@@ -24,6 +24,8 @@ Zig 0.16 release flag: `--release=small` (used by `build.sh`).
 
 CI: `.github/workflows/build-harness.yml` → artifact **`harness-wasm`**.
 
+`build.sh` verifies Wasm export section includes all `inv_*` + `dvui_init` / `gpa_u8` (fails CI if missing).
+
 ## Export surface (dvui host)
 
 Host is dvui’s `web.js`. Required exports (provided by app + backend):
@@ -39,6 +41,27 @@ App code: `src/main.zig` (lifecycle + **`inv_*` exports**) · `src/ui.zig` (fram
 
 Inference stays on the host: `POST /api/chat` holds `AI_GATEWAY_API_KEY` — **never** in Wasm.
 
+### Zig 0.16 Wasm export rules (read this before adding symbols)
+
+From Zig std (`Build.Module`):
+
+> **`export_symbol_names`** — *Symbols to be exported when compiling to WebAssembly.*
+
+Each name becomes a linker **`--export=`** root. Combined with language `export fn` / `@export`:
+
+| Mechanism | Effect |
+|-----------|--------|
+| `export fn foo()` in Zig source | Marks `foo` as an export candidate |
+| `module.export_symbol_names = &.{ "foo" }` | Emits `--export=foo` → keeps `foo` as a GC root + export section entry |
+| `exe.rdynamic = true` | Emits `-rdynamic` → keep **all** export-marked symbols (broader) |
+| `exe.entry = .disabled` | No `_start`; freestanding library-style Wasm (required for dvui host) |
+
+With `entry = .disabled`, the linker has **no entry root**. Exports that nothing *inside* the module calls get **stripped** unless they are roots via `--export=` / `-rdynamic`. That is why `export fn inv_ping` alone was invisible to JS until listed in `export_symbol_names`.
+
+dvui’s web backend already lists `dvui_*` / `gpa_*` / `add_event` / … on its module. Invincible lists `inv_*` on the harness root module in `build.zig`.
+
+Language ref: [export](https://ziglang.org/documentation/0.16.0/#export) · build field: `std.Build.Module.export_symbol_names`.
+
 ---
 
 ## JS ↔ Wasm bridge protocol (Phase 3.6)
@@ -48,7 +71,7 @@ Inference stays on the host: `POST /api/chat` holds `AI_GATEWAY_API_KEY` — **n
 | **Protocol version** | `1` — `inv_protocol_version()` / `HARNESS_PROTOCOL_VERSION` in `lib/harnessBridge.ts` |
 | **TS glue** | `lib/harnessBridge.ts` (`HarnessBridge`) |
 | **Zig state** | `src/bridge.zig` |
-| **Zig exports** | `src/main.zig` (`export fn inv_*` — must stay on root for emission) |
+| **Zig exports** | `src/main.zig` (`export fn inv_*`) + whitelist in `build.zig` |
 | **Host** | `app/harness/HarnessHost.tsx` |
 
 ### Responsibilities
@@ -100,9 +123,10 @@ Existing dvui imports (used by backend only): `wasm_refresh`, `wasm_console_*`, 
 ### Source layout
 
 ```text
-src/main.zig     # dvui_* + inv_* exports (root)
+src/main.zig     # dvui_* + inv_* export fns (root)
 src/ui.zig       # frame: lifecycle + transcript + stub button
 src/bridge.zig   # ring buffer + lifecycle state (no export fn)
+build.zig        # export_symbol_names whitelist for inv_*
 ```
 
 ## Browser requirements

@@ -31,13 +31,24 @@ pub fn build(b: *std.Build) void {
             .strip = strip,
         }),
     });
+    // Freestanding library-style Wasm (no _start); host calls exports.
     exe.entry = .disabled;
     exe.root_module.addImport("dvui", dvui_dep.module("dvui_web"));
     exe.root_module.addImport("web-backend", dvui_dep.module("web"));
 
-    // Zig 0.16 wasm: only names listed here (plus those on dependency modules)
-    // appear in the export section. dvui's web backend lists dvui_* / gpa_*;
-    // we must list inv_* or the bridge is invisible to JS.
+    // Zig std.Build.Module.export_symbol_names:
+    //   "Symbols to be exported when compiling to WebAssembly."
+    // Each name becomes a linker `--export=` root (see Module.zig → zig_args).
+    //
+    // Why this is required (Zig 0.16 freestanding Wasm):
+    // - `export fn` in source marks a symbol for export, but with
+    //   `entry = .disabled` the linker has no `_start` root and will GC
+    //   exports that nothing in the module calls.
+    // - Alternative: `exe.rdynamic = true` (-rdynamic) keeps *all*
+    //   export-marked symbols; export_symbol_names is the explicit list.
+    // - dvui's web backend already lists dvui_* / gpa_* / add_event / …;
+    //   inv_* must be listed here or JS never sees the bridge.
+    // Docs/tutorial: export fn + rdynamic OR export_symbol_names.
     exe.root_module.export_symbol_names = &.{
         "inv_protocol_version",
         "inv_ping",
