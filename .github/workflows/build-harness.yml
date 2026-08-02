@@ -1,0 +1,48 @@
+# Phase 3.3 — compile harness.wasm on DO runner, upload Actions artifact
+name: build-harness
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "native/harness/**"
+      - "native/ZIG_VERSION"
+      - ".github/workflows/build-harness.yml"
+
+jobs:
+  harness:
+    name: zig → harness.wasm
+    runs-on: [self-hosted, invincible, zig]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build harness
+        run: |
+          set -euo pipefail
+          export PATH="/usr/local/bin:${PATH}"
+          zig version
+          test "$(zig version)" = "$(tr -d '[:space:]' < native/ZIG_VERSION)"
+          ./native/harness/build.sh
+
+      - name: Record sizes
+        run: |
+          set -euo pipefail
+          STAGE=native/dist/harness
+          ls -la "$STAGE"
+          echo "harness.wasm bytes=$(wc -c < "$STAGE/harness.wasm" | tr -d ' ')"
+          echo "web.js bytes=$(wc -c < "$STAGE/web.js" | tr -d ' ')"
+          head -c 4 "$STAGE/harness.wasm" | od -An -tx1
+
+      - name: Upload harness-wasm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-wasm
+          path: |
+            native/dist/harness/harness.wasm
+            native/dist/harness/web.js
+            native/dist/harness/index.html
+          if-no-files-found: error
+          retention-days: 14

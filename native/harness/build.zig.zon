@@ -1,0 +1,20 @@
+.{
+    .name = .invincible_harness,
+    .fingerprint = 0x4aa402a51445d238,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .dvui = .{
+            // Same pin as Phase 3.1 spike (Zig 0.16.0)
+            .url = "git+https://github.com/david-vanderson/dvui?ref=main#4f810ef1d695b55fb714a13536a930b9304d619e",
+            .hash = "dvui-0.5.0-dev-AQFJmXxd_QAJS310eGUEjF5iOYHn4QlPT26rwBriRHE0",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "static",
+        "README.md",
+    },
+}

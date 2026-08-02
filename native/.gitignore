@@ -8,3 +8,6 @@ zig-pkg/
 dvui-spike/.zig-cache/
 dvui-spike/zig-out/
 dvui-spike/zig-pkg/
+harness/.zig-cache/
+harness/zig-out/
+harness/zig-pkg/
