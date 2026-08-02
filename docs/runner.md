@@ -26,7 +26,7 @@ DO hosts **build** (Zig/Wasm). Vercel hosts the **Next.js** app only.
 | Public IPv4 | `204.48.30.46` |
 | Runner name | `invincible-do-1` |
 | Labels | `self-hosted`, `Linux`/`linux`, `X64`/`x64`, `invincible`, `zig` |
-| Zig version | _pending Phase 2.3_ |
+| Zig version | **0.16.0** (pinned) |
 
 ## Create options
 
@@ -95,4 +95,27 @@ See [docs/phase-2-plan.md](phase-2-plan.md) and [milestone 2](https://github.com
 cd ~/actions-runner
 sudo ./svc.sh status
 sudo ./svc.sh stop   # / start
+```
+
+## Zig toolchain (Phase 2.3)
+
+| Field | Value |
+|-------|--------|
+| Version | **0.16.0** (pinned in `native/ZIG_VERSION`) |
+| Install path | `/opt/zig/0.16.0` |
+| Symlink | `/usr/local/bin/zig` |
+| Tarball | `https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz` |
+| Install script | [`scripts/install-zig.sh`](../scripts/install-zig.sh) |
+| Verify | [`scripts/verify-zig-wasm.sh`](../scripts/verify-zig-wasm.sh) |
+| Probe source | [`native/hello.zig`](../native/hello.zig) |
+
+```bash
+# as root or with sudo on the droplet
+curl -fsSL https://raw.githubusercontent.com/btipling/invincible/main/scripts/install-zig.sh | sudo bash
+# if private repo, copy script via paste or scp instead
+
+# as runner (after install)
+zig version   # must print 0.16.0
+# with repo checkout:
+./scripts/verify-zig-wasm.sh
 ```
