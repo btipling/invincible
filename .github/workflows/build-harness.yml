@@ -47,13 +47,16 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # Do not use secrets.* in step `if:` — it can fail workflow validation
+      # (runs show as "workflow file issue" with name = path, 0s duration).
       - name: Trigger Vercel redeploy (optional)
-        if: ${{ secrets.VERCEL_DEPLOY_HOOK_URL != '' }}
         env:
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
         run: |
           set -euo pipefail
-          # So harness-only changes go live without a dummy commit.
+          if [ -z "${VERCEL_DEPLOY_HOOK_URL:-}" ]; then
+            echo "VERCEL_DEPLOY_HOOK_URL not set — skip deploy hook"
+            exit 0
+          fi
           curl -fsS -X POST "$VERCEL_DEPLOY_HOOK_URL"
           echo "deploy hook pinged"
-
