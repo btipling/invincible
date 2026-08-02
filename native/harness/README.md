@@ -37,7 +37,7 @@ Host is dvui’s `web.js`. Required exports (provided by app + backend):
 | `dvui_update() → i32` | One frame; return wait ms (`-1` quit) |
 | `add_event` / `arena_u8` / `gpa_u8` / `gpa_free` / `new_font` | Backend memory + input (from dvui web backend) |
 
-App code: `src/main.zig` (lifecycle + **`inv_*` exports**) · `src/ui.zig` (frames) · `src/bridge.zig` (state).
+App code: `src/main.zig` (dvui lifecycle) · `src/ui.zig` (frames) · `src/bridge.zig` (`inv_*` + state).
 
 Inference stays on the host: `POST /api/chat` holds `AI_GATEWAY_API_KEY` — **never** in Wasm.
 
@@ -51,14 +51,16 @@ Each name becomes a linker **`--export=`** root. Combined with language `export 
 
 | Mechanism | Effect |
 |-----------|--------|
-| `export fn foo()` in Zig source | Marks `foo` as an export candidate |
+| `export fn foo()` in Zig source (any file in the module graph) | Marks `foo` as an export candidate |
 | `module.export_symbol_names = &.{ "foo" }` | Emits `--export=foo` → keeps `foo` as a GC root + export section entry |
 | `exe.rdynamic = true` | Emits `-rdynamic` → keep **all** export-marked symbols (broader) |
 | `exe.entry = .disabled` | No `_start`; freestanding library-style Wasm (required for dvui host) |
 
-With `entry = .disabled`, the linker has **no entry root**. Exports that nothing *inside* the module calls get **stripped** unless they are roots via `--export=` / `-rdynamic`. That is why `export fn inv_ping` alone was invisible to JS until listed in `export_symbol_names`.
+With `entry = .disabled`, the linker has **no entry root**. Exports that nothing *inside* the module calls get **stripped** unless they are roots via `--export=` / `-rdynamic`.
 
-dvui’s web backend already lists `dvui_*` / `gpa_*` / `add_event` / … on its module. Invincible lists `inv_*` on the harness root module in `build.zig`.
+**File location does not matter** — `export fn` in `bridge.zig` works the same as in `main.zig`. What matters is the whitelist (or `rdynamic`).
+
+dvui’s web backend lists `dvui_*` / `gpa_*` / `add_event` / … on its module. Invincible lists `inv_*` on the harness root module in `build.zig`.
 
 Language ref: [export](https://ziglang.org/documentation/0.16.0/#export) · build field: `std.Build.Module.export_symbol_names`.
 
@@ -70,8 +72,8 @@ Language ref: [export](https://ziglang.org/documentation/0.16.0/#export) · buil
 |--|--|
 | **Protocol version** | `1` — `inv_protocol_version()` / `HARNESS_PROTOCOL_VERSION` in `lib/harnessBridge.ts` |
 | **TS glue** | `lib/harnessBridge.ts` (`HarnessBridge`) |
-| **Zig state** | `src/bridge.zig` |
-| **Zig exports** | `src/main.zig` (`export fn inv_*`) + whitelist in `build.zig` |
+| **Zig ABI + state** | `src/bridge.zig` (`export fn inv_*`) |
+| **Whitelist** | `build.zig` → `export_symbol_names` |
 | **Host** | `app/harness/HarnessHost.tsx` |
 
 ### Responsibilities
@@ -123,9 +125,9 @@ Existing dvui imports (used by backend only): `wasm_refresh`, `wasm_console_*`, 
 ### Source layout
 
 ```text
-src/main.zig     # dvui_* + inv_* export fns (root)
+src/main.zig     # dvui_init / deinit / update only
 src/ui.zig       # frame: lifecycle + transcript + stub button
-src/bridge.zig   # ring buffer + lifecycle state (no export fn)
+src/bridge.zig   # inv_* export fns + ring buffer state
 build.zig        # export_symbol_names whitelist for inv_*
 ```
 

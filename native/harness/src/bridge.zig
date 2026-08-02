@@ -1,9 +1,10 @@
-//! Invincible JS ↔ Wasm bridge state + helpers (Phase 3.6 / issue #21).
+//! Invincible JS ↔ Wasm bridge (Phase 3.6 / issue #21).
 //!
 //! Host (Next/TS) owns network (`POST /api/chat`) and DOM shell.
 //! Wasm owns dvui frame loop and local transcript state.
 //!
-//! Stable ABI exports live in `main.zig` (root) so the Wasm linker emits them.
+//! `export fn inv_*` live here; they must also be listed in
+//! `build.zig` → `root_module.export_symbol_names` (Zig 0.16 Wasm GC roots).
 //! Protocol doc: README.md.
 const WebBackend = @import("web-backend");
 
@@ -81,9 +82,27 @@ pub fn queueSubmitFromUi(text: []const u8) void {
     has_pending_submit = pending_submit_len > 0;
 }
 
-// ── Called from main.zig export wrappers ───────────────────────────────────
+pub fn reset() void {
+    lifecycle = .boot;
+    msg_head = 0;
+    msg_count = 0;
+    echo_len = 0;
+    has_pending_submit = false;
+    pending_submit_len = 0;
+}
 
-pub fn setLifecycle(status: u8) void {
+// ── Stable ABI (also whitelist in build.zig export_symbol_names) ───────────
+
+export fn inv_protocol_version() u32 {
+    return PROTOCOL_VERSION;
+}
+
+/// Round-trip scalar probe: returns `x ^ 0xA5A5`.
+export fn inv_ping(x: i32) i32 {
+    return x ^ 0xA5A5;
+}
+
+export fn inv_set_lifecycle(status: u8) void {
     lifecycle = switch (status) {
         0 => .boot,
         1 => .ready,
@@ -94,7 +113,7 @@ pub fn setLifecycle(status: u8) void {
     refresh();
 }
 
-pub fn pushMessage(kind: u8, ptr: [*]const u8, len: usize) void {
+export fn inv_push_message(kind: u8, ptr: [*]const u8, len: usize) void {
     const src = ptr[0..len];
     const slot = &messages[msg_head];
     slot.kind = kind;
@@ -104,58 +123,46 @@ pub fn pushMessage(kind: u8, ptr: [*]const u8, len: usize) void {
     refresh();
 }
 
-pub fn clearMessages() void {
+export fn inv_clear_messages() void {
     msg_head = 0;
     msg_count = 0;
     refresh();
 }
 
-pub fn echoSet(ptr: [*]const u8, len: usize) u32 {
+/// Store UTF-8 for later `inv_echo_copy`. Returns stored length (capped).
+export fn inv_echo(ptr: [*]const u8, len: usize) u32 {
     echo_len = copySlice(&echo_buf, ptr[0..len]);
     refresh();
     return echo_len;
 }
 
-pub fn echoLen() u32 {
+export fn inv_echo_len() u32 {
     return echo_len;
 }
 
-pub fn echoCopy(out_ptr: [*]u8, max_len: usize) u32 {
+export fn inv_echo_copy(out_ptr: [*]u8, max_len: usize) u32 {
     const n = @min(max_len, @as(usize, echo_len));
     if (n > 0) @memcpy(out_ptr[0..n], echo_buf[0..n]);
     return @intCast(n);
 }
 
-pub fn hasPendingSubmit() u8 {
+export fn inv_has_pending_submit() u8 {
     return if (has_pending_submit) 1 else 0;
 }
 
-pub fn pendingSubmitLen() u32 {
+export fn inv_pending_submit_len() u32 {
     return if (has_pending_submit) pending_submit_len else 0;
 }
 
-pub fn pendingSubmitCopy(out_ptr: [*]u8, max_len: usize) u32 {
+export fn inv_pending_submit_copy(out_ptr: [*]u8, max_len: usize) u32 {
     if (!has_pending_submit) return 0;
     const n = @min(max_len, @as(usize, pending_submit_len));
     if (n > 0) @memcpy(out_ptr[0..n], pending_submit[0..n]);
     return @intCast(n);
 }
 
-pub fn ackPendingSubmit() void {
+export fn inv_ack_pending_submit() void {
     has_pending_submit = false;
     pending_submit_len = 0;
     refresh();
-}
-
-pub fn ping(x: i32) i32 {
-    return x ^ 0xA5A5;
-}
-
-pub fn reset() void {
-    lifecycle = .boot;
-    msg_head = 0;
-    msg_count = 0;
-    echo_len = 0;
-    has_pending_submit = false;
-    pending_submit_len = 0;
 }
