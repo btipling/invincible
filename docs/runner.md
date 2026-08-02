@@ -167,6 +167,7 @@ sudo systemctl disable --now 'actions.runner.btipling-invincible.*.service'  # c
 |----------|------|----------|-----|
 | **runner-smoke** | `.github/workflows/runner-smoke.yml` | `workflow_dispatch`, push to that file | Host + `zig 0.16.0` + GitHub HTTPS |
 | **build-wasm** | `.github/workflows/build-wasm.yml` | `workflow_dispatch`, push to `native/**` or that file | `./native/build.sh` → artifact **`hello-wasm`** |
+| **build-dvui-spike** | `.github/workflows/build-dvui-spike.yml` | `workflow_dispatch`, push to `native/dvui-spike/**` | `./native/dvui-spike/build.sh` → artifact **`dvui-spike-wasm`** |
 
 ```bash
 # dispatch

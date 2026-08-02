@@ -2,3 +2,9 @@ dist/
 *.wasm
 *.o
 *.obj
+.zig-cache/
+zig-out/
+zig-pkg/
+dvui-spike/.zig-cache/
+dvui-spike/zig-out/
+dvui-spike/zig-pkg/

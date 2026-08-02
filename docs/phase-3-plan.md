@@ -39,7 +39,7 @@ In-browser **agent harness** (Wasm), not a CLI clone and not a Chrome extension:
 
 | Order | Issue | Notes |
 |------:|--------|--------|
-| 1 | [#16 3.1](https://github.com/btipling/invincible/issues/16) dvui spike | May force Zig bump or fallback |
+| 1 | [#16 3.1](https://github.com/btipling/invincible/issues/16) dvui spike | **Done** — see [phase-3-dvui-spike.md](phase-3-dvui-spike.md); dvui OK on 0.16.0 |
 | 2 | [#17 3.2](https://github.com/btipling/invincible/issues/17) crate skeleton | Parallel with 3.1 OK |
 | 3 | [#18 3.3](https://github.com/btipling/invincible/issues/18) CI harness artifact | After 3.2 |
 | 4 | [#19 3.4](https://github.com/btipling/invincible/issues/19) ship to Vercel static | After 3.3 |

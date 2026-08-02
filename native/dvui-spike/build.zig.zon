@@ -1,0 +1,19 @@
+.{
+    .name = .invincible_dvui_spike,
+    .fingerprint = 0x9503e730f8e73287,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .dvui = .{
+            // Pin: main as of 2026-08-02 spike (Zig 0.16.0 compatible)
+            .url = "git+https://github.com/david-vanderson/dvui?ref=main#4f810ef1d695b55fb714a13536a930b9304d619e",
+            .hash = "dvui-0.5.0-dev-AQFJmXxd_QAJS310eGUEjF5iOYHn4QlPT26rwBriRHE0",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "static",
+    },
+}

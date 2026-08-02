@@ -1,0 +1,47 @@
+# Phase 3.1 — build dvui web Wasm spike on invincible-do-1
+name: build-dvui-spike
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "native/dvui-spike/**"
+      - "native/ZIG_VERSION"
+      - ".github/workflows/build-dvui-spike.yml"
+
+jobs:
+  dvui-wasm:
+    name: zig → dvui web.wasm
+    runs-on: [self-hosted, invincible, zig]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build dvui spike
+        run: |
+          set -euo pipefail
+          export PATH="/usr/local/bin:${PATH}"
+          zig version
+          ./native/dvui-spike/build.sh
+
+      - name: Record sizes
+        run: |
+          set -euo pipefail
+          STAGE=native/dist/dvui-spike
+          ls -la "$STAGE"
+          echo "web.wasm bytes=$(wc -c < "$STAGE/web.wasm" | tr -d ' ')"
+          echo "web.js bytes=$(wc -c < "$STAGE/web.js" | tr -d ' ')"
+          head -c 4 "$STAGE/web.wasm" | od -An -tx1
+
+      - name: Upload dvui-spike artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dvui-spike-wasm
+          path: |
+            native/dist/dvui-spike/web.wasm
+            native/dist/dvui-spike/web.js
+            native/dist/dvui-spike/index.html
+          if-no-files-found: error
+          retention-days: 14
