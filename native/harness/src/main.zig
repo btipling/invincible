@@ -2,12 +2,11 @@
 //!
 //! Export surface is fixed by dvui's web.js host:
 //!   dvui_init, dvui_deinit, dvui_update, add_event, arena_u8, gpa_u8, gpa_free, new_font
-//! Invincible bridge exports (inv_*) live in `bridge.zig` and are linked via this root.
+//! Invincible bridge exports (`inv_*`) are declared here (root) so Wasm emits them.
 const std = @import("std");
 const dvui = @import("dvui");
 const WebBackend = @import("web-backend");
 const ui = @import("ui.zig");
-// Keep bridge module in the graph so inv_* exports are emitted.
 const bridge = @import("bridge.zig");
 
 comptime {
@@ -34,6 +33,58 @@ pub fn logFn(
 pub const std_options: std.Options = .{
     .logFn = logFn,
 };
+
+// ── Invincible bridge ABI (must stay in root source for export emission) ───
+
+export fn inv_protocol_version() u32 {
+    return bridge.PROTOCOL_VERSION;
+}
+
+export fn inv_ping(x: i32) i32 {
+    return bridge.ping(x);
+}
+
+export fn inv_set_lifecycle(status: u8) void {
+    bridge.setLifecycle(status);
+}
+
+export fn inv_push_message(kind: u8, ptr: [*]const u8, len: usize) void {
+    bridge.pushMessage(kind, ptr, len);
+}
+
+export fn inv_clear_messages() void {
+    bridge.clearMessages();
+}
+
+export fn inv_echo(ptr: [*]const u8, len: usize) u32 {
+    return bridge.echoSet(ptr, len);
+}
+
+export fn inv_echo_len() u32 {
+    return bridge.echoLen();
+}
+
+export fn inv_echo_copy(out_ptr: [*]u8, max_len: usize) u32 {
+    return bridge.echoCopy(out_ptr, max_len);
+}
+
+export fn inv_has_pending_submit() u8 {
+    return bridge.hasPendingSubmit();
+}
+
+export fn inv_pending_submit_len() u32 {
+    return bridge.pendingSubmitLen();
+}
+
+export fn inv_pending_submit_copy(out_ptr: [*]u8, max_len: usize) u32 {
+    return bridge.pendingSubmitCopy(out_ptr, max_len);
+}
+
+export fn inv_ack_pending_submit() void {
+    bridge.ackPendingSubmit();
+}
+
+// ── dvui host lifecycle ────────────────────────────────────────────────────
 
 export fn dvui_init(platform_ptr: [*]const u8, platform_len: usize) i32 {
     const platform = platform_ptr[0..platform_len];

@@ -35,7 +35,7 @@ Host is dvui’s `web.js`. Required exports (provided by app + backend):
 | `dvui_update() → i32` | One frame; return wait ms (`-1` quit) |
 | `add_event` / `arena_u8` / `gpa_u8` / `gpa_free` / `new_font` | Backend memory + input (from dvui web backend) |
 
-App code: `src/main.zig` (lifecycle) · `src/ui.zig` (frames) · `src/bridge.zig` (JS bridge).
+App code: `src/main.zig` (lifecycle + **`inv_*` exports**) · `src/ui.zig` (frames) · `src/bridge.zig` (state).
 
 Inference stays on the host: `POST /api/chat` holds `AI_GATEWAY_API_KEY` — **never** in Wasm.
 
@@ -47,7 +47,8 @@ Inference stays on the host: `POST /api/chat` holds `AI_GATEWAY_API_KEY` — **n
 |--|--|
 | **Protocol version** | `1` — `inv_protocol_version()` / `HARNESS_PROTOCOL_VERSION` in `lib/harnessBridge.ts` |
 | **TS glue** | `lib/harnessBridge.ts` (`HarnessBridge`) |
-| **Zig** | `src/bridge.zig` (`export fn inv_*`) |
+| **Zig state** | `src/bridge.zig` |
+| **Zig exports** | `src/main.zig` (`export fn inv_*` — must stay on root for emission) |
 | **Host** | `app/harness/HarnessHost.tsx` |
 
 ### Responsibilities
@@ -99,9 +100,9 @@ Existing dvui imports (used by backend only): `wasm_refresh`, `wasm_console_*`, 
 ### Source layout
 
 ```text
-src/main.zig     # dvui_init / deinit / update
+src/main.zig     # dvui_* + inv_* exports (root)
 src/ui.zig       # frame: lifecycle + transcript + stub button
-src/bridge.zig   # inv_* exports + ring buffer state
+src/bridge.zig   # ring buffer + lifecycle state (no export fn)
 ```
 
 ## Browser requirements

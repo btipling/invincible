@@ -1,9 +1,10 @@
-//! Invincible JS ↔ Wasm bridge (Phase 3.6 / issue #21).
+//! Invincible JS ↔ Wasm bridge state + helpers (Phase 3.6 / issue #21).
 //!
 //! Host (Next/TS) owns network (`POST /api/chat`) and DOM shell.
 //! Wasm owns dvui frame loop and local transcript state.
 //!
-//! Protocol version: see `PROTOCOL_VERSION`. Documented in README.md.
+//! Stable ABI exports live in `main.zig` (root) so the Wasm linker emits them.
+//! Protocol doc: README.md.
 const WebBackend = @import("web-backend");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
@@ -47,7 +48,6 @@ var pending_submit_len: u32 = 0;
 var has_pending_submit: bool = false;
 
 fn refresh() void {
-    // Ask web.js to schedule another dvui_update so UI reflects bridge writes.
     WebBackend.wasm.wasm_refresh();
 }
 
@@ -65,7 +65,6 @@ pub fn messageCount() usize {
     return msg_count;
 }
 
-/// Iterate stored messages oldest→newest via index API.
 pub fn messageAt(i: usize) ?struct { kind: u8, text: []const u8 } {
     if (i >= msg_count) return null;
     const idx = (msg_head + MAX_MSG - msg_count + i) % MAX_MSG;
@@ -82,18 +81,9 @@ pub fn queueSubmitFromUi(text: []const u8) void {
     has_pending_submit = pending_submit_len > 0;
 }
 
-// ── Exports (stable ABI for lib/harnessBridge.ts) ──────────────────────────
+// ── Called from main.zig export wrappers ───────────────────────────────────
 
-export fn inv_protocol_version() u32 {
-    return PROTOCOL_VERSION;
-}
-
-/// Round-trip scalar probe: returns `x ^ 0xA5A5`.
-export fn inv_ping(x: i32) i32 {
-    return x ^ 0xA5A5;
-}
-
-export fn inv_set_lifecycle(status: u8) void {
+pub fn setLifecycle(status: u8) void {
     lifecycle = switch (status) {
         0 => .boot,
         1 => .ready,
@@ -104,7 +94,7 @@ export fn inv_set_lifecycle(status: u8) void {
     refresh();
 }
 
-export fn inv_push_message(kind: u8, ptr: [*]const u8, len: usize) void {
+pub fn pushMessage(kind: u8, ptr: [*]const u8, len: usize) void {
     const src = ptr[0..len];
     const slot = &messages[msg_head];
     slot.kind = kind;
@@ -114,51 +104,53 @@ export fn inv_push_message(kind: u8, ptr: [*]const u8, len: usize) void {
     refresh();
 }
 
-export fn inv_clear_messages() void {
+pub fn clearMessages() void {
     msg_head = 0;
     msg_count = 0;
     refresh();
 }
 
-/// Store UTF-8 for later `inv_echo_copy`. Returns stored length (capped).
-export fn inv_echo(ptr: [*]const u8, len: usize) u32 {
+pub fn echoSet(ptr: [*]const u8, len: usize) u32 {
     echo_len = copySlice(&echo_buf, ptr[0..len]);
     refresh();
     return echo_len;
 }
 
-export fn inv_echo_len() u32 {
+pub fn echoLen() u32 {
     return echo_len;
 }
 
-export fn inv_echo_copy(out_ptr: [*]u8, max_len: usize) u32 {
+pub fn echoCopy(out_ptr: [*]u8, max_len: usize) u32 {
     const n = @min(max_len, @as(usize, echo_len));
     if (n > 0) @memcpy(out_ptr[0..n], echo_buf[0..n]);
     return @intCast(n);
 }
 
-export fn inv_has_pending_submit() u8 {
+pub fn hasPendingSubmit() u8 {
     return if (has_pending_submit) 1 else 0;
 }
 
-export fn inv_pending_submit_len() u32 {
+pub fn pendingSubmitLen() u32 {
     return if (has_pending_submit) pending_submit_len else 0;
 }
 
-export fn inv_pending_submit_copy(out_ptr: [*]u8, max_len: usize) u32 {
+pub fn pendingSubmitCopy(out_ptr: [*]u8, max_len: usize) u32 {
     if (!has_pending_submit) return 0;
     const n = @min(max_len, @as(usize, pending_submit_len));
     if (n > 0) @memcpy(out_ptr[0..n], pending_submit[0..n]);
     return @intCast(n);
 }
 
-export fn inv_ack_pending_submit() void {
+pub fn ackPendingSubmit() void {
     has_pending_submit = false;
     pending_submit_len = 0;
     refresh();
 }
 
-/// Reset bridge state on harness init.
+pub fn ping(x: i32) i32 {
+    return x ^ 0xA5A5;
+}
+
 pub fn reset() void {
     lifecycle = .boot;
     msg_head = 0;
