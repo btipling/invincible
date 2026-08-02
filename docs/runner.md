@@ -265,6 +265,7 @@ du -sh /home/runner/actions-runner/_work /opt/zig 2>/dev/null || true
 | [`scripts/install-zig.sh`](../scripts/install-zig.sh) | pin Zig to `/opt/zig` |
 | [`scripts/verify-zig-wasm.sh`](../scripts/verify-zig-wasm.sh) | wasm magic check |
 | [`scripts/phase-2.3-zig.sh`](../scripts/phase-2.3-zig.sh) | install + verify one-shot |
+| [`scripts/harden-runner-host.sh`](../scripts/harden-runner-host.sh) | Phase 2.7 SSH/UFW/unattended-upgrades |
 | [`native/build.sh`](../native/build.sh) | CI/local `hello.wasm` |
 | [`scripts/README.md`](../scripts/README.md) | private-repo `gh_raw` curl recipes |
 
@@ -280,3 +281,58 @@ du -sh /home/runner/actions-runner/_work /opt/zig 2>/dev/null || true
 | Self-hosted runners | https://github.com/btipling/invincible/settings/actions/runners |
 
 **Out of scope for this doc:** Phase 3 dvui harness UI, AI Gateway keys (Vercel only), full host hardening (issue #14).
+
+---
+
+## 12. Hardening & cost (Phase 2.7)
+
+### Applied baseline (run on host)
+
+```bash
+gh_raw scripts/harden-runner-host.sh | sudo bash
+# optional lock SSH to your IP:
+# SSH_ALLOW_FROM='x.x.x.x/32' gh_raw scripts/harden-runner-host.sh | sudo bash
+```
+
+Script: [`scripts/harden-runner-host.sh`](../scripts/harden-runner-host.sh)
+
+| Control | Behavior |
+|---------|----------|
+| SSH | `PasswordAuthentication no`, `PermitRootLogin prohibit-password`, no X11/TCP forwarding |
+| UFW | default deny in; **only 22/tcp** (or from `SSH_ALLOW_FROM`); **no 80/443** |
+| Updates | `unattended-upgrades` daily security |
+| Runner | must not be root; sudo limited to apt + runner `svc.sh` / unit |
+| Marker | `/var/lib/invincible/hardened-at` |
+
+**Web console:** DO Recovery/web console still works if you lock yourself out of SSH.
+
+**After harden:** confirm runner **Idle** in GitHub UI, then:
+
+```bash
+gh workflow run runner-smoke.yml --repo btipling/invincible
+```
+
+### DO console (recommended extras)
+
+1. **Networking → Firewalls** (optional second layer): inbound TCP 22 only; attach to droplet `589481218`.
+2. **Billing → Budgets & alerts**: e.g. alert at $40 if droplet is ~$32/mo.
+3. Avoid unplanned **snapshots/volumes** unless noted here (none today).
+4. **Monitoring** on for the droplet.
+
+### Cost summary
+
+| Item | Amount |
+|------|--------|
+| Droplet `s-2vcpu-4gb-120gb-intel` nyc1 | ~**$32/month** |
+| Extra volumes / snapshots | **none** (do not add without updating this doc) |
+| GitHub self-hosted minutes | $0 |
+| Destroy | Section 9 above |
+
+### Post-harden checklist
+
+- [ ] `sudo ufw status` shows 22 only (or restricted source)
+- [ ] `sshd -T \| grep -i passwordauthentication` → `no`
+- [ ] `systemctl is-active actions.runner.btipling-invincible.invincible-do-1.service` → active
+- [ ] Runner Online in GitHub
+- [ ] `runner-smoke` green
+

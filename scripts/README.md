@@ -58,3 +58,28 @@ Or clone and run:
 git clone https://github.com/btipling/invincible.git
 cd invincible && ./scripts/phase-2.3-zig.sh
 ```
+
+## Phase 2.7 — harden host
+
+```bash
+export GH_TOKEN=...
+gh_raw() {
+  curl -fsSL \
+    -H "Authorization: Bearer ${GH_TOKEN}" \
+    -H "Accept: application/vnd.github.raw" \
+    "https://api.github.com/repos/btipling/invincible/contents/$1?ref=main"
+}
+
+# Default: key-only SSH, UFW SSH-only, unattended-upgrades, restricted runner sudo
+gh_raw scripts/harden-runner-host.sh | sudo bash
+
+# Lock SSH to your home/office IP (recommended):
+# SSH_ALLOW_FROM='203.0.113.10/32' gh_raw scripts/harden-runner-host.sh | sudo bash
+```
+
+Then verify runner Online and re-run smoke:
+
+```bash
+gh workflow run runner-smoke.yml --repo btipling/invincible
+```
+
