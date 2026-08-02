@@ -97,10 +97,11 @@ sudo ./svc.sh status
 sudo ./svc.sh stop   # / start
 ```
 
-## Zig toolchain (Phase 2.3)
+## Zig toolchain (Phase 2.3) — **done**
 
 | Field | Value |
 |-------|--------|
+| Status | Verified on droplet 2026-08-02 (`wasm OK`, 157 bytes) |
 | Version | **0.16.0** (pinned in `native/ZIG_VERSION`) |
 | Install path | `/opt/zig/0.16.0` |
 | Symlink | `/usr/local/bin/zig` |
