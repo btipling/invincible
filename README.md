@@ -31,8 +31,25 @@ See `.env.example`.
 
 - Textarea + **Send** (also ⌘/Ctrl+Enter)
 - Response panel + ember error banner
-- Calls `POST /api/chat` with `{ prompt }` (route in 1.4)
+- Calls `POST /api/chat` with `{ prompt }`
 - Colors only from `lib/palette.ts` (teal chrome, warm model chip, ember errors)
+
+### Chat API (Phase 1.4)
+
+```http
+POST /api/chat
+Content-Type: application/json
+
+{ "prompt": "hello" }
+```
+
+```json
+{ "text": "…" }
+```
+
+Errors: `{ "error": "…" }` with 4xx/5xx.
+
+Uses Vercel AI Gateway + AI SDK `generateText`. Model default: `xai/grok-4.1-fast-non-reasoning` (override with `DEFAULT_MODEL`).
 
 ### Local
 
@@ -48,7 +65,7 @@ npm run build
 - [x] 1.1 GitHub repo
 - [x] 1.2 Next.js scaffold + AI SDK + palette
 - [x] 1.3 Prompt UI
-- [ ] 1.4 API route → AI Gateway
+- [x] 1.4 API route → AI Gateway
 - [ ] 1.5 Vercel project + deploy
 
 ### Later phases (not started)
