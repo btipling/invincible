@@ -8,7 +8,7 @@ DO hosts **build** (Zig/Wasm). Vercel hosts the **Next.js** app only.
 |------|--------|
 | Droplet | **Active** — id `589481218`, IPv4 `204.48.30.46` (nyc1) |
 | Spec | Ubuntu 24.04 · `s-2vcpu-4gb-120gb-intel` · tag `invincible` |
-| Bootstrap | Run on host (web console or SSH) — see below / `scripts/bootstrap-runner-host.sh` |
+| Bootstrap | **Done** (2026-08-02) — user `runner` + baseline packages; github.com 200 |
 | Create helper | [`scripts/create-invincible-droplet.sh`](../scripts/create-invincible-droplet.sh) (for rebuilds) |
 
 ## Target inventory
@@ -21,7 +21,7 @@ DO hosts **build** (Zig/Wasm). Vercel hosts the **Next.js** app only.
 | Image | `ubuntu-24-04-x64` |
 | Tags | `invincible` (add `gha-runner` anytime) |
 | Monitoring | confirm in DO UI |
-| User | `runner` (after bootstrap) |
+| User | `runner` (sudo, uid 1000) |
 | Droplet ID | `589481218` |
 | Public IPv4 | `204.48.30.46` |
 | Runner name | `invincible-do-1` (Phase 2.2) |
@@ -75,3 +75,7 @@ Then re-run Phase 2.1 from chat so the agent can call `droplet-create` and compl
 ## Plan
 
 See [docs/phase-2-plan.md](phase-2-plan.md) and [milestone 2](https://github.com/btipling/invincible/milestone/2).
+
+## Connectivity note
+
+`curl -f https://objects.githubusercontent.com/` often returns **404** on the bare host URL; that still means TLS/DNS work. GitHub Actions runner downloads use full object paths and succeed when `github.com` is 200.
