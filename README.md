@@ -8,8 +8,10 @@ Prompt playground / agent harness.
 
 - **Project board:** [Invincible (projects/1)](https://github.com/users/btipling/projects/1/views/1)
 - **Milestone (done):** [Phase 1 — Prompt MVP](https://github.com/btipling/invincible/milestone/1)
-- **Milestone (next):** [Phase 2 — Build runner (DO)](https://github.com/btipling/invincible/milestone/2)
-- **Phase 2 plan:** [`docs/phase-2-plan.md`](docs/phase-2-plan.md) · issues under milestone 2
+- **Milestone (done):** [Phase 2 — Build runner (DO)](https://github.com/btipling/invincible/milestone/2)
+- **Milestone (next):** [Phase 3 — Zig/dvui Wasm harness](https://github.com/btipling/invincible/milestone/3)
+- **Phase 3 plan (handoff):** [`docs/phase-3-plan.md`](docs/phase-3-plan.md)
+- **Phase 2 plan:** [`docs/phase-2-plan.md`](docs/phase-2-plan.md)
 - **Issues:** https://github.com/btipling/invincible/issues
 
 ## Live
@@ -96,7 +98,7 @@ npm run build
 ### Later phases (not started)
 
 - DO Droplet as self-hosted GitHub Actions runner
-- Zig + dvui Wasm harness
+- Phase 3: Zig + dvui Wasm harness — see [`docs/phase-3-plan.md`](docs/phase-3-plan.md)
 
 ### Palette
 
