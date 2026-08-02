@@ -7,6 +7,7 @@ Prompt playground / agent harness.
 - **Project board:** [Invincible (projects/1)](https://github.com/users/btipling/projects/1/views/1)
 - **Milestone (done):** [Phase 1 — Prompt MVP](https://github.com/btipling/invincible/milestone/1)
 - **Milestone (next):** [Phase 2 — Build runner (DO)](https://github.com/btipling/invincible/milestone/2)
+- **Phase 2 plan:** [`docs/phase-2-plan.md`](docs/phase-2-plan.md) · issues under milestone 2
 - **Issues:** https://github.com/btipling/invincible/issues
 
 ## Live
