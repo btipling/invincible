@@ -30,3 +30,18 @@ Then push to `main` triggers production deploys.
 ## GitHub Project
 
 - Board: https://github.com/users/btipling/projects/1/views/1
+
+## Build runner (Phase 2)
+
+| Field | Value |
+|-------|--------|
+| Droplet name | `invincible-runner` (target) |
+| Region / size | `sfo3` / `s-2vcpu-4gb` |
+| Droplet ID | _pending create_ |
+| Public IPv4 | _pending create_ |
+| Ops doc | [`docs/runner.md`](runner.md) |
+| Create script | [`scripts/create-invincible-droplet.sh`](../scripts/create-invincible-droplet.sh) |
+| Bootstrap | [`scripts/bootstrap-runner-host.sh`](../scripts/bootstrap-runner-host.sh) |
+
+**Blocker (2026-08-02):** DigitalOcean connector returned **403** on droplet create (read-only token). Create via dashboard/`doctl` write token, or re-auth connector with write scopes.
+
