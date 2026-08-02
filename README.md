@@ -17,6 +17,7 @@ Prompt playground / agent harness.
 ## Live
 
 **Production:** https://invincible-dun-ten.vercel.app  
+**Harness (Wasm UI):** https://invincible-dun-ten.vercel.app/harness  
 **Vercel project:** [invincible](https://vercel.com/bjorns-projects-65588ed4/invincible) (team Bjorn's projects)  
 **IDs:** see [`docs/project-ids.md`](docs/project-ids.md)
 
@@ -98,7 +99,7 @@ npm run build
 ### Later phases (not started)
 
 - DO Droplet as self-hosted GitHub Actions runner
-- Phase 3: Zig + dvui Wasm harness — see [`docs/phase-3-plan.md`](docs/phase-3-plan.md)
+- Phase 3: Zig + dvui Wasm harness — 3.1–3.5 done (`/harness` live); see [`docs/phase-3-plan.md`](docs/phase-3-plan.md)
 
 ### Palette
 
