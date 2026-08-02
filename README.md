@@ -27,6 +27,13 @@ Structure mirrors [webgpu-game](https://github.com/btipling/webgpu-game): `app/`
 
 See `.env.example`.
 
+### Prompt UI (Phase 1.3)
+
+- Textarea + **Send** (also ⌘/Ctrl+Enter)
+- Response panel + ember error banner
+- Calls `POST /api/chat` with `{ prompt }` (route in 1.4)
+- Colors only from `lib/palette.ts` (teal chrome, warm model chip, ember errors)
+
 ### Local
 
 ```bash
@@ -40,7 +47,7 @@ npm run build
 
 - [x] 1.1 GitHub repo
 - [x] 1.2 Next.js scaffold + AI SDK + palette
-- [ ] 1.3 Prompt UI
+- [x] 1.3 Prompt UI
 - [ ] 1.4 API route → AI Gateway
 - [ ] 1.5 Vercel project + deploy
 
