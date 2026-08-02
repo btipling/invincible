@@ -44,20 +44,20 @@ In-browser **agent harness** (Wasm), not a CLI clone and not a Chrome extension:
 | 3 | [#18 3.3](https://github.com/btipling/invincible/issues/18) CI harness artifact | **Done** — `build-harness.yml` → `harness-wasm` |
 | 4 | [#19 3.4](https://github.com/btipling/invincible/issues/19) ship to Vercel static | **Done** — option B: `prebuild` fetches Actions artifact (no MB binaries in git) |
 | 5 | [#20 3.5](https://github.com/btipling/invincible/issues/20) `/harness` page | **Done** — App Router host + palette states |
-| 6 | [#21 3.6](https://github.com/btipling/invincible/issues/21) JS↔Wasm bridge | **Done** — `lib/harnessBridge.ts` + `native/harness/src/bridge.zig` + protocol in harness README |
-| 7 | [#22 3.7](https://github.com/btipling/invincible/issues/22) wire Gateway | After 3.6 — **next** |
-| 8 | [#23 3.8](https://github.com/btipling/invincible/issues/23) session model | Parallel after 3.6 |
-| 9 | [#24 3.9](https://github.com/btipling/invincible/issues/24) MVP UX loop | After 3.7 |
+| 6 | [#21 3.6](https://github.com/btipling/invincible/issues/21) JS↔Wasm bridge | **Done** — `lib/harnessBridge.ts` + `native/harness/src/bridge.zig` |
+| 7 | [#22 3.7](https://github.com/btipling/invincible/issues/22) wire Gateway | **Done** — `lib/harnessChat.ts` + host/Wasm prompt → `POST /api/chat` |
+| 8 | [#23 3.8](https://github.com/btipling/invincible/issues/23) session model | Parallel after 3.6 — **next optional** |
+| 9 | [#24 3.9](https://github.com/btipling/invincible/issues/24) MVP UX loop | After 3.7 — **next product** |
 | 10 | [#25 3.10](https://github.com/btipling/invincible/issues/25) polish | After 3.9 |
 | 11 | [#26 3.11](https://github.com/btipling/invincible/issues/26) docs | Ongoing / end |
 
 ## Definition of done
 
-- [ ] `/harness` loads Wasm in prod/preview, clean console  
-- [ ] Prompt → AI Gateway → text visible in harness  
-- [ ] Wasm built on `invincible-do-1`, not laptop-only  
-- [ ] No Gateway secrets in client/Wasm  
-- [ ] `docs/phase-3-plan.md` + runner/README updated  
+- [x] `/harness` loads Wasm in prod/preview, clean console  
+- [x] Prompt → AI Gateway → text visible in harness  
+- [x] Wasm built on `invincible-do-1`, not laptop-only  
+- [x] No Gateway secrets in client/Wasm  
+- [ ] `docs/phase-3-plan.md` + runner/README updated (this file; polish remains)
 
 ## Constraints for implementers
 
@@ -69,7 +69,7 @@ In-browser **agent harness** (Wasm), not a CLI clone and not a Chrome extension:
 
 ## Suggested first message for a new session
 
-> Continue Invincible Phase 3 from `docs/phase-3-plan.md`. Start with issue #22 (wire harness to AI Gateway via `/api/chat`). Do not re-do Phase 1–2 or Phase 3.1–3.6. Repo: btipling/invincible. Prod: https://invincible-dun-ten.vercel.app.
+> Continue Invincible Phase 3 from `docs/phase-3-plan.md`. Start with issue #24 (MVP agent-loop UX) or #23 (session model). Do not re-do Phase 1–2 or Phase 3.1–3.7. Repo: btipling/invincible. Prod: https://invincible-dun-ten.vercel.app.
 
 ## References
 

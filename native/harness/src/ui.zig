@@ -1,9 +1,15 @@
-//! Harness UI (dvui). Bridge-driven transcript + lifecycle chrome (Phase 3.6).
+//! Harness UI (dvui). Transcript + prompt entry; host runs /api/chat (Phase 3.7).
 const dvui = @import("dvui");
 const bridge = @import("bridge.zig");
 
+/// Fixed prompt buffer for textEntry.
+var prompt_buf: [bridge.SUBMIT_CAP]u8 = [_]u8{0} ** bridge.SUBMIT_CAP;
+
+const SMOKE_PROMPT = "Reply with exactly: PONG";
+
 pub fn onInit() void {
     bridge.reset();
+    @memset(&prompt_buf, 0);
 }
 
 pub fn onDeinit() void {}
@@ -27,7 +33,19 @@ fn lifecycleLabel(l: bridge.Lifecycle) []const u8 {
     };
 }
 
+fn clearPrompt() void {
+    @memset(&prompt_buf, 0);
+}
+
+fn submitText(text: []const u8) void {
+    bridge.queueSubmitFromUi(text);
+    clearPrompt();
+}
+
 pub fn frame() !void {
+    const life = bridge.getLifecycle();
+    const busy = life == .busy;
+
     var box = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .both,
         .background = true,
@@ -46,22 +64,53 @@ pub fn frame() !void {
     {
         var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal });
         tl.format(
-            "protocol v{d}  ·  lifecycle: {s}\nJS ↔ Wasm bridge (3.6). Gateway wiring is 3.7.\n",
-            .{ bridge.PROTOCOL_VERSION, lifecycleLabel(bridge.getLifecycle()) },
+            "protocol v{d}  ·  lifecycle: {s}\nHost POSTs /api/chat (Gateway key stays on server).\n",
+            .{ bridge.PROTOCOL_VERSION, lifecycleLabel(life) },
             .{},
         );
         tl.deinit();
     }
 
-    if (dvui.button(@src(), "Queue host submit (stub)", .{}, .{})) {
-        // Wasm → JS path: host polls inv_has_pending_submit (no network).
-        bridge.queueSubmitFromUi("bridge-stub");
+    // Prompt field — slice remains valid after deinit (points into prompt_buf).
+    var typed: []const u8 = prompt_buf[0..0];
+    {
+        var te = dvui.textEntry(@src(), .{
+            .text = .{ .buffer = prompt_buf[0..] },
+            .placeholder = "Type a prompt…",
+            .multiline = false,
+        }, .{
+            .expand = .horizontal,
+            .min_size_content = .{ .w = 200, .h = 24 },
+        });
+        typed = te.getText();
+        const enter = te.enter_pressed and !busy;
+        te.deinit();
+        if (enter and typed.len > 0) {
+            submitText(typed);
+            typed = prompt_buf[0..0];
+        }
     }
 
-    const echo = bridge.lastEcho();
-    if (echo.len > 0) {
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer row.deinit();
+
+        if (dvui.button(@src(), "Send", .{}, .{ .gravity_y = 0.5 })) {
+            if (!busy and typed.len > 0) {
+                submitText(typed);
+            }
+        }
+
+        if (dvui.button(@src(), "Smoke: PONG", .{}, .{ .gravity_y = 0.5 })) {
+            if (!busy) {
+                submitText(SMOKE_PROMPT);
+            }
+        }
+    }
+
+    if (busy) {
         var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal });
-        tl.format("Last echo: {s}\n", .{echo}, .{});
+        tl.addText("Waiting for model…\n", .{});
         tl.deinit();
     }
 
@@ -74,7 +123,7 @@ pub fn frame() !void {
     const n = bridge.messageCount();
     if (n == 0) {
         var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal });
-        tl.addText("(empty — host pushes messages via inv_push_message)", .{});
+        tl.addText("(empty — send a prompt or run Smoke: PONG)", .{});
         tl.deinit();
     } else {
         var i: usize = 0;

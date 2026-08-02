@@ -1,6 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { DEFAULT_MODEL_LABEL } from '../../lib/chatApi';
+import { HARNESS_SMOKE_PROMPT, runHarnessChat } from '../../lib/harnessChat';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -12,6 +14,7 @@ import { ember, teal, warm } from '../../lib/palette';
 import AppNav from '../components/AppNav';
 
 type Phase = 'loading' | 'ready' | 'error';
+type ChatUi = 'idle' | 'busy' | 'ok' | 'fail';
 
 /** Shape of dvui web.js module (static asset, not bundled). */
 type DvuiModule = {
@@ -19,7 +22,6 @@ type DvuiModule = {
     canvas: string | HTMLCanvasElement,
     wasmRef: string | WebAssembly.WebAssemblyInstantiatedSource,
   ) => Promise<DvuiHost> | DvuiHost;
-  Dvui?: new () => DvuiHost;
 };
 
 type DvuiHost = {
@@ -36,11 +38,45 @@ export default function HarnessHost() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bridgeRef = useRef<HarnessBridge | null>(null);
   const pollRef = useRef<number | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const inflightRef = useRef(false);
+
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState<string | null>(null);
   const [bridgeNote, setBridgeNote] = useState<string | null>(null);
-  const [lastSubmit, setLastSubmit] = useState<string | null>(null);
   const [lifecycle, setLifecycle] = useState<string>('boot');
+  const [chatUi, setChatUi] = useState<ChatUi>('idle');
+  const [chatHint, setChatHint] = useState<string | null>(null);
+  const [domPrompt, setDomPrompt] = useState('');
+
+  const runPrompt = useCallback(async (prompt: string) => {
+    const bridge = bridgeRef.current;
+    if (!bridge || inflightRef.current) return;
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    inflightRef.current = true;
+    setChatUi('busy');
+    setChatHint('Calling /api/chat…');
+    setLifecycle(lifecycleName(Lifecycle.Busy));
+
+    try {
+      const result = await runHarnessChat(bridge, prompt, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      if (result.ok) {
+        setChatUi('ok');
+        setChatHint(result.text.length > 120 ? result.text.slice(0, 117) + '…' : result.text);
+        setLifecycle(lifecycleName(Lifecycle.Ready));
+      } else {
+        setChatUi('fail');
+        setChatHint(result.error);
+        setLifecycle(lifecycleName(Lifecycle.Ready));
+      }
+    } finally {
+      inflightRef.current = false;
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,35 +105,33 @@ export default function HarnessHost() {
         const bridge = created.bridge;
         bridgeRef.current = bridge;
 
-        // JS → Wasm → JS round-trip (no network) — acceptance for 3.6.
         const rt = bridge.assertRoundTrip('hello-bridge');
 
         bridge.setLifecycle(Lifecycle.Ready);
         bridge.clearMessages();
-        bridge.pushMessage(MessageKind.System, 'Bridge online (protocol v' + rt.protocol + ').');
-        bridge.pushMessage(MessageKind.User, 'echo: hello-bridge');
-        bridge.pushMessage(MessageKind.Assistant, 'echo ok · ping=0x' + rt.ping.toString(16));
+        bridge.pushMessage(
+          MessageKind.System,
+          `Bridge online (v${rt.protocol}). Inference via host /api/chat · model ${DEFAULT_MODEL_LABEL}.`,
+        );
 
         setLifecycle(lifecycleName(Lifecycle.Ready));
         setBridgeNote(
-          `protocol v${rt.protocol} · echo ok · ping 0x${(rt.ping >>> 0).toString(16)}`,
+          `protocol v${rt.protocol} · echo ok · ${DEFAULT_MODEL_LABEL}`,
         );
 
-        // Poll Wasm → JS submit queue (button in canvas UI).
+        // Poll Wasm → JS submit queue (Send / Smoke in canvas).
         const poll = () => {
           if (cancelled) return;
           const b = bridgeRef.current;
-          if (b) {
+          if (b && !inflightRef.current) {
             const pending = b.takePendingSubmit();
-            if (pending != null) {
-              setLastSubmit(pending);
-              // Acknowledge path: host would call /api/chat in 3.7; for 3.6 just mirror.
-              b.pushMessage(MessageKind.System, 'host received submit: ' + pending);
+            if (pending != null && pending.length > 0) {
+              void runPrompt(pending);
             }
           }
-          pollRef.current = window.setTimeout(poll, 200);
+          pollRef.current = window.setTimeout(poll, 150);
         };
-        pollRef.current = window.setTimeout(poll, 200);
+        pollRef.current = window.setTimeout(poll, 150);
 
         if (!cancelled) {
           setPhase('ready');
@@ -113,13 +147,27 @@ export default function HarnessHost() {
 
     return () => {
       cancelled = true;
+      abortRef.current?.abort();
       if (pollRef.current != null) {
         clearTimeout(pollRef.current);
         pollRef.current = null;
       }
       bridgeRef.current = null;
     };
-  }, []);
+  }, [runPrompt]);
+
+  const onDomSend = useCallback(() => {
+    if (phase !== 'ready' || inflightRef.current) return;
+    void runPrompt(domPrompt);
+  }, [domPrompt, phase, runPrompt]);
+
+  const onSmoke = useCallback(() => {
+    if (phase !== 'ready' || inflightRef.current) return;
+    setDomPrompt(HARNESS_SMOKE_PROMPT);
+    void runPrompt(HARNESS_SMOKE_PROMPT);
+  }, [phase, runPrompt]);
+
+  const busy = chatUi === 'busy' || phase === 'loading';
 
   return (
     <main
@@ -168,39 +216,125 @@ export default function HarnessHost() {
               style={{
                 fontSize: '0.75rem',
                 fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                color: phase === 'error' ? ember.accent : warm.muted,
-                border: `1px solid ${phase === 'error' ? ember.border : warm.border}`,
-                background: phase === 'error' ? ember.surface : warm.surface,
+                color:
+                  phase === 'error' || chatUi === 'fail'
+                    ? ember.accent
+                    : chatUi === 'busy'
+                      ? warm.accent
+                      : warm.muted,
+                border: `1px solid ${
+                  phase === 'error' || chatUi === 'fail'
+                    ? ember.border
+                    : chatUi === 'busy'
+                      ? warm.border
+                      : warm.border
+                }`,
+                background:
+                  phase === 'error' || chatUi === 'fail'
+                    ? ember.surface
+                    : chatUi === 'busy'
+                      ? warm.surface
+                      : warm.surface,
                 borderRadius: 4,
                 padding: '0.2rem 0.5rem',
               }}
             >
               {phase === 'loading' && 'loading wasm…'}
-              {phase === 'ready' && `harness ready · ${lifecycle}`}
+              {phase === 'ready' && `harness · ${lifecycle}`}
               {phase === 'error' && 'harness error'}
             </span>
           </span>
         }
       />
 
-      {lastSubmit != null && phase === 'ready' && (
+      {phase === 'ready' && (
         <div
-          role="status"
           style={{
             borderBottom: `1px solid ${teal.border}`,
             background: teal.surface,
-            color: teal.text,
-            fontSize: '0.8rem',
-            padding: '0.4rem 1.25rem',
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            padding: '0.55rem 1rem',
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '0.5rem',
+            alignItems: 'center',
           }}
         >
-          Wasm → JS submit:{' '}
-          <span style={{ color: warm.accent }}>{lastSubmit}</span>
-          <span style={{ color: teal.muted }}>
-            {' '}
-            (stub — /api/chat wires in 3.7 · host protocol v{HARNESS_PROTOCOL_VERSION})
-          </span>
+          <input
+            type="text"
+            value={domPrompt}
+            onChange={(e) => setDomPrompt(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                onDomSend();
+              }
+            }}
+            placeholder="Prompt (host → /api/chat)…"
+            disabled={busy}
+            aria-label="Harness prompt"
+            style={{
+              flex: '1 1 200px',
+              minWidth: 0,
+              background: teal.bg,
+              color: teal.text,
+              border: `1px solid ${teal.border}`,
+              borderRadius: 6,
+              padding: '0.45rem 0.65rem',
+              fontSize: '0.9rem',
+            }}
+          />
+          <button
+            type="button"
+            onClick={onDomSend}
+            disabled={busy}
+            style={{
+              background: teal.accent,
+              color: teal.bg,
+              border: 'none',
+              borderRadius: 6,
+              padding: '0.45rem 0.85rem',
+              fontWeight: 600,
+              fontSize: '0.85rem',
+              cursor: busy ? 'not-allowed' : 'pointer',
+              opacity: busy ? 0.6 : 1,
+            }}
+          >
+            {busy ? 'Sending…' : 'Send'}
+          </button>
+          <button
+            type="button"
+            onClick={onSmoke}
+            disabled={busy}
+            title={HARNESS_SMOKE_PROMPT}
+            style={{
+              background: warm.surface,
+              color: warm.accent,
+              border: `1px solid ${warm.border}`,
+              borderRadius: 6,
+              padding: '0.45rem 0.75rem',
+              fontWeight: 600,
+              fontSize: '0.8rem',
+              cursor: busy ? 'not-allowed' : 'pointer',
+              opacity: busy ? 0.6 : 1,
+            }}
+          >
+            Smoke: PONG
+          </button>
+          {chatHint && (
+            <span
+              role="status"
+              style={{
+                flex: '1 1 100%',
+                fontSize: '0.78rem',
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                color: chatUi === 'fail' ? ember.accent : teal.muted,
+                lineHeight: 1.35,
+              }}
+            >
+              {chatUi === 'fail' ? 'Error: ' : chatUi === 'busy' ? '' : 'Last: '}
+              {chatHint}
+            </span>
+          )}
         </div>
       )}
 

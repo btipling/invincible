@@ -1,4 +1,4 @@
-//! Invincible JS ↔ Wasm bridge (Phase 3.6 / issue #21).
+//! Invincible JS ↔ Wasm bridge (Phase 3.6–3.7 / issues #21–#22).
 //!
 //! Host (Next/TS) owns network (`POST /api/chat`) and DOM shell.
 //! Wasm owns dvui frame loop and local transcript state.
@@ -25,10 +25,11 @@ pub const MessageKind = enum(u8) {
     error_msg = 4,
 };
 
-const MAX_MSG = 12;
-const MAX_MSG_LEN = 768;
+const MAX_MSG = 16;
+/// Cap per transcript line (UTF-8). Longer Gateway replies are truncated at the host edge.
+pub const MAX_MSG_LEN = 4096;
 const ECHO_CAP = 1024;
-const SUBMIT_CAP = 2048;
+pub const SUBMIT_CAP = 4096;
 
 const StoredMsg = struct {
     kind: u8 = 0,
@@ -78,7 +79,13 @@ pub fn lastEcho() []const u8 {
 }
 
 pub fn queueSubmitFromUi(text: []const u8) void {
-    pending_submit_len = copySlice(&pending_submit, text);
+    // Drop empty / whitespace-only; host validates again.
+    var start: usize = 0;
+    while (start < text.len and (text[start] == ' ' or text[start] == '\t' or text[start] == '\n' or text[start] == '\r')) : (start += 1) {}
+    if (start >= text.len) return;
+    // Ignore while host is already processing or a submit is still pending.
+    if (lifecycle == .busy or has_pending_submit) return;
+    pending_submit_len = copySlice(&pending_submit, text[start..]);
     has_pending_submit = pending_submit_len > 0;
 }
 
