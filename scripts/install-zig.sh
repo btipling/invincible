@@ -37,7 +37,7 @@ curl -fL --retry 3 -o "${ZIG_TARBALL}" "${ZIG_URL}"
 echo "${ZIG_SHA256}  ${ZIG_TARBALL}" | sha256sum -c -
 
 echo "==> extract"
-tar -xJf "${ZIG_TARBALL}"
+tar --no-same-owner -xJf "${ZIG_TARBALL}"
 SRC="$(find . -maxdepth 1 -type d -name "zig-${ZIG_ARCH}-${ZIG_VERSION}" | head -1)"
 if [[ -z "$SRC" ]]; then
   SRC="$(find . -maxdepth 1 -type d -name 'zig-*' | head -1)"
