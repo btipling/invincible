@@ -2,6 +2,21 @@
 
 Prompt playground / agent harness.
 
+## Live
+
+**Production:** https://invincible-dun-ten.vercel.app  
+**Vercel project:** [invincible](https://vercel.com/bjorns-projects-65588ed4/invincible) (team Bjorn's projects)  
+**IDs:** see [`docs/project-ids.md`](docs/project-ids.md)
+
+### Required for Send to work
+
+In Vercel → invincible → **Settings → Environment Variables**:
+
+1. `AI_GATEWAY_API_KEY` = your Gateway key (Production + Preview)
+2. Redeploy production
+
+Until that env is set, the UI loads but Send returns an error asking for the key.
+
 ## Phase 1 — Prompt → response MVP
 
 Minimal Next.js app: type a prompt, get a model reply via [Vercel AI Gateway](https://vercel.com/docs/ai-gateway).
@@ -66,7 +81,7 @@ npm run build
 - [x] 1.2 Next.js scaffold + AI SDK + palette
 - [x] 1.3 Prompt UI
 - [x] 1.4 API route → AI Gateway
-- [ ] 1.5 Vercel project + deploy
+- [x] 1.5 Vercel project + deploy
 
 ### Later phases (not started)
 

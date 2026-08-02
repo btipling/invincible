@@ -310,7 +310,7 @@ export default function PromptPlayground() {
             {busy && !response
               ? '…'
               : response ||
-                'Model output appears here after Send. Gateway is wired in Phase 1.4.'}
+                'Model output appears here after Send. Set AI_GATEWAY_API_KEY on the Vercel project, then redeploy.'}
           </pre>
         </section>
       </div>
