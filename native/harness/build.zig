@@ -35,6 +35,24 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("dvui", dvui_dep.module("dvui_web"));
     exe.root_module.addImport("web-backend", dvui_dep.module("web"));
 
+    // Zig 0.16 wasm: only names listed here (plus those on dependency modules)
+    // appear in the export section. dvui's web backend lists dvui_* / gpa_*;
+    // we must list inv_* or the bridge is invisible to JS.
+    exe.root_module.export_symbol_names = &.{
+        "inv_protocol_version",
+        "inv_ping",
+        "inv_set_lifecycle",
+        "inv_push_message",
+        "inv_clear_messages",
+        "inv_echo",
+        "inv_echo_len",
+        "inv_echo_copy",
+        "inv_has_pending_submit",
+        "inv_pending_submit_len",
+        "inv_pending_submit_copy",
+        "inv_ack_pending_submit",
+    };
+
     const install_wasm = b.addInstallArtifact(exe, .{
         .dest_dir = .{ .override = .{ .custom = "bin" } },
     });
