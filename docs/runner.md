@@ -1,141 +1,282 @@
-# Invincible build runner (Phase 2)
+# Invincible build runner — operator guide
 
-DO hosts **build** (Zig/Wasm). Vercel hosts the **Next.js** app only.
+**Purpose:** DigitalOcean runs **compile** (Zig → Wasm and later native toolchains).  
+**Vercel** runs the **Next.js** app and AI Gateway only. Never expect Vercel to build Zig.
 
-## Status (2026-08-02)
+| Layer | Where | Role |
+|-------|--------|------|
+| UI + API | Vercel (`invincible`) | Prompt playground, deploy |
+| CI build | DO droplet + GitHub Actions self-hosted | `zig` → `.wasm` artifacts |
+| Source | GitHub `btipling/invincible` | Single source of truth |
 
-| Item | Status |
-|------|--------|
-| Droplet | **Active** — id `589481218`, IPv4 `204.48.30.46` (nyc1) |
-| Spec | Ubuntu 24.04 · `s-2vcpu-4gb-120gb-intel` · tag `invincible` |
-| Bootstrap | **Done** (2026-08-02) — user `runner` + baseline packages; github.com 200 |
-| Create helper | [`scripts/create-invincible-droplet.sh`](../scripts/create-invincible-droplet.sh) (for rebuilds) |
+Plan: [phase-2-plan.md](phase-2-plan.md) · Milestone: [Phase 2](https://github.com/btipling/invincible/milestone/2) · Board: [projects/1](https://github.com/users/btipling/projects/1/views/1)
 
-## Target inventory
+---
+
+## 1. Inventory (live)
 
 | Field | Value |
 |-------|--------|
-| Name | `ubuntu-s-2vcpu-4gb-120gb-intel-nyc1` (host) · runner `invincible-do-1` |
-| Region | `nyc1` |
-| Size | `s-2vcpu-4gb-120gb-intel` (~$32/mo) |
-| Image | `ubuntu-24-04-x64` |
-| Tags | `invincible` (add `gha-runner` anytime) |
-| Monitoring | confirm in DO UI |
-| User | `runner` (sudo, uid 1000) |
 | Droplet ID | `589481218` |
+| Droplet name (host) | `ubuntu-s-2vcpu-4gb-120gb-intel-nyc1` |
 | Public IPv4 | `204.48.30.46` |
-| Runner name | `invincible-do-1` |
-| Labels | `self-hosted`, `Linux`/`linux`, `X64`/`x64`, `invincible`, `zig` |
-| Zig version | **0.16.0** (pinned) |
+| Private IPv4 | `10.116.0.2` (VPC) |
+| Region | `nyc1` |
+| Size | `s-2vcpu-4gb-120gb-intel` (~**$32/mo** — confirm on DO bill) |
+| Image | Ubuntu **24.04** LTS x64 |
+| Tags | `invincible` (optional: `gha-runner`) |
+| OS user | `runner` (uid 1000, sudo) |
+| GHA runner name | **`invincible-do-1`** |
+| GHA labels | `self-hosted`, `Linux`/`X64` (platform), **`invincible`**, **`zig`** |
+| Runner path | `/home/runner/actions-runner` |
+| systemd unit | `actions.runner.btipling-invincible.invincible-do-1.service` |
+| Runner version | `2.336.0` (as of 2026-08-02; auto-updates possible) |
+| Zig pin | **0.16.0** (`native/ZIG_VERSION`) |
+| Zig install | `/opt/zig/0.16.0` → `/usr/local/bin/zig` |
+| IDs also in | [project-ids.md](project-ids.md) |
 
-## Create options
+**Workflows target:**
 
-### A) doctl with a write-capable token (preferred for agents)
-
-1. DigitalOcean → API → generate personal access token with **write** (droplet create).
-2. Locally or in an agent env that has the token:
-
-```bash
-export DIGITALOCEAN_ACCESS_TOKEN=dop_v1_...
-./scripts/create-invincible-droplet.sh
-ssh root@<IP> 'bash -s' < scripts/bootstrap-runner-host.sh
+```yaml
+runs-on: [self-hosted, invincible, zig]
 ```
 
-3. Fill **Droplet ID / IPv4** into this file and `docs/project-ids.md`.
+---
 
-### B) DO dashboard
+## 2. Secrets policy
 
-1. Create Droplet → Ubuntu 24.04 × `s-2vcpu-4gb` × `sfo3`
-2. Name `invincible-runner`, tags `invincible` + `gha-runner`, monitoring on
-3. Attach your SSH key
-4. SSH and run bootstrap:
+| Secret | Where it may live | Never |
+|--------|-------------------|--------|
+| Vercel `AI_GATEWAY_API_KEY` | Vercel project env | git, droplet, Actions logs |
+| GitHub PAT (script curl) | shell env on droplet only, short-lived | git, screenshots, issues |
+| GHA **registration** / **remove** tokens | GitHub UI once, ~1h life | git, docs, chat long-term |
+| DO API token | local `doctl` / password manager | git |
+| Runner `.credentials` | `/home/runner/actions-runner/` only | copy into repo |
+
+Fine-grained PAT for `gh_raw` scripts: **Contents: Read** on `invincible` only — see [scripts/README.md](../scripts/README.md).
+
+---
+
+## 3. Bootstrap (new droplet)
+
+### 3.1 Create VM
+
+- Spec: Ubuntu 24.04, **≥ 2 vCPU / 4 GB**, SSD, SSH keys attached, monitoring on.
+- Tag `invincible`. Prefer a stable name like `invincible-runner`.
+- Helpers: [`scripts/create-invincible-droplet.sh`](../scripts/create-invincible-droplet.sh) (needs **write** DO token; Grok connector is often read-only).
+
+### 3.2 Host packages + `runner` user
 
 ```bash
-ssh root@<IP> 'bash -s' < scripts/bootstrap-runner-host.sh
+# as root, or:  gh_raw scripts/bootstrap-runner-host.sh | sudo bash
+# script: scripts/bootstrap-runner-host.sh
 ```
 
-### C) Reconnect Grok DO connector with write scopes
+Creates user `runner`, baseline packages (`curl`, `git`, `build-essential`, `jq`, `unzip`, …), copies root `authorized_keys` to runner when present.
 
-Then re-run Phase 2.1 from chat so the agent can call `droplet-create` and complete bootstrap (SSH still needs your keys on the droplet).
+### 3.3 GitHub Actions runner
 
-## Bootstrap does
-
-- `apt` update/upgrade  
-- packages: curl, git, build-essential, ca-certificates, jq, unzip  
-- user `runner` + passwordless sudo (tighten in 2.7)  
-- copy root `authorized_keys` → runner  
-- outbound check to GitHub  
-
-## Out of scope here
-
-- GitHub Actions runner binary → issue **#2**  
-- Zig → **#10**  
-- Hardening → **#14**  
-
-## Plan
-
-See [docs/phase-2-plan.md](phase-2-plan.md) and [milestone 2](https://github.com/btipling/invincible/milestone/2).
-
-## Connectivity note
-
-`curl -f https://objects.githubusercontent.com/` often returns **404** on the bare host URL; that still means TLS/DNS work. GitHub Actions runner downloads use full object paths and succeed when `github.com` is 200.
-
-## Runner service (Phase 2.2)
-
-| Field | Value |
-|-------|--------|
-| Status | **Online** — Listening for Jobs (2026-08-02) |
-| Path | `/home/runner/actions-runner` |
-| Unit | `actions.runner.btipling-invincible.invincible-do-1.service` |
-| User | `runner` |
-| Version | `2.336.0` |
+1. [New self-hosted runner](https://github.com/btipling/invincible/settings/actions/runners/new) (Linux x64).
+2. As `runner`:
 
 ```bash
-# as runner
-cd ~/actions-runner
+su - runner
+mkdir -p ~/actions-runner && cd ~/actions-runner
+# download + extract per GitHub UI, then:
+./config.sh --url https://github.com/btipling/invincible --token <CONFIG_TOKEN> \
+  --name invincible-do-1 \
+  --labels self-hosted,linux,x64,invincible,zig \
+  --work _work \
+  --unattended
+sudo ./svc.sh install
+sudo ./svc.sh start
 sudo ./svc.sh status
-sudo ./svc.sh stop   # / start
 ```
 
-## Zig toolchain (Phase 2.3) — **done**
+3. Confirm **Idle / Online** under Settings → Actions → Runners.
 
-| Field | Value |
-|-------|--------|
-| Status | Verified on droplet 2026-08-02 (`wasm OK`, 157 bytes) |
-| Version | **0.16.0** (pinned in `native/ZIG_VERSION`) |
-| Install path | `/opt/zig/0.16.0` |
-| Symlink | `/usr/local/bin/zig` |
-| Tarball | `https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz` |
-| Install script | [`scripts/install-zig.sh`](../scripts/install-zig.sh) |
-| Verify | [`scripts/verify-zig-wasm.sh`](../scripts/verify-zig-wasm.sh) |
-| Probe source | [`native/hello.zig`](../native/hello.zig) |
+### 3.4 Zig (pinned)
 
 ```bash
-# Private repo — need a PAT with Contents: Read
-export GH_TOKEN=github_pat_...   # or ghp_...
-
+export GH_TOKEN=...   # Contents: Read
 gh_raw() {
-  curl -fsSL     -H "Authorization: Bearer ${GH_TOKEN}"     -H "Accept: application/vnd.github.raw"     "https://api.github.com/repos/btipling/invincible/contents/$1?ref=main"
+  curl -fsSL \
+    -H "Authorization: Bearer ${GH_TOKEN}" \
+    -H "Accept: application/vnd.github.raw" \
+    "https://api.github.com/repos/btipling/invincible/contents/$1?ref=main"
 }
-
-# one-shot install + wasm verify
 gh_raw scripts/phase-2.3-zig.sh | bash
-
-# or split:
-# gh_raw scripts/install-zig.sh | bash
-# gh_raw scripts/verify-zig-wasm.sh | bash
+# expect: zig version 0.16.0  +  wasm OK
 ```
 
-See also [`scripts/README.md`](../scripts/README.md).
+Split: `install-zig.sh` then `verify-zig-wasm.sh`.
 
-## Workflows
-
-| Workflow | File | Purpose |
-|----------|------|---------|
-| `runner-smoke` | `.github/workflows/runner-smoke.yml` | Phase 2.4 — smoke on self-hosted |
-| `build-wasm` | `.github/workflows/build-wasm.yml` | Phase 2.5 — `hello.wasm` artifact |
+### 3.5 Prove CI
 
 ```bash
 gh workflow run runner-smoke.yml --repo btipling/invincible
-gh run list --workflow=runner-smoke.yml --repo btipling/invincible --limit 3
+gh workflow run build-wasm.yml --repo btipling/invincible
 ```
+
+Update this inventory table with new droplet ID / IP after any rebuild.
+
+---
+
+## 4. Re-register runner (rebuild / token / rename)
+
+Use when: machine reimaged, runner removed in UI, labels wrong, or `.credentials` lost.
+
+1. **Stop service** (if still present):
+
+```bash
+cd /home/runner/actions-runner
+sudo ./svc.sh stop
+```
+
+2. **Remove registration** (needs **remove token** from  
+   Settings → Actions → Runners → this runner → Remove):
+
+```bash
+./config.sh remove --token <REMOVE_TOKEN>
+# or interactive: ./config.sh remove
+```
+
+3. **New config token** from [New runner](https://github.com/btipling/invincible/settings/actions/runners/new) (not the remove token).
+
+4. **Configure** with plan name/labels (section 3.3), then:
+
+```bash
+sudo ./svc.sh install   # if unit missing
+sudo ./svc.sh start
+```
+
+5. Run `runner-smoke` once.
+
+If the old systemd unit name lingers after rename:
+
+```bash
+sudo systemctl disable --now 'actions.runner.btipling-invincible.*.service'  # careful
+# prefer: sudo ./svc.sh uninstall  from the actions-runner dir before re-install
+```
+
+---
+
+## 5. Workflows
+
+| Workflow | File | Triggers | Job |
+|----------|------|----------|-----|
+| **runner-smoke** | `.github/workflows/runner-smoke.yml` | `workflow_dispatch`, push to that file | Host + `zig 0.16.0` + GitHub HTTPS |
+| **build-wasm** | `.github/workflows/build-wasm.yml` | `workflow_dispatch`, push to `native/**` or that file | `./native/build.sh` → artifact **`hello-wasm`** |
+
+```bash
+# dispatch
+gh workflow run runner-smoke.yml --repo btipling/invincible
+gh workflow run build-wasm.yml --repo btipling/invincible
+
+# watch
+gh run list --repo btipling/invincible --limit 5
+gh run view <id> --repo btipling/invincible --log-failed
+```
+
+**Artifact:** Actions run → Artifacts → `hello-wasm` (14-day retention). Free GitHub accounts support this; storage is shared (~500 MB free tier) — our placeholder is tiny.
+
+**Local build (on runner or any Zig 0.16.0 host):**
+
+```bash
+./native/build.sh   # → native/dist/hello.wasm
+```
+
+---
+
+## 6. Day-2 operations
+
+```bash
+# service
+cd /home/runner/actions-runner
+sudo ./svc.sh status
+sudo ./svc.sh stop
+sudo ./svc.sh start
+
+# journal
+sudo journalctl -u actions.runner.btipling-invincible.invincible-do-1.service -n 100 --no-pager
+
+# zig
+zig version
+ls -la /opt/zig/
+
+# disk (caches grow)
+df -h
+du -sh /home/runner/actions-runner/_work /opt/zig 2>/dev/null || true
+```
+
+---
+
+## 7. Failure playbook
+
+| Symptom | Checks / fix |
+|---------|----------------|
+| Runner **Offline** | `sudo ./svc.sh status`; journalctl; reboot; re-register (section 4) |
+| Job **queued forever** | Labels must include `invincible` + `zig`; runner Idle; only one job if concurrency 1 |
+| `zig: not found` in CI | PATH; `/usr/local/bin/zig`; re-run `phase-2.3-zig.sh` |
+| Zig version mismatch | `native/ZIG_VERSION` vs `zig version`; reinstall pin |
+| Checkout / action download fails | Outbound HTTPS to GitHub; DNS; disk full |
+| Disk full | `df -h`; clean `_work/_tool` and old run dirs; expand droplet |
+| OOM during Zig link | Resize above 4 GB or reduce parallel jobs |
+| Artifact upload fail | Free storage quota; retention; artifact name path exists |
+| DO 403 from agents | Connector/token lacks write — use dashboard or write PAT for create only |
+| `objects.githubusercontent.com` bare URL 404 | **Normal**; use full object URLs (runner does) |
+
+---
+
+## 8. Zig upgrade (controlled)
+
+1. Bump `native/ZIG_VERSION` and SHA in `scripts/install-zig.sh` / `phase-2.3-zig.sh`.
+2. On host: install new version under `/opt/zig/<ver>`, retarget symlink.
+3. Update smoke workflow pin check if it hardcodes `0.16.0`.
+4. Run `runner-smoke` + `build-wasm`.
+5. Keep previous `/opt/zig/<old>` until green, then delete.
+
+---
+
+## 9. Cost & destroy
+
+| Item | Estimate |
+|------|----------|
+| Droplet `s-2vcpu-4gb-120gb-intel` nyc1 | ~**$32/month** (check DO) |
+| Bandwidth | Usually fine for CI |
+| GitHub Actions minutes (self-hosted) | **$0** |
+| Artifact storage | Free tier; purge old artifacts if needed |
+
+**Destroy when Phase 2 paused:**
+
+1. Remove runner in GitHub UI (or `config.sh remove`).
+2. Destroy droplet in DO (or power off to stop compute charges — still may pay for disk/snapshots).
+3. Clear inventory IPs from this doc / `project-ids.md`.
+4. Optional: delete stale Actions artifacts.
+
+---
+
+## 10. Script index
+
+| Script | Role |
+|--------|------|
+| [`scripts/bootstrap-runner-host.sh`](../scripts/bootstrap-runner-host.sh) | packages + `runner` user |
+| [`scripts/create-invincible-droplet.sh`](../scripts/create-invincible-droplet.sh) | doctl create (write token) |
+| [`scripts/install-zig.sh`](../scripts/install-zig.sh) | pin Zig to `/opt/zig` |
+| [`scripts/verify-zig-wasm.sh`](../scripts/verify-zig-wasm.sh) | wasm magic check |
+| [`scripts/phase-2.3-zig.sh`](../scripts/phase-2.3-zig.sh) | install + verify one-shot |
+| [`native/build.sh`](../native/build.sh) | CI/local `hello.wasm` |
+| [`scripts/README.md`](../scripts/README.md) | private-repo `gh_raw` curl recipes |
+
+---
+
+## 11. Related product surfaces
+
+| Surface | URL / path |
+|---------|------------|
+| Production app | https://invincible-dun-ten.vercel.app |
+| GitHub repo | https://github.com/btipling/invincible |
+| Vercel project | see [project-ids.md](project-ids.md) |
+| Self-hosted runners | https://github.com/btipling/invincible/settings/actions/runners |
+
+**Out of scope for this doc:** Phase 3 dvui harness UI, AI Gateway keys (Vercel only), full host hardening (issue #14).

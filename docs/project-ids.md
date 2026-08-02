@@ -42,4 +42,7 @@ Then push to `main` triggers production deploys.
 | Ops doc | [`docs/runner.md`](runner.md) |
 | Create script | [`scripts/create-invincible-droplet.sh`](../scripts/create-invincible-droplet.sh) |
 | Bootstrap | [`scripts/bootstrap-runner-host.sh`](../scripts/bootstrap-runner-host.sh) |
+| GHA runner | `invincible-do-1` · labels `invincible`,`zig` |
+| Zig | `0.16.0` @ `/opt/zig/0.16.0` |
+| Ops | **[`docs/runner.md`](runner.md)** (source of truth for rebuild) |
 

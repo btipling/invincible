@@ -4,6 +4,8 @@ Prompt playground / agent harness.
 
 ## Tracking
 
+- **Runner ops:** [`docs/runner.md`](docs/runner.md)
+
 - **Project board:** [Invincible (projects/1)](https://github.com/users/btipling/projects/1/views/1)
 - **Milestone (done):** [Phase 1 — Prompt MVP](https://github.com/btipling/invincible/milestone/1)
 - **Milestone (next):** [Phase 2 — Build runner (DO)](https://github.com/btipling/invincible/milestone/2)
