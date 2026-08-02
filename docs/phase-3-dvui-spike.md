@@ -115,9 +115,19 @@ Phase 2 `hello.wasm` pipeline remains for smoke; harness product path is **dvui-
 
 ---
 
+## CI proof (invincible-do-1)
+
+| | |
+|--|--|
+| Workflow | `build-dvui-spike.yml` |
+| Run | [30771681826](https://github.com/btipling/invincible/actions/runs/30771681826) (push `3d9e431`) |
+| Host | `invincible-do-1` · runner 2.336.0 |
+| Duration | ~1m42s (warm caches after first fetch) |
+| Artifact | **`dvui-spike-wasm`**: `web.wasm` 1 365 046 B · `web.js` 56 149 B · `index.html` 673 B |
+
 ## Acceptance checklist
 
 - [x] Spike notes (`docs/phase-3-dvui-spike.md`)
-- [x] Green path producing dvui demo/spike `.wasm` (local proven; CI on `invincible-do-1`)
+- [x] Green CI job producing dvui spike `.wasm` on `invincible-do-1`
 - [x] Size + load strategy recorded
 - [x] Compatibility with Zig 0.16.0 confirmed — **no bump**
