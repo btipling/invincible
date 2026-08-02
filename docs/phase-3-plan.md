@@ -97,7 +97,7 @@ invincible-do-1  →  Actions artifact harness-wasm
 | Compile | `build-harness.yml` on `[self-hosted, invincible, zig]` |
 | Artifact | name **`harness-wasm`** (`harness.wasm` + `web.js`) |
 | Vercel | `prebuild` → `node scripts/fetch-harness-artifact.mjs` |
-| Auth | Vercel env **`HARNESS_ARTIFACT_TOKEN`** — fine-grained PAT, **Actions: Read** on this repo (Production + Preview) |
+| Auth | Vercel env **`HARNESS_ARTIFACT_TOKEN`** — fine-grained PAT, **Actions: Read** on this repo (Production + Preview). **Redeploy** after adding the var. |
 | Serve | `/harness/harness.wasm` (`application/wasm`), `/harness/web.js` |
 
 ```bash
