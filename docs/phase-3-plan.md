@@ -42,10 +42,10 @@ In-browser **agent harness** (Wasm), not a CLI clone and not a Chrome extension:
 | 1 | [#16 3.1](https://github.com/btipling/invincible/issues/16) dvui spike | **Done** — see [phase-3-dvui-spike.md](phase-3-dvui-spike.md); dvui OK on 0.16.0 |
 | 2 | [#17 3.2](https://github.com/btipling/invincible/issues/17) crate skeleton | **Done** — `native/harness/` |
 | 3 | [#18 3.3](https://github.com/btipling/invincible/issues/18) CI harness artifact | **Done** — `build-harness.yml` → `harness-wasm` |
-| 4 | [#19 3.4](https://github.com/btipling/invincible/issues/19) ship to Vercel static | **Done** — `public/harness/` committed assets |
+| 4 | [#19 3.4](https://github.com/btipling/invincible/issues/19) ship to Vercel static | **Done** — option B: `prebuild` fetches Actions artifact (no MB binaries in git) |
 | 5 | [#20 3.5](https://github.com/btipling/invincible/issues/20) `/harness` page | **Done** — App Router host + palette states |
-| 6 | [#21 3.6](https://github.com/btipling/invincible/issues/21) JS↔Wasm bridge | After 3.5 |
-| 7 | [#22 3.7](https://github.com/btipling/invincible/issues/22) wire Gateway | After 3.6 |
+| 6 | [#21 3.6](https://github.com/btipling/invincible/issues/21) JS↔Wasm bridge | **Done** — `lib/harnessBridge.ts` + `native/harness/src/bridge.zig` + protocol in harness README |
+| 7 | [#22 3.7](https://github.com/btipling/invincible/issues/22) wire Gateway | After 3.6 — **next** |
 | 8 | [#23 3.8](https://github.com/btipling/invincible/issues/23) session model | Parallel after 3.6 |
 | 9 | [#24 3.9](https://github.com/btipling/invincible/issues/24) MVP UX loop | After 3.7 |
 | 10 | [#25 3.10](https://github.com/btipling/invincible/issues/25) polish | After 3.9 |
@@ -65,17 +65,18 @@ In-browser **agent harness** (Wasm), not a CLI clone and not a Chrome extension:
 2. **Palette rules** from Phase 1 / webgpu-game (TEAL / WARM / EMBER)  
 3. **Private repo curl:** `scripts/README.md` `gh_raw` + Contents:Read PAT  
 4. **DO create** may 403 from Grok connector — host already exists  
-5. Prefer extending `build-wasm` / `native/` over new infra  
+5. Prefer extending `native/harness` + `HarnessHost` over new infra  
 
 ## Suggested first message for a new session
 
-> Continue Invincible Phase 3 from `docs/phase-3-plan.md`. Start with issue #16 (dvui Wasm spike on invincible-do-1). Do not re-do Phase 1–2. Repo: btipling/invincible. Prod: https://invincible-dun-ten.vercel.app.
+> Continue Invincible Phase 3 from `docs/phase-3-plan.md`. Start with issue #22 (wire harness to AI Gateway via `/api/chat`). Do not re-do Phase 1–2 or Phase 3.1–3.6. Repo: btipling/invincible. Prod: https://invincible-dun-ten.vercel.app.
 
 ## References
 
 - dvui: https://github.com/david-vanderson/dvui  
 - Runner ops: [runner.md](runner.md)  
 - Phase 2 plan (done): [phase-2-plan.md](phase-2-plan.md)  
+- Bridge protocol: [native/harness/README.md](../native/harness/README.md)  
 
 
 ## Rebuild path (DO → Vercel)
@@ -110,4 +111,3 @@ npm run fetch-harness && npm run dev
 ```
 
 **Do not** commit `public/harness/*.wasm` — gitignored.
-

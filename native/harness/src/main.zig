@@ -2,14 +2,17 @@
 //!
 //! Export surface is fixed by dvui's web.js host:
 //!   dvui_init, dvui_deinit, dvui_update, add_event, arena_u8, gpa_u8, gpa_free, new_font
-//! Additional app logic lives in `ui.zig`. JS bridge extras land in later issues (#21+).
+//! Invincible bridge exports (inv_*) live in `bridge.zig` and are linked via this root.
 const std = @import("std");
 const dvui = @import("dvui");
 const WebBackend = @import("web-backend");
 const ui = @import("ui.zig");
+// Keep bridge module in the graph so inv_* exports are emitted.
+const bridge = @import("bridge.zig");
 
 comptime {
     std.debug.assert(@hasDecl(WebBackend, "WebBackend"));
+    std.debug.assert(bridge.PROTOCOL_VERSION >= 1);
 }
 
 var wasm_log_console_buffer: [512]u8 = undefined;

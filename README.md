@@ -9,7 +9,7 @@ Prompt playground / agent harness.
 - **Project board:** [Invincible (projects/1)](https://github.com/users/btipling/projects/1/views/1)
 - **Milestone (done):** [Phase 1 — Prompt MVP](https://github.com/btipling/invincible/milestone/1)
 - **Milestone (done):** [Phase 2 — Build runner (DO)](https://github.com/btipling/invincible/milestone/2)
-- **Milestone (next):** [Phase 3 — Zig/dvui Wasm harness](https://github.com/btipling/invincible/milestone/3)
+- **Milestone (active):** [Phase 3 — Zig/dvui Wasm harness](https://github.com/btipling/invincible/milestone/3)
 - **Phase 3 plan (handoff):** [`docs/phase-3-plan.md`](docs/phase-3-plan.md)
 - **Phase 2 plan:** [`docs/phase-2-plan.md`](docs/phase-2-plan.md)
 - **Issues:** https://github.com/btipling/invincible/issues
@@ -29,6 +29,16 @@ In Vercel → invincible → **Settings → Environment Variables**:
 2. Redeploy production
 
 Until that env is set, the UI loads but Send returns an error asking for the key.
+
+### Harness Wasm assets (Phase 3.4 option B)
+
+| Variable | Where |
+|----------|--------|
+| `HARNESS_ARTIFACT_TOKEN` | Vercel env — fine-grained PAT, **Actions: Read** on this repo |
+
+`npm run prebuild` downloads Actions artifact `harness-wasm` into `public/harness/` (gitignored binaries).
+
+JS ↔ Wasm protocol: [`native/harness/README.md`](native/harness/README.md) · glue [`lib/harnessBridge.ts`](lib/harnessBridge.ts).
 
 ## Phase 1 — Prompt → response MVP
 
@@ -79,27 +89,18 @@ Errors: `{ "error": "…" }` with 4xx/5xx.
 
 Uses Vercel AI Gateway + AI SDK `generateText`. Model default: `xai/grok-4.1-fast-non-reasoning` (override with `DEFAULT_MODEL`).
 
-### Local
+### Phase checklist
 
-```bash
-npm install
-npm run dev      # http://localhost:3000
-npm test
-npm run build
-```
-
-### Status
-
-- [x] 1.1 GitHub repo
-- [x] 1.2 Next.js scaffold + AI SDK + palette
+- [x] 1.1 Scaffold
+- [x] 1.2 Palette
 - [x] 1.3 Prompt UI
 - [x] 1.4 API route → AI Gateway
 - [x] 1.5 Vercel project + deploy
 
-### Later phases (not started)
+### Later phases
 
-- DO Droplet as self-hosted GitHub Actions runner
-- Phase 3: Zig + dvui Wasm harness — 3.1–3.5 done (`/harness` live); see [`docs/phase-3-plan.md`](docs/phase-3-plan.md)
+- [x] Phase 2: DO self-hosted runner (`invincible-do-1`)
+- Phase 3: Zig + dvui Wasm harness — **3.1–3.6 done** (bridge protocol + `/harness`); next **#22 wire Gateway** — see [`docs/phase-3-plan.md`](docs/phase-3-plan.md)
 
 ### Palette
 
@@ -108,5 +109,3 @@ UI must use tokens from `lib/palette.ts` only (same rules as Asteronica):
 - **TEAL** — default chrome
 - **WARM** (`#d47c2c`) — intentional amber accent
 - **EMBER** (`#d4412c`) — danger / errors only
-
-See `AGENTS.md` for full color requirements.
