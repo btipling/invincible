@@ -127,3 +127,14 @@ gh_raw scripts/phase-2.3-zig.sh | bash
 ```
 
 See also [`scripts/README.md`](../scripts/README.md).
+
+## Workflows
+
+| Workflow | File | Purpose |
+|----------|------|---------|
+| `runner-smoke` | `.github/workflows/runner-smoke.yml` | Phase 2.4 — `workflow_dispatch` on `[self-hosted, invincible, zig]` |
+
+```bash
+gh workflow run runner-smoke.yml --repo btipling/invincible
+gh run list --workflow=runner-smoke.yml --repo btipling/invincible --limit 3
+```

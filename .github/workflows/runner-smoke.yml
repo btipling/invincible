@@ -1,0 +1,38 @@
+# Phase 2.4 — prove invincible-do-1 is healthy
+name: runner-smoke
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/runner-smoke.yml"
+
+jobs:
+  smoke:
+    name: smoke on DO self-hosted
+    runs-on: [self-hosted, invincible, zig]
+    timeout-minutes: 10
+    steps:
+      - name: Host identity
+        run: |
+          set -euo pipefail
+          hostname
+          uname -a
+          id
+          echo "runner name expected: invincible-do-1"
+
+      - name: Zig pin
+        run: |
+          set -euo pipefail
+          export PATH="/usr/local/bin:${PATH}"
+          command -v zig
+          zig version
+          test "$(zig version)" = "0.16.0"
+
+      - name: Outbound GitHub
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /dev/null -w "github.com %{http_code}\n" https://github.com/
+
+      - name: OK
+        run: echo "runner-smoke OK"
