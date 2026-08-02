@@ -4,11 +4,10 @@ Prompt playground / agent harness.
 
 ## Tracking
 
+- **Project board:** [Invincible (projects/1)](https://github.com/users/btipling/projects/1/views/1)
 - **Milestone (done):** [Phase 1 — Prompt MVP](https://github.com/btipling/invincible/milestone/1)
 - **Milestone (next):** [Phase 2 — Build runner (DO)](https://github.com/btipling/invincible/milestone/2)
 - **Issues:** https://github.com/btipling/invincible/issues
-
-> GitHub **Projects** board: the token in this environment lacks `project` scope. Create a board in the UI ([New project](https://github.com/users/btipling/projects?query=is%3Aopen)) named **Invincible MVP**, link repo `invincible`, then add the milestone issues — or reconnect the GitHub connector with Projects permission and ask to wire the board.
 
 ## Live
 

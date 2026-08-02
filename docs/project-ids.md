@@ -26,3 +26,7 @@ This first production deploy was file-based (not auto from Git). To mirror Aster
 3. Production branch: `main`
 
 Then push to `main` triggers production deploys.
+
+## GitHub Project
+
+- Board: https://github.com/users/btipling/projects/1/views/1
