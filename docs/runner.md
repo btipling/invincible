@@ -110,12 +110,19 @@ sudo ./svc.sh stop   # / start
 | Probe source | [`native/hello.zig`](../native/hello.zig) |
 
 ```bash
-# as root or with sudo on the droplet
-curl -fsSL https://raw.githubusercontent.com/btipling/invincible/main/scripts/install-zig.sh | sudo bash
-# if private repo, copy script via paste or scp instead
+# Private repo — need a PAT with Contents: Read
+export GH_TOKEN=github_pat_...   # or ghp_...
 
-# as runner (after install)
-zig version   # must print 0.16.0
-# with repo checkout:
-./scripts/verify-zig-wasm.sh
+gh_raw() {
+  curl -fsSL     -H "Authorization: Bearer ${GH_TOKEN}"     -H "Accept: application/vnd.github.raw"     "https://api.github.com/repos/btipling/invincible/contents/$1?ref=main"
+}
+
+# one-shot install + wasm verify
+gh_raw scripts/phase-2.3-zig.sh | bash
+
+# or split:
+# gh_raw scripts/install-zig.sh | bash
+# gh_raw scripts/verify-zig-wasm.sh | bash
 ```
+
+See also [`scripts/README.md`](../scripts/README.md).
