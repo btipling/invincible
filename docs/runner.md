@@ -15,7 +15,7 @@ DO hosts **build** (Zig/Wasm). Vercel hosts the **Next.js** app only.
 
 | Field | Value |
 |-------|--------|
-| Name | `ubuntu-s-2vcpu-4gb-120gb-intel-nyc1` (rename optional → `invincible-runner`) |
+| Name | `ubuntu-s-2vcpu-4gb-120gb-intel-nyc1` (host) · runner `invincible-do-1` |
 | Region | `nyc1` |
 | Size | `s-2vcpu-4gb-120gb-intel` (~$32/mo) |
 | Image | `ubuntu-24-04-x64` |
@@ -24,8 +24,8 @@ DO hosts **build** (Zig/Wasm). Vercel hosts the **Next.js** app only.
 | User | `runner` (sudo, uid 1000) |
 | Droplet ID | `589481218` |
 | Public IPv4 | `204.48.30.46` |
-| Runner name | `ubuntu-s-2vcpu-4gb-120gb-intel-nyc1` (hostname; ok) |
-| Labels | see GitHub Runners UI — prefer `self-hosted,linux,x64,invincible,zig` |
+| Runner name | `invincible-do-1` |
+| Labels | `self-hosted`, `Linux`/`linux`, `X64`/`x64`, `invincible`, `zig` |
 | Zig version | _pending Phase 2.3_ |
 
 ## Create options
@@ -86,7 +86,7 @@ See [docs/phase-2-plan.md](phase-2-plan.md) and [milestone 2](https://github.com
 |-------|--------|
 | Status | **Online** — Listening for Jobs (2026-08-02) |
 | Path | `/home/runner/actions-runner` |
-| Unit | `actions.runner.btipling-invincible.ubuntu-s-2vcpu-4gb-120gb-intel-nyc1.service` |
+| Unit | `actions.runner.btipling-invincible.invincible-do-1.service` |
 | User | `runner` |
 | Version | `2.336.0` |
 
