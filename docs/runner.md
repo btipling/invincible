@@ -6,24 +6,24 @@ DO hosts **build** (Zig/Wasm). Vercel hosts the **Next.js** app only.
 
 | Item | Status |
 |------|--------|
-| Droplet | **Not created yet** — Grok DO connector got **403** on `droplet create` (read scopes only) |
-| Spec | Ready (below) |
-| Bootstrap script | [`scripts/bootstrap-runner-host.sh`](../scripts/bootstrap-runner-host.sh) |
-| Create helper | [`scripts/create-invincible-droplet.sh`](../scripts/create-invincible-droplet.sh) (needs write token) |
+| Droplet | **Active** — id `589481218`, IPv4 `204.48.30.46` (nyc1) |
+| Spec | Ubuntu 24.04 · `s-2vcpu-4gb-120gb-intel` · tag `invincible` |
+| Bootstrap | Run on host (web console or SSH) — see below / `scripts/bootstrap-runner-host.sh` |
+| Create helper | [`scripts/create-invincible-droplet.sh`](../scripts/create-invincible-droplet.sh) (for rebuilds) |
 
 ## Target inventory
 
 | Field | Value |
 |-------|--------|
-| Name | `invincible-runner` |
-| Region | `sfo3` (SF — close to owner) |
-| Size | `s-2vcpu-4gb` (~$24/mo — confirm current pricing) |
+| Name | `ubuntu-s-2vcpu-4gb-120gb-intel-nyc1` (rename optional → `invincible-runner`) |
+| Region | `nyc1` |
+| Size | `s-2vcpu-4gb-120gb-intel` (~$32/mo) |
 | Image | `ubuntu-24-04-x64` |
-| Tags | `invincible`, `gha-runner` |
-| Monitoring | on |
-| User | `runner` (sudo) |
-| Droplet ID | _pending_ |
-| Public IPv4 | _pending_ |
+| Tags | `invincible` (add `gha-runner` anytime) |
+| Monitoring | confirm in DO UI |
+| User | `runner` (after bootstrap) |
+| Droplet ID | `589481218` |
+| Public IPv4 | `204.48.30.46` |
 | Runner name | `invincible-do-1` (Phase 2.2) |
 | Labels | `self-hosted,linux,x64,invincible,zig` (Phase 2.2) |
 | Zig version | _pending Phase 2.3_ |

@@ -35,13 +35,11 @@ Then push to `main` triggers production deploys.
 
 | Field | Value |
 |-------|--------|
-| Droplet name | `invincible-runner` (target) |
-| Region / size | `sfo3` / `s-2vcpu-4gb` |
-| Droplet ID | _pending create_ |
-| Public IPv4 | _pending create_ |
+| Droplet name | `ubuntu-s-2vcpu-4gb-120gb-intel-nyc1` |
+| Region / size | `nyc1` / `s-2vcpu-4gb-120gb-intel` |
+| Droplet ID | `589481218` |
+| Public IPv4 | `204.48.30.46` |
 | Ops doc | [`docs/runner.md`](runner.md) |
 | Create script | [`scripts/create-invincible-droplet.sh`](../scripts/create-invincible-droplet.sh) |
 | Bootstrap | [`scripts/bootstrap-runner-host.sh`](../scripts/bootstrap-runner-host.sh) |
-
-**Blocker (2026-08-02):** DigitalOcean connector returned **403** on droplet create (read-only token). Create via dashboard/`doctl` write token, or re-auth connector with write scopes.
 
