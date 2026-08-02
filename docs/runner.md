@@ -286,6 +286,8 @@ du -sh /home/runner/actions-runner/_work /opt/zig 2>/dev/null || true
 
 ## 12. Hardening & cost (Phase 2.7)
 
+**Status:** applied on droplet `589481218` (2026-08-02) — UFW SSH-only, key-only sshd, unattended-upgrades, restricted runner sudo; runner stayed active.
+
 ### Applied baseline (run on host)
 
 ```bash
