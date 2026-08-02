@@ -24,8 +24,8 @@ DO hosts **build** (Zig/Wasm). Vercel hosts the **Next.js** app only.
 | User | `runner` (sudo, uid 1000) |
 | Droplet ID | `589481218` |
 | Public IPv4 | `204.48.30.46` |
-| Runner name | `invincible-do-1` (Phase 2.2) |
-| Labels | `self-hosted,linux,x64,invincible,zig` (Phase 2.2) |
+| Runner name | `ubuntu-s-2vcpu-4gb-120gb-intel-nyc1` (hostname; ok) |
+| Labels | see GitHub Runners UI — prefer `self-hosted,linux,x64,invincible,zig` |
 | Zig version | _pending Phase 2.3_ |
 
 ## Create options
@@ -79,3 +79,20 @@ See [docs/phase-2-plan.md](phase-2-plan.md) and [milestone 2](https://github.com
 ## Connectivity note
 
 `curl -f https://objects.githubusercontent.com/` often returns **404** on the bare host URL; that still means TLS/DNS work. GitHub Actions runner downloads use full object paths and succeed when `github.com` is 200.
+
+## Runner service (Phase 2.2)
+
+| Field | Value |
+|-------|--------|
+| Status | **Online** — Listening for Jobs (2026-08-02) |
+| Path | `/home/runner/actions-runner` |
+| Unit | `actions.runner.btipling-invincible.ubuntu-s-2vcpu-4gb-120gb-intel-nyc1.service` |
+| User | `runner` |
+| Version | `2.336.0` |
+
+```bash
+# as runner
+cd ~/actions-runner
+sudo ./svc.sh status
+sudo ./svc.sh stop   # / start
+```
