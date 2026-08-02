@@ -42,8 +42,8 @@ In-browser **agent harness** (Wasm), not a CLI clone and not a Chrome extension:
 | 1 | [#16 3.1](https://github.com/btipling/invincible/issues/16) dvui spike | **Done** — see [phase-3-dvui-spike.md](phase-3-dvui-spike.md); dvui OK on 0.16.0 |
 | 2 | [#17 3.2](https://github.com/btipling/invincible/issues/17) crate skeleton | **Done** — `native/harness/` |
 | 3 | [#18 3.3](https://github.com/btipling/invincible/issues/18) CI harness artifact | **Done** — `build-harness.yml` → `harness-wasm` |
-| 4 | [#19 3.4](https://github.com/btipling/invincible/issues/19) ship to Vercel static | After 3.3 |
-| 5 | [#20 3.5](https://github.com/btipling/invincible/issues/20) `/harness` page | After 3.4 |
+| 4 | [#19 3.4](https://github.com/btipling/invincible/issues/19) ship to Vercel static | **Done** — `public/harness/` committed assets |
+| 5 | [#20 3.5](https://github.com/btipling/invincible/issues/20) `/harness` page | **Done** — App Router host + palette states |
 | 6 | [#21 3.6](https://github.com/btipling/invincible/issues/21) JS↔Wasm bridge | After 3.5 |
 | 7 | [#22 3.7](https://github.com/btipling/invincible/issues/22) wire Gateway | After 3.6 |
 | 8 | [#23 3.8](https://github.com/btipling/invincible/issues/23) session model | Parallel after 3.6 |
@@ -76,3 +76,26 @@ In-browser **agent harness** (Wasm), not a CLI clone and not a Chrome extension:
 - dvui: https://github.com/david-vanderson/dvui  
 - Runner ops: [runner.md](runner.md)  
 - Phase 2 plan (done): [phase-2-plan.md](phase-2-plan.md)  
+
+
+## Rebuild path (DO → Vercel)
+
+**Chosen option for 3.4:** check in built assets under `public/harness/` (~1.3 MB wasm — no LFS for MVP).
+
+```bash
+# on invincible-do-1 / CI
+./native/harness/build.sh
+# from laptop or agent with artifact:
+./scripts/sync-harness-public.sh          # from native/dist/harness
+# or:
+./scripts/sync-harness-public.sh /path/to/downloaded-artifact
+git add public/harness && git commit -m "chore: sync harness wasm" && git push
+```
+
+| Prod URL | MIME |
+|----------|------|
+| `/harness/harness.wasm` | `application/wasm` (see `next.config.js` headers) |
+| `/harness/web.js` | JS module glue |
+| `/harness` | Next App Router host page (3.5) |
+
+CI artifact remains `harness-wasm` for review; **production serve** is the committed `public/harness/*` tree until a bot-commit or build-time download is added.

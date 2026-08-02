@@ -7,6 +7,7 @@ import {
   sendChat,
   validatePrompt,
 } from '../lib/chatApi';
+import AppNav from './components/AppNav';
 
 type Status = 'idle' | 'loading' | 'success' | 'error';
 
@@ -76,47 +77,24 @@ export default function PromptPlayground() {
         boxSizing: 'border-box',
       }}
     >
-      <header
-        style={{
-          borderBottom: `1px solid ${teal.border}`,
-          background: teal.surface,
-          padding: '0.85rem 1.25rem',
-          display: 'flex',
-          flexWrap: 'wrap',
-          alignItems: 'baseline',
-          gap: '0.5rem 1rem',
-        }}
-      >
-        <h1
-          style={{
-            margin: 0,
-            fontSize: '1.15rem',
-            fontWeight: 600,
-            letterSpacing: '0.04em',
-            color: teal.text,
-          }}
-        >
-          Invincible
-        </h1>
-        <span style={{ color: teal.muted, fontSize: '0.85rem' }}>
-          prompt playground
-        </span>
-        <span
-          style={{
-            marginLeft: 'auto',
-            fontSize: '0.75rem',
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-            color: warm.muted,
-            border: `1px solid ${warm.border}`,
-            background: warm.surface,
-            borderRadius: 4,
-            padding: '0.2rem 0.5rem',
-          }}
-          title="Server selects the real model in Phase 1.4"
-        >
-          {DEFAULT_MODEL_LABEL}
-        </span>
-      </header>
+      <AppNav
+        right={
+          <span
+            style={{
+              fontSize: '0.75rem',
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              color: warm.muted,
+              border: `1px solid ${warm.border}`,
+              background: warm.surface,
+              borderRadius: 4,
+              padding: '0.2rem 0.5rem',
+            }}
+            title="Server selects the real model in Phase 1.4"
+          >
+            {DEFAULT_MODEL_LABEL}
+          </span>
+        }
+      />
 
       <div
         style={{
