@@ -1,0 +1,33 @@
+# Phase 2.5 — compile placeholder Wasm on DO runner, upload Actions artifact
+name: build-wasm
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "native/**"
+      - ".github/workflows/build-wasm.yml"
+
+jobs:
+  wasm:
+    name: zig → hello.wasm
+    runs-on: [self-hosted, invincible, zig]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          export PATH="/usr/local/bin:${PATH}"
+          ./native/build.sh
+
+      - name: Upload hello.wasm
+        uses: actions/upload-artifact@v4
+        with:
+          name: hello-wasm
+          path: native/dist/hello.wasm
+          if-no-files-found: error
+          retention-days: 14

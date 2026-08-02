@@ -132,7 +132,8 @@ See also [`scripts/README.md`](../scripts/README.md).
 
 | Workflow | File | Purpose |
 |----------|------|---------|
-| `runner-smoke` | `.github/workflows/runner-smoke.yml` | Phase 2.4 — `workflow_dispatch` on `[self-hosted, invincible, zig]` |
+| `runner-smoke` | `.github/workflows/runner-smoke.yml` | Phase 2.4 — smoke on self-hosted |
+| `build-wasm` | `.github/workflows/build-wasm.yml` | Phase 2.5 — `hello.wasm` artifact |
 
 ```bash
 gh workflow run runner-smoke.yml --repo btipling/invincible

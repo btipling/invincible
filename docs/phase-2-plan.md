@@ -45,3 +45,6 @@ push / workflow_dispatch
 - dvui / harness UI (Phase 3)
 - AI Gateway changes
 - Building Zig inside Vercel
+
+
+Phase 2.5 artifact name: `hello-wasm` (file `hello.wasm`).
