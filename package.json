@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "fetch-harness": "node scripts/fetch-harness-artifact.mjs",
+    "prebuild": "node scripts/fetch-harness-artifact.mjs"
   },
   "dependencies": {
     "ai": "^5.0.0",

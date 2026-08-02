@@ -14,6 +14,7 @@
 |------|----------|--------|
 | `AI_GATEWAY_API_KEY` | yes | Project → Settings → Environment Variables → Production + Preview |
 | `DEFAULT_MODEL` | no | default `xai/grok-4.1-fast-non-reasoning` |
+| `HARNESS_ARTIFACT_TOKEN` | **yes** (for `/harness`) | Fine-grained PAT: **Actions: Read** on `btipling/invincible` — used at build to download artifact `harness-wasm` |
 
 After adding env vars, **Redeploy** the production deployment.
 

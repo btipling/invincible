@@ -170,6 +170,8 @@ sudo systemctl disable --now 'actions.runner.btipling-invincible.*.service'  # c
 | **build-dvui-spike** | `.github/workflows/build-dvui-spike.yml` | `workflow_dispatch`, push to `native/dvui-spike/**` | `./native/dvui-spike/build.sh` → artifact **`dvui-spike-wasm`** |
 | **build-harness** | `.github/workflows/build-harness.yml` | `workflow_dispatch`, push to `native/harness/**` | `./native/harness/build.sh` → artifact **`harness-wasm`** |
 
+**Vercel consume:** artifact is pulled at Next build by `scripts/fetch-harness-artifact.mjs` (`npm run prebuild`). Requires Vercel env `HARNESS_ARTIFACT_TOKEN` (Actions: Read). Binaries are **not** committed.
+
 ```bash
 # dispatch
 gh workflow run runner-smoke.yml --repo btipling/invincible

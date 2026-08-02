@@ -46,3 +46,14 @@ jobs:
             native/dist/harness/index.html
           if-no-files-found: error
           retention-days: 14
+
+      - name: Trigger Vercel redeploy (optional)
+        if: ${{ secrets.VERCEL_DEPLOY_HOOK_URL != '' }}
+        env:
+          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          set -euo pipefail
+          # So harness-only changes go live without a dummy commit.
+          curl -fsS -X POST "$VERCEL_DEPLOY_HOOK_URL"
+          echo "deploy hook pinged"
+

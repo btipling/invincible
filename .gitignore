@@ -38,3 +38,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Harness Wasm (fetched at build from Actions artifact — do not commit)
+public/harness/harness.wasm
+public/harness/web.wasm
+public/harness/web.js
+public/harness/index.html
+public/harness/.artifact-meta.json

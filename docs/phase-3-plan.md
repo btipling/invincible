@@ -80,22 +80,34 @@ In-browser **agent harness** (Wasm), not a CLI clone and not a Chrome extension:
 
 ## Rebuild path (DO → Vercel)
 
-**Chosen option for 3.4:** check in built assets under `public/harness/` (~1.3 MB wasm — no LFS for MVP).
+**Chosen option for 3.4: B** — Vercel **build** downloads the latest Actions artifact; **no Wasm binaries in git**.
 
-```bash
-# on invincible-do-1 / CI
-./native/harness/build.sh
-# from laptop or agent with artifact:
-./scripts/sync-harness-public.sh          # from native/dist/harness
-# or:
-./scripts/sync-harness-public.sh /path/to/downloaded-artifact
-git add public/harness && git commit -m "chore: sync harness wasm" && git push
+```text
+invincible-do-1  →  Actions artifact harness-wasm
+                         ↓
+              npm run prebuild (fetch-harness-artifact.mjs)
+                         ↓
+                 public/harness/* (ephemeral on builder)
+                         ↓
+                    Vercel CDN / harness/*
 ```
 
-| Prod URL | MIME |
-|----------|------|
-| `/harness/harness.wasm` | `application/wasm` (see `next.config.js` headers) |
-| `/harness/web.js` | JS module glue |
-| `/harness` | Next App Router host page (3.5) |
+| Step | How |
+|------|-----|
+| Compile | `build-harness.yml` on `[self-hosted, invincible, zig]` |
+| Artifact | name **`harness-wasm`** (`harness.wasm` + `web.js`) |
+| Vercel | `prebuild` → `node scripts/fetch-harness-artifact.mjs` |
+| Auth | Vercel env **`HARNESS_ARTIFACT_TOKEN`** — fine-grained PAT, **Actions: Read** on this repo (Production + Preview) |
+| Serve | `/harness/harness.wasm` (`application/wasm`), `/harness/web.js` |
 
-CI artifact remains `harness-wasm` for review; **production serve** is the committed `public/harness/*` tree until a bot-commit or build-time download is added.
+```bash
+# after harness source change:
+gh workflow run build-harness.yml
+# then redeploy Vercel (push any commit, dashboard Redeploy, or Deploy Hook)
+# local:
+export HARNESS_ARTIFACT_TOKEN=…   # or gh auth
+npm run fetch-harness && npm run dev
+```
+
+**Do not** commit `public/harness/*.wasm` — gitignored.
+

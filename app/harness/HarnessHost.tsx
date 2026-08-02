@@ -34,7 +34,7 @@ export default function HarnessHost() {
         const head = await fetch('/harness/harness.wasm', { method: 'HEAD' });
         if (!head.ok) {
           throw new Error(
-            `harness.wasm missing (${head.status}). Rebuild on invincible-do-1 and sync public/harness/.`,
+            `harness.wasm missing (${head.status}). Ensure build-harness CI produced harness-wasm and Vercel has HARNESS_ARTIFACT_TOKEN (Actions: Read).`,
           );
         }
 
@@ -168,9 +168,10 @@ export default function HarnessHost() {
                 lineHeight: 1.4,
               }}
             >
-              Rebuild: <code style={{ color: teal.accent }}>./native/harness/build.sh</code> on
-              the DO runner (or CI), then{' '}
-              <code style={{ color: teal.accent }}>./scripts/sync-harness-public.sh</code>.
+              Rebuild on <code style={{ color: teal.accent }}>invincible-do-1</code> (workflow{' '}
+              <code style={{ color: teal.accent }}>build-harness</code>), then redeploy Vercel so{' '}
+              <code style={{ color: teal.accent }}>npm run prebuild</code> fetches artifact{' '}
+              <code style={{ color: teal.accent }}>harness-wasm</code>.
             </div>
           </div>
         )}
