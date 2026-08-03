@@ -9,6 +9,7 @@ import {
   sandboxConfigured,
 } from '../../../lib/sandbox/config';
 import { runAgent } from '../../../lib/agent/runAgent';
+import { requireSessionUser } from '../../../lib/tenancy/session';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -28,6 +29,11 @@ function isAbortError(err: unknown): boolean {
  * 503 when SANDBOX_URL / SANDBOX_TOKEN unset (stable string for host fallback).
  */
 export async function POST(req: Request): Promise<Response> {
+  const sessionGate = await requireSessionUser();
+  if (!sessionGate.ok) {
+    return sessionGate.response;
+  }
+
   if (!gatewayConfigured()) {
     const { status, error } = missingGatewayKeyError();
     return Response.json({ error }, { status });

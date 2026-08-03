@@ -6,6 +6,7 @@ import {
   parseChatBody,
 } from '../../../lib/chatServer';
 import { resolveModelId } from '../../../lib/model';
+import { requireSessionUser } from '../../../lib/tenancy/session';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -18,6 +19,11 @@ export const maxDuration = 60;
  * Requires `AI_GATEWAY_API_KEY`. Optional `DEFAULT_MODEL` (provider/model).
  */
 export async function POST(req: Request): Promise<Response> {
+  const sessionGate = await requireSessionUser();
+  if (!sessionGate.ok) {
+    return sessionGate.response;
+  }
+
   if (!gatewayConfigured()) {
     const { status, error } = missingGatewayKeyError();
     return Response.json({ error }, { status });

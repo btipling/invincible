@@ -65,6 +65,9 @@ npm run db:seed
 # → logs tenantId / userId / sandboxId only (no secrets)
 # Re-seed is idempotent on uniques but **resets** bootstrap password_hash
 # and sandbox token ciphertext from env (intentional bootstrap contract).
+
+# Phase 2 login (when tenancy on — DATABASE_URL + AUTH_SECRET + CREDENTIALS_ENCRYPTION_KEY):
+# open /login with SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD.
 ```
 
 Schema: `db/schema.ts`. Crypto: `lib/tenancy/credentials.ts`. Auth.js tables: phase 2.
