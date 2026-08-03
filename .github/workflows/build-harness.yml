@@ -57,8 +57,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${VERCEL_DEPLOY_HOOK_URL:-}" ]; then
-            echo "VERCEL_DEPLOY_HOOK_URL not set — skip deploy hook"
-            echo "  (fetch-harness still waits on Vercel for this SHA when Git deploy races)"
+            # Secret is expected to exist (see AGENTS.md). Empty = regression or fork.
+            echo "WARN: VERCEL_DEPLOY_HOOK_URL empty — skip hook; fetch-harness wait-for-SHA still applies"
             exit 0
           fi
           curl -fsS -X POST "$VERCEL_DEPLOY_HOOK_URL"

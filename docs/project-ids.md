@@ -8,31 +8,22 @@
 - **Dashboard:** https://vercel.com/bjorns-projects-65588ed4/invincible
 - **GitHub:** https://github.com/btipling/invincible (`main`)
 
-## Env (set in Vercel, not in git)
+## Env / secrets (already configured — agents: do not nag)
 
-| Name | Required | Notes |
-|------|----------|--------|
-| `AI_GATEWAY_API_KEY` | yes | Project → Settings → Environment Variables → Production + Preview |
-| `DEFAULT_MODEL` | no | default `xai/grok-4.1-fast-non-reasoning` |
-| `HARNESS_ARTIFACT_TOKEN` | **yes** (for `/harness`) | Fine-grained PAT: **Actions: Read** on `btipling/invincible` — used at build to download artifact `harness-wasm` |
+| Name | Where | Status |
+|------|--------|--------|
+| `AI_GATEWAY_API_KEY` | Vercel Production + Preview | **Configured** |
+| `DEFAULT_MODEL` | Vercel (optional) | default `xai/grok-4.1-fast-non-reasoning` |
+| `HARNESS_ARTIFACT_TOKEN` | Vercel Production + Preview | **Configured** — Actions: Read PAT for `harness-wasm` |
+| `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions secret | **Configured** — `build-harness` pings after artifact upload |
 
-GitHub secret (recommended):
+Agents: never prompt the user to “set up” or “wire” these unless a log proves a regression. See [`AGENTS.md`](../AGENTS.md).
 
-| Name | Notes |
-|------|--------|
-| `VERCEL_DEPLOY_HOOK_URL` | Deploy Hook URL; `build-harness` pings after artifact upload (avoids stale Wasm). See [`docs/harness-deploy-race.md`](harness-deploy-race.md). |
+Wasm race: [`docs/harness-deploy-race.md`](harness-deploy-race.md) (prebuild waits for commit-matched artifact).
 
-After adding env vars, **Redeploy** the production deployment.
+## Git integration
 
-## Git integration (optional but recommended)
-
-This first production deploy was file-based (not auto from Git). To mirror Asteronica:
-
-1. Vercel project → **Settings → Git**
-2. Connect `btipling/invincible`
-3. Production branch: `main`
-
-Then push to `main` triggers production deploys.
+Connected: `btipling/invincible` → production branch `main`.
 
 ## GitHub Project
 
@@ -52,4 +43,3 @@ Then push to `main` triggers production deploys.
 | GHA runner | `invincible-do-1` · labels `invincible`,`zig` |
 | Zig | `0.16.0` @ `/opt/zig/0.16.0` |
 | Ops | **[`docs/runner.md`](runner.md)** (source of truth for rebuild) |
-
