@@ -30,6 +30,7 @@ gh api "repos/btipling/invincible/contents/.grok/skills/<name>/SKILL.md?ref=main
 |-------|-----------|---------|
 | **create-plan** | `create-plan/` | Author feature plans as **GitHub issues** (parent + optional phase issues) |
 | **plan-review** | `plan-review/` | Review plan issues: correctness, perf, architecture, tests, layers, parent; default **edit issue body** via `gh` |
+| **adversarial-review** | `adversarial-review/` | Hostile **PR** review (break scenarios, security, feature-divide, runner/CI); default **comment on PR** via `gh` |
 
 ## create-plan
 
@@ -50,6 +51,19 @@ See [`plan-review/LOAD.md`](plan-review/LOAD.md):
 2. Clone or `gh api` skill files from `main`  
 3. `gh issue view N`  
 4. Review; default `mode=fix` → full body update via `gh issue edit`  
+
+## adversarial-review
+
+User: “adversarial-review PR #N” / “red-team this PR”
+
+See [`adversarial-review/LOAD.md`](adversarial-review/LOAD.md):
+
+1. `gh` gate + read `AGENTS.md`  
+2. Load skill + PR diff  
+3. Attack lenses (secrets, runner, feature-divide, bridge, deploy race, tests…)  
+4. Self-refute findings; verdict BLOCK / CONCERNS / PASS WITH NOTES  
+5. Default `mode=comment` → `gh pr review` / `gh pr comment`  
+6. Does **not** implement fixes unless asked  
 
 ## Push / GitHub doctrine
 

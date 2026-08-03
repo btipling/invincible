@@ -52,9 +52,11 @@ Feature divide: [`docs/feature-divide.md`](docs/feature-divide.md).
 |-------|------|--------|
 | **create-plan** | “use the create-plan skill to add …” | [`.grok/skills/create-plan/SKILL.md`](.grok/skills/create-plan/SKILL.md) |
 | **plan-review** | Review a plan issue before coding | [`.grok/skills/plan-review/SKILL.md`](.grok/skills/plan-review/SKILL.md) |
+| **adversarial-review** | Hostile PR review before merge | [`.grok/skills/adversarial-review/SKILL.md`](.grok/skills/adversarial-review/SKILL.md) |
 
 Plans are filed as **GitHub issues** (parent issue + optional phase issues that
-link back). Requires authenticated `gh`; do not use GitHub MCP for these flows.
+link back). PR merge gates use **adversarial-review**. Requires authenticated
+`gh`; do not use GitHub MCP for these flows.
 
 ## Secrets (server only)
 
@@ -154,4 +156,4 @@ npm test && npm run typecheck
 | [project-ids.md](docs/project-ids.md) | Public URLs / env names |
 | [SECURITY.md](SECURITY.md) | Secrets + self-hosted public policy |
 | [AGENTS.md](AGENTS.md) | Agent rules, reusability, skills |
-| [.grok/skills/README.md](.grok/skills/README.md) | create-plan / plan-review |
+| [.grok/skills/README.md](.grok/skills/README.md) | create-plan / plan-review / adversarial-review |
