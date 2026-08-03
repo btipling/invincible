@@ -249,7 +249,6 @@ This is **not** “run on a personal laptop.” Prefer GHA for Production bootst
 (Gateway key + harness files). It is **not** the tenancy cutover path — use the
 cloud checklist above for migrate/seed/login flip.
 
-
 ---
 
 ## 5. Wasm supply paths

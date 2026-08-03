@@ -285,7 +285,9 @@ personal laptop as the migrate/seed host.
 1. Follow [bring-your-own.md §4a](bring-your-own.md#4a-optional-multi-tenant-auth)
    (seed via GHA `db-tenancy-bootstrap` or cloud agent while `AUTH_SECRET` is still
    omitted so tenancy stays **off**).
-2. Set all three on Vercel Production → redeploy → tenancy on.
+2. Set the remaining triple-env var(s) on Vercel Production (typically
+   `AUTH_SECRET` last) → redeploy → tenancy on. Do **not** set `AUTH_SECRET`
+   before migrate/seed.
 3. Smoke: unauth `POST /api/agent` → **401**
    `{ "error": "Authentication required." }`; `/login` → harness; optional `/admin`.
 4. Origin only: mark `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`

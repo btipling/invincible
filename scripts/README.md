@@ -82,12 +82,15 @@ session) when you inject secrets into **process env for that session only**
 (never commit; never paste into issues):
 
 ```bash
-# Prefer pooled DATABASE_URL (Neon pooler). Values never committed.
-export DATABASE_URL=postgres://…
-export CREDENTIALS_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+# Inject the SAME DATABASE_URL + CREDENTIALS_ENCRYPTION_KEY as the target
+# Vercel env (dual-store identity). Do **not** openssl-rand a new KEK if
+# Production/Preview already has one — wrong KEK → undecryptable tokens.
+# Values never committed; session env only.
+export DATABASE_URL='…'                      # === Vercel (pooled)
+export CREDENTIALS_ENCRYPTION_KEY='…'        # === Vercel (base64 32-byte KEK)
 export SEED_ADMIN_EMAIL=admin@example.com
 export SEED_ADMIN_PASSWORD='…'
-export SANDBOX_URL=http://127.0.0.1:8787
+export SANDBOX_URL=http://127.0.0.1:8787     # or SEED_SANDBOX_*
 export SANDBOX_TOKEN='…'
 
 npm ci
@@ -97,6 +100,10 @@ npm run db:seed
 # Re-seed is idempotent on uniques but **resets** bootstrap password_hash
 # and sandbox token ciphertext from env (intentional bootstrap contract).
 ```
+
+Greenfield throwaway DB only: generate a fresh KEK with
+`openssl rand -base64 32` and set that **same** value on the matching Vercel
+env before seed — never mint a second key after ciphertext exists.
 
 **Production bootstrap still prefers GHA** (`confirm=seed`). This block is not
 a personal-laptop primary path.

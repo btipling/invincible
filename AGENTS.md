@@ -60,8 +60,9 @@ home directory. Product copy and plans must not require personal hardware.
 - When a change **blocks** reusability **or forces personal-hardware ops**, call
   it out in the plan/PR and prefer a cloud-agent / CI / Vercel path.
 - Config seams for BYO Vercel/keys/runner (#38), **sandbox MVP** (#45 phases
-  1–3), and **optional multi-tenant auth** (#54 phases 1–4 code) are **landed**.
-  Cloud-native tenancy **bootstrap** (migrate/seed without a personal machine)
+  1–3), **optional multi-tenant auth** (#54 phases 1–4 code), and cloud-native
+  tenancy **bootstrap** (GHA `db-tenancy-bootstrap` + [docs/bring-your-own.md](docs/bring-your-own.md) §4a)
+  are **landed**. Origin **Production cutover smoke** ([#70](https://github.com/btipling/invincible/issues/70))
   and SSO/SCIM ([#64](https://github.com/btipling/invincible/issues/64)) remain
   incomplete — still write code and docs as if broader reuse is the destination.
 - Origin `SANDBOX_*` is **Done** for the reference deploy (private host inventory
