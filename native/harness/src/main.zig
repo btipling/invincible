@@ -43,13 +43,17 @@ export fn dvui_init(platform_ptr: [*]const u8, platform_len: usize) i32 {
     WebBackend.back = WebBackend.init() catch {
         return 1;
     };
-    // Asteronica theme (TEAL / WARM / EMBER) — matches lib/palette.ts on the host.
+    // Asteronica (TEAL/WARM/EMBER) — same hex as lib/palette.ts.
+    // color_scheme is ignored when theme is set; still pass .dark for clarity.
     WebBackend.win = dvui.Window.init(@src(), WebBackend.gpa, WebBackend.back.backend(), .{
         .keybinds = if (mac) .mac else .windows,
         .theme = palette.theme(),
+        .color_scheme = .dark,
     }) catch {
         return 2;
     };
+    // Belt-and-suspenders: re-apply after init (some backends touch theme once).
+    WebBackend.win.themeSet(palette.theme());
     WebBackend.win_ok = true;
     ui.onInit();
     return 0;
@@ -74,6 +78,10 @@ export fn dvui_update() i32 {
 fn update() !i32 {
     const nstime = WebBackend.win.beginWait(WebBackend.back.hasEvent());
     try WebBackend.win.begin(nstime);
+    // Keep Asteronica pinned (OS scheme / hot-reload must not flip us light).
+    if (!std.mem.eql(u8, WebBackend.win.theme.name, "Asteronica")) {
+        WebBackend.win.themeSet(palette.theme());
+    }
     try ui.frame();
     const end_micros = try WebBackend.win.end(.{});
     WebBackend.back.setCursor(WebBackend.win.cursorRequested());
