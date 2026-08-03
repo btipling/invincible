@@ -20,8 +20,9 @@ Phase 3 inverted this (DOM chat + optional canvas). That was a pipeline PoC, not
 | Load `web.js` + `harness.wasm` | **DOM** | Instantiate, MIME, errors |
 | JS ↔ Wasm bridge glue | **DOM** | `lib/harnessBridge.ts` |
 | Poll pending submit | **DOM** | No custom Wasm imports |
-| `POST /api/chat` | **DOM / server** | `AI_GATEWAY_API_KEY` never in Wasm |
-| Fold multi-turn history into prompt | **DOM** | `lib/harnessChat.ts` |
+| `POST /api/chat` | **DOM / server** | Single-shot inference; `AI_GATEWAY_API_KEY` never in Wasm |
+| `POST /api/agent` | **DOM / server** | Multi-step tools when sandbox configured; server-only `SANDBOX_*` |
+| Fold multi-turn history into prompt | **DOM** | `lib/harnessChat.ts` (user/assistant only; system tool lines display-only) |
 | `SessionStore` load/save/clear | **DOM** | memory / localStorage (cloud later) |
 | Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status |
 | **Transcript (read messages)** | **Wasm** | Primary UX |
@@ -55,14 +56,20 @@ Track any exception in the issue that introduces it:
 User types in Wasm composer
   → inv_* pending submit (poll)
   → Host runHarnessTurn / SessionStore
-  → POST /api/chat
-  → Host pushes assistant/error into Wasm
+  → formatPromptWithHistory (user/assistant only)
+  → POST /api/agent
+       if 503 + exact sandbox-not-configured → POST /api/chat
+       else tools → SANDBOX_URL (server-only Bearer token)
+  → Host pushes ≤6 system toolTrace lines + assistant/error into Wasm
   → User reads reply in Wasm transcript
 ```
+
+Sandbox ops / BYO: [sandbox.md](sandbox.md).
 
 ## Related
 
 - Handoff: [phase-4-handoff.md](phase-4-handoff.md)
 - Plan: [phase-4-plan.md](phase-4-plan.md)  
 - Epic: [#27](https://github.com/btipling/invincible/issues/27)  
+- Agent sandbox: [sandbox.md](sandbox.md) · parent [#45](https://github.com/btipling/invincible/issues/45)  
 - Limits: [harness-limits.md](harness-limits.md)  

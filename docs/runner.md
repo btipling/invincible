@@ -3,10 +3,15 @@
 **Purpose:** A self-hosted machine runs **compile** (Zig → Wasm).  
 **Vercel** runs the **Next.js** app and AI Gateway only. Never expect Vercel to build Zig.
 
+> **Not the agent sandbox.** Model tools (`list_dir` / `read_file` / `write_file` /
+> `exec`) use a **separate** process documented in [sandbox.md](sandbox.md). Do not
+> merge GHA runner setup with the sandbox daemon, even if both run on the same VM.
+
 | Layer | Where | Role |
 |-------|--------|------|
-| UI + API | Your Vercel project | `/harness` host, `/api/chat` |
+| UI + API | Your Vercel project | `/harness` host, `/api/chat`, `/api/agent` |
 | CI build | Self-hosted GHA runner | `zig` → `.wasm` artifacts |
+| Agent tools (optional) | BYO sandbox process | [sandbox.md](sandbox.md) — not this runner |
 | Source | **This** GitHub repository | Single source of truth for your deploy |
 
 Product handoff: [phase-4-handoff.md](phase-4-handoff.md) · Public safety: [SECURITY.md](../SECURITY.md)  

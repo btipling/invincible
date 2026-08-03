@@ -12,7 +12,11 @@ Standalone HTTP service that exposes a **path-jailed workspace** with four tools
 
 Parent plan: [#45](https://github.com/btipling/invincible/issues/45) · Phase 1: [#46](https://github.com/btipling/invincible/issues/46)
 
-This package is **portable BYO** — run anywhere Node runs. The origin DigitalOcean sample (reverse-proxy TLS, Vercel-reachable URL) is documented later in phase 4; **do not** hardcode host IPs here.
+This package is **portable BYO** — run anywhere Node runs.
+
+**Operator guide (BYO, Vercel, verify, security):** [`docs/sandbox.md`](../docs/sandbox.md).
+
+Origin may use a DigitalOcean-hosted sample (reverse-proxy TLS, Vercel-reachable URL); inventory stays private — **do not** hardcode host IPs here.
 
 ## Requirements
 

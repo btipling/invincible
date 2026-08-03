@@ -11,9 +11,11 @@ If you find a vulnerability in Invincible, please open a **private** security ad
 | `AI_GATEWAY_API_KEY` | Vercel project env only |
 | `HARNESS_ARTIFACT_TOKEN` | Vercel (Actions: Read PAT for artifact download) |
 | `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions secrets |
+| `SANDBOX_TOKEN` | Vercel project env **and** sandbox process env (same secret) |
 | Runner registration tokens, DO API tokens | Operator machines only |
 
-Session blobs and Wasm must never contain API keys.
+Session blobs and Wasm must never contain API keys or sandbox tokens.  
+Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
 
 ## Self-hosted runner (public repo policy)
 
@@ -40,6 +42,21 @@ To reduce abuse risk when this repository is **public**:
 
 Maintainers: still harden the VM (SSH keys, firewall, unattended upgrades) using private runbooks; public docs stay abstract.
 
+## Agent sandbox (not the Zig runner)
+
+The **agent sandbox** is an optional remote workspace for model tools
+(`list_dir` / `read_file` / `write_file` / `exec`). It is **not** the
+self-hosted GHA runner that compiles Zig.
+
+| Rule | Detail |
+|------|--------|
+| Separate process | Dedicated OS user/unit; do **not** share Actions credentials with the sandbox env |
+| Server-only calls | Only Vercel/Node server calls `SANDBOX_URL` with Bearer `SANDBOX_TOKEN` |
+| Path jail | Workspace root + symlink-safe resolve; argv-only `exec` with timeouts |
+| Public inventory | Host IPs / droplet IDs stay offline ([docs/sandbox.md](docs/sandbox.md)) |
+| No PR trigger surface | Sandbox is not executed by untrusted PR workflows |
+
 ## Production app
 
-Inference is server-side only (`POST /api/chat`). Report client-side key exposure immediately.
+Inference is server-side only (`POST /api/chat`, `POST /api/agent`). Report
+client-side key or sandbox-token exposure immediately.

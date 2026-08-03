@@ -20,11 +20,19 @@ Public-facing IDs and URLs. **No host IPs, droplet IDs, or cloud account GUIDs**
 | `DEFAULT_MODEL` | Vercel (optional) | default `xai/grok-4.1-fast-non-reasoning` |
 | `HARNESS_ARTIFACT_TOKEN` | Vercel | Actions: Read — prebuild downloads `harness-wasm` |
 | `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions secret | `build-harness` may ping after artifact upload |
+| `SANDBOX_URL` | Vercel / local server | Agent sandbox base URL — **must be Vercel-reachable in prod**; never commit real hosts |
+| `SANDBOX_TOKEN` | Vercel + sandbox process | Shared bearer; server-only |
+| `AGENT_MAX_STEPS` | Vercel (optional) | Tool-loop step cap (default 6) |
+| `AGENT_MODEL` | Vercel (optional) | Tool-capable model override |
 
-Agents on **origin**: secrets are already configured — do not nag unless a log proves a regression ([`AGENTS.md`](../AGENTS.md)).  
-Forks/clones: set env on **your** Vercel per [`bring-your-own.md`](bring-your-own.md).
+Agents on **origin**: secrets listed as **Done** in [`AGENTS.md`](../AGENTS.md)
+are already configured — do not nag unless a log proves a regression.  
+`SANDBOX_*` is **not** Done until the operator sets it.  
+Forks/clones: set env on **your** Vercel per [`bring-your-own.md`](bring-your-own.md)
+and [`sandbox.md`](sandbox.md).
 
-Wasm race: [`harness-deploy-race.md`](harness-deploy-race.md).
+Wasm race: [`harness-deploy-race.md`](harness-deploy-race.md).  
+Sandbox ops: [`sandbox.md`](sandbox.md) (no host inventory in this table).
 
 ## Build runner (abstract)
 
@@ -36,7 +44,8 @@ Wasm race: [`harness-deploy-race.md`](harness-deploy-race.md).
 | Workflows | `build-harness`, `build-wasm`, `build-dvui-spike`, `runner-smoke` |
 | Host details | **Private** — not in this repo ([SECURITY.md](../SECURITY.md)) |
 
-Ops abstract guide: [`runner.md`](runner.md).
+Ops abstract guide: [`runner.md`](runner.md).  
+**Agent sandbox** is a separate service — not this GHA runner ([`sandbox.md`](sandbox.md)).
 
 ## Git integration
 

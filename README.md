@@ -7,16 +7,17 @@ In-browser agent harness — Zig/dvui Wasm workspace hosted by Next.js, inferenc
 ## Reusable product
 
 This is **not** a one-off demo for a single deployment. The long-term goal is that
-**anyone can clone this repo**, connect **their own Vercel project**, and (when
-shipped) their own **sandbox / runner environment**, then use the harness on
-**their** work — **any language or platform** on the target side.
+**anyone can clone this repo**, connect **their own Vercel project**, and their own
+**sandbox / runner environment**, then use the harness on **their** work — **any
+language or platform** on the target side.
 
 **Start here if you are cloning or forking:**  
-→ **[docs/bring-your-own.md](docs/bring-your-own.md)** — clone → env → your Vercel → secrets → Wasm paths → verify `/harness`.
+→ **[docs/bring-your-own.md](docs/bring-your-own.md)** — clone → env → your Vercel → secrets → Wasm paths → verify `/harness`.  
+→ **[docs/sandbox.md](docs/sandbox.md)** — optional agent tools workspace (`SANDBOX_URL` + `SANDBOX_TOKEN`).
 
-Multi-tenant / bring-your-own **sandbox** is **not shipped yet**; prefer config
-seams over hardcoding one owner’s prod. Agent rules:
-[`AGENTS.md`](AGENTS.md) → **Reusable product**.
+Sandbox **MVP is shipped** as a config seam (without env, harness falls back to
+chat). Multi-tenant isolation / MCP remain future. Prefer config seams over
+hardcoding one owner’s prod. Agent rules: [`AGENTS.md`](AGENTS.md) → **Reusable product**.
 
 ## Reference deployment (maintainer)
 
@@ -38,13 +39,15 @@ Works on **any** host (local, your Vercel, or the reference deploy):
 2. Type in the canvas composer → **Enter** or **Send**.  
 3. **PONG** smokes the host Gateway path (reply appears in canvas).  
 4. Refresh restores session into Wasm; nav **Clear** resets.  
-5. DOM chrome = nav + status chips only (host shell).
+5. DOM chrome = nav + status chips only (host shell).  
+6. **Optional tools:** with sandbox env set, agent turns can write/exec in a jailed workspace ([docs/sandbox.md](docs/sandbox.md)).
 
 Feature divide: [`docs/feature-divide.md`](docs/feature-divide.md). Full BYO checklist: [`docs/bring-your-own.md`](docs/bring-your-own.md).
 
 ### Tracking
 
 - **BYO / clone setup:** [`docs/bring-your-own.md`](docs/bring-your-own.md)
+- **Agent sandbox:** [`docs/sandbox.md`](docs/sandbox.md)
 - **Phase 4 handoff (product):** [`docs/phase-4-handoff.md`](docs/phase-4-handoff.md)
 - **Phase 4 plan:** [`docs/phase-4-plan.md`](docs/phase-4-plan.md)
 - **Phase 3 handoff (pipeline only):** [`docs/phase-3-handoff.md`](docs/phase-3-handoff.md)
@@ -77,6 +80,8 @@ Names only — never commit values. Full BYO steps: [docs/bring-your-own.md](doc
 | `DEFAULT_MODEL` | Vercel (optional) | default `xai/grok-4.1-fast-non-reasoning` |
 | `HARNESS_OWNER` / `HARNESS_REPO` | Vercel / local (optional) | Override artifact source; else Vercel Git / `GITHUB_REPOSITORY` |
 | `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions **secret** (optional) | `build-harness` may ping after artifact upload |
+| `SANDBOX_URL` / `SANDBOX_TOKEN` | Vercel / local server (optional) | Agent sandbox — server only; prod URL must reach from Vercel |
+| `AGENT_MAX_STEPS` / `AGENT_MODEL` | Vercel (optional) | Tool-loop steps / tool-capable model override |
 
 **BYO:** set the table above on **your** Vercel project (and optional Actions secret on **your** repo).  
 **Origin maintainer (`btipling/invincible`):** these are already configured — agents must not re-nag unless a build log proves a regression ([AGENTS.md](AGENTS.md)).
@@ -114,7 +119,8 @@ Details: [docs/bring-your-own.md](docs/bring-your-own.md) · [docs/phase-4-hando
 | Layer | Tech |
 |-------|------|
 | App (DOM host) | Next.js 15 (App Router) + React 19 — shell only |
-| Inference (Vercel backend) | Vercel AI Gateway (`ai` SDK) · `POST /api/chat` |
+| Inference (Vercel backend) | Vercel AI Gateway (`ai` SDK) · `POST /api/chat` · `POST /api/agent` |
+| Agent sandbox (optional) | Protocol v1 daemon (`sandbox/`) — [docs/sandbox.md](docs/sandbox.md) |
 | Harness UI | Zig 0.16 + dvui Wasm (**primary** product surface) |
 | Palette | Asteronica TEAL / WARM / EMBER (`lib/palette.ts` + `palette.zig`) |
 | Session | `lib/sessionStore.ts` (memory + localStorage) |
@@ -151,6 +157,23 @@ Content-Type: application/json
 
 Errors: `{ "error": "…" }` with 4xx/5xx. Key never leaves the server.
 
+### Agent API (optional sandbox)
+
+```http
+POST /api/agent
+Content-Type: application/json
+
+{ "prompt": "list files and summarize" }
+```
+
+```json
+{ "text": "…", "toolTrace": [{ "name": "list_dir", "ok": true, "summary": "…" }] }
+```
+
+When sandbox env is unset: **503** with exact
+`Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.` — host falls back
+to `/api/chat`. Details: [docs/sandbox.md](docs/sandbox.md).
+
 ## Local dev
 
 ```bash
@@ -169,6 +192,7 @@ Clone / production BYO: [docs/bring-your-own.md](docs/bring-your-own.md).
 | Doc | Topic |
 |-----|--------|
 | [bring-your-own.md](docs/bring-your-own.md) | **Clones / BYO** — your Vercel + keys + Wasm paths |
+| [sandbox.md](docs/sandbox.md) | **Agent sandbox** — tools workspace, env, verify |
 | [phase-4-handoff.md](docs/phase-4-handoff.md) | Wasm-primary operator path (reference deploy samples) |
 | [feature-divide.md](docs/feature-divide.md) | DOM shell vs Wasm harness |
 | [phase-4-plan.md](docs/phase-4-plan.md) | Phase 4 issue map (complete) |
