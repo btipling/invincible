@@ -250,6 +250,7 @@ export default function HarnessHost() {
         color: teal.text,
         boxSizing: 'border-box',
         overflow: 'hidden',
+        paddingBottom: 'env(safe-area-inset-bottom, 0px)',
       }}
     >
       {phase === 'loading' && <HarnessLoading label="Loading harness runtime…" />}
@@ -394,7 +395,7 @@ export default function HarnessHost() {
               }
             : {
                 flex: 1,
-                minHeight: 0,
+                minHeight: 200,
                 position: 'relative',
                 background: teal.clear,
                 borderTop: phase === 'ready' ? `1px solid ${teal.border}` : undefined,

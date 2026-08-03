@@ -1,82 +1,79 @@
-# Harness known limits (Phase 3.10+)
+# Harness known limits (Phase 4)
 
-Documented browser / dvui / product constraints for `/harness`.
+Documented browser / dvui / product constraints for `/harness` (Wasm-primary).
+
+## Product UX
+
+| Surface | Role |
+|---------|------|
+| **Wasm (dvui)** | Primary harness — transcript, composer, agent chrome |
+| **DOM** | Host shell — nav, load, status chips, Clear, `/api/chat`, SessionStore |
+
+See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 
 ## Load & performance
 
 | Topic | Behavior |
 |-------|----------|
-| Route | `/harness` is a **client-only** dynamic import (`ssr: false`) so Wasm never hits the server bundle |
-| Assets | `harness.wasm` (~1.3 MB) + `web.js` from Actions artifact via `prebuild` |
-| MIME | `Content-Type: application/wasm` set in `next.config.js` for `/harness/*.wasm` |
-| First paint | Loading spinner until dynamic chunk + HEAD probe + `WebAssembly.instantiate` |
-| Cache | Wasm/JS: `public, max-age=3600, stale-while-revalidate=86400` |
+| Route | `/harness` client-only dynamic import (`ssr: false`) |
+| Assets | `harness.wasm` (~1.3 MB) + `web.js` via `prebuild` artifact |
+| MIME | `application/wasm` for `/harness/*.wasm` (`next.config.js`) |
+| First paint | Spinner until instantiate; full-bleed canvas after ready |
+| Cache | `public, max-age=3600, stale-while-revalidate=86400` |
 
-Acceptable first load on broadband is a few seconds; spinner is intentional.
-
-## Console (happy path)
-
-Expected silence after ready. You may still see:
-
-- dvui / WebGL info logs from the backend (vendor `web.js`)
-- Browser warnings about WebGL if the GPU is blocked
-
-Unexpected: `Failed to compile module`, MIME `text/html` for `.wasm`, missing `inv_*` exports.
-
-## Keyboard
+## Keyboard & focus
 
 | Chord | Action |
 |-------|--------|
-| ⌘/Ctrl + Enter | Send composer prompt |
-| Tab | Move through nav, Clear, Show Wasm, composer, Send |
-| Enter (in canvas textEntry) | Queue Wasm submit when the Wasm panel is focused |
+| **Enter** (canvas composer focused) | Send prompt (single-line entry) |
+| Tab | DOM nav / Clear (canvas uses pointer + dvui focus) |
+| Composer focus | Requested on ready and after each send |
 
-## Product UX (Phase 4)
+## Touch / mobile (~390px)
 
-| Surface | Role |
-|---------|------|
-| **Wasm (dvui)** | Primary harness — transcript, composer, agent chrome |
-| **DOM** | Host shell — nav, load, bridge, `/api/chat`, SessionStore |
+| Topic | Behavior |
+|-------|----------|
+| Layout | Full-bleed canvas under nav; min canvas height ~200px |
+| Hit targets | Send / PONG ≥ ~40px tall |
+| Safe area | Host `padding-bottom: env(safe-area-inset-bottom)` |
+| IME | dvui canvas textEntry — soft keyboards vary by browser; prefer short prompts on mobile |
+| Multi-touch | Canvas `touch-action: none` |
 
-See [feature-divide.md](feature-divide.md). Phase 3 DOM chat panel is **removed** as product UI.
+## Transcript density
 
-## Palette (DOM **and** dvui)
+| Topic | Behavior |
+|-------|----------|
+| Ring capacity | 48 messages in Wasm (`bridge.zig`) |
+| Visible paint | Last **28** lines (+ “N earlier” hint) to limit jank |
+| Stick-to-bottom | Scroll viewport follows new messages / busy line |
+| Line size | 4 KB UTF-8 max per message |
 
-Both surfaces use Asteronica tokens aligned with `lib/palette.ts`:
+## Palette
 
 | Family | Use |
 |--------|-----|
-| **TEAL** | Chrome, panels, primary Send, user labels |
-| **WARM** | Model/busy chip, Smoke/PONG, assistant labels |
+| **TEAL** | Chrome, user labels, primary Send |
+| **WARM** | Busy, PONG, assistant labels |
 | **EMBER** | Errors only |
 
-| Surface | Source |
-|---------|--------|
-| DOM | `lib/palette.ts` CSS tokens |
-| dvui Wasm | `native/harness/src/palette.zig` → `palette.theme()` applied at `Window.init` |
-
-Hex values must stay in sync across those two files. dvui theme reuses Adwaita embedded fonts (color-only override).
+DOM: `lib/palette.ts` · Wasm: `native/harness/src/palette.zig` (keep hex in sync).
 
 ## dvui / browser
 
 | Limit | Notes |
 |-------|--------|
-| WebGL | Required for dvui web backend; fails on locked-down GPUs |
-| Text input | **Wasm textEntry is primary** (Phase 4); IME/mobile limits tracked in #34 |
-| Mobile | Agent panel usable at ~390px; canvas companion is optional (“Show Wasm”) |
-| Multi-touch | Canvas `touch-action: none`; composer uses native text fields |
-| Safari | Wasm + WebGL generally OK on recent iOS; test before relying on canvas entry |
-| Streaming | Not supported — full `generateText` response per turn |
-| Message size | Bridge truncates lines at 4 KB UTF-8 (`MAX_MSG_LEN` in `bridge.zig`) |
-| History | Last ~8 user/assistant turns folded into one Gateway prompt |
-| Secrets | Never in Wasm or `SessionStore` blobs — only server `AI_GATEWAY_API_KEY` |
+| WebGL | **Required** — fails on locked-down GPUs / some remote desktops |
+| Safari / iOS | Recent versions OK; test IME before relying on long mobile sessions |
+| Streaming | Not supported — full `generateText` per turn |
+| History fold | Host folds last ~8 user/assistant turns into Gateway prompt |
+| Secrets | Never in Wasm or SessionStore — only Vercel `AI_GATEWAY_API_KEY` |
 
-## Session persistence
+## Session
 
-See [`session-model.md`](session-model.md). MVP: `localStorage` / memory. No local filesystem.
+See [session-model.md](session-model.md). Host `localStorage` / memory; hydrate into Wasm on load (protocol v2 batch).
 
 ## CI / deploy
 
-- Zig build only on `invincible-do-1` (`build-harness.yml`)
-- Vercel needs `HARNESS_ARTIFACT_TOKEN` + `AI_GATEWAY_API_KEY`
-- After `palette.zig` / UI theme changes: rebuild harness artifact then redeploy
+- Zig only on `invincible-do-1` (`build-harness.yml`)
+- Option B artifact + wait-for-SHA: [harness-deploy-race.md](harness-deploy-race.md)
+- Protocol: host `HARNESS_PROTOCOL_VERSION` must match Wasm `PROTOCOL_VERSION` (currently **2**)

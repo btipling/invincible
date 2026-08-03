@@ -1,6 +1,6 @@
 # Phase 4 plan — Wasm-first harness MVP
 
-**Status:** active · 4.1–4.6 landed (product path) · 4.7 polish + 4.8 docs remain
+**Status:** active · 4.1–4.7 landed · 4.8 docs remain
 
 | | |
 |--|--|
@@ -37,7 +37,7 @@ Full table: [feature-divide.md](feature-divide.md).
 | 4 | [#31](https://github.com/btipling/invincible/issues/31) | 4.4 Bridge v2 session sync | **Done** |
 | 5 | [#32](https://github.com/btipling/invincible/issues/32) | 4.5 Wire Wasm-primary loop | **Done** |
 | 6 | [#33](https://github.com/btipling/invincible/issues/33) | 4.6 Session restore into Wasm | **Done** |
-| 7 | [#34](https://github.com/btipling/invincible/issues/34) | 4.7 dvui UX polish | |
+| 7 | [#34](https://github.com/btipling/invincible/issues/34) | 4.7 dvui UX polish | **Done** |
 | 8 | [#35](https://github.com/btipling/invincible/issues/35) | 4.8 Phase 4 docs handoff | |
 
 ## Definition of done (phase)
@@ -68,4 +68,4 @@ Full table: [feature-divide.md](feature-divide.md).
 
 ## Suggested first message
 
-> Continue Invincible Phase 4 from `docs/phase-4-plan.md` and epic #27. Wasm-primary harness MVP. 4.1–4.6 done — continue at #34 (UX polish) / #35 (docs). Repo: btipling/invincible. Prod: https://invincible-dun-ten.vercel.app. Do not re-do Phase 1–3.
+> Continue Invincible Phase 4 from `docs/phase-4-plan.md` and epic #27. Wasm-primary harness MVP. 4.1–4.7 done — finish at #35 (docs handoff). Repo: btipling/invincible. Prod: https://invincible-dun-ten.vercel.app. Do not re-do Phase 1–3.
