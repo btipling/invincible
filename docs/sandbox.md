@@ -71,7 +71,8 @@ Unauthenticated API calls when tenancy is on → **401**
 
 ### Exact 503 contract (host fallback)
 
-When `SANDBOX_URL` or `SANDBOX_TOKEN` is unset on the Next/Vercel server:
+**Tenancy off only.** When tenancy is **off** and `SANDBOX_URL` or
+`SANDBOX_TOKEN` is unset on the Next/Vercel server:
 
 ```http
 HTTP/1.1 503
@@ -83,6 +84,10 @@ Content-Type: application/json
 The host falls back to chat **only** for status **503** and this **exact**
 `error` string (`SANDBOX_NOT_CONFIGURED_ERROR` in `lib/sandbox/config.ts`).
 Other 4xx/5xx/network errors are shown as error lines — **no** chat fallback.
+
+When tenancy is **on**, missing env `SANDBOX_*` does **not** produce this 503:
+tools use DB grants; failures are **403** `Sandbox access denied.` (or **401**
+if unauthenticated) — see above.
 
 ---
 
@@ -286,6 +291,15 @@ Host inventory stays offline; forks still set their own env.
 
 When Production enables the tenancy triple env, agent tools move to **DB grants**
 for signed-in users. Keep this guide’s env path for Preview/local without DB.
-Do **not** mark `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`
-**Done** in [AGENTS.md](../AGENTS.md) until public unauth → 401 + login smoke.
-See [bring-your-own.md §4a](bring-your-own.md#4a-optional-multi-tenant-auth).
+
+**Ordered checklist (names only):** see
+[bring-your-own.md §4a — Origin Production cutover](bring-your-own.md#origin-production-cutover-checklist-operator).
+Summary:
+
+1. Migrate + seed Production Postgres **before** full triple-env on the deploy
+   (seed needs `DATABASE_URL` + KEK + seed inputs; omit `AUTH_SECRET` until seed OK).
+2. Set all three on Vercel Production → redeploy → tenancy on.
+3. Smoke: unauth `POST /api/agent` → **401**
+   `{ "error": "Authentication required." }`; `/login` → harness; optional `/admin`.
+4. Only then mark `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`
+   **Done** in [AGENTS.md](../AGENTS.md). Never invent hosts.

@@ -75,6 +75,7 @@ client-side key or sandbox-token exposure immediately.
 | Preview isolation | Prefer separate DB or tenancy off on public previews; avoid reusing Production KEK casually |
 | Seed | `SEED_ADMIN_PASSWORD` / seed sandbox token are operator-only; re-seed resets bootstrap hash + ciphertext |
 
-Unauthenticated API when tenancy is on returns **401** with body
-`Authentication required.` (stable constant). Grant failures return **403**
-`Sandbox access denied.`
+Unauthenticated API when tenancy is on returns **401** with JSON
+`{ "error": "Authentication required." }` (stable `error` constant
+`AUTH_REQUIRED_ERROR`). Grant failures return **403**
+`{ "error": "Sandbox access denied." }` (`SANDBOX_FORBIDDEN_ERROR`).

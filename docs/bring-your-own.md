@@ -103,7 +103,7 @@ documented in `scripts/harnessRepo.mjs`.
 | `HARNESS_ARTIFACT_TOKEN` | **Yes** for prod builds that download Wasm | Fine-grained PAT: **Actions: Read** on the repo that publishes artifact `harness-wasm` (your repo for path **A**, or the upstream/build repo for path **B**) |
 | `HARNESS_OWNER` / `HARNESS_REPO` | **Yes until your repo publishes `harness-wasm`** | Point at a repo that already has artifact `harness-wasm` (typical cold-start: path **B**). Once path **A** has uploaded artifacts on **your** repo, omit these so Vercel Git env (`VERCEL_GIT_REPO_OWNER` / `VERCEL_GIT_REPO_SLUG`) is used |
 | `DEFAULT_MODEL` | No | Defaults to gateway model id in code / `.env.example` |
-| `SANDBOX_URL` / `SANDBOX_TOKEN` | No (tools off without both) | Agent sandbox base URL + bearer — **server only**; URL must be **reachable from Vercel** in prod ([sandbox.md](sandbox.md)) |
+| `SANDBOX_URL` / `SANDBOX_TOKEN` | No (tenancy **off**: tools off without both) | Agent sandbox base URL + bearer when tenancy is **off** — **server only**; URL must be **reachable from Vercel** in prod ([sandbox.md](sandbox.md)). Optional tenancy: [§4a](#4a-optional-multi-tenant-auth) |
 | `AGENT_MAX_STEPS` / `AGENT_MODEL` | No | Tool-loop step cap / optional tool-capable model override |
 
 4. Optional GitHub Actions **secret** (on **your** repo): `VERCEL_DEPLOY_HOOK_URL` —
@@ -119,9 +119,6 @@ unless you set `HARNESS_*`. Runtime does **not** depend on the maintainer prod
 
 Race-safe wait for the matching `harness-wasm` artifact:
 [harness-deploy-race.md](harness-deploy-race.md).
-
----
-
 
 ---
 
@@ -175,10 +172,62 @@ resets bootstrap password hash + token ciphertext by design).
 | Environment | Recommendation |
 |-------------|----------------|
 | **Preview** | Separate `DATABASE_URL` **or** leave tenancy **off** (omit any triple-env var). Do **not** casually reuse the Production encryption key on public previews. |
-| **Production** | After seed verified: set all three secrets; confirm unauth API → 401 before calling origin “auth Done”. |
-| Lockout | Keep one deploy path with tenancy off until login works on Preview. |
+| **Lockout** | Keep one deploy path with tenancy **off** (omit `AUTH_SECRET` and/or another triple var) until migrate+seed and `/login` work on Preview or a non-public path. |
 
-Names only — never commit passwords, tokens, or KEK material. See
+### Origin Production cutover checklist (operator)
+
+Tenancy turns **on** only when **all three** secrets are present on the **running**
+deploy. Seed needs `DATABASE_URL` + `CREDENTIALS_ENCRYPTION_KEY` (+ seed inputs)
+but **not** `AUTH_SECRET`. Prefer finishing migrate/seed **before** the third
+var lands on Production so open mode is not flipped against an empty DB.
+
+Names only — never commit passwords, tokens, DB hosts, or KEK material.
+
+1. **Postgres** — create a **pooled** Production `DATABASE_URL` (Neon pooler /
+   PgBouncer). Do **not** put host inventory in git.
+2. **KEK + seed inputs (operator machine)** — generate
+   `CREDENTIALS_ENCRYPTION_KEY` (`openssl rand -base64 32`) and
+   `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`; sandbox token via
+   `SEED_SANDBOX_*` or existing Production `SANDBOX_*`.
+3. **Migrate + seed against Production DB** from an operator machine (or any
+   host that can reach Postgres), with `DATABASE_URL` +
+   `CREDENTIALS_ENCRYPTION_KEY` + seed env in the shell — **before** Production
+   has the full triple:
+
+   ```bash
+   export DATABASE_URL=…          # pooled Production URL
+   export CREDENTIALS_ENCRYPTION_KEY=…
+   export SEED_ADMIN_EMAIL=…
+   export SEED_ADMIN_PASSWORD=…
+   # SEED_SANDBOX_URL/TOKEN or SANDBOX_URL/TOKEN
+   npm run db:migrate
+   npm run db:seed
+   ```
+
+   Seed never prints secrets. Re-run resets bootstrap password hash + token
+   ciphertext by design.
+4. **Safe flip on Vercel Production** — set `DATABASE_URL`,
+   `CREDENTIALS_ENCRYPTION_KEY`, and `AUTH_SECRET` (`openssl rand -base64 32`)
+   only after seed succeeds. Redeploy so the runtime sees all three.
+   Alternative: set `DATABASE_URL` + KEK first (tenancy still **off**), seed,
+   then add `AUTH_SECRET` and redeploy.
+5. **Smoke (public, no host inventory)**
+
+   ```bash
+   # unauth API must be 401 + exact error field
+   curl -sS -o /tmp/agent-body.json -w '%{http_code}' \
+     -X POST https://<your-production-host>/api/agent \
+     -H 'content-type: application/json' \
+     -d '{"prompt":"ping"}'
+   # expect: 401 and {"error":"Authentication required."}
+   ```
+
+   Then: `/login` with seed admin → `/harness`; `/admin` shows base URL +
+   **masked** token (owner can rotate).
+6. **AGENTS.md** — mark `DATABASE_URL` / `AUTH_SECRET` /
+   `CREDENTIALS_ENCRYPTION_KEY` **Done** only after step 5. Never invent hosts.
+
+Also: [sandbox.md tenancy cutover](sandbox.md#tenancy-cutover-origin) ·
 [SECURITY.md](../SECURITY.md) · [`.env.example`](../.env.example).
 
 ---
@@ -245,7 +294,7 @@ empty `public/harness`.
 | Multi-sandbox fleet isolation / MCP control plane | **Not shipped** — single workspace root per process for now |
 | **SSO / SCIM** enterprise directory | **Not shipped** — sequel [#64](https://github.com/btipling/invincible/issues/64) |
 
-This guide covers **BYO Vercel + keys + runner/Wasm supply + optional sandbox**.
+This guide covers **BYO Vercel + keys + runner/Wasm supply + optional sandbox + optional tenancy**.
 Target projects can be any language or platform; Invincible is the harness
 workspace, not a locked stack for the work you operate on.
 
