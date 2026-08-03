@@ -45,6 +45,27 @@ gh_raw scripts/phase-2.3-zig.sh | bash
 | `harden-runner-host.sh` | SSH/UFW baseline (run with care) |
 | `create-invincible-droplet.sh` | DO create (needs write token on laptop) |
 | `fetch-harness-artifact.mjs` | Vercel/local: download `harness-wasm` artifact |
+| `seed-tenancy.ts` | Phase 1: idempotent tenancy seed (`npm run db:seed`) |
+
+## Phase 1 — Postgres migrate + seed
+
+Local / bootstrap (values never committed):
+
+```bash
+# Prefer pooled DATABASE_URL on Vercel (Neon pooler).
+export DATABASE_URL=postgres://… 
+export CREDENTIALS_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+export SEED_ADMIN_EMAIL=admin@example.com
+export SEED_ADMIN_PASSWORD='…'
+export SANDBOX_URL=http://127.0.0.1:8787
+export SANDBOX_TOKEN='…'
+
+npm run db:migrate
+npm run db:seed
+# → logs tenantId / userId / sandboxId only (no secrets)
+```
+
+Schema: `db/schema.ts`. Crypto: `lib/tenancy/credentials.ts`. Auth.js tables: phase 2.
 
 ## Phase 3 — fetch harness artifact (Vercel / local)
 

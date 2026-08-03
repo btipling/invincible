@@ -11,18 +11,27 @@
     "fetch-harness": "node scripts/fetch-harness-artifact.mjs",
     "prebuild": "node scripts/fetch-harness-artifact.mjs",
     "sandbox:start": "node sandbox/server.mjs",
-    "test:sandbox": "vitest run sandbox"
+    "test:sandbox": "vitest run sandbox",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:seed": "tsx scripts/seed-tenancy.ts"
   },
   "dependencies": {
     "ai": "^5.0.0",
+    "bcryptjs": "^3.0.3",
+    "drizzle-orm": "^0.45.2",
     "next": "^15.1.0",
+    "postgres": "^3.4.9",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20.17.6",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.23.5",
     "typescript": "^5.8.2",
     "vitest": "^3.0.5"
   },
