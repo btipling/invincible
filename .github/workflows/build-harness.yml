@@ -1,5 +1,6 @@
 # Compile harness.wasm on trusted self-hosted runner; upload Actions artifact.
-# Public-repo safety: no pull_request trigger; job only on this repo + main/dispatch.
+# Public-repo safety: no pull_request; opt-in vars.SELF_HOSTED_BUILDS (or origin
+# grandfather btipling/invincible) + main / workflow_dispatch only.
 name: build-harness
 
 on:
@@ -21,10 +22,10 @@ jobs:
   harness:
     name: zig → harness.wasm
     if: >
-      github.repository == 'btipling/invincible' &&
+      (vars.SELF_HOSTED_BUILDS == 'true' || github.repository == 'btipling/invincible') &&
       github.event_name != 'pull_request' &&
       (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
-    runs-on: [self-hosted, invincible, zig]
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["self-hosted","invincible","zig"]') }}
     timeout-minutes: 45
     steps:
       - name: Checkout

@@ -5,11 +5,12 @@
 
 | Layer | Where | Role |
 |-------|--------|------|
-| UI + API | Vercel project `invincible` | `/harness` host, `/api/chat` |
+| UI + API | Your Vercel project | `/harness` host, `/api/chat` |
 | CI build | Self-hosted GHA runner | `zig` → `.wasm` artifacts |
-| Source | GitHub `btipling/invincible` | Single source of truth |
+| Source | **This** GitHub repository | Single source of truth for your deploy |
 
-Product handoff: [phase-4-handoff.md](phase-4-handoff.md) · Public safety: [SECURITY.md](../SECURITY.md)
+Product handoff: [phase-4-handoff.md](phase-4-handoff.md) · Public safety: [SECURITY.md](../SECURITY.md)  
+Maintainer sample deploy: `btipling/invincible` (not required architecture).
 
 ---
 
@@ -17,8 +18,8 @@ Product handoff: [phase-4-handoff.md](phase-4-handoff.md) · Public safety: [SEC
 
 | Field | Value |
 |-------|--------|
-| GHA runner name | **`invincible-do-1`** |
-| Labels (required) | **`self-hosted`**, **`invincible`**, **`zig`** |
+| GHA runner name (maintainer sample) | **`invincible-do-1`** |
+| Default labels | **`self-hosted`**, **`invincible`**, **`zig`** |
 | Zig pin | **0.16.0** (`native/ZIG_VERSION`) |
 | Typical install path | `/opt/zig/0.16.0` → `/usr/local/bin/zig` |
 | OS (recommended) | Ubuntu 24.04 LTS x64, ≥ 2 vCPU / 4 GB RAM |
@@ -27,11 +28,15 @@ Product handoff: [phase-4-handoff.md](phase-4-handoff.md) · Public safety: [SEC
 
 **Host IP, droplet ID, VPC addresses, and cloud account IDs are private.** Keep them in your password manager / private notes — not in this repository.
 
-**Workflows target:**
+### Workflow `runs-on`
+
+Default (variable unset):
 
 ```yaml
-runs-on: [self-hosted, invincible, zig]
+runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["self-hosted","invincible","zig"]') }}
 ```
+
+Optional repository **Actions variable** `RUNNER_LABELS` (JSON array) if your runner uses different labels, e.g. `["self-hosted","zig"]`.
 
 ### Public-repo rules (mandatory)
 
@@ -40,9 +45,12 @@ Self-hosted runners on **public** repos are high risk if untrusted PR code can e
 | Rule | Implementation |
 |------|----------------|
 | No `pull_request` / `pull_request_target` on self-hosted jobs | All four workflows: push `main` + `workflow_dispatch` only |
-| Repository + ref guard | Job `if:` requires `github.repository == 'btipling/invincible'` and not a PR event |
+| Opt-in + origin grandfather | Job `if:`: `(vars.SELF_HOSTED_BUILDS == 'true' \|\| github.repository == 'btipling/invincible')` and not a PR; dispatch or `main` |
+| Clone enablement | Set Actions variable `SELF_HOSTED_BUILDS=true` after attaching **your** runner |
 | Path filters | Only relevant `native/**` / workflow paths on push |
 | Fork PRs | Do not add self-hosted PR builds without a security design review |
+
+**Variables vs secrets:** `SELF_HOSTED_BUILDS` / `RUNNER_LABELS` are non-secret **Actions variables**. Do not put them in Secrets. Deploy hooks stay secrets.
 
 See [SECURITY.md](../SECURITY.md).
 
@@ -82,15 +90,15 @@ Creates user `runner`, baseline packages, copies root `authorized_keys` when pre
 
 ### 3.3 GitHub Actions runner
 
-1. Repo → Settings → Actions → Runners → New (Linux x64).
+1. **Your** repo → Settings → Actions → Runners → New (Linux x64).
 2. As `runner`:
 
 ```bash
 su - runner
 mkdir -p ~/actions-runner && cd ~/actions-runner
 # download + extract per GitHub UI, then:
-./config.sh --url https://github.com/btipling/invincible --token <CONFIG_TOKEN> \
-  --name invincible-do-1 \
+./config.sh --url https://github.com/<owner>/<repo> --token <CONFIG_TOKEN> \
+  --name <runner-name> \
   --labels self-hosted,linux,x64,invincible,zig \
   --work _work \
   --unattended
@@ -99,6 +107,9 @@ sudo ./svc.sh start
 ```
 
 3. Confirm **Idle / Online**.
+4. Repo → Settings → Secrets and variables → Actions → **Variables**:
+   - `SELF_HOSTED_BUILDS` = `true` (**required** for any repo that is not the origin grandfather)
+   - optional `RUNNER_LABELS` = `["self-hosted","invincible","zig"]`
 
 ### 3.4 Zig (pinned)
 
@@ -111,6 +122,13 @@ On the runner host:
 ```
 
 ### 3.5 Prove CI
+
+```bash
+gh workflow run runner-smoke.yml --repo <owner>/<repo>
+gh workflow run build-harness.yml --repo <owner>/<repo>
+```
+
+Maintainer sample:
 
 ```bash
 gh workflow run runner-smoke.yml --repo btipling/invincible
@@ -134,7 +152,7 @@ When reimaged, labels wrong, or `.credentials` lost: stop service → `config.sh
 | **build-dvui-spike** | `workflow_dispatch`, push spike paths on `main` | `dvui-spike-wasm` |
 | **build-harness** | `workflow_dispatch`, push `native/harness/**` on `main` | **`harness-wasm`** |
 
-All jobs: self-hosted + `if:` guards (no PR).
+All jobs: self-hosted + `if:` guards (no PR). Foreign repos without `SELF_HOSTED_BUILDS=true` → job **skipped**.
 
 ### Product path: harness → Vercel
 
@@ -149,14 +167,14 @@ push native/harness/** on main
 
 | Piece | Detail |
 |-------|--------|
-| Labels | `[self-hosted, invincible, zig]` |
+| Labels | default `[self-hosted, invincible, zig]` or `RUNNER_LABELS` |
 | Zig | `native/ZIG_VERSION` (0.16.0) |
 | Build | `./native/harness/build.sh` |
 | Race | [harness-deploy-race.md](harness-deploy-race.md) |
 | Product handoff | [phase-4-handoff.md](phase-4-handoff.md) |
 
 ```bash
-gh workflow run build-harness.yml --repo btipling/invincible
+gh workflow run build-harness.yml --repo <owner>/<repo>
 export HARNESS_ARTIFACT_TOKEN=…   # local
 npm run fetch-harness && npm run dev
 ```
@@ -171,8 +189,9 @@ npm run fetch-harness && npm run dev
 |------|------|
 | Online? | GitHub → Settings → Actions → Runners |
 | Disk | Zig caches grow — monitor privately |
-| Smoke | `gh workflow run runner-smoke.yml` |
+| Smoke | `gh workflow run runner-smoke.yml --repo <owner>/<repo>` |
 | Harness | `gh workflow run build-harness.yml` then check prod `/harness` |
+| Jobs skipped? | Check Actions variable `SELF_HOSTED_BUILDS` (clones) or job `if:` logs |
 
 ---
 

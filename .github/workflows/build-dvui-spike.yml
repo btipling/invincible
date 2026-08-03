@@ -1,5 +1,6 @@
 # dvui spike build on self-hosted runner (research artifact).
-# Public-repo safety: no pull_request; only this repo + main/dispatch.
+# Public-repo safety: no pull_request; opt-in vars.SELF_HOSTED_BUILDS (or origin
+# grandfather btipling/invincible) + main / workflow_dispatch only.
 name: build-dvui-spike
 
 on:
@@ -15,10 +16,10 @@ jobs:
   dvui-wasm:
     name: zig → dvui web.wasm
     if: >
-      github.repository == 'btipling/invincible' &&
+      (vars.SELF_HOSTED_BUILDS == 'true' || github.repository == 'btipling/invincible') &&
       github.event_name != 'pull_request' &&
       (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
-    runs-on: [self-hosted, invincible, zig]
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["self-hosted","invincible","zig"]') }}
     timeout-minutes: 45
     steps:
       - name: Checkout
