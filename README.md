@@ -4,6 +4,17 @@ In-browser agent harness — Zig/dvui Wasm workspace hosted by Next.js, inferenc
 
 **License:** [MIT](LICENSE)
 
+## Reusable product
+
+This is **not** a one-off demo for a single deployment. The long-term goal is that
+**anyone can clone this repo**, connect **their own Vercel project**, and (when
+shipped) their own **sandbox / runner environment**, then use the harness on
+**their** work — **any language or platform** on the target side.
+
+Multi-tenant / bring-your-own sandbox is **not fully built yet**; new work should
+still prefer config seams over hardcoding one owner’s prod. Details:
+[`AGENTS.md`](AGENTS.md) → **Reusable product**.
+
 ## Live
 
 | | |
@@ -33,6 +44,17 @@ Feature divide: [`docs/feature-divide.md`](docs/feature-divide.md).
 - **Board:** [projects/1](https://github.com/users/btipling/projects/1/views/1)
 - **Milestones:** Phase 1–4 **done**
 - **Agents:** [`AGENTS.md`](AGENTS.md)
+- **Project skills:** [`.grok/skills/README.md`](.grok/skills/README.md) — **create-plan** (plans as GitHub issues), **plan-review**
+
+## Agent skills (planning)
+
+| Skill | When | Where |
+|-------|------|--------|
+| **create-plan** | “use the create-plan skill to add …” | [`.grok/skills/create-plan/SKILL.md`](.grok/skills/create-plan/SKILL.md) |
+| **plan-review** | Review a plan issue before coding | [`.grok/skills/plan-review/SKILL.md`](.grok/skills/plan-review/SKILL.md) |
+
+Plans are filed as **GitHub issues** (parent issue + optional phase issues that
+link back). Requires authenticated `gh`; do not use GitHub MCP for these flows.
 
 ## Secrets (server only)
 
@@ -70,9 +92,9 @@ Details: [phase-4-handoff.md](docs/phase-4-handoff.md) · [native/harness/README
 
 | Layer | Tech |
 |-------|------|
-| App | Next.js 15 (App Router) + React 19 |
-| Inference | Vercel AI Gateway (`ai` SDK) · `POST /api/chat` |
-| Harness UI | Zig 0.16 + dvui Wasm (**primary**); DOM host shell |
+| App (DOM host) | Next.js 15 (App Router) + React 19 — shell only |
+| Inference (Vercel backend) | Vercel AI Gateway (`ai` SDK) · `POST /api/chat` |
+| Harness UI | Zig 0.16 + dvui Wasm (**primary** product surface) |
 | Palette | Asteronica TEAL / WARM / EMBER (`lib/palette.ts` + `palette.zig`) |
 | Session | `lib/sessionStore.ts` (memory + localStorage) |
 | Bridge | Protocol **v2** (`lib/harnessBridge.ts`) |
@@ -131,3 +153,5 @@ npm test && npm run typecheck
 | [harness-deploy-race.md](docs/harness-deploy-race.md) | Artifact vs Vercel race |
 | [project-ids.md](docs/project-ids.md) | Public URLs / env names |
 | [SECURITY.md](SECURITY.md) | Secrets + self-hosted public policy |
+| [AGENTS.md](AGENTS.md) | Agent rules, reusability, skills |
+| [.grok/skills/README.md](.grok/skills/README.md) | create-plan / plan-review |
