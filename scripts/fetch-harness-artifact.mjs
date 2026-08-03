@@ -1,17 +1,26 @@
 #!/usr/bin/env node
 /**
- * Phase 3.4 option B: pull latest Actions artifact `harness-wasm` into public/harness/
+ * Phase 3.4 option B: pull Actions artifact `harness-wasm` into public/harness/
  * so Vercel can serve Wasm without committing binaries.
+ *
+ * Race fix (Phase 3.10+): when Vercel builds the same git push that triggers
+ * `build-harness.yml`, Git deploy often finishes *before* the artifact exists.
+ * On Vercel we wait for a successful build-harness run for VERCEL_GIT_COMMIT_SHA
+ * (if one is queued/running), then download *that* run's artifact. If no run
+ * appears (commit did not touch native/harness), we fall back to latest.
  *
  * Env (first match wins for token):
  *   HARNESS_ARTIFACT_TOKEN  — preferred (fine-grained PAT, Actions: Read)
  *   GH_TOKEN / GITHUB_TOKEN
  *
  * Optional:
- *   HARNESS_ARTIFACT_ID     — pin a specific artifact id
+ *   HARNESS_ARTIFACT_ID     — pin a specific artifact id (skip wait)
  *   HARNESS_OWNER / HARNESS_REPO — default btipling / invincible
  *   HARNESS_SKIP_FETCH=1    — skip network (use existing files or local dist)
  *   HARNESS_REQUIRE=0       — do not fail if fetch impossible (local only)
+ *   HARNESS_WAIT_MS         — max wait for harness CI (default 720000 = 12m on Vercel)
+ *   HARNESS_WAIT_GRACE_MS   — how long to wait for a run to *appear* (default 90000)
+ *   HARNESS_COMMIT_SHA      — override commit (else VERCEL_GIT_COMMIT_SHA / GITHUB_SHA)
  *
  * On Vercel (VERCEL=1), missing token / missing artifact is a hard build failure
  * unless HARNESS_SKIP_FETCH=1 (not recommended for prod).
@@ -34,12 +43,19 @@ const LOCAL_DIST = join(ROOT, 'native', 'dist', 'harness');
 const OWNER = process.env.HARNESS_OWNER || 'btipling';
 const REPO = process.env.HARNESS_REPO || 'invincible';
 const ARTIFACT_NAME = 'harness-wasm';
+const WORKFLOW_FILE = 'build-harness.yml';
 const ON_VERCEL = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
 const SKIP = process.env.HARNESS_SKIP_FETCH === '1';
 const REQUIRE =
   process.env.HARNESS_REQUIRE === '0'
     ? false
     : ON_VERCEL || process.env.HARNESS_REQUIRE === '1';
+
+const WAIT_MAX_MS = Number(
+  process.env.HARNESS_WAIT_MS || (ON_VERCEL ? 720_000 : 0),
+);
+const WAIT_GRACE_MS = Number(process.env.HARNESS_WAIT_GRACE_MS || 90_000);
+const POLL_MS = Number(process.env.HARNESS_POLL_MS || 12_000);
 
 function log(...args) {
   console.log('[fetch-harness]', ...args);
@@ -57,6 +73,19 @@ function token() {
     process.env.GITHUB_TOKEN ||
     ''
   ).trim();
+}
+
+function commitSha() {
+  return (
+    process.env.HARNESS_COMMIT_SHA ||
+    process.env.VERCEL_GIT_COMMIT_SHA ||
+    process.env.GITHUB_SHA ||
+    ''
+  ).trim();
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 function hasHarnessFiles(dir) {
@@ -128,7 +157,6 @@ function extractZipPure(buf, destDir) {
     const nameStart = offset + 30;
     const name = buf.subarray(nameStart, nameStart + nameLen).toString('utf8');
     let dataStart = nameStart + nameLen + extraLen;
-    // data descriptor (bit 3): sizes are zero in local header — use central directory not implemented
     if ((flags & 0x8) !== 0 && compSize === 0) {
       throw new Error('zip data descriptors require unzip/python (install unzip)');
     }
@@ -183,27 +211,123 @@ async function ghBinary(url, tok) {
   return Buffer.from(await res.arrayBuffer());
 }
 
-async function fetchLatestArtifact(tok) {
-  let artifact;
+async function listRunsForSha(tok, sha) {
+  const url =
+    `https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/${encodeURIComponent(WORKFLOW_FILE)}/runs` +
+    `?head_sha=${encodeURIComponent(sha)}&per_page=5`;
+  const data = await ghJson(url, tok);
+  return data.workflow_runs || [];
+}
+
+async function artifactForRun(tok, runId) {
+  const data = await ghJson(
+    `https://api.github.com/repos/${OWNER}/${REPO}/actions/runs/${runId}/artifacts?per_page=20`,
+    tok,
+  );
+  return (data.artifacts || []).find((a) => a.name === ARTIFACT_NAME && !a.expired) || null;
+}
+
+async function latestArtifact(tok) {
+  const list = await ghJson(
+    `https://api.github.com/repos/${OWNER}/${REPO}/actions/artifacts?name=${encodeURIComponent(ARTIFACT_NAME)}&per_page=20`,
+    tok,
+  );
+  const artifact = (list.artifacts || []).find((a) => !a.expired);
+  if (!artifact) {
+    throw new Error(
+      `no non-expired artifact named "${ARTIFACT_NAME}" — run build-harness on invincible-do-1 first`,
+    );
+  }
+  return artifact;
+}
+
+/**
+ * Wait for build-harness on this commit (if any), then return the right artifact.
+ * Avoids Vercel Git deploy racing the self-hosted Zig job.
+ */
+async function resolveArtifact(tok) {
   if (process.env.HARNESS_ARTIFACT_ID) {
     const id = process.env.HARNESS_ARTIFACT_ID;
-    artifact = await ghJson(
-      `https://api.github.com/repos/${OWNER}/${REPO}/actions/artifacts/${id}`,
-      tok,
-    );
-  } else {
-    const list = await ghJson(
-      `https://api.github.com/repos/${OWNER}/${REPO}/actions/artifacts?name=${encodeURIComponent(ARTIFACT_NAME)}&per_page=20`,
-      tok,
-    );
-    artifact = (list.artifacts || []).find((a) => !a.expired);
-    if (!artifact) {
-      throw new Error(
-        `no non-expired artifact named "${ARTIFACT_NAME}" — run build-harness on invincible-do-1 first`,
-      );
-    }
+    return ghJson(`https://api.github.com/repos/${OWNER}/${REPO}/actions/artifacts/${id}`, tok);
   }
 
+  const sha = commitSha();
+  const shouldWait = WAIT_MAX_MS > 0 && Boolean(sha);
+
+  if (!shouldWait) {
+    log(sha ? `sha=${sha.slice(0, 7)} wait disabled — using latest artifact` : 'no commit sha — using latest artifact');
+    return latestArtifact(tok);
+  }
+
+  log(
+    `waiting for ${WORKFLOW_FILE} on ${sha.slice(0, 7)} (grace ${WAIT_GRACE_MS}ms, max ${WAIT_MAX_MS}ms)`,
+  );
+
+  const started = Date.now();
+  let sawRun = false;
+
+  while (Date.now() - started < WAIT_MAX_MS) {
+    let runs = [];
+    try {
+      runs = await listRunsForSha(tok, sha);
+    } catch (e) {
+      log('list runs failed:', e instanceof Error ? e.message : e);
+    }
+
+    const run = runs[0];
+    if (!run) {
+      if (Date.now() - started >= WAIT_GRACE_MS) {
+        log(
+          `no ${WORKFLOW_FILE} run for ${sha.slice(0, 7)} after grace — commit likely skipped harness paths; using latest artifact`,
+        );
+        return latestArtifact(tok);
+      }
+      log(`no run yet for ${sha.slice(0, 7)}…`);
+      await sleep(POLL_MS);
+      continue;
+    }
+
+    sawRun = true;
+    log(`run id=${run.id} status=${run.status} conclusion=${run.conclusion ?? '-'}`);
+
+    if (run.status !== 'completed') {
+      await sleep(POLL_MS);
+      continue;
+    }
+
+    if (run.conclusion !== 'success') {
+      throw new Error(
+        `${WORKFLOW_FILE} run ${run.id} for ${sha.slice(0, 7)} concluded ${run.conclusion} — not shipping stale Wasm`,
+      );
+    }
+
+    // Artifact upload can lag a few seconds after run success.
+    for (let i = 0; i < 8; i++) {
+      const art = await artifactForRun(tok, run.id);
+      if (art) {
+        log(`using artifact from run ${run.id} (commit-matched)`);
+        return art;
+      }
+      log(`run ${run.id} success but artifact not listed yet (try ${i + 1}/8)`);
+      await sleep(3000);
+    }
+
+    throw new Error(
+      `${WORKFLOW_FILE} run ${run.id} succeeded but artifact "${ARTIFACT_NAME}" not found`,
+    );
+  }
+
+  if (sawRun) {
+    throw new Error(
+      `timed out waiting for ${WORKFLOW_FILE} on ${sha.slice(0, 7)} after ${WAIT_MAX_MS}ms`,
+    );
+  }
+
+  log('wait window ended with no run — using latest artifact');
+  return latestArtifact(tok);
+}
+
+async function installArtifact(tok, artifact) {
   log(
     `artifact id=${artifact.id} size=${artifact.size_in_bytes}B created=${artifact.created_at} run=${artifact.workflow_run?.id ?? '?'}`,
   );
@@ -214,16 +338,16 @@ async function fetchLatestArtifact(tok) {
   );
   log(`downloaded zip ${zip.length} bytes`);
 
-  // extract to temp then promote required files
   const tmp = join(tmpdir(), `harness-extract-${randomBytes(4).toString('hex')}`);
   mkdirSync(tmp, { recursive: true });
   try {
     extractZipBuffer(zip, tmp);
     if (!hasHarnessFiles(tmp)) {
-      throw new Error(`artifact zip missing harness.wasm/web.js; got: ${execFileSync('ls', ['-la', tmp]).toString()}`);
+      throw new Error(
+        `artifact zip missing harness.wasm/web.js; got: ${execFileSync('ls', ['-la', tmp]).toString()}`,
+      );
     }
     mkdirSync(DEST, { recursive: true });
-    // clean previous binaries only
     for (const f of ['harness.wasm', 'web.js', 'index.html', 'web.wasm']) {
       const p = join(DEST, f);
       if (existsSync(p)) rmSync(p);
@@ -240,19 +364,23 @@ async function fetchLatestArtifact(tok) {
       createdAt: artifact.created_at,
       workflowRunId: artifact.workflow_run?.id ?? null,
       sizeInBytes: artifact.size_in_bytes,
+      commitSha: commitSha() || null,
+      matchedCommit: Boolean(commitSha() && artifact.workflow_run),
     });
     log(`installed → ${DEST}`);
     const wasm = readFileSync(join(DEST, 'harness.wasm'));
-    if (wasm.subarray(0, 4).toString('binary') !== '\0asm') {
-      // check magic bytes
-      if (!(wasm[0] === 0x00 && wasm[1] === 0x61 && wasm[2] === 0x73 && wasm[3] === 0x6d)) {
-        throw new Error('harness.wasm missing Wasm magic');
-      }
+    if (!(wasm[0] === 0x00 && wasm[1] === 0x61 && wasm[2] === 0x73 && wasm[3] === 0x6d)) {
+      throw new Error('harness.wasm missing Wasm magic');
     }
     log(`harness.wasm ${wasm.length} bytes OK`);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+async function fetchHarness(tok) {
+  const artifact = await resolveArtifact(tok);
+  await installArtifact(tok, artifact);
 }
 
 async function main() {
@@ -270,11 +398,10 @@ async function main() {
     return;
   }
 
-  // Prefer fresh artifact when token present; fall back to local dist / existing.
   const tok = token();
   if (tok) {
     try {
-      await fetchLatestArtifact(tok);
+      await fetchHarness(tok);
       return;
     } catch (e) {
       console.error('[fetch-harness]', e instanceof Error ? e.message : e);
@@ -292,7 +419,6 @@ async function main() {
     }
   }
 
-  // No token
   if (hasHarnessFiles(LOCAL_DIST)) {
     log('no token — using native/dist/harness');
     copyFrom(LOCAL_DIST);

@@ -16,6 +16,12 @@
 | `DEFAULT_MODEL` | no | default `xai/grok-4.1-fast-non-reasoning` |
 | `HARNESS_ARTIFACT_TOKEN` | **yes** (for `/harness`) | Fine-grained PAT: **Actions: Read** on `btipling/invincible` — used at build to download artifact `harness-wasm` |
 
+GitHub secret (recommended):
+
+| Name | Notes |
+|------|--------|
+| `VERCEL_DEPLOY_HOOK_URL` | Deploy Hook URL; `build-harness` pings after artifact upload (avoids stale Wasm). See [`docs/harness-deploy-race.md`](harness-deploy-race.md). |
+
 After adding env vars, **Redeploy** the production deployment.
 
 ## Git integration (optional but recommended)

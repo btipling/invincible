@@ -47,8 +47,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # Do not use secrets.* in step `if:` — it can fail workflow validation
-      # (runs show as "workflow file issue" with name = path, 0s duration).
+      # After artifact is public: ping Vercel so prebuild can fetch *this* run's Wasm.
+      # Pair with scripts/fetch-harness-artifact.mjs wait-for-SHA (Vercel Git race fix).
+      # Prefer setting secret VERCEL_DEPLOY_HOOK_URL so a second deploy always follows
+      # harness CI even if the first Git deploy raced.
       - name: Trigger Vercel redeploy (optional)
         env:
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
@@ -56,7 +58,9 @@ jobs:
           set -euo pipefail
           if [ -z "${VERCEL_DEPLOY_HOOK_URL:-}" ]; then
             echo "VERCEL_DEPLOY_HOOK_URL not set — skip deploy hook"
+            echo "  (fetch-harness still waits on Vercel for this SHA when Git deploy races)"
             exit 0
           fi
           curl -fsS -X POST "$VERCEL_DEPLOY_HOOK_URL"
-          echo "deploy hook pinged"
+          echo
+          echo "deploy hook pinged after artifact upload"
