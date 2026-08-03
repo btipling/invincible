@@ -1,0 +1,147 @@
+import fs from 'node:fs/promises';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import type { AddressInfo } from 'node:net';
+import { afterEach, describe, expect, it } from 'vitest';
+import { INVINCIBLE_SANDBOX_PROTOCOL } from './constants.mjs';
+import { createSandboxServer } from './createServer.mjs';
+
+async function listen(
+  server: http.Server,
+): Promise<{ base: string; close: () => Promise<void> }> {
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const addr = server.address() as AddressInfo;
+  const base = `http://127.0.0.1:${addr.port}`;
+  return {
+    base,
+    close: () =>
+      new Promise((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      }),
+  };
+}
+
+describe('sandbox HTTP server', () => {
+  let tmp: string;
+  let close: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    if (close) {
+      await close();
+      close = undefined;
+    }
+    if (tmp) await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  async function start(token = 'test-token-secret') {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'sandbox-http-'));
+    const server = createSandboxServer({ token, workspace: tmp });
+    const h = await listen(server);
+    close = h.close;
+    return { base: h.base, token, workspace: tmp };
+  }
+
+  it('GET /health returns version without auth', async () => {
+    const { base } = await start();
+    const res = await fetch(`${base}/health`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; version: number };
+    expect(body).toEqual({ ok: true, version: INVINCIBLE_SANDBOX_PROTOCOL });
+  });
+
+  it('missing bearer → 401', async () => {
+    const { base } = await start();
+    const res = await fetch(`${base}/v1/list_dir`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '.' }),
+    });
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('Unauthorized');
+    expect(JSON.stringify(body)).not.toContain('test-token');
+  });
+
+  it('wrong bearer → 401', async () => {
+    const { base } = await start();
+    const res = await fetch(`${base}/v1/list_dir`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer wrong-token',
+      },
+      body: JSON.stringify({ path: '.' }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('authorized list/write/read/exec work', async () => {
+    const { base, token } = await start();
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    };
+
+    const write = await fetch(`${base}/v1/write_file`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ path: 'note.txt', content: 'hi' }),
+    });
+    expect(write.status).toBe(200);
+    expect(await write.json()).toEqual({ ok: true, bytes: 2 });
+
+    const read = await fetch(`${base}/v1/read_file`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ path: 'note.txt' }),
+    });
+    expect(read.status).toBe(200);
+    expect(await read.json()).toEqual({ content: 'hi' });
+
+    const list = await fetch(`${base}/v1/list_dir`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({}),
+    });
+    expect(list.status).toBe(200);
+    const listBody = (await list.json()) as {
+      entries: { name: string; type: string }[];
+    };
+    expect(listBody.entries).toContainEqual({ name: 'note.txt', type: 'file' });
+
+    const exec = await fetch(`${base}/v1/exec`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        cmd: process.execPath,
+        args: ['-e', 'process.stdout.write("1")'],
+        timeoutMs: 5000,
+      }),
+    });
+    expect(exec.status).toBe(200);
+    const execBody = (await exec.json()) as {
+      exitCode: number;
+      stdout: string;
+    };
+    expect(execBody.exitCode).toBe(0);
+    expect(execBody.stdout).toBe('1');
+  });
+
+  it('jail escape via API returns 400', async () => {
+    const { base, token } = await start();
+    const res = await fetch(`${base}/v1/read_file`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ path: '../secrets' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/jail|escape/i);
+  });
+});

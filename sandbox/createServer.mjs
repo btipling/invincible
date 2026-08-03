@@ -1,0 +1,175 @@
+import http from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
+import { INVINCIBLE_SANDBOX_PROTOCOL } from './constants.mjs';
+import { JailError } from './paths.mjs';
+import {
+  ToolError,
+  execCmd,
+  listDir,
+  readFileTool,
+  writeFileTool,
+} from './tools.mjs';
+
+/**
+ * @param {string} expected
+ * @param {string} provided
+ */
+function safeEqualToken(expected, provided) {
+  const a = Buffer.from(expected);
+  const b = Buffer.from(provided);
+  if (a.length !== b.length) {
+    timingSafeEqual(a, a);
+    return false;
+  }
+  return timingSafeEqual(a, b);
+}
+
+/** @param {string | undefined} header */
+function parseBearer(header) {
+  if (!header) return null;
+  const m = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return m ? m[1].trim() : null;
+}
+
+/**
+ * @param {import('node:http').IncomingMessage} req
+ * @param {number} [maxBytes]
+ */
+async function readJsonBody(req, maxBytes = 512 * 1024) {
+  /** @type {Buffer[]} */
+  const chunks = [];
+  let len = 0;
+  for await (const chunk of req) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    len += buf.byteLength;
+    if (len > maxBytes) {
+      throw new ToolError('Request body too large', 413);
+    }
+    chunks.push(buf);
+  }
+  if (len === 0) return {};
+  const raw = Buffer.concat(chunks).toString('utf8');
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new ToolError('Invalid JSON body', 400);
+  }
+}
+
+/**
+ * @param {import('node:http').ServerResponse} res
+ * @param {number} status
+ * @param {unknown} body
+ */
+function sendJson(res, status, body) {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(payload),
+  });
+  res.end(payload);
+}
+
+/**
+ * @param {import('node:http').ServerResponse} res
+ * @param {number} status
+ * @param {string} error
+ */
+function sendError(res, status, error) {
+  sendJson(res, status, { error });
+}
+
+/**
+ * Create the Invincible sandbox HTTP server (protocol v1).
+ * @param {{ token: string, workspace: string }} opts
+ */
+export function createSandboxServer(opts) {
+  if (!opts.token || typeof opts.token !== 'string') {
+    throw new Error('SANDBOX_TOKEN is required');
+  }
+  if (!opts.workspace || typeof opts.workspace !== 'string') {
+    throw new Error('SANDBOX_WORKSPACE is required');
+  }
+
+  const { token, workspace } = opts;
+
+  const server = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      const method = (req.method ?? 'GET').toUpperCase();
+
+      if (method === 'GET' && url.pathname === '/health') {
+        sendJson(res, 200, {
+          ok: true,
+          version: INVINCIBLE_SANDBOX_PROTOCOL,
+        });
+        return;
+      }
+
+      if (url.pathname.startsWith('/v1/')) {
+        const provided = parseBearer(req.headers.authorization);
+        if (provided == null || !safeEqualToken(token, provided)) {
+          sendError(res, 401, 'Unauthorized');
+          return;
+        }
+      }
+
+      if (method === 'POST' && url.pathname === '/v1/list_dir') {
+        const body = await readJsonBody(req);
+        const result = await listDir(workspace, body ?? {});
+        sendJson(res, 200, result);
+        return;
+      }
+
+      if (method === 'POST' && url.pathname === '/v1/read_file') {
+        const body = await readJsonBody(req);
+        const result = await readFileTool(workspace, body ?? {});
+        sendJson(res, 200, result);
+        return;
+      }
+
+      if (method === 'POST' && url.pathname === '/v1/write_file') {
+        const body = await readJsonBody(req);
+        const result = await writeFileTool(workspace, body ?? {});
+        sendJson(res, 200, result);
+        return;
+      }
+
+      if (method === 'POST' && url.pathname === '/v1/exec') {
+        const body = await readJsonBody(req);
+        const result = await execCmd(workspace, body ?? {});
+        sendJson(res, 200, result);
+        return;
+      }
+
+      sendError(res, 404, 'Not found');
+    } catch (err) {
+      if (err instanceof JailError) {
+        sendError(res, 400, err.message);
+        return;
+      }
+      if (err instanceof ToolError) {
+        sendError(res, err.status, err.message);
+        return;
+      }
+      console.error('[sandbox] unhandled', err);
+      sendError(res, 500, 'Internal server error');
+    }
+  });
+
+  return server;
+}
+
+/** @param {string} listen */
+export function parseListen(listen) {
+  const idx = listen.lastIndexOf(':');
+  if (idx <= 0) {
+    throw new Error(`Invalid SANDBOX_LISTEN: ${listen}`);
+  }
+  const host = listen.slice(0, idx);
+  const port = Number(listen.slice(idx + 1));
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+    throw new Error(`Invalid SANDBOX_LISTEN port: ${listen}`);
+  }
+  return { host, port };
+}
