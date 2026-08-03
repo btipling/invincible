@@ -65,7 +65,7 @@ Workflow: [`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db
 | `CREDENTIALS_ENCRYPTION_KEY` | yes | Same value as Vercel Production (base64 32-byte KEK) |
 | `SEED_ADMIN_EMAIL` | yes | Bootstrap admin |
 | `SEED_ADMIN_PASSWORD` | yes | Re-seed **resets** password hash from this secret |
-| `SANDBOX_URL` + `SANDBOX_TOKEN` | yes* | *or* `SEED_SANDBOX_URL` + `SEED_SANDBOX_TOKEN` |
+| `SANDBOX_URL` + `SANDBOX_TOKEN` | yes* | *or* `SEED_SANDBOX_*`; each field prefers `SEED_*` then `SANDBOX_*` (same as `seed-tenancy.ts`) |
 
 **Dual-store identity:** GHA `DATABASE_URL` + `CREDENTIALS_ENCRYPTION_KEY` must
 match Vercel Production or tokens will not decrypt after login flip.

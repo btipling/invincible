@@ -11,6 +11,8 @@
 #   SEED_ADMIN_PASSWORD
 #   SANDBOX_URL + SANDBOX_TOKEN
 #     — or SEED_SANDBOX_URL + SEED_SANDBOX_TOKEN
+#   Sandbox resolution matches scripts/seed-tenancy.ts: each field prefers
+#   SEED_* then falls back to SANDBOX_* (URL and token independently).
 #
 # Dual-store identity: DATABASE_URL and CREDENTIALS_ENCRYPTION_KEY must be
 # the SAME values as Vercel Production (runtime). Wrong KEK → undecryptable
@@ -61,18 +63,8 @@ jobs:
           echo "::error::confirm input must equal 'seed'. Aborting with no mutate."
           exit 1
 
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
+      # Fail closed before checkout/install so missing secrets and dry_run
+      # never pay npm ci, and install never sees seed secrets in env.
       - name: Fail closed — required secrets present
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -86,23 +78,34 @@ jobs:
         run: |
           set -euo pipefail
           # Never print secret values. Only names in error messages.
+          # Trim ends to match seed-tenancy requireEnv / resolveCredentialsKey.
+          trim() {
+            # shellcheck disable=SC2039
+            local s="$1"
+            s="${s#"${s%%[![:space:]]*}"}"
+            s="${s%"${s##*[![:space:]]}"}"
+            printf '%s' "$s"
+          }
           missing=0
           for name in DATABASE_URL CREDENTIALS_ENCRYPTION_KEY SEED_ADMIN_EMAIL SEED_ADMIN_PASSWORD; do
-            val="${!name:-}"
+            val="$(trim "${!name:-}")"
             if [ -z "${val}" ]; then
               echo "::error::${name} is missing or empty (set repository secret)"
               missing=1
             fi
           done
-          sandbox_ok=0
-          if [ -n "${SEED_SANDBOX_URL:-}" ] && [ -n "${SEED_SANDBOX_TOKEN:-}" ]; then
-            sandbox_ok=1
+          # Same field-wise fallback as scripts/seed-tenancy.ts resolveSandboxEnv:
+          # SEED_SANDBOX_URL || SANDBOX_URL  and  SEED_SANDBOX_TOKEN || SANDBOX_TOKEN
+          sandbox_url="$(trim "${SEED_SANDBOX_URL:-}")"
+          if [ -z "${sandbox_url}" ]; then
+            sandbox_url="$(trim "${SANDBOX_URL:-}")"
           fi
-          if [ -n "${SANDBOX_URL:-}" ] && [ -n "${SANDBOX_TOKEN:-}" ]; then
-            sandbox_ok=1
+          sandbox_token="$(trim "${SEED_SANDBOX_TOKEN:-}")"
+          if [ -z "${sandbox_token}" ]; then
+            sandbox_token="$(trim "${SANDBOX_TOKEN:-}")"
           fi
-          if [ "${sandbox_ok}" -ne 1 ]; then
-            echo "::error::Sandbox secrets missing: set SANDBOX_URL+SANDBOX_TOKEN or SEED_SANDBOX_URL+SEED_SANDBOX_TOKEN"
+          if [ -z "${sandbox_url}" ] || [ -z "${sandbox_token}" ]; then
+            echo "::error::Sandbox secrets missing: set SANDBOX_URL+SANDBOX_TOKEN or SEED_SANDBOX_URL+SEED_SANDBOX_TOKEN (URL and token each prefer SEED_* then SANDBOX_*, same as seed-tenancy.ts)"
             missing=1
           fi
           if [ "${missing}" -ne 0 ]; then
@@ -114,12 +117,27 @@ jobs:
         if: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          echo "dry_run=true — secrets validated; skipping migrate and seed."
+          echo "dry_run=true — secrets validated; skipping checkout, install, migrate, and seed."
           {
             echo "### db-tenancy-bootstrap"
             echo "- result: dry_run (secrets OK, no mutate)"
             echo "- confirm: ok"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Checkout
+        if: ${{ !inputs.dry_run }}
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        if: ${{ !inputs.dry_run }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        if: ${{ !inputs.dry_run }}
+        run: npm ci
 
       - name: Migrate
         if: ${{ !inputs.dry_run }}
