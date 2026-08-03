@@ -15,6 +15,18 @@ function isPageProtected(pathname: string): boolean {
   return false;
 }
 
+/** Auth.js v5 sets `__Secure-authjs.session-token` on HTTPS; getToken must match. */
+export function useSecureAuthCookie(req: NextRequest | Request): boolean {
+  const url = 'nextUrl' in req && req.nextUrl ? req.nextUrl : new URL(req.url);
+  if (url.protocol === 'https:') return true;
+  const forwarded = req.headers.get('x-forwarded-proto');
+  if (forwarded) {
+    const first = forwarded.split(',')[0]?.trim().toLowerCase();
+    if (first === 'https') return true;
+  }
+  return false;
+}
+
 export async function middleware(req: NextRequest) {
   if (!tenancyEnabled()) {
     return NextResponse.next();
@@ -51,6 +63,9 @@ export async function middleware(req: NextRequest) {
   const token = await getToken({
     req,
     secret,
+    // Production Vercel is HTTPS → session cookie is `__Secure-authjs.session-token`.
+    // Default secureCookie:false looks for `authjs.session-token` and always misses → login loop.
+    secureCookie: useSecureAuthCookie(req),
   });
 
   if (token?.sub) {
