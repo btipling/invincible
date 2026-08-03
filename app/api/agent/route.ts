@@ -9,7 +9,9 @@ import {
   sandboxConfigured,
 } from '../../../lib/sandbox/config';
 import { runAgent } from '../../../lib/agent/runAgent';
+import { tenancyEnabled } from '../../../lib/tenancy/enabled';
 import { requireSessionUser } from '../../../lib/tenancy/session';
+import { resolveAgentSandbox } from '../../../lib/tenancy/resolveSandbox';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -21,12 +23,13 @@ function isAbortError(err: unknown): boolean {
 }
 
 /**
- * Phase 2 — multi-step agent with sandbox tools.
+ * Multi-step agent with sandbox tools.
  *
  * POST { prompt: string }
  * → { text, toolTrace? } | { error }
  *
- * 503 when SANDBOX_URL / SANDBOX_TOKEN unset (stable string for host fallback).
+ * Tenancy on: DB-resolved sandbox + grants (403 if unauthorized).
+ * Tenancy off: env SANDBOX_* (503 if unconfigured) — host chat fallback.
  */
 export async function POST(req: Request): Promise<Response> {
   const sessionGate = await requireSessionUser();
@@ -39,7 +42,9 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error }, { status });
   }
 
-  if (!sandboxConfigured()) {
+  const tenancyOn = tenancyEnabled();
+
+  if (!tenancyOn && !sandboxConfigured()) {
     return Response.json({ error: SANDBOX_NOT_CONFIGURED_ERROR }, { status: 503 });
   }
 
@@ -59,10 +64,31 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   try {
-    const { text, toolTrace } = await runAgent({
+    let runParams: Parameters<typeof runAgent>[0] = {
       prompt: parsed.prompt,
       signal: req.signal,
-    });
+    };
+
+    if (tenancyOn) {
+      const userId = sessionGate.user?.id;
+      if (!userId) {
+        // Defense-in-depth: requireSessionUser should have failed already
+        const { AUTH_REQUIRED_ERROR } = await import('../../../lib/tenancy/errors');
+        return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
+      }
+      const resolved = await resolveAgentSandbox(userId);
+      if (!resolved.ok) {
+        return resolved.response;
+      }
+      runParams = {
+        ...runParams,
+        sandboxClient: resolved.value.client,
+        secrets: resolved.value.secrets,
+        permissions: resolved.value.permissions,
+      };
+    }
+
+    const { text, toolTrace } = await runAgent(runParams);
 
     if (!text) {
       return Response.json({ error: 'Empty model response.' }, { status: 502 });
