@@ -14,7 +14,8 @@
     "test:sandbox": "vitest run sandbox",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:seed": "tsx scripts/seed-tenancy.ts"
+    "db:seed": "tsx scripts/seed-tenancy.ts",
+    "smoke:tenancy": "node scripts/smoke-tenancy-public.mjs"
   },
   "dependencies": {
     "ai": "^5.0.0",

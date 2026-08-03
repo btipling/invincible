@@ -28,7 +28,8 @@ work — **independent of the language or platform** of the target project, and
 | Single public deploy + this author’s infra are documented for operators | Multi-operator / bring-your-own Vercel + keys |
 | Sandbox MVP **shipped** via `SANDBOX_URL` + `SANDBOX_TOKEN` ([docs/sandbox.md](docs/sandbox.md)) | Pluggable sandbox without rewriting the harness |
 | Stack is Next + Zig/dvui Wasm + AI Gateway | Target projects can be **any** stack; the harness is the workspace |
-| Tenancy code (phases 1–4) on `main`; cutover ops still incomplete | Optional login/grants **and** cloud-native bootstrap (no personal machine) |
+| Tenancy code + origin Production cutover **Done** (login + DB grants) | Optional login/grants **and** cloud-native bootstrap (no personal machine) |
+
 
 **Third-party / fork deploy:** follow
 [`docs/bring-your-own.md`](docs/bring-your-own.md) (Vercel + keys + Wasm supply)
@@ -59,19 +60,20 @@ home directory. Product copy and plans must not require personal hardware.
 - Do **not** treat “works only on invincible-dun-ten.vercel.app” as architecture.
 - When a change **blocks** reusability **or forces personal-hardware ops**, call
   it out in the plan/PR and prefer a cloud-agent / CI / Vercel path.
-- Config seams for BYO Vercel/keys/runner (#38), **sandbox MVP** (#45 phases
-  1–3), **optional multi-tenant auth** (#54 phases 1–4 code), and cloud-native
-  tenancy **bootstrap** (GHA `db-tenancy-bootstrap` + [docs/bring-your-own.md](docs/bring-your-own.md) §4a)
-  are **landed**. Origin **Production cutover smoke** ([#70](https://github.com/btipling/invincible/issues/70))
-  and SSO/SCIM ([#64](https://github.com/btipling/invincible/issues/64)) remain
-  incomplete — still write code and docs as if broader reuse is the destination.
+- Config seams for BYO Vercel/keys/runner (#38), **sandbox MVP** (#45),
+  **optional multi-tenant auth** (#54 phases 1–5 + cloud cutover #67), and
+  GHA `db-tenancy-bootstrap` + [docs/bring-your-own.md](docs/bring-your-own.md) §4a
+  are **landed** on origin Production (unauth API 401 + login verified).
+  **SSO/SCIM** ([#64](https://github.com/btipling/invincible/issues/64)) remains
+  future — still write code and docs as if broader reuse is the destination.
 - Origin `SANDBOX_*` is **Done** for the reference deploy (private host inventory
   stays offline). Still never invent a host URL; forks set their own env.
 - Origin **tenancy** (`DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`)
-  stays **Not Done** until Production cutover smoke (unauth API 401 + login).
-  Do **not** instruct humans to clone the repo on a laptop to cut over; use a
-  cloud agent workspace, GitHub Actions `db-tenancy-bootstrap`, or
+  is **Done** on Production (cutover smoke: unauth API 401 + login). Do **not**
+  instruct humans to clone the repo on a laptop to re-seed; use a cloud agent
+  workspace, GitHub Actions `db-tenancy-bootstrap`, or
   [docs/bring-your-own.md](docs/bring-your-own.md) §4a.
+
 
 ## Project agent skills
 
@@ -136,9 +138,10 @@ ops inventory).
 | `VERCEL_DEPLOY_HOOK_URL` (GitHub secret) | **Done** | deploy hooks; `build-harness` pings after artifact upload |
 | DO runner `invincible-do-1` labels `invincible`,`zig` | **Done** | Zig 0.16.0 only there |
 | `SANDBOX_URL` / `SANDBOX_TOKEN` (Vercel) | **Done** | Agent sandbox on origin Production — see [docs/sandbox.md](docs/sandbox.md); host inventory private; never invent a host URL |
-| `DATABASE_URL` (Vercel) | **Not Done** | Pooled Postgres for optional tenancy — mark **Done** only after Production cutover smoke (unauth 401 + login); no host inventory in git |
-| `AUTH_SECRET` (Vercel) | **Not Done** | Auth.js signing secret — same Done rule as `DATABASE_URL` |
-| `CREDENTIALS_ENCRYPTION_KEY` (Vercel) | **Not Done** | AES-GCM KEK for sandbox tokens at rest — same Done rule; never reuse casually on public Preview |
+| `DATABASE_URL` (Vercel) | **Done** | Pooled Postgres (Neon) for optional tenancy — Production cutover smoke passed (unauth 401 + login); no host inventory in git |
+| `AUTH_SECRET` (Vercel) | **Done** | Auth.js signing secret — Production cutover smoke passed |
+| `CREDENTIALS_ENCRYPTION_KEY` (Vercel) | **Done** | AES-GCM KEK for sandbox tokens at rest — dual-store with GHA; never reuse casually on public Preview |
+
 
 **Agent behavior (origin):**
 
@@ -146,12 +149,14 @@ ops inventory).
 - If workflow log says hook skipped (`not set`), treat as a real regression and investigate — still prefer fixing CI/docs over lecturing the user.
 - Race fix lives in `scripts/fetch-harness-artifact.mjs` (wait for commit-matched artifact). See `docs/harness-deploy-race.md`.
 - `SANDBOX_*` is **Done** on origin Production. If harness shows exact 503 not-configured or tools vanish, treat as regression (env/redeploy/reachability) — still no invented hosts ([docs/sandbox.md](docs/sandbox.md)).
-- Tenancy triple env is **Not Done** until cutover. Do **not** nag the origin
-  maintainer to “set `DATABASE_URL`” as if forgotten **after** rows are **Done**.
-  Until then, cutover is an **explicit** task — run migrate/seed from a **cloud
-  agent workspace or GHA**, never by telling the human to clone on a laptop.
-  Prefer cloud cutover docs ([docs/bring-your-own.md](docs/bring-your-own.md) §4a)
-  and GHA `db-tenancy-bootstrap` over laptop docs.
+- Tenancy triple env is **Done** on origin Production. Do **not** nag the origin
+  maintainer to “set `DATABASE_URL`” as if forgotten. If unauth `/api/agent`
+  no longer returns 401 or login fails, treat as **regression** (env/redeploy),
+  not a greenfield cutover. Prefer cloud cutover docs
+  ([docs/bring-your-own.md](docs/bring-your-own.md) §4a) and GHA
+  `db-tenancy-bootstrap` for re-seed (resets bootstrap password + token
+  ciphertext by design). Public smoke: `npm run smoke:tenancy`.
+
 
 IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
 BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).  

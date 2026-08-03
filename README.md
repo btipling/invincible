@@ -92,7 +92,8 @@ Names only — never commit values. Full BYO steps: [docs/bring-your-own.md](doc
 | `SEED_SANDBOX_URL` / `SEED_SANDBOX_TOKEN` | GHA / agent seed only | Optional; else `SANDBOX_*` used at seed time |
 
 **BYO:** set the table above on **your** Vercel project (and optional Actions secrets on **your** repo). Tenancy cutover: [docs/bring-your-own.md](docs/bring-your-own.md) §4a (GHA primary).  
-**Origin maintainer (`btipling/invincible`):** Gateway / harness / deploy-hook / **sandbox** (`SANDBOX_*`) rows are **Done** on Production — agents must not re-nag those unless a build log or harness smoke proves a regression ([AGENTS.md](AGENTS.md)). **Tenancy triple env is Not Done** until cutover smoke (unauth 401 + login). Optional `AGENT_*` remains operator preference. Do not invent a host URL ([docs/sandbox.md](docs/sandbox.md)).
+**Origin maintainer (`btipling/invincible`):** Gateway / harness / deploy-hook / **sandbox** (`SANDBOX_*`) / **tenancy triple** (`DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`) are **Done** on Production — agents must not re-nag those unless a build log or harness smoke proves a regression ([AGENTS.md](AGENTS.md)). Optional `AGENT_*` remains operator preference. Do not invent a host URL ([docs/sandbox.md](docs/sandbox.md)).
+
 
 Local / agent workspace: copy [`.env.example`](.env.example) → session env (Gateway key + optional `HARNESS_*` / `SANDBOX_*` / tenancy triple). Prefer GHA for Production migrate/seed.
 
