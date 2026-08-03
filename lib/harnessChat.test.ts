@@ -281,6 +281,32 @@ describe('runHarnessTurn', () => {
     expect(exp.__messages.some((m) => m.kind === MessageKind.Error)).toBe(true);
   });
 
+  it('503 with non-exact body does not call chat', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // status 503 alone is not enough — sandboxNotConfigured must be set by sendAgent
+    // only on the exact SANDBOX_NOT_CONFIGURED_ERROR string.
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      status: 503,
+      error: 'Upstream overloaded',
+    }));
+    const send = vi.fn(async (): Promise<ChatResult> => ({ ok: true, text: 'nope' }));
+
+    const { result, session: next } = await runHarnessTurn(
+      bridge,
+      createEmptySession(),
+      'x',
+      { sendAgent, send, pushUser: false },
+    );
+
+    expect(send).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    expect(result).toMatchObject({ error: 'Upstream overloaded', status: 503 });
+    expect(next.messages.map((m) => m.role)).toEqual(['user', 'error']);
+    expect(exp.__messages.some((m) => m.kind === MessageKind.Error)).toBe(true);
+  });
+
   it('agent cancel does not fall back to chat', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);

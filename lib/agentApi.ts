@@ -35,10 +35,14 @@ export type SendAgentFn = (
   init?: { signal?: AbortSignal; path?: string },
 ) => Promise<AgentResult>;
 
+/** Soft cap on raw toolTrace entries accepted from the wire (host still displays ≤6). */
+const TOOL_TRACE_PARSE_MAX = 32;
+
 function parseToolTrace(raw: unknown): ToolTraceEntry[] | undefined {
   if (!Array.isArray(raw) || raw.length === 0) return undefined;
   const out: ToolTraceEntry[] = [];
   for (const item of raw) {
+    if (out.length >= TOOL_TRACE_PARSE_MAX) break;
     if (!item || typeof item !== 'object') continue;
     const rec = item as Record<string, unknown>;
     const summary = typeof rec.summary === 'string' ? rec.summary : '';
