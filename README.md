@@ -22,10 +22,11 @@ Prompt playground / agent harness (Next.js + Zig/dvui Wasm).
 
 ### Tracking
 
-- **Phase 3 handoff (start here):** [`docs/phase-3-handoff.md`](docs/phase-3-handoff.md)
+- **Phase 4 plan (active):** [`docs/phase-4-plan.md`](docs/phase-4-plan.md)
+- **Phase 3 handoff (pipeline):** [`docs/phase-3-handoff.md`](docs/phase-3-handoff.md)
 - **Runner ops:** [`docs/runner.md`](docs/runner.md)
 - **Board:** [projects/1](https://github.com/users/btipling/projects/1/views/1)
-- **Milestones:** Phase 1–2 **done** · Phase 3 **done** ([plan](docs/phase-3-plan.md))
+- **Milestones:** Phase 1–3 **done** · Phase 4 **active** ([plan](docs/phase-4-plan.md))
 - **Agents:** [`AGENTS.md`](AGENTS.md)
 
 ## Secrets (server only)
@@ -79,7 +80,8 @@ Details: [phase-3-handoff.md](docs/phase-3-handoff.md) · [native/harness/README
 |-------|--------|
 | 1 Prompt MVP | **Done** — playground + Gateway |
 | 2 Build runner (DO) | **Done** — `invincible-do-1`, Zig 0.16.0 |
-| 3 Wasm harness | **Done** — bridge, chat, session MVP, polish, docs |
+| 3 Wasm harness | **Done** — pipeline PoC (DOM chat + bridge); not product MVP |
+| 4 Wasm-first MVP | **Active** — [`docs/phase-4-plan.md`](docs/phase-4-plan.md) · epic [#27](https://github.com/btipling/invincible/issues/27) |
 
 ### Palette
 

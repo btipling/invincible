@@ -9,7 +9,8 @@ Guidance for AI agents (and humans) working on this repository.
 - **Source:** https://github.com/btipling/invincible
 - **Prod:** https://invincible-dun-ten.vercel.app
 - **Phase 1–2:** Next.js playground, AI Gateway, DO runner `invincible-do-1` (Zig 0.16.0)
-- **Phase 3:** Zig + dvui Wasm harness at `/harness` (Option B: artifact, not binaries in git)
+- **Phase 3:** Pipeline PoC — bridge + DOM chat + optional Wasm companion (done)
+- **Phase 4 (active):** Wasm-**primary** harness MVP — [`docs/phase-4-plan.md`](docs/phase-4-plan.md) · epic #27
 - **Deploy:** Vercel (Git-linked) + Actions artifact `harness-wasm`
 - **GitHub account:** owner **`btipling`** (not display name “Bjorn”)
 
