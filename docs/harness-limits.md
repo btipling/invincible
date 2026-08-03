@@ -1,4 +1,4 @@
-# Harness known limits (Phase 3.10)
+# Harness known limits (Phase 3.10+)
 
 Documented browser / dvui / product constraints for `/harness`.
 
@@ -31,15 +31,22 @@ Unexpected: `Failed to compile module`, MIME `text/html` for `.wasm`, missing `i
 | Tab | Move through nav, Clear, Show Wasm, composer, Send |
 | Enter (in canvas textEntry) | Queue Wasm submit when the Wasm panel is focused |
 
-## Palette
+## Palette (DOM **and** dvui)
 
-DOM UI uses only `lib/palette.ts` tokens:
+Both surfaces use Asteronica tokens aligned with `lib/palette.ts`:
 
-- **TEAL** — chrome, panels, primary Send
-- **WARM** — model chip, busy / “thinking”, Smoke button
-- **EMBER** — errors only (banner + error bubbles)
+| Family | Use |
+|--------|-----|
+| **TEAL** | Chrome, panels, primary Send, user labels |
+| **WARM** | Model/busy chip, Smoke/PONG, assistant labels |
+| **EMBER** | Errors only |
 
-dvui canvas theming is stock dvui dark/light — not fully Asteronica-mapped (known gap).
+| Surface | Source |
+|---------|--------|
+| DOM | `lib/palette.ts` CSS tokens |
+| dvui Wasm | `native/harness/src/palette.zig` → `palette.theme()` applied at `Window.init` |
+
+Hex values must stay in sync across those two files. dvui theme reuses Adwaita embedded fonts (color-only override).
 
 ## dvui / browser
 
@@ -63,3 +70,4 @@ See [`session-model.md`](session-model.md). MVP: `localStorage` / memory. No loc
 
 - Zig build only on `invincible-do-1` (`build-harness.yml`)
 - Vercel needs `HARNESS_ARTIFACT_TOKEN` + `AI_GATEWAY_API_KEY`
+- After `palette.zig` / UI theme changes: rebuild harness artifact then redeploy

@@ -138,3 +138,7 @@ WebAssembly, Canvas, WebGL1/2, `fetch`. Serve over HTTP(S). See [`docs/phase-3-d
 ## Known limits
 
 See [`docs/harness-limits.md`](../../docs/harness-limits.md) (load, a11y, dvui/browser).
+
+## Palette
+
+Asteronica theme: [`src/palette.zig`](src/palette.zig) (hex synced with `lib/palette.ts`). Applied in `dvui_init` via `Window.init(.{ .theme = palette.theme() })`.

@@ -7,8 +7,8 @@ const std = @import("std");
 const dvui = @import("dvui");
 const WebBackend = @import("web-backend");
 const ui = @import("ui.zig");
-// Keep bridge in the module graph (exports + PROTOCOL_VERSION).
 const bridge = @import("bridge.zig");
+const palette = @import("palette.zig");
 
 comptime {
     std.debug.assert(@hasDecl(WebBackend, "WebBackend"));
@@ -43,8 +43,10 @@ export fn dvui_init(platform_ptr: [*]const u8, platform_len: usize) i32 {
     WebBackend.back = WebBackend.init() catch {
         return 1;
     };
+    // Asteronica theme (TEAL / WARM / EMBER) — matches lib/palette.ts on the host.
     WebBackend.win = dvui.Window.init(@src(), WebBackend.gpa, WebBackend.back.backend(), .{
         .keybinds = if (mac) .mac else .windows,
+        .theme = palette.theme(),
     }) catch {
         return 2;
     };

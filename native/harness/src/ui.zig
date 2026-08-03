@@ -1,6 +1,7 @@
-//! Harness UI (dvui). Compact companion to the DOM agent panel (Phase 3.9).
+//! Harness UI (dvui). Asteronica-themed companion to the DOM agent panel.
 const dvui = @import("dvui");
 const bridge = @import("bridge.zig");
+const palette = @import("palette.zig");
 
 var prompt_buf: [bridge.SUBMIT_CAP]u8 = [_]u8{0} ** bridge.SUBMIT_CAP;
 
@@ -32,6 +33,17 @@ fn lifecycleLabel(l: bridge.Lifecycle) []const u8 {
     };
 }
 
+/// Role → Asteronica text color (matches DOM bubble labels).
+fn kindTextColor(kind: u8) dvui.Color {
+    return switch (kind) {
+        1 => palette.teal_accent, // user
+        2 => palette.warm_accent, // assistant
+        3 => palette.teal_muted, // system
+        4 => palette.ember_accent, // error
+        else => palette.teal_text,
+    };
+}
+
 fn clearPrompt() void {
     @memset(&prompt_buf, 0);
 }
@@ -51,19 +63,29 @@ pub fn frame() !void {
         .style = .window,
         .margin = .all(10),
         .padding = .all(10),
+        .color_fill = palette.teal_bg,
+        .color_text = palette.teal_text,
+        .color_border = palette.teal_border,
     });
     defer box.deinit();
 
     {
-        var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .font = .theme(.title) });
+        var tl = dvui.textLayout(@src(), .{}, .{
+            .expand = .horizontal,
+            .font = .theme(.title),
+            .color_text = palette.teal_text,
+        });
         tl.addText("Wasm surface", .{});
         tl.deinit();
     }
 
     {
-        var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal });
+        var tl = dvui.textLayout(@src(), .{}, .{
+            .expand = .horizontal,
+            .color_text = palette.teal_muted,
+        });
         tl.format(
-            "lifecycle: {s}  ·  DOM panel is primary UX\n",
+            "lifecycle: {s}  ·  Asteronica theme\n",
             .{lifecycleLabel(life)},
             .{},
         );
@@ -79,6 +101,9 @@ pub fn frame() !void {
         }, .{
             .expand = .horizontal,
             .min_size_content = .{ .w = 160, .h = 22 },
+            .color_fill = palette.teal_surface,
+            .color_text = palette.teal_text,
+            .color_border = palette.teal_border,
         });
         typed = te.getText();
         const enter = te.enter_pressed and !busy;
@@ -93,40 +118,63 @@ pub fn frame() !void {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
         defer row.deinit();
 
-        if (dvui.button(@src(), "Send", .{}, .{ .gravity_y = 0.5 })) {
+        // Send — TEAL primary (highlight)
+        if (dvui.button(@src(), "Send", .{}, .{
+            .gravity_y = 0.5,
+            .style = .highlight,
+        })) {
             if (!busy and typed.len > 0) submitText(typed);
         }
-        if (dvui.button(@src(), "PONG", .{}, .{ .gravity_y = 0.5 })) {
+
+        // PONG smoke — WARM accent (app1)
+        if (dvui.button(@src(), "PONG", .{}, .{
+            .gravity_y = 0.5,
+            .style = .app1,
+        })) {
             if (!busy) submitText(SMOKE_PROMPT);
         }
     }
 
     if (busy) {
-        var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal });
+        var tl = dvui.textLayout(@src(), .{}, .{
+            .expand = .horizontal,
+            .style = .app3,
+            .color_text = palette.warm_accent,
+        });
         tl.addText("Waiting for model…\n", .{});
         tl.deinit();
     }
 
     {
-        var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal });
+        var tl = dvui.textLayout(@src(), .{}, .{
+            .expand = .horizontal,
+            .color_text = palette.teal_muted,
+        });
         tl.addText("Mirror transcript\n", .{});
         tl.deinit();
     }
 
     const n = bridge.messageCount();
     if (n == 0) {
-        var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal });
+        var tl = dvui.textLayout(@src(), .{}, .{
+            .expand = .horizontal,
+            .color_text = palette.teal_muted,
+        });
         tl.addText("(empty)", .{});
         tl.deinit();
     } else {
-        // Show last few lines only (compact companion panel).
         const start: usize = if (n > 6) n - 6 else 0;
         var i: usize = start;
         while (i < n) : (i += 1) {
             if (bridge.messageAt(i)) |m| {
+                const is_err = m.kind == 4;
                 var tl = dvui.textLayout(@src(), .{}, .{
                     .expand = .horizontal,
                     .id_extra = i,
+                    .color_text = kindTextColor(m.kind),
+                    .color_fill = if (is_err) palette.ember_surface else null,
+                    .color_border = if (is_err) palette.ember_border else null,
+                    .style = if (is_err) .err else .content,
                 });
                 tl.format("[{s}] {s}\n", .{ kindLabel(m.kind), m.text }, .{});
                 tl.deinit();
