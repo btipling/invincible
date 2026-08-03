@@ -44,8 +44,8 @@ secrets, runner, sandbox URL, or prod URL exist on a fork.
 - Config seams for BYO Vercel/keys/runner (#38) and **sandbox MVP** (#45 phases
   1–3) are **landed**. Multi-tenant isolation / MCP remain future — still write
   code and docs as if broader reuse is the destination.
-- Do **not** mark origin `SANDBOX_*` as “Infrastructure already configured /
-  Done” until the operator has actually set Vercel env (private ops).
+- Origin `SANDBOX_*` is **Done** for the reference deploy (private host inventory
+  stays offline). Still never invent a host URL; forks set their own env.
 
 ## Project agent skills
 
@@ -97,9 +97,8 @@ forks/clones. Third-party operators set **their** Vercel/env/runner per
 
 On origin, rows marked **Done** are **already set up**. Never ask the origin
 maintainer to create, wire, or “remember to set” those unless a build log
-**proves** they are missing/broken. Rows that are **not Done** (today:
-`SANDBOX_*`) are operator work — agents may remind only when tool smoke fails
-or env is clearly unset; never invent a host URL.
+**proves** they are missing/broken. Never invent a sandbox host URL (private
+ops inventory).
 
 | Item | Status | Notes |
 |------|--------|--------|
@@ -108,14 +107,14 @@ or env is clearly unset; never invent a host URL.
 | `HARNESS_ARTIFACT_TOKEN` (Vercel) | **Done** | PAT Actions: Read — prebuild downloads `harness-wasm` |
 | `VERCEL_DEPLOY_HOOK_URL` (GitHub secret) | **Done** | deploy hooks; `build-harness` pings after artifact upload |
 | DO runner `invincible-do-1` labels `invincible`,`zig` | **Done** | Zig 0.16.0 only there |
-| `SANDBOX_URL` / `SANDBOX_TOKEN` (Vercel) | **Not Done until operator sets** | Agent sandbox — see [docs/sandbox.md](docs/sandbox.md); never invent a host URL |
+| `SANDBOX_URL` / `SANDBOX_TOKEN` (Vercel) | **Done** | Agent sandbox on origin Production — see [docs/sandbox.md](docs/sandbox.md); host inventory private; never invent a host URL |
 
 **Agent behavior (origin):**
 
 - Do **not** prompt “set `VERCEL_DEPLOY_HOOK_URL`” / “wire the deploy hook” / “optional secret if not already”.
 - If workflow log says hook skipped (`not set`), treat as a real regression and investigate — still prefer fixing CI/docs over lecturing the user.
 - Race fix lives in `scripts/fetch-harness-artifact.mjs` (wait for commit-matched artifact). See `docs/harness-deploy-race.md`.
-- Do **not** treat `SANDBOX_*` as Done until the Status column says so. Missing tools + exact 503 not-configured → operator must set env ([docs/sandbox.md](docs/sandbox.md)); still no invented hosts.
+- `SANDBOX_*` is **Done** on origin Production. If harness shows exact 503 not-configured or tools vanish, treat as regression (env/redeploy/reachability) — still no invented hosts ([docs/sandbox.md](docs/sandbox.md)).
 
 IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
 BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).  

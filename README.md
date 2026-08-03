@@ -84,8 +84,7 @@ Names only — never commit values. Full BYO steps: [docs/bring-your-own.md](doc
 | `AGENT_MAX_STEPS` / `AGENT_MODEL` | Vercel (optional) | Tool-loop steps / tool-capable model override |
 
 **BYO:** set the table above on **your** Vercel project (and optional Actions secret on **your** repo).  
-**Origin maintainer (`btipling/invincible`):** Gateway / harness / deploy-hook rows above are already configured — agents must not re-nag those unless a build log proves a regression ([AGENTS.md](AGENTS.md)).  
-**Exception:** `SANDBOX_URL` / `SANDBOX_TOKEN` (and optional `AGENT_*`) are **not** origin-Done until the operator sets them — see [docs/sandbox.md](docs/sandbox.md); do not invent a host URL.
+**Origin maintainer (`btipling/invincible`):** Gateway / harness / deploy-hook / **sandbox** (`SANDBOX_*`) rows are already configured on Production — agents must not re-nag those unless a build log or harness smoke proves a regression ([AGENTS.md](AGENTS.md)). Optional `AGENT_*` remains operator preference. Do not invent a host URL ([docs/sandbox.md](docs/sandbox.md)).
 
 Local: copy [`.env.example`](.env.example) → `.env.local` (Gateway key + optional `HARNESS_*` / `SANDBOX_*`).
 

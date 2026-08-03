@@ -252,12 +252,12 @@ npm run test:sandbox
 Maintainer-only checklist when wiring the **reference** deploy. Does **not**
 block BYO success and must not publish inventory.
 
-- [ ] Sandbox unit running (private notes: host, unit file, user)  
-- [ ] TLS proxy; `SANDBOX_URL` reachable from off-box (simulates Vercel)  
-- [ ] Vercel Production: `SANDBOX_URL` + `SANDBOX_TOKEN`  
+- [x] Sandbox unit running (private notes: host, unit file, user)  
+- [x] TLS proxy; `SANDBOX_URL` reachable from off-box (simulates Vercel)  
+- [x] Vercel Production: `SANDBOX_URL` + `SANDBOX_TOKEN`  
 - [ ] Optional `AGENT_MODEL` if needed  
-- [ ] Prod `/harness` agent tool smoke  
-- [ ] Confirm unset/fallback path still understood for Preview/local  
+- [x] Prod `/harness` agent tool smoke  
+- [x] Confirm unset/fallback path still understood for Preview/local  
 
-Only after origin env is **actually set**, operators may mark `SANDBOX_*` as
-**Done** in [AGENTS.md](../AGENTS.md) origin infra table (not before).
+Origin `SANDBOX_*` is marked **Done** in [AGENTS.md](../AGENTS.md) (2026-08-03).
+Host inventory stays offline; forks still set their own env.
