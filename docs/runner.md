@@ -45,7 +45,7 @@ Self-hosted runners on **public** repos are high risk if untrusted PR code can e
 | Rule | Implementation |
 |------|----------------|
 | No `pull_request` / `pull_request_target` on self-hosted jobs | All four workflows: push `main` + `workflow_dispatch` only |
-| Opt-in + origin grandfather | Job `if:`: `(vars.SELF_HOSTED_BUILDS == 'true' \|\| github.repository == 'btipling/invincible')` and not a PR; dispatch or `main` |
+| Opt-in + origin grandfather | Job `if:`: `(vars.SELF_HOSTED_BUILDS == 'true' \|\| github.repository == 'btipling/invincible')` and (`workflow_dispatch` or `push` to `main`) |
 | Clone enablement | Set Actions variable `SELF_HOSTED_BUILDS=true` after attaching **your** runner |
 | Path filters | Only relevant `native/**` / workflow paths on push |
 | Fork PRs | Do not add self-hosted PR builds without a security design review |

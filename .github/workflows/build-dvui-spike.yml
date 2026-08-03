@@ -17,8 +17,8 @@ jobs:
     name: zig → dvui web.wasm
     if: >
       (vars.SELF_HOSTED_BUILDS == 'true' || github.repository == 'btipling/invincible') &&
-      github.event_name != 'pull_request' &&
-      (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["self-hosted","invincible","zig"]') }}
     timeout-minutes: 45
     steps:

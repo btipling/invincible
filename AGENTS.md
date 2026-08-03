@@ -104,7 +104,9 @@ IDs and URLs: [`docs/project-ids.md`](docs/project-ids.md). Runner ops: [`docs/r
 ## Public repository policy
 
 - Do **not** commit host IPs, droplet IDs, or cloud account GUIDs.
-- Self-hosted workflows: **no** `pull_request` triggers; jobs gated to `btipling/invincible` + `main` / `workflow_dispatch` only.
+- Self-hosted workflows: **no** `pull_request` / `pull_request_target` triggers; jobs run only on `workflow_dispatch` or `push` to `main`.
+- Job `if:` opt-in: `vars.SELF_HOSTED_BUILDS == 'true'` **or** origin grandfather `github.repository == 'btipling/invincible'`. Clones must set the Actions **variable** (not secret) after attaching their own runner; foreign repos without the var **skip**.
+- Optional `vars.RUNNER_LABELS` JSON array for `runs-on` (default `["self-hosted","invincible","zig"]`). See `SECURITY.md` + `docs/runner.md`.
 - Prefer abstract runner docs; private inventory stays offline.
 
 

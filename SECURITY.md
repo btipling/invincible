@@ -25,7 +25,7 @@ To reduce abuse risk when this repository is **public**:
 2. Jobs include `if:` guards:
    - **Opt-in:** `vars.SELF_HOSTED_BUILDS == 'true'` (repository **Actions variable**, not a secret), **or**
    - **Origin grandfather:** `github.repository == 'btipling/invincible'` (maintainer continuity if the variable is unset)
-   - and not a pull_request event; `workflow_dispatch` or `main` only.
+   - and only `workflow_dispatch` or `push` to `main` (not merely “ref is main”).
 3. **Clones / forks** must set `SELF_HOSTED_BUILDS=true` after attaching their own runner. Without that variable, self-hosted jobs **skip** (safe default).
 4. Optional: `vars.RUNNER_LABELS` as a JSON array (e.g. `["self-hosted","invincible","zig"]`). If unset, workflows use that default list via `fromJSON`.
 5. **Do not** add `pull_request` / `pull_request_target` to those workflows without a deliberate design review.
