@@ -134,3 +134,7 @@ build.zig        # export_symbol_names whitelist for inv_*
 ## Browser requirements
 
 WebAssembly, Canvas, WebGL1/2, `fetch`. Serve over HTTP(S). See [`docs/phase-3-dvui-spike.md`](../../docs/phase-3-dvui-spike.md).
+
+## Known limits
+
+See [`docs/harness-limits.md`](../../docs/harness-limits.md) (load, a11y, dvui/browser).

@@ -10,6 +10,8 @@ const links = [
   { href: '/harness', label: 'Harness' },
 ] as const;
 
+const focusRing = `0 0 0 2px ${teal.bg}, 0 0 0 4px ${teal.accent}`;
+
 export default function AppNav({ right }: { right?: ReactNode }) {
   const pathname = usePathname();
 
@@ -34,11 +36,19 @@ export default function AppNav({ right }: { right?: ReactNode }) {
           letterSpacing: '0.04em',
           color: teal.text,
           textDecoration: 'none',
+          borderRadius: 4,
+          outline: 'none',
+        }}
+        onFocus={(e) => {
+          e.currentTarget.style.boxShadow = focusRing;
+        }}
+        onBlur={(e) => {
+          e.currentTarget.style.boxShadow = 'none';
         }}
       >
         Invincible
       </Link>
-      <nav style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
+      <nav aria-label="Primary" style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
         {links.map((l) => {
           const active =
             l.href === '/'
@@ -48,6 +58,7 @@ export default function AppNav({ right }: { right?: ReactNode }) {
             <Link
               key={l.href}
               href={l.href}
+              aria-current={active ? 'page' : undefined}
               style={{
                 fontSize: '0.85rem',
                 textDecoration: 'none',
@@ -57,6 +68,13 @@ export default function AppNav({ right }: { right?: ReactNode }) {
                 borderRadius: 4,
                 padding: '0.25rem 0.6rem',
                 fontWeight: active ? 600 : 400,
+                outline: 'none',
+              }}
+              onFocus={(e) => {
+                e.currentTarget.style.boxShadow = focusRing;
+              }}
+              onBlur={(e) => {
+                e.currentTarget.style.boxShadow = 'none';
               }}
             >
               {l.label}
