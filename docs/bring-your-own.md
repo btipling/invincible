@@ -84,23 +84,30 @@ documented in `scripts/harnessRepo.mjs`.
 
 1. Import **your** GitHub repository into Vercel → create a **new** project
    (name is yours; it does not need to match the maintainer’s).
-2. Set **Environment Variables** (Production + Preview as needed):
+2. **Choose a Wasm supply path before first prod deploy** (see [§5](#5-wasm-supply-paths)).
+   A fresh fork/clone has **no** `harness-wasm` Actions artifact until **you** publish
+   one (path **A**) or you point fetch at a repo that already publishes it (path **B**).
+   Without that, Vercel prebuild resolves owner/repo to **your** connected git repo,
+   finds nothing, and the deploy fails or ships an empty harness.
+3. Set **Environment Variables** (Production + Preview as needed):
 
 | Name | Required | Purpose |
 |------|----------|---------|
 | `AI_GATEWAY_API_KEY` | **Yes** | Server-side inference — never client/Wasm |
-| `HARNESS_ARTIFACT_TOKEN` | **Yes** for prod builds that download Wasm | Fine-grained PAT: **Actions: Read** on the repo that publishes artifact `harness-wasm` |
+| `HARNESS_ARTIFACT_TOKEN` | **Yes** for prod builds that download Wasm | Fine-grained PAT: **Actions: Read** on the repo that publishes artifact `harness-wasm` (your repo for path **A**, or the upstream/build repo for path **B**) |
+| `HARNESS_OWNER` / `HARNESS_REPO` | **Yes until your repo publishes `harness-wasm`** | Point at a repo that already has artifact `harness-wasm` (typical cold-start: path **B**). Once path **A** has uploaded artifacts on **your** repo, omit these so Vercel Git env (`VERCEL_GIT_REPO_OWNER` / `VERCEL_GIT_REPO_SLUG`) is used |
 | `DEFAULT_MODEL` | No | Defaults to gateway model id in code / `.env.example` |
-| `HARNESS_OWNER` / `HARNESS_REPO` | No | Override artifact source; otherwise Vercel Git env (`VERCEL_GIT_REPO_OWNER` / `VERCEL_GIT_REPO_SLUG`) is used |
 
-3. Optional GitHub Actions **secret** (on **your** repo): `VERCEL_DEPLOY_HOOK_URL` —
+4. Optional GitHub Actions **secret** (on **your** repo): `VERCEL_DEPLOY_HOOK_URL` —
    only if you use `build-harness`’s post-artifact deploy-hook ping. Not required
-   for a first deploy if prebuild fetch + Git integration already redeploy.
-4. Deploy. Open **`https://<your-vercel-host>/harness`**.
+   for a first deploy once prebuild can fetch a real artifact (Git integration
+   redeploy alone does **not** create Wasm).
+5. Deploy. Open **`https://<your-vercel-host>/harness`**.
 
 On Vercel Git deploys, artifact owner/repo resolve to the **connected** Git repo
-unless you set `HARNESS_*`. A clone does not silently depend on the maintainer
-prod host for runtime config.
+unless you set `HARNESS_*`. Runtime does **not** depend on the maintainer prod
+**host** URL — but cold-start forks **do** need an explicit artifact **source**
+(path **B** or a completed path **A**) before prebuild succeeds.
 
 Race-safe wait for the matching `harness-wasm` artifact:
 [harness-deploy-race.md](harness-deploy-race.md).
@@ -112,7 +119,7 @@ Race-safe wait for the matching `harness-wasm` artifact:
 | Path | When | What to do |
 |------|------|------------|
 | **A — Own runner** | You edit `native/harness` and want CI builds | Register a self-hosted runner on **your** repo → set Actions **variable** `SELF_HOSTED_BUILDS=true` → optional `RUNNER_LABELS` JSON array (default `["self-hosted","invincible","zig"]`) → follow [runner.md](runner.md) · [SECURITY.md](../SECURITY.md) |
-| **B — Other repo’s artifacts** | You consume `harness-wasm` from upstream or a build repo | Set `HARNESS_OWNER` / `HARNESS_REPO` + token with Actions:Read on **that** repo |
+| **B — Other repo’s artifacts** | **Typical first deploy** (fork has no artifact yet) or you always consume upstream/build-repo Wasm | Set `HARNESS_OWNER` / `HARNESS_REPO` + token with Actions:Read on **that** repo (e.g. origin `btipling` / `invincible` while you have no runner) |
 | **C — Local / skip (non-prod)** | Dev without CI | Zig 0.16.0 local build, or `HARNESS_SKIP_FETCH=1` with existing files — **not** recommended as sole prod strategy |
 
 **Origin (`btipling/invincible`) note:** workflows also allow a **grandfather**
@@ -189,7 +196,7 @@ listed as Done in [AGENTS.md](../AGENTS.md). Operators on **forks/clones** use
 
 - [ ] Cloned **your** repo; Node 18+; `npm install`
 - [ ] `.env.local` / Vercel: `AI_GATEWAY_API_KEY` set (server only)
-- [ ] Harness path chosen (A / B / C); Vercel has `HARNESS_ARTIFACT_TOKEN` when fetching
+- [ ] Harness path chosen (A / B / C); cold-start forks set `HARNESS_OWNER`/`HARNESS_REPO` (B) or publish path A first; Vercel has `HARNESS_ARTIFACT_TOKEN` with Actions:Read on the **artifact** repo
 - [ ] Deployed **your** Vercel project; opened **your** `/harness`
 - [ ] PONG + multi-turn + refresh + Clear work in canvas
 - [ ] If using self-hosted builds: runner online + `SELF_HOSTED_BUILDS=true`

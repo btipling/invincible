@@ -128,7 +128,7 @@ BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Runner ops: [`docs/runn
 invincible/
 ├── app/                 # Next App Router (/, /harness, /api/chat)
 ├── lib/                 # palette, chat, bridge, session
-├── native/harness/      # Zig + dvui Wasm (built on DO only)
+├── native/harness/      # Zig + dvui Wasm (CI on self-hosted runner)
 ├── scripts/             # fetch-harness-artifact.mjs, runner scripts
 ├── docs/                # BYO guide, phase plans, limits, deploy race
 ├── public/harness/      # wasm/js gitignored; README only committed
