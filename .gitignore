@@ -45,3 +45,6 @@ public/harness/web.wasm
 public/harness/web.js
 public/harness/index.html
 public/harness/.artifact-meta.json
+
+# Local sandbox workspace (dev)
+.sandbox-workspace/

@@ -9,7 +9,9 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "fetch-harness": "node scripts/fetch-harness-artifact.mjs",
-    "prebuild": "node scripts/fetch-harness-artifact.mjs"
+    "prebuild": "node scripts/fetch-harness-artifact.mjs",
+    "sandbox:start": "node sandbox/server.mjs",
+    "test:sandbox": "vitest run sandbox"
   },
   "dependencies": {
     "ai": "^5.0.0",
