@@ -1,5 +1,8 @@
 # Invincible — public project pointers
 
+**Clone / BYO setup:** [`bring-your-own.md`](bring-your-own.md).  
+The table below is the **maintainer reference deployment** only — not required for third-party success.
+
 Public-facing IDs and URLs. **No host IPs, droplet IDs, or cloud account GUIDs** (those stay in private operator notes).
 
 | | |
@@ -18,7 +21,8 @@ Public-facing IDs and URLs. **No host IPs, droplet IDs, or cloud account GUIDs**
 | `HARNESS_ARTIFACT_TOKEN` | Vercel | Actions: Read — prebuild downloads `harness-wasm` |
 | `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions secret | `build-harness` may ping after artifact upload |
 
-Agents: secrets are already configured for the maintainer deployment — do not nag unless a log proves a regression. See [`AGENTS.md`](../AGENTS.md).
+Agents on **origin**: secrets are already configured — do not nag unless a log proves a regression ([`AGENTS.md`](../AGENTS.md)).  
+Forks/clones: set env on **your** Vercel per [`bring-your-own.md`](bring-your-own.md).
 
 Wasm race: [`harness-deploy-race.md`](harness-deploy-race.md).
 

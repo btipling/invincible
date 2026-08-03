@@ -11,33 +11,41 @@ This is **not** a one-off demo for a single deployment. The long-term goal is th
 shipped) their own **sandbox / runner environment**, then use the harness on
 **their** work — **any language or platform** on the target side.
 
-Multi-tenant / bring-your-own sandbox is **not fully built yet**; new work should
-still prefer config seams over hardcoding one owner’s prod. Details:
+**Start here if you are cloning or forking:**  
+→ **[docs/bring-your-own.md](docs/bring-your-own.md)** — clone → env → your Vercel → secrets → Wasm paths → verify `/harness`.
+
+Multi-tenant / bring-your-own **sandbox** is **not shipped yet**; prefer config
+seams over hardcoding one owner’s prod. Agent rules:
 [`AGENTS.md`](AGENTS.md) → **Reusable product**.
 
-## Live
+## Reference deployment (maintainer)
+
+Sample public deploy for demos — **not required** for BYO success.
 
 | | |
 |--|--|
 | **Production** | https://invincible-dun-ten.vercel.app |
 | **Harness** | https://invincible-dun-ten.vercel.app/harness |
 | **Root** | https://invincible-dun-ten.vercel.app/ → redirects to `/harness` |
-| **Vercel** | project `invincible` (Git-linked) |
+| **Vercel** | project `invincible` (Git-linked to origin) |
 | **IDs** | [`docs/project-ids.md`](docs/project-ids.md) |
 
 ### Try `/harness` (Wasm is the app)
 
-1. Open the harness URL — after load, the **canvas** is the workspace (not a React chat card).  
+Works on **any** host (local, your Vercel, or the reference deploy):
+
+1. Open `/harness` — after load, the **canvas** is the workspace (not a React chat card).  
 2. Type in the canvas composer → **Enter** or **Send**.  
 3. **PONG** smokes the host Gateway path (reply appears in canvas).  
 4. Refresh restores session into Wasm; nav **Clear** resets.  
 5. DOM chrome = nav + status chips only (host shell).
 
-Feature divide: [`docs/feature-divide.md`](docs/feature-divide.md).
+Feature divide: [`docs/feature-divide.md`](docs/feature-divide.md). Full BYO checklist: [`docs/bring-your-own.md`](docs/bring-your-own.md).
 
 ### Tracking
 
-- **Phase 4 handoff (start here):** [`docs/phase-4-handoff.md`](docs/phase-4-handoff.md)
+- **BYO / clone setup:** [`docs/bring-your-own.md`](docs/bring-your-own.md)
+- **Phase 4 handoff (product):** [`docs/phase-4-handoff.md`](docs/phase-4-handoff.md)
 - **Phase 4 plan:** [`docs/phase-4-plan.md`](docs/phase-4-plan.md)
 - **Phase 3 handoff (pipeline only):** [`docs/phase-3-handoff.md`](docs/phase-3-handoff.md)
 - **Runner ops:** [`docs/runner.md`](docs/runner.md)
@@ -60,19 +68,30 @@ link back). PR merge gates use **adversarial-review**. Requires authenticated
 
 ## Secrets (server only)
 
+Names only — never commit values. Full BYO steps: [docs/bring-your-own.md](docs/bring-your-own.md).
+
 | Variable | Where | Purpose |
 |----------|--------|---------|
-| `AI_GATEWAY_API_KEY` | Vercel | Inference via AI Gateway — **never** in client/Wasm |
-| `HARNESS_ARTIFACT_TOKEN` | Vercel | Download Actions artifact `harness-wasm` at build |
+| `AI_GATEWAY_API_KEY` | Vercel / local `.env.local` | Inference via AI Gateway — **never** in client/Wasm |
+| `HARNESS_ARTIFACT_TOKEN` | Vercel (and local fetch) | Download Actions artifact `harness-wasm` at build / `npm run fetch-harness` |
 | `DEFAULT_MODEL` | Vercel (optional) | default `xai/grok-4.1-fast-non-reasoning` |
+| `HARNESS_OWNER` / `HARNESS_REPO` | Vercel / local (optional) | Override artifact source; else Vercel Git / `GITHUB_REPOSITORY` |
+| `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions **secret** (optional) | `build-harness` may ping after artifact upload |
 
-GitHub Actions secret `VERCEL_DEPLOY_HOOK_URL` is already configured. See AGENTS.md — do not treat as a setup todo.
+**BYO:** set the table above on **your** Vercel project (and optional Actions secret on **your** repo).  
+**Origin maintainer (`btipling/invincible`):** these are already configured — agents must not re-nag unless a build log proves a regression ([AGENTS.md](AGENTS.md)).
 
-Local: copy `.env.example` → `.env.local` for the Gateway key only.
+Local: copy [`.env.example`](.env.example) → `.env.local` (Gateway key + optional `HARNESS_*`).
 
 ## Rebuild harness Wasm
 
-Zig compiles **only** on self-hosted runner `invincible-do-1` (labels `invincible`, `zig`).
+Zig compiles on a **self-hosted** GitHub Actions runner (default labels
+`self-hosted`, `invincible`, `zig`). Clones: attach **your** runner, set Actions
+variable `SELF_HOSTED_BUILDS=true` (optional `RUNNER_LABELS` JSON). Origin keeps a
+grandfather path without the variable. See [docs/runner.md](docs/runner.md) and
+[docs/bring-your-own.md](docs/bring-your-own.md) path **A**.
+
+Maintainer sample runner name: `invincible-do-1`.
 
 ```bash
 # after editing native/harness/**
@@ -80,13 +99,13 @@ git push origin main
 # → build-harness.yml → artifact harness-wasm → Vercel prebuild fetches it
 # race-safe wait: scripts/fetch-harness-artifact.mjs (docs/harness-deploy-race.md)
 
-gh workflow run build-harness.yml
+gh workflow run build-harness.yml --repo <owner>/<repo>
 
 export HARNESS_ARTIFACT_TOKEN=…   # local
 npm run fetch-harness && npm run dev
 ```
 
-Details: [phase-4-handoff.md](docs/phase-4-handoff.md) · [native/harness/README.md](native/harness/README.md).
+Details: [docs/bring-your-own.md](docs/bring-your-own.md) · [docs/phase-4-handoff.md](docs/phase-4-handoff.md) · [native/harness/README.md](native/harness/README.md).
 
 **Do not** commit `public/harness/*.wasm` / `web.js`.
 
@@ -136,16 +155,21 @@ Errors: `{ "error": "…" }` with 4xx/5xx. Key never leaves the server.
 
 ```bash
 npm install
+cp .env.example .env.local   # set AI_GATEWAY_API_KEY
 # optional: HARNESS_ARTIFACT_TOKEN=… npm run fetch-harness
+# or: HARNESS_SKIP_FETCH=1 if public/harness already populated
 npm run dev
 npm test && npm run typecheck
 ```
+
+Clone / production BYO: [docs/bring-your-own.md](docs/bring-your-own.md).
 
 ## Docs index
 
 | Doc | Topic |
 |-----|--------|
-| [phase-4-handoff.md](docs/phase-4-handoff.md) | **Start here** — Wasm-primary operator path |
+| [bring-your-own.md](docs/bring-your-own.md) | **Clones / BYO** — your Vercel + keys + Wasm paths |
+| [phase-4-handoff.md](docs/phase-4-handoff.md) | Wasm-primary operator path (reference deploy samples) |
 | [feature-divide.md](docs/feature-divide.md) | DOM shell vs Wasm harness |
 | [phase-4-plan.md](docs/phase-4-plan.md) | Phase 4 issue map (complete) |
 | [harness-limits.md](docs/harness-limits.md) | Browser / mobile / density limits |

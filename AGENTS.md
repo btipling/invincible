@@ -29,6 +29,10 @@ language or platform** of the project they are building or operating on.
 | Sandbox env for agent build/run is **planned later** — not shipped | Pluggable sandbox without rewriting the harness |
 | Stack is Next + Zig/dvui Wasm + AI Gateway | Target projects can be **any** stack; the harness is the workspace |
 
+**Third-party / clone deploy:** follow
+[`docs/bring-your-own.md`](docs/bring-your-own.md) (Vercel + keys + Wasm supply).
+Do not assume origin secrets, runner, or prod URL exist on a fork.
+
 **Agent rules:**
 
 - Prefer designs and plans that keep **config seams** (env, project IDs, runner
@@ -36,8 +40,9 @@ language or platform** of the project they are building or operating on.
 - Do **not** treat “works only on invincible-dun-ten.vercel.app” as architecture.
 - When a change **blocks** reusability, call it out in the plan/PR and prefer an
   alternative that leaves the door open.
-- The repo may not have implemented multi-tenant/BYO infra yet — still write
-  code and docs **as if that is the destination**.
+- Config seams for BYO Vercel/keys/runner are **landed** (phases 1–3 of epic #38);
+  multi-tenant **sandbox** / MCP remain future — still write code and docs as if
+  broader reuse is the destination.
 
 ## Project agent skills
 
@@ -81,25 +86,32 @@ command -v gh >/dev/null || exit 1
 gh auth status || exit 1
 ```
 
-## Infrastructure already configured (do NOT nag the user)
+## Infrastructure already configured (origin maintainer only)
 
-These are **already set up**. Never ask the user to create, wire, or “remember to set” them unless a build log **proves** they are missing/broken.
+**Scope: origin `btipling/invincible` only.** Do **not** assume these exist on
+forks/clones. Third-party operators set **their** Vercel/env/runner per
+[`docs/bring-your-own.md`](docs/bring-your-own.md).
+
+On origin, these are **already set up**. Never ask the origin maintainer to
+create, wire, or “remember to set” them unless a build log **proves** they are
+missing/broken.
 
 | Item | Status | Notes |
 |------|--------|--------|
 | Vercel project + Git `main` | **Done** | prod URL above |
 | `AI_GATEWAY_API_KEY` (Vercel) | **Done** | server-side only |
 | `HARNESS_ARTIFACT_TOKEN` (Vercel) | **Done** | PAT Actions: Read — prebuild downloads `harness-wasm` |
-| `VERCEL_DEPLOY_HOOK_URL` (GitHub secret) | **Done** | user has deploy hooks; `build-harness` pings after artifact upload |
+| `VERCEL_DEPLOY_HOOK_URL` (GitHub secret) | **Done** | deploy hooks; `build-harness` pings after artifact upload |
 | DO runner `invincible-do-1` labels `invincible`,`zig` | **Done** | Zig 0.16.0 only there |
 
-**Agent behavior:**
+**Agent behavior (origin):**
 
 - Do **not** prompt “set `VERCEL_DEPLOY_HOOK_URL`” / “wire the deploy hook” / “optional secret if not already”.
 - If workflow log says hook skipped (`not set`), treat as a real regression and investigate — still prefer fixing CI/docs over lecturing the user.
 - Race fix lives in `scripts/fetch-harness-artifact.mjs` (wait for commit-matched artifact). See `docs/harness-deploy-race.md`.
 
-IDs and URLs: [`docs/project-ids.md`](docs/project-ids.md). Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURITY.md).
+IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
+BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURITY.md).
 
 ## Public repository policy
 
@@ -116,9 +128,9 @@ IDs and URLs: [`docs/project-ids.md`](docs/project-ids.md). Runner ops: [`docs/r
 invincible/
 ├── app/                 # Next App Router (/, /harness, /api/chat)
 ├── lib/                 # palette, chat, bridge, session
-├── native/harness/      # Zig + dvui Wasm (built on DO only)
+├── native/harness/      # Zig + dvui Wasm (CI on self-hosted runner)
 ├── scripts/             # fetch-harness-artifact.mjs, runner scripts
-├── docs/                # phase plans, limits, deploy race
+├── docs/                # BYO guide, phase plans, limits, deploy race
 ├── public/harness/      # wasm/js gitignored; README only committed
 ├── AGENTS.md
 └── package.json
@@ -187,7 +199,7 @@ See create-plan / plan-review **layer** rules when planning features.
 
 ## Working rules
 
-- Zig compile **only** on `invincible-do-1` (`build-harness.yml`). After harness source changes: CI → artifact → Vercel (wait-for-SHA prebuild + deploy hook).
+- Zig compile **only** on the configured self-hosted runner (`build-harness.yml`; origin sample `invincible-do-1`). After harness source changes: CI → artifact → Vercel (wait-for-SHA prebuild + deploy hook).
 - Inference stays server-side (`POST /api/chat`). No Gateway secrets in client or Wasm.
 - Prefer extending `native/harness` + `HarnessHost` over new infra.
 - Run `npm test` / `npm run typecheck` / `npm run build` before claiming ready (local build needs token or existing `public/harness`).
@@ -199,4 +211,4 @@ See create-plan / plan-review **layer** rules when planning features.
 - Bypass palette for “temporary” colors
 - Use pure blue/cyan or coral one-offs
 - Grow a second unrelated color module
-- Ask the user to configure deploy hooks / tokens that are already listed as **Done** above
+- Ask the **origin** maintainer to configure deploy hooks / tokens that are already listed as **Done** above (forks/clones: use [`docs/bring-your-own.md`](docs/bring-your-own.md))
