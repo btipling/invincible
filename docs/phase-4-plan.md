@@ -1,6 +1,6 @@
 # Phase 4 plan — Wasm-first harness MVP
 
-**Status:** active · **4.1 product contract landed** · Phase 3 = pipeline PoC only
+**Status:** active · 4.1–4.2 done · 4.3 in progress · Phase 3 = pipeline PoC only
 
 | | |
 |--|--|
@@ -31,9 +31,9 @@ Full table: [feature-divide.md](feature-divide.md).
 
 | Order | Issue | Title | Status |
 |------:|-------|--------|--------|
-| 1 | [#28](https://github.com/btipling/invincible/issues/28) | 4.1 Product contract | **Done** (this contract) |
-| 2 | [#29](https://github.com/btipling/invincible/issues/29) | 4.2 Host shell: demote DOM panel | next |
-| 3 | [#30](https://github.com/btipling/invincible/issues/30) | 4.3 dvui transcript + composer | |
+| 1 | [#28](https://github.com/btipling/invincible/issues/28) | 4.1 Product contract | **Done** |
+| 2 | [#29](https://github.com/btipling/invincible/issues/29) | 4.2 Host shell: demote DOM panel | **Done** |
+| 3 | [#30](https://github.com/btipling/invincible/issues/30) | 4.3 dvui transcript + composer | **In progress** |
 | 4 | [#31](https://github.com/btipling/invincible/issues/31) | 4.4 Bridge v2 session sync | |
 | 5 | [#32](https://github.com/btipling/invincible/issues/32) | 4.5 Wire Wasm-primary loop | |
 | 6 | [#33](https://github.com/btipling/invincible/issues/33) | 4.6 Session restore into Wasm | |
@@ -68,4 +68,4 @@ Full table: [feature-divide.md](feature-divide.md).
 
 ## Suggested first message
 
-> Continue Invincible Phase 4 from `docs/phase-4-plan.md` and epic #27. Wasm-primary harness MVP. 4.1 done — continue at #29 (host shell) / #30 (dvui workspace). Repo: btipling/invincible. Prod: https://invincible-dun-ten.vercel.app. Do not re-do Phase 1–3.
+> Continue Invincible Phase 4 from `docs/phase-4-plan.md` and epic #27. Wasm-primary harness MVP. 4.1–4.2 done — continue at #30 (dvui workspace) / #31 (bridge v2). Repo: btipling/invincible. Prod: https://invincible-dun-ten.vercel.app. Do not re-do Phase 1–3.
