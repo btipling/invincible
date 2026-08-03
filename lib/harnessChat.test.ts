@@ -174,4 +174,23 @@ describe('runHarnessTurn', () => {
     const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'x', { send });
     expect(next.messages.map((m) => m.role)).toEqual(['user', 'error']);
   });
+
+  it('pushUser:false does not double-paint user on bridge', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const send = vi.fn(async (): Promise<ChatResult> => ({
+      ok: true,
+      text: 'PONG',
+    }));
+
+    await runHarnessTurn(bridge, createEmptySession(), 'hello', {
+      send,
+      pushUser: false,
+    });
+
+    const userPushes = exp.__messages.filter((m) => m.kind === MessageKind.User);
+    expect(userPushes).toHaveLength(0);
+    expect(exp.__messages.some((m) => m.kind === MessageKind.Assistant)).toBe(true);
+  });
+
 });

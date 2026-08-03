@@ -88,8 +88,8 @@ export default function HarnessHost() {
           prompt,
           {
             signal: controller.signal,
-            // Wasm composer already queued the user-visible line via pending submit;
-            // still append user to session + optionally skip bridge re-push.
+            // Wasm already painted the user line in queueSubmitFromUi.
+            pushUser: false,
           },
         );
         if (controller.signal.aborted) return;
