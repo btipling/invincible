@@ -89,8 +89,15 @@ pub fn queueSubmitFromUi(text: []const u8) void {
     has_pending_submit = pending_submit_len > 0;
     if (!has_pending_submit) return;
     // Immediate user line in Wasm transcript; host uses pushUser:false on this path.
-    _ = pushMessage(1, pending_submit[0..pending_submit_len]);
+    {
+        const slot = &messages[msg_head];
+        slot.kind = 1; // user
+        slot.len = copySlice(&slot.data, pending_submit[0..pending_submit_len]);
+        msg_head = (msg_head + 1) % MAX_MSG;
+        if (msg_count < MAX_MSG) msg_count += 1;
+    }
     lifecycle = .busy;
+    refresh();
 }
 
 pub fn reset() void {
