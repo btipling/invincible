@@ -18,34 +18,59 @@ Guidance for AI agents (and humans) working on this repository.
 
 Invincible is **meant to be reusable**, not a private single-purpose app.
 
-**North star:** anyone can **clone this repository**, attach **their own Vercel
-project**, and their own **sandbox / runner environment**, then run the harness
-for **their** work — **independent of the language or platform** of the project
-they are building or operating on.
+**North star:** anyone can **connect this repository** to **their own Vercel
+project** and **their own sandbox / runner**, then run the harness for **their**
+work — **independent of the language or platform** of the target project, and
+**without needing a personal laptop or desktop** to operate the product.
 
 | Today | Intent |
 |-------|--------|
 | Single public deploy + this author’s infra are documented for operators | Multi-operator / bring-your-own Vercel + keys |
 | Sandbox MVP **shipped** via `SANDBOX_URL` + `SANDBOX_TOKEN` ([docs/sandbox.md](docs/sandbox.md)) | Pluggable sandbox without rewriting the harness |
 | Stack is Next + Zig/dvui Wasm + AI Gateway | Target projects can be **any** stack; the harness is the workspace |
+| Tenancy code (phases 1–4) on `main`; cutover ops still incomplete | Optional login/grants **and** cloud-native bootstrap (no personal machine) |
 
-**Third-party / clone deploy:** follow
+**Third-party / fork deploy:** follow
 [`docs/bring-your-own.md`](docs/bring-your-own.md) (Vercel + keys + Wasm supply)
 and optionally [`docs/sandbox.md`](docs/sandbox.md). Do not assume origin
 secrets, runner, sandbox URL, or prod URL exist on a fork.
+
+### Operator & agent model (no personal hardware)
+
+Invincible is a **cloud product**. Humans operate it through **hosted UI**
+(Vercel dashboard, browser) and **cloud agents** (e.g. Grok Build sessions that
+check out the repo and run `gh` / `npm` in a **remote workspace**). CI and the
+self-hosted **runner** are also cloud.
+
+| Do | Do not |
+|----|--------|
+| Assume the “shell” is a **cloud agent workspace** or **GitHub Actions** job | Assume the human has a laptop clone of the repo |
+| Tell operators to set secrets in **Vercel** / GitHub / managed Postgres UI | Tell them to `cd ~/…`, install Node on their machine, or “run locally” |
+| Run `npm test` / migrate / seed **in the agent workspace or GHA** when needed | Treat “local” as the human’s personal computer |
+| Prefer **cloud-native cutover** paths (Actions, agent-run scripts, hosted DB) | Document laptop-only ops as the primary path |
+
+“Local” in this file means **the agent’s or CI’s checkout**, not a developer’s
+home directory. Product copy and plans must not require personal hardware.
 
 **Agent rules:**
 
 - Prefer designs and plans that keep **config seams** (env, project IDs, runner
   labels) rather than hardcoding one owner’s prod URL or cloud account.
 - Do **not** treat “works only on invincible-dun-ten.vercel.app” as architecture.
-- When a change **blocks** reusability, call it out in the plan/PR and prefer an
-  alternative that leaves the door open.
-- Config seams for BYO Vercel/keys/runner (#38) and **sandbox MVP** (#45 phases
-  1–3) are **landed**. Multi-tenant isolation / MCP remain future — still write
-  code and docs as if broader reuse is the destination.
+- When a change **blocks** reusability **or forces personal-hardware ops**, call
+  it out in the plan/PR and prefer a cloud-agent / CI / Vercel path.
+- Config seams for BYO Vercel/keys/runner (#38), **sandbox MVP** (#45 phases
+  1–3), and **optional multi-tenant auth** (#54 phases 1–4 code) are **landed**.
+  Cloud-native tenancy **bootstrap** (migrate/seed without a personal machine)
+  and SSO/SCIM ([#64](https://github.com/btipling/invincible/issues/64)) remain
+  incomplete — still write code and docs as if broader reuse is the destination.
 - Origin `SANDBOX_*` is **Done** for the reference deploy (private host inventory
   stays offline). Still never invent a host URL; forks set their own env.
+- Origin **tenancy** (`DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`)
+  stays **Not Done** until Production cutover smoke (unauth API 401 + login).
+  Do **not** instruct humans to clone the repo on a laptop to cut over; use a
+  cloud agent workspace, GitHub Actions, or the future bootstrap path (plan
+  issue for cloud-native cutover).
 
 ## Project agent skills
 
@@ -80,9 +105,11 @@ git config user.name "btipling"
 git config user.email "btipling@users.noreply.github.com"
 ```
 
-## Hard constraint: GitHub via `gh` + local `git` only
+## Hard constraint: GitHub via `gh` + `git` (agent / CI workspace)
 
-Prefer `gh` + `git` for all GitHub read/write. One commit per unit of work; one push.
+Prefer `gh` + `git` for all GitHub read/write. One commit per unit of work; one
+push. Run these in the **cloud agent workspace** or CI — not on a human’s
+personal machine.
 
 ```bash
 command -v gh >/dev/null || exit 1
@@ -92,7 +119,7 @@ gh auth status || exit 1
 ## Infrastructure already configured (origin maintainer only)
 
 **Scope: origin `btipling/invincible` only.** Do **not** assume these exist on
-forks/clones. Third-party operators set **their** Vercel/env/runner per
+forks. Third-party operators set **their** Vercel/env/runner (via hosted UI + cloud agents) per
 [`docs/bring-your-own.md`](docs/bring-your-own.md).
 
 On origin, rows marked **Done** are **already set up**. Never ask the origin
@@ -108,6 +135,9 @@ ops inventory).
 | `VERCEL_DEPLOY_HOOK_URL` (GitHub secret) | **Done** | deploy hooks; `build-harness` pings after artifact upload |
 | DO runner `invincible-do-1` labels `invincible`,`zig` | **Done** | Zig 0.16.0 only there |
 | `SANDBOX_URL` / `SANDBOX_TOKEN` (Vercel) | **Done** | Agent sandbox on origin Production — see [docs/sandbox.md](docs/sandbox.md); host inventory private; never invent a host URL |
+| `DATABASE_URL` (Vercel) | **Not Done** | Pooled Postgres for optional tenancy — mark **Done** only after Production cutover smoke (unauth 401 + login); no host inventory in git |
+| `AUTH_SECRET` (Vercel) | **Not Done** | Auth.js signing secret — same Done rule as `DATABASE_URL` |
+| `CREDENTIALS_ENCRYPTION_KEY` (Vercel) | **Not Done** | AES-GCM KEK for sandbox tokens at rest — same Done rule; never reuse casually on public Preview |
 
 **Agent behavior (origin):**
 
@@ -115,6 +145,11 @@ ops inventory).
 - If workflow log says hook skipped (`not set`), treat as a real regression and investigate — still prefer fixing CI/docs over lecturing the user.
 - Race fix lives in `scripts/fetch-harness-artifact.mjs` (wait for commit-matched artifact). See `docs/harness-deploy-race.md`.
 - `SANDBOX_*` is **Done** on origin Production. If harness shows exact 503 not-configured or tools vanish, treat as regression (env/redeploy/reachability) — still no invented hosts ([docs/sandbox.md](docs/sandbox.md)).
+- Tenancy triple env is **Not Done** until cutover. Do **not** nag the origin
+  maintainer to “set `DATABASE_URL`” as if forgotten **after** rows are **Done**.
+  Until then, cutover is an **explicit** task — run migrate/seed from a **cloud
+  agent workspace or GHA**, never by telling the human to clone on a laptop.
+  Prefer implementing cloud-native bootstrap (see plan issues) over laptop docs.
 
 IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
 BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).  
@@ -133,7 +168,7 @@ Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURI
 
 ```text
 invincible/
-├── app/                 # Next App Router (/, /harness, /api/chat, /api/agent)
+├── app/                 # Next App Router (/, /harness, /login, /admin, /api/*)
 ├── db/                  # Drizzle schema + SQL migrations (tenancy phase 1+)
 ├── lib/                 # palette, chat, agent, bridge, session, sandbox, tenancy
 ├── sandbox/             # protocol v1 daemon (BYO tools workspace)
@@ -215,8 +250,11 @@ See create-plan / plan-review **layer** rules when planning features.
 - Inference stays server-side (`POST /api/chat` / `POST /api/agent`). No Gateway or sandbox secrets in client or Wasm.
 - Agent sandbox is a **separate process** from the Zig GHA runner — see [`docs/sandbox.md`](docs/sandbox.md).
 - Prefer extending `native/harness` + `HarnessHost` over new infra.
-- Run `npm test` / `npm run typecheck` / `npm run build` before claiming ready (local build needs token or existing `public/harness`).
+- Run `npm test` / `npm run typecheck` / `npm run build` before claiming ready
+  (**agent workspace or CI**; build needs token or existing `public/harness`).
 - No secrets in repo; Vercel / GitHub secrets only.
+- Ops instructions for humans: **Vercel / browser / cloud agent** only — never
+  “install Node on your laptop” or “clone this path on your machine.”
 
 ## Do not
 
@@ -224,4 +262,5 @@ See create-plan / plan-review **layer** rules when planning features.
 - Bypass palette for “temporary” colors
 - Use pure blue/cyan or coral one-offs
 - Grow a second unrelated color module
-- Ask the **origin** maintainer to configure deploy hooks / tokens that are already listed as **Done** above (forks/clones: use [`docs/bring-your-own.md`](docs/bring-your-own.md))
+- Ask the **origin** maintainer to configure deploy hooks / tokens that are already listed as **Done** above (forks: use [`docs/bring-your-own.md`](docs/bring-your-own.md))
+- Tell humans to use a **personal laptop/desktop** for product ops (clone, migrate, seed, npm). Use cloud agent workspaces, GitHub Actions, or Vercel instead.
