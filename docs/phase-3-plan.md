@@ -29,7 +29,7 @@ In-browser **agent harness** (Wasm), not a CLI clone and not a Chrome extension:
 - Live: https://invincible-dun-ten.vercel.app  
 
 ### Phase 2
-- Droplet `589481218` · `204.48.30.46` · nyc1  
+- Self-hosted runner **`invincible-do-1`** (host inventory private)  
 - Runner **`invincible-do-1`** · labels `self-hosted`, `invincible`, `zig`  
 - Zig **0.16.0** @ `/opt/zig/0.16.0`  
 - Workflows: `runner-smoke`, `build-wasm` (placeholder `hello.wasm`)  

@@ -53,7 +53,14 @@ These are **already set up**. Never ask the user to create, wire, or “remember
 - If workflow log says hook skipped (`not set`), treat as a real regression and investigate — still prefer fixing CI/docs over lecturing the user.
 - Race fix lives in `scripts/fetch-harness-artifact.mjs` (wait for commit-matched artifact). See `docs/harness-deploy-race.md`.
 
-IDs and URLs: [`docs/project-ids.md`](docs/project-ids.md). Runner ops: [`docs/runner.md`](docs/runner.md).
+IDs and URLs: [`docs/project-ids.md`](docs/project-ids.md). Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURITY.md).
+
+## Public repository policy
+
+- Do **not** commit host IPs, droplet IDs, or cloud account GUIDs.
+- Self-hosted workflows: **no** `pull_request` triggers; jobs gated to `btipling/invincible` + `main` / `workflow_dispatch` only.
+- Prefer abstract runner docs; private inventory stays offline.
+
 
 ## Structure
 

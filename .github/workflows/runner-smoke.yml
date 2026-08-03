@@ -1,15 +1,20 @@
-# Phase 2.4 — prove invincible-do-1 is healthy
+# Prove self-hosted runner health. No pull_request (public-repo safety).
 name: runner-smoke
 
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - ".github/workflows/runner-smoke.yml"
 
 jobs:
   smoke:
-    name: smoke on DO self-hosted
+    name: smoke on self-hosted
+    if: >
+      github.repository == 'btipling/invincible' &&
+      github.event_name != 'pull_request' &&
+      (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, invincible, zig]
     timeout-minutes: 10
     steps:
@@ -19,7 +24,7 @@ jobs:
           hostname
           uname -a
           id
-          echo "runner name expected: invincible-do-1"
+          echo "runner labels: self-hosted, invincible, zig"
 
       - name: Zig pin
         run: |

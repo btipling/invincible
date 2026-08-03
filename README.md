@@ -11,7 +11,7 @@ Prompt playground / agent harness (Next.js + Zig/dvui Wasm).
 | **Production** | https://invincible-dun-ten.vercel.app |
 | **Harness** | https://invincible-dun-ten.vercel.app/harness |
 | **Root** | https://invincible-dun-ten.vercel.app/ → redirects to `/harness` |
-| **Vercel** | [invincible](https://vercel.com/bjorns-projects-65588ed4/invincible) |
+| **Vercel** | project `invincible` (Git-linked) |
 | **IDs** | [`docs/project-ids.md`](docs/project-ids.md) |
 
 ### Try `/harness` (Wasm is the app)
@@ -129,4 +129,5 @@ npm test && npm run typecheck
 | [runner.md](docs/runner.md) | DO runner + workflows |
 | [session-model.md](docs/session-model.md) | SessionStore |
 | [harness-deploy-race.md](docs/harness-deploy-race.md) | Artifact vs Vercel race |
-| [project-ids.md](docs/project-ids.md) | IDs and configured env |
+| [project-ids.md](docs/project-ids.md) | Public URLs / env names |
+| [SECURITY.md](SECURITY.md) | Secrets + self-hosted public policy |

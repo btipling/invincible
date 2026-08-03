@@ -1,4 +1,5 @@
-# Phase 3.1 — build dvui web Wasm spike on invincible-do-1
+# dvui spike build on self-hosted runner (research artifact).
+# Public-repo safety: no pull_request; only this repo + main/dispatch.
 name: build-dvui-spike
 
 on:
@@ -13,6 +14,10 @@ on:
 jobs:
   dvui-wasm:
     name: zig → dvui web.wasm
+    if: >
+      github.repository == 'btipling/invincible' &&
+      github.event_name != 'pull_request' &&
+      (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, invincible, zig]
     timeout-minutes: 45
     steps:

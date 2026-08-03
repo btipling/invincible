@@ -1,4 +1,5 @@
-# Phase 2.5 — compile placeholder Wasm on DO runner, upload Actions artifact
+# Placeholder hello.wasm on self-hosted runner.
+# Public-repo safety: no pull_request; only this repo + main/dispatch.
 name: build-wasm
 
 on:
@@ -12,6 +13,10 @@ on:
 jobs:
   wasm:
     name: zig → hello.wasm
+    if: >
+      github.repository == 'btipling/invincible' &&
+      github.event_name != 'pull_request' &&
+      (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, invincible, zig]
     timeout-minutes: 15
     steps:

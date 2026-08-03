@@ -1,4 +1,5 @@
-# Phase 3.3 — compile harness.wasm on DO runner, upload Actions artifact
+# Compile harness.wasm on trusted self-hosted runner; upload Actions artifact.
+# Public-repo safety: no pull_request trigger; job only on this repo + main/dispatch.
 name: build-harness
 
 on:
@@ -10,9 +11,19 @@ on:
       - "native/ZIG_VERSION"
       - ".github/workflows/build-harness.yml"
 
+# Never run untrusted PR code on the DO runner.
+# forks: self-hosted runners are not shared to forks automatically; still refuse PRs.
+concurrency:
+  group: build-harness-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   harness:
     name: zig → harness.wasm
+    if: >
+      github.repository == 'btipling/invincible' &&
+      github.event_name != 'pull_request' &&
+      (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, invincible, zig]
     timeout-minutes: 45
     steps:
@@ -47,17 +58,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # After artifact is public: ping Vercel so prebuild can fetch *this* run's Wasm.
-      # Pair with scripts/fetch-harness-artifact.mjs wait-for-SHA (Vercel Git race fix).
-      # Prefer setting secret VERCEL_DEPLOY_HOOK_URL so a second deploy always follows
-      # harness CI even if the first Git deploy raced.
       - name: Trigger Vercel redeploy (optional)
         env:
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
         run: |
           set -euo pipefail
           if [ -z "${VERCEL_DEPLOY_HOOK_URL:-}" ]; then
-            # Secret is expected to exist (see AGENTS.md). Empty = regression or fork.
             echo "WARN: VERCEL_DEPLOY_HOOK_URL empty — skip hook; fetch-harness wait-for-SHA still applies"
             exit 0
           fi
