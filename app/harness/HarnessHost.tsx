@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { DEFAULT_MODEL_LABEL } from '../../lib/chatApi';
-import { HARNESS_SMOKE_PROMPT, runHarnessChat } from '../../lib/harnessChat';
+import { HARNESS_SMOKE_PROMPT, runHarnessTurn } from '../../lib/harnessChat';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -11,12 +11,18 @@ import {
   lifecycleName,
 } from '../../lib/harnessBridge';
 import { ember, teal, warm } from '../../lib/palette';
+import {
+  createDefaultSessionStore,
+  createEmptySession,
+  type SessionMessage,
+  type SessionSnapshot,
+  type SessionStore,
+} from '../../lib/sessionStore';
 import AppNav from '../components/AppNav';
 
 type Phase = 'loading' | 'ready' | 'error';
 type ChatUi = 'idle' | 'busy' | 'ok' | 'fail';
 
-/** Shape of dvui web.js module (static asset, not bundled). */
 type DvuiModule = {
   dvui: (
     canvas: string | HTMLCanvasElement,
@@ -34,49 +40,103 @@ async function loadDvuiGlue(): Promise<DvuiModule> {
   return import(/* webpackIgnore: true */ /* @vite-ignore */ href) as Promise<DvuiModule>;
 }
 
+function bubbleColors(role: SessionMessage['role']): {
+  border: string;
+  bg: string;
+  label: string;
+  text: string;
+} {
+  switch (role) {
+    case 'user':
+      return { border: teal.accent, bg: teal.bg, label: teal.accent, text: teal.text };
+    case 'assistant':
+      return { border: teal.border, bg: teal.surface, label: warm.accent, text: teal.text };
+    case 'error':
+      return { border: ember.border, bg: ember.surface, label: ember.accent, text: ember.text };
+    case 'system':
+    default:
+      return { border: teal.border, bg: teal.clear, label: teal.muted, text: teal.muted };
+  }
+}
+
+function roleLabel(role: SessionMessage['role']): string {
+  switch (role) {
+    case 'user':
+      return 'You';
+    case 'assistant':
+      return 'Assistant';
+    case 'error':
+      return 'Error';
+    case 'system':
+      return 'System';
+  }
+}
+
 export default function HarnessHost() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const bridgeRef = useRef<HarnessBridge | null>(null);
+  const storeRef = useRef<SessionStore | null>(null);
   const pollRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const inflightRef = useRef(false);
+  const sessionRef = useRef<SessionSnapshot>(createEmptySession());
 
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState<string | null>(null);
-  const [bridgeNote, setBridgeNote] = useState<string | null>(null);
   const [lifecycle, setLifecycle] = useState<string>('boot');
   const [chatUi, setChatUi] = useState<ChatUi>('idle');
-  const [chatHint, setChatHint] = useState<string | null>(null);
+  const [statusLine, setStatusLine] = useState<string | null>(null);
   const [domPrompt, setDomPrompt] = useState('');
+  const [session, setSession] = useState<SessionSnapshot>(() => createEmptySession());
+  const [storeKind, setStoreKind] = useState<string>('memory');
+  const [showCanvas, setShowCanvas] = useState(false);
 
-  const runPrompt = useCallback(async (prompt: string) => {
-    const bridge = bridgeRef.current;
-    if (!bridge || inflightRef.current) return;
-
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    inflightRef.current = true;
-    setChatUi('busy');
-    setChatHint('Calling /api/chat…');
-    setLifecycle(lifecycleName(Lifecycle.Busy));
-
-    try {
-      const result = await runHarnessChat(bridge, prompt, { signal: controller.signal });
-      if (controller.signal.aborted) return;
-      if (result.ok) {
-        setChatUi('ok');
-        setChatHint(result.text.length > 120 ? result.text.slice(0, 117) + '…' : result.text);
-        setLifecycle(lifecycleName(Lifecycle.Ready));
-      } else {
-        setChatUi('fail');
-        setChatHint(result.error);
-        setLifecycle(lifecycleName(Lifecycle.Ready));
-      }
-    } finally {
-      inflightRef.current = false;
-    }
+  const persist = useCallback((next: SessionSnapshot) => {
+    sessionRef.current = next;
+    setSession(next);
+    storeRef.current?.save(next);
   }, []);
+
+  const runPrompt = useCallback(
+    async (prompt: string) => {
+      const bridge = bridgeRef.current;
+      if (!bridge || inflightRef.current) return;
+
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      inflightRef.current = true;
+      setChatUi('busy');
+      setStatusLine('Waiting for model…');
+      setLifecycle(lifecycleName(Lifecycle.Busy));
+
+      try {
+        const { result, session: next } = await runHarnessTurn(
+          bridge,
+          sessionRef.current,
+          prompt,
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+        persist(next);
+        if (result.ok) {
+          setChatUi('ok');
+          setStatusLine(null);
+          setLifecycle(lifecycleName(Lifecycle.Ready));
+          setDomPrompt('');
+        } else {
+          setChatUi('fail');
+          setStatusLine(result.error);
+          setLifecycle(lifecycleName(Lifecycle.Ready));
+        }
+      } finally {
+        inflightRef.current = false;
+      }
+    },
+    [persist],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -85,6 +145,10 @@ export default function HarnessHost() {
 
     (async () => {
       try {
+        const store = createDefaultSessionStore();
+        storeRef.current = store;
+        setStoreKind(store.kind);
+
         const head = await fetch('/harness/harness.wasm', { method: 'HEAD' });
         if (!head.ok) {
           throw new Error(
@@ -106,20 +170,38 @@ export default function HarnessHost() {
         bridgeRef.current = bridge;
 
         const rt = bridge.assertRoundTrip('hello-bridge');
-
         bridge.setLifecycle(Lifecycle.Ready);
-        bridge.clearMessages();
-        bridge.pushMessage(
-          MessageKind.System,
-          `Bridge online (v${rt.protocol}). Inference via host /api/chat · model ${DEFAULT_MODEL_LABEL}.`,
-        );
+
+        const restored = store.load();
+        if (restored && restored.messages.some((m) => m.role === 'user' || m.role === 'assistant')) {
+          sessionRef.current = restored;
+          setSession(restored);
+          bridge.clearMessages();
+          for (const m of restored.messages) {
+            const kind =
+              m.role === 'user'
+                ? MessageKind.User
+                : m.role === 'assistant'
+                  ? MessageKind.Assistant
+                  : m.role === 'error'
+                    ? MessageKind.Error
+                    : MessageKind.System;
+            bridge.pushMessage(kind, m.text);
+          }
+          setStatusLine(`Restored session · protocol v${rt.protocol}`);
+        } else {
+          const empty = createEmptySession();
+          sessionRef.current = empty;
+          setSession(empty);
+          bridge.clearMessages();
+          bridge.pushMessage(
+            MessageKind.System,
+            `Invincible harness ready · ${DEFAULT_MODEL_LABEL} · ⌘/Ctrl+Enter to send`,
+          );
+        }
 
         setLifecycle(lifecycleName(Lifecycle.Ready));
-        setBridgeNote(
-          `protocol v${rt.protocol} · echo ok · ${DEFAULT_MODEL_LABEL}`,
-        );
 
-        // Poll Wasm → JS submit queue (Send / Smoke in canvas).
         const poll = () => {
           if (cancelled) return;
           const b = bridgeRef.current;
@@ -135,7 +217,7 @@ export default function HarnessHost() {
 
         if (!cancelled) {
           setPhase('ready');
-          canvas.focus();
+          requestAnimationFrame(() => textareaRef.current?.focus());
         }
       } catch (e) {
         if (cancelled) return;
@@ -156,6 +238,14 @@ export default function HarnessHost() {
     };
   }, [runPrompt]);
 
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [session.messages, chatUi]);
+
+  const busy = chatUi === 'busy' || phase === 'loading';
+
   const onDomSend = useCallback(() => {
     if (phase !== 'ready' || inflightRef.current) return;
     void runPrompt(domPrompt);
@@ -167,7 +257,38 @@ export default function HarnessHost() {
     void runPrompt(HARNESS_SMOKE_PROMPT);
   }, [phase, runPrompt]);
 
-  const busy = chatUi === 'busy' || phase === 'loading';
+  const onClear = useCallback(() => {
+    if (inflightRef.current) return;
+    abortRef.current?.abort();
+    const empty = createEmptySession();
+    persist(empty);
+    storeRef.current?.clear();
+    storeRef.current?.save(empty);
+    const bridge = bridgeRef.current;
+    if (bridge) {
+      bridge.clearMessages();
+      bridge.pushMessage(MessageKind.System, 'Session cleared.');
+      bridge.setLifecycle(Lifecycle.Ready);
+    }
+    setChatUi('idle');
+    setStatusLine(null);
+    setDomPrompt('');
+    setLifecycle(lifecycleName(Lifecycle.Ready));
+    textareaRef.current?.focus();
+  }, [persist]);
+
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        if (phase === 'ready' && chatUi !== 'busy') onDomSend();
+      }
+    },
+    [onDomSend, phase, chatUi],
+  );
+
+  const turns = session.messages.filter((m) => m.role !== 'system');
+  const isEmpty = turns.length === 0;
 
   return (
     <main
@@ -192,26 +313,34 @@ export default function HarnessHost() {
               justifyContent: 'flex-end',
             }}
           >
-            {bridgeNote && phase === 'ready' && (
-              <span
-                style={{
-                  fontSize: '0.7rem',
-                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                  color: teal.muted,
-                  border: `1px solid ${teal.border}`,
-                  background: teal.surface,
-                  borderRadius: 4,
-                  padding: '0.2rem 0.45rem',
-                  maxWidth: 280,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-                title={bridgeNote}
-              >
-                {bridgeNote}
-              </span>
-            )}
+            <span
+              style={{
+                fontSize: '0.7rem',
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                color: warm.muted,
+                border: `1px solid ${warm.border}`,
+                background: warm.surface,
+                borderRadius: 4,
+                padding: '0.2rem 0.45rem',
+              }}
+              title="Server routes this model via AI Gateway"
+            >
+              {DEFAULT_MODEL_LABEL}
+            </span>
+            <span
+              style={{
+                fontSize: '0.7rem',
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                color: teal.muted,
+                border: `1px solid ${teal.border}`,
+                background: teal.surface,
+                borderRadius: 4,
+                padding: '0.2rem 0.45rem',
+              }}
+              title={`Session store: ${storeKind}`}
+            >
+              {storeKind}
+            </span>
             <span
               style={{
                 fontSize: '0.75rem',
@@ -223,207 +352,419 @@ export default function HarnessHost() {
                       ? warm.accent
                       : warm.muted,
                 border: `1px solid ${
-                  phase === 'error' || chatUi === 'fail'
-                    ? ember.border
-                    : chatUi === 'busy'
-                      ? warm.border
-                      : warm.border
+                  phase === 'error' || chatUi === 'fail' ? ember.border : warm.border
                 }`,
                 background:
-                  phase === 'error' || chatUi === 'fail'
-                    ? ember.surface
-                    : chatUi === 'busy'
-                      ? warm.surface
-                      : warm.surface,
+                  phase === 'error' || chatUi === 'fail' ? ember.surface : warm.surface,
                 borderRadius: 4,
                 padding: '0.2rem 0.5rem',
               }}
             >
-              {phase === 'loading' && 'loading wasm…'}
-              {phase === 'ready' && `harness · ${lifecycle}`}
-              {phase === 'error' && 'harness error'}
+              {phase === 'loading' && 'loading…'}
+              {phase === 'ready' && (chatUi === 'busy' ? 'thinking…' : `ready · ${lifecycle}`)}
+              {phase === 'error' && 'error'}
             </span>
           </span>
         }
       />
 
-      {phase === 'ready' && (
-        <div
-          style={{
-            borderBottom: `1px solid ${teal.border}`,
-            background: teal.surface,
-            padding: '0.55rem 1rem',
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: '0.5rem',
-            alignItems: 'center',
-          }}
-        >
-          <input
-            type="text"
-            value={domPrompt}
-            onChange={(e) => setDomPrompt(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                onDomSend();
-              }
-            }}
-            placeholder="Prompt (host → /api/chat)…"
-            disabled={busy}
-            aria-label="Harness prompt"
-            style={{
-              flex: '1 1 200px',
-              minWidth: 0,
-              background: teal.bg,
-              color: teal.text,
-              border: `1px solid ${teal.border}`,
-              borderRadius: 6,
-              padding: '0.45rem 0.65rem',
-              fontSize: '0.9rem',
-            }}
-          />
-          <button
-            type="button"
-            onClick={onDomSend}
-            disabled={busy}
-            style={{
-              background: teal.accent,
-              color: teal.bg,
-              border: 'none',
-              borderRadius: 6,
-              padding: '0.45rem 0.85rem',
-              fontWeight: 600,
-              fontSize: '0.85rem',
-              cursor: busy ? 'not-allowed' : 'pointer',
-              opacity: busy ? 0.6 : 1,
-            }}
-          >
-            {busy ? 'Sending…' : 'Send'}
-          </button>
-          <button
-            type="button"
-            onClick={onSmoke}
-            disabled={busy}
-            title={HARNESS_SMOKE_PROMPT}
-            style={{
-              background: warm.surface,
-              color: warm.accent,
-              border: `1px solid ${warm.border}`,
-              borderRadius: 6,
-              padding: '0.45rem 0.75rem',
-              fontWeight: 600,
-              fontSize: '0.8rem',
-              cursor: busy ? 'not-allowed' : 'pointer',
-              opacity: busy ? 0.6 : 1,
-            }}
-          >
-            Smoke: PONG
-          </button>
-          {chatHint && (
-            <span
-              role="status"
-              style={{
-                flex: '1 1 100%',
-                fontSize: '0.78rem',
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                color: chatUi === 'fail' ? ember.accent : teal.muted,
-                lineHeight: 1.35,
-              }}
-            >
-              {chatUi === 'fail' ? 'Error: ' : chatUi === 'busy' ? '' : 'Last: '}
-              {chatHint}
-            </span>
-          )}
-        </div>
-      )}
-
       <div
         style={{
           flex: 1,
-          position: 'relative',
           minHeight: 0,
-          background: teal.clear,
+          display: 'flex',
+          flexDirection: 'column',
+          maxWidth: 820,
+          width: '100%',
+          margin: '0 auto',
+          boxSizing: 'border-box',
+          padding: '0.75rem 0.85rem 0.85rem',
+          gap: '0.65rem',
         }}
       >
-        <canvas
-          id="harness-canvas"
-          ref={canvasRef}
-          tabIndex={1}
+        <section
+          aria-label="Conversation"
           style={{
-            display: 'block',
-            width: '100%',
-            height: '100%',
-            outline: 'none',
-            caretColor: 'transparent',
-            touchAction: 'none',
+            flex: 1,
+            minHeight: 160,
+            display: 'flex',
+            flexDirection: 'column',
+            border: `1px solid ${teal.border}`,
+            background: teal.surface,
+            borderRadius: 10,
+            overflow: 'hidden',
           }}
-        />
-
-        {phase === 'loading' && (
+        >
           <div
-            role="status"
             style={{
-              position: 'absolute',
-              inset: 0,
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center',
-              pointerEvents: 'none',
-              background: 'rgba(5, 10, 12, 0.55)',
-              color: teal.muted,
-              fontSize: '0.95rem',
+              gap: '0.5rem',
+              padding: '0.55rem 0.85rem',
+              borderBottom: `1px solid ${teal.border}`,
+              flexWrap: 'wrap',
             }}
           >
-            Loading harness…
+            <h1
+              style={{
+                margin: 0,
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                letterSpacing: '0.06em',
+                textTransform: 'uppercase',
+                color: teal.muted,
+              }}
+            >
+              Agent
+            </h1>
+            <span style={{ fontSize: '0.75rem', color: teal.muted }}>
+              multi-turn · host Gateway
+            </span>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() => setShowCanvas((v) => !v)}
+                style={{
+                  appearance: 'none',
+                  background: 'transparent',
+                  border: `1px solid ${teal.border}`,
+                  color: teal.muted,
+                  borderRadius: 4,
+                  padding: '0.2rem 0.5rem',
+                  fontSize: '0.72rem',
+                  cursor: 'pointer',
+                }}
+              >
+                {showCanvas ? 'Hide Wasm' : 'Show Wasm'}
+              </button>
+              <button
+                type="button"
+                onClick={onClear}
+                disabled={busy || phase !== 'ready'}
+                style={{
+                  appearance: 'none',
+                  background: 'transparent',
+                  border: `1px solid ${teal.border}`,
+                  color: teal.muted,
+                  borderRadius: 4,
+                  padding: '0.2rem 0.5rem',
+                  fontSize: '0.72rem',
+                  cursor: busy ? 'not-allowed' : 'pointer',
+                  opacity: busy ? 0.5 : 1,
+                }}
+              >
+                Clear
+              </button>
+            </div>
           </div>
-        )}
 
-        {phase === 'error' && (
+          <div
+            ref={transcriptRef}
+            style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: '0.85rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.65rem',
+              WebkitOverflowScrolling: 'touch',
+            }}
+          >
+            {phase === 'loading' && (
+              <p style={{ margin: 0, color: teal.muted, fontSize: '0.9rem' }}>
+                Loading harness runtime…
+              </p>
+            )}
+
+            {phase === 'ready' && isEmpty && (
+              <div
+                style={{
+                  margin: 'auto',
+                  textAlign: 'center',
+                  maxWidth: 340,
+                  padding: '1.5rem 0.5rem',
+                  color: teal.muted,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: '1.05rem',
+                    fontWeight: 600,
+                    color: teal.text,
+                    marginBottom: '0.4rem',
+                  }}
+                >
+                  Start a conversation
+                </div>
+                <p style={{ margin: 0, fontSize: '0.88rem', lineHeight: 1.5 }}>
+                  Type a prompt below and press{' '}
+                  <strong style={{ color: teal.accent }}>⌘/Ctrl+Enter</strong>, or try{' '}
+                  <strong style={{ color: warm.accent }}>Smoke: PONG</strong>.
+                </p>
+              </div>
+            )}
+
+            {phase === 'ready' &&
+              turns.map((m) => {
+                const c = bubbleColors(m.role);
+                return (
+                  <article
+                    key={m.id}
+                    style={{
+                      border: `1px solid ${c.border}`,
+                      background: c.bg,
+                      borderRadius: 8,
+                      padding: '0.65rem 0.8rem',
+                      maxWidth: m.role === 'user' ? '92%' : '100%',
+                      alignSelf: m.role === 'user' ? 'flex-end' : 'stretch',
+                      boxSizing: 'border-box',
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: '0.7rem',
+                        fontWeight: 600,
+                        letterSpacing: '0.04em',
+                        textTransform: 'uppercase',
+                        color: c.label,
+                        marginBottom: '0.3rem',
+                      }}
+                    >
+                      {roleLabel(m.role)}
+                    </div>
+                    <pre
+                      style={{
+                        margin: 0,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        fontFamily:
+                          m.role === 'assistant' || m.role === 'error'
+                            ? 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+                            : 'inherit',
+                        fontSize: '0.9rem',
+                        lineHeight: 1.55,
+                        color: c.text,
+                      }}
+                    >
+                      {m.text}
+                    </pre>
+                  </article>
+                );
+              })}
+
+            {chatUi === 'busy' && (
+              <div
+                role="status"
+                style={{
+                  border: `1px solid ${warm.border}`,
+                  background: warm.surface,
+                  color: warm.accent,
+                  borderRadius: 8,
+                  padding: '0.55rem 0.8rem',
+                  fontSize: '0.85rem',
+                }}
+              >
+                Waiting for model…
+              </div>
+            )}
+          </div>
+        </section>
+
+        {chatUi === 'fail' && statusLine && (
           <div
             role="alert"
             style={{
-              position: 'absolute',
-              left: '50%',
-              top: '50%',
-              transform: 'translate(-50%, -50%)',
-              maxWidth: 420,
-              width: 'calc(100% - 2rem)',
               border: `1px solid ${ember.border}`,
               background: ember.surface,
               color: ember.text,
               borderRadius: 8,
-              padding: '1rem 1.1rem',
-              boxSizing: 'border-box',
+              padding: '0.65rem 0.85rem',
+              fontSize: '0.88rem',
+              lineHeight: 1.4,
             }}
           >
-            <div
-              style={{
-                fontWeight: 600,
-                marginBottom: '0.4rem',
-                color: ember.accent,
-              }}
-            >
-              Could not start harness
-            </div>
-            <div style={{ fontSize: '0.9rem', lineHeight: 1.45 }}>{error}</div>
-            <div
-              style={{
-                marginTop: '0.75rem',
-                fontSize: '0.8rem',
-                color: teal.muted,
-                lineHeight: 1.4,
-              }}
-            >
-              Rebuild on <code style={{ color: teal.accent }}>invincible-do-1</code> (workflow{' '}
-              <code style={{ color: teal.accent }}>build-harness</code>), then redeploy Vercel so{' '}
-              <code style={{ color: teal.accent }}>npm run prebuild</code> fetches artifact{' '}
-              <code style={{ color: teal.accent }}>harness-wasm</code>. Bridge needs protocol v
-              {HARNESS_PROTOCOL_VERSION} exports (<code style={{ color: teal.accent }}>inv_*</code>
-              ).
-            </div>
+            <strong style={{ color: ember.accent }}>Error · </strong>
+            {statusLine}
           </div>
         )}
+
+        {phase === 'ready' && (
+          <section
+            aria-label="Composer"
+            style={{
+              border: `1px solid ${teal.border}`,
+              background: teal.surface,
+              borderRadius: 10,
+              padding: '0.75rem 0.85rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.55rem',
+              flexShrink: 0,
+            }}
+          >
+            <textarea
+              ref={textareaRef}
+              value={domPrompt}
+              onChange={(e) => setDomPrompt(e.target.value)}
+              onKeyDown={onKeyDown}
+              disabled={busy}
+              rows={3}
+              placeholder="Message the model… (⌘/Ctrl + Enter to send)"
+              aria-label="Prompt"
+              style={{
+                width: '100%',
+                resize: 'vertical',
+                minHeight: 72,
+                maxHeight: 180,
+                boxSizing: 'border-box',
+                border: `1px solid ${teal.border}`,
+                borderRadius: 6,
+                background: teal.bg,
+                color: teal.text,
+                padding: '0.65rem 0.75rem',
+                fontSize: '0.95rem',
+                lineHeight: 1.45,
+                fontFamily: 'inherit',
+                outline: 'none',
+              }}
+            />
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                gap: '0.5rem',
+              }}
+            >
+              <button
+                type="button"
+                onClick={onDomSend}
+                disabled={busy}
+                style={{
+                  appearance: 'none',
+                  border: 'none',
+                  borderRadius: 6,
+                  padding: '0.5rem 1rem',
+                  fontSize: '0.9rem',
+                  fontWeight: 600,
+                  cursor: busy ? 'not-allowed' : 'pointer',
+                  background: busy ? teal.border : teal.accent,
+                  color: teal.bg,
+                  opacity: busy ? 0.75 : 1,
+                }}
+              >
+                {busy ? 'Sending…' : 'Send'}
+              </button>
+              <button
+                type="button"
+                onClick={onSmoke}
+                disabled={busy}
+                title={HARNESS_SMOKE_PROMPT}
+                style={{
+                  appearance: 'none',
+                  background: warm.surface,
+                  color: warm.accent,
+                  border: `1px solid ${warm.border}`,
+                  borderRadius: 6,
+                  padding: '0.5rem 0.75rem',
+                  fontWeight: 600,
+                  fontSize: '0.8rem',
+                  cursor: busy ? 'not-allowed' : 'pointer',
+                  opacity: busy ? 0.6 : 1,
+                }}
+              >
+                Smoke: PONG
+              </button>
+              <span style={{ fontSize: '0.75rem', color: teal.muted }}>⌘/Ctrl + Enter</span>
+              {domPrompt.trim().length > 0 && (
+                <span
+                  style={{
+                    marginLeft: 'auto',
+                    fontSize: '0.72rem',
+                    color: teal.muted,
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  }}
+                >
+                  {domPrompt.trim().length.toLocaleString()} chars
+                </span>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* Always-mounted canvas: visible panel or off-screen keepalive for Wasm */}
+        <div
+          style={
+            showCanvas || phase === 'error'
+              ? {
+                  position: 'relative',
+                  height: phase === 'error' ? 220 : 200,
+                  borderRadius: 10,
+                  overflow: 'hidden',
+                  border: `1px solid ${teal.border}`,
+                  background: teal.clear,
+                  flexShrink: 0,
+                }
+              : {
+                  position: 'fixed',
+                  width: 4,
+                  height: 4,
+                  left: 0,
+                  top: 0,
+                  overflow: 'hidden',
+                  opacity: 0.01,
+                  pointerEvents: 'none',
+                  zIndex: -1,
+                }
+          }
+        >
+          <canvas
+            id="harness-canvas"
+            ref={canvasRef}
+            tabIndex={showCanvas ? 1 : -1}
+            style={{
+              display: 'block',
+              width: '100%',
+              height: '100%',
+              outline: 'none',
+              caretColor: 'transparent',
+              touchAction: 'none',
+            }}
+          />
+          {phase === 'error' && (
+            <div
+              role="alert"
+              style={{
+                position: 'absolute',
+                inset: 8,
+                border: `1px solid ${ember.border}`,
+                background: ember.surface,
+                color: ember.text,
+                borderRadius: 8,
+                padding: '0.85rem 1rem',
+                overflow: 'auto',
+                boxSizing: 'border-box',
+              }}
+            >
+              <div style={{ fontWeight: 600, marginBottom: '0.35rem', color: ember.accent }}>
+                Could not start harness
+              </div>
+              <div style={{ fontSize: '0.88rem', lineHeight: 1.45 }}>{error}</div>
+              <div
+                style={{
+                  marginTop: '0.65rem',
+                  fontSize: '0.78rem',
+                  color: teal.muted,
+                  lineHeight: 1.4,
+                }}
+              >
+                Rebuild on <code style={{ color: teal.accent }}>invincible-do-1</code> (
+                <code style={{ color: teal.accent }}>build-harness</code>), redeploy Vercel. Bridge
+                needs protocol v{HARNESS_PROTOCOL_VERSION}.
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </main>
   );

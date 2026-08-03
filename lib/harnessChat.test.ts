@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { HARNESS_SMOKE_PROMPT, runHarnessChat } from './harnessChat';
+import {
+  HARNESS_SMOKE_PROMPT,
+  runHarnessChat,
+  runHarnessTurn,
+} from './harnessChat';
 import {
   HARNESS_PROTOCOL_VERSION,
   HarnessBridge,
@@ -9,6 +13,7 @@ import {
   type HarnessBridgeExports,
 } from './harnessBridge';
 import type { ChatResult } from './chatApi';
+import { createEmptySession } from './sessionStore';
 
 function makeMockExports(): HarnessBridgeExports & {
   __messages: { kind: number; text: string }[];
@@ -89,6 +94,29 @@ describe('runHarnessChat', () => {
     expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
   });
 
+  it('folds history into Gateway prompt', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const send = vi.fn(async (_prompt: string): Promise<ChatResult> => ({
+      ok: true,
+      text: '2',
+    }));
+
+    await runHarnessChat(bridge, 'again', {
+      send,
+      history: [
+        { id: '1', role: 'user', text: 'ping', at: 1 },
+        { id: '2', role: 'assistant', text: 'pong', at: 2 },
+      ],
+    });
+
+    expect(send).toHaveBeenCalled();
+    const sent = String(send.mock.calls[0]?.[0] ?? '');
+    expect(sent).toContain('User: ping');
+    expect(sent).toContain('Assistant: pong');
+    expect(sent).toContain('User: again');
+  });
+
   it('pushes ember error message and stays ready for retry', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
@@ -119,26 +147,31 @@ describe('runHarnessChat', () => {
     expect(send).not.toHaveBeenCalled();
     expect(exp.__messages[0]?.kind).toBe(MessageKind.Error);
   });
+});
 
-  it('sets busy while awaiting send', async () => {
+describe('runHarnessTurn', () => {
+  it('appends user + assistant to session', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
-    let sawBusy = false;
-    const send = vi.fn(async (): Promise<ChatResult> => {
-      sawBusy = exp.__lifecycle() === Lifecycle.Busy;
-      return { ok: true, text: 'ok' };
-    });
+    const send = vi.fn(async (): Promise<ChatResult> => ({ ok: true, text: 'PONG' }));
+    const session = createEmptySession('s1');
 
-    await runHarnessChat(bridge, 'x', { send });
-    expect(sawBusy).toBe(true);
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'hi', { send });
+
+    expect(result.ok).toBe(true);
+    expect(next.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(next.messages[1]?.text).toBe('PONG');
   });
 
-  it('can skip user push when Wasm already showed it', async () => {
+  it('appends error role on failure', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
-    const send = vi.fn(async (): Promise<ChatResult> => ({ ok: true, text: 'a' }));
+    const send = vi.fn(async (): Promise<ChatResult> => ({
+      ok: false,
+      error: 'down',
+    }));
 
-    await runHarnessChat(bridge, 'hi', { send, pushUser: false });
-    expect(exp.__messages).toEqual([{ kind: MessageKind.Assistant, text: 'a' }]);
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'x', { send });
+    expect(next.messages.map((m) => m.role)).toEqual(['user', 'error']);
   });
 });

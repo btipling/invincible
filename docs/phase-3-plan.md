@@ -46,8 +46,8 @@ In-browser **agent harness** (Wasm), not a CLI clone and not a Chrome extension:
 | 5 | [#20 3.5](https://github.com/btipling/invincible/issues/20) `/harness` page | **Done** — App Router host + palette states |
 | 6 | [#21 3.6](https://github.com/btipling/invincible/issues/21) JS↔Wasm bridge | **Done** — `lib/harnessBridge.ts` + `native/harness/src/bridge.zig` |
 | 7 | [#22 3.7](https://github.com/btipling/invincible/issues/22) wire Gateway | **Done** — `lib/harnessChat.ts` + host/Wasm prompt → `POST /api/chat` |
-| 8 | [#23 3.8](https://github.com/btipling/invincible/issues/23) session model | Parallel after 3.6 — **next optional** |
-| 9 | [#24 3.9](https://github.com/btipling/invincible/issues/24) MVP UX loop | After 3.7 — **next product** |
+| 8 | [#23 3.8](https://github.com/btipling/invincible/issues/23) session model | **MVP done** — `SessionStore` + localStorage/memory; cloud later ([session-model.md](session-model.md)) |
+| 9 | [#24 3.9](https://github.com/btipling/invincible/issues/24) MVP UX loop | **Done** — DOM agent panel, multi-turn, ⌘/Ctrl+Enter |
 | 10 | [#25 3.10](https://github.com/btipling/invincible/issues/25) polish | After 3.9 |
 | 11 | [#26 3.11](https://github.com/btipling/invincible/issues/26) docs | Ongoing / end |
 
@@ -69,7 +69,7 @@ In-browser **agent harness** (Wasm), not a CLI clone and not a Chrome extension:
 
 ## Suggested first message for a new session
 
-> Continue Invincible Phase 3 from `docs/phase-3-plan.md`. Start with issue #24 (MVP agent-loop UX) or #23 (session model). Do not re-do Phase 1–2 or Phase 3.1–3.7. Repo: btipling/invincible. Prod: https://invincible-dun-ten.vercel.app.
+> Continue Invincible Phase 3 from `docs/phase-3-plan.md`. Start with issue #25 (polish) or extend #23 cloud store. Do not re-do Phase 1–2 or Phase 3.1–3.9. Repo: btipling/invincible. Prod: https://invincible-dun-ten.vercel.app.
 
 ## References
 

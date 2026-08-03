@@ -100,7 +100,7 @@ Uses Vercel AI Gateway + AI SDK `generateText`. Model default: `xai/grok-4.1-fas
 ### Later phases
 
 - [x] Phase 2: DO self-hosted runner (`invincible-do-1`)
-- Phase 3: Zig + dvui Wasm harness — **3.1–3.7 done** (bridge + `/api/chat` from harness); next **#24 MVP UX** or **#23 session** — see [`docs/phase-3-plan.md`](docs/phase-3-plan.md)
+- Phase 3: Zig + dvui Wasm harness — **3.1–3.9 done** (agent panel + session store); next **#25 polish** — see [`docs/phase-3-plan.md`](docs/phase-3-plan.md)
 
 ### Palette
 
