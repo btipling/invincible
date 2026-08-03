@@ -1,0 +1,263 @@
+# Agent sandbox (BYO)
+
+End-to-end guide for the **pluggable agent sandbox**: a remote path-jailed
+workspace where the model can `list_dir` / `read_file` / `write_file` / `exec`
+during a harness turn.
+
+**Parent epic:** [#45](https://github.com/btipling/invincible/issues/45) ·  
+**Phases 1–3 (code):** #46–#48 · **This guide (docs):** #49
+
+Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-divide.md) ·
+[SECURITY.md](../SECURITY.md) · [runner.md](runner.md) · package detail
+[`sandbox/README.md`](../sandbox/README.md)
+
+---
+
+## 1. What it is / is not
+
+| | |
+|--|--|
+| **Is** | A **separate HTTP daemon** (protocol v1) with a workspace root jail + four tools |
+| **Is** | **BYO** — any operator points `SANDBOX_URL` + `SANDBOX_TOKEN` at **their** process |
+| **Is not** | The Zig **GHA build runner** (`invincible-do-1` / `self-hosted` + `zig` labels) |
+| **Is not** | Multi-tenant SaaS isolation or MCP (still future) |
+| **Is not** | Required for basic chat — without env, harness falls back to `POST /api/chat` |
+
+Never put GHA Actions credentials in the sandbox process env. Prefer a dedicated
+OS user and reverse-proxy TLS in production.
+
+---
+
+## 2. Architecture (product path)
+
+```text
+User types in Wasm composer
+  → host polls pending submit (inflight guard)
+  → runHarnessTurn
+       → formatPromptWithHistory(session user/assistant only)
+       → POST /api/agent { prompt }
+            if HTTP 503 + exact not-configured string
+              → POST /api/chat   (today’s single-shot path)
+            else
+              generateText + tools → SANDBOX_URL/v1/* (HTTP or HTTPS)
+              (Bearer SANDBOX_TOKEN; server-only)
+  → host pushes ≤6 system toolTrace lines (≤240 chars) + assistant/error into Wasm
+  → user reads in canvas
+```
+
+- **Wasm** remains the product UI (transcript + composer). No dual React chat.
+- **Gateway key** and **sandbox token** never enter the client or Wasm.
+- Detection is **server-side only** — no `NEXT_PUBLIC_SANDBOX_*`.
+
+### Exact 503 contract (host fallback)
+
+When `SANDBOX_URL` or `SANDBOX_TOKEN` is unset on the Next/Vercel server:
+
+```http
+HTTP/1.1 503
+Content-Type: application/json
+
+{ "error": "Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN." }
+```
+
+The host falls back to chat **only** for status **503** and this **exact**
+`error` string (`SANDBOX_NOT_CONFIGURED_ERROR` in `lib/sandbox/config.ts`).
+Other 4xx/5xx/network errors are shown as error lines — **no** chat fallback.
+
+---
+
+## 3. Protocol v1 (summary)
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| `GET` | `/health` | none | `{ ok: true, version: 1 }` |
+| `POST` | `/v1/list_dir` | Bearer | List directory entries |
+| `POST` | `/v1/read_file` | Bearer | Read file (max 256 KiB) |
+| `POST` | `/v1/write_file` | Bearer | Write file (max 256 KiB) |
+| `POST` | `/v1/exec` | Bearer | Run argv command (no shell) |
+
+Full contract, jail rules, and exec shape: [`sandbox/README.md`](../sandbox/README.md).
+
+---
+
+## 4. Environment (names only)
+
+### Next.js / Vercel (server)
+
+| Name | Required | Purpose |
+|------|----------|---------|
+| `SANDBOX_URL` | for tools | Base URL of the sandbox (no trailing slash required) |
+| `SANDBOX_TOKEN` | for tools | Shared bearer secret (must match daemon) |
+| `AGENT_MAX_STEPS` | no | Default **6**, hard max **12** |
+| `AGENT_MODEL` | no | Optional tool-capable model override |
+
+Also requires existing `AI_GATEWAY_API_KEY` for inference.
+
+**Never** use `NEXT_PUBLIC_SANDBOX_URL` / `NEXT_PUBLIC_SANDBOX_TOKEN`.
+
+### Sandbox process
+
+| Name | Required | Default | Purpose |
+|------|----------|---------|---------|
+| `SANDBOX_TOKEN` | **yes** | — | Same secret as Vercel |
+| `SANDBOX_WORKSPACE` | **yes** | — | Absolute jail root (must exist) |
+| `SANDBOX_LISTEN` | no | `127.0.0.1:8787` | Bind address (localhost OK behind proxy) |
+
+---
+
+## 5. Local quick start
+
+Terminal A — daemon:
+
+```bash
+cd invincible
+npm install
+export SANDBOX_TOKEN='dev-secret-change-me'
+export SANDBOX_WORKSPACE="$(pwd)/.sandbox-workspace"
+mkdir -p "$SANDBOX_WORKSPACE"
+npm run sandbox:start
+```
+
+Smoke:
+
+```bash
+curl -s http://127.0.0.1:8787/health
+# {"ok":true,"version":1}
+```
+
+Terminal B — Next (`.env.local`):
+
+```bash
+# existing
+AI_GATEWAY_API_KEY=…
+
+# agent sandbox (local)
+SANDBOX_URL=http://127.0.0.1:8787
+SANDBOX_TOKEN=dev-secret-change-me
+# optional:
+# AGENT_MAX_STEPS=6
+# AGENT_MODEL=provider/model-with-tools
+
+npm run dev
+# open http://localhost:3000/harness
+```
+
+Harness smoke with tools (example prompt):
+
+> Create `hello.txt` with hello world, then print its contents.
+
+Expect muted **system** tool lines in the canvas, then an assistant reply.
+
+Without `SANDBOX_*` on Next: **PONG** / normal chat still works via 503 → chat.
+
+---
+
+## 6. Vercel / production URL
+
+Production `SANDBOX_URL` **must be reachable from Vercel** (public HTTPS or
+private networking). **Do not** set `http://127.0.0.1:…` on Vercel — serverless
+cannot call the droplet loopback.
+
+Recommended pattern:
+
+1. Sandbox binds `127.0.0.1:8787` on the VM.  
+2. Reverse proxy terminates TLS and forwards to that port.  
+3. Vercel env: `SANDBOX_URL=https://<your-sandbox-host>` + matching token.  
+4. Verify **off-box** (not only from the droplet):
+
+```bash
+curl -sS https://<your-sandbox-host>/health
+```
+
+---
+
+## 7. BYO deploy patterns
+
+| Pattern | Notes |
+|---------|--------|
+| **Any VM / container** | Run `node sandbox/server.mjs` with env above |
+| **systemd unit** | Dedicated user; restart on failure; no GHA token in unit env |
+| **Docker** | Mount workspace volume; publish only via proxy |
+| **Same physical host as Zig runner** | **Allowed** as operator choice — still a **separate process/user** from the Actions runner |
+
+Origin may run a DigitalOcean-hosted **reference** sample. Host inventory
+(IPs, droplet IDs) stays in **private operator notes** — never this repo.
+
+---
+
+## 8. Budgets (locked with parent #45)
+
+| Knob | Default | Cap / notes |
+|------|---------|-------------|
+| Route `maxDuration` | 60s | `app/api/agent` |
+| `AGENT_MAX_STEPS` | 6 | max 12 |
+| exec `timeoutMs` | 10_000 | max 30_000 |
+| read/write maxBytes | 256 KiB | |
+| stdout/stderr per exec | 32 KiB each | truncated |
+| tool result to model | 8_192 chars | |
+| toolTrace lines to Wasm | 6 | host cap |
+| toolTrace summary chars | 240 | host + server |
+
+---
+
+## 9. Model tool-calling
+
+The agent path uses the Vercel AI SDK with tools and
+`stopWhen: stepCountIs(n)` (never the SDK default of 1 step).
+
+If the default gateway model cannot call tools, set **`AGENT_MODEL`** to a
+tool-capable id on the server. Product DoD for a full tool epic requires a
+working tool-capable model (see parent #45).
+
+---
+
+## 10. Security checklist
+
+- [ ] `SANDBOX_TOKEN` only on Vercel + sandbox process — never client, Wasm, git  
+- [ ] Path jail under `SANDBOX_WORKSPACE`; symlink escape rejected  
+- [ ] `exec` is argv-only (no shell); timeouts kill the process group  
+- [ ] Child env does not inherit sandbox token / host secrets  
+- [ ] Sandbox process **≠** GHA runner process; no Actions credentials in sandbox env  
+- [ ] No `pull_request` execution path for the sandbox service  
+- [ ] No host IPs / droplet IDs / cloud GUIDs committed  
+- [ ] Prod URL health-checked from **outside** the host  
+
+See also [SECURITY.md](../SECURITY.md).
+
+---
+
+## 11. Verify
+
+| # | Check | Expect |
+|---|--------|--------|
+| 1 | `GET /health` (local or off-box prod) | `{ ok: true, version: 1 }` |
+| 2 | Harness with `SANDBOX_*` set | tool system lines + assistant for a write/exec prompt |
+| 3 | Harness with `SANDBOX_*` **unset** | PONG / chat still works (agent 503 → chat) |
+| 4 | Wrong/missing Bearer on `/v1/*` | `401` without echoing the token |
+| 5 | Review git diff | no secrets, no private inventory |
+
+Commands:
+
+```bash
+npm test
+npm run typecheck
+# optional focused:
+npm run test:sandbox
+```
+
+---
+
+## 12. Operator origin sample (async)
+
+Maintainer-only checklist when wiring the **reference** deploy. Does **not**
+block BYO success and must not publish inventory.
+
+- [x] Sandbox unit running (private notes: host, unit file, user)  
+- [x] TLS proxy; `SANDBOX_URL` reachable from off-box (simulates Vercel)  
+- [x] Vercel Production: `SANDBOX_URL` + `SANDBOX_TOKEN`  
+- [ ] Optional `AGENT_MODEL` if needed  
+- [x] Prod `/harness` agent tool smoke  
+- [x] Confirm unset/fallback path still understood for Preview/local  
+
+Origin `SANDBOX_*` is marked **Done** in [AGENTS.md](../AGENTS.md) (2026-08-03).
+Host inventory stays offline; forks still set their own env.

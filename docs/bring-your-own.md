@@ -11,9 +11,9 @@ Vercel project, the secrets, and (optionally) the self-hosted runner.
 and the **Reference deployment** section in the [README](../README.md). Success
 for BYO does **not** require `invincible-dun-ten.vercel.app`.
 
-Related: [feature-divide.md](feature-divide.md) · [SECURITY.md](../SECURITY.md) ·
-[runner.md](runner.md) · [harness-deploy-race.md](harness-deploy-race.md) ·
-[AGENTS.md](../AGENTS.md)
+Related: [feature-divide.md](feature-divide.md) · [sandbox.md](sandbox.md) ·
+[SECURITY.md](../SECURITY.md) · [runner.md](runner.md) ·
+[harness-deploy-race.md](harness-deploy-race.md) · [AGENTS.md](../AGENTS.md)
 
 ---
 
@@ -23,12 +23,15 @@ Related: [feature-divide.md](feature-divide.md) · [SECURITY.md](../SECURITY.md)
 |-------|------|
 | **Wasm harness** | Primary product UI — transcript, composer, Send / PONG, busy/error chrome |
 | **Next.js host** | Shell only — nav, load module, bridge glue, SessionStore, thin status chips |
-| **`POST /api/chat`** | Server-side inference via **your** Vercel AI Gateway key |
+| **`POST /api/chat`** | Server-side single-shot inference via **your** Vercel AI Gateway key |
+| **`POST /api/agent`** | Optional multi-step tools when you configure a **sandbox** ([sandbox.md](sandbox.md)) |
 
-- Secrets stay on the **server** (Vercel env). Never put `AI_GATEWAY_API_KEY` in
-  client code, Wasm, or the browser.
+- Secrets stay on the **server** (Vercel env). Never put `AI_GATEWAY_API_KEY` or
+  `SANDBOX_TOKEN` in client code, Wasm, or the browser.
 - Do **not** build a competing React chat panel — canvas is the workspace.
-- **Sandbox** (agent build/edit tools) and **MCP** are **not shipped** — see
+- **Sandbox MVP is shipped** as a config seam (`SANDBOX_URL` + `SANDBOX_TOKEN`).
+  Without it, harness falls back to chat. Full guide: [sandbox.md](sandbox.md).
+- **MCP** / multi-tenant control plane are still future — see
   [§8 Future](#8-future-not-shipped).
 
 ---
@@ -97,6 +100,8 @@ documented in `scripts/harnessRepo.mjs`.
 | `HARNESS_ARTIFACT_TOKEN` | **Yes** for prod builds that download Wasm | Fine-grained PAT: **Actions: Read** on the repo that publishes artifact `harness-wasm` (your repo for path **A**, or the upstream/build repo for path **B**) |
 | `HARNESS_OWNER` / `HARNESS_REPO` | **Yes until your repo publishes `harness-wasm`** | Point at a repo that already has artifact `harness-wasm` (typical cold-start: path **B**). Once path **A** has uploaded artifacts on **your** repo, omit these so Vercel Git env (`VERCEL_GIT_REPO_OWNER` / `VERCEL_GIT_REPO_SLUG`) is used |
 | `DEFAULT_MODEL` | No | Defaults to gateway model id in code / `.env.example` |
+| `SANDBOX_URL` / `SANDBOX_TOKEN` | No (tools off without both) | Agent sandbox base URL + bearer — **server only**; URL must be **reachable from Vercel** in prod ([sandbox.md](sandbox.md)) |
+| `AGENT_MAX_STEPS` / `AGENT_MODEL` | No | Tool-loop step cap / optional tool-capable model override |
 
 4. Optional GitHub Actions **secret** (on **your** repo): `VERCEL_DEPLOY_HOOK_URL` —
    only if you use `build-harness`’s post-artifact deploy-hook ping. Not required
@@ -137,9 +142,10 @@ workflows. Jobs run only on `workflow_dispatch` or `push` to `main`.
 
 | Rule | Detail |
 |------|--------|
-| Secrets server-side | `AI_GATEWAY_API_KEY` only on Vercel (or local `.env.local`); never in Wasm or client bundles |
+| Secrets server-side | `AI_GATEWAY_API_KEY`, `SANDBOX_TOKEN` only on Vercel (or local `.env.local`); never in Wasm or client bundles |
 | Variables ≠ secrets | `SELF_HOSTED_BUILDS` / `RUNNER_LABELS` are Actions **variables** (non-secret) |
 | Public-repo runners | No PR execution on self-hosted; see [SECURITY.md](../SECURITY.md) |
+| Agent sandbox ≠ Zig runner | Separate process/user; see [sandbox.md](sandbox.md) · [runner.md](runner.md) |
 | No host inventory in git | IPs, droplet IDs, cloud account GUIDs stay offline |
 
 ---
@@ -153,7 +159,8 @@ Use **your** deploy URL (local or Vercel). Do not require the maintainer prod ho
 3. **PONG** smokes the host Gateway path (reply appears in canvas).  
 4. Refresh restores session into Wasm; nav **Clear** resets.  
 5. DOM chrome = nav + status chips only (host shell).  
-6. ~390px width remains usable.
+6. ~390px width remains usable.  
+7. **Optional agent tools:** with `SANDBOX_*` set, try a write/exec prompt; without them, PONG/chat still works ([sandbox.md](sandbox.md)).
 
 Feature divide: [feature-divide.md](feature-divide.md). Product-oriented handoff
 (maintainer URLs as samples): [phase-4-handoff.md](phase-4-handoff.md).
@@ -168,12 +175,13 @@ empty `public/harness`.
 
 | Capability | Status |
 |------------|--------|
-| Pluggable **sandbox** for agent build/run tools | **Not shipped** — planned later; keep config seams open |
+| Pluggable **sandbox** for agent build/run tools | **Shipped (MVP)** — config seam; see [sandbox.md](sandbox.md) |
+| Multi-tenant sandbox isolation / fleet | **Not shipped** — single workspace root per process for now |
 | **MCP** / multi-tenant control plane | **Not shipped** — separate epic; do not half-build here |
 
-This guide covers **BYO Vercel + keys + runner/Wasm supply**. Target projects can
-be any language or platform; Invincible is the harness workspace, not a locked
-stack for the work you operate on.
+This guide covers **BYO Vercel + keys + runner/Wasm supply + optional sandbox**.
+Target projects can be any language or platform; Invincible is the harness
+workspace, not a locked stack for the work you operate on.
 
 ---
 
@@ -200,4 +208,5 @@ listed as Done in [AGENTS.md](../AGENTS.md). Operators on **forks/clones** use
 - [ ] Deployed **your** Vercel project; opened **your** `/harness`
 - [ ] PONG + multi-turn + refresh + Clear work in canvas
 - [ ] If using self-hosted builds: runner online + `SELF_HOSTED_BUILDS=true`
+- [ ] Optional: sandbox daemon + Vercel/local `SANDBOX_URL`/`SANDBOX_TOKEN` ([sandbox.md](sandbox.md))
 - [ ] No keys in client/Wasm; no PR triggers on self-hosted workflows

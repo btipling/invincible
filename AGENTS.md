@@ -19,19 +19,20 @@ Guidance for AI agents (and humans) working on this repository.
 Invincible is **meant to be reusable**, not a private single-purpose app.
 
 **North star:** anyone can **clone this repository**, attach **their own Vercel
-project**, and (when the feature exists) their own **sandbox / runner
-environment**, then run the harness for **their** work — **independent of the
-language or platform** of the project they are building or operating on.
+project**, and their own **sandbox / runner environment**, then run the harness
+for **their** work — **independent of the language or platform** of the project
+they are building or operating on.
 
 | Today | Intent |
 |-------|--------|
 | Single public deploy + this author’s infra are documented for operators | Multi-operator / bring-your-own Vercel + keys |
-| Sandbox env for agent build/run is **planned later** — not shipped | Pluggable sandbox without rewriting the harness |
+| Sandbox MVP **shipped** via `SANDBOX_URL` + `SANDBOX_TOKEN` ([docs/sandbox.md](docs/sandbox.md)) | Pluggable sandbox without rewriting the harness |
 | Stack is Next + Zig/dvui Wasm + AI Gateway | Target projects can be **any** stack; the harness is the workspace |
 
 **Third-party / clone deploy:** follow
-[`docs/bring-your-own.md`](docs/bring-your-own.md) (Vercel + keys + Wasm supply).
-Do not assume origin secrets, runner, or prod URL exist on a fork.
+[`docs/bring-your-own.md`](docs/bring-your-own.md) (Vercel + keys + Wasm supply)
+and optionally [`docs/sandbox.md`](docs/sandbox.md). Do not assume origin
+secrets, runner, sandbox URL, or prod URL exist on a fork.
 
 **Agent rules:**
 
@@ -40,9 +41,11 @@ Do not assume origin secrets, runner, or prod URL exist on a fork.
 - Do **not** treat “works only on invincible-dun-ten.vercel.app” as architecture.
 - When a change **blocks** reusability, call it out in the plan/PR and prefer an
   alternative that leaves the door open.
-- Config seams for BYO Vercel/keys/runner are **landed** (phases 1–3 of epic #38);
-  multi-tenant **sandbox** / MCP remain future — still write code and docs as if
-  broader reuse is the destination.
+- Config seams for BYO Vercel/keys/runner (#38) and **sandbox MVP** (#45 phases
+  1–3) are **landed**. Multi-tenant isolation / MCP remain future — still write
+  code and docs as if broader reuse is the destination.
+- Origin `SANDBOX_*` is **Done** for the reference deploy (private host inventory
+  stays offline). Still never invent a host URL; forks set their own env.
 
 ## Project agent skills
 
@@ -92,9 +95,10 @@ gh auth status || exit 1
 forks/clones. Third-party operators set **their** Vercel/env/runner per
 [`docs/bring-your-own.md`](docs/bring-your-own.md).
 
-On origin, these are **already set up**. Never ask the origin maintainer to
-create, wire, or “remember to set” them unless a build log **proves** they are
-missing/broken.
+On origin, rows marked **Done** are **already set up**. Never ask the origin
+maintainer to create, wire, or “remember to set” those unless a build log
+**proves** they are missing/broken. Never invent a sandbox host URL (private
+ops inventory).
 
 | Item | Status | Notes |
 |------|--------|--------|
@@ -103,15 +107,18 @@ missing/broken.
 | `HARNESS_ARTIFACT_TOKEN` (Vercel) | **Done** | PAT Actions: Read — prebuild downloads `harness-wasm` |
 | `VERCEL_DEPLOY_HOOK_URL` (GitHub secret) | **Done** | deploy hooks; `build-harness` pings after artifact upload |
 | DO runner `invincible-do-1` labels `invincible`,`zig` | **Done** | Zig 0.16.0 only there |
+| `SANDBOX_URL` / `SANDBOX_TOKEN` (Vercel) | **Done** | Agent sandbox on origin Production — see [docs/sandbox.md](docs/sandbox.md); host inventory private; never invent a host URL |
 
 **Agent behavior (origin):**
 
 - Do **not** prompt “set `VERCEL_DEPLOY_HOOK_URL`” / “wire the deploy hook” / “optional secret if not already”.
 - If workflow log says hook skipped (`not set`), treat as a real regression and investigate — still prefer fixing CI/docs over lecturing the user.
 - Race fix lives in `scripts/fetch-harness-artifact.mjs` (wait for commit-matched artifact). See `docs/harness-deploy-race.md`.
+- `SANDBOX_*` is **Done** on origin Production. If harness shows exact 503 not-configured or tools vanish, treat as regression (env/redeploy/reachability) — still no invented hosts ([docs/sandbox.md](docs/sandbox.md)).
 
 IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
-BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURITY.md).
+BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).  
+Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURITY.md).
 
 ## Public repository policy
 
@@ -126,11 +133,12 @@ BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Runner ops: [`docs/runn
 
 ```text
 invincible/
-├── app/                 # Next App Router (/, /harness, /api/chat)
-├── lib/                 # palette, chat, bridge, session
+├── app/                 # Next App Router (/, /harness, /api/chat, /api/agent)
+├── lib/                 # palette, chat, agent, bridge, session, sandbox client
+├── sandbox/             # protocol v1 daemon (BYO tools workspace)
 ├── native/harness/      # Zig + dvui Wasm (CI on self-hosted runner)
 ├── scripts/             # fetch-harness-artifact.mjs, runner scripts
-├── docs/                # BYO guide, phase plans, limits, deploy race
+├── docs/                # BYO, sandbox, phase plans, limits, deploy race
 ├── public/harness/      # wasm/js gitignored; README only committed
 ├── AGENTS.md
 └── package.json
@@ -139,7 +147,8 @@ invincible/
 | Kind of change | Where |
 |----------------|--------|
 | UI page / layout | `app/` |
-| API / AI Gateway | `app/api/*` |
+| API / AI Gateway / agent | `app/api/*`, `lib/agent/*`, `lib/sandbox/*` |
+| Sandbox daemon | `sandbox/` |
 | Colors / tokens (DOM) | `lib/palette.ts` |
 | Colors / tokens (dvui) | `native/harness/src/palette.zig` (hex sync with palette.ts) |
 | JS ↔ Wasm bridge | `lib/harnessBridge.ts` + `native/harness/src/bridge.zig` |
@@ -190,17 +199,18 @@ import { teal, warm, ember } from '@/lib/palette';
 
 | DOM host shell | Wasm harness | Vercel backend |
 |----------------|--------------|----------------|
-| Nav, load module, bridge glue, SessionStore | Transcript, composer, agent chrome | `/api/chat`, AI Gateway, secrets |
-| No competing chat panel | Primary multi-turn UX | Server-only inference |
+| Nav, load module, bridge glue, SessionStore | Transcript, composer, agent chrome | `/api/chat`, `/api/agent`, AI Gateway, secrets |
+| No competing chat panel | Primary multi-turn UX | Server-only inference + optional sandbox tools |
 
 Do **not** rebuild a React agent chat panel as product UI.  
-Do **not** put Gateway secrets in client or Wasm.  
+Do **not** put Gateway or sandbox secrets in client or Wasm.  
 See create-plan / plan-review **layer** rules when planning features.
 
 ## Working rules
 
 - Zig compile **only** on the configured self-hosted runner (`build-harness.yml`; origin sample `invincible-do-1`). After harness source changes: CI → artifact → Vercel (wait-for-SHA prebuild + deploy hook).
-- Inference stays server-side (`POST /api/chat`). No Gateway secrets in client or Wasm.
+- Inference stays server-side (`POST /api/chat` / `POST /api/agent`). No Gateway or sandbox secrets in client or Wasm.
+- Agent sandbox is a **separate process** from the Zig GHA runner — see [`docs/sandbox.md`](docs/sandbox.md).
 - Prefer extending `native/harness` + `HarnessHost` over new infra.
 - Run `npm test` / `npm run typecheck` / `npm run build` before claiming ready (local build needs token or existing `public/harness`).
 - No secrets in repo; Vercel / GitHub secrets only.
