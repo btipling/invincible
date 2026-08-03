@@ -20,7 +20,7 @@ Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-d
 | **Is** | A **separate HTTP daemon** (protocol v1) with a workspace root jail + four tools |
 | **Is** | **BYO** — any operator points `SANDBOX_URL` + `SANDBOX_TOKEN` at **their** process |
 | **Is not** | The Zig **GHA build runner** (`invincible-do-1` / `self-hosted` + `zig` labels) |
-| **Is not** | Multi-tenant SaaS isolation or MCP (still future) |
+| **Is not** | Multi-tenant **fleet** isolation or MCP (still future). Optional **login tenancy** is separate — [bring-your-own.md §4a](bring-your-own.md#4a-optional-multi-tenant-auth) |
 | **Is not** | Required for basic chat — without env, harness falls back to `POST /api/chat` |
 
 Never put GHA Actions credentials in the sandbox process env. Prefer a dedicated
@@ -64,6 +64,35 @@ The host falls back to chat **only** for status **503** and this **exact**
 `error` string (`SANDBOX_NOT_CONFIGURED_ERROR` in `lib/sandbox/config.ts`).
 Other 4xx/5xx/network errors are shown as error lines — **no** chat fallback.
 
+### Tenancy on vs legacy env (parent #54)
+
+| Mode | When | Sandbox credentials |
+|------|------|---------------------|
+| **Legacy (tenancy off)** | Any of `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY` missing | Process env `SANDBOX_URL` + `SANDBOX_TOKEN` (this guide’s original path) |
+| **Tenancy on** | All three set | **DB-resolved** sandbox for the signed-in user (`resolveAgentSandbox`): decrypt `token_ciphertext` server-side; enforce `sandbox_grants` R/W. Env `SANDBOX_*` still used for **seed** / local daemon, not as the sole Production path once tenancy is on. |
+
+When tenancy is on and the user has no usable grant / ambiguous membership:
+
+```http
+HTTP/1.1 403
+Content-Type: application/json
+
+{ "error": "Sandbox access denied." }
+```
+
+Unauthenticated API calls when tenancy is on → **401**
+`{ "error": "Authentication required." }` (not a sandbox config issue).
+
+### Exact 503 only when tenancy is off
+
+**Tenancy off only.** When tenancy is **off** and `SANDBOX_URL` or
+`SANDBOX_TOKEN` is unset, `/api/agent` returns the 503 contract above and the
+host falls back to chat.
+
+When tenancy is **on**, missing env `SANDBOX_*` does **not** produce this 503:
+tools use DB grants; failures are **403** `Sandbox access denied.` (or **401**
+if unauthenticated) — see above.
+
 ---
 
 ## 3. Protocol v1 (summary)
@@ -86,8 +115,8 @@ Full contract, jail rules, and exec shape: [`sandbox/README.md`](../sandbox/READ
 
 | Name | Required | Purpose |
 |------|----------|---------|
-| `SANDBOX_URL` | for tools | Base URL of the sandbox (no trailing slash required) |
-| `SANDBOX_TOKEN` | for tools | Shared bearer secret (must match daemon) |
+| `SANDBOX_URL` | for tools (tenancy **off**) | Base URL of the sandbox (no trailing slash required) |
+| `SANDBOX_TOKEN` | for tools (tenancy **off**) / seed | Shared bearer secret (must match daemon); also used by seed to encrypt into DB when enabling tenancy |
 | `AGENT_MAX_STEPS` | no | Default **6**, hard max **12** |
 | `AGENT_MODEL` | no | Optional tool-capable model override |
 
@@ -247,7 +276,26 @@ npm run test:sandbox
 
 ---
 
-## 12. Operator origin sample (async)
+## 12. Tenancy cutover (origin / BYO)
+
+When Production enables the tenancy triple env, agent tools move to **DB grants**
+instead of process env alone. **Primary path is cloud-native** — do not treat a
+personal laptop as the migrate/seed host.
+
+1. Follow [bring-your-own.md §4a](bring-your-own.md#4a-optional-multi-tenant-auth)
+   (seed via GHA `db-tenancy-bootstrap` or cloud agent while `AUTH_SECRET` is still
+   omitted so tenancy stays **off**).
+2. Set all three on Vercel Production → redeploy → tenancy on.
+3. Smoke: unauth `POST /api/agent` → **401**
+   `{ "error": "Authentication required." }`; `/login` → harness; optional `/admin`.
+4. Origin only: mark `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`
+   **Done** in [AGENTS.md](../AGENTS.md) after smoke (phase 3 / #70).
+
+GHA workflow: [`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml).
+
+---
+
+## 13. Operator origin sample (async)
 
 Maintainer-only checklist when wiring the **reference** deploy. Does **not**
 block BYO success and must not publish inventory.

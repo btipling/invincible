@@ -69,8 +69,8 @@ home directory. Product copy and plans must not require personal hardware.
 - Origin **tenancy** (`DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`)
   stays **Not Done** until Production cutover smoke (unauth API 401 + login).
   Do **not** instruct humans to clone the repo on a laptop to cut over; use a
-  cloud agent workspace, GitHub Actions, or the future bootstrap path (plan
-  issue for cloud-native cutover).
+  cloud agent workspace, GitHub Actions `db-tenancy-bootstrap`, or
+  [docs/bring-your-own.md](docs/bring-your-own.md) §4a.
 
 ## Project agent skills
 
@@ -149,7 +149,8 @@ ops inventory).
   maintainer to “set `DATABASE_URL`” as if forgotten **after** rows are **Done**.
   Until then, cutover is an **explicit** task — run migrate/seed from a **cloud
   agent workspace or GHA**, never by telling the human to clone on a laptop.
-  Prefer implementing cloud-native bootstrap (see plan issues) over laptop docs.
+  Prefer cloud cutover docs ([docs/bring-your-own.md](docs/bring-your-own.md) §4a)
+  and GHA `db-tenancy-bootstrap` over laptop docs.
 
 IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
 BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).  
