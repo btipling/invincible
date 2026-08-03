@@ -148,4 +148,20 @@ describe('resolveHarnessRepo', () => {
       }),
     ).toThrow(/Cannot resolve GitHub owner\/repo/);
   });
+
+  it('partial owner only off require → fills invincible, source fallback', () => {
+    expect(resolveHarnessRepo({ HARNESS_OWNER: 'acme' })).toEqual({
+      owner: 'acme',
+      repo: 'invincible',
+      source: 'fallback',
+    });
+  });
+
+  it('partial repo only off require → fills btipling, source fallback', () => {
+    expect(resolveHarnessRepo({ HARNESS_REPO: 'my-app' })).toEqual({
+      owner: 'btipling',
+      repo: 'my-app',
+      source: 'fallback',
+    });
+  });
 });

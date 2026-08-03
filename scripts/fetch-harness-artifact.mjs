@@ -41,7 +41,7 @@ import { inflateRawSync } from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { resolveHarnessRepo } from './harnessRepo.mjs';
+import { isHarnessRequire, resolveHarnessRepo } from './harnessRepo.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -65,10 +65,7 @@ const ARTIFACT_NAME = 'harness-wasm';
 const WORKFLOW_FILE = 'build-harness.yml';
 const ON_VERCEL = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
 const SKIP = process.env.HARNESS_SKIP_FETCH === '1';
-const REQUIRE =
-  process.env.HARNESS_REQUIRE === '0'
-    ? false
-    : ON_VERCEL || process.env.HARNESS_REQUIRE === '1';
+const REQUIRE = isHarnessRequire(process.env);
 
 const WAIT_MAX_MS = Number(
   process.env.HARNESS_WAIT_MS || (ON_VERCEL ? 720_000 : 0),
@@ -406,7 +403,7 @@ async function main() {
   log(`repo=${OWNER}/${REPO} source=${REPO_SOURCE}`);
   if (REPO_SOURCE === 'fallback') {
     log(
-      'WARN: using maintainer convenience defaults btipling/invincible — set HARNESS_OWNER/HARNESS_REPO or git env for BYO',
+      `WARN: using fallback repo=${OWNER}/${REPO} — missing fields filled from maintainer defaults (btipling/invincible). Set HARNESS_OWNER/HARNESS_REPO or git env for BYO`,
     );
   }
   if (SKIP) {
