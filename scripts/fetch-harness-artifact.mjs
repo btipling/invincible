@@ -15,12 +15,19 @@
  *
  * Optional:
  *   HARNESS_ARTIFACT_ID     — pin a specific artifact id (skip wait)
- *   HARNESS_OWNER / HARNESS_REPO — default btipling / invincible
+ *   HARNESS_OWNER / HARNESS_REPO — optional override (else Vercel/GitHub git env)
+ *   VERCEL_GIT_REPO_OWNER / VERCEL_GIT_REPO_SLUG — auto on Vercel Git deploys
+ *   GITHUB_REPOSITORY       — auto on GitHub Actions ("owner/repo")
  *   HARNESS_SKIP_FETCH=1    — skip network (use existing files or local dist)
  *   HARNESS_REQUIRE=0       — do not fail if fetch impossible (local only)
  *   HARNESS_WAIT_MS         — max wait for harness CI (default 720000 = 12m on Vercel)
  *   HARNESS_WAIT_GRACE_MS   — how long to wait for a run to *appear* (default 90000)
+ *   HARNESS_POLL_MS         — poll interval while waiting (default 12000)
  *   HARNESS_COMMIT_SHA      — override commit (else VERCEL_GIT_COMMIT_SHA / GITHUB_SHA)
+ *
+ * Owner/repo resolution (see scripts/harnessRepo.mjs):
+ *   HARNESS_* → VERCEL_GIT_REPO_* → GITHUB_REPOSITORY → local fallback (off REQUIRE)
+ * On Vercel (or HARNESS_REQUIRE=1), unresolved owner/repo is a hard failure.
  *
  * On Vercel (VERCEL=1), missing token / missing artifact is a hard build failure
  * unless HARNESS_SKIP_FETCH=1 (not recommended for prod).
@@ -34,14 +41,26 @@ import { inflateRawSync } from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
+import { resolveHarnessRepo } from './harnessRepo.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 const DEST = join(ROOT, 'public', 'harness');
 const LOCAL_DIST = join(ROOT, 'native', 'dist', 'harness');
 
-const OWNER = process.env.HARNESS_OWNER || 'btipling';
-const REPO = process.env.HARNESS_REPO || 'invincible';
+let OWNER;
+let REPO;
+let REPO_SOURCE;
+try {
+  const resolved = resolveHarnessRepo(process.env);
+  OWNER = resolved.owner;
+  REPO = resolved.repo;
+  REPO_SOURCE = resolved.source;
+} catch (e) {
+  console.error('[fetch-harness] error:', e instanceof Error ? e.message : e);
+  process.exit(1);
+}
+
 const ARTIFACT_NAME = 'harness-wasm';
 const WORKFLOW_FILE = 'build-harness.yml';
 const ON_VERCEL = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
@@ -384,6 +403,12 @@ async function fetchHarness(tok) {
 }
 
 async function main() {
+  log(`repo=${OWNER}/${REPO} source=${REPO_SOURCE}`);
+  if (REPO_SOURCE === 'fallback') {
+    log(
+      'WARN: using maintainer convenience defaults btipling/invincible — set HARNESS_OWNER/HARNESS_REPO or git env for BYO',
+    );
+  }
   if (SKIP) {
     if (hasHarnessFiles(DEST)) {
       log('HARNESS_SKIP_FETCH=1 and public/harness already present — OK');
