@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AUTH_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
 
 /**
  * Route tests import the handler after env is set.
@@ -11,6 +12,7 @@ describe('POST /api/agent', () => {
     process.env = { ...originalEnv };
     vi.resetModules();
     vi.unmock('../../../lib/agent/runAgent');
+    vi.unmock('../../../lib/tenancy/session');
   });
 
   async function loadRoute() {
@@ -141,7 +143,7 @@ describe('POST /api/agent', () => {
       requireSessionUser: vi.fn(async () => ({
         ok: false as const,
         response: Response.json(
-          { error: 'Authentication required.' },
+          { error: AUTH_REQUIRED_ERROR },
           { status: 401 },
         ),
       })),
@@ -160,7 +162,7 @@ describe('POST /api/agent', () => {
     );
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: string };
-    expect(body.error).toBe('Authentication required.');
+    expect(body.error).toBe(AUTH_REQUIRED_ERROR);
   });
 
 });

@@ -3,6 +3,7 @@
 import { AuthError } from 'next-auth';
 import { redirect } from 'next/navigation';
 import { signIn } from '../../auth';
+import { safeCallbackUrl } from '../../lib/tenancy/callbackUrl';
 
 export type LoginState = {
   error?: string;
@@ -14,17 +15,14 @@ export async function loginAction(
 ): Promise<LoginState> {
   const email = String(formData.get('email') ?? '').trim();
   const password = String(formData.get('password') ?? '');
-  const callbackUrl = String(formData.get('callbackUrl') ?? '/harness').trim() || '/harness';
+  const safeCallback = safeCallbackUrl(
+    String(formData.get('callbackUrl') ?? ''),
+    '/harness',
+  );
 
   if (!email || !password) {
     return { error: 'Email and password are required.' };
   }
-
-  // Only allow relative same-origin callback paths
-  const safeCallback =
-    callbackUrl.startsWith('/') && !callbackUrl.startsWith('//')
-      ? callbackUrl
-      : '/harness';
 
   try {
     await signIn('credentials', {

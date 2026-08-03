@@ -1,9 +1,11 @@
 import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
-import { eq } from 'drizzle-orm';
 import type { NextAuthConfig } from 'next-auth';
-import { createDbConnection, users } from './db';
-import { verifyPassword } from './lib/tenancy/password';
+import { authenticateCredentials } from './lib/tenancy/authenticate';
+import {
+  applyJwtToSessionUser,
+  applyUserToJwtToken,
+} from './lib/tenancy/sessionToken';
 
 /**
  * Auth.js v5 — JWT sessions; credentials against phase-1 `users.password_hash`.
@@ -28,65 +30,18 @@ const authConfig = {
           typeof credentials?.email === 'string' ? credentials.email : '';
         const password =
           typeof credentials?.password === 'string' ? credentials.password : '';
-        const email = emailRaw.trim().toLowerCase();
-        if (!email || !password) {
-          return null;
-        }
-
-        if (!process.env.DATABASE_URL?.trim()) {
-          return null;
-        }
-
-        const { db, client } = createDbConnection();
-        try {
-          const rows = await db
-            .select({
-              id: users.id,
-              email: users.email,
-              name: users.name,
-              status: users.status,
-              passwordHash: users.passwordHash,
-            })
-            .from(users)
-            .where(eq(users.email, email))
-            .limit(1);
-          const row = rows[0];
-          if (!row || row.status !== 'active' || !row.passwordHash) {
-            return null;
-          }
-          const ok = await verifyPassword(password, row.passwordHash);
-          if (!ok) {
-            return null;
-          }
-          return {
-            id: row.id,
-            email: row.email,
-            name: row.name ?? undefined,
-          };
-        } finally {
-          await client.end({ timeout: 5 });
-        }
+        const user = await authenticateCredentials(emailRaw, password);
+        return user;
       },
     }),
   ],
   callbacks: {
     async jwt({ token, user }) {
-      if (user?.id) {
-        token.sub = user.id;
-        if (user.email) token.email = user.email;
-        if (user.name) token.name = user.name;
-      }
-      return token;
+      return applyUserToJwtToken(token, user);
     },
     async session({ session, token }) {
-      if (session.user && token.sub) {
-        session.user.id = token.sub;
-        if (typeof token.email === 'string') {
-          session.user.email = token.email;
-        }
-        if (typeof token.name === 'string') {
-          session.user.name = token.name;
-        }
+      if (session.user) {
+        applyJwtToSessionUser(session.user, token);
       }
       return session;
     },

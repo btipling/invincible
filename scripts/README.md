@@ -70,7 +70,7 @@ npm run db:seed
 # open /login with SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD.
 ```
 
-Schema: `db/schema.ts`. Crypto: `lib/tenancy/credentials.ts`. Auth.js tables: phase 2.
+Schema: `db/schema.ts`. Crypto: `lib/tenancy/credentials.ts`. Auth.js: JWT + Credentials only (no adapter `accounts`/`sessions` tables).
 
 ## Phase 3 — fetch harness artifact (Vercel / local)
 

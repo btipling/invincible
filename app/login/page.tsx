@@ -1,4 +1,5 @@
 import { teal } from '../../lib/palette';
+import { safeCallbackUrl } from '../../lib/tenancy/callbackUrl';
 import { LoginForm } from './login-form';
 
 export const metadata = {
@@ -11,10 +12,7 @@ export default async function LoginPage({
   searchParams: Promise<{ callbackUrl?: string }>;
 }) {
   const params = await searchParams;
-  const callbackUrl =
-    typeof params.callbackUrl === 'string' && params.callbackUrl.startsWith('/')
-      ? params.callbackUrl
-      : '/harness';
+  const callbackUrl = safeCallbackUrl(params.callbackUrl, '/harness');
 
   return (
     <main
