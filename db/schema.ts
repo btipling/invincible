@@ -13,7 +13,7 @@ import {
 
 /**
  * Phase 1 tenancy schema (parent #54 / phase #55).
- * Auth.js accounts/sessions/verification_tokens: phase 2.
+ * Auth.js adapter tables (accounts/sessions/verification_tokens): not used (JWT + Credentials).
  */
 
 export const tenants = pgTable('tenants', {

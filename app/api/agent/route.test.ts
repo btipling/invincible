@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AUTH_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
 
 /**
  * Route tests import the handler after env is set.
@@ -11,6 +12,7 @@ describe('POST /api/agent', () => {
     process.env = { ...originalEnv };
     vi.resetModules();
     vi.unmock('../../../lib/agent/runAgent');
+    vi.unmock('../../../lib/tenancy/session');
   });
 
   async function loadRoute() {
@@ -127,4 +129,40 @@ describe('POST /api/agent', () => {
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe('Request cancelled.');
   });
+
+  it('returns 401 with AUTH_REQUIRED_ERROR when tenancy on and unauthenticated', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.SANDBOX_URL = 'http://127.0.0.1:8787';
+    process.env.SANDBOX_TOKEN = 'tok';
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+
+    vi.resetModules();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: false as const,
+        response: Response.json(
+          { error: AUTH_REQUIRED_ERROR },
+          { status: 401 },
+        ),
+      })),
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(async () => ({ text: 'nope', toolTrace: [] })),
+    }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe(AUTH_REQUIRED_ERROR);
+  });
+
 });
