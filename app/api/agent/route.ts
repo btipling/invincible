@@ -13,6 +13,12 @@ import { runAgent } from '../../../lib/agent/runAgent';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
+function isAbortError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  // DOMException AbortError + Next.js ResponseAborted
+  return err.name === 'AbortError' || err.name === 'ResponseAborted';
+}
+
 /**
  * Phase 2 — multi-step agent with sandbox tools.
  *
@@ -61,7 +67,7 @@ export async function POST(req: Request): Promise<Response> {
       ...(toolTrace.length > 0 ? { toolTrace } : {}),
     });
   } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
+    if (isAbortError(err)) {
       return Response.json({ error: 'Request cancelled.' }, { status: 499 });
     }
     const { status, error } = mapInferenceError(err);

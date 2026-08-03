@@ -42,6 +42,29 @@ describe('runAgent', () => {
     expect(generateTextImpl).toHaveBeenCalledTimes(1);
   });
 
+  it('redacts secrets from final model text', async () => {
+    const secret = 'sandbox-token-super-secret';
+    const generateTextImpl = vi.fn(async () => ({
+      text: `token is ${secret} end`,
+      steps: [],
+    }));
+    const client: SandboxClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      exec: vi.fn(),
+    };
+    const result = await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: client,
+      secrets: [secret],
+    });
+    expect(result.text).not.toContain(secret);
+    expect(result.text).toContain('[redacted]');
+  });
+
   it('collectToolTrace builds summaries and ok flags', () => {
     const trace = collectToolTrace(
       {
@@ -77,5 +100,27 @@ describe('runAgent', () => {
     expect(trace[1].ok).toBe(false);
     expect(trace[1].summary).not.toContain('SECRET');
     expect(trace[1].summary).toContain('[redacted]');
+  });
+
+  it('collectToolTrace marks missing results as not ok', () => {
+    const trace = collectToolTrace({
+      steps: [
+        {
+          toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1' }],
+          toolResults: [],
+          content: [
+            {
+              type: 'tool-error',
+              toolCallId: 'c1',
+              toolName: 'list_dir',
+              error: 'Invalid input',
+            },
+          ],
+        },
+      ],
+    });
+    expect(trace).toHaveLength(1);
+    expect(trace[0].ok).toBe(false);
+    expect(trace[0].summary).toMatch(/Invalid input|failed|ERROR/i);
   });
 });

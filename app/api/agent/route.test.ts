@@ -100,4 +100,31 @@ describe('POST /api/agent', () => {
     expect(raw).not.toContain('sandbox-secret-token');
     expect(raw).not.toContain('gw-key-super-secret');
   });
+
+  it('returns 499 when runAgent aborts', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.SANDBOX_URL = 'http://127.0.0.1:8787';
+    process.env.SANDBOX_TOKEN = 'sandbox-secret-token';
+
+    vi.resetModules();
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(async () => {
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        throw err;
+      }),
+    }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(499);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('Request cancelled.');
+  });
 });

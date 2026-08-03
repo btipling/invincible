@@ -50,8 +50,14 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
   const modelId = params.modelId ?? resolveAgentModelId();
   const generate = params.generateTextImpl ?? generateText;
 
+  // Always scrub known server secrets from model-facing and client-facing strings.
+  let secrets: Array<string | undefined | null> = [
+    ...(params.secrets ?? []),
+    process.env.AI_GATEWAY_API_KEY,
+    process.env.SANDBOX_TOKEN,
+  ];
+
   let client = params.sandboxClient;
-  let secrets = params.secrets ?? [];
   if (!client) {
     const cfg = getSandboxConfig();
     if (!cfg) {
@@ -77,7 +83,7 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
   });
 
   const toolTrace = collectToolTrace(result, secrets);
-  const text = (result.text ?? '').trim();
+  const text = redactSecrets((result.text ?? '').trim(), secrets);
   return { text, toolTrace };
 }
 
@@ -92,6 +98,14 @@ export function collectToolTrace(
         result?: unknown;
         output?: unknown;
       }>;
+      /** AI SDK also records invalid/failed calls as content parts. */
+      content?: Array<{
+        type?: string;
+        toolCallId?: string;
+        toolName?: string;
+        error?: unknown;
+        output?: unknown;
+      }>;
     }>;
   },
   secrets: Array<string | undefined | null> = [],
@@ -101,17 +115,36 @@ export function collectToolTrace(
   for (const step of steps) {
     const calls = step.toolCalls ?? [];
     const results = step.toolResults ?? [];
+    const content = step.content ?? [];
     for (const call of calls) {
       const name = call.toolName ?? 'tool';
       const match =
         results.find((r) => r.toolCallId && r.toolCallId === call.toolCallId) ??
         results.find((r) => r.toolName === name);
-      const raw =
-        match && 'output' in match && match.output != null
-          ? match.output
-          : match && 'result' in match
-            ? match.result
-            : undefined;
+      const errorPart =
+        content.find(
+          (p) =>
+            p.type === 'tool-error' &&
+            ((p.toolCallId && p.toolCallId === call.toolCallId) || p.toolName === name),
+        ) ?? undefined;
+
+      let raw: unknown;
+      if (match) {
+        raw =
+          match.output != null
+            ? match.output
+            : 'result' in match
+              ? match.result
+              : undefined;
+      } else if (errorPart) {
+        raw =
+          errorPart.error != null
+            ? errorPart.error
+            : errorPart.output != null
+              ? errorPart.output
+              : 'tool error';
+      }
+
       const asText =
         typeof raw === 'string'
           ? raw
@@ -125,9 +158,13 @@ export function collectToolTrace(
                 }
               })();
       const redacted = redactSecrets(asText, secrets);
-      const ok = !/^\s*ERROR\b/i.test(redacted) && !/\bTIMED_OUT\b/.test(redacted);
+      // Missing result/error → not ok (AI SDK tool-error without toolResults used to look successful).
+      const ok =
+        match != null &&
+        !/^\s*ERROR\b/i.test(redacted) &&
+        !/\bTIMED_OUT\b/.test(redacted);
       const summary = truncateSummary(
-        summarizeTool(name, redacted, ok),
+        summarizeTool(name, redacted || (errorPart ? 'ERROR tool-error' : ''), ok),
         TOOL_TRACE_SUMMARY_MAX_CHARS,
       );
       entries.push({ name, ok, summary });

@@ -8,7 +8,7 @@ import {
 } from './types';
 import { normalizeBaseUrl } from './config';
 
-const DEFAULT_TIMEOUT_MS = 35_000;
+const DEFAULT_TIMEOUT_MS = 45_000;
 
 export type SandboxClient = {
   listDir: (path?: string, init?: { signal?: AbortSignal }) => Promise<ListDirResult>;
