@@ -4,8 +4,10 @@ End-to-end guide for **third-party operators**: clone this repository, attach
 **your** Vercel project and AI Gateway key, supply harness Wasm, and run the
 product without depending on the maintainer production URL.
 
-This is **not** multi-tenant SaaS. You own the GitHub repo (clone/fork), the
-Vercel project, the secrets, and (optionally) the self-hosted runner.
+You own the GitHub repo (clone/fork), the Vercel project, the secrets, and
+(optionally) the self-hosted runner. This is **bring-your-own deploy**, not a
+hosted multi-tenant SaaS control plane — though you **may** enable optional
+**Postgres tenancy + login** (see [§4a](#4a-optional-multi-tenant-auth)).
 
 **Maintainer sample deployment** (demos only): see [project-ids.md](project-ids.md)
 and the **Reference deployment** section in the [README](../README.md). Success
@@ -31,8 +33,9 @@ Related: [feature-divide.md](feature-divide.md) · [sandbox.md](sandbox.md) ·
 - Do **not** build a competing React chat panel — canvas is the workspace.
 - **Sandbox MVP is shipped** as a config seam (`SANDBOX_URL` + `SANDBOX_TOKEN`).
   Without it, harness falls back to chat. Full guide: [sandbox.md](sandbox.md).
-- **MCP** / multi-tenant control plane are still future — see
-  [§8 Future](#8-future-not-shipped).
+- **Optional multi-tenant auth** (login + DB sandbox grants) is **shipped** —
+  see [§4a](#4a-optional-multi-tenant-auth). **MCP** / sandbox fleet isolation
+  remain future — see [§8 Future](#8-future-not-shipped).
 
 ---
 
@@ -100,7 +103,7 @@ documented in `scripts/harnessRepo.mjs`.
 | `HARNESS_ARTIFACT_TOKEN` | **Yes** for prod builds that download Wasm | Fine-grained PAT: **Actions: Read** on the repo that publishes artifact `harness-wasm` (your repo for path **A**, or the upstream/build repo for path **B**) |
 | `HARNESS_OWNER` / `HARNESS_REPO` | **Yes until your repo publishes `harness-wasm`** | Point at a repo that already has artifact `harness-wasm` (typical cold-start: path **B**). Once path **A** has uploaded artifacts on **your** repo, omit these so Vercel Git env (`VERCEL_GIT_REPO_OWNER` / `VERCEL_GIT_REPO_SLUG`) is used |
 | `DEFAULT_MODEL` | No | Defaults to gateway model id in code / `.env.example` |
-| `SANDBOX_URL` / `SANDBOX_TOKEN` | No (tools off without both) | Agent sandbox base URL + bearer — **server only**; URL must be **reachable from Vercel** in prod ([sandbox.md](sandbox.md)) |
+| `SANDBOX_URL` / `SANDBOX_TOKEN` | No (tenancy **off**: tools off without both) | Agent sandbox base URL + bearer when tenancy is **off** — **server only**; URL must be **reachable from Vercel** in prod ([sandbox.md](sandbox.md)). Optional tenancy: [§4a](#4a-optional-multi-tenant-auth) |
 | `AGENT_MAX_STEPS` / `AGENT_MODEL` | No | Tool-loop step cap / optional tool-capable model override |
 
 4. Optional GitHub Actions **secret** (on **your** repo): `VERCEL_DEPLOY_HOOK_URL` —
@@ -116,6 +119,135 @@ unless you set `HARNESS_*`. Runtime does **not** depend on the maintainer prod
 
 Race-safe wait for the matching `harness-wasm` artifact:
 [harness-deploy-race.md](harness-deploy-race.md).
+
+---
+
+## 4a. Optional multi-tenant auth
+
+Phases 1–4 of parent [#54](https://github.com/btipling/invincible/issues/54) ship
+**optional** Postgres tenancy: credentials login, session gate on harness/APIs,
+DB-resolved sandbox credentials + R/W grants, and a minimal `/admin` shell.
+
+Cloud-native cutover (no personal hardware): parent
+[#67](https://github.com/btipling/invincible/issues/67). GHA bootstrap workflow:
+[`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml)
+(phase 1 / [#68](https://github.com/btipling/invincible/issues/68)).
+
+### Enablement (triple env — no AUTH_ENABLED flag)
+
+Tenancy is **on** only when **all three** are non-empty on the **running** deploy:
+
+| Variable | Purpose |
+|----------|---------|
+| `DATABASE_URL` | Postgres (prefer **pooled** Neon / PgBouncer URL on Vercel) |
+| `AUTH_SECRET` | Auth.js session signing (`openssl rand -base64 32`) |
+| `CREDENTIALS_ENCRYPTION_KEY` | Base64 **32-byte** AES-256-GCM KEK for sandbox tokens at rest (`openssl rand -base64 32`) |
+
+If **any** is missing → **legacy open mode**: anonymous `POST /api/chat` and
+`/api/agent`; tools use process env `SANDBOX_URL` + `SANDBOX_TOKEN` as before.
+
+### Behaviour when tenancy is on
+
+| Surface | Behaviour |
+|---------|-----------|
+| Unauthenticated `/api/chat` or `/api/agent` | **401** `{ "error": "Authentication required." }` |
+| Unauthenticated `/`, `/harness`, `/admin` | Redirect to `/login?callbackUrl=…` |
+| Agent tools | **DB-resolved** sandbox for the session user (grants enforced); not raw process env alone |
+| `/admin` | Owner|admin: tenant + sandboxes (**base URL** shown, token **masked**); owner can rotate token |
+| Logout | Clears Auth.js session (and local harness session blob) |
+
+Grant failures return **403** `{ "error": "Sandbox access denied." }`
+(`SANDBOX_FORBIDDEN_ERROR`). See [sandbox.md](sandbox.md).
+
+### Cloud cutover checklist (primary path)
+
+Tenancy turns **on** only when **all three** secrets are present on the running
+deploy. Seed needs `DATABASE_URL` + `CREDENTIALS_ENCRYPTION_KEY` (+ seed inputs)
+but **not** `AUTH_SECRET`. Prefer finishing migrate/seed **before** the third
+var lands on Production so open mode is not flipped against an empty DB.
+
+**Dual-store identity:** GitHub Actions secrets `DATABASE_URL` and
+`CREDENTIALS_ENCRYPTION_KEY` must be the **same values** as Vercel Production
+runtime. Wrong KEK → undecryptable sandbox tokens after login flip.
+
+Names only — never commit passwords, tokens, DB hosts, or KEK material. Never
+paste secret values into issues or PR chat.
+
+1. **Postgres** — create a **pooled** Production `DATABASE_URL` in a hosted
+   console (Neon / DO / etc.). Do **not** put host inventory in git.
+2. **Vercel Production (tenancy still OFF)** — set `DATABASE_URL` +
+   `CREDENTIALS_ENCRYPTION_KEY` only. **Omit** `AUTH_SECRET` so
+   `tenancyEnabled` stays false.
+3. **GitHub Actions secrets** (same DB + KEK as Vercel) — set via GitHub **web
+   UI** or `gh secret set` from a **cloud agent**:
+
+   | Secret | Required |
+   |--------|----------|
+   | `DATABASE_URL` | yes (=== Vercel Production) |
+   | `CREDENTIALS_ENCRYPTION_KEY` | yes (=== Vercel Production) |
+   | `SEED_ADMIN_EMAIL` | yes |
+   | `SEED_ADMIN_PASSWORD` | yes (re-seed **resets** password hash) |
+   | `SANDBOX_URL` + `SANDBOX_TOKEN` | yes* (*or* `SEED_SANDBOX_URL` + `SEED_SANDBOX_TOKEN`) |
+
+4. **Migrate + seed (GHA)** — Actions → **db-tenancy-bootstrap** → Run workflow  
+   - `confirm` = `seed` (required misclick guard)  
+   - optional `dry_run` = true validates secret **presence** only (no mutate)  
+   - Workflow: [`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml)  
+   - Re-run **resets** bootstrap `password_hash` + sandbox token ciphertext (by design).
+
+5. **Flip tenancy ON** — set Vercel Production `AUTH_SECRET` → **Redeploy**.
+   Runtime now sees all three → login required.
+
+6. **Smoke (public, no host inventory)**
+
+   ```bash
+   # unauth API must be 401 + exact error field
+   curl -sS -o /tmp/agent-body.json -w '%{http_code}' \
+     -X POST https://<your-production-host>/api/agent \
+     -H 'content-type: application/json' \
+     -d '{"prompt":"ping"}'
+   # expect: 401 and {"error":"Authentication required."}
+   ```
+
+   Then: `/login` with seed admin → `/harness`; `/admin` shows base URL +
+   **masked** token (owner can rotate).
+
+7. **Origin only** — after smoke, mark `DATABASE_URL` / `AUTH_SECRET` /
+   `CREDENTIALS_ENCRYPTION_KEY` **Done** in [AGENTS.md](../AGENTS.md) (phase 3 /
+   [#70](https://github.com/btipling/invincible/issues/70)). Never invent hosts.
+
+Also: [sandbox.md](sandbox.md) · [SECURITY.md](../SECURITY.md) ·
+[scripts/README.md](../scripts/README.md) · [`.env.example`](../.env.example) ·
+[AGENTS.md operator model](../AGENTS.md).
+
+### Cloud agent alternate (same scripts)
+
+When GHA secrets are awkward (e.g. one-shot throwaway DB), a **cloud agent
+workspace** (Grok Build / similar) may check out the repo and inject secrets
+into **process env for the session only** (from Vercel/GHA — never commit,
+never leave in issue comments):
+
+```bash
+npm ci
+npm run db:migrate
+npm run db:seed
+```
+
+This is **not** “run on a personal laptop.” Prefer GHA for Production bootstrap.
+
+### Preview / Production tips
+
+| Environment | Recommendation |
+|-------------|----------------|
+| **Preview** | Separate `DATABASE_URL` **or** leave tenancy **off** (omit any triple-env var). Do **not** casually reuse the Production encryption key on public previews. |
+| **Lockout** | Keep a path with tenancy **off** (omit `AUTH_SECRET` and/or another triple var) until migrate+seed and `/login` work. |
+| **DB firewall** | Prefer Neon/public pooled SSL so GitHub-hosted runners can reach Postgres; allowlist GHA egress if using DO firewall. |
+
+### Local harness note
+
+[§3 Quick path](#3-quick-path-local-app--keys) is for **local Wasm/host smoke**
+(Gateway key + harness files). It is **not** the tenancy cutover path — use the
+cloud checklist above for migrate/seed/login flip.
 
 ---
 
@@ -176,8 +308,9 @@ empty `public/harness`.
 | Capability | Status |
 |------------|--------|
 | Pluggable **sandbox** for agent build/run tools | **Shipped (MVP)** — config seam; see [sandbox.md](sandbox.md) |
+| Optional multi-tenant auth (login + DB grants) | **Shipped** — [§4a](#4a-optional-multi-tenant-auth); cloud cutover [#67](https://github.com/btipling/invincible/issues/67) |
 | Multi-tenant sandbox isolation / fleet | **Not shipped** — single workspace root per process for now |
-| **MCP** / multi-tenant control plane | **Not shipped** — separate epic; do not half-build here |
+| **MCP** / SSO/SCIM | **Not shipped** — [#64](https://github.com/btipling/invincible/issues/64); do not half-build here |
 
 This guide covers **BYO Vercel + keys + runner/Wasm supply + optional sandbox**.
 Target projects can be any language or platform; Invincible is the harness
@@ -209,4 +342,5 @@ listed as Done in [AGENTS.md](../AGENTS.md). Operators on **forks/clones** use
 - [ ] PONG + multi-turn + refresh + Clear work in canvas
 - [ ] If using self-hosted builds: runner online + `SELF_HOSTED_BUILDS=true`
 - [ ] Optional: sandbox daemon + Vercel/local `SANDBOX_URL`/`SANDBOX_TOKEN` ([sandbox.md](sandbox.md))
+- [ ] Optional tenancy: cloud cutover [§4a](#4a-optional-multi-tenant-auth) (GHA migrate/seed, then `AUTH_SECRET`)
 - [ ] No keys in client/Wasm; no PR triggers on self-hosted workflows

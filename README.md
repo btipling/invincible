@@ -15,9 +15,12 @@ language or platform** on the target side.
 → **[docs/bring-your-own.md](docs/bring-your-own.md)** — clone → env → your Vercel → secrets → Wasm paths → verify `/harness`.  
 → **[docs/sandbox.md](docs/sandbox.md)** — optional agent tools workspace (`SANDBOX_URL` + `SANDBOX_TOKEN`).
 
-Sandbox **MVP is shipped** as a config seam (without env, harness falls back to
-chat). Multi-tenant isolation / MCP remain future. Prefer config seams over
-hardcoding one owner’s prod. Agent rules: [`AGENTS.md`](AGENTS.md) → **Reusable product**.
+Sandbox **MVP** and **optional multi-tenant auth** (login + DB grants) are
+shipped as config seams (tenancy off = legacy open APIs + env sandbox; without
+sandbox env, harness falls back to chat). SSO/SCIM / MCP remain future.
+Prefer config seams over hardcoding one owner’s prod. Agent rules:
+[`AGENTS.md`](AGENTS.md) → **Reusable product**. BYO tenancy:
+[`docs/bring-your-own.md`](docs/bring-your-own.md) §4a.
 
 ## Reference deployment (maintainer)
 
@@ -80,13 +83,18 @@ Names only — never commit values. Full BYO steps: [docs/bring-your-own.md](doc
 | `DEFAULT_MODEL` | Vercel (optional) | default `xai/grok-4.1-fast-non-reasoning` |
 | `HARNESS_OWNER` / `HARNESS_REPO` | Vercel / local (optional) | Override artifact source; else Vercel Git / `GITHUB_REPOSITORY` |
 | `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions **secret** (optional) | `build-harness` may ping after artifact upload |
-| `SANDBOX_URL` / `SANDBOX_TOKEN` | Vercel / local server (optional) | Agent sandbox — server only; prod URL must reach from Vercel |
+| `SANDBOX_URL` / `SANDBOX_TOKEN` | Vercel / local server (optional) | Agent sandbox when tenancy **off** — server only; prod URL must reach from Vercel |
 | `AGENT_MAX_STEPS` / `AGENT_MODEL` | Vercel (optional) | Tool-loop steps / tool-capable model override |
+| `DATABASE_URL` | Vercel / GHA (optional tenancy) | Pooled Postgres — required with the two rows below for tenancy **on** |
+| `AUTH_SECRET` | Vercel (optional tenancy) | Auth.js session secret — set **after** migrate/seed |
+| `CREDENTIALS_ENCRYPTION_KEY` | Vercel / GHA (optional tenancy) | Base64 32-byte AES-GCM KEK for sandbox tokens at rest |
+| `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | GHA / agent seed only | Bootstrap admin — never commit; re-seed resets password hash |
+| `SEED_SANDBOX_URL` / `SEED_SANDBOX_TOKEN` | GHA / agent seed only | Optional; else `SANDBOX_*` used at seed time |
 
-**BYO:** set the table above on **your** Vercel project (and optional Actions secret on **your** repo).  
-**Origin maintainer (`btipling/invincible`):** Gateway / harness / deploy-hook / **sandbox** (`SANDBOX_*`) rows are already configured on Production — agents must not re-nag those unless a build log or harness smoke proves a regression ([AGENTS.md](AGENTS.md)). Optional `AGENT_*` remains operator preference. Do not invent a host URL ([docs/sandbox.md](docs/sandbox.md)).
+**BYO:** set the table above on **your** Vercel project (and optional Actions secrets on **your** repo). Tenancy cutover: [docs/bring-your-own.md](docs/bring-your-own.md) §4a (GHA primary).  
+**Origin maintainer (`btipling/invincible`):** Gateway / harness / deploy-hook / **sandbox** (`SANDBOX_*`) rows are **Done** on Production — agents must not re-nag those unless a build log or harness smoke proves a regression ([AGENTS.md](AGENTS.md)). **Tenancy triple env is Not Done** until cutover smoke (unauth 401 + login). Optional `AGENT_*` remains operator preference. Do not invent a host URL ([docs/sandbox.md](docs/sandbox.md)).
 
-Local: copy [`.env.example`](.env.example) → `.env.local` (Gateway key + optional `HARNESS_*` / `SANDBOX_*`).
+Local / agent workspace: copy [`.env.example`](.env.example) → session env (Gateway key + optional `HARNESS_*` / `SANDBOX_*` / tenancy triple). Prefer GHA for Production migrate/seed.
 
 ## Rebuild harness Wasm
 

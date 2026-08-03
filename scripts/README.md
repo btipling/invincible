@@ -73,34 +73,43 @@ match Vercel Production or tokens will not decrypt after login flip.
 **Cutover order:** keep `AUTH_SECRET` unset on Vercel until after seed so
 tenancy stays OFF; then set `AUTH_SECRET` and redeploy (parent #67 / phase 3).
 
-Full BYO/sandbox cutover doc rewrite: phase 2 (#69). Agent workspace alternate:
-same `npm ci` → `npm run db:migrate` → `npm run db:seed` with env injected
-for the session (never commit).
+Full cutover prose: [docs/bring-your-own.md §4a](../docs/bring-your-own.md#4a-optional-multi-tenant-auth).
 
-## Phase 1 — Postgres migrate + seed
+### Cloud agent / throwaway workspace alternate
 
-Local / bootstrap (values never committed):
+Same scripts as GHA, for a **cloud agent checkout** (or other non-laptop
+session) when you inject secrets into **process env for that session only**
+(never commit; never paste into issues):
 
 ```bash
-# Prefer pooled DATABASE_URL on Vercel (Neon pooler).
-export DATABASE_URL=postgres://… 
-export CREDENTIALS_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+# Inject the SAME DATABASE_URL + CREDENTIALS_ENCRYPTION_KEY as the target
+# Vercel env (dual-store identity). Do **not** openssl-rand a new KEK if
+# Production/Preview already has one — wrong KEK → undecryptable tokens.
+# Values never committed; session env only.
+export DATABASE_URL='…'                      # === Vercel (pooled)
+export CREDENTIALS_ENCRYPTION_KEY='…'        # === Vercel (base64 32-byte KEK)
 export SEED_ADMIN_EMAIL=admin@example.com
 export SEED_ADMIN_PASSWORD='…'
-export SANDBOX_URL=http://127.0.0.1:8787
+export SANDBOX_URL=http://127.0.0.1:8787     # or SEED_SANDBOX_*
 export SANDBOX_TOKEN='…'
 
+npm ci
 npm run db:migrate
 npm run db:seed
 # → logs tenantId / userId / sandboxId only (no secrets)
 # Re-seed is idempotent on uniques but **resets** bootstrap password_hash
 # and sandbox token ciphertext from env (intentional bootstrap contract).
-
-# Phase 2 login (when tenancy on — DATABASE_URL + AUTH_SECRET + CREDENTIALS_ENCRYPTION_KEY):
-# open /login with SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD.
 ```
 
+Greenfield throwaway DB only: generate a fresh KEK with
+`openssl rand -base64 32` and set that **same** value on the matching Vercel
+env before seed — never mint a second key after ciphertext exists.
+
+**Production bootstrap still prefers GHA** (`confirm=seed`). This block is not
+a personal-laptop primary path.
+
 Schema: `db/schema.ts`. Crypto: `lib/tenancy/credentials.ts`. Auth.js: JWT + Credentials only (no adapter `accounts`/`sessions` tables).
+When tenancy is on: `/login` with seed admin email/password.
 
 ## Phase 3 — fetch harness artifact (Vercel / local)
 

@@ -60,8 +60,9 @@ home directory. Product copy and plans must not require personal hardware.
 - When a change **blocks** reusability **or forces personal-hardware ops**, call
   it out in the plan/PR and prefer a cloud-agent / CI / Vercel path.
 - Config seams for BYO Vercel/keys/runner (#38), **sandbox MVP** (#45 phases
-  1–3), and **optional multi-tenant auth** (#54 phases 1–4 code) are **landed**.
-  Cloud-native tenancy **bootstrap** (migrate/seed without a personal machine)
+  1–3), **optional multi-tenant auth** (#54 phases 1–4 code), and cloud-native
+  tenancy **bootstrap** (GHA `db-tenancy-bootstrap` + [docs/bring-your-own.md](docs/bring-your-own.md) §4a)
+  are **landed**. Origin **Production cutover smoke** ([#70](https://github.com/btipling/invincible/issues/70))
   and SSO/SCIM ([#64](https://github.com/btipling/invincible/issues/64)) remain
   incomplete — still write code and docs as if broader reuse is the destination.
 - Origin `SANDBOX_*` is **Done** for the reference deploy (private host inventory
@@ -69,8 +70,8 @@ home directory. Product copy and plans must not require personal hardware.
 - Origin **tenancy** (`DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`)
   stays **Not Done** until Production cutover smoke (unauth API 401 + login).
   Do **not** instruct humans to clone the repo on a laptop to cut over; use a
-  cloud agent workspace, GitHub Actions, or the future bootstrap path (plan
-  issue for cloud-native cutover).
+  cloud agent workspace, GitHub Actions `db-tenancy-bootstrap`, or
+  [docs/bring-your-own.md](docs/bring-your-own.md) §4a.
 
 ## Project agent skills
 
@@ -149,7 +150,8 @@ ops inventory).
   maintainer to “set `DATABASE_URL`” as if forgotten **after** rows are **Done**.
   Until then, cutover is an **explicit** task — run migrate/seed from a **cloud
   agent workspace or GHA**, never by telling the human to clone on a laptop.
-  Prefer implementing cloud-native bootstrap (see plan issues) over laptop docs.
+  Prefer cloud cutover docs ([docs/bring-your-own.md](docs/bring-your-own.md) §4a)
+  and GHA `db-tenancy-bootstrap` over laptop docs.
 
 IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
 BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).  
