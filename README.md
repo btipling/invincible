@@ -12,21 +12,24 @@ Prompt playground / agent harness (Next.js + Zig/dvui Wasm).
 | **Vercel** | [invincible](https://vercel.com/bjorns-projects-65588ed4/invincible) |
 | **IDs** | [`docs/project-ids.md`](docs/project-ids.md) |
 
-### Try `/harness`
+### Try `/harness` (Wasm is the app)
 
-1. Open the harness URL (agent panel is primary UX).  
-2. Type a prompt → **Send** or **⌘/Ctrl+Enter**.  
-3. **Smoke: PONG** for a one-shot model check.  
-4. **Show Wasm** for the Zig/dvui companion (Asteronica theme).  
-5. Session restores from `localStorage` on refresh (Clear resets).
+1. Open the harness URL — after load, the **canvas** is the workspace (not a React chat card).  
+2. Type in the canvas composer → **Enter** or **Send**.  
+3. **PONG** smokes the host Gateway path (reply appears in canvas).  
+4. Refresh restores session into Wasm; nav **Clear** resets.  
+5. DOM chrome = nav + status chips only (host shell).
+
+Feature divide: [`docs/feature-divide.md`](docs/feature-divide.md).
 
 ### Tracking
 
-- **Phase 4 plan (active):** [`docs/phase-4-plan.md`](docs/phase-4-plan.md)
-- **Phase 3 handoff (pipeline):** [`docs/phase-3-handoff.md`](docs/phase-3-handoff.md)
+- **Phase 4 handoff (start here):** [`docs/phase-4-handoff.md`](docs/phase-4-handoff.md)
+- **Phase 4 plan:** [`docs/phase-4-plan.md`](docs/phase-4-plan.md)
+- **Phase 3 handoff (pipeline only):** [`docs/phase-3-handoff.md`](docs/phase-3-handoff.md)
 - **Runner ops:** [`docs/runner.md`](docs/runner.md)
 - **Board:** [projects/1](https://github.com/users/btipling/projects/1/views/1)
-- **Milestones:** Phase 1–3 **done** · Phase 4 **active** ([plan](docs/phase-4-plan.md))
+- **Milestones:** Phase 1–4 **done**
 - **Agents:** [`AGENTS.md`](AGENTS.md)
 
 ## Secrets (server only)
@@ -37,7 +40,7 @@ Prompt playground / agent harness (Next.js + Zig/dvui Wasm).
 | `HARNESS_ARTIFACT_TOKEN` | Vercel | Download Actions artifact `harness-wasm` at build |
 | `DEFAULT_MODEL` | Vercel (optional) | default `xai/grok-4.1-fast-non-reasoning` |
 
-GitHub Actions secret `VERCEL_DEPLOY_HOOK_URL` is already configured (post–artifact redeploy). See AGENTS.md — do not treat as a setup todo.
+GitHub Actions secret `VERCEL_DEPLOY_HOOK_URL` is already configured. See AGENTS.md — do not treat as a setup todo.
 
 Local: copy `.env.example` → `.env.local` for the Gateway key only.
 
@@ -51,15 +54,13 @@ git push origin main
 # → build-harness.yml → artifact harness-wasm → Vercel prebuild fetches it
 # race-safe wait: scripts/fetch-harness-artifact.mjs (docs/harness-deploy-race.md)
 
-# force CI
 gh workflow run build-harness.yml
 
-# local app with existing artifact
-export HARNESS_ARTIFACT_TOKEN=…   # or gh auth
+export HARNESS_ARTIFACT_TOKEN=…   # local
 npm run fetch-harness && npm run dev
 ```
 
-Details: [phase-3-handoff.md](docs/phase-3-handoff.md) · [native/harness/README.md](native/harness/README.md).
+Details: [phase-4-handoff.md](docs/phase-4-handoff.md) · [native/harness/README.md](native/harness/README.md).
 
 **Do not** commit `public/harness/*.wasm` / `web.js`.
 
@@ -69,9 +70,10 @@ Details: [phase-3-handoff.md](docs/phase-3-handoff.md) · [native/harness/README
 |-------|------|
 | App | Next.js 15 (App Router) + React 19 |
 | Inference | Vercel AI Gateway (`ai` SDK) · `POST /api/chat` |
-| Harness UI | DOM agent panel + Zig 0.16 + dvui Wasm |
+| Harness UI | Zig 0.16 + dvui Wasm (**primary**); DOM host shell |
 | Palette | Asteronica TEAL / WARM / EMBER (`lib/palette.ts` + `palette.zig`) |
 | Session | `lib/sessionStore.ts` (memory + localStorage) |
+| Bridge | Protocol **v2** (`lib/harnessBridge.ts`) |
 | Tests | Vitest |
 
 ## Phase status
@@ -80,8 +82,8 @@ Details: [phase-3-handoff.md](docs/phase-3-handoff.md) · [native/harness/README
 |-------|--------|
 | 1 Prompt MVP | **Done** — playground + Gateway |
 | 2 Build runner (DO) | **Done** — `invincible-do-1`, Zig 0.16.0 |
-| 3 Wasm harness | **Done** — pipeline PoC (DOM chat + bridge); not product MVP |
-| 4 Wasm-first MVP | **Active** — [`docs/phase-4-plan.md`](docs/phase-4-plan.md) · epic [#27](https://github.com/btipling/invincible/issues/27) |
+| 3 Wasm pipeline | **Done** — PoC; product model superseded by Phase 4 |
+| 4 Wasm-first MVP | **Done** — [phase-4-handoff.md](docs/phase-4-handoff.md) |
 
 ### Palette
 
@@ -102,7 +104,7 @@ Content-Type: application/json
 { "text": "…" }
 ```
 
-Errors: `{ "error": "…" }` with 4xx/5xx.
+Errors: `{ "error": "…" }` with 4xx/5xx. Key never leaves the server.
 
 ## Local dev
 
@@ -117,10 +119,12 @@ npm test && npm run typecheck
 
 | Doc | Topic |
 |-----|--------|
-| [phase-3-handoff.md](docs/phase-3-handoff.md) | Fresh-session operator path |
-| [phase-3-plan.md](docs/phase-3-plan.md) | Issue map + DoD |
+| [phase-4-handoff.md](docs/phase-4-handoff.md) | **Start here** — Wasm-primary operator path |
+| [feature-divide.md](docs/feature-divide.md) | DOM shell vs Wasm harness |
+| [phase-4-plan.md](docs/phase-4-plan.md) | Phase 4 issue map (complete) |
+| [harness-limits.md](docs/harness-limits.md) | Browser / mobile / density limits |
+| [phase-3-handoff.md](docs/phase-3-handoff.md) | Pipeline rebuild (option B) |
 | [runner.md](docs/runner.md) | DO runner + workflows |
-| [harness-limits.md](docs/harness-limits.md) | Product / browser limits |
-| [session-model.md](docs/session-model.md) | SessionStore + future cloud |
+| [session-model.md](docs/session-model.md) | SessionStore |
 | [harness-deploy-race.md](docs/harness-deploy-race.md) | Artifact vs Vercel race |
 | [project-ids.md](docs/project-ids.md) | IDs and configured env |

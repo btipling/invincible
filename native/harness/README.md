@@ -1,8 +1,19 @@
 # native/harness — Invincible agent harness (Zig + dvui)
 
-Durable Zig crate for the in-browser harness companion. Built on **`invincible-do-1`** (Zig **0.16.0**).
+Durable Zig crate for the in-browser **product** harness UI (Wasm-primary). Built on **`invincible-do-1`** (Zig **0.16.0**).
 
-**Operator handoff:** [`docs/phase-3-handoff.md`](../../docs/phase-3-handoff.md)
+**Product handoff:** [`docs/phase-4-handoff.md`](../../docs/phase-4-handoff.md)  
+**Pipeline rebuild:** [`docs/phase-3-handoff.md`](../../docs/phase-3-handoff.md)
+
+## UI ownership (Phase 4)
+
+| Surface | Owns |
+|---------|------|
+| **This crate (Wasm)** | Transcript, composer, Send/PONG, busy/error chrome, Asteronica theme |
+| **DOM host** (`app/harness/HarnessHost.tsx`) | Load module, bridge poll, `/api/chat`, SessionStore, nav chips |
+
+Do **not** reintroduce a React chat panel as product UX. Feature divide: [`docs/feature-divide.md`](../../docs/feature-divide.md).
+
 
 ## Relation to other `native/` targets
 
@@ -66,6 +77,8 @@ Host is dvui’s `web.js`. Required exports (app + backend):
 | `inv_protocol_version` | Must match `HARNESS_PROTOCOL_VERSION` in `lib/harnessBridge.ts` |
 | `inv_ping` | Scalar round-trip |
 | `inv_set_lifecycle` / `inv_get_lifecycle` | boot / ready / busy / error |
+| `inv_message_count` | ring length |
+| `inv_begin_batch` / `inv_end_batch` | session hydrate without per-msg refresh |
 | `inv_push_message` / `inv_clear_messages` / … | Transcript ring buffer |
 | `inv_echo*` | UTF-8 round-trip stub |
 | `inv_has_pending_submit` / `inv_pending_submit_*` / `inv_ack_pending_submit` | Host polls user submits |

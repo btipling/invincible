@@ -2,7 +2,7 @@
 
 **Audience:** pipeline rebuild/deploy for the Phase 3 ship path.
 
-> **Product direction:** Phase 3 was a **pipeline PoC** (DOM chat + optional Wasm). **Phase 4** makes Wasm the harness — start at [`phase-4-plan.md`](phase-4-plan.md) / epic #27.
+> **Product direction:** Phase 3 was a **pipeline PoC**. **Phase 4 is complete** — Wasm-primary harness. Start at [`phase-4-handoff.md`](phase-4-handoff.md). This doc is **pipeline rebuild only** (DO → artifact → Vercel).
 
 | | |
 |--|--|
@@ -20,7 +20,7 @@
 | Surface | Behavior |
 |---------|----------|
 | `/` | Phase 1 prompt playground |
-| `/harness` | Agent panel (DOM) + optional Zig/dvui Wasm companion |
+| `/harness` (Phase 3 era) | DOM chat + optional Wasm — **superseded** by Phase 4 Wasm-primary |
 | Chat | `POST /api/chat` → Vercel AI Gateway (key **only** on server) |
 | Session | `SessionStore` — memory + `localStorage` ([session-model.md](session-model.md)) |
 | Palette | TEAL / WARM / EMBER on DOM **and** dvui (`lib/palette.ts` + `native/harness/src/palette.zig`) |

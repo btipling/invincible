@@ -62,6 +62,7 @@ User types in Wasm composer
 
 ## Related
 
+- Handoff: [phase-4-handoff.md](phase-4-handoff.md)
 - Plan: [phase-4-plan.md](phase-4-plan.md)  
 - Epic: [#27](https://github.com/btipling/invincible/issues/27)  
 - Limits: [harness-limits.md](harness-limits.md)  
