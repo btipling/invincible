@@ -1,4 +1,6 @@
-# Prove self-hosted runner health. No pull_request (public-repo safety).
+# Prove self-hosted runner is online (no heavy build).
+# Public-repo safety: no pull_request; opt-in vars.SELF_HOSTED_BUILDS (or origin
+# grandfather btipling/invincible) + main / workflow_dispatch only.
 name: runner-smoke
 
 on:
@@ -12,10 +14,10 @@ jobs:
   smoke:
     name: smoke on self-hosted
     if: >
-      github.repository == 'btipling/invincible' &&
-      github.event_name != 'pull_request' &&
-      (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
-    runs-on: [self-hosted, invincible, zig]
+      (vars.SELF_HOSTED_BUILDS == 'true' || github.repository == 'btipling/invincible') &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["self-hosted","invincible","zig"]') }}
     timeout-minutes: 10
     steps:
       - name: Host identity
@@ -24,7 +26,7 @@ jobs:
           hostname
           uname -a
           id
-          echo "runner labels: self-hosted, invincible, zig"
+          echo "runner-smoke: host OK (runs-on from RUNNER_LABELS or default)"
 
       - name: Zig pin
         run: |
