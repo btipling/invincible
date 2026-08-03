@@ -63,6 +63,10 @@ Authorization: Bearer <SANDBOX_TOKEN>
 
 Missing or wrong token → `401` `{ "error": "Unauthorized" }` (token never reflected).
 
+## Path jail
+
+`resolveJailPath` rejects `..` / absolute escapes **and** resolves symlinks: a link whose real target leaves `SANDBOX_WORKSPACE` is rejected. Workspace root must exist on disk.
+
 ## Budgets (locked with parent #45)
 
 | Knob | Value |
@@ -87,6 +91,7 @@ Body:
 
 - **argv only** — no `shell: true`
 - `cwd` is path-jailed under the workspace
+- Child env is **minimal** (`PATH`, `HOME`/`TMPDIR` under workspace, locale) — does **not** inherit `SANDBOX_TOKEN` or host secrets
 - On timeout the process group is killed; response includes `"timedOut": true`
 
 ## Production notes

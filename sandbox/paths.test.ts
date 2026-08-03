@@ -58,4 +58,32 @@ describe('resolveJailPath', () => {
     const ws = await mkWorkspace();
     expect(() => resolveJailPath(ws, 'foo\0bar')).toThrow(JailError);
   });
+
+  it('rejects symlink that points outside workspace', async () => {
+    const ws = await mkWorkspace();
+    const link = path.join(ws, 'outside-link');
+    await fs.symlink('/etc/passwd', link);
+    expect(() => resolveJailPath(ws, 'outside-link')).toThrow(JailError);
+  });
+
+  it('rejects path through symlink dir outside workspace', async () => {
+    const ws = await mkWorkspace();
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'jail-out-'));
+    try {
+      await fs.symlink(outside, path.join(ws, 'out'));
+      expect(() => resolveJailPath(ws, 'out/secret.txt')).toThrow(JailError);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('allows symlink entirely inside workspace', async () => {
+    const ws = await mkWorkspace();
+    const target = path.join(ws, 'real.txt');
+    await fs.writeFile(target, 'inside');
+    await fs.symlink(target, path.join(ws, 'alias.txt'));
+    const resolved = resolveJailPath(ws, 'alias.txt');
+    expect(resolved).toBe(path.resolve(target));
+  });
+
 });

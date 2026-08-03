@@ -22,6 +22,23 @@ export class ToolError extends Error {
   }
 }
 
+/**
+ * Minimal env for child processes — never inherit SANDBOX_TOKEN or host secrets.
+ * @param {string} workspace
+ */
+export function buildExecEnv(workspace) {
+  /** @type {Record<string, string>} */
+  const env = {
+    PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+    HOME: workspace,
+    TMPDIR: path.join(workspace, '.tmp'),
+    LANG: process.env.LANG || 'C.UTF-8',
+  };
+  if (process.env.TERM) env.TERM = process.env.TERM;
+  if (process.env.LC_ALL) env.LC_ALL = process.env.LC_ALL;
+  return env;
+}
+
 /** @param {number} [timeoutMs] */
 function clampTimeout(timeoutMs) {
   if (timeoutMs == null || Number.isNaN(Number(timeoutMs))) {
@@ -123,11 +140,7 @@ export async function writeFileTool(workspace, body) {
     );
   }
   const target = resolveJailPath(workspace, body.path);
-  const root = path.resolve(workspace);
   const parent = path.dirname(target);
-  if (parent !== root && !parent.startsWith(root + path.sep)) {
-    throw new JailError();
-  }
 
   if (body.mkdir) {
     await fs.mkdir(parent, { recursive: true });
@@ -213,7 +226,7 @@ export async function execCmd(workspace, body) {
       child = spawn(body.cmd, args, {
         cwd,
         shell: false,
-        env: process.env,
+        env: buildExecEnv(path.resolve(workspace)),
         detached: useDetached,
         stdio: ['ignore', 'pipe', 'pipe'],
       });

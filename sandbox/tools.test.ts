@@ -110,4 +110,54 @@ describe('sandbox tools', () => {
       execCmd(ws, { cmd: process.execPath, args: ['-e', '1'], cwd: '..' }),
     ).rejects.toThrow(JailError);
   });
+
+  it('blocks symlink read escape', async () => {
+    const ws = await mkWorkspace();
+    await fs.symlink('/etc/passwd', path.join(ws, 'passwd-link'));
+    await expect(readFileTool(ws, { path: 'passwd-link' })).rejects.toThrow(
+      JailError,
+    );
+  });
+
+  it('blocks symlink write escape', async () => {
+    const ws = await mkWorkspace();
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'tools-out-'));
+    try {
+      await fs.symlink(outside, path.join(ws, 'out'));
+      await expect(
+        writeFileTool(ws, { path: 'out/pwned.txt', content: 'x' }),
+      ).rejects.toThrow(JailError);
+      await expect(
+        fs.readFile(path.join(outside, 'pwned.txt'), 'utf8'),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('exec does not inherit SANDBOX_TOKEN or host secrets', async () => {
+    const ws = await mkWorkspace();
+    const prevToken = process.env.SANDBOX_TOKEN;
+    const prevKey = process.env.AI_GATEWAY_API_KEY;
+    process.env.SANDBOX_TOKEN = 'should-not-leak';
+    process.env.AI_GATEWAY_API_KEY = 'gateway-should-not-leak';
+    try {
+      const result = await execCmd(ws, {
+        cmd: process.execPath,
+        args: [
+          '-e',
+          'process.stdout.write(String(process.env.SANDBOX_TOKEN)+"|"+String(process.env.AI_GATEWAY_API_KEY))',
+        ],
+        timeoutMs: 5000,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe('undefined|undefined');
+    } finally {
+      if (prevToken === undefined) delete process.env.SANDBOX_TOKEN;
+      else process.env.SANDBOX_TOKEN = prevToken;
+      if (prevKey === undefined) delete process.env.AI_GATEWAY_API_KEY;
+      else process.env.AI_GATEWAY_API_KEY = prevKey;
+    }
+  });
+
 });

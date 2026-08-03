@@ -109,6 +109,7 @@ export function createSandboxServer(opts) {
       if (url.pathname.startsWith('/v1/')) {
         const provided = parseBearer(req.headers.authorization);
         if (provided == null || !safeEqualToken(token, provided)) {
+          req.resume();
           sendError(res, 401, 'Unauthorized');
           return;
         }
