@@ -1,7 +1,7 @@
 /**
  * Phase 3.7–3.9 — host-side inference for the harness.
- * Wasm never sees Gateway keys; this module POSTs /api/chat and pushes results
- * through HarnessBridge + optional SessionStore.
+ * Phase 3 (#48): try POST /api/agent first; 503 sandbox-not-configured → /api/chat.
+ * Wasm never sees Gateway keys; results push through HarnessBridge + SessionStore.
  */
 import {
   normalizePrompt,
@@ -9,6 +9,15 @@ import {
   validatePrompt,
   type ChatResult,
 } from './chatApi';
+import {
+  sendAgent,
+  type AgentResult,
+  type SendAgentFn,
+  type ToolTraceEntry,
+} from './agentApi';
+import {
+  TOOL_TRACE_SUMMARY_MAX_CHARS,
+} from './sandbox/config';
 import {
   HarnessBridge,
   Lifecycle,
@@ -19,6 +28,9 @@ import {
   formatPromptWithHistory,
   type SessionSnapshot,
 } from './sessionStore';
+
+/** Parent #45 / phase 3 — max system toolTrace lines per turn. */
+export const TOOL_TRACE_MAX_LINES = 6;
 
 /** Prompt used for end-to-end smoke (model should reply with PONG). */
 export const HARNESS_SMOKE_PROMPT = 'Reply with exactly: PONG';
@@ -41,9 +53,19 @@ export type RunHarnessChatOptions = {
   useHistory?: boolean;
 };
 
+export type RunHarnessTurnOptions = Omit<RunHarnessChatOptions, 'history'> & {
+  /**
+   * When true (default), try POST /api/agent first; fall back to chat only on
+   * exact sandbox-not-configured 503.
+   */
+  preferAgent?: boolean;
+  /** Inject for tests; defaults to sendAgent. */
+  sendAgent?: SendAgentFn;
+};
+
 export type HarnessTurnResult = {
   result: ChatResult;
-  /** Session after this turn (user + assistant/error appended). */
+  /** Session after this turn (user + optional system tool lines + assistant/error). */
   session: SessionSnapshot;
 };
 
@@ -58,6 +80,33 @@ function roleToKind(role: 'user' | 'assistant' | 'system' | 'error'): MessageKin
     case 'error':
       return MessageKind.Error;
   }
+}
+
+/** Truncate toolTrace summary for bridge (≤240). */
+export function truncateToolTraceSummary(
+  text: string,
+  maxChars: number = TOOL_TRACE_SUMMARY_MAX_CHARS,
+): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+/**
+ * Cap and clean toolTrace for host display (≤6 non-empty summaries, ≤240 chars).
+ */
+export function selectToolTraceLines(
+  toolTrace: ToolTraceEntry[] | undefined,
+  maxLines: number = TOOL_TRACE_MAX_LINES,
+): string[] {
+  if (!toolTrace?.length) return [];
+  const lines: string[] = [];
+  for (const entry of toolTrace) {
+    if (lines.length >= maxLines) break;
+    const summary = truncateToolTraceSummary((entry.summary ?? '').trim());
+    if (!summary) continue;
+    lines.push(summary);
+  }
+  return lines;
 }
 
 /** Mirror session into Wasm (batched hydrate when clearing). Truncated by MAX_MSG_LEN on Zig. */
@@ -126,14 +175,18 @@ export async function runHarnessChat(
   return result;
 }
 
+function isCancelledAgent(result: AgentResult): boolean {
+  return !result.ok && result.error === 'Request cancelled.';
+}
+
 /**
- * Full agent turn: update session + bridge + Gateway.
+ * Full agent turn: try /api/agent (tools) then optional chat fallback + session.
  */
 export async function runHarnessTurn(
   bridge: HarnessBridge,
   session: SessionSnapshot,
   rawPrompt: string,
-  opts?: Omit<RunHarnessChatOptions, 'history'>,
+  opts?: RunHarnessTurnOptions,
 ): Promise<HarnessTurnResult> {
   const validation = validatePrompt(rawPrompt);
   if (validation) {
@@ -148,10 +201,62 @@ export async function runHarnessTurn(
 
   // Wasm pending-submit path sets pushUser:false (user line already in canvas).
   const pushUser = opts?.pushUser !== false;
+  const preferAgent = opts?.preferAgent !== false;
+  const useHistory = opts?.useHistory !== false;
+  const sendAgentFn = opts?.sendAgent ?? sendAgent;
+
+  const apiPrompt =
+    useHistory && session.messages.length > 0
+      ? formatPromptWithHistory(session.messages, prompt)
+      : prompt;
+
+  let userPushedOnBridge = false;
+
+  if (preferAgent) {
+    bridge.setLifecycle(Lifecycle.Busy);
+    if (pushUser) {
+      bridge.pushMessage(MessageKind.User, prompt);
+      userPushedOnBridge = true;
+    }
+
+    const agentResult = await sendAgentFn(apiPrompt, { signal: opts?.signal });
+
+    if (agentResult.ok) {
+      let next = withUser;
+      const lines = selectToolTraceLines(agentResult.toolTrace);
+      for (const line of lines) {
+        bridge.pushMessage(MessageKind.System, line);
+        next = appendMessage(next, 'system', line);
+      }
+      bridge.pushMessage(MessageKind.Assistant, agentResult.text);
+      bridge.setLifecycle(Lifecycle.Ready);
+      next = appendMessage(next, 'assistant', agentResult.text);
+      return {
+        result: { ok: true, text: agentResult.text },
+        session: next,
+      };
+    }
+
+    // Cancel or hard agent failure — never fall back to chat.
+    if (!agentResult.sandboxNotConfigured || isCancelledAgent(agentResult)) {
+      bridge.pushMessage(MessageKind.Error, agentResult.error);
+      bridge.setLifecycle(Lifecycle.Ready);
+      return {
+        result: {
+          ok: false,
+          error: agentResult.error,
+          status: agentResult.status,
+        },
+        session: appendMessage(withUser, 'error', agentResult.error),
+      };
+    }
+    // sandboxNotConfigured → fall through to chat once
+  }
 
   const result = await runHarnessChat(bridge, prompt, {
-    ...opts,
-    pushUser,
+    signal: opts?.signal,
+    send: opts?.send,
+    pushUser: pushUser && !userPushedOnBridge,
     history: session.messages,
     useHistory: opts?.useHistory,
   });
