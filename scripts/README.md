@@ -83,3 +83,15 @@ Then verify runner Online and re-run smoke:
 gh workflow run runner-smoke.yml --repo btipling/invincible
 ```
 
+
+
+## Phase 3 — fetch harness artifact (Vercel / local)
+
+```bash
+# Needs Actions: Read (HARNESS_ARTIFACT_TOKEN or GH_TOKEN)
+node scripts/fetch-harness-artifact.mjs
+# → public/harness/{harness.wasm,web.js}
+```
+
+On Vercel this runs as `npm run prebuild`. Wait-for-commit race fix: see `docs/harness-deploy-race.md`.
+Full rebuild path: `docs/phase-3-handoff.md`.

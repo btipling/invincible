@@ -5,11 +5,11 @@
 
 | Layer | Where | Role |
 |-------|--------|------|
-| UI + API | Vercel (`invincible`) | Prompt playground, deploy |
+| UI + API | Vercel (`invincible`) | Playground, `/harness` host, `/api/chat` |
 | CI build | DO droplet + GitHub Actions self-hosted | `zig` → `.wasm` artifacts |
 | Source | GitHub `btipling/invincible` | Single source of truth |
 
-Plan: [phase-2-plan.md](phase-2-plan.md) · Milestone: [Phase 2](https://github.com/btipling/invincible/milestone/2) · Board: [projects/1](https://github.com/users/btipling/projects/1/views/1)
+Phase 3 handoff: [phase-3-handoff.md](phase-3-handoff.md) · Plan: [phase-3-plan.md](phase-3-plan.md) · Board: [projects/1](https://github.com/users/btipling/projects/1/views/1)
 
 ---
 
@@ -47,13 +47,17 @@ runs-on: [self-hosted, invincible, zig]
 
 | Secret | Where it may live | Never |
 |--------|-------------------|--------|
-| Vercel `AI_GATEWAY_API_KEY` | Vercel project env | git, droplet, Actions logs |
+| Vercel `AI_GATEWAY_API_KEY` | Vercel project env | git, droplet, Actions logs, client, Wasm |
+| Vercel `HARNESS_ARTIFACT_TOKEN` | Vercel project env (Actions: Read PAT) | git, client |
+| GitHub `VERCEL_DEPLOY_HOOK_URL` | Actions secret (already configured) | git; do not nag operators to re-add |
 | GitHub PAT (script curl) | shell env on droplet only, short-lived | git, screenshots, issues |
 | GHA **registration** / **remove** tokens | GitHub UI once, ~1h life | git, docs, chat long-term |
 | DO API token | local `doctl` / password manager | git |
 | Runner `.credentials` | `/home/runner/actions-runner/` only | copy into repo |
 
 Fine-grained PAT for `gh_raw` scripts: **Contents: Read** on `invincible` only — see [scripts/README.md](../scripts/README.md).
+
+Gateway key is **never** on the droplet and **never** inside Wasm or session blobs.
 
 ---
 
@@ -116,6 +120,7 @@ Split: `install-zig.sh` then `verify-zig-wasm.sh`.
 ```bash
 gh workflow run runner-smoke.yml --repo btipling/invincible
 gh workflow run build-wasm.yml --repo btipling/invincible
+gh workflow run build-harness.yml --repo btipling/invincible
 ```
 
 Update this inventory table with new droplet ID / IP after any rebuild.
@@ -163,182 +168,81 @@ sudo systemctl disable --now 'actions.runner.btipling-invincible.*.service'  # c
 
 ## 5. Workflows
 
-| Workflow | File | Triggers | Job |
-|----------|------|----------|-----|
-| **runner-smoke** | `.github/workflows/runner-smoke.yml` | `workflow_dispatch`, push to that file | Host + `zig 0.16.0` + GitHub HTTPS |
-| **build-wasm** | `.github/workflows/build-wasm.yml` | `workflow_dispatch`, push to `native/**` or that file | `./native/build.sh` → artifact **`hello-wasm`** |
-| **build-dvui-spike** | `.github/workflows/build-dvui-spike.yml` | `workflow_dispatch`, push to `native/dvui-spike/**` | `./native/dvui-spike/build.sh` → artifact **`dvui-spike-wasm`** |
-| **build-harness** | `.github/workflows/build-harness.yml` | `workflow_dispatch`, push to `native/harness/**` | `./native/harness/build.sh` → artifact **`harness-wasm`** |
+| Workflow | File | Triggers | Artifact |
+|----------|------|----------|----------|
+| **runner-smoke** | `.github/workflows/runner-smoke.yml` | `workflow_dispatch`, push to that file | (none — health) |
+| **build-wasm** | `.github/workflows/build-wasm.yml` | `workflow_dispatch`, push `native/**` | **`hello-wasm`** (Phase 2 probe) |
+| **build-dvui-spike** | `.github/workflows/build-dvui-spike.yml` | `workflow_dispatch`, push `native/dvui-spike/**` | **`dvui-spike-wasm`** (research) |
+| **build-harness** | `.github/workflows/build-harness.yml` | `workflow_dispatch`, push `native/harness/**` | **`harness-wasm`** (**product**) |
 
-**Vercel consume:** artifact is pulled at Next build by `scripts/fetch-harness-artifact.mjs` (`npm run prebuild`). Requires Vercel env `HARNESS_ARTIFACT_TOKEN` (Actions: Read). Binaries are **not** committed.
+### Product path: harness → Vercel
 
-```bash
-# dispatch
-gh workflow run runner-smoke.yml --repo btipling/invincible
-gh workflow run build-wasm.yml --repo btipling/invincible
-
-# watch
-gh run list --repo btipling/invincible --limit 5
-gh run view <id> --repo btipling/invincible --log-failed
+```text
+push native/harness/** 
+  → build-harness on invincible-do-1
+  → upload-artifact name=harness-wasm  (harness.wasm + web.js + index.html)
+  → optional: POST VERCEL_DEPLOY_HOOK_URL
+  → Vercel npm run prebuild → scripts/fetch-harness-artifact.mjs
+       waits for this commit’s build-harness when racing Git deploy
+  → public/harness/* on CDN as /harness/*
 ```
 
-**Artifact:** Actions run → Artifacts → `hello-wasm` (14-day retention). Free GitHub accounts support this; storage is shared (~500 MB free tier) — our placeholder is tiny.
+| Piece | Detail |
+|-------|--------|
+| Labels | `[self-hosted, invincible, zig]` |
+| Zig | must match `native/ZIG_VERSION` (0.16.0) |
+| Build script | `./native/harness/build.sh` → `native/dist/harness/` |
+| Artifact | **`harness-wasm`**, retention 14 days |
+| Vercel auth | env **`HARNESS_ARTIFACT_TOKEN`** (Actions: Read) |
+| Race doc | [harness-deploy-race.md](harness-deploy-race.md) |
+| Full handoff | [phase-3-handoff.md](phase-3-handoff.md) |
+
+```bash
+gh workflow run build-harness.yml --repo btipling/invincible
+gh run list --workflow=build-harness.yml --repo btipling/invincible --limit 5
+gh run view <id> --repo btipling/invincible --log-failed
+```
 
 **Local build (on runner or any Zig 0.16.0 host):**
 
 ```bash
-./native/build.sh   # → native/dist/hello.wasm
+cd /path/to/invincible
+test "$(zig version)" = "$(tr -d '[:space:]' < native/ZIG_VERSION)"
+./native/harness/build.sh
+ls -la native/dist/harness/
 ```
 
----
-
-## 6. Day-2 operations
+**Local Next after fetching artifact:**
 
 ```bash
-# service
-cd /home/runner/actions-runner
-sudo ./svc.sh status
-sudo ./svc.sh stop
-sudo ./svc.sh start
-
-# journal
-sudo journalctl -u actions.runner.btipling-invincible.invincible-do-1.service -n 100 --no-pager
-
-# zig
-zig version
-ls -la /opt/zig/
-
-# disk (caches grow)
-df -h
-du -sh /home/runner/actions-runner/_work /opt/zig 2>/dev/null || true
+export HARNESS_ARTIFACT_TOKEN=…   # or GH_TOKEN from gh auth
+npm run fetch-harness
+npm run dev
 ```
 
----
-
-## 7. Failure playbook
-
-| Symptom | Checks / fix |
-|---------|----------------|
-| Runner **Offline** | `sudo ./svc.sh status`; journalctl; reboot; re-register (section 4) |
-| Job **queued forever** | Labels must include `invincible` + `zig`; runner Idle; only one job if concurrency 1 |
-| `zig: not found` in CI | PATH; `/usr/local/bin/zig`; re-run `phase-2.3-zig.sh` |
-| Zig version mismatch | `native/ZIG_VERSION` vs `zig version`; reinstall pin |
-| Checkout / action download fails | Outbound HTTPS to GitHub; DNS; disk full |
-| Disk full | `df -h`; clean `_work/_tool` and old run dirs; expand droplet |
-| OOM during Zig link | Resize above 4 GB or reduce parallel jobs |
-| Artifact upload fail | Free storage quota; retention; artifact name path exists |
-| DO 403 from agents | Connector/token lacks write — use dashboard or write PAT for create only |
-| `objects.githubusercontent.com` bare URL 404 | **Normal**; use full object URLs (runner does) |
+**Do not** commit `public/harness/*.wasm` / `web.js`.
 
 ---
 
-## 8. Zig upgrade (controlled)
+## 6. Day-2 ops
 
-1. Bump `native/ZIG_VERSION` and SHA in `scripts/install-zig.sh` / `phase-2.3-zig.sh`.
-2. On host: install new version under `/opt/zig/<ver>`, retarget symlink.
-3. Update smoke workflow pin check if it hardcodes `0.16.0`.
-4. Run `runner-smoke` + `build-wasm`.
-5. Keep previous `/opt/zig/<old>` until green, then delete.
-
----
-
-## 9. Cost & destroy
-
-| Item | Estimate |
-|------|----------|
-| Droplet `s-2vcpu-4gb-120gb-intel` nyc1 | ~**$32/month** (check DO) |
-| Bandwidth | Usually fine for CI |
-| GitHub Actions minutes (self-hosted) | **$0** |
-| Artifact storage | Free tier; purge old artifacts if needed |
-
-**Destroy when Phase 2 paused:**
-
-1. Remove runner in GitHub UI (or `config.sh remove`).
-2. Destroy droplet in DO (or power off to stop compute charges — still may pay for disk/snapshots).
-3. Clear inventory IPs from this doc / `project-ids.md`.
-4. Optional: delete stale Actions artifacts.
+| Task | Command / note |
+|------|----------------|
+| Runner online? | GitHub → Settings → Actions → Runners |
+| Disk | `df -h` on droplet — Zig + caches grow |
+| Zig upgrade | bump `native/ZIG_VERSION`, re-run install script, fix build if API broke |
+| Smoke | `gh workflow run runner-smoke.yml` |
+| Harness | `gh workflow run build-harness.yml` then check `/harness` on prod |
 
 ---
 
-## 10. Script index
+## 7. Related docs
 
-| Script | Role |
-|--------|------|
-| [`scripts/bootstrap-runner-host.sh`](../scripts/bootstrap-runner-host.sh) | packages + `runner` user |
-| [`scripts/create-invincible-droplet.sh`](../scripts/create-invincible-droplet.sh) | doctl create (write token) |
-| [`scripts/install-zig.sh`](../scripts/install-zig.sh) | pin Zig to `/opt/zig` |
-| [`scripts/verify-zig-wasm.sh`](../scripts/verify-zig-wasm.sh) | wasm magic check |
-| [`scripts/phase-2.3-zig.sh`](../scripts/phase-2.3-zig.sh) | install + verify one-shot |
-| [`scripts/harden-runner-host.sh`](../scripts/harden-runner-host.sh) | Phase 2.7 SSH/UFW/unattended-upgrades |
-| [`native/build.sh`](../native/build.sh) | CI/local `hello.wasm` |
-| [`scripts/README.md`](../scripts/README.md) | private-repo `gh_raw` curl recipes |
-
----
-
-## 11. Related product surfaces
-
-| Surface | URL / path |
-|---------|------------|
-| Production app | https://invincible-dun-ten.vercel.app |
-| GitHub repo | https://github.com/btipling/invincible |
-| Vercel project | see [project-ids.md](project-ids.md) |
-| Self-hosted runners | https://github.com/btipling/invincible/settings/actions/runners |
-
-**Out of scope for this doc:** Phase 3 dvui harness UI, AI Gateway keys (Vercel only), full host hardening (issue #14).
-
----
-
-## 12. Hardening & cost (Phase 2.7)
-
-**Status:** applied on droplet `589481218` (2026-08-02) — UFW SSH-only, key-only sshd, unattended-upgrades, restricted runner sudo; runner stayed active.
-
-### Applied baseline (run on host)
-
-```bash
-gh_raw scripts/harden-runner-host.sh | sudo bash
-# optional lock SSH to your IP:
-# SSH_ALLOW_FROM='x.x.x.x/32' gh_raw scripts/harden-runner-host.sh | sudo bash
-```
-
-Script: [`scripts/harden-runner-host.sh`](../scripts/harden-runner-host.sh)
-
-| Control | Behavior |
-|---------|----------|
-| SSH | `PasswordAuthentication no`, `PermitRootLogin prohibit-password`, no X11/TCP forwarding |
-| UFW | default deny in; **only 22/tcp** (or from `SSH_ALLOW_FROM`); **no 80/443** |
-| Updates | `unattended-upgrades` daily security |
-| Runner | must not be root; sudo limited to apt + runner `svc.sh` / unit |
-| Marker | `/var/lib/invincible/hardened-at` |
-
-**Web console:** DO Recovery/web console still works if you lock yourself out of SSH.
-
-**After harden:** confirm runner **Idle** in GitHub UI, then:
-
-```bash
-gh workflow run runner-smoke.yml --repo btipling/invincible
-```
-
-### DO console (recommended extras)
-
-1. **Networking → Firewalls** (optional second layer): inbound TCP 22 only; attach to droplet `589481218`.
-2. **Billing → Budgets & alerts**: e.g. alert at $40 if droplet is ~$32/mo.
-3. Avoid unplanned **snapshots/volumes** unless noted here (none today).
-4. **Monitoring** on for the droplet.
-
-### Cost summary
-
-| Item | Amount |
-|------|--------|
-| Droplet `s-2vcpu-4gb-120gb-intel` nyc1 | ~**$32/month** |
-| Extra volumes / snapshots | **none** (do not add without updating this doc) |
-| GitHub self-hosted minutes | $0 |
-| Destroy | Section 9 above |
-
-### Post-harden checklist
-
-- [ ] `sudo ufw status` shows 22 only (or restricted source)
-- [ ] `sshd -T \| grep -i passwordauthentication` → `no`
-- [ ] `systemctl is-active actions.runner.btipling-invincible.invincible-do-1.service` → active
-- [ ] Runner Online in GitHub
-- [ ] `runner-smoke` green
-
+| Doc | Topic |
+|-----|--------|
+| [phase-3-handoff.md](phase-3-handoff.md) | Fresh-session rebuild + secrets |
+| [phase-3-plan.md](phase-3-plan.md) | Issue map (complete) |
+| [harness-limits.md](harness-limits.md) | Browser / product limits |
+| [session-model.md](session-model.md) | SessionStore |
+| [project-ids.md](project-ids.md) | Vercel / DO IDs |
+| [native/harness/README.md](../native/harness/README.md) | Exports + bridge protocol |
