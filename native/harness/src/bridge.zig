@@ -1,4 +1,4 @@
-//! Invincible JS ↔ Wasm bridge (Phase 3.6–3.7 / issues #21–#22).
+//! Invincible JS ↔ Wasm bridge (Phase 3.6 + Phase 4.4 v2 hydrate/batch).
 //!
 //! Host (Next/TS) owns network (`POST /api/chat`) and DOM shell.
 //! Wasm owns dvui frame loop and local transcript state.
@@ -9,7 +9,7 @@
 const WebBackend = @import("web-backend");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -25,7 +25,7 @@ pub const MessageKind = enum(u8) {
     error_msg = 4,
 };
 
-const MAX_MSG = 16;
+const MAX_MSG = 48;
 /// Cap per transcript line (UTF-8). Longer Gateway replies are truncated at the host edge.
 pub const MAX_MSG_LEN = 4096;
 const ECHO_CAP = 1024;
@@ -48,8 +48,10 @@ var echo_len: u32 = 0;
 var pending_submit: [SUBMIT_CAP]u8 = undefined;
 var pending_submit_len: u32 = 0;
 var has_pending_submit: bool = false;
+var suppress_refresh: bool = false;
 
 fn refresh() void {
+    if (suppress_refresh) return;
     WebBackend.wasm.wasm_refresh();
 }
 
@@ -107,6 +109,7 @@ pub fn reset() void {
     echo_len = 0;
     has_pending_submit = false;
     pending_submit_len = 0;
+    suppress_refresh = false;
 }
 
 // ── Stable ABI (also whitelist in build.zig export_symbol_names) ───────────
@@ -128,6 +131,26 @@ export fn inv_set_lifecycle(status: u8) void {
         3 => .err,
         else => .err,
     };
+    refresh();
+}
+
+/// Host reads authoritative lifecycle (0–3).
+export fn inv_get_lifecycle() u8 {
+    return @intFromEnum(lifecycle);
+}
+
+/// Transcript length (ring count).
+export fn inv_message_count() u32 {
+    return @intCast(msg_count);
+}
+
+/// Batch host→Wasm updates (hydrate) without per-message wasm_refresh.
+export fn inv_begin_batch() void {
+    suppress_refresh = true;
+}
+
+export fn inv_end_batch() void {
+    suppress_refresh = false;
     refresh();
 }
 

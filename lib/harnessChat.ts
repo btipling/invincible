@@ -60,17 +60,24 @@ function roleToKind(role: 'user' | 'assistant' | 'system' | 'error'): MessageKin
   }
 }
 
-/** Mirror a session message into the Wasm bridge (truncated by MAX_MSG_LEN on Zig side). */
+/** Mirror session into Wasm (batched hydrate when clearing). Truncated by MAX_MSG_LEN on Zig. */
 export function pushSessionToBridge(
   bridge: HarnessBridge,
   session: SessionSnapshot,
-  opts?: { clear?: boolean },
+  opts?: { clear?: boolean; lifecycle?: import('./harnessBridge').Lifecycle },
 ): void {
+  const msgs = session.messages.map((m) => ({
+    kind: roleToKind(m.role),
+    text: m.text,
+  }));
   if (opts?.clear !== false) {
-    bridge.clearMessages();
+    bridge.hydrateMessages(msgs, {
+      lifecycle: opts?.lifecycle,
+    });
+    return;
   }
-  for (const m of session.messages) {
-    bridge.pushMessage(roleToKind(m.role), m.text);
+  for (const m of msgs) {
+    bridge.pushMessage(m.kind, m.text);
   }
 }
 

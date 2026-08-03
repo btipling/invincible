@@ -122,7 +122,7 @@ pub fn frame() !void {
                 .expand = .horizontal,
                 .color_text = palette.teal_muted,
             });
-            tl.addText("Start a conversation\n\nType below and press Enter or Send.\nSmoke: PONG checks the host Gateway path.\n", .{});
+            tl.addText("Start a conversation\n\nThis canvas is the harness (not a side panel).\nType below — Enter or Send.\nPONG smokes the host Gateway path.\n", .{});
             tl.deinit();
         } else {
             var i: usize = 0;

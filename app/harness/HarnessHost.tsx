@@ -160,10 +160,18 @@ export default function HarnessHost() {
         const poll = () => {
           if (cancelled) return;
           const b = bridgeRef.current;
-          if (b && !inflightRef.current) {
-            const pending = b.takePendingSubmit();
-            if (pending != null && pending.length > 0) {
-              void runPrompt(pending);
+          if (b) {
+            // Reflect Wasm lifecycle on host chip (busy set by canvas submit).
+            try {
+              setLifecycle(lifecycleName(b.getLifecycle()));
+            } catch {
+              /* ignore */
+            }
+            if (!inflightRef.current) {
+              const pending = b.takePendingSubmit();
+              if (pending != null && pending.length > 0) {
+                void runPrompt(pending);
+              }
             }
           }
           pollRef.current = window.setTimeout(poll, 150);

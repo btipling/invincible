@@ -10,7 +10,7 @@
  */
 
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
-export const HARNESS_PROTOCOL_VERSION = 1 as const;
+export const HARNESS_PROTOCOL_VERSION = 2 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -59,6 +59,10 @@ export type HarnessBridgeExports = {
   inv_protocol_version: () => number;
   inv_ping: (x: number) => number;
   inv_set_lifecycle: (status: number) => void;
+  inv_get_lifecycle: () => number;
+  inv_message_count: () => number;
+  inv_begin_batch: () => void;
+  inv_end_batch: () => void;
   inv_push_message: (kind: number, ptr: number, len: number) => void;
   inv_clear_messages: () => void;
   inv_echo: (ptr: number, len: number) => number;
@@ -76,6 +80,10 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_protocol_version',
   'inv_ping',
   'inv_set_lifecycle',
+  'inv_get_lifecycle',
+  'inv_message_count',
+  'inv_begin_batch',
+  'inv_end_batch',
   'inv_push_message',
   'inv_clear_messages',
   'inv_echo',
@@ -161,6 +169,44 @@ export class HarnessBridge {
 
   setLifecycle(status: Lifecycle): void {
     this.exports.inv_set_lifecycle(status);
+  }
+
+  getLifecycle(): Lifecycle {
+    return this.exports.inv_get_lifecycle() as Lifecycle;
+  }
+
+  messageCount(): number {
+    return this.exports.inv_message_count() >>> 0;
+  }
+
+  beginBatch(): void {
+    this.exports.inv_begin_batch();
+  }
+
+  endBatch(): void {
+    this.exports.inv_end_batch();
+  }
+
+  /**
+   * Host → Wasm full transcript replace (session hydrate / restore).
+   * Batched so dvui refreshes once.
+   */
+  hydrateMessages(
+    messages: { kind: MessageKind; text: string }[],
+    opts?: { lifecycle?: Lifecycle },
+  ): void {
+    this.beginBatch();
+    try {
+      this.clearMessages();
+      for (const m of messages) {
+        this.pushMessage(m.kind, m.text);
+      }
+    } finally {
+      this.endBatch();
+    }
+    if (opts?.lifecycle !== undefined) {
+      this.setLifecycle(opts.lifecycle);
+    }
   }
 
   pushMessage(kind: MessageKind, text: string): void {

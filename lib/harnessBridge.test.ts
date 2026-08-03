@@ -64,6 +64,10 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_set_lifecycle: (s: number) => {
       lifecycle = s as Lifecycle;
     },
+    inv_get_lifecycle: () => lifecycle,
+    inv_message_count: () => messages.length,
+    inv_begin_batch: () => {},
+    inv_end_batch: () => {},
     inv_push_message: (kind: number, ptr: number, len: number) => {
       messages.push({ kind, text: len === 0 ? '' : read(ptr, len) });
     },
@@ -204,5 +208,23 @@ describe('HarnessBridge', () => {
     expect(bridge.takePendingSubmit()).toBe('bridge-stub');
     expect(bridge.hasPendingSubmit()).toBe(false);
     expect(bridge.takePendingSubmit()).toBeNull();
+  });
+});
+
+describe('hydrateMessages (protocol v2)', () => {
+  it('clears and batch-pushes', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'old');
+    bridge.hydrateMessages(
+      [
+        { kind: MessageKind.User, text: 'a' },
+        { kind: MessageKind.Assistant, text: 'b' },
+      ],
+      { lifecycle: Lifecycle.Ready },
+    );
+    expect(exp.__messages.map((m) => m.text)).toEqual(['a', 'b']);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(bridge.messageCount()).toBe(2);
   });
 });

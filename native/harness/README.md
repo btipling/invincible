@@ -78,7 +78,7 @@ Inference stays on the host: `POST /api/chat` holds `AI_GATEWAY_API_KEY` — **n
 
 | | |
 |--|--|
-| **Protocol version** | `1` |
+| **Protocol version** | `2` |
 | **TS** | `lib/harnessBridge.ts` |
 | **Zig** | `src/bridge.zig` |
 | **Host** | `app/harness/HarnessHost.tsx` (DOM primary; Wasm optional “Show Wasm”) |
