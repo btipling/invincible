@@ -47,6 +47,36 @@ gh_raw scripts/phase-2.3-zig.sh | bash
 | `fetch-harness-artifact.mjs` | Vercel/local: download `harness-wasm` artifact |
 | `seed-tenancy.ts` | Phase 1: idempotent tenancy seed (`npm run db:seed`) |
 
+## Cloud-native bootstrap (GHA) — phase 1 (#68)
+
+Primary path for migrate+seed **without personal hardware**:
+
+1. Set repository secrets (GitHub **web UI** or `gh secret set` from a cloud agent).
+2. Actions → **db-tenancy-bootstrap** → Run workflow with `confirm` = `seed`.
+3. Optional: `dry_run` = true validates secrets only (no mutate).
+
+Workflow: [`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml)
+
+### Secret names (values never in git / issues / logs)
+
+| Secret | Required | Notes |
+|--------|----------|--------|
+| `DATABASE_URL` | yes | Same value as Vercel Production |
+| `CREDENTIALS_ENCRYPTION_KEY` | yes | Same value as Vercel Production (base64 32-byte KEK) |
+| `SEED_ADMIN_EMAIL` | yes | Bootstrap admin |
+| `SEED_ADMIN_PASSWORD` | yes | Re-seed **resets** password hash from this secret |
+| `SANDBOX_URL` + `SANDBOX_TOKEN` | yes* | *or* `SEED_SANDBOX_URL` + `SEED_SANDBOX_TOKEN` |
+
+**Dual-store identity:** GHA `DATABASE_URL` + `CREDENTIALS_ENCRYPTION_KEY` must
+match Vercel Production or tokens will not decrypt after login flip.
+
+**Cutover order:** keep `AUTH_SECRET` unset on Vercel until after seed so
+tenancy stays OFF; then set `AUTH_SECRET` and redeploy (parent #67 / phase 3).
+
+Full BYO/sandbox cutover doc rewrite: phase 2 (#69). Agent workspace alternate:
+same `npm ci` → `npm run db:migrate` → `npm run db:seed` with env injected
+for the session (never commit).
+
 ## Phase 1 — Postgres migrate + seed
 
 Local / bootstrap (values never committed):

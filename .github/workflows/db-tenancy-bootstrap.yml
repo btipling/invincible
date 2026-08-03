@@ -1,0 +1,152 @@
+# Cloud-native tenancy bootstrap: migrate + seed (no personal hardware).
+#
+# Operator: Actions → db-tenancy-bootstrap → Run workflow
+#   inputs: confirm=seed  (required); dry_run=true optional (validate only)
+#
+# Repository secrets (names only — set via GitHub web UI or `gh secret set`
+# from a cloud agent; never commit values or paste into issues/PR chat):
+#   DATABASE_URL
+#   CREDENTIALS_ENCRYPTION_KEY
+#   SEED_ADMIN_EMAIL
+#   SEED_ADMIN_PASSWORD
+#   SANDBOX_URL + SANDBOX_TOKEN
+#     — or SEED_SANDBOX_URL + SEED_SANDBOX_TOKEN
+#
+# Dual-store identity: DATABASE_URL and CREDENTIALS_ENCRYPTION_KEY must be
+# the SAME values as Vercel Production (runtime). Wrong KEK → undecryptable
+# sandbox tokens after login flip.
+#
+# Cutover order (parent #67): seed while AUTH_SECRET is still omitted on
+# Vercel so tenancy stays OFF; then set AUTH_SECRET and redeploy.
+#
+# Re-run contract: seed re-run RESETS bootstrap password_hash and sandbox
+# token ciphertext from the secret env (intentional).
+#
+# Safety: workflow_dispatch only; ubuntu-latest only; never self-hosted;
+# never echo secret values; job summary success/fail only.
+# See plan issues #67 / #68. Full cutover docs: phase 2 (#69).
+
+name: db-tenancy-bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Must equal "seed" to run migrate+seed (misclick guard)'
+        required: true
+        type: string
+      dry_run:
+        description: 'If true, validate required secrets are present and exit without migrate/seed'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-tenancy-bootstrap-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: migrate + seed
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Guard confirm input
+        if: ${{ inputs.confirm != 'seed' }}
+        run: |
+          set -euo pipefail
+          echo "::error::confirm input must equal 'seed'. Aborting with no mutate."
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Fail closed — required secrets present
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CREDENTIALS_ENCRYPTION_KEY: ${{ secrets.CREDENTIALS_ENCRYPTION_KEY }}
+          SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
+          SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
+          SANDBOX_URL: ${{ secrets.SANDBOX_URL }}
+          SANDBOX_TOKEN: ${{ secrets.SANDBOX_TOKEN }}
+          SEED_SANDBOX_URL: ${{ secrets.SEED_SANDBOX_URL }}
+          SEED_SANDBOX_TOKEN: ${{ secrets.SEED_SANDBOX_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Never print secret values. Only names in error messages.
+          missing=0
+          for name in DATABASE_URL CREDENTIALS_ENCRYPTION_KEY SEED_ADMIN_EMAIL SEED_ADMIN_PASSWORD; do
+            val="${!name:-}"
+            if [ -z "${val}" ]; then
+              echo "::error::${name} is missing or empty (set repository secret)"
+              missing=1
+            fi
+          done
+          sandbox_ok=0
+          if [ -n "${SEED_SANDBOX_URL:-}" ] && [ -n "${SEED_SANDBOX_TOKEN:-}" ]; then
+            sandbox_ok=1
+          fi
+          if [ -n "${SANDBOX_URL:-}" ] && [ -n "${SANDBOX_TOKEN:-}" ]; then
+            sandbox_ok=1
+          fi
+          if [ "${sandbox_ok}" -ne 1 ]; then
+            echo "::error::Sandbox secrets missing: set SANDBOX_URL+SANDBOX_TOKEN or SEED_SANDBOX_URL+SEED_SANDBOX_TOKEN"
+            missing=1
+          fi
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+          echo "All required secret names present (values not printed)."
+
+      - name: Dry run — skip mutate
+        if: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          echo "dry_run=true — secrets validated; skipping migrate and seed."
+          {
+            echo "### db-tenancy-bootstrap"
+            echo "- result: dry_run (secrets OK, no mutate)"
+            echo "- confirm: ok"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Migrate
+        if: ${{ !inputs.dry_run }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npm run db:migrate
+
+      - name: Seed
+        if: ${{ !inputs.dry_run }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CREDENTIALS_ENCRYPTION_KEY: ${{ secrets.CREDENTIALS_ENCRYPTION_KEY }}
+          SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
+          SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
+          SANDBOX_URL: ${{ secrets.SANDBOX_URL }}
+          SANDBOX_TOKEN: ${{ secrets.SANDBOX_TOKEN }}
+          SEED_SANDBOX_URL: ${{ secrets.SEED_SANDBOX_URL }}
+          SEED_SANDBOX_TOKEN: ${{ secrets.SEED_SANDBOX_TOKEN }}
+        run: npm run db:seed
+
+      - name: Job summary
+        if: ${{ always() && inputs.confirm == 'seed' && !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### db-tenancy-bootstrap"
+            echo "- result: ${{ job.status }}"
+            echo "- dry_run: false"
+            echo "- note: re-run resets bootstrap password_hash + sandbox token ciphertext"
+          } >> "${GITHUB_STEP_SUMMARY}"
