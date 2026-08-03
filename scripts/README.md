@@ -111,7 +111,20 @@ a personal-laptop primary path.
 Schema: `db/schema.ts`. Crypto: `lib/tenancy/credentials.ts`. Auth.js: JWT + Credentials only (no adapter `accounts`/`sessions` tables).
 When tenancy is on: `/login` with seed admin email/password.
 
+## Tenancy public smoke (origin / BYO)
+
+After Production cutover (#70), verify unauth gate without secrets:
+
+```bash
+npm run smoke:tenancy
+# or: BASE_URL=https://<your-host> npm run smoke:tenancy
+```
+
+Expect exit 0 only when `POST /api/agent` returns **401** + exact
+`Authentication required.` (see `lib/tenancy/errors.ts`).
+
 ## Phase 3 — fetch harness artifact (Vercel / local)
+
 
 ```bash
 # Needs Actions: Read (HARNESS_ARTIFACT_TOKEN or GH_TOKEN)

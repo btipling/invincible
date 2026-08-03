@@ -26,7 +26,7 @@
 #
 # Safety: workflow_dispatch only; ubuntu-latest only; never self-hosted;
 # never echo secret values; job summary success/fail only.
-# See plan issues #67 / #68. Full cutover docs: phase 2 (#69).
+# See plan issues #67 / #68 / #70. Cutover docs: docs/bring-your-own.md §4a.
 
 name: db-tenancy-bootstrap
 
