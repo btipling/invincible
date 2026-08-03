@@ -1,6 +1,6 @@
 # invincible
 
-Prompt playground / agent harness (Next.js + Zig/dvui Wasm).
+In-browser agent harness — Zig/dvui Wasm workspace hosted by Next.js, inference via Vercel AI Gateway.
 
 **License:** [MIT](LICENSE)
 
