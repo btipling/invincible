@@ -1,0 +1,114 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { PGlite } from '@electric-sql/pglite';
+import { eq } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/pglite';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import * as schema from '../../db/schema';
+import { decryptSecret, encryptSecret } from './credentials';
+import { rotateSandboxToken } from './rotateSandboxToken';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const migrationSql = readFileSync(
+  join(__dirname, '../../db/migrations/0000_tenancy_phase1.sql'),
+  'utf8',
+);
+
+const KEY = Buffer.alloc(32, 3);
+
+describe('rotateSandboxToken', () => {
+  let client: PGlite;
+  let db: ReturnType<typeof drizzle<typeof schema>>;
+  let ownerId: string;
+  let adminId: string;
+  let sandboxId: string;
+
+  beforeAll(async () => {
+    client = new PGlite();
+    for (const stmt of migrationSql
+      .split('--> statement-breakpoint')
+      .map((s) => s.trim())
+      .filter(Boolean)) {
+      await client.exec(stmt);
+    }
+    db = drizzle(client, { schema });
+  });
+
+  afterAll(async () => {
+    await client.close();
+  });
+
+  beforeEach(async () => {
+    await db.delete(schema.sandboxGrants);
+    await db.delete(schema.sandboxes);
+    await db.delete(schema.tenantMembers);
+    await db.delete(schema.users);
+    await db.delete(schema.tenants);
+
+    const [tenant] = await db
+      .insert(schema.tenants)
+      .values({ slug: 't', name: 'T' })
+      .returning({ id: schema.tenants.id });
+
+    const [owner] = await db
+      .insert(schema.users)
+      .values({ email: 'o@example.com', status: 'active' })
+      .returning({ id: schema.users.id });
+    ownerId = owner.id;
+
+    const [admin] = await db
+      .insert(schema.users)
+      .values({ email: 'a@example.com', status: 'active' })
+      .returning({ id: schema.users.id });
+    adminId = admin.id;
+
+    await db.insert(schema.tenantMembers).values([
+      { tenantId: tenant.id, userId: ownerId, role: 'owner' },
+      { tenantId: tenant.id, userId: adminId, role: 'admin' },
+    ]);
+
+    const [sb] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId: tenant.id,
+        name: 'S',
+        slug: 's',
+        baseUrl: 'https://sb.example',
+        tokenCiphertext: encryptSecret('old-token-value', KEY),
+        tokenKekVersion: 1,
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+    sandboxId = sb.id;
+  });
+
+  it('owner rotates and re-encrypts', async () => {
+    const res = await rotateSandboxToken(ownerId, sandboxId, 'brand-new-token', {
+      db: db as never,
+      encrypt: (p) => encryptSecret(p, KEY),
+    });
+    expect(res).toEqual({ ok: true });
+
+    const [row] = await db
+      .select()
+      .from(schema.sandboxes)
+      .where(eq(schema.sandboxes.id, sandboxId));
+    expect(decryptSecret(row.tokenCiphertext, KEY)).toBe('brand-new-token');
+  });
+
+  it('admin cannot rotate', async () => {
+    const res = await rotateSandboxToken(adminId, sandboxId, 'x', {
+      db: db as never,
+      encrypt: (p) => encryptSecret(p, KEY),
+    });
+    expect(res).toEqual({ ok: false, reason: 'forbidden' });
+  });
+
+  it('rejects empty token', async () => {
+    const res = await rotateSandboxToken(ownerId, sandboxId, '   ', {
+      db: db as never,
+    });
+    expect(res).toEqual({ ok: false, reason: 'empty' });
+  });
+});
