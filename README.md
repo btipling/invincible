@@ -2,6 +2,8 @@
 
 Prompt playground / agent harness (Next.js + Zig/dvui Wasm).
 
+**License:** [MIT](LICENSE)
+
 ## Live
 
 | | |
