@@ -55,16 +55,24 @@ export function LoginForm({ callbackUrl }: { callbackUrl: string }) {
           }}
         />
       </label>
-      {state.error ? (
-        <p role="alert" style={{ margin: 0, color: ember.accent, fontSize: 14 }}>
-          {state.error}
-        </p>
-      ) : null}
+      {/* Reserved height so submit does not jump when error appears */}
+      <p
+        role={state.error ? 'alert' : undefined}
+        style={{
+          margin: 0,
+          minHeight: '1.35em',
+          color: ember.accent,
+          fontSize: 14,
+          lineHeight: 1.35,
+        }}
+      >
+        {state.error ?? '\u00a0'}
+      </p>
       <button
         type="submit"
         disabled={pending}
         style={{
-          marginTop: 4,
+          marginTop: 0,
           padding: '10px 14px',
           borderRadius: 8,
           border: 'none',
@@ -79,7 +87,7 @@ export function LoginForm({ callbackUrl }: { callbackUrl: string }) {
       </button>
       <p style={{ margin: 0, fontSize: 12, color: teal.muted }}>
         Seeded operator uses <code style={{ color: warm.accent }}>SEED_ADMIN_*</code> credentials
-        after <code style={{ color: warm.accent }}>npm run db:seed</code>.
+        after <code style={{ color: warm.accent }}>npm run db:seed</code>. SSO later.
       </p>
     </form>
   );

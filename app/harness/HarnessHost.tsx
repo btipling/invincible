@@ -4,7 +4,7 @@
  * Phase 4 host shell — DOM loads Wasm, owns network/session, does NOT host chat UI.
  * Product transcript + composer live in Zig/dvui (see docs/feature-divide.md).
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { DEFAULT_MODEL_LABEL } from '../../lib/chatApi';
 import { runHarnessTurn, pushSessionToBridge } from '../../lib/harnessChat';
 import {
@@ -43,7 +43,7 @@ async function loadDvuiGlue(): Promise<DvuiModule> {
   return import(/* webpackIgnore: true */ /* @vite-ignore */ href) as Promise<DvuiModule>;
 }
 
-export default function HarnessHost() {
+export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bridgeRef = useRef<HarnessBridge | null>(null);
   const storeRef = useRef<SessionStore | null>(null);
@@ -334,6 +334,7 @@ export default function HarnessHost() {
                   Clear
                 </button>
               )}
+              {authNav}
             </span>
           }
         />

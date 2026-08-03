@@ -1,17 +1,11 @@
-'use client';
+import { AuthNavLinks } from '../components/AuthNavLinks';
+import HarnessClient from './HarnessClient';
 
-import dynamic from 'next/dynamic';
-import HarnessLoading from './HarnessLoading';
+export const dynamic = 'force-dynamic';
 
 /**
- * Code-split the heavy host (Wasm glue, bridge, session) off the main bundle.
- * ssr: false — WebAssembly + canvas only exist in the browser.
+ * Server page: auth chrome as RSC slot into client host (no dual chat).
  */
-const HarnessHost = dynamic(() => import('./HarnessHost'), {
-  ssr: false,
-  loading: () => <HarnessLoading label="Starting agent panel…" />,
-});
-
 export default function HarnessPage() {
-  return <HarnessHost />;
+  return <HarnessClient authNav={<AuthNavLinks />} />;
 }
