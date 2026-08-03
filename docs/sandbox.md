@@ -20,8 +20,8 @@ Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-d
 | **Is** | A **separate HTTP daemon** (protocol v1) with a workspace root jail + four tools |
 | **Is** | **BYO** — any operator points `SANDBOX_URL` + `SANDBOX_TOKEN` at **their** process |
 | **Is not** | The Zig **GHA build runner** (`invincible-do-1` / `self-hosted` + `zig` labels) |
-| **Is not** | Multi-tenant SaaS isolation or MCP (still future) |
-| **Is not** | Required for basic chat — without env, harness falls back to `POST /api/chat` |
+| **Is not** | Multi-tenant SaaS fleet isolation or MCP (still future) |
+| **Is not** | Required for basic chat — without sandbox config, harness falls back to `POST /api/chat` |
 
 Never put GHA Actions credentials in the sandbox process env. Prefer a dedicated
 OS user and reverse-proxy TLS in production.
@@ -48,6 +48,26 @@ User types in Wasm composer
 - **Wasm** remains the product UI (transcript + composer). No dual React chat.
 - **Gateway key** and **sandbox token** never enter the client or Wasm.
 - Detection is **server-side only** — no `NEXT_PUBLIC_SANDBOX_*`.
+
+### Tenancy on vs legacy env (parent #54)
+
+| Mode | When | How agent tools get base URL + token |
+|------|------|--------------------------------------|
+| **Legacy (tenancy off)** | Any of `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY` missing | Process env `SANDBOX_URL` + `SANDBOX_TOKEN` (this guide’s original path) |
+| **Tenancy on** | All three set | **DB-resolved** sandbox for the signed-in user (`resolveAgentSandbox`): decrypt `token_ciphertext` server-side; enforce `sandbox_grants` R/W. Env `SANDBOX_*` still used for **seed** / local daemon, not as the sole Production path once tenancy is on. |
+
+When tenancy is on and the user has no usable grant / ambiguous membership:
+
+```http
+HTTP/1.1 403
+Content-Type: application/json
+
+{ "error": "Sandbox access denied." }
+```
+
+(`SANDBOX_FORBIDDEN_ERROR` — host must **not** fall back to chat.)  
+Unauthenticated API calls when tenancy is on → **401**
+`Authentication required.` (not a sandbox config issue).
 
 ### Exact 503 contract (host fallback)
 
@@ -86,8 +106,8 @@ Full contract, jail rules, and exec shape: [`sandbox/README.md`](../sandbox/READ
 
 | Name | Required | Purpose |
 |------|----------|---------|
-| `SANDBOX_URL` | for tools | Base URL of the sandbox (no trailing slash required) |
-| `SANDBOX_TOKEN` | for tools | Shared bearer secret (must match daemon) |
+| `SANDBOX_URL` | for tools (tenancy **off**) | Base URL of the sandbox (no trailing slash required) |
+| `SANDBOX_TOKEN` | for tools (tenancy **off**) / seed | Shared bearer secret (must match daemon); also used by `npm run db:seed` to encrypt into DB when tenancy on |
 | `AGENT_MAX_STEPS` | no | Default **6**, hard max **12** |
 | `AGENT_MODEL` | no | Optional tool-capable model override |
 
@@ -261,3 +281,11 @@ block BYO success and must not publish inventory.
 
 Origin `SANDBOX_*` is marked **Done** in [AGENTS.md](../AGENTS.md) (2026-08-03).
 Host inventory stays offline; forks still set their own env.
+
+### Tenancy cutover (origin)
+
+When Production enables the tenancy triple env, agent tools move to **DB grants**
+for signed-in users. Keep this guide’s env path for Preview/local without DB.
+Do **not** mark `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`
+**Done** in [AGENTS.md](../AGENTS.md) until public unauth → 401 + login smoke.
+See [bring-your-own.md §4a](bring-your-own.md#4a-optional-multi-tenant-auth).

@@ -41,11 +41,16 @@ secrets, runner, sandbox URL, or prod URL exist on a fork.
 - Do **not** treat “works only on invincible-dun-ten.vercel.app” as architecture.
 - When a change **blocks** reusability, call it out in the plan/PR and prefer an
   alternative that leaves the door open.
-- Config seams for BYO Vercel/keys/runner (#38) and **sandbox MVP** (#45 phases
-  1–3) are **landed**. Multi-tenant isolation / MCP remain future — still write
-  code and docs as if broader reuse is the destination.
+- Config seams for BYO Vercel/keys/runner (#38), **sandbox MVP** (#45 phases
+  1–3), and **optional multi-tenant auth** (#54 phases 1–4) are **landed**.
+  SSO/SCIM ([#64](https://github.com/btipling/invincible/issues/64)) and MCP /
+  sandbox fleet isolation remain future — still write code and docs as if
+  broader reuse is the destination.
 - Origin `SANDBOX_*` is **Done** for the reference deploy (private host inventory
   stays offline). Still never invent a host URL; forks set their own env.
+- Origin **tenancy** (`DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`)
+  stays **Not Done** until Production cutover smoke (unauth API 401 + login).
+  Docs: [`docs/bring-your-own.md`](docs/bring-your-own.md) §4a.
 
 ## Project agent skills
 
@@ -108,6 +113,9 @@ ops inventory).
 | `VERCEL_DEPLOY_HOOK_URL` (GitHub secret) | **Done** | deploy hooks; `build-harness` pings after artifact upload |
 | DO runner `invincible-do-1` labels `invincible`,`zig` | **Done** | Zig 0.16.0 only there |
 | `SANDBOX_URL` / `SANDBOX_TOKEN` (Vercel) | **Done** | Agent sandbox on origin Production — see [docs/sandbox.md](docs/sandbox.md); host inventory private; never invent a host URL |
+| `DATABASE_URL` (Vercel) | **Not Done** | Pooled Postgres for optional tenancy — mark **Done** only after Production cutover smoke (unauth 401 + login); no host inventory in git |
+| `AUTH_SECRET` (Vercel) | **Not Done** | Auth.js signing secret — same Done rule as `DATABASE_URL` |
+| `CREDENTIALS_ENCRYPTION_KEY` (Vercel) | **Not Done** | AES-GCM KEK for sandbox tokens at rest — same Done rule; never reuse casually on public Preview |
 
 **Agent behavior (origin):**
 
@@ -115,6 +123,7 @@ ops inventory).
 - If workflow log says hook skipped (`not set`), treat as a real regression and investigate — still prefer fixing CI/docs over lecturing the user.
 - Race fix lives in `scripts/fetch-harness-artifact.mjs` (wait for commit-matched artifact). See `docs/harness-deploy-race.md`.
 - `SANDBOX_*` is **Done** on origin Production. If harness shows exact 503 not-configured or tools vanish, treat as regression (env/redeploy/reachability) — still no invented hosts ([docs/sandbox.md](docs/sandbox.md)).
+- Tenancy triple env is **Not Done** until cutover. Do **not** nag the origin maintainer to “set DATABASE_URL” as if forgotten **after** they are marked Done; until then, cutover is an explicit operator task ([docs/bring-your-own.md](docs/bring-your-own.md) §4a).
 
 IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
 BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).  
@@ -133,7 +142,7 @@ Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURI
 
 ```text
 invincible/
-├── app/                 # Next App Router (/, /harness, /api/chat, /api/agent)
+├── app/                 # Next App Router (/, /harness, /login, /admin, /api/*)
 ├── db/                  # Drizzle schema + SQL migrations (tenancy phase 1+)
 ├── lib/                 # palette, chat, agent, bridge, session, sandbox, tenancy
 ├── sandbox/             # protocol v1 daemon (BYO tools workspace)

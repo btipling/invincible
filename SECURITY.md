@@ -64,3 +64,17 @@ self-hosted GHA runner that compiles Zig.
 
 Inference is server-side only (`POST /api/chat`, `POST /api/agent`). Report
 client-side key or sandbox-token exposure immediately.
+
+## Multi-tenant auth (optional)
+
+| Rule | Detail |
+|------|--------|
+| Triple-env gate | Tenancy on only when `DATABASE_URL` **and** `AUTH_SECRET` **and** `CREDENTIALS_ENCRYPTION_KEY` are set — no separate `AUTH_ENABLED` |
+| Tokens at rest | Sandbox bearer secrets stored as AES-256-GCM ciphertext; decrypt only server-side for agent tools / admin mask |
+| Never client | No `NEXT_PUBLIC_*` for DB, Auth.js secret, KEK, or sandbox token |
+| Preview isolation | Prefer separate DB or tenancy off on public previews; avoid reusing Production KEK casually |
+| Seed | `SEED_ADMIN_PASSWORD` / seed sandbox token are operator-only; re-seed resets bootstrap hash + ciphertext |
+
+Unauthenticated API when tenancy is on returns **401** with body
+`Authentication required.` (stable constant). Grant failures return **403**
+`Sandbox access denied.`
