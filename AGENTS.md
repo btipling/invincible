@@ -47,6 +47,7 @@ Load from **this repo** via `gh` (not generic template skills). Zero-search:
 |-------|----------------|----------|
 | **create-plan** | `.grok/skills/create-plan/SKILL.md` | “use create-plan”, feature plans as **GitHub issues**, parent + phase issues |
 | **plan-review** | `.grok/skills/plan-review/SKILL.md` (+ `LOAD.md`, `references/*`) | Review a plan **issue**; default edit issue body via `gh` |
+| **adversarial-review** | `.grok/skills/adversarial-review/SKILL.md` (+ `LOAD.md`, `references/*`) | Hostile **PR** review; break scenarios; post comment via `gh` |
 
 Index: [`.grok/skills/README.md`](.grok/skills/README.md).
 
@@ -56,7 +57,7 @@ valid handoffs.
 
 ```bash
 command -v gh >/dev/null && gh auth status   # refuse GitHub work if this fails
-# never GitHub MCP for plan create/review
+# never GitHub MCP for plan create/review or adversarial PR review
 ```
 
 ## Hard constraint: git commit author = `btipling`
