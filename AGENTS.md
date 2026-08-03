@@ -134,10 +134,11 @@ Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURI
 ```text
 invincible/
 ├── app/                 # Next App Router (/, /harness, /api/chat, /api/agent)
-├── lib/                 # palette, chat, agent, bridge, session, sandbox client
+├── db/                  # Drizzle schema + SQL migrations (tenancy phase 1+)
+├── lib/                 # palette, chat, agent, bridge, session, sandbox, tenancy
 ├── sandbox/             # protocol v1 daemon (BYO tools workspace)
 ├── native/harness/      # Zig + dvui Wasm (CI on self-hosted runner)
-├── scripts/             # fetch-harness-artifact.mjs, runner scripts
+├── scripts/             # fetch-harness, seed-tenancy, runner scripts
 ├── docs/                # BYO, sandbox, phase plans, limits, deploy race
 ├── public/harness/      # wasm/js gitignored; README only committed
 ├── AGENTS.md
@@ -148,6 +149,8 @@ invincible/
 |----------------|--------|
 | UI page / layout | `app/` |
 | API / AI Gateway / agent | `app/api/*`, `lib/agent/*`, `lib/sandbox/*` |
+| Tenancy schema / migrations | `db/schema.ts`, `db/migrations/` |
+| Tenancy crypto / seed helpers | `lib/tenancy/*`, `scripts/seed-tenancy.ts` |
 | Sandbox daemon | `sandbox/` |
 | Colors / tokens (DOM) | `lib/palette.ts` |
 | Colors / tokens (dvui) | `native/harness/src/palette.zig` (hex sync with palette.ts) |

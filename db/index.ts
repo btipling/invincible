@@ -8,6 +8,9 @@ export type Db = ReturnType<typeof drizzle<typeof schema>>;
 /**
  * Server-only Postgres client. Prefer a **pooled** DATABASE_URL on Vercel
  * (Neon pooler / PgBouncer).
+ *
+ * Caller **must** `await client.end()` when finished (see seed script).
+ * Do not use from long-lived request handlers without a shared pool strategy.
  */
 export function createDbConnection(connectionString?: string): {
   db: Db;
@@ -21,11 +24,6 @@ export function createDbConnection(connectionString?: string): {
   const client = postgres(url, { prepare: false, max: 1 });
   const db = drizzle(client, { schema });
   return { db, client };
-}
-
-/** Convenience when the caller does not need to close the connection. */
-export function createDb(connectionString?: string): Db {
-  return createDbConnection(connectionString).db;
 }
 
 export * from './schema';

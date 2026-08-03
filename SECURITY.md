@@ -12,6 +12,10 @@ If you find a vulnerability in Invincible, please open a **private** security ad
 | `HARNESS_ARTIFACT_TOKEN` | Vercel (Actions: Read PAT for artifact download) |
 | `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions secrets |
 | `SANDBOX_TOKEN` | Vercel project env **and** sandbox process env (same secret) |
+| `DATABASE_URL` | Vercel / local only (prefer **pooled** Neon/PgBouncer URL) |
+| `CREDENTIALS_ENCRYPTION_KEY` | Vercel / local only — base64 32-byte AES-256-GCM KEK for sandbox tokens at rest |
+| `SEED_ADMIN_PASSWORD` / `SEED_SANDBOX_TOKEN` | Operator bootstrap only (`npm run db:seed`); never commit; re-seed resets bootstrap password + token ciphertext |
+| `AUTH_SECRET` | Phase 2+ Auth.js (not required for phase 1 migrate/seed) |
 | Runner registration tokens, DO API tokens | Operator machines only |
 
 Session blobs and Wasm must never contain API keys or sandbox tokens.  

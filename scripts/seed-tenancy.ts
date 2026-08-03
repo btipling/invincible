@@ -1,7 +1,7 @@
 /**
  * Idempotent tenancy seed (phase 1 / #55).
  *
- * Requires:
+ * Requires (live run):
  *   DATABASE_URL
  *   CREDENTIALS_ENCRYPTION_KEY  (base64 32-byte AES key)
  *   SEED_ADMIN_EMAIL
@@ -9,13 +9,15 @@
  *   SEED_SANDBOX_URL + SEED_SANDBOX_TOKEN  (or SANDBOX_URL + SANDBOX_TOKEN)
  *
  * Never prints password, token, or encryption key.
+ * Re-running resets bootstrap password_hash + sandbox token ciphertext (by design).
  *
  * Usage: npm run db:seed
  */
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   createDbConnection,
+  type Db,
   sandboxes,
   sandboxGrants,
   tenantMembers,
@@ -29,8 +31,8 @@ import {
 } from '../lib/tenancy/credentials';
 import { hashPassword } from '../lib/tenancy/password';
 
-const TENANT_SLUG = 'default';
-const SANDBOX_SLUG = 'default';
+export const TENANT_SLUG = 'default';
+export const SANDBOX_SLUG = 'default';
 
 function requireEnv(name: string, env: NodeJS.ProcessEnv = process.env): string {
   const v = env[name]?.trim();
@@ -63,57 +65,54 @@ export type SeedResult = {
   grant: { canRead: boolean; canWrite: boolean };
 };
 
+export type SeedOptions = {
+  /** Injected DB (tests). When set, caller owns lifecycle — no connect/end. */
+  db?: Db;
+};
+
+/**
+ * Upsert tenant/user/member/sandbox/grant inside a single transaction.
+ * Uses ON CONFLICT so concurrent seeds do not TOCTOU-duplicate.
+ */
 export async function seedTenancy(
   env: NodeJS.ProcessEnv = process.env,
+  options: SeedOptions = {},
 ): Promise<SeedResult> {
-  requireEnv('DATABASE_URL', env);
+  if (!options.db) {
+    requireEnv('DATABASE_URL', env);
+  }
   const key = resolveCredentialsKey(env as Record<string, string | undefined>);
   const email = requireEnv('SEED_ADMIN_EMAIL', env).toLowerCase();
   const password = requireEnv('SEED_ADMIN_PASSWORD', env);
   const { baseUrl, token } = resolveSandboxEnv(env);
 
-  const { db, client } = createDbConnection(env.DATABASE_URL);
+  const passwordHash = await hashPassword(password);
+  const tokenCiphertext = encryptSecret(token, key);
+
+  const owned = !options.db;
+  const conn = options.db ? null : createDbConnection(env.DATABASE_URL);
+  const db = options.db ?? conn!.db;
 
   try {
-    const passwordHash = await hashPassword(password);
-    const tokenCiphertext = encryptSecret(token, key);
-
-    // 1) tenant
-    const existingTenant = await db
-      .select()
-      .from(tenants)
-      .where(eq(tenants.slug, TENANT_SLUG))
-      .limit(1);
-    let tenantId: string;
-    if (existingTenant[0]) {
-      tenantId = existingTenant[0].id;
-    } else {
-      const [row] = await db
+    return await db.transaction(async (tx) => {
+      // 1) tenant slug `default`
+      await tx
         .insert(tenants)
         .values({ slug: TENANT_SLUG, name: 'Default', settings: {} })
-        .returning({ id: tenants.id });
-      tenantId = row.id;
-    }
+        .onConflictDoNothing({ target: tenants.slug });
 
-    // 2) user
-    const existingUser = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, email))
-      .limit(1);
-    let userId: string;
-    if (existingUser[0]) {
-      userId = existingUser[0].id;
-      await db
-        .update(users)
-        .set({
-          passwordHash,
-          status: 'active',
-          updatedAt: new Date(),
-        })
-        .where(eq(users.id, userId));
-    } else {
-      const [row] = await db
+      const tenantRow = await tx
+        .select({ id: tenants.id })
+        .from(tenants)
+        .where(eq(tenants.slug, TENANT_SLUG))
+        .limit(1);
+      const tenantId = tenantRow[0]?.id;
+      if (!tenantId) {
+        throw new Error('seed failed: tenant missing after upsert');
+      }
+
+      // 2) user by email — re-seed refreshes password_hash (bootstrap contract)
+      await tx
         .insert(users)
         .values({
           email,
@@ -121,61 +120,40 @@ export async function seedTenancy(
           status: 'active',
           passwordHash,
         })
-        .returning({ id: users.id });
-      userId = row.id;
-    }
+        .onConflictDoUpdate({
+          target: users.email,
+          set: {
+            passwordHash,
+            status: 'active',
+            updatedAt: new Date(),
+          },
+        });
 
-    // 3) member owner
-    const existingMember = await db
-      .select()
-      .from(tenantMembers)
-      .where(
-        and(
-          eq(tenantMembers.tenantId, tenantId),
-          eq(tenantMembers.userId, userId),
-        ),
-      )
-      .limit(1);
-    if (!existingMember[0]) {
-      await db.insert(tenantMembers).values({
-        tenantId,
-        userId,
-        role: 'owner',
-      });
-    } else if (existingMember[0].role !== 'owner') {
-      await db
-        .update(tenantMembers)
-        .set({ role: 'owner' })
-        .where(
-          and(
-            eq(tenantMembers.tenantId, tenantId),
-            eq(tenantMembers.userId, userId),
-          ),
-        );
-    }
+      const userRow = await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, email))
+        .limit(1);
+      const userId = userRow[0]?.id;
+      if (!userId) {
+        throw new Error('seed failed: user missing after upsert');
+      }
 
-    // 4) sandbox
-    const existingSandbox = await db
-      .select()
-      .from(sandboxes)
-      .where(
-        and(eq(sandboxes.tenantId, tenantId), eq(sandboxes.slug, SANDBOX_SLUG)),
-      )
-      .limit(1);
-    let sandboxId: string;
-    if (existingSandbox[0]) {
-      sandboxId = existingSandbox[0].id;
-      await db
-        .update(sandboxes)
-        .set({
-          baseUrl,
-          tokenCiphertext,
-          tokenKekVersion: CURRENT_KEK_VERSION,
-          status: 'active',
+      // 3) member owner
+      await tx
+        .insert(tenantMembers)
+        .values({
+          tenantId,
+          userId,
+          role: 'owner',
         })
-        .where(eq(sandboxes.id, sandboxId));
-    } else {
-      const [row] = await db
+        .onConflictDoUpdate({
+          target: [tenantMembers.tenantId, tenantMembers.userId],
+          set: { role: 'owner' },
+        });
+
+      // 4) sandbox under tenant
+      await tx
         .insert(sandboxes)
         .values({
           tenantId,
@@ -186,49 +164,84 @@ export async function seedTenancy(
           tokenKekVersion: CURRENT_KEK_VERSION,
           status: 'active',
         })
-        .returning({ id: sandboxes.id });
-      sandboxId = row.id;
-    }
+        .onConflictDoUpdate({
+          target: [sandboxes.tenantId, sandboxes.slug],
+          set: {
+            baseUrl,
+            tokenCiphertext,
+            tokenKekVersion: CURRENT_KEK_VERSION,
+            status: 'active',
+          },
+        });
 
-    // 5) full grant
-    const existingGrant = await db
-      .select()
-      .from(sandboxGrants)
-      .where(
-        and(
-          eq(sandboxGrants.sandboxId, sandboxId),
-          eq(sandboxGrants.userId, userId),
-        ),
-      )
-      .limit(1);
-    if (!existingGrant[0]) {
-      await db.insert(sandboxGrants).values({
-        sandboxId,
-        userId,
-        canRead: true,
-        canWrite: true,
-      });
-    } else {
-      await db
-        .update(sandboxGrants)
-        .set({ canRead: true, canWrite: true })
+      const sandboxRow = await tx
+        .select({ id: sandboxes.id })
+        .from(sandboxes)
         .where(
-          and(
-            eq(sandboxGrants.sandboxId, sandboxId),
-            eq(sandboxGrants.userId, userId),
-          ),
-        );
-    }
+          and(eq(sandboxes.tenantId, tenantId), eq(sandboxes.slug, SANDBOX_SLUG)),
+        )
+        .limit(1);
+      const sandboxId = sandboxRow[0]?.id;
+      if (!sandboxId) {
+        throw new Error('seed failed: sandbox missing after upsert');
+      }
 
-    return {
-      tenantId,
-      userId,
-      sandboxId,
-      grant: { canRead: true, canWrite: true },
-    };
+      // 5) full R/W grant
+      await tx
+        .insert(sandboxGrants)
+        .values({
+          sandboxId,
+          userId,
+          canRead: true,
+          canWrite: true,
+        })
+        .onConflictDoUpdate({
+          target: [sandboxGrants.sandboxId, sandboxGrants.userId],
+          set: { canRead: true, canWrite: true },
+        });
+
+      return {
+        tenantId,
+        userId,
+        sandboxId,
+        grant: { canRead: true, canWrite: true },
+      };
+    });
   } finally {
-    await client.end({ timeout: 5 });
+    if (owned && conn) {
+      await conn.client.end({ timeout: 5 });
+    }
   }
+}
+
+/** Count helpers for tests / operators (no secrets). */
+export async function countSeedRows(db: Db): Promise<{
+  tenants: number;
+  users: number;
+  members: number;
+  sandboxes: number;
+  grants: number;
+}> {
+  const one = async (
+    table:
+      | typeof tenants
+      | typeof users
+      | typeof tenantMembers
+      | typeof sandboxes
+      | typeof sandboxGrants,
+  ) => {
+    const [row] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(table);
+    return Number(row?.n ?? 0);
+  };
+  return {
+    tenants: await one(tenants),
+    users: await one(users),
+    members: await one(tenantMembers),
+    sandboxes: await one(sandboxes),
+    grants: await one(sandboxGrants),
+  };
 }
 
 async function main() {
@@ -246,7 +259,14 @@ async function main() {
   );
 }
 
-main().catch((err) => {
-  console.error(err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+// Only auto-run when executed as the seed script entrypoint.
+const entry = process.argv[1] ?? '';
+const isMain =
+  entry.endsWith('seed-tenancy.ts') || entry.endsWith('seed-tenancy.js');
+
+if (isMain) {
+  main().catch((err) => {
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}
