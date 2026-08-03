@@ -81,4 +81,56 @@ describe('middleware tenancy gate', () => {
     );
     expect(res.status).toBe(200);
   });
+
+  it('passes secureCookie:true to getToken on HTTPS (Vercel prod cookie name)', async () => {
+    process.env.DATABASE_URL = 'postgres://x';
+    process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = 'key-material';
+    vi.resetModules();
+    const getToken = vi.fn(async () => ({ sub: 'user-uuid' }));
+    vi.doMock('next-auth/jwt', () => ({ getToken }));
+    const { middleware } = await loadMw();
+    const req = new Request('https://invincible-dun-ten.vercel.app/harness', {
+      headers: { 'x-forwarded-proto': 'https' },
+    });
+    await middleware(req as never);
+    expect(getToken).toHaveBeenCalled();
+    const arg = getToken.mock.calls[0]?.[0] as { secureCookie?: boolean };
+    expect(arg.secureCookie).toBe(true);
+  });
+
+  it('passes secureCookie:false on plain http localhost', async () => {
+    process.env.DATABASE_URL = 'postgres://x';
+    process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = 'key-material';
+    vi.resetModules();
+    const getToken = vi.fn(async () => ({ sub: 'user-uuid' }));
+    vi.doMock('next-auth/jwt', () => ({ getToken }));
+    const { middleware } = await loadMw();
+    await middleware(new Request('http://localhost/harness') as never);
+    const arg = getToken.mock.calls[0]?.[0] as { secureCookie?: boolean };
+    expect(arg.secureCookie).toBe(false);
+  });
+});
+
+describe('useSecureAuthCookie', () => {
+  it('detects https URL and x-forwarded-proto', async () => {
+    vi.resetModules();
+    const { useSecureAuthCookie } = await import('./middleware');
+    expect(
+      useSecureAuthCookie(
+        new Request('https://example.com/harness') as never,
+      ),
+    ).toBe(true);
+    expect(
+      useSecureAuthCookie(
+        new Request('http://localhost/harness', {
+          headers: { 'x-forwarded-proto': 'https' },
+        }) as never,
+      ),
+    ).toBe(true);
+    expect(
+      useSecureAuthCookie(new Request('http://localhost/harness') as never),
+    ).toBe(false);
+  });
 });
