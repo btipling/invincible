@@ -95,9 +95,11 @@ gh auth status || exit 1
 forks/clones. Third-party operators set **their** Vercel/env/runner per
 [`docs/bring-your-own.md`](docs/bring-your-own.md).
 
-On origin, these are **already set up**. Never ask the origin maintainer to
-create, wire, or “remember to set” them unless a build log **proves** they are
-missing/broken.
+On origin, rows marked **Done** are **already set up**. Never ask the origin
+maintainer to create, wire, or “remember to set” those unless a build log
+**proves** they are missing/broken. Rows that are **not Done** (today:
+`SANDBOX_*`) are operator work — agents may remind only when tool smoke fails
+or env is clearly unset; never invent a host URL.
 
 | Item | Status | Notes |
 |------|--------|--------|
@@ -113,6 +115,7 @@ missing/broken.
 - Do **not** prompt “set `VERCEL_DEPLOY_HOOK_URL`” / “wire the deploy hook” / “optional secret if not already”.
 - If workflow log says hook skipped (`not set`), treat as a real regression and investigate — still prefer fixing CI/docs over lecturing the user.
 - Race fix lives in `scripts/fetch-harness-artifact.mjs` (wait for commit-matched artifact). See `docs/harness-deploy-race.md`.
+- Do **not** treat `SANDBOX_*` as Done until the Status column says so. Missing tools + exact 503 not-configured → operator must set env ([docs/sandbox.md](docs/sandbox.md)); still no invented hosts.
 
 IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
 BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).  

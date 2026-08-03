@@ -39,7 +39,7 @@ User types in Wasm composer
             if HTTP 503 + exact not-configured string
               → POST /api/chat   (today’s single-shot path)
             else
-              generateText + tools → HTTPS SANDBOX_URL/v1/*
+              generateText + tools → SANDBOX_URL/v1/* (HTTP or HTTPS)
               (Bearer SANDBOX_TOKEN; server-only)
   → host pushes ≤6 system toolTrace lines (≤240 chars) + assistant/error into Wasm
   → user reads in canvas
