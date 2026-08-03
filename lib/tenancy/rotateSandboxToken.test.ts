@@ -22,6 +22,7 @@ describe('rotateSandboxToken', () => {
   let db: ReturnType<typeof drizzle<typeof schema>>;
   let ownerId: string;
   let adminId: string;
+  let memberId: string;
   let sandboxId: string;
 
   beforeAll(async () => {
@@ -63,9 +64,16 @@ describe('rotateSandboxToken', () => {
       .returning({ id: schema.users.id });
     adminId = admin.id;
 
+    const [member] = await db
+      .insert(schema.users)
+      .values({ email: 'm@example.com', status: 'active' })
+      .returning({ id: schema.users.id });
+    memberId = member.id;
+
     await db.insert(schema.tenantMembers).values([
       { tenantId: tenant.id, userId: ownerId, role: 'owner' },
       { tenantId: tenant.id, userId: adminId, role: 'admin' },
+      { tenantId: tenant.id, userId: memberId, role: 'member' },
     ]);
 
     const [sb] = await db
@@ -110,5 +118,23 @@ describe('rotateSandboxToken', () => {
       db: db as never,
     });
     expect(res).toEqual({ ok: false, reason: 'empty' });
+  });
+
+  it('member cannot rotate', async () => {
+    const res = await rotateSandboxToken(memberId, sandboxId, 'x', {
+      db: db as never,
+      encrypt: (p) => encryptSecret(p, KEY),
+    });
+    expect(res).toEqual({ ok: false, reason: 'forbidden' });
+  });
+
+  it('unknown sandbox is not_found', async () => {
+    const res = await rotateSandboxToken(
+      ownerId,
+      '00000000-0000-4000-8000-000000000099',
+      'x',
+      { db: db as never },
+    );
+    expect(res).toEqual({ ok: false, reason: 'not_found' });
   });
 });

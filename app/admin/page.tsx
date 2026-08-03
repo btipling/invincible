@@ -73,7 +73,14 @@ export default async function AdminPage() {
           ? 'No tenant membership found.'
           : result.reason === 'ambiguous'
             ? 'Multiple tenant memberships — v1 admin requires exactly one.'
-            : 'Could not load admin data.';
+            : 'Could not load admin data (database unavailable).';
+
+    const hint =
+      result.reason === 'forbidden' || result.reason === 'no_membership'
+        ? 'Access denied — contact a tenant owner if you need admin.'
+        : result.reason === 'ambiguous'
+          ? 'v1 supports a single tenant membership per user.'
+          : 'Check DATABASE_URL / pooler connectivity and try again.';
 
     return (
       <main style={{ padding: 24, maxWidth: 880, margin: '0 auto', width: '100%' }}>
@@ -82,7 +89,7 @@ export default async function AdminPage() {
           {message}
         </p>
         <p style={{ color: teal.muted, fontSize: 14, marginTop: 12 }}>
-          HTTP 403 — contact a tenant owner if you need access.
+          {hint}
         </p>
       </main>
     );

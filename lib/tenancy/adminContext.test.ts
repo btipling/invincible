@@ -22,6 +22,7 @@ describe('loadAdminContext', () => {
   let tenantId: string;
   let ownerId: string;
   let memberId: string;
+  let adminId: string;
   let sandboxId: string;
 
   beforeAll(async () => {
@@ -64,9 +65,16 @@ describe('loadAdminContext', () => {
       .returning({ id: schema.users.id });
     memberId = member.id;
 
+    const [admin] = await db
+      .insert(schema.users)
+      .values({ email: 'admin@example.com', status: 'active' })
+      .returning({ id: schema.users.id });
+    adminId = admin.id;
+
     await db.insert(schema.tenantMembers).values([
       { tenantId, userId: ownerId, role: 'owner' },
       { tenantId, userId: memberId, role: 'member' },
+      { tenantId, userId: adminId, role: 'admin' },
     ]);
 
     const [sb] = await db
@@ -109,5 +117,41 @@ describe('loadAdminContext', () => {
   it('forbids member role', async () => {
     const res = await loadAdminContext(memberId, { db: db as never });
     expect(res).toEqual({ ok: false, reason: 'forbidden' });
+  });
+
+  it('allows admin role with canRotate false', async () => {
+    const res = await loadAdminContext(adminId, {
+      db: db as never,
+      decrypt: (ct) => decryptSecret(ct, KEY),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.role).toBe('admin');
+    expect(res.value.canAdmin).toBe(true);
+    expect(res.value.canRotate).toBe(false);
+    expect(res.value.sandboxes).toHaveLength(1);
+  });
+
+  it('no_membership when user has none', async () => {
+    const [orphan] = await db
+      .insert(schema.users)
+      .values({ email: 'orphan@example.com', status: 'active' })
+      .returning({ id: schema.users.id });
+    const res = await loadAdminContext(orphan.id, { db: db as never });
+    expect(res).toEqual({ ok: false, reason: 'no_membership' });
+  });
+
+  it('ambiguous when two memberships', async () => {
+    const [t2] = await db
+      .insert(schema.tenants)
+      .values({ slug: 'other', name: 'Other' })
+      .returning({ id: schema.tenants.id });
+    await db.insert(schema.tenantMembers).values({
+      tenantId: t2.id,
+      userId: ownerId,
+      role: 'owner',
+    });
+    const res = await loadAdminContext(ownerId, { db: db as never });
+    expect(res).toEqual({ ok: false, reason: 'ambiguous' });
   });
 });
