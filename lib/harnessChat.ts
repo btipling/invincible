@@ -126,7 +126,7 @@ export async function runHarnessTurn(
   bridge: HarnessBridge,
   session: SessionSnapshot,
   rawPrompt: string,
-  opts?: Omit<RunHarnessChatOptions, 'history' | 'pushUser'>,
+  opts?: Omit<RunHarnessChatOptions, 'history'>,
 ): Promise<HarnessTurnResult> {
   const validation = validatePrompt(rawPrompt);
   if (validation) {
@@ -139,9 +139,12 @@ export async function runHarnessTurn(
   const prompt = normalizePrompt(rawPrompt);
   const withUser = appendMessage(session, 'user', prompt);
 
+  // Wasm pending-submit path sets pushUser:false (user line already in canvas).
+  const pushUser = opts?.pushUser !== false;
+
   const result = await runHarnessChat(bridge, prompt, {
     ...opts,
-    pushUser: true,
+    pushUser,
     history: session.messages,
     useHistory: opts?.useHistory,
   });

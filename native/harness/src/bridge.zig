@@ -87,6 +87,10 @@ pub fn queueSubmitFromUi(text: []const u8) void {
     if (lifecycle == .busy or has_pending_submit) return;
     pending_submit_len = copySlice(&pending_submit, text[start..]);
     has_pending_submit = pending_submit_len > 0;
+    if (!has_pending_submit) return;
+    // Immediate user line in Wasm transcript; host uses pushUser:false on this path.
+    _ = pushMessage(1, pending_submit[0..pending_submit_len]);
+    lifecycle = .busy;
 }
 
 pub fn reset() void {

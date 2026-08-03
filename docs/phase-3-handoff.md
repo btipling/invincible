@@ -1,6 +1,8 @@
 # Phase 3 operator handoff
 
-**Audience:** a new agent or human who must rebuild the Wasm harness and see it on prod **without tribal knowledge**.
+**Audience:** pipeline rebuild/deploy for the Phase 3 ship path.
+
+> **Product direction:** Phase 3 was a **pipeline PoC** (DOM chat + optional Wasm). **Phase 4** makes Wasm the harness — start at [`phase-4-plan.md`](phase-4-plan.md) / epic #27.
 
 | | |
 |--|--|

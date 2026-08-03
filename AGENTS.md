@@ -116,6 +116,17 @@ import { teal, warm, ember } from '@/lib/palette';
 - Using `ember` for non-error UI
 - Hardcoding `#2dd4bf` instead of `teal.accent` (literals drift)
 
+## Feature divide (Phase 4)
+
+**Wasm is the harness; DOM is host shell only.** See [`docs/feature-divide.md`](docs/feature-divide.md).
+
+| DOM | Wasm |
+|-----|------|
+| Nav, load module, bridge, `/api/chat`, SessionStore | Transcript, composer, agent chrome |
+| No competing chat panel | Primary multi-turn UX |
+
+Do **not** rebuild a React agent chat panel as product UI.
+
 ## Working rules
 
 - Zig compile **only** on `invincible-do-1` (`build-harness.yml`). After harness source changes: CI → artifact → Vercel (wait-for-SHA prebuild + deploy hook).

@@ -1,4 +1,5 @@
-//! Harness UI (dvui). Asteronica-themed companion to the DOM agent panel.
+//! Harness product UI (dvui) — Phase 4 Wasm-primary agent workspace.
+//! DOM host only loads this surface + owns /api/chat; chat UX lives here.
 const dvui = @import("dvui");
 const bridge = @import("bridge.zig");
 const palette = @import("palette.zig");
@@ -33,13 +34,12 @@ fn lifecycleLabel(l: bridge.Lifecycle) []const u8 {
     };
 }
 
-/// Role → Asteronica text color (matches DOM bubble labels).
 fn kindTextColor(kind: u8) dvui.Color {
     return switch (kind) {
-        1 => palette.teal_accent, // user
-        2 => palette.warm_accent, // assistant
-        3 => palette.teal_muted, // system
-        4 => palette.ember_accent, // error
+        1 => palette.teal_accent,
+        2 => palette.warm_accent,
+        3 => palette.teal_muted,
+        4 => palette.ember_accent,
         else => palette.teal_text,
     };
 }
@@ -57,53 +57,116 @@ pub fn frame() !void {
     const life = bridge.getLifecycle();
     const busy = life == .busy;
 
-    var box = dvui.box(@src(), .{ .dir = .vertical }, .{
+    var root = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .both,
         .background = true,
         .style = .window,
-        .margin = .all(10),
-        .padding = .all(10),
         .color_fill = palette.teal_bg,
         .color_text = palette.teal_text,
         .color_border = palette.teal_border,
+        .padding = .all(12),
     });
-    defer box.deinit();
+    defer root.deinit();
 
+    // Header
     {
-        var tl = dvui.textLayout(@src(), .{}, .{
+        var head = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .expand = .horizontal,
-            .font = .theme(.title),
-            .color_text = palette.teal_text,
+            .background = true,
+            .color_fill = palette.teal_surface,
+            .color_border = palette.teal_border,
+            .padding = .all(8),
+            .margin = .{ .x = 0, .y = 0, .w = 0, .h = 8 },
         });
-        tl.addText("Wasm surface", .{});
-        tl.deinit();
+        defer head.deinit();
+
+        {
+            var tl = dvui.textLayout(@src(), .{}, .{
+                .expand = .horizontal,
+                .font = .theme(.heading),
+                .color_text = palette.teal_text,
+            });
+            tl.addText("Agent harness", .{});
+            tl.deinit();
+        }
+        {
+            var tl = dvui.textLayout(@src(), .{}, .{
+                .color_text = if (busy) palette.warm_accent else palette.teal_muted,
+            });
+            tl.format("{s}", .{lifecycleLabel(life)}, .{});
+            tl.deinit();
+        }
     }
 
+    // Transcript (scroll-friendly expand)
     {
-        var tl = dvui.textLayout(@src(), .{}, .{
-            .expand = .horizontal,
-            .color_text = palette.teal_muted,
+        var scroll = dvui.scrollArea(@src(), .{}, .{
+            .expand = .both,
+            .background = true,
+            .color_fill = palette.teal_surface,
+            .color_border = palette.teal_border,
+            .min_size_content = .{ .w = 200, .h = 160 },
+            .padding = .all(10),
+            .margin = .{ .x = 0, .y = 0, .w = 0, .h = 8 },
         });
-        tl.format(
-            "lifecycle: {s}  ·  Asteronica theme\n",
-            .{lifecycleLabel(life)},
-            .{},
-        );
-        tl.deinit();
+        defer scroll.deinit();
+
+        var body = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .expand = .horizontal,
+        });
+        defer body.deinit();
+
+        const n = bridge.messageCount();
+        if (n == 0) {
+            var tl = dvui.textLayout(@src(), .{}, .{
+                .expand = .horizontal,
+                .color_text = palette.teal_muted,
+            });
+            tl.addText("Start a conversation\n\nType below and press Enter or Send.\nSmoke: PONG checks the host Gateway path.\n", .{});
+            tl.deinit();
+        } else {
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                if (bridge.messageAt(i)) |m| {
+                    const is_err = m.kind == 4;
+                    var tl = dvui.textLayout(@src(), .{}, .{
+                        .expand = .horizontal,
+                        .id_extra = i,
+                        .color_text = kindTextColor(m.kind),
+                        .color_fill = if (is_err) palette.ember_surface else null,
+                        .style = if (is_err) .err else .content,
+                        .margin = .{ .x = 0, .y = 0, .w = 0, .h = 6 },
+                    });
+                    tl.format("[{s}]\n{s}\n", .{ kindLabel(m.kind), m.text }, .{});
+                    tl.deinit();
+                }
+            }
+        }
+
+        if (busy) {
+            var tl = dvui.textLayout(@src(), .{}, .{
+                .expand = .horizontal,
+                .color_text = palette.warm_accent,
+            });
+            tl.addText("Waiting for model…\n", .{});
+            tl.deinit();
+        }
     }
 
+    // Composer
     var typed: []const u8 = prompt_buf[0..0];
     {
         var te = dvui.textEntry(@src(), .{
             .text = .{ .buffer = prompt_buf[0..] },
-            .placeholder = "Optional Wasm prompt…",
-            .multiline = false,
+            .placeholder = "Message the model…",
+            .multiline = true,
         }, .{
             .expand = .horizontal,
-            .min_size_content = .{ .w = 160, .h = 22 },
-            .color_fill = palette.teal_surface,
+            .min_size_content = .{ .w = 200, .h = 56 },
+            .color_fill = palette.teal_bg,
             .color_text = palette.teal_text,
             .color_border = palette.teal_border,
+            .margin = .{ .x = 0, .y = 0, .w = 0, .h = 8 },
         });
         typed = te.getText();
         const enter = te.enter_pressed and !busy;
@@ -118,67 +181,25 @@ pub fn frame() !void {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
         defer row.deinit();
 
-        // Send — TEAL primary (highlight)
         if (dvui.button(@src(), "Send", .{}, .{
             .gravity_y = 0.5,
             .style = .highlight,
         })) {
             if (!busy and typed.len > 0) submitText(typed);
         }
-
-        // PONG smoke — WARM accent (app1)
         if (dvui.button(@src(), "PONG", .{}, .{
             .gravity_y = 0.5,
             .style = .app1,
         })) {
             if (!busy) submitText(SMOKE_PROMPT);
         }
-    }
-
-    if (busy) {
-        var tl = dvui.textLayout(@src(), .{}, .{
-            .expand = .horizontal,
-            .style = .app3,
-            .color_text = palette.warm_accent,
-        });
-        tl.addText("Waiting for model…\n", .{});
-        tl.deinit();
-    }
-
-    {
-        var tl = dvui.textLayout(@src(), .{}, .{
-            .expand = .horizontal,
-            .color_text = palette.teal_muted,
-        });
-        tl.addText("Mirror transcript\n", .{});
-        tl.deinit();
-    }
-
-    const n = bridge.messageCount();
-    if (n == 0) {
-        var tl = dvui.textLayout(@src(), .{}, .{
-            .expand = .horizontal,
-            .color_text = palette.teal_muted,
-        });
-        tl.addText("(empty)", .{});
-        tl.deinit();
-    } else {
-        const start: usize = if (n > 6) n - 6 else 0;
-        var i: usize = start;
-        while (i < n) : (i += 1) {
-            if (bridge.messageAt(i)) |m| {
-                const is_err = m.kind == 4;
-                var tl = dvui.textLayout(@src(), .{}, .{
-                    .expand = .horizontal,
-                    .id_extra = i,
-                    .color_text = kindTextColor(m.kind),
-                    .color_fill = if (is_err) palette.ember_surface else null,
-                    .color_border = if (is_err) palette.ember_border else null,
-                    .style = if (is_err) .err else .content,
-                });
-                tl.format("[{s}] {s}\n", .{ kindLabel(m.kind), m.text }, .{});
-                tl.deinit();
-            }
+        {
+            var tl = dvui.textLayout(@src(), .{}, .{
+                .gravity_y = 0.5,
+                .color_text = palette.teal_muted,
+            });
+            tl.addText("  Enter to send", .{});
+            tl.deinit();
         }
     }
 }

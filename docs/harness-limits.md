@@ -31,6 +31,15 @@ Unexpected: `Failed to compile module`, MIME `text/html` for `.wasm`, missing `i
 | Tab | Move through nav, Clear, Show Wasm, composer, Send |
 | Enter (in canvas textEntry) | Queue Wasm submit when the Wasm panel is focused |
 
+## Product UX (Phase 4)
+
+| Surface | Role |
+|---------|------|
+| **Wasm (dvui)** | Primary harness — transcript, composer, agent chrome |
+| **DOM** | Host shell — nav, load, bridge, `/api/chat`, SessionStore |
+
+See [feature-divide.md](feature-divide.md). Phase 3 DOM chat panel is **removed** as product UI.
+
 ## Palette (DOM **and** dvui)
 
 Both surfaces use Asteronica tokens aligned with `lib/palette.ts`:
@@ -53,7 +62,7 @@ Hex values must stay in sync across those two files. dvui theme reuses Adwaita e
 | Limit | Notes |
 |-------|--------|
 | WebGL | Required for dvui web backend; fails on locked-down GPUs |
-| Text input | Canvas textEntry works; **DOM composer is primary** for IME / mobile keyboards |
+| Text input | **Wasm textEntry is primary** (Phase 4); IME/mobile limits tracked in #34 |
 | Mobile | Agent panel usable at ~390px; canvas companion is optional (“Show Wasm”) |
 | Multi-touch | Canvas `touch-action: none`; composer uses native text fields |
 | Safari | Wasm + WebGL generally OK on recent iOS; test before relying on canvas entry |
