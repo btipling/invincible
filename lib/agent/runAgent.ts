@@ -27,6 +27,8 @@ export type RunAgentParams = {
   generateTextImpl?: (args: any) => Promise<any>;
   sandboxClient?: SandboxClient;
   secrets?: Array<string | undefined | null>;
+  /** Effective grant permissions; default full access when omitted. */
+  permissions?: { canRead: boolean; canWrite: boolean };
 };
 
 export type RunAgentResult = {
@@ -71,6 +73,7 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
     client,
     secrets,
     signal: params.signal,
+    permissions: params.permissions,
   });
 
   const result = await generate({

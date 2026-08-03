@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SANDBOX_NOT_CONFIGURED_ERROR, sendAgent } from './agentApi';
-import { AUTH_REQUIRED_ERROR } from './tenancy/errors';
+import { AUTH_REQUIRED_ERROR, SANDBOX_FORBIDDEN_ERROR } from './tenancy/errors';
 
 describe('sendAgent', () => {
   afterEach(() => {
@@ -86,5 +86,23 @@ describe('sendAgent', () => {
       expect(result.sandboxNotConfigured).toBeUndefined();
     }
   });
+
+
+  it('does not mark sandboxNotConfigured on 403 sandbox forbidden', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({ error: SANDBOX_FORBIDDEN_ERROR }, { status: 403 }),
+      ),
+    );
+    const result = await sendAgent('hi');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.status).toBe(403);
+      expect(result.error).toBe(SANDBOX_FORBIDDEN_ERROR);
+      expect(result.sandboxNotConfigured).toBeUndefined();
+    }
+  });
+
 
 });

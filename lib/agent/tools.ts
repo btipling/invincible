@@ -6,15 +6,29 @@ import {
 import type { SandboxClient } from '../sandbox/client';
 import { redactSecrets, truncateForModel } from './redact';
 
+export type ToolPermissions = {
+  canRead: boolean;
+  canWrite: boolean;
+};
+
 export type CreateAgentToolsOptions = {
   client: SandboxClient;
   /** Secrets to redact from tool results (token, etc.). */
   secrets?: Array<string | undefined | null>;
   signal?: AbortSignal;
+  /**
+   * Grant-derived permissions. Default full access (env / legacy inject path).
+   * Write does not need to re-encode write⇒read here — caller should pass effective flags.
+   */
+  permissions?: ToolPermissions;
 };
 
 function finalize(text: string, secrets: Array<string | undefined | null>): string {
   return truncateForModel(redactSecrets(text, secrets), TOOL_RESULT_MAX_CHARS);
+}
+
+function deny(toolName: string, need: 'read' | 'write', secrets: Array<string | undefined | null>) {
+  return finalize(`ERROR ${toolName}: permission denied (need ${need})`, secrets);
 }
 
 /**
@@ -23,6 +37,10 @@ function finalize(text: string, secrets: Array<string | undefined | null>): stri
 export function createAgentTools(opts: CreateAgentToolsOptions) {
   const { client, signal } = opts;
   const secrets = opts.secrets ?? [];
+  const permissions: ToolPermissions = opts.permissions ?? {
+    canRead: true,
+    canWrite: true,
+  };
 
   const list_dir = tool({
     description:
@@ -38,6 +56,9 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
       additionalProperties: false,
     }),
     execute: async (input) => {
+      if (!permissions.canRead) {
+        return deny('list_dir', 'read', secrets);
+      }
       try {
         const path = input?.path?.trim() || '.';
         const result = await client.listDir(path, { signal });
@@ -68,6 +89,9 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
       additionalProperties: false,
     }),
     execute: async (input) => {
+      if (!permissions.canRead) {
+        return deny('read_file', 'read', secrets);
+      }
       try {
         const path = input.path;
         if (!path) return finalize('ERROR read_file: path is required', secrets);
@@ -97,6 +121,9 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
       additionalProperties: false,
     }),
     execute: async (input) => {
+      if (!permissions.canWrite) {
+        return deny('write_file', 'write', secrets);
+      }
       try {
         if (!input.path) return finalize('ERROR write_file: path is required', secrets);
         if (typeof input.content !== 'string') {
@@ -143,6 +170,9 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
       additionalProperties: false,
     }),
     execute: async (input) => {
+      if (!permissions.canWrite) {
+        return deny('exec', 'write', secrets);
+      }
       try {
         if (!input.cmd) return finalize('ERROR exec: cmd is required', secrets);
         const timeoutMs = clampExecTimeoutMs(input.timeoutMs);

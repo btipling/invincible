@@ -83,3 +83,81 @@ describe('createAgentTools', () => {
     expect(out).toContain('a.ts');
   });
 });
+
+describe('createAgentTools permissions', () => {
+  it('read-only denies write_file and exec without calling client', async () => {
+    const writeFile = vi.fn(async () => ({ ok: true as const, bytes: 1 }));
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const listDir = vi.fn(async () => ({ entries: [{ name: 'a', type: 'file' as const }] }));
+    const client = mockClient({ writeFile, exec, listDir });
+    const tools = createAgentTools({
+      client,
+      permissions: { canRead: true, canWrite: false },
+    });
+
+    const w = (await tools.write_file.execute!(
+      { path: 'x.txt', content: 'hi' },
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(w).toMatch(/permission denied \(need write\)/);
+    expect(writeFile).not.toHaveBeenCalled();
+
+    const e = (await tools.exec.execute!(
+      { cmd: 'true' },
+      { toolCallId: '2', messages: [] } as never,
+    )) as string;
+    expect(e).toMatch(/permission denied \(need write\)/);
+    expect(exec).not.toHaveBeenCalled();
+
+    const l = (await tools.list_dir.execute!(
+      { path: '.' },
+      { toolCallId: '3', messages: [] } as never,
+    )) as string;
+    expect(l).toContain('1 entries');
+    expect(listDir).toHaveBeenCalled();
+  });
+
+  it('write-only effective caller allows all when canRead true canWrite true', async () => {
+    // Caller passes *effective* flags (write⇒read already applied)
+    const client = mockClient({
+      listDir: vi.fn(async () => ({ entries: [] })),
+      writeFile: vi.fn(async () => ({ ok: true as const, bytes: 2 })),
+    });
+    const tools = createAgentTools({
+      client,
+      permissions: { canRead: true, canWrite: true },
+    });
+    const l = (await tools.list_dir.execute!(
+      {},
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(l).toContain('0 entries');
+    const w = (await tools.write_file.execute!(
+      { path: 'a', content: 'b' },
+      { toolCallId: '2', messages: [] } as never,
+    )) as string;
+    expect(w).toContain('ok bytes=2');
+  });
+
+  it('no-read denies list/read', async () => {
+    const listDir = vi.fn(async () => ({ entries: [] }));
+    const readFile = vi.fn(async () => ({ content: 'x' }));
+    const client = mockClient({ listDir, readFile });
+    const tools = createAgentTools({
+      client,
+      permissions: { canRead: false, canWrite: false },
+    });
+    const l = (await tools.list_dir.execute!(
+      {},
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(l).toMatch(/permission denied \(need read\)/);
+    expect(listDir).not.toHaveBeenCalled();
+    const r = (await tools.read_file.execute!(
+      { path: 'a' },
+      { toolCallId: '2', messages: [] } as never,
+    )) as string;
+    expect(r).toMatch(/permission denied \(need read\)/);
+    expect(readFile).not.toHaveBeenCalled();
+  });
+});

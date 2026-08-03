@@ -18,7 +18,7 @@ import {
 import type { ChatResult } from './chatApi';
 import type { AgentResult } from './agentApi';
 import { SANDBOX_NOT_CONFIGURED_ERROR } from './agentApi';
-import { AUTH_REQUIRED_ERROR } from './tenancy/errors';
+import { AUTH_REQUIRED_ERROR, SANDBOX_FORBIDDEN_ERROR } from './tenancy/errors';
 import { createEmptySession, formatPromptWithHistory, appendMessage } from './sessionStore';
 import { TOOL_TRACE_SUMMARY_MAX_CHARS } from './sandbox/config';
 
@@ -431,6 +431,36 @@ describe('runHarnessTurn', () => {
     expect(send).toHaveBeenCalled();
     expect(result).toEqual({ ok: true, text: 'chat' });
   });
+
+  it('does not fall back to chat on 403 sandbox forbidden', async () => {
+    const mock = makeMockExports();
+    const bridge = new HarnessBridge(mock);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      error: SANDBOX_FORBIDDEN_ERROR,
+      status: 403,
+    }));
+    const send = vi.fn(async (): Promise<ChatResult> => ({
+      ok: true,
+      text: 'should-not-run',
+    }));
+    const { result, session: next } = await runHarnessTurn(
+      bridge,
+      createEmptySession(),
+      'hi',
+      { sendAgent, send, pushUser: false },
+    );
+    expect(sendAgent).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe(SANDBOX_FORBIDDEN_ERROR);
+      expect(result.status).toBe(403);
+    }
+    expect(next.messages.some((m) => m.role === 'error')).toBe(true);
+    expect(mock.__messages.some((m) => m.kind === MessageKind.Error)).toBe(true);
+  });
+
 });
 
   it('does not fall back to chat on 401 auth required', async () => {
