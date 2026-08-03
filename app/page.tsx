@@ -1,5 +1,6 @@
-import PromptPlayground from './PromptPlayground';
+import { redirect } from 'next/navigation';
 
-export default function Page() {
-  return <PromptPlayground />;
+/** Product entry is the Wasm harness — no separate playground route. */
+export default function Home() {
+  redirect('/harness');
 }

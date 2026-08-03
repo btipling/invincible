@@ -8,7 +8,7 @@ Prompt playground / agent harness (Next.js + Zig/dvui Wasm).
 |--|--|
 | **Production** | https://invincible-dun-ten.vercel.app |
 | **Harness** | https://invincible-dun-ten.vercel.app/harness |
-| **Playground** | https://invincible-dun-ten.vercel.app/ |
+| **Root** | https://invincible-dun-ten.vercel.app/ → redirects to `/harness` |
 | **Vercel** | [invincible](https://vercel.com/bjorns-projects-65588ed4/invincible) |
 | **IDs** | [`docs/project-ids.md`](docs/project-ids.md) |
 
@@ -80,7 +80,7 @@ Details: [phase-4-handoff.md](docs/phase-4-handoff.md) · [native/harness/README
 
 | Phase | Status |
 |-------|--------|
-| 1 Prompt MVP | **Done** — playground + Gateway |
+| 1 Prompt MVP | **Done** — Gateway API (UI entry is harness) |
 | 2 Build runner (DO) | **Done** — `invincible-do-1`, Zig 0.16.0 |
 | 3 Wasm pipeline | **Done** — PoC; product model superseded by Phase 4 |
 | 4 Wasm-first MVP | **Done** — [phase-4-handoff.md](docs/phase-4-handoff.md) |

@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect } from 'react';
-import Link from 'next/link';
 import { ember, teal } from '../../lib/palette';
 
 export default function HarnessError({
@@ -12,7 +11,6 @@ export default function HarnessError({
   reset: () => void;
 }) {
   useEffect(() => {
-    // Surface once for debugging; do not spam console on happy path.
     console.error('[harness]', error.message);
   }, [error]);
 
@@ -53,39 +51,23 @@ export default function HarnessError({
         <p style={{ margin: '0 0 0.85rem', fontSize: '0.9rem', lineHeight: 1.45 }}>
           {error.message || 'Unexpected error.'}
         </p>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-          <button
-            type="button"
-            onClick={reset}
-            style={{
-              appearance: 'none',
-              border: 'none',
-              borderRadius: 6,
-              padding: '0.5rem 0.9rem',
-              fontWeight: 600,
-              fontSize: '0.85rem',
-              cursor: 'pointer',
-              background: teal.accent,
-              color: teal.bg,
-            }}
-          >
-            Try again
-          </button>
-          <Link
-            href="/"
-            style={{
-              borderRadius: 6,
-              padding: '0.5rem 0.9rem',
-              fontSize: '0.85rem',
-              textDecoration: 'none',
-              border: `1px solid ${teal.border}`,
-              color: teal.muted,
-              background: teal.bg,
-            }}
-          >
-            Playground
-          </Link>
-        </div>
+        <button
+          type="button"
+          onClick={reset}
+          style={{
+            appearance: 'none',
+            border: 'none',
+            borderRadius: 6,
+            padding: '0.5rem 0.9rem',
+            fontWeight: 600,
+            fontSize: '0.85rem',
+            cursor: 'pointer',
+            background: teal.accent,
+            color: teal.bg,
+          }}
+        >
+          Try again
+        </button>
       </div>
     </main>
   );
