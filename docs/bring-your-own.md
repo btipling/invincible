@@ -124,14 +124,11 @@ Race-safe wait for the matching `harness-wasm` artifact:
 
 ## 4a. Optional multi-tenant auth
 
-Phases 1–4 of parent [#54](https://github.com/btipling/invincible/issues/54) ship
-**optional** Postgres tenancy: credentials login, session gate on harness/APIs,
+**Optional** Postgres tenancy: credentials login, session gate on harness/APIs,
 DB-resolved sandbox credentials + R/W grants, and a minimal `/admin` shell.
 
-Cloud-native cutover (no personal hardware): parent
-[#67](https://github.com/btipling/invincible/issues/67). GHA bootstrap workflow:
-[`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml)
-(phase 1 / [#68](https://github.com/btipling/invincible/issues/68)).
+Cloud-native cutover (no personal hardware). GHA bootstrap workflow:
+[`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml).
 
 ### Enablement (triple env — no AUTH_ENABLED flag)
 
@@ -174,16 +171,26 @@ runtime. Wrong AMK → unwrap of tenant DEKs fails (agent/tools 403).
 
 - **AMK** = `CREDENTIALS_ENCRYPTION_KEY` (env only). **DEK** = random 32-byte key
   per tenant, stored AMK-wrapped on `tenants.dek_ciphertext`.
-- Sandbox tokens encrypt under the tenant DEK (not raw AMK) after phase 2 wire.
-- **Greenfield:** GHA `db-tenancy-bootstrap` migrate+seed — seed **ensures** DEK.
-- **Existing Production data:** run **`npm run db:backfill-deks`** with
-  `ALLOW_TENANT_DEK_BACKFILL=1` only **after** a dual-read app is live
-  (`TENANT_TOKEN_DECRYPT_MODE` default `dual`). Seed is **not** a migration
-  (re-seed resets bootstrap password + token).
-- After backfill verify: set `TENANT_TOKEN_DECRYPT_MODE=dek-only` and redeploy.
-- **Owner DEK rotate:** `/admin` → “Rotate encryption key” (or `rotateTenantDek`)
-  re-encrypts that tenant only. Never change Production AMK without a re-wrap
-  tool (not shipped — dual-store GHA≡Vercel must stay locked).
+- Product paths encrypt sandbox tokens under the **tenant DEK**. Runtime default
+  is **dual-read** (`TENANT_TOKEN_DECRYPT_MODE` unset or `dual`: try DEK, then
+  AMK) so legacy AMK ciphertext still works until backfill completes.
+- **Greenfield:** GHA **db-tenancy-bootstrap** (migrate + seed) — seed **ensures**
+  a DEK and encrypts the bootstrap sandbox token under it.
+- **Existing Production data (legacy AMK tokens):** one-time **backfill only** —
+  ensure DEKs and re-encrypt tokens. **Do not** re-run seed/bootstrap for this
+  (seed resets bootstrap password hash + token ciphertext).
+  - **Primary operator path:** GitHub Actions **DEK backfill** workflow when
+    present (Actions → workflow → Run workflow; confirm +
+    `ALLOW_TENANT_DEK_BACKFILL=1` inside the job). If that workflow is not on
+    `main` yet, use a **cloud agent** session with dual-store
+    `DATABASE_URL` + `CREDENTIALS_ENCRYPTION_KEY` (same as Vercel Production) to
+    run the repo backfill entrypoint — **not** a personal laptop.
+  - Only after dual-read app is live on the target deploy.
+- After backfill verify (login + agent tools): set Vercel
+  `TENANT_TOKEN_DECRYPT_MODE=dek-only` and redeploy.
+- **Owner DEK rotate:** `/admin` → “Rotate encryption key” (server helper
+  `rotateTenantDek`) re-encrypts that tenant only. Never change Production AMK
+  without a re-wrap tool (not shipped — dual-store GHA≡Vercel must stay locked).
 
 
 Names only — never commit passwords, tokens, DB hosts, or KEK material. Never
@@ -229,8 +236,8 @@ paste secret values into issues or PR chat.
    **masked** token (owner can rotate).
 
 7. **Origin only** — after smoke, mark `DATABASE_URL` / `AUTH_SECRET` /
-   `CREDENTIALS_ENCRYPTION_KEY` **Done** in [AGENTS.md](../AGENTS.md) (phase 3 /
-   [#70](https://github.com/btipling/invincible/issues/70)). Never invent hosts.
+   `CREDENTIALS_ENCRYPTION_KEY` **Done** in [AGENTS.md](../AGENTS.md).
+   Never invent hosts.
 
 Also: [sandbox.md](sandbox.md) · [SECURITY.md](../SECURITY.md) ·
 [scripts/README.md](../scripts/README.md) · [`.env.example`](../.env.example) ·
@@ -268,8 +275,7 @@ cloud checklist above for migrate/seed/login flip.
 
 ### 4b. Optional SSO (OIDC) + SCIM
 
-Parent [#64](https://github.com/btipling/invincible/issues/64) (phases 1–3 on
-`main`). **Optional** on top of tenancy: generic OpenID Connect sign-in and/or
+**Optional** on top of tenancy: generic OpenID Connect sign-in and/or
 SCIM 2.0 user provisioning. Neither is required for credentials login or
 sandbox grants.
 
@@ -417,9 +423,10 @@ empty `public/harness`.
 | Capability | Status |
 |------------|--------|
 | Pluggable **sandbox** for agent build/run tools | **Shipped (MVP)** — config seam; see [sandbox.md](sandbox.md) |
-| Optional multi-tenant auth (login + DB grants) | **Shipped** — [§4a](#4a-optional-multi-tenant-auth); cloud cutover [#67](https://github.com/btipling/invincible/issues/67) |
+| Optional multi-tenant auth (login + DB grants) | **Shipped** — [§4a](#4a-optional-multi-tenant-auth) |
 | Multi-tenant sandbox isolation / fleet | **Not shipped** — single workspace root per process for now |
-| Optional **OIDC SSO** + **SCIM** provisioning | **Shipped (optional config)** — [§4b](#4b-optional-sso-oidc--scim); parent [#64](https://github.com/btipling/invincible/issues/64) |
+| Optional **OIDC SSO** + **SCIM** provisioning | **Shipped (optional config)** — [§4b](#4b-optional-sso-oidc--scim) |
+
 | **MCP** | **Not shipped** — do not half-build here |
 
 This guide covers **BYO Vercel + keys + runner/Wasm supply + optional sandbox**.

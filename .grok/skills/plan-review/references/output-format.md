@@ -13,7 +13,7 @@ fixes into the **GitHub issue body** before finishing.
 **Verdict:** HANDOFF-READY | NEEDS REVISION | BLOCKED
 **Repo:** `owner/repo`
 **URL:** https://github.com/…/issues/N
-**Class:** parent | phase N | UI | harness | backend | systems | refactor
+**Class:** parent | phase N | UI | harness | backend | ops | docs | systems | refactor
 **Parent:** #M (or N/A)
 **Update:** issue body edited | no plan edits | skipped (mode=review)
 
@@ -25,6 +25,8 @@ fixes into the **GitHub issue body** before finishing.
 | Performance | | |
 | Architecture | | |
 | Testing | | |
+| Cloud ops | | or N/A — no Production mutate |
+| Living docs | | or N/A — no user/operator/agent surface change |
 | Parent adherence | | or N/A |
 | Layer placement | | or N/A |
 | UI / harness UX | | or N/A |
@@ -53,11 +55,24 @@ fixes into the **GitHub issue body** before finishing.
 - Layout stability: …
 - Palette: …
 
+## Cloud ops
+
+- Production mutate: yes/no
+- Primary path: GHA `…` | N/A | **missing**
+- Script-only / laptop-only risk: none | mitigated | **Blocker**
+
+## Living docs
+
+- Surfaces: docs / AGENTS / README / SECURITY / .env.example
+- Timeless (no phase/issue process artifacts): yes/no
+- Gaps: …
+
 ## Baseline verification
 
 | Claim in plan | Live check | Result |
 |---------------|------------|--------|
 | … | `path` @ main | OK / mismatch |
+| Existing GHA (if ops) | `.github/workflows/…` | OK / missing |
 
 ## Plan edits applied
 
@@ -75,11 +90,12 @@ fixes into the **GitHub issue body** before finishing.
 ## Residual risk
 
 One short paragraph: what could still go wrong in implementation even if the
-plan is followed.
+plan is followed (include missing-GHA residual if ops were soft).
 
 ## Next step
 
-- If HANDOFF-READY: implement against the issue (follow plan order).
+- If HANDOFF-READY: implement against the issue (follow plan order; ship GHA +
+  docs in the same unit that needs them).
 - If NEEDS REVISION with user decisions open: list only those questions.
 - Do **not** end on “suggested edits” without updating the issue when mode=fix.
 ```
@@ -90,8 +106,8 @@ plan is followed.
 
 | Sev | Meaning | Verdict impact |
 |-----|---------|----------------|
-| **Blocker** | Would ship bugs, break feature-divide, leak secrets, or dual-chat | Cannot be HANDOFF-READY until fixed **in the issue** |
-| **Major** | Likely bug, parent drift, weak tests, layer blur | Must be fixed in issue under mode=fix |
+| **Blocker** | Would ship bugs, break feature-divide, leak secrets, dual-chat, or **laptop/script-only Production cutover** | Cannot be HANDOFF-READY until fixed **in the issue** |
+| **Major** | Likely bug, parent drift, weak tests, layer blur, missing docs plan, phase/issue theater in product docs | Must be fixed in issue under mode=fix |
 | **Minor** | Real improvement | Push into issue under mode=fix |
 | **Nit** | Wording / optional | Optional lock |
 
@@ -105,7 +121,7 @@ Near the top of the issue body:
 ## Review notes (YYYY-MM-DD)
 
 Reviewed issue `#…` for correctness / performance / architecture / testing
-[/ parent adherence] [/ layers / UI].
+[/ cloud ops] [/ living docs] [/ parent adherence] [/ layers / UI].
 
 | Issue | Severity | Resolution |
 |-------|----------|------------|
@@ -116,7 +132,8 @@ Reviewed issue `#…` for correctness / performance / architecture / testing
 ```
 
 Keep the rest of the plan coherent with resolutions. Update the **entire** body
-on the **same issue**.
+on the **same issue**. Prefer adding **Cloud ops path** and **Living docs plan**
+sections when missing rather than burying fixes only in Review notes.
 
 ### Update anti-patterns
 
@@ -124,3 +141,4 @@ on the **same issue**.
 - Truncated / partial body  
 - `PLACEHOLDER` / `TODO` for in-scope locks  
 - Creating a new issue instead of editing the reviewed one (unless user asks)  
+- Leaving Production mutate as npm-only after review  
