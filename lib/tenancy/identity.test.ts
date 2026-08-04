@@ -26,7 +26,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, '../../db/migrations');
 
 async function applyMigrations(client: PGlite) {
-  for (const name of ['0000_tenancy_phase1.sql', '0001_sso_scim_identity.sql']) {
+  for (const name of ['0000_tenancy_phase1.sql', '0001_sso_scim_identity.sql', '0002_tenant_deks.sql']) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     const statements = sql
       .split('--> statement-breakpoint')
