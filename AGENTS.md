@@ -101,6 +101,8 @@ Do **not** write product/ops guides as phase narratives or issue archaeology
   do **not** use seed/bootstrap for that (seed resets password + token). Dual-read
   keeps Production working until the operator dispatches backfill + optional
   `TENANT_TOKEN_DECRYPT_MODE=dek-only`. Never laptop npm as the official cutover.
+- **Tenant BYOK inference** is on `main`: admin **`/admin/inference`**, `GET /api/models`, harness protocol v3 model cycle, chat/agent request-scoped BYOK. Under tenancy on, **never** route via `DEFAULT_MODEL` / `AGENT_MODEL`. Additive schema for provider tables: GHA **`db-migrate`** (not seed). Docs: [docs/bring-your-own.md](docs/bring-your-own.md) §4a Inference keys.
+
 - Do **not** instruct humans to clone the repo on a laptop to re-seed; use a
   cloud agent workspace, GitHub Actions `db-tenancy-bootstrap`, or
   [docs/bring-your-own.md](docs/bring-your-own.md) §4a.
@@ -167,6 +169,7 @@ ops inventory).
 |------|--------|--------|
 | Vercel project + Git `main` | **Done** | prod URL above |
 | `AI_GATEWAY_API_KEY` (Vercel) | **Done** | server-side only |
+| Tenant BYOK provider secrets (DB) | **Done** (code) | Admin `/admin/inference`; ciphertext under tenant DEK; grants + model catalog; tenancy-on chat/agent attach request-scoped Gateway BYOK (never env model routing). Schema-only Production: GHA **`db-migrate`** (`confirm=migrate`) |
 | `HARNESS_ARTIFACT_TOKEN` (Vercel) | **Done** | PAT Actions: Read — prebuild downloads `harness-wasm` |
 | `VERCEL_DEPLOY_HOOK_URL` (GitHub secret) | **Done** | deploy hooks; `build-harness` pings after artifact upload |
 | DO runner `invincible-do-1` labels `invincible`,`zig` | **Done** | Zig 0.16.0 only there |
@@ -234,6 +237,9 @@ invincible/
 | API / AI Gateway / agent | `app/api/*`, `lib/agent/*`, `lib/sandbox/*` |
 | Tenancy schema / migrations | `db/schema.ts`, `db/migrations/` |
 | Tenancy crypto / seed helpers | `lib/tenancy/*`, `scripts/seed-tenancy.ts` |
+| Tenant BYOK / inference grants | `app/admin/inference/*`, `lib/tenancy/providerSecrets*`, `lib/tenancy/resolveInference*`, `lib/gateway/byokProviders.ts`, `app/api/models/*` |
+| Harness model catalog (protocol v3) | `lib/harnessBridge.ts`, `native/harness/src/bridge.zig`, `app/harness/HarnessHost.tsx` |
+| Schema-only migrate (GHA) | `.github/workflows/db-migrate.yml` |
 | Sandbox daemon | `sandbox/` |
 | Colors / tokens (DOM) | `lib/palette.ts` |
 | Colors / tokens (dvui) | `native/harness/src/palette.zig` (hex sync with palette.ts) |

@@ -24,7 +24,11 @@ optional login chrome).
 | `POST /api/agent` | **Vercel backend** | Multi-step tools when sandbox configured; server-only secrets |
 | Fold multi-turn history into prompt | **DOM** | `lib/harnessChat.ts` (user/assistant only; system tool lines display-only) |
 | `SessionStore` load/save/clear | **DOM** | memory / localStorage |
-| Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status |
+| Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status; model chip is a **mirror** of Wasm selection, not a second picker |
+| Model catalog fetch (`GET /api/models`) | **DOM** | Session-gated; host pushes ids into Wasm catalog |
+| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 |
+| Selected `modelId` on inference | **DOM host** → **Vercel backend** | Host reads bridge; POST body; server re-authorizes grants + BYOK |
+| Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
 | **Transcript (read messages)** | **Wasm** | Primary UX |
 | **Composer + Send / smoke** | **Wasm** | Primary input |
 | Busy / error presentation for turns | **Wasm** | EMBER for errors |
@@ -53,12 +57,15 @@ Track any exception in the issue that introduces it:
 ## Data flow
 
 ```text
+Host loads Wasm → GET /api/models → push catalog into bridge (protocol v3)
+User cycles model in Wasm header (optional Next) — host chip mirrors selection
 User types in Wasm composer
   → inv_* pending submit (poll)
   → Host runHarnessTurn / SessionStore
   → formatPromptWithHistory (user/assistant only)
-  → POST /api/agent
-       if 503 + exact sandbox-not-configured → POST /api/chat
+  → POST /api/agent { prompt, modelId? }
+       if 503 + exact sandbox-not-configured → POST /api/chat { prompt, modelId? }
+       tenancy on: server attaches request-scoped BYOK for authorized modelId
        else tools → sandbox (env SANDBOX_* when tenancy off; DB grants when on)
   → Host pushes ≤6 system toolTrace lines + assistant/error into Wasm
   → User reads reply in Wasm transcript
@@ -70,6 +77,9 @@ User types in Wasm composer
 |---------|------|
 | Host shell | `app/harness/HarnessHost.tsx` |
 | Bridge TS (protocol **v3**) | `lib/harnessBridge.ts` |
+| Model catalog API | `app/api/models/route.ts` |
+| Admin inference keys | `app/admin/inference/*` |
+| BYOK resolve | `lib/tenancy/resolveInference*.ts`, `lib/gateway/byokProviders.ts` |
 | Chat turn | `lib/harnessChat.ts` |
 | Session | `lib/sessionStore.ts` |
 | Zig UI | `native/harness/src/ui.zig` |
