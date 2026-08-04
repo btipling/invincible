@@ -77,6 +77,12 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_pending_submit_len: () => 0,
     inv_pending_submit_copy: () => 0,
     inv_ack_pending_submit: () => {},
+    inv_clear_model_catalog: () => {},
+    inv_push_model_catalog_entry: () => 0,
+    inv_model_catalog_count: () => 0,
+    inv_selected_model_len: () => 0,
+    inv_selected_model_copy: () => 0,
+    inv_cycle_selected_model: () => 0,
     __messages: messages,
     __lifecycle: () => lifecycle,
   };
@@ -461,8 +467,6 @@ describe('runHarnessTurn', () => {
     expect(mock.__messages.some((m) => m.kind === MessageKind.Error)).toBe(true);
   });
 
-});
-
   it('does not fall back to chat on 401 auth required', async () => {
     const mock = makeMockExports();
     const bridge = new HarnessBridge(mock);
@@ -491,3 +495,42 @@ describe('runHarnessTurn', () => {
     expect(next.messages.some((m) => m.role === 'error')).toBe(true);
     expect(mock.__messages.some((m) => m.kind === MessageKind.Error)).toBe(true);
   });
+
+  it('forwards modelId to sendAgent', async () => {
+    const mock = makeMockExports();
+    const bridge = new HarnessBridge(mock);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'agent-ok',
+      toolTrace: [],
+    }));
+    const send = vi.fn(async (): Promise<ChatResult> => ({
+      ok: true,
+      text: 'should-not-run',
+    }));
+    await runHarnessTurn(bridge, createEmptySession(), 'hi', {
+      sendAgent,
+      send,
+      pushUser: false,
+      modelId: 'anthropic/claude-a',
+    });
+    expect(sendAgent).toHaveBeenCalledWith(
+      'hi',
+      expect.objectContaining({ modelId: 'anthropic/claude-a' }),
+    );
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe('modelId forwarding', () => {
+  it('forwards modelId to send', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const send = vi.fn(async (): Promise<ChatResult> => ({ ok: true, text: 'ok' }));
+    await runHarnessChat(bridge, 'hi', { send, modelId: 'anthropic/claude-a' });
+    expect(send).toHaveBeenCalledWith(
+      'hi',
+      expect.objectContaining({ modelId: 'anthropic/claude-a' }),
+    );
+  });
+});

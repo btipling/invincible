@@ -121,6 +121,39 @@ pub fn frame() !void {
             tl.format("{s}", .{lifecycleLabel(life)}, .{});
             tl.deinit();
         }
+        // Protocol v3: cycle through granted models (host pushed catalog).
+        {
+            const cat_n = bridge.modelCatalogCount();
+            {
+                var tl = dvui.textLayout(@src(), .{}, .{
+                    .color_text = if (cat_n == 0) palette.teal_muted else palette.teal_accent,
+                    .gravity_y = 0.5,
+                    .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
+                });
+                if (cat_n == 0) {
+                    tl.addText("no model", .{});
+                } else {
+                    tl.format("{s}", .{bridge.selectedModelLabel()}, .{});
+                }
+                tl.deinit();
+            }
+            if (cat_n > 1) {
+                if (dvui.button(@src(), "Next", .{}, .{
+                    .gravity_y = 0.5,
+                    .style = .content,
+                    .min_size_content = .{ .w = 52, .h = TOUCH_H - 8 },
+                    .corners = .round(6),
+                    .color_fill = palette.teal_bg,
+                    .color_text = palette.teal_accent,
+                    .color_border = palette.teal_border,
+                    .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
+                })) {
+                    if (!busy) {
+                        bridge.cycleSelectedModel();
+                    }
+                }
+            }
+        }
     }
 
     // ── Transcript ────────────────────────────────────────────────────────
@@ -154,10 +187,17 @@ pub fn frame() !void {
                 .expand = .horizontal,
                 .color_text = palette.teal_muted,
             });
-            tl.addText(
-                "Start a conversation\n\nType below, then Enter or Send.\nPONG smokes the Gateway path.\n",
-                .{},
-            );
+            if (bridge.modelCatalogCount() == 0) {
+                tl.addText(
+                    "No models available\n\nAsk a tenant admin to grant you an inference key,\nor wait for the host catalog to load.\n",
+                    .{},
+                );
+            } else {
+                tl.addText(
+                    "Start a conversation\n\nType below, then Enter or Send.\nUse Next in the header to cycle models.\n",
+                    .{},
+                );
+            }
             tl.deinit();
         } else {
             // Density: only paint the last VISIBLE_MSG_CAP lines.

@@ -9,7 +9,7 @@
 const WebBackend = @import("web-backend");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -30,6 +30,9 @@ const MAX_MSG = 48;
 pub const MAX_MSG_LEN = 4096;
 const ECHO_CAP = 1024;
 pub const SUBMIT_CAP = 4096;
+/// Protocol v3 model catalog caps (host pushes UTF-8 model ids).
+pub const MAX_CATALOG = 64;
+pub const MAX_MODEL_ID_LEN = 128;
 
 const StoredMsg = struct {
     kind: u8 = 0,
@@ -49,6 +52,15 @@ var pending_submit: [SUBMIT_CAP]u8 = undefined;
 var pending_submit_len: u32 = 0;
 var has_pending_submit: bool = false;
 var suppress_refresh: bool = false;
+
+const CatalogEntry = struct {
+    len: u32 = 0,
+    data: [MAX_MODEL_ID_LEN]u8 = undefined,
+};
+
+var catalog: [MAX_CATALOG]CatalogEntry = [_]CatalogEntry{.{}} ** MAX_CATALOG;
+var catalog_count: u32 = 0;
+var selected_index: u32 = 0;
 
 fn refresh() void {
     if (suppress_refresh) return;
@@ -110,6 +122,41 @@ pub fn reset() void {
     has_pending_submit = false;
     pending_submit_len = 0;
     suppress_refresh = false;
+    catalog_count = 0;
+    selected_index = 0;
+}
+
+pub fn modelCatalogCount() u32 {
+    return catalog_count;
+}
+
+/// Selected model id bytes, or empty if catalog empty.
+pub fn selectedModelId() []const u8 {
+    if (catalog_count == 0) return &[_]u8{};
+    const idx = @min(selected_index, catalog_count - 1);
+    const e = &catalog[idx];
+    return e.data[0..e.len];
+}
+
+/// Short label for UI: after last '/' else full id.
+pub fn selectedModelLabel() []const u8 {
+    const id = selectedModelId();
+    if (id.len == 0) return id;
+    var last_slash: ?usize = null;
+    for (id, 0..) |c, i| {
+        if (c == '/') last_slash = i;
+    }
+    if (last_slash) |s| {
+        if (s + 1 < id.len) return id[s + 1 ..];
+    }
+    return id;
+}
+
+/// Cycle selection forward. No-op if count ≤ 1.
+pub fn cycleSelectedModel() void {
+    if (catalog_count <= 1) return;
+    selected_index = (selected_index + 1) % catalog_count;
+    refresh();
 }
 
 // ── Stable ABI (also whitelist in build.zig export_symbol_names) ───────────
@@ -206,4 +253,51 @@ export fn inv_ack_pending_submit() void {
     has_pending_submit = false;
     pending_submit_len = 0;
     refresh();
+}
+
+// ── Protocol v3 model catalog ──────────────────────────────────────────────
+
+export fn inv_clear_model_catalog() void {
+    catalog_count = 0;
+    selected_index = 0;
+    refresh();
+}
+
+/// Append one UTF-8 model id. Returns 1 on success, 0 if rejected (empty/oversize/full).
+export fn inv_push_model_catalog_entry(ptr: [*]const u8, len: usize) u8 {
+    if (len == 0 or len > MAX_MODEL_ID_LEN) return 0;
+    if (catalog_count >= MAX_CATALOG) return 0;
+    const src = ptr[0..len];
+    // Reject ids containing control chars / whitespace (gateway ids are [a-zA-Z0-9./_:-] etc.)
+    for (src) |c| {
+        if (c < 0x21 or c > 0x7e) return 0; // printable ASCII only
+    }
+    const slot = &catalog[catalog_count];
+    slot.len = copySlice(&slot.data, src);
+    catalog_count += 1;
+    if (catalog_count == 1) selected_index = 0;
+    refresh();
+    return 1;
+}
+
+export fn inv_model_catalog_count() u32 {
+    return catalog_count;
+}
+
+export fn inv_selected_model_len() u32 {
+    return @intCast(selectedModelId().len);
+}
+
+export fn inv_selected_model_copy(out_ptr: [*]u8, max_len: usize) u32 {
+    const id = selectedModelId();
+    const n = @min(max_len, id.len);
+    if (n > 0) @memcpy(out_ptr[0..n], id[0..n]);
+    return @intCast(n);
+}
+
+/// Cycle selected model (UI / tests). Returns new index or 0 if empty.
+export fn inv_cycle_selected_model() u32 {
+    cycleSelectedModel();
+    if (catalog_count == 0) return 0;
+    return selected_index;
 }

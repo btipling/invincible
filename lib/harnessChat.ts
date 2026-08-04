@@ -51,6 +51,8 @@ export type RunHarnessChatOptions = {
   history?: SessionSnapshot['messages'];
   /** When true (default), fold history into the Gateway prompt. */
   useHistory?: boolean;
+  /** Explicit gateway model id (protocol v3 picker). */
+  modelId?: string;
 };
 
 export type RunHarnessTurnOptions = Omit<RunHarnessChatOptions, 'history'> & {
@@ -162,7 +164,10 @@ export async function runHarnessChat(
     bridge.pushMessage(MessageKind.User, prompt);
   }
 
-  const result = await send(apiPrompt, { signal: opts?.signal });
+  const result = await send(apiPrompt, {
+    signal: opts?.signal,
+    modelId: opts?.modelId,
+  });
 
   if (result.ok) {
     bridge.pushMessage(MessageKind.Assistant, result.text);
@@ -219,7 +224,10 @@ export async function runHarnessTurn(
       userPushedOnBridge = true;
     }
 
-    const agentResult = await sendAgentFn(apiPrompt, { signal: opts?.signal });
+    const agentResult = await sendAgentFn(apiPrompt, {
+      signal: opts?.signal,
+      modelId: opts?.modelId,
+    });
 
     if (agentResult.ok) {
       let next = withUser;
@@ -259,6 +267,7 @@ export async function runHarnessTurn(
     pushUser: pushUser && !userPushedOnBridge,
     history: session.messages,
     useHistory: opts?.useHistory,
+    modelId: opts?.modelId,
   });
 
   if (result.ok) {

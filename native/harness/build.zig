@@ -66,6 +66,12 @@ pub fn build(b: *std.Build) void {
         "inv_pending_submit_len",
         "inv_pending_submit_copy",
         "inv_ack_pending_submit",
+        "inv_clear_model_catalog",
+        "inv_push_model_catalog_entry",
+        "inv_model_catalog_count",
+        "inv_selected_model_len",
+        "inv_selected_model_copy",
+        "inv_cycle_selected_model",
     };
 
     const install_wasm = b.addInstallArtifact(exe, .{
