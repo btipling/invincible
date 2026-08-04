@@ -49,11 +49,29 @@ self-hosted **runner** are also cloud.
 |----|--------|
 | Assume the “shell” is a **cloud agent workspace** or **GitHub Actions** job | Assume the human has a laptop clone of the repo |
 | Tell operators to set secrets in **Vercel** / GitHub / managed Postgres UI | Tell them to `cd ~/…`, install Node on their machine, or “run locally” |
-| Run `npm test` / migrate / seed **in the agent workspace or GHA** when needed | Treat “local” as the human’s personal computer |
-| Prefer **cloud-native cutover** paths (Actions, agent-run scripts, hosted DB) | Document laptop-only ops as the primary path |
+| Run `npm test` / migrate / seed / backfill **in the agent workspace or GHA** when needed | Treat “local” as the human’s personal computer |
+| Prefer **cloud-native cutover** paths (**Actions `workflow_dispatch` primary**, then agent-run scripts, hosted DB) | Document laptop-only ops **or script-only npm** as the primary Production path |
 
 “Local” in this file means **the agent’s or CI’s checkout**, not a developer’s
 home directory. Product copy and plans must not require personal hardware.
+
+**Plans are not enough if they only say “run npm.”** A sentence here is not an
+operator surface. Any Production **data/secret mutate** (migrate, seed, backfill,
+re-encrypt, coordinated cutover) must ship a **GitHub Actions** entrypoint
+(usually `workflow_dispatch` with confirm/dry_run guards on `ubuntu-latest`) as
+the **primary** path. `package.json` scripts are what the job runs — not a
+substitute for Actions when humans have no laptop shell.
+
+**Living docs vs plan issues:**
+
+| Place | Holds |
+|-------|--------|
+| **GitHub plan issues** | Phases, parent maps, handoff checklists, “implements #N” |
+| **`docs/*`, README, SECURITY, this file** | Timeless product/ops truth for **new** people and agents |
+
+Do **not** write product/ops guides as phase narratives or issue archaeology
+(“see phase 3 / issue #95”). Write what the system does and how to operate it
+**now** (workflow names, env names, order of steps).
 
 **Agent rules:**
 
@@ -61,7 +79,10 @@ home directory. Product copy and plans must not require personal hardware.
   labels) rather than hardcoding one owner’s prod URL or cloud account.
 - Do **not** treat “works only on invincible-dun-ten.vercel.app” as architecture.
 - When a change **blocks** reusability **or forces personal-hardware ops**, call
-  it out in the plan/PR and prefer a cloud-agent / CI / Vercel path.
+  it out in the plan/PR and prefer a cloud-agent / **GHA** / Vercel path.
+- **create-plan** / **plan-review** must lock **Cloud ops path** + **Living docs**
+  (always consider `AGENTS.md` + `README.md` updates). plan-review treats
+  laptop/script-only Production cutover as a **Blocker**.
 - Config seams for BYO Vercel/keys/runner (#38), **sandbox MVP** (#45),
   **optional multi-tenant auth** (#54 phases 1–5 + cloud cutover #67), and
   GHA `db-tenancy-bootstrap` + [docs/bring-your-own.md](docs/bring-your-own.md) §4a
@@ -73,9 +94,14 @@ home directory. Product copy and plans must not require personal hardware.
 - Origin `SANDBOX_*` is **Done** for the reference deploy (private host inventory
   stays offline). Still never invent a host URL; forks set their own env.
 - Origin **tenancy** (`DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`)
-  is **Done** on Production (cutover smoke: unauth API 401 + login). Do **not**
-  instruct humans to clone the repo on a laptop to re-seed; use a cloud agent
-  workspace, GitHub Actions `db-tenancy-bootstrap`, or
+  is **Done** on Production (cutover smoke: unauth 401 + login). Per-tenant DEK
+  **code** is on `main` (envelope + dual-read + owner DEK rotate). Origin **data**
+  cutover (backfill legacy AMK tokens → DEK, then optional `dek-only`) still needs
+  a **cloud** path — prefer a GHA backfill workflow when present; do **not** use
+  seed/bootstrap for that (seed resets password + token). Until then dual-read
+  keeps Production working. Never laptop npm as the official cutover.
+- Do **not** instruct humans to clone the repo on a laptop to re-seed; use a
+  cloud agent workspace, GitHub Actions `db-tenancy-bootstrap`, or
   [docs/bring-your-own.md](docs/bring-your-own.md) §4a.
 
 
@@ -85,8 +111,8 @@ Load from **this repo** via `gh` (not generic template skills). Zero-search:
 
 | Skill | Path on `main` | Use when |
 |-------|----------------|----------|
-| **create-plan** | `.grok/skills/create-plan/SKILL.md` | “use create-plan”, feature plans as **GitHub issues**, parent + phase issues |
-| **plan-review** | `.grok/skills/plan-review/SKILL.md` (+ `LOAD.md`, `references/*`) | Review a plan **issue**; default edit issue body via `gh` |
+| **create-plan** | `.grok/skills/create-plan/SKILL.md` | “use create-plan”, feature plans as **GitHub issues**, parent + phase issues; locks **cloud ops (GHA)** + **living docs** |
+| **plan-review** | `.grok/skills/plan-review/SKILL.md` (+ `LOAD.md`, `references/*`) | Review a plan **issue**; default edit issue body via `gh`; scores cloud ops + living docs |
 | **adversarial-review** | `.grok/skills/adversarial-review/SKILL.md` (+ `LOAD.md`, `references/*`) | Hostile **PR** review; break scenarios; post comment via `gh` |
 
 Index: [`.grok/skills/README.md`](.grok/skills/README.md).
@@ -94,7 +120,8 @@ Index: [`.grok/skills/README.md`](.grok/skills/README.md).
 **Plan storage:** implementation plans are **GitHub issues** (see create-plan),
 not a required `docs/*-plan.md`. Completed phase plan/handoff markdown was
 removed; living product/ops guides live under `docs/` (feature-divide, runner,
-BYO, limits).
+BYO, limits) and must stay **timeless** (no phase/issue process artifacts).
+
 
 ```bash
 command -v gh >/dev/null && gh auth status   # refuse GitHub work if this fails

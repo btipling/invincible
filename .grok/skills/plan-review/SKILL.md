@@ -3,16 +3,18 @@ name: plan-review
 description: >
   FIRST read repo AGENTS.md, then review a GitHub issue plan (parent or phase)
   for correctness, performance, architectural soundness, testing, layer placement
-  (DOM host vs Wasm harness vs Vercel backend), and parent adherence when phased.
-  DEFAULT: apply recommended fixes by editing the same issue body via gh.
+  (DOM host vs Wasm harness vs Vercel backend), cloud-native ops (GHA primary for
+  Production mutates — never laptop-only), living docs (docs/ AGENTS README
+  SECURITY without phase/issue process artifacts), and parent adherence when
+  phased. DEFAULT: apply recommended fixes by editing the same issue body via gh.
   LOAD: do not search — use gh to read .grok/skills/plan-review/* from main.
   Refuse if gh missing/unauthenticated. Never GitHub MCP.
   Triggers: "review plan", "plan review", "review the plan", "team review",
   "HANDOFF-READY", "check this plan", "load the plan-review skill", issue URL
   or number, "parent adherence".
 metadata:
-  short-description: "Review plan GitHub issues; apply fixes via gh issue edit"
-  version: "1.0"
+  short-description: "Review plan issues; cloud ops + living docs; edit via gh"
+  version: "1.1"
   project: invincible
 ---
 
@@ -32,8 +34,9 @@ gh api "repos/btipling/invincible/contents/AGENTS.md?ref=main" --jq .content | b
 Also load **`docs/feature-divide.md`** when the plan touches UI or the agent loop.
 
 `AGENTS.md` is the project constitution: commit author `btipling`, **gh-only**
-GitHub, palette locks, feature divide, configured infra (do not nag), harness
-build path. Reviewing without it invents dual chat, wrong ownership, or MCP pushes.
+GitHub, **cloud-native ops (no personal laptop shell)**, palette locks, feature
+divide, configured infra (do not nag), harness build path. Reviewing without it
+invents dual chat, wrong ownership, laptop-only cutovers, or MCP pushes.
 
 **Hard rule:** if you have not read `AGENTS.md` this session, **stop and load it**
 before the first finding.
@@ -135,14 +138,16 @@ If the issue is missing, ask once for the number/URL, then stop. Do **not** inve
 ### Output (always)
 
 1. **Verdict:** `HANDOFF-READY` | `NEEDS REVISION` | `BLOCKED`
-2. **Scores** (1–5) for each required axis (§3)
+2. **Scores** (1–5) for each required axis (§3) — include **Cloud ops** and
+   **Living docs** (or N/A with reason)
 3. **Findings table** (severity · axis · issue · fix)
 4. **Parent adherence** block when applicable (§4)
 5. **Layer / UI** block when applicable (§5)
-6. **Required plan edits** — what was (or will be) written into the issue
-7. **Update result** (default mode): issue number, URL, verified  
+6. **Cloud ops + living docs** block when Production mutate or docs in scope (§3.5–3.6)
+7. **Required plan edits** — what was (or will be) written into the issue
+8. **Update result** (default mode): issue number, URL, verified  
    — or explicit “no plan edits” when nothing to change
-8. **Merge-gate residual risk** (one short paragraph)
+9. **Merge-gate residual risk** (one short paragraph)
 
 Severity: **Blocker** > **Major** > **Minor** > **Nit**.  
 Any **Blocker** ⇒ verdict cannot be `HANDOFF-READY`.
@@ -171,6 +176,8 @@ Leaving fixes only in the chat reply is a **skill failure** unless the user set
 | Parent drift | Corrections/refinements vs parent table |
 | Weak DoD / tests | Expand DoD + testing matrix |
 | Layer mistakes | Layer placement table + forbidden wiring |
+| Laptop-only / script-only Production ops | Lock **Cloud ops path** with GHA primary |
+| Missing AGENTS/README/docs consideration | Fill **Living docs plan** table; forbid phase/issue docs |
 | Resolved open questions | Move into locked decisions |
 | Status after review | Header Status + **Review notes** stamp |
 
@@ -232,13 +239,15 @@ parent locks.
 
 ## 1. Fetch order (never review from memory)
 
-0. **Read `AGENTS.md` first** — project constitution.  
+0. **Read `AGENTS.md` first** — project constitution (incl. cloud ops model).  
 1. **Get the plan issue** body via `gh issue view`.  
-2. **Parse header** for: Status, Parent, Phase N, Layers, Reusability impact.  
+2. **Parse header** for: Status, Parent, Phase N, Layers, Reusability, Production
+   mutate, Cloud ops, Living docs.  
 3. **Detect parent relationship** (§4). If `Parent: #N` or title says phase,
    **get the parent issue**.  
 4. **Ground in live code** for every module the plan claims as baseline:
    - clone or `gh api` for cited paths on `main` (or named branch)
+   - If ops: list `.github/workflows/*` and verify claims about existing GHA  
    - Do **not** invent bridge APIs, route shapes, or ownership  
 5. **Load project constraints:** feature-divide, palette rules, infra “Done” table.  
 6. Only then score. **If a cited baseline cannot be fetched, mark Unverified.**  
@@ -256,9 +265,11 @@ parent locks.
 | **Harness UX** | transcript, composer, canvas chrome, dvui | Harness UX + palette; no dual-chat |
 | **Systems / pure** | bridge protocol, SessionStore, pure TS, no new look | Skip beauty; still score layers |
 | **Backend / API** | `/api/*`, Gateway, secrets, rate limits | Security + reusability seams |
+| **Ops / cutover** | migrate, seed, backfill, env flip, dual-store, GHA | **Cloud ops** (§3.5) **required** |
+| **Docs / agent rules** | SECURITY, BYO, AGENTS, README | **Living docs** (§3.6) **required** |
 | **Refactor** | move modules, no behavior change | Zero behavior drift |
 
-A plan can combine classes (e.g. phase + harness UX + backend).
+A plan can combine classes (e.g. phase + backend + ops + docs).
 
 ---
 
@@ -294,6 +305,7 @@ Score each 1–5. Detail: [references/rubric.md](references/rubric.md).
 - Import / module placement matches AGENTS “where to change” table.
 - **Reusability:** plans must not cement single-owner hardcoding without a risk
   note and a seam (env / config). See AGENTS product intent.
+- **Cloud-native:** ops/cutover designs must not assume a human laptop shell.
 
 ### 3.4 Testing
 
@@ -301,9 +313,54 @@ Score each 1–5. Detail: [references/rubric.md](references/rubric.md).
 - Bridge/protocol tests when message shapes change.
 - API tests without real secrets.
 - Operator checklist when UI is user-visible (host and/or canvas).
-- Commands listed: `npm test`, `npm run typecheck`, `npm run build`, and harness
-  CI when Wasm changes.
+- Commands listed for **agent workspace or CI**: `npm test`, `npm run typecheck`,
+  `npm run build`, and harness CI when Wasm changes — never “run on your laptop”
+  as the human operator story.
+- When GHA ships: dry_run / script unit tests / throwaway DB smoke named.
 - Tests are **implementable** against the locked API.
+
+### 3.5 Cloud ops (mandatory when Production mutate / cutover in scope)
+
+Score **N/A** only when the plan truly has no Production data/secret/env mutate
+and says so. Otherwise score 1–5.
+
+| Must lock | Fail if |
+|-----------|---------|
+| **Primary** operator path is **GHA `workflow_dispatch`** (new or extend) | Only `npm run …` / script / “cloud agent someday” without a workflow |
+| Workflow safety: confirm input, dry_run optional, ubuntu-latest for DB, no PR trigger | Self-hosted Production DB mutate without deliberate review |
+| Dual-store secret **names**; GHA ≡ Vercel when required | Laptop `.env` as Production path |
+| Explicit wrong-tool bans (seed ≠ backfill, etc.) | Ambiguous “re-run bootstrap” for a different op |
+| Living docs describe Actions path **first** | Docs teach personal-machine npm as primary |
+
+**Blocker:** Production mutate/cutover planned with **no** cloud primary path
+(GHA or equivalent hosted dispatch), leaving only personal-machine or “hope an
+agent is online” execution.
+
+**Major:** Script exists in DoD but workflow deferred to “follow-up”; or AGENTS
+sentence treated as sufficient operator UX.
+
+**Historical pattern to reject:** document + `package.json` script for backfill
+while origin Production still needs cutover and **no** Actions workflow ships.
+
+### 3.6 Living docs (mandatory when product, ops, secrets, or agent rules change)
+
+Score **N/A** only for pure internal refactors with zero user/operator/agent
+surface change — and the plan must say why each surface is N/A.
+
+| Must consider | Fail if |
+|---------------|---------|
+| `docs/*` for durable behavior/ops | Ops knowledge only in plan issue |
+| `AGENTS.md` when infra Done table, skills, or agent rules change | Agents still get stale constitution |
+| `README.md` when visitor entry or top links change | Front door wrong/missing |
+| `SECURITY.md` / `.env.example` when secrets or crypto cutover change | Security table stale |
+| Docs are **timeless** for newcomers | Docs narrate “phase 2”, “see issue #95”, handoff checklists |
+| Process (phases, parent maps) stays in **issues** | Product guides become project-management logs |
+
+**Major:** plan ships Production-facing ops with no docs plan, or docs planned as
+“mention in AGENTS only.”  
+**Major:** living docs will cite phases/issue numbers as the main explanation.  
+**Blocker:** only if docs would instruct **secrets in git** or **laptop-only
+Production mutate** as the official path.
 
 ---
 
@@ -322,6 +379,7 @@ When the issue is a phase of a parent (`Parent: #N`, or title `phase N`):
 | DoD maps to parent checklist | Parent cannot be checked off |
 | Depends on prior phases COMPLETE or assumed | Builds on unfinished work quietly |
 | Next-phase preview does not leak into this scope | Scope bleed |
+| Cloud ops / docs deferred incorrectly across phases | Mutate script in phase N, GHA “later” with no owner |
 
 ### 4.2 Allowed refinements
 
@@ -383,6 +441,7 @@ No freehand hex; no pure blue/cyan; EMBER = danger only.
 | Clone + own Vercel + own keys remains plausible | Hardcodes one prod host as architecture |
 | Config seams for future sandbox/runner | Plan deepens single-tenant binds with no note |
 | Language/platform-agnostic **target** projects | Assumes only this repo’s stack is ever driven |
+| BYO ops via GHA/Vercel, not author laptop | Laptop-centric cutover as architecture |
 
 Not every phase must implement multi-tenant; every phase must **avoid needless
 anti-reuse** and document impact in the plan header.
@@ -402,6 +461,8 @@ anti-reuse** and document impact in the plan header.
 9. Commit guidance that uses GitHub MCP or non-`btipling` author for this repo’s gates  
 10. Plan re-opens “configure deploy hooks/tokens” as user todos when AGENTS marks them **Done** (unless log-proven regression)  
 11. Architectural change with **no** decisions table and no explicit N/A justification  
+12. **Production data/secret cutover with no GHA (or equivalent hosted) primary path** — script/`npm run` only, or “operator’s laptop”  
+13. **Living docs planned to teach laptop-only Production ops** as the official path  
 
 ---
 
@@ -411,10 +472,11 @@ anti-reuse** and document impact in the plan header.
 1. Parse user issue number/URL (mode defaults to fix)
 2. Read AGENTS.md (+ feature-divide if UI/loop) — MANDATORY before scoring
 3. Fetch plan issue body via gh
-4. Classify (§2)
+4. Classify (§2) — flag ops/docs classes
 5. Fetch parent issue if phase
-6. Fetch every cited baseline module
+6. Fetch every cited baseline module (+ workflows if ops)
 7. Walk rubric axes (§3) + parent (§4) + layers/UI (§5)
+   including Cloud ops (§3.5) + Living docs (§3.6)
 8. Build findings; scores + verdict
 9. DEFAULT mode=fix — if recommended plan changes:
      a. Write full revised body to disk
@@ -429,7 +491,7 @@ anti-reuse** and document impact in the plan header.
 
 | Verdict | When |
 |---------|------|
-| **HANDOFF-READY** | No Blockers; Majors fixed in plan (or user-waived); scores ≥ 4 on required axes; parent ≥ 4 when phase; layers sound — **after** edits if any |
+| **HANDOFF-READY** | No Blockers; Majors fixed in plan (or user-waived); scores ≥ 4 on required axes; parent ≥ 4 when phase; layers sound; cloud ops + docs sound or N/A — **after** edits if any |
 | **NEEDS REVISION** | Material issues remain (user decision or incomplete baseline) |
 | **BLOCKED** | Missing issue, cannot fetch critical baseline, or unsafe contradictions |
 
@@ -442,15 +504,18 @@ When `mode=fix` clears Blockers/Majors via issue edits, re-score and prefer
 
 High-quality plan issues include:
 
-- Header table (Status · Parent · Layers · Reusability)  
+- Header table (Status · Parent · Layers · Reusability · **Production mutate** ·
+  **Cloud ops** · **Living docs**)  
 - **Review notes** after team review  
 - Intent lock (in / out / forbidden)  
-- Goals & DoD + checkbox exit criteria  
-- Live baseline table  
+- Goals & DoD + checkbox exit criteria (ops + docs checkboxes when relevant)  
+- Live baseline table (workflows when ops)  
 - Architectural decisions when warranted  
 - Layer placement table  
+- **Cloud ops path** section (or N/A)  
+- **Living docs plan** table (AGENTS + README always considered)  
 - Testing matrix with edges  
-- Risks & mitigations  
+- Risks & mitigations (incl. missing-GHA risk when ops)  
 - Parent alignment + refinements (phase)  
 - Open questions empty for in-scope locks  
 
@@ -468,6 +533,8 @@ Missing sections that the phase needs → finding → pushed into issue under fi
 - Ignoring parent locks on phase issues  
 - Rubber-stamping UI on palette alone while **actions hop**  
 - Approving DOM dual-chat as “faster MVP” without exception  
+- Approving **script-only Production cutover** because “AGENTS says cloud”  
+- Approving docs that are **phase/issue process dumps**  
 - Expanding scope during review  
 - Implementing app code under the guise of review  
 
@@ -481,7 +548,10 @@ Missing sections that the phase needs → finding → pushed into issue under fi
 [ ] Plan issue fetched via gh
 [ ] Parent fetched if phase issue
 [ ] Baseline modules verified against live code
+[ ] Workflows verified if Production mutate
 [ ] Correctness / performance / architecture / testing scored
+[ ] Cloud ops scored (or N/A with reason)
+[ ] Living docs scored (or N/A with reason) — AGENTS + README considered
 [ ] Parent adherence scored (or N/A)
 [ ] Layer placement + dual-chat check (or N/A)
 [ ] Layout stability for host chrome (or N/A)

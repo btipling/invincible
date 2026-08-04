@@ -21,6 +21,9 @@
 | **Parent** | N/A |
 | **Layers** | DOM, harness, Vercel backend |
 | **Reusability impact** | … |
+| **Production mutate?** | no \| yes — … |
+| **Cloud ops path** | N/A \| GHA … |
+| **Living docs** | paths or N/A |
 
 ## Summary
 
@@ -35,6 +38,7 @@
 ## Non-goals / out of scope
 
 - 
+- **Forbidden wiring:** dual DOM chat · secrets in Wasm · laptop-only Production ops
 
 ## Architectural decisions
 
@@ -48,6 +52,22 @@
 |---------|-------|---------|-----------|
 | | | | |
 
+## Cloud ops path
+
+N/A — no Production mutate.
+
+<!-- or: GHA workflow name, inputs, secret names, guards, wrong-tool bans -->
+
+## Living docs plan
+
+| Surface | Change | Notes |
+|---------|--------|-------|
+| `docs/…` | | timeless; no phase/issue process artifacts |
+| `AGENTS.md` | | |
+| `README.md` | | |
+| `SECURITY.md` | | |
+| `.env.example` | | |
+
 ## Phase map
 
 | Phase | Issue | Deliverable | Depends on |
@@ -58,11 +78,13 @@
 
 | # | Case | Layer | Type | Command / method |
 |---|------|-------|------|------------------|
-| 1 | | | | |
+| 1 | | | | agent workspace / CI / GHA dry_run |
 
 ## Definition of done
 
 - [ ] 
+- [ ] Cloud ops: GHA primary path or N/A
+- [ ] Living docs: listed surfaces updated (timeless)
 
 ## Risks & mitigations
 
@@ -88,22 +110,40 @@
 | **Parent** | #NN |
 | **Layers** | … |
 | **Reusability impact** | … |
+| **Production mutate?** | no \| yes |
+| **Cloud ops path** | N/A \| GHA … |
+| **Living docs** | paths or N/A |
 
 ## Intent lock
 
 **In scope:** …
 **Out of scope:** …
-**Forbidden:** dual DOM chat · secrets in Wasm · …
+**Forbidden:** dual DOM chat · secrets in Wasm · laptop-only Production ops · phase/issue theater in product docs
 
 ## Current baseline (live code)
 
 | Claim | Path / symbol | Notes |
 |-------|---------------|-------|
 | | | |
+| Existing GHA (if ops) | `.github/workflows/…` | |
 
 ## Design
 
 …
+
+## Cloud ops path
+
+N/A — no Production mutate.
+
+## Living docs plan
+
+| Surface | Change | Notes |
+|---------|--------|-------|
+| `docs/…` | | |
+| `AGENTS.md` | | |
+| `README.md` | | |
+| `SECURITY.md` | | |
+| `.env.example` | | |
 
 ## Implementation order
 
@@ -118,6 +158,8 @@
 ## Definition of done
 
 - [ ] Maps to parent checklist item: …
+- [ ] Cloud ops: GHA primary or N/A
+- [ ] Living docs: timeless updates or N/A
 
 ## Corrections / refinements vs parent
 

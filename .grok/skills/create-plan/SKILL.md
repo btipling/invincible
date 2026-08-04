@@ -5,10 +5,13 @@ description: >
   that reference the parent). Use when the user says "create-plan", "use the
   create-plan skill", "plan this feature", "write a plan for", "phase plan",
   or wants a feature broken into HANDOFF-READY issues before coding.
-  Requires gh. Plans live in issues, not docs/*.md. Never GitHub MCP.
+  Requires gh. Plans live in issues, not docs/*.md. Enforces cloud-native ops
+  (GHA / cloud agent — never laptop-only Production cutovers) and living docs
+  updates (docs/, AGENTS.md, README.md) without phase/issue process artifacts.
+  Never GitHub MCP.
 metadata:
-  short-description: "Write feature plans as GitHub issues (parent + optional phase issues)"
-  version: "1.0"
+  short-description: "Write feature plans as GitHub issues (cloud ops + living docs)"
+  version: "1.1"
   project: invincible
 ---
 
@@ -36,10 +39,14 @@ If `gh` fails → **stop**. Never use GitHub MCP (`github___*`).
 
 **Before drafting:**
 
-1. Read root **`AGENTS.md`** (main, or the branch the user named).
+1. Read root **`AGENTS.md`** (main, or the branch the user named) — especially
+   **Operator & agent model** and **Infrastructure already configured**.
 2. Read **`docs/feature-divide.md`** (DOM vs Wasm ownership).
 3. Ground claims in **live code** on the branch you plan against (usually `main`).
 4. Skim relevant prior COMPLETE plans / epics if the feature continues them.
+5. If the work mutates Production data, secrets, deploy, or env cutover: list
+   existing **GHA workflows** under `.github/workflows/` and decide whether to
+   **extend** one or **add** a dispatch-only job (see §1.1).
 
 Commit author for any git work that accompanies the plan:
 
@@ -72,6 +79,91 @@ fully. Plans must still:
 - Avoid “works only for this author’s prod URL” as a permanent architecture.
 - If a plan **blocks** reusability, say so under **Risks** and prefer a path
   that keeps the door open.
+
+### 1.1 Cloud-native development & ops (mandatory — not optional color)
+
+There is **no personal laptop/desktop as a product shell**. Humans use browser +
+Vercel + GitHub UI. Agents and CI run in **cloud workspaces** / **GitHub Actions**.
+A note in `AGENTS.md` is **not** enough — **plans must ship cloud operator paths**.
+
+| Who | Where work runs |
+|-----|-----------------|
+| Human operator | Vercel dashboard, GitHub Actions **Run workflow**, hosted admin UI, browser |
+| Implementer agent | Remote agent workspace (`gh` + `git` + `npm` **there**) |
+| Trusted automation | GitHub Actions (`ubuntu-latest` for DB/secrets jobs; self-hosted only for Zig) |
+
+**“Local” in plans means the agent/CI checkout**, never “clone on the maintainer’s Mac.”
+
+#### When the plan mutates Production / shared state
+
+If the design needs **any** of: migrate, seed, backfill, re-encrypt, one-shot data
+repair, dual-store secret cutover, env flip that requires a coordinated script,
+or other **ops that are not pure Vercel env UI**:
+
+| Required in the plan | Fail if missing |
+|----------------------|-----------------|
+| **Primary path = GHA `workflow_dispatch`** (new workflow or extend existing) | Only “run `npm run …`” / script path with no Actions entry |
+| Confirm / dry-run guards, ubuntu-latest (no self-hosted for untrusted DB ops) | Self-hosted runner for Production DB mutate without explicit design review |
+| Dual-store secrets named by **secret name only** (GHA ≡ Vercel when required) | Invented laptop `.env` as the Production path |
+| Living docs describe the **Actions button** path first | Docs that teach personal-machine npm as primary |
+| Explicit **do not** use wrong tools (e.g. seed ≠ backfill) | Ambiguous “re-run bootstrap” for a different cutover |
+
+**Script + `package.json` script** is fine as the **implementation** the workflow
+runs — it is **not** a complete operator story by itself.
+
+**Historical failure mode (do not repeat):** shipping `npm run db:backfill-deks`
++ docs while Production still needed cutover, with **no** `workflow_dispatch`
+GHA — leaves origin in a bind because humans have no laptop shell and agents
+are not always mid-session when cutover is due.
+
+#### When pure code is enough
+
+UI/lib/Wasm-only changes with **no** Production data/secret mutate may mark
+**Cloud ops path: N/A — no Production mutate** (one line). Still never document
+laptop-only steps for humans.
+
+### 1.2 Living docs (mandatory when product, ops, or agent rules change)
+
+Plans live in **GitHub issues**. **Durable truth** for new people and agents is:
+
+| Surface | Audience | Update when |
+|---------|----------|-------------|
+| **`docs/*`** | Operators + implementers | Behavior, cutover order, BYO, sandbox, runner, limits |
+| **`AGENTS.md`** | Agents (+ humans) | Infra Done/Not Done, skills index, hard constraints, “where to change” |
+| **`README.md`** | New visitors | Front door, how to try the product, pointers to living docs |
+| **`SECURITY.md`** | Security / operators | Secrets table, runner policy, tenancy/crypto rules |
+| **`.env.example`** | Config seams | New/changed env names (comments only; never values) |
+
+#### Always consider (checklist in every plan)
+
+```text
+[ ] docs/* — new or existing guide needs a section?
+[ ] AGENTS.md — infra table, agent rules, skills, ownership table?
+[ ] README.md — visitor-facing entry or link table?
+[ ] SECURITY.md — secrets, trust boundaries, cutover?
+[ ] .env.example — new env or operator comment?
+[ ] Explicit N/A for each skipped surface with one-line why
+```
+
+DoD **must** include concrete doc paths when any box is yes. “Docs if needed”
+without naming files is a skill failure.
+
+#### What living docs must **not** contain
+
+Product/ops docs are for **someone new to the repo with zero issue history**:
+
+| Forbidden in `docs/*`, README, SECURITY (and prefer avoid in AGENTS) | Put instead |
+|---------------------------------------------------------------------|-------------|
+| “Phase 2”, “phase 3 of the epic”, implementation roadmaps | Timeless behavior: *what the system does now* and *how to operate it* |
+| “See GitHub issue #92 / plan #95” as the main explanation | Self-contained procedure + code paths |
+| Handoff theater, parent/child phase checklists | Keep process only in **plan issues** |
+| Laptop-primary ops (`cd ~/…`, “on your machine”) | GHA / Vercel / cloud agent |
+| Secret values, host inventory, private IPs | Names of secrets and abstract topology only |
+
+**OK in plan issues only:** phase maps, parent links, “implements #N”, review notes.
+
+**OK in living docs:** current architecture, cutover **order**, workflow **names**,
+env **names**, failure modes, links between durable guides.
 
 ### Layer ownership (DOM · harness · Vercel backend)
 
@@ -122,6 +214,9 @@ not re-ask the user to create them unless a log proves regression.
 
 Create the **parent first**, then phases that **link back** (see §5).
 
+Phase numbers belong in **issues only** — never as the primary structure of
+living product docs shipped by the same work.
+
 ---
 
 ## 3. Required plan format (issue body)
@@ -140,6 +235,9 @@ Use this structure. Omit a section only if truly N/A (state N/A explicitly).
 | **Branch** | plan/<slug> or main (implementation branch if known) |
 | **Layers** | DOM \| harness \| Vercel backend (list all that apply) |
 | **Reusability impact** | none \| config-only \| architectural (explain) |
+| **Production mutate?** | no \| yes — summarize (migrate / backfill / seed / env cutover / …) |
+| **Cloud ops path** | N/A \| GHA workflow name(s) to add/extend |
+| **Living docs** | paths to touch, or N/A with why |
 
 ## Summary
 
@@ -154,13 +252,13 @@ One short paragraph: what ships and why.
 ## Non-goals / out of scope
 
 - …
-- **Forbidden wiring:** … (e.g. dual DOM chat, secrets in Wasm)
+- **Forbidden wiring:** … (e.g. dual DOM chat, secrets in Wasm, laptop-only ops)
 
 ## Architectural decisions
 
 > Required when the work changes ownership, protocols, data flow, deploy path,
-> persistence, or multi-tenant/reuse seams. For pure local polish, write
-> **N/A — no new decisions** and one line why.
+> persistence, multi-tenant/reuse seams, or **Production ops path**. For pure
+> polish with no ops/docs, write **N/A — no new decisions** and one line why.
 
 | Decision | Options considered | Choice | Why |
 |----------|--------------------|--------|-----|
@@ -177,6 +275,7 @@ One short paragraph: what ships and why.
 | Claim | Path / symbol | Notes |
 |-------|---------------|-------|
 | … | `lib/…` @ main | verified |
+| Existing GHA (if ops) | `.github/workflows/…` | verified |
 
 Do **not** invent APIs. Unverified → mark **Unverified** and either verify or
 narrow scope.
@@ -188,17 +287,44 @@ narrow scope.
 - Edge cases: empty session, Wasm load fail, API 4xx/5xx, mobile ~390px, refresh
 - Performance notes when relevant (poll rates, payload size, Wasm rebuild need)
 
+## Cloud ops path
+
+> Required when **Production mutate?** is yes. Else: **N/A — no Production mutate**.
+
+| Item | Lock |
+|------|------|
+| Primary operator surface | GitHub Actions → **workflow name** → Run workflow (inputs…) |
+| Workflow to add/extend | `.github/workflows/….yml` |
+| What the job runs | e.g. script X / `npm run …` **inside the job** |
+| Secrets (names only) | `DATABASE_URL`, … — dual-store with Vercel when required |
+| Guards | confirm string, dry_run, concurrency group, ubuntu-latest |
+| Explicit non-paths | e.g. **not** seed; **not** personal laptop npm |
+| After job | Vercel env flip / smoke / verify steps (UI or public smoke) |
+
+## Living docs plan
+
+> Always fill. Use N/A per row with why — do not omit the table.
+
+| Surface | Change | Notes |
+|---------|--------|-------|
+| `docs/…` | add/update section … | timeless; **no** phase/issue process artifacts |
+| `AGENTS.md` | infra table / rules / skills | |
+| `README.md` | visitor pointer / no change | |
+| `SECURITY.md` | … / N/A | |
+| `.env.example` | … / N/A | |
+
 ## Implementation order
 
 1. …
-2. …
+2. … (include workflow + docs in the same epic/phase that needs them — do not
+   defer cloud ops to “later docs-only”)
 3. …
 
 ## Testing
 
 | # | Case | Layer | Type | Command / method |
 |---|------|-------|------|------------------|
-| 1 | … | DOM / harness / API | unit / integration / operator | `npm test` / manual |
+| 1 | … | DOM / harness / API / GHA | unit / integration / operator | agent workspace or CI |
 
 **Minimum locked** rows (must pass for DoD) vs full matrix.
 
@@ -208,15 +334,19 @@ Always include:
 - Bridge / protocol cases when message shapes change
 - Server route cases when `/api/*` changes (no real key in tests)
 - Operator checklist when UI is play-visible (host shell and/or canvas)
-- Build gates: `npm test`, `npm run typecheck`, `npm run build` (note harness
-  artifact requirement if Wasm changes → DO runner / `build-harness`)
+- Build gates run in **agent workspace or CI**: `npm test`, `npm run typecheck`,
+  `npm run build` (harness artifact / DO runner when Wasm changes)
+- When cloud ops ships: how the workflow is validated (dry_run, unit tests for
+  scripts, or documented dispatch smoke on throwaway DB)
 
 ## Definition of done
 
 - [ ] …
-- [ ] Tests green (commands listed)
+- [ ] Tests green (commands listed; cloud agent/CI — not human laptop)
 - [ ] No dual-chat regression (if UI)
-- [ ] Docs / AGENTS updated if ownership or ops change
+- [ ] **Cloud ops:** GHA primary path shipped or explicit N/A
+- [ ] **Living docs:** listed surfaces updated (timeless; no phase/issue theater)
+- [ ] AGENTS.md / README.md considered (updated or N/A justified)
 - [ ] Parent checklist items mappable (phase plans)
 
 ## Risks & mitigations
@@ -224,6 +354,7 @@ Always include:
 | Risk | Mitigation |
 |------|------------|
 | … | … |
+| Laptop-only cutover / missing GHA | … |
 
 ## Open questions
 
@@ -239,7 +370,8 @@ not left open.
 
 ## References
 
-- Related issues, docs, prior handoffs
+- Related issues, docs, prior handoffs (**issues only** — do not copy this list
+  into product docs as the explanation of the feature)
 ```
 
 ### Architectural decisions — when mandatory
@@ -250,6 +382,7 @@ Create a non-empty **Architectural decisions** table if any of:
 - Moving ownership across DOM ↔ harness ↔ backend  
 - New persistence, auth, or multi-user model  
 - New deploy / artifact / runner requirement  
+- **New or changed Production mutate / cutover path** (GHA vs script-only)  
 - Anything that affects **clone-and-run-for-your-own-project** reusability  
 - Public API shape for `/api/*`
 
@@ -259,11 +392,14 @@ Create a non-empty **Architectural decisions** table if any of:
 
 ```text
 [ ] AGENTS.md + feature-divide read this session
-[ ] Baseline table grounded in live files
+[ ] Baseline table grounded in live files (+ workflows if ops)
 [ ] Layers table filled; no forbidden dual-UI
 [ ] Architectural decisions present or explicit N/A
+[ ] Cloud ops path: GHA primary if Production mutate; else explicit N/A
+[ ] Living docs table filled; AGENTS + README considered
+[ ] No plan to put phase/issue process artifacts into docs/*
 [ ] Tests matrix has edge cases, not only happy path
-[ ] DoD checkboxes prove the goals
+[ ] DoD checkboxes prove the goals (including ops + docs)
 [ ] Secrets stay server-side
 [ ] Zig-only-on-runner constraint respected if harness changes
 [ ] Reusability: no hardcoding single-tenant forever without note
@@ -345,7 +481,7 @@ Report to the user:
 
 1. Parent (or single) issue URL + number  
 2. Phase issue URLs (if any)  
-3. One-line summary of scope + layers  
+3. One-line summary of scope + layers + **ops/docs** (GHA? which docs?)  
 4. Suggested next step: **plan-review** on the issue(s), then implement  
 
 Do **not** start coding unless the user explicitly asks.
@@ -362,7 +498,12 @@ Do **not** start coding unless the user explicitly asks.
 - Secrets or Gateway calls from Wasm  
 - Re-asking user to configure already-**Done** infra  
 - Mentioning unrelated products / engines in the plan body  
-- Placeholder issue bodies (`TODO`, `TBD` for in-scope locks)
+- Placeholder issue bodies (`TODO`, `TBD` for in-scope locks)  
+- **Production cutover as “run npm on a machine” with no GHA**  
+- **Script-only ops** documented as the primary human path  
+- **Living docs that narrate phases / issue numbers** instead of current system  
+- Deferring “we’ll add the workflow later” while shipping the mutate script  
+- Treating an AGENTS.md sentence as a substitute for a real operator path  
 
 ---
 
@@ -370,8 +511,8 @@ Do **not** start coding unless the user explicitly asks.
 
 ```text
 [ ] gh auth OK
-[ ] AGENTS.md + feature-divide + live baseline
-[ ] Format §3 complete
+[ ] AGENTS.md + feature-divide + live baseline (+ workflows if ops)
+[ ] Format §3 complete (incl. Cloud ops path + Living docs plan)
 [ ] Parent issue created (or single)
 [ ] Phase issues created with Parent: #N
 [ ] Parent phase map updated with numbers

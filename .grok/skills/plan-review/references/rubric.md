@@ -55,10 +55,10 @@ Companion to `plan-review/SKILL.md`. Use these prompts while scoring.
 
 | Score | Meaning |
 |-------|---------|
-| 5 | Layer ownership perfect; reusability-aware; phase cut clean |
+| 5 | Layer ownership perfect; reusability-aware; cloud-native ops; phase cut clean |
 | 4 | Fits project; minor placement nits |
-| 3 | Works but blurs DOM/harness/backend |
-| 2 | Fights AGENTS.md / feature-divide |
+| 3 | Works but blurs DOM/harness/backend or soft on ops shell |
+| 2 | Fights AGENTS.md / feature-divide / laptop-centric ops |
 | 1 | Dual state / secret leakage / anti-reuse hardcoding |
 
 ### Prompt questions
@@ -68,6 +68,7 @@ Companion to `plan-review/SKILL.md`. Use these prompts while scoring.
 - Are secrets server-only?  
 - Config seams for clone + own Vercel?  
 - Zig-only-on-runner respected?  
+- Does any Production path assume a human laptop checkout?  
 
 ---
 
@@ -75,7 +76,7 @@ Companion to `plan-review/SKILL.md`. Use these prompts while scoring.
 
 | Score | Meaning |
 |-------|---------|
-| 5 | Edge-rich matrix; operator checklist if UI; commands listed |
+| 5 | Edge-rich matrix; operator checklist if UI; commands for agent/CI; GHA dry_run if ops |
 | 4 | Strong unit coverage; small gaps |
 | 3 | Happy-path only or missing integration where wiring lands |
 | 2 | Vague “add tests” without cases |
@@ -87,7 +88,57 @@ Companion to `plan-review/SKILL.md`. Use these prompts while scoring.
 - Bridge tests for new message types?  
 - API tests without real keys?  
 - Operator path: load → send → read → multi-turn → mobile?  
-- `npm test` / typecheck / build / harness CI listed when relevant?  
+- `npm test` / typecheck / build / harness CI listed for **agent/CI**, not human laptop?  
+- If workflow ships: dry_run or script tests named?  
+
+---
+
+## Cloud ops (when Production mutate / cutover — else N/A)
+
+| Score | Meaning |
+|-------|---------|
+| 5 | GHA primary path locked (name, inputs, secrets names, guards); wrong-tool bans; docs match |
+| 4 | Solid GHA plan; minor input/docs polish |
+| 3 | Script + vague “run in cloud” without concrete workflow |
+| 2 | npm/script primary; GHA optional/deferred |
+| 1 | Laptop-only or missing operator path for a required mutate |
+
+### Prompt questions
+
+- Is **workflow_dispatch** the primary human/operator surface?  
+- Extend existing workflow or new file under `.github/workflows/`?  
+- ubuntu-latest for DB/secrets? No PR trigger on mutate jobs?  
+- Confirm + dry_run guards?  
+- Dual-store: which secrets must match Vercel Production?  
+- Seed vs backfill vs migrate: which is forbidden for this op?  
+- Does DoD ship the workflow in the **same** phase as the script?  
+
+### Common failure modes
+
+- “Document `npm run db:…`” with no Actions job  
+- “Cloud agent can run it” without a durable dispatch entrypoint  
+- Re-using seed bootstrap for a non-seed cutover  
+- Self-hosted runner for Production DB without design review  
+
+---
+
+## Living docs (when product/ops/agent surface changes — else N/A)
+
+| Score | Meaning |
+|-------|---------|
+| 5 | docs + AGENTS + README (+ SECURITY/env as needed) planned; timeless; no process theater |
+| 4 | Right surfaces named; small gaps |
+| 3 | “Update docs if needed” without paths |
+| 2 | Only plan-issue knowledge; or docs will be phase/issue narrative |
+| 1 | Docs teach secrets/laptop-only Production ops |
+
+### Prompt questions
+
+- Which of `docs/*`, `AGENTS.md`, `README.md`, `SECURITY.md`, `.env.example` change?  
+- Explicit N/A per skipped surface?  
+- Will a **new** reader understand without issue history?  
+- Forbidden: phase numbers, “see #95”, handoff checklists in product docs?  
+- Ops steps lead with **Actions / Vercel UI**, not personal npm?  
 
 ---
 
@@ -97,6 +148,7 @@ Companion to `plan-review/SKILL.md`. Use these prompts while scoring.
 - Parent phase checklist: 1:1 map from this DoD?  
 - Prior phase COMPLETE or explicitly assumed?  
 - Refinements table present when names/constants tighten?  
+- Ops/docs split across phases without a owning phase for GHA?  
 
 ---
 
@@ -104,14 +156,17 @@ Companion to `plan-review/SKILL.md`. Use these prompts while scoring.
 
 | Type | Expected depth |
 |------|----------------|
-| Parent roadmap | Locks, phases, non-goals, feasibility — less code sketch |
+| Parent roadmap | Locks, phases, non-goals, feasibility, ops/docs ownership — less code sketch |
 | Pure / lib phase | Types, algorithms, test matrix heavy |
 | Wire / bridge phase | Message shapes, poll order, host call sites |
 | UI phase | Layout stability, palette, operator checklist |
 | Backend phase | Authz, env, error contracts, no secret leakage |
+| Ops / cutover phase | **GHA workflow design**, secret names, dual-store, smoke |
+| Docs phase | Timeless guides; AGENTS/README; no issue archaeology |
 
 Do **not** fail a parent roadmap for missing line-level code.  
-**Do** fail a bridge phase with no message schema.
+**Do** fail a bridge phase with no message schema.  
+**Do** fail an ops phase with no workflow.
 
 ---
 
@@ -129,3 +184,4 @@ Do **not** fail a parent roadmap for missing line-level code.
 
 - Dual product chat unmitigated: architecture **≤ 2**, **Blocker**  
 - Primary action reflow unmitigated: UI axis **≤ 2**, **Blocker**  
+- Laptop-only Production mutate: cloud ops **≤ 2**, **Blocker**  

@@ -17,6 +17,7 @@ Before the plan, before scoring, before editing the issue:
 ```bash
 gh api "repos/btipling/invincible/contents/AGENTS.md?ref=main" --jq .content | base64 -d
 # also when UI/agent loop: docs/feature-divide.md
+# note: Operator & agent model = cloud only (no personal laptop shell)
 ```
 
 ## Do NOT
@@ -51,6 +52,9 @@ gh issue view <N> --repo btipling/invincible --json number,title,body,url,state
 
 1. Confirm `AGENTS.md` was read this session.  
 2. Follow SKILL.md review axes → findings + verdict.  
+   **Always score Cloud ops + Living docs** (or explicit N/A).  
+   Block laptop/script-only Production cutovers; demand GHA primary when mutate.  
+   Demand timeless docs (docs/ AGENTS README) — no phase/issue process theater.  
 3. **Default (`mode=fix`):** if recommended plan changes, rewrite the **full issue
    body**, `gh issue edit <N> --body-file …`, verify. Do not leave fixes only in chat.  
 4. Do **not** implement app code unless the user asked.  
