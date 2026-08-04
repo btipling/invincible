@@ -1,27 +1,28 @@
 # native/harness — Invincible agent harness (Zig + dvui)
 
-Durable Zig crate for the in-browser **product** harness UI (Wasm-primary). Built on **`invincible-do-1`** (Zig **0.16.0**).
+Durable Zig crate for the in-browser **product** harness UI (Wasm-primary). Built
+with Zig **0.16.0** on the self-hosted runner (maintainer sample: `invincible-do-1`).
 
-**Product handoff:** [`docs/phase-4-handoff.md`](../../docs/phase-4-handoff.md)  
-**Pipeline rebuild:** [`docs/phase-3-handoff.md`](../../docs/phase-3-handoff.md)
+**Architecture:** [`docs/feature-divide.md`](../../docs/feature-divide.md)  
+**Wasm supply / CI:** [`docs/runner.md`](../../docs/runner.md)
 
-## UI ownership (Phase 4)
+## UI ownership
 
 | Surface | Owns |
 |---------|------|
 | **This crate (Wasm)** | Transcript, composer, Send/PONG, busy/error chrome, Asteronica theme |
-| **DOM host** (`app/harness/HarnessHost.tsx`) | Load module, bridge poll, `/api/chat`, SessionStore, nav chips |
+| **DOM host** (`app/harness/HarnessHost.tsx`) | Load module, bridge poll, `/api/chat` + `/api/agent`, SessionStore, nav chips |
 
-Do **not** reintroduce a React chat panel as product UX. Feature divide: [`docs/feature-divide.md`](../../docs/feature-divide.md).
-
+Do **not** reintroduce a React chat panel as product UX. The canvas is the
+workspace — not an optional companion.
 
 ## Relation to other `native/` targets
 
 | Path | Status | Role |
 |------|--------|------|
-| `hello.zig` + root `build.sh` | Phase 2 probe | Tiny `add` export → `hello.wasm`. Keep for runner smoke. |
-| `dvui-spike/` | Phase 3.1 research | Superseded by this crate for product work. |
-| **`harness/` (this)** | **Phase 3 product** | dvui web → **`harness.wasm`** + `web.js`. |
+| `hello.zig` + root `build.sh` | Runner probe | Tiny `add` export → `hello.wasm`. Keep for runner smoke. |
+| `dvui-spike/` | Research | Superseded by this crate for product work. |
+| **`harness/` (this)** | **Product** | dvui web → **`harness.wasm`** + `web.js`. |
 
 ## Build
 
@@ -38,7 +39,7 @@ CI: `.github/workflows/build-harness.yml` → artifact **`harness-wasm`**
 
 `build.sh` verifies Wasm export section includes all `inv_*` + `dvui_init` / `gpa_u8`.
 
-### Ship to Vercel (option B — no binaries in git)
+### Ship to Vercel (no binaries in git)
 
 ```text
 build-harness → artifact harness-wasm
@@ -46,16 +47,16 @@ build-harness → artifact harness-wasm
   → public/harness/* (ephemeral) → CDN /harness/*
 ```
 
-- Vercel env: `HARNESS_ARTIFACT_TOKEN` (Actions: Read) — already configured  
+- Vercel env: `HARNESS_ARTIFACT_TOKEN` (Actions: Read)  
 - Deploy race: wait-for-SHA in fetch script — [`docs/harness-deploy-race.md`](../../docs/harness-deploy-race.md)  
-- After upload: Actions secret `VERCEL_DEPLOY_HOOK_URL` (already configured)  
+- Optional after upload: Actions secret `VERCEL_DEPLOY_HOOK_URL`  
 - **Do not** commit `public/harness/*.wasm` / `web.js`
 
 ## Source layout
 
 ```text
 src/main.zig     # dvui_init / deinit / update + Asteronica themeSet
-src/ui.zig       # frame: companion panel (Send / PONG / transcript mirror)
+src/ui.zig       # frame: transcript, composer, Send / PONG
 src/bridge.zig   # inv_* export fns + ring buffer + pending submit
 src/palette.zig  # TEAL/WARM/EMBER hex (sync with lib/palette.ts)
 build.zig        # export_symbol_names whitelist for inv_*
@@ -85,7 +86,8 @@ Host is dvui’s `web.js`. Required exports (app + backend):
 
 Whitelist: `build.zig` → `export_symbol_names` (Zig 0.16 freestanding + `entry = .disabled` strips unrooted exports).
 
-Inference stays on the host: `POST /api/chat` holds `AI_GATEWAY_API_KEY` — **never** in Wasm.
+Inference stays on the host: `POST /api/chat` and `POST /api/agent` hold
+`AI_GATEWAY_API_KEY` — **never** in Wasm.
 
 ## JS ↔ Wasm protocol
 
@@ -94,16 +96,16 @@ Inference stays on the host: `POST /api/chat` holds `AI_GATEWAY_API_KEY` — **n
 | **Protocol version** | `2` |
 | **TS** | `lib/harnessBridge.ts` |
 | **Zig** | `src/bridge.zig` |
-| **Host** | `app/harness/HarnessHost.tsx` (DOM primary; Wasm optional “Show Wasm”) |
-| **Chat** | `lib/harnessChat.ts` → `POST /api/chat` |
+| **Host** | `app/harness/HarnessHost.tsx` (shell: load + bridge + APIs) |
+| **Chat turn** | `lib/harnessChat.ts` → `/api/agent` or `/api/chat` |
 
 ### Message kinds
 
 | Kind | Value | Use |
 |------|------:|-----|
-| user | 1 | Host / canvas prompt |
-| assistant | 2 | Model reply mirrored into Wasm |
-| system | 3 | Status lines |
+| user | 1 | Canvas prompt |
+| assistant | 2 | Model reply into Wasm |
+| system | 3 | Status / toolTrace lines |
 | error | 4 | Errors (EMBER) |
 
 Host **polls** pending submit (~150 ms); no custom Wasm imports beyond stock dvui `web.js`.

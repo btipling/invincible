@@ -388,8 +388,7 @@ Use **your** deploy URL (local or Vercel). Do not require the maintainer prod ho
 6. ~390px width remains usable.  
 7. **Optional agent tools:** with `SANDBOX_*` set, try a write/exec prompt; without them, PONG/chat still works ([sandbox.md](sandbox.md)).
 
-Feature divide: [feature-divide.md](feature-divide.md). Product-oriented handoff
-(maintainer URLs as samples): [phase-4-handoff.md](phase-4-handoff.md).
+Feature divide: [feature-divide.md](feature-divide.md). Visitor try path / samples: [README](../README.md).
 
 If the canvas stays blank: check Vercel build logs for harness fetch failures
 (token, artifact missing, wrong owner/repo). Prefer fail-loud over shipping an

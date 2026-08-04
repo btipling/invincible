@@ -14,7 +14,7 @@
 | Agent tools (optional) | BYO sandbox process | [sandbox.md](sandbox.md) — not this runner |
 | Source | **This** GitHub repository | Single source of truth for your deploy |
 
-Product handoff: [phase-4-handoff.md](phase-4-handoff.md) · Public safety: [SECURITY.md](../SECURITY.md)  
+Product architecture: [feature-divide.md](feature-divide.md) · Try path: [README](../README.md) · Public safety: [SECURITY.md](../SECURITY.md)  
 Maintainer sample deploy: `btipling/invincible` (not required architecture).
 
 ---
@@ -176,7 +176,7 @@ push native/harness/** on main
 | Zig | `native/ZIG_VERSION` (0.16.0) |
 | Build | `./native/harness/build.sh` |
 | Race | [harness-deploy-race.md](harness-deploy-race.md) |
-| Product handoff | [phase-4-handoff.md](phase-4-handoff.md) |
+| Product architecture | [feature-divide.md](feature-divide.md) · [README](../README.md) |
 
 ```bash
 gh workflow run build-harness.yml --repo <owner>/<repo>
@@ -205,6 +205,7 @@ npm run fetch-harness && npm run dev
 | Doc | Topic |
 |-----|--------|
 | [SECURITY.md](../SECURITY.md) | Public repo + runner policy |
-| [phase-4-handoff.md](phase-4-handoff.md) | Product operator path |
+| [feature-divide.md](feature-divide.md) | DOM shell vs Wasm harness |
+| [README](../README.md) | Visitor try path |
 | [project-ids.md](project-ids.md) | Public URLs only |
 | [native/harness/README.md](../native/harness/README.md) | Bridge / exports |

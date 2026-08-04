@@ -1,22 +1,14 @@
-# Session model (Phase 3.8)
+# Session model
 
-**Status:** Acceptance met for Phase 3. Cloud backends are optional follow-ups.
+How browser session restore works for the harness (memory + `localStorage`).
 
-## Constraint
+## Constraints
 
 - **No local filesystem** as source of truth for sessions/files  
 - No secrets (`AI_GATEWAY_API_KEY`, tokens) inside session blobs  
 - Client must not use Node `fs`
 
-## Acceptance
-
-| Requirement | Status |
-|-------------|--------|
-| `SessionStore` interface + one implementation | **Done** — interface + `MemorySessionStore` + `LocalStorageSessionStore` in [`lib/sessionStore.ts`](../lib/sessionStore.ts) |
-| Design note: files/workspaces later | **This doc** |
-| No Node `fs` in client; no secrets in blobs | **Done** — browser storage / memory only; Gateway key stays on server |
-
-## Implementations (now)
+## What ships today
 
 | Piece | Location | Notes |
 |-------|----------|--------|
@@ -25,7 +17,9 @@
 | `LocalStorageSessionStore` | same | default in browser via `createDefaultSessionStore()` |
 | Agent loop | `lib/harnessChat.ts` `runHarnessTurn` | multi-turn via folded history |
 
-Multi-turn continuity: history is folded into a single `POST /api/chat` prompt (`formatPromptWithHistory`). The API remains Phase 1 single-shot.
+Multi-turn continuity: history is folded into a single `POST /api/chat` (or
+`/api/agent`) prompt (`formatPromptWithHistory`). The API remains single-shot
+per request; multi-turn lives in the host session + Wasm transcript.
 
 Blob shape (messages only — never env secrets):
 
@@ -37,7 +31,10 @@ Blob shape (messages only — never env secrets):
 }
 ```
 
-## Cloud backends (later — not required for Phase 3 close)
+Wasm stays free of persistence I/O; the host loads/saves session and pushes
+transcript via the bridge on load / Clear.
+
+## Cloud backends (optional follow-ups)
 
 | Approach | Fit | Notes |
 |----------|-----|--------|
@@ -45,7 +42,7 @@ Blob shape (messages only — never env secrets):
 | Object storage (S3/R2) | File/workspace blobs | Keys only in session row |
 | GitHub repo as storage | “code harness” identity | OAuth + rate limits |
 
-Recommended path:
+Recommended path if multi-device is needed later:
 
 1. Keep sync `SessionStore` for local UX.  
 2. Add async `SessionRepository` for network (don’t block first paint).  
@@ -59,8 +56,6 @@ Session
     files: { path, contentHash, size }[]   # no full content in session row
     blobStore: object storage keys
 ```
-
-Wasm stays free of persistence I/O; host loads/saves session and pushes transcript via bridge.
 
 ## Product rule
 
