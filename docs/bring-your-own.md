@@ -141,7 +141,7 @@ Tenancy is **on** only when **all three** are non-empty on the **running** deplo
 |----------|---------|
 | `DATABASE_URL` | Postgres (prefer **pooled** Neon / PgBouncer URL on Vercel) |
 | `AUTH_SECRET` | Auth.js session signing (`openssl rand -base64 32`) |
-| `CREDENTIALS_ENCRYPTION_KEY` | Base64 **32-byte** AES-256-GCM KEK for sandbox tokens at rest (`openssl rand -base64 32`) |
+| `CREDENTIALS_ENCRYPTION_KEY` | Base64 **32-byte** AES-256-GCM **AMK** (wraps per-tenant DEKs; tokens encrypt under DEK) (`openssl rand -base64 32`) — not a fourth secret |
 
 If **any** is missing → **legacy open mode**: anonymous `POST /api/chat` and
 `/api/agent`; tools use process env `SANDBOX_URL` + `SANDBOX_TOKEN` as before.
@@ -168,7 +168,23 @@ var lands on Production so open mode is not flipped against an empty DB.
 
 **Dual-store identity:** GitHub Actions secrets `DATABASE_URL` and
 `CREDENTIALS_ENCRYPTION_KEY` must be the **same values** as Vercel Production
-runtime. Wrong KEK → undecryptable sandbox tokens after login flip.
+runtime. Wrong AMK → unwrap of tenant DEKs fails (agent/tools 403).
+
+### Per-tenant DEK envelope + cutover
+
+- **AMK** = `CREDENTIALS_ENCRYPTION_KEY` (env only). **DEK** = random 32-byte key
+  per tenant, stored AMK-wrapped on `tenants.dek_ciphertext`.
+- Sandbox tokens encrypt under the tenant DEK (not raw AMK) after phase 2 wire.
+- **Greenfield:** GHA `db-tenancy-bootstrap` migrate+seed — seed **ensures** DEK.
+- **Existing Production data:** run **`npm run db:backfill-deks`** with
+  `ALLOW_TENANT_DEK_BACKFILL=1` only **after** a dual-read app is live
+  (`TENANT_TOKEN_DECRYPT_MODE` default `dual`). Seed is **not** a migration
+  (re-seed resets bootstrap password + token).
+- After backfill verify: set `TENANT_TOKEN_DECRYPT_MODE=dek-only` and redeploy.
+- **Owner DEK rotate:** `/admin` → “Rotate encryption key” (or `rotateTenantDek`)
+  re-encrypts that tenant only. Never change Production AMK without a re-wrap
+  tool (not shipped — dual-store GHA≡Vercel must stay locked).
+
 
 Names only — never commit passwords, tokens, DB hosts, or KEK material. Never
 paste secret values into issues or PR chat.

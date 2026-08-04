@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { auth } from '../../auth';
 import { rotateSandboxToken } from '../../lib/tenancy/rotateSandboxToken';
+import { rotateTenantDek } from '../../lib/tenancy/rotateTenantDek';
 import { tenancyEnabled } from '../../lib/tenancy/enabled';
 
 export type RotateState = {
@@ -51,4 +52,47 @@ export async function rotateTokenAction(
 
   revalidatePath('/admin');
   return { ok: true, sandboxId };
+}
+
+export type RotateDekState = {
+  ok?: boolean;
+  error?: string;
+  tenantId?: string;
+};
+
+export async function rotateTenantDekAction(
+  _prev: RotateDekState,
+  formData: FormData,
+): Promise<RotateDekState> {
+  if (!tenancyEnabled()) {
+    return { error: 'Tenancy is not enabled.' };
+  }
+
+  const session = await auth();
+  const userId = session?.user?.id;
+  if (!userId) {
+    return { error: 'Authentication required.' };
+  }
+
+  const tenantId = String(formData.get('tenantId') ?? '').trim();
+  if (!tenantId) {
+    return { error: 'Missing tenant.' };
+  }
+
+  const result = await rotateTenantDek(userId, tenantId);
+  if (!result.ok) {
+    if (result.reason === 'forbidden') {
+      return {
+        error: 'Only the tenant owner can rotate the encryption key.',
+        tenantId,
+      };
+    }
+    if (result.reason === 'not_found') {
+      return { error: 'Tenant not found.', tenantId };
+    }
+    return { error: 'Could not rotate encryption key.', tenantId };
+  }
+
+  revalidatePath('/admin');
+  return { ok: true, tenantId };
 }

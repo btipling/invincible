@@ -6,6 +6,7 @@ import { tenancyEnabled } from '../../lib/tenancy/enabled';
 import { loadAdminContext } from '../../lib/tenancy/adminContext';
 import { listUsersForAdmin } from '../../lib/tenancy/identity';
 import { RotateTokenForm } from './rotate-form';
+import { RotateDekForm } from './rotate-dek-form';
 
 export const dynamic = 'force-dynamic';
 
@@ -158,6 +159,20 @@ export default async function AdminPage() {
           </dd>
         </dl>
       </section>
+
+      {canRotate ? (
+        <section style={panelStyle()} aria-labelledby="dek-heading">
+          <h2 id="dek-heading" style={{ margin: '0 0 8px', fontSize: 16 }}>
+            Tenant encryption
+          </h2>
+          <p style={{ margin: '0 0 4px', fontSize: 13, color: teal.muted }}>
+            Owner-only. Rotates the per-tenant data encryption key (DEK) and
+            re-encrypts all sandbox tokens. Application master key (AMK) is
+            unchanged.
+          </p>
+          <RotateDekForm tenantId={tenant.id} />
+        </section>
+      ) : null}
 
       <section style={panelStyle()} aria-labelledby="users-heading">
         <h2 id="users-heading" style={{ margin: '0 0 12px', fontSize: 16 }}>

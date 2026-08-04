@@ -145,7 +145,7 @@ ops inventory).
 | `SANDBOX_URL` / `SANDBOX_TOKEN` (Vercel) | **Done** | Agent sandbox on origin Production — see [docs/sandbox.md](docs/sandbox.md); host inventory private; never invent a host URL |
 | `DATABASE_URL` (Vercel) | **Done** | Pooled Postgres (Neon) for optional tenancy — Production cutover smoke passed (unauth 401 + login); no host inventory in git |
 | `AUTH_SECRET` (Vercel) | **Done** | Auth.js signing secret — Production cutover smoke passed |
-| `CREDENTIALS_ENCRYPTION_KEY` (Vercel) | **Done** | AES-GCM AMK wrapping per-tenant DEKs (tokens under DEK; dual-read cutover) — dual-store with GHA; never reuse casually on public Preview |
+| `CREDENTIALS_ENCRYPTION_KEY` (Vercel) | **Done** | AES-GCM AMK wrapping per-tenant DEKs (tokens under DEK; dual-read cutover) — dual-store with GHA; never reuse casually on public Preview. Owner DEK rotate via `/admin` (no new env). Do not rotate Production AMK without re-wrap tool |
 | Optional OIDC (`AUTH_OIDC_ISSUER` / `AUTH_OIDC_CLIENT_ID` / `AUTH_OIDC_CLIENT_SECRET` / `AUTH_OIDC_LABEL?`) | **Not Done** | Generic SSO — configure when operator wants IdP login; callback `{origin}/api/auth/callback/oidc`; BYO: [docs/bring-your-own.md](docs/bring-your-own.md) §4b |
 | Optional SCIM (`SCIM_BEARER_TOKEN`) | **Not Done** | SCIM 2.0 Users at `/api/scim/v2` — set only when directory provisioning is intended; fail-closed 404 when unset |
 
