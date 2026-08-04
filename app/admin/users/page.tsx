@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Users · Admin · Invincible' };
 
 export default async function AdminUsersPage() {
-  const gate = await gateAdminPage();
+  const gate = await gateAdminPage('/admin/users');
   return (
     <AdminPageShell title="Users" gate={gate}>
       {async () => {

@@ -13,7 +13,9 @@ export type AdminGateResult =
 /**
  * Shared gate for all /admin/* pages (except layout chrome).
  */
-export async function gateAdminPage(): Promise<AdminGateResult> {
+export async function gateAdminPage(
+  callbackUrl = '/admin',
+): Promise<AdminGateResult> {
   if (!tenancyEnabled()) {
     return {
       ok: false,
@@ -25,7 +27,8 @@ export async function gateAdminPage(): Promise<AdminGateResult> {
 
   const session = await auth();
   if (!session?.user?.id) {
-    redirect('/login?callbackUrl=/admin');
+    const cb = callbackUrl.startsWith('/') ? callbackUrl : '/admin';
+    redirect(`/login?callbackUrl=${encodeURIComponent(cb)}`);
   }
 
   const result = await loadAdminContext(session.user.id);

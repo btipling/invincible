@@ -222,7 +222,7 @@ export async function createProviderSecretAction(
   const secretId = created.value.id;
 
   if (models.length > 0) {
-    const m = await setProviderSecretModels(secretId, models);
+    const m = await setProviderSecretModels(secretId, models, gate.tenantId);
     if (!m.ok) {
       return { error: m.error, secretId };
     }
@@ -232,6 +232,7 @@ export async function createProviderSecretAction(
     const g = await setProviderSecretGrants(
       secretId,
       grantIds.map((userId) => ({ userId, canUse: true })),
+      gate.tenantId,
     );
     if (!g.ok) {
       return { error: g.error, secretId };
@@ -258,9 +259,10 @@ export async function updateProviderSecretAction(
 
   const patch: {
     secretId: string;
+    tenantId: string;
     name?: string;
     credentials?: Record<string, unknown>;
-  } = { secretId };
+  } = { secretId, tenantId: gate.tenantId };
 
   if (name) patch.name = name;
   if (replaceKey && isByokProvider(provider)) {
@@ -286,7 +288,7 @@ export async function disableProviderSecretAction(
   const secretId = String(formData.get('secretId') ?? '').trim();
   if (!secretId) return { error: 'Missing secret.' };
 
-  const result = await disableProviderSecret(secretId);
+  const result = await disableProviderSecret(secretId, gate.tenantId);
   if (!result.ok) {
     return { error: result.error, secretId };
   }
@@ -305,7 +307,11 @@ export async function enableProviderSecretAction(
   const secretId = String(formData.get('secretId') ?? '').trim();
   if (!secretId) return { error: 'Missing secret.' };
 
-  const result = await updateProviderSecret({ secretId, status: 'active' });
+  const result = await updateProviderSecret({
+    secretId,
+    tenantId: gate.tenantId,
+    status: 'active',
+  });
   if (!result.ok) {
     return { error: result.error, secretId };
   }
@@ -331,7 +337,7 @@ export async function setProviderSecretModelsAction(
     }
   }
 
-  const result = await setProviderSecretModels(secretId, models);
+  const result = await setProviderSecretModels(secretId, models, gate.tenantId);
   if (!result.ok) {
     return { error: result.error, secretId };
   }
@@ -354,6 +360,7 @@ export async function setProviderSecretGrantsAction(
   const result = await setProviderSecretGrants(
     secretId,
     grantIds.map((userId) => ({ userId, canUse: true })),
+    gate.tenantId,
   );
   if (!result.ok) {
     return { error: result.error, secretId };

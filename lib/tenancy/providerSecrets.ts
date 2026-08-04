@@ -158,6 +158,8 @@ export async function createProviderSecret(
 
 export type UpdateProviderSecretInput = {
   secretId: string;
+  /** Caller's tenant — mutations fail as not_found when secret is outside this tenant. */
+  tenantId: string;
   /** Optional new display name */
   name?: string;
   /** Optional credential replace */
@@ -170,8 +172,12 @@ export async function updateProviderSecret(
   deps: ProviderSecretsDeps = {},
 ): Promise<ProviderSecretResult<{ id: string }>> {
   const secretId = input.secretId?.trim();
+  const tenantId = input.tenantId?.trim();
   if (!secretId) {
     return { ok: false, code: 'not_found', error: 'secret not found' };
+  }
+  if (!tenantId) {
+    return { ok: false, code: 'unavailable', error: 'tenantId is required' };
   }
 
   try {
@@ -179,7 +185,12 @@ export async function updateProviderSecret(
       const existing = await db
         .select()
         .from(providerSecrets)
-        .where(eq(providerSecrets.id, secretId))
+        .where(
+          and(
+            eq(providerSecrets.id, secretId),
+            eq(providerSecrets.tenantId, tenantId),
+          ),
+        )
         .limit(1);
       const row = existing[0];
       if (!row) {
@@ -247,7 +258,12 @@ export async function updateProviderSecret(
         await db
           .update(providerSecrets)
           .set(patch)
-          .where(eq(providerSecrets.id, secretId));
+          .where(
+            and(
+              eq(providerSecrets.id, secretId),
+              eq(providerSecrets.tenantId, tenantId),
+            ),
+          );
       } catch (err) {
         if (isUniqueViolation(err)) {
           return {
@@ -267,19 +283,28 @@ export async function updateProviderSecret(
 
 export async function disableProviderSecret(
   secretId: string,
+  tenantId: string,
   deps: ProviderSecretsDeps = {},
 ): Promise<ProviderSecretResult<{ id: string }>> {
-  return updateProviderSecret({ secretId, status: 'disabled' }, deps);
+  return updateProviderSecret(
+    { secretId, tenantId, status: 'disabled' },
+    deps,
+  );
 }
 
 export async function setProviderSecretModels(
   secretId: string,
   modelIds: string[],
+  tenantId: string,
   deps: ProviderSecretsDeps = {},
 ): Promise<ProviderSecretResult<{ modelIds: string[] }>> {
   const id = secretId?.trim();
+  const tid = tenantId?.trim();
   if (!id) {
     return { ok: false, code: 'not_found', error: 'secret not found' };
+  }
+  if (!tid) {
+    return { ok: false, code: 'unavailable', error: 'tenantId is required' };
   }
   const unique = [...new Set(modelIds.map((m) => m.trim()).filter(Boolean))];
   for (const mid of unique) {
@@ -297,7 +322,9 @@ export async function setProviderSecretModels(
       const existing = await db
         .select({ id: providerSecrets.id })
         .from(providerSecrets)
-        .where(eq(providerSecrets.id, id))
+        .where(
+          and(eq(providerSecrets.id, id), eq(providerSecrets.tenantId, tid)),
+        )
         .limit(1);
       if (!existing[0]) {
         return { ok: false, code: 'not_found', error: 'secret not found' };
@@ -315,7 +342,9 @@ export async function setProviderSecretModels(
         await tx
           .update(providerSecrets)
           .set({ updatedAt: new Date() })
-          .where(eq(providerSecrets.id, id));
+          .where(
+            and(eq(providerSecrets.id, id), eq(providerSecrets.tenantId, tid)),
+          );
       });
 
       return { ok: true, value: { modelIds: unique } };
@@ -334,11 +363,16 @@ export type GrantInput = { userId: string; canUse: boolean };
 export async function setProviderSecretGrants(
   secretId: string,
   grants: GrantInput[],
+  tenantId: string,
   deps: ProviderSecretsDeps = {},
 ): Promise<ProviderSecretResult<{ grants: GrantInput[] }>> {
   const id = secretId?.trim();
+  const tid = tenantId?.trim();
   if (!id) {
     return { ok: false, code: 'not_found', error: 'secret not found' };
+  }
+  if (!tid) {
+    return { ok: false, code: 'unavailable', error: 'tenantId is required' };
   }
 
   // de-dupe by userId (last wins)
@@ -363,7 +397,9 @@ export async function setProviderSecretGrants(
           tenantId: providerSecrets.tenantId,
         })
         .from(providerSecrets)
-        .where(eq(providerSecrets.id, id))
+        .where(
+          and(eq(providerSecrets.id, id), eq(providerSecrets.tenantId, tid)),
+        )
         .limit(1);
       const secret = secrets[0];
       if (!secret) {
@@ -409,7 +445,9 @@ export async function setProviderSecretGrants(
         await tx
           .update(providerSecrets)
           .set({ updatedAt: new Date() })
-          .where(eq(providerSecrets.id, id));
+          .where(
+            and(eq(providerSecrets.id, id), eq(providerSecrets.tenantId, tid)),
+          );
       });
 
       return { ok: true, value: { grants: normalized } };

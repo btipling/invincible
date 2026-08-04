@@ -113,12 +113,12 @@ describe('resolveInference', () => {
         .set({ createdAt: opts.createdAt })
         .where(eq(schema.providerSecrets.id, id));
     }
-    const m = await setProviderSecretModels(id, opts.models, deps());
+    const m = await setProviderSecretModels(id, opts.models, tenantId, deps());
     if (!m.ok) throw new Error(m.error);
-    const g = await setProviderSecretGrants(id, opts.grants, deps());
+    const g = await setProviderSecretGrants(id, opts.grants, tenantId, deps());
     if (!g.ok) throw new Error(g.error);
     if (opts.status === 'disabled') {
-      await updateProviderSecret({ secretId: id, status: 'disabled' }, deps());
+      await updateProviderSecret({ secretId: id, tenantId, status: 'disabled' }, deps());
     }
     return id;
   }

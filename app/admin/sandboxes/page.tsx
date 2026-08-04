@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Sandboxes · Admin · Invincible' };
 
 export default async function AdminSandboxesPage() {
-  const gate = await gateAdminPage();
+  const gate = await gateAdminPage('/admin/sandboxes');
   return (
     <AdminPageShell title="Sandboxes" gate={gate}>
       {(ctx) => {

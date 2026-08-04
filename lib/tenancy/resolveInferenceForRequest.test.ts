@@ -89,10 +89,11 @@ describe('resolveByokForRequest', () => {
       deps(),
     );
     if (!created.ok) throw new Error(created.error);
-    await setProviderSecretModels(created.value.id, models, deps());
+    await setProviderSecretModels(created.value.id, models, tenantId, deps());
     await setProviderSecretGrants(
       created.value.id,
       [{ userId: memberId, canUse: true }],
+      tenantId,
       deps(),
     );
   }

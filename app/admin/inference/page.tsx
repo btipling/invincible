@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Inference · Admin · Invincible' };
 
 export default async function AdminInferencePage() {
-  const gate = await gateAdminPage();
+  const gate = await gateAdminPage('/admin/inference');
   return (
     <AdminPageShell title="Inference keys" gate={gate}>
       {async (ctx) => {
