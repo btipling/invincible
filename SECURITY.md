@@ -73,13 +73,13 @@ client-side key or sandbox-token exposure immediately.
 |------|--------|
 | Triple-env gate | Tenancy on only when `DATABASE_URL` **and** `AUTH_SECRET` **and** `CREDENTIALS_ENCRYPTION_KEY` are set — no separate `AUTH_ENABLED` |
 | Tokens at rest | Envelope: env **AMK** (`CREDENTIALS_ENCRYPTION_KEY`) wraps each **per-tenant DEK**; sandbox bearer secrets AES-256-GCM under that tenant’s DEK only. Decrypt server-side for agent tools / admin mask only |
-| Dual-read cutover | `TENANT_TOKEN_DECRYPT_MODE`: default **`dual`** (DEK then AMK) until backfill verified; then **`dek-only`**. Order: dual-read app live → `ALLOW_TENANT_DEK_BACKFILL=1` backfill-only → verify → dek-only. **Never** backfill under AMK-only runtime |
+| Dual-read cutover | `TENANT_TOKEN_DECRYPT_MODE`: default **`dual`** (DEK then AMK) until backfill verified; then **`dek-only`**. Order: dual-read app live → GHA **db-tenancy-backfill-deks** (`confirm=backfill`, job sets `ALLOW_TENANT_DEK_BACKFILL=1`) → verify → dek-only. **Never** backfill under AMK-only runtime |
 | DEK rotate | Owner-only (`rotateTenantDek` / `/admin`); re-encrypts that tenant’s tokens; never shows DEK/token. Other tenants untouched |
 | AMK rotate | **Not automated.** Changing Production AMK without a re-wrap tool breaks all DEK unwraps. Keep GHA `CREDENTIALS_ENCRYPTION_KEY` **===** Vercel Production AMK (dual-store). Re-wrap is a future sequel |
 | Never client | No `NEXT_PUBLIC_*` for DB, Auth.js secret, AMK/DEK, sandbox token, OIDC client secret, or SCIM bearer |
 | Preview isolation | Prefer separate DB or tenancy off on public previews; avoid reusing Production AMK, OIDC client secret, or `SCIM_BEARER_TOKEN` casually |
-| Seed vs backfill | Seed = greenfield / bootstrap (resets password hash + token ciphertext; **keeps** existing DEK). Existing Production data = **`npm run db:backfill-deks` only** — not seed |
-| Bootstrap surface | Prefer GitHub Actions `db-tenancy-bootstrap` or cloud agent workspace — not personal-laptop primary ops |
+| Seed vs backfill | Seed = greenfield / bootstrap via GHA `db-tenancy-bootstrap` (resets password hash + token ciphertext; **keeps** existing DEK). Existing Production data = GHA **`db-tenancy-backfill-deks`** only — **not** seed |
+| Bootstrap / backfill surface | Prefer GitHub Actions (`db-tenancy-bootstrap`, `db-tenancy-backfill-deks`) or cloud agent workspace — not personal-laptop primary ops |
 | OIDC (optional) | `AUTH_OIDC_ISSUER` + `AUTH_OIDC_CLIENT_ID` + `AUTH_OIDC_CLIENT_SECRET` (+ optional `AUTH_OIDC_LABEL`); provider id `oidc`; callback `/api/auth/callback/oidc`; email auto-link requires verified `email_verified` claim |
 | SCIM (optional) | `SCIM_BEARER_TOKEN` + tenancy triple; base `/api/scim/v2`; off → **404**; bad Bearer → **401**; DELETE = suspend |
 | Hybrid roster | SCIM is **additive** — non-SCIM users remain; `/admin` lists all provision sources; SCIM list = SCIM-managed only |
