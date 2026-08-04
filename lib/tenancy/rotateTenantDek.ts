@@ -1,15 +1,16 @@
 /**
- * Phase 3 (#95 / parent #92): owner-only tenant DEK rotation.
- * Re-encrypts all sandbox tokens under a new DEK; bumps dek_version atomically.
- * Never returns key material.
+ * Owner-only tenant DEK rotation.
+ * Re-encrypts all sandbox tokens and provider secret credentials under a new DEK;
+ * bumps dek_version atomically. Never returns key material.
  *
- * Concurrency: SELECT … FOR UPDATE on the tenant row (and sandboxes) for the
- * full re-encrypt so concurrent rotateSandboxToken cannot write under a
- * discarded DEK. Authz is re-checked under the same lock.
+ * Concurrency: SELECT … FOR UPDATE on the tenant row (and sandboxes / secrets)
+ * for the full re-encrypt so concurrent writers cannot write under a discarded DEK.
+ * Authz is re-checked under the same lock.
  */
 import { and, eq } from 'drizzle-orm';
 import {
   createDbConnection,
+  providerSecrets,
   sandboxes,
   tenantMembers,
   tenants,
@@ -42,8 +43,9 @@ export type RotateTenantDekDeps = {
 };
 
 /**
- * Owner-only: generate a new tenant DEK, re-encrypt every sandbox token, bump versions.
- * Single transaction + SELECT … FOR UPDATE on the tenant row (and its sandboxes).
+ * Owner-only: generate a new tenant DEK, re-encrypt every sandbox token and
+ * provider_secrets credential, bump versions.
+ * Single transaction + SELECT … FOR UPDATE on the tenant row.
  */
 export async function rotateTenantDek(
   userId: string,
@@ -86,6 +88,11 @@ function decryptTokenForRotate(
     }
     throw new Error('token decrypt failed under current DEK');
   }
+}
+
+/** Provider secrets are DEK-only — no AMK dual-read. */
+function decryptProviderCredential(ciphertext: string, oldDek: Buffer): string {
+  return decryptSecret(ciphertext, oldDek);
 }
 
 async function rotateWithDb(
@@ -172,6 +179,32 @@ async function rotateWithDb(
             tokenKekVersion: nextVersion,
           })
           .where(eq(sandboxes.id, sb.id));
+      }
+
+      // Provider secrets: DEK-only (no AMK dual-read).
+      const secretRows = await tx
+        .select({
+          id: providerSecrets.id,
+          credentialCiphertext: providerSecrets.credentialCiphertext,
+        })
+        .from(providerSecrets)
+        .where(eq(providerSecrets.tenantId, tenantId))
+        .for('update');
+
+      for (const sec of secretRows) {
+        const plain = decryptProviderCredential(
+          sec.credentialCiphertext,
+          oldDek,
+        );
+        const nextCt = encryptSecret(plain, newDek);
+        await tx
+          .update(providerSecrets)
+          .set({
+            credentialCiphertext: nextCt,
+            credentialKekVersion: nextVersion,
+            updatedAt: new Date(),
+          })
+          .where(eq(providerSecrets.id, sec.id));
       }
 
       await tx
