@@ -1,216 +1,139 @@
 # invincible
 
-In-browser agent harness — Zig/dvui Wasm workspace hosted by Next.js, inference via Vercel AI Gateway.
+In-browser agent harness — a Zig/dvui Wasm workspace hosted by Next.js, with inference via Vercel AI Gateway.
 
 **License:** [MIT](LICENSE)
 
-## Reusable product
+## What it is
 
-This is **not** a one-off demo for a single deployment. The long-term goal is that
-**anyone can clone this repo**, connect **their own Vercel project**, and their own
-**sandbox / runner environment**, then use the harness on **their** work — **any
-language or platform** on the target side.
+Invincible is a **browser-based agent workspace**. You open `/harness`, and the
+**canvas** is the product: type prompts, run multi-turn chat, smoke the Gateway
+path, and (when configured) drive a jailed sandbox for agent tools.
 
-**Start here if you are cloning or forking:**  
-→ **[docs/bring-your-own.md](docs/bring-your-own.md)** — clone → env → your Vercel → secrets → Wasm paths → verify `/harness`.  
-→ **[docs/sandbox.md](docs/sandbox.md)** — optional agent tools workspace (`SANDBOX_URL` + `SANDBOX_TOKEN`).
+The Next.js host is a thin shell — load the Wasm module, bridge messages, and
+keep server-only secrets off the client. Clone it, point it at **your** Vercel
+project and keys, and run the same harness on **your** work.
 
-Sandbox **MVP** and **optional multi-tenant auth** (login + DB grants) are
-shipped as config seams (tenancy off = legacy open APIs + env sandbox; without
-sandbox env, harness falls back to chat). SSO/SCIM / MCP remain future.
-Prefer config seams over hardcoding one owner’s prod. Agent rules:
-[`AGENTS.md`](AGENTS.md) → **Reusable product**. BYO tenancy:
-[`docs/bring-your-own.md`](docs/bring-your-own.md) §4a.
+## Features
 
-## Reference deployment (maintainer)
+| | Feature | Notes |
+|---|---------|--------|
+| **Core** | Wasm harness chat | Transcript, composer, and turn UX live in the canvas (`/harness`) |
+| **Core** | AI Gateway inference | `POST /api/chat` — `AI_GATEWAY_API_KEY` stays on the server |
+| **Optional** | Agent tools + sandbox | `POST /api/agent` when `SANDBOX_URL` + `SANDBOX_TOKEN` are set |
+| **Optional** | Multi-tenant login + admin | Credentials auth, grants, `/login` + `/admin` — **on** for the reference Production deploy |
+| **Optional** | OIDC SSO + SCIM | Code on `main`; enable with env ([docs/bring-your-own.md](docs/bring-your-own.md) §4b) |
 
-Sample public deploy for demos — **not required** for BYO success.
+## Try it
+
+### Local (best for new visitors)
+
+Open harness is the default when multi-tenant auth is **off** (leave the tenancy
+triple unset: `DATABASE_URL`, `AUTH_SECRET`, `CREDENTIALS_ENCRYPTION_KEY`).
+
+1. Set `AI_GATEWAY_API_KEY` (see [Run locally](#run-locally)).
+2. `npm run dev` → open [http://localhost:3000/harness](http://localhost:3000/harness).
+3. Type in the **canvas** composer → **Enter** or **Send**.
+4. **PONG** smokes the host Gateway path (reply appears in the canvas).
+5. Refresh restores session into Wasm; nav **Clear** resets.
+
+### Reference deploy
+
+Maintainer sample (not required for BYO success):
 
 | | |
 |--|--|
 | **Production** | https://invincible-dun-ten.vercel.app |
 | **Harness** | https://invincible-dun-ten.vercel.app/harness |
-| **Root** | https://invincible-dun-ten.vercel.app/ → redirects to `/harness` |
-| **Vercel** | project `invincible` (Git-linked to origin) |
-| **IDs** | [`docs/project-ids.md`](docs/project-ids.md) |
 
-### Try `/harness` (Wasm is the app)
+That host runs **with multi-tenant auth enabled**. Unauthenticated visits to
+`/harness` redirect to **`/login`**. Use an account **you** control on that
+deploy — this README does **not** publish seed passwords. Forks that want an
+open demo leave the tenancy triple unset.
 
-Works on **any** host (local, your Vercel, or the reference deploy):
+IDs and pointers: [`docs/project-ids.md`](docs/project-ids.md).
 
-1. Open `/harness` — after load, the **canvas** is the workspace (not a React chat card).  
-2. Type in the canvas composer → **Enter** or **Send**.  
-3. **PONG** smokes the host Gateway path (reply appears in canvas).  
-4. Refresh restores session into Wasm; nav **Clear** resets.  
-5. DOM chrome = nav + status chips only (host shell).  
-6. **Optional tools:** with sandbox env set, agent turns can write/exec in a jailed workspace ([docs/sandbox.md](docs/sandbox.md)).
-
-Feature divide: [`docs/feature-divide.md`](docs/feature-divide.md). Full BYO checklist: [`docs/bring-your-own.md`](docs/bring-your-own.md).
-
-### Tracking
-
-- **BYO / clone setup:** [`docs/bring-your-own.md`](docs/bring-your-own.md)
-- **Agent sandbox:** [`docs/sandbox.md`](docs/sandbox.md)
-- **Phase 4 handoff (product):** [`docs/phase-4-handoff.md`](docs/phase-4-handoff.md)
-- **Phase 4 plan:** [`docs/phase-4-plan.md`](docs/phase-4-plan.md)
-- **Phase 3 handoff (pipeline only):** [`docs/phase-3-handoff.md`](docs/phase-3-handoff.md)
-- **Runner ops:** [`docs/runner.md`](docs/runner.md)
-- **Board:** [projects/1](https://github.com/users/btipling/projects/1/views/1)
-- **Milestones:** Phase 1–4 **done**
-- **Agents:** [`AGENTS.md`](AGENTS.md)
-- **Project skills:** [`.grok/skills/README.md`](.grok/skills/README.md) — **create-plan** (plans as GitHub issues), **plan-review**
-
-## Agent skills (planning)
-
-| Skill | When | Where |
-|-------|------|--------|
-| **create-plan** | “use the create-plan skill to add …” | [`.grok/skills/create-plan/SKILL.md`](.grok/skills/create-plan/SKILL.md) |
-| **plan-review** | Review a plan issue before coding | [`.grok/skills/plan-review/SKILL.md`](.grok/skills/plan-review/SKILL.md) |
-| **adversarial-review** | Hostile PR review before merge | [`.grok/skills/adversarial-review/SKILL.md`](.grok/skills/adversarial-review/SKILL.md) |
-
-Plans are filed as **GitHub issues** (parent issue + optional phase issues that
-link back). PR merge gates use **adversarial-review**. Requires authenticated
-`gh`; do not use GitHub MCP for these flows.
-
-## Secrets (server only)
-
-Names only — never commit values. Full BYO steps: [docs/bring-your-own.md](docs/bring-your-own.md).
-
-| Variable | Where | Purpose |
-|----------|--------|---------|
-| `AI_GATEWAY_API_KEY` | Vercel / local `.env.local` | Inference via AI Gateway — **never** in client/Wasm |
-| `HARNESS_ARTIFACT_TOKEN` | Vercel (and local fetch) | Download Actions artifact `harness-wasm` at build / `npm run fetch-harness` |
-| `DEFAULT_MODEL` | Vercel (optional) | default `xai/grok-4.1-fast-non-reasoning` |
-| `HARNESS_OWNER` / `HARNESS_REPO` | Vercel / local (optional) | Override artifact source; else Vercel Git / `GITHUB_REPOSITORY` |
-| `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions **secret** (optional) | `build-harness` may ping after artifact upload |
-| `SANDBOX_URL` / `SANDBOX_TOKEN` | Vercel / local server (optional) | Agent sandbox when tenancy **off** — server only; prod URL must reach from Vercel |
-| `AGENT_MAX_STEPS` / `AGENT_MODEL` | Vercel (optional) | Tool-loop steps / tool-capable model override |
-| `DATABASE_URL` | Vercel / GHA (optional tenancy) | Pooled Postgres — required with the two rows below for tenancy **on** |
-| `AUTH_SECRET` | Vercel (optional tenancy) | Auth.js session secret — set **after** migrate/seed |
-| `CREDENTIALS_ENCRYPTION_KEY` | Vercel / GHA (optional tenancy) | Base64 32-byte AES-GCM KEK for sandbox tokens at rest |
-| `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | GHA / agent seed only | Bootstrap admin — never commit; re-seed resets password hash |
-| `SEED_SANDBOX_URL` / `SEED_SANDBOX_TOKEN` | GHA / agent seed only | Optional; else `SANDBOX_*` used at seed time |
-
-**BYO:** set the table above on **your** Vercel project (and optional Actions secrets on **your** repo). Tenancy cutover: [docs/bring-your-own.md](docs/bring-your-own.md) §4a (GHA primary).  
-**Origin maintainer (`btipling/invincible`):** Gateway / harness / deploy-hook / **sandbox** (`SANDBOX_*`) / **tenancy triple** (`DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`) are **Done** on Production — agents must not re-nag those unless a build log or harness smoke proves a regression ([AGENTS.md](AGENTS.md)). Optional `AGENT_*` remains operator preference. Do not invent a host URL ([docs/sandbox.md](docs/sandbox.md)).
-
-
-Local / agent workspace: copy [`.env.example`](.env.example) → session env (Gateway key + optional `HARNESS_*` / `SANDBOX_*` / tenancy triple). Prefer GHA for Production migrate/seed.
-
-## Rebuild harness Wasm
-
-Zig compiles on a **self-hosted** GitHub Actions runner (default labels
-`self-hosted`, `invincible`, `zig`). Clones: attach **your** runner, set Actions
-variable `SELF_HOSTED_BUILDS=true` (optional `RUNNER_LABELS` JSON). Origin keeps a
-grandfather path without the variable. See [docs/runner.md](docs/runner.md) and
-[docs/bring-your-own.md](docs/bring-your-own.md) path **A**.
-
-Maintainer sample runner name: `invincible-do-1`.
+## Run locally
 
 ```bash
-# after editing native/harness/**
-git push origin main
-# → build-harness.yml → artifact harness-wasm → Vercel prebuild fetches it
-# race-safe wait: scripts/fetch-harness-artifact.mjs (docs/harness-deploy-race.md)
-
-gh workflow run build-harness.yml --repo <owner>/<repo>
-
-export HARNESS_ARTIFACT_TOKEN=…   # local
-npm run fetch-harness && npm run dev
+npm install
+cp .env.example .env.local   # set AI_GATEWAY_API_KEY
+# optional: HARNESS_ARTIFACT_TOKEN=… npm run fetch-harness
+# or: HARNESS_SKIP_FETCH=1 if public/harness is already populated
+npm run dev
 ```
 
-Details: [docs/bring-your-own.md](docs/bring-your-own.md) · [docs/phase-4-handoff.md](docs/phase-4-handoff.md) · [native/harness/README.md](native/harness/README.md).
+Leave tenancy env unset for an open local harness. Optional `SANDBOX_*` enables
+agent tools ([docs/sandbox.md](docs/sandbox.md)).
 
-**Do not** commit `public/harness/*.wasm` / `web.js`.
+```bash
+npm test && npm run typecheck
+```
+
+## Deploy your own
+
+→ **[docs/bring-your-own.md](docs/bring-your-own.md)** — clone → env → your Vercel →
+secrets → Wasm supply → verify `/harness`.
+
+| Topic | Doc |
+|-------|-----|
+| Agent tools workspace | [docs/sandbox.md](docs/sandbox.md) |
+| Multi-tenant cutover | [docs/bring-your-own.md](docs/bring-your-own.md) §4a |
+| OIDC + SCIM | [docs/bring-your-own.md](docs/bring-your-own.md) §4b |
+| Self-hosted Zig runner | [docs/runner.md](docs/runner.md) |
+
+Anyone can connect this repo to **their** Vercel project and keys — no single-host
+hardcoding required.
+
+## Architecture
+
+- **Wasm harness** — primary product surface: transcript, composer, busy/error UI.
+- **DOM host** — Next.js shell: route `/harness`, load `web.js` + `harness.wasm`,
+  bridge poll/submit, thin nav/status chips (not a second chat).
+- **Vercel backend** — `POST /api/chat` and `POST /api/agent`; Gateway key and
+  sandbox tokens never enter the client or Wasm.
+- **Session** — browser `SessionStore` (memory + localStorage) restored into Wasm.
+
+Full ownership table: [`docs/feature-divide.md`](docs/feature-divide.md).
 
 ## Stack
 
 | Layer | Tech |
 |-------|------|
 | App (DOM host) | Next.js 15 (App Router) + React 19 — shell only |
-| Inference (Vercel backend) | Vercel AI Gateway (`ai` SDK) · `POST /api/chat` · `POST /api/agent` |
-| Agent sandbox (optional) | Protocol v1 daemon (`sandbox/`) — [docs/sandbox.md](docs/sandbox.md) |
+| Inference | Vercel AI Gateway (`ai` SDK) · `POST /api/chat` · `POST /api/agent` |
+| Agent sandbox (optional) | Protocol v1 daemon (`sandbox/`) |
 | Harness UI | Zig 0.16 + dvui Wasm (**primary** product surface) |
-| Palette | Asteronica TEAL / WARM / EMBER (`lib/palette.ts` + `palette.zig`) |
-| Session | `lib/sessionStore.ts` (memory + localStorage) |
+| Auth (optional) | Auth.js credentials + optional OIDC; SCIM Users API |
+| Palette | Asteronica TEAL / WARM / EMBER |
+| Session | `lib/sessionStore.ts` |
 | Bridge | Protocol **v2** (`lib/harnessBridge.ts`) |
 | Tests | Vitest |
 
-## Phase status
+## Docs
 
-| Phase | Status |
-|-------|--------|
-| 1 Prompt MVP | **Done** — Gateway API (UI entry is harness) |
-| 2 Build runner (DO) | **Done** — `invincible-do-1`, Zig 0.16.0 |
-| 3 Wasm pipeline | **Done** — PoC; product model superseded by Phase 4 |
-| 4 Wasm-first MVP | **Done** — [phase-4-handoff.md](docs/phase-4-handoff.md) |
+Living guides only (process / phase history lives in closed GitHub issues).
 
-### Palette
-
-- **TEAL** — default chrome  
-- **WARM** (`#d47c2c`) — intentional amber accent  
-- **EMBER** (`#d4412c`) — danger / errors only  
-
-### Chat API
-
-```http
-POST /api/chat
-Content-Type: application/json
-
-{ "prompt": "hello" }
-```
-
-```json
-{ "text": "…" }
-```
-
-Errors: `{ "error": "…" }` with 4xx/5xx. Key never leaves the server.
-
-### Agent API (optional sandbox)
-
-```http
-POST /api/agent
-Content-Type: application/json
-
-{ "prompt": "list files and summarize" }
-```
-
-```json
-{ "text": "…", "toolTrace": [{ "name": "list_dir", "ok": true, "summary": "…" }] }
-```
-
-When sandbox env is unset: **503** with exact
-`Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.` — host falls back
-to `/api/chat`. Details: [docs/sandbox.md](docs/sandbox.md).
-
-## Local dev
-
-```bash
-npm install
-cp .env.example .env.local   # set AI_GATEWAY_API_KEY
-# optional: HARNESS_ARTIFACT_TOKEN=… npm run fetch-harness
-# or: HARNESS_SKIP_FETCH=1 if public/harness already populated
-npm run dev
-npm test && npm run typecheck
-```
-
-Clone / production BYO: [docs/bring-your-own.md](docs/bring-your-own.md).
-
-## Docs index
-
-| Doc | Topic |
-|-----|--------|
-| [bring-your-own.md](docs/bring-your-own.md) | **Clones / BYO** — your Vercel + keys + Wasm paths |
-| [sandbox.md](docs/sandbox.md) | **Agent sandbox** — tools workspace, env, verify |
-| [phase-4-handoff.md](docs/phase-4-handoff.md) | Wasm-primary operator path (reference deploy samples) |
-| [feature-divide.md](docs/feature-divide.md) | DOM shell vs Wasm harness |
-| [phase-4-plan.md](docs/phase-4-plan.md) | Phase 4 issue map (complete) |
-| [harness-limits.md](docs/harness-limits.md) | Browser / mobile / density limits |
-| [phase-3-handoff.md](docs/phase-3-handoff.md) | Pipeline rebuild (option B) |
-| [runner.md](docs/runner.md) | DO runner + workflows |
-| [session-model.md](docs/session-model.md) | SessionStore |
-| [harness-deploy-race.md](docs/harness-deploy-race.md) | Artifact vs Vercel race |
-| [project-ids.md](docs/project-ids.md) | Public URLs / env names |
+| Doc | Audience |
+|-----|----------|
+| [bring-your-own.md](docs/bring-your-own.md) | Operator — your Vercel + keys + Wasm paths |
+| [sandbox.md](docs/sandbox.md) | Operator — agent tools workspace |
+| [feature-divide.md](docs/feature-divide.md) | Product — DOM shell vs Wasm harness |
+| [runner.md](docs/runner.md) | Operator — self-hosted Zig runner + workflows |
+| [session-model.md](docs/session-model.md) | Product — session restore behavior |
+| [harness-limits.md](docs/harness-limits.md) | Product — browser / mobile / density limits |
+| [harness-deploy-race.md](docs/harness-deploy-race.md) | Operator — artifact vs Vercel race |
+| [project-ids.md](docs/project-ids.md) | Maintainer sample IDs / URLs |
 | [SECURITY.md](SECURITY.md) | Secrets + self-hosted public policy |
-| [AGENTS.md](AGENTS.md) | Agent rules, reusability, skills |
-| [.grok/skills/README.md](.grok/skills/README.md) | create-plan / plan-review / adversarial-review |
+| [AGENTS.md](AGENTS.md) | Agent / contributor operating rules |
+
+## Secrets
+
+Server-only names — **never** commit values or put them in client/Wasm.
+
+Set what you need via [`.env.example`](.env.example) locally and your Vercel
+project env in production. Full cutover tables and order-of-operations:
+[docs/bring-your-own.md](docs/bring-your-own.md). Policy: [SECURITY.md](SECURITY.md).
+
+Minimum to chat: `AI_GATEWAY_API_KEY`. Optional: harness artifact token, sandbox
+pair, tenancy triple, OIDC/SCIM tokens — see `.env.example` for names only.
