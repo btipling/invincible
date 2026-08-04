@@ -1,0 +1,173 @@
+# Cloud-native DEK backfill for existing data (no personal hardware).
+#
+# Operator: Actions → db-tenancy-backfill-deks → Run workflow
+#   inputs:
+#     confirm=backfill   (required misclick guard)
+#     dry_run=true       optional — validate secrets only, no mutate
+#     run_migrate=true   optional — drizzle migrate only (no seed) if DEK columns missing
+#
+# Repository secrets (names only — set via GitHub web UI or `gh secret set`
+# from a cloud agent; never commit values or paste into issues/PR chat):
+#   DATABASE_URL
+#   CREDENTIALS_ENCRYPTION_KEY
+#
+# Dual-store identity: DATABASE_URL and CREDENTIALS_ENCRYPTION_KEY must be
+# the SAME values as Vercel Production (runtime). Wrong AMK → unwrap/re-encrypt fails.
+#
+# Preconditions:
+#   - Target deploy runs dual-read (default) or DEK-capable app.
+#     Never backfill while runtime can only decrypt with AMK.
+#   - Prefer dual-read live → this workflow → verify login/tools → optional
+#     Vercel TENANT_TOKEN_DECRYPT_MODE=dek-only + redeploy.
+#
+# Explicit non-paths:
+#   - NOT db-tenancy-bootstrap / seed (resets password + token ciphertext)
+#   - NOT personal-laptop npm as the official path
+#   - NOT self-hosted runner
+#
+# Re-run contract: idempotent (helper skips already-DEK tokens); second run
+# should report ~0 sandboxesReencrypted when complete.
+#
+# Safety: workflow_dispatch only; ubuntu-latest only; never self-hosted;
+# never echo secret values; job summary success/fail + counts only.
+# Docs: docs/bring-your-own.md (DEK cutover) · SECURITY.md · AGENTS.md
+
+name: db-tenancy-backfill-deks
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Must equal "backfill" to run DEK backfill (misclick guard)'
+        required: true
+        type: string
+      dry_run:
+        description: 'If true, validate required secrets are present and exit without mutate'
+        required: false
+        type: boolean
+        default: false
+      run_migrate:
+        description: 'If true, run drizzle migrate before backfill (no seed). Use when DEK columns missing.'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-tenancy-backfill-deks-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    name: DEK backfill
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Guard confirm input
+        if: ${{ inputs.confirm != 'backfill' }}
+        run: |
+          set -euo pipefail
+          echo "::error::confirm input must equal 'backfill'. Aborting with no mutate."
+          exit 1
+
+      # Fail closed before checkout/install so missing secrets and dry_run
+      # never pay npm ci, and install never sees unrelated seed secrets.
+      - name: Fail closed — required secrets present
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CREDENTIALS_ENCRYPTION_KEY: ${{ secrets.CREDENTIALS_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          # Never print secret values. Only names in error messages.
+          trim() {
+            # shellcheck disable=SC2039
+            local s="$1"
+            s="${s#"${s%%[![:space:]]*}"}"
+            s="${s%"${s##*[![:space:]]}"}"
+            printf '%s' "$s"
+          }
+          missing=0
+          for name in DATABASE_URL CREDENTIALS_ENCRYPTION_KEY; do
+            val="$(trim "${!name:-}")"
+            if [ -z "${val}" ]; then
+              echo "::error::${name} is missing or empty (set repository secret; dual-store with Vercel Production)"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+          echo "All required secret names present (values not printed)."
+
+      - name: Dry run — skip mutate
+        if: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          echo "dry_run=true — secrets validated; skipping checkout, install, migrate, and backfill."
+          {
+            echo "### db-tenancy-backfill-deks"
+            echo "- result: dry_run (secrets OK, no mutate)"
+            echo "- confirm: ok"
+            echo "- run_migrate: skipped"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Checkout
+        if: ${{ !inputs.dry_run }}
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        if: ${{ !inputs.dry_run }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      # Do not set NODE_ENV=production — need devDependency tsx for the CLI.
+      - name: Install app dependencies
+        if: ${{ !inputs.dry_run }}
+        run: npm ci
+
+      # drizzle-kit is intentionally NOT in package.json (esbuild platform bloat).
+      - name: Install migrator (ephemeral)
+        if: ${{ !inputs.dry_run && inputs.run_migrate }}
+        run: npm install --no-save --no-audit --no-fund drizzle-kit@0.31.10
+
+      - name: Migrate
+        if: ${{ !inputs.dry_run && inputs.run_migrate }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npx drizzle-kit migrate
+
+      - name: Backfill tenant DEKs
+        id: backfill
+        if: ${{ !inputs.dry_run }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CREDENTIALS_ENCRYPTION_KEY: ${{ secrets.CREDENTIALS_ENCRYPTION_KEY }}
+          ALLOW_TENANT_DEK_BACKFILL: "1"
+        run: |
+          set -euo pipefail
+          # Direct tsx so stdout is a single JSON line (counts only).
+          out="$(npx tsx scripts/backfill-tenant-deks.ts)"
+          echo "${out}"
+          tenants="$(printf '%s' "${out}" | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{const j=JSON.parse(s.trim());if(typeof j.tenantsUpdated!=='number'||typeof j.sandboxesReencrypted!=='number')process.exit(2);process.stdout.write(String(j.tenantsUpdated))}catch{process.exit(2)}})" )"
+          sandboxes="$(printf '%s' "${out}" | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{const j=JSON.parse(s.trim());process.stdout.write(String(j.sandboxesReencrypted))}catch{process.exit(2)}})" )"
+          echo "tenantsUpdated=${tenants}" >> "${GITHUB_OUTPUT}"
+          echo "sandboxesReencrypted=${sandboxes}" >> "${GITHUB_OUTPUT}"
+
+      - name: Job summary
+        if: ${{ always() && inputs.confirm == 'backfill' && !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### db-tenancy-backfill-deks"
+            echo "- result: ${{ job.status }}"
+            echo "- dry_run: false"
+            echo "- run_migrate: ${{ inputs.run_migrate }}"
+            echo "- tenantsUpdated: ${{ steps.backfill.outputs.tenantsUpdated }}"
+            echo "- sandboxesReencrypted: ${{ steps.backfill.outputs.sandboxesReencrypted }}"
+            echo "- note: idempotent; re-run safe. Never seed for this cutover."
+            echo "- next: smoke login/tools; optional Vercel TENANT_TOKEN_DECRYPT_MODE=dek-only"
+          } >> "${GITHUB_STEP_SUMMARY}"

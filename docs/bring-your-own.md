@@ -176,16 +176,20 @@ runtime. Wrong AMK → unwrap of tenant DEKs fails (agent/tools 403).
   AMK) so legacy AMK ciphertext still works until backfill completes.
 - **Greenfield:** GHA **db-tenancy-bootstrap** (migrate + seed) — seed **ensures**
   a DEK and encrypts the bootstrap sandbox token under it.
-- **Existing Production data (legacy AMK tokens):** one-time **backfill only** —
-  ensure DEKs and re-encrypt tokens. **Do not** re-run seed/bootstrap for this
-  (seed resets bootstrap password hash + token ciphertext).
-  - **Primary operator path:** GitHub Actions **DEK backfill** workflow when
-    present (Actions → workflow → Run workflow; confirm +
-    `ALLOW_TENANT_DEK_BACKFILL=1` inside the job). If that workflow is not on
-    `main` yet, use a **cloud agent** session with dual-store
-    `DATABASE_URL` + `CREDENTIALS_ENCRYPTION_KEY` (same as Vercel Production) to
-    run the repo backfill entrypoint — **not** a personal laptop.
+- **Existing Production data (legacy AMK tokens):** one-time **backfill only**.
+  **Do not** re-run seed/bootstrap for this (seed resets bootstrap password hash
+  + token ciphertext).
+  - **Primary path:** GitHub Actions → **db-tenancy-backfill-deks** → Run workflow  
+    - `confirm` = `backfill` (required)  
+    - optional `dry_run=true` (secrets only, no mutate)  
+    - optional `run_migrate=true` if DEK columns are missing (migrate only — still
+      **no seed**)  
+    - Workflow: [`.github/workflows/db-tenancy-backfill-deks.yml`](../.github/workflows/db-tenancy-backfill-deks.yml)  
+    - Secrets: `DATABASE_URL` + `CREDENTIALS_ENCRYPTION_KEY` (**same as** Vercel
+      Production — dual-store identity)  
   - Only after dual-read app is live on the target deploy.
+  - Alternate (cloud agent only): same env names + `ALLOW_TENANT_DEK_BACKFILL=1`
+    and the repo backfill entrypoint — **not** a personal laptop.
 - After backfill verify (login + agent tools): set Vercel
   `TENANT_TOKEN_DECRYPT_MODE=dek-only` and redeploy.
 - **Owner DEK rotate:** `/admin` → “Rotate encryption key” (server helper

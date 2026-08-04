@@ -1,17 +1,22 @@
 /**
  * Operator CLI: backfill tenant DEKs + re-encrypt sandbox tokens under DEKs.
  *
- * PRODUCTION GATE (parent #92 / phase #93):
- * Do **not** run this against origin Production while the live app still decrypts
- * sandbox tokens with AMK only. That re-encrypts tokens under tenant DEKs and
- * breaks resolve/login/tools until a dual-read (phase 2) or DEK-only app is live.
+ * Primary operator path: GitHub Actions workflow `db-tenancy-backfill-deks`
+ * (workflow_dispatch, confirm=backfill). This script is what the job runs.
+ * Cloud agent may invoke the same entrypoint; personal-laptop npm is not the
+ * official Production path.
  *
- * Hard refuse without ALLOW_TENANT_DEK_BACKFILL=1 (in addition to the comment gate).
- * Safe on: PGlite tests, throwaway DBs, or Production **after** phase 2 dual-read.
+ * PRODUCTION GATE:
+ * Do **not** run against a database while the live app can only decrypt sandbox
+ * tokens with AMK. Re-encrypting under tenant DEKs breaks resolve/login/tools
+ * until dual-read (default) or DEK-only app is live.
+ *
+ * Hard refuse without ALLOW_TENANT_DEK_BACKFILL=1.
+ * Safe on: PGlite tests, throwaway DBs, or Production **after** dual-read is live.
  *
  * Env: DATABASE_URL, CREDENTIALS_ENCRYPTION_KEY (AMK dual-store identity),
  *      ALLOW_TENANT_DEK_BACKFILL=1
- * Prints counts only — never logs secrets.
+ * Prints counts JSON only — never logs secrets.
  */
 import { createDbConnection } from '../db';
 import { backfillTenantDeks } from '../lib/tenancy/tenantKeys';
@@ -27,8 +32,9 @@ async function main(): Promise<void> {
   }
   if (process.env.ALLOW_TENANT_DEK_BACKFILL !== '1') {
     console.error(
-      'Refusing: set ALLOW_TENANT_DEK_BACKFILL=1 only after phase-2 dual-read ' +
-        '(or DEK-only app) is live. Early Production backfill bricks AMK-only resolve.',
+      'Refusing: set ALLOW_TENANT_DEK_BACKFILL=1 only after dual-read ' +
+        '(or DEK-only app) is live. Early Production backfill bricks AMK-only resolve. ' +
+        'Prefer GHA db-tenancy-backfill-deks (confirm=backfill).',
     );
     process.exit(1);
   }

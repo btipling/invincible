@@ -96,10 +96,11 @@ Do **not** write product/ops guides as phase narratives or issue archaeology
 - Origin **tenancy** (`DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`)
   is **Done** on Production (cutover smoke: unauth 401 + login). Per-tenant DEK
   **code** is on `main` (envelope + dual-read + owner DEK rotate). Origin **data**
-  cutover (backfill legacy AMK tokens → DEK, then optional `dek-only`) still needs
-  a **cloud** path — prefer a GHA backfill workflow when present; do **not** use
-  seed/bootstrap for that (seed resets password + token). Until then dual-read
-  keeps Production working. Never laptop npm as the official cutover.
+  cutover (legacy AMK tokens → DEK, then optional `dek-only`): primary path is
+  GHA **`db-tenancy-backfill-deks`** (`confirm=backfill`; dual-store secrets);
+  do **not** use seed/bootstrap for that (seed resets password + token). Dual-read
+  keeps Production working until the operator dispatches backfill + optional
+  `TENANT_TOKEN_DECRYPT_MODE=dek-only`. Never laptop npm as the official cutover.
 - Do **not** instruct humans to clone the repo on a laptop to re-seed; use a
   cloud agent workspace, GitHub Actions `db-tenancy-bootstrap`, or
   [docs/bring-your-own.md](docs/bring-your-own.md) §4a.
@@ -172,7 +173,7 @@ ops inventory).
 | `SANDBOX_URL` / `SANDBOX_TOKEN` (Vercel) | **Done** | Agent sandbox on origin Production — see [docs/sandbox.md](docs/sandbox.md); host inventory private; never invent a host URL |
 | `DATABASE_URL` (Vercel) | **Done** | Pooled Postgres (Neon) for optional tenancy — Production cutover smoke passed (unauth 401 + login); no host inventory in git |
 | `AUTH_SECRET` (Vercel) | **Done** | Auth.js signing secret — Production cutover smoke passed |
-| `CREDENTIALS_ENCRYPTION_KEY` (Vercel) | **Done** | AES-GCM AMK wrapping per-tenant DEKs (tokens under DEK; dual-read cutover) — dual-store with GHA; never reuse casually on public Preview. Owner DEK rotate via `/admin` (no new env). Do not rotate Production AMK without re-wrap tool |
+| `CREDENTIALS_ENCRYPTION_KEY` (Vercel) | **Done** | AES-GCM AMK wrapping per-tenant DEKs (tokens under DEK; dual-read cutover) — dual-store with GHA; never reuse casually on public Preview. Owner DEK rotate via `/admin`. Existing-data backfill: GHA `db-tenancy-backfill-deks`. Do not rotate Production AMK without re-wrap tool |
 | Optional OIDC (`AUTH_OIDC_ISSUER` / `AUTH_OIDC_CLIENT_ID` / `AUTH_OIDC_CLIENT_SECRET` / `AUTH_OIDC_LABEL?`) | **Not Done** | Generic SSO — configure when operator wants IdP login; callback `{origin}/api/auth/callback/oidc`; BYO: [docs/bring-your-own.md](docs/bring-your-own.md) §4b |
 | Optional SCIM (`SCIM_BEARER_TOKEN`) | **Not Done** | SCIM 2.0 Users at `/api/scim/v2` — set only when directory provisioning is intended; fail-closed 404 when unset |
 
@@ -189,7 +190,8 @@ ops inventory).
   not a greenfield cutover. Prefer cloud cutover docs
   ([docs/bring-your-own.md](docs/bring-your-own.md) §4a) and GHA
   `db-tenancy-bootstrap` for re-seed (resets bootstrap password + token
-  ciphertext by design). Public smoke: `npm run smoke:tenancy`.
+  ciphertext by design) or GHA `db-tenancy-backfill-deks` for legacy AMK→DEK
+  data cutover (never seed for that). Public smoke: `npm run smoke:tenancy`.
 - Optional **OIDC / SCIM** on origin are **Not Done** until an operator sets env
   and smokes. Do **not** claim they are configured, invent IdP URLs, or nag to
   “enable SSO” as a forgotten secret. When configuring: follow
