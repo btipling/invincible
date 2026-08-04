@@ -13,7 +13,7 @@ If you find a vulnerability in Invincible, please open a **private** security ad
 | `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions secrets |
 | `SANDBOX_TOKEN` | Vercel project env **and** sandbox process env (same secret) |
 | `DATABASE_URL` | Vercel / local only (prefer **pooled** Neon/PgBouncer URL) |
-| `CREDENTIALS_ENCRYPTION_KEY` | Vercel / local only — base64 32-byte AES-256-GCM KEK for sandbox tokens at rest |
+| `CREDENTIALS_ENCRYPTION_KEY` | Vercel / local only — base64 32-byte AES-256-GCM **AMK** (wraps per-tenant DEKs; tokens encrypt under DEK) |
 | `SEED_ADMIN_PASSWORD` / `SEED_SANDBOX_TOKEN` | Bootstrap only (prefer GHA `db-tenancy-bootstrap`; cloud-agent `npm run db:seed` alternate); never commit; re-seed resets bootstrap password + token ciphertext |
 | `AUTH_SECRET` | Auth.js session secret — set on Vercel **after** migrate/seed (seed does not need it) |
 | `AUTH_OIDC_CLIENT_SECRET` | Optional OIDC client secret — Vercel/server only; never `NEXT_PUBLIC_*` |
@@ -72,9 +72,9 @@ client-side key or sandbox-token exposure immediately.
 | Rule | Detail |
 |------|--------|
 | Triple-env gate | Tenancy on only when `DATABASE_URL` **and** `AUTH_SECRET` **and** `CREDENTIALS_ENCRYPTION_KEY` are set — no separate `AUTH_ENABLED` |
-| Tokens at rest | Sandbox bearer secrets stored as AES-256-GCM ciphertext; decrypt only server-side for agent tools / admin mask |
-| Never client | No `NEXT_PUBLIC_*` for DB, Auth.js secret, KEK, sandbox token, OIDC client secret, or SCIM bearer |
-| Preview isolation | Prefer separate DB or tenancy off on public previews; avoid reusing Production KEK, OIDC client secret, or `SCIM_BEARER_TOKEN` casually |
+| Tokens at rest | Sandbox bearer secrets AES-256-GCM under **per-tenant DEK** (AMK wraps DEK); dual-read cutover via `TENANT_TOKEN_DECRYPT_MODE` (default `dual`, then `dek-only` after backfill); decrypt only server-side for agent tools / admin mask |
+| Never client | No `NEXT_PUBLIC_*` for DB, Auth.js secret, AMK/DEK, sandbox token, OIDC client secret, or SCIM bearer |
+| Preview isolation | Prefer separate DB or tenancy off on public previews; avoid reusing Production AMK, OIDC client secret, or `SCIM_BEARER_TOKEN` casually |
 | Seed | `SEED_ADMIN_PASSWORD` / seed sandbox token are operator-only; re-seed resets bootstrap hash + ciphertext |
 | Bootstrap surface | Prefer GitHub Actions `db-tenancy-bootstrap` or cloud agent workspace — not personal-laptop primary ops |
 | OIDC (optional) | `AUTH_OIDC_ISSUER` + `AUTH_OIDC_CLIENT_ID` + `AUTH_OIDC_CLIENT_SECRET` (+ optional `AUTH_OIDC_LABEL`); provider id `oidc`; callback `/api/auth/callback/oidc`; email auto-link requires verified `email_verified` claim |

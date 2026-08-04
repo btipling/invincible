@@ -120,6 +120,8 @@ export async function seedTenancy(
       const tokenCiphertext = encryptSecret(token, dek);
 
       // 2) user by email — re-seed refreshes password_hash (bootstrap contract).
+      // Insert sets provision_source=credentials; conflict does NOT overwrite
+      // provision_source (hybrid: preserve scim/oidc if email collides).
       await tx
         .insert(users)
         .values({
