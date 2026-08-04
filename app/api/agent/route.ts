@@ -1,3 +1,4 @@
+import type { JSONValue } from 'ai';
 import {
   gatewayConfigured,
   mapByokResolveFailure,
@@ -88,13 +89,14 @@ export async function POST(req: Request): Promise<Response> {
         return resolved.response;
       }
 
+      // Same JSONValue boundary cast as chat route (AI SDK ProviderOptions).
       runParams = {
         ...runParams,
         modelId: byok.modelId,
         providerOptions: {
           gateway: {
-            only: byok.only,
-            byok: byok.byok,
+            only: byok.only as JSONValue,
+            byok: byok.byok as JSONValue,
           },
         },
         sandboxClient: resolved.value.client,

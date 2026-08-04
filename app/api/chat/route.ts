@@ -1,4 +1,4 @@
-import { generateText } from 'ai';
+import { generateText, type JSONValue } from 'ai';
 import {
   gatewayConfigured,
   mapByokResolveFailure,
@@ -64,13 +64,15 @@ export async function POST(req: Request): Promise<Response> {
         return Response.json({ error }, { status });
       }
 
+      // AI SDK ProviderOptions = Record<string, Record<string, JSONValue>>.
+      // Credential objects are JSON from DEK decrypt; cast at the SDK boundary.
       const result = await generateText({
         model: byok.modelId,
         prompt: parsed.prompt,
         providerOptions: {
           gateway: {
-            only: byok.only,
-            byok: byok.byok,
+            only: byok.only as JSONValue,
+            byok: byok.byok as JSONValue,
           },
         },
       });
