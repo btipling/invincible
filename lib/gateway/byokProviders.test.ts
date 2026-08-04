@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BYOK_PROVIDERS,
+  SUGGESTED_MODELS,
   isByokProvider,
   isValidModelId,
   validateCredentials,
@@ -116,5 +117,19 @@ describe('validateCredentials', () => {
         googleCredentials: { clientEmail: 'a@b.c', privateKey: 'pk' },
       }),
     ).toBe('a@b.c');
+  });
+});
+
+
+describe('SUGGESTED_MODELS', () => {
+  it('covers every BYOK provider with valid model ids', async () => {
+    const { SUGGESTED_MODELS, BYOK_PROVIDERS, isValidModelId } = await import('./byokProviders');
+    for (const p of BYOK_PROVIDERS) {
+      const list = SUGGESTED_MODELS[p];
+      expect(list.length).toBeGreaterThan(0);
+      for (const mid of list) {
+        expect(isValidModelId(mid)).toBe(true);
+      }
+    }
   });
 });
