@@ -44,7 +44,7 @@ See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 | Ring capacity | 48 messages in Wasm (`bridge.zig` `MAX_MSG`) |
 | Visible paint | Last **28** lines (+ “N earlier” hint) |
 | Line size | 4 KB UTF-8 max per message (`MAX_MSG_LEN`) |
-| Host history | Long sessions fold into the Gateway prompt; prefer Clear for a fresh workspace |
+| Host history | Host folds last **~8** user/assistant turns (`formatPromptWithHistory` maxTurns=8, maxChars=12 000); prefer Clear for a fresh workspace |
 
 ## Palette
 

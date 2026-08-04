@@ -18,8 +18,9 @@ How browser session restore works for the harness (memory + `localStorage`).
 | Agent loop | `lib/harnessChat.ts` `runHarnessTurn` | multi-turn via folded history |
 
 Multi-turn continuity: history is folded into a single `POST /api/chat` (or
-`/api/agent`) prompt (`formatPromptWithHistory`). The API remains single-shot
-per request; multi-turn lives in the host session + Wasm transcript.
+`/api/agent`) prompt (`formatPromptWithHistory`, default **maxTurns=8** /
+**maxChars=12 000**). The API remains single-shot per request; multi-turn lives
+in the host session + Wasm transcript.
 
 Blob shape (messages only — never env secrets):
 
