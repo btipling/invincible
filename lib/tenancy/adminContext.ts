@@ -1,5 +1,6 @@
 /**
  * Phase 4 — load admin context for the signed-in user (v1 sole membership).
+ * Phase 2 (#94): mask sandbox tokens via tenant DEK (dual-read / dek-only).
  */
 import { and, eq } from 'drizzle-orm';
 import {
@@ -11,9 +12,9 @@ import {
   users,
   type Db,
 } from '../../db';
-import { decryptSecret } from './credentials';
 import { maskSecret } from './maskSecret';
 import { canAccessAdmin, canRotateSandboxToken, type TenantRole } from './roles';
+import { decryptSandboxToken } from './tenantKeys';
 
 export type AdminSandboxRow = {
   id: string;
@@ -41,7 +42,14 @@ export type LoadAdminContextResult =
 
 export type LoadAdminContextDeps = {
   db?: Db;
-  decrypt?: (ciphertext: string) => string;
+  /**
+   * Override sandbox-token decrypt for tests.
+   * Product default: mode-aware tenant DEK (dual / dek-only).
+   */
+  decryptSandboxToken?: (
+    tenantId: string,
+    ciphertext: string,
+  ) => string | Promise<string>;
 };
 
 /**
@@ -105,7 +113,9 @@ async function loadWithDb(
       return { ok: false, reason: 'forbidden' };
     }
 
-    const decrypt = deps.decrypt ?? ((ct: string) => decryptSecret(ct));
+    const decrypt =
+      deps.decryptSandboxToken ??
+      ((tid: string, ct: string) => decryptSandboxToken(tid, ct, { db }));
 
     const rows = await db
       .select({
@@ -128,15 +138,16 @@ async function loadWithDb(
       )
       .where(eq(sandboxes.tenantId, m.tenantId));
 
-    const sandboxRows: AdminSandboxRow[] = rows.map((r) => {
+    const sandboxRows: AdminSandboxRow[] = [];
+    for (const r of rows) {
       let tokenMasked = '********';
       try {
-        const plain = decrypt(r.tokenCiphertext);
+        const plain = await decrypt(m.tenantId, r.tokenCiphertext);
         tokenMasked = maskSecret(plain);
       } catch {
         tokenMasked = '********';
       }
-      return {
+      sandboxRows.push({
         id: r.id,
         name: r.name,
         slug: r.slug,
@@ -145,8 +156,8 @@ async function loadWithDb(
         tokenMasked,
         canRead: Boolean(r.canRead),
         canWrite: Boolean(r.canWrite),
-      };
-    });
+      });
+    }
 
     return {
       ok: true,

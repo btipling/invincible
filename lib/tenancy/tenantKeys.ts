@@ -23,19 +23,27 @@ import {
 
 const DEK_LENGTH = 32;
 
+export type TokenDecryptMode = 'dual' | 'dek-only';
+
+/** Drizzle transaction handle (postgres-js or PGlite). */
+type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0];
+
 export type TenantKeyDeps = {
   db?: Db;
+  /**
+   * Open transaction — when set, ensure helpers use it (no nested transaction).
+   */
+  tx?: DbTx;
   /** Explicit AMK; defaults to resolveCredentialsKey(). */
   amk?: Buffer;
+  /** Decrypt mode for decryptSandboxToken; defaults to resolveTokenDecryptMode(). */
+  mode?: TokenDecryptMode;
 };
 
 export type TenantDek = {
   dek: Buffer;
   version: number;
 };
-
-/** Drizzle transaction handle (postgres-js or PGlite). */
-type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
 function resolveAmk(deps: TenantKeyDeps): Buffer {
   return deps.amk ?? resolveCredentialsKey();
@@ -155,6 +163,11 @@ export async function ensureTenantDek(
   }
   const amk = resolveAmk(deps);
 
+  if (deps.tx) {
+    const result = await ensureTenantDekInTx(deps.tx, id, amk);
+    return { dek: result.dek, version: result.version };
+  }
+
   return withDb(deps, async (db) => {
     return db.transaction(async (tx) => {
       const result = await ensureTenantDekInTx(tx, id, amk);
@@ -222,6 +235,65 @@ export async function decryptTenantSecret(
 ): Promise<string> {
   const { dek } = await loadTenantDek(tenantId, deps);
   return decryptSecret(ciphertext, dek);
+}
+
+/**
+ * Cutover mode from env. Default / unknown → dual (safe before Production backfill).
+ * Set TENANT_TOKEN_DECRYPT_MODE=dek-only after backfill verified.
+ */
+export function resolveTokenDecryptMode(
+  env: Record<string, string | undefined> = process.env,
+): TokenDecryptMode {
+  const raw = env.TENANT_TOKEN_DECRYPT_MODE?.trim().toLowerCase();
+  if (raw === 'dek-only') {
+    return 'dek-only';
+  }
+  return 'dual';
+}
+
+/**
+ * Temporary dual-read: try tenant DEK first (when provisioned), then AMK legacy.
+ * Deleted from product paths only after dek-only cutover; helper remains for tests.
+ */
+export async function decryptSandboxTokenCutover(
+  tenantId: string,
+  ciphertext: string,
+  deps: TenantKeyDeps = {},
+): Promise<string> {
+  const amk = resolveAmk(deps);
+  let dek: Buffer | null = null;
+  try {
+    const loaded = await loadTenantDek(tenantId, deps);
+    dek = loaded.dek;
+  } catch {
+    dek = null;
+  }
+
+  if (dek) {
+    try {
+      return decryptSecret(ciphertext, dek);
+    } catch {
+      // DEK present but ciphertext still legacy AMK (pre-backfill)
+      return decryptSecret(ciphertext, amk);
+    }
+  }
+
+  return decryptSecret(ciphertext, amk);
+}
+
+/**
+ * Mode-aware sandbox token decrypt for resolve/admin product paths.
+ */
+export async function decryptSandboxToken(
+  tenantId: string,
+  ciphertext: string,
+  deps: TenantKeyDeps = {},
+): Promise<string> {
+  const mode = deps.mode ?? resolveTokenDecryptMode();
+  if (mode === 'dek-only') {
+    return decryptTenantSecret(tenantId, ciphertext, deps);
+  }
+  return decryptSandboxTokenCutover(tenantId, ciphertext, deps);
 }
 
 export type BackfillResult = {

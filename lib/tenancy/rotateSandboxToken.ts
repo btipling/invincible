@@ -1,5 +1,6 @@
 /**
  * Phase 4 — owner-only rotate sandbox token (re-encrypt at rest).
+ * Phase 2 (#94): re-encrypt under tenant DEK; token_kek_version = dek_version.
  */
 import { and, eq } from 'drizzle-orm';
 import {
@@ -8,11 +9,9 @@ import {
   tenantMembers,
   type Db,
 } from '../../db';
-import {
-  CURRENT_KEK_VERSION,
-  encryptSecret,
-} from './credentials';
+import { encryptSecret } from './credentials';
 import { canRotateSandboxToken } from './roles';
+import { ensureTenantDek } from './tenantKeys';
 
 export type RotateResult =
   | { ok: true }
@@ -20,7 +19,10 @@ export type RotateResult =
 
 export type RotateDeps = {
   db?: Db;
-  encrypt?: (plaintext: string) => string;
+  /** Explicit AMK for tests / inject. */
+  amk?: Buffer;
+  /** Override encrypt for tests: (plaintext, dek) => ciphertext */
+  encrypt?: (plaintext: string, dek: Buffer) => string;
 };
 
 /**
@@ -92,15 +94,19 @@ async function rotateWithDb(
       return { ok: false, reason: 'forbidden' };
     }
 
+    const { dek, version } = await ensureTenantDek(row.tenantId, {
+      db,
+      amk: deps.amk,
+    });
     const encrypt =
-      deps.encrypt ?? ((plaintext: string) => encryptSecret(plaintext));
-    const ciphertext = encrypt(newToken.trim());
+      deps.encrypt ?? ((plaintext: string, key: Buffer) => encryptSecret(plaintext, key));
+    const ciphertext = encrypt(newToken.trim(), dek);
 
     await db
       .update(sandboxes)
       .set({
         tokenCiphertext: ciphertext,
-        tokenKekVersion: CURRENT_KEK_VERSION,
+        tokenKekVersion: version,
       })
       .where(eq(sandboxes.id, sandboxId));
 

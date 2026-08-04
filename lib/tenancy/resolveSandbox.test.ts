@@ -6,9 +6,13 @@ import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as schema from '../../db/schema';
-import { decryptSecret, encryptSecret } from './credentials';
+import { encryptSecret } from './credentials';
 import { SANDBOX_FORBIDDEN_ERROR } from './errors';
 import { resolveAgentSandbox } from './resolveSandbox';
+import {
+  decryptSandboxToken,
+  encryptTenantSecret,
+} from './tenantKeys';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, '../../db/migrations');
@@ -25,11 +29,7 @@ async function applyMigrations(client: PGlite) {
   }
 }
 
-const KEY = Buffer.alloc(32, 9);
-
-function decryptWithKey(ct: string): string {
-  return decryptSecret(ct, KEY);
-}
+const AMK = Buffer.alloc(32, 9);
 
 function stubClient(meta?: { baseUrl: string; token: string }) {
   return {
@@ -83,7 +83,11 @@ describe('resolveAgentSandbox', () => {
       role: 'owner',
     });
 
-    const ciphertext = encryptSecret('sandbox-token-secret-xyz', KEY);
+    const { ciphertext } = await encryptTenantSecret(
+      tenantId,
+      'sandbox-token-secret-xyz',
+      { db: db as never, amk: AMK },
+    );
     const [sandbox] = await db
       .insert(schema.sandboxes)
       .values({
@@ -105,10 +109,13 @@ describe('resolveAgentSandbox', () => {
     });
   });
 
-  it('resolves single membership + full grant', async () => {
+  const decrypt = (tid: string, ct: string) =>
+    decryptSandboxToken(tid, ct, { db: db as never, amk: AMK, mode: 'dual' });
+
+  it('resolves single membership + full grant under DEK', async () => {
     const result = await resolveAgentSandbox(userId, {
       db: db as never,
-      decrypt: decryptWithKey,
+      decryptSandboxToken: decrypt,
       createClient: ({ baseUrl, token }) => stubClient({ baseUrl, token }),
     });
     expect(result.ok).toBe(true);
@@ -123,6 +130,46 @@ describe('resolveAgentSandbox', () => {
     );
   });
 
+  it('dual-read resolves legacy AMK token when DEK missing', async () => {
+    await db
+      .update(schema.tenants)
+      .set({ dekCiphertext: null })
+      .where(eq(schema.tenants.id, tenantId));
+    await db
+      .update(schema.sandboxes)
+      .set({ tokenCiphertext: encryptSecret('legacy-amk-token', AMK) })
+      .where(eq(schema.sandboxes.id, sandboxId));
+
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      decryptSandboxToken: decrypt,
+      createClient: ({ token }) => stubClient({ baseUrl: '', token }),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value.secrets).toContain('legacy-amk-token');
+  });
+
+  it('dek-only mode fails closed on AMK-only ciphertext', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({ tokenCiphertext: encryptSecret('legacy-only', AMK) })
+      .where(eq(schema.sandboxes.id, sandboxId));
+
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      decryptSandboxToken: (tid, ct) =>
+        decryptSandboxToken(tid, ct, {
+          db: db as never,
+          amk: AMK,
+          mode: 'dek-only',
+        }),
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected fail');
+    expect(result.response.status).toBe(403);
+  });
+
   it('write-only grant gets effective read', async () => {
     await db
       .update(schema.sandboxGrants)
@@ -131,7 +178,7 @@ describe('resolveAgentSandbox', () => {
 
     const result = await resolveAgentSandbox(userId, {
       db: db as never,
-      decrypt: decryptWithKey,
+      decryptSandboxToken: decrypt,
       createClient: () => stubClient(),
     });
     expect(result.ok).toBe(true);
@@ -143,7 +190,7 @@ describe('resolveAgentSandbox', () => {
     await db.delete(schema.tenantMembers);
     const result = await resolveAgentSandbox(userId, {
       db: db as never,
-      decrypt: decryptWithKey,
+      decryptSandboxToken: decrypt,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected fail');
@@ -163,7 +210,7 @@ describe('resolveAgentSandbox', () => {
     });
     const result = await resolveAgentSandbox(userId, {
       db: db as never,
-      decrypt: decryptWithKey,
+      decryptSandboxToken: decrypt,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected fail');
@@ -177,7 +224,7 @@ describe('resolveAgentSandbox', () => {
       .where(eq(schema.sandboxes.id, sandboxId));
     const result = await resolveAgentSandbox(userId, {
       db: db as never,
-      decrypt: decryptWithKey,
+      decryptSandboxToken: decrypt,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected fail');
@@ -191,7 +238,7 @@ describe('resolveAgentSandbox', () => {
       .where(eq(schema.sandboxGrants.userId, userId));
     const result = await resolveAgentSandbox(userId, {
       db: db as never,
-      decrypt: decryptWithKey,
+      decryptSandboxToken: decrypt,
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected fail');
@@ -201,7 +248,7 @@ describe('resolveAgentSandbox', () => {
   it('403 on decrypt failure without leaking crypto detail', async () => {
     const result = await resolveAgentSandbox(userId, {
       db: db as never,
-      decrypt: () => {
+      decryptSandboxToken: async () => {
         throw new Error('decryption failed secret-key-material');
       },
     });
