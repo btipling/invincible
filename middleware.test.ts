@@ -87,16 +87,18 @@ describe('middleware tenancy gate', () => {
     process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';
     process.env.CREDENTIALS_ENCRYPTION_KEY = 'key-material';
     vi.resetModules();
-    const getToken = vi.fn(async () => ({ sub: 'user-uuid' }));
+    const getToken = vi.fn(
+      async (_opts?: { secureCookie?: boolean }) => ({ sub: 'user-uuid' }),
+    );
     vi.doMock('next-auth/jwt', () => ({ getToken }));
     const { middleware } = await loadMw();
     const req = new Request('https://invincible-dun-ten.vercel.app/harness', {
       headers: { 'x-forwarded-proto': 'https' },
     });
     await middleware(req as never);
-    expect(getToken).toHaveBeenCalled();
-    const arg = getToken.mock.calls[0]?.[0] as { secureCookie?: boolean };
-    expect(arg.secureCookie).toBe(true);
+    expect(getToken).toHaveBeenCalledWith(
+      expect.objectContaining({ secureCookie: true }),
+    );
   });
 
   it('passes secureCookie:false on plain http localhost', async () => {
@@ -104,12 +106,15 @@ describe('middleware tenancy gate', () => {
     process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';
     process.env.CREDENTIALS_ENCRYPTION_KEY = 'key-material';
     vi.resetModules();
-    const getToken = vi.fn(async () => ({ sub: 'user-uuid' }));
+    const getToken = vi.fn(
+      async (_opts?: { secureCookie?: boolean }) => ({ sub: 'user-uuid' }),
+    );
     vi.doMock('next-auth/jwt', () => ({ getToken }));
     const { middleware } = await loadMw();
     await middleware(new Request('http://localhost/harness') as never);
-    const arg = getToken.mock.calls[0]?.[0] as { secureCookie?: boolean };
-    expect(arg.secureCookie).toBe(false);
+    expect(getToken).toHaveBeenCalledWith(
+      expect.objectContaining({ secureCookie: false }),
+    );
   });
 });
 
