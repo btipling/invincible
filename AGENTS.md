@@ -188,7 +188,7 @@ Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURI
 ```text
 invincible/
 ├── app/                 # Next App Router (/, /harness, /login, /admin, /api/*)
-├── db/                  # Drizzle schema + SQL migrations (tenancy phase 1+)
+├── db/                  # Drizzle schema + SQL migrations (tenancy)
 ├── lib/                 # palette, chat, agent, bridge, session, sandbox, tenancy
 ├── sandbox/             # protocol v1 daemon (BYO tools workspace)
 ├── native/harness/      # Zig + dvui Wasm (CI on self-hosted runner)
