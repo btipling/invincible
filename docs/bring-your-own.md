@@ -153,7 +153,7 @@ If **any** is missing → **legacy open mode**: anonymous `POST /api/chat` and
 | Unauthenticated `/api/chat` or `/api/agent` | **401** `{ "error": "Authentication required." }` |
 | Unauthenticated `/`, `/harness`, `/admin` | Redirect to `/login?callbackUrl=…` |
 | Agent tools | **DB-resolved** sandbox for the session user (grants enforced); not raw process env alone |
-| `/admin` | Owner|admin: tenant + sandboxes (**base URL** shown, token **masked**); owner can rotate token |
+| `/admin` | Owner|admin: tenant + **Users** roster (all provision sources) + sandboxes (**base URL** shown, token **masked**); owner can rotate token |
 | Logout | Clears Auth.js session (and local harness session blob) |
 
 Grant failures return **403** `{ "error": "Sandbox access denied." }`
@@ -250,6 +250,99 @@ This is **not** “run on a personal laptop.” Prefer GHA for Production bootst
 (Gateway key + harness files). It is **not** the tenancy cutover path — use the
 cloud checklist above for migrate/seed/login flip.
 
+### 4b. Optional SSO (OIDC) + SCIM
+
+Parent [#64](https://github.com/btipling/invincible/issues/64) (phases 1–3 on
+`main`). **Optional** on top of tenancy: generic OpenID Connect sign-in and/or
+SCIM 2.0 user provisioning. Neither is required for credentials login or
+sandbox grants.
+
+#### Hybrid identity (anti-Figma)
+
+**SCIM is additive.** Enabling SCIM does **not** hide, delete, or disable
+non-SCIM users (credentials break-glass, OIDC JIT, manual). Product `/admin`
+**Users** roster shows **all** provision sources (`credentials` · `oidc` ·
+`scim` · `manual`). SCIM list endpoints return **SCIM-managed only** (IdP
+compatibility). SCIM deprovision **suspends** SCIM-managed rows only; the
+break-glass credentials owner is protected from SCIM suspend. Credentials
+login remains available whenever tenancy is on.
+
+#### OIDC (generic Auth.js provider)
+
+Enable only when **tenancy triple-gate is on** and all three OIDC secrets are
+non-empty:
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `AUTH_OIDC_ISSUER` | yes | Issuer URL (OIDC discovery) |
+| `AUTH_OIDC_CLIENT_ID` | yes | Client id |
+| `AUTH_OIDC_CLIENT_SECRET` | yes | Client secret — **server-only** |
+| `AUTH_OIDC_LABEL` | no | Button label (default `Sign in with SSO`) |
+
+| Item | Value |
+|------|--------|
+| Auth.js provider id | `oidc` |
+| Callback URL (register at IdP) | `{your-origin}/api/auth/callback/oidc` |
+| Login UI | `/login` — credentials form always; OIDC button only when configured |
+
+**SCIM users and login:** directory-provisioned users typically have no
+password. Interactive sign-in for those users is **OIDC** (same IdP) after
+email/`idp_subject` link. Pure SCIM without OIDC = provisioned in DB only until
+OIDC is configured. Do not expect password login for SCIM rows by default.
+
+**Account linking:** when OIDC finds an existing user by email with no
+`idp_subject` yet (typical SCIM → first SSO), the IdP must send a **verified**
+email claim (`email_verified` true / `"true"`). Unverified email → link refused
+(no account takeover). Subject match (`issuer|sub`) does not require re-verify.
+Configure the IdP to emit verified emails for SSO users.
+
+#### SCIM 2.0 Users API
+
+Enable when **tenancy triple-gate is on** and `SCIM_BEARER_TOKEN` is non-empty:
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `SCIM_BEARER_TOKEN` | yes | Bearer secret for IdP → app — **server-only**; timing-safe compare |
+
+| Surface | Behaviour |
+|---------|-----------|
+| Base path | `/api/scim/v2` (`Users`, `ServiceProviderConfig`, `Schemas`) |
+| Feature off (tenancy off **or** token empty) | **404** (fail closed) |
+| Wrong / missing `Authorization: Bearer …` | **401** + `WWW-Authenticate: Bearer` |
+| Responses | `Content-Type: application/scim+json` |
+| DELETE | **Suspend** (`status=suspended`) — not hard delete |
+| Pagination | `count` default **50**, max **100** |
+| Session middleware | SCIM routes are **outside** the session matcher — bearer only |
+
+Set the token in Vercel (or your host) env only. Never commit real token values.
+Never put the token in client bundles or Wasm.
+
+#### Preview isolation (OIDC / SCIM)
+
+| Environment | Recommendation |
+|-------------|----------------|
+| **Public Preview** | Prefer **omit** OIDC secrets and/or use a **separate** `SCIM_BEARER_TOKEN` (and separate DB). Do **not** casually reuse Production SCIM token or OIDC client secret on public previews. |
+| **Production** | Set OIDC/SCIM only when you intend SSO / directory provisioning. |
+
+#### Operator checklist (OIDC / SCIM)
+
+1. Tenancy on + seed admin can `/login` with **credentials**.  
+2. **(Optional OIDC)** Set issuer + client id + secret (+ label); register
+   callback `{origin}/api/auth/callback/oidc` at the IdP; redeploy; confirm
+   button on `/login` → session → `/harness`.  
+3. Confirm **credentials still work** with OIDC enabled (break-glass).  
+4. **(Optional SCIM)** Set `SCIM_BEARER_TOKEN`; redeploy.  
+   - `GET /api/scim/v2/ServiceProviderConfig` **with** Bearer → **200**  
+   - Same request without Bearer when configured → **401**  
+   - Token unset / tenancy off → **404**  
+5. SCIM create user → appears on `/admin` with `scim` badge; existing
+   credentials user still listed (hybrid).  
+6. Preview: separate token/DB or leave OIDC/SCIM unset.
+
+Env comment block: [`.env.example`](../.env.example). Security notes:
+[SECURITY.md](../SECURITY.md).
+
+
 ---
 
 ## 5. Wasm supply paths
@@ -275,7 +368,7 @@ workflows. Jobs run only on `workflow_dispatch` or `push` to `main`.
 
 | Rule | Detail |
 |------|--------|
-| Secrets server-side | `AI_GATEWAY_API_KEY`, `SANDBOX_TOKEN` only on Vercel (or local `.env.local`); never in Wasm or client bundles |
+| Secrets server-side | `AI_GATEWAY_API_KEY`, `SANDBOX_TOKEN`, `AUTH_OIDC_CLIENT_SECRET`, `SCIM_BEARER_TOKEN` only on Vercel (or local `.env.local`); never in Wasm or client bundles |
 | Variables ≠ secrets | `SELF_HOSTED_BUILDS` / `RUNNER_LABELS` are Actions **variables** (non-secret) |
 | Public-repo runners | No PR execution on self-hosted; see [SECURITY.md](../SECURITY.md) |
 | Agent sandbox ≠ Zig runner | Separate process/user; see [sandbox.md](sandbox.md) · [runner.md](runner.md) |
@@ -311,7 +404,8 @@ empty `public/harness`.
 | Pluggable **sandbox** for agent build/run tools | **Shipped (MVP)** — config seam; see [sandbox.md](sandbox.md) |
 | Optional multi-tenant auth (login + DB grants) | **Shipped** — [§4a](#4a-optional-multi-tenant-auth); cloud cutover [#67](https://github.com/btipling/invincible/issues/67) |
 | Multi-tenant sandbox isolation / fleet | **Not shipped** — single workspace root per process for now |
-| **MCP** / SSO/SCIM | **Not shipped** — [#64](https://github.com/btipling/invincible/issues/64); do not half-build here |
+| Optional **OIDC SSO** + **SCIM** provisioning | **Shipped (optional config)** — [§4b](#4b-optional-sso-oidc--scim); parent [#64](https://github.com/btipling/invincible/issues/64) |
+| **MCP** | **Not shipped** — do not half-build here |
 
 This guide covers **BYO Vercel + keys + runner/Wasm supply + optional sandbox**.
 Target projects can be any language or platform; Invincible is the harness
@@ -344,4 +438,5 @@ listed as Done in [AGENTS.md](../AGENTS.md). Operators on **forks/clones** use
 - [ ] If using self-hosted builds: runner online + `SELF_HOSTED_BUILDS=true`
 - [ ] Optional: sandbox daemon + Vercel/local `SANDBOX_URL`/`SANDBOX_TOKEN` ([sandbox.md](sandbox.md))
 - [ ] Optional tenancy: cloud cutover [§4a](#4a-optional-multi-tenant-auth) (GHA migrate/seed, then `AUTH_SECRET`)
+- [ ] Optional OIDC / SCIM: [§4b](#4b-optional-sso-oidc--scim) (credentials break-glass still works; hybrid roster)
 - [ ] No keys in client/Wasm; no PR triggers on self-hosted workflows
