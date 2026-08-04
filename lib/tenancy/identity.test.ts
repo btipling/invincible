@@ -138,7 +138,12 @@ describe('identity helpers (pglite)', () => {
   it('findOrCreateOidcUser creates, reuses, and refuses suspended', async () => {
     const subject = normalizeIdpSubject('https://idp.example', 'user-1');
     const first = await findOrCreateOidcUser(
-      { subject, email: 'oidc1@example.com', name: 'Oidc One' },
+      {
+        subject,
+        email: 'oidc1@example.com',
+        name: 'Oidc One',
+        emailVerified: true,
+      },
       { db: db as never },
     );
     expect(first.created).toBe(true);
@@ -146,7 +151,7 @@ describe('identity helpers (pglite)', () => {
     expect(first.user.idpSubject).toBe(subject);
 
     const second = await findOrCreateOidcUser(
-      { subject, email: 'oidc1@example.com' },
+      { subject, email: 'oidc1@example.com', emailVerified: true },
       { db: db as never },
     );
     expect(second.created).toBe(false);
@@ -159,7 +164,7 @@ describe('identity helpers (pglite)', () => {
 
     await expect(
       findOrCreateOidcUser(
-        { subject, email: 'oidc1@example.com' },
+        { subject, email: 'oidc1@example.com', emailVerified: true },
         { db: db as never },
       ),
     ).rejects.toMatchObject({ code: 'suspended' });
@@ -180,7 +185,12 @@ describe('identity helpers (pglite)', () => {
 
     const subject = normalizeIdpSubject('https://idp.example', 'link-user');
     const linked = await findOrCreateOidcUser(
-      { subject, email: 'linkme@example.com', name: 'Linked Name' },
+      {
+        subject,
+        email: 'linkme@example.com',
+        name: 'Linked Name',
+        emailVerified: true,
+      },
       { db: db as never },
     );
     expect(linked.created).toBe(false);
@@ -191,10 +201,60 @@ describe('identity helpers (pglite)', () => {
     const other = normalizeIdpSubject('https://idp.example', 'other-sub');
     await expect(
       findOrCreateOidcUser(
-        { subject: other, email: 'linkme@example.com' },
+        { subject: other, email: 'linkme@example.com', emailVerified: true },
         { db: db as never },
       ),
     ).rejects.toMatchObject({ code: 'conflict' });
+  });
+
+  it('findOrCreateOidcUser refuses email-link without emailVerified', async () => {
+    const hash = await hashPassword('u');
+    await db.insert(schema.users).values({
+      email: 'unverified-link@example.com',
+      status: 'active',
+      passwordHash: hash,
+      provisionSource: 'credentials',
+    });
+
+    const subject = normalizeIdpSubject('https://idp.example', 'unverified-1');
+    await expect(
+      findOrCreateOidcUser(
+        {
+          subject,
+          email: 'unverified-link@example.com',
+          emailVerified: false,
+        },
+        { db: db as never },
+      ),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  it('findOrCreateOidcUser SCIM email-link keeps provision_source=scim', async () => {
+    const scim = await scimCreateUser(
+      {
+        email: 'scim-oidc@example.com',
+        externalId: 'ext-oidc-link',
+        displayName: 'SCIM OIDC',
+      },
+      { db: db as never },
+    );
+    expect(scim.provisionSource).toBe('scim');
+    expect(scim.idpSubject).toBeNull();
+
+    const subject = normalizeIdpSubject('https://idp.example', 'scim-person');
+    const linked = await findOrCreateOidcUser(
+      {
+        subject,
+        email: 'scim-oidc@example.com',
+        name: 'SCIM via OIDC',
+        emailVerified: true,
+      },
+      { db: db as never },
+    );
+    expect(linked.created).toBe(false);
+    expect(linked.user.id).toBe(scim.id);
+    expect(linked.user.idpSubject).toBe(subject);
+    expect(linked.user.provisionSource).toBe('scim');
   });
 
   it('scimCreateUser / scimSuspendUser / cannot suspend break-glass', async () => {
