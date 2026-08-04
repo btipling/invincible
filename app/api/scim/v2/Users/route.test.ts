@@ -100,4 +100,76 @@ describe('SCIM /api/scim/v2/Users', () => {
     );
     expect(res.status).toBe(400);
   });
+
+  it('creates user with bearer (mocked identity) and prefers userName', async () => {
+    clearTenancy();
+    Object.assign(process.env, tenancyOn, { SCIM_BEARER_TOKEN: 'scim-tok' });
+    const created = {
+      id: '44444444-4444-4444-4444-444444444444',
+      email: 'new@example.com',
+      name: 'New',
+      status: 'active',
+      image: null,
+      emailVerified: null,
+      passwordHash: null,
+      idpSubject: null,
+      provisionSource: 'scim',
+      scimExternalId: 'ext-new',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const createFn = vi.fn(async () => created);
+    vi.doMock('../../../../../lib/tenancy/identity', async () => {
+      const actual = await vi.importActual<typeof import('../../../../../lib/tenancy/identity')>(
+        '../../../../../lib/tenancy/identity',
+      );
+      return {
+        ...actual,
+        scimCreateUser: createFn,
+      };
+    });
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/scim/v2/Users', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer scim-tok',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          userName: 'new@example.com',
+          emails: [{ value: 'other@example.com', primary: true }],
+          displayName: 'New',
+          externalId: 'ext-new',
+        }),
+      }),
+    );
+    expect(res.status).toBe(201);
+    expect(res.headers.get('Location')).toContain(created.id);
+    expect(createFn).toHaveBeenCalledWith(
+      expect.objectContaining({ email: 'new@example.com' }),
+    );
+    const body = (await res.json()) as { userName: string };
+    expect(body.userName).toBe('new@example.com');
+  });
+
+  it('rejects oversized displayName', async () => {
+    clearTenancy();
+    Object.assign(process.env, tenancyOn, { SCIM_BEARER_TOKEN: 'scim-tok' });
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/scim/v2/Users', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer scim-tok',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          userName: 'big@example.com',
+          displayName: 'x'.repeat(300),
+        }),
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
 });

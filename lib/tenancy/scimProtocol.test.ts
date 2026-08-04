@@ -4,7 +4,9 @@ import {
   parseScimFilter,
   parseScimPagination,
   SCIM_MAX_COUNT,
+  SCIM_MAX_EMAIL_LEN,
   userToScimResource,
+  validateScimStringFields,
 } from './scimProtocol';
 import type { User } from '../../db';
 
@@ -76,5 +78,28 @@ describe('applyScimPatchOperations', () => {
     ]);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.patch.active).toBe(false);
+  });
+});
+
+describe('applyScimPatchOperations pathless value', () => {
+  it('prefers userName over emails when both present', () => {
+    const r = applyScimPatchOperations([
+      {
+        op: 'replace',
+        value: {
+          userName: 'a@x.com',
+          emails: [{ value: 'b@x.com', primary: true }],
+        },
+      },
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.patch.email).toBe('a@x.com');
+  });
+});
+
+describe('validateScimStringFields', () => {
+  it('rejects oversized email', () => {
+    const r = validateScimStringFields({ email: 'x'.repeat(SCIM_MAX_EMAIL_LEN + 1) });
+    expect(r.ok).toBe(false);
   });
 });

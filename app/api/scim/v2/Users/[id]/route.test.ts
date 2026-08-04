@@ -76,4 +76,42 @@ describe('SCIM /api/scim/v2/Users/:id', () => {
     );
     expect(res.status).toBe(404);
   });
+
+  it('PUT prefers userName over emails', async () => {
+    process.env = { ...originalEnv, ...tenancyOn };
+    const update = vi.fn(async (_id: string, patch: { email?: string }) => ({
+      ...scimUser,
+      email: patch.email ?? scimUser.email,
+    }));
+    vi.doMock('../../../../../../lib/tenancy/identity', async () => {
+      const actual = await vi.importActual<
+        typeof import('../../../../../../lib/tenancy/identity')
+      >('../../../../../../lib/tenancy/identity');
+      return {
+        ...actual,
+        getScimUserById: vi.fn(async () => scimUser),
+        scimUpdateUser: update,
+      };
+    });
+    const { PUT } = await import('./route');
+    const res = await PUT(
+      new Request('http://localhost/api/scim/v2/Users/' + scimUser.id, {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer scim-tok',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          userName: 'a@example.com',
+          emails: [{ value: 'b@example.com', primary: true }],
+        }),
+      }),
+      { params: Promise.resolve({ id: scimUser.id }) },
+    );
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledWith(
+      scimUser.id,
+      expect.objectContaining({ email: 'a@example.com' }),
+    );
+  });
 });

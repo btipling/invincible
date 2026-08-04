@@ -20,6 +20,7 @@ import {
   scimErrorResponse,
   scimJsonResponse,
   userToScimResource,
+  validateScimStringFields,
 } from './scimProtocol';
 
 function fromIdentityError(err: unknown): Response {
@@ -89,6 +90,11 @@ export async function handleScimCreateUser(req: Request): Promise<Response> {
   const externalId = typeof b.externalId === 'string' ? b.externalId : null;
   const active = typeof b.active === 'boolean' ? b.active : true;
 
+  const lenCheck = validateScimStringFields({ email, displayName, externalId });
+  if (!lenCheck.ok) {
+    return scimErrorResponse(400, lenCheck.detail);
+  }
+
   try {
     const user = await scimCreateUser({
       email,
@@ -128,9 +134,11 @@ export async function handleScimPutUser(req: Request, id: string): Promise<Respo
     return scimErrorResponse(400, 'Invalid body');
   }
   const b = body as Record<string, unknown>;
+  // userName is the SCIM identifier; emails is fallback only (match create).
   let email: string | undefined;
-  if (typeof b.userName === 'string') email = b.userName;
-  if (Array.isArray(b.emails) && b.emails[0] && typeof b.emails[0] === 'object') {
+  if (typeof b.userName === 'string') {
+    email = b.userName;
+  } else if (Array.isArray(b.emails) && b.emails[0] && typeof b.emails[0] === 'object') {
     const v = (b.emails[0] as { value?: string }).value;
     if (typeof v === 'string') email = v;
   }
@@ -147,6 +155,15 @@ export async function handleScimPutUser(req: Request, id: string): Promise<Respo
         ? b.externalId
         : undefined;
   const active = typeof b.active === 'boolean' ? b.active : undefined;
+
+  const lenCheck = validateScimStringFields({
+    email,
+    displayName: displayName === undefined ? undefined : displayName,
+    externalId,
+  });
+  if (!lenCheck.ok) {
+    return scimErrorResponse(400, lenCheck.detail);
+  }
 
   try {
     const existing = await getScimUserById(id);
@@ -180,6 +197,10 @@ export async function handleScimPatchUser(req: Request, id: string): Promise<Res
   const applied = applyScimPatchOperations(operations);
   if (!applied.ok) {
     return scimErrorResponse(400, applied.detail);
+  }
+  const lenCheck = validateScimStringFields(applied.patch);
+  if (!lenCheck.ok) {
+    return scimErrorResponse(400, lenCheck.detail);
   }
   try {
     const existing = await getScimUserById(id);

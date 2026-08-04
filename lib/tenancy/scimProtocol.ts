@@ -11,6 +11,11 @@ export const SCIM_CONTENT_TYPE = 'application/scim+json';
 export const SCIM_DEFAULT_COUNT = 50;
 export const SCIM_MAX_COUNT = 100;
 
+/** Field caps at SCIM HTTP boundary (DB columns are unbounded text). */
+export const SCIM_MAX_EMAIL_LEN = 320;
+export const SCIM_MAX_DISPLAY_NAME_LEN = 256;
+export const SCIM_MAX_EXTERNAL_ID_LEN = 255;
+
 export type ScimUserResource = {
   schemas: string[];
   id: string;
@@ -284,11 +289,10 @@ export function applyScimPatchOperations(operations: unknown): {
       patch.externalId = value;
       continue;
     }
-    // No path: value is partial resource
+    // No path: value is partial resource (userName wins over emails)
     if (!path && value && typeof value === 'object') {
       const v = value as Record<string, unknown>;
       if (typeof v.active === 'boolean') patch.active = v.active;
-      if (typeof v.userName === 'string') patch.email = v.userName;
       if (typeof v.displayName === 'string') patch.displayName = v.displayName;
       if (typeof v.externalId === 'string') patch.externalId = v.externalId;
       if (v.externalId === null) patch.externalId = null;
@@ -296,12 +300,47 @@ export function applyScimPatchOperations(operations: unknown): {
         const ev = (v.emails[0] as { value?: string }).value;
         if (typeof ev === 'string') patch.email = ev;
       }
+      if (typeof v.userName === 'string') patch.email = v.userName;
       continue;
     }
     return { ok: false, detail: `Unsupported path: ${op.path}` };
   }
 
   return { ok: true, patch };
+}
+
+export type ScimStringFields = {
+  email?: string;
+  displayName?: string | null;
+  externalId?: string | null;
+};
+
+/** Reject oversized SCIM string fields (fail closed with detail). */
+export function validateScimStringFields(
+  fields: ScimStringFields,
+): { ok: true } | { ok: false; detail: string } {
+  if (fields.email !== undefined && fields.email.length > SCIM_MAX_EMAIL_LEN) {
+    return { ok: false, detail: `userName/email must be <= ${SCIM_MAX_EMAIL_LEN} characters` };
+  }
+  if (
+    fields.displayName != null &&
+    fields.displayName.length > SCIM_MAX_DISPLAY_NAME_LEN
+  ) {
+    return {
+      ok: false,
+      detail: `displayName must be <= ${SCIM_MAX_DISPLAY_NAME_LEN} characters`,
+    };
+  }
+  if (
+    fields.externalId != null &&
+    fields.externalId.length > SCIM_MAX_EXTERNAL_ID_LEN
+  ) {
+    return {
+      ok: false,
+      detail: `externalId must be <= ${SCIM_MAX_EXTERNAL_ID_LEN} characters`,
+    };
+  }
+  return { ok: true };
 }
 
 export function serviceProviderConfig() {

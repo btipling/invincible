@@ -98,10 +98,12 @@ export default async function AdminPage() {
 
   const { tenant, role, user, sandboxes, canRotate } = result.value;
   let roster: Awaited<ReturnType<typeof listUsersForAdmin>> = [];
+  let rosterError: string | null = null;
   try {
     roster = await listUsersForAdmin();
   } catch {
     roster = [];
+    rosterError = 'Could not load users (database unavailable).';
   }
 
   return (
@@ -161,6 +163,11 @@ export default async function AdminPage() {
         <h2 id="users-heading" style={{ margin: '0 0 12px', fontSize: 16 }}>
           Users
         </h2>
+        {rosterError ? (
+          <p role="alert" style={{ color: ember.accent, margin: '0 0 12px', fontSize: 13 }}>
+            {rosterError}
+          </p>
+        ) : null}
         <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 420 }}>
             <thead>
@@ -174,7 +181,9 @@ export default async function AdminPage() {
               {roster.length === 0 ? (
                 <tr>
                   <td style={tdStyle()} colSpan={3}>
-                    <span style={{ color: teal.muted }}>No users found.</span>
+                    <span style={{ color: rosterError ? ember.accent : teal.muted }}>
+                      {rosterError ? 'User list unavailable.' : 'No users found.'}
+                    </span>
                   </td>
                 </tr>
               ) : (
