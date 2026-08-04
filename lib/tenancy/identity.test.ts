@@ -17,6 +17,9 @@ import {
   scimCreateUser,
   scimSuspendUser,
   scimUpdateUser,
+  listScimUsers,
+  listUsersForAdmin,
+  getScimUserById,
 } from './identity';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -316,4 +319,40 @@ describe('identity helpers (pglite)', () => {
       ),
     ).rejects.toMatchObject({ code: 'conflict' });
   });
+
+  it('listScimUsers only SCIM-managed; listUsersForAdmin shows all', async () => {
+    const hash = await hashPassword('p');
+    await db.insert(schema.users).values({
+      email: 'cred@example.com',
+      status: 'active',
+      passwordHash: hash,
+      provisionSource: 'credentials',
+    });
+    const scim = await scimCreateUser(
+      { email: 'listed-scim@example.com', externalId: 'list-ext' },
+      { db: db as never },
+    );
+    const listed = await listScimUsers({}, { db: db as never });
+    expect(listed.users.some((u) => u.id === scim.id)).toBe(true);
+    expect(listed.users.every((u) => u.provisionSource === 'scim' || u.scimExternalId)).toBe(
+      true,
+    );
+    expect(listed.users.some((u) => u.email === 'cred@example.com')).toBe(false);
+
+    const filtered = await listScimUsers(
+      { filter: { kind: 'userName', value: 'listed-scim@example.com' } },
+      { db: db as never },
+    );
+    expect(filtered.totalResults).toBe(1);
+    expect(filtered.users[0]?.id).toBe(scim.id);
+
+    const admin = await listUsersForAdmin({ db: db as never });
+    expect(admin.some((u) => u.email === 'cred@example.com')).toBe(true);
+    expect(admin.some((u) => u.email === 'listed-scim@example.com')).toBe(true);
+
+    expect(await getScimUserById(scim.id, { db: db as never })).not.toBeNull();
+    const cred = admin.find((u) => u.email === 'cred@example.com')!;
+    expect(await getScimUserById(cred.id, { db: db as never })).toBeNull();
+  });
+
 });
