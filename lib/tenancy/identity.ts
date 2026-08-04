@@ -2,7 +2,7 @@
  * SSO/SCIM identity helpers (parent #64 / phase #75).
  * Pure + DB only — no OIDC provider, no SCIM HTTP.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import {
   createDbConnection,
   tenantMembers,
@@ -322,6 +322,7 @@ export async function findOrCreateOidcUser(
         }
         try {
           // Preserve provision_source (e.g. scim) — only set idp_subject + name.
+          // Require idp_subject still null so concurrent links fail closed.
           const [linked] = await db
             .update(users)
             .set({
@@ -329,11 +330,20 @@ export async function findOrCreateOidcUser(
               name: name ?? byEmail[0].name,
               updatedAt: new Date(),
             })
-            .where(eq(users.id, byEmail[0].id))
+            .where(
+              and(eq(users.id, byEmail[0].id), isNull(users.idpSubject)),
+            )
             .returning();
+          if (!linked) {
+            throw new IdentityError(
+              'email already linked to a different idp_subject',
+              'conflict',
+            );
+          }
           await ensureDefaultTenantMembership(linked.id, 'member', { db });
           return { user: linked, created: false };
         } catch (err) {
+          if (err instanceof IdentityError) throw err;
           const msg = err instanceof Error ? err.message : String(err);
           if (/unique|duplicate/i.test(msg)) {
             throw new IdentityError(

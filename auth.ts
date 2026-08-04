@@ -45,12 +45,9 @@ function buildOidcProvider(): OIDCConfig<OidcProfile> {
       params: { scope: 'openid email profile' },
     },
     profile(profile) {
-      const email =
-        typeof profile.email === 'string'
-          ? profile.email
-          : typeof profile.preferred_username === 'string'
-            ? profile.preferred_username
-            : '';
+      // Email claim only — never preferred_username (not an email; email_verified
+      // does not attest it). Missing email → signIn fails closed.
+      const email = typeof profile.email === 'string' ? profile.email.trim() : '';
       return {
         id: profile.sub ?? '',
         email: email || null,

@@ -62,19 +62,20 @@ export default async function LoginPage({
         <p style={{ margin: '0 0 20px', fontSize: 14, color: teal.muted }}>
           Sign in to use the harness
         </p>
-        {params.error ? (
-          <p
-            role="alert"
-            style={{
-              margin: '0 0 12px',
-              minHeight: '1.35em',
-              color: ember.accent,
-              fontSize: 14,
-            }}
-          >
-            Sign-in was denied. Try again or use credentials.
-          </p>
-        ) : null}
+        <p
+          role={params.error ? 'alert' : undefined}
+          style={{
+            margin: '0 0 12px',
+            minHeight: '1.35em',
+            color: ember.accent,
+            fontSize: 14,
+            lineHeight: 1.35,
+          }}
+        >
+          {params.error
+            ? 'Sign-in was denied. Try again or use credentials.'
+            : ' '}
+        </p>
         <LoginForm callbackUrl={callbackUrl} oidc={oidc} />
       </div>
     </main>

@@ -207,6 +207,23 @@ describe('identity helpers (pglite)', () => {
     ).rejects.toMatchObject({ code: 'conflict' });
   });
 
+  it('findOrCreateOidcUser JIT-creates when email is new even if emailVerified false', async () => {
+    const subject = normalizeIdpSubject('https://idp.example', 'jit-unverified');
+    const created = await findOrCreateOidcUser(
+      {
+        subject,
+        email: 'jit-new@example.com',
+        name: 'JIT New',
+        emailVerified: false,
+      },
+      { db: db as never },
+    );
+    expect(created.created).toBe(true);
+    expect(created.user.email).toBe('jit-new@example.com');
+    expect(created.user.idpSubject).toBe(subject);
+    expect(created.user.provisionSource).toBe('oidc');
+  });
+
   it('findOrCreateOidcUser refuses email-link without emailVerified', async () => {
     const hash = await hashPassword('u');
     await db.insert(schema.users).values({
