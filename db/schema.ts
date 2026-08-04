@@ -22,6 +22,15 @@ export const tenants = pgTable('tenants', {
   slug: text('slug').notNull().unique(),
   name: text('name').notNull(),
   settings: jsonb('settings').notNull().default({}),
+  /**
+   * AMK-wrapped tenant DEK (`encryptSecret` format: v1:iv:ct:tag).
+   * Null until ensureTenantDek / backfill; never log plaintext DEK.
+   */
+  dekCiphertext: text('dek_ciphertext'),
+  /** Tenant DEK version; written into sandboxes.token_kek_version after DEK encrypt. */
+  dekVersion: integer('dek_version').notNull().default(1),
+  /** AMK version that wraps dek_ciphertext (env KEK generation). */
+  amkVersion: integer('amk_version').notNull().default(1),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

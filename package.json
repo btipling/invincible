@@ -15,7 +15,8 @@
     "db:generate": "npx --yes drizzle-kit@0.31.10 generate",
     "db:migrate": "npx --yes drizzle-kit@0.31.10 migrate",
     "db:seed": "tsx scripts/seed-tenancy.ts",
-    "smoke:tenancy": "node scripts/smoke-tenancy-public.mjs"
+    "smoke:tenancy": "node scripts/smoke-tenancy-public.mjs",
+    "db:backfill-deks": "tsx scripts/backfill-tenant-deks.ts"
   },
   "dependencies": {
     "ai": "^5.0.0",

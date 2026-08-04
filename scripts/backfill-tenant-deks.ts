@@ -1,0 +1,44 @@
+/**
+ * Operator CLI: backfill tenant DEKs + re-encrypt sandbox tokens under DEKs.
+ *
+ * PRODUCTION GATE (parent #92 / phase #93):
+ * Do **not** run this against origin Production while the live app still decrypts
+ * sandbox tokens with AMK only. That re-encrypts tokens under tenant DEKs and
+ * breaks resolve/login/tools until a dual-read (phase 2) or DEK-only app is live.
+ *
+ * Safe on: PGlite tests, throwaway DBs, or Production **after** phase 2 dual-read.
+ *
+ * Env: DATABASE_URL, CREDENTIALS_ENCRYPTION_KEY (AMK dual-store identity).
+ * Prints counts only — never logs secrets.
+ */
+import { createDbConnection } from '../db';
+import { backfillTenantDeks } from '../lib/tenancy/tenantKeys';
+
+async function main(): Promise<void> {
+  if (!process.env.DATABASE_URL?.trim()) {
+    console.error('DATABASE_URL is required');
+    process.exit(1);
+  }
+  if (!process.env.CREDENTIALS_ENCRYPTION_KEY?.trim()) {
+    console.error('CREDENTIALS_ENCRYPTION_KEY is required');
+    process.exit(1);
+  }
+
+  const { db, client } = createDbConnection();
+  try {
+    const result = await backfillTenantDeks({ db });
+    console.log(
+      JSON.stringify({
+        tenantsUpdated: result.tenantsUpdated,
+        sandboxesReencrypted: result.sandboxesReencrypted,
+      }),
+    );
+  } finally {
+    await client.end({ timeout: 5 });
+  }
+}
+
+main().catch((err) => {
+  console.error(err instanceof Error ? err.message : 'backfill failed');
+  process.exit(1);
+});

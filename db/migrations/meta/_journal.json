@@ -15,6 +15,13 @@
       "when": 1785805733133,
       "tag": "0001_sso_scim_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785840000000,
+      "tag": "0002_tenant_deks",
+      "breakpoints": true
     }
   ]
 }
