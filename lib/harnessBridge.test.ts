@@ -30,6 +30,8 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
   const messages: { kind: number; text: string }[] = [];
   let echo = '';
   let pending: string | null = null;
+  const catalog: string[] = [];
+  let selected = 0;
 
   const gpa_u8 = (len: number) => {
     if (len <= 0) return 0;
@@ -94,6 +96,37 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     },
     inv_ack_pending_submit: () => {
       pending = null;
+    },
+    inv_clear_model_catalog: () => {
+      catalog.length = 0;
+      selected = 0;
+    },
+    inv_push_model_catalog_entry: (ptr: number, len: number) => {
+      if (len <= 0 || len > 128 || catalog.length >= 64) return 0;
+      const id = read(ptr, len);
+      if (!id || /[\x00-\x20\x7f-\xff]/.test(id)) return 0;
+      catalog.push(id);
+      if (catalog.length === 1) selected = 0;
+      return 1;
+    },
+    inv_model_catalog_count: () => catalog.length,
+    inv_selected_model_len: () => {
+      if (catalog.length === 0) return 0;
+      const idx = Math.min(selected, catalog.length - 1);
+      return catalog[idx].length;
+    },
+    inv_selected_model_copy: (outPtr: number, maxLen: number) => {
+      if (catalog.length === 0) return 0;
+      const idx = Math.min(selected, catalog.length - 1);
+      const id = catalog[idx];
+      const n = Math.min(maxLen, id.length);
+      if (n > 0) write(outPtr, id.slice(0, n));
+      return n;
+    },
+    inv_cycle_selected_model: () => {
+      if (catalog.length <= 1) return selected;
+      selected = (selected + 1) % catalog.length;
+      return selected;
     },
     __messages: messages,
     __setPending: (s) => {
@@ -226,5 +259,44 @@ describe('hydrateMessages (protocol v2)', () => {
     expect(exp.__messages.map((m) => m.text)).toEqual(['a', 'b']);
     expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
     expect(bridge.messageCount()).toBe(2);
+  });
+});
+
+
+describe('model catalog protocol v3', () => {
+  it('setModelCatalog + getSelectedModel round-trip', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setModelCatalog(['anthropic/claude-a', 'openai/gpt-b']);
+    expect(bridge.modelCatalogCount()).toBe(2);
+    expect(bridge.getSelectedModel()).toBe('anthropic/claude-a');
+    bridge.cycleSelectedModel();
+    expect(bridge.getSelectedModel()).toBe('openai/gpt-b');
+  });
+
+  it('catalog replace drops missing selection to first', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setModelCatalog(['a/m1', 'a/m2']);
+    bridge.cycleSelectedModel();
+    expect(bridge.getSelectedModel()).toBe('a/m2');
+    bridge.setModelCatalog(['b/only']);
+    expect(bridge.getSelectedModel()).toBe('b/only');
+  });
+
+  it('rejects empty / oversize entry', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    expect(bridge.pushModelCatalogEntry('')).toBe(false);
+    expect(bridge.pushModelCatalogEntry('x'.repeat(200))).toBe(false);
+    expect(bridge.modelCatalogCount()).toBe(0);
+  });
+
+  it('protocol mismatch fails assertRoundTrip', () => {
+    const exp = makeMockExports({
+      inv_protocol_version: () => 2,
+    });
+    const bridge = new HarnessBridge(exp);
+    expect(() => bridge.assertRoundTrip()).toThrow(/protocol mismatch/);
   });
 });

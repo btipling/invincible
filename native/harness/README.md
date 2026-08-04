@@ -83,6 +83,8 @@ Host is dvui’s `web.js`. Required exports (app + backend):
 | `inv_push_message` / `inv_clear_messages` / … | Transcript ring buffer |
 | `inv_echo*` | UTF-8 round-trip stub |
 | `inv_has_pending_submit` / `inv_pending_submit_*` / `inv_ack_pending_submit` | Host polls user submits |
+| `inv_clear_model_catalog` / `inv_push_model_catalog_entry` / `inv_model_catalog_count` | Protocol v3 model catalog |
+| `inv_selected_model_len` / `inv_selected_model_copy` / `inv_cycle_selected_model` | Protocol v3 selection |
 
 Whitelist: `build.zig` → `export_symbol_names` (Zig 0.16 freestanding + `entry = .disabled` strips unrooted exports).
 
@@ -93,7 +95,7 @@ Inference stays on the host: `POST /api/chat` and `POST /api/agent` hold
 
 | | |
 |--|--|
-| **Protocol version** | `2` |
+| **Protocol version** | `3` |
 | **TS** | `lib/harnessBridge.ts` |
 | **Zig** | `src/bridge.zig` |
 | **Host** | `app/harness/HarnessHost.tsx` (shell: load + bridge + APIs) |

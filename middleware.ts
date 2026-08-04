@@ -5,7 +5,7 @@ import { tenancyEnabled } from './lib/tenancy/enabled';
 import { AUTH_REQUIRED_ERROR } from './lib/tenancy/errors';
 
 function isApiProtected(pathname: string): boolean {
-  return pathname === '/api/chat' || pathname === '/api/agent';
+  return pathname === '/api/chat' || pathname === '/api/agent' || pathname === '/api/models';
 }
 
 function isPageProtected(pathname: string): boolean {
@@ -91,5 +91,6 @@ export const config = {
     '/admin/:path*',
     '/api/chat',
     '/api/agent',
+    '/api/models',
   ],
 };

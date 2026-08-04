@@ -87,4 +87,21 @@ describe('sendChat', () => {
     const result = await sendChat('x');
     expect(result).toEqual({ ok: false, status: 500, error: 'no key' });
   });
+
+  it('includes modelId when provided', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ text: 'ok' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await sendChat('hi', { modelId: 'anthropic/claude-a' });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/chat',
+      expect.objectContaining({
+        body: JSON.stringify({ prompt: 'hi', modelId: 'anthropic/claude-a' }),
+      }),
+    );
+  });
 });

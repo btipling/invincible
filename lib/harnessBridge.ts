@@ -10,10 +10,14 @@
  */
 
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
-export const HARNESS_PROTOCOL_VERSION = 2 as const;
+export const HARNESS_PROTOCOL_VERSION = 3 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
+
+/** Must match Zig `MAX_CATALOG` / `MAX_MODEL_ID_LEN`. */
+export const MAX_MODEL_CATALOG = 64 as const;
+export const MAX_MODEL_ID_LEN = 128 as const;
 
 export enum Lifecycle {
   Boot = 0,
@@ -72,6 +76,12 @@ export type HarnessBridgeExports = {
   inv_pending_submit_len: () => number;
   inv_pending_submit_copy: (outPtr: number, maxLen: number) => number;
   inv_ack_pending_submit: () => void;
+  inv_clear_model_catalog: () => void;
+  inv_push_model_catalog_entry: (ptr: number, len: number) => number;
+  inv_model_catalog_count: () => number;
+  inv_selected_model_len: () => number;
+  inv_selected_model_copy: (outPtr: number, maxLen: number) => number;
+  inv_cycle_selected_model: () => number;
 };
 
 const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
@@ -93,6 +103,12 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_pending_submit_len',
   'inv_pending_submit_copy',
   'inv_ack_pending_submit',
+  'inv_clear_model_catalog',
+  'inv_push_model_catalog_entry',
+  'inv_model_catalog_count',
+  'inv_selected_model_len',
+  'inv_selected_model_copy',
+  'inv_cycle_selected_model',
 ];
 
 function isMemoryLike(v: unknown): v is WasmMemoryLike {
@@ -267,6 +283,56 @@ export class HarnessBridge {
     } finally {
       this.exports.gpa_free(ptr, len);
     }
+  }
+
+
+  clearModelCatalog(): void {
+    this.exports.inv_clear_model_catalog();
+  }
+
+  /**
+   * Push one model id into the Wasm catalog. Returns false if rejected.
+   */
+  pushModelCatalogEntry(modelId: string): boolean {
+    const id = modelId.trim();
+    if (!id || id.length > MAX_MODEL_ID_LEN) return false;
+    const { ptr, len } = this.writeUtf8(id);
+    try {
+      return this.exports.inv_push_model_catalog_entry(ptr, len) !== 0;
+    } finally {
+      if (len > 0) this.exports.gpa_free(ptr, len);
+    }
+  }
+
+  /** Replace catalog with the given model ids (clears first). */
+  setModelCatalog(modelIds: string[]): void {
+    this.clearModelCatalog();
+    for (const id of modelIds) {
+      this.pushModelCatalogEntry(id);
+    }
+  }
+
+  modelCatalogCount(): number {
+    return this.exports.inv_model_catalog_count() >>> 0;
+  }
+
+  /** Selected model id, or null if catalog empty. */
+  getSelectedModel(): string | null {
+    const len = this.exports.inv_selected_model_len() >>> 0;
+    if (len === 0) return null;
+    const ptr = this.exports.gpa_u8(len);
+    if (!ptr) throw new Error('gpa_u8 failed for selected model');
+    try {
+      const copied = this.exports.inv_selected_model_copy(ptr, len);
+      const text = this.readUtf8(ptr, copied).trim();
+      return text.length > 0 ? text : null;
+    } finally {
+      this.exports.gpa_free(ptr, len);
+    }
+  }
+
+  cycleSelectedModel(): number {
+    return this.exports.inv_cycle_selected_model() >>> 0;
   }
 
   /**

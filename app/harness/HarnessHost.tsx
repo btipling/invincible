@@ -5,7 +5,6 @@
  * Product transcript + composer live in Zig/dvui (see docs/feature-divide.md).
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { DEFAULT_MODEL_LABEL } from '../../lib/chatApi';
 import { runHarnessTurn, pushSessionToBridge } from '../../lib/harnessChat';
 import {
   HarnessBridge,
@@ -43,6 +42,25 @@ async function loadDvuiGlue(): Promise<DvuiModule> {
   return import(/* webpackIgnore: true */ /* @vite-ignore */ href) as Promise<DvuiModule>;
 }
 
+function shortModelChip(id: string | null, max = 28): string {
+  if (!id) return 'no model';
+  return id.length <= max ? id : `${id.slice(0, max - 1)}…`;
+}
+
+async function fetchModelCatalog(): Promise<string[]> {
+  try {
+    const res = await fetch('/api/models', { credentials: 'same-origin' });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { models?: { id?: string }[] };
+    if (!Array.isArray(data.models)) return [];
+    return data.models
+      .map((m) => (typeof m?.id === 'string' ? m.id.trim() : ''))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bridgeRef = useRef<HarnessBridge | null>(null);
@@ -62,6 +80,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const [storeKind, setStoreKind] = useState<string>('memory');
   const [loadMs, setLoadMs] = useState<number | null>(null);
   const [hostNote, setHostNote] = useState<string | null>(null);
+  const [modelChip, setModelChip] = useState<string>('…');
 
   const persist = useCallback((next: SessionSnapshot) => {
     sessionRef.current = next;
@@ -73,6 +92,21 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       const bridge = bridgeRef.current;
       if (!bridge || inflightRef.current) return;
 
+      const modelId = bridge.getSelectedModel();
+      if (!modelId) {
+        setHostNote('No model selected — catalog empty or not granted.');
+        try {
+          bridge.pushMessage(
+            MessageKind.Error,
+            'No model available. Ask an admin for an inference grant.',
+          );
+          bridge.setLifecycle(Lifecycle.Ready);
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -80,6 +114,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       setBusy(true);
       setHostNote(null);
       setLifecycle(lifecycleName(Lifecycle.Busy));
+      setModelChip(shortModelChip(modelId));
 
       try {
         const { result, session: next } = await runHarnessTurn(
@@ -90,6 +125,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             signal: controller.signal,
             // Wasm already painted the user line in queueSubmitFromUi.
             pushUser: false,
+            modelId,
           },
         );
         if (controller.signal.aborted) return;
@@ -138,6 +174,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         bridgeRef.current = bridge;
 
         bridge.assertRoundTrip('hello-bridge');
+
+        // Catalog before Ready so first paint has models (protocol v3).
+        const catalogIds = await fetchModelCatalog();
+        if (cancelled) return;
+        bridge.setModelCatalog(catalogIds);
+        setModelChip(shortModelChip(bridge.getSelectedModel()));
+
         bridge.setLifecycle(Lifecycle.Ready);
 
         const restored = store.load();
@@ -148,9 +191,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           const empty = createEmptySession();
           sessionRef.current = empty;
           bridge.clearMessages();
+          const sel = bridge.getSelectedModel();
           bridge.pushMessage(
             MessageKind.System,
-            `Invincible harness · ${DEFAULT_MODEL_LABEL} · type below, Enter to send`,
+            sel
+              ? `Invincible harness · ${sel} · type below, Enter to send · use Next in the canvas header to cycle`
+              : 'Invincible harness · no models granted — ask a tenant admin for inference access',
           );
         }
 
@@ -161,9 +207,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           if (cancelled) return;
           const b = bridgeRef.current;
           if (b) {
-            // Reflect Wasm lifecycle on host chip (busy set by canvas submit).
+            // Reflect Wasm lifecycle + selected model on host chips.
             try {
               setLifecycle(lifecycleName(b.getLifecycle()));
+              setModelChip(shortModelChip(b.getSelectedModel()));
             } catch {
               /* ignore */
             }
@@ -276,10 +323,14 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                   background: warm.surface,
                   borderRadius: 4,
                   padding: '0.2rem 0.45rem',
+                  maxWidth: 160,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
                 }}
-                title="Server routes this model via AI Gateway"
+                title="Selected model (change in canvas header)"
               >
-                {DEFAULT_MODEL_LABEL}
+                {modelChip}
               </span>
               <span
                 style={{

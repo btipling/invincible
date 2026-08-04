@@ -32,7 +32,7 @@ export type AgentResult = AgentSuccess | AgentFailure;
 
 export type SendAgentFn = (
   prompt: string,
-  init?: { signal?: AbortSignal; path?: string },
+  init?: { signal?: AbortSignal; path?: string; modelId?: string },
 ) => Promise<AgentResult>;
 
 /** Soft cap on raw toolTrace entries accepted from the wire (host still displays ≤6). */
@@ -55,11 +55,15 @@ function parseToolTrace(raw: unknown): ToolTraceEntry[] | undefined {
 
 /**
  * Call the multi-step agent endpoint.
- * Expects JSON `{ prompt }` and `{ text, toolTrace? }` or `{ error }`.
+ * Expects JSON `{ prompt, modelId? }` and `{ text, toolTrace? }` or `{ error }`.
  */
 export const sendAgent: SendAgentFn = async (prompt, init) => {
   const path = init?.path ?? '/api/agent';
-  const body = { prompt: normalizePrompt(prompt) };
+  const body: { prompt: string; modelId?: string } = {
+    prompt: normalizePrompt(prompt),
+  };
+  const mid = init?.modelId?.trim();
+  if (mid) body.modelId = mid;
 
   let res: Response;
   try {

@@ -69,7 +69,7 @@ User types in Wasm composer
 | Concern | Path |
 |---------|------|
 | Host shell | `app/harness/HarnessHost.tsx` |
-| Bridge TS (protocol **v2**) | `lib/harnessBridge.ts` |
+| Bridge TS (protocol **v3**) | `lib/harnessBridge.ts` |
 | Chat turn | `lib/harnessChat.ts` |
 | Session | `lib/sessionStore.ts` |
 | Zig UI | `native/harness/src/ui.zig` |
@@ -77,7 +77,7 @@ User types in Wasm composer
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
 | Export whitelist | `native/harness/build.zig` |
 
-Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently
+Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **3**).
 **2**). Mismatch → load error; rebuild both sides.
 
 ## Related

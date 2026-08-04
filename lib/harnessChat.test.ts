@@ -77,6 +77,12 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_pending_submit_len: () => 0,
     inv_pending_submit_copy: () => 0,
     inv_ack_pending_submit: () => {},
+    inv_clear_model_catalog: () => {},
+    inv_push_model_catalog_entry: () => 0,
+    inv_model_catalog_count: () => 0,
+    inv_selected_model_len: () => 0,
+    inv_selected_model_copy: () => 0,
+    inv_cycle_selected_model: () => 0,
     __messages: messages,
     __lifecycle: () => lifecycle,
   };
@@ -491,3 +497,16 @@ describe('runHarnessTurn', () => {
     expect(next.messages.some((m) => m.role === 'error')).toBe(true);
     expect(mock.__messages.some((m) => m.kind === MessageKind.Error)).toBe(true);
   });
+
+describe('modelId forwarding', () => {
+  it('forwards modelId to send', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const send = vi.fn(async (): Promise<ChatResult> => ({ ok: true, text: 'ok' }));
+    await runHarnessChat(bridge, 'hi', { send, modelId: 'anthropic/claude-a' });
+    expect(send).toHaveBeenCalledWith(
+      'hi',
+      expect.objectContaining({ modelId: 'anthropic/claude-a' }),
+    );
+  });
+});

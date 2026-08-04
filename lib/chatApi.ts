@@ -5,6 +5,7 @@
 
 export type ChatRequest = {
   prompt: string;
+  modelId?: string;
 };
 
 export type ChatSuccess = {
@@ -36,14 +37,16 @@ export function validatePrompt(raw: string): string | null {
 
 /**
  * Call the Phase 1 chat endpoint.
- * Expects JSON body `{ prompt }` and response `{ text }` or `{ error }`.
+ * Expects JSON body `{ prompt, modelId? }` and response `{ text }` or `{ error }`.
  */
 export async function sendChat(
   prompt: string,
-  init?: { signal?: AbortSignal; path?: string },
+  init?: { signal?: AbortSignal; path?: string; modelId?: string },
 ): Promise<ChatResult> {
   const path = init?.path ?? '/api/chat';
   const body: ChatRequest = { prompt: normalizePrompt(prompt) };
+  const mid = init?.modelId?.trim();
+  if (mid) body.modelId = mid;
 
   let res: Response;
   try {
