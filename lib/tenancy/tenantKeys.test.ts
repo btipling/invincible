@@ -9,6 +9,7 @@ import * as schema from '../../db/schema';
 import { sandboxes, tenants } from '../../db/schema';
 import {
   CredentialsError,
+  CURRENT_KEK_VERSION,
   decryptSecret,
   encryptSecret,
 } from './credentials';
@@ -116,11 +117,15 @@ describe('tenantKeys (pglite)', () => {
     expect(second.dek.equals(first.dek)).toBe(true);
 
     const row = await db
-      .select({ ct: tenants.dekCiphertext })
+      .select({
+        ct: tenants.dekCiphertext,
+        amkVer: tenants.amkVersion,
+      })
       .from(tenants)
       .where(eq(tenants.id, id))
       .limit(1);
     expect(row[0]?.ct).toBeTruthy();
+    expect(row[0]?.amkVer).toBe(CURRENT_KEK_VERSION);
     expect(unwrapTenantDek(row[0]!.ct!, amk).equals(first.dek)).toBe(true);
   });
 
@@ -190,11 +195,13 @@ describe('tenantKeys (pglite)', () => {
       .select({
         ct: tenants.dekCiphertext,
         ver: tenants.dekVersion,
+        amkVer: tenants.amkVersion,
       })
       .from(tenants)
       .where(eq(tenants.id, id))
       .limit(1);
     expect(tenantRow[0]?.ct).toBeTruthy();
+    expect(tenantRow[0]?.amkVer).toBe(CURRENT_KEK_VERSION);
     const dek = unwrapTenantDek(tenantRow[0]!.ct!, amk);
 
     const sb = await db
@@ -214,5 +221,22 @@ describe('tenantKeys (pglite)', () => {
     const second = await backfillTenantDeks({ db: db as never, amk });
     expect(second.tenantsUpdated).toBe(0);
     expect(second.sandboxesReencrypted).toBe(0);
+  });
+
+  it('backfill fails closed on corrupt sandbox token (no silent skip)', async () => {
+    const id = await insertTenant('t-corrupt');
+    await db.insert(sandboxes).values({
+      tenantId: id,
+      name: 'Default',
+      slug: 'default',
+      baseUrl: 'http://127.0.0.1:8787/',
+      tokenCiphertext: 'v1:not:valid:ciphertext',
+      tokenKekVersion: 1,
+      status: 'active',
+    });
+
+    await expect(
+      backfillTenantDeks({ db: db as never, amk }),
+    ).rejects.toThrow(/AMK and tenant DEK/);
   });
 });

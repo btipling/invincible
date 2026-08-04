@@ -15,6 +15,7 @@ import {
 } from '../../db';
 import {
   CredentialsError,
+  CURRENT_KEK_VERSION,
   decryptSecret,
   encryptSecret,
   resolveCredentialsKey,
@@ -32,6 +33,9 @@ export type TenantDek = {
   dek: Buffer;
   version: number;
 };
+
+/** Drizzle transaction handle (postgres-js or PGlite). */
+type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
 function resolveAmk(deps: TenantKeyDeps): Buffer {
   return deps.amk ?? resolveCredentialsKey();
@@ -76,22 +80,65 @@ export function wrapTenantDek(dek: Buffer, amk?: Buffer): string {
 
 /**
  * Unwrap AMK-wrapped DEK. Enforces 32-byte length after base64 decode.
+ * Note: Node `Buffer.from(…, 'base64')` never throws — invalid input yields a
+ * shorter buffer and is rejected by the length check.
  */
 export function unwrapTenantDek(ciphertext: string, amk?: Buffer): Buffer {
   const key = amk ?? resolveCredentialsKey();
   const b64 = decryptSecret(ciphertext, key);
-  let dek: Buffer;
-  try {
-    dek = Buffer.from(b64, 'base64');
-  } catch {
-    throw new CredentialsError('invalid DEK encoding');
-  }
+  const dek = Buffer.from(b64, 'base64');
   if (dek.length !== DEK_LENGTH) {
     throw new CredentialsError(
       `unwrapped DEK must be ${DEK_LENGTH} bytes (got ${dek.length})`,
     );
   }
   return dek;
+}
+
+/**
+ * Ensure tenant DEK inside an open transaction (SELECT … FOR UPDATE).
+ * Never overwrites a non-null dek_ciphertext.
+ * Stamps amk_version to CURRENT_KEK_VERSION on first wrap.
+ */
+async function ensureTenantDekInTx(
+  tx: DbTx,
+  tenantId: string,
+  amk: Buffer,
+): Promise<TenantDek & { created: boolean }> {
+  const rows = await tx
+    .select({
+      id: tenants.id,
+      dekCiphertext: tenants.dekCiphertext,
+      dekVersion: tenants.dekVersion,
+    })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .for('update')
+    .limit(1);
+
+  const row = rows[0];
+  if (!row) {
+    throw new CredentialsError('tenant not found');
+  }
+
+  if (row.dekCiphertext) {
+    const dek = unwrapTenantDek(row.dekCiphertext, amk);
+    return { dek, version: row.dekVersion, created: false };
+  }
+
+  const dek = generateTenantDek();
+  const wrapped = wrapTenantDek(dek, amk);
+  const version = row.dekVersion;
+
+  await tx
+    .update(tenants)
+    .set({
+      dekCiphertext: wrapped,
+      amkVersion: CURRENT_KEK_VERSION,
+    })
+    .where(eq(tenants.id, tenantId));
+
+  return { dek, version, created: true };
 }
 
 /**
@@ -110,37 +157,8 @@ export async function ensureTenantDek(
 
   return withDb(deps, async (db) => {
     return db.transaction(async (tx) => {
-      const rows = await tx
-        .select({
-          id: tenants.id,
-          dekCiphertext: tenants.dekCiphertext,
-          dekVersion: tenants.dekVersion,
-        })
-        .from(tenants)
-        .where(eq(tenants.id, id))
-        .for('update')
-        .limit(1);
-
-      const row = rows[0];
-      if (!row) {
-        throw new CredentialsError('tenant not found');
-      }
-
-      if (row.dekCiphertext) {
-        const dek = unwrapTenantDek(row.dekCiphertext, amk);
-        return { dek, version: row.dekVersion };
-      }
-
-      const dek = generateTenantDek();
-      const wrapped = wrapTenantDek(dek, amk);
-      const version = row.dekVersion;
-
-      await tx
-        .update(tenants)
-        .set({ dekCiphertext: wrapped })
-        .where(eq(tenants.id, id));
-
-      return { dek, version };
+      const result = await ensureTenantDekInTx(tx, id, amk);
+      return { dek: result.dek, version: result.version };
     });
   });
 }
@@ -213,10 +231,12 @@ export type BackfillResult = {
 
 /**
  * Idempotent: ensure DEK for every tenant; re-encrypt legacy AMK sandbox tokens under DEK.
+ * Each tenant is processed in a single transaction (ensure DEK + all sandbox re-encrypts).
  *
  * PRODUCTION GATE: do **not** run against origin Production while the live app still
  * decrypts sandbox tokens with AMK only (phase 1). Wait until phase 2 dual-read
  * (or maintenance-window DEK-only app) is deployed — see parent #92 cutover.
+ * CLI also requires ALLOW_TENANT_DEK_BACKFILL=1.
  * Safe anytime on PGlite / throwaway DBs.
  *
  * Returns counts only — never logs secrets.
@@ -230,59 +250,64 @@ export async function backfillTenantDeks(
     let tenantsUpdated = 0;
     let sandboxesReencrypted = 0;
 
-    const allTenants = await db
-      .select({
-        id: tenants.id,
-        dekCiphertext: tenants.dekCiphertext,
-      })
-      .from(tenants);
+    const allTenants = await db.select({ id: tenants.id }).from(tenants);
 
     for (const t of allTenants) {
-      const hadDek = Boolean(t.dekCiphertext);
-      const { dek, version } = await ensureTenantDek(t.id, { db, amk });
-      if (!hadDek) {
-        tenantsUpdated += 1;
-      }
+      const tenantCounts = await db.transaction(async (tx) => {
+        let updated = 0;
+        let reencrypted = 0;
 
-      const sbRows = await db
-        .select({
-          id: sandboxes.id,
-          tokenCiphertext: sandboxes.tokenCiphertext,
-        })
-        .from(sandboxes)
-        .where(eq(sandboxes.tenantId, t.id));
+        const ensured = await ensureTenantDekInTx(tx, t.id, amk);
+        if (ensured.created) {
+          updated = 1;
+        }
+        const { dek, version } = ensured;
 
-      for (const sb of sbRows) {
-        let plain: string | null = null;
-        let legacy = false;
+        const sbRows = await tx
+          .select({
+            id: sandboxes.id,
+            tokenCiphertext: sandboxes.tokenCiphertext,
+          })
+          .from(sandboxes)
+          .where(eq(sandboxes.tenantId, t.id));
 
-        try {
-          plain = decryptSecret(sb.tokenCiphertext, amk);
-          legacy = true;
-        } catch {
+        for (const sb of sbRows) {
+          let plain: string | null = null;
+          let legacy = false;
+
           try {
-            decryptSecret(sb.tokenCiphertext, dek);
-            // already under DEK — skip
-            continue;
+            plain = decryptSecret(sb.tokenCiphertext, amk);
+            legacy = true;
           } catch {
-            throw new CredentialsError(
-              'sandbox token decrypt failed under AMK and tenant DEK',
-            );
+            try {
+              decryptSecret(sb.tokenCiphertext, dek);
+              // already under DEK — skip
+              continue;
+            } catch {
+              throw new CredentialsError(
+                'sandbox token decrypt failed under AMK and tenant DEK',
+              );
+            }
+          }
+
+          if (legacy && plain !== null) {
+            const nextCt = encryptSecret(plain, dek);
+            await tx
+              .update(sandboxes)
+              .set({
+                tokenCiphertext: nextCt,
+                tokenKekVersion: version,
+              })
+              .where(eq(sandboxes.id, sb.id));
+            reencrypted += 1;
           }
         }
 
-        if (legacy && plain !== null) {
-          const nextCt = encryptSecret(plain, dek);
-          await db
-            .update(sandboxes)
-            .set({
-              tokenCiphertext: nextCt,
-              tokenKekVersion: version,
-            })
-            .where(eq(sandboxes.id, sb.id));
-          sandboxesReencrypted += 1;
-        }
-      }
+        return { updated, reencrypted };
+      });
+
+      tenantsUpdated += tenantCounts.updated;
+      sandboxesReencrypted += tenantCounts.reencrypted;
     }
 
     return { tenantsUpdated, sandboxesReencrypted };
