@@ -20,7 +20,7 @@ Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-d
 | **Is** | A **separate HTTP daemon** (protocol v1) with a workspace root jail + four tools |
 | **Is** | **BYO** — any operator points `SANDBOX_URL` + `SANDBOX_TOKEN` at **their** process |
 | **Is not** | The Zig **GHA build runner** (`invincible-do-1` / `self-hosted` + `zig` labels) |
-| **Is not** | Multi-tenant **fleet** isolation or MCP (still future). Optional **login tenancy** is separate — [bring-your-own.md §4a](bring-your-own.md#4a-optional-multi-tenant-auth) |
+| **Is not** | Multi-tenant **fleet** isolation or MCP (still future). Optional **login tenancy** is separate — [bring-your-own.md §4a](bring-your-own.md#4a-optional-multi-tenant-auth); optional **OIDC/SCIM** — [§4b](bring-your-own.md#4b-optional-sso-oidc--scim) |
 | **Is not** | Required for basic chat — without env, harness falls back to `POST /api/chat` |
 
 Never put GHA Actions credentials in the sandbox process env. Prefer a dedicated

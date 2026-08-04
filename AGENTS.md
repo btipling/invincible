@@ -64,8 +64,10 @@ home directory. Product copy and plans must not require personal hardware.
   **optional multi-tenant auth** (#54 phases 1–5 + cloud cutover #67), and
   GHA `db-tenancy-bootstrap` + [docs/bring-your-own.md](docs/bring-your-own.md) §4a
   are **landed** on origin Production (unauth API 401 + login verified).
-  **SSO/SCIM** ([#64](https://github.com/btipling/invincible/issues/64)) remains
-  future — still write code and docs as if broader reuse is the destination.
+  **SSO/SCIM** code ([#64](https://github.com/btipling/invincible/issues/64)
+  phases 1–3) is on `main`; **origin** OIDC/SCIM env remains **Not Done** until
+  an operator configures + smokes (see infra table). Still write docs/config as
+  reusable BYO seams — not a single-owner IdP hardcoding.
 - Origin `SANDBOX_*` is **Done** for the reference deploy (private host inventory
   stays offline). Still never invent a host URL; forks set their own env.
 - Origin **tenancy** (`DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`)
@@ -141,6 +143,8 @@ ops inventory).
 | `DATABASE_URL` (Vercel) | **Done** | Pooled Postgres (Neon) for optional tenancy — Production cutover smoke passed (unauth 401 + login); no host inventory in git |
 | `AUTH_SECRET` (Vercel) | **Done** | Auth.js signing secret — Production cutover smoke passed |
 | `CREDENTIALS_ENCRYPTION_KEY` (Vercel) | **Done** | AES-GCM KEK for sandbox tokens at rest — dual-store with GHA; never reuse casually on public Preview |
+| Optional OIDC (`AUTH_OIDC_ISSUER` / `AUTH_OIDC_CLIENT_ID` / `AUTH_OIDC_CLIENT_SECRET` / `AUTH_OIDC_LABEL?`) | **Not Done** | Generic SSO — configure when operator wants IdP login; callback `{origin}/api/auth/callback/oidc`; BYO: [docs/bring-your-own.md](docs/bring-your-own.md) §4b |
+| Optional SCIM (`SCIM_BEARER_TOKEN`) | **Not Done** | SCIM 2.0 Users at `/api/scim/v2` — set only when directory provisioning is intended; fail-closed 404 when unset |
 
 
 **Agent behavior (origin):**
@@ -156,6 +160,11 @@ ops inventory).
   ([docs/bring-your-own.md](docs/bring-your-own.md) §4a) and GHA
   `db-tenancy-bootstrap` for re-seed (resets bootstrap password + token
   ciphertext by design). Public smoke: `npm run smoke:tenancy`.
+- Optional **OIDC / SCIM** on origin are **Not Done** until an operator sets env
+  and smokes. Do **not** claim they are configured, invent IdP URLs, or nag to
+  “enable SSO” as a forgotten secret. When configuring: follow
+  [docs/bring-your-own.md](docs/bring-your-own.md) §4b; never put
+  `AUTH_OIDC_CLIENT_SECRET` or `SCIM_BEARER_TOKEN` in client/Wasm or git.
 
 
 IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
