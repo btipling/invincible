@@ -77,7 +77,7 @@ client-side key or sandbox-token exposure immediately.
 | Preview isolation | Prefer separate DB or tenancy off on public previews; avoid reusing Production KEK, OIDC client secret, or `SCIM_BEARER_TOKEN` casually |
 | Seed | `SEED_ADMIN_PASSWORD` / seed sandbox token are operator-only; re-seed resets bootstrap hash + ciphertext |
 | Bootstrap surface | Prefer GitHub Actions `db-tenancy-bootstrap` or cloud agent workspace — not personal-laptop primary ops |
-| OIDC (optional) | `AUTH_OIDC_ISSUER` + `AUTH_OIDC_CLIENT_ID` + `AUTH_OIDC_CLIENT_SECRET` (+ optional `AUTH_OIDC_LABEL`); provider id `oidc`; callback `/api/auth/callback/oidc` |
+| OIDC (optional) | `AUTH_OIDC_ISSUER` + `AUTH_OIDC_CLIENT_ID` + `AUTH_OIDC_CLIENT_SECRET` (+ optional `AUTH_OIDC_LABEL`); provider id `oidc`; callback `/api/auth/callback/oidc`; email auto-link requires verified `email_verified` claim |
 | SCIM (optional) | `SCIM_BEARER_TOKEN` + tenancy triple; base `/api/scim/v2`; off → **404**; bad Bearer → **401**; DELETE = suspend |
 | Hybrid roster | SCIM is **additive** — non-SCIM users remain; `/admin` lists all provision sources; SCIM list = SCIM-managed only |
 | Break-glass | Credentials login remains when tenancy is on; SCIM must not suspend break-glass credentials owner |

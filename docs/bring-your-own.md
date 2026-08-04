@@ -290,6 +290,12 @@ password. Interactive sign-in for those users is **OIDC** (same IdP) after
 email/`idp_subject` link. Pure SCIM without OIDC = provisioned in DB only until
 OIDC is configured. Do not expect password login for SCIM rows by default.
 
+**Account linking:** when OIDC finds an existing user by email with no
+`idp_subject` yet (typical SCIM → first SSO), the IdP must send a **verified**
+email claim (`email_verified` true / `"true"`). Unverified email → link refused
+(no account takeover). Subject match (`issuer|sub`) does not require re-verify.
+Configure the IdP to emit verified emails for SSO users.
+
 #### SCIM 2.0 Users API
 
 Enable when **tenancy triple-gate is on** and `SCIM_BEARER_TOKEN` is non-empty:
