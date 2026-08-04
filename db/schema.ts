@@ -114,8 +114,67 @@ export const sandboxGrants = pgTable(
   ],
 );
 
+
+export const providerSecrets = pgTable(
+  'provider_secrets',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    /** Closed enum: anthropic | openai | azure | vertex | bedrock */
+    provider: text('provider').notNull(),
+    /** DEK-only ciphertext of JSON credentials — never log. */
+    credentialCiphertext: text('credential_ciphertext').notNull(),
+    /** Tenant dek_version at write time. */
+    credentialKekVersion: integer('credential_kek_version').notNull().default(1),
+    /** active | disabled */
+    status: text('status').notNull().default('active'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('provider_secrets_tenant_name_unique').on(t.tenantId, t.name),
+    index('provider_secrets_tenant_id_idx').on(t.tenantId),
+  ],
+);
+
+export const providerSecretModels = pgTable(
+  'provider_secret_models',
+  {
+    secretId: uuid('secret_id')
+      .notNull()
+      .references(() => providerSecrets.id, { onDelete: 'cascade' }),
+    /** Gateway shape: provider/model */
+    modelId: text('model_id').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.secretId, t.modelId] })],
+);
+
+export const providerSecretGrants = pgTable(
+  'provider_secret_grants',
+  {
+    secretId: uuid('secret_id')
+      .notNull()
+      .references(() => providerSecrets.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    canUse: boolean('can_use').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.secretId, t.userId] }),
+    index('provider_secret_grants_user_id_idx').on(t.userId),
+  ],
+);
+
 export type Tenant = typeof tenants.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type TenantMember = typeof tenantMembers.$inferSelect;
 export type Sandbox = typeof sandboxes.$inferSelect;
 export type SandboxGrant = typeof sandboxGrants.$inferSelect;
+export type ProviderSecret = typeof providerSecrets.$inferSelect;
+export type ProviderSecretModel = typeof providerSecretModels.$inferSelect;
+export type ProviderSecretGrant = typeof providerSecretGrants.$inferSelect;
