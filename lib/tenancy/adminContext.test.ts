@@ -5,8 +5,11 @@ import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
-import { decryptSecret, encryptSecret } from './credentials';
 import { loadAdminContext } from './adminContext';
+import {
+  decryptSandboxToken,
+  encryptTenantSecret,
+} from './tenantKeys';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, '../../db/migrations');
@@ -23,7 +26,7 @@ async function applyMigrations(client: PGlite) {
   }
 }
 
-const KEY = Buffer.alloc(32, 7);
+const AMK = Buffer.alloc(32, 7);
 
 describe('loadAdminContext', () => {
   let client: PGlite;
@@ -81,6 +84,11 @@ describe('loadAdminContext', () => {
       { tenantId, userId: adminId, role: 'admin' },
     ]);
 
+    const { ciphertext } = await encryptTenantSecret(
+      tenantId,
+      'super-secret-token-xyz',
+      { db: db as never, amk: AMK },
+    );
     const [sb] = await db
       .insert(schema.sandboxes)
       .values({
@@ -88,7 +96,7 @@ describe('loadAdminContext', () => {
         name: 'Default',
         slug: 'default',
         baseUrl: 'https://sandbox.example',
-        tokenCiphertext: encryptSecret('super-secret-token-xyz', KEY),
+        tokenCiphertext: ciphertext,
         tokenKekVersion: 1,
         status: 'active',
       })
@@ -103,10 +111,13 @@ describe('loadAdminContext', () => {
     });
   });
 
-  it('loads tenant and masked sandbox for owner', async () => {
+  const decrypt = (tid: string, ct: string) =>
+    decryptSandboxToken(tid, ct, { db: db as never, amk: AMK, mode: 'dual' });
+
+  it('loads tenant and masked sandbox for owner under DEK', async () => {
     const res = await loadAdminContext(ownerId, {
       db: db as never,
-      decrypt: (ct) => decryptSecret(ct, KEY),
+      decryptSandboxToken: decrypt,
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
@@ -126,7 +137,7 @@ describe('loadAdminContext', () => {
   it('allows admin role with canRotate false', async () => {
     const res = await loadAdminContext(adminId, {
       db: db as never,
-      decrypt: (ct) => decryptSecret(ct, KEY),
+      decryptSandboxToken: decrypt,
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;

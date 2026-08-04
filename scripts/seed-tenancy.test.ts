@@ -9,6 +9,10 @@ import * as schema from '../db/schema';
 import { decryptSecret, resolveCredentialsKey } from '../lib/tenancy/credentials';
 import { verifyPassword } from '../lib/tenancy/password';
 import {
+  loadTenantDek,
+  unwrapTenantDek,
+} from '../lib/tenancy/tenantKeys';
+import {
   countSeedRows,
   SANDBOX_SLUG,
   seedTenancy,
@@ -119,10 +123,17 @@ describe('seedTenancy (pglite)', () => {
       .limit(1);
     expect(sb.slug).toBe(SANDBOX_SLUG);
     expect(sb.baseUrl).toBe('http://127.0.0.1:9999');
-    const key = resolveCredentialsKey({
+    const amk = resolveCredentialsKey({
       CREDENTIALS_ENCRYPTION_KEY: env.CREDENTIALS_ENCRYPTION_KEY,
     });
-    expect(decryptSecret(sb.tokenCiphertext, key)).toBe('rotated-token');
+    // token under DEK, not AMK
+    expect(() => decryptSecret(sb.tokenCiphertext, amk)).toThrow();
+    const { dek, version } = await loadTenantDek(first.tenantId, {
+      db: db as never,
+      amk,
+    });
+    expect(decryptSecret(sb.tokenCiphertext, dek)).toBe('rotated-token');
+    expect(sb.tokenKekVersion).toBe(version);
 
     const [tenant] = await db
       .select()
@@ -130,6 +141,11 @@ describe('seedTenancy (pglite)', () => {
       .where(eq(schema.tenants.id, first.tenantId))
       .limit(1);
     expect(tenant.slug).toBe(TENANT_SLUG);
+    expect(tenant.dekCiphertext).toBeTruthy();
+
+    // re-seed keeps same DEK
+    const dekAgain = unwrapTenantDek(tenant.dekCiphertext!, amk);
+    expect(dekAgain.equals(dek)).toBe(true);
   });
 
   it('re-seed does not overwrite provision_source on conflict', async () => {

@@ -1,5 +1,6 @@
 /**
  * Phase 3 — resolve default sandbox + grants for an authenticated user (v1).
+ * Phase 2 (#94): decrypt sandbox token via tenant DEK (dual-read / dek-only mode).
  */
 import { and, eq } from 'drizzle-orm';
 import {
@@ -11,13 +12,13 @@ import {
 } from '../../db';
 import { createSandboxClient, type SandboxClient } from '../sandbox/client';
 import { normalizeBaseUrl } from '../sandbox/config';
-import { decryptSecret } from './credentials';
 import { SANDBOX_FORBIDDEN_ERROR } from './errors';
 import {
   effectiveGrantPermissions,
   isUsableGrant,
   type EffectivePermissions,
 } from './grants';
+import { decryptSandboxToken } from './tenantKeys';
 
 export type ResolvedAgentSandbox = {
   client: SandboxClient;
@@ -35,8 +36,14 @@ export type ResolveAgentSandboxResult =
 
 export type ResolveAgentSandboxDeps = {
   db?: Db;
-  /** Override decrypt for tests. */
-  decrypt?: (ciphertext: string) => string;
+  /**
+   * Override sandbox-token decrypt for tests.
+   * Product default: mode-aware tenant DEK (dual / dek-only).
+   */
+  decryptSandboxToken?: (
+    tenantId: string,
+    ciphertext: string,
+  ) => string | Promise<string>;
   /** Override client factory for tests. */
   createClient?: (opts: { baseUrl: string; token: string }) => SandboxClient;
 };
@@ -125,10 +132,13 @@ async function resolveWithDb(
       canWrite: row.canWrite,
     });
 
-    const decrypt = deps.decrypt ?? ((ct: string) => decryptSecret(ct));
+    const decrypt =
+      deps.decryptSandboxToken ??
+      ((tid: string, ct: string) =>
+        decryptSandboxToken(tid, ct, { db }));
     let token: string;
     try {
-      token = decrypt(row.tokenCiphertext);
+      token = await decrypt(tenantId, row.tokenCiphertext);
     } catch {
       return forbidden();
     }

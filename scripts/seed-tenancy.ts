@@ -1,15 +1,17 @@
 /**
- * Idempotent tenancy seed (phase 1 / #55).
+ * Idempotent tenancy seed (phase 1 / #55 + phase 2 DEK wire / #94).
  *
  * Requires (live run):
  *   DATABASE_URL
- *   CREDENTIALS_ENCRYPTION_KEY  (base64 32-byte AES key)
+ *   CREDENTIALS_ENCRYPTION_KEY  (base64 32-byte AES key = AMK)
  *   SEED_ADMIN_EMAIL
  *   SEED_ADMIN_PASSWORD
  *   SEED_SANDBOX_URL + SEED_SANDBOX_TOKEN  (or SANDBOX_URL + SANDBOX_TOKEN)
  *
- * Never prints password, token, or encryption key.
- * Re-running resets bootstrap password_hash + sandbox token ciphertext (by design).
+ * Ensures per-tenant DEK then encrypts sandbox token under DEK.
+ * Never prints password, token, DEK, or encryption key.
+ * Re-running resets bootstrap password_hash + sandbox token ciphertext (by design);
+ * existing tenant DEK is kept (ensure never overwrites).
  *
  * Usage: npm run db:seed
  */
@@ -25,11 +27,11 @@ import {
   users,
 } from '../db';
 import {
-  CURRENT_KEK_VERSION,
   encryptSecret,
   resolveCredentialsKey,
 } from '../lib/tenancy/credentials';
 import { hashPassword } from '../lib/tenancy/password';
+import { ensureTenantDek } from '../lib/tenancy/tenantKeys';
 
 export const TENANT_SLUG = 'default';
 export const SANDBOX_SLUG = 'default';
@@ -81,13 +83,12 @@ export async function seedTenancy(
   if (!options.db) {
     requireEnv('DATABASE_URL', env);
   }
-  const key = resolveCredentialsKey(env as Record<string, string | undefined>);
+  const amk = resolveCredentialsKey(env as Record<string, string | undefined>);
   const email = requireEnv('SEED_ADMIN_EMAIL', env).toLowerCase();
   const password = requireEnv('SEED_ADMIN_PASSWORD', env);
   const { baseUrl, token } = resolveSandboxEnv(env);
 
   const passwordHash = await hashPassword(password);
-  const tokenCiphertext = encryptSecret(token, key);
 
   const owned = !options.db;
   const conn = options.db ? null : createDbConnection(env.DATABASE_URL);
@@ -111,9 +112,14 @@ export async function seedTenancy(
         throw new Error('seed failed: tenant missing after upsert');
       }
 
+      // Ensure DEK on this transaction (keep existing on re-seed)
+      const { dek, version } = await ensureTenantDek(tenantId, {
+        tx: tx as never,
+        amk,
+      });
+      const tokenCiphertext = encryptSecret(token, dek);
+
       // 2) user by email — re-seed refreshes password_hash (bootstrap contract).
-      // Insert sets provision_source=credentials; conflict does NOT overwrite
-      // provision_source (hybrid: preserve scim/oidc if email collides).
       await tx
         .insert(users)
         .values({
@@ -155,7 +161,7 @@ export async function seedTenancy(
           set: { role: 'owner' },
         });
 
-      // 4) sandbox under tenant
+      // 4) sandbox under tenant — token under DEK
       await tx
         .insert(sandboxes)
         .values({
@@ -164,7 +170,7 @@ export async function seedTenancy(
           slug: SANDBOX_SLUG,
           baseUrl,
           tokenCiphertext,
-          tokenKekVersion: CURRENT_KEK_VERSION,
+          tokenKekVersion: version,
           status: 'active',
         })
         .onConflictDoUpdate({
@@ -172,7 +178,7 @@ export async function seedTenancy(
           set: {
             baseUrl,
             tokenCiphertext,
-            tokenKekVersion: CURRENT_KEK_VERSION,
+            tokenKekVersion: version,
             status: 'active',
           },
         });

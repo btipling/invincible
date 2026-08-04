@@ -15,11 +15,14 @@ import {
 } from './credentials';
 import {
   backfillTenantDeks,
+  decryptSandboxToken,
+  decryptSandboxTokenCutover,
   decryptTenantSecret,
   encryptTenantSecret,
   ensureTenantDek,
   generateTenantDek,
   loadTenantDek,
+  resolveTokenDecryptMode,
   unwrapTenantDek,
   wrapTenantDek,
 } from './tenantKeys';
@@ -238,5 +241,85 @@ describe('tenantKeys (pglite)', () => {
     await expect(
       backfillTenantDeks({ db: db as never, amk }),
     ).rejects.toThrow(/AMK and tenant DEK/);
+  });
+});
+
+describe('decryptSandboxTokenCutover / mode', () => {
+  let client: PGlite;
+  let db: ReturnType<typeof drizzle<typeof schema>>;
+  const amk = testAmk(11);
+
+  beforeAll(async () => {
+    client = new PGlite();
+    await applyMigrations(client);
+    db = drizzle(client, { schema });
+  });
+
+  afterAll(async () => {
+    await client.close();
+  });
+
+  beforeEach(async () => {
+    await client.exec('DELETE FROM sandboxes');
+    await client.exec('DELETE FROM tenants');
+  });
+
+  async function insertTenant(slug: string) {
+    const rows = await db
+      .insert(tenants)
+      .values({ slug, name: slug, settings: {} })
+      .returning({ id: tenants.id });
+    return rows[0]!.id;
+  }
+
+  it('dual-read: AMK legacy when DEK missing', async () => {
+    const id = await insertTenant('t-legacy');
+    const legacy = encryptSecret('legacy-token', amk);
+    const plain = await decryptSandboxTokenCutover(id, legacy, {
+      db: db as never,
+      amk,
+    });
+    expect(plain).toBe('legacy-token');
+  });
+
+  it('dual-read: prefers DEK when provisioned', async () => {
+    const id = await insertTenant('t-pref');
+    const { ciphertext } = await encryptTenantSecret(id, 'dek-token', {
+      db: db as never,
+      amk,
+    });
+    const plain = await decryptSandboxTokenCutover(id, ciphertext, {
+      db: db as never,
+      amk,
+    });
+    expect(plain).toBe('dek-token');
+    // still dual-read works for leftover AMK ciphertext after DEK exists
+    const leftover = encryptSecret('still-amk', amk);
+    expect(
+      await decryptSandboxTokenCutover(id, leftover, { db: db as never, amk }),
+    ).toBe('still-amk');
+  });
+
+  it('dek-only: rejects AMK-only ciphertext', async () => {
+    const id = await insertTenant('t-strict');
+    await ensureTenantDek(id, { db: db as never, amk });
+    const legacy = encryptSecret('legacy-only', amk);
+    await expect(
+      decryptSandboxToken(id, legacy, {
+        db: db as never,
+        amk,
+        mode: 'dek-only',
+      }),
+    ).rejects.toThrow(CredentialsError);
+  });
+
+  it('resolveTokenDecryptMode defaults to dual', () => {
+    expect(resolveTokenDecryptMode({})).toBe('dual');
+    expect(resolveTokenDecryptMode({ TENANT_TOKEN_DECRYPT_MODE: 'weird' })).toBe(
+      'dual',
+    );
+    expect(
+      resolveTokenDecryptMode({ TENANT_TOKEN_DECRYPT_MODE: 'dek-only' }),
+    ).toBe('dek-only');
   });
 });

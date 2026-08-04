@@ -8,6 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
 import { decryptSecret, encryptSecret } from './credentials';
 import { rotateSandboxToken } from './rotateSandboxToken';
+import { ensureTenantDek, loadTenantDek } from './tenantKeys';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, '../../db/migrations');
@@ -24,7 +25,7 @@ async function applyMigrations(client: PGlite) {
   }
 }
 
-const KEY = Buffer.alloc(32, 3);
+const AMK = Buffer.alloc(32, 3);
 
 describe('rotateSandboxToken', () => {
   let client: PGlite;
@@ -32,6 +33,7 @@ describe('rotateSandboxToken', () => {
   let ownerId: string;
   let adminId: string;
   let memberId: string;
+  let tenantId: string;
   let sandboxId: string;
 
   beforeAll(async () => {
@@ -55,6 +57,7 @@ describe('rotateSandboxToken', () => {
       .insert(schema.tenants)
       .values({ slug: 't', name: 'T' })
       .returning({ id: schema.tenants.id });
+    tenantId = tenant.id;
 
     const [owner] = await db
       .insert(schema.users)
@@ -80,6 +83,7 @@ describe('rotateSandboxToken', () => {
       { tenantId: tenant.id, userId: memberId, role: 'member' },
     ]);
 
+    const { dek } = await ensureTenantDek(tenantId, { db: db as never, amk: AMK });
     const [sb] = await db
       .insert(schema.sandboxes)
       .values({
@@ -87,7 +91,7 @@ describe('rotateSandboxToken', () => {
         name: 'S',
         slug: 's',
         baseUrl: 'https://sb.example',
-        tokenCiphertext: encryptSecret('old-token-value', KEY),
+        tokenCiphertext: encryptSecret('old-token-value', dek),
         tokenKekVersion: 1,
         status: 'active',
       })
@@ -95,10 +99,10 @@ describe('rotateSandboxToken', () => {
     sandboxId = sb.id;
   });
 
-  it('owner rotates and re-encrypts', async () => {
+  it('owner rotates and re-encrypts under DEK', async () => {
     const res = await rotateSandboxToken(ownerId, sandboxId, 'brand-new-token', {
       db: db as never,
-      encrypt: (p) => encryptSecret(p, KEY),
+      amk: AMK,
     });
     expect(res).toEqual({ ok: true });
 
@@ -106,13 +110,20 @@ describe('rotateSandboxToken', () => {
       .select()
       .from(schema.sandboxes)
       .where(eq(schema.sandboxes.id, sandboxId));
-    expect(decryptSecret(row.tokenCiphertext, KEY)).toBe('brand-new-token');
+    const { dek, version } = await loadTenantDek(tenantId, {
+      db: db as never,
+      amk: AMK,
+    });
+    expect(decryptSecret(row.tokenCiphertext, dek)).toBe('brand-new-token');
+    expect(row.tokenKekVersion).toBe(version);
+    // not decryptable with AMK
+    expect(() => decryptSecret(row.tokenCiphertext, AMK)).toThrow();
   });
 
   it('admin cannot rotate', async () => {
     const res = await rotateSandboxToken(adminId, sandboxId, 'x', {
       db: db as never,
-      encrypt: (p) => encryptSecret(p, KEY),
+      amk: AMK,
     });
     expect(res).toEqual({ ok: false, reason: 'forbidden' });
   });
@@ -120,6 +131,7 @@ describe('rotateSandboxToken', () => {
   it('rejects empty token', async () => {
     const res = await rotateSandboxToken(ownerId, sandboxId, '   ', {
       db: db as never,
+      amk: AMK,
     });
     expect(res).toEqual({ ok: false, reason: 'empty' });
   });
@@ -127,7 +139,7 @@ describe('rotateSandboxToken', () => {
   it('member cannot rotate', async () => {
     const res = await rotateSandboxToken(memberId, sandboxId, 'x', {
       db: db as never,
-      encrypt: (p) => encryptSecret(p, KEY),
+      amk: AMK,
     });
     expect(res).toEqual({ ok: false, reason: 'forbidden' });
   });
@@ -137,7 +149,7 @@ describe('rotateSandboxToken', () => {
       ownerId,
       '00000000-0000-4000-8000-000000000099',
       'x',
-      { db: db as never },
+      { db: db as never, amk: AMK },
     );
     expect(res).toEqual({ ok: false, reason: 'not_found' });
   });
