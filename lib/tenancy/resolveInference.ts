@@ -62,7 +62,8 @@ async function withDb<T>(
 
 /**
  * Distinct model ids the user may use, sorted model_id ASC (stable default).
- * Empty when no sole membership, no grants, or errors (fail soft → []).
+ * Empty when no sole membership or no grants. DB/query errors propagate
+ * (callers that need fail-closed HTTP map catch → unavailable).
  */
 export async function listModelsForUser(
   userId: string,
@@ -71,45 +72,41 @@ export async function listModelsForUser(
   const id = userId?.trim();
   if (!id) return [];
 
-  try {
-    return await withDb(deps, async (db) => {
-      const memberships = await db
-        .select({ tenantId: tenantMembers.tenantId })
-        .from(tenantMembers)
-        .where(eq(tenantMembers.userId, id));
-      if (memberships.length !== 1) {
-        return [];
-      }
-      const tenantId = memberships[0].tenantId;
+  return await withDb(deps, async (db) => {
+    const memberships = await db
+      .select({ tenantId: tenantMembers.tenantId })
+      .from(tenantMembers)
+      .where(eq(tenantMembers.userId, id));
+    if (memberships.length !== 1) {
+      return [];
+    }
+    const tenantId = memberships[0].tenantId;
 
-      const rows = await db
-        .select({
-          modelId: providerSecretModels.modelId,
-        })
-        .from(providerSecretGrants)
-        .innerJoin(
-          providerSecrets,
-          eq(providerSecretGrants.secretId, providerSecrets.id),
-        )
-        .innerJoin(
-          providerSecretModels,
-          eq(providerSecretModels.secretId, providerSecrets.id),
-        )
-        .where(
-          and(
-            eq(providerSecretGrants.userId, id),
-            eq(providerSecretGrants.canUse, true),
-            eq(providerSecrets.status, 'active'),
-            eq(providerSecrets.tenantId, tenantId),
-          ),
-        );
+    const rows = await db
+      .select({
+        modelId: providerSecretModels.modelId,
+      })
+      .from(providerSecretGrants)
+      .innerJoin(
+        providerSecrets,
+        eq(providerSecretGrants.secretId, providerSecrets.id),
+      )
+      .innerJoin(
+        providerSecretModels,
+        eq(providerSecretModels.secretId, providerSecrets.id),
+      )
+      .where(
+        and(
+          eq(providerSecretGrants.userId, id),
+          eq(providerSecretGrants.canUse, true),
+          eq(providerSecrets.status, 'active'),
+          eq(providerSecrets.tenantId, tenantId),
+        ),
+      );
 
-      const set = new Set(rows.map((r) => r.modelId));
-      return [...set].sort((a, b) => a.localeCompare(b));
-    });
-  } catch {
-    return [];
-  }
+    const set = new Set(rows.map((r) => r.modelId));
+    return [...set].sort((a, b) => a.localeCompare(b));
+  });
 }
 
 type Candidate = {

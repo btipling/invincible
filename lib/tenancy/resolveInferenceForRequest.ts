@@ -44,7 +44,13 @@ export async function resolveByokForRequest(
 
   let effective = modelId?.trim();
   if (!effective) {
-    const catalog = await listModelsForUser(uid, deps);
+    let catalog: string[];
+    try {
+      catalog = await listModelsForUser(uid, deps);
+    } catch {
+      // Do not treat infra errors as empty grants (403).
+      return { ok: false, reason: 'unavailable' };
+    }
     if (catalog.length === 0) {
       return { ok: false, reason: 'forbidden' };
     }

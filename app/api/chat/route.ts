@@ -9,6 +9,7 @@ import {
 import { resolveModelId } from '../../../lib/model';
 import { tenancyEnabled } from '../../../lib/tenancy/enabled';
 import { resolveByokForRequest } from '../../../lib/tenancy/resolveInferenceForRequest';
+import { redactSecrets } from '../../../lib/agent/redact';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 
 export const runtime = 'nodejs';
@@ -49,6 +50,7 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const tenancyOn = tenancyEnabled();
+  let redactList: string[] = [];
 
   try {
     if (tenancyOn) {
@@ -63,6 +65,7 @@ export async function POST(req: Request): Promise<Response> {
         const { status, error } = mapByokResolveFailure(byok.reason);
         return Response.json({ error }, { status });
       }
+      redactList = byok.secretsToRedact;
 
       // AI SDK ProviderOptions = Record<string, Record<string, JSONValue>>.
       // Credential objects are JSON from DEK decrypt; cast at the SDK boundary.
@@ -100,6 +103,8 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ text });
   } catch (err) {
     const { status, error } = mapInferenceError(err);
-    return Response.json({ error }, { status });
+    const safe =
+      redactList.length > 0 ? redactSecrets(error, redactList) : error;
+    return Response.json({ error: safe }, { status });
   }
 }

@@ -15,6 +15,7 @@ import { tenancyEnabled } from '../../../lib/tenancy/enabled';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 import { resolveAgentSandbox } from '../../../lib/tenancy/resolveSandbox';
 import { resolveByokForRequest } from '../../../lib/tenancy/resolveInferenceForRequest';
+import { redactSecrets } from '../../../lib/agent/redact';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -65,6 +66,8 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: parsed.error }, { status: parsed.status });
   }
 
+  let redactList: string[] = [];
+
   try {
     let runParams: Parameters<typeof runAgent>[0] = {
       prompt: parsed.prompt,
@@ -83,11 +86,13 @@ export async function POST(req: Request): Promise<Response> {
         const { status, error } = mapByokResolveFailure(byok.reason);
         return Response.json({ error }, { status });
       }
+      redactList = byok.secretsToRedact;
 
       const resolved = await resolveAgentSandbox(userId);
       if (!resolved.ok) {
         return resolved.response;
       }
+      redactList = [...redactList, ...resolved.value.secrets];
 
       // Same JSONValue boundary cast as chat route (AI SDK ProviderOptions).
       runParams = {
@@ -120,6 +125,8 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json({ error: 'Request cancelled.' }, { status: 499 });
     }
     const { status, error } = mapInferenceError(err);
-    return Response.json({ error }, { status });
+    const safe =
+      redactList.length > 0 ? redactSecrets(error, redactList) : error;
+    return Response.json({ error: safe }, { status });
   }
 }

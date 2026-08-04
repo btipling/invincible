@@ -124,4 +124,19 @@ describe('resolveByokForRequest', () => {
     if (!r.ok) throw new Error('expected ok');
     expect(r.secretsToRedact).toContain('sk-req');
   });
+
+  it('catalog db failure → unavailable (not forbidden)', async () => {
+    const badDb = {
+      select: () => {
+        throw new Error('db down');
+      },
+    };
+    const r = await resolveByokForRequest(memberId, undefined, {
+      db: badDb as never,
+      amk: AMK,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected fail');
+    expect(r.reason).toBe('unavailable');
+  });
 });
