@@ -47,3 +47,12 @@ export async function loginAction(
 
   redirect(safeCallback);
 }
+
+/** OIDC SSO — redirects to IdP when provider is configured. */
+export async function oidcSignInAction(formData: FormData): Promise<void> {
+  const safeCallback = safeCallbackUrl(
+    String(formData.get('callbackUrl') ?? ''),
+    '/harness',
+  );
+  await signIn('oidc', { redirectTo: safeCallback });
+}

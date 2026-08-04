@@ -2,7 +2,7 @@
  * SSO/SCIM identity helpers (parent #64 / phase #75).
  * Pure + DB only — no OIDC provider, no SCIM HTTP.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import {
   createDbConnection,
   tenantMembers,
@@ -255,14 +255,20 @@ export type FindOrCreateOidcInput = {
   subject: string;
   email: string;
   name?: string | null;
+  /**
+   * Required for email-link path (phase 2 #76).
+   * Auto-link existing user with null idp_subject only when true.
+   * JIT create of a new email is allowed when false.
+   */
+  emailVerified: boolean;
 };
 
 /**
- * OIDC find-or-create (no Auth.js wiring here).
+ * OIDC find-or-create (Auth.js wiring is separate).
  * 1) Match idp_subject
- * 2) Else if email matches user with null idp_subject → set subject (phase 1 link)
+ * 2) Else if email matches user with null idp_subject → link only if emailVerified
  * 3) Else create provision_source=oidc
- * Refuses suspended users. Ensures default membership.
+ * Never rewrites provision_source (SCIM stays scim). Refuses suspended. Ensures membership.
  */
 export async function findOrCreateOidcUser(
   input: FindOrCreateOidcInput,
@@ -274,6 +280,7 @@ export async function findOrCreateOidcUser(
     throw new IdentityError('subject and email are required', 'invalid_input');
   }
   const name = input.name?.trim() || null;
+  const emailVerified = input.emailVerified === true;
 
   return withDb(deps, async (db) => {
     const bySubject = await db
@@ -307,7 +314,15 @@ export async function findOrCreateOidcUser(
         );
       }
       if (!byEmail[0].idpSubject) {
+        if (!emailVerified) {
+          throw new IdentityError(
+            'email link requires verified email claim',
+            'forbidden',
+          );
+        }
         try {
+          // Preserve provision_source (e.g. scim) — only set idp_subject + name.
+          // Require idp_subject still null so concurrent links fail closed.
           const [linked] = await db
             .update(users)
             .set({
@@ -315,11 +330,20 @@ export async function findOrCreateOidcUser(
               name: name ?? byEmail[0].name,
               updatedAt: new Date(),
             })
-            .where(eq(users.id, byEmail[0].id))
+            .where(
+              and(eq(users.id, byEmail[0].id), isNull(users.idpSubject)),
+            )
             .returning();
+          if (!linked) {
+            throw new IdentityError(
+              'email already linked to a different idp_subject',
+              'conflict',
+            );
+          }
           await ensureDefaultTenantMembership(linked.id, 'member', { db });
           return { user: linked, created: false };
         } catch (err) {
+          if (err instanceof IdentityError) throw err;
           const msg = err instanceof Error ? err.message : String(err);
           if (/unique|duplicate/i.test(msg)) {
             throw new IdentityError(
