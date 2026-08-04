@@ -196,17 +196,18 @@ describe('providerSecrets', () => {
     if (!created.ok) throw new Error('create');
     const id = created.value.id;
 
-    const bad = await setProviderSecretModels(id, ['not-a-model'], deps());
+    const bad = await setProviderSecretModels(id, ['not-a-model'], tenantId, deps());
     expect(bad.ok).toBe(false);
 
     const ok1 = await setProviderSecretModels(
       id,
       ['anthropic/claude-a', 'anthropic/claude-b'],
+      tenantId,
       deps(),
     );
     expect(ok1.ok).toBe(true);
 
-    const ok2 = await setProviderSecretModels(id, ['anthropic/claude-c'], deps());
+    const ok2 = await setProviderSecretModels(id, ['anthropic/claude-c'], tenantId, deps());
     expect(ok2.ok).toBe(true);
 
     const models = await db
@@ -232,6 +233,7 @@ describe('providerSecrets', () => {
     const ok = await setProviderSecretGrants(
       id,
       [{ userId, canUse: true }],
+      tenantId,
       deps(),
     );
     expect(ok.ok).toBe(true);
@@ -242,6 +244,7 @@ describe('providerSecrets', () => {
         { userId: otherUserId, canUse: true },
         { userId: foreignUserId, canUse: true },
       ],
+      tenantId,
       deps(),
     );
     expect(fail.ok).toBe(false);
@@ -259,6 +262,7 @@ describe('providerSecrets', () => {
     const replace = await setProviderSecretGrants(
       id,
       [{ userId: otherUserId, canUse: false }],
+      tenantId,
       deps(),
     );
     expect(replace.ok).toBe(true);
@@ -282,7 +286,7 @@ describe('providerSecrets', () => {
       deps(),
     );
     if (!created.ok) throw new Error('create');
-    const r = await disableProviderSecret(created.value.id, deps());
+    const r = await disableProviderSecret(created.value.id, tenantId, deps());
     expect(r.ok).toBe(true);
     const row = await db
       .select()
@@ -309,6 +313,7 @@ describe('providerSecrets', () => {
     await updateProviderSecret(
       {
         secretId: created.value.id,
+        tenantId,
         credentials: { apiKey: 'new-key-bbbb' },
       },
       deps(),
@@ -327,4 +332,64 @@ describe('providerSecrets', () => {
     );
     expect(JSON.parse(plain)).toEqual({ apiKey: 'new-key-bbbb' });
   });
+
+  it('rejects mutations for secret outside tenantId', async () => {
+    const [otherTenant] = await db
+      .insert(schema.tenants)
+      .values({ slug: 'other-tenant', name: 'Other' })
+      .returning({ id: schema.tenants.id });
+
+    const foreign = await createProviderSecret(
+      {
+        tenantId: otherTenant.id,
+        name: 'foreign-secret',
+        provider: 'anthropic',
+        credentials: { apiKey: 'foreign-key' },
+      },
+      deps(),
+    );
+    if (!foreign.ok) throw new Error(foreign.error);
+    const fid = foreign.value.id;
+
+    const upd = await updateProviderSecret(
+      { secretId: fid, tenantId, name: 'hijacked' },
+      deps(),
+    );
+    expect(upd.ok).toBe(false);
+    if (upd.ok) throw new Error('expected fail');
+    expect(upd.code).toBe('not_found');
+
+    const dis = await disableProviderSecret(fid, tenantId, deps());
+    expect(dis.ok).toBe(false);
+    if (dis.ok) throw new Error('expected fail');
+    expect(dis.code).toBe('not_found');
+
+    const models = await setProviderSecretModels(
+      fid,
+      ['anthropic/claude-x'],
+      tenantId,
+      deps(),
+    );
+    expect(models.ok).toBe(false);
+    if (models.ok) throw new Error('expected fail');
+    expect(models.code).toBe('not_found');
+
+    const grants = await setProviderSecretGrants(
+      fid,
+      [{ userId, canUse: true }],
+      tenantId,
+      deps(),
+    );
+    expect(grants.ok).toBe(false);
+    if (grants.ok) throw new Error('expected fail');
+    expect(grants.code).toBe('not_found');
+
+    const still = await db
+      .select()
+      .from(schema.providerSecrets)
+      .where(eq(schema.providerSecrets.id, fid));
+    expect(still[0].name).toBe('foreign-secret');
+    expect(still[0].status).toBe('active');
+  });
+
 });

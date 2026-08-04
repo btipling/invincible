@@ -37,6 +37,19 @@ export const PROVIDER_MODEL_PREFIX: Record<ByokProvider, string> = {
   bedrock: 'bedrock',
 };
 
+/** Curated gateway model ids for admin UI chips (freeform still allowed via MODEL_ID_RE). */
+export const SUGGESTED_MODELS: Record<ByokProvider, readonly string[]> = {
+  anthropic: [
+    'anthropic/claude-sonnet-4',
+    'anthropic/claude-opus-4',
+    'anthropic/claude-3-5-haiku-latest',
+  ],
+  openai: ['openai/gpt-4.1', 'openai/gpt-4.1-mini', 'openai/o3-mini'],
+  azure: ['azure/gpt-4o', 'azure/gpt-4o-mini'],
+  vertex: ['vertex/gemini-2.0-flash', 'vertex/gemini-2.5-pro'],
+  bedrock: ['bedrock/anthropic.claude-sonnet-4', 'bedrock/amazon.nova-pro-v1:0'],
+};
+
 /**
  * AI Gateway `providerOptions.gateway.byok` object key — same as registry id.
  */
