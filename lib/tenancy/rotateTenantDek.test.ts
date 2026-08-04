@@ -21,6 +21,7 @@ async function applyMigrations(client: PGlite) {
     '0000_tenancy_phase1.sql',
     '0001_sso_scim_identity.sql',
     '0002_tenant_deks.sql',
+    '0003_provider_secrets.sql',
   ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     for (const stmt of sql
@@ -57,6 +58,9 @@ describe('rotateTenantDek', () => {
   });
 
   beforeEach(async () => {
+    await db.delete(schema.providerSecretGrants);
+    await db.delete(schema.providerSecretModels);
+    await db.delete(schema.providerSecrets);
     await db.delete(schema.sandboxGrants);
     await db.delete(schema.sandboxes);
     await db.delete(schema.tenantMembers);
@@ -150,9 +154,21 @@ describe('rotateTenantDek', () => {
       })
       .returning({ id: schema.sandboxes.id });
     sandboxB = sb.id;
+
+    await db.insert(schema.providerSecrets).values({
+      tenantId,
+      name: 'anthropic-prod',
+      provider: 'anthropic',
+      credentialCiphertext: encryptSecret(
+        JSON.stringify({ apiKey: 'sk-rotate-me' }),
+        dek,
+      ),
+      credentialKekVersion: 1,
+      status: 'active',
+    });
   });
 
-  it('owner rotates: re-encrypts N sandboxes; old DEK fails; versions bump', async () => {
+  it('owner rotates: re-encrypts sandboxes + provider_secrets; old DEK fails', async () => {
     const before = await loadTenantDek(tenantId, {
       db: db as never,
       amk: AMK,
@@ -189,6 +205,18 @@ describe('rotateTenantDek', () => {
     expect(byId[sandboxA2].tokenKekVersion).toBe(2);
     expect(() =>
       decryptSecret(byId[sandboxA1].tokenCiphertext, before.dek),
+    ).toThrow();
+
+    const secrets = await db
+      .select()
+      .from(schema.providerSecrets)
+      .where(eq(schema.providerSecrets.tenantId, tenantId));
+    expect(secrets).toHaveLength(1);
+    expect(secrets[0].credentialKekVersion).toBe(2);
+    const plain = decryptSecret(secrets[0].credentialCiphertext, after.dek);
+    expect(JSON.parse(plain)).toEqual({ apiKey: 'sk-rotate-me' });
+    expect(() =>
+      decryptSecret(secrets[0].credentialCiphertext, before.dek),
     ).toThrow();
   });
 

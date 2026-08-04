@@ -1,0 +1,117 @@
+# Cloud-native schema migrate only (no seed, no personal hardware).
+#
+# Operator: Actions → db-migrate → Run workflow
+#   inputs: confirm=migrate  (required); dry_run=true optional (validate only)
+#
+# Repository secrets (names only — set via GitHub web UI or `gh secret set`
+# from a cloud agent; never commit values):
+#   DATABASE_URL  — must === Vercel Production (dual-store)
+#
+# Use this for additive schema (e.g. provider_secrets 0003) on existing
+# Production. Do NOT use db-tenancy-bootstrap/seed for schema-only cutover
+# (seed resets bootstrap password + token ciphertext).
+#
+# Safety: workflow_dispatch only; ubuntu-latest only; never self-hosted;
+# never echo secret values; job summary success/fail only.
+# Migrator: drizzle-kit installed ephemerally (not in package.json).
+
+name: db-migrate
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Must equal "migrate" to run drizzle migrate (misclick guard)'
+        required: true
+        type: string
+      dry_run:
+        description: 'If true, validate DATABASE_URL is present and exit without migrate'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-migrate-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: drizzle migrate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Guard confirm input
+        if: ${{ inputs.confirm != 'migrate' }}
+        run: |
+          set -euo pipefail
+          echo "::error::confirm input must equal 'migrate'. Aborting with no mutate."
+          exit 1
+
+      - name: Fail closed — DATABASE_URL present
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          trim() {
+            local s="$1"
+            s="${s#"${s%%[![:space:]]*}"}"
+            s="${s%"${s##*[![:space:]]}"}"
+            printf '%s' "$s"
+          }
+          val="$(trim "${DATABASE_URL:-}")"
+          if [ -z "${val}" ]; then
+            echo "::error::DATABASE_URL is missing or empty (set repository secret; dual-store with Vercel Production)"
+            exit 1
+          fi
+          echo "DATABASE_URL present (value not printed)."
+
+      - name: Dry run — skip mutate
+        if: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          echo "dry_run=true — secret validated; skipping checkout, install, and migrate."
+          {
+            echo "### db-migrate"
+            echo "- result: dry_run (DATABASE_URL OK, no mutate)"
+            echo "- confirm: ok"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Checkout
+        if: ${{ !inputs.dry_run }}
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        if: ${{ !inputs.dry_run }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install app dependencies
+        if: ${{ !inputs.dry_run }}
+        run: npm ci
+
+      - name: Install migrator (ephemeral)
+        if: ${{ !inputs.dry_run }}
+        run: npm install --no-save --no-audit --no-fund drizzle-kit@0.31.10
+
+      - name: Migrate
+        if: ${{ !inputs.dry_run }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npx drizzle-kit migrate
+
+      - name: Job summary
+        if: ${{ always() && inputs.confirm == 'migrate' && !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### db-migrate"
+            echo "- result: ${{ job.status }}"
+            echo "- dry_run: false"
+            echo "- migrator: drizzle-kit@0.31.10 (ephemeral, not in package.json)"
+            echo "- note: schema-only; never seed for this path"
+          } >> "${GITHUB_STEP_SUMMARY}"

@@ -17,6 +17,7 @@ describe('POST /api/agent', () => {
     vi.doUnmock('../../../lib/agent/runAgent');
     vi.doUnmock('../../../lib/tenancy/session');
     vi.doUnmock('../../../lib/tenancy/resolveSandbox');
+    vi.doUnmock('../../../lib/tenancy/resolveInferenceForRequest');
   });
 
   async function loadRoute() {
@@ -28,6 +29,31 @@ describe('POST /api/agent', () => {
     delete process.env.AUTH_SECRET;
     delete process.env.CREDENTIALS_ENCRYPTION_KEY;
   }
+
+function mockByokOk(overrides: Record<string, unknown> = {}) {
+  vi.doMock('../../../lib/tenancy/resolveInferenceForRequest', () => ({
+    resolveByokForRequest: vi.fn(async () => ({
+      ok: true as const,
+      modelId: 'anthropic/claude-a',
+      provider: 'anthropic',
+      credentials: { apiKey: 'sk-byok-test' },
+      only: ['anthropic'] as [string],
+      byok: { anthropic: [{ apiKey: 'sk-byok-test' }] },
+      secretId: 'sec-1',
+      secretsToRedact: ['sk-byok-test'],
+      ...overrides,
+    })),
+  }));
+}
+
+function mockByokFail(reason: 'forbidden' | 'unavailable' | 'model_invalid' = 'forbidden') {
+  vi.doMock('../../../lib/tenancy/resolveInferenceForRequest', () => ({
+    resolveByokForRequest: vi.fn(async () => ({
+      ok: false as const,
+      reason,
+    })),
+  }));
+}
 
   it('returns 500 when gateway key missing', async () => {
     clearTenancyEnv();
@@ -197,6 +223,7 @@ describe('POST /api/agent', () => {
         user: { id: 'user-1', email: 'a@b.c' },
       })),
     }));
+    mockByokOk();
     vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
       resolveAgentSandbox: vi.fn(async () => ({
         ok: false as const,
@@ -222,7 +249,7 @@ describe('POST /api/agent', () => {
     expect(runAgent).not.toHaveBeenCalled();
   });
 
-  it('tenancy on injects resolved client without requiring env SANDBOX_*', async () => {
+  it('tenancy on injects resolved client + BYOK without requiring env SANDBOX_*', async () => {
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
     process.env.DATABASE_URL = 'postgres://localhost/db';
     process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
@@ -241,6 +268,10 @@ describe('POST /api/agent', () => {
       secrets: string[];
       permissions: { canRead: boolean; canWrite: boolean };
       prompt: string;
+      modelId?: string;
+      providerOptions?: {
+        gateway?: { only?: unknown; byok?: unknown };
+      };
     };
     const runAgent = vi.fn(async (_arg: RunArg) => ({
       text: 'from-db-sandbox',
@@ -254,6 +285,7 @@ describe('POST /api/agent', () => {
         user: { id: 'user-1', email: 'a@b.c' },
       })),
     }));
+    mockByokOk();
     vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
       resolveAgentSandbox: vi.fn(async () => ({
         ok: true as const,
@@ -286,6 +318,62 @@ describe('POST /api/agent', () => {
     expect(arg!.prompt).toBe('do work');
     expect(arg!.sandboxClient).toBe(fakeClient);
     expect(arg!.secrets).toContain('decrypted-db-token');
+    expect(arg!.secrets).toContain('sk-byok-test');
     expect(arg!.permissions).toEqual({ canRead: true, canWrite: false });
+    expect(arg!.modelId).toBe('anthropic/claude-a');
+    expect(arg!.providerOptions?.gateway?.only).toEqual(['anthropic']);
+    expect(arg!.providerOptions?.gateway?.byok).toEqual({
+      anthropic: [{ apiKey: 'sk-byok-test' }],
+    });
+    expect(JSON.stringify(body)).not.toContain('sk-byok-test');
+  });
+
+  it('tenancy on: empty BYOK grants → 403 and runAgent not called', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+
+    const runAgent = vi.fn(async () => ({ text: 'nope', toolTrace: [] }));
+    const resolveAgentSandbox = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        client: {},
+        permissions: { canRead: true, canWrite: true },
+        secrets: [],
+        sandboxId: 'sbx-1',
+        tenantId: 'ten-1',
+        baseUrl: 'http://sandbox.example',
+      },
+    }));
+
+    vi.resetModules();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1', email: 'a@b.c' },
+      })),
+    }));
+    mockByokFail('forbidden');
+    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+      resolveAgentSandbox,
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('Inference access denied.');
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(resolveAgentSandbox).not.toHaveBeenCalled();
   });
 });
