@@ -1,29 +1,29 @@
-# Feature divide — DOM host vs Wasm harness (Phase 4)
+# Feature divide — where the UI lives
 
-**Product rule:** **Wasm is the harness.** DOM is the **host shell** only.
-
-Phase 3 inverted this (DOM chat + optional canvas). That was a pipeline PoC, not MVP.
+**Product rule:** The **product workspace** is the Wasm harness (transcript +
+composer). The Next.js app is a **host shell** (load Wasm, bridge, APIs,
+optional login chrome).
 
 ## One-line test
 
 > Can a user complete a multi-turn agent session **without reading or typing in a React chat panel**?
 
-- **Yes** → Phase 4 MVP path  
-- **No** → still a PoC  
+- **Yes** → correct product path  
+- **No** → dual-chat regression  
 
 ## Ownership table
 
 | Concern | Owner | Notes |
 |---------|--------|--------|
 | Route `/harness`, App Router, code-split | **DOM** | Next.js |
-| Site nav (Playground / Harness) | **DOM** | Shared chrome |
+| Site chrome | **DOM** | `AppNav` brand header; optional `AuthNavLinks` (Sign in / Admin / Harness / Logout) when tenancy is on — **not** Playground tabs |
 | Load `web.js` + `harness.wasm` | **DOM** | Instantiate, MIME, errors |
 | JS ↔ Wasm bridge glue | **DOM** | `lib/harnessBridge.ts` |
-| Poll pending submit | **DOM** | No custom Wasm imports |
-| `POST /api/chat` | **DOM / server** | Single-shot inference; `AI_GATEWAY_API_KEY` never in Wasm |
-| `POST /api/agent` | **DOM / server** | Multi-step tools when sandbox configured; server-only `SANDBOX_*` |
+| Poll pending submit | **DOM** | No custom Wasm imports beyond stock dvui `web.js` |
+| `POST /api/chat` | **Vercel backend** | Single-shot inference; `AI_GATEWAY_API_KEY` never in Wasm |
+| `POST /api/agent` | **Vercel backend** | Multi-step tools when sandbox configured; server-only secrets |
 | Fold multi-turn history into prompt | **DOM** | `lib/harnessChat.ts` (user/assistant only; system tool lines display-only) |
-| `SessionStore` load/save/clear | **DOM** | memory / localStorage (cloud later) |
+| `SessionStore` load/save/clear | **DOM** | memory / localStorage |
 | Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status |
 | **Transcript (read messages)** | **Wasm** | Primary UX |
 | **Composer + Send / smoke** | **Wasm** | Primary input |
@@ -50,7 +50,7 @@ Track any exception in the issue that introduces it:
 | DOM fallback composer | Only if dvui text input is blocked on a target (e.g. specific mobile bug); must be labeled temporary |
 | DOM error toast for *host* load failures | Wasm never started — host must report |
 
-## Data flow (target)
+## Data flow
 
 ```text
 User types in Wasm composer
@@ -59,17 +59,31 @@ User types in Wasm composer
   → formatPromptWithHistory (user/assistant only)
   → POST /api/agent
        if 503 + exact sandbox-not-configured → POST /api/chat
-       else tools → SANDBOX_URL (server-only Bearer token)
+       else tools → sandbox (env SANDBOX_* when tenancy off; DB grants when on)
   → Host pushes ≤6 system toolTrace lines + assistant/error into Wasm
   → User reads reply in Wasm transcript
 ```
 
-Sandbox ops / BYO: [sandbox.md](sandbox.md).
+## Key source paths
+
+| Concern | Path |
+|---------|------|
+| Host shell | `app/harness/HarnessHost.tsx` |
+| Bridge TS (protocol **v2**) | `lib/harnessBridge.ts` |
+| Chat turn | `lib/harnessChat.ts` |
+| Session | `lib/sessionStore.ts` |
+| Zig UI | `native/harness/src/ui.zig` |
+| Bridge Zig | `native/harness/src/bridge.zig` |
+| Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
+| Export whitelist | `native/harness/build.zig` |
+
+Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently
+**2**). Mismatch → load error; rebuild both sides.
 
 ## Related
 
-- Handoff: [phase-4-handoff.md](phase-4-handoff.md)
-- Plan: [phase-4-plan.md](phase-4-plan.md)  
-- Epic: [#27](https://github.com/btipling/invincible/issues/27)  
-- Agent sandbox: [sandbox.md](sandbox.md) · parent [#45](https://github.com/btipling/invincible/issues/45)  
+- Visitor front door: [README](../README.md)  
+- Agent sandbox: [sandbox.md](sandbox.md)  
+- Wasm supply / runner: [runner.md](runner.md)  
 - Limits: [harness-limits.md](harness-limits.md)  
+- Session restore: [session-model.md](session-model.md)  

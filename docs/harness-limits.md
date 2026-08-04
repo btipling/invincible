@@ -1,4 +1,4 @@
-# Harness known limits (Phase 4)
+# Harness known limits
 
 Documented browser / dvui / product constraints for `/harness` (Wasm-primary).
 
@@ -7,7 +7,7 @@ Documented browser / dvui / product constraints for `/harness` (Wasm-primary).
 | Surface | Role |
 |---------|------|
 | **Wasm (dvui)** | Primary harness — transcript, composer, agent chrome |
-| **DOM** | Host shell — nav, load, status chips, Clear, `/api/chat`, SessionStore |
+| **DOM** | Host shell — nav, load, status chips, Clear, APIs, SessionStore |
 
 See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 
@@ -33,47 +33,40 @@ See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 
 | Topic | Behavior |
 |-------|----------|
-| Layout | Full-bleed canvas under nav; min canvas height ~200px |
+| Layout | Full-bleed canvas under host nav; no horizontal overflow expected |
 | Hit targets | Send / PONG ≥ ~40px tall |
-| Safe area | Host `padding-bottom: env(safe-area-inset-bottom)` |
-| IME | dvui canvas textEntry — soft keyboards vary by browser; prefer short prompts on mobile |
-| Multi-touch | Canvas `touch-action: none` |
+| Fallback | No “use the DOM chat instead” product path |
 
 ## Transcript density
 
 | Topic | Behavior |
 |-------|----------|
-| Ring capacity | 48 messages in Wasm (`bridge.zig`) |
-| Visible paint | Last **28** lines (+ “N earlier” hint) to limit jank |
-| Stick-to-bottom | Scroll viewport follows new messages / busy line |
-| Line size | 4 KB UTF-8 max per message |
+| Ring capacity | 48 messages in Wasm (`bridge.zig` `MAX_MSG`) |
+| Visible paint | Last **28** lines (+ “N earlier” hint) |
+| Line size | 4 KB UTF-8 max per message (`MAX_MSG_LEN`) |
+| Host history | Long sessions fold into the Gateway prompt; prefer Clear for a fresh workspace |
 
 ## Palette
 
-| Family | Use |
-|--------|-----|
-| **TEAL** | Chrome, user labels, primary Send |
+| Family | Role |
+|--------|------|
+| **TEAL** | Default chrome |
 | **WARM** | Busy, PONG, assistant labels |
-| **EMBER** | Errors only |
+| **EMBER** | Danger / errors only |
 
-DOM: `lib/palette.ts` · Wasm: `native/harness/src/palette.zig` (keep hex in sync).
+Sources: `lib/palette.ts` + `native/harness/src/palette.zig`.
 
 ## dvui / browser
 
-| Limit | Notes |
-|-------|--------|
-| WebGL | **Required** — fails on locked-down GPUs / some remote desktops |
-| Safari / iOS | Recent versions OK; test IME before relying on long mobile sessions |
-| Streaming | Not supported — full `generateText` per turn |
-| History fold | Host folds last ~8 user/assistant turns into Gateway prompt |
-| Secrets | Never in Wasm or SessionStore — only Vercel `AI_GATEWAY_API_KEY` |
+WebAssembly, Canvas, WebGL, `fetch`. Console may show WebGL noise; happy path
+should stay free of uncaught host errors.
 
 ## Session
 
-See [session-model.md](session-model.md). Host `localStorage` / memory; hydrate into Wasm on load (protocol v2 batch).
+Browser memory + `localStorage` only — see [session-model.md](session-model.md).
+No secrets in session blobs.
 
 ## CI / deploy
 
-- Zig only on `invincible-do-1` (`build-harness.yml`)
-- Option B artifact + wait-for-SHA: [harness-deploy-race.md](harness-deploy-race.md)
-- Protocol: host `HARNESS_PROTOCOL_VERSION` must match Wasm `PROTOCOL_VERSION` (currently **2**)
+Wasm rebuild is self-hosted Zig → artifact → Vercel prebuild. See
+[runner.md](runner.md) and [harness-deploy-race.md](harness-deploy-race.md).

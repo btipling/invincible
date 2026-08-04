@@ -1,11 +1,8 @@
 # Agent sandbox (BYO)
 
-End-to-end guide for the **pluggable agent sandbox**: a remote path-jailed
-workspace where the model can `list_dir` / `read_file` / `write_file` / `exec`
-during a harness turn.
-
-**Parent epic:** [#45](https://github.com/btipling/invincible/issues/45) ·  
-**Phases 1–3 (code):** #46–#48 · **This guide (docs):** #49
+What tools the agent gets when a sandbox is configured: a remote path-jailed
+workspace with `list_dir` / `read_file` / `write_file` / `exec` during a
+harness turn.
 
 Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-divide.md) ·
 [SECURITY.md](../SECURITY.md) · [runner.md](runner.md) · package detail

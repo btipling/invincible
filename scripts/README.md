@@ -124,7 +124,7 @@ npm run smoke:tenancy
 Expect exit 0 only when `POST /api/agent` returns **401** + exact
 `Authentication required.` (see `lib/tenancy/errors.ts`).
 
-## Phase 3 — fetch harness artifact (Vercel / local)
+## Fetch harness artifact (Vercel / local)
 
 
 ```bash
@@ -134,7 +134,7 @@ node scripts/fetch-harness-artifact.mjs
 ```
 
 On Vercel this runs as `npm run prebuild`. Race wait: `docs/harness-deploy-race.md`.  
-Product path: `docs/phase-4-handoff.md`.
+Product path: [README](../README.md) · [feature-divide.md](../docs/feature-divide.md).
 
 ## Safety
 

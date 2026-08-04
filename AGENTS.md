@@ -10,7 +10,7 @@ Guidance for AI agents (and humans) working on this repository.
 - **Prod:** https://invincible-dun-ten.vercel.app
 - **Phase 1–2:** Next.js playground, AI Gateway, DO runner `invincible-do-1` (Zig 0.16.0)
 - **Phase 3:** Pipeline PoC — bridge + DOM chat + optional Wasm companion (done)
-- **Phase 4 (done):** Wasm-**primary** harness MVP — [`docs/phase-4-handoff.md`](docs/phase-4-handoff.md) · epic #27
+- **Phase 4 (done):** Wasm-**primary** harness MVP — [`docs/feature-divide.md`](docs/feature-divide.md) · [README](README.md) · epic #27
 - **Deploy:** Vercel (Git-linked) + Actions artifact `harness-wasm`
 - **GitHub account:** owner **`btipling`** (not display name “Bjorn”)
 
@@ -90,8 +90,9 @@ Load from **this repo** via `gh` (not generic template skills). Zero-search:
 Index: [`.grok/skills/README.md`](.grok/skills/README.md).
 
 **Plan storage:** implementation plans are **GitHub issues** (see create-plan),
-not a required `docs/*-plan.md`. Historical phase docs under `docs/` remain
-valid handoffs.
+not a required `docs/*-plan.md`. Completed phase plan/handoff markdown was
+removed; living product/ops guides live under `docs/` (feature-divide, runner,
+BYO, limits).
 
 ```bash
 command -v gh >/dev/null && gh auth status   # refuse GitHub work if this fails
@@ -190,7 +191,7 @@ invincible/
 ├── sandbox/             # protocol v1 daemon (BYO tools workspace)
 ├── native/harness/      # Zig + dvui Wasm (CI on self-hosted runner)
 ├── scripts/             # fetch-harness, seed-tenancy, runner scripts
-├── docs/                # BYO, sandbox, phase plans, limits, deploy race
+├── docs/                # BYO, sandbox, feature-divide, limits, deploy race
 ├── public/harness/      # wasm/js gitignored; README only committed
 ├── AGENTS.md
 └── package.json
@@ -206,7 +207,7 @@ invincible/
 | Colors / tokens (DOM) | `lib/palette.ts` |
 | Colors / tokens (dvui) | `native/harness/src/palette.zig` (hex sync with palette.ts) |
 | JS ↔ Wasm bridge | `lib/harnessBridge.ts` + `native/harness/src/bridge.zig` |
-| Plans / ops | `docs/*` (handoffs, limits); **new plans → GitHub issues** via create-plan |
+| Plans / ops | `docs/*` (living guides); **new plans → GitHub issues** via create-plan |
 | Agent skills | `.grok/skills/*` |
 
 ## Palette (imported from Asteronica / webgpu-game)
