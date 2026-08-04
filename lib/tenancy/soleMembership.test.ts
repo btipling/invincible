@@ -8,10 +8,19 @@ import * as schema from '../../db/schema';
 import { loadSoleMembership } from './soleMembership';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationSql = readFileSync(
-  join(__dirname, '../../db/migrations/0000_tenancy_phase1.sql'),
-  'utf8',
-);
+const migrationsDir = join(__dirname, '../../db/migrations');
+
+async function applyMigrations(client: PGlite) {
+  for (const name of ['0000_tenancy_phase1.sql', '0001_sso_scim_identity.sql']) {
+    const sql = readFileSync(join(migrationsDir, name), 'utf8');
+    for (const stmt of sql
+      .split('--> statement-breakpoint')
+      .map((s) => s.trim())
+      .filter(Boolean)) {
+      await client.exec(stmt);
+    }
+  }
+}
 
 describe('loadSoleMembership', () => {
   let client: PGlite;
@@ -21,12 +30,7 @@ describe('loadSoleMembership', () => {
 
   beforeAll(async () => {
     client = new PGlite();
-    for (const stmt of migrationSql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean)) {
-      await client.exec(stmt);
-    }
+    await applyMigrations(client);
     db = drizzle(client, { schema });
   });
 

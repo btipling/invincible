@@ -94,7 +94,8 @@ export SANDBOX_URL=http://127.0.0.1:8787     # or SEED_SANDBOX_*
 export SANDBOX_TOKEN='…'
 
 npm ci
-npm run db:migrate
+npm install --no-save --no-audit --no-fund drizzle-kit@0.31.10
+npx drizzle-kit migrate
 npm run db:seed
 # → logs tenantId / userId / sandboxId only (no secrets)
 # Re-seed is idempotent on uniques but **resets** bootstrap password_hash

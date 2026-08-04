@@ -11,10 +11,19 @@ import { SANDBOX_FORBIDDEN_ERROR } from './errors';
 import { resolveAgentSandbox } from './resolveSandbox';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationSql = readFileSync(
-  join(__dirname, '../../db/migrations/0000_tenancy_phase1.sql'),
-  'utf8',
-);
+const migrationsDir = join(__dirname, '../../db/migrations');
+
+async function applyMigrations(client: PGlite) {
+  for (const name of ['0000_tenancy_phase1.sql', '0001_sso_scim_identity.sql']) {
+    const sql = readFileSync(join(migrationsDir, name), 'utf8');
+    for (const stmt of sql
+      .split('--> statement-breakpoint')
+      .map((s) => s.trim())
+      .filter(Boolean)) {
+      await client.exec(stmt);
+    }
+  }
+}
 
 const KEY = Buffer.alloc(32, 9);
 
@@ -41,13 +50,7 @@ describe('resolveAgentSandbox', () => {
 
   beforeAll(async () => {
     client = new PGlite();
-    const statements = migrationSql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    for (const stmt of statements) {
-      await client.exec(stmt);
-    }
+    await applyMigrations(client);
     db = drizzle(client, { schema });
   });
 
