@@ -165,6 +165,38 @@ describe('identity helpers (pglite)', () => {
     ).rejects.toMatchObject({ code: 'suspended' });
   });
 
+  it('findOrCreateOidcUser links null idp_subject by email; conflicts on different subject', async () => {
+    const hash = await hashPassword('link-pass');
+    const [cred] = await db
+      .insert(schema.users)
+      .values({
+        email: 'linkme@example.com',
+        name: 'Link Me',
+        status: 'active',
+        passwordHash: hash,
+        provisionSource: 'credentials',
+      })
+      .returning();
+
+    const subject = normalizeIdpSubject('https://idp.example', 'link-user');
+    const linked = await findOrCreateOidcUser(
+      { subject, email: 'linkme@example.com', name: 'Linked Name' },
+      { db: db as never },
+    );
+    expect(linked.created).toBe(false);
+    expect(linked.user.id).toBe(cred.id);
+    expect(linked.user.idpSubject).toBe(subject);
+    expect(linked.user.name).toBe('Linked Name');
+
+    const other = normalizeIdpSubject('https://idp.example', 'other-sub');
+    await expect(
+      findOrCreateOidcUser(
+        { subject: other, email: 'linkme@example.com' },
+        { db: db as never },
+      ),
+    ).rejects.toMatchObject({ code: 'conflict' });
+  });
+
   it('scimCreateUser / scimSuspendUser / cannot suspend break-glass', async () => {
     const created = await scimCreateUser(
       {

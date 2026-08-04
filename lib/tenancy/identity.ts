@@ -158,12 +158,34 @@ export async function ensureDefaultTenantMembership(
       return { tenantId, role: existing[0].role, created: false };
     }
 
-    await db.insert(tenantMembers).values({
-      tenantId,
-      userId: id,
-      role: r,
-    });
-    return { tenantId, role: r, created: true };
+    try {
+      await db.insert(tenantMembers).values({
+        tenantId,
+        userId: id,
+        role: r,
+      });
+      return { tenantId, role: r, created: true };
+    } catch (err) {
+      // Concurrent ensureDefaultTenantMembership races on PK.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/unique|duplicate|primary key/i.test(msg)) {
+        throw err;
+      }
+      const raced = await db
+        .select({ role: tenantMembers.role })
+        .from(tenantMembers)
+        .where(
+          and(
+            eq(tenantMembers.tenantId, tenantId),
+            eq(tenantMembers.userId, id),
+          ),
+        )
+        .limit(1);
+      if (raced[0]) {
+        return { tenantId, role: raced[0].role, created: false };
+      }
+      throw err;
+    }
   });
 }
 
@@ -285,36 +307,68 @@ export async function findOrCreateOidcUser(
         );
       }
       if (!byEmail[0].idpSubject) {
-        const [linked] = await db
-          .update(users)
-          .set({
-            idpSubject: subject,
-            name: name ?? byEmail[0].name,
-            updatedAt: new Date(),
-          })
-          .where(eq(users.id, byEmail[0].id))
-          .returning();
-        await ensureDefaultTenantMembership(linked.id, 'member', { db });
-        return { user: linked, created: false };
+        try {
+          const [linked] = await db
+            .update(users)
+            .set({
+              idpSubject: subject,
+              name: name ?? byEmail[0].name,
+              updatedAt: new Date(),
+            })
+            .where(eq(users.id, byEmail[0].id))
+            .returning();
+          await ensureDefaultTenantMembership(linked.id, 'member', { db });
+          return { user: linked, created: false };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/unique|duplicate/i.test(msg)) {
+            throw new IdentityError(
+              'email already linked to a different idp_subject',
+              'conflict',
+            );
+          }
+          throw err;
+        }
       }
       await ensureDefaultTenantMembership(byEmail[0].id, 'member', { db });
       return { user: byEmail[0], created: false };
     }
 
-    const [created] = await db
-      .insert(users)
-      .values({
-        email,
-        name,
-        status: 'active',
-        passwordHash: null,
-        idpSubject: subject,
-        provisionSource: 'oidc',
-      })
-      .returning();
+    try {
+      const [created] = await db
+        .insert(users)
+        .values({
+          email,
+          name,
+          status: 'active',
+          passwordHash: null,
+          idpSubject: subject,
+          provisionSource: 'oidc',
+        })
+        .returning();
 
-    await ensureDefaultTenantMembership(created.id, 'member', { db });
-    return { user: created, created: true };
+      await ensureDefaultTenantMembership(created.id, 'member', { db });
+      return { user: created, created: true };
+    } catch (err) {
+      // Concurrent find-or-create: unique on email or idp_subject.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/unique|duplicate/i.test(msg)) {
+        throw err;
+      }
+      const raced = await db
+        .select()
+        .from(users)
+        .where(eq(users.idpSubject, subject))
+        .limit(1);
+      if (raced[0]) {
+        if (!isActiveStatus(raced[0].status)) {
+          throw new IdentityError('user is suspended', 'suspended');
+        }
+        await ensureDefaultTenantMembership(raced[0].id, 'member', { db });
+        return { user: raced[0], created: false };
+      }
+      throw new IdentityError('user conflict', 'conflict');
+    }
   });
 }
 
