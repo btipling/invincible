@@ -9,10 +9,20 @@ import { hashPassword } from './password';
 import { authenticateCredentials } from './authenticate';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationSql = readFileSync(
-  join(__dirname, '../../db/migrations/0000_tenancy_phase1.sql'),
-  'utf8',
-);
+const migrationsDir = join(__dirname, '../../db/migrations');
+
+async function applyMigrations(client: PGlite) {
+  for (const name of ['0000_tenancy_phase1.sql', '0001_sso_scim_identity.sql']) {
+    const sql = readFileSync(join(migrationsDir, name), 'utf8');
+    const statements = sql
+      .split('--> statement-breakpoint')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const stmt of statements) {
+      await client.exec(stmt);
+    }
+  }
+}
 
 describe('authenticateCredentials', () => {
   let client: PGlite;
@@ -20,35 +30,40 @@ describe('authenticateCredentials', () => {
 
   beforeAll(async () => {
     client = new PGlite();
-    const statements = migrationSql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    for (const stmt of statements) {
-      await client.exec(stmt);
-    }
+    await applyMigrations(client);
     db = drizzle(client, { schema });
 
     const activeHash = await hashPassword('correct-horse-battery');
     const inactiveHash = await hashPassword('inactive-pass');
+    const suspendedHash = await hashPassword('suspended-pass');
     await db.insert(schema.users).values([
       {
         email: 'active@example.com',
         name: 'Active',
         status: 'active',
         passwordHash: activeHash,
+        provisionSource: 'credentials',
       },
       {
         email: 'inactive@example.com',
         name: 'Inactive',
         status: 'inactive',
         passwordHash: inactiveHash,
+        provisionSource: 'credentials',
+      },
+      {
+        email: 'suspended@example.com',
+        name: 'Suspended',
+        status: 'suspended',
+        passwordHash: suspendedHash,
+        provisionSource: 'credentials',
       },
       {
         email: 'nohash@example.com',
         name: 'NoHash',
         status: 'active',
         passwordHash: null,
+        provisionSource: 'oidc',
       },
     ]);
   });
@@ -84,6 +99,15 @@ describe('authenticateCredentials', () => {
     const user = await authenticateCredentials(
       'inactive@example.com',
       'inactive-pass',
+      { db: db as never },
+    );
+    expect(user).toBeNull();
+  });
+
+  it('rejects suspended user even with correct password', async () => {
+    const user = await authenticateCredentials(
+      'suspended@example.com',
+      'suspended-pass',
       { db: db as never },
     );
     expect(user).toBeNull();

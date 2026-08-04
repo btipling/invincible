@@ -111,7 +111,9 @@ export async function seedTenancy(
         throw new Error('seed failed: tenant missing after upsert');
       }
 
-      // 2) user by email — re-seed refreshes password_hash (bootstrap contract)
+      // 2) user by email — re-seed refreshes password_hash (bootstrap contract).
+      // Insert sets provision_source=credentials; conflict does NOT overwrite
+      // provision_source (hybrid: preserve scim/oidc if email collides).
       await tx
         .insert(users)
         .values({
@@ -119,6 +121,7 @@ export async function seedTenancy(
           name: 'Admin',
           status: 'active',
           passwordHash,
+          provisionSource: 'credentials',
         })
         .onConflictDoUpdate({
           target: users.email,

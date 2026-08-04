@@ -14,6 +14,7 @@ import {
 /**
  * Phase 1 tenancy schema (parent #54 / phase #55).
  * Auth.js adapter tables (accounts/sessions/verification_tokens): not used (JWT + Credentials).
+ * SSO/SCIM identity columns: parent #64 / phase #75.
  */
 
 export const tenants = pgTable('tenants', {
@@ -33,8 +34,15 @@ export const users = pgTable('users', {
   emailVerified: timestamp('email_verified', { withTimezone: true }),
   /** bcrypt cost 12; nullable until credentials set */
   passwordHash: text('password_hash'),
-  /** SSO/SCIM later */
+  /** OIDC subject: normalizeIdpSubject(issuer, sub) */
   idpSubject: text('idp_subject').unique(),
+  /**
+   * How the user was provisioned. Hybrid model (#64): credentials | oidc | scim | manual.
+   * Default credentials for back-compat / seed break-glass.
+   */
+  provisionSource: text('provision_source').notNull().default('credentials'),
+  /** IdP SCIM externalId; SCIM resource id remains users.id */
+  scimExternalId: text('scim_external_id').unique(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

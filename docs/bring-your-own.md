@@ -229,7 +229,8 @@ never leave in issue comments):
 
 ```bash
 npm ci
-npm run db:migrate
+npm install --no-save --no-audit --no-fund drizzle-kit@0.31.10
+npx drizzle-kit migrate
 npm run db:seed
 ```
 

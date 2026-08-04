@@ -1,0 +1,210 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { PGlite } from '@electric-sql/pglite';
+import { eq } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/pglite';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import * as schema from '../../db/schema';
+import { hashPassword } from './password';
+import {
+  assertNotBreakGlass,
+  ensureDefaultTenantMembership,
+  findOrCreateOidcUser,
+  IdentityError,
+  isBreakGlassUser,
+  normalizeIdpSubject,
+  scimCreateUser,
+  scimSuspendUser,
+  scimUpdateUser,
+} from './identity';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const migrationsDir = join(__dirname, '../../db/migrations');
+
+async function applyMigrations(client: PGlite) {
+  for (const name of ['0000_tenancy_phase1.sql', '0001_sso_scim_identity.sql']) {
+    const sql = readFileSync(join(migrationsDir, name), 'utf8');
+    const statements = sql
+      .split('--> statement-breakpoint')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const stmt of statements) {
+      await client.exec(stmt);
+    }
+  }
+}
+
+describe('normalizeIdpSubject', () => {
+  it('joins trimmed issuer and sub', () => {
+    expect(normalizeIdpSubject(' https://idp.example ', ' abc ')).toBe(
+      'https://idp.example|abc',
+    );
+  });
+
+  it('rejects empty issuer or sub', () => {
+    expect(() => normalizeIdpSubject('', 'x')).toThrow(IdentityError);
+    expect(() => normalizeIdpSubject('iss', '  ')).toThrow(IdentityError);
+  });
+});
+
+describe('identity helpers (pglite)', () => {
+  let client: PGlite;
+  let db: ReturnType<typeof drizzle<typeof schema>>;
+  let ownerId: string;
+  let tenantId: string;
+
+  beforeAll(async () => {
+    client = new PGlite();
+    await applyMigrations(client);
+    db = drizzle(client, { schema });
+
+    const [tenant] = await db
+      .insert(schema.tenants)
+      .values({ slug: 'default', name: 'Default', settings: {} })
+      .returning();
+    tenantId = tenant.id;
+
+    const hash = await hashPassword('owner-pass');
+    const [owner] = await db
+      .insert(schema.users)
+      .values({
+        email: 'owner@example.com',
+        name: 'Owner',
+        status: 'active',
+        passwordHash: hash,
+        provisionSource: 'credentials',
+      })
+      .returning();
+    ownerId = owner.id;
+
+    await db.insert(schema.tenantMembers).values({
+      tenantId,
+      userId: ownerId,
+      role: 'owner',
+    });
+  });
+
+  afterAll(async () => {
+    await client.close();
+  });
+
+  it('ensureDefaultTenantMembership is idempotent and refuses owner', async () => {
+    const hash = await hashPassword('m');
+    const [u] = await db
+      .insert(schema.users)
+      .values({
+        email: 'member1@example.com',
+        status: 'active',
+        passwordHash: hash,
+        provisionSource: 'manual',
+      })
+      .returning();
+
+    const first = await ensureDefaultTenantMembership(u.id, 'member', {
+      db: db as never,
+    });
+    expect(first.created).toBe(true);
+    expect(first.role).toBe('member');
+    expect(first.tenantId).toBe(tenantId);
+
+    const second = await ensureDefaultTenantMembership(u.id, 'member', {
+      db: db as never,
+    });
+    expect(second.created).toBe(false);
+
+    await expect(
+      ensureDefaultTenantMembership(u.id, 'owner', { db: db as never }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  it('isBreakGlassUser true for credentials owner; false for scim member', async () => {
+    expect(await isBreakGlassUser(ownerId, { db: db as never })).toBe(true);
+
+    const scim = await scimCreateUser(
+      {
+        email: 'scim-bg@example.com',
+        externalId: 'ext-bg',
+        displayName: 'SCIM',
+      },
+      { db: db as never },
+    );
+    expect(await isBreakGlassUser(scim.id, { db: db as never })).toBe(false);
+    await expect(
+      assertNotBreakGlass(ownerId, { db: db as never }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  it('findOrCreateOidcUser creates, reuses, and refuses suspended', async () => {
+    const subject = normalizeIdpSubject('https://idp.example', 'user-1');
+    const first = await findOrCreateOidcUser(
+      { subject, email: 'oidc1@example.com', name: 'Oidc One' },
+      { db: db as never },
+    );
+    expect(first.created).toBe(true);
+    expect(first.user.provisionSource).toBe('oidc');
+    expect(first.user.idpSubject).toBe(subject);
+
+    const second = await findOrCreateOidcUser(
+      { subject, email: 'oidc1@example.com' },
+      { db: db as never },
+    );
+    expect(second.created).toBe(false);
+    expect(second.user.id).toBe(first.user.id);
+
+    await db
+      .update(schema.users)
+      .set({ status: 'suspended' })
+      .where(eq(schema.users.id, first.user.id));
+
+    await expect(
+      findOrCreateOidcUser(
+        { subject, email: 'oidc1@example.com' },
+        { db: db as never },
+      ),
+    ).rejects.toMatchObject({ code: 'suspended' });
+  });
+
+  it('scimCreateUser / scimSuspendUser / cannot suspend break-glass', async () => {
+    const created = await scimCreateUser(
+      {
+        email: 'scim2@example.com',
+        externalId: 'ext-2',
+        displayName: 'Scim Two',
+        active: true,
+      },
+      { db: db as never },
+    );
+    expect(created.provisionSource).toBe('scim');
+    expect(created.scimExternalId).toBe('ext-2');
+    expect(created.status).toBe('active');
+
+    const updated = await scimUpdateUser(
+      created.id,
+      { displayName: 'Scim Two Updated', active: true },
+      { db: db as never },
+    );
+    expect(updated.name).toBe('Scim Two Updated');
+
+    const suspended = await scimSuspendUser(created.id, { db: db as never });
+    expect(suspended.status).toBe('suspended');
+
+    // row still exists
+    const [still] = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, created.id));
+    expect(still).toBeTruthy();
+
+    await expect(
+      scimSuspendUser(ownerId, { db: db as never }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+
+    await expect(
+      scimCreateUser(
+        { email: 'scim2@example.com', externalId: 'ext-other' },
+        { db: db as never },
+      ),
+    ).rejects.toMatchObject({ code: 'conflict' });
+  });
+});

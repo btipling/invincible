@@ -16,10 +16,20 @@ import {
 } from './seed-tenancy';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationSql = readFileSync(
-  join(__dirname, '../db/migrations/0000_tenancy_phase1.sql'),
-  'utf8',
-);
+const migrationsDir = join(__dirname, '../db/migrations');
+
+async function applyMigrations(client: PGlite) {
+  for (const name of ['0000_tenancy_phase1.sql', '0001_sso_scim_identity.sql']) {
+    const sql = readFileSync(join(migrationsDir, name), 'utf8');
+    const statements = sql
+      .split('--> statement-breakpoint')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const stmt of statements) {
+      await client.exec(stmt);
+    }
+  }
+}
 
 function seedEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   const key = Buffer.alloc(32, 5).toString('base64');
@@ -41,14 +51,7 @@ describe('seedTenancy (pglite)', () => {
 
   beforeAll(async () => {
     client = new PGlite();
-    // drizzle migration file uses statement breakpoints
-    const statements = migrationSql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    for (const stmt of statements) {
-      await client.exec(stmt);
-    }
+    await applyMigrations(client);
     db = drizzle(client, { schema });
   });
 
@@ -99,13 +102,14 @@ describe('seedTenancy (pglite)', () => {
     const end = await countSeedRows(db as never);
     expect(end).toEqual(mid);
 
-    // email lowercased
+    // email lowercased; provision_source credentials on seed insert
     const [user] = await db
       .select()
       .from(schema.users)
       .where(eq(schema.users.email, 'admin@example.com'))
       .limit(1);
     expect(user).toBeTruthy();
+    expect(user.provisionSource).toBe('credentials');
     expect(await verifyPassword('rotated-pass!', user.passwordHash!)).toBe(true);
 
     const [sb] = await db
@@ -126,5 +130,27 @@ describe('seedTenancy (pglite)', () => {
       .where(eq(schema.tenants.id, first.tenantId))
       .limit(1);
     expect(tenant.slug).toBe(TENANT_SLUG);
+  });
+
+  it('re-seed does not overwrite provision_source on conflict', async () => {
+    // Simulate hybrid: change seed user to scim, re-seed same email
+    await db
+      .update(schema.users)
+      .set({ provisionSource: 'scim', scimExternalId: 'seed-collide' })
+      .where(eq(schema.users.email, 'admin@example.com'));
+
+    await seedTenancy(
+      seedEnv({ SEED_ADMIN_PASSWORD: 'again-pass!' }),
+      { db: db as never },
+    );
+
+    const [user] = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.email, 'admin@example.com'))
+      .limit(1);
+    expect(user.provisionSource).toBe('scim');
+    expect(user.scimExternalId).toBe('seed-collide');
+    expect(await verifyPassword('again-pass!', user.passwordHash!)).toBe(true);
   });
 });

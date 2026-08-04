@@ -27,6 +27,10 @@
 # Safety: workflow_dispatch only; ubuntu-latest only; never self-hosted;
 # never echo secret values; job summary success/fail only.
 # See plan issues #67 / #68 / #70. Cutover docs: docs/bring-your-own.md §4a.
+#
+# Migrator: drizzle-kit is NOT a package.json dependency (keeps app `npm ci`
+# free of kit/esbuild platform forests). This job installs kit ephemerally
+# for the migrate step only (pinned version; --no-save).
 
 name: db-tenancy-bootstrap
 
@@ -135,15 +139,21 @@ jobs:
           node-version: "22"
           cache: npm
 
-      - name: Install dependencies
+      - name: Install app dependencies
         if: ${{ !inputs.dry_run }}
         run: npm ci
+
+      # drizzle-kit is intentionally NOT in package.json (esbuild platform bloat).
+      # Install only for this job; pin matches former package.json version.
+      - name: Install migrator (ephemeral)
+        if: ${{ !inputs.dry_run }}
+        run: npm install --no-save --no-audit --no-fund drizzle-kit@0.31.10
 
       - name: Migrate
         if: ${{ !inputs.dry_run }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: npm run db:migrate
+        run: npx drizzle-kit migrate
 
       - name: Seed
         if: ${{ !inputs.dry_run }}
@@ -166,5 +176,6 @@ jobs:
             echo "### db-tenancy-bootstrap"
             echo "- result: ${{ job.status }}"
             echo "- dry_run: false"
+            echo "- migrator: drizzle-kit@0.31.10 (ephemeral, not in package.json)"
             echo "- note: re-run resets bootstrap password_hash + sandbox token ciphertext"
           } >> "${GITHUB_STEP_SUMMARY}"
