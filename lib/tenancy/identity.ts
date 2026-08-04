@@ -2,7 +2,7 @@
  * SSO/SCIM identity helpers (parent #64 / phase #75).
  * Pure + DB only — no OIDC provider, no SCIM HTTP.
  */
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, asc, count, eq, isNotNull, isNull, or } from 'drizzle-orm';
 import {
   createDbConnection,
   tenantMembers,
@@ -548,6 +548,95 @@ export async function scimSuspendUser(
   });
 }
 
+
+export type ScimListFilter =
+  | { kind: 'userName'; value: string }
+  | { kind: 'externalId'; value: string };
+
+export type ListScimUsersInput = {
+  filter?: ScimListFilter | null;
+  startIndex?: number;
+  count?: number;
+};
+
+/**
+ * List SCIM-managed users only (provision_source=scim OR scim_external_id set).
+ * Pagination is 1-based startIndex; count default 50.
+ */
+export async function listScimUsers(
+  input: ListScimUsersInput = {},
+  deps: IdentityDeps = {},
+): Promise<{ users: User[]; totalResults: number }> {
+  const startIndex = Math.max(1, input.startIndex ?? 1);
+  const limit = Math.max(0, input.count ?? 50);
+  const offset = startIndex - 1;
+
+  return withDb(deps, async (db) => {
+    const managed = or(
+      eq(users.provisionSource, 'scim'),
+      isNotNull(users.scimExternalId),
+    );
+    const parts = [managed];
+    if (input.filter?.kind === 'userName') {
+      parts.push(eq(users.email, input.filter.value.trim().toLowerCase()));
+    } else if (input.filter?.kind === 'externalId') {
+      parts.push(eq(users.scimExternalId, input.filter.value.trim()));
+    }
+    const where = and(...parts);
+
+    const totalRows = await db
+      .select({ n: count() })
+      .from(users)
+      .where(where);
+    const totalResults = Number(totalRows[0]?.n ?? 0);
+
+    if (limit === 0) {
+      return { users: [], totalResults };
+    }
+
+    const rows = await db
+      .select()
+      .from(users)
+      .where(where)
+      .orderBy(asc(users.email))
+      .limit(limit)
+      .offset(offset);
+
+    return { users: rows, totalResults };
+  });
+}
+
+export type AdminUserRow = {
+  id: string;
+  email: string;
+  name: string | null;
+  status: string;
+  provisionSource: string;
+  scimExternalId: string | null;
+  createdAt: Date;
+};
+
+/** All users for admin roster (hybrid visibility). No secrets. */
+export async function listUsersForAdmin(
+  deps: IdentityDeps = {},
+): Promise<AdminUserRow[]> {
+  return withDb(deps, async (db) => {
+    const rows = await db
+      .select({
+        id: users.id,
+        email: users.email,
+        name: users.name,
+        status: users.status,
+        provisionSource: users.provisionSource,
+        scimExternalId: users.scimExternalId,
+        createdAt: users.createdAt,
+      })
+      .from(users)
+      .orderBy(asc(users.email));
+    return rows;
+  });
+}
+
 /** Load user by id (tests / callers). */
 export async function getUserById(
   userId: string,
@@ -559,4 +648,14 @@ export async function getUserById(
     const rows = await db.select().from(users).where(eq(users.id, id)).limit(1);
     return rows[0] ?? null;
   });
+}
+
+/** Get SCIM-managed user by id or null if missing/not managed. */
+export async function getScimUserById(
+  userId: string,
+  deps: IdentityDeps = {},
+): Promise<User | null> {
+  const row = await getUserById(userId, deps);
+  if (!row || !isScimManaged(row)) return null;
+  return row;
 }
