@@ -22,6 +22,7 @@ project and keys, and run the same harness on **your** work.
 | **Core** | AI Gateway inference | `POST /api/chat` — `AI_GATEWAY_API_KEY` stays on the server |
 | **Optional** | Agent tools + sandbox | `POST /api/agent` — tenancy **off**: `SANDBOX_URL` + `SANDBOX_TOKEN`; tenancy **on**: DB sandbox grants (not env `SANDBOX_*`) |
 | **Optional** | Multi-tenant login + admin | Credentials auth, grants, `/login` + `/admin` — **on** for the reference Production deploy |
+| **Optional** | Tenant BYOK inference | When tenancy is on: admin **Inference keys** (`/admin/inference`), harness model cycle (canvas **Next**), request-scoped Gateway BYOK |
 | **Optional** | OIDC SSO + SCIM | Code on `main`; enable with env ([docs/bring-your-own.md §4b](docs/bring-your-own.md#4b-optional-sso-oidc--scim)) |
 
 ## Try it
@@ -79,6 +80,7 @@ secrets → Wasm supply → verify `/harness`.
 |-------|-----|
 | Agent tools workspace | [docs/sandbox.md](docs/sandbox.md) |
 | Multi-tenant cutover | [docs/bring-your-own.md §4a](docs/bring-your-own.md#4a-optional-multi-tenant-auth) |
+| Tenant BYOK inference | [docs/bring-your-own.md §4a Inference keys](docs/bring-your-own.md#inference-keys-byok) |
 | OIDC + SCIM | [docs/bring-your-own.md §4b](docs/bring-your-own.md#4b-optional-sso-oidc--scim) |
 | Self-hosted Zig runner | [docs/runner.md](docs/runner.md) |
 

@@ -45,9 +45,25 @@ gh_raw scripts/phase-2.3-zig.sh | bash
 | `harden-runner-host.sh` | SSH/UFW baseline (run with care) |
 | `create-invincible-droplet.sh` | DO create (needs write token on laptop) |
 | `fetch-harness-artifact.mjs` | Vercel/local: download `harness-wasm` artifact |
-| `seed-tenancy.ts` | Phase 1: idempotent tenancy seed (`npm run db:seed`) |
+| `seed-tenancy.ts` | Idempotent tenancy seed (`npm run db:seed`) — prefer GHA bootstrap |
 
-## Cloud-native bootstrap (GHA) — phase 1 (#68)
+## Schema-only migrate (GHA) — db-migrate
+
+Primary path for **additive schema** on existing Production (e.g. provider secrets /
+BYOK tables) **without** seed:
+
+1. Repository secret **`DATABASE_URL`** === Vercel Production (dual-store).
+2. Actions → **db-migrate** → Run workflow with `confirm` = `migrate`.
+3. Optional `dry_run` = true validates secret presence only (no mutate).
+
+Workflow: [`.github/workflows/db-migrate.yml`](../.github/workflows/db-migrate.yml)
+
+Do **not** use `db-tenancy-bootstrap` / seed for schema-only cutover (seed resets
+bootstrap password hash + sandbox token ciphertext).
+
+Full BYOK operator notes: [docs/bring-your-own.md §4a Inference keys](../docs/bring-your-own.md#inference-keys-byok).
+
+## Cloud-native bootstrap (GHA) — migrate + seed
 
 Primary path for migrate+seed **without personal hardware**:
 
@@ -71,7 +87,7 @@ Workflow: [`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db
 match Vercel Production or tokens will not decrypt after login flip.
 
 **Cutover order:** keep `AUTH_SECRET` unset on Vercel until after seed so
-tenancy stays OFF; then set `AUTH_SECRET` and redeploy (parent #67 / phase 3).
+tenancy stays OFF; then set `AUTH_SECRET` and redeploy.
 
 Full cutover prose: [docs/bring-your-own.md §4a](../docs/bring-your-own.md#4a-optional-multi-tenant-auth).
 

@@ -150,11 +150,62 @@ If **any** is missing → **legacy open mode**: anonymous `POST /api/chat` and
 | Unauthenticated `/api/chat` or `/api/agent` | **401** `{ "error": "Authentication required." }` |
 | Unauthenticated `/`, `/harness`, `/admin` | Redirect to `/login?callbackUrl=…` |
 | Agent tools | **DB-resolved** sandbox for the session user (grants enforced); not raw process env alone |
-| `/admin` | Owner|admin: tenant + **Users** roster (all provision sources) + sandboxes (**base URL** shown, token **masked**); owner can rotate token |
+| `/admin` | Owner|admin: tenant + **Users** roster + sandboxes + **Inference keys** (`/admin/inference`) + encryption; tokens/credentials **masked** |
 | Logout | Clears Auth.js session (and local harness session blob) |
 
 Grant failures return **403** `{ "error": "Sandbox access denied." }`
 (`SANDBOX_FORBIDDEN_ERROR`). See [sandbox.md](sandbox.md).
+
+### Inference keys (BYOK)
+
+When **tenancy is on**, inference uses **tenant Bring-Your-Own-Key (BYOK)** so
+**provider billing is the tenant’s**, not Invincible host system credits.
+
+| Role | What they do |
+|------|----------------|
+| Tenant **admin** / owner | `/admin/inference` — create provider secrets (encrypted under the **tenant DEK**), attach **model ids**, grant members **`can_use`**. UI shows **masks** only — never plaintext keys. |
+| Member | Signs in → `/harness` → catalog from **`GET /api/models`** (session-gated, grants only) → cycles model with **Next** in the **canvas** header (protocol v3) → Send. Host chip **mirrors** selection (not a second picker). |
+
+**Request path (tenancy on):**
+
+1. Host reads selected model id from the Wasm bridge and POSTs `{ prompt, modelId? }` to `/api/chat` or `/api/agent`.
+2. Server re-authorizes grants and attaches **request-scoped**
+   `providerOptions.gateway.byok` + `only` (never routes via env `DEFAULT_MODEL` /
+   `AGENT_MODEL` under tenancy on).
+3. Missing grants / unauthorized model → **4xx** — not silent host spend.
+4. Empty catalog → host blocks Send with an in-canvas error (reload if catalog failed to load).
+
+**`AI_GATEWAY_API_KEY` is still required** on the host (Gateway routing/auth). It
+is **not** a substitute for tenant provider keys under tenancy on.
+
+**Schema (provider secrets tables):** if the BYOK tables are not yet applied on
+Production Postgres, run **schema-only** migrate — **not** seed/bootstrap:
+
+1. Actions → **db-migrate** → Run workflow  
+2. `confirm` = `migrate` (required)  
+3. Optional `dry_run` = true (validate `DATABASE_URL` presence only)  
+4. Workflow: [`.github/workflows/db-migrate.yml`](../.github/workflows/db-migrate.yml)  
+5. Repository secret **`DATABASE_URL`** must equal Vercel Production (dual-store)
+
+Do **not** use `db-tenancy-bootstrap` / seed for schema-only BYOK cutover (seed
+resets bootstrap password hash + sandbox token ciphertext).
+
+**When tenancy is off:** single-operator path unchanged — env Gateway model
+(`DEFAULT_MODEL` / code default); no provider-secret tables required.
+
+#### Operator checklist (BYOK inference)
+
+Timeless steps (no personal-laptop Production shell):
+
+1. **Schema (if needed):** Actions → **db-migrate** → `confirm=migrate` (optional `dry_run=true` first).
+2. **App:** tenancy triple on Production; redeploy if you just migrated.
+3. **Admin:** sign in → **`/admin/inference`** → create provider secret + model ids → grant members.
+4. **Harness:** member → `/harness` → catalog loads → **Next** cycles models → Send; chip mirrors selection.
+5. **Negative smoke:** member without grant cannot use ungranted models; empty catalog does not hit Gateway.
+6. **Never** put provider API keys in client, Wasm, git, issues, or logs.
+
+Also: [SECURITY.md](../SECURITY.md) · [feature-divide.md](feature-divide.md) ·
+[native/harness/README.md](../native/harness/README.md).
 
 ### Cloud cutover checklist (primary path)
 
@@ -428,6 +479,7 @@ empty `public/harness`.
 |------------|--------|
 | Pluggable **sandbox** for agent build/run tools | **Shipped (MVP)** — config seam; see [sandbox.md](sandbox.md) |
 | Optional multi-tenant auth (login + DB grants) | **Shipped** — [§4a](#4a-optional-multi-tenant-auth) |
+| Tenant BYOK inference keys + harness model cycle | **Shipped** — [§4a Inference keys](#inference-keys-byok) |
 | Multi-tenant sandbox isolation / fleet | **Not shipped** — single workspace root per process for now |
 | Optional **OIDC SSO** + **SCIM** provisioning | **Shipped (optional config)** — [§4b](#4b-optional-sso-oidc--scim) |
 
@@ -464,5 +516,6 @@ listed as Done in [AGENTS.md](../AGENTS.md). Operators on **forks/clones** use
 - [ ] If using self-hosted builds: runner online + `SELF_HOSTED_BUILDS=true`
 - [ ] Optional: sandbox daemon + Vercel/local `SANDBOX_URL`/`SANDBOX_TOKEN` ([sandbox.md](sandbox.md))
 - [ ] Optional tenancy: cloud cutover [§4a](#4a-optional-multi-tenant-auth) (GHA migrate/seed, then `AUTH_SECRET`)
+- [ ] Optional BYOK: GHA **db-migrate** if needed + `/admin/inference` + harness model cycle ([§4a](#inference-keys-byok))
 - [ ] Optional OIDC / SCIM: [§4b](#4b-optional-sso-oidc--scim) (credentials break-glass still works; hybrid roster)
 - [ ] No keys in client/Wasm; no PR triggers on self-hosted workflows

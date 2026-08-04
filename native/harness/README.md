@@ -100,6 +100,7 @@ Inference stays on the host: `POST /api/chat` and `POST /api/agent` hold
 | **Zig** | `src/bridge.zig` |
 | **Host** | `app/harness/HarnessHost.tsx` (shell: load + bridge + APIs) |
 | **Chat turn** | `lib/harnessChat.ts` → `/api/agent` or `/api/chat` |
+| **Model catalog** | Host fetches `GET /api/models` after load and **pushes** ids into Wasm; selection (cycle / label) stays in the canvas UI |
 
 ### Message kinds
 
