@@ -22,6 +22,9 @@ export type RunAgentParams = {
   maxSteps?: number;
   modelId?: string;
   system?: string;
+  /** Request-scoped Gateway BYOK (tenancy on). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  providerOptions?: any;
   /** Inject for tests — same shape as `generateText` from `ai`. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   generateTextImpl?: (args: any) => Promise<any>;
@@ -76,14 +79,20 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
     permissions: params.permissions,
   });
 
-  const result = await generate({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const genArgs: any = {
     model: modelId,
     system: params.system ?? DEFAULT_AGENT_SYSTEM,
     prompt: params.prompt,
     tools,
     stopWhen: stepCountIs(maxSteps),
     abortSignal: params.signal,
-  });
+  };
+  if (params.providerOptions) {
+    genArgs.providerOptions = params.providerOptions;
+  }
+
+  const result = await generate(genArgs);
 
   const toolTrace = collectToolTrace(result, secrets);
   const text = redactSecrets((result.text ?? '').trim(), secrets);
@@ -179,7 +188,6 @@ export function collectToolTrace(
 function summarizeTool(name: string, resultText: string, ok: boolean): string {
   const oneLine = resultText.replace(/\s+/g, ' ').trim();
   if (!oneLine) return `${name} ${ok ? 'ok' : 'failed'}`;
-  // Prefer first ~line for summary
   const head = oneLine.length > 200 ? oneLine.slice(0, 200) : oneLine;
   return head;
 }
