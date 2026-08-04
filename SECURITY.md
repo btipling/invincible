@@ -91,8 +91,11 @@ client-side key or sandbox-token exposure immediately.
 
 Unauthenticated API when tenancy is on returns **401** with JSON
 `{ "error": "Authentication required." }` (stable `error` constant
-`AUTH_REQUIRED_ERROR`). Grant failures return **403**
+`AUTH_REQUIRED_ERROR`). Sandbox grant failures return **403**
 `{ "error": "Sandbox access denied." }` (`SANDBOX_FORBIDDEN_ERROR`).
+Inference grant / model failures return **403** / **400**
+(`INFERENCE_FORBIDDEN_ERROR` / `INFERENCE_MODEL_REQUIRED_ERROR`); temporary
+resolve/catalog failures return **503** (`INFERENCE_UNAVAILABLE_ERROR`).
 
 Cutover: [docs/bring-your-own.md](docs/bring-your-own.md) §4a.  
 OIDC / SCIM operator notes: [docs/bring-your-own.md](docs/bring-your-own.md) §4b.
