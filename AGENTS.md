@@ -4,15 +4,17 @@ Guidance for AI agents (and humans) working on this repository.
 
 ## Project
 
-**Invincible** is a cloud prompt playground / agent harness.
+**Invincible** is an in-browser **agent harness**: Zig/dvui Wasm workspace
+(transcript + composer) hosted by Next.js, with inference via Vercel AI Gateway.
+The canvas at `/harness` is the product; DOM is host shell only.
 
-- **Source:** https://github.com/btipling/invincible
-- **Prod:** https://invincible-dun-ten.vercel.app
-- **Phase 1–2:** Next.js playground, AI Gateway, DO runner `invincible-do-1` (Zig 0.16.0)
-- **Phase 3:** Pipeline PoC — bridge + DOM chat + optional Wasm companion (done)
-- **Phase 4 (done):** Wasm-**primary** harness MVP — [`docs/feature-divide.md`](docs/feature-divide.md) · [README](README.md) · epic #27
-- **Deploy:** Vercel (Git-linked) + Actions artifact `harness-wasm`
-- **GitHub account:** owner **`btipling`** (not display name “Bjorn”)
+| | |
+|--|--|
+| **Source** | https://github.com/btipling/invincible |
+| **Prod (sample)** | https://invincible-dun-ten.vercel.app |
+| **Architecture** | [`docs/feature-divide.md`](docs/feature-divide.md) · [README](README.md) |
+| **Deploy** | Vercel (Git-linked) + Actions artifact `harness-wasm` |
+| **GitHub account** | owner **`btipling`** (not display name “Bjorn”) |
 
 ## Reusable product (not a one-off)
 
@@ -248,7 +250,7 @@ import { teal, warm, ember } from '@/lib/palette';
 - Using `ember` for non-error UI
 - Hardcoding `#2dd4bf` instead of `teal.accent` (literals drift)
 
-## Feature divide (Phase 4)
+## Feature divide
 
 **Wasm is the harness; DOM is host shell only.** See [`docs/feature-divide.md`](docs/feature-divide.md).
 
