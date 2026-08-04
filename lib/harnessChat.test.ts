@@ -467,8 +467,6 @@ describe('runHarnessTurn', () => {
     expect(mock.__messages.some((m) => m.kind === MessageKind.Error)).toBe(true);
   });
 
-});
-
   it('does not fall back to chat on 401 auth required', async () => {
     const mock = makeMockExports();
     const bridge = new HarnessBridge(mock);
@@ -497,6 +495,32 @@ describe('runHarnessTurn', () => {
     expect(next.messages.some((m) => m.role === 'error')).toBe(true);
     expect(mock.__messages.some((m) => m.kind === MessageKind.Error)).toBe(true);
   });
+
+  it('forwards modelId to sendAgent', async () => {
+    const mock = makeMockExports();
+    const bridge = new HarnessBridge(mock);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'agent-ok',
+      toolTrace: [],
+    }));
+    const send = vi.fn(async (): Promise<ChatResult> => ({
+      ok: true,
+      text: 'should-not-run',
+    }));
+    await runHarnessTurn(bridge, createEmptySession(), 'hi', {
+      sendAgent,
+      send,
+      pushUser: false,
+      modelId: 'anthropic/claude-a',
+    });
+    expect(sendAgent).toHaveBeenCalledWith(
+      'hi',
+      expect.objectContaining({ modelId: 'anthropic/claude-a' }),
+    );
+    expect(send).not.toHaveBeenCalled();
+  });
+});
 
 describe('modelId forwarding', () => {
   it('forwards modelId to send', async () => {

@@ -78,7 +78,7 @@ User types in Wasm composer
 | Export whitelist | `native/harness/build.zig` |
 
 Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **3**).
-**2**). Mismatch → load error; rebuild both sides.
+Mismatch → load error; rebuild both sides.
 
 ## Related
 

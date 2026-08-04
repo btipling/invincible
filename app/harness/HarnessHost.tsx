@@ -47,18 +47,74 @@ function shortModelChip(id: string | null, max = 28): string {
   return id.length <= max ? id : `${id.slice(0, max - 1)}…`;
 }
 
-async function fetchModelCatalog(): Promise<string[]> {
+type ModelCatalogResult =
+  | { ok: true; models: string[] }
+  | { ok: false; status: number; message: string };
+
+async function fetchModelCatalogOnce(): Promise<ModelCatalogResult> {
   try {
     const res = await fetch('/api/models', { credentials: 'same-origin' });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      if (res.status === 401) {
+        return {
+          ok: false,
+          status: 401,
+          message: 'Session expired — sign in again to load models.',
+        };
+      }
+      if (res.status === 503) {
+        return {
+          ok: false,
+          status: 503,
+          message: 'Model catalog temporarily unavailable.',
+        };
+      }
+      return {
+        ok: false,
+        status: res.status,
+        message: `Model catalog unavailable (${res.status}).`,
+      };
+    }
     const data = (await res.json()) as { models?: { id?: string }[] };
-    if (!Array.isArray(data.models)) return [];
-    return data.models
+    if (!Array.isArray(data.models)) {
+      return {
+        ok: false,
+        status: res.status,
+        message: 'Model catalog response invalid.',
+      };
+    }
+    const models = data.models
       .map((m) => (typeof m?.id === 'string' ? m.id.trim() : ''))
       .filter(Boolean);
+    return { ok: true, models };
   } catch {
-    return [];
+    return {
+      ok: false,
+      status: 0,
+      message: 'Network error loading model catalog.',
+    };
   }
+}
+
+/** Retry transport failures; do not retry 401 (session is gone). */
+async function fetchModelCatalog(
+  attempts = 3,
+  baseDelayMs = 400,
+): Promise<ModelCatalogResult> {
+  let last: ModelCatalogResult = {
+    ok: false,
+    status: 0,
+    message: 'Model catalog unavailable.',
+  };
+  for (let i = 0; i < attempts; i++) {
+    last = await fetchModelCatalogOnce();
+    if (last.ok) return last;
+    if (last.status === 401) return last;
+    if (i < attempts - 1) {
+      await new Promise((r) => setTimeout(r, baseDelayMs * (i + 1)));
+    }
+  }
+  return last;
 }
 
 export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
@@ -94,11 +150,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
 
       const modelId = bridge.getSelectedModel();
       if (!modelId) {
-        setHostNote('No model selected — catalog empty or not granted.');
+        setHostNote('No model selected — catalog empty, failed to load, or not granted.');
         try {
           bridge.pushMessage(
             MessageKind.Error,
-            'No model available. Ask an admin for an inference grant.',
+            'No model available. Reload if the catalog failed to load; otherwise ask an admin for an inference grant.',
           );
           bridge.setLifecycle(Lifecycle.Ready);
         } catch {
@@ -176,10 +232,20 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         bridge.assertRoundTrip('hello-bridge');
 
         // Catalog before Ready so first paint has models (protocol v3).
-        const catalogIds = await fetchModelCatalog();
+        // Distinguish transport/auth failure from an empty grant list.
+        const catalog = await fetchModelCatalog();
         if (cancelled) return;
-        bridge.setModelCatalog(catalogIds);
-        setModelChip(shortModelChip(bridge.getSelectedModel()));
+        if (catalog.ok) {
+          bridge.setModelCatalog(catalog.models);
+          setModelChip(shortModelChip(bridge.getSelectedModel()));
+          if (catalog.models.length === 0) {
+            setHostNote('No models granted — ask a tenant admin for inference access.');
+          }
+        } else {
+          bridge.setModelCatalog([]);
+          setModelChip('no model');
+          setHostNote(catalog.message);
+        }
 
         bridge.setLifecycle(Lifecycle.Ready);
 
@@ -192,12 +258,16 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           sessionRef.current = empty;
           bridge.clearMessages();
           const sel = bridge.getSelectedModel();
-          bridge.pushMessage(
-            MessageKind.System,
-            sel
-              ? `Invincible harness · ${sel} · type below, Enter to send · use Next in the canvas header to cycle`
-              : 'Invincible harness · no models granted — ask a tenant admin for inference access',
-          );
+          let systemLine: string;
+          if (!catalog.ok) {
+            systemLine = `Invincible harness · ${catalog.message} Reload the page to retry.`;
+          } else if (sel) {
+            systemLine = `Invincible harness · ${sel} · type below, Enter to send · use Next in the canvas header to cycle`;
+          } else {
+            systemLine =
+              'Invincible harness · no models granted — ask a tenant admin for inference access';
+          }
+          bridge.pushMessage(MessageKind.System, systemLine);
         }
 
         setLoadMs(Math.round(performance.now() - loadStarted.current));
