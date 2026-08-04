@@ -360,8 +360,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           </div>
           <div>{error}</div>
           <div style={{ marginTop: '0.5rem', fontSize: '0.78rem', color: teal.muted }}>
-            Rebuild on invincible-do-1 (build-harness), redeploy Vercel. Protocol v
-            {HARNESS_PROTOCOL_VERSION}. See docs/phase-4-plan.md.
+            Rebuild harness Wasm (build-harness), redeploy Vercel. Protocol v
+            {HARNESS_PROTOCOL_VERSION}. See docs/feature-divide.md · docs/runner.md.
           </div>
         </div>
       )}

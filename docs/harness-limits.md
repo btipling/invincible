@@ -39,8 +39,12 @@ See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 
 ## Transcript density
 
-Long sessions fold into the prompt via host history; Wasm ring buffer is
-bounded. Prefer Clear for a fresh workspace.
+| Topic | Behavior |
+|-------|----------|
+| Ring capacity | 48 messages in Wasm (`bridge.zig` `MAX_MSG`) |
+| Visible paint | Last **28** lines (+ “N earlier” hint) |
+| Line size | 4 KB UTF-8 max per message (`MAX_MSG_LEN`) |
+| Host history | Long sessions fold into the Gateway prompt; prefer Clear for a fresh workspace |
 
 ## Palette
 

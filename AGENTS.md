@@ -90,8 +90,9 @@ Load from **this repo** via `gh` (not generic template skills). Zero-search:
 Index: [`.grok/skills/README.md`](.grok/skills/README.md).
 
 **Plan storage:** implementation plans are **GitHub issues** (see create-plan),
-not a required `docs/*-plan.md`. Historical phase docs under `docs/` remain
-valid handoffs.
+not a required `docs/*-plan.md`. Completed phase plan/handoff markdown was
+removed; living product/ops guides live under `docs/` (feature-divide, runner,
+BYO, limits).
 
 ```bash
 command -v gh >/dev/null && gh auth status   # refuse GitHub work if this fails
@@ -190,7 +191,7 @@ invincible/
 ├── sandbox/             # protocol v1 daemon (BYO tools workspace)
 ├── native/harness/      # Zig + dvui Wasm (CI on self-hosted runner)
 ├── scripts/             # fetch-harness, seed-tenancy, runner scripts
-├── docs/                # BYO, sandbox, phase plans, limits, deploy race
+├── docs/                # BYO, sandbox, feature-divide, limits, deploy race
 ├── public/harness/      # wasm/js gitignored; README only committed
 ├── AGENTS.md
 └── package.json
@@ -206,7 +207,7 @@ invincible/
 | Colors / tokens (DOM) | `lib/palette.ts` |
 | Colors / tokens (dvui) | `native/harness/src/palette.zig` (hex sync with palette.ts) |
 | JS ↔ Wasm bridge | `lib/harnessBridge.ts` + `native/harness/src/bridge.zig` |
-| Plans / ops | `docs/*` (handoffs, limits); **new plans → GitHub issues** via create-plan |
+| Plans / ops | `docs/*` (living guides); **new plans → GitHub issues** via create-plan |
 | Agent skills | `.grok/skills/*` |
 
 ## Palette (imported from Asteronica / webgpu-game)
