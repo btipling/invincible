@@ -325,6 +325,43 @@ describe('rotateTenantDek', () => {
     expect(() => decryptSecret(row.tokenCiphertext, AMK)).toThrow();
   });
 
+  it('dek-only mode fails closed on leftover AMK ciphertext (no partial commit)', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({ tokenCiphertext: encryptSecret('legacy-amk-token', AMK) })
+      .where(eq(schema.sandboxes.id, sandboxA1));
+
+    const before = await loadTenantDek(tenantId, {
+      db: db as never,
+      amk: AMK,
+    });
+    const [a2Before] = await db
+      .select()
+      .from(schema.sandboxes)
+      .where(eq(schema.sandboxes.id, sandboxA2));
+
+    const res = await rotateTenantDek(ownerId, tenantId, {
+      db: db as never,
+      amk: AMK,
+      mode: 'dek-only',
+    });
+    expect(res).toEqual({ ok: false, reason: 'db' });
+
+    const after = await loadTenantDek(tenantId, {
+      db: db as never,
+      amk: AMK,
+    });
+    expect(after.dek.equals(before.dek)).toBe(true);
+    expect(after.version).toBe(before.version);
+
+    const [a2After] = await db
+      .select()
+      .from(schema.sandboxes)
+      .where(eq(schema.sandboxes.id, sandboxA2));
+    expect(a2After.tokenCiphertext).toBe(a2Before.tokenCiphertext);
+    expect(decryptSecret(a2After.tokenCiphertext, before.dek)).toBe('token-a2');
+  });
+
   it('not_found when user has no membership on tenant', async () => {
     const [stranger] = await db
       .insert(schema.users)

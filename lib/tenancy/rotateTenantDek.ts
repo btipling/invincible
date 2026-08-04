@@ -2,6 +2,10 @@
  * Phase 3 (#95 / parent #92): owner-only tenant DEK rotation.
  * Re-encrypts all sandbox tokens under a new DEK; bumps dek_version atomically.
  * Never returns key material.
+ *
+ * Concurrency: SELECT … FOR UPDATE on the tenant row (and sandboxes) for the
+ * full re-encrypt so concurrent rotateSandboxToken cannot write under a
+ * discarded DEK. Authz is re-checked under the same lock.
  */
 import { and, eq } from 'drizzle-orm';
 import {
@@ -39,7 +43,7 @@ export type RotateTenantDekDeps = {
 
 /**
  * Owner-only: generate a new tenant DEK, re-encrypt every sandbox token, bump versions.
- * Single transaction + SELECT … FOR UPDATE on the tenant row.
+ * Single transaction + SELECT … FOR UPDATE on the tenant row (and its sandboxes).
  */
 export async function rotateTenantDek(
   userId: string,
@@ -91,31 +95,11 @@ async function rotateWithDb(
   deps: RotateTenantDekDeps,
 ): Promise<RotateTenantDekResult> {
   try {
-    const memberships = await db
-      .select({
-        role: tenantMembers.role,
-      })
-      .from(tenantMembers)
-      .where(
-        and(
-          eq(tenantMembers.tenantId, tenantId),
-          eq(tenantMembers.userId, userId),
-        ),
-      )
-      .limit(1);
-
-    const membership = memberships[0];
-    if (!membership) {
-      return { ok: false, reason: 'not_found' };
-    }
-    if (!canRotateSandboxToken(membership.role)) {
-      return { ok: false, reason: 'forbidden' };
-    }
-
     const amk = deps.amk ?? resolveCredentialsKey();
     const mode = deps.mode ?? resolveTokenDecryptMode();
 
-    const newVersion = await db.transaction(async (tx) => {
+    return await db.transaction(async (tx) => {
+      // Lock tenant first — serializes concurrent DEK rotates and token rotates.
       const rows = await tx
         .select({
           id: tenants.id,
@@ -129,8 +113,31 @@ async function rotateWithDb(
 
       const row = rows[0];
       if (!row) {
-        throw new Error('tenant not found');
+        return { ok: false as const, reason: 'not_found' as const };
       }
+
+      // Authz under the same lock (closes demotion TOCTOU).
+      const memberships = await tx
+        .select({
+          role: tenantMembers.role,
+        })
+        .from(tenantMembers)
+        .where(
+          and(
+            eq(tenantMembers.tenantId, tenantId),
+            eq(tenantMembers.userId, userId),
+          ),
+        )
+        .limit(1);
+
+      const membership = memberships[0];
+      if (!membership) {
+        return { ok: false as const, reason: 'not_found' as const };
+      }
+      if (!canRotateSandboxToken(membership.role)) {
+        return { ok: false as const, reason: 'forbidden' as const };
+      }
+
       if (!row.dekCiphertext) {
         throw new Error('tenant DEK not provisioned');
       }
@@ -147,7 +154,8 @@ async function rotateWithDb(
           tokenCiphertext: sandboxes.tokenCiphertext,
         })
         .from(sandboxes)
-        .where(eq(sandboxes.tenantId, tenantId));
+        .where(eq(sandboxes.tenantId, tenantId))
+        .for('update');
 
       for (const sb of sbRows) {
         const plain = decryptTokenForRotate(
@@ -174,10 +182,8 @@ async function rotateWithDb(
         })
         .where(eq(tenants.id, tenantId));
 
-      return nextVersion;
+      return { ok: true as const, dekVersion: nextVersion };
     });
-
-    return { ok: true, dekVersion: newVersion };
   } catch {
     return { ok: false, reason: 'db' };
   }
