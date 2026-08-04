@@ -20,9 +20,9 @@ project and keys, and run the same harness on **your** work.
 |---|---------|--------|
 | **Core** | Wasm harness chat | Transcript, composer, and turn UX live in the canvas (`/harness`) |
 | **Core** | AI Gateway inference | `POST /api/chat` — `AI_GATEWAY_API_KEY` stays on the server |
-| **Optional** | Agent tools + sandbox | `POST /api/agent` when `SANDBOX_URL` + `SANDBOX_TOKEN` are set |
+| **Optional** | Agent tools + sandbox | `POST /api/agent` — tenancy **off**: `SANDBOX_URL` + `SANDBOX_TOKEN`; tenancy **on**: DB sandbox grants (not env `SANDBOX_*`) |
 | **Optional** | Multi-tenant login + admin | Credentials auth, grants, `/login` + `/admin` — **on** for the reference Production deploy |
-| **Optional** | OIDC SSO + SCIM | Code on `main`; enable with env ([docs/bring-your-own.md](docs/bring-your-own.md) §4b) |
+| **Optional** | OIDC SSO + SCIM | Code on `main`; enable with env ([docs/bring-your-own.md §4b](docs/bring-your-own.md#4b-optional-sso-oidc--scim)) |
 
 ## Try it
 
@@ -78,8 +78,8 @@ secrets → Wasm supply → verify `/harness`.
 | Topic | Doc |
 |-------|-----|
 | Agent tools workspace | [docs/sandbox.md](docs/sandbox.md) |
-| Multi-tenant cutover | [docs/bring-your-own.md](docs/bring-your-own.md) §4a |
-| OIDC + SCIM | [docs/bring-your-own.md](docs/bring-your-own.md) §4b |
+| Multi-tenant cutover | [docs/bring-your-own.md §4a](docs/bring-your-own.md#4a-optional-multi-tenant-auth) |
+| OIDC + SCIM | [docs/bring-your-own.md §4b](docs/bring-your-own.md#4b-optional-sso-oidc--scim) |
 | Self-hosted Zig runner | [docs/runner.md](docs/runner.md) |
 
 Anyone can connect this repo to **their** Vercel project and keys — no single-host
