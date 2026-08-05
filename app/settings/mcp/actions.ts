@@ -39,7 +39,7 @@ async function requireSettingsSession(): Promise<
         error: 'Multiple tenant memberships — v1 Settings requires exactly one.',
       };
     }
-    if (membership.reason === 'unavailable') {
+    if (membership.reason === 'db') {
       return {
         ok: false,
         error: 'Could not load membership (database unavailable).',

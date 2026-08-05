@@ -255,4 +255,43 @@ describe('settings MCP actions', () => {
     expect(r.error).toMatch(/Multiple tenant memberships/);
     expect(createUserMcpServer).not.toHaveBeenCalled();
   });
+
+  it('createMcpServerAction surfaces membership db failure distinctly', async () => {
+    tenancyOn();
+    vi.resetModules();
+    vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
+    vi.doMock('../../../lib/tenancy/enabled', () => ({
+      tenancyEnabled: () => true,
+    }));
+    vi.doMock('../../../auth', () => ({
+      auth: vi.fn(async () => ({ user: { id: 'u1' } })),
+    }));
+    vi.doMock('../../../lib/tenancy/soleMembership', () => ({
+      loadSoleMembership: vi.fn(async () => ({
+        ok: false,
+        reason: 'db',
+      })),
+    }));
+    const createUserMcpServer = vi.fn();
+    vi.doMock('../../../lib/tenancy/userMcpServers', () => ({
+      createUserMcpServer,
+      deleteUserMcpServer: vi.fn(),
+      loadUserMcpSecretById: vi.fn(),
+      setUserMcpServerEnabled: vi.fn(),
+      setUserMcpServerLastError: vi.fn(),
+      updateUserMcpServer: vi.fn(),
+    }));
+    vi.doMock('../../../lib/mcp/client', () => ({
+      probeUserMcpServer: vi.fn(),
+    }));
+
+    const { createMcpServerAction } = await import('./actions');
+    const fd = new FormData();
+    fd.set('name', 'X');
+    fd.set('slug', 'x');
+    fd.set('url', 'https://mcp.example.com/mcp');
+    const r = await createMcpServerAction({}, fd);
+    expect(r.error).toMatch(/database unavailable/i);
+    expect(createUserMcpServer).not.toHaveBeenCalled();
+  });
 });
