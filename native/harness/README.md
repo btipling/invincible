@@ -29,6 +29,11 @@ workspace — not an optional companion. Layout: header + height-bounded transcr
 
 ## Build
 
+CI bakes a short git SHA via `-Dbuild-id=…` (see `build.sh`). The id is
+written to `build-id.txt` in the artifact and shown in the canvas header as
+`h:<id>` (and host chip). Use it to confirm Production is not serving stale wasm.
+
+
 ```bash
 # requires zig == $(cat ../ZIG_VERSION), outbound GitHub for dvui fetch (first time)
 ./build.sh

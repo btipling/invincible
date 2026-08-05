@@ -1,11 +1,15 @@
 //! Harness product UI (dvui) — Phase 4 Wasm-primary agent workspace.
 //! Polish (4.7): density, focus composer, touch targets, scroll stick-to-bottom.
 //! #131 / plan #135: persistent transcript ScrollInfo + conditional stick rules.
-//! #137 / plan #138: IMGUI-style bands — exact transcript height each frame;
-//! composer packed first with gravity_y=1.0 so chrome always keeps its pixels.
+//! #137: IMGUI absolute-rect bands (header / transcript / composer) so content
+//! min-size cannot push chrome off-canvas. Build id (`h:…`) detects stale wasm.
 const dvui = @import("dvui");
 const bridge = @import("bridge.zig");
 const palette = @import("palette.zig");
+const build_options = @import("build_options");
+
+/// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
+pub const BUILD_ID: []const u8 = build_options.build_id;
 
 var prompt_buf: [bridge.SUBMIT_CAP]u8 = [_]u8{0} ** bridge.SUBMIT_CAP;
 
@@ -122,8 +126,9 @@ pub fn frame() !void {
     const life = bridge.getLifecycle();
     const busy = life == .busy;
 
-    // Full-bleed root. Layout is IMGUI-style: recompute band heights every frame
-    // from the real content rect, then size the transcript to an exact pixel height.
+    // Full-bleed root. Children that use Options.rect do not report min-size up
+    // the tree (WidgetData.minSizeReportToParent) — required so tall transcript
+    // content cannot push the composer off-canvas.
     var root = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .both,
         .background = true,
@@ -135,28 +140,34 @@ pub fn frame() !void {
     });
     defer root.deinit();
 
-    // Viewport height this frame (natural px). Fall back to window if first-frame zero.
-    var avail_h = root.data().contentRect().h;
-    if (avail_h < 1) {
-        avail_h = @max(0, dvui.windowRect().h - 16);
+    // Viewport in parent content coords (IMGUI: recompute every frame).
+    var avail = root.data().contentRect().justSize();
+    if (avail.h < 1 or avail.w < 1) {
+        const wr = dvui.windowRect();
+        avail = .{ .x = 0, .y = 0, .w = @max(1, wr.w - 16), .h = @max(1, wr.h - 16) };
     }
 
-    // ── Header (compact, top band) ────────────────────────────────────────
-    var header_h: f32 = TOUCH_H + 28;
+    // Fixed chrome height (content + pad). Header uses a measured estimate then
+    // absolute placement so bands never depend on expand packing order.
+    const chrome_h: f32 = COMPOSER_CHROME_MIN + COMPOSER_PAD_Y;
+    // Header band: title row ~ TOUCH_H + padding/margin.
+    const header_h: f32 = TOUCH_H + 24;
+    const scroll_y = header_h + BAND_GAP;
+    const scroll_h = @max(SCROLL_FLOOR_H, avail.h - scroll_y - chrome_h - BAND_GAP);
+    const chrome_y = avail.h - chrome_h;
+
+    // ── Header (absolute top band) ────────────────────────────────────────
     {
         var head = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .rect = .{ .x = 0, .y = 0, .w = 0, .h = header_h },
             .expand = .horizontal,
             .background = true,
             .color_fill = palette.teal_surface,
             .color_border = palette.teal_border,
-            .padding = .{ .x = 10, .y = 8, .w = 10, .h = 8 },
-            .margin = .{ .x = 0, .y = 0, .w = 0, .h = BAND_GAP },
-            .min_size_content = .{ .w = 0, .h = TOUCH_H },
+            .padding = .{ .x = 10, .y = 6, .w = 10, .h = 6 },
+            .min_size_content = .{ .w = 0, .h = TOUCH_H - 8 },
         });
-        defer {
-            header_h = head.data().rect.h;
-            head.deinit();
-        }
+        defer head.deinit();
 
         {
             var tl = dvui.textLayout(@src(), .{}, .{
@@ -174,6 +185,16 @@ pub fn frame() !void {
                 .gravity_y = 0.5,
             });
             tl.format("{s}", .{lifecycleLabel(life)}, .{});
+            tl.deinit();
+        }
+        // Build id — proves which wasm is running (stale-cache detector).
+        {
+            var tl = dvui.textLayout(@src(), .{}, .{
+                .color_text = palette.teal_muted,
+                .gravity_y = 0.5,
+                .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
+            });
+            tl.format("h:{s}", .{BUILD_ID}, .{});
             tl.deinit();
         }
         // Protocol v3: cycle through granted models (host pushed catalog).
@@ -211,34 +232,156 @@ pub fn frame() !void {
         }
     }
 
-    // Exact transcript CONTENT height this frame (header + chrome + gaps win).
-    // min/max_size_content are content-box; pad/margin added by dvui on top.
-    const chrome_outer = COMPOSER_CHROME_MIN + COMPOSER_PAD_Y; // content + chrome top pad
-    const scroll_pad_v: f32 = 16; // scrollArea padding.all(8) top+bottom
-    const scroll_h = @max(
-        SCROLL_FLOOR_H,
-        avail_h - header_h - chrome_outer - BAND_GAP * 2 - scroll_pad_v,
-    );
+    // ── Transcript (absolute middle band — fixed pixel height) ────────────
+    const near_before = isNearBottom(&transcript_scroll);
+    const prev_msg = last_msg_count;
+    const prev_shown = last_shown_count;
+    const n = bridge.messageCount();
+    const shown = n + @as(usize, if (busy) 1 else 0);
+    var user_scroll: dvui.Point = .{};
+    {
+        // Content height = band minus vertical padding (all 8 → 16).
+        const scroll_pad_v: f32 = 16;
+        const scroll_content_h = @max(SCROLL_FLOOR_H, scroll_h - scroll_pad_v);
+        var scroll = dvui.scrollArea(@src(), .{
+            .scroll_info = &transcript_scroll,
+            .vertical_bar = .auto,
+            .user_scroll = &user_scroll,
+        }, .{
+            .rect = .{ .x = 0, .y = scroll_y, .w = 0, .h = scroll_h },
+            .expand = .horizontal,
+            .background = true,
+            .color_fill = palette.teal_surface,
+            .color_border = palette.teal_border,
+            .min_size_content = .{ .w = 120, .h = scroll_content_h },
+            .max_size_content = .height(scroll_content_h),
+            .padding = .all(8),
+        });
+        defer scroll.deinit();
 
-    // ── Composer chrome FIRST at bottom (gravity_y = 1.0) ─────────────────
-    // dvui Box packs gravity_y > 0.5 from the bottom of remaining space so the
-    // expanded transcript cannot claim chrome's pixels (dialog-layout pattern).
+        var body = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .expand = .horizontal,
+        });
+        defer body.deinit();
+        if (n == 0) {
+            var tl = dvui.textLayout(@src(), .{}, .{
+                .expand = .horizontal,
+                .color_text = palette.teal_muted,
+            });
+            if (bridge.modelCatalogCount() == 0) {
+                tl.addText(
+                    "No models available\n\nAsk a tenant admin to grant you an inference key,\nor wait for the host catalog to load.\n",
+                    .{},
+                );
+            } else {
+                tl.addText(
+                    "Start a conversation\n\nType below, then Enter or Send.\nUse Next in the header to cycle models.\n",
+                    .{},
+                );
+            }
+            tl.deinit();
+        } else {
+            const start_i: usize = if (n > VISIBLE_MSG_CAP) n - VISIBLE_MSG_CAP else 0;
+            if (start_i > 0) {
+                var tl = dvui.textLayout(@src(), .{}, .{
+                    .expand = .horizontal,
+                    .color_text = palette.teal_muted,
+                    .id_extra = 0xffff_fffe,
+                });
+                tl.format("… {d} earlier messages\n", .{start_i}, .{});
+                tl.deinit();
+            }
+            var i: usize = start_i;
+            while (i < n) : (i += 1) {
+                if (bridge.messageAt(i)) |m| {
+                    const is_err = m.kind == 4;
+                    var row = dvui.box(@src(), .{ .dir = .vertical }, .{
+                        .expand = .horizontal,
+                        .id_extra = i,
+                        .background = kindFill(m.kind) != null,
+                        .color_fill = kindFill(m.kind),
+                        .color_border = if (is_err) palette.ember_border else palette.teal_border,
+                        .padding = .{ .x = 8, .y = 6, .w = 8, .h = 6 },
+                        .margin = .{ .x = 0, .y = 0, .w = 0, .h = 4 },
+                        .style = if (is_err) .err else .content,
+                    });
+                    defer row.deinit();
+
+                    {
+                        var tl = dvui.textLayout(@src(), .{}, .{
+                            .expand = .horizontal,
+                            .id_extra = i * 2,
+                            .color_text = kindTextColor(m.kind),
+                            .font = .theme(.heading),
+                        });
+                        tl.format("{s}", .{kindLabel(m.kind)}, .{});
+                        tl.deinit();
+                    }
+                    {
+                        var tl = dvui.textLayout(@src(), .{}, .{
+                            .expand = .horizontal,
+                            .id_extra = i * 2 + 1,
+                            .color_text = if (is_err) palette.ember_text else palette.teal_text,
+                        });
+                        tl.format("{s}", .{m.text}, .{});
+                        tl.deinit();
+                    }
+                }
+            }
+        }
+
+        if (busy) {
+            var tl = dvui.textLayout(@src(), .{}, .{
+                .expand = .horizontal,
+                .color_text = palette.warm_accent,
+                .id_extra = 0xffff_ffff,
+            });
+            tl.addText("Waiting for model…", .{});
+            tl.deinit();
+        }
+    }
+
+    // Conditional stick-to-bottom (plan #135 / #131).
+    if (n < prev_msg) {
+        transcript_scroll.velocity = .{ .x = 0, .y = 0 };
+        scrollToBottom(&transcript_scroll);
+        last_shown_count = shown;
+        last_msg_count = n;
+    } else if (shown != prev_shown) {
+        const newest_is_user = blk: {
+            if (n == 0) break :blk false;
+            if (bridge.messageAt(n - 1)) |m| break :blk m.kind == @intFromEnum(bridge.MessageKind.user);
+            break :blk false;
+        };
+        const user_sent = newest_is_user and shown > prev_shown;
+        const hydrate = (prev_msg == 0 and n > 1) or (n >= prev_msg + 3);
+        const should_follow = user_sent or hydrate or prev_msg == 0 or (near_before and user_scroll.y >= 0);
+        if (should_follow) {
+            scrollToBottom(&transcript_scroll);
+        } else {
+            clampScrollToContent(&transcript_scroll);
+        }
+        last_shown_count = shown;
+        last_msg_count = n;
+    } else {
+        clampScrollToContent(&transcript_scroll);
+    }
+
+    // ── Composer chrome (absolute bottom band — always on-canvas) ─────────
     var typed: []const u8 = prompt_buf[0..0];
     {
         var chrome = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .rect = .{ .x = 0, .y = chrome_y, .w = 0, .h = chrome_h },
             .expand = .horizontal,
-            .gravity_y = 1.0,
             .background = true,
             .color_fill = palette.teal_bg,
             .color_border = palette.teal_border,
             .min_size_content = .{ .w = 120, .h = COMPOSER_CHROME_MIN },
             .max_size_content = .height(COMPOSER_CHROME_MIN),
             .padding = .{ .x = 0, .y = COMPOSER_PAD_Y, .w = 0, .h = 0 },
-            .margin = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
         });
         defer chrome.deinit();
 
-        // Single-line so Enter submits — multiline disables enter_pressed.
         {
             var te = dvui.textEntry(@src(), .{
                 .text = .{ .buffer = prompt_buf[0..] },
@@ -310,140 +453,5 @@ pub fn frame() !void {
                 tl.deinit();
             }
         }
-    }
-
-    // ── Transcript: fixed pixel height (not expand.both) ──────────────────
-    // expand.horizontal only — vertical size is exact so content cannot grow the
-    // parent. min == max == scroll_h (same pattern as dvui scrolling demo).
-    const near_before = isNearBottom(&transcript_scroll);
-    const prev_msg = last_msg_count;
-    const prev_shown = last_shown_count;
-    const n = bridge.messageCount();
-    const shown = n + @as(usize, if (busy) 1 else 0);
-    var user_scroll: dvui.Point = .{};
-    {
-        var scroll = dvui.scrollArea(@src(), .{
-            .scroll_info = &transcript_scroll,
-            .vertical_bar = .auto,
-            .user_scroll = &user_scroll,
-        }, .{
-            .expand = .horizontal,
-            .background = true,
-            .color_fill = palette.teal_surface,
-            .color_border = palette.teal_border,
-            .min_size_content = .{ .w = 120, .h = scroll_h },
-            .max_size_content = .height(scroll_h),
-            .padding = .all(8),
-            .margin = .{ .x = 0, .y = 0, .w = 0, .h = BAND_GAP },
-        });
-        defer scroll.deinit();
-
-        var body = dvui.box(@src(), .{ .dir = .vertical }, .{
-            .expand = .horizontal,
-        });
-        defer body.deinit();
-        if (n == 0) {
-            var tl = dvui.textLayout(@src(), .{}, .{
-                .expand = .horizontal,
-                .color_text = palette.teal_muted,
-            });
-            if (bridge.modelCatalogCount() == 0) {
-                tl.addText(
-                    "No models available\n\nAsk a tenant admin to grant you an inference key,\nor wait for the host catalog to load.\n",
-                    .{},
-                );
-            } else {
-                tl.addText(
-                    "Start a conversation\n\nType below, then Enter or Send.\nUse Next in the header to cycle models.\n",
-                    .{},
-                );
-            }
-            tl.deinit();
-        } else {
-            // Density: only paint the last VISIBLE_MSG_CAP lines.
-            const start: usize = if (n > VISIBLE_MSG_CAP) n - VISIBLE_MSG_CAP else 0;
-            if (start > 0) {
-                var tl = dvui.textLayout(@src(), .{}, .{
-                    .expand = .horizontal,
-                    .color_text = palette.teal_muted,
-                    .id_extra = 0xffff_fffe,
-                });
-                tl.format("… {d} earlier messages\n", .{start}, .{});
-                tl.deinit();
-            }
-            var i: usize = start;
-            while (i < n) : (i += 1) {
-                if (bridge.messageAt(i)) |m| {
-                    const is_err = m.kind == 4;
-                    var row = dvui.box(@src(), .{ .dir = .vertical }, .{
-                        .expand = .horizontal,
-                        .id_extra = i,
-                        .background = kindFill(m.kind) != null,
-                        .color_fill = kindFill(m.kind),
-                        .color_border = if (is_err) palette.ember_border else palette.teal_border,
-                        .padding = .{ .x = 8, .y = 6, .w = 8, .h = 6 },
-                        .margin = .{ .x = 0, .y = 0, .w = 0, .h = 4 },
-                        .style = if (is_err) .err else .content,
-                    });
-                    defer row.deinit();
-
-                    {
-                        var tl = dvui.textLayout(@src(), .{}, .{
-                            .expand = .horizontal,
-                            .id_extra = i * 2,
-                            .color_text = kindTextColor(m.kind),
-                            .font = .theme(.heading),
-                        });
-                        tl.format("{s}", .{kindLabel(m.kind)}, .{});
-                        tl.deinit();
-                    }
-                    {
-                        var tl = dvui.textLayout(@src(), .{}, .{
-                            .expand = .horizontal,
-                            .id_extra = i * 2 + 1,
-                            .color_text = if (is_err) palette.ember_text else palette.teal_text,
-                        });
-                        tl.format("{s}", .{m.text}, .{});
-                        tl.deinit();
-                    }
-                }
-            }
-        }
-
-        if (busy) {
-            var tl = dvui.textLayout(@src(), .{}, .{
-                .expand = .horizontal,
-                .color_text = palette.warm_accent,
-                .id_extra = 0xffff_ffff,
-            });
-            tl.addText("Waiting for model…", .{});
-            tl.deinit();
-        }
-    }
-
-    // Conditional stick-to-bottom (plan #135 / #131) — after deinit so virtual_size is current.
-    if (n < prev_msg) {
-        transcript_scroll.velocity = .{ .x = 0, .y = 0 };
-        scrollToBottom(&transcript_scroll);
-        last_shown_count = shown;
-        last_msg_count = n;
-    } else if (shown != prev_shown) {
-        const newest_is_user = blk: {
-            if (n == 0) break :blk false;
-            if (bridge.messageAt(n - 1)) |m| break :blk m.kind == @intFromEnum(bridge.MessageKind.user);
-            break :blk false;
-        };
-        const user_sent = newest_is_user and shown > prev_shown;
-        const hydrate = (prev_msg == 0 and n > 1) or (n >= prev_msg + 3);
-        const should_follow = user_sent or hydrate or prev_msg == 0 or (near_before and user_scroll.y >= 0);
-        if (should_follow) {
-            scrollToBottom(&transcript_scroll);
-        } else {
-            clampScrollToContent(&transcript_scroll);
-        }
-        last_shown_count = shown;
-        last_msg_count = n;
-    } else {
-        clampScrollToContent(&transcript_scroll);
     }
 }

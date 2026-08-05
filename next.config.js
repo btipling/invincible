@@ -7,6 +7,15 @@ const nextConfig = {
   async headers() {
     return [
       {
+        // Version stamp — never cache (stale-wasm detector).
+        source: '/harness/build-id.txt',
+        headers: [{ key: 'Cache-Control', value: 'no-store' }],
+      },
+      {
+        source: '/harness/build-id-full.txt',
+        headers: [{ key: 'Cache-Control', value: 'no-store' }],
+      },
+      {
         // Production MIME for Wasm — browsers reject wrong types with opaque failures.
         source: '/harness/:path*.wasm',
         headers: [

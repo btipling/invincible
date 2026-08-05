@@ -20,6 +20,11 @@ pub fn build(b: *std.Build) void {
         else => false,
     };
 
+    // Baked build id (short git SHA) — shown in canvas chrome to detect stale wasm.
+    const build_id = b.option([]const u8, "build-id", "Harness build id (git short SHA)") orelse "dev";
+    const build_opts = b.addOptions();
+    build_opts.addOption([]const u8, "build_id", build_id);
+
     // Primary artifact name: harness.wasm (issues #17 / #18).
     const exe = b.addExecutable(.{
         .name = "harness",
@@ -35,6 +40,7 @@ pub fn build(b: *std.Build) void {
     exe.entry = .disabled;
     exe.root_module.addImport("dvui", dvui_dep.module("dvui_web"));
     exe.root_module.addImport("web-backend", dvui_dep.module("web"));
+    exe.root_module.addOptions("build_options", build_opts);
 
     // Zig std.Build.Module.export_symbol_names:
     //   "Symbols to be exported when compiling to WebAssembly."

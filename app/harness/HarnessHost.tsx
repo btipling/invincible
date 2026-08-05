@@ -37,9 +37,21 @@ type DvuiHost = {
   stop?: () => void;
 };
 
-async function loadDvuiGlue(): Promise<DvuiModule> {
-  const href = '/harness/web.js';
+async function loadDvuiGlue(cacheBust: string): Promise<DvuiModule> {
+  const q = cacheBust ? `?v=${encodeURIComponent(cacheBust)}` : '';
+  const href = `/harness/web.js${q}`;
   return import(/* webpackIgnore: true */ /* @vite-ignore */ href) as Promise<DvuiModule>;
+}
+
+/** Read baked build id written by native/harness/build.sh into the artifact. */
+async function fetchHarnessBuildId(): Promise<string> {
+  try {
+    const res = await fetch(`/harness/build-id.txt?t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) return '';
+    return (await res.text()).trim().split(/\s+/)[0] || '';
+  } catch {
+    return '';
+  }
 }
 
 function shortModelChip(id: string | null, max = 28): string {
@@ -137,6 +149,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const [loadMs, setLoadMs] = useState<number | null>(null);
   const [hostNote, setHostNote] = useState<string | null>(null);
   const [modelChip, setModelChip] = useState<string>('…');
+  /** Wasm build id from public/harness/build-id.txt — stale-cache detector. */
+  const [harnessBuildId, setHarnessBuildId] = useState<string>('');
 
   const persist = useCallback((next: SessionSnapshot) => {
     sessionRef.current = next;
@@ -209,17 +223,23 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         storeRef.current = store;
         setStoreKind(store.kind);
 
-        const head = await fetch('/harness/harness.wasm', { method: 'HEAD' });
+        const buildId = await fetchHarnessBuildId();
+        if (cancelled) return;
+        if (buildId) setHarnessBuildId(buildId);
+        const bust = buildId || String(Date.now());
+        const wasmUrl = `/harness/harness.wasm?v=${encodeURIComponent(bust)}`;
+
+        const head = await fetch(wasmUrl, { method: 'HEAD', cache: 'no-store' });
         if (!head.ok) {
           throw new Error(
             `harness.wasm missing (${head.status}). Ensure build-harness CI produced harness-wasm and Vercel has HARNESS_ARTIFACT_TOKEN.`,
           );
         }
 
-        const mod = await loadDvuiGlue();
+        const mod = await loadDvuiGlue(bust);
         if (cancelled) return;
 
-        const host = await Promise.resolve(mod.dvui(canvas, '/harness/harness.wasm'));
+        const host = await Promise.resolve(mod.dvui(canvas, wasmUrl));
         if (cancelled) return;
 
         const created = HarnessBridge.fromInstance(host.instance);
@@ -401,6 +421,20 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                 title="Selected model (change in canvas header)"
               >
                 {modelChip}
+              </span>
+              <span
+                style={{
+                  fontSize: '0.7rem',
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  color: teal.muted,
+                  border: `1px solid ${teal.border}`,
+                  background: teal.surface,
+                  borderRadius: 4,
+                  padding: '0.2rem 0.45rem',
+                }}
+                title={`Harness Wasm build id (native/harness). Mismatch with canvas h:… means stale wasm cache.`}
+              >
+                h:{harnessBuildId || '…'}
               </span>
               <span
                 style={{
