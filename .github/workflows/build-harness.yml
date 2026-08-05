@@ -31,14 +31,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Host unit tests (rich/parse)
+      - name: Host unit tests (rich/*)
         run: |
           set -euo pipefail
           export PATH="/usr/local/bin:${PATH}"
           zig version
           test "$(zig version)" = "$(tr -d '[:space:]' < native/ZIG_VERSION)"
           cd native/harness
-          zig build test-parse
+          zig build test-rich
 
       - name: Build harness
         run: |

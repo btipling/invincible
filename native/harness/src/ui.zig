@@ -7,6 +7,7 @@ const dvui = @import("dvui");
 const bridge = @import("bridge.zig");
 const palette = @import("palette.zig");
 const build_options = @import("build_options");
+const rich = @import("rich/root.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
@@ -47,6 +48,7 @@ pub fn onInit() void {
     @memset(&prompt_buf, 0);
     want_composer_focus = true;
     resetTranscriptScroll();
+    rich.clearCache();
 }
 
 fn resetTranscriptScroll() void {
@@ -318,13 +320,17 @@ pub fn frame() !void {
                         tl.deinit();
                     }
                     {
-                        var tl = dvui.textLayout(@src(), .{}, .{
-                            .expand = .horizontal,
-                            .id_extra = i * 2 + 1,
-                            .color_text = if (is_err) palette.ember_text else palette.teal_text,
-                        });
-                        tl.format("{s}", .{m.text}, .{});
-                        tl.deinit();
+                        if (rich.shouldPaintMarkdown(m.kind)) {
+                            rich.paintMessageBody(@src(), m.kind, m.text, .{ .msg_index = i });
+                        } else {
+                            var tl = dvui.textLayout(@src(), .{}, .{
+                                .expand = .horizontal,
+                                .id_extra = i *% 1024 + 1,
+                                .color_text = if (is_err) palette.ember_text else palette.teal_text,
+                            });
+                            tl.format("{s}", .{m.text}, .{});
+                            tl.deinit();
+                        }
                     }
                 }
             }
@@ -343,6 +349,8 @@ pub fn frame() !void {
 
     // Conditional stick-to-bottom (plan #135 / #131).
     if (n < prev_msg) {
+        // Ring cleared or truncated — drop parse cache (generation bump).
+        if (n == 0) rich.clearCache();
         transcript_scroll.velocity = .{ .x = 0, .y = 0 };
         scrollToBottom(&transcript_scroll);
         last_shown_count = shown;

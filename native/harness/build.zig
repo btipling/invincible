@@ -124,4 +124,39 @@ pub fn build(b: *std.Build) void {
     const run_parse_tests = b.addRunArtifact(parse_tests);
     const test_parse = b.step("test-parse", "Run rich/parse.zig unit tests (host)");
     test_parse.dependOn(&run_parse_tests.step);
+
+    // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds)");
+    test_rich.dependOn(&run_parse_tests.step);
+
+    const cache_tests = b.addTest(.{
+        .name = "rich-cache",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/rich/cache.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+    cache_tests.root_module.addImport("zmd", zmd_host.module("zmd"));
+    test_rich.dependOn(&b.addRunArtifact(cache_tests).step);
+
+    const link_tests = b.addTest(.{
+        .name = "rich-link-url",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/rich/link_url.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+    test_rich.dependOn(&b.addRunArtifact(link_tests).step);
+
+    const kinds_tests = b.addTest(.{
+        .name = "rich-kinds",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/rich/kinds.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+    test_rich.dependOn(&b.addRunArtifact(kinds_tests).step);
 }
