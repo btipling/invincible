@@ -196,8 +196,20 @@ describe('providerSecrets', () => {
     if (!created.ok) throw new Error('create');
     const id = created.value.id;
 
-    const bad = await setProviderSecretModels(id, ['not-a-model'], tenantId, deps());
+    const bad = await setProviderSecretModels(id, ['UPPER/model'], tenantId, deps());
     expect(bad.ok).toBe(false);
+
+    // Bare model names are prefixed with the secret provider.
+    const bare = await setProviderSecretModels(
+      id,
+      ['claude-a', 'anthropic/claude-b'],
+      tenantId,
+      deps(),
+    );
+    expect(bare.ok).toBe(true);
+    if (bare.ok) {
+      expect(bare.value.modelIds).toEqual(['anthropic/claude-a', 'anthropic/claude-b']);
+    }
 
     const ok1 = await setProviderSecretModels(
       id,

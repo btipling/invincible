@@ -97,6 +97,36 @@ export function isValidModelId(modelId: string): boolean {
   return MODEL_ID_RE.test(modelId);
 }
 
+/**
+ * Gateway model ids are `provider/model`. Bare names (from xAI console etc.)
+ * are prefixed with the secret's provider when no `/` is present.
+ */
+export function normalizeModelId(raw: string, provider?: string): string {
+  const mid = raw.trim();
+  if (!mid) return mid;
+  if (mid.includes('/')) return mid;
+  const p = provider?.trim();
+  if (p && isByokProvider(p)) {
+    return `${p}/${mid}`;
+  }
+  return mid;
+}
+
+export function normalizeModelIds(
+  rawIds: readonly string[],
+  provider?: string,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of rawIds) {
+    const mid = normalizeModelId(raw, provider);
+    if (!mid || seen.has(mid)) continue;
+    seen.add(mid);
+    out.push(mid);
+  }
+  return out;
+}
+
 /** Suggested model-id prefix for each provider (before `/`). */
 export const PROVIDER_MODEL_PREFIX: Record<ByokProvider, string> =
   Object.fromEntries(BYOK_PROVIDERS.map((id) => [id, id])) as Record<
@@ -164,9 +194,11 @@ export const SUGGESTED_MODELS: Record<ByokProvider, readonly string[]> = {
   voyage: [],
   wafer: [],
   xai: [
+    'xai/grok-4.5',
+    'xai/grok-build-0.1',
+    'xai/grok-4.3',
     'xai/grok-4.1-fast-non-reasoning',
     'xai/grok-4.1-fast-reasoning',
-    'xai/grok-3',
   ],
   xiaomi: ['xiaomi/mimo-v2.5'],
   zai: ['zai/glm-4.5', 'zai/glm-4.5-air'],

@@ -175,9 +175,15 @@ export function CreateSecretForm({ members }: { members: Member[] }) {
             name="modelIds"
             type="text"
             style={inputStyle()}
-            placeholder={suggestions[0] ?? 'provider/model'}
+            placeholder={suggestions[0] ?? `${provider}/model-name`}
           />
         </Field>
+        <p style={{ margin: '-4px 0 12px', fontSize: 12, color: teal.muted }}>
+          Gateway format is <code style={{ fontSize: 11 }}>provider/model</code>{' '}
+          (e.g. <code style={{ fontSize: 11 }}>xai/grok-4.5</code>). Bare names
+          like <code style={{ fontSize: 11 }}>grok-4.5</code> are prefixed with{' '}
+          <code style={{ fontSize: 11 }}>{provider}/</code>.
+        </p>
         {suggestions.length > 0 ? (
           <p style={{ margin: '-4px 0 12px', fontSize: 12, color: teal.muted }}>
             Suggested: {suggestions.join(', ')}

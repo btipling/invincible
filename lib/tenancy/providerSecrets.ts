@@ -14,6 +14,7 @@ import {
 import {
   isByokProvider,
   isValidModelId,
+  normalizeModelIds,
   pickMaskSource,
   validateCredentials,
   type ByokProvider,
@@ -306,21 +307,13 @@ export async function setProviderSecretModels(
   if (!tid) {
     return { ok: false, code: 'unavailable', error: 'tenantId is required' };
   }
-  const unique = [...new Set(modelIds.map((m) => m.trim()).filter(Boolean))];
-  for (const mid of unique) {
-    if (!isValidModelId(mid)) {
-      return {
-        ok: false,
-        code: 'invalid_model_id',
-        error: `invalid model_id: ${mid}`,
-      };
-    }
-  }
-
   try {
     return await withDb(deps, async (db) => {
       const existing = await db
-        .select({ id: providerSecrets.id })
+        .select({
+          id: providerSecrets.id,
+          provider: providerSecrets.provider,
+        })
         .from(providerSecrets)
         .where(
           and(eq(providerSecrets.id, id), eq(providerSecrets.tenantId, tid)),
@@ -328,6 +321,18 @@ export async function setProviderSecretModels(
         .limit(1);
       if (!existing[0]) {
         return { ok: false, code: 'not_found', error: 'secret not found' };
+      }
+
+      // Bare names (e.g. grok-4.5) → provider/model for Gateway (xai/grok-4.5).
+      const unique = normalizeModelIds(modelIds, existing[0].provider);
+      for (const mid of unique) {
+        if (!isValidModelId(mid)) {
+          return {
+            ok: false,
+            code: 'invalid_model_id',
+            error: `invalid model_id: ${mid} (use provider/model, e.g. xai/grok-4.5)`,
+          };
+        }
       }
 
       await db.transaction(async (tx) => {

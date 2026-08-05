@@ -6,6 +6,8 @@ import {
   byokCredentialShape,
   isByokProvider,
   isValidModelId,
+  normalizeModelId,
+  normalizeModelIds,
   validateCredentials,
   collectRedactableSecrets,
   pickMaskSource,
@@ -49,10 +51,24 @@ describe('byokProviders registry', () => {
   it('model id regex', () => {
     expect(isValidModelId('anthropic/claude-sonnet-4')).toBe(true);
     expect(isValidModelId('xai/grok-4.1-fast-non-reasoning')).toBe(true);
+    expect(isValidModelId('xai/grok-4.5')).toBe(true);
+    expect(isValidModelId('xai/grok-build-0.1')).toBe(true);
     expect(isValidModelId('openai/gpt-4.1')).toBe(true);
+    expect(isValidModelId('grok-4.5')).toBe(false); // bare — needs prefix
     expect(isValidModelId('bad')).toBe(false);
     expect(isValidModelId('UPPER/model')).toBe(false);
     expect(isValidModelId('a/b:c+d')).toBe(true);
+  });
+
+  it('normalizeModelId prefixes bare names with provider', () => {
+    expect(normalizeModelId('grok-4.5', 'xai')).toBe('xai/grok-4.5');
+    expect(normalizeModelId('grok-build-0.1', 'xai')).toBe('xai/grok-build-0.1');
+    expect(normalizeModelId('xai/grok-4.5', 'xai')).toBe('xai/grok-4.5');
+    expect(normalizeModelId('  grok-4.5  ', 'xai')).toBe('xai/grok-4.5');
+    expect(normalizeModelIds(['grok-4.5', 'xai/grok-4.5', 'grok-build-0.1'], 'xai')).toEqual([
+      'xai/grok-4.5',
+      'xai/grok-build-0.1',
+    ]);
   });
 });
 
