@@ -61,7 +61,10 @@ export default async function AdminInferencePage() {
           <>
             <p style={{ margin: '0 0 16px', fontSize: 13, color: teal.muted }}>
               Bring-your-own provider keys for tenancy-on inference. Masked preview only — full
-              keys are never shown after save.
+              keys are never shown after save. Vercel AI Gateway still requires{' '}
+              <strong style={{ color: teal.text }}>paid team AI credits</strong> for BYOK (free
+              tier rejects request-scoped keys); top up in the Vercel dashboard if harness returns
+              a paid-credits error.
             </p>
             {membersError ? (
               <p role="alert" style={{ color: ember.accent, fontSize: 13 }}>

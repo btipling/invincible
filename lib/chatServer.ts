@@ -75,6 +75,18 @@ export function mapInferenceError(err: unknown): { error: string; status: number
       error: 'AI Gateway rejected the API key. Check AI_GATEWAY_API_KEY.',
     };
   }
+  // Vercel AI Gateway: request-scoped BYOK requires paid team credits (not free tier).
+  if (
+    lower.includes('bring your own key') ||
+    (lower.includes('byok') && lower.includes('paid')) ||
+    lower.includes('paid credits')
+  ) {
+    return {
+      status: 402,
+      error:
+        'Vercel AI Gateway BYOK requires paid AI credits on the team (provider keys alone are not enough). Top up AI Gateway credits in the Vercel dashboard, then retry.',
+    };
+  }
   if (lower.includes('rate') || lower.includes('429')) {
     return { status: 429, error: 'Rate limited by the model provider. Try again shortly.' };
   }
