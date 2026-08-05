@@ -3,7 +3,7 @@
  * Server-only. Never log plaintext keys or ciphertext.
  * tenantId is always derived from loadSoleMembership — never client input.
  */
-import { and, count, eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import {
   createDbConnection,
   userMcpServers,
@@ -23,6 +23,7 @@ import { loadSoleMembership } from './soleMembership';
 import {
   decryptTenantSecret,
   encryptTenantSecret,
+  ensureTenantDek,
   type TenantKeyDeps,
 } from './tenantKeys';
 
@@ -230,7 +231,7 @@ export async function createUserMcpServer(
       error: 'slug must match ^[a-z][a-z0-9_]{0,31}$',
     };
   }
-  const urlCheck = assertSafeMcpUrl(input.url);
+  const urlCheck = await assertSafeMcpUrl(input.url);
   if (!urlCheck.ok) {
     return { ok: false, code: 'invalid_url', error: urlCheck.error };
   }
@@ -258,61 +259,75 @@ export async function createUserMcpServer(
     if (!tid.ok) return tid;
 
     return await withDb(deps, async (db) => {
-      const [{ value: existingCount }] = await db
-        .select({ value: count() })
-        .from(userMcpServers)
-        .where(eq(userMcpServers.userId, userId));
-      if (Number(existingCount) >= MAX_MCP_SERVERS_PER_USER) {
-        return {
-          ok: false,
-          code: 'limit_exceeded',
-          error: `at most ${MAX_MCP_SERVERS_PER_USER} MCP servers per user`,
-        };
-      }
+      // Single txn: lock tenant DEK (via encrypt) + user MCP rows before insert
+      // so concurrent rotate/create cannot strand ciphertext under a discarded DEK,
+      // and concurrent creates cannot exceed MAX_MCP_SERVERS_PER_USER.
+      return await db.transaction(async (tx) => {
+        // Lock order matches rotateTenantDek: tenant row first, then MCP rows.
+        const dek = await ensureTenantDek(tid.value, { ...deps, db, tx });
 
-      let ciphertext: string | null = null;
-      let kekVersion: number | null = null;
-      if (hasKey) {
-        const enc = await encryptTenantSecret(tid.value, rawKey, {
-          ...deps,
-          db,
-        });
-        ciphertext = enc.ciphertext;
-        kekVersion = enc.dekVersion;
-      }
-
-      try {
-        const [row] = await db
-          .insert(userMcpServers)
-          .values({
-            tenantId: tid.value,
-            userId,
-            name,
-            slug,
-            url: urlCheck.href,
-            transport: 'http',
-            authHeaderName,
-            authHeaderValueCiphertext: ciphertext,
-            authHeaderKekVersion: kekVersion,
-            authMode,
-            enabled: true,
-          })
-          .returning({ id: userMcpServers.id });
-        return { ok: true, value: { id: row.id } };
-      } catch (err) {
-        if (isUniqueViolation(err)) {
-          const code = uniqueCodeFromError(err);
+        const existingRows = await tx
+          .select({ id: userMcpServers.id })
+          .from(userMcpServers)
+          .where(eq(userMcpServers.userId, userId))
+          .for('update');
+        if (existingRows.length >= MAX_MCP_SERVERS_PER_USER) {
           return {
-            ok: false,
-            code,
-            error:
-              code === 'duplicate_slug'
-                ? 'slug already exists for user'
-                : 'name already exists for user',
+            ok: false as const,
+            code: 'limit_exceeded' as const,
+            error: `at most ${MAX_MCP_SERVERS_PER_USER} MCP servers per user`,
           };
         }
-        throw err;
-      }
+
+        let ciphertext: string | null = null;
+        let kekVersion: number | null = null;
+        if (hasKey) {
+          const enc = await encryptTenantSecret(tid.value, rawKey, {
+            ...deps,
+            db,
+            tx,
+          });
+          ciphertext = enc.ciphertext;
+          kekVersion = enc.dekVersion;
+          // dek.version should match enc.dekVersion under the same lock
+          if (enc.dekVersion !== dek.version) {
+            throw new Error('DEK version changed under lock');
+          }
+        }
+
+        try {
+          const [row] = await tx
+            .insert(userMcpServers)
+            .values({
+              tenantId: tid.value,
+              userId,
+              name,
+              slug,
+              url: urlCheck.href,
+              transport: 'http',
+              authHeaderName,
+              authHeaderValueCiphertext: ciphertext,
+              authHeaderKekVersion: kekVersion,
+              authMode,
+              enabled: true,
+            })
+            .returning({ id: userMcpServers.id });
+          return { ok: true as const, value: { id: row.id } };
+        } catch (err) {
+          if (isUniqueViolation(err)) {
+            const code = uniqueCodeFromError(err);
+            return {
+              ok: false as const,
+              code,
+              error:
+                code === 'duplicate_slug'
+                  ? 'slug already exists for user'
+                  : 'name already exists for user',
+            };
+          }
+          throw err;
+        }
+      });
     });
   } catch (err) {
     if (isUndefinedTable(err)) {
@@ -348,129 +363,164 @@ export async function updateUserMcpServer(
   }
 
   try {
+    // Resolve membership tenant first so we can lock tenant → MCP (rotate order).
+    const tid = await resolveTenantId(userId, deps);
+    if (!tid.ok) {
+      // Preserve prior not_found masking for empty ids; membership errors surface.
+      if (tid.code === 'no_membership' || tid.code === 'unavailable') {
+        return tid;
+      }
+      return tid;
+    }
+
     return await withDb(deps, async (db) => {
-      const existing = await db
-        .select()
-        .from(userMcpServers)
-        .where(
-          and(eq(userMcpServers.id, id), eq(userMcpServers.userId, userId)),
-        )
-        .limit(1);
-      const row = existing[0];
-      if (!row) {
-        return { ok: false, code: 'not_found', error: 'MCP server not found' };
-      }
+      return await db.transaction(async (tx) => {
+        await ensureTenantDek(tid.value, { ...deps, db, tx });
 
-      const patch: {
-        name?: string;
-        slug?: string;
-        url?: string;
-        authHeaderName?: string | null;
-        authHeaderValueCiphertext?: string | null;
-        authHeaderKekVersion?: number | null;
-        authMode?: string;
-        enabled?: boolean;
-        updatedAt: Date;
-      } = { updatedAt: new Date() };
-
-      if (input.name !== undefined) {
-        const name = trimName(input.name);
-        if (!name) {
-          return {
-            ok: false,
-            code: 'invalid_name',
-            error: `name must be ${MCP_NAME_MIN}–${MCP_NAME_MAX} chars`,
-          };
-        }
-        patch.name = name;
-      }
-
-      if (input.slug !== undefined) {
-        const slug = trimSlug(input.slug);
-        if (!slug) {
-          return {
-            ok: false,
-            code: 'invalid_slug',
-            error: 'slug must match ^[a-z][a-z0-9_]{0,31}$',
-          };
-        }
-        patch.slug = slug;
-      }
-
-      if (input.url !== undefined) {
-        const urlCheck = assertSafeMcpUrl(input.url);
-        if (!urlCheck.ok) {
-          return { ok: false, code: 'invalid_url', error: urlCheck.error };
-        }
-        patch.url = urlCheck.href;
-      }
-
-      if (input.enabled !== undefined) {
-        patch.enabled = Boolean(input.enabled);
-      }
-
-      const rawKey =
-        input.apiKey === undefined || input.apiKey === null
-          ? null
-          : input.apiKey.trim();
-      const rotatingKey = rawKey !== null && rawKey.length > 0;
-
-      if (rotatingKey) {
-        const header =
-          input.authHeaderName !== undefined
-            ? normalizeHeaderName(input.authHeaderName)
-            : row.authHeaderName;
-        if (!header || !validateHeaderName(header)) {
-          return {
-            ok: false,
-            code: 'invalid_header',
-            error:
-              'auth header name required when API key is set (A-Za-z0-9-, ≤64)',
-          };
-        }
-        const enc = await encryptTenantSecret(row.tenantId, rawKey, {
-          ...deps,
-          db,
-        });
-        patch.authHeaderName = header;
-        patch.authHeaderValueCiphertext = enc.ciphertext;
-        patch.authHeaderKekVersion = enc.dekVersion;
-        patch.authMode = 'api_key';
-      } else if (input.authHeaderName !== undefined && row.authMode === 'api_key') {
-        // Allow renaming header without rotating key when a key already exists.
-        const header = normalizeHeaderName(input.authHeaderName);
-        if (!header || !validateHeaderName(header)) {
-          return {
-            ok: false,
-            code: 'invalid_header',
-            error: 'invalid auth header name',
-          };
-        }
-        patch.authHeaderName = header;
-      }
-
-      try {
-        await db
-          .update(userMcpServers)
-          .set(patch)
+        const existing = await tx
+          .select()
+          .from(userMcpServers)
           .where(
             and(eq(userMcpServers.id, id), eq(userMcpServers.userId, userId)),
-          );
-      } catch (err) {
-        if (isUniqueViolation(err)) {
-          const code = uniqueCodeFromError(err);
+          )
+          .for('update')
+          .limit(1);
+        const row = existing[0];
+        if (!row) {
           return {
-            ok: false,
-            code,
-            error:
-              code === 'duplicate_slug'
-                ? 'slug already exists for user'
-                : 'name already exists for user',
+            ok: false as const,
+            code: 'not_found' as const,
+            error: 'MCP server not found',
           };
         }
-        throw err;
-      }
-      return { ok: true, value: { id } };
+        if (row.tenantId !== tid.value) {
+          return {
+            ok: false as const,
+            code: 'not_found' as const,
+            error: 'MCP server not found',
+          };
+        }
+
+        const patch: {
+          name?: string;
+          slug?: string;
+          url?: string;
+          authHeaderName?: string | null;
+          authHeaderValueCiphertext?: string | null;
+          authHeaderKekVersion?: number | null;
+          authMode?: string;
+          enabled?: boolean;
+          updatedAt: Date;
+        } = { updatedAt: new Date() };
+
+        if (input.name !== undefined) {
+          const name = trimName(input.name);
+          if (!name) {
+            return {
+              ok: false as const,
+              code: 'invalid_name' as const,
+              error: `name must be ${MCP_NAME_MIN}–${MCP_NAME_MAX} chars`,
+            };
+          }
+          patch.name = name;
+        }
+
+        if (input.slug !== undefined) {
+          const slug = trimSlug(input.slug);
+          if (!slug) {
+            return {
+              ok: false as const,
+              code: 'invalid_slug' as const,
+              error: 'slug must match ^[a-z][a-z0-9_]{0,31}$',
+            };
+          }
+          patch.slug = slug;
+        }
+
+        if (input.url !== undefined) {
+          const urlCheck = await assertSafeMcpUrl(input.url);
+          if (!urlCheck.ok) {
+            return {
+              ok: false as const,
+              code: 'invalid_url' as const,
+              error: urlCheck.error,
+            };
+          }
+          patch.url = urlCheck.href;
+        }
+
+        if (input.enabled !== undefined) {
+          patch.enabled = Boolean(input.enabled);
+        }
+
+        const rawKey =
+          input.apiKey === undefined || input.apiKey === null
+            ? null
+            : input.apiKey.trim();
+        const rotatingKey = rawKey !== null && rawKey.length > 0;
+
+        if (rotatingKey) {
+          const header =
+            input.authHeaderName !== undefined
+              ? normalizeHeaderName(input.authHeaderName)
+              : row.authHeaderName;
+          if (!header || !validateHeaderName(header)) {
+            return {
+              ok: false as const,
+              code: 'invalid_header' as const,
+              error:
+                'auth header name required when API key is set (A-Za-z0-9-, ≤64)',
+            };
+          }
+          // Lock tenant DEK via ensureTenantDek inside same txn as row update.
+          const enc = await encryptTenantSecret(row.tenantId, rawKey, {
+            ...deps,
+            db,
+            tx,
+          });
+          patch.authHeaderName = header;
+          patch.authHeaderValueCiphertext = enc.ciphertext;
+          patch.authHeaderKekVersion = enc.dekVersion;
+          patch.authMode = 'api_key';
+        } else if (
+          input.authHeaderName !== undefined &&
+          row.authMode === 'api_key'
+        ) {
+          // Allow renaming header without rotating key when a key already exists.
+          const header = normalizeHeaderName(input.authHeaderName);
+          if (!header || !validateHeaderName(header)) {
+            return {
+              ok: false as const,
+              code: 'invalid_header' as const,
+              error: 'invalid auth header name',
+            };
+          }
+          patch.authHeaderName = header;
+        }
+
+        try {
+          await tx
+            .update(userMcpServers)
+            .set(patch)
+            .where(
+              and(eq(userMcpServers.id, id), eq(userMcpServers.userId, userId)),
+            );
+        } catch (err) {
+          if (isUniqueViolation(err)) {
+            const code = uniqueCodeFromError(err);
+            return {
+              ok: false as const,
+              code,
+              error:
+                code === 'duplicate_slug'
+                  ? 'slug already exists for user'
+                  : 'name already exists for user',
+            };
+          }
+          throw err;
+        }
+        return { ok: true as const, value: { id } };
+      });
     });
   } catch (err) {
     if (isUndefinedTable(err)) {
