@@ -92,7 +92,7 @@ Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain tex
 | Parser | **zmd** (MIT) → walkable blocks; no HTML intermediate |
 | Common MD | Headings, paragraphs, lists, bold/italic, inline code, fences, http(s) links |
 | Fenced code | Mono box + muted language label; **≤80 lines** then “… N more” |
-| Diff / patch fences | Info string `diff` or `patch` (any case): line colors — **+** WARM accent, **−** EMBER text (removed-line semantics, not error chrome), **`@` / `---` / `+++`** muted, context TEAL body |
+| Diff / patch fences | Info string `diff` or `patch` (any case): line colors — **+** WARM accent, **−** EMBER text (removed-line semantics, not error chrome), file headers / `@@` hunk headers muted (hunk-aware so body lines like `---flag` stay del), context TEAL body |
 | Tables | Pipe tables paint as **plain paragraphs** today (parser has no table nodes). Richer mono/grid is follow-on work |
 | Links | `http://` and `https://` only; other schemes show as plain label text |
 | Fallback | Parse failure / OOM → raw body text (never empty bubble) |

@@ -41,6 +41,7 @@ pub fn paintDiffFence(src: std.builtin.SourceLocation, block: parse.Block, ctx: 
 
     var line_count: usize = 0;
     var truncated: usize = 0;
+    var in_hunk: bool = false;
     var tl = dvui.textLayout(@src(), .{}, .{
         .expand = .horizontal,
         .id_extra = paint_text.nextIdPublic(ctx),
@@ -51,7 +52,7 @@ pub fn paintDiffFence(src: std.builtin.SourceLocation, block: parse.Block, ctx: 
     defer tl.deinit();
 
     for (block.inlines) |inl| {
-        paintDiffText(tl, inl.text, &line_count, &truncated, ctx);
+        paintDiffText(tl, inl.text, &line_count, &truncated, &in_hunk, ctx);
     }
     if (truncated > 0) {
         var buf: [48]u8 = undefined;
@@ -63,7 +64,14 @@ pub fn paintDiffFence(src: std.builtin.SourceLocation, block: parse.Block, ctx: 
     }
 }
 
-fn paintDiffText(tl: *dvui.TextLayoutWidget, text: []const u8, line_count: *usize, truncated: *usize, ctx: *const paint_text.PaintCtx) void {
+fn paintDiffText(
+    tl: *dvui.TextLayoutWidget,
+    text: []const u8,
+    line_count: *usize,
+    truncated: *usize,
+    in_hunk: *bool,
+    ctx: *const paint_text.PaintCtx,
+) void {
     const cap = paint_code.FENCE_LINE_CAP;
     var start: usize = 0;
     var i: usize = 0;
@@ -73,7 +81,9 @@ fn paintDiffText(tl: *dvui.TextLayoutWidget, text: []const u8, line_count: *usiz
         if (!at_end and !at_nl) continue;
         const line = text[start..i];
         if (line_count.* < cap) {
-            const color = lineColor(classifyLine(line), ctx);
+            const kind = classifyLine(line, in_hunk.*);
+            if (std.mem.startsWith(u8, line, "@@")) in_hunk.* = true;
+            const color = lineColor(kind, ctx);
             tl.addText(line, .{
                 .color_text = color,
                 .font = .theme(.mono),
@@ -83,6 +93,8 @@ fn paintDiffText(tl: *dvui.TextLayoutWidget, text: []const u8, line_count: *usiz
             }
             line_count.* += 1;
         } else {
+            // Still advance hunk state so color stays correct if we ever paint past cap later.
+            if (std.mem.startsWith(u8, line, "@@")) in_hunk.* = true;
             truncated.* += 1;
         }
         start = i + 1;
