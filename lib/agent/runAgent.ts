@@ -8,6 +8,10 @@ import {
 import { createSandboxClient, type SandboxClient } from '../sandbox/client';
 import { createAgentTools } from './tools';
 import { redactSecrets, truncateSummary } from './redact';
+import {
+  flattenToolResultText,
+  parseAndFlattenIfMcpEnvelope,
+} from './toolResultText';
 import { MCP_SYSTEM_ADDENDUM } from '../mcp/toolNames';
 
 export type ToolTraceEntry = {
@@ -115,7 +119,12 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
   const result = await generate(genArgs);
 
   const toolTrace = collectToolTrace(result, secrets);
-  const text = redactSecrets((result.text ?? '').trim(), secrets);
+  let text = redactSecrets((result.text ?? '').trim(), secrets);
+  // Pure MCP content-envelope assistant dumps → readable text (#129 / #133).
+  const unwrapped = parseAndFlattenIfMcpEnvelope(text);
+  if (unwrapped != null) {
+    text = redactSecrets(unwrapped, secrets);
+  }
   return { text, toolTrace };
 }
 
@@ -177,18 +186,7 @@ export function collectToolTrace(
               : 'tool error';
       }
 
-      const asText =
-        typeof raw === 'string'
-          ? raw
-          : raw == null
-            ? ''
-            : (() => {
-                try {
-                  return JSON.stringify(raw);
-                } catch {
-                  return String(raw);
-                }
-              })();
+      const asText = flattenToolResultText(raw);
       const redacted = redactSecrets(asText, secrets);
       // Missing result/error → not ok (AI SDK tool-error without toolResults used to look successful).
       const ok =
@@ -206,8 +204,9 @@ export function collectToolTrace(
 }
 
 function summarizeTool(name: string, resultText: string, ok: boolean): string {
+  const status = ok ? 'ok' : 'failed';
   const oneLine = resultText.replace(/\s+/g, ' ').trim();
-  if (!oneLine) return `${name} ${ok ? 'ok' : 'failed'}`;
-  const head = oneLine.length > 200 ? oneLine.slice(0, 200) : oneLine;
-  return head;
+  if (!oneLine) return `${name} · ${status}`;
+  const preview = oneLine.length > 200 ? oneLine.slice(0, 200) : oneLine;
+  return `${name} · ${status} · ${preview}`;
 }

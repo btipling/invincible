@@ -553,4 +553,43 @@ describe('probeUserMcpServer', () => {
     expect(result.error).toMatch(/list boom/);
     expect(close).toHaveBeenCalled();
   });
+
+  it('flattens MCP content envelope on success and caps length', async () => {
+    const { TOOL_RESULT_MAX_CHARS } = await import('../sandbox/config');
+    const bigBody = 'x'.repeat(TOOL_RESULT_MAX_CHARS + 100);
+    const createClient = vi.fn(async () => ({
+      tools: async () => ({
+        web_search_exa: {
+          execute: async () => ({
+            content: [{ type: 'text', text: bigBody }],
+          }),
+        },
+      }),
+      close: async () => {},
+    }));
+
+    const result = await buildUserMcpTools('user-1', {
+      createClient: createClient as never,
+      loadSecrets: async () => ({
+        ok: true,
+        value: [
+          secret({
+            id: 's1',
+            slug: 'exa',
+            apiKey: 'mcp-secret-key-bbbb',
+            authHeaderName: 'x-api-key',
+          }),
+        ],
+      }),
+    });
+
+    const tool = result.tools.mcp_exa__web_search_exa;
+    const out = await tool.execute({});
+    expect(typeof out).toBe('string');
+    expect(out).not.toContain('"content"');
+    expect(out.startsWith('x')).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(TOOL_RESULT_MAX_CHARS + 20);
+    await result.close();
+  });
+
 });

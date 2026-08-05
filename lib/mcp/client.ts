@@ -9,7 +9,9 @@ import {
   type UserMcpSecretRow,
   type UserMcpServerResult,
 } from '../tenancy/userMcpServers';
-import { redactSecrets } from '../agent/redact';
+import { redactSecrets, truncateForModel } from '../agent/redact';
+import { flattenToolResultText } from '../agent/toolResultText';
+import { TOOL_RESULT_MAX_CHARS } from '../sandbox/config';
 import {
   MAX_MCP_TOOLS,
   MCP_CONNECT_TIMEOUT_MS,
@@ -92,7 +94,7 @@ function buildHeaders(row: UserMcpSecretRow): Record<string, string> | undefined
 
 /**
  * Wrap MCP tool execute: soft-fail like sandbox tools; redact secrets in errors.
- * (ai@7 + @ai-sdk/mcp share provider-utils@5 — no schema re-home needed.)
+ * Success path: flatten MCP envelopes → redact → TOOL_RESULT_MAX_CHARS (plan #133).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrapMcpTool(tool: any, toolKey: string, secrets: string[]): any {
@@ -105,7 +107,9 @@ function wrapMcpTool(tool: any, toolKey: string, secrets: string[]): any {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     execute: async (input: any, options: any) => {
       try {
-        return await original.call(tool, input, options);
+        const raw = await original.call(tool, input, options);
+        const flat = flattenToolResultText(raw);
+        return truncateForModel(redactSecrets(flat, secrets), TOOL_RESULT_MAX_CHARS);
       } catch (err) {
         const msg = safeErrorMessage(err, secrets);
         return `ERROR ${toolKey}: ${msg}`;
