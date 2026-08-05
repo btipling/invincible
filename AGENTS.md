@@ -262,7 +262,7 @@ invincible/
 |--------|------|--------|
 | **TEAL** | Primary UI chrome, backgrounds, borders, readable text, interactive accents | `teal.*` CSS tokens + `TEAL_PALETTE` |
 | **WARM** | Complementary amber `#D47C2C` — secondary highlights, CTAs, success/emphasis | `warm.*` + `WARM_PALETTE[6]` |
-| **EMBER** | Red-orange `#D4412C` — **danger / error only** | `ember.*` + `EMBER_PALETTE[6]` |
+| **EMBER** | Red-orange `#D4412C` — **danger / error**, plus intentional **unified-diff removed lines** in Wasm rich paint | `ember.*` + `EMBER_PALETTE[6]` |
 
 ### CSS tokens (use these — no freehand hex)
 
@@ -277,7 +277,7 @@ import { teal, warm, ember } from '@/lib/palette';
 1. **All UI colors come from palette modules.** No one-off hex, no Tailwind default palette, no pure blue/cyan.
 2. **TEAL** = default chrome (page bg, panels, borders, body text, primary buttons via `teal.accent`).
 3. **WARM** = complementary accent only when intentional (secondary button, stream highlight, non-danger emphasis). Anchor `#d47c2c` / `warm.accent`.
-4. **EMBER** = **danger only** (API errors, destructive confirm, invalid state). Never for normal chrome, success, or links.
+4. **EMBER** = **danger** (API errors, destructive confirm, invalid state). Never for normal chrome, success, or links. **Exception:** Wasm rich transcript `diff`/`patch` fence **deleted (`-`) lines** use `ember_text` as *removed-line* semantics (not error chrome) — see `native/harness/src/rich/paint_diff.zig` / `docs/harness-limits.md`.
 5. Do **not** invent coral / orange / red outside `warm` / `ember`.
 6. Palette ramps and CSS token objects are **golden** — do not renumber or recolor casually. `lib/palette.test.ts` locks values.
 7. Prefer `teal.*` / `warm.*` / `ember.*` for DOM styles; Zig uses matching hex in `palette.zig`.
@@ -286,7 +286,7 @@ import { teal, warm, ember } from '@/lib/palette';
 
 - `#e87a5c`, `#f0a090`, Tailwind orange/red/blue defaults
 - Pure blue/cyan backgrounds or accents
-- Using `ember` for non-error UI
+- Using `ember` for non-error UI (except documented diff removed-line paint in harness rich transcript)
 - Hardcoding `#2dd4bf` instead of `teal.accent` (literals drift)
 
 ## Feature divide
