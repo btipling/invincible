@@ -553,4 +553,91 @@ describe('probeUserMcpServer', () => {
     expect(result.error).toMatch(/list boom/);
     expect(close).toHaveBeenCalled();
   });
+
+  it('flattens MCP content envelope on success and caps length', async () => {
+    const { TOOL_RESULT_MAX_CHARS } = await import('../sandbox/config');
+    const bigBody = 'x'.repeat(TOOL_RESULT_MAX_CHARS + 100);
+    const createClient = vi.fn(async () => ({
+      tools: async () => ({
+        web_search_exa: {
+          execute: async () => ({
+            content: [{ type: 'text', text: bigBody }],
+          }),
+          // Simulates @ai-sdk/mcp mcpToModelOutput — must be stripped by wrap.
+          toModelOutput: ({ output }: { output: unknown }) => {
+            if (!('content' in (output as object))) {
+              throw new Error('toModelOutput must not run on strings');
+            }
+            return { type: 'content', value: output };
+          },
+        },
+      }),
+      close: async () => {},
+    }));
+
+    const result = await buildUserMcpTools('user-1', {
+      createClient: createClient as never,
+      loadSecrets: async () => ({
+        ok: true,
+        value: [
+          secret({
+            id: 's1',
+            slug: 'exa',
+            apiKey: 'mcp-secret-key-bbbb',
+            authHeaderName: 'x-api-key',
+          }),
+        ],
+      }),
+    });
+
+    const tool = result.tools.mcp_exa__web_search_exa;
+    expect(tool.toModelOutput).toBeUndefined();
+    const out = await tool.execute({});
+    expect(typeof out).toBe('string');
+    expect(out).not.toContain('"content"');
+    expect(out.startsWith('x')).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(TOOL_RESULT_MAX_CHARS + 20);
+    await result.close();
+  });
+
+  it('maps MCP isError results to ERROR prefix for toolTrace ok=false', async () => {
+    const createClient = vi.fn(async () => ({
+      tools: async () => ({
+        web_search_exa: {
+          execute: async () => ({
+            isError: true,
+            content: [{ type: 'text', text: 'rate limited' }],
+          }),
+          toModelOutput: () => {
+            throw new Error('toModelOutput must be stripped');
+          },
+        },
+      }),
+      close: async () => {},
+    }));
+
+    const result = await buildUserMcpTools('user-1', {
+      createClient: createClient as never,
+      loadSecrets: async () => ({
+        ok: true,
+        value: [
+          secret({
+            id: 's1',
+            slug: 'exa',
+            apiKey: 'mcp-secret-key-bbbb',
+            authHeaderName: 'x-api-key',
+          }),
+        ],
+      }),
+    });
+
+    const tool = result.tools.mcp_exa__web_search_exa;
+    expect(tool.toModelOutput).toBeUndefined();
+    const out = await tool.execute({});
+    expect(out).toMatch(/^ERROR mcp_exa__web_search_exa:/);
+    expect(out).toContain('rate limited');
+    expect(out).not.toContain('"content"');
+    await result.close();
+  });
+
 });

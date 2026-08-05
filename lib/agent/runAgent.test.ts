@@ -221,4 +221,66 @@ describe('runAgent', () => {
     expect(trace[0].summary).toContain('[redacted]');
     expect(trace[0].ok).toBe(false);
   });
+
+  it('collectToolTrace flattens MCP content envelopes in summaries', () => {
+    const trace = collectToolTrace({
+      steps: [
+        {
+          toolCalls: [{ toolName: 'mcp_exa__web_search_exa', toolCallId: 'c1' }],
+          toolResults: [
+            {
+              toolName: 'mcp_exa__web_search_exa',
+              toolCallId: 'c1',
+              output: {
+                content: [
+                  {
+                    type: 'text',
+                    text: 'Title: Introducing Exa 2.0 | Exa Blog\nURL: https://exa.ai/blog/exa-api-2-0',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    expect(trace).toHaveLength(1);
+    expect(trace[0].ok).toBe(true);
+    expect(trace[0].summary).toMatch(/^mcp_exa__web_search_exa · ok ·/);
+    expect(trace[0].summary).toContain('Introducing Exa 2.0');
+    expect(trace[0].summary).not.toContain('"content"');
+  });
+
+  it('runAgent sanitizes pure MCP content-envelope assistant text', async () => {
+    const envelope = JSON.stringify({
+      content: [{ type: 'text', text: 'Title: Exa 2.0\nURL: https://exa.ai/blog' }],
+    });
+    const generateTextImpl = vi.fn(async () => ({
+      text: envelope,
+      steps: [],
+    }));
+    const { text, toolTrace } = await runAgent({
+      prompt: 'search',
+      sandboxClient: { request: vi.fn() } as never,
+      generateTextImpl: generateTextImpl as never,
+    });
+    expect(text).toContain('Exa 2.0');
+    expect(text).not.toContain('"content"');
+    expect(toolTrace).toEqual([]);
+  });
+
+  it('runAgent does not rewrite prose that mentions JSON', async () => {
+    const prose =
+      'Found results. Payload was {"content":[{"type":"text","text":"x"}]} — summary: Exa launched 2.0.';
+    const generateTextImpl = vi.fn(async () => ({
+      text: prose,
+      steps: [],
+    }));
+    const { text } = await runAgent({
+      prompt: 'search',
+      sandboxClient: { request: vi.fn() } as never,
+      generateTextImpl: generateTextImpl as never,
+    });
+    expect(text).toBe(prose);
+  });
 });
