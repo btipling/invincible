@@ -429,17 +429,18 @@ fn unescapeHtml(a: Allocator, raw: []const u8) ![]u8 {
     var i: usize = 0;
     while (i < raw.len) {
         if (raw[i] == '&') {
-            if (std.mem.startsWith(u8, raw[i..], "&")) {
+            // Match full HTML entities (zmd writeEscaped output).
+            if (std.mem.startsWith(u8, raw[i..], "&amp;")) {
                 try out.append(a, '&');
                 i += 5;
                 continue;
             }
-            if (std.mem.startsWith(u8, raw[i..], "<")) {
+            if (std.mem.startsWith(u8, raw[i..], "&lt;")) {
                 try out.append(a, '<');
                 i += 4;
                 continue;
             }
-            if (std.mem.startsWith(u8, raw[i..], ">")) {
+            if (std.mem.startsWith(u8, raw[i..], "&gt;")) {
                 try out.append(a, '>');
                 i += 4;
                 continue;
@@ -496,6 +497,36 @@ test "parse paragraph and fence" {
 
 test "backend is zmd" {
     try std.testing.expectEqual(Backend.zmd, backend);
+}
+
+test "unescapeHtml entities and bare ampersand" {
+    const bare = try unescapeHtml(std.testing.allocator, "a & b");
+    defer std.testing.allocator.free(bare);
+    try std.testing.expectEqualStrings("a & b", bare);
+
+    const amp_ent = try unescapeHtml(std.testing.allocator, "a " ++ "&" ++ "amp; b");
+    defer std.testing.allocator.free(amp_ent);
+    try std.testing.expectEqualStrings("a & b", amp_ent);
+
+    const lt = try unescapeHtml(std.testing.allocator, "x " ++ "&" ++ "lt; y");
+    defer std.testing.allocator.free(lt);
+    try std.testing.expectEqualStrings("x < y", lt);
+
+    const gt = try unescapeHtml(std.testing.allocator, "x " ++ "&" ++ "gt; y");
+    defer std.testing.allocator.free(gt);
+    try std.testing.expectEqualStrings("x > y", gt);
+}
+
+test "parse preserves ampersand in paragraph" {
+    var doc = try parse(std.testing.allocator, "Use A & B together");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    var joined: std.ArrayList(u8) = .empty;
+    defer joined.deinit(std.testing.allocator);
+    for (doc.blocks[0].inlines) |inl| {
+        try joined.appendSlice(std.testing.allocator, inl.text);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, joined.items, "A & B") != null);
 }
 
 test "smokeOnce" {
