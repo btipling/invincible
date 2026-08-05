@@ -9,7 +9,8 @@ const WebBackend = @import("web-backend");
 const ui = @import("ui.zig");
 const bridge = @import("bridge.zig");
 const palette = @import("palette.zig");
-const rich_parse = @import("rich/parse.zig");
+const rich = @import("rich/root.zig");
+const rich_parse = rich.parse;
 
 comptime {
     std.debug.assert(@hasDecl(WebBackend, "WebBackend"));
@@ -58,10 +59,12 @@ export fn dvui_init(platform_ptr: [*]const u8, platform_len: usize) i32 {
     // Belt-and-suspenders: re-apply after init (some backends touch theme once).
     WebBackend.win.themeSet(palette.theme());
     WebBackend.win_ok = true;
+    // Rich MD cache arenas use the same GPA as the window.
+    rich.setAllocator(WebBackend.gpa);
     ui.onInit();
-    // Phase 1 (#143): force-link zmd parse into wasm; discard result (no paint yet).
+    // Force-link zmd parse into wasm (size truth + smoke).
     if (!rich_parse.smokeOnce()) {
-        dvui.log.debug("rich parse smoke failed (non-fatal phase 1)", .{});
+        dvui.log.debug("rich parse smoke failed (non-fatal)", .{});
     }
     return 0;
 }
