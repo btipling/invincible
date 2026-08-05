@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { asSchema, jsonSchema } from 'ai';
+import { asSchema } from 'ai';
 import { safeParseJSON } from '@ai-sdk/provider-utils';
 import { buildUserMcpTools, probeUserMcpServer } from './client';
 import { MAX_MCP_TOOLS } from './limits';
@@ -83,27 +83,25 @@ describe('buildUserMcpTools', () => {
     expect(close).toHaveBeenCalled();
   });
 
-  it('rehomes MCP inputSchema so AI SDK can validate tool args (Exa-style)', async () => {
-    // Simulate @ai-sdk/mcp provider-utils@5 schema: has schema symbol path via
-    // jsonSchema() from `ai` then strip validator symbol — or plain JSON schema object.
-    const mcpLikeSchema = {
-      jsonSchema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', minLength: 1 },
-          numResults: { type: 'number' },
-        },
-        required: ['query'],
-        additionalProperties: false,
+  it('passes through MCP inputSchema so AI SDK can validate Exa-style tool args', async () => {
+    // ai@7 + @ai-sdk/mcp share provider-utils@5; schemas from createMCPClient.tools()
+    // must validate without InvalidToolInputError / "value is not a function".
+    const { jsonSchema } = await import('ai');
+    const mcpSchema = jsonSchema({
+      type: 'object',
+      properties: {
+        query: { type: 'string', minLength: 1 },
+        numResults: { type: 'number' },
       },
-      validate: undefined,
-    };
+      required: ['query'],
+      additionalProperties: false,
+    });
 
     const createClient = vi.fn(async () => ({
       tools: async () => ({
         web_search_exa: {
           description: 'search',
-          inputSchema: mcpLikeSchema,
+          inputSchema: mcpSchema,
           execute: async (input: { query: string }) => input.query,
         },
       }),
@@ -121,9 +119,6 @@ describe('buildUserMcpTools', () => {
     const tool = result.tools.mcp_exa__web_search_exa;
     expect(tool).toBeTruthy();
 
-    const validatorSymbol = Symbol.for('vercel.ai.validator');
-    expect(validatorSymbol in tool.inputSchema).toBe(true);
-
     const text =
       '{"query":"latest Exa AI product news announcements 2025","numResults":10.0}';
     const parsed = await safeParseJSON({
@@ -137,13 +132,6 @@ describe('buildUserMcpTools', () => {
         numResults: 10,
       });
     }
-
-    // Control: bare mcpLikeSchema still fails asValidator without rehome
-    const broken = await safeParseJSON({
-      text,
-      schema: asSchema(mcpLikeSchema as never),
-    });
-    expect(broken.success).toBe(false);
 
     await result.close();
   });
