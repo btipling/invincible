@@ -3,6 +3,7 @@
  * Server-only — never import from client components.
  */
 import { createMCPClient, type MCPClient } from '@ai-sdk/mcp';
+import { jsonSchema } from 'ai';
 import {
   loadEnabledUserMcpSecrets,
   setUserMcpServerLastError,
@@ -91,16 +92,64 @@ function buildHeaders(row: UserMcpSecretRow): Record<string, string> | undefined
 }
 
 /**
+ * Re-home MCP tool inputSchema onto the `ai` package's `jsonSchema`.
+ *
+ * `@ai-sdk/mcp` depends on `@ai-sdk/provider-utils@5` while `ai@5` still uses
+ * `@ai-sdk/provider-utils@3`. Schemas created by MCP lack `Symbol(vercel.ai.validator)`;
+ * when `generateText` validates tool args it calls `asValidator` → `value()` and throws
+ * "value is not a function" / "b is not a function" (InvalidToolInputError), so Exa
+ * tools never execute even with valid JSON args.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rehomeMcpInputSchema(tool: any): any {
+  const raw = tool?.inputSchema;
+  if (raw == null) {
+    return jsonSchema({
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    });
+  }
+  // Prefer the resolved JSON schema object (getter on AI SDK schemas).
+  const resolved =
+    typeof raw === 'object' &&
+    raw !== null &&
+    'jsonSchema' in raw &&
+    typeof (raw as { jsonSchema?: unknown }).jsonSchema === 'object' &&
+    (raw as { jsonSchema: object }).jsonSchema != null
+      ? (raw as { jsonSchema: Record<string, unknown> }).jsonSchema
+      : (raw as Record<string, unknown>);
+
+  const properties =
+    resolved &&
+    typeof resolved === 'object' &&
+    resolved.properties != null &&
+    typeof resolved.properties === 'object'
+      ? (resolved.properties as Record<string, unknown>)
+      : {};
+
+  return jsonSchema({
+    ...resolved,
+    type: (resolved as { type?: string }).type ?? 'object',
+    properties,
+    additionalProperties: false,
+  });
+}
+
+/**
  * Wrap MCP tool execute: soft-fail like sandbox tools; redact secrets in errors.
+ * Always re-homes inputSchema onto the host AI SDK schema symbols.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrapMcpTool(tool: any, toolKey: string, secrets: string[]): any {
   const original = tool?.execute;
+  const inputSchema = rehomeMcpInputSchema(tool);
   if (typeof original !== 'function') {
-    return tool;
+    return { ...tool, inputSchema };
   }
   return {
     ...tool,
+    inputSchema,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     execute: async (input: any, options: any) => {
       try {
