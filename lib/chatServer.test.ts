@@ -102,6 +102,16 @@ describe('mapInferenceError', () => {
   it('maps unauthorized', () => {
     expect(mapInferenceError(new Error('Unauthorized: bad api key')).status).toBe(401);
   });
+
+  it('maps Vercel BYOK paid-credits gate to 402', () => {
+    const r = mapInferenceError(
+      new Error(
+        'Bring Your Own Key (BYOK) is available only with paid credits. Purchase at https://vercel.com/...',
+      ),
+    );
+    expect(r.status).toBe(402);
+    expect(r.error.toLowerCase()).toContain('paid');
+  });
   it('maps rate limit', () => {
     expect(mapInferenceError(new Error('429 rate limit')).status).toBe(429);
   });

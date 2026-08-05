@@ -199,10 +199,11 @@ Timeless steps (no personal-laptop Production shell):
 
 1. **Schema (if needed):** Actions → **db-migrate** → `confirm=migrate` (optional `dry_run=true` first).
 2. **App:** tenancy triple on Production; redeploy if you just migrated.
-3. **Admin:** sign in → **`/admin/inference`** → create provider secret + model ids → grant members.
-4. **Harness:** member → `/harness` → catalog loads → **Next** cycles models → Send; chip mirrors selection.
-5. **Negative smoke:** member without grant cannot use ungranted models; empty catalog does not hit Gateway.
-6. **Never** put provider API keys in client, Wasm, git, issues, or logs.
+3. **Vercel credits:** team has **paid AI Gateway credits** (BYOK is not on free tier).
+4. **Admin:** sign in → **`/admin/inference`** → create provider secret + model ids → grant members.
+5. **Harness:** member → `/harness` → catalog loads → **Next** cycles models → Send; chip mirrors selection.
+6. **Negative smoke:** member without grant cannot use ungranted models; empty catalog does not hit Gateway.
+7. **Never** put provider API keys in client, Wasm, git, issues, or logs.
 
 Also: [SECURITY.md](../SECURITY.md) · [feature-divide.md](feature-divide.md) ·
 [native/harness/README.md](../native/harness/README.md).
