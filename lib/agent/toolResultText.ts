@@ -32,7 +32,12 @@ function textFromPart(part: unknown): string | null {
  */
 export function flattenToolResultText(value: unknown): string {
   if (value == null) return '';
-  if (typeof value === 'string') return value.trim() === '' ? '' : value;
+  if (typeof value === 'string') {
+    if (value.trim() === '') return '';
+    // Some paths may hand a pure-envelope JSON string (not only objects).
+    const unwrapped = parseAndFlattenIfMcpEnvelope(value);
+    return unwrapped ?? value;
+  }
   if (typeof value === 'number' || typeof value === 'boolean') {
     return String(value);
   }
@@ -83,6 +88,11 @@ export function parseAndFlattenIfMcpEnvelope(text: string): string | null {
     return null;
   }
   if (!isLikelyMcpContentEnvelope(parsed)) return null;
-  const flat = flattenToolResultText(parsed);
-  return flat.length > 0 ? flat : null;
+  // Flatten object path only (avoid re-entering string unwrap).
+  const obj = parsed as Record<string, unknown>;
+  const parts = (obj.content as unknown[])
+    .map((part) => textFromPart(part))
+    .filter((t): t is string => t != null && t.length > 0);
+  if (parts.length > 0) return parts.join('\n');
+  return null;
 }

@@ -34,6 +34,13 @@ describe('flattenToolResultText', () => {
     expect(flattenToolResultText(undefined)).toBe('');
   });
 
+  it('unwraps string-encoded pure envelope JSON', () => {
+    const raw = JSON.stringify(exaEnvelope);
+    const out = flattenToolResultText(raw);
+    expect(out).toContain('Introducing Exa 2.0');
+    expect(out).not.toContain('"content"');
+  });
+
   it('falls back to JSON for objects without content', () => {
     const out = flattenToolResultText({ foo: 1, bar: 'x' });
     expect(out).toBe('{"foo":1,"bar":"x"}');

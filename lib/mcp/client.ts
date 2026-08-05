@@ -95,6 +95,10 @@ function buildHeaders(row: UserMcpSecretRow): Record<string, string> | undefined
 /**
  * Wrap MCP tool execute: soft-fail like sandbox tools; redact secrets in errors.
  * Success path: flatten MCP envelopes → redact → TOOL_RESULT_MAX_CHARS (plan #133).
+ *
+ * Returns a plain string. Must strip `toModelOutput` from @ai-sdk/mcp tools:
+ * their `mcpToModelOutput` assumes a CallToolResult object and does
+ * `"content" in result`, which TypeErrors on strings.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrapMcpTool(tool: any, toolKey: string, secrets: string[]): any {
@@ -102,14 +106,28 @@ function wrapMcpTool(tool: any, toolKey: string, secrets: string[]): any {
   if (typeof original !== 'function') {
     return tool;
   }
+  // Drop toModelOutput so AI SDK treats execute output as text/json primitives.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { toModelOutput: _toModelOutput, ...rest } = tool;
   return {
-    ...tool,
+    ...rest,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     execute: async (input: any, options: any) => {
       try {
         const raw = await original.call(tool, input, options);
+        const isError =
+          raw != null &&
+          typeof raw === 'object' &&
+          !Array.isArray(raw) &&
+          (raw as { isError?: unknown }).isError === true;
         const flat = flattenToolResultText(raw);
-        return truncateForModel(redactSecrets(flat, secrets), TOOL_RESULT_MAX_CHARS);
+        const body = isError
+          ? `ERROR ${toolKey}: ${flat || 'tool error'}`
+          : flat;
+        return truncateForModel(
+          redactSecrets(body, secrets),
+          TOOL_RESULT_MAX_CHARS,
+        );
       } catch (err) {
         const msg = safeErrorMessage(err, secrets);
         return `ERROR ${toolKey}: ${msg}`;
