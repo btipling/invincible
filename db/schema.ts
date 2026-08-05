@@ -123,7 +123,7 @@ export const providerSecrets = pgTable(
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
-    /** Closed enum: anthropic | openai | azure | vertex | bedrock */
+    /** Closed enum in lib/gateway/byokProviders (Gateway catalog slugs). */
     provider: text('provider').notNull(),
     /** DEK-only ciphertext of JSON credentials — never log. */
     credentialCiphertext: text('credential_ciphertext').notNull(),

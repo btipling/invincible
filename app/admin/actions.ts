@@ -13,7 +13,11 @@ import {
   setProviderSecretModels,
   updateProviderSecret,
 } from '../../lib/tenancy/providerSecrets';
-import { isByokProvider, isValidModelId } from '../../lib/gateway/byokProviders';
+import {
+  byokCredentialShape,
+  isByokProvider,
+  isValidModelId,
+} from '../../lib/gateway/byokProviders';
 
 function revalidateAdmin() {
   revalidatePath('/admin');
@@ -158,16 +162,18 @@ function parseGrantUserIds(formData: FormData): string[] {
 }
 
 function credentialsFromForm(provider: string, formData: FormData): Record<string, unknown> {
-  if (provider === 'anthropic' || provider === 'openai') {
+  if (!isByokProvider(provider)) return {};
+  const shape = byokCredentialShape(provider);
+  if (shape === 'apiKey') {
     return { apiKey: String(formData.get('apiKey') ?? '') };
   }
-  if (provider === 'azure') {
+  if (shape === 'azure') {
     return {
       apiKey: String(formData.get('apiKey') ?? ''),
       resourceName: String(formData.get('resourceName') ?? ''),
     };
   }
-  if (provider === 'vertex') {
+  if (shape === 'vertex') {
     return {
       project: String(formData.get('project') ?? ''),
       location: String(formData.get('location') ?? ''),
@@ -177,14 +183,12 @@ function credentialsFromForm(provider: string, formData: FormData): Record<strin
       },
     };
   }
-  if (provider === 'bedrock') {
-    return {
-      accessKeyId: String(formData.get('accessKeyId') ?? ''),
-      secretAccessKey: String(formData.get('secretAccessKey') ?? ''),
-      region: String(formData.get('region') ?? '') || undefined,
-    };
-  }
-  return {};
+  // bedrock
+  return {
+    accessKeyId: String(formData.get('accessKeyId') ?? ''),
+    secretAccessKey: String(formData.get('secretAccessKey') ?? ''),
+    region: String(formData.get('region') ?? '') || undefined,
+  };
 }
 
 export async function createProviderSecretAction(
