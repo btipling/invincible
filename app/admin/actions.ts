@@ -17,6 +17,7 @@ import {
   byokCredentialShape,
   isByokProvider,
   isValidModelId,
+  normalizeModelIds,
 } from '../../lib/gateway/byokProviders';
 
 function revalidateAdmin() {
@@ -204,10 +205,15 @@ export async function createProviderSecretAction(
     return { error: 'Unknown provider.' };
   }
   const credentials = credentialsFromForm(provider, formData);
-  const models = parseModels(String(formData.get('modelIds') ?? ''));
+  const models = normalizeModelIds(
+    parseModels(String(formData.get('modelIds') ?? '')),
+    provider,
+  );
   for (const mid of models) {
     if (!isValidModelId(mid)) {
-      return { error: `Invalid model id: ${mid}` };
+      return {
+        error: `Invalid model id: ${mid} (use provider/model, e.g. xai/grok-4.5)`,
+      };
     }
   }
   const grantIds = parseGrantUserIds(formData);
@@ -334,12 +340,8 @@ export async function setProviderSecretModelsAction(
   const secretId = String(formData.get('secretId') ?? '').trim();
   if (!secretId) return { error: 'Missing secret.' };
 
+  // Bare model names are prefixed with the secret's provider inside setProviderSecretModels.
   const models = parseModels(String(formData.get('modelIds') ?? ''));
-  for (const mid of models) {
-    if (!isValidModelId(mid)) {
-      return { error: `Invalid model id: ${mid}`, secretId };
-    }
-  }
 
   const result = await setProviderSecretModels(secretId, models, gate.tenantId);
   if (!result.ok) {
