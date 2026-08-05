@@ -14,6 +14,7 @@ import {
   listUserMcpServers,
   loadEnabledUserMcpSecrets,
   setUserMcpServerEnabled,
+  setUserMcpServerLastError,
   updateUserMcpServer,
 } from './userMcpServers';
 
@@ -464,4 +465,35 @@ describe('userMcpServers', () => {
     if (!listed.ok) throw new Error(listed.error);
     expect(listed.value).toHaveLength(0);
   });
+
+  it('setUserMcpServerLastError updates and clears', async () => {
+    const created = await createUserMcpServer(
+      {
+        userId,
+        name: 'Err',
+        slug: 'err',
+        url: 'https://example.com/mcp',
+      },
+      deps(),
+    );
+    if (!created.ok) throw new Error(created.error);
+    const set = await setUserMcpServerLastError(
+      userId,
+      created.value.id,
+      'connect failed',
+      deps(),
+    );
+    expect(set.ok).toBe(true);
+    const listed = await listUserMcpServers(userId, deps());
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error(listed.error);
+    expect(listed.value[0].lastError).toBe('connect failed');
+
+    await setUserMcpServerLastError(userId, created.value.id, null, deps());
+    const after = await listUserMcpServers(userId, deps());
+    expect(after.ok).toBe(true);
+    if (!after.ok) throw new Error(after.error);
+    expect(after.value[0].lastError).toBeNull();
+  });
+
 });

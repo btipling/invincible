@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SandboxClient } from '../sandbox/client';
-import { collectToolTrace, runAgent } from './runAgent';
+import { collectToolTrace, DEFAULT_AGENT_SYSTEM, runAgent } from './runAgent';
 import { TOOL_TRACE_SUMMARY_MAX_CHARS } from '../sandbox/config';
+import { MCP_SYSTEM_ADDENDUM } from '../mcp/toolNames';
 
 describe('runAgent', () => {
   it('passes stopWhen stepCountIs(maxSteps) to generateText', async () => {
@@ -40,6 +41,79 @@ describe('runAgent', () => {
 
     expect(result.text).toBe('done');
     expect(generateTextImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('merges extraTools into generateText tools', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      const tools = args.tools as Record<string, unknown>;
+      expect(tools.list_dir).toBeTruthy();
+      expect(tools.mcp_exa__web_search).toBeTruthy();
+      return { text: 'merged', steps: [] };
+    });
+    const client: SandboxClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      exec: vi.fn(),
+    };
+    await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: client,
+      extraTools: {
+        mcp_exa__web_search: {
+          description: 'search',
+          execute: async () => 'ok',
+        },
+      },
+    });
+    expect(generateTextImpl).toHaveBeenCalled();
+  });
+
+  it('appends MCP system addendum when mcp_ extraTools present', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      expect(args.system).toBe(`${DEFAULT_AGENT_SYSTEM} ${MCP_SYSTEM_ADDENDUM}`);
+      return { text: 'ok', steps: [] };
+    });
+    const client: SandboxClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      exec: vi.fn(),
+    };
+    await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: client,
+      extraTools: {
+        mcp_exa__t: { execute: async () => 'x' },
+      },
+    });
+  });
+
+  it('does not append MCP addendum when system override provided', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      expect(args.system).toBe('custom');
+      return { text: 'ok', steps: [] };
+    });
+    const client: SandboxClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      exec: vi.fn(),
+    };
+    await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      system: 'custom',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: client,
+      extraTools: {
+        mcp_exa__t: { execute: async () => 'x' },
+      },
+    });
   });
 
   it('redacts secrets from final model text', async () => {
@@ -122,5 +196,29 @@ describe('runAgent', () => {
     expect(trace).toHaveLength(1);
     expect(trace[0].ok).toBe(false);
     expect(trace[0].summary).toMatch(/Invalid input|failed|ERROR/i);
+  });
+
+  it('redacts MCP secrets from toolTrace summaries', () => {
+    const secret = 'mcp-api-key-should-not-leak';
+    const trace = collectToolTrace(
+      {
+        steps: [
+          {
+            toolCalls: [{ toolName: 'mcp_exa__web_search', toolCallId: 'c1' }],
+            toolResults: [
+              {
+                toolName: 'mcp_exa__web_search',
+                toolCallId: 'c1',
+                output: `ERROR mcp_exa__web_search: boom ${secret}`,
+              },
+            ],
+          },
+        ],
+      },
+      [secret],
+    );
+    expect(trace[0].summary).not.toContain(secret);
+    expect(trace[0].summary).toContain('[redacted]');
+    expect(trace[0].ok).toBe(false);
   });
 });

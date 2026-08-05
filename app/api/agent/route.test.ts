@@ -6,7 +6,7 @@ import {
 
 /**
  * Route tests import the handler after env is set.
- * We mock runAgent / resolve to avoid real Gateway / DB.
+ * We mock runAgent / resolve / MCP to avoid real Gateway / DB.
  */
 describe('POST /api/agent', () => {
   const originalEnv = { ...process.env };
@@ -18,6 +18,7 @@ describe('POST /api/agent', () => {
     vi.doUnmock('../../../lib/tenancy/session');
     vi.doUnmock('../../../lib/tenancy/resolveSandbox');
     vi.doUnmock('../../../lib/tenancy/resolveInferenceForRequest');
+    vi.doUnmock('../../../lib/mcp/client');
   });
 
   async function loadRoute() {
@@ -30,30 +31,45 @@ describe('POST /api/agent', () => {
     delete process.env.CREDENTIALS_ENCRYPTION_KEY;
   }
 
-function mockByokOk(overrides: Record<string, unknown> = {}) {
-  vi.doMock('../../../lib/tenancy/resolveInferenceForRequest', () => ({
-    resolveByokForRequest: vi.fn(async () => ({
-      ok: true as const,
-      modelId: 'anthropic/claude-a',
-      provider: 'anthropic',
-      credentials: { apiKey: 'sk-byok-test' },
-      only: ['anthropic'] as [string],
-      byok: { anthropic: [{ apiKey: 'sk-byok-test' }] },
-      secretId: 'sec-1',
-      secretsToRedact: ['sk-byok-test'],
-      ...overrides,
-    })),
-  }));
-}
+  function mockByokOk(overrides: Record<string, unknown> = {}) {
+    vi.doMock('../../../lib/tenancy/resolveInferenceForRequest', () => ({
+      resolveByokForRequest: vi.fn(async () => ({
+        ok: true as const,
+        modelId: 'anthropic/claude-a',
+        provider: 'anthropic',
+        credentials: { apiKey: 'sk-byok-test' },
+        only: ['anthropic'] as [string],
+        byok: { anthropic: [{ apiKey: 'sk-byok-test' }] },
+        secretId: 'sec-1',
+        secretsToRedact: ['sk-byok-test'],
+        ...overrides,
+      })),
+    }));
+  }
 
-function mockByokFail(reason: 'forbidden' | 'unavailable' | 'model_invalid' = 'forbidden') {
-  vi.doMock('../../../lib/tenancy/resolveInferenceForRequest', () => ({
-    resolveByokForRequest: vi.fn(async () => ({
-      ok: false as const,
-      reason,
-    })),
-  }));
-}
+  function mockByokFail(
+    reason: 'forbidden' | 'unavailable' | 'model_invalid' = 'forbidden',
+  ) {
+    vi.doMock('../../../lib/tenancy/resolveInferenceForRequest', () => ({
+      resolveByokForRequest: vi.fn(async () => ({
+        ok: false as const,
+        reason,
+      })),
+    }));
+  }
+
+  function mockMcpEmpty() {
+    const close = vi.fn(async () => {});
+    const buildUserMcpTools = vi.fn(async () => ({
+      tools: {},
+      secretsToRedact: [] as string[],
+      close,
+      connectedSlugs: [] as string[],
+      skipped: [] as Array<{ slug: string; reason: string }>,
+    }));
+    vi.doMock('../../../lib/mcp/client', () => ({ buildUserMcpTools }));
+    return { close, buildUserMcpTools };
+  }
 
   it('returns 500 when gateway key missing', async () => {
     clearTenancyEnv();
@@ -117,6 +133,7 @@ function mockByokFail(reason: 'forbidden' | 'unavailable' | 'model_invalid' = 'f
     process.env.SANDBOX_TOKEN = 'sandbox-secret-token';
 
     vi.resetModules();
+    const mcp = mockMcpEmpty();
     vi.doMock('../../../lib/agent/runAgent', () => ({
       runAgent: vi.fn(async () => ({
         text: 'hello from agent',
@@ -141,6 +158,8 @@ function mockByokFail(reason: 'forbidden' | 'unavailable' | 'model_invalid' = 'f
     const raw = JSON.stringify(body);
     expect(raw).not.toContain('sandbox-secret-token');
     expect(raw).not.toContain('gw-key-super-secret');
+    // tenancy off → no MCP load
+    expect(mcp.buildUserMcpTools).not.toHaveBeenCalled();
   });
 
   it('returns 499 when runAgent aborts', async () => {
@@ -181,6 +200,7 @@ function mockByokFail(reason: 'forbidden' | 'unavailable' | 'model_invalid' = 'f
     delete process.env.SANDBOX_TOKEN;
 
     vi.resetModules();
+    mockMcpEmpty();
     vi.doMock('../../../lib/tenancy/session', () => ({
       requireSessionUser: vi.fn(async () => ({
         ok: false as const,
@@ -217,6 +237,7 @@ function mockByokFail(reason: 'forbidden' | 'unavailable' | 'model_invalid' = 'f
 
     const runAgent = vi.fn(async () => ({ text: 'nope', toolTrace: [] }));
     vi.resetModules();
+    const mcp = mockMcpEmpty();
     vi.doMock('../../../lib/tenancy/session', () => ({
       requireSessionUser: vi.fn(async () => ({
         ok: true as const,
@@ -247,6 +268,8 @@ function mockByokFail(reason: 'forbidden' | 'unavailable' | 'model_invalid' = 'f
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe(SANDBOX_FORBIDDEN_ERROR);
     expect(runAgent).not.toHaveBeenCalled();
+    // sandbox failed before MCP
+    expect(mcp.buildUserMcpTools).not.toHaveBeenCalled();
   });
 
   it('tenancy on injects resolved client + BYOK without requiring env SANDBOX_*', async () => {
@@ -272,6 +295,7 @@ function mockByokFail(reason: 'forbidden' | 'unavailable' | 'model_invalid' = 'f
       providerOptions?: {
         gateway?: { only?: unknown; byok?: unknown };
       };
+      extraTools?: Record<string, unknown>;
     };
     const runAgent = vi.fn(async (_arg: RunArg) => ({
       text: 'from-db-sandbox',
@@ -279,6 +303,7 @@ function mockByokFail(reason: 'forbidden' | 'unavailable' | 'model_invalid' = 'f
     }));
 
     vi.resetModules();
+    const mcp = mockMcpEmpty();
     vi.doMock('../../../lib/tenancy/session', () => ({
       requireSessionUser: vi.fn(async () => ({
         ok: true as const,
@@ -325,7 +350,96 @@ function mockByokFail(reason: 'forbidden' | 'unavailable' | 'model_invalid' = 'f
     expect(arg!.providerOptions?.gateway?.byok).toEqual({
       anthropic: [{ apiKey: 'sk-byok-test' }],
     });
+    expect(arg!.extraTools).toEqual({});
+    expect(mcp.buildUserMcpTools).toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({ signal: expect.anything() }),
+    );
+    expect(mcp.close).toHaveBeenCalled();
     expect(JSON.stringify(body)).not.toContain('sk-byok-test');
+  });
+
+  it('tenancy on merges MCP extraTools + secrets and closes clients', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+
+    const close = vi.fn(async () => {});
+    const mcpTools = {
+      mcp_exa__web_search: { execute: async () => 'ok' },
+    };
+    type RunArg = {
+      extraTools?: Record<string, unknown>;
+      secrets?: string[];
+    };
+    const runAgent = vi.fn(async (_arg: RunArg) => ({
+      text: 'with-mcp',
+      toolTrace: [
+        {
+          name: 'mcp_exa__web_search',
+          ok: true,
+          summary: 'search ok',
+        },
+      ],
+    }));
+
+    vi.resetModules();
+    vi.doMock('../../../lib/mcp/client', () => ({
+      buildUserMcpTools: vi.fn(async () => ({
+        tools: mcpTools,
+        secretsToRedact: ['mcp-key-secret-value'],
+        close,
+        connectedSlugs: ['exa'],
+        skipped: [],
+      })),
+    }));
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1', email: 'a@b.c' },
+      })),
+    }));
+    mockByokOk();
+    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          client: {
+            listDir: vi.fn(),
+            readFile: vi.fn(),
+            writeFile: vi.fn(),
+            exec: vi.fn(),
+          },
+          permissions: { canRead: true, canWrite: true },
+          secrets: ['decrypted-db-token'],
+          sandboxId: 'sbx-1',
+          tenantId: 'ten-1',
+          baseUrl: 'http://sandbox.example',
+        },
+      })),
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'search' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    const arg = runAgent.mock.calls[0]?.[0];
+    expect(arg).toBeDefined();
+    expect(arg!.extraTools).toBe(mcpTools);
+    expect(arg!.secrets).toContain('mcp-key-secret-value');
+    expect(close).toHaveBeenCalled();
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain('mcp-key-secret-value');
   });
 
   it('tenancy on: empty BYOK grants → 403 and runAgent not called', async () => {
@@ -350,6 +464,7 @@ function mockByokFail(reason: 'forbidden' | 'unavailable' | 'model_invalid' = 'f
     }));
 
     vi.resetModules();
+    const mcp = mockMcpEmpty();
     vi.doMock('../../../lib/tenancy/session', () => ({
       requireSessionUser: vi.fn(async () => ({
         ok: true as const,
@@ -375,5 +490,6 @@ function mockByokFail(reason: 'forbidden' | 'unavailable' | 'model_invalid' = 'f
     expect(body.error).toBe('Inference access denied.');
     expect(runAgent).not.toHaveBeenCalled();
     expect(resolveAgentSandbox).not.toHaveBeenCalled();
+    expect(mcp.buildUserMcpTools).not.toHaveBeenCalled();
   });
 });

@@ -16,6 +16,7 @@ import { requireSessionUser } from '../../../lib/tenancy/session';
 import { resolveAgentSandbox } from '../../../lib/tenancy/resolveSandbox';
 import { resolveByokForRequest } from '../../../lib/tenancy/resolveInferenceForRequest';
 import { redactSecrets } from '../../../lib/agent/redact';
+import { buildUserMcpTools } from '../../../lib/mcp/client';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -26,13 +27,13 @@ function isAbortError(err: unknown): boolean {
 }
 
 /**
- * Multi-step agent with sandbox tools.
+ * Multi-step agent with sandbox tools (+ per-user MCP when tenancy on).
  *
  * POST { prompt: string, modelId?: string }
  * → { text, toolTrace? } | { error }
  *
- * Tenancy on: DB-resolved sandbox + grants + request-scoped BYOK.
- * Tenancy off: env SANDBOX_* + env model (no BYOK).
+ * Tenancy on: DB-resolved sandbox + grants + request-scoped BYOK + user MCP tools.
+ * Tenancy off: env SANDBOX_* + env model (no BYOK, no MCP).
  */
 export async function POST(req: Request): Promise<Response> {
   const sessionGate = await requireSessionUser();
@@ -67,6 +68,7 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   let redactList: string[] = [];
+  let mcpClose: (() => Promise<void>) | undefined;
 
   try {
     let runParams: Parameters<typeof runAgent>[0] = {
@@ -94,6 +96,10 @@ export async function POST(req: Request): Promise<Response> {
       }
       redactList = [...redactList, ...resolved.value.secrets];
 
+      const mcp = await buildUserMcpTools(userId, { signal: req.signal });
+      mcpClose = mcp.close;
+      redactList = [...redactList, ...mcp.secretsToRedact];
+
       // Same JSONValue boundary cast as chat route (AI SDK ProviderOptions).
       runParams = {
         ...runParams,
@@ -105,8 +111,13 @@ export async function POST(req: Request): Promise<Response> {
           },
         },
         sandboxClient: resolved.value.client,
-        secrets: [...resolved.value.secrets, ...byok.secretsToRedact],
+        secrets: [
+          ...resolved.value.secrets,
+          ...byok.secretsToRedact,
+          ...mcp.secretsToRedact,
+        ],
         permissions: resolved.value.permissions,
+        extraTools: mcp.tools,
       };
     }
 
@@ -128,5 +139,13 @@ export async function POST(req: Request): Promise<Response> {
     const safe =
       redactList.length > 0 ? redactSecrets(error, redactList) : error;
     return Response.json({ error: safe }, { status });
+  } finally {
+    if (mcpClose) {
+      try {
+        await mcpClose();
+      } catch {
+        // ignore MCP close errors
+      }
+    }
   }
 }
