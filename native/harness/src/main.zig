@@ -9,10 +9,13 @@ const WebBackend = @import("web-backend");
 const ui = @import("ui.zig");
 const bridge = @import("bridge.zig");
 const palette = @import("palette.zig");
+const rich_parse = @import("rich/parse.zig");
 
 comptime {
     std.debug.assert(@hasDecl(WebBackend, "WebBackend"));
     std.debug.assert(bridge.PROTOCOL_VERSION >= 1);
+    // Keep phase-1 parser in the module graph for freestanding link + size delta.
+    std.debug.assert(rich_parse.backend == .zmd);
 }
 
 var wasm_log_console_buffer: [512]u8 = undefined;
@@ -56,6 +59,10 @@ export fn dvui_init(platform_ptr: [*]const u8, platform_len: usize) i32 {
     WebBackend.win.themeSet(palette.theme());
     WebBackend.win_ok = true;
     ui.onInit();
+    // Phase 1 (#143): force-link zmd parse into wasm; discard result (no paint yet).
+    if (!rich_parse.smokeOnce()) {
+        dvui.log.debug("rich parse smoke failed (non-fatal phase 1)", .{});
+    }
     return 0;
 }
 

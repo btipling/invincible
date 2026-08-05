@@ -9,6 +9,10 @@
             .url = "git+https://github.com/david-vanderson/dvui?ref=main#4f810ef1d695b55fb714a13536a930b9304d619e",
             .hash = "dvui-0.5.0-dev-AQFJmXxd_QAJS310eGUEjF5iOYHn4QlPT26rwBriRHE0",
         },
+        .zmd = .{
+            .url = "git+https://github.com/jetzig-framework/zmd#3a23328a575357e6c55e2c50a4e41f11776e4f18",
+            .hash = "zmd-0.2.0-H8YV7VfEAACoEBk4Yy0feU3HmoIE-7oqjuiGadj3t1mv",
+        },
     },
     .paths = .{
         "build.zig",

@@ -15,6 +15,12 @@ pub fn build(b: *std.Build) void {
         .backend = .web,
     });
 
+    // Phase 1 rich transcript (#143): zmd (MIT) markdown parser, freestanding.
+    const zmd_dep = b.dependency("zmd", .{
+        .target = web_target,
+        .optimize = optimize,
+    });
+
     const strip = switch (optimize) {
         .ReleaseFast, .ReleaseSmall => true,
         else => false,
@@ -40,6 +46,7 @@ pub fn build(b: *std.Build) void {
     exe.entry = .disabled;
     exe.root_module.addImport("dvui", dvui_dep.module("dvui_web"));
     exe.root_module.addImport("web-backend", dvui_dep.module("web"));
+    exe.root_module.addImport("zmd", zmd_dep.module("zmd"));
     exe.root_module.addOptions("build_options", build_opts);
 
     // Zig std.Build.Module.export_symbol_names:
@@ -98,4 +105,23 @@ pub fn build(b: *std.Build) void {
     compile_step.dependOn(&copy_web.step);
 
     b.getInstallStep().dependOn(compile_step);
+
+    // Host unit tests for rich/parse.zig (phase 1 smoke). Not run on wasm target.
+    const host_target = b.graph.host;
+    const zmd_host = b.dependency("zmd", .{
+        .target = host_target,
+        .optimize = optimize,
+    });
+    const parse_tests = b.addTest(.{
+        .name = "rich-parse",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/rich/parse.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+    parse_tests.root_module.addImport("zmd", zmd_host.module("zmd"));
+    const run_parse_tests = b.addRunArtifact(parse_tests);
+    const test_parse = b.step("test-parse", "Run rich/parse.zig unit tests (host)");
+    test_parse.dependOn(&run_parse_tests.step);
 }

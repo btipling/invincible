@@ -48,3 +48,10 @@ public/harness/.artifact-meta.json
 
 # Local sandbox workspace (dev)
 .sandbox-workspace/
+
+# Zig local package extracts / caches (agent workspaces)
+native/harness/zig-pkg/
+native/harness/zig-cache/
+native/harness/.zig-cache/
+native/harness/zig-out/
+native/dist/
