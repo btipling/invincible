@@ -421,6 +421,33 @@ describe('userMcpServers', () => {
     expect(slugDup.code).toBe('duplicate_slug');
   });
 
+  it('create with enabled:false is atomic (not in loadEnabled)', async () => {
+    const created = await createUserMcpServer(
+      {
+        userId,
+        name: 'Disabled',
+        slug: 'disabled_at_create',
+        url: 'https://example.com/mcp',
+        authHeaderName: 'x-api-key',
+        apiKey: 'disabled-key-0001',
+        enabled: false,
+      },
+      deps(),
+    );
+    if (!created.ok) throw new Error(created.error);
+
+    const listed = await listUserMcpServers(userId, deps());
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error(listed.error);
+    expect(listed.value).toHaveLength(1);
+    expect(listed.value[0].enabled).toBe(false);
+
+    const secrets = await loadEnabledUserMcpSecrets(userId, deps());
+    expect(secrets.ok).toBe(true);
+    if (!secrets.ok) throw new Error(secrets.error);
+    expect(secrets.value).toHaveLength(0);
+  });
+
   it('set enabled + loadEnabledUserMcpSecrets decrypts', async () => {
     const created = await createUserMcpServer(
       {

@@ -33,6 +33,18 @@ async function requireSettingsSession(): Promise<
   }
   const membership = await loadSoleMembership(userId);
   if (!membership.ok) {
+    if (membership.reason === 'ambiguous') {
+      return {
+        ok: false,
+        error: 'Multiple tenant memberships — v1 Settings requires exactly one.',
+      };
+    }
+    if (membership.reason === 'unavailable') {
+      return {
+        ok: false,
+        error: 'Could not load membership (database unavailable).',
+      };
+    }
     return { ok: false, error: 'No tenant membership found.' };
   }
   return { ok: true, userId };
@@ -94,14 +106,11 @@ export async function createMcpServerAction(
     url,
     authHeaderName: authHeaderName || null,
     apiKey: apiKey.trim() || null,
+    enabled,
   });
 
   if (!result.ok) {
     return { error: mapError(result.code, result.error) };
-  }
-
-  if (!enabled) {
-    await setUserMcpServerEnabled(session.userId, result.value.id, false);
   }
 
   revalidateSettings();
@@ -213,14 +222,12 @@ export async function testMcpServerAction(
   });
 
   if (!probe.ok) {
-    void setUserMcpServerLastError(session.userId, id, probe.error).catch(
-      () => {},
-    );
+    await setUserMcpServerLastError(session.userId, id, probe.error);
     revalidateSettings();
     return { error: probe.error, id };
   }
 
-  void setUserMcpServerLastError(session.userId, id, null).catch(() => {});
+  await setUserMcpServerLastError(session.userId, id, null);
   revalidateSettings();
   return {
     ok: true,

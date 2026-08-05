@@ -214,6 +214,8 @@ export type CreateUserMcpServerInput = {
   authHeaderName?: string | null;
   /** Raw API key; empty/omitted ⇒ auth_mode=none */
   apiKey?: string | null;
+  /** Default true. Atomic at insert — avoid create-then-disable races. */
+  enabled?: boolean;
 };
 
 export async function createUserMcpServer(
@@ -318,7 +320,7 @@ export async function createUserMcpServer(
               authHeaderValueCiphertext: ciphertext,
               authHeaderKekVersion: kekVersion,
               authMode,
-              enabled: true,
+              enabled: input.enabled !== false,
             })
             .returning({ id: userMcpServers.id });
           return { ok: true as const, value: { id: row.id } };
