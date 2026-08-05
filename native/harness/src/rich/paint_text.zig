@@ -20,28 +20,28 @@ pub fn nextIdPublic(ctx: *PaintCtx) usize {
     return nextId(ctx);
 }
 
-pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, ctx: *const PaintCtx) void {
+/// Paint flat inline runs. `base_font` is the block face (body for paragraphs,
+/// title/heading for headings) so strong/emph/link keep block size.
+pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, ctx: *const PaintCtx, base_font: dvui.Font) void {
     const st = ctx.style;
     for (inlines) |inl| {
         switch (inl.kind) {
             .text => {
                 tl.addText(inl.text, .{
                     .color_text = st.body_text,
-                    .font = .theme(.body),
+                    .font = base_font,
                 });
             },
             .strong => {
-                const bold = dvui.Font.theme(.body).withWeight(.bold);
                 tl.addText(inl.text, .{
                     .color_text = st.strong_text,
-                    .font = bold,
+                    .font = base_font.withWeight(.bold),
                 });
             },
             .emph => {
-                const ital = dvui.Font.theme(.body).withStyle(.italic);
                 tl.addText(inl.text, .{
                     .color_text = st.emph_text,
-                    .font = ital,
+                    .font = base_font.withStyle(.italic),
                 });
             },
             .code => {
@@ -59,12 +59,12 @@ pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, c
                         .url = href,
                     }, .{
                         .color_text = st.link_text,
-                        .font = dvui.Font.theme(.body).withUnderline(.{}),
+                        .font = base_font.withUnderline(.{}),
                     });
                 } else {
                     tl.addText(if (inl.text.len > 0) inl.text else href, .{
                         .color_text = st.body_text,
-                        .font = .theme(.body),
+                        .font = base_font,
                     });
                 }
             },
@@ -89,26 +89,27 @@ pub fn paintHeading(src: std.builtin.SourceLocation, block: parse.Block, ctx: *P
         .padding = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
     });
     defer tl.deinit();
-    // Re-apply inline fonts on top of block default via addText options
-    paintInlines(tl, block.inlines, ctx);
+    paintInlines(tl, block.inlines, ctx, font);
     tl.addText("\n", .{});
 }
 
 pub fn paintParagraph(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
+    const body = dvui.Font.theme(.body);
     var tl = dvui.textLayout(src, .{}, .{
         .expand = .horizontal,
         .id_extra = nextId(ctx),
         .color_text = ctx.style.body_text,
-        .font = .theme(.body),
+        .font = body,
         .background = false,
         .padding = .{ .x = 0, .y = 1, .w = 0, .h = 2 },
     });
     defer tl.deinit();
-    paintInlines(tl, block.inlines, ctx);
+    paintInlines(tl, block.inlines, ctx, body);
     tl.addText("\n", .{});
 }
 
 pub fn paintListItem(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
+    const body = dvui.Font.theme(.body);
     const depth: f32 = @floatFromInt(@min(block.level, 6));
     const indent: f32 = 8.0 + depth * 10.0;
     var row = dvui.box(src, .{ .dir = .horizontal }, .{
@@ -123,23 +124,23 @@ pub fn paintListItem(src: std.builtin.SourceLocation, block: parse.Block, ctx: *
         var tl = dvui.textLayout(@src(), .{}, .{
             .id_extra = nextId(ctx),
             .color_text = ctx.style.bullet_text,
-            .font = .theme(.body),
+            .font = body,
             .background = false,
             .padding = .{ .x = 0, .y = 0, .w = 4, .h = 0 },
         });
         defer tl.deinit();
-        tl.addText("• ", .{ .color_text = ctx.style.bullet_text });
+        tl.addText("• ", .{ .color_text = ctx.style.bullet_text, .font = body });
     }
     {
         var tl = dvui.textLayout(@src(), .{}, .{
             .expand = .horizontal,
             .id_extra = nextId(ctx),
             .color_text = ctx.style.body_text,
-            .font = .theme(.body),
+            .font = body,
             .background = false,
         });
         defer tl.deinit();
-        paintInlines(tl, block.inlines, ctx);
+        paintInlines(tl, block.inlines, ctx, body);
         tl.addText("\n", .{});
     }
 }

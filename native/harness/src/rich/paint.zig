@@ -31,7 +31,12 @@ pub fn paintMessageBody(src: std.builtin.SourceLocation, kind: u8, text: []const
 
     const doc = cache.parseCached(text);
     if (doc) |d| {
-        paintDocument(src, d, opts);
+        // Never empty bubble: zero blocks still shows original body bytes.
+        if (d.blocks.len == 0) {
+            paintPlainBody(src, text, opts, false);
+        } else {
+            paintDocument(src, d, opts);
+        }
     } else {
         paintPlainBody(src, text, opts, false);
     }
@@ -44,11 +49,6 @@ pub fn paintDocument(src: std.builtin.SourceLocation, doc: *const parse.ParsedDo
         .id_base = opts.msg_index *% 1024,
         .run_seq = &run_seq,
     };
-
-    if (doc.blocks.len == 0) {
-        paintPlainBody(src, "", opts, false);
-        return;
-    }
 
     var col = dvui.box(src, .{ .dir = .vertical }, .{
         .expand = .horizontal,

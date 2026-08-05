@@ -68,12 +68,12 @@ pub fn parseCached(src: []const u8) ?*const parse.ParsedDoc {
         }
     }
     if (!found_free) {
-        // Drop slot 0 (simple victim); could LRU later
+        // Clock victim; replace in place (live count stays MAX_ENTRIES).
         slot = clock % MAX_ENTRIES;
         clock +%= 1;
         if (entries[slot].doc) |*d| d.deinit();
         entries[slot] = .{};
-        if (used > 0) used -= 1;
+        // used stays the same: one out, one in below
     }
 
     entries[slot] = .{
@@ -132,14 +132,16 @@ test "parseCached hit and clear" {
     try std.testing.expectEqual(@as(usize, 1), liveCount());
 }
 
-test "parseCached fail returns null" {
-    // Empty is still valid parse for zmd usually; force OOM via tiny fixed buffer.
-    var buf: [64]u8 = undefined;
+test "parseCached OOM returns null" {
+    // Tiny fixed buffer forces arena OOM for non-trivial MD.
+    var buf: [32]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buf);
     setAllocator(fba.allocator());
-    defer parent_allocator = null;
+    defer {
+        clear();
+        parent_allocator = null;
+    }
     clear();
-    // Large-ish markdown to exceed 64-byte arena for IR
     const big =
         \\# Title
         \\
@@ -148,9 +150,16 @@ test "parseCached fail returns null" {
         \\```zig
         \\const x = 1;
         \\const y = 2;
+        \\const z = 3;
         \\```
     ;
     const d = parseCached(big);
-    // May be null (OOM) or succeed if lucky — either is fine; must not panic.
-    _ = d;
+    try std.testing.expect(d == null);
+    try std.testing.expectEqual(@as(usize, 0), liveCount());
+}
+
+test "parseCached null allocator returns null" {
+    parent_allocator = null;
+    clear();
+    try std.testing.expect(parseCached("hello") == null);
 }
