@@ -31,7 +31,7 @@ optional login chrome).
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
 | Per-user MCP config UI | **DOM** | `/settings`, `/settings/mcp` — not dual chat; not Admin |
 | Per-user MCP tools (connect + execute) | **Vercel backend** | `lib/mcp/*`; keys under tenant DEK; never Wasm/client |
-| **Transcript (read messages)** | **Wasm** | Primary UX |
+| **Transcript (read messages)** | **Wasm** | Primary UX; rich MD + diff/patch fence paint in-canvas (`rich/*`) — no DOM markdown |
 | **Composer + Send / smoke** | **Wasm** | Primary input |
 | Busy / error presentation for turns | **Wasm** | EMBER for errors |
 | Empty / onboarding copy for agent | **Wasm** | |

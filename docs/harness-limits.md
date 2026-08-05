@@ -80,6 +80,27 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 | Line size | 4 KB UTF-8 max per message (`MAX_MSG_LEN`) |
 | Host history | Host folds last **~8** user/assistant turns (`formatPromptWithHistory` maxTurns=8, maxChars=12 000); prefer Clear for a fresh workspace |
 
+
+## Rich transcript (Wasm)
+
+Markdown and fenced code for **user** and **assistant** bodies are painted in the
+Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain text
+(EMBER for errors). There is **no** DOM/React markdown panel.
+
+| Topic | Behavior |
+|-------|----------|
+| Parser | **zmd** (MIT) → walkable blocks; no HTML intermediate |
+| Common MD | Headings, paragraphs, lists, bold/italic, inline code, fences, http(s) links |
+| Fenced code | Mono box + muted language label; **≤80 lines** then “… N more” |
+| Diff / patch fences | Info string `diff` or `patch` (any case): line colors — **+** WARM accent, **−** EMBER text (removed-line semantics, not error chrome), **`@` / `---` / `+++`** muted, context TEAL body |
+| Tables | Pipe tables paint as **plain paragraphs** today (parser has no table nodes). Richer mono/grid is follow-on work |
+| Links | `http://` and `https://` only; other schemes show as plain label text |
+| Fallback | Parse failure / OOM → raw body text (never empty bubble) |
+| Cache | Fingerprint (FNV-1a) over full body; cap 48 entries; cleared on transcript clear |
+| Caps | Same ring / 4 KiB line / 28 visible as above |
+
+Feature divide: transcript **read** path remains canvas-only — see [feature-divide.md](feature-divide.md).
+
 ## Palette
 
 | Family | Role |

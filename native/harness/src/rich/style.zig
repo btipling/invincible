@@ -17,6 +17,12 @@ pub const StyleMap = struct {
     heading_text: dvui.Color = palette.teal_text,
     bullet_text: dvui.Color = palette.teal_muted,
     fence_lang_text: dvui.Color = palette.teal_muted,
+    /// Unified diff: added lines (`+`). WARM accent — intentional, not error.
+    diff_add: dvui.Color = palette.warm_accent,
+    /// Unified diff: removed lines (`-`). EMBER text = removed-line semantics only.
+    diff_del: dvui.Color = palette.ember_text,
+    /// Hunk / file headers (`@`, `---`, `+++`).
+    diff_meta: dvui.Color = palette.teal_muted,
 };
 
 pub fn defaultStyle() StyleMap {
