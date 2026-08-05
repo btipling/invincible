@@ -1,5 +1,5 @@
 /**
- * Per-user MCP server CRUD under tenant DEK (parent #116 / phase #117).
+ * Per-user MCP server CRUD under tenant DEK (parent #116 / phase #117–#118).
  * Server-only. Never log plaintext keys or ciphertext.
  * tenantId is always derived from loadSoleMembership — never client input.
  */
@@ -13,6 +13,7 @@ import {
   MAX_MCP_SERVERS_PER_USER,
   MCP_HEADER_NAME_MAX,
   MCP_HEADER_NAME_RE,
+  MCP_LAST_ERROR_MAX,
   MCP_NAME_MAX,
   MCP_NAME_MIN,
   MCP_SLUG_RE,
@@ -195,6 +196,14 @@ function uniqueCodeFromError(err: unknown): UserMcpServerErrorCode {
     return 'duplicate_slug';
   }
   return 'duplicate_name';
+}
+
+
+function truncateLastError(msg: string | null): string | null {
+  if (msg == null) return null;
+  const t = msg.replace(/\s+/g, ' ').trim();
+  if (!t) return null;
+  return t.length > MCP_LAST_ERROR_MAX ? t.slice(0, MCP_LAST_ERROR_MAX) : t;
 }
 
 export type CreateUserMcpServerInput = {
@@ -569,6 +578,55 @@ export async function setUserMcpServerEnabled(
 ): Promise<UserMcpServerResult<{ id: string }>> {
   return updateUserMcpServer({ userId, id, enabled }, deps);
 }
+
+
+/**
+ * Best-effort last_error update for connect/probe failures (phase 2).
+ * Never store secrets — caller must pass safe messages only.
+ */
+export async function setUserMcpServerLastError(
+  userId: string,
+  id: string,
+  lastError: string | null,
+  deps: UserMcpServersDeps = {},
+): Promise<UserMcpServerResult<{ id: string }>> {
+  const uid = userId?.trim();
+  const sid = id?.trim();
+  if (!uid || !sid) {
+    return { ok: false, code: 'not_found', error: 'MCP server not found' };
+  }
+
+  const safe = truncateLastError(lastError);
+
+  try {
+    return await withDb(deps, async (db) => {
+      const updated = await db
+        .update(userMcpServers)
+        .set({
+          lastError: safe,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(userMcpServers.id, sid), eq(userMcpServers.userId, uid)),
+        )
+        .returning({ id: userMcpServers.id });
+      if (!updated[0]) {
+        return { ok: false, code: 'not_found', error: 'MCP server not found' };
+      }
+      return { ok: true, value: { id: sid } };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'MCP servers unavailable' };
+    }
+    return {
+      ok: false,
+      code: 'unavailable',
+      error: 'could not update MCP last_error',
+    };
+  }
+}
+
 
 /**
  * List servers for user — mask only, never ciphertext.

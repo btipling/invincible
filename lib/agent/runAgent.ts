@@ -8,6 +8,7 @@ import {
 import { createSandboxClient, type SandboxClient } from '../sandbox/client';
 import { createAgentTools } from './tools';
 import { redactSecrets, truncateSummary } from './redact';
+import { MCP_SYSTEM_ADDENDUM } from '../mcp/toolNames';
 
 export type ToolTraceEntry = {
   name: string;
@@ -32,6 +33,12 @@ export type RunAgentParams = {
   secrets?: Array<string | undefined | null>;
   /** Effective grant permissions; default full access when omitted. */
   permissions?: { canRead: boolean; canWrite: boolean };
+  /**
+   * Optional extra tools (e.g. MCP) merged after sandbox tools.
+   * Route builds these; tests inject pure maps.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  extraTools?: Record<string, any>;
 };
 
 export type RunAgentResult = {
@@ -45,6 +52,16 @@ export const DEFAULT_AGENT_SYSTEM = [
   'Use paths relative to the workspace root. Do not invent host absolute paths outside the sandbox.',
   'Be concise in final answers; cite relative paths when useful.',
 ].join(' ');
+
+function resolveSystem(params: RunAgentParams): string {
+  if (params.system != null) return params.system;
+  const extra = params.extraTools ?? {};
+  const hasMcp = Object.keys(extra).some((k) => k.startsWith('mcp_'));
+  if (hasMcp) {
+    return `${DEFAULT_AGENT_SYSTEM} ${MCP_SYSTEM_ADDENDUM}`;
+  }
+  return DEFAULT_AGENT_SYSTEM;
+}
 
 /**
  * Multi-step generateText + sandbox tools.
@@ -72,17 +89,20 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
     secrets = [...secrets, cfg.token];
   }
 
-  const tools = createAgentTools({
-    client,
-    secrets,
-    signal: params.signal,
-    permissions: params.permissions,
-  });
+  const tools = {
+    ...createAgentTools({
+      client,
+      secrets,
+      signal: params.signal,
+      permissions: params.permissions,
+    }),
+    ...(params.extraTools ?? {}),
+  };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const genArgs: any = {
     model: modelId,
-    system: params.system ?? DEFAULT_AGENT_SYSTEM,
+    system: resolveSystem(params),
     prompt: params.prompt,
     tools,
     stopWhen: stepCountIs(maxSteps),
