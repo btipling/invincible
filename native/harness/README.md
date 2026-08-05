@@ -10,7 +10,7 @@ with Zig **0.16.0** on the self-hosted runner (maintainer sample: `invincible-do
 
 | Surface | Owns |
 |---------|------|
-| **This crate (Wasm)** | Transcript, composer, Send/PONG, busy/error chrome, Asteronica theme |
+| **This crate (Wasm)** | Transcript (incl. scroll), composer, Send/PONG, busy/error chrome, Asteronica theme |
 | **DOM host** (`app/harness/HarnessHost.tsx`) | Load module, bridge poll, `/api/chat` + `/api/agent`, SessionStore, nav chips |
 
 Do **not** reintroduce a React chat panel as product UX. The canvas is the
