@@ -10,11 +10,14 @@ with Zig **0.16.0** on the self-hosted runner (maintainer sample: `invincible-do
 
 | Surface | Owns |
 |---------|------|
-| **This crate (Wasm)** | Transcript (incl. scroll), composer, Send/PONG, busy/error chrome, Asteronica theme |
+| **This crate (Wasm)** | Transcript (incl. scroll + reserved composer layout), composer, Send/PONG, busy/error chrome, Asteronica theme |
 | **DOM host** (`app/harness/HarnessHost.tsx`) | Load module, bridge poll, `/api/chat` + `/api/agent`, SessionStore, nav chips |
 
 Do **not** reintroduce a React chat panel as product UX. The canvas is the
-workspace — not an optional companion.
+workspace — not an optional companion. Layout: header + height-bounded transcript
+`scrollArea` + reserved bottom composer chrome in `src/ui.zig` (see
+[`docs/harness-limits.md`](../../docs/harness-limits.md)).
+
 
 ## Relation to other `native/` targets
 
