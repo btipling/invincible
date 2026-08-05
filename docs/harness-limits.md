@@ -20,6 +20,7 @@ See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 | MIME | `application/wasm` for `/harness/*.wasm` (`next.config.js`) |
 | First paint | Spinner until instantiate; full-bleed canvas after ready |
 | Cache | `public, max-age=3600, stale-while-revalidate=86400` |
+| Build id | Baked short git SHA (`-Dbuild-id`); file `public/harness/build-id.txt`; shown as `h:…` in host chip **and** canvas header — must match after deploy |
 
 ## Keyboard & focus
 
@@ -50,7 +51,7 @@ Vertical bands inside the Wasm root (not a DOM panel):
 | Rule | Behavior |
 |------|----------|
 | Composer visibility | Fully on-canvas while the harness is ready; not optional |
-| Height budget | Every frame: viewport − measured header − chrome − gaps → exact transcript height (`min_size_content` = `max_size_content`); chrome packed with `gravity_y = 1.0` before the scroller |
+| Height budget | Every frame: viewport → absolute `Options.rect` bands (header / transcript / composer). Rect children do not report min-size up the tree, so tall content cannot push chrome off-canvas |
 | Short canvas | Transcript shrinks / scrolls first — chrome keeps touch-sized targets (~40px) |
 | Content size | Tall messages grow **virtual** scroll size only; scroller outer height is fixed to the leftover band |
 | Solid chrome | Composer band uses TEAL fill so transcript paint cannot show through |

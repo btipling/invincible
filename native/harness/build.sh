@@ -13,10 +13,28 @@ if [[ "$GOT" != "$PIN" ]]; then
 fi
 
 RELEASE_MODE="${RELEASE_MODE:-small}"
-echo "building harness (--release=${RELEASE_MODE}) with zig ${GOT}..."
+
+# Build id: CI SHA > HARNESS_BUILD_ID > git short > dev
+BUILD_ID="${HARNESS_BUILD_ID:-}"
+if [[ -z "${BUILD_ID}" && -n "${GITHUB_SHA:-}" ]]; then
+  BUILD_ID="${GITHUB_SHA}"
+fi
+if [[ -z "${BUILD_ID}" ]]; then
+  BUILD_ID="$(git -C "${ROOT}/.." rev-parse --short=12 HEAD 2>/dev/null || true)"
+fi
+if [[ -z "${BUILD_ID}" ]]; then
+  BUILD_ID="$(git rev-parse --short=12 HEAD 2>/dev/null || true)"
+fi
+if [[ -z "${BUILD_ID}" ]]; then
+  BUILD_ID="dev"
+fi
+# Prefer short id for UI chrome (keep full in file if ≤40).
+BUILD_ID_SHORT="${BUILD_ID:0:7}"
+
+echo "building harness (--release=${RELEASE_MODE}) build-id=${BUILD_ID_SHORT} with zig ${GOT}..."
 # Clean local zig cache for this crate so export_symbol_names changes always apply.
 rm -rf zig-cache zig-out .zig-cache
-zig build harness --release="${RELEASE_MODE}" --summary all
+zig build harness --release="${RELEASE_MODE}" -Dbuild-id="${BUILD_ID_SHORT}" --summary all
 
 OUT="zig-out/bin"
 test -f "${OUT}/harness.wasm"
@@ -62,8 +80,11 @@ mkdir -p "${STAGE}"
 cp -a "${OUT}/harness.wasm" "${OUT}/web.js" "${OUT}/index.html" "${STAGE}/"
 # Keep web.wasm alias in staged dist for convenience
 cp -f "${OUT}/harness.wasm" "${STAGE}/web.wasm"
+# Version stamp for cache-bust + host chip (must match -Dbuild-id)
+printf '%s\n' "${BUILD_ID_SHORT}" > "${STAGE}/build-id.txt"
+printf '%s\n' "${BUILD_ID}" > "${STAGE}/build-id-full.txt"
 
 BYTES=$(wc -c < "${STAGE}/harness.wasm" | tr -d ' ')
 JS_BYTES=$(wc -c < "${STAGE}/web.js" | tr -d ' ')
-echo "built ${STAGE}/harness.wasm (${BYTES} bytes wasm, ${JS_BYTES} bytes js) with zig ${GOT}"
+echo "built ${STAGE}/harness.wasm (${BYTES} bytes wasm, ${JS_BYTES} bytes js) build-id=${BUILD_ID_SHORT} zig ${GOT}"
 ls -la "${STAGE}"

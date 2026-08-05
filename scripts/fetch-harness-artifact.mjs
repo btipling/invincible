@@ -115,6 +115,9 @@ function copyFrom(src) {
   if (existsSync(join(src, 'index.html'))) {
     cpSync(join(src, 'index.html'), join(DEST, 'index.html'));
   }
+  for (const f of ['build-id.txt', 'build-id-full.txt']) {
+    if (existsSync(join(src, f))) cpSync(join(src, f), join(DEST, f));
+  }
   log(`copied from ${src}`);
   writeMeta({ source: 'local-copy', path: src });
 }
