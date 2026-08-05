@@ -10,7 +10,7 @@ with Zig **0.16.0** on the self-hosted runner (maintainer sample: `invincible-do
 
 | Surface | Owns |
 |---------|------|
-| **This crate (Wasm)** | Transcript (incl. scroll, rich MD + diff/patch fences, reserved composer layout), composer, Send/PONG, busy/error chrome, Asteronica theme |
+| **This crate (Wasm)** | Transcript (incl. scroll, rich MD + diff/patch fences, per-message **Copy** of source via dvui clipboard, reserved composer layout), composer, Send/PONG, busy/error chrome, Asteronica theme |
 | **DOM host** (`app/harness/HarnessHost.tsx`) | Load module, bridge poll, `/api/chat` + `/api/agent`, SessionStore, nav chips |
 
 Do **not** reintroduce a React chat panel as product UX. The canvas is the
@@ -74,6 +74,7 @@ build.zig        # export_symbol_names whitelist for inv_*; test-rich host tests
 ```
 
 **Rich transcript:** user/assistant bodies use zmd → `ParsedDoc` → dvui paint (no HTML).
+Each non-empty message row has **Copy** (source bytes → system clipboard via `dvui.clipboardTextSet`).
 Fences with info string `diff` or `patch` use line-colored paint (WARM add, EMBER remove,
 muted meta). System/error stay plain. Tables are plain text until a future parse/paint
 path. Host unit tests: `zig build test-rich`.

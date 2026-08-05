@@ -35,7 +35,7 @@ See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 | Topic | Behavior |
 |-------|----------|
 | Layout | Full-bleed canvas under host nav; no horizontal overflow expected |
-| Hit targets | Send / PONG ≥ ~40px tall |
+| Hit targets | Send / PONG / message **Copy** ≥ ~40px tall |
 | Fallback | No “use the DOM chat instead” product path |
 
 ## Layout / composer chrome
@@ -80,6 +80,19 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 | Line size | 4 KB UTF-8 max per message (`MAX_MSG_LEN`) |
 | Host history | Host folds last **~8** user/assistant turns (`formatPromptWithHistory` maxTurns=8, maxChars=12 000); prefer Clear for a fresh workspace |
 
+
+
+## Transcript copy / paste
+
+| Topic | Behavior |
+|-------|----------|
+| **Primary path** | Per-message **Copy** control on the kind row (user / assistant / system / error when body non-empty) |
+| Clipboard payload | **Message source** UTF-8 as stored in the Wasm ring (markdown as produced) — not re-serialized paint colors or “… N more” chrome |
+| Drag-select | Best-effort **within a single** `textLayout` only (rich MD is many widgets per body). Whole-reply drag-select is not the product path |
+| Cross-message selection | Not supported |
+| Composer paste | Supported via dvui text entry when the composer is focused. Composer is **single-line** — pasted newlines may flatten |
+| Mobile / touch | **Copy** is the supported path; multi-block drag-select on canvas is unreliable |
+| Secure context | System clipboard write needs https (or localhost); silent no-op possible if the browser blocks clipboard |
 
 ## Rich transcript (Wasm)
 

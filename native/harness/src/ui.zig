@@ -309,15 +309,42 @@ pub fn frame() !void {
                     });
                     defer row.deinit();
 
+                    // Kind label + Copy (message source → system clipboard).
+                    // id_extra: label i*2; Copy i*%1024+2 (plain body uses +1).
                     {
-                        var tl = dvui.textLayout(@src(), .{}, .{
+                        var kind_row = dvui.box(@src(), .{ .dir = .horizontal }, .{
                             .expand = .horizontal,
-                            .id_extra = i * 2,
-                            .color_text = kindTextColor(m.kind),
-                            .font = .theme(.heading),
+                            .id_extra = i,
                         });
-                        tl.format("{s}", .{kindLabel(m.kind)}, .{});
-                        tl.deinit();
+                        defer kind_row.deinit();
+
+                        {
+                            var tl = dvui.textLayout(@src(), .{}, .{
+                                .expand = .horizontal,
+                                .id_extra = i * 2,
+                                .color_text = kindTextColor(m.kind),
+                                .font = .theme(.heading),
+                                .gravity_y = 0.5,
+                            });
+                            tl.format("{s}", .{kindLabel(m.kind)}, .{});
+                            tl.deinit();
+                        }
+                        if (m.text.len > 0) {
+                            if (dvui.button(@src(), "Copy", .{}, .{
+                                .gravity_y = 0.5,
+                                .style = .content,
+                                .id_extra = i *% 1024 + 2,
+                                .min_size_content = .{ .w = 56, .h = TOUCH_H - 8 },
+                                .corners = .round(6),
+                                .color_fill = palette.teal_bg,
+                                .color_text = palette.teal_accent,
+                                .color_border = palette.teal_border,
+                                .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
+                            })) {
+                                // Same-frame write only — do not retain ring slices.
+                                dvui.clipboardTextSet(m.text);
+                            }
+                        }
                     }
                     {
                         if (rich.shouldPaintMarkdown(m.kind)) {
