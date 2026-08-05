@@ -43,14 +43,14 @@ Vertical bands inside the Wasm root (not a DOM panel):
 
 | Band | Behavior |
 |------|----------|
-| **Header** | Compact title / lifecycle / model cycle — fixed min height |
+| **Header** | Compact title / lifecycle / model cycle — height measured each frame |
 | **Transcript** | One outer `scrollArea` that takes **remaining** height only |
 | **Composer chrome** | Text field + Send / PONG (+ hint) in a **reserved bottom band** outside the scroller |
 
 | Rule | Behavior |
 |------|----------|
 | Composer visibility | Fully on-canvas while the harness is ready; not optional |
-| Height budget | Header + composer chrome min are taken first; leftover → transcript |
+| Height budget | Measured header + composer chrome (incl. pad) + band margins taken first; leftover → transcript |
 | Short canvas | Transcript shrinks / scrolls first — chrome keeps touch-sized targets (~40px) |
 | Content size | Tall message content drives **scroll max**, not outer layout height (`max_size_content` on the scroller) |
 | Solid chrome | Composer band uses TEAL fill so transcript paint cannot show through |

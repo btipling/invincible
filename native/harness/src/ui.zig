@@ -31,6 +31,10 @@ const NEAR_BOTTOM_PX: f32 = 48;
 /// Reserved bottom chrome: textEntry + action row + margins (plan #138).
 /// Height budget: header + this win over transcript min on short canvases.
 const COMPOSER_CHROME_MIN: f32 = 2 * TOUCH_H + 20;
+/// Chrome box top padding (Options.padding.y) — outside min_size_content.
+const COMPOSER_PAD_Y: f32 = 4;
+/// Vertical margins between header→scroll and scroll→chrome (Options.margin.h).
+const BAND_GAP: f32 = 6;
 /// Default transcript min height when space allows.
 const SCROLL_MIN_H: f32 = 120;
 /// Absolute floor so a short canvas still has a scroll band.
@@ -143,7 +147,7 @@ pub fn frame() !void {
             .color_fill = palette.teal_surface,
             .color_border = palette.teal_border,
             .padding = .{ .x = 10, .y = 8, .w = 10, .h = 8 },
-            .margin = .{ .x = 0, .y = 0, .w = 0, .h = 6 },
+            .margin = .{ .x = 0, .y = 0, .w = 0, .h = BAND_GAP },
             .min_size_content = .{ .w = 0, .h = TOUCH_H },
         });
         defer {
@@ -205,9 +209,13 @@ pub fn frame() !void {
     }
 
     // Transcript layout height: leftover after header + reserved composer chrome.
+    // Subtract inter-band margins + chrome pad so max_size_content cannot exceed
+    // true free height (short canvas / tall content must not clip chrome).
     // max_size_content caps content-driven min so the scroller cannot starve chrome
     // (dvui Options: use when scrollArea makes the parent too big).
-    const scroll_h_max = @max(SCROLL_FLOOR_H, root_content_h - header_h - COMPOSER_CHROME_MIN);
+    const chrome_reserve = COMPOSER_CHROME_MIN + COMPOSER_PAD_Y;
+    const band_gaps = BAND_GAP * 2; // header margin.h + scroll margin.h
+    const scroll_h_max = @max(SCROLL_FLOOR_H, root_content_h - header_h - chrome_reserve - band_gaps);
     const scroll_min_h = @min(SCROLL_MIN_H, scroll_h_max);
 
     // ── Transcript ────────────────────────────────────────────────────────
@@ -234,7 +242,7 @@ pub fn frame() !void {
             // Cap layout min so tall message content cannot push past remaining height.
             .max_size_content = .height(scroll_h_max),
             .padding = .all(8),
-            .margin = .{ .x = 0, .y = 0, .w = 0, .h = 6 },
+            .margin = .{ .x = 0, .y = 0, .w = 0, .h = BAND_GAP },
         });
         defer scroll.deinit();
 
@@ -363,7 +371,7 @@ pub fn frame() !void {
             .color_fill = palette.teal_bg,
             .color_border = palette.teal_border,
             .min_size_content = .{ .w = 120, .h = COMPOSER_CHROME_MIN },
-            .padding = .{ .x = 0, .y = 4, .w = 0, .h = 0 },
+            .padding = .{ .x = 0, .y = COMPOSER_PAD_Y, .w = 0, .h = 0 },
         });
         defer chrome.deinit();
 
