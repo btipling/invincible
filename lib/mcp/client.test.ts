@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { asSchema, jsonSchema } from 'ai';
+import { safeParseJSON } from '@ai-sdk/provider-utils';
 import { buildUserMcpTools, probeUserMcpServer } from './client';
 import { MAX_MCP_TOOLS } from './limits';
 import type { UserMcpSecretRow } from '../tenancy/userMcpServers';
@@ -79,6 +81,71 @@ describe('buildUserMcpTools', () => {
 
     await result.close();
     expect(close).toHaveBeenCalled();
+  });
+
+  it('rehomes MCP inputSchema so AI SDK can validate tool args (Exa-style)', async () => {
+    // Simulate @ai-sdk/mcp provider-utils@5 schema: has schema symbol path via
+    // jsonSchema() from `ai` then strip validator symbol — or plain JSON schema object.
+    const mcpLikeSchema = {
+      jsonSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', minLength: 1 },
+          numResults: { type: 'number' },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+      validate: undefined,
+    };
+
+    const createClient = vi.fn(async () => ({
+      tools: async () => ({
+        web_search_exa: {
+          description: 'search',
+          inputSchema: mcpLikeSchema,
+          execute: async (input: { query: string }) => input.query,
+        },
+      }),
+      close: vi.fn(async () => {}),
+    }));
+
+    const result = await buildUserMcpTools('user-1', {
+      createClient: createClient as never,
+      loadSecrets: async () => ({
+        ok: true,
+        value: [secret({ id: 's1', slug: 'exa' })],
+      }),
+    });
+
+    const tool = result.tools.mcp_exa__web_search_exa;
+    expect(tool).toBeTruthy();
+
+    const validatorSymbol = Symbol.for('vercel.ai.validator');
+    expect(validatorSymbol in tool.inputSchema).toBe(true);
+
+    const text =
+      '{"query":"latest Exa AI product news announcements 2025","numResults":10.0}';
+    const parsed = await safeParseJSON({
+      text,
+      schema: asSchema(tool.inputSchema),
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.value).toMatchObject({
+        query: 'latest Exa AI product news announcements 2025',
+        numResults: 10,
+      });
+    }
+
+    // Control: bare mcpLikeSchema still fails asValidator without rehome
+    const broken = await safeParseJSON({
+      text,
+      schema: asSchema(mcpLikeSchema as never),
+    });
+    expect(broken.success).toBe(false);
+
+    await result.close();
   });
 
   it('soft-fails connect and records last_error', async () => {
