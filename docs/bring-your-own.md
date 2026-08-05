@@ -152,7 +152,7 @@ If **any** is missing → **legacy open mode**: anonymous `POST /api/chat` and
 | Unauthenticated `/`, `/harness`, `/admin` | Redirect to `/login?callbackUrl=…` |
 | Agent tools | **DB-resolved** sandbox for the session user (grants enforced); not raw process env alone |
 | `/admin` | Owner|admin: tenant + **Users** roster + sandboxes + **Inference keys** (`/admin/inference`) + encryption; tokens/credentials **masked** |
-| `/settings` | Any signed-in member: personal **MCP servers** (`/settings/mcp`) — not shared Admin; keys masked |
+| `/settings` | Signed-in member with **sole** tenant membership: personal **MCP servers** (`/settings/mcp`) — not shared Admin; keys masked |
 | Logout | Clears Auth.js session (and local harness session blob) |
 
 Grant failures return **403** `{ "error": "Sandbox access denied." }`
@@ -212,14 +212,15 @@ Also: [SECURITY.md](../SECURITY.md) · [feature-divide.md](feature-divide.md) ·
 
 ### Per-user MCP servers
 
-When **tenancy is on**, each member can register personal **remote HTTPS MCP**
-servers under **Settings → MCP servers** (`/settings/mcp`). API keys (optional)
-are encrypted under the **tenant DEK**. Tools load on **agent** turns only
-(`POST /api/agent`), merged with sandbox tools under the `mcp_*` name prefix.
+When **tenancy is on**, each signed-in member with a **sole** tenant membership
+can register personal **remote HTTPS MCP** servers under **Settings → MCP servers**
+(`/settings/mcp`). API keys (optional) are encrypted under the **tenant DEK**.
+Tools load on **agent** turns only (`POST /api/agent`), merged with sandbox tools
+under the `mcp_*` name prefix.
 
 | Role | What they do |
 |------|----------------|
-| Any member | `/settings/mcp` — CRUD servers, Test connection, enable/disable. Mask only — never plaintext after save. |
+| Member (sole membership) | `/settings/mcp` — CRUD servers, Test connection, enable/disable. Mask only — never plaintext after save. |
 | Owner | DEK rotate on `/admin` also re-encrypts MCP header ciphertexts. |
 
 **Schema (`user_mcp_servers`):** same schema-only path as BYOK tables — Actions →
