@@ -55,6 +55,9 @@ export async function AuthNavLinks() {
           Admin
         </Link>
       ) : null}
+      <Link href="/settings" style={linkStyle}>
+        Settings
+      </Link>
       <Link href="/harness" style={linkStyle}>
         Harness
       </Link>

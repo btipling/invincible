@@ -16,7 +16,7 @@ optional login chrome).
 | Concern | Owner | Notes |
 |---------|--------|--------|
 | Route `/harness`, App Router, code-split | **DOM** | Next.js |
-| Site chrome | **DOM** | `AppNav` brand header; optional `AuthNavLinks` (Sign in / Admin / Harness / Logout) when tenancy is on — **not** Playground tabs |
+| Site chrome | **DOM** | `AppNav` brand header; optional `AuthNavLinks` (Sign in / Admin / Settings / Harness / Logout) when tenancy is on — **not** Playground tabs |
 | Load `web.js` + `harness.wasm` | **DOM** | Instantiate, MIME, errors |
 | JS ↔ Wasm bridge glue | **DOM** | `lib/harnessBridge.ts` |
 | Poll pending submit | **DOM** | No custom Wasm imports beyond stock dvui `web.js` |
@@ -79,6 +79,7 @@ User types in Wasm composer
 | Bridge TS (protocol **v3**) | `lib/harnessBridge.ts` |
 | Model catalog API | `app/api/models/route.ts` |
 | Admin inference keys | `app/admin/inference/*` |
+| User Settings / MCP servers | `app/settings/*` · `lib/tenancy/userMcpServers.ts` · `lib/mcp/client.ts` |
 | BYOK resolve | `lib/tenancy/resolveInference*.ts`, `lib/gateway/byokProviders.ts` |
 | Chat turn | `lib/harnessChat.ts` |
 | Session | `lib/sessionStore.ts` |

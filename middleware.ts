@@ -12,6 +12,7 @@ function isPageProtected(pathname: string): boolean {
   if (pathname === '/') return true;
   if (pathname === '/harness' || pathname.startsWith('/harness/')) return true;
   if (pathname === '/admin' || pathname.startsWith('/admin/')) return true;
+  if (pathname === '/settings' || pathname.startsWith('/settings/')) return true;
   return false;
 }
 
@@ -89,6 +90,8 @@ export const config = {
     '/harness/:path*',
     '/admin',
     '/admin/:path*',
+    '/settings',
+    '/settings/:path*',
     '/api/chat',
     '/api/agent',
     '/api/models',

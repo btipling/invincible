@@ -224,6 +224,34 @@ describe('buildUserMcpTools', () => {
     expect(createClient).toHaveBeenCalled();
   });
 
+  it('wires Authorization header as Bearer <raw>', async () => {
+    const createClient = vi.fn(async (cfg: {
+      transport: { headers?: Record<string, string> };
+    }) => {
+      expect(cfg.transport.headers?.Authorization).toBe('Bearer raw-token');
+      return {
+        tools: async () => ({}),
+        close: async () => {},
+      };
+    });
+    await buildUserMcpTools('user-1', {
+      createClient: createClient as never,
+      setLastError: async () => ({ ok: true, value: { id: 's1' } }),
+      loadSecrets: async () => ({
+        ok: true,
+        value: [
+          secret({
+            id: 's1',
+            slug: 'auth',
+            apiKey: 'raw-token',
+            authHeaderName: 'Authorization',
+          }),
+        ],
+      }),
+    });
+    expect(createClient).toHaveBeenCalled();
+  });
+
   it('closes client when tools() fails after create', async () => {
     const close = vi.fn(async () => {});
     const setLastError = vi.fn(async () => ({

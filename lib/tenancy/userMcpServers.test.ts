@@ -13,6 +13,7 @@ import {
   deleteUserMcpServer,
   listUserMcpServers,
   loadEnabledUserMcpSecrets,
+  loadUserMcpSecretById,
   setUserMcpServerEnabled,
   setUserMcpServerLastError,
   updateUserMcpServer,
@@ -420,6 +421,33 @@ describe('userMcpServers', () => {
     expect(slugDup.code).toBe('duplicate_slug');
   });
 
+  it('create with enabled:false is atomic (not in loadEnabled)', async () => {
+    const created = await createUserMcpServer(
+      {
+        userId,
+        name: 'Disabled',
+        slug: 'disabled_at_create',
+        url: 'https://example.com/mcp',
+        authHeaderName: 'x-api-key',
+        apiKey: 'disabled-key-0001',
+        enabled: false,
+      },
+      deps(),
+    );
+    if (!created.ok) throw new Error(created.error);
+
+    const listed = await listUserMcpServers(userId, deps());
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error(listed.error);
+    expect(listed.value).toHaveLength(1);
+    expect(listed.value[0].enabled).toBe(false);
+
+    const secrets = await loadEnabledUserMcpSecrets(userId, deps());
+    expect(secrets.ok).toBe(true);
+    if (!secrets.ok) throw new Error(secrets.error);
+    expect(secrets.value).toHaveLength(0);
+  });
+
   it('set enabled + loadEnabledUserMcpSecrets decrypts', async () => {
     const created = await createUserMcpServer(
       {
@@ -494,6 +522,53 @@ describe('userMcpServers', () => {
     expect(after.ok).toBe(true);
     if (!after.ok) throw new Error(after.error);
     expect(after.value[0].lastError).toBeNull();
+  });
+
+  it('loadUserMcpSecretById returns decrypted key for owner', async () => {
+    const created = await createUserMcpServer(
+      {
+        userId,
+        name: 'Exa',
+        slug: 'exa',
+        url: 'https://mcp.exa.ai/mcp',
+        authHeaderName: 'x-api-key',
+        apiKey: 'secret-key-zzzz',
+      },
+      deps(),
+    );
+    if (!created.ok) throw new Error(created.error);
+    const loaded = await loadUserMcpSecretById(
+      userId,
+      created.value.id,
+      deps(),
+    );
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) throw new Error(loaded.error);
+    expect(loaded.value.apiKey).toBe('secret-key-zzzz');
+    expect(loaded.value.url).toContain('exa');
+  });
+
+  it('loadUserMcpSecretById rejects foreign user', async () => {
+    const created = await createUserMcpServer(
+      {
+        userId,
+        name: 'Mine',
+        slug: 'mine',
+        url: 'https://example.com/mcp',
+        authHeaderName: 'x-api-key',
+        apiKey: 'nope-for-other',
+      },
+      deps(),
+    );
+    if (!created.ok) throw new Error(created.error);
+    const foreign = await loadUserMcpSecretById(
+      otherUserId,
+      created.value.id,
+      deps(),
+    );
+    expect(foreign.ok).toBe(false);
+    if (foreign.ok) throw new Error('expected fail');
+    expect(foreign.code).toBe('not_found');
   });
 
 });

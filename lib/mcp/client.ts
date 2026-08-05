@@ -69,9 +69,23 @@ function isAbortLike(err: unknown, signal?: AbortSignal): boolean {
   return false;
 }
 
+/**
+ * Wire auth header. Parent #116: if name is Authorization (case-insensitive),
+ * send `Bearer <raw>`; otherwise send the raw secret as the header value.
+ * DB stores raw secret only — never the "Bearer " prefix.
+ */
+function formatAuthHeaderValue(headerName: string, apiKey: string): string {
+  if (headerName.toLowerCase() === 'authorization') {
+    return apiKey.match(/^Bearer\s+/i) ? apiKey : `Bearer ${apiKey}`;
+  }
+  return apiKey;
+}
+
 function buildHeaders(row: UserMcpSecretRow): Record<string, string> | undefined {
   if (row.apiKey && row.authHeaderName) {
-    return { [row.authHeaderName]: row.apiKey };
+    return {
+      [row.authHeaderName]: formatAuthHeaderValue(row.authHeaderName, row.apiKey),
+    };
   }
   return undefined;
 }
@@ -379,7 +393,12 @@ export async function probeUserMcpServer(
   try {
     const headers =
       input.apiKey && input.authHeaderName
-        ? { [input.authHeaderName]: input.apiKey }
+        ? {
+            [input.authHeaderName]: formatAuthHeaderValue(
+              input.authHeaderName,
+              input.apiKey,
+            ),
+          }
         : undefined;
 
     // Same as agent path: single timeout owner on create (library init).
