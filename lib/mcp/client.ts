@@ -52,8 +52,21 @@ function safeErrorMessage(err: unknown, secrets: string[]): string {
   return redacted.replace(/\s+/g, ' ').trim().slice(0, 200) || 'connect failed';
 }
 
-function isAbortError(err: unknown): boolean {
-  return err instanceof Error && err.name === 'AbortError';
+/**
+ * Detect cancel vs real server failure.
+ * @ai-sdk/mcp does NOT throw AbortError on init abort — it throws
+ * MCPClientError("MCP client initialization was aborted"). Request-level
+ * aborts may be "Request was aborted". Prefer signal.aborted when known.
+ */
+function isAbortLike(err: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'AbortError') return true;
+  if (err.message === 'aborted') return true;
+  // @ai-sdk/mcp abort wrappers (keep narrow — do not match arbitrary "abort")
+  if (/initialization was aborted/i.test(err.message)) return true;
+  if (/^Request was aborted$/i.test(err.message)) return true;
+  return false;
 }
 
 function buildHeaders(row: UserMcpSecretRow): Record<string, string> | undefined {
@@ -105,10 +118,14 @@ async function withTimeout<T>(
   ms: number,
   signal?: AbortSignal,
 ): Promise<T> {
-  if (signal?.aborted) {
+  const abortErr = () => {
     const err = new Error('aborted');
     err.name = 'AbortError';
-    throw err;
+    return err;
+  };
+
+  if (signal?.aborted) {
+    throw abortErr();
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -134,12 +151,14 @@ async function withTimeout<T>(
       if (signal) {
         onAbort = () => {
           finish(() => {
-            const err = new Error('aborted');
-            err.name = 'AbortError';
-            reject(err);
+            reject(abortErr());
           });
         };
         signal.addEventListener('abort', onAbort, { once: true });
+        // Re-check after register (TOCTOU with pre-check above).
+        if (signal.aborted) {
+          onAbort();
+        }
       }
 
       promise.then(
@@ -224,7 +243,7 @@ async function connectOneServer(
     await closeQuietly(client);
     client = undefined;
 
-    if (isAbortError(err)) {
+    if (isAbortLike(err, opts.signal)) {
       return {
         ok: false,
         slug: row.slug,
@@ -292,7 +311,7 @@ export async function buildUserMcpTools(
       const reason = safeErrorMessage(s.reason, row.apiKey ? [row.apiKey] : []);
       skipped.push({ slug: row.slug, reason });
       // Unexpected throw (connectOneServer normally returns ok:false).
-      if (!isAbortError(s.reason)) {
+      if (!isAbortLike(s.reason, opts.signal)) {
         void setLastError(userId, row.id, reason).catch(() => {});
       }
       continue;

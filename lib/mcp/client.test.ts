@@ -291,6 +291,69 @@ describe('buildUserMcpTools', () => {
     await result.close();
   });
 
+  it('does not persist last_error on @ai-sdk/mcp init abort (MCPClientError shape)', async () => {
+    // Real createMCPClient rethrows MCPClientError, not AbortError, when the
+    // external initializationOptions.signal aborts during init.
+    const setLastError = vi.fn(async () => ({
+      ok: true as const,
+      value: { id: 's1' },
+    }));
+    const createClient = vi.fn(async () => {
+      const err = new Error('MCP client initialization was aborted');
+      err.name = 'MCPClientError';
+      throw err;
+    });
+
+    const ac = new AbortController();
+    // Abort after create starts so we exercise message/shape detection, not
+    // only signal?.aborted short-circuit if create never sees aborted signal.
+    // createClient itself throws the library-shaped error (as real init does).
+    ac.abort();
+
+    const result = await buildUserMcpTools('user-1', {
+      signal: ac.signal,
+      createClient: createClient as never,
+      setLastError: setLastError as never,
+      loadSecrets: async () => ({
+        ok: true,
+        value: [secret({ id: 's1', slug: 'exa' })],
+      }),
+    });
+
+    expect(result.skipped).toEqual([{ slug: 'exa', reason: 'aborted' }]);
+    expect(setLastError).not.toHaveBeenCalled();
+    await result.close();
+  });
+
+  it('does not persist last_error when create throws MCPClientError abort without aborted signal', async () => {
+    // Message-shape path: signal not aborted at catch time (e.g. library
+    // already consumed abort) but error is clearly cancel, not server fault.
+    const setLastError = vi.fn(async () => ({
+      ok: true as const,
+      value: { id: 's1' },
+    }));
+    const createClient = vi.fn(async () => {
+      const err = new Error('MCP client initialization was aborted');
+      err.name = 'MCPClientError';
+      throw err;
+    });
+
+    const result = await buildUserMcpTools('user-1', {
+      // live signal — not aborted
+      signal: new AbortController().signal,
+      createClient: createClient as never,
+      setLastError: setLastError as never,
+      loadSecrets: async () => ({
+        ok: true,
+        value: [secret({ id: 's1', slug: 'exa' })],
+      }),
+    });
+
+    expect(result.skipped).toEqual([{ slug: 'exa', reason: 'aborted' }]);
+    expect(setLastError).not.toHaveBeenCalled();
+    await result.close();
+  });
+
   it('closes client when tools() is aborted after create', async () => {
     const close = vi.fn(async () => {});
     const setLastError = vi.fn(async () => ({
