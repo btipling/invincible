@@ -50,9 +50,9 @@ Vertical bands inside the Wasm root (not a DOM panel):
 | Rule | Behavior |
 |------|----------|
 | Composer visibility | Fully on-canvas while the harness is ready; not optional |
-| Height budget | Measured header + composer chrome (incl. pad) + band margins taken first; leftover → transcript |
+| Height budget | Every frame: viewport − measured header − chrome − gaps → exact transcript height (`min_size_content` = `max_size_content`); chrome packed with `gravity_y = 1.0` before the scroller |
 | Short canvas | Transcript shrinks / scrolls first — chrome keeps touch-sized targets (~40px) |
-| Content size | Tall message content drives **scroll max**, not outer layout height (`max_size_content` on the scroller) |
+| Content size | Tall messages grow **virtual** scroll size only; scroller outer height is fixed to the leftover band |
 | Solid chrome | Composer band uses TEAL fill so transcript paint cannot show through |
 | Forbidden | Nesting the composer inside the transcript `scrollArea`; dual DOM chat input |
 
