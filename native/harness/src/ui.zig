@@ -26,8 +26,6 @@ const VISIBLE_MSG_CAP: usize = 28;
 const TOUCH_H: f32 = 40;
 /// Near-bottom epsilon for stick-to-bottom follow (plan #135).
 const NEAR_BOTTOM_PX: f32 = 48;
-/// MessageKind.User in bridge / host protocol.
-const KIND_USER: u8 = 1;
 
 pub fn onInit() void {
     bridge.reset();
@@ -192,14 +190,20 @@ pub fn frame() !void {
     }
 
     // ── Transcript ────────────────────────────────────────────────────────
-    // Snapshot before layout: virtual_size is still last frame's (near-bottom check).
+    // near_before uses last frame's virtual_size (still valid before this layout).
+    // Stick/clamp runs AFTER scrollArea.deinit so scrollMax sees this frame's size
+    // (dvui writes virtual_size in ScrollContainer.deinit — see dvui scrolling example).
     const near_before = isNearBottom(&transcript_scroll);
     const prev_msg = last_msg_count;
     const prev_shown = last_shown_count;
+    const n = bridge.messageCount();
+    const shown = n + @as(usize, if (busy) 1 else 0);
+    var user_scroll: dvui.Point = .{};
     {
         var scroll = dvui.scrollArea(@src(), .{
             .scroll_info = &transcript_scroll,
             .vertical_bar = .auto,
+            .user_scroll = &user_scroll,
         }, .{
             .expand = .both,
             .background = true,
@@ -215,8 +219,6 @@ pub fn frame() !void {
             .expand = .horizontal,
         });
         defer body.deinit();
-
-        const n = bridge.messageCount();
         if (n == 0) {
             var tl = dvui.textLayout(@src(), .{}, .{
                 .expand = .horizontal,
@@ -294,37 +296,37 @@ pub fn frame() !void {
             tl.addText("Waiting for model…", .{});
             tl.deinit();
         }
+    }
 
-        // Conditional stick-to-bottom (plan #135 / #131).
-        // near_before uses last frame's virtual_size (captured before this layout).
-        const shown = n + @as(usize, if (busy) 1 else 0);
-        if (n < prev_msg) {
-            // Clear or ring shrink: land at bottom of new content.
-            transcript_scroll.viewport.y = 0;
-            transcript_scroll.velocity = .{ .x = 0, .y = 0 };
+    // Conditional stick-to-bottom (plan #135 / #131) — after deinit so virtual_size is current.
+    if (n < prev_msg) {
+        // Clear or ring shrink: land at bottom of new content.
+        transcript_scroll.velocity = .{ .x = 0, .y = 0 };
+        scrollToBottom(&transcript_scroll);
+        last_shown_count = shown;
+        last_msg_count = n;
+    } else if (shown != prev_shown) {
+        // User-kind follow without requiring msg_count growth (ring full overwrites).
+        // Require shown growth so busy-row collapse alone does not re-yank while scrolled up.
+        const newest_is_user = blk: {
+            if (n == 0) break :blk false;
+            if (bridge.messageAt(n - 1)) |m| break :blk m.kind == @intFromEnum(bridge.MessageKind.user);
+            break :blk false;
+        };
+        const user_sent = newest_is_user and shown > prev_shown;
+        // Hydrate / batch: empty→many, or ≥3 messages in one frame (batched push).
+        const hydrate = (prev_msg == 0 and n > 1) or (n >= prev_msg + 3);
+        // user_scroll.y < 0 → user moved toward older content this frame (dvui convention).
+        const should_follow = user_sent or hydrate or prev_msg == 0 or (near_before and user_scroll.y >= 0);
+        if (should_follow) {
             scrollToBottom(&transcript_scroll);
-            last_shown_count = shown;
-            last_msg_count = n;
-        } else if (shown != prev_shown) {
-            const msg_grew = n > prev_msg;
-            const newest_is_user = blk: {
-                if (!msg_grew or n == 0) break :blk false;
-                if (bridge.messageAt(n - 1)) |m| break :blk m.kind == KIND_USER;
-                break :blk false;
-            };
-            // Hydrate / batch: empty→many, or ≥3 messages in one frame (batched push).
-            const hydrate = (prev_msg == 0 and n > 1) or (n >= prev_msg + 3);
-            const should_follow = near_before or newest_is_user or hydrate or prev_msg == 0;
-            if (should_follow) {
-                scrollToBottom(&transcript_scroll);
-            } else {
-                clampScrollToContent(&transcript_scroll);
-            }
-            last_shown_count = shown;
-            last_msg_count = n;
         } else {
             clampScrollToContent(&transcript_scroll);
         }
+        last_shown_count = shown;
+        last_msg_count = n;
+    } else {
+        clampScrollToContent(&transcript_scroll);
     }
 
     // ── Composer (single-line so Enter submits — multiline disables enter_pressed) ──
