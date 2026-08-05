@@ -1,11 +1,12 @@
 /**
  * Owner-only tenant DEK rotation.
- * Re-encrypts all sandbox tokens and provider secret credentials under a new DEK;
- * bumps dek_version atomically. Never returns key material.
+ * Re-encrypts all sandbox tokens, provider secret credentials, and non-null
+ * user_mcp_servers header ciphertexts under a new DEK; bumps dek_version
+ * atomically. Never returns key material.
  *
- * Concurrency: SELECT … FOR UPDATE on the tenant row (and sandboxes / secrets)
- * for the full re-encrypt so concurrent writers cannot write under a discarded DEK.
- * Authz is re-checked under the same lock.
+ * Concurrency: SELECT … FOR UPDATE on the tenant row (and sandboxes / secrets /
+ * MCP rows) for the full re-encrypt so concurrent writers cannot write under a
+ * discarded DEK. Authz is re-checked under the same lock.
  */
 import { and, eq } from 'drizzle-orm';
 import {
@@ -14,6 +15,7 @@ import {
   sandboxes,
   tenantMembers,
   tenants,
+  userMcpServers,
   type Db,
 } from '../../db';
 import {
@@ -43,8 +45,9 @@ export type RotateTenantDekDeps = {
 };
 
 /**
- * Owner-only: generate a new tenant DEK, re-encrypt every sandbox token and
- * provider_secrets credential, bump versions.
+ * Owner-only: generate a new tenant DEK, re-encrypt every sandbox token,
+ * provider_secrets credential, and non-null user_mcp_servers header ciphertext,
+ * bump versions.
  * Single transaction + SELECT … FOR UPDATE on the tenant row.
  */
 export async function rotateTenantDek(
@@ -205,6 +208,35 @@ async function rotateWithDb(
             updatedAt: new Date(),
           })
           .where(eq(providerSecrets.id, sec.id));
+      }
+
+      // MCP header secrets: DEK-only; skip null ciphertext (auth_mode=none).
+      const mcpRows = await tx
+        .select({
+          id: userMcpServers.id,
+          authHeaderValueCiphertext: userMcpServers.authHeaderValueCiphertext,
+        })
+        .from(userMcpServers)
+        .where(eq(userMcpServers.tenantId, tenantId))
+        .for('update');
+
+      for (const mcp of mcpRows) {
+        if (!mcp.authHeaderValueCiphertext) {
+          continue;
+        }
+        const plain = decryptProviderCredential(
+          mcp.authHeaderValueCiphertext,
+          oldDek,
+        );
+        const nextCt = encryptSecret(plain, newDek);
+        await tx
+          .update(userMcpServers)
+          .set({
+            authHeaderValueCiphertext: nextCt,
+            authHeaderKekVersion: nextVersion,
+            updatedAt: new Date(),
+          })
+          .where(eq(userMcpServers.id, mcp.id));
       }
 
       await tx

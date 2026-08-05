@@ -22,6 +22,7 @@ async function applyMigrations(client: PGlite) {
     '0001_sso_scim_identity.sql',
     '0002_tenant_deks.sql',
     '0003_provider_secrets.sql',
+    '0004_user_mcp_servers.sql',
   ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     for (const stmt of sql
@@ -58,6 +59,7 @@ describe('rotateTenantDek', () => {
   });
 
   beforeEach(async () => {
+    await db.delete(schema.userMcpServers);
     await db.delete(schema.providerSecretGrants);
     await db.delete(schema.providerSecretModels);
     await db.delete(schema.providerSecrets);
@@ -166,9 +168,38 @@ describe('rotateTenantDek', () => {
       credentialKekVersion: 1,
       status: 'active',
     });
+
+    await db.insert(schema.userMcpServers).values([
+      {
+        tenantId,
+        userId: ownerId,
+        name: 'Exa',
+        slug: 'exa',
+        url: 'https://mcp.exa.ai/mcp',
+        transport: 'http',
+        authHeaderName: 'x-api-key',
+        authHeaderValueCiphertext: encryptSecret('mcp-key-rotate', dek),
+        authHeaderKekVersion: 1,
+        authMode: 'api_key',
+        enabled: true,
+      },
+      {
+        tenantId,
+        userId: ownerId,
+        name: 'Public',
+        slug: 'public',
+        url: 'https://example.com/mcp',
+        transport: 'http',
+        authHeaderName: null,
+        authHeaderValueCiphertext: null,
+        authHeaderKekVersion: null,
+        authMode: 'none',
+        enabled: true,
+      },
+    ]);
   });
 
-  it('owner rotates: re-encrypts sandboxes + provider_secrets; old DEK fails', async () => {
+  it('owner rotates: re-encrypts sandboxes + provider_secrets + MCP; old DEK fails', async () => {
     const before = await loadTenantDek(tenantId, {
       db: db as never,
       amk: AMK,
@@ -218,6 +249,23 @@ describe('rotateTenantDek', () => {
     expect(() =>
       decryptSecret(secrets[0].credentialCiphertext, before.dek),
     ).toThrow();
+
+    const mcpRows = await db
+      .select()
+      .from(schema.userMcpServers)
+      .where(eq(schema.userMcpServers.tenantId, tenantId));
+    expect(mcpRows).toHaveLength(2);
+    const withKey = mcpRows.find((r) => r.slug === 'exa')!;
+    const noKey = mcpRows.find((r) => r.slug === 'public')!;
+    expect(withKey.authHeaderKekVersion).toBe(2);
+    expect(decryptSecret(withKey.authHeaderValueCiphertext!, after.dek)).toBe(
+      'mcp-key-rotate',
+    );
+    expect(() =>
+      decryptSecret(withKey.authHeaderValueCiphertext!, before.dek),
+    ).toThrow();
+    expect(noKey.authHeaderValueCiphertext).toBeNull();
+    expect(noKey.authHeaderKekVersion).toBeNull();
   });
 
   it('admin cannot rotate DEK', async () => {

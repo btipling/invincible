@@ -178,3 +178,48 @@ export type SandboxGrant = typeof sandboxGrants.$inferSelect;
 export type ProviderSecret = typeof providerSecrets.$inferSelect;
 export type ProviderSecretModel = typeof providerSecretModels.$inferSelect;
 export type ProviderSecretGrant = typeof providerSecretGrants.$inferSelect;
+
+/**
+ * Per-user remote MCP server configs (parent #116 / phase #117).
+ * API-key header ciphertext is DEK-only (nullable when auth_mode=none).
+ * Server-only — never expose ciphertext to client.
+ */
+export const userMcpServers = pgTable(
+  'user_mcp_servers',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    /** Tool-prefix slug: ^[a-z][a-z0-9_]{0,31}$ */
+    slug: text('slug').notNull(),
+    url: text('url').notNull(),
+    /** v1 always http (Streamable HTTP). */
+    transport: text('transport').notNull().default('http'),
+    /** Header name when auth_mode=api_key; null when none. */
+    authHeaderName: text('auth_header_name'),
+    /** DEK ciphertext of raw API key; null when auth_mode=none. Never log. */
+    authHeaderValueCiphertext: text('auth_header_value_ciphertext'),
+    /** Tenant dek_version at write; null when no ciphertext. */
+    authHeaderKekVersion: integer('auth_header_kek_version'),
+    /** api_key | none */
+    authMode: text('auth_mode').notNull().default('none'),
+    enabled: boolean('enabled').notNull().default(true),
+    /** Last connect/test error (no secrets); null until phase 2+ writes. */
+    lastError: text('last_error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('user_mcp_servers_user_id_name_unique').on(t.userId, t.name),
+    unique('user_mcp_servers_user_id_slug_unique').on(t.userId, t.slug),
+    index('user_mcp_servers_user_id_idx').on(t.userId),
+    index('user_mcp_servers_tenant_id_idx').on(t.tenantId),
+  ],
+);
+
+export type UserMcpServer = typeof userMcpServers.$inferSelect;
