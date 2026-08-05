@@ -148,6 +148,40 @@ describe('middleware tenancy gate', () => {
       expect.objectContaining({ secureCookie: false }),
     );
   });
+
+  it('redirects unauth /settings to /login when tenancy on', async () => {
+    process.env.DATABASE_URL = 'postgres://x';
+    process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = 'key-material';
+    vi.resetModules();
+    vi.doMock('next-auth/jwt', () => ({
+      getToken: vi.fn(async () => null),
+    }));
+    const { middleware } = await loadMw();
+    const res = await middleware(
+      new Request('http://localhost/settings/mcp') as never,
+    );
+    expect(res.status).toBeGreaterThanOrEqual(300);
+    expect(res.status).toBeLessThan(400);
+    const loc = res.headers.get('location') ?? '';
+    expect(loc).toContain('/login');
+    expect(loc).toContain('callbackUrl');
+  });
+
+  it('allows /settings when JWT sub present', async () => {
+    process.env.DATABASE_URL = 'postgres://x';
+    process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = 'key-material';
+    vi.resetModules();
+    vi.doMock('next-auth/jwt', () => ({
+      getToken: vi.fn(async () => ({ sub: 'user-uuid' })),
+    }));
+    const { middleware } = await loadMw();
+    const res = await middleware(
+      new Request('http://localhost/settings') as never,
+    );
+    expect(res.status).toBe(200);
+  });
 });
 
 describe('useSecureAuthCookie', () => {

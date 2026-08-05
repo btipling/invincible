@@ -768,3 +768,86 @@ export async function loadEnabledUserMcpSecrets(
     };
   }
 }
+
+/**
+ * Server-only decrypt of one MCP row for Settings Test connection.
+ * Scoped to userId + id; never import from client components.
+ */
+export async function loadUserMcpSecretById(
+  userId: string,
+  id: string,
+  deps: UserMcpServersDeps = {},
+): Promise<UserMcpServerResult<UserMcpSecretRow>> {
+  const uid = userId?.trim();
+  const sid = id?.trim();
+  if (!uid || !sid) {
+    return { ok: false, code: 'not_found', error: 'MCP server not found' };
+  }
+
+  try {
+    const tid = await resolveTenantId(uid, deps);
+    if (!tid.ok) return tid;
+
+    return await withDb(deps, async (db) => {
+      const rows = await db
+        .select()
+        .from(userMcpServers)
+        .where(
+          and(eq(userMcpServers.id, sid), eq(userMcpServers.userId, uid)),
+        )
+        .limit(1);
+      const row = rows[0];
+      if (!row || row.tenantId !== tid.value) {
+        return {
+          ok: false as const,
+          code: 'not_found' as const,
+          error: 'MCP server not found',
+        };
+      }
+
+      let apiKey: string | null = null;
+      if (row.authHeaderValueCiphertext) {
+        try {
+          apiKey = await decryptTenantSecret(
+            row.tenantId,
+            row.authHeaderValueCiphertext,
+            { ...deps, db },
+          );
+        } catch {
+          return {
+            ok: false as const,
+            code: 'unavailable' as const,
+            error: 'could not decrypt MCP API key',
+          };
+        }
+      }
+
+      return {
+        ok: true as const,
+        value: {
+          id: row.id,
+          tenantId: row.tenantId,
+          userId: row.userId,
+          name: row.name,
+          slug: row.slug,
+          url: row.url,
+          transport: row.transport,
+          authHeaderName: row.authHeaderName,
+          authMode: row.authMode,
+          apiKey,
+          enabled: row.enabled,
+          lastError: row.lastError,
+        },
+      };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'MCP servers unavailable' };
+    }
+    return {
+      ok: false,
+      code: 'unavailable',
+      error: 'could not load MCP secret',
+    };
+  }
+}
