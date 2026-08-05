@@ -5,7 +5,7 @@ workspace with `list_dir` / `read_file` / `write_file` / `exec` during a
 harness turn.
 
 Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-divide.md) ·
-[SECURITY.md](../SECURITY.md) · [runner.md](runner.md) · package detail
+[mcp.md](mcp.md) · [SECURITY.md](../SECURITY.md) · [runner.md](runner.md) · package detail
 [`sandbox/README.md`](../sandbox/README.md)
 
 ---
@@ -17,7 +17,7 @@ Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-d
 | **Is** | A **separate HTTP daemon** (protocol v1) with a workspace root jail + four tools |
 | **Is** | **BYO** — any operator points `SANDBOX_URL` + `SANDBOX_TOKEN` at **their** process |
 | **Is not** | The Zig **GHA build runner** (`invincible-do-1` / `self-hosted` + `zig` labels) |
-| **Is not** | Multi-tenant **fleet** isolation or MCP (still future). Optional **login tenancy** is separate — [bring-your-own.md §4a](bring-your-own.md#4a-optional-multi-tenant-auth); optional **OIDC/SCIM** — [§4b](bring-your-own.md#4b-optional-sso-oidc--scim) |
+| **Is not** | Multi-tenant **fleet** isolation (still future). **Per-user MCP** is separate and **shipped** — [mcp.md](mcp.md). Optional **login tenancy** — [bring-your-own.md §4a](bring-your-own.md#4a-optional-multi-tenant-auth); optional **OIDC/SCIM** — [§4b](bring-your-own.md#4b-optional-sso-oidc--scim) |
 | **Is not** | Required for basic chat — without env, harness falls back to `POST /api/chat` |
 
 Never put GHA Actions credentials in the sandbox process env. Prefer a dedicated
@@ -36,14 +36,16 @@ User types in Wasm composer
             if HTTP 503 + exact not-configured string
               → POST /api/chat   (today’s single-shot path)
             else
-              generateText + tools → SANDBOX_URL/v1/* (HTTP or HTTPS)
-              (Bearer SANDBOX_TOKEN; server-only)
+              generateText + tools → sandbox (env SANDBOX_* / DB grants)
+                                   + enabled per-user MCP tools (server-side; soft-fail)
+              (sandbox Bearer + MCP header secrets; server-only)
   → host pushes ≤6 system toolTrace lines (≤240 chars) + assistant/error into Wasm
   → user reads in canvas
 ```
 
 - **Wasm** remains the product UI (transcript + composer). No dual React chat.
-- **Gateway key** and **sandbox token** never enter the client or Wasm.
+- **Gateway key**, **sandbox token**, and **MCP API keys** never enter the client or Wasm.
+- Per-user MCP config lives under Settings (`/settings/mcp`) — not this sandbox daemon guide; see [mcp.md](mcp.md).
 - Detection is **server-side only** — no `NEXT_PUBLIC_SANDBOX_*`.
 
 ### Exact 503 contract (host fallback)

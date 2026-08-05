@@ -21,7 +21,7 @@ optional login chrome).
 | JS ↔ Wasm bridge glue | **DOM** | `lib/harnessBridge.ts` |
 | Poll pending submit | **DOM** | No custom Wasm imports beyond stock dvui `web.js` |
 | `POST /api/chat` | **Vercel backend** | Single-shot inference; `AI_GATEWAY_API_KEY` never in Wasm |
-| `POST /api/agent` | **Vercel backend** | Multi-step tools when sandbox configured; server-only secrets |
+| `POST /api/agent` | **Vercel backend** | Multi-step tools (sandbox + per-user MCP when configured); server-only secrets |
 | Fold multi-turn history into prompt | **DOM** | `lib/harnessChat.ts` (user/assistant only; system tool lines display-only) |
 | `SessionStore` load/save/clear | **DOM** | memory / localStorage |
 | Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status; model chip is a **mirror** of Wasm selection, not a second picker |
@@ -29,6 +29,8 @@ optional login chrome).
 | Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 |
 | Selected `modelId` on inference | **DOM host** → **Vercel backend** | Host reads bridge; POST body; server re-authorizes grants + BYOK |
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
+| Per-user MCP config UI | **DOM** | `/settings`, `/settings/mcp` — not dual chat; not Admin |
+| Per-user MCP tools (connect + execute) | **Vercel backend** | `lib/mcp/*`; keys under tenant DEK; never Wasm/client |
 | **Transcript (read messages)** | **Wasm** | Primary UX |
 | **Composer + Send / smoke** | **Wasm** | Primary input |
 | Busy / error presentation for turns | **Wasm** | EMBER for errors |
@@ -59,6 +61,7 @@ Track any exception in the issue that introduces it:
 ```text
 Host loads Wasm → GET /api/models → push catalog into bridge (protocol v3)
 User cycles model in Wasm header (optional Next) — host chip mirrors selection
+(optional) User configures personal MCP on /settings/mcp (keys → tenant DEK ciphertext)
 User types in Wasm composer
   → inv_* pending submit (poll)
   → Host runHarnessTurn / SessionStore
@@ -66,7 +69,8 @@ User types in Wasm composer
   → POST /api/agent { prompt, modelId? }
        if 503 + exact sandbox-not-configured → POST /api/chat { prompt, modelId? }
        tenancy on: server attaches request-scoped BYOK for authorized modelId
-       else tools → sandbox (env SANDBOX_* when tenancy off; DB grants when on)
+       tools → sandbox (env SANDBOX_* when tenancy off; DB grants when on)
+              + enabled per-user MCP tools (server-side only; soft-fail dead servers)
   → Host pushes ≤6 system toolTrace lines + assistant/error into Wasm
   → User reads reply in Wasm transcript
 ```
@@ -98,3 +102,4 @@ Mismatch → load error; rebuild both sides.
 - Wasm supply / runner: [runner.md](runner.md)  
 - Limits: [harness-limits.md](harness-limits.md)  
 - Session restore: [session-model.md](session-model.md)  
+- Per-user MCP: [mcp.md](mcp.md)  
