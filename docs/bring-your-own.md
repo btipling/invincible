@@ -34,8 +34,9 @@ Related: [feature-divide.md](feature-divide.md) · [sandbox.md](sandbox.md) ·
 - **Sandbox MVP is shipped** as a config seam (`SANDBOX_URL` + `SANDBOX_TOKEN`).
   Without it, harness falls back to chat. Full guide: [sandbox.md](sandbox.md).
 - **Optional multi-tenant auth** (login + DB sandbox grants) is **shipped** —
-  see [§4a](#4a-optional-multi-tenant-auth). **MCP** / sandbox fleet isolation
-  remain future — see [§8 Future](#8-future-not-shipped).
+  see [§4a](#4a-optional-multi-tenant-auth). **Per-user MCP** is shipped —
+  [mcp.md](mcp.md). Multi-tenant sandbox fleet isolation remains future —
+  see [§8 Future](#8-future-not-shipped).
 
 ---
 
@@ -151,6 +152,7 @@ If **any** is missing → **legacy open mode**: anonymous `POST /api/chat` and
 | Unauthenticated `/`, `/harness`, `/admin` | Redirect to `/login?callbackUrl=…` |
 | Agent tools | **DB-resolved** sandbox for the session user (grants enforced); not raw process env alone |
 | `/admin` | Owner|admin: tenant + **Users** roster + sandboxes + **Inference keys** (`/admin/inference`) + encryption; tokens/credentials **masked** |
+| `/settings` | Any signed-in member: personal **MCP servers** (`/settings/mcp`) — not shared Admin; keys masked |
 | Logout | Clears Auth.js session (and local harness session blob) |
 
 Grant failures return **403** `{ "error": "Sandbox access denied." }`
@@ -207,6 +209,24 @@ Timeless steps (no personal-laptop Production shell):
 
 Also: [SECURITY.md](../SECURITY.md) · [feature-divide.md](feature-divide.md) ·
 [native/harness/README.md](../native/harness/README.md).
+
+### Per-user MCP servers
+
+When **tenancy is on**, each member can register personal **remote HTTPS MCP**
+servers under **Settings → MCP servers** (`/settings/mcp`). API keys (optional)
+are encrypted under the **tenant DEK**. Tools load on **agent** turns only
+(`POST /api/agent`), merged with sandbox tools under the `mcp_*` name prefix.
+
+| Role | What they do |
+|------|----------------|
+| Any member | `/settings/mcp` — CRUD servers, Test connection, enable/disable. Mask only — never plaintext after save. |
+| Owner | DEK rotate on `/admin` also re-encrypts MCP header ciphertexts. |
+
+**Schema (`user_mcp_servers`):** same schema-only path as BYOK tables — Actions →
+**db-migrate** → `confirm=migrate` (not seed). Dual-store `DATABASE_URL` ≡ Vercel
+Production.
+
+Full guide + **Exa** operator smoke checklist: **[mcp.md](mcp.md)**.
 
 ### Cloud cutover checklist (primary path)
 
@@ -483,8 +503,7 @@ empty `public/harness`.
 | Tenant BYOK inference keys + harness model cycle | **Shipped** — [§4a Inference keys](#inference-keys-byok) |
 | Multi-tenant sandbox isolation / fleet | **Not shipped** — single workspace root per process for now |
 | Optional **OIDC SSO** + **SCIM** provisioning | **Shipped (optional config)** — [§4b](#4b-optional-sso-oidc--scim) |
-
-| **MCP** | **Not shipped** — do not half-build here |
+| Per-user **MCP** tools (remote HTTPS) | **Shipped** — [mcp.md](mcp.md); Settings `/settings/mcp` |
 
 This guide covers **BYO Vercel + keys + runner/Wasm supply + optional sandbox**.
 Target projects can be any language or platform; Invincible is the harness
@@ -518,5 +537,6 @@ listed as Done in [AGENTS.md](../AGENTS.md). Operators on **forks/clones** use
 - [ ] Optional: sandbox daemon + Vercel/local `SANDBOX_URL`/`SANDBOX_TOKEN` ([sandbox.md](sandbox.md))
 - [ ] Optional tenancy: cloud cutover [§4a](#4a-optional-multi-tenant-auth) (GHA migrate/seed, then `AUTH_SECRET`)
 - [ ] Optional BYOK: GHA **db-migrate** if needed + `/admin/inference` + harness model cycle ([§4a](#inference-keys-byok))
+- [ ] Optional MCP: GHA **db-migrate** if needed + `/settings/mcp` + Exa smoke ([mcp.md](mcp.md))
 - [ ] Optional OIDC / SCIM: [§4b](#4b-optional-sso-oidc--scim) (credentials break-glass still works; hybrid roster)
 - [ ] No keys in client/Wasm; no PR triggers on self-hosted workflows

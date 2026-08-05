@@ -170,6 +170,7 @@ ops inventory).
 | Vercel project + Git `main` | **Done** | prod URL above |
 | `AI_GATEWAY_API_KEY` (Vercel) | **Done** | server-side only |
 | Tenant BYOK provider secrets (DB) | **Done** (code) | Admin `/admin/inference`; ciphertext under tenant DEK; grants + model catalog; tenancy-on chat/agent attach request-scoped Gateway BYOK (never env model routing). Schema-only Production: GHA **`db-migrate`** (`confirm=migrate`) |
+| Per-user MCP servers (DB) | **Done** (code) | Settings `/settings/mcp`; header secrets under tenant DEK; tools on `/api/agent` only; SSRF url policy; DEK rotate re-encrypts. Schema: GHA **`db-migrate`**. Ops/smoke: [docs/mcp.md](docs/mcp.md) |
 | `HARNESS_ARTIFACT_TOKEN` (Vercel) | **Done** | PAT Actions: Read — prebuild downloads `harness-wasm` |
 | `VERCEL_DEPLOY_HOOK_URL` (GitHub secret) | **Done** | deploy hooks; `build-harness` pings after artifact upload |
 | DO runner `invincible-do-1` labels `invincible`,`zig` | **Done** | Zig 0.16.0 only there |
@@ -195,6 +196,7 @@ ops inventory).
   `db-tenancy-bootstrap` for re-seed (resets bootstrap password + token
   ciphertext by design) or GHA `db-tenancy-backfill-deks` for legacy AMK→DEK
   data cutover (never seed for that). Public smoke: `npm run smoke:tenancy`.
+- Per-user **MCP** code is on `main` (Settings + agent merge). Schema on Production still needs GHA **`db-migrate`** when `user_mcp_servers` is missing. Operator smoke: [docs/mcp.md](docs/mcp.md) (Exa). Never put MCP API keys in client/Wasm/git.
 - Optional **OIDC / SCIM** on origin are **Not Done** until an operator sets env
   and smokes. Do **not** claim they are configured, invent IdP URLs, or nag to
   “enable SSO” as a forgotten secret. When configuring: follow
@@ -204,6 +206,7 @@ ops inventory).
 
 IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
 BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).  
+MCP: [`docs/mcp.md`](docs/mcp.md).  
 Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURITY.md).
 
 ## Public repository policy
@@ -219,13 +222,13 @@ Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURI
 
 ```text
 invincible/
-├── app/                 # Next App Router (/, /harness, /login, /admin, /api/*)
+├── app/                 # Next App Router (/, /harness, /login, /admin, /settings, /api/*)
 ├── db/                  # Drizzle schema + SQL migrations (tenancy)
 ├── lib/                 # palette, chat, agent, bridge, session, sandbox, tenancy
 ├── sandbox/             # protocol v1 daemon (BYO tools workspace)
 ├── native/harness/      # Zig + dvui Wasm (CI on self-hosted runner)
 ├── scripts/             # fetch-harness, seed-tenancy, runner scripts
-├── docs/                # BYO, sandbox, feature-divide, limits, deploy race
+├── docs/                # BYO, sandbox, mcp, feature-divide, limits, deploy race
 ├── public/harness/      # wasm/js gitignored; README only committed
 ├── AGENTS.md
 └── package.json
@@ -238,6 +241,7 @@ invincible/
 | Tenancy schema / migrations | `db/schema.ts`, `db/migrations/` |
 | Tenancy crypto / seed helpers | `lib/tenancy/*`, `scripts/seed-tenancy.ts` |
 | Tenant BYOK / inference grants | `app/admin/inference/*`, `lib/tenancy/providerSecrets*`, `lib/tenancy/resolveInference*`, `lib/gateway/byokProviders.ts`, `app/api/models/*` |
+| User Settings / per-user MCP | `app/settings/*`, `lib/tenancy/userMcpServers.ts`, `lib/mcp/*` |
 | Harness model catalog (protocol v3) | `lib/harnessBridge.ts`, `native/harness/src/bridge.zig`, `app/harness/HarnessHost.tsx` |
 | Schema-only migrate (GHA) | `.github/workflows/db-migrate.yml` |
 | Sandbox daemon | `sandbox/` |
