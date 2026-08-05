@@ -223,6 +223,142 @@ describe('buildUserMcpTools', () => {
     });
     expect(createClient).toHaveBeenCalled();
   });
+
+  it('closes client when tools() fails after create', async () => {
+    const close = vi.fn(async () => {});
+    const setLastError = vi.fn(async () => ({
+      ok: true as const,
+      value: { id: 's1' },
+    }));
+    const createClient = vi.fn(async () => ({
+      tools: async () => {
+        throw new Error('tools/list failed');
+      },
+      close,
+    }));
+
+    const result = await buildUserMcpTools('user-1', {
+      createClient: createClient as never,
+      setLastError: setLastError as never,
+      loadSecrets: async () => ({
+        ok: true,
+        value: [secret({ id: 's1', slug: 'exa' })],
+      }),
+    });
+
+    expect(result.tools).toEqual({});
+    expect(result.connectedSlugs).toEqual([]);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].slug).toBe('exa');
+    expect(result.skipped[0].reason).toMatch(/tools\/list failed/);
+    // closed inside connectOneServer failure path — not deferred to result.close
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(setLastError).toHaveBeenCalledWith(
+      'user-1',
+      's1',
+      expect.stringMatching(/tools\/list failed/),
+    );
+    await result.close();
+  });
+
+  it('does not persist last_error on abort', async () => {
+    const setLastError = vi.fn(async () => ({
+      ok: true as const,
+      value: { id: 's1' },
+    }));
+    const createClient = vi.fn(async () => {
+      // Simulate library abort during init (initializationOptions.signal).
+      const err = new Error('aborted');
+      err.name = 'AbortError';
+      throw err;
+    });
+
+    const ac = new AbortController();
+    ac.abort();
+
+    const result = await buildUserMcpTools('user-1', {
+      signal: ac.signal,
+      createClient: createClient as never,
+      setLastError: setLastError as never,
+      loadSecrets: async () => ({
+        ok: true,
+        value: [secret({ id: 's1', slug: 'exa' })],
+      }),
+    });
+
+    expect(result.skipped).toEqual([{ slug: 'exa', reason: 'aborted' }]);
+    expect(setLastError).not.toHaveBeenCalled();
+    await result.close();
+  });
+
+  it('closes client when tools() is aborted after create', async () => {
+    const close = vi.fn(async () => {});
+    const setLastError = vi.fn(async () => ({
+      ok: true as const,
+      value: { id: 's1' },
+    }));
+    const ac = new AbortController();
+
+    let toolsStarted!: () => void;
+    const toolsStartedP = new Promise<void>((resolve) => {
+      toolsStarted = resolve;
+    });
+
+    const createClient = vi.fn(async () => ({
+      tools: () => {
+        toolsStarted();
+        return new Promise(() => {
+          // never resolves — abort wins the race
+        });
+      },
+      close,
+    }));
+
+    const resultPromise = buildUserMcpTools('user-1', {
+      signal: ac.signal,
+      createClient: createClient as never,
+      setLastError: setLastError as never,
+      connectTimeoutMs: 5000,
+      loadSecrets: async () => ({
+        ok: true,
+        value: [secret({ id: 's1', slug: 'exa' })],
+      }),
+    });
+
+    await toolsStartedP;
+    ac.abort();
+
+    const result = await resultPromise;
+    expect(result.skipped.some((s) => s.reason === 'aborted')).toBe(true);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(setLastError).not.toHaveBeenCalled();
+    await result.close();
+  });
+
+  it('passes initialization timeout/signal only (no double race on create)', async () => {
+    const createClient = vi.fn(async (cfg: {
+      initializationOptions?: { timeout?: number; signal?: AbortSignal };
+    }) => {
+      expect(cfg.initializationOptions?.timeout).toBe(1234);
+      expect(cfg.initializationOptions?.signal).toBeDefined();
+      return {
+        tools: async () => ({}),
+        close: async () => {},
+      };
+    });
+    const ac = new AbortController();
+    await buildUserMcpTools('user-1', {
+      signal: ac.signal,
+      connectTimeoutMs: 1234,
+      createClient: createClient as never,
+      setLastError: async () => ({ ok: true, value: { id: 's1' } }),
+      loadSecrets: async () => ({
+        ok: true,
+        value: [secret({ id: 's1', slug: 'exa' })],
+      }),
+    });
+    expect(createClient).toHaveBeenCalled();
+  });
 });
 
 describe('probeUserMcpServer', () => {
@@ -252,5 +388,23 @@ describe('probeUserMcpServer', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected fail');
     expect(result.error).toMatch(/https/i);
+  });
+
+  it('closes client when listTools fails', async () => {
+    const close = vi.fn(async () => {});
+    const createClient = vi.fn(async () => ({
+      listTools: async () => {
+        throw new Error('list boom');
+      },
+      close,
+    }));
+    const result = await probeUserMcpServer({
+      url: 'https://example.com/mcp',
+      createClient: createClient as never,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected fail');
+    expect(result.error).toMatch(/list boom/);
+    expect(close).toHaveBeenCalled();
   });
 });

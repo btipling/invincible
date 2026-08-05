@@ -52,6 +52,10 @@ function safeErrorMessage(err: unknown, secrets: string[]): string {
   return redacted.replace(/\s+/g, ' ').trim().slice(0, 200) || 'connect failed';
 }
 
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError';
+}
+
 function buildHeaders(row: UserMcpSecretRow): Record<string, string> | undefined {
   if (row.apiKey && row.authHeaderName) {
     return { [row.authHeaderName]: row.apiKey };
@@ -82,6 +86,20 @@ function wrapMcpTool(tool: any, toolKey: string, secrets: string[]): any {
   };
 }
 
+async function closeQuietly(client: MCPClient | undefined): Promise<void> {
+  if (!client) return;
+  try {
+    await client.close();
+  } catch {
+    // ignore close errors
+  }
+}
+
+/**
+ * Race a promise against a wall-clock timeout and optional AbortSignal.
+ * Does not cancel the underlying promise — callers that obtain a client
+ * must close it on failure (see connectOneServer).
+ */
 async function withTimeout<T>(
   promise: Promise<T>,
   ms: number,
@@ -92,25 +110,48 @@ async function withTimeout<T>(
     err.name = 'AbortError';
     throw err;
   }
+
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      const err = new Error(`MCP connect timed out after ${ms}ms`);
-      err.name = 'TimeoutError';
-      reject(err);
-    }, ms);
-  });
-  const onAbort = () => {
-    const err = new Error('aborted');
-    err.name = 'AbortError';
-    // reject via timeout race by aborting outer — recreate
-  };
-  // Use AbortSignal.timeout composition when available + caller signal
+  let onAbort: (() => void) | undefined;
+
   try {
-    return await Promise.race([promise, timeoutPromise]);
+    return await new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
+
+      timer = setTimeout(() => {
+        finish(() => {
+          const err = new Error(`MCP connect timed out after ${ms}ms`);
+          err.name = 'TimeoutError';
+          reject(err);
+        });
+      }, ms);
+
+      if (signal) {
+        onAbort = () => {
+          finish(() => {
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+
+      promise.then(
+        (value) => finish(() => resolve(value)),
+        (err) => finish(() => reject(err)),
+      );
+    });
   } finally {
     if (timer) clearTimeout(timer);
-    void onAbort;
+    if (signal && onAbort) {
+      signal.removeEventListener('abort', onAbort);
+    }
   }
 }
 
@@ -133,6 +174,8 @@ async function connectOneServer(
   },
 ): Promise<ConnectOneResult> {
   const secrets = row.apiKey ? [row.apiKey] : [];
+  let client: MCPClient | undefined;
+
   try {
     const urlCheck = await assertSafeMcpUrl(row.url);
     if (!urlCheck.ok) {
@@ -145,7 +188,11 @@ async function connectOneServer(
     }
 
     const headers = buildHeaders(row);
-    const createPromise = opts.createClient({
+
+    // createMCPClient already applies initializationOptions.timeout/signal and
+    // closes the transport on init failure. Do not wrap create in a second
+    // Promise.race — that can orphan a client that resolves after the race.
+    client = await opts.createClient({
       transport: {
         type: 'http',
         url: urlCheck.href,
@@ -158,12 +205,7 @@ async function connectOneServer(
       },
     });
 
-    const client = await withTimeout(
-      createPromise,
-      opts.connectTimeoutMs,
-      opts.signal,
-    );
-
+    // tools() is a separate RPC — bound it and always close on failure.
     const rawTools = await withTimeout(
       client.tools(),
       opts.connectTimeoutMs,
@@ -179,7 +221,10 @@ async function connectOneServer(
 
     return { ok: true, slug: row.slug, client, tools, secrets };
   } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
+    await closeQuietly(client);
+    client = undefined;
+
+    if (isAbortError(err)) {
       return {
         ok: false,
         slug: row.slug,
@@ -246,13 +291,19 @@ export async function buildUserMcpTools(
     if (s.status === 'rejected') {
       const reason = safeErrorMessage(s.reason, row.apiKey ? [row.apiKey] : []);
       skipped.push({ slug: row.slug, reason });
-      void setLastError(userId, row.id, reason).catch(() => {});
+      // Unexpected throw (connectOneServer normally returns ok:false).
+      if (!isAbortError(s.reason)) {
+        void setLastError(userId, row.id, reason).catch(() => {});
+      }
       continue;
     }
     const result = s.value;
     if (!result.ok) {
       skipped.push({ slug: result.slug, reason: result.reason });
-      void setLastError(userId, result.id, result.reason).catch(() => {});
+      // Request cancel is not a server fault — do not poison last_error.
+      if (result.reason !== 'aborted') {
+        void setLastError(userId, result.id, result.reason).catch(() => {});
+      }
       continue;
     }
 
@@ -275,15 +326,7 @@ export async function buildUserMcpTools(
 
   // Cap may leave tools from later servers unused — still close clients.
   const close = async () => {
-    await Promise.all(
-      clients.map(async (c) => {
-        try {
-          await c.close();
-        } catch {
-          // ignore close errors
-        }
-      }),
-    );
+    await Promise.all(clients.map((c) => closeQuietly(c)));
   };
 
   return { tools, secretsToRedact, close, connectedSlugs, skipped };
@@ -320,22 +363,19 @@ export async function probeUserMcpServer(
         ? { [input.authHeaderName]: input.apiKey }
         : undefined;
 
-    client = await withTimeout(
-      createClient({
-        transport: {
-          type: 'http',
-          url: urlCheck.href,
-          ...(headers ? { headers } : {}),
-          redirect: 'error',
-        },
-        initializationOptions: {
-          timeout: connectTimeoutMs,
-          signal: input.signal,
-        },
-      }),
-      connectTimeoutMs,
-      input.signal,
-    );
+    // Same as agent path: single timeout owner on create (library init).
+    client = await createClient({
+      transport: {
+        type: 'http',
+        url: urlCheck.href,
+        ...(headers ? { headers } : {}),
+        redirect: 'error',
+      },
+      initializationOptions: {
+        timeout: connectTimeoutMs,
+        signal: input.signal,
+      },
+    });
 
     const listed = await withTimeout(
       client.listTools(),
@@ -350,12 +390,6 @@ export async function probeUserMcpServer(
   } catch (err) {
     return { ok: false, error: safeErrorMessage(err, secrets) };
   } finally {
-    if (client) {
-      try {
-        await client.close();
-      } catch {
-        // ignore
-      }
-    }
+    await closeQuietly(client);
   }
 }
