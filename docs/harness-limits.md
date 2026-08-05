@@ -37,6 +37,20 @@ See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 | Hit targets | Send / PONG ≥ ~40px tall |
 | Fallback | No “use the DOM chat instead” product path |
 
+
+## Transcript scroll
+
+| Topic | Behavior |
+|-------|----------|
+| Scroller | One outer **Wasm** `scrollArea` for the whole transcript (not a DOM panel) |
+| State | `ScrollInfo` persists across frames (`native/harness/src/ui.zig`) |
+| Input | Mouse wheel / trackpad / touch drag on the canvas transcript region |
+| Stick-to-bottom | Follow when user was **near bottom** (~48px), when a **new user** line arrives, or on **session hydrate** / Clear |
+| Reading older lines | If the user scrolled **up**, new assistant/tool/system lines do **not** yank the viewport down |
+| Long messages | Multi-screen assistant text is reachable by scrolling; still capped at 4 KiB per line |
+
+Not a dual-chat surface: scrolling stays inside the harness canvas.
+
 ## Transcript density
 
 | Topic | Behavior |

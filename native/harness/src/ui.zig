@@ -1,5 +1,6 @@
 //! Harness product UI (dvui) — Phase 4 Wasm-primary agent workspace.
 //! Polish (4.7): density, focus composer, touch targets, scroll stick-to-bottom.
+//! #131 / plan #135: persistent transcript ScrollInfo + conditional stick rules.
 const dvui = @import("dvui");
 const bridge = @import("bridge.zig");
 const palette = @import("palette.zig");
@@ -8,20 +9,54 @@ var prompt_buf: [bridge.SUBMIT_CAP]u8 = [_]u8{0} ** bridge.SUBMIT_CAP;
 
 /// First frame after init: focus the composer once.
 var want_composer_focus: bool = true;
-/// Stick transcript scroll to bottom when message count grows.
+/// Shown line count last frame (messages + optional busy row).
 var last_shown_count: usize = 0;
+/// Ring message count last frame (for clear / hydrate / user-send detection).
+var last_msg_count: usize = 0;
+/// Persistent across frames — frame-local ScrollInfo zeros viewport every paint.
+var transcript_scroll: dvui.ScrollInfo = .{
+    .vertical = .auto,
+    .horizontal = .none,
+};
 
 const SMOKE_PROMPT = "Reply with exactly: PONG";
 /// Cap visible lines for density (ring may hold more).
 const VISIBLE_MSG_CAP: usize = 28;
 /// Touch-friendly control height (CSS px ≈).
 const TOUCH_H: f32 = 40;
+/// Near-bottom epsilon for stick-to-bottom follow (plan #135).
+const NEAR_BOTTOM_PX: f32 = 48;
+/// MessageKind.User in bridge / host protocol.
+const KIND_USER: u8 = 1;
 
 pub fn onInit() void {
     bridge.reset();
     @memset(&prompt_buf, 0);
     want_composer_focus = true;
+    resetTranscriptScroll();
+}
+
+fn resetTranscriptScroll() void {
+    transcript_scroll = .{
+        .vertical = .auto,
+        .horizontal = .none,
+    };
     last_shown_count = 0;
+    last_msg_count = 0;
+}
+
+fn isNearBottom(si: *const dvui.ScrollInfo) bool {
+    return si.offsetFromMax(.vertical) <= NEAR_BOTTOM_PX;
+}
+
+fn clampScrollToContent(si: *dvui.ScrollInfo) void {
+    const max_y = si.scrollMax(.vertical);
+    if (si.viewport.y > max_y) si.viewport.y = max_y;
+    if (si.viewport.y < 0) si.viewport.y = 0;
+}
+
+fn scrollToBottom(si: *dvui.ScrollInfo) void {
+    si.viewport.y = si.scrollMax(.vertical);
 }
 
 pub fn onDeinit() void {}
@@ -157,13 +192,13 @@ pub fn frame() !void {
     }
 
     // ── Transcript ────────────────────────────────────────────────────────
-    var scroll_info: dvui.ScrollInfo = .{
-        .vertical = .auto,
-        .horizontal = .none,
-    };
+    // Snapshot before layout: virtual_size is still last frame's (near-bottom check).
+    const near_before = isNearBottom(&transcript_scroll);
+    const prev_msg = last_msg_count;
+    const prev_shown = last_shown_count;
     {
         var scroll = dvui.scrollArea(@src(), .{
-            .scroll_info = &scroll_info,
+            .scroll_info = &transcript_scroll,
             .vertical_bar = .auto,
         }, .{
             .expand = .both,
@@ -260,11 +295,35 @@ pub fn frame() !void {
             tl.deinit();
         }
 
-        // Stick to bottom when new messages arrive (or busy line appears).
+        // Conditional stick-to-bottom (plan #135 / #131).
+        // near_before uses last frame's virtual_size (captured before this layout).
         const shown = n + @as(usize, if (busy) 1 else 0);
-        if (shown != last_shown_count) {
+        if (n < prev_msg) {
+            // Clear or ring shrink: land at bottom of new content.
+            transcript_scroll.viewport.y = 0;
+            transcript_scroll.velocity = .{ .x = 0, .y = 0 };
+            scrollToBottom(&transcript_scroll);
             last_shown_count = shown;
-            scroll_info.viewport.y = scroll_info.scrollMax(.vertical);
+            last_msg_count = n;
+        } else if (shown != prev_shown) {
+            const msg_grew = n > prev_msg;
+            const newest_is_user = blk: {
+                if (!msg_grew or n == 0) break :blk false;
+                if (bridge.messageAt(n - 1)) |m| break :blk m.kind == KIND_USER;
+                break :blk false;
+            };
+            // Hydrate / batch: empty→many, or ≥3 messages in one frame (batched push).
+            const hydrate = (prev_msg == 0 and n > 1) or (n >= prev_msg + 3);
+            const should_follow = near_before or newest_is_user or hydrate or prev_msg == 0;
+            if (should_follow) {
+                scrollToBottom(&transcript_scroll);
+            } else {
+                clampScrollToContent(&transcript_scroll);
+            }
+            last_shown_count = shown;
+            last_msg_count = n;
+        } else {
+            clampScrollToContent(&transcript_scroll);
         }
     }
 
