@@ -1,6 +1,8 @@
 //! Harness product UI (dvui) — Phase 4 Wasm-primary agent workspace.
 //! Polish (4.7): density, focus composer, touch targets, scroll stick-to-bottom.
 //! #131 / plan #135: persistent transcript ScrollInfo + conditional stick rules.
+//! #137 / plan #138: reserved composer chrome; transcript max_size_content so
+//! messages cannot cover or starve the input band.
 const dvui = @import("dvui");
 const bridge = @import("bridge.zig");
 const palette = @import("palette.zig");
@@ -26,6 +28,13 @@ const VISIBLE_MSG_CAP: usize = 28;
 const TOUCH_H: f32 = 40;
 /// Near-bottom epsilon for stick-to-bottom follow (plan #135).
 const NEAR_BOTTOM_PX: f32 = 48;
+/// Reserved bottom chrome: textEntry + action row + margins (plan #138).
+/// Height budget: header + this win over transcript min on short canvases.
+const COMPOSER_CHROME_MIN: f32 = 2 * TOUCH_H + 20;
+/// Default transcript min height when space allows.
+const SCROLL_MIN_H: f32 = 120;
+/// Absolute floor so a short canvas still has a scroll band.
+const SCROLL_FLOOR_H: f32 = 32;
 
 pub fn onInit() void {
     bridge.reset();
@@ -123,7 +132,10 @@ pub fn frame() !void {
     });
     defer root.deinit();
 
+    const root_content_h = root.data().contentRect().h;
+
     // ── Header (compact) ──────────────────────────────────────────────────
+    var header_h: f32 = TOUCH_H + 28;
     {
         var head = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .expand = .horizontal,
@@ -134,7 +146,10 @@ pub fn frame() !void {
             .margin = .{ .x = 0, .y = 0, .w = 0, .h = 6 },
             .min_size_content = .{ .w = 0, .h = TOUCH_H },
         });
-        defer head.deinit();
+        defer {
+            header_h = head.data().rect.h;
+            head.deinit();
+        }
 
         {
             var tl = dvui.textLayout(@src(), .{}, .{
@@ -189,6 +204,12 @@ pub fn frame() !void {
         }
     }
 
+    // Transcript layout height: leftover after header + reserved composer chrome.
+    // max_size_content caps content-driven min so the scroller cannot starve chrome
+    // (dvui Options: use when scrollArea makes the parent too big).
+    const scroll_h_max = @max(SCROLL_FLOOR_H, root_content_h - header_h - COMPOSER_CHROME_MIN);
+    const scroll_min_h = @min(SCROLL_MIN_H, scroll_h_max);
+
     // ── Transcript ────────────────────────────────────────────────────────
     // near_before uses last frame's virtual_size (still valid before this layout).
     // Stick/clamp runs AFTER scrollArea.deinit so scrollMax sees this frame's size
@@ -209,7 +230,9 @@ pub fn frame() !void {
             .background = true,
             .color_fill = palette.teal_surface,
             .color_border = palette.teal_border,
-            .min_size_content = .{ .w = 120, .h = 120 },
+            .min_size_content = .{ .w = 120, .h = scroll_min_h },
+            // Cap layout min so tall message content cannot push past remaining height.
+            .max_size_content = .height(scroll_h_max),
             .padding = .all(8),
             .margin = .{ .x = 0, .y = 0, .w = 0, .h = 6 },
         });
@@ -329,79 +352,94 @@ pub fn frame() !void {
         clampScrollToContent(&transcript_scroll);
     }
 
-    // ── Composer (single-line so Enter submits — multiline disables enter_pressed) ──
+    // ── Composer chrome (outside scrollArea — plan #138) ──────────────────
+    // Solid fill so tall transcript paint cannot show through; no vertical expand
+    // so chrome keeps COMPOSER_CHROME_MIN and stays on-canvas.
     var typed: []const u8 = prompt_buf[0..0];
     {
-        var te = dvui.textEntry(@src(), .{
-            .text = .{ .buffer = prompt_buf[0..] },
-            .placeholder = "Message the model…",
-            .multiline = false,
-        }, .{
+        var chrome = dvui.box(@src(), .{ .dir = .vertical }, .{
             .expand = .horizontal,
-            .min_size_content = .{ .w = 120, .h = TOUCH_H },
+            .background = true,
             .color_fill = palette.teal_bg,
-            .color_text = palette.teal_text,
-            .color_border = if (busy) palette.teal_border else palette.teal_accent,
-            .margin = .{ .x = 0, .y = 0, .w = 0, .h = 6 },
+            .color_border = palette.teal_border,
+            .min_size_content = .{ .w = 120, .h = COMPOSER_CHROME_MIN },
+            .padding = .{ .x = 0, .y = 4, .w = 0, .h = 0 },
         });
-        typed = te.getText();
-        if (want_composer_focus) {
-            dvui.focusWidget(te.data().id, null, null);
-            want_composer_focus = false;
-        }
-        const enter = te.enter_pressed and !busy;
-        te.deinit();
-        if (enter and typed.len > 0) {
-            submitText(typed);
-            typed = prompt_buf[0..0];
-            // Re-focus next frame after submit
-            want_composer_focus = true;
-        }
-    }
+        defer chrome.deinit();
 
-    // ── Actions (large hit targets) ───────────────────────────────────────
-    {
-        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .expand = .horizontal,
-            .min_size_content = .{ .w = 0, .h = TOUCH_H + 4 },
-        });
-        defer row.deinit();
-
-        if (dvui.button(@src(), "Send", .{}, .{
-            .gravity_y = 0.5,
-            .style = .highlight,
-            .min_size_content = .{ .w = 72, .h = TOUCH_H },
-            .corners = .round(8),
-        })) {
-            if (!busy and typed.len > 0) {
-                submitText(typed);
-                want_composer_focus = true;
-            }
-        }
-        if (dvui.button(@src(), "PONG", .{}, .{
-            .gravity_y = 0.5,
-            .style = .app1,
-            .min_size_content = .{ .w = 72, .h = TOUCH_H },
-            .corners = .round(8),
-            .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
-        })) {
-            if (!busy) {
-                submitText(SMOKE_PROMPT);
-                want_composer_focus = true;
-            }
-        }
+        // Single-line so Enter submits — multiline disables enter_pressed.
         {
-            var tl = dvui.textLayout(@src(), .{}, .{
-                .gravity_y = 0.5,
-                .color_text = palette.teal_muted,
-                .margin = .{ .x = 10, .y = 0, .w = 0, .h = 0 },
+            var te = dvui.textEntry(@src(), .{
+                .text = .{ .buffer = prompt_buf[0..] },
+                .placeholder = "Message the model…",
+                .multiline = false,
+            }, .{
+                .expand = .horizontal,
+                .min_size_content = .{ .w = 120, .h = TOUCH_H },
+                .color_fill = palette.teal_surface,
+                .color_text = palette.teal_text,
+                .color_border = if (busy) palette.teal_border else palette.teal_accent,
+                .margin = .{ .x = 0, .y = 0, .w = 0, .h = 6 },
             });
-            if (busy) {
-                tl.addText("busy…", .{});
-            } else {
-                tl.addText("Enter to send", .{});
+            typed = te.getText();
+            if (want_composer_focus) {
+                dvui.focusWidget(te.data().id, null, null);
+                want_composer_focus = false;
             }
-            tl.deinit();
+            const enter = te.enter_pressed and !busy;
+            te.deinit();
+            if (enter and typed.len > 0) {
+                submitText(typed);
+                typed = prompt_buf[0..0];
+                // Re-focus next frame after submit
+                want_composer_focus = true;
+            }
+        }
+
+        // Actions (large hit targets)
+        {
+            var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                .expand = .horizontal,
+                .min_size_content = .{ .w = 0, .h = TOUCH_H + 4 },
+            });
+            defer row.deinit();
+
+            if (dvui.button(@src(), "Send", .{}, .{
+                .gravity_y = 0.5,
+                .style = .highlight,
+                .min_size_content = .{ .w = 72, .h = TOUCH_H },
+                .corners = .round(8),
+            })) {
+                if (!busy and typed.len > 0) {
+                    submitText(typed);
+                    want_composer_focus = true;
+                }
+            }
+            if (dvui.button(@src(), "PONG", .{}, .{
+                .gravity_y = 0.5,
+                .style = .app1,
+                .min_size_content = .{ .w = 72, .h = TOUCH_H },
+                .corners = .round(8),
+                .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
+            })) {
+                if (!busy) {
+                    submitText(SMOKE_PROMPT);
+                    want_composer_focus = true;
+                }
+            }
+            {
+                var tl = dvui.textLayout(@src(), .{}, .{
+                    .gravity_y = 0.5,
+                    .color_text = palette.teal_muted,
+                    .margin = .{ .x = 10, .y = 0, .w = 0, .h = 0 },
+                });
+                if (busy) {
+                    tl.addText("busy…", .{});
+                } else {
+                    tl.addText("Enter to send", .{});
+                }
+                tl.deinit();
+            }
         }
     }
 }

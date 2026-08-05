@@ -37,6 +37,24 @@ See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 | Hit targets | Send / PONG ≥ ~40px tall |
 | Fallback | No “use the DOM chat instead” product path |
 
+## Layout / composer chrome
+
+Vertical bands inside the Wasm root (not a DOM panel):
+
+| Band | Behavior |
+|------|----------|
+| **Header** | Compact title / lifecycle / model cycle — fixed min height |
+| **Transcript** | One outer `scrollArea` that takes **remaining** height only |
+| **Composer chrome** | Text field + Send / PONG (+ hint) in a **reserved bottom band** outside the scroller |
+
+| Rule | Behavior |
+|------|----------|
+| Composer visibility | Fully on-canvas while the harness is ready; not optional |
+| Height budget | Header + composer chrome min are taken first; leftover → transcript |
+| Short canvas | Transcript shrinks / scrolls first — chrome keeps touch-sized targets (~40px) |
+| Content size | Tall message content drives **scroll max**, not outer layout height (`max_size_content` on the scroller) |
+| Solid chrome | Composer band uses TEAL fill so transcript paint cannot show through |
+| Forbidden | Nesting the composer inside the transcript `scrollArea`; dual DOM chat input |
 
 ## Transcript scroll
 
@@ -44,12 +62,13 @@ See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 |-------|----------|
 | Scroller | One outer **Wasm** `scrollArea` for the whole transcript (not a DOM panel) |
 | State | `ScrollInfo` persists across frames (`native/harness/src/ui.zig`) |
-| Input | Mouse wheel / trackpad / touch drag on the canvas transcript region |
+| Input | Mouse wheel / trackpad / touch drag on the canvas **transcript region only** |
 | Stick-to-bottom | Follow when user was **near bottom** (~48px), when a **new user** line arrives, or on **session hydrate** / Clear |
 | Reading older lines | If the user scrolled **up**, new assistant/tool/system lines do **not** yank the viewport down |
 | Long messages | Multi-screen assistant text is reachable by scrolling; still capped at 4 KiB per line |
+| vs composer | Scrolling never covers or moves the reserved composer band |
 
-Not a dual-chat surface: scrolling stays inside the harness canvas.
+Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 
 ## Transcript density
 
