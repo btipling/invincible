@@ -3,8 +3,9 @@
 import { useActionState, useMemo, useState, type ReactNode } from 'react';
 import { ember, teal, warm } from '../../../lib/palette';
 import {
-  BYOK_PROVIDERS,
+  BYOK_PROVIDER_DEFS,
   SUGGESTED_MODELS,
+  byokCredentialShape,
   type ByokProvider,
 } from '../../../lib/gateway/byokProviders';
 import {
@@ -55,14 +56,15 @@ function Field({
 }
 
 function CredentialFields({ provider }: { provider: ByokProvider }) {
-  if (provider === 'anthropic' || provider === 'openai') {
+  const shape = byokCredentialShape(provider);
+  if (shape === 'apiKey') {
     return (
       <Field label="API key">
         <input name="apiKey" type="password" autoComplete="off" required style={inputStyle()} />
       </Field>
     );
   }
-  if (provider === 'azure') {
+  if (shape === 'azure') {
     return (
       <>
         <Field label="API key">
@@ -74,7 +76,7 @@ function CredentialFields({ provider }: { provider: ByokProvider }) {
       </>
     );
   }
-  if (provider === 'vertex') {
+  if (shape === 'vertex') {
     return (
       <>
         <Field label="Project">
@@ -129,7 +131,7 @@ function ActionError({ state }: { state: InferenceActionState }) {
 }
 
 export function CreateSecretForm({ members }: { members: Member[] }) {
-  const [provider, setProvider] = useState<ByokProvider>('anthropic');
+  const [provider, setProvider] = useState<ByokProvider>('xai');
   const [state, action, pending] = useActionState(createProviderSecretAction, initial);
   const suggestions = SUGGESTED_MODELS[provider] ?? [];
 
@@ -160,9 +162,9 @@ export function CreateSecretForm({ members }: { members: Member[] }) {
             onChange={(e) => setProvider(e.target.value as ByokProvider)}
             style={inputStyle()}
           >
-            {BYOK_PROVIDERS.map((p) => (
-              <option key={p} value={p}>
-                {p}
+            {BYOK_PROVIDER_DEFS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label} ({p.id})
               </option>
             ))}
           </select>
@@ -369,7 +371,7 @@ export function SecretCard({
 }
 
 function isByok(p: string): p is ByokProvider {
-  return (BYOK_PROVIDERS as readonly string[]).includes(p);
+  return BYOK_PROVIDER_DEFS.some((d) => d.id === p);
 }
 
 function Badge({
