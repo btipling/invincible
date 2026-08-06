@@ -3,6 +3,7 @@ const std = @import("std");
 const dvui = @import("dvui");
 const parse = @import("parse.zig");
 const style_mod = @import("style.zig");
+const mixed_text = @import("mixed_text.zig");
 
 pub const PaintCtx = struct {
     style: style_mod.StyleMap,
@@ -22,50 +23,40 @@ pub fn nextIdPublic(ctx: *PaintCtx) usize {
 
 /// Paint flat inline runs. `base_font` is the block face (body for paragraphs,
 /// title/heading for headings) so strong/emph/link keep block size.
+/// Emoji code points switch to OpenMoji (see mixed_text.zig).
 pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, ctx: *const PaintCtx, base_font: dvui.Font) void {
     const st = ctx.style;
     for (inlines) |inl| {
         switch (inl.kind) {
             .text => {
-                tl.addText(inl.text, .{
-                    .color_text = st.body_text,
-                    .font = base_font,
-                });
+                mixed_text.addTextMixed(tl, inl.text, base_font, .{ .color_text = st.body_text });
             },
             .strong => {
-                tl.addText(inl.text, .{
-                    .color_text = st.strong_text,
-                    .font = base_font.withWeight(.bold),
-                });
+                mixed_text.addTextMixed(tl, inl.text, base_font.withWeight(.bold), .{ .color_text = st.strong_text });
             },
             .emph => {
-                tl.addText(inl.text, .{
-                    .color_text = st.emph_text,
-                    .font = base_font.withStyle(.italic),
-                });
+                mixed_text.addTextMixed(tl, inl.text, base_font.withStyle(.italic), .{ .color_text = st.emph_text });
             },
             .code => {
-                tl.addText(inl.text, .{
+                mixed_text.addTextMixed(tl, inl.text, .theme(.mono), .{
                     .color_text = st.code_text,
                     .color_fill = st.code_fill,
-                    .font = .theme(.mono),
                 });
             },
             .link => {
                 const href = inl.href orelse "";
                 if (style_mod.isSafeLinkUrl(href)) {
+                    // Links stay single-face (URL widgets); emoji in link labels rare.
+                    const label = if (inl.text.len > 0) inl.text else href;
                     tl.addLink(.{
-                        .text = if (inl.text.len > 0) inl.text else href,
+                        .text = label,
                         .url = href,
                     }, .{
                         .color_text = st.link_text,
                         .font = base_font.withUnderline(.{}),
                     });
                 } else {
-                    tl.addText(if (inl.text.len > 0) inl.text else href, .{
-                        .color_text = st.body_text,
-                        .font = base_font,
-                    });
+                    mixed_text.addTextMixed(tl, if (inl.text.len > 0) inl.text else href, base_font, .{ .color_text = st.body_text });
                 }
             },
         }

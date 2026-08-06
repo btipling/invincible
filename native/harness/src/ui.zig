@@ -8,6 +8,7 @@ const bridge = @import("bridge.zig");
 const palette = @import("palette.zig");
 const build_options = @import("build_options");
 const rich = @import("rich/root.zig");
+const mixed_text = @import("rich/mixed_text.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
@@ -354,8 +355,11 @@ pub fn frame() !void {
                                 .expand = .horizontal,
                                 .id_extra = i *% 1024 + 1,
                                 .color_text = if (is_err) palette.ember_text else palette.teal_text,
+                                .font = .theme(.body),
                             });
-                            tl.format("{s}", .{m.text}, .{});
+                            mixed_text.addTextMixed(tl, m.text, .theme(.body), .{
+                                .color_text = if (is_err) palette.ember_text else palette.teal_text,
+                            });
                             tl.deinit();
                         }
                     }
