@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   extractCandidateImageUrls,
+  harnessImageSessionGeneration,
   isImageBodyWithinCap,
   isSafeImageUrl,
   MAX_IMAGE_FETCH_BYTES,
   MAX_IMAGE_URL_LEN,
+  readResponseBodyCapped,
+  resetHarnessImageSession,
 } from './harnessImages';
 
 describe('isSafeImageUrl', () => {
@@ -61,5 +64,34 @@ describe('isImageBodyWithinCap', () => {
     expect(isImageBodyWithinCap(MAX_IMAGE_FETCH_BYTES)).toBe(true);
     expect(isImageBodyWithinCap(MAX_IMAGE_FETCH_BYTES + 1)).toBe(false);
     expect(isImageBodyWithinCap(0)).toBe(false);
+  });
+});
+
+describe('resetHarnessImageSession', () => {
+  it('bumps session generation', () => {
+    const before = harnessImageSessionGeneration();
+    resetHarnessImageSession();
+    expect(harnessImageSessionGeneration()).toBe(before + 1);
+    resetHarnessImageSession();
+    expect(harnessImageSessionGeneration()).toBe(before + 2);
+  });
+});
+
+describe('readResponseBodyCapped', () => {
+  it('rejects when Content-Length exceeds cap', async () => {
+    const res = new Response(new Uint8Array([1, 2, 3]), {
+      headers: { 'content-length': String(MAX_IMAGE_FETCH_BYTES + 1) },
+    });
+    expect(await readResponseBodyCapped(res)).toBeNull();
+  });
+
+  it('accepts small body', async () => {
+    const bytes = new Uint8Array([10, 20, 30, 40]);
+    const res = new Response(bytes, {
+      headers: { 'content-length': '4' },
+    });
+    const buf = await readResponseBodyCapped(res);
+    expect(buf).not.toBeNull();
+    expect(new Uint8Array(buf!).length).toBe(4);
   });
 });

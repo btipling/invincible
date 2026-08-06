@@ -133,11 +133,11 @@ pub fn countLive() usize {
 }
 
 test "image_cache put get clear" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const a = gpa.allocator();
-    setAllocator(a);
-    defer clear();
+    setAllocator(std.testing.allocator);
+    defer {
+        clear();
+        parent_allocator = null;
+    }
 
     const url = "https://example.com/a.png";
     var px = [_]u8{ 255, 0, 0, 255 } ** 4; // 2x2
@@ -154,10 +154,11 @@ test "image_cache put get clear" {
 }
 
 test "image_cache rejects bad url and dims" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    setAllocator(gpa.allocator());
-    defer clear();
+    setAllocator(std.testing.allocator);
+    defer {
+        clear();
+        parent_allocator = null;
+    }
 
     var px = [_]u8{0} ** 16;
     try std.testing.expectError(PutError.BadUrl, put("javascript:alert(1)", px[0..], 2, 2));
@@ -167,10 +168,11 @@ test "image_cache rejects bad url and dims" {
 }
 
 test "image_cache replace same url and evict at cap" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    setAllocator(gpa.allocator());
-    defer clear();
+    setAllocator(std.testing.allocator);
+    defer {
+        clear();
+        parent_allocator = null;
+    }
 
     var px = [_]u8{1} ** 16;
     var i: usize = 0;

@@ -111,7 +111,7 @@ fn paintImageInline(src: std.builtin.SourceLocation, inl: parse.Inline, ctx: *Pa
     const st = ctx.style;
 
     if (href.len == 0 or !link_url.isSafeLinkUrl(href)) {
-        paintImagePlaceholder(src, alt, ctx, false);
+        paintImagePlaceholder(src, alt, ctx);
         return;
     }
     if (image_cache.get(href)) |hit| {
@@ -146,11 +146,10 @@ fn paintImageInline(src: std.builtin.SourceLocation, inl: parse.Inline, ctx: *Pa
         });
         return;
     }
-    paintImagePlaceholder(src, alt, ctx, true);
+    paintImagePlaceholder(src, alt, ctx);
 }
 
-fn paintImagePlaceholder(src: std.builtin.SourceLocation, alt: []const u8, ctx: *PaintCtx, _: bool) void {
-    _ = loading_or_miss;
+fn paintImagePlaceholder(src: std.builtin.SourceLocation, alt: []const u8, ctx: *PaintCtx) void {
     const st = ctx.style;
     var box = dvui.box(src, .{ .dir = .horizontal }, .{
         .expand = .horizontal,
@@ -268,32 +267,20 @@ pub fn paintHeading(src: std.builtin.SourceLocation, block: parse.Block, ctx: *P
         .id_base = ctx.id_base,
         .run_seq = ctx.run_seq,
     };
-    var tl = dvui.textLayout(src, .{}, .{
-        .expand = .horizontal,
-        .id_extra = nextId(ctx),
-        .color_text = color,
-        .font = font,
-        .background = false,
+    // Segmented flow so ![alt](url) in headings paints (paintInlines skips .image).
+    paintInlineFlow(src, block.inlines, &heading_ctx, font, .{
         .padding = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
+        .color_text = color,
     });
-    defer tl.deinit();
-    paintInlines(tl, block.inlines, &heading_ctx, font);
-    tl.addText("\n", .{});
 }
 
 pub fn paintParagraph(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
     const body = dvui.Font.theme(.body);
-    var tl = dvui.textLayout(src, .{}, .{
-        .expand = .horizontal,
-        .id_extra = nextId(ctx),
-        .color_text = ctx.style.body_text,
-        .font = body,
-        .background = false,
+    // Primary MD image path is paragraph inlines — must use paintInlineFlow.
+    paintInlineFlow(src, block.inlines, ctx, body, .{
         .padding = .{ .x = 0, .y = 1, .w = 0, .h = 2 },
+        .color_text = ctx.style.body_text,
     });
-    defer tl.deinit();
-    paintInlines(tl, block.inlines, ctx, body);
-    tl.addText("\n", .{});
 }
 
 /// Cumulative left margin clamp for list/quote nest + indent_cols (~390px safety).

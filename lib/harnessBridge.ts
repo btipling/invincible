@@ -259,8 +259,10 @@ export class HarnessBridge {
     height: number,
   ): boolean {
     if (!url || width <= 0 || height <= 0) return false;
+    // Match Wasm MAX_EDGE (1280); reject absurd dims before gpa_u8.
+    if (width > 1280 || height > 1280) return false;
     const need = width * height * 4;
-    if (rgba.byteLength < need) return false;
+    if (!Number.isFinite(need) || need <= 0 || rgba.byteLength < need) return false;
     const urlBytes = this.writeUtf8(url);
     const rgbaPtr = this.exports.gpa_u8(need);
     if (!rgbaPtr) {

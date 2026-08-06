@@ -20,13 +20,24 @@ const queue: string[] = [];
 let active = 0;
 /** Bridge used by the current pump; cleared on session reset. */
 let pumpBridge: HarnessBridge | null = null;
+/**
+ * Bumped on every session reset. In-flight fetches capture gen at start and must
+ * not put / adjust counters after a reset (avoids stale textures after clear).
+ */
+let sessionGen = 0;
 
 export function resetHarnessImageSession(): void {
+  sessionGen += 1;
   putOk.clear();
   inFlight.clear();
   queue.length = 0;
   active = 0;
   pumpBridge = null;
+}
+
+/** Current session generation (tests + diagnostics). */
+export function harnessImageSessionGeneration(): number {
+  return sessionGen;
 }
 
 /** True when URL is http(s) and within length cap (mirrors link_url.isSafeLinkUrl). */
@@ -98,40 +109,98 @@ function enqueue(url: string): void {
 async function pump(): Promise<void> {
   const bridge = pumpBridge;
   if (!bridge) return;
-  while (active < MAX_CONCURRENT_IMAGE_FETCHES && queue.length > 0) {
+  const gen = sessionGen;
+  while (
+    sessionGen === gen &&
+    pumpBridge === bridge &&
+    active < MAX_CONCURRENT_IMAGE_FETCHES &&
+    queue.length > 0
+  ) {
     const url = queue.shift()!;
     if (putOk.has(url) || inFlight.has(url)) continue;
     inFlight.add(url);
     active += 1;
-    void loadOne(bridge, url).finally(() => {
+    void loadOne(bridge, url, gen).finally(() => {
+      // Only touch counters if this session is still current.
+      if (sessionGen !== gen) return;
       inFlight.delete(url);
-      active -= 1;
+      active = Math.max(0, active - 1);
       void pump();
     });
   }
 }
 
-async function loadOne(bridge: HarnessBridge, url: string): Promise<void> {
+/**
+ * Read body with a hard byte ceiling (handles missing/liar Content-Length).
+ * Returns null when over cap or empty.
+ */
+export async function readResponseBodyCapped(
+  res: Response,
+  maxBytes: number = MAX_IMAGE_FETCH_BYTES,
+): Promise<ArrayBuffer | null> {
+  const lenHeader = res.headers.get('content-length');
+  if (lenHeader) {
+    const n = Number(lenHeader);
+    if (Number.isFinite(n) && (n <= 0 || n > maxBytes)) return null;
+  }
+  const body = res.body;
+  if (!body || typeof body.getReader !== 'function') {
+    const buf = await res.arrayBuffer();
+    if (!isImageBodyWithinCap(buf.byteLength)) return null;
+    return buf;
+  }
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      try {
+        await reader.cancel();
+      } catch {
+        /* ignore */
+      }
+      return null;
+    }
+    chunks.push(value);
+  }
+  if (total <= 0 || total > maxBytes) return null;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out.buffer;
+}
+
+async function loadOne(
+  bridge: HarnessBridge,
+  url: string,
+  gen: number,
+): Promise<void> {
   try {
+    if (sessionGen !== gen) return;
     const res = await fetch(url, {
       mode: 'cors',
       credentials: 'omit',
       redirect: 'follow',
     });
+    if (sessionGen !== gen) return;
     if (!res.ok) return;
-    const lenHeader = res.headers.get('content-length');
-    if (lenHeader) {
-      const n = Number(lenHeader);
-      if (Number.isFinite(n) && !isImageBodyWithinCap(n)) return;
-    }
-    const buf = await res.arrayBuffer();
-    if (!isImageBodyWithinCap(buf.byteLength)) return;
+    const buf = await readResponseBodyCapped(res);
+    if (!buf || sessionGen !== gen) return;
     const bitmap = await createImageBitmap(new Blob([buf]));
     try {
+      if (sessionGen !== gen) return;
       const { width, height, rgba } = rasterizeBitmap(bitmap);
       if (width === 0 || height === 0) return;
+      if (sessionGen !== gen) return;
       const ok = bridge.imageCachePut(url, rgba, width, height);
-      if (ok) putOk.add(url);
+      if (ok && sessionGen === gen) putOk.add(url);
     } finally {
       bitmap.close();
     }
