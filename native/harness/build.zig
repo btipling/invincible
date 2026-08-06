@@ -126,7 +126,7 @@ pub fn build(b: *std.Build) void {
     test_parse.dependOn(&run_parse_tests.step);
 
     // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
-    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, diff_lang, highlight, unicode_face, blockquote)");
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, diff_lang, highlight, unicode_face, blockquote, table)");
     test_rich.dependOn(&run_parse_tests.step);
 
     const cache_tests = b.addTest(.{
@@ -199,4 +199,14 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_rich.dependOn(&b.addRunArtifact(blockquote_tests).step);
+
+    const table_tests = b.addTest(.{
+        .name = "rich-table",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/rich/table.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+    test_rich.dependOn(&b.addRunArtifact(table_tests).step);
 }
