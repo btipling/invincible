@@ -63,7 +63,11 @@ pub const Block = struct {
     kind: BlockKind,
     /// Heading level 1–6, list nesting depth, blockquote depth (1–6), or table header flag (1=has header).
     level: u8 = 0,
-    /// Fence language info string (arena-owned).
+    /// 0 = not in quote; 1–6 when list_item (or future) painted under quote chrome.
+    quote_depth: u8 = 0,
+    /// Extra lead spaces for quote-under-list paint margin (0 default).
+    indent_cols: u8 = 0,
+    /// Fence language / list ordered meta / table cols (arena-owned).
     meta: ?[]const u8 = null,
     inlines: []const Inline = &.{},
 };
@@ -152,12 +156,26 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
                     const depth: u8 = if (seg.depth == 0) 1 else seg.depth;
                     for (lowered) |blk| {
                         if (blk.inlines.len == 0) continue;
-                        try blocks.append(a, .{
-                            .kind = .blockquote,
-                            .level = depth,
-                            .meta = null,
-                            .inlines = blk.inlines,
-                        });
+                        if (blk.kind == .list_item) {
+                            try blocks.append(a, .{
+                                .kind = .list_item,
+                                .level = blk.level,
+                                .quote_depth = depth,
+                                .indent_cols = seg.indent_cols,
+                                .meta = blk.meta,
+                                .inlines = blk.inlines,
+                            });
+                        } else {
+                            // paragraph/plain/other → blockquote; fence/heading flatten (v1 non-goal chrome).
+                            try blocks.append(a, .{
+                                .kind = .blockquote,
+                                .level = depth,
+                                .quote_depth = 0,
+                                .indent_cols = seg.indent_cols,
+                                .meta = null,
+                                .inlines = blk.inlines,
+                            });
+                        }
                     }
                 } else {
                     // Definition lists on non-quote prose (fence-aware local partition).
@@ -382,12 +400,22 @@ const Builder = struct {
     inlines: std.ArrayList(Inline) = .empty,
     pending: std.ArrayList(Pending) = .empty,
     list_depth: u8 = 0,
+    /// Stack of open list containers (ul vs ol + ordered counter). Cap 8.
+    list_stack: [8]ListFrame = undefined,
+    list_stack_len: u8 = 0,
     cur_kind: ?BlockKind = null,
     cur_level: u8 = 0,
     cur_meta: ?[]const u8 = null,
     text_buf: std.ArrayList(u8) = .empty,
     fn_label_buf: std.ArrayList(u8) = .empty,
     in_fn_ref: bool = false,
+
+    const ListKind = enum { ul, ol };
+    const ListFrame = struct {
+        kind: ListKind,
+        /// Next 1-based index for ordered lists (0 until first li).
+        counter: u16 = 0,
+    };
 
     const Pending = struct {
         role: Role,
@@ -590,6 +618,14 @@ const Builder = struct {
     fn openMarker(self: *Builder, tag: []const u8, meta: []const u8) !void {
         if (std.mem.eql(u8, tag, "ul") or std.mem.eql(u8, tag, "ol")) {
             self.list_depth +|= 1;
+            // Cap frames at list_stack.len; depth still rises for indent paint.
+            // closeMarker keeps stack_len <= list_depth so over-cap opens do not
+            // permanently desync markers after the deep nest closes.
+            if (self.list_stack_len < self.list_stack.len) {
+                const kind: ListKind = if (std.mem.eql(u8, tag, "ol")) .ol else .ul;
+                self.list_stack[self.list_stack_len] = .{ .kind = kind, .counter = 0 };
+                self.list_stack_len += 1;
+            }
             return;
         }
         if (std.mem.eql(u8, tag, "b")) {
@@ -617,7 +653,8 @@ const Builder = struct {
             return;
         }
         if (std.mem.eql(u8, tag, "li")) {
-            try self.openBlock(.list_item, self.list_depth, null);
+            const list_meta = try self.listItemMeta();
+            try self.openBlock(.list_item, self.list_depth, list_meta);
             return;
         }
         if (std.mem.eql(u8, tag, "fence")) {
@@ -630,9 +667,27 @@ const Builder = struct {
         }
     }
 
+    fn listItemMeta(self: *Builder) !?[]const u8 {
+        if (self.list_stack_len == 0) return null;
+        const frame = &self.list_stack[self.list_stack_len - 1];
+        switch (frame.kind) {
+            .ul => return try self.a.dupe(u8, "u"),
+            .ol => {
+                if (frame.counter < 65535) frame.counter += 1;
+                return try std.fmt.allocPrint(self.a, "o,{d}", .{frame.counter});
+            },
+        }
+    }
+
     fn closeMarker(self: *Builder, tag: []const u8) !void {
         if (std.mem.eql(u8, tag, "ul") or std.mem.eql(u8, tag, "ol")) {
+            // list_depth always tracks nest; list_stack caps at 8 frames.
+            // Only pop a frame when stack would exceed post-close depth (avoids
+            // sticky desync after open past the cap).
             if (self.list_depth > 0) self.list_depth -= 1;
+            if (self.list_stack_len > self.list_depth) {
+                self.list_stack_len = self.list_depth;
+            }
             return;
         }
         if (std.mem.eql(u8, tag, "b")) {
@@ -1537,4 +1592,176 @@ test "deflist does not steal footnote def" {
     try std.testing.expect(saw_fn);
     try std.testing.expect(saw_term);
     try std.testing.expect(saw_desc);
+}
+
+
+test "ordered list meta outside quote" {
+    var doc = try parse(std.testing.allocator, "1. alpha\n2. beta\n");
+    defer doc.deinit();
+    var ordered: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        ordered += 1;
+        try std.testing.expect(blk.meta != null);
+        try std.testing.expect(blk.meta.?[0] == 'o');
+        try std.testing.expectEqual(@as(u8, 0), blk.quote_depth);
+        if (ordered == 1) try std.testing.expectEqualStrings("o,1", blk.meta.?);
+        if (ordered == 2) try std.testing.expectEqualStrings("o,2", blk.meta.?);
+    }
+    try std.testing.expect(ordered >= 2);
+}
+
+test "unordered list meta is u" {
+    var doc = try parse(std.testing.allocator, "- one\n- two\n");
+    defer doc.deinit();
+    var n: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        n += 1;
+        try std.testing.expectEqualStrings("u", blk.meta.?);
+    }
+    try std.testing.expect(n >= 2);
+}
+
+test "quote under nested list has indent_cols" {
+    const src =
+        \\- outer
+        \\  - nested
+        \\    > should be a quote under the nested item
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_list = false;
+    var saw_quote = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .list_item) saw_list = true;
+        if (blk.kind == .blockquote) {
+            saw_quote = true;
+            try std.testing.expect(blk.indent_cols >= 4);
+            // body should mention quote text
+            var joined: std.ArrayList(u8) = .empty;
+            defer joined.deinit(std.testing.allocator);
+            for (blk.inlines) |inl| try joined.appendSlice(std.testing.allocator, inl.text);
+            try std.testing.expect(std.mem.indexOf(u8, joined.items, "should be a quote") != null);
+        }
+    }
+    try std.testing.expect(saw_list);
+    try std.testing.expect(saw_quote);
+}
+
+test "ordered list inside quote preserves list_item and quote_depth" {
+    const src =
+        \\> intro
+        \\> 1. first
+        \\> 2. second
+        \\> 3. third
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_intro = false;
+    var ordered: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .blockquote) {
+            var joined: std.ArrayList(u8) = .empty;
+            defer joined.deinit(std.testing.allocator);
+            for (blk.inlines) |inl| try joined.appendSlice(std.testing.allocator, inl.text);
+            if (std.mem.indexOf(u8, joined.items, "intro") != null) saw_intro = true;
+        }
+        if (blk.kind == .list_item) {
+            ordered += 1;
+            try std.testing.expect(blk.quote_depth >= 1);
+            try std.testing.expect(blk.meta != null);
+            try std.testing.expect(blk.meta.?[0] == 'o');
+            if (ordered == 1) try std.testing.expectEqualStrings("o,1", blk.meta.?);
+            if (ordered == 2) try std.testing.expectEqualStrings("o,2", blk.meta.?);
+            if (ordered == 3) try std.testing.expectEqualStrings("o,3", blk.meta.?);
+        }
+    }
+    try std.testing.expect(saw_intro);
+    try std.testing.expectEqual(@as(usize, 3), ordered);
+}
+
+test "unordered list inside quote" {
+    const src =
+        \\> - unordered in quote
+        \\> - second bullet
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var ul: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        try std.testing.expect(blk.quote_depth >= 1);
+        try std.testing.expectEqualStrings("u", blk.meta.?);
+        ul += 1;
+    }
+    try std.testing.expect(ul >= 2);
+}
+
+test "mixed lists inside quote with blank sep" {
+    // zmd keeps adjacent `-` then `1.` as one ul without a blank line between;
+    // blank `>` line lets a new ol open (same as outside quotes).
+    const src =
+        \\> - unordered in quote
+        \\>
+        \\> 1. ordered in quote
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var ul: usize = 0;
+    var ol: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        try std.testing.expect(blk.quote_depth >= 1);
+        if (blk.meta) |m| {
+            if (m[0] == 'u') ul += 1;
+            if (m[0] == 'o') ol += 1;
+        }
+    }
+    try std.testing.expect(ul >= 1);
+    try std.testing.expect(ol >= 1);
+}
+
+test "ordered list counter resumes after nested ul" {
+    // Outer ol, inner ul under first item, then second outer item should be o,2.
+    const src =
+        \\1. alpha
+        \\   - nested bullet
+        \\2. beta
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var ordered: usize = 0;
+    var saw_ul = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        if (blk.meta) |m| {
+            if (m[0] == 'u') {
+                saw_ul = true;
+                continue;
+            }
+            if (m[0] == 'o') {
+                ordered += 1;
+                if (ordered == 1) try std.testing.expectEqualStrings("o,1", m);
+                if (ordered == 2) try std.testing.expectEqualStrings("o,2", m);
+            }
+        }
+    }
+    try std.testing.expect(saw_ul);
+    try std.testing.expectEqual(@as(usize, 2), ordered);
+}
+
+test "plain quote no list non-regression" {
+    var doc = try parse(std.testing.allocator, "> only quote\n> second line\n");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    for (doc.blocks) |blk| {
+        try std.testing.expect(blk.kind == .blockquote);
+        try std.testing.expectEqual(@as(u8, 0), blk.quote_depth);
+    }
 }
