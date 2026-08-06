@@ -1,4 +1,4 @@
-//! Paragraph / heading / list_item / plain + inline runs (style flags compose).
+//! Paragraph / heading / list_item / deflist / plain + inline runs (style flags compose).
 const std = @import("std");
 const dvui = @import("dvui");
 const parse = @import("parse.zig");
@@ -278,4 +278,53 @@ pub fn paintFootnoteDef(src: std.builtin.SourceLocation, block: parse.Block, ctx
     mixed_text.addTextMixed(tl, mark, mark_font, .{ .color_text = ctx.style.muted_text });
     paintInlines(tl, block.inlines, ctx, body);
     tl.addText("\n", .{});
+}
+
+
+pub fn paintDefTerm(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
+    // Term: body face bold, body ink, tight bottom gap before defs.
+    const body = dvui.Font.theme(.body).withWeight(.bold);
+    var tl = dvui.textLayout(src, .{}, .{
+        .expand = .horizontal,
+        .id_extra = nextId(ctx),
+        .color_text = ctx.style.body_text,
+        .font = body,
+        .background = false,
+        .padding = .{ .x = 0, .y = 2, .w = 0, .h = 0 },
+    });
+    defer tl.deinit();
+    paintInlines(tl, block.inlines, ctx, body);
+    tl.addText("\n", .{});
+}
+
+pub fn paintDefDesc(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
+    // Definition: ~16px indent via box margin; body_text only → muted (blockquote pattern).
+    const body = dvui.Font.theme(.body);
+    var desc_style = ctx.style;
+    desc_style.body_text = ctx.style.muted_text;
+    var desc_ctx = PaintCtx{
+        .style = desc_style,
+        .id_base = ctx.id_base,
+        .run_seq = ctx.run_seq,
+    };
+    var row = dvui.box(src, .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .id_extra = nextId(ctx),
+        .background = false,
+        .margin = .{ .x = 16, .y = 0, .w = 0, .h = 2 },
+    });
+    defer row.deinit();
+    {
+        var tl = dvui.textLayout(@src(), .{}, .{
+            .expand = .horizontal,
+            .id_extra = nextId(ctx),
+            .color_text = ctx.style.muted_text,
+            .font = body,
+            .background = false,
+            .padding = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
+        });
+        defer tl.deinit();
+        paintInlines(tl, block.inlines, &desc_ctx, body);
+        tl.addText("\n", .{});
+    }
 }

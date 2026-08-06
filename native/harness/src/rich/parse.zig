@@ -10,6 +10,7 @@ const bq = @import("blockquote.zig");
 const table = @import("table.zig");
 const thematic = @import("thematic.zig");
 const footnote = @import("footnote.zig");
+const deflist = @import("deflist.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
@@ -26,6 +27,8 @@ pub const BlockKind = enum {
     table,
     thematic_break,
     footnote_def,
+    def_term,
+    def_desc,
     plain,
 };
 
@@ -142,10 +145,10 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
             for (segments) |seg| {
                 if (seg.text.len == 0) continue;
                 if (!bq.hasNonWs(seg.text)) continue;
-                const pre = try preprocess.preprocessInlineSugar(a, seg.text);
-                const ir = try zmd.parseAlloc(a, pre, markerConfig);
-                const lowered = try lowerIr(a, ir);
                 if (seg.is_quote) {
+                    const pre = try preprocess.preprocessInlineSugar(a, seg.text);
+                    const ir = try zmd.parseAlloc(a, pre, markerConfig);
+                    const lowered = try lowerIr(a, ir);
                     const depth: u8 = if (seg.depth == 0) 1 else seg.depth;
                     for (lowered) |blk| {
                         if (blk.inlines.len == 0) continue;
@@ -157,7 +160,38 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
                         });
                     }
                 } else {
-                    try blocks.appendSlice(a, lowered);
+                    // Definition lists on non-quote prose (fence-aware local partition).
+                    const dl_segs = try deflist.partition(a, seg.text);
+                    for (dl_segs) |dseg| {
+                        if (dseg.is_deflist) {
+                            const term_inl = try lowerDefBodyInlines(a, dseg.term);
+                            if (term_inl.len > 0 or dseg.term.len > 0) {
+                                const inl = if (term_inl.len > 0) term_inl else try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, dseg.term) }});
+                                try blocks.append(a, .{
+                                    .kind = .def_term,
+                                    .level = 0,
+                                    .meta = null,
+                                    .inlines = inl,
+                                });
+                            }
+                            for (dseg.descs) |body| {
+                                const desc_inl = try lowerDefBodyInlines(a, body);
+                                const inl = if (desc_inl.len > 0) desc_inl else try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, body) }});
+                                try blocks.append(a, .{
+                                    .kind = .def_desc,
+                                    .level = 0,
+                                    .meta = null,
+                                    .inlines = inl,
+                                });
+                            }
+                        } else {
+                            if (dseg.text.len == 0 or !bq.hasNonWs(dseg.text)) continue;
+                            const pre = try preprocess.preprocessInlineSugar(a, dseg.text);
+                            const ir = try zmd.parseAlloc(a, pre, markerConfig);
+                            const lowered = try lowerIr(a, ir);
+                            try blocks.appendSlice(a, lowered);
+                        }
+                    }
                 }
             }
         }
@@ -1363,4 +1397,144 @@ test "footnote does not destroy surrounding paragraph" {
     }
     try std.testing.expect(saw_alpha);
     try std.testing.expect(saw_beta);
+}
+
+
+test "deflist multi-term multi-def parse" {
+    const src =
+        \\Term one
+        \\: First definition
+        \\: Second definition for the same term
+        \\
+        \\Term two
+        \\: Definition of term two
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var terms: usize = 0;
+    var descs: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .def_term) terms += 1;
+        if (blk.kind == .def_desc) descs += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), terms);
+    try std.testing.expectEqual(@as(usize, 3), descs);
+    // Order: term, desc, desc, term, desc
+    try std.testing.expectEqual(BlockKind.def_term, doc.blocks[0].kind);
+    const j0 = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(j0);
+    try expectContains(j0, "Term one");
+    try std.testing.expectEqual(BlockKind.def_desc, doc.blocks[1].kind);
+    const j1 = try joinBlockText(std.testing.allocator, doc.blocks[1]);
+    defer std.testing.allocator.free(j1);
+    try expectContains(j1, "First definition");
+}
+
+test "deflist inline marks in term and def" {
+    const src =
+        \\Nested **marks** and `code` in defs
+        \\: Should still compose **inlines**
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_term = false;
+    var saw_desc = false;
+    var term_strong = false;
+    var term_code = false;
+    var desc_strong = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .def_term) {
+            saw_term = true;
+            for (blk.inlines) |inl| {
+                if (inl.flags.strong and std.mem.eql(u8, inl.text, "marks")) term_strong = true;
+                if (inl.kind == .code and std.mem.eql(u8, inl.text, "code")) term_code = true;
+            }
+        }
+        if (blk.kind == .def_desc) {
+            saw_desc = true;
+            for (blk.inlines) |inl| {
+                if (inl.flags.strong and std.mem.eql(u8, inl.text, "inlines")) desc_strong = true;
+            }
+        }
+    }
+    try std.testing.expect(saw_term);
+    try std.testing.expect(saw_desc);
+    try std.testing.expect(term_strong);
+    try std.testing.expect(term_code);
+    try std.testing.expect(desc_strong);
+}
+
+test "deflist fence safe" {
+    const src =
+        \\```
+        \\Term
+        \\: not
+        \\```
+        \\
+        \\Outside
+        \\: yes
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var terms: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .def_term) {
+            terms += 1;
+            const j = try joinBlockText(std.testing.allocator, blk);
+            defer std.testing.allocator.free(j);
+            try expectContains(j, "Outside");
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), terms);
+}
+
+test "deflist orphan colon stays prose" {
+    const src = ": orphan only\n\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    for (doc.blocks) |blk| {
+        try std.testing.expect(blk.kind != .def_term);
+        try std.testing.expect(blk.kind != .def_desc);
+    }
+}
+
+test "deflist does not steal footnote def" {
+    const src =
+        \\See note[^1] please.
+        \\
+        \\[^1]: Hello footnote.
+        \\
+        \\API key
+        \\: Secret used by the gateway
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_fn = false;
+    var saw_term = false;
+    var saw_desc = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .footnote_def) {
+            saw_fn = true;
+            try std.testing.expectEqualStrings("1", blk.meta.?);
+        }
+        if (blk.kind == .def_term) {
+            saw_term = true;
+            const j = try joinBlockText(std.testing.allocator, blk);
+            defer std.testing.allocator.free(j);
+            try expectContains(j, "API key");
+        }
+        if (blk.kind == .def_desc) {
+            saw_desc = true;
+            const j = try joinBlockText(std.testing.allocator, blk);
+            defer std.testing.allocator.free(j);
+            try expectContains(j, "Secret");
+        }
+    }
+    try std.testing.expect(saw_fn);
+    try std.testing.expect(saw_term);
+    try std.testing.expect(saw_desc);
 }
