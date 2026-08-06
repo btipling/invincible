@@ -83,7 +83,7 @@ pub fn fontEmoji() Font {
 
 /// OpenMoji black is thin outline art — at body px it reads as noise.
 /// Scale relative to the surrounding run so glyphs stay legible in the transcript.
-pub const emoji_size_scale: f32 = 1.65;
+pub const emoji_size_scale: f32 = 2.25;
 
 /// Ink for monochrome emoji (OpenMoji outlines). Always teal_accent — intentional brand look.
 pub const emoji_ink = teal_accent;
