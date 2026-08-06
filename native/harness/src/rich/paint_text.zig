@@ -150,6 +150,54 @@ pub fn paintListItem(src: std.builtin.SourceLocation, block: parse.Block, ctx: *
     }
 }
 
+
+pub fn paintBlockquote(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
+    const body = dvui.Font.theme(.body);
+    const level: u8 = if (block.level == 0) 1 else block.level;
+    const depth: f32 = @floatFromInt(@min(level -| 1, 6));
+    const indent: f32 = 8.0 + depth * 10.0;
+    // Plain runs use quote_text (muted); strong/code/link keep StyleMap colors.
+    var quote_style = ctx.style;
+    quote_style.body_text = ctx.style.quote_text;
+    var quote_ctx = PaintCtx{
+        .style = quote_style,
+        .id_base = ctx.id_base,
+        .run_seq = ctx.run_seq,
+    };
+    var row = dvui.box(src, .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .id_extra = nextId(ctx),
+        .background = false,
+        .margin = .{ .x = indent, .y = 1, .w = 0, .h = 2 },
+    });
+    defer row.deinit();
+
+    // Left bar (~3px) — quote chrome (palette only).
+    {
+        var bar = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .id_extra = nextId(ctx),
+            .background = true,
+            .color_fill = ctx.style.quote_bar,
+            .min_size_content = .{ .w = 3, .h = 14 },
+            .margin = .{ .x = 0, .y = 0, .w = 8, .h = 0 },
+        });
+        defer bar.deinit();
+    }
+
+    {
+        var tl = dvui.textLayout(@src(), .{}, .{
+            .expand = .horizontal,
+            .id_extra = nextId(ctx),
+            .color_text = ctx.style.quote_text,
+            .font = body,
+            .background = false,
+        });
+        defer tl.deinit();
+        paintInlines(tl, block.inlines, &quote_ctx, body);
+        tl.addText("\n", .{});
+    }
+}
+
 pub fn paintPlain(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
     paintParagraph(src, block, ctx);
 }
