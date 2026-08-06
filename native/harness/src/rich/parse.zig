@@ -71,7 +71,7 @@ pub const Block = struct {
     indent_cols: u8 = 0,
     /// GFM task list: null = ordinary list item; false/true = unchecked/checked task.
     checked: ?bool = null,
-    /// Fence language / list ordered meta / table cols (arena-owned).
+    /// Fence language / list ordered meta / table "cols,overflow,aligns" (arena-owned).
     meta: ?[]const u8 = null,
     inlines: []const Inline = &.{},
 };
@@ -151,12 +151,14 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
         if (tseg.is_table) {
             const td = tseg.table orelse continue;
             if (td.cols == 0 or td.cells.len == 0) continue;
-            // inlines = row-major cells; meta = "cols,overflow"
+            // inlines = row-major cells; meta = "cols,overflow,aligns" (aligns = lcrd…)
             const inl = try a.alloc(Inline, td.cells.len);
             for (td.cells, 0..) |cell, i| {
                 inl[i] = .{ .kind = .text, .text = try a.dupe(u8, cell) };
             }
-            const meta = try std.fmt.allocPrint(a, "{d},{d}", .{ td.cols, td.overflow_rows });
+            var abuf: [table.MAX_COLS]u8 = undefined;
+            const acodes = table.packAligns(td.aligns, abuf[0..]);
+            const meta = try std.fmt.allocPrint(a, "{d},{d},{s}", .{ td.cols, td.overflow_rows, acodes });
             try blocks.append(a, .{
                 .kind = .table,
                 .level = if (td.has_header) 1 else 0,
@@ -1423,6 +1425,56 @@ test "table header only" {
     defer std.testing.allocator.free(j);
     try expectContains(j, "H1");
 }
+
+test "table meta mixed aligns lcrd" {
+    const src =
+        \\| Left | Center | Right | Unaligned |
+        \\|:-----|:------:|------:|-----------|
+        \\| a | b | c | d |
+        \\| longer left cell | mid | rightmost | default |
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    try std.testing.expectEqual(BlockKind.table, doc.blocks[0].kind);
+    try std.testing.expectEqualStrings("4,0,lcrd", doc.blocks[0].meta.?);
+    // header + 2 body rows × 4 cols
+    try std.testing.expectEqual(@as(usize, 12), doc.blocks[0].inlines.len);
+    try std.testing.expectEqualStrings("a", doc.blocks[0].inlines[4].text);
+    try std.testing.expectEqualStrings("longer left cell", doc.blocks[0].inlines[8].text);
+}
+
+test "table body colon dash is plain text" {
+    // Full-row body that is itself a separator ends the table (partition rule).
+    // Cell text `:---` is plain when the row is not a separator row.
+    const src =
+        \\| H | X |
+        \\| --- | --- |
+        \\| :--- | keep |
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    try std.testing.expectEqual(BlockKind.table, doc.blocks[0].kind);
+    try std.testing.expectEqualStrings("2,0,dd", doc.blocks[0].meta.?);
+    try std.testing.expectEqualStrings(":---", doc.blocks[0].inlines[2].text);
+    try std.testing.expectEqualStrings("keep", doc.blocks[0].inlines[3].text);
+}
+
+test "table header only has aligns" {
+    const src =
+        \\| L | C | R |
+        \\|:---|:---:|---:|
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    try std.testing.expectEqual(BlockKind.table, doc.blocks[0].kind);
+    try std.testing.expectEqualStrings("3,0,lcr", doc.blocks[0].meta.?);
+    try std.testing.expectEqual(@as(usize, 3), doc.blocks[0].inlines.len);
+}
+
 
 test "table between prose" {
     const src = "before\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nafter\n";

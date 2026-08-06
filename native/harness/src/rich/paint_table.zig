@@ -3,27 +3,54 @@ const std = @import("std");
 const dvui = @import("dvui");
 const parse = @import("parse.zig");
 const paint_text = @import("paint_text.zig");
+const table = @import("table.zig");
 
-/// Parse meta "cols,overflow" → (cols, overflow_rows). Defaults: cols from cells, 0 overflow.
-fn parseMeta(meta: ?[]const u8, cell_n: usize) struct { usize, usize } {
+const Meta = struct {
+    cols: usize,
+    overflow: usize,
+    aligns: [table.MAX_COLS]table.Align,
+};
+
+/// Parse meta "cols,overflow[,aligns]" → cols, overflow_rows, per-col aligns.
+/// Legacy 2-field form → all default. Soft-fail on short/long/bad aligns chars.
+fn parseMeta(meta: ?[]const u8, cell_n: usize) Meta {
+    var result: Meta = .{
+        .cols = 1,
+        .overflow = 0,
+        .aligns = .{.default} ** table.MAX_COLS,
+    };
     if (meta) |m| {
         var it = std.mem.splitScalar(u8, m, ',');
         const c_s = it.next() orelse "";
         const o_s = it.next() orelse "0";
+        const a_s = it.next() orelse "";
         const cols = std.fmt.parseInt(usize, c_s, 10) catch 0;
         const overflow = std.fmt.parseInt(usize, o_s, 10) catch 0;
-        if (cols > 0) return .{ cols, overflow };
+        if (cols > 0) {
+            result.cols = @min(cols, table.MAX_COLS);
+            result.overflow = overflow;
+            table.unpackAligns(a_s, result.cols, result.aligns[0..]);
+            return result;
+        }
     }
-    // fallback: treat as single column
     _ = cell_n;
-    return .{ 1, 0 };
+    return result;
+}
+
+/// Horizontal gravity for a column (shared by header + body labels).
+/// When #206 cell inlines ship, apply the same gravity_x / expand on the cell content child.
+fn colPaintX(aligns: *const [table.MAX_COLS]table.Align, col: usize, cols: usize) f32 {
+    if (col >= cols) return 0.0;
+    return aligns[col].paintX();
 }
 
 pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *paint_text.PaintCtx) void {
     const cell_n = block.inlines.len;
     if (cell_n == 0) return;
 
-    const cols, const overflow = parseMeta(block.meta, cell_n);
+    const meta = parseMeta(block.meta, cell_n);
+    const cols = meta.cols;
+    const overflow = meta.overflow;
     if (cols == 0) return;
     const total_rows = cell_n / cols;
     if (total_rows == 0) return;
@@ -92,7 +119,10 @@ pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
             });
             defer cell.deinit();
             const text = block.inlines[col].text;
-            dvui.labelNoFmt(@src(), text, .{}, .{
+            const ax = colPaintX(&meta.aligns, col, cols);
+            dvui.labelNoFmt(@src(), text, .{ .align_x = ax }, .{
+                .expand = .horizontal,
+                .gravity_x = ax,
                 .font = header_font,
                 .color_text = ctx.style.body_text,
                 .id_extra = paint_text.nextIdPublic(ctx),
@@ -119,7 +149,11 @@ pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
             });
             defer cell.deinit();
 
-            dvui.labelNoFmt(@src(), text, .{}, .{
+            const ax = colPaintX(&meta.aligns, col, cols);
+            // Column gravity on the cell content box — keep for future #206 inlines.
+            dvui.labelNoFmt(@src(), text, .{ .align_x = ax }, .{
+                .expand = .horizontal,
+                .gravity_x = ax,
                 .font = body_font,
                 .color_text = ctx.style.body_text,
                 .id_extra = paint_text.nextIdPublic(ctx),
