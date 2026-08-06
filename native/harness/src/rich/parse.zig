@@ -618,6 +618,9 @@ const Builder = struct {
     fn openMarker(self: *Builder, tag: []const u8, meta: []const u8) !void {
         if (std.mem.eql(u8, tag, "ul") or std.mem.eql(u8, tag, "ol")) {
             self.list_depth +|= 1;
+            // Cap frames at list_stack.len; depth still rises for indent paint.
+            // closeMarker keeps stack_len <= list_depth so over-cap opens do not
+            // permanently desync markers after the deep nest closes.
             if (self.list_stack_len < self.list_stack.len) {
                 const kind: ListKind = if (std.mem.eql(u8, tag, "ol")) .ol else .ul;
                 self.list_stack[self.list_stack_len] = .{ .kind = kind, .counter = 0 };
@@ -678,8 +681,13 @@ const Builder = struct {
 
     fn closeMarker(self: *Builder, tag: []const u8) !void {
         if (std.mem.eql(u8, tag, "ul") or std.mem.eql(u8, tag, "ol")) {
+            // list_depth always tracks nest; list_stack caps at 8 frames.
+            // Only pop a frame when stack would exceed post-close depth (avoids
+            // sticky desync after open past the cap).
             if (self.list_depth > 0) self.list_depth -= 1;
-            if (self.list_stack_len > 0) self.list_stack_len -= 1;
+            if (self.list_stack_len > self.list_depth) {
+                self.list_stack_len = self.list_depth;
+            }
             return;
         }
         if (std.mem.eql(u8, tag, "b")) {
@@ -1718,6 +1726,36 @@ test "mixed lists inside quote with blank sep" {
     try std.testing.expect(ol >= 1);
 }
 
+test "ordered list counter resumes after nested ul" {
+    // Outer ol, inner ul under first item, then second outer item should be o,2.
+    const src =
+        \\1. alpha
+        \\   - nested bullet
+        \\2. beta
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var ordered: usize = 0;
+    var saw_ul = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        if (blk.meta) |m| {
+            if (m[0] == 'u') {
+                saw_ul = true;
+                continue;
+            }
+            if (m[0] == 'o') {
+                ordered += 1;
+                if (ordered == 1) try std.testing.expectEqualStrings("o,1", m);
+                if (ordered == 2) try std.testing.expectEqualStrings("o,2", m);
+            }
+        }
+    }
+    try std.testing.expect(saw_ul);
+    try std.testing.expectEqual(@as(usize, 2), ordered);
+}
+
 test "plain quote no list non-regression" {
     var doc = try parse(std.testing.allocator, "> only quote\n> second line\n");
     defer doc.deinit();
@@ -1727,6 +1765,3 @@ test "plain quote no list non-regression" {
         try std.testing.expectEqual(@as(u8, 0), blk.quote_depth);
     }
 }
-
-
-
