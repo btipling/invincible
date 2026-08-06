@@ -10,6 +10,7 @@ pub const QuoteLine = struct {
 
 /// Parse a single physical line (no trailing `\n`) as a quote line.
 /// Returns null if not a quote line (or if caller is inside a fence).
+/// Depth: consecutive `>>` or GFM-spaced `> >` (optional one space/tab after each `>`).
 pub fn parseQuoteLine(line: []const u8) ?QuoteLine {
     var i: usize = 0;
     var lead: usize = 0;
@@ -17,14 +18,14 @@ pub fn parseQuoteLine(line: []const u8) ?QuoteLine {
     if (i >= line.len or line[i] != '>') return null;
 
     var gt: u8 = 0;
-    while (i < line.len and line[i] == '>') : (i += 1) {
+    while (i < line.len and line[i] == '>') {
         if (gt < 255) gt += 1;
+        i += 1;
+        // Optional one space/tab after each `>` (content lead-in or nest separator).
+        if (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
     }
     if (gt == 0) return null;
     const depth: u8 = if (gt > 6) 6 else gt;
-
-    // Optional whitespace after the `>` run
-    if (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
 
     return .{ .depth = depth, .content = line[i..] };
 }
@@ -228,4 +229,23 @@ test "partition prose then quote then prose" {
     try std.testing.expectEqualStrings("mid", segs[1].text);
     try std.testing.expect(!segs[2].is_quote);
     try std.testing.expect(std.mem.indexOf(u8, segs[2].text, "after") != null);
+}
+
+test "parseQuoteLine spaced nest" {
+    const q = parseQuoteLine("> > nest").?;
+    try std.testing.expectEqual(@as(u8, 2), q.depth);
+    try std.testing.expectEqualStrings("nest", q.content);
+}
+
+test "partition spaced nest depth" {
+    const segs = try partition(std.testing.allocator, "> outer\n> > inner\n");
+    defer {
+        for (segs) |s| std.testing.allocator.free(s.text);
+        std.testing.allocator.free(segs);
+    }
+    try std.testing.expectEqual(@as(usize, 2), segs.len);
+    try std.testing.expectEqual(@as(u8, 1), segs[0].depth);
+    try std.testing.expectEqualStrings("outer", segs[0].text);
+    try std.testing.expectEqual(@as(u8, 2), segs[1].depth);
+    try std.testing.expectEqualStrings("inner", segs[1].text);
 }

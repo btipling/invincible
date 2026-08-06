@@ -117,6 +117,8 @@ pub fn paintListItem(src: std.builtin.SourceLocation, block: parse.Block, ctx: *
     const body = dvui.Font.theme(.body);
     const depth: f32 = @floatFromInt(@min(block.level, 6));
     const indent: f32 = 8.0 + depth * 10.0;
+    // textLayout defaults pad 6px — must zero both marker and body or the bullet sits high.
+    const zero_pad = dvui.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
     var row = dvui.box(src, .{ .dir = .horizontal }, .{
         .expand = .horizontal,
         .id_extra = nextId(ctx),
@@ -143,6 +145,7 @@ pub fn paintListItem(src: std.builtin.SourceLocation, block: parse.Block, ctx: *
             .color_text = ctx.style.body_text,
             .font = body,
             .background = false,
+            .padding = zero_pad,
         });
         defer tl.deinit();
         paintInlines(tl, block.inlines, ctx, body);
@@ -164,6 +167,8 @@ pub fn paintBlockquote(src: std.builtin.SourceLocation, block: parse.Block, ctx:
         .id_base = ctx.id_base,
         .run_seq = ctx.run_seq,
     };
+    // textLayout defaults pad 6px — zero it so the bar top matches text top.
+    const zero_pad = dvui.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
     var row = dvui.box(src, .{ .dir = .horizontal }, .{
         .expand = .horizontal,
         .id_extra = nextId(ctx),
@@ -172,13 +177,14 @@ pub fn paintBlockquote(src: std.builtin.SourceLocation, block: parse.Block, ctx:
     });
     defer row.deinit();
 
-    // Left bar (~3px) — quote chrome (palette only).
+    // Left bar (~3px) — expands to row height so multi-line quotes keep a full rule.
     {
         var bar = dvui.box(@src(), .{ .dir = .vertical }, .{
             .id_extra = nextId(ctx),
             .background = true,
             .color_fill = ctx.style.quote_bar,
-            .min_size_content = .{ .w = 3, .h = 14 },
+            .min_size_content = .{ .w = 3, .h = 1 },
+            .expand = .vertical,
             .margin = .{ .x = 0, .y = 0, .w = 8, .h = 0 },
         });
         defer bar.deinit();
@@ -191,6 +197,7 @@ pub fn paintBlockquote(src: std.builtin.SourceLocation, block: parse.Block, ctx:
             .color_text = ctx.style.quote_text,
             .font = body,
             .background = false,
+            .padding = zero_pad,
         });
         defer tl.deinit();
         paintInlines(tl, block.inlines, &quote_ctx, body);
