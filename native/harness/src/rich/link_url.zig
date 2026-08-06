@@ -1,6 +1,15 @@
 //! http(s) link allowlist for rich transcript (no dvui dep).
 const std = @import("std");
 
+/// Cap for bare-URL autolink spans (same spirit as image URL cap).
+pub const max_bare_url_len: usize = 2048;
+
+/// Half-open span of a bare http(s) URL inside `s`.
+pub const BareUrlSpan = struct {
+    start: usize,
+    end: usize,
+};
+
 /// Strip CommonMark optional title and `<>` wrappers from a zmd destination.
 /// zmd sets `node.href` to the full paren contents, e.g. `https://x/a.png "title"`.
 /// Host fetch keys and paint cache lookups must use the bare URL only.
@@ -38,6 +47,92 @@ pub fn isSafeLinkUrl(url: []const u8) bool {
     if (startsWithIgnoreCase(url, "https://")) return true;
     if (startsWithIgnoreCase(url, "http://")) return true;
     return false;
+}
+
+/// Find next bare `http://` / `https://` URL in `s` at or after `from`.
+/// Returns half-open `[start, end)` after trailing-punctuation trim.
+/// Does not stop at `?` / `#` / `&` / `=` / path punctuation.
+pub fn findBareHttpUrl(s: []const u8, from: usize) ?BareUrlSpan {
+    var i = from;
+    while (i < s.len) {
+        const scheme_len = matchHttpScheme(s, i) orelse {
+            i += 1;
+            continue;
+        };
+        var j = i + scheme_len;
+        while (j < s.len and isUrlBodyByte(s[j])) : (j += 1) {}
+        if (j <= i + scheme_len) {
+            i += 1;
+            continue;
+        }
+        const raw = s[i..j];
+        const trimmed = trimTrailingUrlPunct(raw);
+        if (trimmed.len <= scheme_len) {
+            i += 1;
+            continue;
+        }
+        if (trimmed.len > max_bare_url_len) {
+            // Fail open as plain text — skip past this scheme match.
+            i += scheme_len;
+            continue;
+        }
+        if (!isSafeLinkUrl(trimmed)) {
+            i += 1;
+            continue;
+        }
+        return .{ .start = i, .end = i + trimmed.len };
+    }
+    return null;
+}
+
+/// GFM-ish trailing trim: strip `.,;:!?` and unpaired closers `)]}'"`.
+/// Does not strip a `)` that balances an open `(` inside the URL.
+pub fn trimTrailingUrlPunct(s: []const u8) []const u8 {
+    var end = s.len;
+    while (end > 0) {
+        const c = s[end - 1];
+        switch (c) {
+            '.', ',', ';', ':', '!', '?' => end -= 1,
+            ')' => {
+                if (countByte(s[0..end], ')') > countByte(s[0..end], '(')) {
+                    end -= 1;
+                } else break;
+            },
+            ']' => {
+                if (countByte(s[0..end], ']') > countByte(s[0..end], '[')) {
+                    end -= 1;
+                } else break;
+            },
+            '}' => {
+                if (countByte(s[0..end], '}') > countByte(s[0..end], '{')) {
+                    end -= 1;
+                } else break;
+            },
+            '\'', '"' => end -= 1,
+            else => break,
+        }
+    }
+    return s[0..end];
+}
+
+fn matchHttpScheme(s: []const u8, i: usize) ?usize {
+    const rest = s[i..];
+    if (startsWithIgnoreCase(rest, "https://")) return 8;
+    if (startsWithIgnoreCase(rest, "http://")) return 7;
+    return null;
+}
+
+fn isUrlBodyByte(c: u8) bool {
+    // Stop at whitespace and ASCII controls; keep path/query/frag punctuation.
+    return c > 0x20 and c != 0x7f;
+}
+
+fn countByte(s: []const u8, b: u8) usize {
+    var n: usize = 0;
+    for (s) |c| {
+        if (c == b) n += 1;
+    }
+    return n;
 }
 
 fn startsWithIgnoreCase(hay: []const u8, needle: []const u8) bool {
@@ -90,4 +185,65 @@ test "normalizeDestination strips title and angle brackets" {
         "https://example.com/a.png",
         normalizeDestination("  <https://example.com/a.png> \"t\"  "),
     );
+}
+
+test "findBareHttpUrl query frag and case" {
+    const s = "See https://example.com/path?q=1&x=y#frag for details.";
+    const sp = findBareHttpUrl(s, 0).?;
+    try std.testing.expectEqualStrings(
+        "https://example.com/path?q=1&x=y#frag",
+        s[sp.start..sp.end],
+    );
+
+    const s2 = "go HTTP://example.com/a next";
+    const sp2 = findBareHttpUrl(s2, 0).?;
+    try std.testing.expectEqualStrings("HTTP://example.com/a", s2[sp2.start..sp2.end]);
+
+    const s3 = "go HTTPS://EXAMPLE.COM/X";
+    const sp3 = findBareHttpUrl(s3, 0).?;
+    try std.testing.expectEqualStrings("HTTPS://EXAMPLE.COM/X", s3[sp3.start..sp3.end]);
+}
+
+test "trimTrailingUrlPunct sentence and parens" {
+    try std.testing.expectEqualStrings(
+        "https://example.com/a?b=c#d",
+        trimTrailingUrlPunct("https://example.com/a?b=c#d."),
+    );
+    try std.testing.expectEqualStrings(
+        "https://example.com/x?y=1#z",
+        trimTrailingUrlPunct("https://example.com/x?y=1#z)"),
+    );
+    try std.testing.expectEqualStrings(
+        "https://example.com/foo_(bar)",
+        trimTrailingUrlPunct("https://example.com/foo_(bar)"),
+    );
+    try std.testing.expectEqualStrings(
+        "https://example.com/x",
+        trimTrailingUrlPunct("https://example.com/x),"),
+    );
+}
+
+test "findBareHttpUrl trailing punct not in span" {
+    const s = "end: https://example.com/a?b=c#d.";
+    const sp = findBareHttpUrl(s, 0).?;
+    try std.testing.expectEqualStrings("https://example.com/a?b=c#d", s[sp.start..sp.end]);
+    try std.testing.expect(s[sp.end] == '.');
+
+    const s2 = "(https://example.com/x?y=1#z)";
+    const sp2 = findBareHttpUrl(s2, 0).?;
+    try std.testing.expectEqualStrings("https://example.com/x?y=1#z", s2[sp2.start..sp2.end]);
+}
+
+test "findBareHttpUrl rejects non-http and overlong" {
+    try std.testing.expect(findBareHttpUrl("javascript:alert(1)", 0) == null);
+    try std.testing.expect(findBareHttpUrl("see www.example.com", 0) == null);
+    try std.testing.expect(findBareHttpUrl("ftp://example.com", 0) == null);
+
+    var buf: [max_bare_url_len + 64]u8 = undefined;
+    const prefix = "https://example.com/";
+    @memcpy(buf[0..prefix.len], prefix);
+    @memset(buf[prefix.len .. prefix.len + max_bare_url_len], 'a');
+    const long = buf[0 .. prefix.len + max_bare_url_len];
+    try std.testing.expect(long.len > max_bare_url_len);
+    try std.testing.expect(findBareHttpUrl(long, 0) == null);
 }
