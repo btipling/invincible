@@ -79,16 +79,24 @@ pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, c
 
 pub fn paintHeading(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
     const level = if (block.level == 0) 1 else block.level;
+    // H1–H3: existing title/section/subsection faces.
+    // H4–H6: detail → fine print → whisper ladder (#149 / plan #182).
     const font = switch (level) {
         1 => dvui.Font.theme(.title),
         2 => dvui.Font.theme(.heading).larger(2),
         3 => dvui.Font.theme(.heading),
-        else => dvui.Font.theme(.body).withWeight(.bold),
+        4 => dvui.Font.theme(.body).withWeight(.bold),
+        5 => dvui.Font.theme(.body),
+        else => dvui.Font.theme(.body).smaller(), // H6+
+    };
+    const color = switch (level) {
+        1, 2, 3, 4 => ctx.style.heading_text,
+        else => ctx.style.muted_text, // H5 / H6
     };
     var tl = dvui.textLayout(src, .{}, .{
         .expand = .horizontal,
         .id_extra = nextId(ctx),
-        .color_text = ctx.style.heading_text,
+        .color_text = color,
         .font = font,
         .background = false,
         .padding = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
