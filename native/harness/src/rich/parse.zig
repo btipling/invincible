@@ -402,7 +402,10 @@ fn autolinkTextInlines(a: Allocator, inlines: []const Inline) ![]const Inline {
         }
     }
 
-    if (!changed) return inlines;
+    if (!changed) {
+        out.deinit(a);
+        return inlines;
+    }
     return try out.toOwnedSlice(a);
 }
 

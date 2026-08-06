@@ -92,3 +92,30 @@ export function resolveHarnessRepo(env = process.env) {
 
   return { owner, repo, source };
 }
+
+/**
+ * Paths that must produce a commit-matched `build-harness` artifact when changed
+ * (mirrors `.github/workflows/build-harness.yml` path filters).
+ * @param {string} path
+ * @returns {boolean}
+ */
+export function isHarnessBuildPath(path) {
+  if (typeof path !== 'string' || !path) return false;
+  const p = path.replace(/\\/g, '/');
+  if (p === 'native/ZIG_VERSION') return true;
+  if (p === '.github/workflows/build-harness.yml') return true;
+  if (p === 'native/harness' || p.startsWith('native/harness/')) return true;
+  return false;
+}
+
+/**
+ * @param {Iterable<string> | null | undefined} paths
+ * @returns {boolean}
+ */
+export function commitTouchesHarnessBuild(paths) {
+  if (!paths) return false;
+  for (const p of paths) {
+    if (isHarnessBuildPath(p)) return true;
+  }
+  return false;
+}

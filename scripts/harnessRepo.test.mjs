@@ -165,3 +165,31 @@ describe('resolveHarnessRepo', () => {
     });
   });
 });
+
+import { commitTouchesHarnessBuild, isHarnessBuildPath } from './harnessRepo.mjs';
+
+describe('isHarnessBuildPath / commitTouchesHarnessBuild', () => {
+  it('matches build-harness path filters', () => {
+    expect(isHarnessBuildPath('native/harness/src/rich/parse.zig')).toBe(true);
+    expect(isHarnessBuildPath('native/harness')).toBe(true);
+    expect(isHarnessBuildPath('native/ZIG_VERSION')).toBe(true);
+    expect(isHarnessBuildPath('.github/workflows/build-harness.yml')).toBe(true);
+    expect(isHarnessBuildPath('docs/harness-limits.md')).toBe(false);
+    expect(isHarnessBuildPath('scripts/fetch-harness-artifact.mjs')).toBe(false);
+    expect(isHarnessBuildPath('')).toBe(false);
+  });
+
+  it('commitTouchesHarnessBuild any-path', () => {
+    expect(
+      commitTouchesHarnessBuild([
+        'docs/harness-limits.md',
+        'native/harness/src/rich/link_url.zig',
+      ]),
+    ).toBe(true);
+    expect(commitTouchesHarnessBuild(['docs/harness-limits.md', 'README.md'])).toBe(
+      false,
+    );
+    expect(commitTouchesHarnessBuild(null)).toBe(false);
+    expect(commitTouchesHarnessBuild([])).toBe(false);
+  });
+});
