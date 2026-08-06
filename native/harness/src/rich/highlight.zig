@@ -468,39 +468,43 @@ test "token buffer cap still paints-safe remainder contract" {
 
 test "utf8 in string and comment" {
     const cjk = "\xe6\x97\xa5\xe6\x9c\xac"; // 日本
-    // string: "日"  comment: // 本
+    // string and line-comment each contain full CJK (integrity, not glyph coverage)
     const src = "const s = \"" ++ cjk ++ "\"; // " ++ cjk ++ "\n";
     var tokens: [64]Token = undefined;
     const n = lexInto(src, .zig, &tokens);
     try std.testing.expect(n > 0);
     try std.testing.expect(hasKind(src, .zig, .string));
     try std.testing.expect(hasKind(src, .zig, .comment));
+    var string_has_cjk = false;
+    var comment_has_cjk = false;
     for (tokens[0..n]) |t| {
         const slice = src[t.start .. t.start + t.len];
-        // complete sequences inside string/comment should validate; incomplete only if cap/degrade
-        if (t.kind == .string or t.kind == .comment) {
+        if (t.kind == .string) {
             try std.testing.expect(std.unicode.utf8ValidateSlice(slice));
-            try std.testing.expect(std.mem.indexOf(u8, slice, cjk) != null or slice.len > 0);
+            if (std.mem.indexOf(u8, slice, cjk) != null) string_has_cjk = true;
+        } else if (t.kind == .comment) {
+            try std.testing.expect(std.unicode.utf8ValidateSlice(slice));
+            if (std.mem.indexOf(u8, slice, cjk) != null) comment_has_cjk = true;
         }
     }
-    // at least one token contains full cjk
-    var found = false;
-    for (tokens[0..n]) |t| {
-        if (std.mem.indexOf(u8, src[t.start .. t.start + t.len], cjk) != null) found = true;
-    }
-    try std.testing.expect(found);
+    try std.testing.expect(string_has_cjk);
+    try std.testing.expect(comment_has_cjk);
 }
 
 test "lex invalid utf8 does not panic" {
-    const src = "a \xe6\x97 b"; // incomplete sequence mid-source
-    var tokens: [32]Token = undefined;
-    const n = lexInto(src, .zig, &tokens);
-    try std.testing.expect(n > 0);
-    var end: usize = 0;
-    for (tokens[0..n]) |t| {
-        try std.testing.expectEqual(end, t.start);
-        end = t.start + t.len;
+    // Incomplete sequence mid-source + truncated lead at EOF
+    const mid = "a \xe6\x97 b";
+    const tail = "ok\xe6\x97"; // 2 of 3 bytes at end
+    for ([_][]const u8{ mid, tail }) |src| {
+        var tokens: [32]Token = undefined;
+        const n = lexInto(src, .zig, &tokens);
+        try std.testing.expect(n > 0);
+        var end: usize = 0;
+        for (tokens[0..n]) |t| {
+            try std.testing.expect(t.len > 0);
+            try std.testing.expectEqual(end, t.start);
+            end = t.start + t.len;
+        }
+        try std.testing.expectEqual(src.len, end);
     }
-    // may not cover full body if TOKEN buffer tiny — here full
-    try std.testing.expectEqual(src.len, end);
 }
