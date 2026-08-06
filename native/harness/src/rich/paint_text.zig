@@ -92,12 +92,13 @@ pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, c
 
 pub fn paintHeading(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
     const level = if (block.level == 0) 1 else block.level;
-    // H1–H3: existing title/section/subsection faces.
-    // H4–H6: detail → fine print → whisper ladder (#149 / plan #182).
+    // H1–H3: title / section / subsection. H4–H6: detail → fine print → whisper (#149).
+    // palette.font_heading and font_body share DefaultSize — plain .heading for H3 was the
+    // same px as H4 body.bold, so H3/H4 looked equal or H4 heavier. H3 uses larger(1).
     const font = switch (level) {
         1 => dvui.Font.theme(.title),
         2 => dvui.Font.theme(.heading).larger(2),
-        3 => dvui.Font.theme(.heading),
+        3 => dvui.Font.theme(.heading).larger(1),
         4 => dvui.Font.theme(.body).withWeight(.bold),
         5 => dvui.Font.theme(.body),
         // No Font.smaller on this dvui pin — larger(-N) is the size inverse of H2's larger(2).
