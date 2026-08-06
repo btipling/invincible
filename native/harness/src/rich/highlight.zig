@@ -97,8 +97,7 @@ pub fn lexInto(src: []const u8, family: LangFamily, out: []Token) usize {
 
         // Punctuation / other → default; keep UTF-8 sequences whole so paint
         // never receives a split multi-byte slice (mono path paints whole lines).
-        const seq_len = utf8SeqLen(src[i]);
-        const take = @min(seq_len, src.len - i);
+        const take = utf8SeqLen(src, i);
         n = push(out, n, i, take, .default);
         i += take;
     }
@@ -289,9 +288,14 @@ fn isIdentCont(c: u8) bool {
     return isIdentStart(c) or isDigit(c);
 }
 
-/// UTF-8 sequence length for lead byte, or 1 on invalid (degrade, never panic).
-fn utf8SeqLen(lead: u8) usize {
-    return std.unicode.utf8ByteSequenceLength(lead) catch 1;
+/// UTF-8 sequence length at `i`, or 1 on invalid/incomplete (degrade, never panic).
+fn utf8SeqLen(src: []const u8, i: usize) usize {
+    if (i >= src.len) return 1;
+    const need = std.unicode.utf8ByteSequenceLength(src[i]) catch return 1;
+    if (i + need > src.len) return 1; // incomplete → single-byte degrade
+    // Reject overlong/invalid continuation so paint gets 1-byte slices not fake multi-byte.
+    _ = std.unicode.utf8Decode(src[i .. i + need]) catch return 1;
+    return need;
 }
 
 fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
@@ -460,4 +464,47 @@ test "token buffer cap still paints-safe remainder contract" {
         try std.testing.expect(std.unicode.utf8ValidateSlice(src[t.start .. t.start + t.len]));
     }
     try std.testing.expect(end < src.len); // capped before EOF
+}
+
+test "utf8 in string and comment" {
+    const cjk = "\xe6\x97\xa5\xe6\x9c\xac"; // 日本
+    // string and line-comment each contain full CJK (integrity, not glyph coverage)
+    const src = "const s = \"" ++ cjk ++ "\"; // " ++ cjk ++ "\n";
+    var tokens: [64]Token = undefined;
+    const n = lexInto(src, .zig, &tokens);
+    try std.testing.expect(n > 0);
+    try std.testing.expect(hasKind(src, .zig, .string));
+    try std.testing.expect(hasKind(src, .zig, .comment));
+    var string_has_cjk = false;
+    var comment_has_cjk = false;
+    for (tokens[0..n]) |t| {
+        const slice = src[t.start .. t.start + t.len];
+        if (t.kind == .string) {
+            try std.testing.expect(std.unicode.utf8ValidateSlice(slice));
+            if (std.mem.indexOf(u8, slice, cjk) != null) string_has_cjk = true;
+        } else if (t.kind == .comment) {
+            try std.testing.expect(std.unicode.utf8ValidateSlice(slice));
+            if (std.mem.indexOf(u8, slice, cjk) != null) comment_has_cjk = true;
+        }
+    }
+    try std.testing.expect(string_has_cjk);
+    try std.testing.expect(comment_has_cjk);
+}
+
+test "lex invalid utf8 does not panic" {
+    // Incomplete sequence mid-source + truncated lead at EOF
+    const mid = "a \xe6\x97 b";
+    const tail = "ok\xe6\x97"; // 2 of 3 bytes at end
+    for ([_][]const u8{ mid, tail }) |src| {
+        var tokens: [32]Token = undefined;
+        const n = lexInto(src, .zig, &tokens);
+        try std.testing.expect(n > 0);
+        var end: usize = 0;
+        for (tokens[0..n]) |t| {
+            try std.testing.expect(t.len > 0);
+            try std.testing.expectEqual(end, t.start);
+            end = t.start + t.len;
+        }
+        try std.testing.expectEqual(src.len, end);
+    }
 }
