@@ -183,6 +183,13 @@ pub fn partition(allocator: Allocator, src: []const u8) ![]Segment {
             const term = try allocator.dupe(u8, line.text);
             errdefer allocator.free(term);
             const descs = try desc_list.toOwnedSlice(allocator);
+            // Owned by `out` after append; free on append failure (GPA callers).
+            errdefer {
+                for (descs) |d| {
+                    if (d.len > 0) allocator.free(d);
+                }
+                if (descs.len > 0) allocator.free(descs);
+            }
             try out.append(allocator, .{
                 .is_deflist = true,
                 .term = term,
@@ -342,5 +349,34 @@ test "partition cap fail open" {
         }
     }
     try std.testing.expectEqual(MAX_TERMS, terms);
+    try std.testing.expect(saw_overflow_prose);
+}
+
+test "partition cap descs fail open" {
+    // One term with > MAX_DESCS defs; overflow def lines stay prose (visible).
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try buf.appendSlice(std.testing.allocator, "Term\n");
+    var n: usize = 0;
+    while (n < MAX_DESCS + 5) : (n += 1) {
+        var line_buf: [32]u8 = undefined;
+        const line = try std.fmt.bufPrint(&line_buf, ": d{d}\n", .{n});
+        try buf.appendSlice(std.testing.allocator, line);
+    }
+    const segs = try partition(std.testing.allocator, buf.items);
+    defer freeSegments(std.testing.allocator, segs);
+    var terms: usize = 0;
+    var descs: usize = 0;
+    var saw_overflow_prose = false;
+    for (segs) |s| {
+        if (s.is_deflist) {
+            terms += 1;
+            descs += s.descs.len;
+        } else if (std.mem.indexOf(u8, s.text, "d64") != null or std.mem.indexOf(u8, s.text, "d65") != null) {
+            saw_overflow_prose = true;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), terms);
+    try std.testing.expectEqual(MAX_DESCS, descs);
     try std.testing.expect(saw_overflow_prose);
 }
