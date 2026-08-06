@@ -332,21 +332,7 @@ const Builder = struct {
                     try self.pending.append(self.a, .{ .role = .strike });
                 },
                 preprocess.pua_strike_close => {
-                    try self.flushText();
-                    // Orphan close: ignore
-                    if (self.pending.items.len > 0 and self.pending.items[self.pending.items.len - 1].role == .strike) {
-                        _ = self.pending.pop();
-                    } else {
-                        // pop matching strike deeper if needed
-                        var k = self.pending.items.len;
-                        while (k > 0) {
-                            k -= 1;
-                            if (self.pending.items[k].role == .strike) {
-                                _ = self.pending.orderedRemove(k);
-                                break;
-                            }
-                        }
-                    }
+                    try self.closeInlineRole(.strike);
                 },
                 preprocess.pua_lit_star => try self.text_buf.append(self.a, '*'),
                 preprocess.pua_lit_under => try self.text_buf.append(self.a, '_'),
@@ -412,6 +398,27 @@ const Builder = struct {
         _ = self.pending.pop() orelse return;
     }
 
+    /// Pop a specific role (zmd tag close or PUA strike). Prefer top-of-stack;
+    /// otherwise remove the nearest matching frame so overlapping spans do not
+    /// steal a different role's close (LIFO-only broke `**~~x** y~~`).
+    fn closeInlineRole(self: *Builder, role: Role) !void {
+        try self.flushText();
+        if (self.pending.items.len == 0) return;
+        if (self.pending.items[self.pending.items.len - 1].role == role) {
+            _ = self.pending.pop();
+            return;
+        }
+        var k = self.pending.items.len;
+        while (k > 0) {
+            k -= 1;
+            if (self.pending.items[k].role == role) {
+                _ = self.pending.orderedRemove(k);
+                return;
+            }
+        }
+        // Orphan close: ignore
+    }
+
     fn openMarker(self: *Builder, tag: []const u8, meta: []const u8) !void {
         if (std.mem.eql(u8, tag, "ul") or std.mem.eql(u8, tag, "ol")) {
             self.list_depth +|= 1;
@@ -460,11 +467,24 @@ const Builder = struct {
             if (self.list_depth > 0) self.list_depth -= 1;
             return;
         }
-        if (std.mem.eql(u8, tag, "b") or std.mem.eql(u8, tag, "i") or
-            std.mem.eql(u8, tag, "code") or std.mem.eql(u8, tag, "link") or
-            std.mem.eql(u8, tag, "img") or std.mem.eql(u8, tag, "ref"))
-        {
-            try self.closeInline();
+        if (std.mem.eql(u8, tag, "b")) {
+            try self.closeInlineRole(.strong);
+            return;
+        }
+        if (std.mem.eql(u8, tag, "i")) {
+            try self.closeInlineRole(.emph);
+            return;
+        }
+        if (std.mem.eql(u8, tag, "code")) {
+            try self.closeInlineRole(.code);
+            return;
+        }
+        if (std.mem.eql(u8, tag, "link")) {
+            try self.closeInlineRole(.link);
+            return;
+        }
+        if (std.mem.eql(u8, tag, "img") or std.mem.eql(u8, tag, "ref")) {
+            try self.closeInlineRole(.plain);
             return;
         }
         if (std.mem.eql(u8, tag, "p") or std.mem.eql(u8, tag, "li") or
@@ -808,4 +828,53 @@ test "fence body not rewritten as strike" {
         saw = true;
     }
     try std.testing.expect(saw);
+}
+
+
+test "escape underscore no emph" {
+    var doc = try parse(std.testing.allocator, "\\_not emph\\_");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    const joined = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(joined);
+    try expectContains(joined, "_not emph_");
+    for (doc.blocks[0].inlines) |inl| {
+        try std.testing.expect(!inl.flags.emph);
+    }
+}
+
+test "escape backtick does not open code" {
+    var doc = try parse(std.testing.allocator, "\\`not code\\`");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    const joined = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(joined);
+    try expectContains(joined, "`not code`");
+    for (doc.blocks[0].inlines) |inl| {
+        try std.testing.expect(inl.kind != .code);
+    }
+}
+
+test "escape backslash literal" {
+    var doc = try parse(std.testing.allocator, "a\\\\b");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    const joined = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(joined);
+    try expectContains(joined, "a\\b");
+}
+
+test "overlapping strike and strong role-matched close" {
+    // Crossed markers: strong should not stay open over trailing prose after **.
+    var doc = try parse(std.testing.allocator, "**~~x** y~~");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    var y_strong = false;
+    var x_struck = false;
+    for (doc.blocks[0].inlines) |inl| {
+        if (std.mem.indexOf(u8, inl.text, "x") != null and inl.flags.strike) x_struck = true;
+        if (std.mem.indexOf(u8, inl.text, "y") != null and inl.flags.strong) y_strong = true;
+    }
+    try std.testing.expect(x_struck);
+    try std.testing.expect(!y_strong);
 }
