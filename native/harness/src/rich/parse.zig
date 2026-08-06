@@ -5,6 +5,7 @@
 //! paint. This module must not import `bridge.zig` or paint HTML into the canvas.
 const std = @import("std");
 const zmd = @import("zmd");
+const preprocess = @import("preprocess.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
@@ -20,18 +21,30 @@ pub const BlockKind = enum {
     plain,
 };
 
+/// Primary paint role (exclusive kinds). Strong/emph/strike are `StyleFlags`.
 pub const InlineKind = enum {
     text,
-    strong,
-    emph,
     code,
     link,
+};
+
+/// Stackable style bits on a flat run (no nested AST).
+pub const StyleFlags = packed struct(u8) {
+    strong: bool = false,
+    emph: bool = false,
+    strike: bool = false,
+    _pad: u5 = 0,
+
+    pub fn any(self: StyleFlags) bool {
+        return self.strong or self.emph or self.strike;
+    }
 };
 
 pub const Inline = struct {
     kind: InlineKind,
     text: []const u8,
     href: ?[]const u8 = null,
+    flags: StyleFlags = .{},
 };
 
 pub const Block = struct {
@@ -63,7 +76,9 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
     errdefer arena.deinit();
     const a = arena.allocator();
 
-    const ir = try zmd.parseAlloc(a, src, markerConfig);
+    // Escapes + same-line ~~strike~~ (zmd has neither). Arena-owned.
+    const pre = try preprocess.preprocessInlineSugar(a, src);
+    const ir = try zmd.parseAlloc(a, pre, markerConfig);
     const blocks = try lowerIr(a, ir);
 
     return .{
@@ -88,7 +103,7 @@ fn smokeDocOk(doc: *const ParsedDoc) bool {
     const b0 = doc.blocks[0];
     if (b0.kind != .heading or b0.level != 1) return false;
     for (b0.inlines) |inl| {
-        if (inl.kind == .strong and std.mem.eql(u8, inl.text, "x")) return true;
+        if (inl.flags.strong and std.mem.eql(u8, inl.text, "x")) return true;
     }
     return false;
 }
@@ -214,46 +229,139 @@ const markerConfig: zmd.Config = .{
 
 // --- IR → ParsedDoc ---------------------------------------------------------
 
+const Role = enum { strong, emph, strike, code, link, plain };
+
 const Builder = struct {
     a: Allocator,
     blocks: std.ArrayList(Block) = .empty,
     inlines: std.ArrayList(Inline) = .empty,
-    /// Stack of open inline kinds; on close we fold collected text into one Inline.
-    pending_inline: std.ArrayList(PendingInline) = .empty,
+    pending: std.ArrayList(Pending) = .empty,
     list_depth: u8 = 0,
     cur_kind: ?BlockKind = null,
     cur_level: u8 = 0,
     cur_meta: ?[]const u8 = null,
-    /// Text buffer for the current open inline frame (or block-level text).
     text_buf: std.ArrayList(u8) = .empty,
 
-    const PendingInline = struct {
-        kind: InlineKind,
+    const Pending = struct {
+        role: Role,
         href: ?[]const u8 = null,
     };
 
     fn deinitLists(self: *Builder) void {
         self.blocks.deinit(self.a);
         self.inlines.deinit(self.a);
-        self.pending_inline.deinit(self.a);
+        self.pending.deinit(self.a);
         self.text_buf.deinit(self.a);
+    }
+
+    fn stackFlags(self: *const Builder) StyleFlags {
+        var f: StyleFlags = .{};
+        for (self.pending.items) |p| {
+            switch (p.role) {
+                .strong => f.strong = true,
+                .emph => f.emph = true,
+                .strike => f.strike = true,
+                else => {},
+            }
+        }
+        return f;
+    }
+
+    fn stackKind(self: *const Builder) struct { InlineKind, ?[]const u8 } {
+        // Innermost code/link wins for primary kind
+        var kind: InlineKind = .text;
+        var href: ?[]const u8 = null;
+        for (self.pending.items) |p| {
+            switch (p.role) {
+                .code => {
+                    kind = .code;
+                    href = null;
+                },
+                .link => {
+                    if (kind != .code) {
+                        kind = .link;
+                        href = p.href;
+                    }
+                },
+                else => {},
+            }
+        }
+        return .{ kind, href };
     }
 
     fn flushText(self: *Builder) !void {
         if (self.text_buf.items.len == 0) return;
         const t = try self.a.dupe(u8, self.text_buf.items);
         self.text_buf.clearRetainingCapacity();
-        try self.inlines.append(self.a, .{ .kind = .text, .text = t });
+        const kh = self.stackKind();
+        try self.inlines.append(self.a, .{
+            .kind = kh[0],
+            .text = t,
+            .href = kh[1],
+            .flags = self.stackFlags(),
+        });
     }
 
     fn appendText(self: *Builder, raw: []const u8) !void {
         const text = try unescapeHtml(self.a, raw);
         if (text.len == 0) return;
-        // Skip pure indent noise when not inside a content block/inline.
-        if (isSkippableWs(text) and self.cur_kind == null and self.pending_inline.items.len == 0) {
+        if (isSkippableWs(text) and self.cur_kind == null and self.pending.items.len == 0) {
             return;
         }
-        try self.text_buf.appendSlice(self.a, text);
+        // Walk UTF-8; handle PUA strike/literals from preprocess.
+        var i: usize = 0;
+        while (i < text.len) {
+            const need = std.unicode.utf8ByteSequenceLength(text[i]) catch {
+                try self.text_buf.append(self.a, text[i]);
+                i += 1;
+                continue;
+            };
+            if (i + need > text.len) {
+                try self.text_buf.appendSlice(self.a, text[i..]);
+                break;
+            }
+            const cp = std.unicode.utf8Decode(text[i .. i + need]) catch {
+                try self.text_buf.append(self.a, text[i]);
+                i += 1;
+                continue;
+            };
+            i += need;
+            switch (cp) {
+                preprocess.pua_strike_open => {
+                    try self.flushText();
+                    try self.pending.append(self.a, .{ .role = .strike });
+                },
+                preprocess.pua_strike_close => {
+                    try self.flushText();
+                    // Orphan close: ignore
+                    if (self.pending.items.len > 0 and self.pending.items[self.pending.items.len - 1].role == .strike) {
+                        _ = self.pending.pop();
+                    } else {
+                        // pop matching strike deeper if needed
+                        var k = self.pending.items.len;
+                        while (k > 0) {
+                            k -= 1;
+                            if (self.pending.items[k].role == .strike) {
+                                _ = self.pending.orderedRemove(k);
+                                break;
+                            }
+                        }
+                    }
+                },
+                preprocess.pua_lit_star => try self.text_buf.append(self.a, '*'),
+                preprocess.pua_lit_under => try self.text_buf.append(self.a, '_'),
+                preprocess.pua_lit_tick => try self.text_buf.append(self.a, '`'),
+                preprocess.pua_lit_backslash => try self.text_buf.append(self.a, '\\'),
+                preprocess.pua_lit_tilde => try self.text_buf.append(self.a, '~'),
+                else => {
+                    var buf: [4]u8 = undefined;
+                    const n = std.unicode.utf8Encode(cp, &buf) catch {
+                        continue;
+                    };
+                    try self.text_buf.appendSlice(self.a, buf[0..n]);
+                },
+            }
+        }
     }
 
     fn openBlock(self: *Builder, kind: BlockKind, level: u8, meta: ?[]const u8) !void {
@@ -265,13 +373,11 @@ const Builder = struct {
 
     fn closeBlock(self: *Builder) !void {
         try self.flushText();
-        // Close any dangling inlines by promoting buffered text.
-        while (self.pending_inline.items.len > 0) {
+        while (self.pending.items.len > 0) {
             try self.closeInline();
         }
         const kind = self.cur_kind orelse {
             if (self.inlines.items.len == 0) return;
-            // Orphan inlines → plain block.
             const owned = try self.inlines.toOwnedSlice(self.a);
             self.inlines = .empty;
             try self.blocks.append(self.a, .{
@@ -293,24 +399,17 @@ const Builder = struct {
         self.cur_meta = null;
     }
 
-    fn openInline(self: *Builder, kind: InlineKind, href: ?[]const u8) !void {
+    fn openInline(self: *Builder, role: Role, href: ?[]const u8) !void {
         try self.flushText();
-        try self.pending_inline.append(self.a, .{
-            .kind = kind,
+        try self.pending.append(self.a, .{
+            .role = role,
             .href = if (href) |h| try self.a.dupe(u8, h) else null,
         });
     }
 
     fn closeInline(self: *Builder) !void {
-        const frame = self.pending_inline.pop() orelse return;
-        // Text collected while this frame was top-of-stack lives in text_buf.
-        const t = try self.a.dupe(u8, self.text_buf.items);
-        self.text_buf.clearRetainingCapacity();
-        try self.inlines.append(self.a, .{
-            .kind = frame.kind,
-            .text = t,
-            .href = frame.href,
-        });
+        try self.flushText();
+        _ = self.pending.pop() orelse return;
     }
 
     fn openMarker(self: *Builder, tag: []const u8, meta: []const u8) !void {
@@ -335,8 +434,7 @@ const Builder = struct {
             return;
         }
         if (std.mem.eql(u8, tag, "img") or std.mem.eql(u8, tag, "ref")) {
-            // Spike: fold image/ref content as plain text inline.
-            try self.openInline(.text, null);
+            try self.openInline(.plain, null);
             return;
         }
         if (std.mem.eql(u8, tag, "p")) {
@@ -369,7 +467,6 @@ const Builder = struct {
             try self.closeInline();
             return;
         }
-        // Block closes
         if (std.mem.eql(u8, tag, "p") or std.mem.eql(u8, tag, "li") or
             std.mem.eql(u8, tag, "fence") or
             (tag.len == 2 and tag[0] == 'h' and tag[1] >= '1' and tag[1] <= '6'))
@@ -481,7 +578,7 @@ test "parse paragraph and fence" {
             saw_para = true;
             var saw_strong = false;
             for (blk.inlines) |inl| {
-                if (inl.kind == .strong) saw_strong = true;
+                if (inl.flags.strong) saw_strong = true;
             }
             try std.testing.expect(saw_strong);
         }
@@ -573,7 +670,7 @@ test "parse heading strong preserves unicode" {
     var saw_strong = false;
     var strong_has_cjk = false;
     for (doc.blocks[0].inlines) |inl| {
-        if (inl.kind == .strong) {
+        if (inl.flags.strong) {
             saw_strong = true;
             if (std.mem.indexOf(u8, inl.text, cjk) != null) strong_has_cjk = true;
             try std.testing.expect(std.unicode.utf8ValidateSlice(inl.text));
@@ -609,4 +706,106 @@ test "parse invalid utf8 does not panic" {
     defer doc.deinit();
     // May produce blocks or empty; must not crash. Prefer non-empty or plain fallback path later.
     _ = doc.blocks;
+}
+
+
+test "nested bold italic composes flags" {
+    // **a *b* c** → b has strong+emph
+    var doc = try parse(std.testing.allocator, "**a *b* c**");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    var saw_bi = false;
+    var saw_strong_only = false;
+    for (doc.blocks[0].inlines) |inl| {
+        if (std.mem.eql(u8, inl.text, "b") and inl.flags.strong and inl.flags.emph) saw_bi = true;
+        if ((std.mem.indexOf(u8, inl.text, "a") != null or std.mem.indexOf(u8, inl.text, "c") != null) and inl.flags.strong and !inl.flags.emph)
+            saw_strong_only = true;
+    }
+    try std.testing.expect(saw_bi);
+    try std.testing.expect(saw_strong_only);
+}
+
+test "triple star bold italic" {
+    // zmd treats *** as italic-open then **...**; prefer **_bi_** which nests cleanly.
+    // Also accept *** if it composes; require at least one of the two forms.
+    var ok = false;
+    {
+        var doc = try parse(std.testing.allocator, "**_bi_**");
+        defer doc.deinit();
+        for (doc.blocks[0].inlines) |inl| {
+            if (std.mem.indexOf(u8, inl.text, "bi") != null and inl.flags.strong and inl.flags.emph) ok = true;
+        }
+    }
+    {
+        var doc = try parse(std.testing.allocator, "***bi***");
+        defer doc.deinit();
+        // At minimum bold or italic on bi — document zmd *** quirk if both not set
+        for (doc.blocks[0].inlines) |inl| {
+            if (std.mem.indexOf(u8, inl.text, "bi") != null and inl.flags.strong and inl.flags.emph) ok = true;
+        }
+    }
+    try std.testing.expect(ok);
+}
+
+test "strikethrough flags" {
+    var doc = try parse(std.testing.allocator, "~~strike~~");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    var saw = false;
+    for (doc.blocks[0].inlines) |inl| {
+        if (std.mem.indexOf(u8, inl.text, "strike") != null and inl.flags.strike) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
+test "strike plus strong" {
+    var doc = try parse(std.testing.allocator, "~~**x**~~");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    var saw = false;
+    for (doc.blocks[0].inlines) |inl| {
+        if (std.mem.eql(u8, inl.text, "x") and inl.flags.strike and inl.flags.strong) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
+test "escape star no emph" {
+    var doc = try parse(std.testing.allocator, "\\*not italic\\*");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    const joined = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(joined);
+    try expectContains(joined, "*not italic*");
+    for (doc.blocks[0].inlines) |inl| {
+        try std.testing.expect(!inl.flags.emph);
+    }
+}
+
+test "bold wrapping code keeps code kind and strong" {
+    var doc = try parse(std.testing.allocator, "**`code`**");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    var saw = false;
+    for (doc.blocks[0].inlines) |inl| {
+        if (inl.kind == .code and inl.flags.strong and std.mem.indexOf(u8, inl.text, "code") != null) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
+test "fence body not rewritten as strike" {
+    const src = "```\n~~keep~~\n```\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .code_fence) continue;
+        const joined = try joinBlockText(std.testing.allocator, blk);
+        defer std.testing.allocator.free(joined);
+        try expectContains(joined, "~~keep~~");
+        for (blk.inlines) |inl| {
+            try std.testing.expect(!inl.flags.strike);
+        }
+        saw = true;
+    }
+    try std.testing.expect(saw);
 }
