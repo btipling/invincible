@@ -1039,3 +1039,29 @@ test "blockquote between prose paragraphs" {
     try std.testing.expect(saw_before);
     try std.testing.expect(saw_after);
 }
+
+test "blockquote spaced nest depth" {
+    var doc = try parse(std.testing.allocator, "> outer\n> > inner\n");
+    defer doc.deinit();
+    var saw1 = false;
+    var saw2 = false;
+    for (doc.blocks) |blk| {
+        try std.testing.expectEqual(BlockKind.blockquote, blk.kind);
+        if (blk.level == 1) {
+            saw1 = true;
+            const j = try joinBlockText(std.testing.allocator, blk);
+            defer std.testing.allocator.free(j);
+            try expectContains(j, "outer");
+            try std.testing.expect(std.mem.indexOf(u8, j, ">") == null);
+        }
+        if (blk.level == 2) {
+            saw2 = true;
+            const j = try joinBlockText(std.testing.allocator, blk);
+            defer std.testing.allocator.free(j);
+            try expectContains(j, "inner");
+            try std.testing.expect(std.mem.indexOf(u8, j, ">") == null);
+        }
+    }
+    try std.testing.expect(saw1);
+    try std.testing.expect(saw2);
+}
