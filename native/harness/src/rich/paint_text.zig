@@ -87,7 +87,8 @@ pub fn paintHeading(src: std.builtin.SourceLocation, block: parse.Block, ctx: *P
         3 => dvui.Font.theme(.heading),
         4 => dvui.Font.theme(.body).withWeight(.bold),
         5 => dvui.Font.theme(.body),
-        else => dvui.Font.theme(.body).smaller(), // H6+
+        // No Font.smaller on this dvui pin — larger(-N) is the size inverse of H2's larger(2).
+        else => dvui.Font.theme(.body).larger(-2), // H6+ whisper
     };
     const color = switch (level) {
         1, 2, 3, 4 => ctx.style.heading_text,
