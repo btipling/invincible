@@ -8,6 +8,7 @@ const zmd = @import("zmd");
 const preprocess = @import("preprocess.zig");
 const bq = @import("blockquote.zig");
 const table = @import("table.zig");
+const thematic = @import("thematic.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
@@ -22,6 +23,7 @@ pub const BlockKind = enum {
     code_fence,
     blockquote,
     table,
+    thematic_break,
     plain,
 };
 
@@ -106,26 +108,42 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
         if (tseg.text.len == 0) continue;
         if (!bq.hasNonWs(tseg.text)) continue;
 
-        const segments = try bq.partition(a, tseg.text);
-        for (segments) |seg| {
-            if (seg.text.len == 0) continue;
-            if (!bq.hasNonWs(seg.text)) continue;
-            const pre = try preprocess.preprocessInlineSugar(a, seg.text);
-            const ir = try zmd.parseAlloc(a, pre, markerConfig);
-            const lowered = try lowerIr(a, ir);
-            if (seg.is_quote) {
-                const depth: u8 = if (seg.depth == 0) 1 else seg.depth;
-                for (lowered) |blk| {
-                    if (blk.inlines.len == 0) continue;
-                    try blocks.append(a, .{
-                        .kind = .blockquote,
-                        .level = depth,
-                        .meta = null,
-                        .inlines = blk.inlines,
-                    });
+        // Thematic breaks on non-table spans (fence-aware); then quotes + zmd.
+        const hr_segs = try thematic.partition(a, tseg.text);
+        for (hr_segs) |hseg| {
+            if (hseg.is_hr) {
+                try blocks.append(a, .{
+                    .kind = .thematic_break,
+                    .level = 0,
+                    .meta = null,
+                    .inlines = &.{},
+                });
+                continue;
+            }
+            if (hseg.text.len == 0) continue;
+            if (!bq.hasNonWs(hseg.text)) continue;
+
+            const segments = try bq.partition(a, hseg.text);
+            for (segments) |seg| {
+                if (seg.text.len == 0) continue;
+                if (!bq.hasNonWs(seg.text)) continue;
+                const pre = try preprocess.preprocessInlineSugar(a, seg.text);
+                const ir = try zmd.parseAlloc(a, pre, markerConfig);
+                const lowered = try lowerIr(a, ir);
+                if (seg.is_quote) {
+                    const depth: u8 = if (seg.depth == 0) 1 else seg.depth;
+                    for (lowered) |blk| {
+                        if (blk.inlines.len == 0) continue;
+                        try blocks.append(a, .{
+                            .kind = .blockquote,
+                            .level = depth,
+                            .meta = null,
+                            .inlines = blk.inlines,
+                        });
+                    }
+                } else {
+                    try blocks.appendSlice(a, lowered);
                 }
-            } else {
-                try blocks.appendSlice(a, lowered);
             }
         }
     }
@@ -1159,4 +1177,52 @@ test "table between prose" {
     try std.testing.expect(saw_t);
     try std.testing.expect(saw_b);
     try std.testing.expect(saw_a);
+}
+
+
+test "thematic break ---" {
+    const src = "before\n\n---\n\nafter\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_hr = false;
+    var saw_b = false;
+    var saw_a = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .thematic_break) saw_hr = true;
+        if (blk.kind != .thematic_break) {
+            const j = try joinBlockText(std.testing.allocator, blk);
+            defer std.testing.allocator.free(j);
+            if (std.mem.indexOf(u8, j, "before") != null) saw_b = true;
+            if (std.mem.indexOf(u8, j, "after") != null) saw_a = true;
+        }
+    }
+    try std.testing.expect(saw_hr);
+    try std.testing.expect(saw_b);
+    try std.testing.expect(saw_a);
+}
+
+test "thematic break forms and fence safe" {
+    for ([_][]const u8{ "***", "___", "- - -" }) |hr| {
+        var doc = try parse(std.testing.allocator, hr);
+        defer doc.deinit();
+        try std.testing.expect(doc.blocks.len >= 1);
+        try std.testing.expectEqual(BlockKind.thematic_break, doc.blocks[0].kind);
+    }
+    var fenced = try parse(std.testing.allocator, "```\n---\n```\n");
+    defer fenced.deinit();
+    for (fenced.blocks) |blk| {
+        try std.testing.expect(blk.kind != .thematic_break);
+    }
+}
+
+test "table separator not thematic break" {
+    const src = "| A | B |\n| --- | --- |\n| 1 | 2 |\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_table = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .table) saw_table = true;
+        try std.testing.expect(blk.kind != .thematic_break);
+    }
+    try std.testing.expect(saw_table);
 }
