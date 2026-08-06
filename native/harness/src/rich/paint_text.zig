@@ -208,3 +208,18 @@ pub fn paintBlockquote(src: std.builtin.SourceLocation, block: parse.Block, ctx:
 pub fn paintPlain(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
     paintParagraph(src, block, ctx);
 }
+
+pub fn paintThematicBreak(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
+    _ = block;
+    // Horizontal rule — dvui.separator fill bar (palette teal_border via quote_bar).
+    // No text / box-drawing glyphs (avoids tofu).
+    _ = dvui.separator(src, .{
+        .expand = .horizontal,
+        .id_extra = nextId(ctx),
+        .color_fill = ctx.style.quote_bar,
+        .min_size_content = .{ .w = 1, .h = 2 },
+        .margin = .{ .x = 0, .y = 6, .w = 0, .h = 6 },
+        .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    });
+}
+

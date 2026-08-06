@@ -13,6 +13,7 @@ pub fn paintBlock(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
         .list_item => paint_text.paintListItem(src, block, ctx),
         .blockquote => paint_text.paintBlockquote(src, block, ctx),
         .table => paint_table.paintTable(src, block, ctx),
+        .thematic_break => paint_text.paintThematicBreak(src, block, ctx),
         .code_fence => {
             if (paint_diff.isDiffLang(block.meta)) {
                 paint_diff.paintDiffFence(src, block, ctx);
