@@ -7,9 +7,10 @@
 //! `build.zig` → `root_module.export_symbol_names` (Zig 0.16 Wasm GC roots).
 //! Protocol doc: README.md.
 const WebBackend = @import("web-backend");
+const image_cache = @import("rich/image_cache.zig");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -124,6 +125,7 @@ pub fn reset() void {
     suppress_refresh = false;
     catalog_count = 0;
     selected_index = 0;
+    image_cache.clear();
 }
 
 pub fn modelCatalogCount() u32 {
@@ -214,6 +216,7 @@ export fn inv_push_message(kind: u8, ptr: [*]const u8, len: usize) void {
 export fn inv_clear_messages() void {
     msg_head = 0;
     msg_count = 0;
+    image_cache.clear();
     refresh();
 }
 
@@ -300,4 +303,30 @@ export fn inv_cycle_selected_model() u32 {
     cycleSelectedModel();
     if (catalog_count == 0) return 0;
     return selected_index;
+}
+
+// ── Protocol v4 image texture cache ───────────────────────────────────────
+
+/// Copy host-decoded RGBA into the paint cache. Returns 0=ok, nonzero=error.
+export fn inv_image_cache_put(
+    url_ptr: [*]const u8,
+    url_len: usize,
+    rgba_ptr: [*]const u8,
+    width: u32,
+    height: u32,
+) u8 {
+    const url = url_ptr[0..url_len];
+    const need: usize = @as(usize, width) * @as(usize, height) * 4;
+    // Host passes full buffer; reject if width/height would overflow.
+    if (width == 0 or height == 0) return 1;
+    if (need > image_cache.MAX_RGBA_BYTES) return 2;
+    const rgba = rgba_ptr[0..need];
+    image_cache.put(url, rgba, width, height) catch return 3;
+    refresh();
+    return 0;
+}
+
+export fn inv_image_cache_clear() void {
+    image_cache.clear();
+    refresh();
 }

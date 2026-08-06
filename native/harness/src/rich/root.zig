@@ -4,6 +4,7 @@ const cache = @import("cache.zig");
 const style_mod = @import("style.zig");
 const kinds = @import("kinds.zig");
 const link_url = @import("link_url.zig");
+const image_cache = @import("image_cache.zig");
 
 pub const paintMessageBody = paint.paintMessageBody;
 pub const paintDocument = paint.paintDocument;
@@ -25,3 +26,7 @@ pub const defaultStyle = style_mod.defaultStyle;
 
 // Re-export parse for main force-link / smoke
 pub const parse = @import("parse.zig");
+
+pub const imageCacheGet = image_cache.get;
+pub const imageCacheClear = image_cache.clear;
+pub const imageCacheSetAllocator = image_cache.setAllocator;
