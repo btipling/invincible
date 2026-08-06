@@ -167,9 +167,9 @@ fn listMarkerText(meta: ?[]const u8, buf: *[8]u8) []const u8 {
 pub fn paintListItem(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
     const body = dvui.Font.theme(.body);
     const depth: f32 = @floatFromInt(@min(block.level, 6));
-    const indent_cols_px: f32 = @floatFromInt(block.indent_cols) * 8.0;
+    const indent_cols_px: f32 = @as(f32, @floatFromInt(block.indent_cols)) * 8.0;
     const quote_nest: f32 = if (block.quote_depth > 0)
-        @floatFromInt(@min(block.quote_depth -| 1, 6)) * 10.0
+        @as(f32, @floatFromInt(@min(block.quote_depth -| 1, 6))) * 10.0
     else
         0.0;
     const indent: f32 = clampMargin(8.0 + depth * 10.0 + indent_cols_px + quote_nest);
@@ -240,7 +240,7 @@ pub fn paintBlockquote(src: std.builtin.SourceLocation, block: parse.Block, ctx:
     const body = dvui.Font.theme(.body);
     const level: u8 = if (block.level == 0) 1 else block.level;
     const depth: f32 = @floatFromInt(@min(level -| 1, 6));
-    const indent_cols_px: f32 = @floatFromInt(block.indent_cols) * 8.0;
+    const indent_cols_px: f32 = @as(f32, @floatFromInt(block.indent_cols)) * 8.0;
     const indent: f32 = clampMargin(8.0 + depth * 10.0 + indent_cols_px);
     // Plain runs use quote_text (muted); strong/code/link keep StyleMap colors.
     var quote_style = ctx.style;
