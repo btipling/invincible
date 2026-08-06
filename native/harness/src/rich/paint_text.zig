@@ -92,17 +92,17 @@ pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, c
 
 pub fn paintHeading(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
     const level = if (block.level == 0) 1 else block.level;
-    // H1–H3: title / section / subsection. H4–H6: detail → fine print → whisper (#149).
-    // palette.font_heading and font_body share DefaultSize — plain .heading for H3 was the
-    // same px as H4 body.bold, so H3/H4 looked equal or H4 heavier. H3 uses larger(1).
+    // Strict size ladder (DefaultSize=10 in palette): H1>H2>H3>H4≥H5>H6.
+    // title is already DefaultSize+2; heading/body share DefaultSize (heading is bold only).
+    // H1 was plain title and H2 heading.larger(2) → both 12px. H3 plain heading == H4 body.bold.
     const font = switch (level) {
-        1 => dvui.Font.theme(.title),
-        2 => dvui.Font.theme(.heading).larger(2),
-        3 => dvui.Font.theme(.heading).larger(1),
-        4 => dvui.Font.theme(.body).withWeight(.bold),
-        5 => dvui.Font.theme(.body),
-        // No Font.smaller on this dvui pin — larger(-N) is the size inverse of H2's larger(2).
-        else => dvui.Font.theme(.body).larger(-2), // H6+ whisper
+        1 => dvui.Font.theme(.title).larger(2), // 14
+        2 => dvui.Font.theme(.heading).larger(2), // 12
+        3 => dvui.Font.theme(.heading).larger(1), // 11
+        4 => dvui.Font.theme(.body).withWeight(.bold), // 10
+        5 => dvui.Font.theme(.body), // 10 muted
+        // No Font.smaller on this dvui pin — larger(-N) steps down from body.
+        else => dvui.Font.theme(.body).larger(-2), // 8 whisper
     };
     const color = switch (level) {
         1, 2, 3, 4 => ctx.style.heading_text,
