@@ -1712,6 +1712,10 @@ test "table cell javascript link label preserved" {
     var has_x = false;
     for (blk.inlines) |inl| {
         if (std.mem.indexOf(u8, inl.text, "x") != null) has_x = true;
+        // IR may still carry href (same as body); paint allowlist must refuse navigation.
+        if (inl.href) |h| {
+            try std.testing.expect(!link_url.isSafeLinkUrl(h));
+        }
     }
     try std.testing.expect(has_x);
 }
