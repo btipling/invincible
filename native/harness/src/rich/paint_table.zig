@@ -1,58 +1,55 @@
 //! GFM pipe table paint — dvui GridWidget with borders (no box-drawing glyphs).
+//! Cell bodies use paintInlineFlow (rich inlines); meta may include per-cell run counts.
 const std = @import("std");
 const dvui = @import("dvui");
 const parse = @import("parse.zig");
 const paint_text = @import("paint_text.zig");
 const table = @import("table.zig");
 
-const Meta = struct {
-    cols: usize,
-    overflow: usize,
-    aligns: [table.MAX_COLS]table.Align,
-};
+const MAX_CELLS = table.MAX_CELLS;
 
-/// Parse meta "cols,overflow[,aligns]" → cols, overflow_rows, per-col aligns.
-/// Legacy 2-field form → all default. Soft-fail on short/long/bad aligns chars.
-fn parseMeta(meta: ?[]const u8, cell_n: usize) Meta {
-    var result: Meta = .{
-        .cols = 1,
-        .overflow = 0,
-        .aligns = .{.default} ** table.MAX_COLS,
-    };
-    if (meta) |m| {
-        var it = std.mem.splitScalar(u8, m, ',');
-        const c_s = it.next() orelse "";
-        const o_s = it.next() orelse "0";
-        const a_s = it.next() orelse "";
-        const cols = std.fmt.parseInt(usize, c_s, 10) catch 0;
-        const overflow = std.fmt.parseInt(usize, o_s, 10) catch 0;
-        if (cols > 0) {
-            result.cols = @min(cols, table.MAX_COLS);
-            result.overflow = overflow;
-            table.unpackAligns(a_s, result.cols, result.aligns[0..]);
-            return result;
-        }
-    }
-    _ = cell_n;
-    return result;
-}
-
-/// Horizontal gravity for a column (shared by header + body labels).
-/// When #206 cell inlines ship, apply the same gravity_x / expand on the cell content child.
+/// Horizontal gravity for a column (shared by header + body).
 fn colPaintX(aligns: *const [table.MAX_COLS]table.Align, col: usize, cols: usize) f32 {
     if (col >= cols) return 0.0;
     return aligns[col].paintX();
 }
 
-pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *paint_text.PaintCtx) void {
-    const cell_n = block.inlines.len;
-    if (cell_n == 0) return;
+fn paintCellInlines(
+    slice: []const parse.Inline,
+    ctx: *paint_text.PaintCtx,
+    base_font: dvui.Font,
+    ax: f32,
+) void {
+    // Outer box carries column gravity; paintInlineFlow has no gravity_x.
+    var wrap = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .horizontal,
+        .gravity_x = ax,
+        .id_extra = paint_text.nextIdPublic(ctx),
+        .background = false,
+        .padding = .{},
+        .margin = .{},
+    });
+    defer wrap.deinit();
+    paint_text.paintInlineFlow(@src(), slice, ctx, base_font, .{
+        .expand = .horizontal,
+        .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+        .color_text = ctx.style.body_text,
+    });
+}
 
-    const meta = parseMeta(block.meta, cell_n);
+pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *paint_text.PaintCtx) void {
+    const inline_n = block.inlines.len;
+    if (inline_n == 0) return;
+
+    const meta = table.parsePaintMeta(block.meta, inline_n);
     const cols = meta.cols;
     const overflow = meta.overflow;
     if (cols == 0) return;
-    const total_rows = cell_n / cols;
+
+    // parsePaintMeta caps soft-fail; tryParseRuns caps valid runs to MAX_CELLS.
+    const num_cells = meta.num_cells;
+    if (num_cells == 0) return;
+    const total_rows = num_cells / cols;
     if (total_rows == 0) return;
 
     const has_header = block.level == 1 and total_rows >= 1;
@@ -106,11 +103,30 @@ pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
         .max_height = 120,
     });
 
+    // Build cursor offsets: start index of each cell in block.inlines
+    var starts: [MAX_CELLS]usize = undefined;
+    const cell_n = @min(num_cells, MAX_CELLS);
+    {
+        var cursor: usize = 0;
+        var i: usize = 0;
+        while (i < cell_n) : (i += 1) {
+            starts[i] = cursor;
+            const n = table.cellRunCount(&meta, i);
+            const add = @addWithOverflow(cursor, n);
+            if (add[1] != 0 or add[0] > inline_n) {
+                // Soft-fail: clamp remaining to empty
+                cursor = inline_n;
+            } else {
+                cursor = add[0];
+            }
+        }
+    }
+
     // Column headers
     if (has_header) {
         var col: usize = 0;
         while (col < cols) : (col += 1) {
-            const cell = grid.colHeader(col, .{
+            var cell = grid.colHeader(col, .{
                 .border = cell_border,
                 .color_border = ctx.style.code_border,
                 .background = true,
@@ -118,15 +134,12 @@ pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
                 .padding = cell_pad,
             });
             defer cell.deinit();
-            const text = block.inlines[col].text;
             const ax = colPaintX(&meta.aligns, col, cols);
-            dvui.labelNoFmt(@src(), text, .{ .align_x = ax }, .{
-                .expand = .horizontal,
-                .gravity_x = ax,
-                .font = header_font,
-                .color_text = ctx.style.body_text,
-                .id_extra = paint_text.nextIdPublic(ctx),
-            });
+            const n = table.cellRunCount(&meta, col);
+            const start = starts[col];
+            const end = @min(start + n, inline_n);
+            const slice = if (start < inline_n) block.inlines[start..end] else block.inlines[0..0];
+            paintCellInlines(slice, ctx, header_font, ax);
         }
     }
 
@@ -136,8 +149,7 @@ pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
         const band = (row % 2 == 1);
         var col: usize = 0;
         while (col < cols) : (col += 1) {
-            const idx = (header_offset + row) * cols + col;
-            const text = if (idx < block.inlines.len) block.inlines[idx].text else "";
+            const cell_i = (header_offset + row) * cols + col;
             const fill = if (band) ctx.style.code_fill else null;
 
             var cell = grid.cell(.{ .col = col, .row = row, .draw_focus = false }, .{
@@ -150,14 +162,15 @@ pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
             defer cell.deinit();
 
             const ax = colPaintX(&meta.aligns, col, cols);
-            // Column gravity on the cell content box — keep for future #206 inlines.
-            dvui.labelNoFmt(@src(), text, .{ .align_x = ax }, .{
-                .expand = .horizontal,
-                .gravity_x = ax,
-                .font = body_font,
-                .color_text = ctx.style.body_text,
-                .id_extra = paint_text.nextIdPublic(ctx),
-            });
+            if (cell_i >= num_cells) {
+                paintCellInlines(&.{}, ctx, body_font, ax);
+                continue;
+            }
+            const n = table.cellRunCount(&meta, cell_i);
+            const start = starts[cell_i];
+            const end = @min(start + n, inline_n);
+            const slice = if (start < inline_n) block.inlines[start..end] else block.inlines[0..0];
+            paintCellInlines(slice, ctx, body_font, ax);
         }
     }
 

@@ -6,6 +6,87 @@ const Allocator = std.mem.Allocator;
 
 pub const MAX_COLS: usize = 12;
 pub const MAX_ROWS: usize = 40; // header + body after sep consumed
+pub const MAX_CELLS: usize = MAX_COLS * MAX_ROWS;
+
+/// Paint-side table meta: cols/overflow/aligns + optional per-cell inline run counts.
+pub const PaintMeta = struct {
+    cols: usize = 1,
+    overflow: usize = 0,
+    aligns: [MAX_COLS]Align = .{.default} ** MAX_COLS,
+    /// When runs_valid, runs[0..num_cells] are per-cell inline counts.
+    runs: [MAX_CELLS]usize = .{1} ** MAX_CELLS,
+    num_cells: usize = 0,
+    runs_valid: bool = false,
+};
+
+/// Soft-fail geometry: at most MAX_CELLS, complete rows only when cols > 0.
+fn softFailCellCount(inline_n: usize, cols: usize) usize {
+    const capped = @min(inline_n, MAX_CELLS);
+    if (cols == 0) return capped;
+    return (capped / cols) * cols;
+}
+
+/// Parse meta "cols,overflow[,aligns[,runs]]".
+/// Valid runs: field 4 present, each token ≥1, num_cells % cols == 0, sum == inline_n.
+pub fn parsePaintMeta(meta: ?[]const u8, inline_n: usize) PaintMeta {
+    var result: PaintMeta = .{};
+    if (meta) |m| {
+        var it = std.mem.splitScalar(u8, m, ',');
+        const c_s = it.next() orelse "";
+        const o_s = it.next() orelse "0";
+        const a_s = it.next() orelse "";
+        const runs_s = it.next() orelse null;
+        const cols = std.fmt.parseInt(usize, c_s, 10) catch 0;
+        const overflow = std.fmt.parseInt(usize, o_s, 10) catch 0;
+        if (cols > 0) {
+            result.cols = @min(cols, MAX_COLS);
+            result.overflow = overflow;
+            unpackAligns(a_s, result.cols, result.aligns[0..]);
+
+            if (runs_s) |rs| {
+                if (tryParseRuns(rs, result.cols, inline_n, &result)) {
+                    return result;
+                }
+            }
+            // Legacy / soft-fail: 1 run per inline, geometry from inline count.
+            // Cap so paint starts[MAX_CELLS] never OOB if multi-run inlines + bad meta.
+            result.runs_valid = false;
+            result.num_cells = softFailCellCount(inline_n, result.cols);
+            return result;
+        }
+    }
+    result.num_cells = softFailCellCount(inline_n, result.cols);
+    return result;
+}
+
+fn tryParseRuns(rs: []const u8, cols: usize, inline_n: usize, result: *PaintMeta) bool {
+    if (rs.len == 0 or cols == 0) return false;
+    var n_cells: usize = 0;
+    var sum: usize = 0;
+    var it = std.mem.splitScalar(u8, rs, '.');
+    while (it.next()) |tok| {
+        if (tok.len == 0) return false;
+        const n = std.fmt.parseInt(usize, tok, 10) catch return false;
+        if (n < 1) return false;
+        if (n_cells >= MAX_CELLS) return false;
+        result.runs[n_cells] = n;
+        const add = @addWithOverflow(sum, n);
+        if (add[1] != 0) return false;
+        sum = add[0];
+        n_cells += 1;
+    }
+    if (n_cells == 0) return false;
+    if (n_cells % cols != 0) return false;
+    if (sum != inline_n) return false;
+    result.num_cells = n_cells;
+    result.runs_valid = true;
+    return true;
+}
+
+pub fn cellRunCount(meta: *const PaintMeta, cell_i: usize) usize {
+    if (meta.runs_valid and cell_i < meta.num_cells) return meta.runs[cell_i];
+    return 1;
+}
 
 /// GFM separator-derived column alignment (separator row only).
 pub const Align = enum(u8) {
@@ -597,4 +678,61 @@ test "12-col all-right cap" {
     defer td.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 12), td.cols);
     try std.testing.expectEqual(Align.right, td.aligns[11]);
+}
+
+
+// --- paint meta (runs) unit tests ---
+
+test "parsePaintMeta legacy 3-field soft-fail" {
+    const m = parsePaintMeta("2,0,lr", 4);
+    try std.testing.expect(!m.runs_valid);
+    try std.testing.expectEqual(@as(usize, 2), m.cols);
+    try std.testing.expectEqual(@as(usize, 4), m.num_cells);
+    try std.testing.expectEqual(Align.left, m.aligns[0]);
+    try std.testing.expectEqual(Align.right, m.aligns[1]);
+}
+
+test "parsePaintMeta valid runs multi-run cells" {
+    const m = parsePaintMeta("2,0,dd,2.1", 3);
+    try std.testing.expect(m.runs_valid);
+    try std.testing.expectEqual(@as(usize, 2), m.num_cells);
+    try std.testing.expectEqual(@as(usize, 2), m.runs[0]);
+    try std.testing.expectEqual(@as(usize, 1), m.runs[1]);
+    try std.testing.expectEqual(@as(usize, 2), cellRunCount(&m, 0));
+    try std.testing.expectEqual(@as(usize, 1), cellRunCount(&m, 1));
+}
+
+test "parsePaintMeta sum mismatch soft-fails" {
+    const m = parsePaintMeta("2,0,dd,2.1", 9);
+    try std.testing.expect(!m.runs_valid);
+    try std.testing.expectEqual(@as(usize, 8), m.num_cells); // complete rows of 2
+}
+
+test "parsePaintMeta empty run token soft-fails" {
+    const m = parsePaintMeta("2,0,dd,1..1", 3);
+    try std.testing.expect(!m.runs_valid);
+}
+
+test "parsePaintMeta zero run soft-fails" {
+    const m = parsePaintMeta("2,0,dd,0.1", 1);
+    try std.testing.expect(!m.runs_valid);
+}
+
+test "parsePaintMeta n_cells not multiple of cols soft-fails" {
+    const m = parsePaintMeta("2,0,dd,1.1.1", 3);
+    try std.testing.expect(!m.runs_valid);
+}
+
+test "parsePaintMeta soft-fail caps at MAX_CELLS complete rows" {
+    const m = parsePaintMeta("12,0,dddddddddddd", MAX_CELLS + 50);
+    try std.testing.expect(!m.runs_valid);
+    try std.testing.expectEqual(@as(usize, 12), m.cols);
+    try std.testing.expectEqual(MAX_CELLS, m.num_cells);
+}
+
+test "tryParseRuns overflow sum rejects" {
+    var result: PaintMeta = .{};
+    const half = try std.fmt.allocPrint(std.testing.allocator, "{d}.{d}", .{ std.math.maxInt(usize), 1 });
+    defer std.testing.allocator.free(half);
+    try std.testing.expect(!tryParseRuns(half, 1, 0, &result));
 }

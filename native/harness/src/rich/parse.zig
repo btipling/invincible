@@ -71,7 +71,7 @@ pub const Block = struct {
     indent_cols: u8 = 0,
     /// GFM task list: null = ordinary list item; false/true = unchecked/checked task.
     checked: ?bool = null,
-    /// Fence language / list ordered meta / table "cols,overflow,aligns" (arena-owned).
+    /// Fence language / list ordered meta / table "cols,overflow,aligns[,runs]" (arena-owned).
     meta: ?[]const u8 = null,
     inlines: []const Inline = &.{},
 };
@@ -151,19 +151,29 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
         if (tseg.is_table) {
             const td = tseg.table orelse continue;
             if (td.cols == 0 or td.cells.len == 0) continue;
-            // inlines = row-major cells; meta = "cols,overflow,aligns" (aligns = lcrd…)
-            const inl = try a.alloc(Inline, td.cells.len);
-            for (td.cells, 0..) |cell, i| {
-                inl[i] = .{ .kind = .text, .text = try a.dupe(u8, cell) };
+            // inlines = row-major multi-run cells; meta = "cols,overflow,aligns,runs"
+            var inl_list: std.ArrayList(Inline) = .empty;
+            var run_counts: std.ArrayList(usize) = .empty;
+            for (td.cells) |cell| {
+                const cell_inls = try lowerTableCell(a, cell);
+                try run_counts.append(a, cell_inls.len);
+                try inl_list.appendSlice(a, cell_inls);
+            }
+            var runs_buf: std.ArrayList(u8) = .empty;
+            for (run_counts.items, 0..) |n, i| {
+                if (i > 0) try runs_buf.append(a, '.');
+                var nbuf: [20]u8 = undefined;
+                const ns = try std.fmt.bufPrint(&nbuf, "{d}", .{n});
+                try runs_buf.appendSlice(a, ns);
             }
             var abuf: [table.MAX_COLS]u8 = undefined;
             const acodes = table.packAligns(td.aligns, abuf[0..]);
-            const meta = try std.fmt.allocPrint(a, "{d},{d},{s}", .{ td.cols, td.overflow_rows, acodes });
+            const meta = try std.fmt.allocPrint(a, "{d},{d},{s},{s}", .{ td.cols, td.overflow_rows, acodes, runs_buf.items });
             try blocks.append(a, .{
                 .kind = .table,
                 .level = if (td.has_header) 1 else 0,
                 .meta = meta,
-                .inlines = inl,
+                .inlines = try inl_list.toOwnedSlice(a),
             });
             continue;
         }
@@ -233,7 +243,7 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
                     const dl_segs = try deflist.partition(a, seg.text);
                     for (dl_segs) |dseg| {
                         if (dseg.is_deflist) {
-                            const term_inl = try lowerDefBodyInlines(a, dseg.term);
+                            const term_inl = try lowerInlineOnly(a, dseg.term);
                             if (term_inl.len > 0 or dseg.term.len > 0) {
                                 const inl = if (term_inl.len > 0) term_inl else try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, dseg.term) }});
                                 try blocks.append(a, .{
@@ -244,7 +254,7 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
                                 });
                             }
                             for (dseg.descs) |body| {
-                                const desc_inl = try lowerDefBodyInlines(a, body);
+                                const desc_inl = try lowerInlineOnly(a, body);
                                 const inl = if (desc_inl.len > 0) desc_inl else try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, body) }});
                                 try blocks.append(a, .{
                                     .kind = .def_desc,
@@ -268,7 +278,7 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
 
     // Footnote definitions as a single end section (source order).
     for (all_defs.items) |d| {
-        const inl = try lowerDefBodyInlines(a, d.body);
+        const inl = try lowerInlineOnly(a, d.body);
         try blocks.append(a, .{
             .kind = .footnote_def,
             .level = 0,
@@ -283,8 +293,9 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
     };
 }
 
-/// Def body: inline sugar + zmd paragraph only (no nested blocks).
-fn lowerDefBodyInlines(a: Allocator, body: []const u8) ![]const Inline {
+/// Inline-only lower: sugar + zmd paragraph (no nested blocks).
+/// Shared by deflist / footnote bodies and GFM table cells.
+fn lowerInlineOnly(a: Allocator, body: []const u8) ![]const Inline {
     if (body.len == 0) return &.{};
     // Synthetic single paragraph so bold/code/link still lower.
     const wrapped = try std.fmt.allocPrint(a, "{s}\n", .{body});
@@ -299,6 +310,32 @@ fn lowerDefBodyInlines(a: Allocator, body: []const u8) ![]const Inline {
         if (blk.inlines.len > 0) return blk.inlines;
     }
     return try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, body) }});
+}
+
+/// True when cell text may contain MD inline markers (skip zmd when false).
+fn cellHasMdMarkers(s: []const u8) bool {
+    for (s) |c| {
+        switch (c) {
+            '*', '_', '`', '~', '[', '!', '\\' => return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+/// One table cell → ≥1 inline runs (fast path when no MD markers).
+fn lowerTableCell(a: Allocator, cell: []const u8) ![]const Inline {
+    if (cell.len == 0) {
+        return try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = "" }});
+    }
+    if (!cellHasMdMarkers(cell)) {
+        return try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, cell) }});
+    }
+    const inls = try lowerInlineOnly(a, cell);
+    if (inls.len == 0) {
+        return try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, cell) }});
+    }
+    return inls;
 }
 
 /// Fixed-buffer smoke used from harness init so the parser is not tree-shaken
@@ -1438,7 +1475,7 @@ test "table meta mixed aligns lcrd" {
     defer doc.deinit();
     try std.testing.expect(doc.blocks.len >= 1);
     try std.testing.expectEqual(BlockKind.table, doc.blocks[0].kind);
-    try std.testing.expectEqualStrings("4,0,lcrd", doc.blocks[0].meta.?);
+    try std.testing.expectEqualStrings("4,0,lcrd,1.1.1.1.1.1.1.1.1.1.1.1", doc.blocks[0].meta.?);
     // header + 2 body rows × 4 cols
     try std.testing.expectEqual(@as(usize, 12), doc.blocks[0].inlines.len);
     try std.testing.expectEqualStrings("a", doc.blocks[0].inlines[4].text);
@@ -1457,7 +1494,7 @@ test "table body colon dash is plain text" {
     var doc = try parse(std.testing.allocator, src);
     defer doc.deinit();
     try std.testing.expectEqual(BlockKind.table, doc.blocks[0].kind);
-    try std.testing.expectEqualStrings("2,0,dd", doc.blocks[0].meta.?);
+    try std.testing.expectEqualStrings("2,0,dd,1.1.1.1", doc.blocks[0].meta.?);
     try std.testing.expectEqualStrings(":---", doc.blocks[0].inlines[2].text);
     try std.testing.expectEqualStrings("keep", doc.blocks[0].inlines[3].text);
 }
@@ -1471,7 +1508,7 @@ test "table header only has aligns" {
     var doc = try parse(std.testing.allocator, src);
     defer doc.deinit();
     try std.testing.expectEqual(BlockKind.table, doc.blocks[0].kind);
-    try std.testing.expectEqualStrings("3,0,lcr", doc.blocks[0].meta.?);
+    try std.testing.expectEqualStrings("3,0,lcr,1.1.1", doc.blocks[0].meta.?);
     try std.testing.expectEqual(@as(usize, 3), doc.blocks[0].inlines.len);
 }
 
@@ -1498,6 +1535,190 @@ test "table between prose" {
     try std.testing.expect(saw_a);
 }
 
+
+
+test "table cell strong" {
+    const src =
+        \\| Feature |
+        \\| --- |
+        \\| **Bold** term |
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    try std.testing.expectEqual(BlockKind.table, doc.blocks[0].kind);
+    const blk = doc.blocks[0];
+    try std.testing.expectEqual(@as(u8, 1), blk.level);
+    var saw = false;
+    for (blk.inlines) |inl| {
+        if (inl.flags.strong and std.mem.indexOf(u8, inl.text, "Bold") != null) saw = true;
+    }
+    try std.testing.expect(saw);
+    try std.testing.expect(std.mem.startsWith(u8, blk.meta.?, "1,0,d,"));
+}
+
+test "table cell emph" {
+    const src = "| S |\n| --- |\n| *wip* |\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    const blk = doc.blocks[0];
+    var saw = false;
+    for (blk.inlines) |inl| {
+        if (inl.flags.emph and std.mem.indexOf(u8, inl.text, "wip") != null) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
+test "table cell strike" {
+    const src = "| S |\n| --- |\n| ~~old~~ |\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    const blk = doc.blocks[0];
+    var saw = false;
+    for (blk.inlines) |inl| {
+        if (inl.flags.strike and std.mem.indexOf(u8, inl.text, "old") != null) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
+test "table cell code" {
+    const src = "| S |\n| --- |\n| `code` |\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    const blk = doc.blocks[0];
+    var saw = false;
+    for (blk.inlines) |inl| {
+        if (inl.kind == .code and std.mem.indexOf(u8, inl.text, "code") != null) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
+test "table cell link query frag" {
+    const src = "| L |\n| --- |\n| [docs](https://example.com/path?q=1#frag) |\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    const blk = doc.blocks[0];
+    var saw = false;
+    for (blk.inlines) |inl| {
+        if (inl.kind == .link) {
+            if (inl.href) |h| {
+                if (std.mem.eql(u8, h, "https://example.com/path?q=1#frag")) saw = true;
+            }
+        }
+    }
+    try std.testing.expect(saw);
+}
+
+test "table cell mixed strong and code" {
+    const src = "| M |\n| --- |\n| Mix **a** and `b` |\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    const blk = doc.blocks[0];
+    try std.testing.expect(std.mem.startsWith(u8, blk.meta.?, "1,0,d,"));
+    var saw_strong = false;
+    var saw_code = false;
+    for (blk.inlines) |inl| {
+        if (inl.flags.strong and std.mem.indexOf(u8, inl.text, "a") != null) saw_strong = true;
+        if (inl.kind == .code and std.mem.indexOf(u8, inl.text, "b") != null) saw_code = true;
+    }
+    try std.testing.expect(saw_strong);
+    try std.testing.expect(saw_code);
+    try std.testing.expect(blk.inlines.len >= 3);
+}
+
+test "table header cell strong" {
+    const src = "| **x** |\n| --- |\n| plain |\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    const blk = doc.blocks[0];
+    try std.testing.expectEqual(@as(u8, 1), blk.level);
+    var saw = false;
+    for (blk.inlines) |inl| {
+        if (inl.flags.strong and std.mem.indexOf(u8, inl.text, "x") != null) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
+test "table cell image" {
+    const src = "| I |\n| --- |\n| ![icon](https://example.com/i.png) |\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    const blk = doc.blocks[0];
+    var saw = false;
+    for (blk.inlines) |inl| {
+        if (inl.kind == .image) {
+            if (inl.href) |h| {
+                if (std.mem.eql(u8, h, "https://example.com/i.png")) saw = true;
+            }
+        }
+    }
+    try std.testing.expect(saw);
+}
+
+test "table cell plain fast path" {
+    const src = "| H |\n| --- |\n| plain ok |\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    const blk = doc.blocks[0];
+    try std.testing.expectEqualStrings("1,0,d,1.1", blk.meta.?);
+    try std.testing.expectEqual(@as(usize, 2), blk.inlines.len);
+    try std.testing.expectEqual(InlineKind.text, blk.inlines[1].kind);
+    try std.testing.expectEqualStrings("plain ok", blk.inlines[1].text);
+}
+
+test "table empty cell one run" {
+    const src = "| A | B |\n| --- | --- |\n|  | x |\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    const blk = doc.blocks[0];
+    try std.testing.expectEqualStrings("2,0,dd,1.1.1.1", blk.meta.?);
+    try std.testing.expectEqual(@as(usize, 4), blk.inlines.len);
+    try std.testing.expectEqualStrings("", blk.inlines[2].text);
+}
+
+test "table meta runs sum matches inlines" {
+    const src =
+        \\| Feature | Status |
+        \\| --- | --- |
+        \\| **Bold** | *wip* |
+        \\| Mix **a** and `b` | plain |
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    const blk = doc.blocks[0];
+    const meta = blk.meta.?;
+    var it = std.mem.splitScalar(u8, meta, ',');
+    _ = it.next();
+    _ = it.next();
+    _ = it.next();
+    const runs_s = it.next() orelse "";
+    var sum: usize = 0;
+    var n_cells: usize = 0;
+    var rit = std.mem.splitScalar(u8, runs_s, '.');
+    while (rit.next()) |tok| {
+        const n = try std.fmt.parseInt(usize, tok, 10);
+        try std.testing.expect(n >= 1);
+        sum += n;
+        n_cells += 1;
+    }
+    try std.testing.expectEqual(blk.inlines.len, sum);
+    try std.testing.expectEqual(@as(usize, 6), n_cells);
+}
+
+test "table cell javascript link label preserved" {
+    const src = "| L |\n| --- |\n| [x](javascript:alert(1)) |\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    const blk = doc.blocks[0];
+    var has_x = false;
+    for (blk.inlines) |inl| {
+        if (std.mem.indexOf(u8, inl.text, "x") != null) has_x = true;
+        // IR may still carry href (same as body); paint allowlist must refuse navigation.
+        if (inl.href) |h| {
+            try std.testing.expect(!link_url.isSafeLinkUrl(h));
+        }
+    }
+    try std.testing.expect(has_x);
+}
 
 test "thematic break ---" {
     const src = "before\n\n---\n\nafter\n";
