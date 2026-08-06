@@ -108,7 +108,6 @@ pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, c
 fn paintImageInline(src: std.builtin.SourceLocation, inl: parse.Inline, ctx: *PaintCtx) void {
     const href = inl.href orelse "";
     const alt = if (inl.text.len > 0) inl.text else "(image)";
-    const st = ctx.style;
 
     if (href.len == 0 or !link_url.isSafeLinkUrl(href)) {
         paintImagePlaceholder(src, alt, ctx);
