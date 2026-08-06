@@ -67,6 +67,8 @@ pub const Block = struct {
     quote_depth: u8 = 0,
     /// Extra lead spaces for quote-under-list paint margin (0 default).
     indent_cols: u8 = 0,
+    /// GFM task list: null = ordinary list item; false/true = unchecked/checked task.
+    checked: ?bool = null,
     /// Fence language / list ordered meta / table cols (arena-owned).
     meta: ?[]const u8 = null,
     inlines: []const Inline = &.{},
@@ -81,6 +83,50 @@ pub const ParsedDoc = struct {
         self.* = undefined;
     }
 };
+
+
+/// Result of stripping a leading GFM task-list marker from list item text.
+const TaskMarkerStrip = struct {
+    checked: bool,
+    rest: []const u8,
+};
+
+/// Detect GFM task marker at the start of `text`.
+/// Accepted: optional single leading space, then `[ ]` / `[x]` / `[X]`, then optional single trailing space.
+/// Returns null when not a task marker. ASCII only.
+pub fn stripTaskMarker(text: []const u8) ?TaskMarkerStrip {
+    var s = text;
+    if (s.len > 0 and s[0] == ' ') s = s[1..];
+    if (s.len < 3) return null;
+    if (s[0] != '[' or s[2] != ']') return null;
+    const mid = s[1];
+    const checked: bool = switch (mid) {
+        ' ' => false,
+        'x', 'X' => true,
+        else => return null,
+    };
+    var rest = s[3..];
+    if (rest.len > 0 and rest[0] == ' ') rest = rest[1..];
+    return .{ .checked = checked, .rest = rest };
+}
+
+/// Strip leading task marker from the first non-empty `.text` inline; mutate in place.
+/// Returns checked state or null if not a task item. Empty marker-only run is dropped when siblings remain.
+fn applyTaskListOnInlines(inlines: *std.ArrayList(Inline)) ?bool {
+    var i: usize = 0;
+    while (i < inlines.items.len) : (i += 1) {
+        const inl = inlines.items[i];
+        if (inl.kind != .text) return null;
+        if (inl.text.len == 0) continue;
+        const stripped = stripTaskMarker(inl.text) orelse return null;
+        inlines.items[i].text = stripped.rest;
+        if (stripped.rest.len == 0 and inlines.items.len > 1) {
+            _ = inlines.orderedRemove(i);
+        }
+        return stripped.checked;
+    }
+    return null;
+}
 
 const marker_start: u8 = 0x1e;
 const marker_sep: u8 = 0x1f;
@@ -162,6 +208,7 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
                                 .level = blk.level,
                                 .quote_depth = depth,
                                 .indent_cols = seg.indent_cols,
+                                .checked = blk.checked,
                                 .meta = blk.meta,
                                 .inlines = blk.inlines,
                             });
@@ -568,11 +615,16 @@ const Builder = struct {
             });
             return;
         };
+        var checked: ?bool = null;
+        if (kind == .list_item) {
+            checked = applyTaskListOnInlines(&self.inlines);
+        }
         const owned = try self.inlines.toOwnedSlice(self.a);
         self.inlines = .empty;
         try self.blocks.append(self.a, .{
             .kind = kind,
             .level = self.cur_level,
+            .checked = checked,
             .meta = self.cur_meta,
             .inlines = owned,
         });
@@ -1764,4 +1816,201 @@ test "plain quote no list non-regression" {
         try std.testing.expect(blk.kind == .blockquote);
         try std.testing.expectEqual(@as(u8, 0), blk.quote_depth);
     }
+}
+
+
+test "stripTaskMarker pure helper" {
+    const u = stripTaskMarker("[ ] foo").?;
+    try std.testing.expect(!u.checked);
+    try std.testing.expectEqualStrings("foo", u.rest);
+
+    const c = stripTaskMarker("[x] bar").?;
+    try std.testing.expect(c.checked);
+    try std.testing.expectEqualStrings("bar", c.rest);
+
+    const C = stripTaskMarker("[X] Baz").?;
+    try std.testing.expect(C.checked);
+    try std.testing.expectEqualStrings("Baz", C.rest);
+
+    const lead = stripTaskMarker(" [ ] spaced").?;
+    try std.testing.expect(!lead.checked);
+    try std.testing.expectEqualStrings("spaced", lead.rest);
+
+    const nospace = stripTaskMarker("[x]extra").?;
+    try std.testing.expect(nospace.checked);
+    try std.testing.expectEqualStrings("extra", nospace.rest);
+
+    try std.testing.expect(stripTaskMarker("[]") == null);
+    try std.testing.expect(stripTaskMarker("[y] no") == null);
+    try std.testing.expect(stripTaskMarker("not a task") == null);
+    try std.testing.expect(stripTaskMarker("foo [ ]") == null);
+}
+
+test "task list unchecked strips marker" {
+    var doc = try parse(std.testing.allocator, "- [ ] write plan\n");
+    defer doc.deinit();
+    var found = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        found = true;
+        try std.testing.expect(blk.checked != null);
+        try std.testing.expect(!blk.checked.?);
+        try std.testing.expectEqualStrings("u", blk.meta.?);
+        const j = try joinBlockText(std.testing.allocator, blk);
+        defer std.testing.allocator.free(j);
+        try std.testing.expect(std.mem.indexOf(u8, j, "[ ]") == null);
+        try expectContains(j, "write plan");
+    }
+    try std.testing.expect(found);
+}
+
+test "task list checked and X case" {
+    var doc = try parse(std.testing.allocator, "- [x] done\n- [X] also\n");
+    defer doc.deinit();
+    var n: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        n += 1;
+        try std.testing.expect(blk.checked != null);
+        try std.testing.expect(blk.checked.?);
+        const j = try joinBlockText(std.testing.allocator, blk);
+        defer std.testing.allocator.free(j);
+        try std.testing.expect(std.mem.indexOf(u8, j, "[x]") == null);
+        try std.testing.expect(std.mem.indexOf(u8, j, "[X]") == null);
+    }
+    try std.testing.expect(n >= 2);
+}
+
+test "ordinary list item not a task" {
+    var doc = try parse(std.testing.allocator, "- ordinary\n- also plain\n");
+    defer doc.deinit();
+    var n: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        n += 1;
+        try std.testing.expect(blk.checked == null);
+        try std.testing.expectEqualStrings("u", blk.meta.?);
+    }
+    try std.testing.expect(n >= 2);
+}
+
+test "ordered task list preserves meta and checked" {
+    var doc = try parse(std.testing.allocator, "1. [ ] first\n2. [x] second\n");
+    defer doc.deinit();
+    var ordered: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        if (blk.meta == null or blk.meta.?[0] != 'o') continue;
+        ordered += 1;
+        try std.testing.expect(blk.checked != null);
+        if (ordered == 1) {
+            try std.testing.expectEqualStrings("o,1", blk.meta.?);
+            try std.testing.expect(!blk.checked.?);
+        }
+        if (ordered == 2) {
+            try std.testing.expectEqualStrings("o,2", blk.meta.?);
+            try std.testing.expect(blk.checked.?);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), ordered);
+}
+
+test "nested task under unordered list" {
+    const src =
+        \\- outer
+        \\  - [ ] write plan
+        \\  - [x] handoff-ready
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var tasks: usize = 0;
+    var outer_plain = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        if (blk.checked == null) {
+            const j = try joinBlockText(std.testing.allocator, blk);
+            defer std.testing.allocator.free(j);
+            if (std.mem.indexOf(u8, j, "outer") != null) outer_plain = true;
+            continue;
+        }
+        tasks += 1;
+    }
+    try std.testing.expect(outer_plain);
+    try std.testing.expect(tasks >= 2);
+}
+
+test "mixed task and non-task siblings" {
+    const src =
+        \\- [x] done
+        \\- plain sibling
+        \\- [ ] todo
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var task_n: usize = 0;
+    var plain_n: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        if (blk.checked == null) plain_n += 1 else task_n += 1;
+    }
+    try std.testing.expect(task_n >= 2);
+    try std.testing.expect(plain_n >= 1);
+}
+
+test "task list preserves strong and code inlines" {
+    var doc = try parse(std.testing.allocator, "- [ ] **bold** and `code`\n");
+    defer doc.deinit();
+    var found = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        found = true;
+        try std.testing.expect(blk.checked != null);
+        try std.testing.expect(!blk.checked.?);
+        var saw_strong = false;
+        var saw_code = false;
+        for (blk.inlines) |inl| {
+            if (inl.flags.strong) saw_strong = true;
+            if (inl.kind == .code) saw_code = true;
+            try std.testing.expect(std.mem.indexOf(u8, inl.text, "[ ]") == null);
+        }
+        try std.testing.expect(saw_strong);
+        try std.testing.expect(saw_code);
+    }
+    try std.testing.expect(found);
+}
+
+test "task list inside quote keeps checked and quote_depth" {
+    const src =
+        \\> - [ ] quoted task
+        \\> - [x] quoted done
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var n: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        n += 1;
+        try std.testing.expect(blk.quote_depth >= 1);
+        try std.testing.expect(blk.checked != null);
+        const j = try joinBlockText(std.testing.allocator, blk);
+        defer std.testing.allocator.free(j);
+        try std.testing.expect(std.mem.indexOf(u8, j, "[ ]") == null);
+        try std.testing.expect(std.mem.indexOf(u8, j, "[x]") == null);
+    }
+    try std.testing.expect(n >= 2);
+}
+
+test "task list marker alone empty body" {
+    var doc = try parse(std.testing.allocator, "- [ ]\n- [x]\n");
+    defer doc.deinit();
+    var n: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        if (blk.checked == null) continue;
+        n += 1;
+    }
+    try std.testing.expect(n >= 2);
 }

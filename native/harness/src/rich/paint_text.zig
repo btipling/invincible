@@ -197,19 +197,31 @@ pub fn paintListItem(src: std.builtin.SourceLocation, block: parse.Block, ctx: *
         defer bar.deinit();
     }
 
-    var marker_buf: [8]u8 = undefined;
-    const marker = listMarkerText(block.meta, &marker_buf);
-    const marker_color = if (in_quote) ctx.style.quote_text else ctx.style.bullet_text;
-    {
-        var tl = dvui.textLayout(@src(), .{}, .{
+    if (block.checked) |is_checked| {
+        // Display-only: ephemeral stack bool each frame. dvui.checkbox toggles
+        // *target on click but we never write IR / SessionStore / message source.
+        var c = is_checked;
+        _ = dvui.checkbox(@src(), &c, null, .{
             .id_extra = nextId(ctx),
-            .color_text = marker_color,
-            .font = body,
+            .padding = .{ .x = 0, .y = 2, .w = 4, .h = 0 },
+            .gravity_y = 0.5,
             .background = false,
-            .padding = .{ .x = 0, .y = 0, .w = 4, .h = 0 },
         });
-        defer tl.deinit();
-        tl.addText(marker, .{ .color_text = marker_color, .font = body });
+    } else {
+        var marker_buf: [8]u8 = undefined;
+        const marker = listMarkerText(block.meta, &marker_buf);
+        const marker_color = if (in_quote) ctx.style.quote_text else ctx.style.bullet_text;
+        {
+            var tl = dvui.textLayout(@src(), .{}, .{
+                .id_extra = nextId(ctx),
+                .color_text = marker_color,
+                .font = body,
+                .background = false,
+                .padding = .{ .x = 0, .y = 0, .w = 4, .h = 0 },
+            });
+            defer tl.deinit();
+            tl.addText(marker, .{ .color_text = marker_color, .font = body });
+        }
     }
 
     var body_style = ctx.style;
