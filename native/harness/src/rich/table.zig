@@ -7,16 +7,55 @@ const Allocator = std.mem.Allocator;
 pub const MAX_COLS: usize = 12;
 pub const MAX_ROWS: usize = 40; // header + body after sep consumed
 
+/// GFM separator-derived column alignment (separator row only).
+pub const Align = enum(u8) {
+    default,
+    left,
+    center,
+    right,
+
+    pub fn toCode(self: Align) u8 {
+        return switch (self) {
+            .default => 'd',
+            .left => 'l',
+            .center => 'c',
+            .right => 'r',
+        };
+    }
+
+    pub fn fromCode(c: u8) Align {
+        return switch (c) {
+            'l' => .left,
+            'c' => .center,
+            'r' => .right,
+            'd' => .default,
+            else => .default,
+        };
+    }
+
+    /// Paint gravity / label align_x (left and default are identical).
+    pub fn paintX(self: Align) f32 {
+        return switch (self) {
+            .center => 0.5,
+            .right => 1.0,
+            .left, .default => 0.0,
+        };
+    }
+};
+
 pub const TableData = struct {
     cols: usize,
     /// Row-major cell texts (allocator-owned slices). Header is first row when has_header.
     cells: []const []const u8,
     has_header: bool,
     overflow_rows: usize = 0,
+    /// Length == cols; allocator-owned. Separator-derived GFM align codes.
+    aligns: []const Align,
 
     pub fn deinit(self: TableData, a: Allocator) void {
         for (self.cells) |c| a.free(c);
         a.free(self.cells);
+        a.free(self.aligns);
     }
 
     pub fn rowCount(self: TableData) usize {
@@ -24,6 +63,22 @@ pub const TableData = struct {
         return self.cells.len / self.cols;
     }
 };
+
+/// Pack aligns into `lcrd…` codes (exactly `aligns.len` bytes into `buf`).
+pub fn packAligns(aligns: []const Align, buf: []u8) []const u8 {
+    const n = @min(aligns.len, buf.len);
+    var i: usize = 0;
+    while (i < n) : (i += 1) buf[i] = aligns[i].toCode();
+    return buf[0..n];
+}
+
+/// Soft-fail decode: missing/invalid → default; extra ignored. Fills `out[0..cols]`.
+pub fn unpackAligns(codes: []const u8, cols: usize, out: []Align) void {
+    var i: usize = 0;
+    while (i < cols and i < out.len) : (i += 1) {
+        out[i] = if (i < codes.len) Align.fromCode(codes[i]) else .default;
+    }
+}
 
 pub const Segment = struct {
     is_table: bool,
@@ -95,6 +150,24 @@ fn isSepCell(cell: []const u8) bool {
     return i == t.len;
 }
 
+/// Classify a separator cell that already passes `isSepCell` into Align.
+/// Leading+trailing `:` → center; leading only → left; trailing only → right; none → default.
+pub fn sepCellAlign(cell: []const u8) Align {
+    const t = trimWs(cell);
+    if (t.len == 0) return .default;
+    var i: usize = 0;
+    const lead = t[i] == ':';
+    if (lead) i += 1;
+    var dashes: usize = 0;
+    while (i < t.len and t[i] == '-') : (i += 1) dashes += 1;
+    if (dashes < 3) return .default;
+    const trail = i < t.len and t[i] == ':';
+    if (lead and trail) return .center;
+    if (lead) return .left;
+    if (trail) return .right;
+    return .default;
+}
+
 pub fn isSeparatorRow(line: []const u8) bool {
     if (!isPipeRow(line)) return false;
     var cells: [MAX_COLS + 4][]const u8 = undefined;
@@ -108,10 +181,12 @@ pub fn isSeparatorRow(line: []const u8) bool {
 }
 
 /// Build owned TableData from header + body row slices (cell content points into src OK; we dupe).
+/// `col_aligns` is pad/truncated to `cols` (missing → default); never panics on length mismatch.
 pub fn buildTable(
     allocator: Allocator,
     header: []const []const u8,
     body: []const []const []const u8,
+    col_aligns: []const Align,
 ) !TableData {
     const cols_raw = header.len;
     if (cols_raw == 0) return error.EmptyTable;
@@ -124,14 +199,7 @@ pub fn buildTable(
     const total_rows = 1 + body_n; // header + body
     const total_cells = total_rows * cols;
     var cells = try allocator.alloc([]const u8, total_cells);
-    errdefer {
-        // free any already written
-        var fi: usize = 0;
-        while (fi < total_cells) : (fi += 1) {
-            // only free if we set them — use empty check
-        }
-        allocator.free(cells);
-    }
+    errdefer allocator.free(cells);
 
     var written: usize = 0;
     errdefer {
@@ -157,11 +225,19 @@ pub fn buildTable(
         }
     }
 
+    var aligns = try allocator.alloc(Align, cols);
+    errdefer allocator.free(aligns);
+    var ai: usize = 0;
+    while (ai < cols) : (ai += 1) {
+        aligns[ai] = if (ai < col_aligns.len) col_aligns[ai] else .default;
+    }
+
     return .{
         .cols = cols,
         .cells = cells,
         .has_header = true,
         .overflow_rows = overflow,
+        .aligns = aligns,
     };
 }
 
@@ -244,6 +320,19 @@ pub fn partition(allocator: Allocator, src: []const u8) ![]Segment {
             var hc: usize = 0;
             while (hc < hcols) : (hc += 1) header[hc] = header_cells_buf[hc];
 
+            // Separator-derived column aligns (pad/truncate to header cols).
+            var sep_cells_buf: [MAX_COLS + 4][]const u8 = undefined;
+            const sn = splitCells(lines.items[li + 1], sep_cells_buf[0..]);
+            var col_aligns: [MAX_COLS]Align = undefined;
+            var ac: usize = 0;
+            while (ac < hcols) : (ac += 1) {
+                if (ac < sn and isSepCell(sep_cells_buf[ac])) {
+                    col_aligns[ac] = sepCellAlign(sep_cells_buf[ac]);
+                } else {
+                    col_aligns[ac] = .default;
+                }
+            }
+
             var body_rows: std.ArrayList(CellRow) = .empty;
             defer {
                 for (body_rows.items) |row| allocator.free(row.cells);
@@ -272,7 +361,7 @@ pub fn partition(allocator: Allocator, src: []const u8) ![]Segment {
                 try body_ptrs.append(allocator, row.cells);
             }
 
-            const td = buildTable(allocator, header[0..hcols], body_ptrs.items) catch {
+            const td = buildTable(allocator, header[0..hcols], body_ptrs.items, col_aligns[0..hcols]) catch {
                 try prose.appendSlice(allocator, line);
                 try prose.append(allocator, '\n');
                 li += 1;
@@ -314,9 +403,12 @@ test "buildTable structure" {
     const header = [_][]const u8{ "h", "long" };
     const row1 = [_][]const u8{ "a", "b" };
     const body = [_][]const []const u8{row1[0..]};
-    const td = try buildTable(std.testing.allocator, header[0..], body[0..]);
+    const defaults = [_]Align{ .default, .default };
+    const td = try buildTable(std.testing.allocator, header[0..], body[0..], defaults[0..]);
     defer td.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 2), td.cols);
+    try std.testing.expectEqual(@as(usize, 2), td.aligns.len);
+    try std.testing.expectEqual(Align.default, td.aligns[0]);
     try std.testing.expectEqual(@as(usize, 4), td.cells.len);
     try std.testing.expectEqualStrings("h", td.cells[0]);
     try std.testing.expectEqualStrings("long", td.cells[1]);
@@ -401,4 +493,108 @@ test "partition prose then table" {
     }
     try std.testing.expect(saw_t);
     try std.testing.expect(saw_bye);
+}
+
+test "sepCellAlign matrix" {
+    try std.testing.expectEqual(Align.left, sepCellAlign(":---"));
+    try std.testing.expectEqual(Align.left, sepCellAlign(":----"));
+    try std.testing.expectEqual(Align.left, sepCellAlign(" :--- "));
+    try std.testing.expectEqual(Align.center, sepCellAlign(":---:"));
+    try std.testing.expectEqual(Align.center, sepCellAlign(":-----:"));
+    try std.testing.expectEqual(Align.right, sepCellAlign("---:"));
+    try std.testing.expectEqual(Align.right, sepCellAlign("----:"));
+    try std.testing.expectEqual(Align.default, sepCellAlign("---"));
+    try std.testing.expectEqual(Align.default, sepCellAlign("-----"));
+    // whitespace around dashes/colons (trim outer; inner spaces not GFM)
+    try std.testing.expectEqual(Align.center, sepCellAlign("  :---:  "));
+}
+
+test "isSepCell rejects short GFM forms" {
+    try std.testing.expect(!isSepCell(":-:"));
+    try std.testing.expect(!isSepCell(":--"));
+    try std.testing.expect(!isSepCell("--:"));
+    try std.testing.expect(!isSepCell("=="));
+    try std.testing.expect(isSepCell(":---"));
+    try std.testing.expect(isSepCell(":---:"));
+    try std.testing.expect(isSepCell("---:"));
+}
+
+test "partition mixed aligns lcrd" {
+    const src =
+        \\| Left | Center | Right | Unaligned |
+        \\|:-----|:------:|------:|-----------|
+        \\| a | b | c | d |
+        \\
+    ;
+    const segs = try partition(std.testing.allocator, src);
+    defer {
+        for (segs) |s| freeSegment(std.testing.allocator, s);
+        std.testing.allocator.free(segs);
+    }
+    try std.testing.expectEqual(@as(usize, 1), segs.len);
+    const td = segs[0].table.?;
+    try std.testing.expectEqual(@as(usize, 4), td.cols);
+    try std.testing.expectEqual(Align.left, td.aligns[0]);
+    try std.testing.expectEqual(Align.center, td.aligns[1]);
+    try std.testing.expectEqual(Align.right, td.aligns[2]);
+    try std.testing.expectEqual(Align.default, td.aligns[3]);
+    // body text that looks like a sep is plain content
+    try std.testing.expectEqualStrings("a", td.cells[4]);
+}
+
+test "unpackAligns soft fail" {
+    var out: [4]Align = undefined;
+    unpackAligns("lc", 4, out[0..]);
+    try std.testing.expectEqual(Align.left, out[0]);
+    try std.testing.expectEqual(Align.center, out[1]);
+    try std.testing.expectEqual(Align.default, out[2]);
+    try std.testing.expectEqual(Align.default, out[3]);
+
+    unpackAligns("lcrdx", 3, out[0..3]);
+    try std.testing.expectEqual(Align.left, out[0]);
+    try std.testing.expectEqual(Align.center, out[1]);
+    try std.testing.expectEqual(Align.right, out[2]);
+
+    unpackAligns("l?r", 3, out[0..3]);
+    try std.testing.expectEqual(Align.left, out[0]);
+    try std.testing.expectEqual(Align.default, out[1]);
+    try std.testing.expectEqual(Align.right, out[2]);
+}
+
+test "packAligns codes" {
+    const als = [_]Align{ .left, .center, .right, .default };
+    var buf: [8]u8 = undefined;
+    const codes = packAligns(als[0..], buf[0..]);
+    try std.testing.expectEqualStrings("lcrd", codes);
+}
+
+test "buildTable pad truncate aligns" {
+    const header = [_][]const u8{ "a", "b", "c" };
+    const row1 = [_][]const u8{ "1", "2", "3" };
+    const body = [_][]const []const u8{row1[0..]};
+    // short aligns → pad with default
+    const short = [_]Align{.right};
+    const td = try buildTable(std.testing.allocator, header[0..], body[0..], short[0..]);
+    defer td.deinit(std.testing.allocator);
+    try std.testing.expectEqual(Align.right, td.aligns[0]);
+    try std.testing.expectEqual(Align.default, td.aligns[1]);
+    try std.testing.expectEqual(Align.default, td.aligns[2]);
+
+    // long aligns → truncate
+    const long = [_]Align{ .left, .center, .right, .left, .center };
+    const td2 = try buildTable(std.testing.allocator, header[0..], body[0..], long[0..]);
+    defer td2.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), td2.aligns.len);
+    try std.testing.expectEqual(Align.right, td2.aligns[2]);
+}
+
+test "12-col all-right cap" {
+    var header: [12][]const u8 = undefined;
+    var i: usize = 0;
+    while (i < 12) : (i += 1) header[i] = "h";
+    var aligns: [12]Align = .{.right} ** 12;
+    const td = try buildTable(std.testing.allocator, header[0..], &[_][]const []const u8{}, aligns[0..]);
+    defer td.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 12), td.cols);
+    try std.testing.expectEqual(Align.right, td.aligns[11]);
 }
