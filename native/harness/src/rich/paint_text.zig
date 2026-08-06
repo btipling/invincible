@@ -146,12 +146,37 @@ pub fn paintParagraph(src: std.builtin.SourceLocation, block: parse.Block, ctx: 
     tl.addText("\n", .{});
 }
 
+/// Cumulative left margin clamp for list/quote nest + indent_cols (~390px safety).
+const MAX_LEFT_MARGIN: f32 = 96.0;
+
+fn clampMargin(x: f32) f32 {
+    return @min(x, MAX_LEFT_MARGIN);
+}
+
+/// Parse list_item.meta: "u" → bullet; "o,{n}" → ordered number (1–99) else "· ".
+fn listMarkerText(meta: ?[]const u8, buf: *[8]u8) []const u8 {
+    const m = meta orelse return "• ";
+    if (m.len >= 3 and m[0] == 'o' and m[1] == ',') {
+        const n = std.fmt.parseInt(u16, m[2..], 10) catch return "· ";
+        if (n == 0 or n > 99) return "· ";
+        return std.fmt.bufPrint(buf, "{d}. ", .{n}) catch "· ";
+    }
+    return "• ";
+}
+
 pub fn paintListItem(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
     const body = dvui.Font.theme(.body);
     const depth: f32 = @floatFromInt(@min(block.level, 6));
-    const indent: f32 = 8.0 + depth * 10.0;
+    const indent_cols_px: f32 = @floatFromInt(block.indent_cols) * 8.0;
+    const quote_nest: f32 = if (block.quote_depth > 0)
+        @floatFromInt(@min(block.quote_depth -| 1, 6)) * 10.0
+    else
+        0.0;
+    const indent: f32 = clampMargin(8.0 + depth * 10.0 + indent_cols_px + quote_nest);
     // textLayout defaults pad 6px — must zero both marker and body or the bullet sits high.
     const zero_pad = dvui.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    const in_quote = block.quote_depth > 0;
+
     var row = dvui.box(src, .{ .dir = .horizontal }, .{
         .expand = .horizontal,
         .id_extra = nextId(ctx),
@@ -160,28 +185,52 @@ pub fn paintListItem(src: std.builtin.SourceLocation, block: parse.Block, ctx: *
     });
     defer row.deinit();
 
+    if (in_quote) {
+        var bar = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .id_extra = nextId(ctx),
+            .background = true,
+            .color_fill = ctx.style.quote_bar,
+            .min_size_content = .{ .w = 3, .h = 1 },
+            .expand = .vertical,
+            .margin = .{ .x = 0, .y = 0, .w = 8, .h = 0 },
+        });
+        defer bar.deinit();
+    }
+
+    var marker_buf: [8]u8 = undefined;
+    const marker = listMarkerText(block.meta, &marker_buf);
+    const marker_color = if (in_quote) ctx.style.quote_text else ctx.style.bullet_text;
     {
         var tl = dvui.textLayout(@src(), .{}, .{
             .id_extra = nextId(ctx),
-            .color_text = ctx.style.bullet_text,
+            .color_text = marker_color,
             .font = body,
             .background = false,
             .padding = .{ .x = 0, .y = 0, .w = 4, .h = 0 },
         });
         defer tl.deinit();
-        tl.addText("• ", .{ .color_text = ctx.style.bullet_text, .font = body });
+        tl.addText(marker, .{ .color_text = marker_color, .font = body });
     }
+
+    var body_style = ctx.style;
+    if (in_quote) body_style.body_text = ctx.style.quote_text;
+    var body_ctx = PaintCtx{
+        .style = body_style,
+        .id_base = ctx.id_base,
+        .run_seq = ctx.run_seq,
+    };
+    const body_color = if (in_quote) ctx.style.quote_text else ctx.style.body_text;
     {
         var tl = dvui.textLayout(@src(), .{}, .{
             .expand = .horizontal,
             .id_extra = nextId(ctx),
-            .color_text = ctx.style.body_text,
+            .color_text = body_color,
             .font = body,
             .background = false,
             .padding = zero_pad,
         });
         defer tl.deinit();
-        paintInlines(tl, block.inlines, ctx, body);
+        paintInlines(tl, block.inlines, &body_ctx, body);
         tl.addText("\n", .{});
     }
 }
@@ -191,7 +240,8 @@ pub fn paintBlockquote(src: std.builtin.SourceLocation, block: parse.Block, ctx:
     const body = dvui.Font.theme(.body);
     const level: u8 = if (block.level == 0) 1 else block.level;
     const depth: f32 = @floatFromInt(@min(level -| 1, 6));
-    const indent: f32 = 8.0 + depth * 10.0;
+    const indent_cols_px: f32 = @floatFromInt(block.indent_cols) * 8.0;
+    const indent: f32 = clampMargin(8.0 + depth * 10.0 + indent_cols_px);
     // Plain runs use quote_text (muted); strong/code/link keep StyleMap colors.
     var quote_style = ctx.style;
     quote_style.body_text = ctx.style.quote_text;
