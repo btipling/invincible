@@ -1,4 +1,5 @@
 //! Split text runs across body + emoji faces (dvui has no per-glyph fallback).
+//! Zig 0.16: `utf8Decode` requires an exact one-codepoint byte slice (len 1–4).
 const std = @import("std");
 const dvui = @import("dvui");
 const palette = @import("../palette.zig");
@@ -10,6 +11,15 @@ pub const PaintOpts = struct {
     color_text: ?dvui.Color = null,
     color_fill: ?dvui.Color = null,
 };
+
+/// Decode one code point at `i`. Returns null on invalid/incomplete.
+fn nextCodepoint(text: []const u8, i: usize) ?struct { cp: u21, len: usize } {
+    if (i >= text.len) return null;
+    const need = std.unicode.utf8ByteSequenceLength(text[i]) catch return null;
+    if (i + need > text.len) return null;
+    const cp = std.unicode.utf8Decode(text[i .. i + need]) catch return null;
+    return .{ .cp = cp, .len = need };
+}
 
 /// Paint `text` switching between `base` and emoji face at run boundaries.
 pub fn addTextMixed(
@@ -24,20 +34,18 @@ pub fn addTextMixed(
     var i: usize = 0;
     while (i < text.len) {
         const start = i;
-        const first_cp = std.unicode.utf8Decode(text[i..]) catch {
+        const first = nextCodepoint(text, i) orelse {
+            // invalid lead — advance 1 byte on body face
             i += 1;
             paintSlice(tl, text[start..i], base, opts);
             continue;
         };
-        const first_len = std.unicode.utf8CodepointSequenceLength(first_cp) catch 1;
-        const want_emoji = isEmojiRelated(first_cp);
-        i += first_len;
+        const want_emoji = isEmojiRelated(first.cp);
+        i += first.len;
 
-        while (i < text.len) {
-            const cp = std.unicode.utf8Decode(text[i..]) catch break;
-            if (isEmojiRelated(cp) != want_emoji) break;
-            const len = std.unicode.utf8CodepointSequenceLength(cp) catch break;
-            i += len;
+        while (nextCodepoint(text, i)) |n| {
+            if (isEmojiRelated(n.cp) != want_emoji) break;
+            i += n.len;
         }
 
         const slice = text[start..i];
