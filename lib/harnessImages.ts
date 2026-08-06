@@ -11,8 +11,12 @@ export const MAX_CONCURRENT_IMAGE_FETCHES = 3 as const;
 export const MAX_IMAGE_FETCH_BYTES = Math.floor(1.5 * 1024 * 1024); // 1.5 MiB
 export const MAX_DECODE_EDGE = 1280 as const;
 
-/** CommonMark-ish `![alt](url)` — scheduling only (not full MD). */
-const IMAGE_MD_RE = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+/**
+ * CommonMark-ish `![alt](url)` / `![alt](<url>)` with optional title
+ * (`"…"`, `'…'`, `(…)`). Capture bare URL only (scheduling, not full MD).
+ */
+const IMAGE_MD_RE =
+  /!\[([^\]]*)\]\(\s*(?:<([^>\s]+)>|([^)\s]+))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g;
 
 const putOk = new Set<string>();
 const inFlight = new Set<string>();
@@ -43,6 +47,8 @@ export function harnessImageSessionGeneration(): number {
 /** True when URL is http(s) and within length cap (mirrors link_url.isSafeLinkUrl). */
 export function isSafeImageUrl(url: string): boolean {
   if (!url || url.length > MAX_IMAGE_URL_LEN) return false;
+  // Reject title leftovers / unescaped spaces (must be bare http(s) URL).
+  if (/\s/.test(url)) return false;
   const lower = url.toLowerCase();
   return lower.startsWith('https://') || lower.startsWith('http://');
 }
@@ -58,11 +64,7 @@ export function extractCandidateImageUrls(markdown: string): string[] {
   IMAGE_MD_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = IMAGE_MD_RE.exec(markdown)) !== null) {
-    let url = (m[2] ?? '').trim();
-    // Strip optional surrounding <…>
-    if (url.startsWith('<') && url.endsWith('>')) {
-      url = url.slice(1, -1).trim();
-    }
+    let url = (m[2] || m[3] || '').trim();
     if (!isSafeImageUrl(url)) continue;
     if (seen.has(url)) continue;
     seen.add(url);
