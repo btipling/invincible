@@ -198,15 +198,25 @@ pub fn paintListItem(src: std.builtin.SourceLocation, block: parse.Block, ctx: *
     }
 
     if (block.checked) |is_checked| {
-        // Display-only: ephemeral stack bool each frame. dvui.checkbox toggles
-        // *target on click but we never write IR / SessionStore / message source.
-        var c = is_checked;
-        _ = dvui.checkbox(@src(), &c, null, .{
+        // Display-only chrome: do not use dvui.checkbox — it always toggles *target
+        // on click, joins tab order, and advertises AccessKit toggle. Paint the same
+        // checkmark glyph without interaction (no IR / SessionStore / source mutate).
+        const check_size = body.textHeight();
+        const box_wd = dvui.spacer(@src(), .{
             .id_extra = nextId(ctx),
+            .min_size_content = .{ .w = check_size, .h = check_size },
             .padding = .{ .x = 0, .y = 2, .w = 4, .h = 0 },
             .gravity_y = 0.5,
+            .tab_index = 0,
             .background = false,
         });
+        if (box_wd.visible()) {
+            const opts: dvui.Options = .{
+                .style = .control,
+                .corners = .all(2),
+            };
+            dvui.checkmark(is_checked, false, box_wd.borderRectScale(), false, 0, opts);
+        }
     } else {
         var marker_buf: [8]u8 = undefined;
         const marker = listMarkerText(block.meta, &marker_buf);

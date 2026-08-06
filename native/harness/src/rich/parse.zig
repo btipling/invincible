@@ -2006,11 +2006,42 @@ test "task list inside quote keeps checked and quote_depth" {
 test "task list marker alone empty body" {
     var doc = try parse(std.testing.allocator, "- [ ]\n- [x]\n");
     defer doc.deinit();
-    var n: usize = 0;
+    var unchecked: usize = 0;
+    var checked_n: usize = 0;
     for (doc.blocks) |blk| {
         if (blk.kind != .list_item) continue;
-        if (blk.checked == null) continue;
-        n += 1;
+        const c = blk.checked orelse continue;
+        if (c) checked_n += 1 else unchecked += 1;
     }
-    try std.testing.expect(n >= 2);
+    try std.testing.expect(unchecked >= 1);
+    try std.testing.expect(checked_n >= 1);
+}
+
+test "star and plus list markers are tasks" {
+    const src =
+        \\* [ ] star task
+        \\+ [x] plus done
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var unchecked: usize = 0;
+    var checked_n: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        const c = blk.checked orelse continue;
+        const j = try joinBlockText(std.testing.allocator, blk);
+        defer std.testing.allocator.free(j);
+        try std.testing.expect(std.mem.indexOf(u8, j, "[ ]") == null);
+        try std.testing.expect(std.mem.indexOf(u8, j, "[x]") == null);
+        if (c) {
+            checked_n += 1;
+            try expectContains(j, "plus done");
+        } else {
+            unchecked += 1;
+            try expectContains(j, "star task");
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), unchecked);
+    try std.testing.expectEqual(@as(usize, 1), checked_n);
 }
