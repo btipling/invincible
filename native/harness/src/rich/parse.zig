@@ -6,6 +6,7 @@
 const std = @import("std");
 const zmd = @import("zmd");
 const preprocess = @import("preprocess.zig");
+const bq = @import("blockquote.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
@@ -18,6 +19,7 @@ pub const BlockKind = enum {
     heading,
     list_item,
     code_fence,
+    blockquote,
     plain,
 };
 
@@ -49,7 +51,7 @@ pub const Inline = struct {
 
 pub const Block = struct {
     kind: BlockKind,
-    /// Heading level 1–6, or list nesting depth for list_item.
+    /// Heading level 1–6, list nesting depth, or blockquote depth (1–6).
     level: u8 = 0,
     /// Fence language info string (arena-owned).
     meta: ?[]const u8 = null,
@@ -76,14 +78,37 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
     errdefer arena.deinit();
     const a = arena.allocator();
 
-    // Escapes + same-line ~~strike~~ (zmd has neither). Arena-owned.
-    const pre = try preprocess.preprocessInlineSugar(a, src);
-    const ir = try zmd.parseAlloc(a, pre, markerConfig);
-    const blocks = try lowerIr(a, ir);
+    // zmd has no `>` blockquotes @ pin — fence-aware partition, then sugar+zmd per segment.
+    const segments = try bq.partition(a, src);
+    var blocks: std.ArrayList(Block) = .empty;
+    // blocks live in arena; no deinit of list storage needed beyond arena
+
+    for (segments) |seg| {
+        if (seg.text.len == 0) continue;
+        if (!bq.hasNonWs(seg.text)) continue;
+        // Escapes + same-line ~~strike~~ (zmd has neither). Arena-owned.
+        const pre = try preprocess.preprocessInlineSugar(a, seg.text);
+        const ir = try zmd.parseAlloc(a, pre, markerConfig);
+        const lowered = try lowerIr(a, ir);
+        if (seg.is_quote) {
+            const depth: u8 = if (seg.depth == 0) 1 else seg.depth;
+            for (lowered) |blk| {
+                if (blk.inlines.len == 0) continue;
+                try blocks.append(a, .{
+                    .kind = .blockquote,
+                    .level = depth,
+                    .meta = null,
+                    .inlines = blk.inlines,
+                });
+            }
+        } else {
+            try blocks.appendSlice(a, lowered);
+        }
+    }
 
     return .{
         .arena = arena,
-        .blocks = blocks,
+        .blocks = try blocks.toOwnedSlice(a),
     };
 }
 
@@ -878,3 +903,89 @@ test "overlapping strike and strong role-matched close" {
     try std.testing.expect(x_struck);
     try std.testing.expect(!y_strong);
 }
+
+
+test "blockquote single line" {
+    var doc = try parse(std.testing.allocator, "> hello");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    try std.testing.expectEqual(BlockKind.blockquote, doc.blocks[0].kind);
+    try std.testing.expectEqual(@as(u8, 1), doc.blocks[0].level);
+    const joined = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(joined);
+    try expectContains(joined, "hello");
+    try std.testing.expect(std.mem.indexOf(u8, joined, ">") == null);
+}
+
+test "blockquote multi-line same depth" {
+    var doc = try parse(std.testing.allocator, "> a\n> b\n");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    var joined_all: std.ArrayList(u8) = .empty;
+    defer joined_all.deinit(std.testing.allocator);
+    for (doc.blocks) |blk| {
+        try std.testing.expectEqual(BlockKind.blockquote, blk.kind);
+        const j = try joinBlockText(std.testing.allocator, blk);
+        defer std.testing.allocator.free(j);
+        try joined_all.appendSlice(std.testing.allocator, j);
+    }
+    try expectContains(joined_all.items, "a");
+    try expectContains(joined_all.items, "b");
+}
+
+test "blockquote nested depth" {
+    var doc = try parse(std.testing.allocator, ">> nest");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    try std.testing.expectEqual(BlockKind.blockquote, doc.blocks[0].kind);
+    try std.testing.expectEqual(@as(u8, 2), doc.blocks[0].level);
+}
+
+test "blockquote depth change splits levels" {
+    var doc = try parse(std.testing.allocator, "> outer\n>> inner\n");
+    defer doc.deinit();
+    var saw1 = false;
+    var saw2 = false;
+    for (doc.blocks) |blk| {
+        try std.testing.expectEqual(BlockKind.blockquote, blk.kind);
+        if (blk.level == 1) saw1 = true;
+        if (blk.level == 2) saw2 = true;
+    }
+    try std.testing.expect(saw1);
+    try std.testing.expect(saw2);
+}
+
+test "blockquote inline flags" {
+    var doc = try parse(std.testing.allocator, "> **bold** *em*");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    try std.testing.expectEqual(BlockKind.blockquote, doc.blocks[0].kind);
+    var saw_strong = false;
+    var saw_emph = false;
+    for (doc.blocks[0].inlines) |inl| {
+        if (inl.flags.strong) saw_strong = true;
+        if (inl.flags.emph) saw_emph = true;
+    }
+    try std.testing.expect(saw_strong);
+    try std.testing.expect(saw_emph);
+}
+
+test "fence body not blockquote" {
+    const src = "```\n> keep\n```\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    for (doc.blocks) |blk| {
+        try std.testing.expect(blk.kind != .blockquote);
+    }
+    var saw_fence = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .code_fence) {
+            saw_fence = true;
+            const j = try joinBlockText(std.testing.allocator, blk);
+            defer std.testing.allocator.free(j);
+            try expectContains(j, "> keep");
+        }
+    }
+    try std.testing.expect(saw_fence);
+}
+

@@ -17,6 +17,10 @@ pub const StyleMap = struct {
     link_text: dvui.Color = palette.teal_accent,
     heading_text: dvui.Color = palette.teal_text,
     bullet_text: dvui.Color = palette.teal_muted,
+    /// Blockquote left bar fill.
+    quote_bar: dvui.Color = palette.teal_border,
+    /// Default blockquote textLayout ink (runs still use inline colors).
+    quote_text: dvui.Color = palette.teal_muted,
     fence_lang_text: dvui.Color = palette.teal_muted,
     /// Fence token HL: comments.
     code_comment: dvui.Color = palette.teal_muted,

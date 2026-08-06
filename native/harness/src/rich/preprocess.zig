@@ -18,7 +18,7 @@ fn appendCp(out: *std.ArrayList(u8), a: Allocator, cp: u21) !void {
     try out.appendSlice(a, buf[0..n]);
 }
 
-fn isFenceLine(line: []const u8) bool {
+pub fn isFenceLine(line: []const u8) bool {
     var i: usize = 0;
     while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
     return std.mem.startsWith(u8, line[i..], "```");
