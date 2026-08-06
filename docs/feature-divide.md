@@ -26,12 +26,13 @@ optional login chrome).
 | `SessionStore` load/save/clear | **DOM** | memory / localStorage |
 | Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status; model chip is a **mirror** of Wasm selection, not a second picker |
 | Model catalog fetch (`GET /api/models`) | **DOM** | Session-gated; host pushes ids into Wasm catalog |
-| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 |
+| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v4**) |
 | Selected `modelId` on inference | **DOM host** → **Vercel backend** | Host reads bridge; POST body; server re-authorizes grants + BYOK |
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
 | Per-user MCP config UI | **DOM** | `/settings`, `/settings/mcp` — not dual chat; not Admin |
 | Per-user MCP tools (connect + execute) | **Vercel backend** | `lib/mcp/*`; keys under tenant DEK; never Wasm/client |
-| **Transcript (read messages)** | **Wasm** | Primary UX; rich MD + diff/patch fence paint in-canvas (`rich/*`) — no DOM markdown |
+| **Transcript (read messages)** | **Wasm** | Primary UX; rich MD + images + diff/patch fence paint in-canvas (`rich/*`) — no DOM markdown |
+| Image bytes (fetch/decode) | **DOM host** | Browser fetch → RGBA → `inv_image_cache_put`; paint stays Wasm |
 | **Composer + Send / smoke** | **Wasm** | Primary input |
 | Busy / error presentation for turns | **Wasm** | EMBER for errors |
 | Empty / onboarding copy for agent | **Wasm** | |
@@ -59,7 +60,7 @@ Track any exception in the issue that introduces it:
 ## Data flow
 
 ```text
-Host loads Wasm → GET /api/models → push catalog into bridge (protocol v3)
+Host loads Wasm → GET /api/models → push catalog into bridge (protocol v4; catalog APIs from v3)
 User cycles model in Wasm header (optional Next) — host chip mirrors selection
 (optional) User configures personal MCP on /settings/mcp (keys → tenant DEK ciphertext)
 User types in Wasm composer
@@ -85,7 +86,8 @@ are flattened server-side before the model and before summaries.
 | Concern | Path |
 |---------|------|
 | Host shell | `app/harness/HarnessHost.tsx` |
-| Bridge TS (protocol **v3**) | `lib/harnessBridge.ts` |
+| Bridge TS (protocol **v4**) | `lib/harnessBridge.ts` |
+| Image fetch/decode | `lib/harnessImages.ts` |
 | Model catalog API | `app/api/models/route.ts` |
 | Admin inference keys | `app/admin/inference/*` |
 | User Settings / MCP servers | `app/settings/*` · `lib/tenancy/userMcpServers.ts` · `lib/mcp/client.ts` |
@@ -97,8 +99,8 @@ are flattened server-side before the model and before summaries.
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
 | Export whitelist | `native/harness/build.zig` |
 
-Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **3**).
-Mismatch → load error; rebuild both sides.
+Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **4**).
+Mismatch → load error; rebuild both sides. Image **bytes** enter only via bridge put; never dual DOM `<img>` product surface.
 
 ## Related
 

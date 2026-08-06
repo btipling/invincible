@@ -37,6 +37,7 @@ pub const InlineKind = enum {
     text,
     code,
     link,
+    image,
     footnote_ref,
 };
 
@@ -439,7 +440,7 @@ const markerConfig: zmd.Config = .{
 
 // --- IR → ParsedDoc ---------------------------------------------------------
 
-const Role = enum { strong, emph, strike, code, link, plain };
+const Role = enum { strong, emph, strike, code, link, image, plain };
 
 const Builder = struct {
     a: Allocator,
@@ -491,7 +492,7 @@ const Builder = struct {
     }
 
     fn stackKind(self: *const Builder) struct { InlineKind, ?[]const u8 } {
-        // Innermost code/link wins for primary kind
+        // Innermost code wins; else image; else link
         var kind: InlineKind = .text;
         var href: ?[]const u8 = null;
         for (self.pending.items) |p| {
@@ -500,8 +501,14 @@ const Builder = struct {
                     kind = .code;
                     href = null;
                 },
-                .link => {
+                .image => {
                     if (kind != .code) {
+                        kind = .image;
+                        href = p.href;
+                    }
+                },
+                .link => {
+                    if (kind != .code and kind != .image) {
                         kind = .link;
                         href = p.href;
                     }
@@ -517,10 +524,17 @@ const Builder = struct {
         const t = try self.a.dupe(u8, self.text_buf.items);
         self.text_buf.clearRetainingCapacity();
         const kh = self.stackKind();
+        var kind = kh[0];
+        var href = kh[1];
+        // Empty href cannot be image/link paint path — demote to text.
+        if ((kind == .image or kind == .link) and (href == null or href.?.len == 0)) {
+            kind = .text;
+            href = null;
+        }
         try self.inlines.append(self.a, .{
-            .kind = kh[0],
+            .kind = kind,
             .text = t,
-            .href = kh[1],
+            .href = href,
             .flags = self.stackFlags(),
         });
     }
@@ -650,6 +664,39 @@ const Builder = struct {
     /// otherwise remove the nearest matching frame so overlapping spans do not
     /// steal a different role's close (LIFO-only broke `**~~x** y~~`).
     fn closeInlineRole(self: *Builder, role: Role) !void {
+        // Empty-alt images: flushText no-ops on empty text_buf — force IR run.
+        if (role == .image and self.text_buf.items.len == 0) {
+            var idx: ?usize = null;
+            var href: ?[]const u8 = null;
+            if (self.pending.items.len > 0 and self.pending.items[self.pending.items.len - 1].role == .image) {
+                idx = self.pending.items.len - 1;
+                href = self.pending.items[idx.?].href;
+            } else {
+                var k = self.pending.items.len;
+                while (k > 0) {
+                    k -= 1;
+                    if (self.pending.items[k].role == .image) {
+                        idx = k;
+                        href = self.pending.items[k].href;
+                        break;
+                    }
+                }
+            }
+            if (idx) |i| {
+                if (href) |h| {
+                    if (h.len > 0) {
+                        try self.inlines.append(self.a, .{
+                            .kind = .image,
+                            .text = try self.a.dupe(u8, ""),
+                            .href = h,
+                            .flags = self.stackFlags(),
+                        });
+                    }
+                }
+                _ = self.pending.orderedRemove(i);
+            }
+            return;
+        }
         try self.flushText();
         if (self.pending.items.len == 0) return;
         if (self.pending.items[self.pending.items.len - 1].role == role) {
@@ -696,7 +743,11 @@ const Builder = struct {
             try self.openInline(.link, meta);
             return;
         }
-        if (std.mem.eql(u8, tag, "img") or std.mem.eql(u8, tag, "ref")) {
+        if (std.mem.eql(u8, tag, "img")) {
+            try self.openInline(.image, if (meta.len > 0) meta else null);
+            return;
+        }
+        if (std.mem.eql(u8, tag, "ref")) {
             try self.openInline(.plain, null);
             return;
         }
@@ -758,7 +809,11 @@ const Builder = struct {
             try self.closeInlineRole(.link);
             return;
         }
-        if (std.mem.eql(u8, tag, "img") or std.mem.eql(u8, tag, "ref")) {
+        if (std.mem.eql(u8, tag, "img")) {
+            try self.closeInlineRole(.image);
+            return;
+        }
+        if (std.mem.eql(u8, tag, "ref")) {
             try self.closeInlineRole(.plain);
             return;
         }
@@ -2044,4 +2099,80 @@ test "star and plus list markers are tasks" {
     }
     try std.testing.expectEqual(@as(usize, 1), unchecked);
     try std.testing.expectEqual(@as(usize, 1), checked_n);
+}
+
+
+test "image inline https alt and href" {
+    var doc = try parse(std.testing.allocator, "![Architecture](https://example.com/arch.png)\n");
+    defer doc.deinit();
+    var found = false;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (inl.kind == .image) {
+                found = true;
+                try std.testing.expectEqualStrings("Architecture", inl.text);
+                try std.testing.expect(inl.href != null);
+                try std.testing.expectEqualStrings("https://example.com/arch.png", inl.href.?);
+            }
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "image empty alt still yields image kind" {
+    var doc = try parse(std.testing.allocator, "![](https://example.com/x.png)\n");
+    defer doc.deinit();
+    var found = false;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (inl.kind == .image) {
+                found = true;
+                try std.testing.expectEqual(@as(usize, 0), inl.text.len);
+                try std.testing.expect(inl.href != null);
+                try std.testing.expectEqualStrings("https://example.com/x.png", inl.href.?);
+            }
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "image unsafe scheme still stored as image kind" {
+    // Paint/host refuse fetch; IR may still carry href for alt fallback.
+    var doc = try parse(std.testing.allocator, "![x](javascript:alert(1))\n");
+    defer doc.deinit();
+    var found = false;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (inl.kind == .image) {
+                found = true;
+                try std.testing.expectEqualStrings("x", inl.text);
+                try std.testing.expect(inl.href != null);
+            }
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "image mid-paragraph among text" {
+    var doc = try parse(std.testing.allocator, "see ![icon](https://example.com/i.png) for status\n");
+    defer doc.deinit();
+    var kinds: [8]InlineKind = undefined;
+    var n: usize = 0;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (n < kinds.len) {
+                kinds[n] = inl.kind;
+                n += 1;
+            }
+        }
+    }
+    try std.testing.expect(n >= 2);
+    var has_image = false;
+    var has_text = false;
+    for (kinds[0..n]) |k| {
+        if (k == .image) has_image = true;
+        if (k == .text) has_text = true;
+    }
+    try std.testing.expect(has_image);
+    try std.testing.expect(has_text);
 }

@@ -85,6 +85,8 @@ pub fn build(b: *std.Build) void {
         "inv_selected_model_len",
         "inv_selected_model_copy",
         "inv_cycle_selected_model",
+        "inv_image_cache_put",
+        "inv_image_cache_clear",
     };
 
     const install_wasm = b.addInstallArtifact(exe, .{
@@ -126,7 +128,7 @@ pub fn build(b: *std.Build) void {
     test_parse.dependOn(&run_parse_tests.step);
 
     // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
-    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist)");
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, image_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist)");
     test_rich.dependOn(&run_parse_tests.step);
 
     const cache_tests = b.addTest(.{
@@ -149,6 +151,16 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_rich.dependOn(&b.addRunArtifact(link_tests).step);
+
+    const image_cache_tests = b.addTest(.{
+        .name = "rich-image-cache",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/rich/image_cache.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+    test_rich.dependOn(&b.addRunArtifact(image_cache_tests).step);
 
     const kinds_tests = b.addTest(.{
         .name = "rich-kinds",

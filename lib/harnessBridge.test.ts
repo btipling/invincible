@@ -128,6 +128,8 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
       selected = (selected + 1) % catalog.length;
       return selected;
     },
+    inv_image_cache_put: () => 0,
+    inv_image_cache_clear: () => {},
     __messages: messages,
     __setPending: (s) => {
       pending = s;
@@ -298,5 +300,35 @@ describe('model catalog protocol v3', () => {
     });
     const bridge = new HarnessBridge(exp);
     expect(() => bridge.assertRoundTrip()).toThrow(/protocol mismatch/);
+  });
+});
+
+describe("imageCachePut (protocol v4)", () => {
+  it("copies RGBA into inv_image_cache_put", () => {
+    const exp = makeMockExports();
+    let seen: { url: string; w: number; h: number; bytes: number } | null = null;
+    exp.inv_image_cache_put = (urlPtr, urlLen, rgbaPtr, width, height) => {
+      const url = new TextDecoder().decode(
+        new Uint8Array(exp.memory.buffer, urlPtr, urlLen),
+      );
+      seen = { url, w: width, h: height, bytes: width * height * 4 };
+      // touch rgba to ensure buffer readable
+      void new Uint8Array(exp.memory.buffer, rgbaPtr, width * height * 4)[0];
+      return 0;
+    };
+    const bridge = new HarnessBridge(exp);
+    const rgba = new Uint8ClampedArray([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    expect(bridge.imageCachePut("https://example.com/a.png", rgba, 2, 2)).toBe(true);
+    expect(seen).toEqual({
+      url: "https://example.com/a.png",
+      w: 2,
+      h: 2,
+      bytes: 16,
+    });
+  });
+
+  it("rejects zero dimensions", () => {
+    const bridge = new HarnessBridge(makeMockExports());
+    expect(bridge.imageCachePut("https://example.com/a.png", new Uint8Array(16), 0, 2)).toBe(false);
   });
 });

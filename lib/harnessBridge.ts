@@ -10,7 +10,7 @@
  */
 
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
-export const HARNESS_PROTOCOL_VERSION = 3 as const;
+export const HARNESS_PROTOCOL_VERSION = 4 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -82,6 +82,14 @@ export type HarnessBridgeExports = {
   inv_selected_model_len: () => number;
   inv_selected_model_copy: (outPtr: number, maxLen: number) => number;
   inv_cycle_selected_model: () => number;
+  inv_image_cache_put: (
+    urlPtr: number,
+    urlLen: number,
+    rgbaPtr: number,
+    width: number,
+    height: number,
+  ) => number;
+  inv_image_cache_clear: () => void;
 };
 
 const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
@@ -109,6 +117,8 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_selected_model_len',
   'inv_selected_model_copy',
   'inv_cycle_selected_model',
+  'inv_image_cache_put',
+  'inv_image_cache_clear',
 ];
 
 function isMemoryLike(v: unknown): v is WasmMemoryLike {
@@ -236,6 +246,49 @@ export class HarnessBridge {
 
   clearMessages(): void {
     this.exports.inv_clear_messages();
+  }
+
+  /**
+   * Push host-decoded non-premultiplied RGBA into Wasm image cache (protocol v4).
+   * Returns true on success.
+   */
+  imageCachePut(
+    url: string,
+    rgba: Uint8Array | Uint8ClampedArray,
+    width: number,
+    height: number,
+  ): boolean {
+    if (!url || width <= 0 || height <= 0) return false;
+    // Match Wasm MAX_EDGE (1280); reject absurd dims before gpa_u8.
+    if (width > 1280 || height > 1280) return false;
+    const need = width * height * 4;
+    if (!Number.isFinite(need) || need <= 0 || rgba.byteLength < need) return false;
+    const urlBytes = this.writeUtf8(url);
+    const rgbaPtr = this.exports.gpa_u8(need);
+    if (!rgbaPtr) {
+      if (urlBytes.len > 0) this.exports.gpa_free(urlBytes.ptr, urlBytes.len);
+      return false;
+    }
+    try {
+      new Uint8Array(this.exports.memory.buffer, rgbaPtr, need).set(
+        rgba.subarray(0, need),
+      );
+      const rc = this.exports.inv_image_cache_put(
+        urlBytes.ptr,
+        urlBytes.len,
+        rgbaPtr,
+        width | 0,
+        height | 0,
+      );
+      return rc === 0;
+    } finally {
+      this.exports.gpa_free(rgbaPtr, need);
+      if (urlBytes.len > 0) this.exports.gpa_free(urlBytes.ptr, urlBytes.len);
+    }
+  }
+
+  imageCacheClear(): void {
+    this.exports.inv_image_cache_clear();
   }
 
   /**

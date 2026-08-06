@@ -5,6 +5,8 @@ const parse = @import("parse.zig");
 const style_mod = @import("style.zig");
 const mixed_text = @import("mixed_text.zig");
 const palette = @import("../palette.zig");
+const image_cache = @import("image_cache.zig");
+const link_url = @import("link_url.zig");
 
 /// `[^` + label≤32 + `]` fits in 36 bytes; pad for safety.
 const MAX_FN_MARK: usize = 48;
@@ -31,7 +33,7 @@ fn fontFor(base: dvui.Font, kind: parse.InlineKind, f: parse.StyleFlags) dvui.Fo
     var font = switch (kind) {
         .code => dvui.Font.theme(.mono),
         .footnote_ref => dvui.Font.theme(.body).larger(-1),
-        .text, .link => base,
+        .text, .link, .image => base,
     };
     if (f.strong) font = font.withWeight(.bold);
     if (f.emph) font = font.withStyle(.italic);
@@ -48,12 +50,23 @@ fn colorFor(st: style_mod.StyleMap, kind: parse.InlineKind, f: parse.StyleFlags)
     return st.body_text;
 }
 
-/// Paint flat inline runs. `base_font` is the block face (body for paragraphs,
-/// title/heading for headings). Style flags compose bold/italic/strike.
+const MAX_IMAGE_DISPLAY_H: f32 = 280.0;
+const PLACEHOLDER_MIN_H: f32 = 24.0;
+
+fn hasImageInline(inlines: []const parse.Inline) bool {
+    for (inlines) |inl| {
+        if (inl.kind == .image) return true;
+    }
+    return false;
+}
+
+/// Paint flat non-image inline runs into an open TextLayout.
 /// Emoji code points switch to OpenMoji (see mixed_text.zig).
+/// `.image` is ignored here — use `paintInlineFlow`.
 pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, ctx: *const PaintCtx, base_font: dvui.Font) void {
     const st = ctx.style;
     for (inlines) |inl| {
+        if (inl.kind == .image) continue;
         if (inl.text.len == 0) continue;
         const font = fontFor(base_font, inl.kind, inl.flags);
         switch (inl.kind) {
@@ -87,7 +100,141 @@ pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, c
                 const mark = std.fmt.bufPrint(&mark_buf, "[{s}]", .{inl.text}) catch inl.text;
                 mixed_text.addTextMixed(tl, mark, font, .{ .color_text = st.muted_text });
             },
+            .image => {},
         }
+    }
+}
+
+fn paintImageInline(src: std.builtin.SourceLocation, inl: parse.Inline, ctx: *PaintCtx) void {
+    const href = inl.href orelse "";
+    const alt = if (inl.text.len > 0) inl.text else "(image)";
+
+    if (href.len == 0 or !link_url.isSafeLinkUrl(href)) {
+        paintImagePlaceholder(src, alt, ctx);
+        return;
+    }
+    if (image_cache.get(href)) |hit| {
+        const nw: f32 = @floatFromInt(hit.width);
+        const nh: f32 = @floatFromInt(hit.height);
+        var dw = nw;
+        var dh = nh;
+        if (dh > MAX_IMAGE_DISPLAY_H and dh > 0) {
+            const s = MAX_IMAGE_DISPLAY_H / dh;
+            dw *= s;
+            dh = MAX_IMAGE_DISPLAY_H;
+        }
+        _ = dvui.image(src, .{
+            .source = .{
+                .pixels = .{
+                    .rgba = hit.rgba,
+                    .width = hit.width,
+                    .height = hit.height,
+                    .interpolation = .linear,
+                    .invalidation = .ptr,
+                },
+            },
+            .shrink = .ratio,
+        }, .{
+            .expand = .horizontal,
+            .id_extra = nextId(ctx),
+            .min_size_content = .{ .w = dw, .h = dh },
+            .max_size_content = .{ .w = 10_000, .h = MAX_IMAGE_DISPLAY_H },
+            .margin = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
+            .label = .{ .text = alt },
+            .background = false,
+        });
+        return;
+    }
+    paintImagePlaceholder(src, alt, ctx);
+}
+
+fn paintImagePlaceholder(src: std.builtin.SourceLocation, alt: []const u8, ctx: *PaintCtx) void {
+    const st = ctx.style;
+    var box = dvui.box(src, .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .id_extra = nextId(ctx),
+        .background = true,
+        .color_fill = st.code_fill,
+        .color_border = st.code_border,
+        .border = .all(1),
+        .min_size_content = .{ .w = 40, .h = PLACEHOLDER_MIN_H },
+        .margin = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
+        .padding = .{ .x = 6, .y = 4, .w = 6, .h = 4 },
+    });
+    defer box.deinit();
+    var tl = dvui.textLayout(@src(), .{}, .{
+        .expand = .horizontal,
+        .id_extra = nextId(ctx),
+        .color_text = st.muted_text,
+        .font = dvui.Font.theme(.body).larger(-1),
+        .background = false,
+        .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    });
+    defer tl.deinit();
+    const label = if (alt.len > 0) alt else "(image)";
+    mixed_text.addTextMixed(tl, label, dvui.Font.theme(.body).larger(-1), .{ .color_text = st.muted_text });
+}
+
+const TextLayoutOpts = struct {
+    expand: dvui.Options.Expand = .horizontal,
+    padding: dvui.Rect = .{ .x = 0, .y = 1, .w = 0, .h = 2 },
+    color_text: ?dvui.Color = null,
+};
+
+/// Paint inlines with optional images via segmented vertical flow (locked plan).
+pub fn paintInlineFlow(
+    src: std.builtin.SourceLocation,
+    inlines: []const parse.Inline,
+    ctx: *PaintCtx,
+    base_font: dvui.Font,
+    layout: TextLayoutOpts,
+) void {
+    const default_color = layout.color_text orelse ctx.style.body_text;
+    if (!hasImageInline(inlines)) {
+        var tl = dvui.textLayout(src, .{}, .{
+            .expand = layout.expand,
+            .id_extra = nextId(ctx),
+            .color_text = default_color,
+            .font = base_font,
+            .background = false,
+            .padding = layout.padding,
+        });
+        defer tl.deinit();
+        paintInlines(tl, inlines, ctx, base_font);
+        tl.addText("\n", .{});
+        return;
+    }
+
+    var col = dvui.box(src, .{ .dir = .vertical }, .{
+        .expand = .horizontal,
+        .id_extra = nextId(ctx),
+        .background = false,
+        .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+        .margin = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    });
+    defer col.deinit();
+
+    var i: usize = 0;
+    while (i < inlines.len) {
+        if (inlines[i].kind == .image) {
+            paintImageInline(@src(), inlines[i], ctx);
+            i += 1;
+            continue;
+        }
+        const start = i;
+        while (i < inlines.len and inlines[i].kind != .image) : (i += 1) {}
+        const slice = inlines[start..i];
+        var tl = dvui.textLayout(@src(), .{}, .{
+            .expand = layout.expand,
+            .id_extra = nextId(ctx),
+            .color_text = default_color,
+            .font = base_font,
+            .background = false,
+            .padding = layout.padding,
+        });
+        defer tl.deinit();
+        paintInlines(tl, slice, ctx, base_font);
+        if (i >= inlines.len) tl.addText("\n", .{});
     }
 }
 
@@ -119,32 +266,20 @@ pub fn paintHeading(src: std.builtin.SourceLocation, block: parse.Block, ctx: *P
         .id_base = ctx.id_base,
         .run_seq = ctx.run_seq,
     };
-    var tl = dvui.textLayout(src, .{}, .{
-        .expand = .horizontal,
-        .id_extra = nextId(ctx),
-        .color_text = color,
-        .font = font,
-        .background = false,
+    // Segmented flow so ![alt](url) in headings paints (paintInlines skips .image).
+    paintInlineFlow(src, block.inlines, &heading_ctx, font, .{
         .padding = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
+        .color_text = color,
     });
-    defer tl.deinit();
-    paintInlines(tl, block.inlines, &heading_ctx, font);
-    tl.addText("\n", .{});
 }
 
 pub fn paintParagraph(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
     const body = dvui.Font.theme(.body);
-    var tl = dvui.textLayout(src, .{}, .{
-        .expand = .horizontal,
-        .id_extra = nextId(ctx),
-        .color_text = ctx.style.body_text,
-        .font = body,
-        .background = false,
+    // Primary MD image path is paragraph inlines — must use paintInlineFlow.
+    paintInlineFlow(src, block.inlines, ctx, body, .{
         .padding = .{ .x = 0, .y = 1, .w = 0, .h = 2 },
+        .color_text = ctx.style.body_text,
     });
-    defer tl.deinit();
-    paintInlines(tl, block.inlines, ctx, body);
-    tl.addText("\n", .{});
 }
 
 /// Cumulative left margin clamp for list/quote nest + indent_cols (~390px safety).
@@ -281,19 +416,10 @@ pub fn paintListItem(src: std.builtin.SourceLocation, block: parse.Block, ctx: *
         .run_seq = ctx.run_seq,
     };
     const body_color = if (in_quote) ctx.style.quote_text else ctx.style.body_text;
-    {
-        var tl = dvui.textLayout(@src(), .{}, .{
-            .expand = .horizontal,
-            .id_extra = nextId(ctx),
-            .color_text = body_color,
-            .font = body,
-            .background = false,
-            .padding = zero_pad,
-        });
-        defer tl.deinit();
-        paintInlines(tl, block.inlines, &body_ctx, body);
-        tl.addText("\n", .{});
-    }
+    paintInlineFlow(@src(), block.inlines, &body_ctx, body, .{
+        .padding = zero_pad,
+        .color_text = body_color,
+    });
 }
 
 
@@ -334,19 +460,10 @@ pub fn paintBlockquote(src: std.builtin.SourceLocation, block: parse.Block, ctx:
         defer bar.deinit();
     }
 
-    {
-        var tl = dvui.textLayout(@src(), .{}, .{
-            .expand = .horizontal,
-            .id_extra = nextId(ctx),
-            .color_text = ctx.style.quote_text,
-            .font = body,
-            .background = false,
-            .padding = zero_pad,
-        });
-        defer tl.deinit();
-        paintInlines(tl, block.inlines, &quote_ctx, body);
-        tl.addText("\n", .{});
-    }
+    paintInlineFlow(@src(), block.inlines, &quote_ctx, body, .{
+        .padding = zero_pad,
+        .color_text = ctx.style.quote_text,
+    });
 }
 
 pub fn paintPlain(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
@@ -375,38 +492,41 @@ pub fn paintFootnoteDef(src: std.builtin.SourceLocation, block: parse.Block, ctx
     }
     const body = dvui.Font.theme(.body);
     const mark_font = body.larger(-1);
-    var tl = dvui.textLayout(src, .{}, .{
-        .expand = .horizontal,
-        .id_extra = nextId(ctx),
-        .color_text = ctx.style.muted_text,
-        .font = body,
-        .background = false,
-        .padding = .{ .x = 0, .y = 1, .w = 0, .h = 2 },
-    });
-    defer tl.deinit();
     const label = block.meta orelse "";
     var mark_buf: [MAX_FN_MARK]u8 = undefined;
     const mark = std.fmt.bufPrint(&mark_buf, "[{s}]: ", .{label}) catch "[?]: ";
-    mixed_text.addTextMixed(tl, mark, mark_font, .{ .color_text = ctx.style.muted_text });
-    paintInlines(tl, block.inlines, ctx, body);
-    tl.addText("\n", .{});
+    var col = dvui.box(src, .{ .dir = .vertical }, .{
+        .expand = .horizontal,
+        .id_extra = nextId(ctx),
+        .background = false,
+    });
+    defer col.deinit();
+    {
+        var tl = dvui.textLayout(@src(), .{}, .{
+            .expand = .horizontal,
+            .id_extra = nextId(ctx),
+            .color_text = ctx.style.muted_text,
+            .font = mark_font,
+            .background = false,
+            .padding = .{ .x = 0, .y = 1, .w = 0, .h = 0 },
+        });
+        defer tl.deinit();
+        mixed_text.addTextMixed(tl, mark, mark_font, .{ .color_text = ctx.style.muted_text });
+    }
+    paintInlineFlow(@src(), block.inlines, ctx, body, .{
+        .padding = .{ .x = 0, .y = 0, .w = 0, .h = 2 },
+        .color_text = ctx.style.muted_text,
+    });
 }
 
 
 pub fn paintDefTerm(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
     // Term: body face bold, body ink, tight bottom gap before defs.
     const body = dvui.Font.theme(.body).withWeight(.bold);
-    var tl = dvui.textLayout(src, .{}, .{
-        .expand = .horizontal,
-        .id_extra = nextId(ctx),
-        .color_text = ctx.style.body_text,
-        .font = body,
-        .background = false,
+    paintInlineFlow(src, block.inlines, ctx, body, .{
         .padding = .{ .x = 0, .y = 2, .w = 0, .h = 0 },
+        .color_text = ctx.style.body_text,
     });
-    defer tl.deinit();
-    paintInlines(tl, block.inlines, ctx, body);
-    tl.addText("\n", .{});
 }
 
 pub fn paintDefDesc(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
@@ -426,17 +546,8 @@ pub fn paintDefDesc(src: std.builtin.SourceLocation, block: parse.Block, ctx: *P
         .margin = .{ .x = 16, .y = 0, .w = 0, .h = 2 },
     });
     defer row.deinit();
-    {
-        var tl = dvui.textLayout(@src(), .{}, .{
-            .expand = .horizontal,
-            .id_extra = nextId(ctx),
-            .color_text = ctx.style.muted_text,
-            .font = body,
-            .background = false,
-            .padding = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
-        });
-        defer tl.deinit();
-        paintInlines(tl, block.inlines, &desc_ctx, body);
-        tl.addText("\n", .{});
-    }
+    paintInlineFlow(@src(), block.inlines, &desc_ctx, body, .{
+        .padding = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
+        .color_text = ctx.style.muted_text,
+    });
 }
