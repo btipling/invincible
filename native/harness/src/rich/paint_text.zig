@@ -81,9 +81,9 @@ pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, c
                 }
             },
             .footnote_ref => {
-                // Display as [^label] muted smaller body face.
+                // Display as [label] (no caret) — source still uses [^label].
                 var mark_buf: [MAX_FN_MARK]u8 = undefined;
-                const mark = std.fmt.bufPrint(&mark_buf, "[^{s}]", .{inl.text}) catch inl.text;
+                const mark = std.fmt.bufPrint(&mark_buf, "[{s}]", .{inl.text}) catch inl.text;
                 mixed_text.addTextMixed(tl, mark, font, .{ .color_text = st.muted_text });
             },
         }
@@ -274,7 +274,7 @@ pub fn paintFootnoteDef(src: std.builtin.SourceLocation, block: parse.Block, ctx
     defer tl.deinit();
     const label = block.meta orelse "";
     var mark_buf: [MAX_FN_MARK]u8 = undefined;
-    const mark = std.fmt.bufPrint(&mark_buf, "[^{s}]: ", .{label}) catch "[^?]: ";
+    const mark = std.fmt.bufPrint(&mark_buf, "[{s}]: ", .{label}) catch "[?]: ";
     mixed_text.addTextMixed(tl, mark, mark_font, .{ .color_text = ctx.style.muted_text });
     paintInlines(tl, block.inlines, ctx, body);
     tl.addText("\n", .{});
