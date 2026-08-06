@@ -7,6 +7,7 @@ const std = @import("std");
 const zmd = @import("zmd");
 const preprocess = @import("preprocess.zig");
 const bq = @import("blockquote.zig");
+const table = @import("table.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
@@ -20,6 +21,7 @@ pub const BlockKind = enum {
     list_item,
     code_fence,
     blockquote,
+    table,
     plain,
 };
 
@@ -51,7 +53,7 @@ pub const Inline = struct {
 
 pub const Block = struct {
     kind: BlockKind,
-    /// Heading level 1–6, list nesting depth, or blockquote depth (1–6).
+    /// Heading level 1–6, list nesting depth, blockquote depth (1–6), or table header flag (1=has header).
     level: u8 = 0,
     /// Fence language info string (arena-owned).
     meta: ?[]const u8 = null,
@@ -78,31 +80,49 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
     errdefer arena.deinit();
     const a = arena.allocator();
 
-    // zmd has no `>` blockquotes @ pin — fence-aware partition, then sugar+zmd per segment.
-    const segments = try bq.partition(a, src);
+    // zmd has no table / `>` blockquote @ pin — fence-aware table partition first,
+    // then quote partition + sugar+zmd on non-table spans.
+    const table_segs = try table.partition(a, src);
     var blocks: std.ArrayList(Block) = .empty;
-    // blocks live in arena; no deinit of list storage needed beyond arena
 
-    for (segments) |seg| {
-        if (seg.text.len == 0) continue;
-        if (!bq.hasNonWs(seg.text)) continue;
-        // Escapes + same-line ~~strike~~ (zmd has neither). Arena-owned.
-        const pre = try preprocess.preprocessInlineSugar(a, seg.text);
-        const ir = try zmd.parseAlloc(a, pre, markerConfig);
-        const lowered = try lowerIr(a, ir);
-        if (seg.is_quote) {
-            const depth: u8 = if (seg.depth == 0) 1 else seg.depth;
-            for (lowered) |blk| {
-                if (blk.inlines.len == 0) continue;
-                try blocks.append(a, .{
-                    .kind = .blockquote,
-                    .level = depth,
-                    .meta = null,
-                    .inlines = blk.inlines,
-                });
+    for (table_segs) |tseg| {
+        if (tseg.text.len == 0) continue;
+        if (tseg.is_table) {
+            if (!table.hasNonWs(tseg.text)) continue;
+            const grid = try a.dupe(u8, tseg.text);
+            const inl = try a.alloc(Inline, 1);
+            inl[0] = .{ .kind = .text, .text = grid };
+            try blocks.append(a, .{
+                .kind = .table,
+                .level = if (tseg.has_header) 1 else 0,
+                .meta = null,
+                .inlines = inl,
+            });
+            continue;
+        }
+        if (!bq.hasNonWs(tseg.text)) continue;
+
+        const segments = try bq.partition(a, tseg.text);
+        for (segments) |seg| {
+            if (seg.text.len == 0) continue;
+            if (!bq.hasNonWs(seg.text)) continue;
+            const pre = try preprocess.preprocessInlineSugar(a, seg.text);
+            const ir = try zmd.parseAlloc(a, pre, markerConfig);
+            const lowered = try lowerIr(a, ir);
+            if (seg.is_quote) {
+                const depth: u8 = if (seg.depth == 0) 1 else seg.depth;
+                for (lowered) |blk| {
+                    if (blk.inlines.len == 0) continue;
+                    try blocks.append(a, .{
+                        .kind = .blockquote,
+                        .level = depth,
+                        .meta = null,
+                        .inlines = blk.inlines,
+                    });
+                }
+            } else {
+                try blocks.appendSlice(a, lowered);
             }
-        } else {
-            try blocks.appendSlice(a, lowered);
         }
     }
 
@@ -1064,4 +1084,75 @@ test "blockquote spaced nest depth" {
     }
     try std.testing.expect(saw1);
     try std.testing.expect(saw2);
+}
+
+
+test "table 2x3 parse" {
+    const src =
+        \\| Name | Age |
+        \\| --- | --- |
+        \\| Ada | 36 |
+        \\| Bob | 41 |
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    try std.testing.expectEqual(BlockKind.table, doc.blocks[0].kind);
+    try std.testing.expectEqual(@as(u8, 1), doc.blocks[0].level);
+    const j = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(j);
+    try expectContains(j, "Ada");
+    try expectContains(j, "Bob");
+    try expectContains(j, "Name");
+}
+
+test "table missing separator not table" {
+    const src = "| A | B |\n| x | y |\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    for (doc.blocks) |blk| {
+        try std.testing.expect(blk.kind != .table);
+    }
+}
+
+test "fence body pipes not table" {
+    const src = "```\n| a | b |\n| --- | --- |\n| 1 | 2 |\n```\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    for (doc.blocks) |blk| {
+        try std.testing.expect(blk.kind != .table);
+    }
+}
+
+test "table header only" {
+    const src = "| H1 | H2 |\n| --- | --- |\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    try std.testing.expectEqual(BlockKind.table, doc.blocks[0].kind);
+    const j = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(j);
+    try expectContains(j, "H1");
+}
+
+test "table between prose" {
+    const src = "before\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nafter\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_t = false;
+    var saw_b = false;
+    var saw_a = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .table) {
+            saw_t = true;
+        } else {
+            const j = try joinBlockText(std.testing.allocator, blk);
+            defer std.testing.allocator.free(j);
+            if (std.mem.indexOf(u8, j, "before") != null) saw_b = true;
+            if (std.mem.indexOf(u8, j, "after") != null) saw_a = true;
+        }
+    }
+    try std.testing.expect(saw_t);
+    try std.testing.expect(saw_b);
+    try std.testing.expect(saw_a);
 }
