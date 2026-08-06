@@ -93,6 +93,16 @@ pub fn paintHeading(src: std.builtin.SourceLocation, block: parse.Block, ctx: *P
         1, 2, 3, 4 => ctx.style.heading_text,
         else => ctx.style.muted_text, // H5 / H6
     };
+    // paintInlines always sets explicit color_text from StyleMap (never inherits
+    // textLayout.color_text). Override body_text so plain heading runs use the
+    // ladder color; strong/code/link keep StyleMap colors — same as paintBlockquote.
+    var heading_style = ctx.style;
+    heading_style.body_text = color;
+    var heading_ctx = PaintCtx{
+        .style = heading_style,
+        .id_base = ctx.id_base,
+        .run_seq = ctx.run_seq,
+    };
     var tl = dvui.textLayout(src, .{}, .{
         .expand = .horizontal,
         .id_extra = nextId(ctx),
@@ -102,7 +112,7 @@ pub fn paintHeading(src: std.builtin.SourceLocation, block: parse.Block, ctx: *P
         .padding = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
     });
     defer tl.deinit();
-    paintInlines(tl, block.inlines, ctx, font);
+    paintInlines(tl, block.inlines, &heading_ctx, font);
     tl.addText("\n", .{});
 }
 
