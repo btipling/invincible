@@ -5,21 +5,22 @@ const std = @import("std");
 /// zmd sets `node.href` to the full paren contents, e.g. `https://x/a.png "title"`.
 /// Host fetch keys and paint cache lookups must use the bare URL only.
 pub fn normalizeDestination(raw: []const u8) []const u8 {
-    var s = std.mem.trim(u8, raw, " \t\r\n");
+    const s = std.mem.trim(u8, raw, " \t\r\n");
     if (s.len == 0) return s;
 
-    // <https://example.com/a.png>
-    if (s.len >= 2 and s[0] == '<' and s[s.len - 1] == '>') {
-        s = std.mem.trim(u8, s[1 .. s.len - 1], " \t\r\n");
+    // <url> optional-title
+    if (s[0] == '<') {
+        if (std.mem.indexOfScalar(u8, s[1..], '>')) |rel| {
+            return std.mem.trim(u8, s[1 .. 1 + rel], " \t\r\n");
+        }
     }
 
-    // Destination then title: space + "…" / '…' / (…)
+    // Unquoted destination then title: space + "…" / '…' / (…)
     // Unquoted destinations cannot contain spaces (use <> form for those).
     if (std.mem.indexOfScalar(u8, s, ' ')) |sp| {
         var i = sp;
         while (i < s.len and (s[i] == ' ' or s[i] == '\t')) : (i += 1) {}
         if (i < s.len and (s[i] == '"' or s[i] == '\'' or s[i] == '(')) {
-            // trim right of destination (before first space)
             var end = sp;
             while (end > 0 and (s[end - 1] == ' ' or s[end - 1] == '\t')) : (end -= 1) {}
             return s[0..end];
