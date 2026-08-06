@@ -3,10 +3,13 @@
 //! TEAL  — chrome / content / primary controls
 //! WARM  — intentional amber accent (busy, smoke, assistant label)
 //! EMBER — danger / error only
+//!
+//! Fonts: Noto Sans (body) + OpenMoji (emoji) + Vera Mono (code). See `fonts/README.md`.
 const dvui = @import("dvui");
 
 const Color = dvui.Color;
 const Theme = dvui.Theme;
+const Font = dvui.Font;
 
 // ── TEAL (lib/palette.ts `teal`) ───────────────────────────────────────────
 pub const teal_bg = Color.fromHex("#050a0c");
@@ -36,12 +39,65 @@ pub const ember_text = Color.fromHex("#f0d0c8");
 pub const ember_accent = Color.fromHex("#d4412c");
 pub const ember_accent_dark = Color.fromHex("#b83420");
 
-/// Full dvui theme: Adwaita Dark fonts + Asteronica colors.
-/// Reuses builtin embedded fonts so we don't ship a second font pack.
+/// Body / heading family (Latin + Greek + Cyrillic; not full CJK).
+pub const family_body = "Noto Sans";
+/// Monochrome outline emoji face (subset).
+pub const family_emoji = "OpenMoji";
+/// Fences / inline code.
+pub const family_mono = "Vera Sans Mono";
+
+const embedded_fonts: []const Font.Source = &.{
+    .{
+        .family = Font.array(family_body),
+        .bytes = @embedFile("fonts/NotoSans-Regular.ttf"),
+    },
+    .{
+        .family = Font.array(family_body),
+        .weight = .bold,
+        .bytes = @embedFile("fonts/NotoSans-Bold.ttf"),
+    },
+    .{
+        .family = Font.array(family_emoji),
+        .bytes = @embedFile("fonts/OpenMoji-subset.ttf"),
+    },
+    .{
+        .family = Font.array(family_mono),
+        .bytes = @embedFile("fonts/VeraMono.ttf"),
+    },
+    .{
+        .family = Font.array(family_mono),
+        .weight = .bold,
+        .bytes = @embedFile("fonts/VeraMoBd.ttf"),
+    },
+};
+
+/// Theme body face (Noto Sans).
+pub fn fontBody() Font {
+    return .find(.{ .family = family_body });
+}
+
+/// Emoji face (OpenMoji outline subset).
+pub fn fontEmoji() Font {
+    return .find(.{ .family = family_emoji });
+}
+
+/// Mono face (Vera Sans Mono).
+pub fn fontMono() Font {
+    return .find(.{ .family = family_mono });
+}
+
+/// Full dvui theme: Noto/OpenMoji/Vera Mono + Asteronica colors.
 pub fn theme() Theme {
     var t = Theme.builtin.adwaita_dark;
     t.name = "Asteronica";
     t.dark = true;
+
+    // Replace Adwaita Vera embeds with our pack (body + emoji + mono).
+    t.embedded_fonts = embedded_fonts;
+    t.font_body = .find(.{ .family = family_body });
+    t.font_heading = .find(.{ .family = family_body, .weight = .bold });
+    t.font_title = .find(.{ .family = family_body, .size = Font.DefaultSize + 2, .weight = .bold });
+    t.font_mono = .find(.{ .family = family_mono });
 
     t.focus = teal_accent;
     t.fill = teal_bg;

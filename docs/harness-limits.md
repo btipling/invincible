@@ -112,9 +112,10 @@ Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain tex
 | Fallback | Parse failure / OOM → raw body text (never empty bubble) |
 | Cache | Fingerprint (FNV-1a) over full body; cap 48 entries; cleared on transcript clear |
 | Caps | Same ring / 4 KiB line / 28 visible as above |
-| Unicode | Message bodies are **UTF-8** end-to-end (host `TextEncoder` → Wasm ring → zmd parse → paint → Copy source). Integrity means scalars/bytes preserved — not that every script has glyphs |
-| Fonts (embedded) | Theme uses dvui **Adwaita Dark** embeds: **Bitstream Vera Sans** (body/heading) and **Vera Sans Mono** (fences / inline code). Coverage is **Latin / Western-centric** |
-| Missing glyphs | Code points outside the embedded fonts may render as a **missing-glyph placeholder or blank advance** (font/shaper dependent). That is **not** mojibake; **Copy** still yields the message’s UTF-8 source when the browser allows clipboard write |
+| Unicode | Message bodies are **UTF-8** end-to-end (host `TextEncoder` → Wasm ring → zmd parse → paint → Copy source). Integrity = scalars/bytes preserved; glyphs depend on the faces below |
+| Fonts (embedded) | **Noto Sans** (body/heading) · **OpenMoji** black outline subset (emoji) · **Vera Sans Mono** (fences / inline code). Licenses: `native/harness/src/fonts/README.md` |
+| Paint faces | Transcript paint **splits** emoji-related code points onto OpenMoji and everything else onto Noto Sans / mono (dvui has no automatic per-glyph fallback) |
+| Missing glyphs | Scripts outside these faces (notably **full CJK**) may still show a **missing-glyph placeholder**. That is **not** mojibake; **Copy** still yields UTF-8 source when the browser allows clipboard write |
 | Truncation | `MAX_MSG_LEN` (4 KiB) is a **byte** cap — a multi-byte sequence at the limit may be cut mid-code-point (pre-existing ring behavior) |
 
 ### Unicode / fonts (detail)
@@ -123,9 +124,10 @@ Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain tex
 |-------|----------|
 | Host → Wasm | UTF-8 via `TextEncoder`; ring stores raw bytes |
 | Parse / fences | Non-ASCII kept in inline and fence text; allowlisted token HL keeps complete UTF-8 sequences whole on the default path |
-| Paint | dvui `addText` with message/font runs; glyph holes ≠ data loss |
-| Composer | Canvas `textEntry` submits UTF-8 into the same ring (no DOM composer fallback for Unicode) |
-| Out of scope (today) | Shipping a multi‑MB CJK/emoji font pack; full BiDi; perfect ZWJ emoji shaping |
+| Paint | Mixed runs: Noto Sans for letters/punctuation; OpenMoji for emoji / pictographs (monochrome outlines). ZWJ / skin-tone / VS stay on the emoji face |
+| Composer | Canvas `textEntry` uses theme body (Noto Sans); emoji while typing follows the same face rules when painted in the transcript after send |
+| Coverage | Latin / Greek / Cyrillic (Noto) + common emoji (OpenMoji subset). **Not** full CJK; **not** color emoji; complex ZWJ families are best-effort without a full shaper |
+| Out of scope (today) | Full CJK face pack; color emoji; full BiDi |
 
 Feature divide: transcript **read** path remains canvas-only — see [feature-divide.md](feature-divide.md).
 

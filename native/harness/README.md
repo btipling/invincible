@@ -79,7 +79,7 @@ Each non-empty message row has **Copy** (source bytes → system clipboard via `
 Fences with info string `diff` or `patch` use line-colored paint (WARM add, EMBER remove,
 muted meta). Allowlisted langs get **token** colors via `rich/highlight.zig` (keyword/string/
 comment/number); unknown lang stays mono. System/error stay plain. Tables are plain text until a future parse/paint
-path. Host unit tests: `zig build test-rich`. Bodies are UTF-8; embedded Vera fonts are Latin-centric — see `docs/harness-limits.md` (Unicode / fonts).
+path. Host unit tests: `zig build test-rich`. Bodies are UTF-8; Noto Sans + OpenMoji (emoji) + Vera Mono — see `docs/harness-limits.md` (Unicode / fonts).
 
 ## Export surface (dvui host)
 

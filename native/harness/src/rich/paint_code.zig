@@ -5,6 +5,7 @@ const dvui = @import("dvui");
 const parse = @import("parse.zig");
 const paint_text = @import("paint_text.zig");
 const highlight = @import("highlight.zig");
+const mixed_text = @import("mixed_text.zig");
 
 pub const FENCE_LINE_CAP: usize = 80;
 const JOIN_CAP: usize = 4096;
@@ -153,15 +154,13 @@ fn paintLineSpans(
         }
         if (s > cursor) {
             // gap → default (TOKEN_CAP remainder or non-contiguous)
-            tl.addText(body[cursor..s], .{
+            mixed_text.addTextMixed(tl, body[cursor..s], .theme(.mono), .{
                 .color_text = ctx.style.code_text,
-                .font = .theme(.mono),
             });
         }
         if (e > s) {
-            tl.addText(body[s..e], .{
+            mixed_text.addTextMixed(tl, body[s..e], .theme(.mono), .{
                 .color_text = tokenColor(tok.kind, ctx),
-                .font = .theme(.mono),
             });
         }
         cursor = e;
@@ -172,9 +171,8 @@ fn paintLineSpans(
         if (cursor >= line_end) break;
     }
     if (cursor < line_end) {
-        tl.addText(body[cursor..line_end], .{
+        mixed_text.addTextMixed(tl, body[cursor..line_end], .theme(.mono), .{
             .color_text = ctx.style.code_text,
-            .font = .theme(.mono),
         });
     }
 }
@@ -188,9 +186,8 @@ fn paintFenceText(tl: *dvui.TextLayoutWidget, text: []const u8, line_count: *usi
         if (!at_end and !at_nl) continue;
         const line = text[start..i];
         if (line_count.* < FENCE_LINE_CAP) {
-            tl.addText(line, .{
+            mixed_text.addTextMixed(tl, line, .theme(.mono), .{
                 .color_text = ctx.style.code_text,
-                .font = .theme(.mono),
             });
             if (at_nl and line_count.* + 1 < FENCE_LINE_CAP) {
                 tl.addText("\n", .{ .font = .theme(.mono) });
