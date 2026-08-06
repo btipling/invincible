@@ -8,7 +8,7 @@ const highlight = @import("highlight.zig");
 
 pub const FENCE_LINE_CAP: usize = 80;
 const JOIN_CAP: usize = 4096;
-const TOKEN_CAP: usize = 512;
+const TOKEN_CAP: usize = 2048;
 
 pub fn paintCodeFence(src: std.builtin.SourceLocation, block: parse.Block, ctx: *paint_text.PaintCtx) void {
     var box = dvui.box(src, .{ .dir = .vertical }, .{
@@ -102,13 +102,14 @@ fn paintHighlighted(
 ) void {
     var line_start: usize = 0;
     var i: usize = 0;
+    var tok_i: usize = 0;
     while (i <= body.len) : (i += 1) {
         const at_end = i == body.len;
         const at_nl = !at_end and body[i] == '\n';
         if (!at_end and !at_nl) continue;
         const line_end = i;
         if (line_count.* < FENCE_LINE_CAP) {
-            paintLineSpans(tl, body, line_start, line_end, tokens, ctx);
+            paintLineSpans(tl, body, line_start, line_end, tokens, &tok_i, ctx);
             if (at_nl and line_count.* + 1 < FENCE_LINE_CAP) {
                 tl.addText("\n", .{ .font = .theme(.mono) });
             }
@@ -121,29 +122,37 @@ fn paintHighlighted(
     }
 }
 
-/// Paint one line [line_start, line_end) using overlapping token slices.
+/// Paint one line [line_start, line_end) using token slices.
+/// `tok_i` is advanced so successive lines do not re-scan earlier tokens.
 fn paintLineSpans(
     tl: *dvui.TextLayoutWidget,
     body: []const u8,
     line_start: usize,
     line_end: usize,
     tokens: []const highlight.Token,
+    tok_i: *usize,
     ctx: *const paint_text.PaintCtx,
 ) void {
     if (line_start >= line_end) return;
     var cursor = line_start;
-    for (tokens) |tok| {
+    while (tok_i.* < tokens.len) {
+        const tok = tokens[tok_i.*];
         const t0 = tok.start;
         const t1 = tok.start + tok.len;
-        if (t1 <= line_start or t0 >= line_end) continue;
+        if (t1 <= line_start) {
+            tok_i.* += 1;
+            continue;
+        }
+        if (t0 >= line_end) break;
         const s = @max(t0, line_start);
         const e = @min(t1, line_end);
         if (s < cursor) {
             // shouldn't happen if tokens are contiguous; skip overlap
+            tok_i.* += 1;
             continue;
         }
         if (s > cursor) {
-            // gap → default (shouldn't happen with contiguous lex)
+            // gap → default (TOKEN_CAP remainder or non-contiguous)
             tl.addText(body[cursor..s], .{
                 .color_text = ctx.style.code_text,
                 .font = .theme(.mono),
@@ -156,6 +165,10 @@ fn paintLineSpans(
             });
         }
         cursor = e;
+        if (t1 <= line_end) {
+            // token fully consumed on this line
+            tok_i.* += 1;
+        }
         if (cursor >= line_end) break;
     }
     if (cursor < line_end) {

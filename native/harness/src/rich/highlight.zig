@@ -95,9 +95,12 @@ pub fn lexInto(src: []const u8, family: LangFamily, out: []Token) usize {
             continue;
         }
 
-        // Single punctuation / other → default
-        n = push(out, n, i, 1, .default);
-        i += 1;
+        // Punctuation / other → default; keep UTF-8 sequences whole so paint
+        // never receives a split multi-byte slice (mono path paints whole lines).
+        const seq_len = utf8SeqLen(src[i]);
+        const take = @min(seq_len, src.len - i);
+        n = push(out, n, i, take, .default);
+        i += take;
     }
     return n;
 }
@@ -232,7 +235,7 @@ const zig_kw = [_][]const u8{
     "return", "struct", "enum", "union", "switch", "defer", "errdefer", "async",
     "await", "export", "extern", "inline", "comptime", "test", "and", "or",
     "null", "undefined", "true", "false", "break", "continue", "opaque", "type",
-    "anytype", "void", "bool", "usize", "isize", "import",
+    "anytype", "void", "bool", "usize", "isize",
 };
 
 const c_kw = [_][]const u8{
@@ -284,6 +287,11 @@ fn isIdentStart(c: u8) bool {
 }
 fn isIdentCont(c: u8) bool {
     return isIdentStart(c) or isDigit(c);
+}
+
+/// UTF-8 sequence length for lead byte, or 1 on invalid (degrade, never panic).
+fn utf8SeqLen(lead: u8) usize {
+    return std.unicode.utf8ByteSequenceLength(lead) catch 1;
 }
 
 fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
@@ -417,4 +425,39 @@ test "token coverage contiguous" {
         end = t.start + t.len;
     }
     try std.testing.expectEqual(src.len, end);
+}
+
+test "utf8 outside string stays whole token" {
+    // "x = " + UTF-8 ident bytes (日本語) — not in string/comment
+    const src = "x = \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e";
+    var tokens: [32]Token = undefined;
+    const n = lexInto(src, .python, &tokens);
+    try std.testing.expect(n > 0);
+    // Every token slice must be valid UTF-8
+    for (tokens[0..n]) |t| {
+        const slice = src[t.start .. t.start + t.len];
+        try std.testing.expect(std.unicode.utf8ValidateSlice(slice));
+    }
+    // Contiguous full coverage
+    var end: usize = 0;
+    for (tokens[0..n]) |t| {
+        try std.testing.expectEqual(end, t.start);
+        end = t.start + t.len;
+    }
+    try std.testing.expectEqual(src.len, end);
+}
+
+test "token buffer cap still paints-safe remainder contract" {
+    // Many 1-char tokens; tiny out buffer must not panic and must be contiguous prefix
+    const src = "a+b+c+d+e+f+g+h";
+    var tokens: [4]Token = undefined;
+    const n = lexInto(src, .zig, &tokens);
+    try std.testing.expectEqual(@as(usize, 4), n);
+    var end: usize = 0;
+    for (tokens[0..n]) |t| {
+        try std.testing.expectEqual(end, t.start);
+        end = t.start + t.len;
+        try std.testing.expect(std.unicode.utf8ValidateSlice(src[t.start .. t.start + t.len]));
+    }
+    try std.testing.expect(end < src.len); // capped before EOF
 }
