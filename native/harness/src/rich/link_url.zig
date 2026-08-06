@@ -16,9 +16,13 @@ pub fn normalizeDestination(raw: []const u8) []const u8 {
     // Destination then title: space + "…" / '…' / (…)
     // Unquoted destinations cannot contain spaces (use <> form for those).
     if (std.mem.indexOfScalar(u8, s, ' ')) |sp| {
-        const rest = std.mem.trimLeft(u8, s[sp..], " \t");
-        if (rest.len > 0 and (rest[0] == '"' or rest[0] == '\'' or rest[0] == '(')) {
-            return std.mem.trimRight(u8, s[0..sp], " \t");
+        var i = sp;
+        while (i < s.len and (s[i] == ' ' or s[i] == '\t')) : (i += 1) {}
+        if (i < s.len and (s[i] == '"' or s[i] == '\'' or s[i] == '(')) {
+            // trim right of destination (before first space)
+            var end = sp;
+            while (end > 0 and (s[end - 1] == ' ' or s[end - 1] == '\t')) : (end -= 1) {}
+            return s[0..end];
         }
     }
     return s;
