@@ -17,6 +17,14 @@ pub const StyleMap = struct {
     heading_text: dvui.Color = palette.teal_text,
     bullet_text: dvui.Color = palette.teal_muted,
     fence_lang_text: dvui.Color = palette.teal_muted,
+    /// Fence token HL: comments.
+    code_comment: dvui.Color = palette.teal_muted,
+    /// Fence token HL: keywords (WARM intentional accent).
+    code_keyword: dvui.Color = palette.warm_accent,
+    /// Fence token HL: string literals.
+    code_string: dvui.Color = palette.teal_accent,
+    /// Fence token HL: numbers.
+    code_number: dvui.Color = palette.teal_muted,
     /// Unified diff: added lines (`+`). WARM accent — intentional, not error.
     diff_add: dvui.Color = palette.warm_accent,
     /// Unified diff: removed lines (`-`). EMBER text = removed-line semantics only.

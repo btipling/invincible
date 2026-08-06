@@ -69,14 +69,16 @@ src/bridge.zig   # inv_* export fns + ring buffer + pending submit
 src/palette.zig  # TEAL/WARM/EMBER hex (sync with lib/palette.ts)
 src/rich/        # Markdown + fence paint (zmd MIT parse → cache → registry)
                  #   parse, cache, paint, paint_text, paint_code, paint_diff,
-                 #   diff_lang, registry, style, kinds, link_url, root
+                 #   highlight (fence token HL), diff_lang, registry, style,
+                 #   kinds, link_url, root
 build.zig        # export_symbol_names whitelist for inv_*; test-rich host tests
 ```
 
 **Rich transcript:** user/assistant bodies use zmd → `ParsedDoc` → dvui paint (no HTML).
 Each non-empty message row has **Copy** (source bytes → system clipboard via `dvui.clipboardTextSet`).
 Fences with info string `diff` or `patch` use line-colored paint (WARM add, EMBER remove,
-muted meta). System/error stay plain. Tables are plain text until a future parse/paint
+muted meta). Allowlisted langs get **token** colors via `rich/highlight.zig` (keyword/string/
+comment/number); unknown lang stays mono. System/error stay plain. Tables are plain text until a future parse/paint
 path. Host unit tests: `zig build test-rich`.
 
 ## Export surface (dvui host)

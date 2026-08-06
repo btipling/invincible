@@ -104,7 +104,8 @@ Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain tex
 |-------|----------|
 | Parser | **zmd** (MIT) → walkable blocks; no HTML intermediate |
 | Common MD | Headings, paragraphs, lists, bold/italic, inline code, fences, http(s) links |
-| Fenced code | Mono box + muted language label; **≤80 lines** then “… N more” |
+| Fenced code | Mono box + muted language label; **≤80 lines** then “… N more”. **Token highlight** for allowlisted langs (see below); unknown lang stays mono |
+| Fence token highlight | Allowlist (case-insensitive): `zig`, C/C++ (`c`/`h`/`cpp`/`cc`/`cxx`/`c++`/`hpp`/`hh`/`hxx`), `ts`/`js`/`tsx`/`jsx` (+ long forms), `json`, `bash`/`sh`/`shell`, `python`/`py`. Roles: keyword (WARM), string (TEAL accent), comment/number (muted), default body. **`diff`/`patch` stay line-kind paint** (not token HL). Payload is source text as stored — not reconstructed |
 | Diff / patch fences | Info string `diff` or `patch` (any case): line colors — **+** WARM accent, **−** EMBER text (removed-line semantics, not error chrome), file headers / `@@` hunk headers muted (hunk-aware so body lines like `---flag` stay del), context TEAL body |
 | Tables | Pipe tables paint as **plain paragraphs** today (parser has no table nodes). Richer mono/grid is follow-on work |
 | Links | `http://` and `https://` only; other schemes show as plain label text |
