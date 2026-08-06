@@ -7,7 +7,8 @@
  * `build-harness.yml`, Git deploy often finishes *before* the artifact exists.
  * On Vercel we wait for a successful build-harness run for VERCEL_GIT_COMMIT_SHA
  * (if one is queued/running), then download *that* run's artifact. If no run
- * appears (commit did not touch native/harness), we fall back to latest.
+ * appears after grace: if the commit touches harness build paths → **fail closed**
+ * (do not ship stale Wasm); otherwise fall back to latest.
  *
  * Env (first match wins for token):
  *   HARNESS_ARTIFACT_TOKEN  — preferred (fine-grained PAT, Actions: Read)
@@ -41,7 +42,11 @@ import { inflateRawSync } from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { isHarnessRequire, resolveHarnessRepo } from './harnessRepo.mjs';
+import {
+  commitTouchesHarnessBuild,
+  isHarnessRequire,
+  resolveHarnessRepo,
+} from './harnessRepo.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -238,6 +243,45 @@ async function listRunsForSha(tok, sha) {
   return data.workflow_runs || [];
 }
 
+/** @returns {Promise<string[]>} */
+async function listCommitPaths(tok, sha) {
+  const data = await ghJson(
+    `https://api.github.com/repos/${OWNER}/${REPO}/commits/${encodeURIComponent(sha)}`,
+    tok,
+  );
+  const files = data.files || [];
+  return files.map((f) => f.filename).filter(Boolean);
+}
+
+/**
+ * After grace with no build-harness run: fail closed if this commit needed a
+ * harness rebuild; else latest (docs-only / host-only changes).
+ */
+async function resolveNoRunFallback(tok, sha) {
+  let paths = [];
+  try {
+    paths = await listCommitPaths(tok, sha);
+  } catch (e) {
+    log('list commit files failed:', e instanceof Error ? e.message : e);
+    // Unknown whether this commit needs Wasm — fail closed on Vercel require path.
+    throw new Error(
+      `no ${WORKFLOW_FILE} run for ${sha.slice(0, 7)} and could not read commit files — refusing to guess stale Wasm`,
+    );
+  }
+  if (commitTouchesHarnessBuild(paths)) {
+    const hit = paths.filter((p) => p.includes('harness') || p.includes('ZIG_VERSION') || p.includes('build-harness'));
+    throw new Error(
+      `no ${WORKFLOW_FILE} run for ${sha.slice(0, 7)} but commit touches harness build paths ` +
+        `(${hit.slice(0, 5).join(', ') || 'native/harness/**'}) — refusing stale Wasm. ` +
+        `Run workflow_dispatch build-harness on main, or wait for path-filtered push CI.`,
+    );
+  }
+  log(
+    `no ${WORKFLOW_FILE} run for ${sha.slice(0, 7)} after grace — commit does not touch harness paths; using latest artifact`,
+  );
+  return latestArtifact(tok);
+}
+
 async function artifactForRun(tok, runId) {
   const data = await ghJson(
     `https://api.github.com/repos/${OWNER}/${REPO}/actions/runs/${runId}/artifacts?per_page=20`,
@@ -296,10 +340,7 @@ async function resolveArtifact(tok) {
     const run = runs[0];
     if (!run) {
       if (Date.now() - started >= WAIT_GRACE_MS) {
-        log(
-          `no ${WORKFLOW_FILE} run for ${sha.slice(0, 7)} after grace — commit likely skipped harness paths; using latest artifact`,
-        );
-        return latestArtifact(tok);
+        return resolveNoRunFallback(tok, sha);
       }
       log(`no run yet for ${sha.slice(0, 7)}…`);
       await sleep(POLL_MS);
@@ -342,8 +383,7 @@ async function resolveArtifact(tok) {
     );
   }
 
-  log('wait window ended with no run — using latest artifact');
-  return latestArtifact(tok);
+  return resolveNoRunFallback(tok, sha);
 }
 
 async function installArtifact(tok, artifact) {
