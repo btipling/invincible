@@ -4,6 +4,7 @@ const dvui = @import("dvui");
 const parse = @import("parse.zig");
 const style_mod = @import("style.zig");
 const mixed_text = @import("mixed_text.zig");
+const palette = @import("../palette.zig");
 
 /// `[^` + label≤32 + `]` fits in 36 bytes; pad for safety.
 const MAX_FN_MARK: usize = 48;
@@ -153,6 +154,57 @@ fn clampMargin(x: f32) f32 {
     return @min(x, MAX_LEFT_MARGIN);
 }
 
+/// Display-only task checkbox (non-interactive). Uses palette TEAL tokens only.
+/// Not `dvui.checkbox` / `dvui.checkmark` defaults — those use a ~1px inset "border"
+/// (`rs.s`) that vanishes on dark Asteronica bg. We stroke a real 2px ring instead.
+fn paintTaskCheckbox(src: std.builtin.SourceLocation, is_checked: bool, body: dvui.Font, ctx: *PaintCtx) void {
+    // Optical size under body height; gap to label via margin (not baked into draw rect).
+    const check_size = @max(14.0, body.textHeight() * 0.88);
+    const box_wd = dvui.spacer(src, .{
+        .id_extra = nextId(ctx),
+        .min_size_content = .{ .w = check_size, .h = check_size },
+        .margin = .{ .x = 0, .y = 0, .w = 8, .h = 0 },
+        .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+        .gravity_y = 0.5,
+        .tab_index = 0,
+        .background = false,
+    });
+    if (!box_wd.visible()) return;
+
+    const rs = box_wd.contentRectScale();
+    const corners = dvui.CornerRect.round(2.5).scale(rs.s, dvui.CornerRect.Physical);
+    // 2 natural-px stroke — readable muted ring on teal_bg (checkmark's 1px was not).
+    const border_t = 2.0 * rs.s;
+
+    if (is_checked) {
+        rs.r.fill(corners, .{ .color = palette.teal_accent, .fade = 1.0 });
+        // Check stroke (same geometry as dvui.checkmark) in dark ink on accent fill.
+        const r = rs.r.insetAll(0.5 * rs.s);
+        const pad = @max(1.0, r.w / 6.0);
+        var thick = @max(1.5 * rs.s, r.w / 5.0);
+        const size = r.w - (thick / 2.0) - pad * 2.0;
+        const third = size / 3.0;
+        const x = r.x + pad + (0.25 * thick) + third;
+        const y = r.y + pad + (0.25 * thick) + size - (third * 0.5);
+        thick /= 1.5;
+        const path: dvui.Path = .{ .points = &.{
+            .{ .x = x - third, .y = y - third },
+            .{ .x = x, .y = y },
+            .{ .x = x + third * 2.0, .y = y - third * 2.0 },
+        } };
+        path.stroke(.{
+            .thickness = thick,
+            .color = palette.teal_bg,
+            .endcap_style = .square,
+        });
+    } else {
+        rs.r.stroke(corners, .{
+            .thickness = border_t,
+            .color = palette.teal_muted,
+        });
+    }
+}
+
 /// Parse list_item.meta: "u" → bullet; "o,{n}" → ordered number (1–99) else "· ".
 fn listMarkerText(meta: ?[]const u8, buf: *[8]u8) []const u8 {
     const m = meta orelse return "• ";
@@ -198,25 +250,7 @@ pub fn paintListItem(src: std.builtin.SourceLocation, block: parse.Block, ctx: *
     }
 
     if (block.checked) |is_checked| {
-        // Display-only chrome: do not use dvui.checkbox — it always toggles *target
-        // on click, joins tab order, and advertises AccessKit toggle. Paint the same
-        // checkmark glyph without interaction (no IR / SessionStore / source mutate).
-        const check_size = body.textHeight();
-        const box_wd = dvui.spacer(@src(), .{
-            .id_extra = nextId(ctx),
-            .min_size_content = .{ .w = check_size, .h = check_size },
-            .padding = .{ .x = 0, .y = 2, .w = 4, .h = 0 },
-            .gravity_y = 0.5,
-            .tab_index = 0,
-            .background = false,
-        });
-        if (box_wd.visible()) {
-            const opts: dvui.Options = .{
-                .style = .control,
-                .corners = .all(2),
-            };
-            dvui.checkmark(is_checked, false, box_wd.borderRectScale(), false, 0, opts);
-        }
+        paintTaskCheckbox(@src(), is_checked, body, ctx);
     } else {
         var marker_buf: [8]u8 = undefined;
         const marker = listMarkerText(block.meta, &marker_buf);
