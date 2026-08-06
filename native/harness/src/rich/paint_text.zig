@@ -114,6 +114,9 @@ fn paintImageInline(src: std.builtin.SourceLocation, inl: parse.Inline, ctx: *Pa
         return;
     }
     if (image_cache.get(href)) |hit| {
+        // Desired paint size from natural pixels with aspect preserved.
+        // Do **not** expand=.horizontal — that forces full column width while
+        // height stays natural and stretches the texture into a panoramic strip.
         const nw: f32 = @floatFromInt(hit.width);
         const nh: f32 = @floatFromInt(hit.height);
         var dw = nw;
@@ -123,6 +126,16 @@ fn paintImageInline(src: std.builtin.SourceLocation, inl: parse.Inline, ctx: *Pa
             dw *= s;
             dh = MAX_IMAGE_DISPLAY_H;
         }
+        // Fit column width (transcript content / ~390) without upscaling.
+        const parent_w = dvui.parentGet().data().contentRect().w;
+        if (parent_w > 1 and dw > parent_w) {
+            const s = parent_w / dw;
+            dw = parent_w;
+            dh *= s;
+        }
+        // Never request a zero edge (dvui placeIn ratio divides by size).
+        if (dw < 1) dw = 1;
+        if (dh < 1) dh = 1;
         _ = dvui.image(src, .{
             .source = .{
                 .pixels = .{
@@ -133,12 +146,14 @@ fn paintImageInline(src: std.builtin.SourceLocation, inl: parse.Inline, ctx: *Pa
                     .invalidation = .ptr,
                 },
             },
+            // Safety net if layout avail is smaller than min (first frame / nest).
             .shrink = .ratio,
         }, .{
-            .expand = .horizontal,
+            // Natural (capped) size only — never stretch to column width.
+            .expand = .none,
             .id_extra = nextId(ctx),
             .min_size_content = .{ .w = dw, .h = dh },
-            .max_size_content = .{ .w = 10_000, .h = MAX_IMAGE_DISPLAY_H },
+            .max_size_content = .{ .w = dw, .h = dh },
             .margin = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
             .label = .{ .text = alt },
             .background = false,
