@@ -160,12 +160,17 @@ fn clampMargin(x: f32) f32 {
 fn paintTaskCheckbox(src: std.builtin.SourceLocation, is_checked: bool, body: dvui.Font, ctx: *PaintCtx) void {
     // Optical size under body height; gap to label via margin (not baked into draw rect).
     const check_size = @max(14.0, body.textHeight() * 0.88);
+    // Body textLayout ends with "\n" so the row is ~2 line-boxes tall. gravity_y=0.5
+    // centers the box in *that* full height (looks high/low vs the label). Top-align and
+    // nudge to the vertical center of the *first* line only (same band as bullet glyphs).
+    const line_h = body.lineHeight();
+    const y_off = @max(0.0, (line_h - check_size) * 0.5);
     const box_wd = dvui.spacer(src, .{
         .id_extra = nextId(ctx),
         .min_size_content = .{ .w = check_size, .h = check_size },
-        .margin = .{ .x = 0, .y = 0, .w = 8, .h = 0 },
+        .margin = .{ .x = 0, .y = y_off, .w = 8, .h = 0 },
         .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-        .gravity_y = 0.5,
+        .gravity_y = 0,
         .tab_index = 0,
         .background = false,
     });
