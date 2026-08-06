@@ -1,4 +1,5 @@
 //! Split text runs across body + emoji faces (dvui has no per-glyph fallback).
+//! Emoji: OpenMoji monochrome outlines inked with Asteronica teal_accent.
 //! Zig 0.16: `utf8Decode` requires an exact one-codepoint byte slice (len 1–4).
 const std = @import("std");
 const dvui = @import("dvui");
@@ -55,8 +56,15 @@ pub fn addTextMixed(
         }
 
         const slice = text[start..i];
-        const font = if (want_emoji) emoji_font else base;
-        paintSlice(tl, slice, font, opts);
+        if (want_emoji) {
+            // Monochrome OpenMoji, always Asteronica teal (not body/link/error ink).
+            paintSlice(tl, slice, emoji_font, .{
+                .color_text = palette.emoji_ink,
+                .color_fill = opts.color_fill,
+            });
+        } else {
+            paintSlice(tl, slice, base, opts);
+        }
     }
 }
 

@@ -85,6 +85,9 @@ pub fn fontEmoji() Font {
 /// Scale relative to the surrounding run so glyphs stay legible in the transcript.
 pub const emoji_size_scale: f32 = 1.65;
 
+/// Ink for monochrome emoji (OpenMoji outlines). Always teal_accent — intentional brand look.
+pub const emoji_ink = teal_accent;
+
 /// Mono face (Vera Sans Mono).
 pub fn fontMono() Font {
     return .find(.{ .family = family_mono });

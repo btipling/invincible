@@ -124,10 +124,10 @@ Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain tex
 |-------|----------|
 | Host → Wasm | UTF-8 via `TextEncoder`; ring stores raw bytes |
 | Parse / fences | Non-ASCII kept in inline and fence text; allowlisted token HL keeps complete UTF-8 sequences whole on the default path |
-| Paint | Mixed runs: Noto Sans for letters/punctuation; OpenMoji for emoji / pictographs (monochrome outlines). ZWJ / skin-tone / VS stay on the emoji face |
+| Paint | Mixed runs: Noto Sans for letters/punctuation; OpenMoji for emoji / pictographs (**monochrome outlines, inked teal_accent**). ZWJ / skin-tone / VS stay on the emoji face |
 | Composer | Canvas `textEntry` uses theme body (Noto Sans); emoji while typing follows the same face rules when painted in the transcript after send |
 | Coverage | Latin / Greek / Cyrillic (Noto) + common emoji (OpenMoji subset). **Not** full CJK; **not** color emoji; complex ZWJ families are best-effort without a full shaper |
-| Out of scope (today) | Full CJK face pack; color emoji; full BiDi |
+| Out of scope (today) | Full CJK face pack; **color** emoji (monochrome teal is intentional); full BiDi |
 
 Feature divide: transcript **read** path remains canvas-only — see [feature-divide.md](feature-divide.md).
 
