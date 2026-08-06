@@ -532,3 +532,81 @@ test "parse preserves ampersand in paragraph" {
 test "smokeOnce" {
     try std.testing.expect(smokeOnce());
 }
+
+fn joinBlockText(a: std.mem.Allocator, blk: Block) ![]u8 {
+    var joined: std.ArrayList(u8) = .empty;
+    errdefer joined.deinit(a);
+    for (blk.inlines) |inl| {
+        try joined.appendSlice(a, inl.text);
+    }
+    return try joined.toOwnedSlice(a);
+}
+
+fn expectContains(hay: []const u8, needle: []const u8) !void {
+    try std.testing.expect(std.mem.indexOf(u8, hay, needle) != null);
+}
+
+test "parse preserves unicode paragraph" {
+    // café + CJK + emoji — integrity (bytes present), not glyph coverage
+    const cafe = "caf\xc3\xa9"; // café
+    const cjk = "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e"; // 日本語
+    const emoji = "\xf0\x9f\x98\x80"; // 😀
+    const src = cafe ++ " " ++ cjk ++ " " ++ emoji;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    const joined = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(joined);
+    try expectContains(joined, cafe);
+    try expectContains(joined, cjk);
+    try expectContains(joined, emoji);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(joined));
+}
+
+test "parse heading strong preserves unicode" {
+    const cjk = "\xe6\x97\xa5\xe6\x9c\xac"; // 日本
+    const src = "# Hello **bold " ++ cjk ++ "** end";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    try std.testing.expectEqual(BlockKind.heading, doc.blocks[0].kind);
+    var saw_strong = false;
+    var strong_has_cjk = false;
+    for (doc.blocks[0].inlines) |inl| {
+        if (inl.kind == .strong) {
+            saw_strong = true;
+            if (std.mem.indexOf(u8, inl.text, cjk) != null) strong_has_cjk = true;
+            try std.testing.expect(std.unicode.utf8ValidateSlice(inl.text));
+        }
+        try std.testing.expect(std.unicode.utf8ValidateSlice(inl.text));
+    }
+    try std.testing.expect(saw_strong);
+    try std.testing.expect(strong_has_cjk);
+}
+
+test "parse fence preserves unicode comment body" {
+    const cjk = "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e";
+    // python fence with non-ASCII comment (byte-concat; avoid broken multi-line mix)
+    const src = "```python\n# " ++ cjk ++ "\nprint(1)\n```\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_fence = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .code_fence) continue;
+        saw_fence = true;
+        const joined = try joinBlockText(std.testing.allocator, blk);
+        defer std.testing.allocator.free(joined);
+        try expectContains(joined, cjk);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(joined));
+    }
+    try std.testing.expect(saw_fence);
+}
+
+test "parse invalid utf8 does not panic" {
+    // Truncated multi-byte sequence + valid ASCII — must not panic
+    const src = "ok \xe6\x97 rest"; // incomplete CJK lead + trailing text
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    // May produce blocks or empty; must not crash. Prefer non-empty or plain fallback path later.
+    _ = doc.blocks;
+}
