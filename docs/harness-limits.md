@@ -103,7 +103,8 @@ Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain tex
 | Topic | Behavior |
 |-------|----------|
 | Parser | **zmd** (MIT) → walkable blocks; no HTML intermediate |
-| Common MD | Headings, paragraphs, lists, bold/italic, inline code, fences, http(s) links |
+| Common MD | Headings, paragraphs, lists, **bold / italic / combined**, GFM `~~strike~~` (same-line), backslash escapes (`\\*`, `\\_`, `\\`` , `\\\\`), inline code, fences, http(s) links |
+| Inline marks | Flat runs with **style flags** (strong/emph/strike compose). No nested AST. Italic uses style bit (no separate italic TTF). Multi-flag **text color**: strong wins over emph; strike alone keeps body color. |
 | Fenced code | Mono box + muted language label; **≤80 lines** then “… N more”. **Token highlight** for allowlisted langs (see below); unknown lang stays mono |
 | Fence token highlight | Allowlist (case-insensitive): `zig`, C/C++ (`c`/`h`/`cpp`/`cc`/`cxx`/`c++`/`hpp`/`hh`/`hxx`), `ts`/`js`/`tsx`/`jsx` (+ long forms), `json`, `bash`/`sh`/`shell`, `python`/`py`. Roles: keyword (WARM), string (TEAL accent), comment/number (muted), default body. **`diff`/`patch` stay line-kind paint** (not token HL). Payload is source text as stored — not reconstructed |
 | Diff / patch fences | Info string `diff` or `patch` (any case): line colors — **+** WARM accent, **−** EMBER text (removed-line semantics, not error chrome), file headers / `@@` hunk headers muted (hunk-aware so body lines like `---flag` stay del), context TEAL body |

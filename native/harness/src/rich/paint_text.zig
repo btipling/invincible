@@ -1,4 +1,4 @@
-//! Paragraph / heading / list_item / plain + inline runs.
+//! Paragraph / heading / list_item / plain + inline runs (style flags compose).
 const std = @import("std");
 const dvui = @import("dvui");
 const parse = @import("parse.zig");
@@ -21,24 +21,39 @@ pub fn nextIdPublic(ctx: *PaintCtx) usize {
     return nextId(ctx);
 }
 
+fn fontFor(base: dvui.Font, kind: parse.InlineKind, f: parse.StyleFlags) dvui.Font {
+    var font = switch (kind) {
+        .code => dvui.Font.theme(.mono),
+        .text, .link => base,
+    };
+    if (f.strong) font = font.withWeight(.bold);
+    if (f.emph) font = font.withStyle(.italic);
+    if (f.strike) font = font.withStrike(.{});
+    return font;
+}
+
+fn colorFor(st: style_mod.StyleMap, kind: parse.InlineKind, f: parse.StyleFlags) dvui.Color {
+    if (kind == .code) return st.code_text;
+    if (kind == .link) return st.link_text;
+    if (f.strong) return st.strong_text;
+    if (f.emph) return st.emph_text;
+    return st.body_text;
+}
+
 /// Paint flat inline runs. `base_font` is the block face (body for paragraphs,
-/// title/heading for headings) so strong/emph/link keep block size.
+/// title/heading for headings). Style flags compose bold/italic/strike.
 /// Emoji code points switch to OpenMoji (see mixed_text.zig).
 pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, ctx: *const PaintCtx, base_font: dvui.Font) void {
     const st = ctx.style;
     for (inlines) |inl| {
+        if (inl.text.len == 0) continue;
+        const font = fontFor(base_font, inl.kind, inl.flags);
         switch (inl.kind) {
             .text => {
-                mixed_text.addTextMixed(tl, inl.text, base_font, .{ .color_text = st.body_text });
-            },
-            .strong => {
-                mixed_text.addTextMixed(tl, inl.text, base_font.withWeight(.bold), .{ .color_text = st.strong_text });
-            },
-            .emph => {
-                mixed_text.addTextMixed(tl, inl.text, base_font.withStyle(.italic), .{ .color_text = st.emph_text });
+                mixed_text.addTextMixed(tl, inl.text, font, .{ .color_text = colorFor(st, .text, inl.flags) });
             },
             .code => {
-                mixed_text.addTextMixed(tl, inl.text, .theme(.mono), .{
+                mixed_text.addTextMixed(tl, inl.text, font, .{
                     .color_text = st.code_text,
                     .color_fill = st.code_fill,
                 });
@@ -46,17 +61,16 @@ pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, c
             .link => {
                 const href = inl.href orelse "";
                 if (style_mod.isSafeLinkUrl(href)) {
-                    // Links stay single-face (URL widgets); emoji in link labels rare.
                     const label = if (inl.text.len > 0) inl.text else href;
                     tl.addLink(.{
                         .text = label,
                         .url = href,
                     }, .{
                         .color_text = st.link_text,
-                        .font = base_font.withUnderline(.{}),
+                        .font = font.withUnderline(.{}),
                     });
                 } else {
-                    mixed_text.addTextMixed(tl, if (inl.text.len > 0) inl.text else href, base_font, .{ .color_text = st.body_text });
+                    mixed_text.addTextMixed(tl, if (inl.text.len > 0) inl.text else href, font, .{ .color_text = st.body_text });
                 }
             },
         }
