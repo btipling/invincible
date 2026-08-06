@@ -29,22 +29,27 @@ Zig builds run on a **self-hosted** GitHub Actions runner (default labels: `self
 
 To reduce abuse risk when this repository is **public**:
 
-1. **No `pull_request` / `pull_request_target` triggers** on self-hosted workflows — only `push` to `main` (path-filtered) and `workflow_dispatch`.
-2. Jobs include `if:` guards:
+1. **Default triggers** on self-hosted workflows: `push` to `main` (path-filtered) and `workflow_dispatch`.
+2. **`build-harness` only** also runs on **`pull_request` → `main`** when **all** of:
+   - head branch is in **this** repository (`head.repo.full_name == github.repository`) — **not** forks;
+   - `author_association` is one of `OWNER` / `MEMBER` / `COLLABORATOR` / `CONTRIBUTOR`;
+   - path filter matches harness sources / this workflow.
+   - **Never** `pull_request_target`. **Never** Vercel deploy hook on PR. Other self-hosted workflows stay main/`workflow_dispatch` only.
+3. Jobs include `if:` guards:
    - **Opt-in:** `vars.SELF_HOSTED_BUILDS == 'true'` (repository **Actions variable**, not a secret), **or**
    - **Origin grandfather:** `github.repository == 'btipling/invincible'` (maintainer continuity if the variable is unset)
-   - and only `workflow_dispatch` or `push` to `main` (not merely “ref is main”).
-3. **Clones / forks** must set `SELF_HOSTED_BUILDS=true` after attaching their own runner. Without that variable, self-hosted jobs **skip** (safe default).
-4. Optional: `vars.RUNNER_LABELS` as a JSON array (e.g. `["self-hosted","invincible","zig"]`). If unset, workflows use that default list via `fromJSON`.
-5. **Do not** add `pull_request` / `pull_request_target` to those workflows without a deliberate design review.
-6. Prefer GitHub setting: require approval for first-time contributors’ workflows; keep fork PR workflows off the self-hosted pool.
-7. Host inventory (IPs, droplet IDs) is **not** published in this repo — keep private notes offline.
+   - and event is `workflow_dispatch`, `push` to `main`, or the same-repo contributor `pull_request` rules above (`build-harness`).
+4. **Clones / forks** must set `SELF_HOSTED_BUILDS=true` after attaching their own runner. Without that variable, self-hosted jobs **skip** (safe default).
+5. Optional: `vars.RUNNER_LABELS` as a JSON array (e.g. `["self-hosted","invincible","zig"]`). If unset, workflows use that default list via `fromJSON`.
+6. **Do not** add fork PR or `pull_request_target` builds on self-hosted without a deliberate design review. Expanding PR CI beyond same-repo contributor heads is a security change.
+7. Prefer GitHub setting: require approval for first-time contributors’ workflows; keep **fork** PR workflows off the self-hosted pool.
+8. Host inventory (IPs, droplet IDs) is **not** published in this repo — keep private notes offline.
 
 | Setting | Kind | Purpose |
 |---------|------|---------|
 | `SELF_HOSTED_BUILDS` | Actions **variable** (`true`) | Enable self-hosted jobs on **this** repository |
 | `RUNNER_LABELS` | Actions **variable** (JSON array) | Optional `runs-on` labels override |
-| `VERCEL_DEPLOY_HOOK_URL` | Actions **secret** | Post-artifact redeploy (origin) |
+| `VERCEL_DEPLOY_HOOK_URL` | Actions **secret** | Post-artifact redeploy (origin; **main / dispatch only**) |
 
 Maintainers: still harden the VM (SSH keys, firewall, unattended upgrades) using private runbooks; public docs stay abstract.
 

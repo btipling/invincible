@@ -49,11 +49,12 @@ Self-hosted runners on **public** repos are high risk if untrusted PR code can e
 
 | Rule | Implementation |
 |------|----------------|
-| No `pull_request` / `pull_request_target` on self-hosted jobs | All four workflows: push `main` + `workflow_dispatch` only |
-| Opt-in + origin grandfather | Job `if:`: `(vars.SELF_HOSTED_BUILDS == 'true' \|\| github.repository == 'btipling/invincible')` and (`workflow_dispatch` or `push` to `main`) |
+| Default: no untrusted PR on self-hosted | `runner-smoke` / `build-wasm` / `build-dvui-spike`: push `main` + `workflow_dispatch` only |
+| Same-repo contributor PR CI | **`build-harness` only:** `pull_request` → `main` when head is **this** repo (not a fork) and author is OWNER/MEMBER/COLLABORATOR/CONTRIBUTOR; path-filtered; **no** deploy hook; **never** `pull_request_target` |
+| Opt-in + origin grandfather | Job `if:`: `(vars.SELF_HOSTED_BUILDS == 'true' \|\| github.repository == 'btipling/invincible')` plus event guards |
 | Clone enablement | Set Actions variable `SELF_HOSTED_BUILDS=true` after attaching **your** runner |
-| Path filters | Only relevant `native/**` / workflow paths on push |
-| Fork PRs | Do not add self-hosted PR builds without a security design review |
+| Path filters | Only relevant `native/**` / workflow paths on push and on harness PRs |
+| Fork PRs | Still **off** the self-hosted pool (job `if:` refuses `head.repo != github.repository`) |
 
 **Variables vs secrets:** `SELF_HOSTED_BUILDS` / `RUNNER_LABELS` are non-secret **Actions variables**. Do not put them in Secrets. Deploy hooks stay secrets.
 
@@ -155,9 +156,9 @@ When reimaged, labels wrong, or `.credentials` lost: stop service → `config.sh
 | **runner-smoke** | `workflow_dispatch`, push to workflow file on `main` | — |
 | **build-wasm** | `workflow_dispatch`, push `native/**` on `main` | `hello-wasm` |
 | **build-dvui-spike** | `workflow_dispatch`, push spike paths on `main` | `dvui-spike-wasm` |
-| **build-harness** | `workflow_dispatch`, push `native/harness/**` on `main` | **`harness-wasm`** |
+| **build-harness** | `workflow_dispatch`, push `native/harness/**` on `main`, **same-repo contributor `pull_request` → `main`** (path-filtered; no Vercel hook) | **`harness-wasm`** |
 
-All jobs: self-hosted + `if:` guards (no PR). Foreign repos without `SELF_HOSTED_BUILDS=true` → job **skipped**.
+All jobs: self-hosted + `if:` guards. Fork PRs never run on the DO runner. Foreign repos without `SELF_HOSTED_BUILDS=true` → job **skipped**.
 
 ### Product path: harness → Vercel
 
