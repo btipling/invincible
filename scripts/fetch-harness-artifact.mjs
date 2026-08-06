@@ -44,6 +44,7 @@ import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import {
   commitTouchesHarnessBuild,
+  isHarnessBuildPath,
   isHarnessRequire,
   resolveHarnessRepo,
 } from './harnessRepo.mjs';
@@ -269,11 +270,11 @@ async function resolveNoRunFallback(tok, sha) {
     );
   }
   if (commitTouchesHarnessBuild(paths)) {
-    const hit = paths.filter((p) => p.includes('harness') || p.includes('ZIG_VERSION') || p.includes('build-harness'));
+    const hit = paths.filter((p) => isHarnessBuildPath(p));
     throw new Error(
       `no ${WORKFLOW_FILE} run for ${sha.slice(0, 7)} but commit touches harness build paths ` +
         `(${hit.slice(0, 5).join(', ') || 'native/harness/**'}) — refusing stale Wasm. ` +
-        `Run workflow_dispatch build-harness on main, or wait for path-filtered push CI.`,
+        `Run: gh workflow run build-harness.yml -f runner=ubuntu-latest (or self-hosted when DO runner is up).`,
     );
   }
   log(

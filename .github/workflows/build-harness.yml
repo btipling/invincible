@@ -1,6 +1,7 @@
-# Compile harness.wasm on trusted self-hosted runner; upload Actions artifact.
+# Compile harness.wasm; upload Actions artifact for Vercel prebuild.
 # Public-repo safety:
-#   - self-hosted only with opt-in vars.SELF_HOSTED_BUILDS (or origin grandfather)
+#   - default: self-hosted (opt-in vars.SELF_HOSTED_BUILDS or origin grandfather)
+#   - workflow_dispatch can force ubuntu-latest (Zig freestanding — no DO runner needed)
 #   - push main / workflow_dispatch always (path-filtered)
 #   - pull_request: same-repo head only (contributors with push access); never forks
 #   - never pull_request_target; never Vercel deploy hook on PR
@@ -8,6 +9,14 @@ name: build-harness
 
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: "Where to build (ubuntu-latest when DO runner is offline)"
+        type: choice
+        options:
+          - self-hosted
+          - ubuntu-latest
+        default: self-hosted
   push:
     branches: [main]
     paths:
@@ -32,26 +41,63 @@ jobs:
   harness:
     name: zig → harness.wasm
     if: >
-      (vars.SELF_HOSTED_BUILDS == 'true' || github.repository == 'btipling/invincible') &&
       (
-        github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        github.event_name == 'workflow_dispatch' &&
+        github.event.inputs.runner == 'ubuntu-latest'
+      ) ||
+      (
+        (vars.SELF_HOSTED_BUILDS == 'true' || github.repository == 'btipling/invincible') &&
         (
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)
+          )
         )
       )
-    runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["self-hosted","invincible","zig"]') }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.runner == 'ubuntu-latest' && 'ubuntu-latest' || fromJSON(vars.RUNNER_LABELS || '["self-hosted","invincible","zig"]') }}
     timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Ensure Zig (pinned)
+        run: |
+          set -euo pipefail
+          PIN="$(tr -d '[:space:]' < native/ZIG_VERSION)"
+          export PATH="/usr/local/bin:${HOME}/.local/bin:${PATH}"
+          if command -v zig >/dev/null 2>&1 && [[ "$(zig version)" == "$PIN" ]]; then
+            zig version
+            exit 0
+          fi
+          ARCH="$(uname -m)"
+          case "$ARCH" in
+            x86_64|amd64) ZIG_ARCH=x86_64-linux ;;
+            aarch64|arm64) ZIG_ARCH=aarch64-linux ;;
+            *) echo "unsupported arch $ARCH" >&2; exit 1 ;;
+          esac
+          TMP="$(mktemp -d)"
+          URL="https://ziglang.org/download/${PIN}/zig-${ZIG_ARCH}-${PIN}.tar.xz"
+          echo "installing Zig ${PIN} from ${URL}"
+          curl -fsSL "$URL" -o "$TMP/zig.tar.xz"
+          tar -xJf "$TMP/zig.tar.xz" -C "$TMP"
+          mkdir -p "${HOME}/.local/bin"
+          ZIG_DIR="$(echo "$TMP"/zig-*)"
+          ln -sfn "${ZIG_DIR}/zig" "${HOME}/.local/bin/zig"
+          # Also try system path when we have write access (self-hosted).
+          if [[ -w /usr/local/bin ]]; then
+            ln -sfn "${ZIG_DIR}/zig" /usr/local/bin/zig || true
+          fi
+          export PATH="${HOME}/.local/bin:/usr/local/bin:${PATH}"
+          zig version
+          test "$(zig version)" = "$PIN"
+
       - name: Host unit tests (rich/*)
         run: |
           set -euo pipefail
-          export PATH="/usr/local/bin:${PATH}"
+          export PATH="${HOME}/.local/bin:/usr/local/bin:${PATH}"
           zig version
           test "$(zig version)" = "$(tr -d '[:space:]' < native/ZIG_VERSION)"
           cd native/harness
@@ -60,7 +106,7 @@ jobs:
       - name: Build harness
         run: |
           set -euo pipefail
-          export PATH="/usr/local/bin:${PATH}"
+          export PATH="${HOME}/.local/bin:/usr/local/bin:${PATH}"
           zig version
           test "$(zig version)" = "$(tr -d '[:space:]' < native/ZIG_VERSION)"
           ./native/harness/build.sh

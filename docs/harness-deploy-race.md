@@ -34,7 +34,7 @@ Local/default: `HARNESS_WAIT_MS=0` → latest artifact immediately.
 
 Path match helpers: `isHarnessBuildPath` / `commitTouchesHarnessBuild` in `scripts/harnessRepo.mjs` (unit-tested; keep aligned with workflow path filters).
 
-If Production fails closed with “no build-harness run … touches harness build paths”, recover with **`workflow_dispatch`** on `build-harness` for `main` (artifact upload then pings the deploy hook).
+If Production fails closed with “no build-harness run … touches harness build paths”, recover with **`workflow_dispatch`** on `build-harness` for `main` (artifact upload then pings the deploy hook). When the DO runner is offline, dispatch with **`runner=ubuntu-latest`** (Zig freestanding build works on GitHub-hosted).
 
 ### 2. Deploy hook after upload (secondary)
 
