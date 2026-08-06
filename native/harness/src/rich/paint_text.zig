@@ -5,10 +5,15 @@ const parse = @import("parse.zig");
 const style_mod = @import("style.zig");
 const mixed_text = @import("mixed_text.zig");
 
+/// `[^` + label≤32 + `]` fits in 36 bytes; pad for safety.
+const MAX_FN_MARK: usize = 48;
+
 pub const PaintCtx = struct {
     style: style_mod.StyleMap,
     id_base: usize,
     run_seq: *usize,
+    /// Set after drawing the bar before the first footnote_def in a message.
+    footnote_section_started: bool = false,
 };
 
 fn nextId(ctx: *PaintCtx) usize {
@@ -24,6 +29,7 @@ pub fn nextIdPublic(ctx: *PaintCtx) usize {
 fn fontFor(base: dvui.Font, kind: parse.InlineKind, f: parse.StyleFlags) dvui.Font {
     var font = switch (kind) {
         .code => dvui.Font.theme(.mono),
+        .footnote_ref => dvui.Font.theme(.body).larger(-1),
         .text, .link => base,
     };
     if (f.strong) font = font.withWeight(.bold);
@@ -35,6 +41,7 @@ fn fontFor(base: dvui.Font, kind: parse.InlineKind, f: parse.StyleFlags) dvui.Fo
 fn colorFor(st: style_mod.StyleMap, kind: parse.InlineKind, f: parse.StyleFlags) dvui.Color {
     if (kind == .code) return st.code_text;
     if (kind == .link) return st.link_text;
+    if (kind == .footnote_ref) return st.muted_text;
     if (f.strong) return st.strong_text;
     if (f.emph) return st.emph_text;
     return st.body_text;
@@ -72,6 +79,12 @@ pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, c
                 } else {
                     mixed_text.addTextMixed(tl, if (inl.text.len > 0) inl.text else href, font, .{ .color_text = st.body_text });
                 }
+            },
+            .footnote_ref => {
+                // Display as [^label] muted smaller body face.
+                var mark_buf: [MAX_FN_MARK]u8 = undefined;
+                const mark = std.fmt.bufPrint(&mark_buf, "[^{s}]", .{inl.text}) catch inl.text;
+                mixed_text.addTextMixed(tl, mark, font, .{ .color_text = st.muted_text });
             },
         }
     }
@@ -242,3 +255,27 @@ pub fn paintThematicBreak(src: std.builtin.SourceLocation, block: parse.Block, c
     });
 }
 
+pub fn paintFootnoteDef(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
+    // One section bar before the first def in this message.
+    if (!ctx.footnote_section_started) {
+        ctx.footnote_section_started = true;
+        paintThematicBreak(src, .{ .kind = .thematic_break, .inlines = &.{} }, ctx);
+    }
+    const body = dvui.Font.theme(.body);
+    const mark_font = body.larger(-1);
+    var tl = dvui.textLayout(src, .{}, .{
+        .expand = .horizontal,
+        .id_extra = nextId(ctx),
+        .color_text = ctx.style.muted_text,
+        .font = body,
+        .background = false,
+        .padding = .{ .x = 0, .y = 1, .w = 0, .h = 2 },
+    });
+    defer tl.deinit();
+    const label = block.meta orelse "";
+    var mark_buf: [MAX_FN_MARK]u8 = undefined;
+    const mark = std.fmt.bufPrint(&mark_buf, "[^{s}]: ", .{label}) catch "[^?]: ";
+    mixed_text.addTextMixed(tl, mark, mark_font, .{ .color_text = ctx.style.muted_text });
+    paintInlines(tl, block.inlines, ctx, body);
+    tl.addText("\n", .{});
+}

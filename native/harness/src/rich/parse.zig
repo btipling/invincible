@@ -9,6 +9,7 @@ const preprocess = @import("preprocess.zig");
 const bq = @import("blockquote.zig");
 const table = @import("table.zig");
 const thematic = @import("thematic.zig");
+const footnote = @import("footnote.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
@@ -24,6 +25,7 @@ pub const BlockKind = enum {
     blockquote,
     table,
     thematic_break,
+    footnote_def,
     plain,
 };
 
@@ -32,6 +34,7 @@ pub const InlineKind = enum {
     text,
     code,
     link,
+    footnote_ref,
 };
 
 /// Stackable style bits on a flat run (no nested AST).
@@ -82,10 +85,12 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
     errdefer arena.deinit();
     const a = arena.allocator();
 
-    // zmd has no table / `>` blockquote @ pin — fence-aware table partition first,
-    // then quote partition + sugar+zmd on non-table spans.
+    // zmd has no table / `>` blockquote / footnotes @ pin — table partition first,
+    // then footnote extract+ref rewrite, HR, quotes, sugar+zmd on non-table spans.
     const table_segs = try table.partition(a, src);
     var blocks: std.ArrayList(Block) = .empty;
+    var all_defs: std.ArrayList(footnote.Def) = .empty;
+    var defs_budget: usize = footnote.MAX_DEFS;
 
     for (table_segs) |tseg| {
         if (tseg.is_table) {
@@ -108,8 +113,18 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
         if (tseg.text.len == 0) continue;
         if (!bq.hasNonWs(tseg.text)) continue;
 
+        // Footnotes before HR/quotes so end-of-message defs are found and refs
+        // never hit zmd's `[` link tokenizer.
+        const fn_res = try footnote.extractAndRewriteBudget(a, tseg.text, defs_budget, footnote.MAX_REFS);
+        if (fn_res.defs.len > 0) {
+            try all_defs.appendSlice(a, fn_res.defs);
+            defs_budget -= fn_res.defs.len;
+        }
+        const span_text = fn_res.body;
+        if (span_text.len == 0 or !bq.hasNonWs(span_text)) continue;
+
         // Thematic breaks on non-table spans (fence-aware); then quotes + zmd.
-        const hr_segs = try thematic.partition(a, tseg.text);
+        const hr_segs = try thematic.partition(a, span_text);
         for (hr_segs) |hseg| {
             if (hseg.is_hr) {
                 try blocks.append(a, .{
@@ -148,10 +163,39 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
         }
     }
 
+    // Footnote definitions as a single end section (source order).
+    for (all_defs.items) |d| {
+        const inl = try lowerDefBodyInlines(a, d.body);
+        try blocks.append(a, .{
+            .kind = .footnote_def,
+            .level = 0,
+            .meta = try a.dupe(u8, d.label),
+            .inlines = inl,
+        });
+    }
+
     return .{
         .arena = arena,
         .blocks = try blocks.toOwnedSlice(a),
     };
+}
+
+/// Def body: inline sugar + zmd paragraph only (no nested blocks).
+fn lowerDefBodyInlines(a: Allocator, body: []const u8) ![]const Inline {
+    if (body.len == 0) return &.{};
+    // Synthetic single paragraph so bold/code/link still lower.
+    const wrapped = try std.fmt.allocPrint(a, "{s}\n", .{body});
+    const pre = try preprocess.preprocessInlineSugar(a, wrapped);
+    const ir = try zmd.parseAlloc(a, pre, markerConfig);
+    const lowered = try lowerIr(a, ir);
+    if (lowered.len == 0) {
+        return try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, body) }});
+    }
+    // Prefer first paragraph-like block with inlines.
+    for (lowered) |blk| {
+        if (blk.inlines.len > 0) return blk.inlines;
+    }
+    return try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, body) }});
 }
 
 /// Fixed-buffer smoke used from harness init so the parser is not tree-shaken
@@ -308,6 +352,8 @@ const Builder = struct {
     cur_level: u8 = 0,
     cur_meta: ?[]const u8 = null,
     text_buf: std.ArrayList(u8) = .empty,
+    fn_label_buf: std.ArrayList(u8) = .empty,
+    in_fn_ref: bool = false,
 
     const Pending = struct {
         role: Role,
@@ -319,6 +365,7 @@ const Builder = struct {
         self.inlines.deinit(self.a);
         self.pending.deinit(self.a);
         self.text_buf.deinit(self.a);
+        self.fn_label_buf.deinit(self.a);
     }
 
     fn stackFlags(self: *const Builder) StyleFlags {
@@ -401,6 +448,22 @@ const Builder = struct {
                 preprocess.pua_strike_close => {
                     try self.closeInlineRole(.strike);
                 },
+                footnote.pua_fn_open => {
+                    try self.flushText();
+                    self.in_fn_ref = true;
+                    self.fn_label_buf.clearRetainingCapacity();
+                },
+                footnote.pua_fn_close => {
+                    if (self.in_fn_ref) {
+                        self.in_fn_ref = false;
+                        const lab = try self.a.dupe(u8, self.fn_label_buf.items);
+                        self.fn_label_buf.clearRetainingCapacity();
+                        try self.inlines.append(self.a, .{
+                            .kind = .footnote_ref,
+                            .text = lab,
+                        });
+                    }
+                },
                 preprocess.pua_lit_star => try self.text_buf.append(self.a, '*'),
                 preprocess.pua_lit_under => try self.text_buf.append(self.a, '_'),
                 preprocess.pua_lit_tick => try self.text_buf.append(self.a, '`'),
@@ -411,7 +474,11 @@ const Builder = struct {
                     const n = std.unicode.utf8Encode(cp, &buf) catch {
                         continue;
                     };
-                    try self.text_buf.appendSlice(self.a, buf[0..n]);
+                    if (self.in_fn_ref) {
+                        try self.fn_label_buf.appendSlice(self.a, buf[0..n]);
+                    } else {
+                        try self.text_buf.appendSlice(self.a, buf[0..n]);
+                    }
                 },
             }
         }
@@ -1225,4 +1292,75 @@ test "table separator not thematic break" {
         try std.testing.expect(blk.kind != .thematic_break);
     }
     try std.testing.expect(saw_table);
+}
+
+test "footnote ref and def parse" {
+    const src =
+        \\See note[^1] please.
+        \\
+        \\[^1]: Hello **world**.
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_ref = false;
+    var saw_def = false;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (inl.kind == .footnote_ref) {
+                saw_ref = true;
+                try std.testing.expectEqualStrings("1", inl.text);
+            }
+        }
+        if (blk.kind == .footnote_def) {
+            saw_def = true;
+            try std.testing.expectEqualStrings("1", blk.meta.?);
+            const j = try joinBlockText(std.testing.allocator, blk);
+            defer std.testing.allocator.free(j);
+            try std.testing.expect(std.mem.indexOf(u8, j, "Hello") != null);
+        }
+    }
+    try std.testing.expect(saw_ref);
+    try std.testing.expect(saw_def);
+}
+
+test "footnote def without ref still present" {
+    const src =
+        \\Intro.
+        \\
+        \\[^solo]: Only def.
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_def = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .footnote_def) {
+            saw_def = true;
+            try std.testing.expectEqualStrings("solo", blk.meta.?);
+        }
+    }
+    try std.testing.expect(saw_def);
+}
+
+test "footnote does not destroy surrounding paragraph" {
+    const src =
+        \\Alpha[^x] beta.
+        \\
+        \\[^x]: note
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_alpha = false;
+    var saw_beta = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .footnote_def) continue;
+        const j = try joinBlockText(std.testing.allocator, blk);
+        defer std.testing.allocator.free(j);
+        if (std.mem.indexOf(u8, j, "Alpha") != null) saw_alpha = true;
+        if (std.mem.indexOf(u8, j, "beta") != null) saw_beta = true;
+    }
+    try std.testing.expect(saw_alpha);
+    try std.testing.expect(saw_beta);
 }
