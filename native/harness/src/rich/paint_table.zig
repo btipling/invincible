@@ -1,85 +1,148 @@
-//! GFM pipe table paint — mono surface box (no token HL, no inner scroll).
+//! GFM pipe table paint — dvui GridWidget with borders (no box-drawing glyphs).
 const std = @import("std");
 const dvui = @import("dvui");
 const parse = @import("parse.zig");
 const paint_text = @import("paint_text.zig");
 
+/// Parse meta "cols,overflow" → (cols, overflow_rows). Defaults: cols from cells, 0 overflow.
+fn parseMeta(meta: ?[]const u8, cell_n: usize) struct { usize, usize } {
+    if (meta) |m| {
+        var it = std.mem.splitScalar(u8, m, ',');
+        const c_s = it.next() orelse "";
+        const o_s = it.next() orelse "0";
+        const cols = std.fmt.parseInt(usize, c_s, 10) catch 0;
+        const overflow = std.fmt.parseInt(usize, o_s, 10) catch 0;
+        if (cols > 0) return .{ cols, overflow };
+    }
+    // fallback: treat as single column
+    _ = cell_n;
+    return .{ 1, 0 };
+}
+
 pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *paint_text.PaintCtx) void {
-    var box = dvui.box(src, .{ .dir = .vertical }, .{
+    const cell_n = block.inlines.len;
+    if (cell_n == 0) return;
+
+    const cols, const overflow = parseMeta(block.meta, cell_n);
+    if (cols == 0) return;
+    const total_rows = cell_n / cols;
+    if (total_rows == 0) return;
+
+    const has_header = block.level == 1 and total_rows >= 1;
+    const body_rows: usize = if (has_header) total_rows - 1 else total_rows;
+    const header_offset: usize = if (has_header) 1 else 0;
+
+    const body_font = dvui.Font.theme(.body);
+    const header_font = body_font.withWeight(.bold);
+    const cell_border = dvui.Rect.all(1);
+    const cell_pad = dvui.Rect.all(6);
+
+    // Outer frame — palette surface + border (matches fence tokens, no freehand)
+    var outer = dvui.box(src, .{ .dir = .vertical }, .{
         .expand = .horizontal,
         .id_extra = paint_text.nextIdPublic(ctx),
         .background = true,
         .color_fill = ctx.style.code_fill,
         .color_border = ctx.style.code_border,
-        .padding = .{ .x = 8, .y = 6, .w = 8, .h = 6 },
+        .border = .all(1),
+        .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
         .margin = .{ .x = 0, .y = 2, .w = 0, .h = 4 },
     });
-    defer box.deinit();
+    defer outer.deinit();
 
-    const mono = dvui.Font.theme(.mono);
-    const mono_bold = mono.withWeight(.bold);
-    const zero_pad = dvui.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
-
-    var tl = dvui.textLayout(@src(), .{}, .{
+    // layout_only: bordered grid without spreadsheet edit/select chrome
+    var grid = dvui.grid(@src(), .{
+        .layout_only = true,
+        .rows = body_rows,
+        .scroll_opts = .{
+            .horizontal = .auto,
+            .vertical = .none,
+        },
+    }, .{
         .expand = .horizontal,
         .id_extra = paint_text.nextIdPublic(ctx),
-        .color_text = ctx.style.code_text,
-        .font = mono,
-        .background = false,
-        .padding = zero_pad,
+        .background = true,
+        .color_fill = ctx.style.code_fill,
+        .color_border = ctx.style.code_border,
+        .border = .all(0),
+        .padding = .{},
+        .margin = .{},
     });
-    defer tl.deinit();
+    defer grid.deinit();
 
-    // Join inlines to full grid text
-    var join_buf: [4096]u8 = undefined;
-    var join_len: usize = 0;
-    for (block.inlines) |inl| {
-        const take = @min(inl.text.len, join_buf.len - join_len);
-        if (take > 0) {
-            @memcpy(join_buf[join_len .. join_len + take], inl.text[0..take]);
-            join_len += take;
+    // Force autosize every paint so col widths track content (small tables)
+    grid.autoSize(.{
+        .auto = .both,
+        .min_width = 48,
+        .min_height = 20,
+        .max_width = 280,
+        .max_height = 120,
+    });
+
+    // Column headers
+    if (has_header) {
+        var col: usize = 0;
+        while (col < cols) : (col += 1) {
+            const cell = grid.colHeader(col, .{
+                .border = cell_border,
+                .color_border = ctx.style.code_border,
+                .background = true,
+                .color_fill = ctx.style.code_fill,
+                .padding = cell_pad,
+            });
+            defer cell.deinit();
+            const text = block.inlines[col].text;
+            dvui.labelNoFmt(@src(), text, .{}, .{
+                .font = header_font,
+                .color_text = ctx.style.body_text,
+                .id_extra = paint_text.nextIdPublic(ctx),
+            });
         }
-        if (join_len >= join_buf.len) break;
-    }
-    const grid = join_buf[0..join_len];
-    if (grid.len == 0) {
-        tl.addText("\n", .{});
-        return;
     }
 
-    // First line bold when header present (level == 1)
-    const bold_header = block.level == 1;
-    var line_start: usize = 0;
-    var line_i: usize = 0;
-    var i: usize = 0;
-    while (i <= grid.len) : (i += 1) {
-        const at_end = i == grid.len;
-        const at_nl = !at_end and grid[i] == '\n';
-        if (!at_end and !at_nl) continue;
+    // Body rows
+    var row: usize = 0;
+    while (row < body_rows) : (row += 1) {
+        const band = (row % 2 == 1);
+        var col: usize = 0;
+        while (col < cols) : (col += 1) {
+            const idx = (header_offset + row) * cols + col;
+            const text = if (idx < block.inlines.len) block.inlines[idx].text else "";
+            const fill = if (band) ctx.style.code_fill else null;
 
-        const line = grid[line_start..i];
-        const is_overflow = std.mem.startsWith(u8, line, "…");
-        if (line.len > 0) {
-            if (is_overflow) {
-                tl.addText(line, .{
-                    .color_text = ctx.style.fence_lang_text,
-                    .font = mono,
-                });
-            } else if (bold_header and line_i == 0) {
-                tl.addText(line, .{
-                    .color_text = ctx.style.code_text,
-                    .font = mono_bold,
-                });
-            } else {
-                tl.addText(line, .{
-                    .color_text = ctx.style.code_text,
-                    .font = mono,
-                });
-            }
+            var cell = grid.cell(.{ .col = col, .row = row, .draw_focus = false }, .{
+                .border = cell_border,
+                .color_border = ctx.style.code_border,
+                .background = true,
+                .color_fill = if (fill) |f| f else ctx.style.code_fill,
+                .padding = cell_pad,
+            });
+            defer cell.deinit();
+
+            dvui.labelNoFmt(@src(), text, .{}, .{
+                .font = body_font,
+                .color_text = ctx.style.body_text,
+                .id_extra = paint_text.nextIdPublic(ctx),
+            });
         }
+    }
+
+    if (overflow > 0) {
+        var buf: [48]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "… {d} more rows", .{overflow}) catch "… more rows";
+        var tl = dvui.textLayout(@src(), .{}, .{
+            .expand = .horizontal,
+            .id_extra = paint_text.nextIdPublic(ctx),
+            .color_text = ctx.style.fence_lang_text,
+            .font = body_font,
+            .background = false,
+            .padding = .{ .x = 8, .y = 4, .w = 8, .h = 4 },
+        });
+        defer tl.deinit();
+        tl.addText(msg, .{
+            .color_text = ctx.style.fence_lang_text,
+            .font = body_font,
+        });
         tl.addText("\n", .{});
-        line_i += 1;
-        line_start = i + 1;
-        if (at_end) break;
     }
 }

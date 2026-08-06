@@ -86,20 +86,24 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
     var blocks: std.ArrayList(Block) = .empty;
 
     for (table_segs) |tseg| {
-        if (tseg.text.len == 0) continue;
         if (tseg.is_table) {
-            if (!table.hasNonWs(tseg.text)) continue;
-            const grid = try a.dupe(u8, tseg.text);
-            const inl = try a.alloc(Inline, 1);
-            inl[0] = .{ .kind = .text, .text = grid };
+            const td = tseg.table orelse continue;
+            if (td.cols == 0 or td.cells.len == 0) continue;
+            // inlines = row-major cells; meta = "cols,overflow"
+            const inl = try a.alloc(Inline, td.cells.len);
+            for (td.cells, 0..) |cell, i| {
+                inl[i] = .{ .kind = .text, .text = try a.dupe(u8, cell) };
+            }
+            const meta = try std.fmt.allocPrint(a, "{d},{d}", .{ td.cols, td.overflow_rows });
             try blocks.append(a, .{
                 .kind = .table,
-                .level = if (tseg.has_header) 1 else 0,
-                .meta = null,
+                .level = if (td.has_header) 1 else 0,
+                .meta = meta,
                 .inlines = inl,
             });
             continue;
         }
+        if (tseg.text.len == 0) continue;
         if (!bq.hasNonWs(tseg.text)) continue;
 
         const segments = try bq.partition(a, tseg.text);
