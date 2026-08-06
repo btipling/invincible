@@ -29,7 +29,13 @@ pub fn addTextMixed(
     opts: PaintOpts,
 ) void {
     if (text.len == 0) return;
-    const emoji_font = palette.fontEmoji().withSize(base.size).withWeight(base.weight).withStyle(base.style);
+    // OpenMoji outlines need more px than Noto body at the same nominal size.
+    const emoji_size = base.size * palette.emoji_size_scale;
+    const emoji_font = palette.fontEmoji()
+        .withSize(emoji_size)
+        .withWeight(base.weight)
+        .withStyle(base.style)
+        .withLineHeight(1.0); // size already enlarged; don't double vertical gap
 
     var i: usize = 0;
     while (i < text.len) {

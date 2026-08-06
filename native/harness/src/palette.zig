@@ -81,6 +81,10 @@ pub fn fontEmoji() Font {
     return .find(.{ .family = family_emoji });
 }
 
+/// OpenMoji black is thin outline art — at body px it reads as noise.
+/// Scale relative to the surrounding run so glyphs stay legible in the transcript.
+pub const emoji_size_scale: f32 = 1.65;
+
 /// Mono face (Vera Sans Mono).
 pub fn fontMono() Font {
     return .find(.{ .family = family_mono });
