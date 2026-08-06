@@ -1,6 +1,9 @@
 # Compile harness.wasm on trusted self-hosted runner; upload Actions artifact.
-# Public-repo safety: no pull_request; opt-in vars.SELF_HOSTED_BUILDS (or origin
-# grandfather btipling/invincible) + main / workflow_dispatch only.
+# Public-repo safety:
+#   - self-hosted only with opt-in vars.SELF_HOSTED_BUILDS (or origin grandfather)
+#   - push main / workflow_dispatch always (path-filtered)
+#   - pull_request: same-repo head only (contributors with push access); never forks
+#   - never pull_request_target; never Vercel deploy hook on PR
 name: build-harness
 
 on:
@@ -11,11 +14,18 @@ on:
       - "native/harness/**"
       - "native/ZIG_VERSION"
       - ".github/workflows/build-harness.yml"
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "native/harness/**"
+      - "native/ZIG_VERSION"
+      - ".github/workflows/build-harness.yml"
 
-# Never run untrusted PR code on the DO runner.
-# forks: self-hosted runners are not shared to forks automatically; still refuse PRs.
+# Fork PRs: head.repo != github.repository → job if: skips (no untrusted code on DO).
+# Same-repo PRs: trusted branch authors (write access); still no deploy hook.
 concurrency:
-  group: build-harness-${{ github.ref }}
+  group: build-harness-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -23,8 +33,15 @@ jobs:
     name: zig → harness.wasm
     if: >
       (vars.SELF_HOSTED_BUILDS == 'true' || github.repository == 'btipling/invincible') &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)
+        )
+      )
     runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["self-hosted","invincible","zig"]') }}
     timeout-minutes: 45
     steps:
@@ -70,7 +87,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # Production redeploy only on main (or manual dispatch) — never on PR.
       - name: Trigger Vercel redeploy (optional)
+        if: github.event_name != 'pull_request'
         env:
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
         run: |
