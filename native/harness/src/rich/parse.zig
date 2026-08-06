@@ -303,13 +303,15 @@ fn lowerInlineOnly(a: Allocator, body: []const u8) ![]const Inline {
     const ir = try zmd.parseAlloc(a, pre, markerConfig);
     const lowered = try lowerIr(a, ir);
     if (lowered.len == 0) {
-        return try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, body) }});
+        const fallback = try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, body) }});
+        return try autolinkTextInlines(a, fallback);
     }
     // Prefer first paragraph-like block with inlines.
     for (lowered) |blk| {
-        if (blk.inlines.len > 0) return blk.inlines;
+        if (blk.inlines.len > 0) return try autolinkTextInlines(a, blk.inlines);
     }
-    return try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, body) }});
+    const fallback = try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, body) }});
+    return try autolinkTextInlines(a, fallback);
 }
 
 /// True when cell text may contain MD inline markers (skip zmd when false).
@@ -329,13 +331,79 @@ fn lowerTableCell(a: Allocator, cell: []const u8) ![]const Inline {
         return try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = "" }});
     }
     if (!cellHasMdMarkers(cell)) {
-        return try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, cell) }});
+        // Plain fast path — still bare-http(s) autolink (scheme not in MD markers).
+        const one = try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, cell) }});
+        return try autolinkTextInlines(a, one);
     }
     const inls = try lowerInlineOnly(a, cell);
     if (inls.len == 0) {
-        return try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, cell) }});
+        const one = try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, cell) }});
+        return try autolinkTextInlines(a, one);
     }
     return inls;
+}
+
+/// Post-lower bare http(s) autolink on flat `.text` runs only.
+/// Non-text kinds (code/link/image/footnote_ref) pass through unchanged.
+fn autolinkTextInlines(a: Allocator, inlines: []const Inline) ![]const Inline {
+    var has_candidate = false;
+    for (inlines) |inl| {
+        if (inl.kind == .text and inl.text.len >= 7 and std.mem.indexOfScalar(u8, inl.text, ':') != null) {
+            has_candidate = true;
+            break;
+        }
+    }
+    if (!has_candidate) return inlines;
+
+    var out: std.ArrayList(Inline) = .empty;
+    errdefer out.deinit(a);
+    var changed = false;
+
+    for (inlines) |inl| {
+        if (inl.kind != .text) {
+            try out.append(a, inl);
+            continue;
+        }
+        const t = inl.text;
+        var pos: usize = 0;
+        var emitted_for_run = false;
+        while (pos < t.len) {
+            if (link_url.findBareHttpUrl(t, pos)) |span| {
+                changed = true;
+                if (span.start > pos) {
+                    try out.append(a, .{
+                        .kind = .text,
+                        .text = t[pos..span.start],
+                        .flags = inl.flags,
+                    });
+                }
+                const url = t[span.start..span.end];
+                const url_dupe = try a.dupe(u8, url);
+                try out.append(a, .{
+                    .kind = .link,
+                    .text = url_dupe,
+                    .href = url_dupe,
+                    .flags = inl.flags,
+                });
+                pos = span.end;
+                emitted_for_run = true;
+            } else {
+                if (pos == 0 and !emitted_for_run) {
+                    try out.append(a, inl);
+                } else if (pos < t.len) {
+                    try out.append(a, .{
+                        .kind = .text,
+                        .text = t[pos..],
+                        .flags = inl.flags,
+                    });
+                }
+                break;
+            }
+        }
+    }
+
+    if (!changed) return inlines;
+    return try out.toOwnedSlice(a);
 }
 
 /// Fixed-buffer smoke used from harness init so the parser is not tree-shaken
@@ -661,8 +729,9 @@ const Builder = struct {
         }
         const kind = self.cur_kind orelse {
             if (self.inlines.items.len == 0) return;
-            const owned = try self.inlines.toOwnedSlice(self.a);
+            var owned: []const Inline = try self.inlines.toOwnedSlice(self.a);
             self.inlines = .empty;
+            owned = try autolinkTextInlines(self.a, owned);
             try self.blocks.append(self.a, .{
                 .kind = .plain,
                 .inlines = owned,
@@ -673,8 +742,12 @@ const Builder = struct {
         if (kind == .list_item) {
             checked = applyTaskListOnInlines(&self.inlines);
         }
-        const owned = try self.inlines.toOwnedSlice(self.a);
+        var owned: []const Inline = try self.inlines.toOwnedSlice(self.a);
         self.inlines = .empty;
+        // Fence payload stays plain text — no bare-URL rewrite inside fences.
+        if (kind != .code_fence) {
+            owned = try autolinkTextInlines(self.a, owned);
+        }
         try self.blocks.append(self.a, .{
             .kind = kind,
             .level = self.cur_level,
@@ -1719,6 +1792,157 @@ test "table cell javascript link label preserved" {
     }
     try std.testing.expect(has_x);
 }
+
+test "bare https query frag mid paragraph" {
+    const src =
+        \\See https://example.com/path?q=1&x=y#frag for details.
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw = false;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (inl.kind == .link) {
+                if (inl.href) |h| {
+                    if (std.mem.eql(u8, h, "https://example.com/path?q=1&x=y#frag")) {
+                        try std.testing.expectEqualStrings(h, inl.text);
+                        saw = true;
+                    }
+                }
+            }
+        }
+    }
+    try std.testing.expect(saw);
+}
+
+test "bare http and HTTPS schemes" {
+    const src = "a http://example.com/x b HTTPS://EXAMPLE.COM/Y c\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_http = false;
+    var saw_https = false;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (inl.kind == .link) {
+                if (inl.href) |h| {
+                    if (std.mem.eql(u8, h, "http://example.com/x")) saw_http = true;
+                    if (std.mem.eql(u8, h, "HTTPS://EXAMPLE.COM/Y")) saw_https = true;
+                }
+            }
+        }
+    }
+    try std.testing.expect(saw_http);
+    try std.testing.expect(saw_https);
+}
+
+test "bare url trailing punct not in href" {
+    const src = "end https://example.com/a?b=c#d. and (https://example.com/x?y=1#z).\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_d = false;
+    var saw_z = false;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (inl.kind == .link) {
+                if (inl.href) |h| {
+                    if (std.mem.eql(u8, h, "https://example.com/a?b=c#d")) saw_d = true;
+                    if (std.mem.eql(u8, h, "https://example.com/x?y=1#z")) saw_z = true;
+                    try std.testing.expect(h[h.len - 1] != '.');
+                    try std.testing.expect(h[h.len - 1] != ')');
+                }
+            }
+        }
+    }
+    try std.testing.expect(saw_d);
+    try std.testing.expect(saw_z);
+}
+
+test "bare url not inside inline code" {
+    const src = "x `https://example.com` y\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_code = false;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (inl.kind == .code and std.mem.indexOf(u8, inl.text, "https://example.com") != null) {
+                saw_code = true;
+            }
+            if (inl.kind == .link) {
+                if (inl.href) |h| {
+                    try std.testing.expect(!std.mem.eql(u8, h, "https://example.com"));
+                }
+            }
+        }
+    }
+    try std.testing.expect(saw_code);
+}
+
+test "bare url not inside fence" {
+    const src = "```\nhttps://example.com/path?q=1#f\n```\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_fence = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .code_fence) {
+            saw_fence = true;
+            for (blk.inlines) |inl| {
+                try std.testing.expect(inl.kind != .link);
+                if (inl.kind == .text) {
+                    try std.testing.expect(std.mem.indexOf(u8, inl.text, "https://example.com") != null);
+                }
+            }
+        }
+    }
+    try std.testing.expect(saw_fence);
+}
+
+test "markdown link unchanged with query frag" {
+    const src = "[docs](https://example.com/path?q=1&x=y#frag)\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw = false;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (inl.kind == .link) {
+                if (inl.href) |h| {
+                    if (std.mem.eql(u8, h, "https://example.com/path?q=1&x=y#frag")) {
+                        try std.testing.expectEqualStrings("docs", inl.text);
+                        saw = true;
+                    }
+                }
+            }
+        }
+    }
+    try std.testing.expect(saw);
+}
+
+test "bare javascript stays text" {
+    const src = "nope javascript:alert(1) end\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            try std.testing.expect(inl.kind != .link);
+        }
+    }
+}
+
+test "table cell bare url fast path" {
+    const src = "| L |\n| --- |\n| https://example.com/path?q=1#frag |\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    const blk = doc.blocks[0];
+    var saw = false;
+    for (blk.inlines) |inl| {
+        if (inl.kind == .link) {
+            if (inl.href) |h| {
+                if (std.mem.eql(u8, h, "https://example.com/path?q=1#frag")) saw = true;
+            }
+        }
+    }
+    try std.testing.expect(saw);
+}
+
 
 test "thematic break ---" {
     const src = "before\n\n---\n\nafter\n";
