@@ -11,6 +11,7 @@ const table = @import("table.zig");
 const thematic = @import("thematic.zig");
 const footnote = @import("footnote.zig");
 const deflist = @import("deflist.zig");
+const link_url = @import("link_url.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
@@ -740,11 +741,14 @@ const Builder = struct {
             return;
         }
         if (std.mem.eql(u8, tag, "link")) {
-            try self.openInline(.link, meta);
+            // zmd href is full paren body (may include title) — bare URL only.
+            const dest = link_url.normalizeDestination(meta);
+            try self.openInline(.link, if (dest.len > 0) dest else null);
             return;
         }
         if (std.mem.eql(u8, tag, "img")) {
-            try self.openInline(.image, if (meta.len > 0) meta else null);
+            const dest = link_url.normalizeDestination(meta);
+            try self.openInline(.image, if (dest.len > 0) dest else null);
             return;
         }
         if (std.mem.eql(u8, tag, "ref")) {
@@ -2175,4 +2179,38 @@ test "image mid-paragraph among text" {
     }
     try std.testing.expect(has_image);
     try std.testing.expect(has_text);
+}
+
+
+test "image with double-quoted title strips to bare url" {
+    var doc = try parse(std.testing.allocator, "![Random test image](https://example.com/a.png \"title\")\n");
+    defer doc.deinit();
+    var found = false;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (inl.kind == .image) {
+                found = true;
+                try std.testing.expectEqualStrings("Random test image", inl.text);
+                try std.testing.expect(inl.href != null);
+                try std.testing.expectEqualStrings("https://example.com/a.png", inl.href.?);
+            }
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "image with single-quoted title strips to bare url" {
+    var doc = try parse(std.testing.allocator, "![alt](https://example.com/b.png 'cap')\n");
+    defer doc.deinit();
+    var found = false;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (inl.kind == .image) {
+                found = true;
+                try std.testing.expect(inl.href != null);
+                try std.testing.expectEqualStrings("https://example.com/b.png", inl.href.?);
+            }
+        }
+    }
+    try std.testing.expect(found);
 }

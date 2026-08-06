@@ -1,9 +1,35 @@
 //! http(s) link allowlist for rich transcript (no dvui dep).
 const std = @import("std");
 
-/// http(s) only — reject javascript:, data:, relative, etc.
+/// Strip CommonMark optional title and `<>` wrappers from a zmd destination.
+/// zmd sets `node.href` to the full paren contents, e.g. `https://x/a.png "title"`.
+/// Host fetch keys and paint cache lookups must use the bare URL only.
+pub fn normalizeDestination(raw: []const u8) []const u8 {
+    var s = std.mem.trim(u8, raw, " \t\r\n");
+    if (s.len == 0) return s;
+
+    // <https://example.com/a.png>
+    if (s.len >= 2 and s[0] == '<' and s[s.len - 1] == '>') {
+        s = std.mem.trim(u8, s[1 .. s.len - 1], " \t\r\n");
+    }
+
+    // Destination then title: space + "…" / '…' / (…)
+    // Unquoted destinations cannot contain spaces (use <> form for those).
+    if (std.mem.indexOfScalar(u8, s, ' ')) |sp| {
+        const rest = std.mem.trimLeft(u8, s[sp..], " \t");
+        if (rest.len > 0 and (rest[0] == '"' or rest[0] == '\'' or rest[0] == '(')) {
+            return std.mem.trimRight(u8, s[0..sp], " \t");
+        }
+    }
+    return s;
+}
+
+/// http(s) only — reject javascript:, data:, relative, whitespace (dirty title left on), etc.
 pub fn isSafeLinkUrl(url: []const u8) bool {
     if (url.len < 8) return false;
+    // Destinations with spaces are not bare URLs (title leak or unescaped space).
+    if (std.mem.indexOfScalar(u8, url, ' ') != null) return false;
+    if (std.mem.indexOfScalar(u8, url, '\t') != null) return false;
     if (startsWithIgnoreCase(url, "https://")) return true;
     if (startsWithIgnoreCase(url, "http://")) return true;
     return false;
@@ -31,4 +57,32 @@ test "isSafeLinkUrl allowlist" {
     try std.testing.expect(!isSafeLinkUrl(""));
     try std.testing.expect(!isSafeLinkUrl("/relative"));
     try std.testing.expect(!isSafeLinkUrl("ftp://x"));
+    try std.testing.expect(!isSafeLinkUrl("https://example.com/a.png \"title\""));
+}
+
+test "normalizeDestination strips title and angle brackets" {
+    try std.testing.expectEqualStrings(
+        "https://example.com/a.png",
+        normalizeDestination("https://example.com/a.png"),
+    );
+    try std.testing.expectEqualStrings(
+        "https://example.com/a.png",
+        normalizeDestination("https://example.com/a.png \"Random test image\""),
+    );
+    try std.testing.expectEqualStrings(
+        "https://example.com/a.png",
+        normalizeDestination("https://example.com/a.png 'title'"),
+    );
+    try std.testing.expectEqualStrings(
+        "https://example.com/a.png",
+        normalizeDestination("https://example.com/a.png (title)"),
+    );
+    try std.testing.expectEqualStrings(
+        "https://example.com/a.png",
+        normalizeDestination("<https://example.com/a.png>"),
+    );
+    try std.testing.expectEqualStrings(
+        "https://example.com/a.png",
+        normalizeDestination("  <https://example.com/a.png> \"t\"  "),
+    );
 }

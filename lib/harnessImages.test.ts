@@ -95,3 +95,26 @@ describe('readResponseBodyCapped', () => {
     expect(new Uint8Array(buf!).length).toBe(4);
   });
 });
+
+describe('titled image destinations', () => {
+  it('extracts bare url when double-quoted title present', () => {
+    expect(
+      extractCandidateImageUrls(
+        '![Random test image](https://cdn.example.com/a.png "Random test image")',
+      ),
+    ).toEqual(['https://cdn.example.com/a.png']);
+  });
+
+  it('extracts bare url for single-quoted and paren titles', () => {
+    expect(
+      extractCandidateImageUrls("![a](https://cdn.example.com/a.png 'cap')"),
+    ).toEqual(['https://cdn.example.com/a.png']);
+    expect(
+      extractCandidateImageUrls('![a](https://cdn.example.com/a.png (cap))'),
+    ).toEqual(['https://cdn.example.com/a.png']);
+  });
+
+  it('rejects urls with whitespace', () => {
+    expect(isSafeImageUrl('https://cdn.example.com/a.png "title"')).toBe(false);
+  });
+});
