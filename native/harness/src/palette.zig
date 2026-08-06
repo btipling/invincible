@@ -4,7 +4,7 @@
 //! WARM  — intentional amber accent (busy, smoke, assistant label)
 //! EMBER — danger / error only
 //!
-//! Fonts: Noto Sans (body) + OpenMoji (emoji) + Vera Mono (code). See `fonts/README.md`.
+//! Fonts: Noto Sans Regular/Bold/Italic/BoldItalic + OpenMoji + Vera Mono. See `fonts/README.md`.
 const dvui = @import("dvui");
 
 const Color = dvui.Color;
@@ -55,6 +55,17 @@ const embedded_fonts: []const Font.Source = &.{
         .family = Font.array(family_body),
         .weight = .bold,
         .bytes = @embedFile("fonts/NotoSans-Bold.ttf"),
+    },
+    .{
+        .family = Font.array(family_body),
+        .style = .italic,
+        .bytes = @embedFile("fonts/NotoSans-Italic.ttf"),
+    },
+    .{
+        .family = Font.array(family_body),
+        .weight = .bold,
+        .style = .italic,
+        .bytes = @embedFile("fonts/NotoSans-BoldItalic.ttf"),
     },
     .{
         .family = Font.array(family_emoji),

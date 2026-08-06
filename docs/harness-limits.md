@@ -104,7 +104,7 @@ Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain tex
 |-------|----------|
 | Parser | **zmd** (MIT) → walkable blocks; no HTML intermediate |
 | Common MD | Headings, paragraphs, lists, **bold / italic / combined**, GFM `~~strike~~` (same-line), backslash escapes (`\\*`, `\\_`, `\\`` , `\\\\`), inline code, fences, http(s) links |
-| Inline marks | Flat runs with **style flags** (strong/emph/strike compose). No nested AST. Italic uses style bit (no separate italic TTF). Multi-flag **text color**: strong wins over emph; strike alone keeps body color. |
+| Inline marks | Flat runs with **style flags** (strong/emph/strike compose). No nested AST. Emph uses **Noto Sans Italic** / **Bold Italic** (real slant, not color-only). Emph ink matches body (slant is the cue); strong ink matches body; strike alone keeps body color. Mono has no italic face (style bit may fall back). |
 | Fenced code | Mono box + muted language label; **≤80 lines** then “… N more”. **Token highlight** for allowlisted langs (see below); unknown lang stays mono |
 | Fence token highlight | Allowlist (case-insensitive): `zig`, C/C++ (`c`/`h`/`cpp`/`cc`/`cxx`/`c++`/`hpp`/`hh`/`hxx`), `ts`/`js`/`tsx`/`jsx` (+ long forms), `json`, `bash`/`sh`/`shell`, `python`/`py`. Roles: keyword (WARM), string (TEAL accent), comment/number (muted), default body. **`diff`/`patch` stay line-kind paint** (not token HL). Payload is source text as stored — not reconstructed |
 | Diff / patch fences | Info string `diff` or `patch` (any case): line colors — **+** WARM accent, **−** EMBER text (removed-line semantics, not error chrome), file headers / `@@` hunk headers muted (hunk-aware so body lines like `---flag` stay del), context TEAL body |
@@ -114,7 +114,7 @@ Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain tex
 | Cache | Fingerprint (FNV-1a) over full body; cap 48 entries; cleared on transcript clear |
 | Caps | Same ring / 4 KiB line / 28 visible as above |
 | Unicode | Message bodies are **UTF-8** end-to-end (host `TextEncoder` → Wasm ring → zmd parse → paint → Copy source). Integrity = scalars/bytes preserved; glyphs depend on the faces below |
-| Fonts (embedded) | **Noto Sans** (body/heading) · **OpenMoji** black outline subset (emoji) · **Vera Sans Mono** (fences / inline code). Licenses: `native/harness/src/fonts/README.md` |
+| Fonts (embedded) | **Noto Sans** Regular/Bold/Italic/BoldItalic (body + rich emph) · **OpenMoji** black outline subset (emoji) · **Vera Sans Mono** Regular/Bold (fences / inline code). Licenses: `native/harness/src/fonts/README.md` |
 | Paint faces | Transcript paint **splits** emoji-related code points onto OpenMoji and everything else onto Noto Sans / mono (dvui has no automatic per-glyph fallback) |
 | Missing glyphs | Scripts outside these faces (notably **full CJK**) may still show a **missing-glyph placeholder**. That is **not** mojibake; **Copy** still yields UTF-8 source when the browser allows clipboard write |
 | Truncation | `MAX_MSG_LEN` (4 KiB) is a **byte** cap — a multi-byte sequence at the limit may be cut mid-code-point (pre-existing ring behavior) |

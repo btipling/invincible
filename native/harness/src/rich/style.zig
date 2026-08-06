@@ -9,7 +9,8 @@ pub const StyleMap = struct {
     body_text: dvui.Color = palette.teal_text,
     muted_text: dvui.Color = palette.teal_muted,
     strong_text: dvui.Color = palette.teal_text,
-    emph_text: dvui.Color = palette.teal_muted,
+    /// Same ink as body — slant comes from Noto Italic faces (not muted-as-fake-italic).
+    emph_text: dvui.Color = palette.teal_text,
     code_text: dvui.Color = palette.teal_text,
     code_fill: dvui.Color = palette.teal_surface,
     code_border: dvui.Color = palette.teal_border,
