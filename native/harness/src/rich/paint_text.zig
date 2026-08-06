@@ -156,6 +156,14 @@ pub fn paintBlockquote(src: std.builtin.SourceLocation, block: parse.Block, ctx:
     const level: u8 = if (block.level == 0) 1 else block.level;
     const depth: f32 = @floatFromInt(@min(level -| 1, 6));
     const indent: f32 = 8.0 + depth * 10.0;
+    // Plain runs use quote_text (muted); strong/code/link keep StyleMap colors.
+    var quote_style = ctx.style;
+    quote_style.body_text = ctx.style.quote_text;
+    var quote_ctx = PaintCtx{
+        .style = quote_style,
+        .id_base = ctx.id_base,
+        .run_seq = ctx.run_seq,
+    };
     var row = dvui.box(src, .{ .dir = .horizontal }, .{
         .expand = .horizontal,
         .id_extra = nextId(ctx),
@@ -185,7 +193,7 @@ pub fn paintBlockquote(src: std.builtin.SourceLocation, block: parse.Block, ctx:
             .background = false,
         });
         defer tl.deinit();
-        paintInlines(tl, block.inlines, ctx, body);
+        paintInlines(tl, block.inlines, &quote_ctx, body);
         tl.addText("\n", .{});
     }
 }

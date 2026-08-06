@@ -197,3 +197,35 @@ test "partition skips fence body quotes" {
     try std.testing.expect(saw_quote);
     try std.testing.expect(saw_fence_prose);
 }
+
+test "parseQuoteLine depth clamp" {
+    const q = parseQuoteLine(">>>>>>> deep").?;
+    try std.testing.expectEqual(@as(u8, 6), q.depth);
+    try std.testing.expectEqualStrings("deep", q.content);
+}
+
+test "partition empty quote line keeps same-depth continuity" {
+    const segs = try partition(std.testing.allocator, "> a\n>\n> b\n");
+    defer {
+        for (segs) |s| std.testing.allocator.free(s.text);
+        std.testing.allocator.free(segs);
+    }
+    try std.testing.expectEqual(@as(usize, 1), segs.len);
+    try std.testing.expect(segs[0].is_quote);
+    try std.testing.expectEqualStrings("a\n\nb", segs[0].text);
+}
+
+test "partition prose then quote then prose" {
+    const segs = try partition(std.testing.allocator, "before\n> mid\nafter\n");
+    defer {
+        for (segs) |s| std.testing.allocator.free(s.text);
+        std.testing.allocator.free(segs);
+    }
+    try std.testing.expectEqual(@as(usize, 3), segs.len);
+    try std.testing.expect(!segs[0].is_quote);
+    try std.testing.expect(std.mem.indexOf(u8, segs[0].text, "before") != null);
+    try std.testing.expect(segs[1].is_quote);
+    try std.testing.expectEqualStrings("mid", segs[1].text);
+    try std.testing.expect(!segs[2].is_quote);
+    try std.testing.expect(std.mem.indexOf(u8, segs[2].text, "after") != null);
+}

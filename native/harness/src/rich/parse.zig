@@ -989,3 +989,53 @@ test "fence body not blockquote" {
     try std.testing.expect(saw_fence);
 }
 
+test "blockquote empty line continuity" {
+    var doc = try parse(std.testing.allocator, "> a\n>\n> b\n");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    for (doc.blocks) |blk| {
+        try std.testing.expectEqual(BlockKind.blockquote, blk.kind);
+    }
+    var joined_all: std.ArrayList(u8) = .empty;
+    defer joined_all.deinit(std.testing.allocator);
+    for (doc.blocks) |blk| {
+        const j = try joinBlockText(std.testing.allocator, blk);
+        defer std.testing.allocator.free(j);
+        try joined_all.appendSlice(std.testing.allocator, j);
+    }
+    try expectContains(joined_all.items, "a");
+    try expectContains(joined_all.items, "b");
+}
+
+test "blockquote depth clamp at 6" {
+    var doc = try parse(std.testing.allocator, ">>>>>>> deep");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    try std.testing.expectEqual(BlockKind.blockquote, doc.blocks[0].kind);
+    try std.testing.expectEqual(@as(u8, 6), doc.blocks[0].level);
+}
+
+test "blockquote between prose paragraphs" {
+    const src = "before\n\n> quoted\n\nafter\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_quote = false;
+    var saw_before = false;
+    var saw_after = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .blockquote) {
+            saw_quote = true;
+            const j = try joinBlockText(std.testing.allocator, blk);
+            defer std.testing.allocator.free(j);
+            try expectContains(j, "quoted");
+        } else {
+            const j = try joinBlockText(std.testing.allocator, blk);
+            defer std.testing.allocator.free(j);
+            if (std.mem.indexOf(u8, j, "before") != null) saw_before = true;
+            if (std.mem.indexOf(u8, j, "after") != null) saw_after = true;
+        }
+    }
+    try std.testing.expect(saw_quote);
+    try std.testing.expect(saw_before);
+    try std.testing.expect(saw_after);
+}
