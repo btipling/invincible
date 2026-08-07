@@ -6,6 +6,7 @@ const style_mod = @import("style.zig");
 const mixed_text = @import("mixed_text.zig");
 const palette = @import("../palette.zig");
 const image_cache = @import("image_cache.zig");
+const math_cache = @import("math_cache.zig");
 const link_url = @import("link_url.zig");
 
 /// `[^` + label≤32 + `]` fits in 36 bytes; pad for safety.
@@ -33,7 +34,7 @@ fn fontFor(base: dvui.Font, kind: parse.InlineKind, f: parse.StyleFlags) dvui.Fo
     var font = switch (kind) {
         .code => dvui.Font.theme(.mono),
         .footnote_ref => dvui.Font.theme(.body).larger(-1),
-        .text, .link, .image => base,
+        .text, .link, .image, .math => base,
     };
     if (f.strong) font = font.withWeight(.bold);
     if (f.emph) font = font.withStyle(.italic);
@@ -53,9 +54,9 @@ fn colorFor(st: style_mod.StyleMap, kind: parse.InlineKind, f: parse.StyleFlags)
 const MAX_IMAGE_DISPLAY_H: f32 = 280.0;
 const PLACEHOLDER_MIN_H: f32 = 24.0;
 
-fn hasImageInline(inlines: []const parse.Inline) bool {
+fn hasSegmentedInline(inlines: []const parse.Inline) bool {
     for (inlines) |inl| {
-        if (inl.kind == .image) return true;
+        if (inl.kind == .image or inl.kind == .math) return true;
     }
     return false;
 }
@@ -66,7 +67,7 @@ fn hasImageInline(inlines: []const parse.Inline) bool {
 pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, ctx: *const PaintCtx, base_font: dvui.Font) void {
     const st = ctx.style;
     for (inlines) |inl| {
-        if (inl.kind == .image) continue;
+        if (inl.kind == .image or inl.kind == .math) continue;
         if (inl.text.len == 0) continue;
         const font = fontFor(base_font, inl.kind, inl.flags);
         switch (inl.kind) {
@@ -101,6 +102,7 @@ pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, c
                 mixed_text.addTextMixed(tl, mark, font, .{ .color_text = st.muted_text });
             },
             .image => {},
+            .math => {},
         }
     }
 }
@@ -205,7 +207,7 @@ pub fn paintInlineFlow(
     layout: TextLayoutOpts,
 ) void {
     const default_color = layout.color_text orelse ctx.style.body_text;
-    if (!hasImageInline(inlines)) {
+    if (!hasSegmentedInline(inlines)) {
         var tl = dvui.textLayout(src, .{}, .{
             .expand = layout.expand,
             .id_extra = nextId(ctx),
@@ -236,8 +238,13 @@ pub fn paintInlineFlow(
             i += 1;
             continue;
         }
+        if (inlines[i].kind == .math) {
+            paintMathInline(@src(), inlines[i], ctx, false);
+            i += 1;
+            continue;
+        }
         const start = i;
-        while (i < inlines.len and inlines[i].kind != .image) : (i += 1) {}
+        while (i < inlines.len and inlines[i].kind != .image and inlines[i].kind != .math) : (i += 1) {}
         const slice = inlines[start..i];
         var tl = dvui.textLayout(@src(), .{}, .{
             .expand = layout.expand,
@@ -251,6 +258,116 @@ pub fn paintInlineFlow(
         paintInlines(tl, slice, ctx, base_font);
         if (i >= inlines.len) tl.addText("\n", .{});
     }
+}
+
+
+const MAX_MATH_INLINE_H: f32 = 64;
+const MAX_MATH_DISPLAY_H: f32 = 320;
+
+fn paintMathInline(src: std.builtin.SourceLocation, inl: parse.Inline, ctx: *PaintCtx, display: bool) void {
+    const tex = inl.text;
+    const disp_u8: u8 = if (display) 1 else 0;
+    if (tex.len > 0) {
+        if (math_cache.get(tex, disp_u8)) |hit| {
+            const nw: f32 = @floatFromInt(hit.width);
+            const nh: f32 = @floatFromInt(hit.height);
+            var dw = nw;
+            var dh = nh;
+            const max_h: f32 = if (display) MAX_MATH_DISPLAY_H else MAX_MATH_INLINE_H;
+            if (dh > max_h and dh > 0) {
+                const s = max_h / dh;
+                dw *= s;
+                dh = max_h;
+            }
+            const parent_w = dvui.parentGet().data().contentRect().w;
+            if (parent_w > 1 and dw > parent_w) {
+                const s = parent_w / dw;
+                dw = parent_w;
+                dh *= s;
+            }
+            if (dw < 1) dw = 1;
+            if (dh < 1) dh = 1;
+            _ = dvui.image(src, .{
+                .source = .{
+                    .pixels = .{
+                        .rgba = hit.rgba,
+                        .width = hit.width,
+                        .height = hit.height,
+                        .interpolation = .linear,
+                        .invalidation = .ptr,
+                    },
+                },
+                .shrink = .ratio,
+            }, .{
+                .expand = .none,
+                .id_extra = nextId(ctx),
+                .min_size_content = .{ .w = dw, .h = dh },
+                .max_size_content = .{ .w = dw, .h = dh },
+                .margin = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
+                .label = .{ .text = tex },
+                .background = false,
+            });
+            return;
+        }
+    }
+    paintMathPlaceholder(src, tex, ctx, display);
+}
+
+fn paintMathPlaceholder(src: std.builtin.SourceLocation, tex: []const u8, ctx: *PaintCtx, display: bool) void {
+    const st = ctx.style;
+    var box = dvui.box(src, .{ .dir = .horizontal }, .{
+        .expand = if (display) .horizontal else .none,
+        .id_extra = nextId(ctx),
+        .background = true,
+        .color_fill = st.code_fill,
+        .color_border = st.code_border,
+        .border = .all(1),
+        .min_size_content = .{ .w = 24, .h = 16 },
+        .margin = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
+        .padding = .{ .x = 6, .y = 4, .w = 6, .h = 4 },
+    });
+    defer box.deinit();
+    var tl = dvui.textLayout(@src(), .{}, .{
+        .expand = .horizontal,
+        .id_extra = nextId(ctx),
+        .color_text = st.muted_text,
+        .font = .theme(.mono),
+        .background = false,
+        .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    });
+    defer tl.deinit();
+    if (tex.len > 0) {
+        if (display) {
+            mixed_text.addTextMixed(tl, tex, .theme(.mono), .{ .color_text = st.muted_text });
+        } else {
+            var buf: [520]u8 = undefined;
+            const label = std.fmt.bufPrint(&buf, "${s}$", .{tex}) catch tex;
+            mixed_text.addTextMixed(tl, label, .theme(.mono), .{ .color_text = st.muted_text });
+        }
+    } else {
+        mixed_text.addTextMixed(tl, "(math)", .theme(.mono), .{ .color_text = st.muted_text });
+    }
+}
+
+pub fn paintMathDisplay(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {
+    var row = dvui.box(src, .{ .dir = .vertical }, .{
+        .expand = .horizontal,
+        .id_extra = nextId(ctx),
+        .background = false,
+        .padding = .{ .x = 0, .y = 4, .w = 0, .h = 4 },
+    });
+    defer row.deinit();
+    // Center when texture narrower than content: outer horizontal expand, inner none.
+    var center = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .id_extra = nextId(ctx),
+        .background = false,
+        .gravity_x = 0.5,
+    });
+    defer center.deinit();
+    const tex = if (block.inlines.len > 0) block.inlines[0].text else "";
+    const inl = parse.Inline{ .kind = .math, .text = tex };
+    paintMathInline(@src(), inl, ctx, true);
 }
 
 pub fn paintHeading(src: std.builtin.SourceLocation, block: parse.Block, ctx: *PaintCtx) void {

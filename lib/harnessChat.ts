@@ -29,6 +29,11 @@ import {
   scheduleImagesFromTexts,
 } from './harnessImages';
 import {
+  resetHarnessMathSession,
+  scheduleMathFromMarkdown,
+  scheduleMathFromTexts,
+} from './harnessMath';
+import {
   appendMessage,
   formatPromptWithHistory,
   type SessionSnapshot,
@@ -128,26 +133,25 @@ export function pushSessionToBridge(
   }));
   if (opts?.clear !== false) {
     resetHarnessImageSession();
+    resetHarnessMathSession();
     bridge.hydrateMessages(msgs, {
       lifecycle: opts?.lifecycle,
     });
-    scheduleImagesFromTexts(
-      bridge,
-      session.messages
-        .filter((m) => m.role === 'user' || m.role === 'assistant')
-        .map((m) => m.text),
-    );
+    const texts = session.messages
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .map((m) => m.text);
+    scheduleImagesFromTexts(bridge, texts);
+    scheduleMathFromTexts(bridge, texts);
     return;
   }
   for (const m of msgs) {
     bridge.pushMessage(m.kind, m.text);
   }
-  scheduleImagesFromTexts(
-    bridge,
-    session.messages
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m) => m.text),
-  );
+  const texts = session.messages
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => m.text);
+  scheduleImagesFromTexts(bridge, texts);
+  scheduleMathFromTexts(bridge, texts);
 }
 
 /**
@@ -181,6 +185,7 @@ export async function runHarnessChat(
   if (pushUser) {
     bridge.pushMessage(MessageKind.User, prompt);
     scheduleImagesFromMarkdown(bridge, prompt);
+    scheduleMathFromMarkdown(bridge, prompt);
   }
 
   const result = await send(apiPrompt, {
@@ -191,6 +196,20 @@ export async function runHarnessChat(
   if (result.ok) {
     bridge.pushMessage(MessageKind.Assistant, result.text);
     scheduleImagesFromMarkdown(bridge, result.text);
+    scheduleMathFromMarkdown(bridge, result.text);
+    // Also fold prior history so LRU-dropped formulas can refresh.
+    if (history.length > 0) {
+      scheduleMathFromTexts(
+        bridge,
+        [
+          ...history
+            .filter((m) => m.role === 'user' || m.role === 'assistant')
+            .map((m) => m.text),
+          prompt,
+          result.text,
+        ],
+      );
+    }
     bridge.setLifecycle(Lifecycle.Ready);
     return result;
   }
@@ -226,8 +245,9 @@ export async function runHarnessTurn(
 
   // Wasm pending-submit path sets pushUser:false (user line already in canvas).
   const pushUser = opts?.pushUser !== false;
-  // Always schedule user-body images (Wasm may already show the user line).
+  // Always schedule user-body images/math (Wasm may already show the user line).
   scheduleImagesFromMarkdown(bridge, prompt);
+  scheduleMathFromMarkdown(bridge, prompt);
   const preferAgent = opts?.preferAgent !== false;
   const useHistory = opts?.useHistory !== false;
   const sendAgentFn = opts?.sendAgent ?? sendAgent;
@@ -260,8 +280,16 @@ export async function runHarnessTurn(
       }
       bridge.pushMessage(MessageKind.Assistant, agentResult.text);
       scheduleImagesFromMarkdown(bridge, agentResult.text);
-      bridge.setLifecycle(Lifecycle.Ready);
       next = appendMessage(next, 'assistant', agentResult.text);
+      // Full-transcript math schedule so putOk LRU drops can re-put after
+      // Wasm math_cache eviction while older formulas remain visible.
+      scheduleMathFromTexts(
+        bridge,
+        next.messages
+          .filter((m) => m.role === 'user' || m.role === 'assistant')
+          .map((m) => m.text),
+      );
+      bridge.setLifecycle(Lifecycle.Ready);
       return {
         result: { ok: true, text: agentResult.text },
         session: next,

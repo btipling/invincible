@@ -85,6 +85,8 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_cycle_selected_model: () => 0,
     inv_image_cache_put: () => 0,
     inv_image_cache_clear: () => {},
+    inv_math_cache_put: () => 0,
+    inv_math_cache_clear: () => {},
     __messages: messages,
     __lifecycle: () => lifecycle,
   };

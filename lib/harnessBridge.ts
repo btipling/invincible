@@ -10,7 +10,7 @@
  */
 
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
-export const HARNESS_PROTOCOL_VERSION = 4 as const;
+export const HARNESS_PROTOCOL_VERSION = 5 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -90,6 +90,15 @@ export type HarnessBridgeExports = {
     height: number,
   ) => number;
   inv_image_cache_clear: () => void;
+  inv_math_cache_put: (
+    texPtr: number,
+    texLen: number,
+    display: number,
+    rgbaPtr: number,
+    width: number,
+    height: number,
+  ) => number;
+  inv_math_cache_clear: () => void;
 };
 
 const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
@@ -119,6 +128,8 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_cycle_selected_model',
   'inv_image_cache_put',
   'inv_image_cache_clear',
+  'inv_math_cache_put',
+  'inv_math_cache_clear',
 ];
 
 function isMemoryLike(v: unknown): v is WasmMemoryLike {
@@ -289,6 +300,53 @@ export class HarnessBridge {
 
   imageCacheClear(): void {
     this.exports.inv_image_cache_clear();
+  }
+
+  /**
+   * Push host-rasterized math RGBA into Wasm math cache (protocol v5).
+   * display: 0 = inline, 1 = display. Returns true on success.
+   * TeX length is UTF-8 bytes (matches Zig MAX_TEX_LEN).
+   */
+  mathCachePut(
+    tex: string,
+    display: boolean,
+    rgba: Uint8Array | Uint8ClampedArray,
+    width: number,
+    height: number,
+  ): boolean {
+    if (!tex || width <= 0 || height <= 0) return false;
+    if (width > 1280 || height > 1280) return false;
+    const texUtf8Len = utf8Encode.encode(tex).length;
+    if (texUtf8Len === 0 || texUtf8Len > 512) return false;
+    const need = width * height * 4;
+    if (!Number.isFinite(need) || need <= 0 || rgba.byteLength < need) return false;
+    const texBytes = this.writeUtf8(tex);
+    const rgbaPtr = this.exports.gpa_u8(need);
+    if (!rgbaPtr) {
+      if (texBytes.len > 0) this.exports.gpa_free(texBytes.ptr, texBytes.len);
+      return false;
+    }
+    try {
+      new Uint8Array(this.exports.memory.buffer, rgbaPtr, need).set(
+        rgba.subarray(0, need),
+      );
+      const rc = this.exports.inv_math_cache_put(
+        texBytes.ptr,
+        texBytes.len,
+        display ? 1 : 0,
+        rgbaPtr,
+        width | 0,
+        height | 0,
+      );
+      return rc === 0;
+    } finally {
+      this.exports.gpa_free(rgbaPtr, need);
+      if (texBytes.len > 0) this.exports.gpa_free(texBytes.ptr, texBytes.len);
+    }
+  }
+
+  mathCacheClear(): void {
+    this.exports.inv_math_cache_clear();
   }
 
   /**

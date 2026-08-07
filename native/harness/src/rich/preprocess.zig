@@ -11,6 +11,7 @@ pub const pua_lit_under: u21 = 0xE021;
 pub const pua_lit_tick: u21 = 0xE022;
 pub const pua_lit_backslash: u21 = 0xE023;
 pub const pua_lit_tilde: u21 = 0xE024;
+pub const pua_lit_dollar: u21 = 0xE025;
 
 fn appendCp(out: *std.ArrayList(u8), a: Allocator, cp: u21) !void {
     var buf: [4]u8 = undefined;
@@ -96,6 +97,7 @@ fn rewriteProseLine(a: Allocator, out: *std.ArrayList(u8), line: []const u8) !vo
                 '`' => pua_lit_tick,
                 '\\' => pua_lit_backslash,
                 '~' => pua_lit_tilde,
+                '$' => pua_lit_dollar,
                 else => null,
             };
             if (lit) |cp| {
@@ -145,6 +147,7 @@ fn rewriteProseLineNoStrike(a: Allocator, out: *std.ArrayList(u8), line: []const
                 '`' => pua_lit_tick,
                 '\\' => pua_lit_backslash,
                 '~' => pua_lit_tilde,
+                '$' => pua_lit_dollar,
                 else => null,
             };
             if (lit) |cp| {

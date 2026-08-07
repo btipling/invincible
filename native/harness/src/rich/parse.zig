@@ -10,6 +10,7 @@ const bq = @import("blockquote.zig");
 const table = @import("table.zig");
 const thematic = @import("thematic.zig");
 const footnote = @import("footnote.zig");
+const math = @import("math.zig");
 const deflist = @import("deflist.zig");
 const link_url = @import("link_url.zig");
 const Allocator = std.mem.Allocator;
@@ -30,6 +31,7 @@ pub const BlockKind = enum {
     footnote_def,
     def_term,
     def_desc,
+    math_display,
     plain,
 };
 
@@ -40,6 +42,7 @@ pub const InlineKind = enum {
     link,
     image,
     footnote_ref,
+    math,
 };
 
 /// Stackable style bits on a flat run (no nested AST).
@@ -190,8 +193,24 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
         const span_text = fn_res.body;
         if (span_text.len == 0 or !bq.hasNonWs(span_text)) continue;
 
+        // Display math partition (fence-aware) before HR/quotes/zmd.
+        const math_segs = try math.partitionDisplay(a, span_text);
+        for (math_segs) |mseg| {
+            if (mseg.is_math) {
+                const tex = mseg.text;
+                const inl = try a.dupe(Inline, &[_]Inline{.{ .kind = .math, .text = try a.dupe(u8, tex) }});
+                try blocks.append(a, .{
+                    .kind = .math_display,
+                    .level = 0,
+                    .meta = null,
+                    .inlines = inl,
+                });
+                continue;
+            }
+            if (mseg.text.len == 0 or !bq.hasNonWs(mseg.text)) continue;
+
         // Thematic breaks on non-table spans (fence-aware); then quotes + zmd.
-        const hr_segs = try thematic.partition(a, span_text);
+        const hr_segs = try thematic.partition(a, mseg.text);
         for (hr_segs) |hseg| {
             if (hseg.is_hr) {
                 try blocks.append(a, .{
@@ -210,9 +229,10 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
                 if (seg.text.len == 0) continue;
                 if (!bq.hasNonWs(seg.text)) continue;
                 if (seg.is_quote) {
-                    const pre = try preprocess.preprocessInlineSugar(a, seg.text);
+                    const math_res = try math.extractInline(a, seg.text);
+                    const pre = try preprocess.preprocessInlineSugar(a, math_res.body);
                     const ir = try zmd.parseAlloc(a, pre, markerConfig);
-                    const lowered = try lowerIr(a, ir);
+                    const lowered = try lowerIr(a, ir, math_res.texs);
                     const depth: u8 = if (seg.depth == 0) 1 else seg.depth;
                     for (lowered) |blk| {
                         if (blk.inlines.len == 0) continue;
@@ -265,15 +285,17 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
                             }
                         } else {
                             if (dseg.text.len == 0 or !bq.hasNonWs(dseg.text)) continue;
-                            const pre = try preprocess.preprocessInlineSugar(a, dseg.text);
+                            const math_res = try math.extractInline(a, dseg.text);
+                            const pre = try preprocess.preprocessInlineSugar(a, math_res.body);
                             const ir = try zmd.parseAlloc(a, pre, markerConfig);
-                            const lowered = try lowerIr(a, ir);
+                            const lowered = try lowerIr(a, ir, math_res.texs);
                             try blocks.appendSlice(a, lowered);
                         }
                     }
                 }
             }
         }
+        } // math_segs
     }
 
     // Footnote definitions as a single end section (source order).
@@ -299,9 +321,10 @@ fn lowerInlineOnly(a: Allocator, body: []const u8) ![]const Inline {
     if (body.len == 0) return &.{};
     // Synthetic single paragraph so bold/code/link still lower.
     const wrapped = try std.fmt.allocPrint(a, "{s}\n", .{body});
-    const pre = try preprocess.preprocessInlineSugar(a, wrapped);
+    const math_res = try math.extractInline(a, wrapped);
+    const pre = try preprocess.preprocessInlineSugar(a, math_res.body);
     const ir = try zmd.parseAlloc(a, pre, markerConfig);
-    const lowered = try lowerIr(a, ir);
+    const lowered = try lowerIr(a, ir, math_res.texs);
     if (lowered.len == 0) {
         const fallback = try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, body) }});
         return try autolinkTextInlines(a, fallback);
@@ -568,6 +591,10 @@ const Builder = struct {
     text_buf: std.ArrayList(u8) = .empty,
     fn_label_buf: std.ArrayList(u8) = .empty,
     in_fn_ref: bool = false,
+    /// Side-table from math.extractInline (TeX by index).
+    math_texs: []const []const u8 = &.{},
+    math_idx_buf: std.ArrayList(u8) = .empty,
+    in_math_ref: bool = false,
 
     const ListKind = enum { ul, ol };
     const ListFrame = struct {
@@ -587,6 +614,7 @@ const Builder = struct {
         self.pending.deinit(self.a);
         self.text_buf.deinit(self.a);
         self.fn_label_buf.deinit(self.a);
+        self.math_idx_buf.deinit(self.a);
     }
 
     fn stackFlags(self: *const Builder) StyleFlags {
@@ -703,6 +731,30 @@ const Builder = struct {
                 preprocess.pua_lit_tick => try self.text_buf.append(self.a, '`'),
                 preprocess.pua_lit_backslash => try self.text_buf.append(self.a, '\\'),
                 preprocess.pua_lit_tilde => try self.text_buf.append(self.a, '~'),
+                preprocess.pua_lit_dollar => try self.text_buf.append(self.a, '$'),
+                math.pua_math_open => {
+                    try self.flushText();
+                    self.in_math_ref = true;
+                    self.math_idx_buf.clearRetainingCapacity();
+                },
+                math.pua_math_close => {
+                    if (self.in_math_ref) {
+                        self.in_math_ref = false;
+                        const idx_s = self.math_idx_buf.items;
+                        const idx = std.fmt.parseInt(usize, idx_s, 10) catch null;
+                        self.math_idx_buf.clearRetainingCapacity();
+                        if (idx) |ix| {
+                            if (ix < self.math_texs.len) {
+                                try self.inlines.append(self.a, .{
+                                    .kind = .math,
+                                    .text = try self.a.dupe(u8, self.math_texs[ix]),
+                                });
+                                continue;
+                            }
+                        }
+                        // Soft-fail: leave nothing (marker consumed)
+                    }
+                },
                 else => {
                     var buf: [4]u8 = undefined;
                     const n = std.unicode.utf8Encode(cp, &buf) catch {
@@ -710,6 +762,8 @@ const Builder = struct {
                     };
                     if (self.in_fn_ref) {
                         try self.fn_label_buf.appendSlice(self.a, buf[0..n]);
+                    } else if (self.in_math_ref) {
+                        try self.math_idx_buf.appendSlice(self.a, buf[0..n]);
                     } else {
                         try self.text_buf.appendSlice(self.a, buf[0..n]);
                     }
@@ -946,8 +1000,8 @@ const Builder = struct {
     }
 };
 
-fn lowerIr(a: Allocator, ir: []const u8) ![]const Block {
-    var b: Builder = .{ .a = a };
+fn lowerIr(a: Allocator, ir: []const u8, math_texs: []const []const u8) ![]const Block {
+    var b: Builder = .{ .a = a, .math_texs = math_texs };
     errdefer b.deinitLists();
 
     var i: usize = 0;
@@ -2710,6 +2764,78 @@ test "image with single-quoted title strips to bare url" {
                 try std.testing.expect(inl.href != null);
                 try std.testing.expectEqualStrings("https://example.com/b.png", inl.href.?);
             }
+        }
+    }
+    try std.testing.expect(found);
+}
+
+
+test "inline math E=mc^2" {
+    var doc = try parse(std.testing.allocator, "energy $E=mc^2$ free");
+    defer doc.deinit();
+    var found = false;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (inl.kind == .math) {
+                found = true;
+                try std.testing.expectEqualStrings("E=mc^2", inl.text);
+            }
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "display math block" {
+    const src =
+        \\before
+        \\$$
+        \\\int x
+        \\$$
+        \\after
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var found = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .math_display) {
+            found = true;
+            try std.testing.expect(blk.inlines.len >= 1);
+            try std.testing.expectEqual(InlineKind.math, blk.inlines[0].kind);
+            try std.testing.expect(std.mem.indexOf(u8, blk.inlines[0].text, "\\int") != null);
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "currency not math" {
+    var doc = try parse(std.testing.allocator, "costs $5 and $10 today");
+    defer doc.deinit();
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            try std.testing.expect(inl.kind != .math);
+        }
+    }
+}
+
+test "math not inside code or fence" {
+    const src = "x `$E=mc^2$` y\n```\n$a$\n```\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            try std.testing.expect(inl.kind != .math);
+        }
+    }
+}
+
+test "same-line display math" {
+    var doc = try parse(std.testing.allocator, "go $$\\sum n$$ end");
+    defer doc.deinit();
+    var found = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .math_display) {
+            found = true;
+            try std.testing.expectEqualStrings("\\sum n", blk.inlines[0].text);
         }
     }
     try std.testing.expect(found);
