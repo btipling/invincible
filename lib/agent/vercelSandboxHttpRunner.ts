@@ -224,6 +224,8 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
 
     // Write body to file; headers on stdout via -D -
     const bodyPath = `/tmp/inv-http-body-${Date.now()}-${Math.random().toString(36).slice(2)}.bin`;
+    // Cap transfer size at the hop-B layer (not only post-download head -c).
+    // Without --max-filesize, curl can write unbounded bytes until --max-time.
     const cmd = await sb.runCommand(
       'curl',
       [
@@ -236,6 +238,8 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
         String(maxTimeSec),
         '--max-redirs',
         '0',
+        '--max-filesize',
+        String(Math.max(1, maxBytes)),
         '-A',
         BUILTIN_HTTP_USER_AGENT,
         input.url,

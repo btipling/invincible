@@ -45,7 +45,13 @@ function finalize(
  * Soft-fail: never throw from execute.
  */
 export function createHttpFetchTools(opts: CreateHttpFetchToolsOptions) {
-  const secrets = opts.secrets ?? [];
+  // Match runAgent baseline: always scrub Gateway / DO sandbox token from
+  // model-facing tool strings (route secrets are additive).
+  const secrets: Array<string | undefined | null> = [
+    ...(opts.secrets ?? []),
+    process.env.AI_GATEWAY_API_KEY,
+    process.env.SANDBOX_TOKEN,
+  ];
   const includeHead = opts.includeHead !== false;
   const defaultMaxBytes = opts.maxBytes;
   const timeoutMs = opts.timeoutMs;

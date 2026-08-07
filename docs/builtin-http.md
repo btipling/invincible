@@ -43,6 +43,7 @@ User (Wasm composer)
 | `BUILTIN_HTTP_FETCH` | `off` \| `sandbox` | `off` |
 | `BUILTIN_HTTP_TIMEOUT_MS` | 1–20000 | `10000` (per fetch) |
 | `BUILTIN_HTTP_MAX_BYTES` | ≤ 256 KiB | `65536` |
+| `BUILTIN_HTTP_SANDBOX_TIMEOUT_MS` | 5000–55000 | `55000` (VM lifetime) |
 
 Set on the **Vercel project** (server-only). No `NEXT_PUBLIC_*`.
 
@@ -79,6 +80,7 @@ Host chat fallback still triggers **only** on HTTP **503** with the exact
 | VMs per agent request | ≤ 1 (single-flight create) |
 | Sandbox VM lifetime | ≤ 55s (`persistent: false`) |
 | Per-fetch timeout | default 10s, max 20s |
+| Hop-B transfer cap | curl `--max-filesize` = per-fetch `maxBytes` (default 64 KiB) |
 | Model-facing result | `TOOL_RESULT_MAX_CHARS` (8192) |
 
 ## 6. SSRF & content policy

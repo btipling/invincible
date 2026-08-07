@@ -102,7 +102,6 @@ export async function POST(req: Request): Promise<Response> {
       redactList = byok.secretsToRedact;
 
       const resolved = await resolveAgentSandbox(userId);
-      const hasFs = resolved.ok;
 
       if (!resolved.ok) {
         if (!builtinHttp.enabled) {
