@@ -284,3 +284,59 @@ describe('runAgent', () => {
     expect(text).toBe(prose);
   });
 });
+
+describe('runAgent http-only / optional sandbox', () => {
+  it('does not throw when sandboxClient omitted and http extraTools present', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      const tools = args.tools as Record<string, unknown>;
+      expect(tools.http_get).toBeTruthy();
+      expect(tools.list_dir).toBeUndefined();
+      expect(String(args.system)).toMatch(/http_get/);
+      return { text: 'from web', steps: [] };
+    });
+    // Ensure env has no sandbox
+    const prevUrl = process.env.SANDBOX_URL;
+    const prevTok = process.env.SANDBOX_TOKEN;
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+    try {
+      const result = await runAgent({
+        prompt: 'fetch example',
+        modelId: 'test-model',
+        generateTextImpl: generateTextImpl as never,
+        skipSandboxTools: true,
+        extraTools: {
+          http_get: {
+            description: 'get',
+            execute: async () => 'ok',
+          },
+        },
+      });
+      expect(result.text).toBe('from web');
+      expect(generateTextImpl).toHaveBeenCalled();
+    } finally {
+      if (prevUrl != null) process.env.SANDBOX_URL = prevUrl;
+      if (prevTok != null) process.env.SANDBOX_TOKEN = prevTok;
+    }
+  });
+
+  it('still throws when no sandbox and no extraTools', async () => {
+    const prevUrl = process.env.SANDBOX_URL;
+    const prevTok = process.env.SANDBOX_TOKEN;
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+    try {
+      await expect(
+        runAgent({
+          prompt: 'hi',
+          modelId: 'test-model',
+          generateTextImpl: vi.fn() as never,
+          skipSandboxTools: true,
+        }),
+      ).rejects.toThrow(/Sandbox not configured/);
+    } finally {
+      if (prevUrl != null) process.env.SANDBOX_URL = prevUrl;
+      if (prevTok != null) process.env.SANDBOX_TOKEN = prevTok;
+    }
+  });
+});

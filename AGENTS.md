@@ -206,7 +206,7 @@ ops inventory).
 
 IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
 BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).  
-MCP: [`docs/mcp.md`](docs/mcp.md).  
+MCP: [`docs/mcp.md`](docs/mcp.md). Builtin HTTP: [`docs/builtin-http.md`](docs/builtin-http.md).  
 Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURITY.md).
 
 ## Public repository policy
@@ -228,7 +228,7 @@ invincible/
 ├── sandbox/             # protocol v1 daemon (BYO tools workspace)
 ├── native/harness/      # Zig + dvui Wasm (CI on self-hosted runner)
 ├── scripts/             # fetch-harness, seed-tenancy, runner scripts
-├── docs/                # BYO, sandbox, mcp, feature-divide, limits, deploy race
+├── docs/                # BYO, sandbox, mcp, builtin-http, feature-divide, limits, deploy race
 ├── public/harness/      # wasm/js gitignored; README only committed
 ├── AGENTS.md
 └── package.json
@@ -238,6 +238,7 @@ invincible/
 |----------------|--------|
 | UI page / layout | `app/` |
 | API / AI Gateway / agent | `app/api/*`, `lib/agent/*`, `lib/sandbox/*` |
+| Builtin HTTPS fetch (`http_get`) | `lib/agent/httpFetch*.ts`, `lib/agent/vercelSandboxHttpRunner.ts`, `lib/net/publicUrlPolicy.ts`, `docs/builtin-http.md` — env `BUILTIN_HTTP_FETCH` |
 | Tenancy schema / migrations | `db/schema.ts`, `db/migrations/` |
 | Tenancy crypto / seed helpers | `lib/tenancy/*`, `scripts/seed-tenancy.ts` |
 | Tenant BYOK / inference grants | `app/admin/inference/*`, `lib/tenancy/providerSecrets*`, `lib/tenancy/resolveInference*`, `lib/gateway/byokProviders.ts`, `app/api/models/*` |

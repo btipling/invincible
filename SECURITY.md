@@ -23,6 +23,15 @@ If you find a vulnerability in Invincible, please open a **private** security ad
 Session blobs and Wasm must never contain API keys or sandbox tokens.  
 Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
 
+## Builtin HTTPS fetch (Vercel Sandbox)
+
+When `BUILTIN_HTTP_FETCH=sandbox`, agent tools may fetch **public HTTPS** URLs via a
+Vercel Sandbox microVM (hop B). App-side SSRF policy runs first (https-only; no
+private/metadata hosts; no redirect follow). Never put Gateway, DO sandbox, or
+MCP secrets into the Sandbox child env. No `NEXT_PUBLIC_*` for this feature.
+See [docs/builtin-http.md](docs/builtin-http.md).
+
+
 ## Self-hosted runner (public repo policy)
 
 Zig builds run on a **self-hosted** GitHub Actions runner (default labels: `self-hosted`, `invincible`, `zig`).

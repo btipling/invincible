@@ -19,6 +19,9 @@ describe('POST /api/agent', () => {
     vi.doUnmock('../../../lib/tenancy/resolveSandbox');
     vi.doUnmock('../../../lib/tenancy/resolveInferenceForRequest');
     vi.doUnmock('../../../lib/mcp/client');
+    vi.doUnmock('../../../lib/agent/vercelSandboxHttpRunner');
+    vi.doUnmock('../../../lib/agent/httpFetchTools');
+    vi.doUnmock('../../../lib/agent/builtinHttpConfig');
   });
 
   async function loadRoute() {
@@ -435,7 +438,7 @@ describe('POST /api/agent', () => {
     expect(runAgent).toHaveBeenCalledTimes(1);
     const arg = runAgent.mock.calls[0]?.[0];
     expect(arg).toBeDefined();
-    expect(arg!.extraTools).toBe(mcpTools);
+    expect(arg!.extraTools).toEqual(mcpTools);
     expect(arg!.secrets).toContain('mcp-key-secret-value');
     expect(close).toHaveBeenCalled();
     const body = await res.json();
@@ -492,4 +495,195 @@ describe('POST /api/agent', () => {
     expect(resolveAgentSandbox).not.toHaveBeenCalled();
     expect(mcp.buildUserMcpTools).not.toHaveBeenCalled();
   });
+
+  it('tenancy off, builtin on, no DO sandbox → not 503; runAgent with http tools', async () => {
+    clearTenancyEnv();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+    process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+
+    const close = vi.fn(async () => {});
+    type HttpRunArg = {
+      skipSandboxTools?: boolean;
+      extraTools?: Record<string, unknown>;
+      prompt: string;
+    };
+    const runAgent = vi.fn(async (_arg: HttpRunArg) => ({
+      text: 'fetched',
+      toolTrace: [{ name: 'http_get', ok: true, summary: 'http_get · ok · 200' }],
+    }));
+
+    vi.resetModules();
+    mockMcpEmpty();
+    vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
+      createVercelSandboxHttpRunner: vi.fn(() => ({
+        get: vi.fn(),
+        close,
+      })),
+    }));
+    vi.doMock('../../../lib/agent/httpFetchTools', () => ({
+      createHttpFetchTools: vi.fn(() => ({
+        http_get: { description: 'get', execute: async () => 'ok' },
+      })),
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'fetch https://example.com' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    const arg = runAgent.mock.calls[0]?.[0];
+    expect(arg).toBeDefined();
+    expect(arg!.skipSandboxTools).toBe(true);
+    expect(arg!.extraTools?.http_get).toBeTruthy();
+    expect(close).toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.text).toBe('fetched');
+  });
+
+  it('tenancy off, builtin off, no DO → exact 503 string (host chat fallback)', async () => {
+    clearTenancyEnv();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+    delete process.env.BUILTIN_HTTP_FETCH;
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe(
+      'Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.',
+    );
+  });
+
+  it('tenancy on, grant deny, builtin on → not 403; http tools only', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+
+    const closeHttp = vi.fn(async () => {});
+    type HttpOnlyRunArg = {
+      skipSandboxTools?: boolean;
+      extraTools?: Record<string, unknown>;
+      prompt: string;
+    };
+    const runAgent = vi.fn(async (_arg: HttpOnlyRunArg) => ({
+      text: 'web only',
+      toolTrace: [],
+    }));
+    const closeMcp = vi.fn(async () => {});
+
+    vi.resetModules();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1', email: 'a@b.c' },
+      })),
+    }));
+    mockByokOk();
+    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: false as const,
+        response: Response.json(
+          { error: 'Sandbox access denied.' },
+          { status: 403 },
+        ),
+      })),
+    }));
+    vi.doMock('../../../lib/mcp/client', () => ({
+      buildUserMcpTools: vi.fn(async () => ({
+        tools: {},
+        secretsToRedact: [] as string[],
+        close: closeMcp,
+        connectedSlugs: [] as string[],
+        skipped: [],
+      })),
+    }));
+    vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
+      createVercelSandboxHttpRunner: vi.fn(() => ({
+        get: vi.fn(),
+        close: closeHttp,
+      })),
+    }));
+    vi.doMock('../../../lib/agent/httpFetchTools', () => ({
+      createHttpFetchTools: vi.fn(() => ({
+        http_get: { description: 'get', execute: async () => 'ok' },
+      })),
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(runAgent).toHaveBeenCalled();
+    const arg = runAgent.mock.calls[0]?.[0];
+    expect(arg).toBeDefined();
+    expect(arg!.skipSandboxTools).toBe(true);
+    expect(arg!.extraTools?.http_get).toBeTruthy();
+    expect(closeHttp).toHaveBeenCalled();
+    expect(closeMcp).toHaveBeenCalled();
+  });
+
+  it('finally closes http runner when runAgent throws', async () => {
+    clearTenancyEnv();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.SANDBOX_URL = 'http://127.0.0.1:8787';
+    process.env.SANDBOX_TOKEN = 'tok';
+    process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+
+    const closeHttp = vi.fn(async () => {});
+    vi.resetModules();
+    mockMcpEmpty();
+    vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
+      createVercelSandboxHttpRunner: vi.fn(() => ({
+        get: vi.fn(),
+        close: closeHttp,
+      })),
+    }));
+    vi.doMock('../../../lib/agent/httpFetchTools', () => ({
+      createHttpFetchTools: vi.fn(() => ({
+        http_get: { description: 'get', execute: async () => 'ok' },
+      })),
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(async () => {
+        throw new Error('model boom');
+      }),
+    }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(closeHttp).toHaveBeenCalled();
+  });
+
 });
