@@ -159,11 +159,19 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
         signal,
       })
         .then((sb) => {
+          // Always retain the instance so close() can stop even if we closed mid-create.
           this.sandbox = sb;
+          if (this.closed) {
+            throw new Error('http runner is closed');
+          }
           return sb;
         })
         .catch((err) => {
-          this.createPromise = null;
+          // Leave this.sandbox set if create succeeded then closed (close stops it).
+          // Only clear latch when create itself failed with no sandbox retained.
+          if (!this.sandbox) {
+            this.createPromise = null;
+          }
           throw err;
         });
     }
@@ -277,12 +285,33 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
     };
   }
 
+  /**
+   * Idempotent stop. Always drains in-flight create so abort-during-cold-start
+   * cannot orphan a microVM until TTL.
+   */
   async close(): Promise<void> {
-    if (this.closed) return;
+    if (this.closed) {
+      // Second close: still try to stop if a prior close raced create completion.
+      await this.stopSandboxIfAny();
+      return;
+    }
     this.closed = true;
+    const pending = this.createPromise;
+    this.createPromise = null;
+    if (pending) {
+      try {
+        await pending;
+      } catch {
+        // Create failed or rejected because closed mid-create — sandbox may still
+        // have been assigned in the create .then for stop below.
+      }
+    }
+    await this.stopSandboxIfAny();
+  }
+
+  private async stopSandboxIfAny(): Promise<void> {
     const sb = this.sandbox;
     this.sandbox = null;
-    this.createPromise = null;
     if (!sb) return;
     try {
       await sb.stop();

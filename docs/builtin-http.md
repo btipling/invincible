@@ -84,10 +84,19 @@ Host chat fallback still triggers **only** on HTTP **503** with the exact
 ## 6. SSRF & content policy
 
 - https only; no URL userinfo
-- Block private / link-local / metadata hosts (literal + DNS)
-- No redirect follow
+- Block private / link-local / metadata hosts (literal + DNS **preflight** on the app)
+- No redirect follow (`--max-redirs 0`)
 - Bodies returned only for text-ish types (`text/*`, JSON, XML, `+json`/`+xml`)
 - Soft-fail tool strings (`ERROR http_get: …`); never throw into the route
+
+### Residual risk (v1)
+
+Preflight DNS on the app is **not** an IP pin for hop B. The microVM uses
+`networkPolicy: allow-all` and curl re-resolves the hostname. A malicious
+short-TTL name can answer public during policy check and private/link-local
+during fetch (classic DNS rebinding). v1 accepts this residual; do not claim
+“SSRF impossible.” Future hardening options: pin with `curl --resolve`, or a
+Sandbox egress policy that denies RFC1918 / link-local ranges when available.
 
 ## 7. Source map
 

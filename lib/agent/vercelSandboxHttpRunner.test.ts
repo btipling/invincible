@@ -105,6 +105,37 @@ describe('VercelSandboxHttpRunner', () => {
     expect(sb.stop).toHaveBeenCalledTimes(1);
   });
 
+  it('close during in-flight create still stops the VM (no orphan)', async () => {
+    let resolveCreate!: (sb: SandboxLike) => void;
+    const createGate = new Promise<SandboxLike>((r) => {
+      resolveCreate = r;
+    });
+    const sb = mockSandbox();
+    const createSandbox: CreateSandboxFn = vi.fn(async () => createGate);
+
+    const runner = new VercelSandboxHttpRunner({ createSandbox });
+    const getPromise = runner.get({
+      url: 'https://example.com/',
+      maxBytes: 0,
+      timeoutMs: 1000,
+      head: true,
+    });
+
+    // Abort path: close while Sandbox.create is still pending.
+    const closePromise = runner.close();
+    // Allow close to park on pending create
+    await Promise.resolve();
+    resolveCreate(sb);
+    await closePromise;
+
+    expect(sb.stop).toHaveBeenCalledTimes(1);
+    // In-flight get must not leave runner usable
+    await expect(getPromise).rejects.toThrow(/closed|curl|HTTP/i);
+    // Second close is idempotent (no double-stop)
+    await runner.close();
+    expect(sb.stop).toHaveBeenCalledTimes(1);
+  });
+
   it('clamps sandbox create timeout to max 55s', async () => {
     const createSandbox: CreateSandboxFn = vi.fn(async (params) => {
       expect(params.timeout).toBe(MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS);
