@@ -11,6 +11,7 @@ const bridge = @import("bridge.zig");
 const palette = @import("palette.zig");
 const rich = @import("rich/root.zig");
 const image_cache = @import("rich/image_cache.zig");
+const math_cache = @import("rich/math_cache.zig");
 const rich_parse = rich.parse;
 
 comptime {
@@ -63,6 +64,7 @@ export fn dvui_init(platform_ptr: [*]const u8, platform_len: usize) i32 {
     // Rich MD cache arenas use the same GPA as the window.
     rich.setAllocator(WebBackend.gpa);
     image_cache.setAllocator(WebBackend.gpa);
+    math_cache.setAllocator(WebBackend.gpa);
     ui.onInit();
     // Force-link zmd parse into wasm (size truth + smoke).
     if (!rich_parse.smokeOnce()) {

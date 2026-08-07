@@ -25,5 +25,6 @@ pub fn paintBlock(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
             }
         },
         .plain => paint_text.paintPlain(src, block, ctx),
+        .math_display => paint_text.paintMathDisplay(src, block, ctx),
     }
 }

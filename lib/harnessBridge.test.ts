@@ -130,6 +130,8 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     },
     inv_image_cache_put: () => 0,
     inv_image_cache_clear: () => {},
+    inv_math_cache_put: () => 0,
+    inv_math_cache_clear: () => {},
     __messages: messages,
     __setPending: (s) => {
       pending = s;

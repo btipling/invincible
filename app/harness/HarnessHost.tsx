@@ -7,6 +7,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { runHarnessTurn, pushSessionToBridge } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
+import { resetHarnessMathSession } from '../../lib/harnessMath';
+import 'katex/dist/katex.min.css';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -349,6 +351,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     const bridge = bridgeRef.current;
     if (bridge) {
       resetHarnessImageSession();
+      resetHarnessMathSession();
       bridge.clearMessages();
       bridge.pushMessage(MessageKind.System, 'Session cleared.');
       bridge.setLifecycle(Lifecycle.Ready);

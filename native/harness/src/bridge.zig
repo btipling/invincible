@@ -8,9 +8,10 @@
 //! Protocol doc: README.md.
 const WebBackend = @import("web-backend");
 const image_cache = @import("rich/image_cache.zig");
+const math_cache = @import("rich/math_cache.zig");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -126,6 +127,7 @@ pub fn reset() void {
     catalog_count = 0;
     selected_index = 0;
     image_cache.clear();
+    math_cache.clear();
 }
 
 pub fn modelCatalogCount() u32 {
@@ -217,6 +219,7 @@ export fn inv_clear_messages() void {
     msg_head = 0;
     msg_count = 0;
     image_cache.clear();
+    math_cache.clear();
     refresh();
 }
 
@@ -328,5 +331,32 @@ export fn inv_image_cache_put(
 
 export fn inv_image_cache_clear() void {
     image_cache.clear();
+    refresh();
+}
+
+// ── Protocol v5 math texture cache ────────────────────────────────────────
+
+/// Copy host-rasterized math RGBA. display: 0=inline, 1=display.
+/// Returns 0=ok, nonzero=error.
+export fn inv_math_cache_put(
+    tex_ptr: [*]const u8,
+    tex_len: usize,
+    display: u8,
+    rgba_ptr: [*]const u8,
+    width: u32,
+    height: u32,
+) u8 {
+    const tex = tex_ptr[0..tex_len];
+    const need: usize = @as(usize, width) * @as(usize, height) * 4;
+    if (width == 0 or height == 0) return 1;
+    if (need > math_cache.MAX_RGBA_BYTES) return 2;
+    const rgba = rgba_ptr[0..need];
+    math_cache.put(tex, display, rgba, width, height) catch return 3;
+    refresh();
+    return 0;
+}
+
+export fn inv_math_cache_clear() void {
+    math_cache.clear();
     refresh();
 }
