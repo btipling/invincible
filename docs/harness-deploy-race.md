@@ -58,4 +58,14 @@ Skipping L4 / “CI not yet observed” is a merge blocker for `native/harness/*
 - Option B shipping: no Wasm binaries in git  
 - [`docs/harness-limits.md`](harness-limits.md)  
 - Workflow: `.github/workflows/build-harness.yml`  
-- IDs: [`docs/project-ids.md`](project-ids.md)  
+- IDs: [`docs/project-ids.md`](project-ids.md)
+
+## Redeploy after harness-only CI
+
+`build-harness` uploads `harness-wasm` and may POST `VERCEL_DEPLOY_HOOK_URL`.
+If that Actions secret is **empty**, the hook step exits 0 with a WARN and **no**
+new Vercel deployment is created (Git-linked deploys still fire only on `main` pushes).
+
+**Recovery:** set `VERCEL_DEPLOY_HOOK_URL` in repo Actions secrets, or push/redeploy
+Production so `fetch-harness` can bind the artifact for the current `main` SHA.
+
