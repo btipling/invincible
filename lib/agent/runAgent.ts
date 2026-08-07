@@ -13,6 +13,10 @@ import {
   parseAndFlattenIfMcpEnvelope,
 } from './toolResultText';
 import { MCP_SYSTEM_ADDENDUM } from '../mcp/toolNames';
+import {
+  HTTP_GET_SYSTEM_ADDENDUM,
+  HTTP_ONLY_SYSTEM,
+} from './httpFetchTools';
 
 export type ToolTraceEntry = {
   name: string;
@@ -33,16 +37,27 @@ export type RunAgentParams = {
   /** Inject for tests — same shape as `generateText` from `ai`. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   generateTextImpl?: (args: any) => Promise<any>;
+  /**
+   * Optional. When omitted and sandbox env is missing, FS tools are skipped
+   * (http-only / MCP-only paths). Throws only when no tools at all would remain
+   * *and* no extraTools were provided *and* no sandbox can be resolved —
+   * callers that need a hard error should check config at the route layer.
+   */
   sandboxClient?: SandboxClient;
   secrets?: Array<string | undefined | null>;
   /** Effective grant permissions; default full access when omitted. */
   permissions?: { canRead: boolean; canWrite: boolean };
   /**
-   * Optional extra tools (e.g. MCP) merged after sandbox tools.
+   * Optional extra tools (e.g. MCP, builtin http) merged after sandbox tools.
    * Route builds these; tests inject pure maps.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   extraTools?: Record<string, any>;
+  /**
+   * When true, do not auto-create sandbox client from env (route already decided
+   * FS tools are unavailable). Default false.
+   */
+  skipSandboxTools?: boolean;
 };
 
 export type RunAgentResult = {
@@ -57,19 +72,32 @@ export const DEFAULT_AGENT_SYSTEM = [
   'Be concise in final answers; cite relative paths when useful.',
 ].join(' ');
 
-function resolveSystem(params: RunAgentParams): string {
+function resolveSystem(
+  params: RunAgentParams,
+  hasFsTools: boolean,
+): string {
   if (params.system != null) return params.system;
   const extra = params.extraTools ?? {};
-  const hasMcp = Object.keys(extra).some((k) => k.startsWith('mcp_'));
-  if (hasMcp) {
-    return `${DEFAULT_AGENT_SYSTEM} ${MCP_SYSTEM_ADDENDUM}`;
+  const keys = Object.keys(extra);
+  const hasMcp = keys.some((k) => k.startsWith('mcp_'));
+  const hasHttp = keys.some((k) => k === 'http_get' || k === 'http_head');
+
+  const parts: string[] = [];
+  if (hasFsTools) {
+    parts.push(DEFAULT_AGENT_SYSTEM);
+  } else if (hasHttp || hasMcp) {
+    parts.push(HTTP_ONLY_SYSTEM);
+  } else {
+    parts.push(DEFAULT_AGENT_SYSTEM);
   }
-  return DEFAULT_AGENT_SYSTEM;
+  if (hasHttp) parts.push(HTTP_GET_SYSTEM_ADDENDUM);
+  if (hasMcp) parts.push(MCP_SYSTEM_ADDENDUM);
+  return parts.join(' ');
 }
 
 /**
- * Multi-step generateText + sandbox tools.
- * Caller must ensure sandbox is configured when not injecting sandboxClient.
+ * Multi-step generateText + optional sandbox / extra tools.
+ * Sandbox client is optional when extraTools (http / MCP) supply the tool surface.
  */
 export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> {
   const maxSteps = params.maxSteps ?? resolveAgentMaxSteps();
@@ -84,29 +112,47 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
   ];
 
   let client = params.sandboxClient;
-  if (!client) {
-    const cfg = getSandboxConfig();
-    if (!cfg) {
-      throw new Error('Sandbox not configured');
+  let hasFsTools = false;
+
+  if (!params.skipSandboxTools) {
+    if (!client) {
+      const cfg = getSandboxConfig();
+      if (cfg) {
+        client = createSandboxClient(cfg);
+        secrets = [...secrets, cfg.token];
+      }
     }
-    client = createSandboxClient(cfg);
-    secrets = [...secrets, cfg.token];
+    if (client) {
+      hasFsTools = true;
+    }
+  } else if (client) {
+    hasFsTools = true;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sandboxTools: Record<string, any> = hasFsTools && client
+    ? createAgentTools({
+        client,
+        secrets,
+        signal: params.signal,
+        permissions: params.permissions,
+      })
+    : {};
+
   const tools = {
-    ...createAgentTools({
-      client,
-      secrets,
-      signal: params.signal,
-      permissions: params.permissions,
-    }),
+    ...sandboxTools,
     ...(params.extraTools ?? {}),
   };
+
+  if (Object.keys(tools).length === 0) {
+    // Preserve prior behavior when nothing is available (misconfigured call).
+    throw new Error('Sandbox not configured');
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const genArgs: any = {
     model: modelId,
-    system: resolveSystem(params),
+    system: resolveSystem(params, hasFsTools),
     prompt: params.prompt,
     tools,
     stopWhen: stepCountIs(maxSteps),

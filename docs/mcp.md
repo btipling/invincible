@@ -5,6 +5,8 @@ Invincible is an MCP **host/client**: signed-in members can register their own
 sandbox tools. Secrets stay **server-side under the tenant DEK** — never in the
 Wasm canvas, client bundle, or git.
 
+**Not the same as builtin HTTPS fetch.** Optional native `http_get` tools use Vercel Sandbox egress for public pages — see [builtin-http.md](builtin-http.md). User MCP remains the path for third-party remote tools (e.g. Exa).
+
 ## What it is
 
 | | |

@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@ai-sdk/mcp": "^2.0.25",
+    "@vercel/sandbox": "^3.0.0",
     "ai": "^7.0.52",
     "bcryptjs": "^3.0.3",
     "drizzle-orm": "^0.45.2",

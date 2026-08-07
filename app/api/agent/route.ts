@@ -17,6 +17,10 @@ import { resolveAgentSandbox } from '../../../lib/tenancy/resolveSandbox';
 import { resolveByokForRequest } from '../../../lib/tenancy/resolveInferenceForRequest';
 import { redactSecrets } from '../../../lib/agent/redact';
 import { buildUserMcpTools } from '../../../lib/mcp/client';
+import { resolveBuiltinHttpConfig } from '../../../lib/agent/builtinHttpConfig';
+import { createHttpFetchTools } from '../../../lib/agent/httpFetchTools';
+import { createVercelSandboxHttpRunner } from '../../../lib/agent/vercelSandboxHttpRunner';
+import type { HttpFetchRunner } from '../../../lib/agent/httpFetchTypes';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -27,13 +31,14 @@ function isAbortError(err: unknown): boolean {
 }
 
 /**
- * Multi-step agent with sandbox tools (+ per-user MCP when tenancy on).
+ * Multi-step agent with sandbox tools (+ builtin HTTP + per-user MCP when enabled).
  *
  * POST { prompt: string, modelId?: string }
  * → { text, toolTrace? } | { error }
  *
  * Tenancy on: DB-resolved sandbox + grants + request-scoped BYOK + user MCP tools.
  * Tenancy off: env SANDBOX_* + env model (no BYOK, no MCP).
+ * Builtin HTTP: BUILTIN_HTTP_FETCH=sandbox enables http_get without requiring DO workspace.
  */
 export async function POST(req: Request): Promise<Response> {
   const sessionGate = await requireSessionUser();
@@ -47,8 +52,11 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const tenancyOn = tenancyEnabled();
+  const builtinHttp = resolveBuiltinHttpConfig();
+  const envSandboxOk = sandboxConfigured();
 
-  if (!tenancyOn && !sandboxConfigured()) {
+  // Tenancy off: require DO sandbox OR builtin HTTP — never false 503 when http-only.
+  if (!tenancyOn && !envSandboxOk && !builtinHttp.enabled) {
     return Response.json({ error: SANDBOX_NOT_CONFIGURED_ERROR }, { status: 503 });
   }
 
@@ -69,8 +77,11 @@ export async function POST(req: Request): Promise<Response> {
 
   let redactList: string[] = [];
   let mcpClose: (() => Promise<void>) | undefined;
+  let httpRunner: HttpFetchRunner | undefined;
 
   try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let extraTools: Record<string, any> = {};
     let runParams: Parameters<typeof runAgent>[0] = {
       prompt: parsed.prompt,
       signal: req.signal,
@@ -91,16 +102,37 @@ export async function POST(req: Request): Promise<Response> {
       redactList = byok.secretsToRedact;
 
       const resolved = await resolveAgentSandbox(userId);
+      const hasFs = resolved.ok;
+
       if (!resolved.ok) {
-        return resolved.response;
+        if (!builtinHttp.enabled) {
+          // Preserve hard 403 when no FS grant and no builtin HTTP path.
+          return resolved.response;
+        }
+        // Soft-continue: http ± MCP only (no FS tools).
+        runParams = {
+          ...runParams,
+          skipSandboxTools: true,
+          secrets: [...byok.secretsToRedact],
+        };
+      } else {
+        redactList = [...redactList, ...resolved.value.secrets];
+        runParams = {
+          ...runParams,
+          sandboxClient: resolved.value.client,
+          permissions: resolved.value.permissions,
+          secrets: [
+            ...resolved.value.secrets,
+            ...byok.secretsToRedact,
+          ],
+        };
       }
-      redactList = [...redactList, ...resolved.value.secrets];
 
       const mcp = await buildUserMcpTools(userId, { signal: req.signal });
       mcpClose = mcp.close;
       redactList = [...redactList, ...mcp.secretsToRedact];
+      extraTools = { ...extraTools, ...mcp.tools };
 
-      // Same JSONValue boundary cast as chat route (AI SDK ProviderOptions).
       runParams = {
         ...runParams,
         modelId: byok.modelId,
@@ -110,16 +142,34 @@ export async function POST(req: Request): Promise<Response> {
             byok: byok.byok as JSONValue,
           },
         },
-        sandboxClient: resolved.value.client,
         secrets: [
-          ...resolved.value.secrets,
-          ...byok.secretsToRedact,
+          ...(runParams.secrets ?? []),
           ...mcp.secretsToRedact,
         ],
-        permissions: resolved.value.permissions,
-        extraTools: mcp.tools,
+      };
+    } else if (!envSandboxOk) {
+      // Tenancy off + no DO sandbox: http-only (gate already required builtin on).
+      runParams = {
+        ...runParams,
+        skipSandboxTools: true,
       };
     }
+
+    if (builtinHttp.enabled) {
+      httpRunner = createVercelSandboxHttpRunner({
+        sandboxTimeoutMs: builtinHttp.sandboxTimeoutMs,
+      });
+      const httpTools = createHttpFetchTools({
+        runner: httpRunner,
+        secrets: runParams.secrets,
+        signal: req.signal,
+        maxBytes: builtinHttp.maxBytes,
+        timeoutMs: builtinHttp.timeoutMs,
+      });
+      extraTools = { ...extraTools, ...httpTools };
+    }
+
+    runParams = { ...runParams, extraTools };
 
     const { text, toolTrace } = await runAgent(runParams);
 
@@ -140,6 +190,13 @@ export async function POST(req: Request): Promise<Response> {
       redactList.length > 0 ? redactSecrets(error, redactList) : error;
     return Response.json({ error: safe }, { status });
   } finally {
+    if (httpRunner) {
+      try {
+        await httpRunner.close();
+      } catch {
+        // ignore http runner close errors
+      }
+    }
     if (mcpClose) {
       try {
         await mcpClose();

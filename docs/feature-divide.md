@@ -31,6 +31,7 @@ optional login chrome).
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
 | Per-user MCP config UI | **DOM** | `/settings`, `/settings/mcp` — not dual chat; not Admin |
 | Per-user MCP tools (connect + execute) | **Vercel backend** | `lib/mcp/*`; keys under tenant DEK; never Wasm/client |
+| Builtin HTTPS fetch (`http_get`) | **Vercel backend** | Env `BUILTIN_HTTP_FETCH`; Vercel Sandbox egress; see [builtin-http.md](builtin-http.md) |
 | **Transcript (read messages)** | **Wasm** | Primary UX; rich MD + images + math + diff/patch fence paint in-canvas (`rich/*`) — no DOM markdown |
 | Image bytes (fetch/decode) | **DOM host** | Browser fetch → RGBA → `inv_image_cache_put`; paint stays Wasm |
 | Math pixels (TeX raster) | **DOM host** | Host MathJax SVG → RGBA → `inv_math_cache_put`; paint stays Wasm |
@@ -72,6 +73,7 @@ User types in Wasm composer
        if 503 + exact sandbox-not-configured → POST /api/chat { prompt, modelId? }
        tenancy on: server attaches request-scoped BYOK for authorized modelId
        tools → sandbox (env SANDBOX_* when tenancy off; DB grants when on)
+              + optional builtin http_get (Vercel Sandbox egress; env BUILTIN_HTTP_FETCH)
               + enabled per-user MCP tools (server-side only; soft-fail dead servers)
   → Host pushes ≤6 system toolTrace lines + assistant/error into Wasm
   → User reads reply in Wasm transcript

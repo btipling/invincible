@@ -5,7 +5,7 @@ workspace with `list_dir` / `read_file` / `write_file` / `exec` during a
 harness turn.
 
 Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-divide.md) ·
-[mcp.md](mcp.md) · [SECURITY.md](../SECURITY.md) · [runner.md](runner.md) · package detail
+[mcp.md](mcp.md) · [builtin-http.md](builtin-http.md) · [SECURITY.md](../SECURITY.md) · [runner.md](runner.md) · package detail
 [`sandbox/README.md`](../sandbox/README.md)
 
 ---
@@ -19,6 +19,7 @@ Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-d
 | **Is not** | The Zig **GHA build runner** (`invincible-do-1` / `self-hosted` + `zig` labels) |
 | **Is not** | Multi-tenant **fleet** isolation (still future). **Per-user MCP** is separate and **shipped** — [mcp.md](mcp.md). Optional **login tenancy** — [bring-your-own.md §4a](bring-your-own.md#4a-optional-multi-tenant-auth); optional **OIDC/SCIM** — [§4b](bring-your-own.md#4b-optional-sso-oidc--scim) |
 | **Is not** | Required for basic chat — without env, harness falls back to `POST /api/chat` |
+| **Is not** | Builtin HTTPS fetch (`http_get`) — that is **Vercel Sandbox** hop B; see [builtin-http.md](builtin-http.md) |
 
 Never put GHA Actions credentials in the sandbox process env. Prefer a dedicated
 OS user and reverse-proxy TLS in production.
