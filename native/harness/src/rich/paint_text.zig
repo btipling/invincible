@@ -263,14 +263,18 @@ pub fn paintInlineFlow(
 
 const MAX_MATH_INLINE_H: f32 = 64;
 const MAX_MATH_DISPLAY_H: f32 = 320;
+/// Host rasters at 2× for sharpness (`MATH_PIXEL_RATIO` in lib/harnessMath.ts).
+/// Display size is texture size / this factor so body scale stays correct.
+const MATH_PIXEL_RATIO: f32 = 2;
 
 fn paintMathInline(src: std.builtin.SourceLocation, inl: parse.Inline, ctx: *PaintCtx, display: bool) void {
     const tex = inl.text;
     const disp_u8: u8 = if (display) 1 else 0;
     if (tex.len > 0) {
         if (math_cache.get(tex, disp_u8)) |hit| {
-            const nw: f32 = @floatFromInt(hit.width);
-            const nh: f32 = @floatFromInt(hit.height);
+            // Logical size = texture / host super-sample ratio (teal ink, transparent bg).
+            const nw: f32 = @as(f32, @floatFromInt(hit.width)) / MATH_PIXEL_RATIO;
+            const nh: f32 = @as(f32, @floatFromInt(hit.height)) / MATH_PIXEL_RATIO;
             var dw = nw;
             var dh = nh;
             const max_h: f32 = if (display) MAX_MATH_DISPLAY_H else MAX_MATH_INLINE_H;
@@ -303,7 +307,7 @@ fn paintMathInline(src: std.builtin.SourceLocation, inl: parse.Inline, ctx: *Pai
                 .id_extra = nextId(ctx),
                 .min_size_content = .{ .w = dw, .h = dh },
                 .max_size_content = .{ .w = dw, .h = dh },
-                .margin = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
+                .margin = .{ .x = 0, .y = if (display) 6 else 1, .w = 0, .h = if (display) 6 else 1 },
                 .label = .{ .text = tex },
                 .background = false,
             });

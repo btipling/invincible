@@ -4,9 +4,12 @@
  *
  * Raster uses MathJax SVG (path geometry), not KaTeX HTML: browser canvas taints
  * on blob+foreignObject KaTeX HTML, so pixels never reached Wasm (mono fallback).
+ *
+ * Visual: Asteronica teal ink on transparent pixels (matches body text; no white cards).
  */
 
 import type { HarnessBridge } from './harnessBridge';
+import { teal } from './palette';
 
 /** Caps locked in plan #221. Must match `math_cache.MAX_ENTRIES` / `MAX_TEX_LEN`. */
 export const MAX_TEX_LEN = 512 as const;
@@ -16,7 +19,15 @@ export const MAX_MATH_EDGE = 1280 as const;
 export const MAX_INLINE_MATH_H = 64 as const;
 export const MAX_DISPLAY_MATH_H = 320 as const;
 
-/** CSS px per MathJax `ex` when sizing the SVG raster (em=16 → ex≈8). */
+/**
+ * Math ink — palette `teal.text` only (no freehand hex).
+ * Transparent backdrop so formulas sit on canvas like body text.
+ */
+export const MATH_INK = teal.text;
+/** Super-sample factor for sharper glyphs; paint displays at 1/ratio size. */
+export const MATH_PIXEL_RATIO = 2 as const;
+
+/** CSS px per MathJax `ex` at logical (1×) size. em=16 → ex≈8. */
 const MATH_EX_PX = 8 as const;
 const MATH_EM = 16 as const;
 
@@ -302,7 +313,7 @@ async function ensureMathJax(): Promise<MathJaxHandle> {
     ]);
     const adaptor = liteAdaptor();
     RegisterHTMLHandler(adaptor);
-    // AllPackages: ams, base, … — matches stock KaTeX coverage for common agent math.
+    // AllPackages: ams, base, … — common agent math coverage.
     const input = new TeX({
       packages: AllPackages,
       formatError: (_jax: unknown, err: Error) => {
@@ -325,11 +336,15 @@ async function ensureMathJax(): Promise<MathJaxHandle> {
   }
 }
 
-/** Convert TeX to a standalone SVG string (path geometry, black ink). */
+/**
+ * Convert TeX to a standalone SVG string (path geometry).
+ * Ink = palette teal.text via currentColor; no white backdrop.
+ */
 export function texToSvgString(
   handle: MathJaxHandle,
   tex: string,
   display: boolean,
+  ink: string = MATH_INK,
 ): string {
   const { adaptor, html } = handle;
   const node = html.convert(tex, {
@@ -344,16 +359,24 @@ export function texToSvgString(
   if (!svgStr.includes('xmlns=')) {
     svgStr = svgStr.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
   }
-  // MathJax uses currentColor — pin ink for canvas
-  if (!/\s(?:color|fill)=/.test(svgStr.slice(0, 80))) {
-    svgStr = svgStr.replace('<svg', '<svg color="#111111"');
-  }
+  // Pin ink: MathJax paths use currentColor / fill currentColor
+  svgStr = svgStr.replace(
+    /<svg\b/,
+    `<svg color="${ink}" fill="${ink}"`,
+  );
+  // Force any hard-coded black fills to palette ink (defensive)
+  svgStr = svgStr
+    .replace(/fill="black"/gi, `fill="${ink}"`)
+    .replace(/stroke="black"/gi, `stroke="${ink}"`)
+    .replace(/fill="#000(?:000)?"/gi, `fill="${ink}"`)
+    .replace(/stroke="#000(?:000)?"/gi, `stroke="${ink}"`);
   return svgStr;
 }
 
 /**
  * Raster TeX to non-premultiplied RGBA via MathJax SVG → data-URL image → canvas.
- * Must use data: URLs (blob: taints canvas in Chromium). No HTML foreignObject.
+ * Transparent background + teal.text ink (Asteronica). Super-sampled for sharpness.
+ * Must use data: URLs (blob: taints canvas in Chromium).
  */
 export async function rasterizeTex(
   tex: string,
@@ -364,39 +387,54 @@ export async function rasterizeTex(
     const handle = await ensureMathJax();
     let svgStr: string;
     try {
-      svgStr = texToSvgString(handle, tex, display);
+      svgStr = texToSvgString(handle, tex, display, MATH_INK);
     } catch {
       // Bad TeX / MathJax formatError → Wasm mono fallback
       return null;
     }
 
-    // Size from MathJax width/height in `ex` units
+    // Logical size from MathJax width/height in `ex` units
     const widthEx = parseFloat(svgStr.match(/\bwidth="([\d.]+)ex"/)?.[1] ?? '');
     const heightEx = parseFloat(svgStr.match(/\bheight="([\d.]+)ex"/)?.[1] ?? '');
-    let w = Math.max(1, Math.ceil((Number.isFinite(widthEx) ? widthEx : 10) * MATH_EX_PX));
-    let h = Math.max(1, Math.ceil((Number.isFinite(heightEx) ? heightEx : 2) * MATH_EX_PX));
-    // Slight padding so ink is not clipped
-    w += display ? 12 : 6;
-    h += display ? 10 : 4;
+    let logicalW = Math.max(
+      1,
+      Math.ceil((Number.isFinite(widthEx) ? widthEx : 10) * MATH_EX_PX),
+    );
+    let logicalH = Math.max(
+      1,
+      Math.ceil((Number.isFinite(heightEx) ? heightEx : 2) * MATH_EX_PX),
+    );
+    // Padding (logical)
+    logicalW += display ? 10 : 4;
+    logicalH += display ? 8 : 2;
 
     const maxH = display ? MAX_DISPLAY_MATH_H : MAX_INLINE_MATH_H;
-    let scale = 1;
-    if (h > maxH) scale = maxH / h;
-    if (w * scale > MAX_MATH_EDGE) scale = Math.min(scale, MAX_MATH_EDGE / w);
-    if (h * scale > MAX_MATH_EDGE) scale = Math.min(scale, MAX_MATH_EDGE / h);
-    const cw = Math.max(1, Math.min(MAX_MATH_EDGE, Math.ceil(w * scale)));
-    const ch = Math.max(1, Math.min(MAX_MATH_EDGE, Math.ceil(h * scale)));
+    let fit = 1;
+    if (logicalH > maxH) fit = maxH / logicalH;
+    if (logicalW * fit > MAX_MATH_EDGE) fit = Math.min(fit, MAX_MATH_EDGE / logicalW);
+    if (logicalH * fit > MAX_MATH_EDGE) fit = Math.min(fit, MAX_MATH_EDGE / logicalH);
 
-    // Explicit pixel size for image decode; white backdrop under transparent SVG
+    // Super-sample, then Wasm paints at texture size / MATH_PIXEL_RATIO
+    const ratio = MATH_PIXEL_RATIO;
+    let cw = Math.max(1, Math.ceil(logicalW * fit * ratio));
+    let ch = Math.max(1, Math.ceil(logicalH * fit * ratio));
+    if (cw > MAX_MATH_EDGE) {
+      const s = MAX_MATH_EDGE / cw;
+      cw = MAX_MATH_EDGE;
+      ch = Math.max(1, Math.ceil(ch * s));
+    }
+    if (ch > MAX_MATH_EDGE) {
+      const s = MAX_MATH_EDGE / ch;
+      ch = MAX_MATH_EDGE;
+      cw = Math.max(1, Math.ceil(cw * s));
+    }
+
+    // Explicit pixel size; transparent (no white card)
     let sized = svgStr
       .replace(/\bwidth="[^"]*"/, `width="${cw}"`)
       .replace(/\bheight="[^"]*"/, `height="${ch}"`);
-    sized = sized.replace(
-      /(<svg[^>]*>)/,
-      `$1<rect width="100%" height="100%" fill="#ffffff"/>`,
-    );
 
-    // data: URL — blob: URLs taint canvas (opaque origin) and break getImageData
+    // data: URL — blob: URLs taint canvas
     const dataUrl =
       'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(sized);
     const img = await loadImage(dataUrl);
@@ -405,8 +443,8 @@ export async function rasterizeTex(
     canvas.height = ch;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, cw, ch);
+    // Transparent clear — not white fill
+    ctx.clearRect(0, 0, cw, ch);
     ctx.drawImage(img, 0, 0, cw, ch);
     const data = ctx.getImageData(0, 0, cw, ch);
     return { rgba: data.data, width: cw, height: ch };
