@@ -177,4 +177,34 @@ describe('VercelSandboxHttpRunner', () => {
     });
     await runner.close();
   });
+
+  it('passes curl --max-filesize equal to maxBytes on GET', async () => {
+    const runCommand = vi.fn(async (cmd: string, args?: string[]) => {
+      if (cmd === 'curl') {
+        expect(args).toContain('--max-filesize');
+        const i = args!.indexOf('--max-filesize');
+        expect(args![i + 1]).toBe('2048');
+        return {
+          exitCode: 0,
+          stdout: 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n',
+          stderr: '',
+        };
+      }
+      if (cmd === 'head') {
+        return { exitCode: 0, stdout: 'tiny', stderr: '' };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+    const sb = mockSandbox({ runCommand });
+    const createSandbox: CreateSandboxFn = vi.fn(async () => sb);
+    const runner = new VercelSandboxHttpRunner({ createSandbox });
+    const r = await runner.get({
+      url: 'https://example.com/big',
+      maxBytes: 2048,
+      timeoutMs: 5000,
+    });
+    expect(r.body).toBe('tiny');
+    expect(runCommand).toHaveBeenCalled();
+    await runner.close();
+  });
 });
