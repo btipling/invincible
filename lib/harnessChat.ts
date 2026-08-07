@@ -197,6 +197,19 @@ export async function runHarnessChat(
     bridge.pushMessage(MessageKind.Assistant, result.text);
     scheduleImagesFromMarkdown(bridge, result.text);
     scheduleMathFromMarkdown(bridge, result.text);
+    // Also fold prior history so LRU-dropped formulas can refresh.
+    if (history.length > 0) {
+      scheduleMathFromTexts(
+        bridge,
+        [
+          ...history
+            .filter((m) => m.role === 'user' || m.role === 'assistant')
+            .map((m) => m.text),
+          prompt,
+          result.text,
+        ],
+      );
+    }
     bridge.setLifecycle(Lifecycle.Ready);
     return result;
   }
@@ -267,9 +280,16 @@ export async function runHarnessTurn(
       }
       bridge.pushMessage(MessageKind.Assistant, agentResult.text);
       scheduleImagesFromMarkdown(bridge, agentResult.text);
-      scheduleMathFromMarkdown(bridge, agentResult.text);
-      bridge.setLifecycle(Lifecycle.Ready);
       next = appendMessage(next, 'assistant', agentResult.text);
+      // Full-transcript math schedule so putOk LRU drops can re-put after
+      // Wasm math_cache eviction while older formulas remain visible.
+      scheduleMathFromTexts(
+        bridge,
+        next.messages
+          .filter((m) => m.role === 'user' || m.role === 'assistant')
+          .map((m) => m.text),
+      );
+      bridge.setLifecycle(Lifecycle.Ready);
       return {
         result: { ok: true, text: agentResult.text },
         session: next,

@@ -305,6 +305,7 @@ export class HarnessBridge {
   /**
    * Push host-rasterized math RGBA into Wasm math cache (protocol v5).
    * display: 0 = inline, 1 = display. Returns true on success.
+   * TeX length is UTF-8 bytes (matches Zig MAX_TEX_LEN).
    */
   mathCachePut(
     tex: string,
@@ -313,8 +314,10 @@ export class HarnessBridge {
     width: number,
     height: number,
   ): boolean {
-    if (!tex || tex.length > 512 || width <= 0 || height <= 0) return false;
+    if (!tex || width <= 0 || height <= 0) return false;
     if (width > 1280 || height > 1280) return false;
+    const texUtf8Len = utf8Encode.encode(tex).length;
+    if (texUtf8Len === 0 || texUtf8Len > 512) return false;
     const need = width * height * 4;
     if (!Number.isFinite(need) || need <= 0 || rgba.byteLength < need) return false;
     const texBytes = this.writeUtf8(tex);

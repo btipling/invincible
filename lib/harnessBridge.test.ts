@@ -334,3 +334,59 @@ describe("imageCachePut (protocol v4)", () => {
     expect(bridge.imageCachePut("https://example.com/a.png", new Uint8Array(16), 0, 2)).toBe(false);
   });
 });
+
+describe("mathCachePut (protocol v5)", () => {
+  it("copies TeX + RGBA into inv_math_cache_put with display flag", () => {
+    const exp = makeMockExports();
+    let seen: {
+      tex: string;
+      display: number;
+      w: number;
+      h: number;
+      bytes: number;
+    } | null = null;
+    exp.inv_math_cache_put = (
+      texPtr,
+      texLen,
+      display,
+      rgbaPtr,
+      width,
+      height,
+    ) => {
+      const tex = new TextDecoder().decode(
+        new Uint8Array(exp.memory.buffer, texPtr, texLen),
+      );
+      seen = {
+        tex,
+        display,
+        w: width,
+        h: height,
+        bytes: width * height * 4,
+      };
+      void new Uint8Array(exp.memory.buffer, rgbaPtr, width * height * 4)[0];
+      return 0;
+    };
+    const bridge = new HarnessBridge(exp);
+    const rgba = new Uint8ClampedArray([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    expect(bridge.mathCachePut("E=mc^2", true, rgba, 2, 2)).toBe(true);
+    expect(seen).toEqual({
+      tex: "E=mc^2",
+      display: 1,
+      w: 2,
+      h: 2,
+      bytes: 16,
+    });
+    expect(bridge.mathCachePut("x_i", false, rgba, 2, 2)).toBe(true);
+    expect(seen).not.toBeNull();
+    expect(seen!.display).toBe(0);
+  });
+
+  it("rejects empty tex, oversize UTF-8, and zero dims", () => {
+    const bridge = new HarnessBridge(makeMockExports());
+    const rgba = new Uint8Array(16);
+    expect(bridge.mathCachePut("", false, rgba, 2, 2)).toBe(false);
+    expect(bridge.mathCachePut("x", false, rgba, 0, 2)).toBe(false);
+    // 513 ASCII bytes > MAX_TEX_LEN
+    expect(bridge.mathCachePut("x".repeat(513), false, rgba, 2, 2)).toBe(false);
+  });
+});

@@ -389,7 +389,8 @@ fn rewriteProseLine(
                 j += 1;
             }
             if (closed) {
-                const tex = line[tex_start..tex_end];
+                // Trim so cache keys match host `extractCandidateMath` (trims).
+                const tex = trimWs(line[tex_start..tex_end]);
                 if (acceptInlineTex(tex) and texs.items.len < MAX_INLINE_MATH) {
                     const idx = texs.items.len;
                     try texs.append(a, try a.dupe(u8, tex));
@@ -443,6 +444,17 @@ test "extract inline E=mc^2" {
     try std.testing.expectEqual(@as(usize, 1), r.texs.len);
     try std.testing.expectEqualStrings("E=mc^2", r.texs[0]);
     try std.testing.expect(std.mem.indexOf(u8, r.body, "$E=mc^2$") == null);
+}
+
+test "extract inline trims interior whitespace for cache key" {
+    const r = try extractInline(std.testing.allocator, "see $ E=mc^2 $ here");
+    defer {
+        std.testing.allocator.free(r.body);
+        for (r.texs) |t| std.testing.allocator.free(t);
+        std.testing.allocator.free(r.texs);
+    }
+    try std.testing.expectEqual(@as(usize, 1), r.texs.len);
+    try std.testing.expectEqualStrings("E=mc^2", r.texs[0]);
 }
 
 test "extract rejects currency" {

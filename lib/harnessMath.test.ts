@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   acceptInlineTex,
   extractCandidateMath,
+  harnessMathPutOkSize,
   harnessMathSessionGeneration,
   isCurrencyLike,
+  MAX_MATH_CACHE_ENTRIES,
   MAX_TEX_LEN,
   resetHarnessMathSession,
 } from './harnessMath';
@@ -43,6 +45,11 @@ same $$\\sum n$$ end
     expect(got.some((c) => c.display && c.tex.includes('\\sum'))).toBe(true);
   });
 
+  it('trims interior whitespace (host/Wasm key parity)', () => {
+    const got = extractCandidateMath('see $ E=mc^2 $ here');
+    expect(got).toEqual([{ tex: 'E=mc^2', display: false }]);
+  });
+
   it('skips currency and code/fences', () => {
     const md = `
 costs $5 and $10 today
@@ -63,9 +70,11 @@ $x$
 });
 
 describe('resetHarnessMathSession', () => {
-  it('bumps generation', () => {
+  it('bumps generation and clears putOk', () => {
     const before = harnessMathSessionGeneration();
     resetHarnessMathSession();
     expect(harnessMathSessionGeneration()).toBe(before + 1);
+    expect(harnessMathPutOkSize()).toBe(0);
+    expect(MAX_MATH_CACHE_ENTRIES).toBe(48);
   });
 });

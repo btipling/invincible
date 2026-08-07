@@ -5,8 +5,9 @@
 
 import type { HarnessBridge } from './harnessBridge';
 
-/** Caps locked in plan #221. */
+/** Caps locked in plan #221. Must match `math_cache.MAX_ENTRIES` / `MAX_TEX_LEN`. */
 export const MAX_TEX_LEN = 512 as const;
+export const MAX_MATH_CACHE_ENTRIES = 48 as const;
 export const MAX_CONCURRENT_MATH_RENDERS = 3 as const;
 export const MAX_MATH_EDGE = 1280 as const;
 export const MAX_INLINE_MATH_H = 64 as const;
@@ -17,7 +18,9 @@ export type MathCandidate = {
   display: boolean;
 };
 
-const putOk = new Set<string>();
+/** Successful puts (LRU). Dropped keys may re-schedule after Wasm eviction. */
+const putOk = new Map<string, true>();
+const putOkOrder: string[] = [];
 const inFlight = new Set<string>();
 const queue: MathCandidate[] = [];
 let active = 0;
@@ -33,9 +36,26 @@ function cacheKey(tex: string, display: boolean): string {
   return `${display ? '1' : '0'}:${tex}`;
 }
 
+function markPutOk(k: string): void {
+  if (putOk.has(k)) {
+    // Refresh LRU order
+    const idx = putOkOrder.indexOf(k);
+    if (idx >= 0) putOkOrder.splice(idx, 1);
+    putOkOrder.push(k);
+    return;
+  }
+  putOk.set(k, true);
+  putOkOrder.push(k);
+  while (putOkOrder.length > MAX_MATH_CACHE_ENTRIES) {
+    const old = putOkOrder.shift();
+    if (old) putOk.delete(old);
+  }
+}
+
 export function resetHarnessMathSession(): void {
   sessionGen += 1;
   putOk.clear();
+  putOkOrder.length = 0;
   inFlight.clear();
   queue.length = 0;
   active = 0;
@@ -44,6 +64,11 @@ export function resetHarnessMathSession(): void {
 
 export function harnessMathSessionGeneration(): number {
   return sessionGen;
+}
+
+/** Test/diagnostics: current putOk size (≤ MAX_MATH_CACHE_ENTRIES). */
+export function harnessMathPutOkSize(): number {
+  return putOk.size;
 }
 
 /** Currency / money false-positive gate (mirrors Wasm math.zig). */
@@ -84,6 +109,7 @@ function isFenceLine(line: string): boolean {
 /**
  * Extract unique {tex, display} candidates. Fence + inline-code aware.
  * Display first ($$), then inline ($). Currency gate on inline.
+ * TeX interiors are trimmed (must match Wasm `trimWs` on store).
  */
 export function extractCandidateMath(markdown: string): MathCandidate[] {
   if (!markdown) return [];
@@ -394,7 +420,7 @@ async function pump(): Promise<void> {
           raster.width,
           raster.height,
         );
-        if (ok) putOk.add(k);
+        if (ok) markPutOk(k);
       } catch {
         // mono fallback in Wasm
       } finally {
