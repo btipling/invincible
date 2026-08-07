@@ -33,7 +33,7 @@ optional login chrome).
 | Per-user MCP tools (connect + execute) | **Vercel backend** | `lib/mcp/*`; keys under tenant DEK; never Wasm/client |
 | **Transcript (read messages)** | **Wasm** | Primary UX; rich MD + images + math + diff/patch fence paint in-canvas (`rich/*`) — no DOM markdown |
 | Image bytes (fetch/decode) | **DOM host** | Browser fetch → RGBA → `inv_image_cache_put`; paint stays Wasm |
-| Math pixels (KaTeX raster) | **DOM host** | Host `katex` → RGBA → `inv_math_cache_put`; paint stays Wasm |
+| Math pixels (TeX raster) | **DOM host** | Host MathJax SVG → RGBA → `inv_math_cache_put`; paint stays Wasm |
 | **Composer + Send / smoke** | **Wasm** | Primary input |
 | Busy / error presentation for turns | **Wasm** | EMBER for errors |
 | Empty / onboarding copy for agent | **Wasm** | |

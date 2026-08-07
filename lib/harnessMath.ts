@@ -1,6 +1,9 @@
 /**
- * Protocol v5 — host-side MD math extract, KaTeX render, raster, Wasm cache put.
- * IR paint truth stays in Wasm; this module only schedules browser KaTeX for formulas.
+ * Protocol v5 — host-side MD math extract, TeX→SVG raster, Wasm cache put.
+ * IR paint truth stays in Wasm; this module only schedules host raster for formulas.
+ *
+ * Raster uses MathJax SVG (path geometry), not KaTeX HTML: browser canvas taints
+ * on blob+foreignObject KaTeX HTML, so pixels never reached Wasm (mono fallback).
  */
 
 import type { HarnessBridge } from './harnessBridge';
@@ -12,6 +15,10 @@ export const MAX_CONCURRENT_MATH_RENDERS = 3 as const;
 export const MAX_MATH_EDGE = 1280 as const;
 export const MAX_INLINE_MATH_H = 64 as const;
 export const MAX_DISPLAY_MATH_H = 320 as const;
+
+/** CSS px per MathJax `ex` when sizing the SVG raster (em=16 → ex≈8). */
+const MATH_EX_PX = 8 as const;
+const MATH_EM = 16 as const;
 
 export type MathCandidate = {
   tex: string;
@@ -27,10 +34,15 @@ let active = 0;
 let pumpBridge: HarnessBridge | null = null;
 let sessionGen = 0;
 
-/** Offscreen host (lazy). */
-let hostEl: HTMLElement | null = null;
-let katexMod: typeof import('katex') | null = null;
-let cssReady = false;
+type MathJaxHandle = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  adaptor: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  html: any;
+};
+
+let mjHandle: MathJaxHandle | null = null;
+let mjLoading: Promise<MathJaxHandle> | null = null;
 
 function cacheKey(tex: string, display: boolean): string {
   return `${display ? '1' : '0'}:${tex}`;
@@ -265,60 +277,108 @@ export function extractCandidateMath(markdown: string): MathCandidate[] {
   return out;
 }
 
-async function ensureKatex(): Promise<typeof import('katex')> {
-  if (katexMod) return katexMod;
-  katexMod = await import('katex');
-  if (!cssReady && typeof document !== 'undefined') {
-    try {
-      // Side-effect CSS for correct metrics/fonts in offscreen host.
-      await import('katex/dist/katex.min.css');
-    } catch {
-      // CSS optional in unit tests without CSS bundler.
-    }
-    cssReady = true;
+/**
+ * Lazy MathJax TeX→SVG document (path geometry, fontCache none).
+ * Client-only; tree-shaken dynamic import.
+ */
+async function ensureMathJax(): Promise<MathJaxHandle> {
+  if (mjHandle) return mjHandle;
+  if (mjLoading) return mjLoading;
+  mjLoading = (async () => {
+    const [
+      { mathjax },
+      { TeX },
+      { SVG },
+      { liteAdaptor },
+      { RegisterHTMLHandler },
+      { AllPackages },
+    ] = await Promise.all([
+      import('mathjax-full/js/mathjax.js'),
+      import('mathjax-full/js/input/tex.js'),
+      import('mathjax-full/js/output/svg.js'),
+      import('mathjax-full/js/adaptors/liteAdaptor.js'),
+      import('mathjax-full/js/handlers/html.js'),
+      import('mathjax-full/js/input/tex/AllPackages.js'),
+    ]);
+    const adaptor = liteAdaptor();
+    RegisterHTMLHandler(adaptor);
+    // AllPackages: ams, base, … — matches stock KaTeX coverage for common agent math.
+    const input = new TeX({
+      packages: AllPackages,
+      formatError: (_jax: unknown, err: Error) => {
+        throw err;
+      },
+    });
+    const output = new SVG({ fontCache: 'none' });
+    const html = mathjax.document('', {
+      InputJax: input,
+      OutputJax: output,
+    });
+    mjHandle = { adaptor, html };
+    return mjHandle;
+  })();
+  try {
+    return await mjLoading;
+  } catch (e) {
+    mjLoading = null;
+    throw e;
   }
-  return katexMod;
 }
 
-function ensureHost(): HTMLElement {
-  if (hostEl && hostEl.isConnected) return hostEl;
-  hostEl = document.createElement('div');
-  hostEl.setAttribute('data-harness-math-host', '1');
-  hostEl.style.cssText =
-    'position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none;z-index:-1;';
-  document.body.appendChild(hostEl);
-  return hostEl;
+/** Convert TeX to a standalone SVG string (path geometry, black ink). */
+export function texToSvgString(
+  handle: MathJaxHandle,
+  tex: string,
+  display: boolean,
+): string {
+  const { adaptor, html } = handle;
+  const node = html.convert(tex, {
+    display,
+    em: MATH_EM,
+    ex: MATH_EX_PX,
+    containerWidth: 1200,
+  });
+  // convert() returns mjx-container; first child is <svg>
+  const svgNode = adaptor.firstChild(node);
+  let svgStr: string = adaptor.outerHTML(svgNode);
+  if (!svgStr.includes('xmlns=')) {
+    svgStr = svgStr.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+  }
+  // MathJax uses currentColor — pin ink for canvas
+  if (!/\s(?:color|fill)=/.test(svgStr.slice(0, 80))) {
+    svgStr = svgStr.replace('<svg', '<svg color="#111111"');
+  }
+  return svgStr;
 }
 
-/** Raster KaTeX HTML to non-premultiplied RGBA via canvas. */
+/**
+ * Raster TeX to non-premultiplied RGBA via MathJax SVG → data-URL image → canvas.
+ * Must use data: URLs (blob: taints canvas in Chromium). No HTML foreignObject.
+ */
 export async function rasterizeTex(
   tex: string,
   display: boolean,
 ): Promise<{ rgba: Uint8ClampedArray; width: number; height: number } | null> {
   if (typeof document === 'undefined') return null;
-  const katex = await ensureKatex();
-  const host = ensureHost();
-  const wrap = document.createElement('div');
-  wrap.style.cssText = display
-    ? 'display:inline-block;padding:4px 8px;background:#ffffff;color:#111111;font-size:18px;line-height:1.2;'
-    : 'display:inline-block;padding:1px 2px;background:#ffffff;color:#111111;font-size:16px;line-height:1.2;';
   try {
-    const html = katex.renderToString(tex, {
-      displayMode: display,
-      throwOnError: false,
-      strict: 'ignore',
-      output: 'html',
-    });
-    wrap.innerHTML = html;
-  } catch {
-    return null;
-  }
-  host.appendChild(wrap);
-  try {
-    // Force layout
-    const rect = wrap.getBoundingClientRect();
-    let w = Math.max(1, Math.ceil(rect.width) || wrap.offsetWidth || 1);
-    let h = Math.max(1, Math.ceil(rect.height) || wrap.offsetHeight || 1);
+    const handle = await ensureMathJax();
+    let svgStr: string;
+    try {
+      svgStr = texToSvgString(handle, tex, display);
+    } catch {
+      // Bad TeX / MathJax formatError → Wasm mono fallback
+      return null;
+    }
+
+    // Size from MathJax width/height in `ex` units
+    const widthEx = parseFloat(svgStr.match(/\bwidth="([\d.]+)ex"/)?.[1] ?? '');
+    const heightEx = parseFloat(svgStr.match(/\bheight="([\d.]+)ex"/)?.[1] ?? '');
+    let w = Math.max(1, Math.ceil((Number.isFinite(widthEx) ? widthEx : 10) * MATH_EX_PX));
+    let h = Math.max(1, Math.ceil((Number.isFinite(heightEx) ? heightEx : 2) * MATH_EX_PX));
+    // Slight padding so ink is not clipped
+    w += display ? 12 : 6;
+    h += display ? 10 : 4;
+
     const maxH = display ? MAX_DISPLAY_MATH_H : MAX_INLINE_MATH_H;
     let scale = 1;
     if (h > maxH) scale = maxH / h;
@@ -327,52 +387,31 @@ export async function rasterizeTex(
     const cw = Math.max(1, Math.min(MAX_MATH_EDGE, Math.ceil(w * scale)));
     const ch = Math.max(1, Math.min(MAX_MATH_EDGE, Math.ceil(h * scale)));
 
-    // Collect loaded stylesheets text (katex) for foreignObject isolation.
-    let cssText = '';
-    try {
-      for (const sheet of Array.from(document.styleSheets)) {
-        try {
-          const rules = sheet.cssRules;
-          if (!rules) continue;
-          for (const rule of Array.from(rules)) {
-            cssText += rule.cssText + '\n';
-          }
-        } catch {
-          // cross-origin sheet
-        }
-      }
-    } catch {
-      /* ignore */
-    }
+    // Explicit pixel size for image decode; white backdrop under transparent SVG
+    let sized = svgStr
+      .replace(/\bwidth="[^"]*"/, `width="${cw}"`)
+      .replace(/\bheight="[^"]*"/, `height="${ch}"`);
+    sized = sized.replace(
+      /(<svg[^>]*>)/,
+      `$1<rect width="100%" height="100%" fill="#ffffff"/>`,
+    );
 
-    const serialized = new XMLSerializer().serializeToString(wrap);
-    const svg =
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${cw}" height="${ch}">` +
-      `<foreignObject width="100%" height="100%">` +
-      `<div xmlns="http://www.w3.org/1999/xhtml" style="transform:scale(${scale});transform-origin:top left;background:#ffffff;color:#111111;">` +
-      (cssText ? `<style>${cssText.replace(/]]>/g, '')}</style>` : '') +
-      `${serialized}` +
-      `</div></foreignObject></svg>`;
-
-    const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    try {
-      const img = await loadImage(url);
-      const canvas = document.createElement('canvas');
-      canvas.width = cw;
-      canvas.height = ch;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return null;
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, cw, ch);
-      ctx.drawImage(img, 0, 0, cw, ch);
-      const data = ctx.getImageData(0, 0, cw, ch);
-      return { rgba: data.data, width: cw, height: ch };
-    } finally {
-      URL.revokeObjectURL(url);
-    }
-  } finally {
-    wrap.remove();
+    // data: URL — blob: URLs taint canvas (opaque origin) and break getImageData
+    const dataUrl =
+      'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(sized);
+    const img = await loadImage(dataUrl);
+    const canvas = document.createElement('canvas');
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, cw, ch);
+    ctx.drawImage(img, 0, 0, cw, ch);
+    const data = ctx.getImageData(0, 0, cw, ch);
+    return { rgba: data.data, width: cw, height: ch };
+  } catch {
+    return null;
   }
 }
 
