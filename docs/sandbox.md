@@ -53,10 +53,35 @@ Vercel Sandboxes may be created (sharing one VM is not a product goal).
 ### How to get a useful toolchain on Vercel rows
 
 1. **Managed image (VMI)** — pick a preset in admin (Node, Python, Ubuntu, Arch, or default universal).
-2. **Custom VCR ref** — build/push an image your **host** Vercel team can pull, paste the ref in admin. Invincible does **not** build images at runtime.
-3. **Runtime `exec` install** — still available inside the VM; image is the durable deps path.
+2. **Origin dogfood image** — first-party `invincible-dev` on Vercel Container Registry (see below).
+3. **Custom VCR ref** — build/push an image your **host** Vercel team can pull, paste the ref in admin. The **Next.js / agent runtime does not build images**.
+4. **Runtime `exec` install** — still available inside the VM; image is the durable deps path.
 
 Ephemeral vercel VMs are stopped after the agent turn (route finally and stream cancel). Do **not** treat them as durable multi-turn disks (use BYO for long-lived workspaces).
+
+### Origin dogfood image (`dev/` + GHA)
+
+To run Invincible **on Invincible** without reinstalling Node/Zig/gh/rg every turn:
+
+| Piece | Role |
+|-------|------|
+| [`dev/Dockerfile`](../dev/Dockerfile) | Toolchain image (Ubuntu amd64, Node 22, Zig from `native/ZIG_VERSION`, `gh`, `rg`) — **no** app source; WORKDIR `/vercel/workspace` |
+| GHA **`dev-image-build`** | Official build/push to **Vercel Container Registry** (`linux/amd64`) |
+| Admin sandbox row | `backend=vercel`, `image=` full VCR ref to `…/invincible-dev:latest` (or sha tag) |
+
+**Operator path (cloud-native):**
+
+1. Set GitHub Actions secret **`VERCEL_TOKEN`**, variable **`VERCEL_TEAM_ID`** (docker username; secret allowed), variable **`VCR_IMAGE_PREFIX`** = `vcr.vercel.com/<team-slug>/<project-slug>` (no trailing slash). Names only — never commit values.
+2. Actions → **dev-image-build** → Run workflow with **`confirm=push`** (optional **`dry_run`** validates config only).
+3. Wait until the image is **Ready** in the Vercel project Container Registry UI.
+4. **Admin → Sandboxes**: create/edit `backend=vercel`, set image to  
+   `${VCR_IMAGE_PREFIX}/invincible-dev:latest`  
+   (short `team/project/invincible-dev:latest` also passes shape validation; prefer full prefix in ops notes).
+5. Smoke via harness tools: `node -v`, `zig version`, `gh --version`, `rg --version`.
+
+This image is **not** the self-hosted Zig **build-harness** runner that produces production `harness.wasm`. See [runner.md](runner.md) and [dev/README.md](../dev/README.md).
+
+Forks/BYO: copy `dev/` + the workflow; use **your** team/project prefix and token.
 
 ### Operator path (schema + create)
 

@@ -1,0 +1,207 @@
+# Cloud-native dogfood sandbox image → Vercel Container Registry.
+#
+# Operator: Actions → dev-image-build → Run workflow
+#   inputs: confirm=push  (required to mutate); dry_run=true optional
+#
+# Repository configuration (names only — never commit values):
+#   secrets.VERCEL_TOKEN       — Account token with project access (docker password)
+#   vars.VERCEL_TEAM_ID        — Docker login username for vcr.vercel.com
+#                                (may be secrets.VERCEL_TEAM_ID if preferred)
+#   vars.VCR_IMAGE_PREFIX      — vcr.vercel.com/<team-slug>/<project-slug>
+#                                (no trailing slash)
+#
+# Image: ${VCR_IMAGE_PREFIX}/invincible-dev:latest and :sha-<short>
+# Platform: linux/amd64 only (Vercel Sandbox).
+#
+# Safety: workflow_dispatch primary; optional push to main only (dev/**,
+# native/ZIG_VERSION, this workflow); never pull_request; ubuntu-latest only
+# (not self-hosted zig); never echo tokens. Build context: native/ only.
+
+name: dev-image-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Must equal "push" to build and push the image (misclick guard)'
+        required: true
+        type: string
+      dry_run:
+        description: 'If true, validate secrets/vars only and exit without build/push'
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - 'dev/**'
+      - 'native/ZIG_VERSION'
+      - '.github/workflows/dev-image-build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-image-build-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPO: invincible-dev
+
+jobs:
+  build-push:
+    name: build + push dogfood image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Guard confirm input (workflow_dispatch only)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm != 'push' }}
+        run: |
+          set -euo pipefail
+          echo "::error::confirm input must equal 'push'. Aborting with no build/push."
+          exit 1
+
+      - name: Resolve config (names only)
+        id: cfg
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID_VAR: ${{ vars.VERCEL_TEAM_ID }}
+          VERCEL_TEAM_ID_SECRET: ${{ secrets.VERCEL_TEAM_ID }}
+          VCR_IMAGE_PREFIX: ${{ vars.VCR_IMAGE_PREFIX }}
+        run: |
+          set -euo pipefail
+          trim() {
+            local s="$1"
+            s="${s#"${s%%[![:space:]]*}"}"
+            s="${s%"${s##*[![:space:]]}"}"
+            printf '%s' "$s"
+          }
+          missing=0
+          token="$(trim "${VERCEL_TOKEN:-}")"
+          team="$(trim "${VERCEL_TEAM_ID_VAR:-}")"
+          if [ -z "${team}" ]; then
+            team="$(trim "${VERCEL_TEAM_ID_SECRET:-}")"
+          fi
+          prefix="$(trim "${VCR_IMAGE_PREFIX:-}")"
+          if [ -z "${token}" ]; then
+            echo "::error::VERCEL_TOKEN is missing or empty (set repository secret)"
+            missing=1
+          fi
+          if [ -z "${team}" ]; then
+            echo "::error::VERCEL_TEAM_ID is missing or empty (set repository variable or secret)"
+            missing=1
+          fi
+          if [ -z "${prefix}" ]; then
+            echo "::error::VCR_IMAGE_PREFIX is missing or empty (set repository variable, e.g. vcr.vercel.com/team/project)"
+            missing=1
+          fi
+          case "${prefix}" in
+            */)
+              echo "::error::VCR_IMAGE_PREFIX must not end with a slash"
+              missing=1
+              ;;
+          esac
+          case "${prefix}" in
+            vcr.vercel.com/*) ;;
+            *)
+              echo "::error::VCR_IMAGE_PREFIX must start with vcr.vercel.com/ (e.g. vcr.vercel.com/team/project)"
+              missing=1
+              ;;
+          esac
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+          short="$(printf '%s' "${GITHUB_SHA}" | cut -c1-12)"
+          echo "prefix_ok=1" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${short}" >> "$GITHUB_OUTPUT"
+          echo "image_base=${prefix}/${IMAGE_REPO}" >> "$GITHUB_OUTPUT"
+          # Team id is an identifier (not the token). Still never print token.
+          echo "team_id=${team}" >> "$GITHUB_OUTPUT"
+          echo "Config present (values not printed). image_base shape ok."
+
+      - name: Dry run — skip build/push
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+        run: |
+          set -euo pipefail
+          echo "dry_run=true — secrets/vars validated; no Docker build or push."
+          echo "Would push: ${{ steps.cfg.outputs.image_base }}:latest and :sha-${{ steps.cfg.outputs.short_sha }}"
+
+      - name: Checkout
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run == true) }}
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run == true) }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Vercel Container Registry
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run == true) }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID: ${{ steps.cfg.outputs.team_id }}
+        run: |
+          set -euo pipefail
+          # Never echo token. Stdin login only.
+          printf '%s' "${VERCEL_TOKEN}" | docker login vcr.vercel.com -u "${VERCEL_TEAM_ID}" --password-stdin
+
+      - name: Build linux/amd64 image
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run == true) }}
+        env:
+          IMAGE_BASE: ${{ steps.cfg.outputs.image_base }}
+          SHORT_SHA: ${{ steps.cfg.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            -f dev/Dockerfile \
+            -t "${IMAGE_BASE}:sha-${SHORT_SHA}" \
+            -t "${IMAGE_BASE}:latest" \
+            --load \
+            native
+
+      - name: Smoke tools inside image
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run == true) }}
+        env:
+          IMAGE_BASE: ${{ steps.cfg.outputs.image_base }}
+          SHORT_SHA: ${{ steps.cfg.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          IMG="${IMAGE_BASE}:sha-${SHORT_SHA}"
+          PIN="$(tr -d '[:space:]' < native/ZIG_VERSION)"
+          docker run --rm --platform linux/amd64 "${IMG}" bash -lc 'node -v | grep -E "^v22\."'
+          docker run --rm --platform linux/amd64 "${IMG}" bash -lc "test \"\$(zig version)\" = \"${PIN}\" && zig version"
+          docker run --rm --platform linux/amd64 "${IMG}" bash -lc 'gh --version'
+          docker run --rm --platform linux/amd64 "${IMG}" bash -lc 'rg --version'
+
+      - name: Push tags
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run == true) }}
+        env:
+          IMAGE_BASE: ${{ steps.cfg.outputs.image_base }}
+          SHORT_SHA: ${{ steps.cfg.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          docker push "${IMAGE_BASE}:sha-${SHORT_SHA}"
+          docker push "${IMAGE_BASE}:latest"
+
+      - name: Job summary
+        if: ${{ always() }}
+        env:
+          IMAGE_BASE: ${{ steps.cfg.outputs.image_base }}
+          SHORT_SHA: ${{ steps.cfg.outputs.short_sha }}
+          DRY: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## dev-image-build"
+            echo ""
+            echo "- event: \`${{ github.event_name }}\`"
+            echo "- dry_run: \`${DRY}\`"
+            if [ -n "${IMAGE_BASE:-}" ]; then
+              echo "- image: \`${IMAGE_BASE}:latest\`"
+              echo "- immutable: \`${IMAGE_BASE}:sha-${SHORT_SHA}\`"
+            fi
+            echo "- platform: \`linux/amd64\`"
+            echo ""
+            echo "After push, wait until VCR shows **Ready** before agent smoke."
+            echo "Never paste tokens into issues or summaries."
+          } >> "$GITHUB_STEP_SUMMARY"

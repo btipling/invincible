@@ -28,7 +28,7 @@ work — **independent of the language or platform** of the target project, and
 | Today | Intent |
 |-------|--------|
 | Single public deploy + this author’s infra are documented for operators | Multi-operator / bring-your-own Vercel + keys |
-| Sandbox MVP **shipped** via `SANDBOX_URL` + `SANDBOX_TOKEN`; tenancy **per-row** `backend`/`image` (BYO or Vercel) via admin ([docs/sandbox.md](docs/sandbox.md)) | No host-wide `SANDBOX_BACKEND`; dogfood image pipeline optional |
+| Sandbox MVP **shipped** via `SANDBOX_URL` + `SANDBOX_TOKEN`; tenancy **per-row** `backend`/`image` (BYO or Vercel) via admin ([docs/sandbox.md](docs/sandbox.md)) | No host-wide `SANDBOX_BACKEND`; origin dogfood image: `dev/` + GHA **`dev-image-build`** → VCR ([dev/README.md](dev/README.md)) |
 | Stack is Next + Zig/dvui Wasm + AI Gateway | Target projects can be **any** stack; the harness is the workspace |
 | Tenancy code + origin Production cutover **Done** (login + DB grants) | Optional login/grants **and** cloud-native bootstrap (no personal machine) |
 
@@ -93,6 +93,11 @@ Do **not** write product/ops guides as phase narratives or issue archaeology
   reusable BYO seams — not a single-owner IdP hardcoding.
 - Origin `SANDBOX_*` is **Done** for the reference deploy (private host inventory
   stays offline). Still never invent a host URL; forks set their own env.
+- Origin **dogfood VCR image** (`dev/` + GHA `dev-image-build`) is **code on
+  main** when landed; **secrets/vars + first push + admin image** remain
+  **Not Done** until an operator configures them. Do not nag as forgotten
+  Product env; treat as optional origin infra like OIDC. Never put `VERCEL_TOKEN`
+  in client/Wasm/git.
 - Origin **tenancy** (`DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`)
   is **Done** on Production (cutover smoke: unauth 401 + login). Per-tenant DEK
   **code** is on `main` (envelope + dual-read + owner DEK rotate). Origin **data**
@@ -249,6 +254,7 @@ invincible/
 | User Settings / per-user MCP | `app/settings/*`, `lib/tenancy/userMcpServers.ts`, `lib/mcp/*` |
 | Harness model catalog (protocol v3) | `lib/harnessBridge.ts`, `native/harness/src/bridge.zig`, `app/harness/HarnessHost.tsx` |
 | Schema-only migrate (GHA) | `.github/workflows/db-migrate.yml` |
+| Dogfood sandbox image (VCR) | `dev/Dockerfile`, `dev/README.md`, `.github/workflows/dev-image-build.yml`, [docs/sandbox.md](docs/sandbox.md) |
 | Sandbox daemon | `sandbox/` |
 | Colors / tokens (DOM) | `lib/palette.ts` |
 | Colors / tokens (dvui) | `native/harness/src/palette.zig` (hex sync with palette.ts) |

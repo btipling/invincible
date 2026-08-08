@@ -19,6 +19,8 @@ If you find a vulnerability in Invincible, please open a **private** security ad
 | `AUTH_OIDC_CLIENT_SECRET` | Optional OIDC client secret — Vercel/server only; never `NEXT_PUBLIC_*` |
 | `SCIM_BEARER_TOKEN` | Optional SCIM shared bearer — Vercel/server only; IdP → `/api/scim/v2`; never client/Wasm |
 | Runner registration tokens, DO API tokens | Operator machines only |
+| `VERCEL_TOKEN` (GHA secret for **dev-image-build** VCR push) | GitHub Actions only — docker login password to `vcr.vercel.com`; never commit; never echo in logs/summaries |
+| `VERCEL_TEAM_ID` / `VCR_IMAGE_PREFIX` (GHA vars for dogfood image) | Identifiers for VCR push; not app runtime env; never put production DB/Gateway secrets in the dogfood image |
 
 Session blobs and Wasm must never contain API keys or sandbox tokens.  
 Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
@@ -81,6 +83,13 @@ token) or **`backend=vercel`** (host Vercel project OIDC for `Sandbox.create`;
 no BYO token; optional image ref). There is **no** product host env
 `SANDBOX_BACKEND`. Registry credentials for custom images stay on the host
 Vercel/CI side — never in the DB. Token rotate applies to **byo** only.
+
+**Dogfood image push (GHA `dev-image-build`):** builds a toolchain OCI image
+from `dev/Dockerfile` and pushes to Vercel Container Registry. Uses Actions
+`VERCEL_TOKEN` + team/prefix identifiers only. **Never** bake
+`AI_GATEWAY_API_KEY`, `DATABASE_URL`, sandbox tokens, or AMK/DEK material into
+image layers. The dogfood image is **not** the self-hosted Zig build-harness
+runner.
 
 | Rule | Detail |
 |------|--------|
