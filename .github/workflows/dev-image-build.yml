@@ -112,11 +112,21 @@ jobs:
             exit 1
           fi
           short="$(printf '%s' "${GITHUB_SHA}" | cut -c1-12)"
+          # prefix = vcr.vercel.com/<team-slug>/<project-slug>
+          rest="${prefix#vcr.vercel.com/}"
+          team_slug="${rest%%/*}"
+          project_slug="${rest#*/}"
+          if [ -z "${team_slug}" ] || [ -z "${project_slug}" ] || [ "${team_slug}" = "${rest}" ] || [ "${project_slug}" = "${rest}" ] || [[ "${project_slug}" == */* ]]; then
+            echo "::error::VCR_IMAGE_PREFIX must be vcr.vercel.com/<team-slug>/<project-slug> (exactly two path segments after host)"
+            exit 1
+          fi
           echo "prefix_ok=1" >> "$GITHUB_OUTPUT"
           echo "short_sha=${short}" >> "$GITHUB_OUTPUT"
           echo "image_base=${prefix}/${IMAGE_REPO}" >> "$GITHUB_OUTPUT"
           # Team id is an identifier (not the token). Still never print token.
           echo "team_id=${team}" >> "$GITHUB_OUTPUT"
+          echo "team_slug=${team_slug}" >> "$GITHUB_OUTPUT"
+          echo "project_slug=${project_slug}" >> "$GITHUB_OUTPUT"
           echo "Config present (values not printed). image_base shape ok."
 
       - name: Dry run — skip build/push
@@ -139,29 +149,57 @@ jobs:
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_TEAM_ID: ${{ steps.cfg.outputs.team_id }}
+          TEAM_SLUG: ${{ steps.cfg.outputs.team_slug }}
+          PROJECT_SLUG: ${{ steps.cfg.outputs.project_slug }}
         run: |
           set -euo pipefail
           # Never echo token.
-          # `docker login` pings the registry with HEAD /v2/, which VCR answers
-          # 404 (GET returns 401 + WWW-Authenticate). Write Docker config auth
-          # directly and validate with GET + Basic (expect 200).
-          mkdir -p "${HOME}/.docker"
-          auth="$(printf '%s:%s' "${VERCEL_TEAM_ID}" "${VERCEL_TOKEN}" | base64 -w0 2>/dev/null || printf '%s:%s' "${VERCEL_TEAM_ID}" "${VERCEL_TOKEN}" | base64 | tr -d '\n')"
-          umask 077
-          printf '%s\n' "{\"auths\":{\"vcr.vercel.com\":{\"auth\":\"${auth}\"}}}" > "${HOME}/.docker/config.json"
-          code="$(curl -sS -o /tmp/vcr-auth-body.json -w '%{http_code}' \
-            -u "${VERCEL_TEAM_ID}:${VERCEL_TOKEN}" \
-            "https://vcr.vercel.com/v2/")"
-          if [ "${code}" != "200" ]; then
-            echo "::error::VCR auth failed (HTTP ${code}). Check VERCEL_TOKEN (account token scoped to the team) and VERCEL_TEAM_ID (team_… id, not slug)."
-            # Body may mention invalidToken; never dump Authorization.
-            if [ -f /tmp/vcr-auth-body.json ]; then
-              # Strip anything that looks like a token-ish string just in case.
-              sed -E 's/vcp_[A-Za-z0-9_-]+/[redacted]/g; s/[A-Za-z0-9_-]{32,}/[redacted]/g' /tmp/vcr-auth-body.json || true
+          # Official path: Vercel CLI. Plain `docker login` fails because VCR
+          # answers HEAD /v2/ with 404 (GET unauth is 401; GET+Basic is not 200).
+          npm install -g vercel@latest
+          # Create dogfood repo if missing (non-interactive; ignore already-exists).
+          set +e
+          add_out="$(vercel vcr add "${IMAGE_REPO}" \
+            --token "${VERCEL_TOKEN}" \
+            --scope "${TEAM_SLUG}" \
+            --project "${PROJECT_SLUG}" 2>&1)"
+          add_ec=$?
+          set -e
+          if [ "${add_ec}" -ne 0 ]; then
+            if printf '%s' "${add_out}" | grep -qiE 'already exists|exist|conflict|duplicate'; then
+              echo "VCR repo ${IMAGE_REPO} already present."
+            else
+              echo "vercel vcr add exited ${add_ec} (continuing; first push may create repo)."
             fi
-            exit 1
+          else
+            echo "VCR repo ${IMAGE_REPO} ensured."
           fi
-          echo "VCR credentials OK (docker config written; skipped docker login HEAD quirk)."
+          vercel vcr login docker \
+            --token "${VERCEL_TOKEN}" \
+            --scope "${TEAM_SLUG}" \
+            --project "${PROJECT_SLUG}"
+          # Also write Basic auth (team id + token) as backup for docker push.
+          mkdir -p "${HOME}/.docker"
+          AUTH_B64="$(printf '%s:%s' "${VERCEL_TEAM_ID}" "${VERCEL_TOKEN}" | base64 -w0 2>/dev/null || printf '%s:%s' "${VERCEL_TEAM_ID}" "${VERCEL_TOKEN}" | base64 | tr -d '\n')"
+          export AUTH_B64
+          if [ -f "${HOME}/.docker/config.json" ]; then
+            node -e '
+              const fs = require("fs");
+              const p = process.env.HOME + "/.docker/config.json";
+              const cfg = JSON.parse(fs.readFileSync(p, "utf8"));
+              cfg.auths = cfg.auths || {};
+              cfg.auths["vcr.vercel.com"] = Object.assign(
+                {},
+                cfg.auths["vcr.vercel.com"] || {},
+                { auth: process.env.AUTH_B64 },
+              );
+              fs.writeFileSync(p, JSON.stringify(cfg), { mode: 0o600 });
+            '
+          else
+            umask 077
+            printf '%s\n' "{\"auths\":{\"vcr.vercel.com\":{\"auth\":\"${AUTH_B64}\"}}}" > "${HOME}/.docker/config.json"
+          fi
+          echo "VCR auth ready (vercel vcr login docker + Basic backup)."
 
       - name: Build linux/amd64 image
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run == true) }}
