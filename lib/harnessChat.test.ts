@@ -640,6 +640,69 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     expect(kinds.filter((k) => k === MessageKind.Assistant)).toHaveLength(1);
   });
 
+  it('grows Thinking on reasoning_delta then tools then assistant', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'think', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'reasoning_delta', text: 'Hmm' });
+        await init?.onEvent?.({ type: 'reasoning_delta', text: '…' });
+        await init?.onEvent?.({ type: 'tool_start', name: 'list_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'list_dir',
+          ok: true,
+          summary: 'list_dir · ok · a',
+        });
+        await init?.onEvent?.({ type: 'text_delta', text: 'Done' });
+        await init?.onEvent?.({ type: 'done', text: 'Done' });
+        return { ok: true, text: 'Done' };
+      },
+    });
+    expect(result.result.ok).toBe(true);
+    const thinking = exp.__messages.filter((m) => m.kind === MessageKind.Thinking);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]!.text).toBe('Hmm…');
+    expect(exp.__messages.some((m) => m.kind === MessageKind.System)).toBe(true);
+    const assistants = exp.__messages.filter((m) => m.kind === MessageKind.Assistant);
+    expect(assistants.some((m) => m.text === 'Done')).toBe(true);
+    // Session must not store thinking lines
+    expect(result.session.messages.every((m) => m.role !== 'system' || m.text.includes('list_dir'))).toBe(
+      true,
+    );
+    expect(result.session.messages.some((m) => m.text.includes('Hmm'))).toBe(false);
+  });
+
+  it('text then reasoning then text does not duplicate assistant segment', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'interleave', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'text_delta', text: 'Hello' });
+        await init?.onEvent?.({ type: 'reasoning_delta', text: 'wait' });
+        await init?.onEvent?.({ type: 'text_delta', text: ' world' });
+        await init?.onEvent?.({ type: 'done', text: 'Hello world' });
+        return { ok: true, text: 'Hello world' };
+      },
+    });
+    expect(result.result.ok).toBe(true);
+    const assistants = exp.__messages.filter((m) => m.kind === MessageKind.Assistant);
+    // Must not re-push full "Hello world" while leaving "Hello" (duplicate).
+    expect(assistants.map((m) => m.text)).not.toContain('Hello world');
+    expect(assistants.some((m) => m.text === 'Hello')).toBe(true);
+    expect(assistants.some((m) => m.text === ' world')).toBe(true);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.Thinking)).toHaveLength(1);
+    expect(result.session.messages.some((m) => m.role === 'assistant' && m.text === 'Hello world')).toBe(
+      true,
+    );
+  });
+
   it('opens a new assistant bubble after tools when text was already streaming', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);

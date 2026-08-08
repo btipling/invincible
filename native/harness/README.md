@@ -99,7 +99,7 @@ Host is dvui’s `web.js`. Required exports (app + backend):
 | `inv_set_lifecycle` / `inv_get_lifecycle` | boot / ready / busy / error |
 | `inv_message_count` | ring length |
 | `inv_begin_batch` / `inv_end_batch` | session hydrate without per-msg refresh |
-| `inv_push_message` / `inv_update_last_message` / `inv_clear_messages` / … | Transcript ring buffer (v7 update-last for stream) |
+| `inv_push_message` / `inv_update_last_message` / `inv_clear_messages` / … | Transcript ring buffer (v8 update-last; Thinking kind=5) |
 | `inv_echo*` | UTF-8 round-trip stub |
 | `inv_has_pending_submit` / `inv_pending_submit_*` / `inv_ack_pending_submit` | Host polls user submits |
 | `inv_set_can_load_earlier` / `inv_has_pending_load_earlier` / `inv_ack_pending_load_earlier` | Host enables Load earlier; polls window step-back (protocol v6) |

@@ -175,6 +175,7 @@ describe('lifecycleName / messageKindLabel', () => {
     expect(lifecycleName(Lifecycle.Ready)).toBe('ready');
     expect(messageKindLabel(MessageKind.User)).toBe('user');
     expect(messageKindLabel(MessageKind.Error)).toBe('error');
+    expect(messageKindLabel(MessageKind.Thinking)).toBe('thinking');
   });
 });
 
@@ -431,7 +432,7 @@ describe('load earlier pending (protocol v6)', () => {
   });
 });
 
-describe('updateLastMessage (protocol v7)', () => {
+describe('updateLastMessage (protocol v8 stream growth)', () => {
   it('replaces last message when kind matches', () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);

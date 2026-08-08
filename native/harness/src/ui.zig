@@ -81,6 +81,7 @@ fn kindLabel(kind: u8) []const u8 {
         2 => "assistant",
         3 => "system",
         4 => "error",
+        5 => "thinking",
         else => "msg",
     };
 }
@@ -100,6 +101,8 @@ fn kindTextColor(kind: u8) dvui.Color {
         2 => palette.warm_accent,
         3 => palette.teal_muted,
         4 => palette.ember_accent,
+        // Muted warm — thinking monologue (not EMBER, not pure blue).
+        5 => palette.warm_muted,
         else => palette.teal_text,
     };
 }
@@ -110,6 +113,7 @@ fn kindFill(kind: u8) ?dvui.Color {
         2 => palette.teal_surface,
         3 => null,
         4 => palette.ember_surface,
+        5 => palette.warm_bg,
         else => null,
     };
 }

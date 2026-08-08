@@ -90,8 +90,17 @@ describe('mapFullStreamPart', () => {
     }
   });
 
-  it('ignores reasoning parts', () => {
-    expect(mapFullStreamPart({ type: 'reasoning-delta', text: 'think' })).toEqual([]);
+  it('maps reasoning-delta → reasoning_delta', () => {
+    expect(mapFullStreamPart({ type: 'reasoning-delta', text: 'think' })).toEqual([
+      { type: 'reasoning_delta', text: 'think' },
+    ]);
+  });
+
+  it('redacts secrets in reasoning_delta', () => {
+    const secret = 'sk-reason-secret';
+    expect(
+      mapFullStreamPart({ type: 'reasoning-delta', text: `see ${secret}` }, [secret]),
+    ).toEqual([{ type: 'reasoning_delta', text: 'see [redacted]' }]);
   });
 
   it('maps error parts', () => {

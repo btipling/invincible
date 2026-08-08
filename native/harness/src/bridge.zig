@@ -11,7 +11,7 @@ const image_cache = @import("rich/image_cache.zig");
 const math_cache = @import("rich/math_cache.zig");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -25,6 +25,8 @@ pub const MessageKind = enum(u8) {
     assistant = 2,
     system = 3,
     error_msg = 4,
+    /// Protocol v8 — model reasoning monologue (display-only; not folded into history).
+    thinking = 5,
 };
 
 const MAX_MSG = 48;
@@ -232,7 +234,7 @@ export fn inv_push_message(kind: u8, ptr: [*]const u8, len: usize) void {
     refresh();
 }
 
-/// Replace the newest ring message when kind matches (protocol v7 — stream assistant growth).
+/// Replace the newest ring message when kind matches (protocol v7+ stream growth; Thinking in v8).
 /// Returns 1 on update, 0 if empty ring or kind mismatch.
 export fn inv_update_last_message(kind: u8, ptr: [*]const u8, len: usize) u8 {
     if (msg_count == 0) return 0;
