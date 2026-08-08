@@ -124,7 +124,7 @@ describe('summarizeToolLine', () => {
 });
 
 describe('LIVE_TOOL_LINES_MAX', () => {
-  it('is 32', () => {
-    expect(LIVE_TOOL_LINES_MAX).toBe(32);
+  it('is 128', () => {
+    expect(LIVE_TOOL_LINES_MAX).toBe(128);
   });
 });

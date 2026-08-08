@@ -66,12 +66,12 @@ When `AGENT_REASONING` is unset, the server enables `reasoning: provider-default
 
 | Cap | Value | Behavior |
 |-----|------:|----------|
-| Live tool System lines | **32** / turn | Then one `+ more tools (live cap 32)` notice |
-| Thinking **segments** | **6** / turn | Then one `+ more thinking (live cap 6)`; further monologue ignored |
+| Live tool System lines | **128** / turn | Then one `+ more tools (live cap 128)` notice |
+| Thinking **segments** | **32** / turn | Then one `+ more thinking (live cap 32)`; further monologue ignored |
 | Thinking chars (live segment) | **4096** | Wasm `MAX_MSG_LEN` |
 | Collapsed thinking | **≤160** + ellipsis | After segment close |
 | Tool summary length | **≤240** | `summarizeToolLine` / toolTrace |
-| JSON end-of-turn toolTrace lines | **6** | Non-stream / finalize path only |
+| JSON end-of-turn toolTrace lines | **128** | Non-stream / finalize path only |
 
 ## Deferred (not in stream contract yet)
 

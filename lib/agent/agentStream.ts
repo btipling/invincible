@@ -20,7 +20,7 @@ export const AGENT_STREAM_ACCEPT = 'text/event-stream';
 export const AGENT_STREAM_CONTENT_TYPE = 'text/event-stream; charset=utf-8';
 
 /** Live System tool lines per turn before a single overflow notice. */
-export const LIVE_TOOL_LINES_MAX = 32;
+export const LIVE_TOOL_LINES_MAX = 128;
 
 export function wantsAgentStream(req: Request): boolean {
   const accept = req.headers.get('accept') ?? '';
