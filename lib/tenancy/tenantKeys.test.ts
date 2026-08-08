@@ -229,6 +229,57 @@ describe('tenantKeys (pglite)', () => {
     expect(second.sandboxesReencrypted).toBe(0);
   });
 
+  it('backfill skips null/empty tokenCiphertext (vercel rows)', async () => {
+    const id = await insertTenant('t-backfill-vercel');
+    await db.insert(sandboxes).values([
+      {
+        tenantId: id,
+        name: 'Vercel',
+        slug: 'vercel',
+        backend: 'vercel',
+        image: 'vercel/sandbox/node:24',
+        baseUrl: null,
+        tokenCiphertext: null,
+        tokenKekVersion: 1,
+        status: 'active',
+      },
+      {
+        tenantId: id,
+        name: 'Legacy',
+        slug: 'legacy',
+        backend: 'byo',
+        baseUrl: 'http://127.0.0.1:8787/',
+        tokenCiphertext: encryptSecret('legacy-only', amk),
+        tokenKekVersion: 1,
+        status: 'active',
+      },
+    ]);
+
+    const result = await backfillTenantDeks({ db: db as never, amk });
+    expect(result.tenantsUpdated).toBe(1);
+    // only the legacy BYO row counts as re-encrypted
+    expect(result.sandboxesReencrypted).toBe(1);
+
+    const rows = await db
+      .select()
+      .from(sandboxes)
+      .where(eq(sandboxes.tenantId, id));
+    const bySlug = Object.fromEntries(rows.map((r) => [r.slug, r]));
+    expect(bySlug.vercel.tokenCiphertext).toBeNull();
+    expect(bySlug.vercel.tokenKekVersion).toBe(1);
+
+    const tenantRow = await db
+      .select({ ct: tenants.dekCiphertext, ver: tenants.dekVersion })
+      .from(tenants)
+      .where(eq(tenants.id, id))
+      .limit(1);
+    const dek = unwrapTenantDek(tenantRow[0]!.ct!, amk);
+    expect(decryptSecret(bySlug.legacy.tokenCiphertext!, dek)).toBe(
+      'legacy-only',
+    );
+    expect(bySlug.legacy.tokenKekVersion).toBe(tenantRow[0]!.ver);
+  });
+
   it('backfill fails closed on corrupt sandbox token (no silent skip)', async () => {
     const id = await insertTenant('t-corrupt');
     await db.insert(sandboxes).values({

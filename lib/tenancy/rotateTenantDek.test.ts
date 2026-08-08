@@ -439,6 +439,79 @@ describe('rotateTenantDek', () => {
     expect(decryptSecret(a2After.tokenCiphertext!, before.dek)).toBe('token-a2');
   });
 
+  it('skips null/empty tokenCiphertext (vercel rows) while rotating BYO', async () => {
+    const [vercelSb] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'Vercel',
+        slug: 'vercel',
+        backend: 'vercel',
+        image: 'vercel/sandbox/universal:latest',
+        baseUrl: null,
+        tokenCiphertext: null,
+        tokenKekVersion: 1,
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+
+    // empty string ciphertext must also skip (not throw)
+    const [emptySb] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'EmptyCt',
+        slug: 'empty-ct',
+        backend: 'byo',
+        baseUrl: 'https://empty.example',
+        tokenCiphertext: '   ',
+        tokenKekVersion: 1,
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+
+    const before = await loadTenantDek(tenantId, {
+      db: db as never,
+      amk: AMK,
+    });
+
+    const res = await rotateTenantDek(ownerId, tenantId, {
+      db: db as never,
+      amk: AMK,
+      mode: 'dek-only',
+    });
+    expect(res).toEqual({ ok: true, dekVersion: before.version + 1 });
+
+    const after = await loadTenantDek(tenantId, {
+      db: db as never,
+      amk: AMK,
+    });
+    expect(after.version).toBe(before.version + 1);
+
+    const [vercelAfter] = await db
+      .select()
+      .from(schema.sandboxes)
+      .where(eq(schema.sandboxes.id, vercelSb.id));
+    expect(vercelAfter.tokenCiphertext).toBeNull();
+    expect(vercelAfter.baseUrl).toBeNull();
+    expect(vercelAfter.tokenKekVersion).toBe(1);
+
+    const [emptyAfter] = await db
+      .select()
+      .from(schema.sandboxes)
+      .where(eq(schema.sandboxes.id, emptySb.id));
+    expect(emptyAfter.tokenCiphertext?.trim() ?? '').toBe('');
+    expect(emptyAfter.tokenKekVersion).toBe(1);
+
+    // BYO rows still re-encrypted under new DEK
+    const [a1After] = await db
+      .select()
+      .from(schema.sandboxes)
+      .where(eq(schema.sandboxes.id, sandboxA1));
+    expect(decryptSecret(a1After.tokenCiphertext!, after.dek)).toBe('token-a1');
+    expect(a1After.tokenKekVersion).toBe(after.version);
+  });
+
   it('not_found when user has no membership on tenant', async () => {
     const [stranger] = await db
       .insert(schema.users)

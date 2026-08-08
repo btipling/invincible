@@ -34,6 +34,7 @@ import {
 } from '../lib/tenancy/credentials';
 import { hashPassword } from '../lib/tenancy/password';
 import {
+  assertSandboxCredentials,
   isSandboxBackend,
   normalizeSandboxFieldsForBackend,
   parseVercelSandboxImageInput,
@@ -224,6 +225,10 @@ export async function seedTenancy(
         tokenCiphertext,
         image: sandboxEnv.image,
       });
+      const creds = assertSandboxCredentials(fields);
+      if (!creds.ok) {
+        throw new Error(`seed sandbox credentials invalid: ${creds.error}`);
+      }
 
       await tx
         .insert(sandboxes)
