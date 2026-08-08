@@ -102,8 +102,8 @@ pub fn queueSubmitFromUi(text: []const u8) void {
     var start: usize = 0;
     while (start < text.len and (text[start] == ' ' or text[start] == '\t' or text[start] == '\n' or text[start] == '\r')) : (start += 1) {}
     if (start >= text.len) return;
-    // Ignore while host is already processing or a submit is still pending.
-    if (lifecycle == .busy or has_pending_submit) return;
+    // Ignore while host is processing, submit pending, or load-earlier pending.
+    if (lifecycle == .busy or has_pending_submit or has_pending_load_earlier) return;
     pending_submit_len = copySlice(&pending_submit, text[start..]);
     has_pending_submit = pending_submit_len > 0;
     if (!has_pending_submit) return;

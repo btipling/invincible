@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   HARNESS_SMOKE_PROMPT,
+  pushSessionToBridge,
   runHarnessChat,
   runHarnessTurn,
   selectToolTraceLines,
@@ -19,12 +20,13 @@ import type { ChatResult } from './chatApi';
 import type { AgentResult } from './agentApi';
 import { SANDBOX_NOT_CONFIGURED_ERROR } from './agentApi';
 import { AUTH_REQUIRED_ERROR, SANDBOX_FORBIDDEN_ERROR } from './tenancy/errors';
-import { createEmptySession, formatPromptWithHistory, appendMessage } from './sessionStore';
+import { createEmptySession, formatPromptWithHistory, appendMessage, makeMessage } from './sessionStore';
 import { TOOL_TRACE_SUMMARY_MAX_CHARS } from './sandbox/config';
 
 function makeMockExports(): HarnessBridgeExports & {
   __messages: { kind: number; text: string }[];
   __lifecycle: () => Lifecycle;
+  __canLoadEarlier: () => number;
 } {
   let buf = new ArrayBuffer(64 * 1024);
   const memory = {
@@ -34,6 +36,7 @@ function makeMockExports(): HarnessBridgeExports & {
   };
   let nextPtr = 1024;
   let lifecycle = Lifecycle.Boot;
+  let canLoadEarlier = 0;
   const messages: { kind: number; text: string }[] = [];
 
   const gpa_u8 = (len: number) => {
@@ -77,7 +80,9 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_pending_submit_len: () => 0,
     inv_pending_submit_copy: () => 0,
     inv_ack_pending_submit: () => {},
-    inv_set_can_load_earlier: () => {},
+    inv_set_can_load_earlier: (v: number) => {
+      canLoadEarlier = v ? 1 : 0;
+    },
     inv_has_pending_load_earlier: () => 0,
     inv_ack_pending_load_earlier: () => {},
     inv_clear_model_catalog: () => {},
@@ -92,6 +97,7 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_math_cache_clear: () => {},
     __messages: messages,
     __lifecycle: () => lifecycle,
+    __canLoadEarlier: () => canLoadEarlier,
   };
 }
 
@@ -539,5 +545,53 @@ describe('modelId forwarding', () => {
       'hi',
       expect.objectContaining({ modelId: 'anthropic/claude-a' }),
     );
+  });
+});
+
+describe('pushSessionToBridge window (protocol v6)', () => {
+  it('hydrates at most 48 messages from the latest window', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      messages: Array.from({ length: 60 }, (_, i) => makeMessage('user', `m${i}`)),
+    };
+    const start = pushSessionToBridge(bridge, session, { clear: true });
+    expect(start).toBe(12);
+    expect(exp.__messages).toHaveLength(48);
+    expect(exp.__messages[0]!.text).toBe('m12');
+    expect(exp.__messages[47]!.text).toBe('m59');
+    expect(exp.__canLoadEarlier()).toBe(1);
+  });
+
+  it('earlier windowStart surfaces older turns and clears can-load at 0', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      messages: Array.from({ length: 60 }, (_, i) => makeMessage('user', `m${i}`)),
+    };
+    const start = pushSessionToBridge(bridge, session, { clear: true, windowStart: 0 });
+    expect(start).toBe(0);
+    expect(exp.__messages).toHaveLength(48);
+    expect(exp.__messages[0]!.text).toBe('m0');
+    expect(exp.__messages[47]!.text).toBe('m47');
+    expect(exp.__canLoadEarlier()).toBe(0);
+  });
+
+  it('short session leaves can-load false', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      messages: Array.from({ length: 10 }, (_, i) => makeMessage('user', `m${i}`)),
+    };
+    const start = pushSessionToBridge(bridge, session, { clear: true });
+    expect(start).toBe(0);
+    expect(exp.__messages).toHaveLength(10);
+    expect(exp.__canLoadEarlier()).toBe(0);
   });
 });

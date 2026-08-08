@@ -39,8 +39,10 @@ transcript via the bridge on load / Clear.
 ## Ring window vs full session
 
 The Wasm transcript ring holds at most **48** messages (`MAX_MSG`). The host
-`SessionStore` may hold more. On restore and after each turn the host hydrates
-the **latest** ≤48 messages into the ring.
+`SessionStore` may hold more. On restore the host hydrates the **latest** ≤48
+messages into the ring. After a turn on the latest window, new lines are pushed
+incrementally (`pushMessage`); the host updates `ringWindowStart` /
+`can_load_earlier` without a full re-hydrate.
 
 When the session is longer than 48, the canvas shows a **Load earlier** control
 (protocol **v6**). Activating it asks the host (poll/ack, same pattern as submit)
