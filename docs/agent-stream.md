@@ -31,7 +31,7 @@ Unknown types are ignored (forward-compatible). String fields are redacted serve
 
 ## Wasm bridge
 
-Assistant and thinking growth use **protocol v8** `inv_update_last_message` so streaming does not create one ring message per token. Tool lines use System `pushMessage`. Thinking uses `MessageKind.Thinking` (muted warm chrome). No dual DOM transcript. In-place stream growth relies on harness stick-to-bottom (content height) so the viewport follows when the user is near the bottom — not on new SSE event types.
+Assistant and thinking growth use **protocol v8** `inv_update_last_message` so streaming does not create one ring message per token. Tool lines use System `pushMessage`. Thinking uses `MessageKind.Thinking` (muted warm chrome + **same GFM paint** as assistant). No dual DOM transcript. In-place stream growth relies on harness stick-to-bottom (content height) so the viewport follows when the user is near the bottom — not on new SSE event types.
 
 ### Thinking collapse
 
