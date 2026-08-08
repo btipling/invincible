@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SANDBOX_NOT_CONFIGURED_ERROR, sendAgent } from './agentApi';
+import { SANDBOX_NOT_CONFIGURED_ERROR, sendAgent, sendAgentStream } from './agentApi';
 import { AUTH_REQUIRED_ERROR, SANDBOX_FORBIDDEN_ERROR } from './tenancy/errors';
 
 describe('sendAgent', () => {
@@ -105,4 +105,132 @@ describe('sendAgent', () => {
   });
 
 
+});
+
+
+describe('sendAgentStream', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function sseResponse(chunks: string[], init?: ResponseInit): Response {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const enc = new TextEncoder();
+        for (const c of chunks) controller.enqueue(enc.encode(c));
+        controller.close();
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        ...(init?.headers as Record<string, string> | undefined),
+      },
+      ...init,
+    });
+  }
+
+  it('parses tool + text events and returns done text', async () => {
+    const events: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse([
+          'data: {"type":"tool_start","name":"list_dir"}\n\n',
+          'data: {"type":"tool_result","name":"list_dir","ok":true,"summary":"list_dir · ok · a"}\n\n',
+          'data: {"type":"text_delta","text":"Hi"}\n\n',
+          'data: {"type":"text_delta","text":" there"}\n\n',
+          'data: {"type":"done","text":"Hi there","toolTrace":[{"name":"list_dir","ok":true,"summary":"list_dir · ok · a"}]}\n\n',
+        ]),
+      ),
+    );
+    const result = await sendAgentStream('list', {
+      onEvent: async (ev) => {
+        events.push(ev.type);
+      },
+    });
+    expect(result).toEqual({
+      ok: true,
+      text: 'Hi there',
+      toolTrace: [{ name: 'list_dir', ok: true, summary: 'list_dir · ok · a' }],
+    });
+    expect(events).toEqual([
+      'tool_start',
+      'tool_result',
+      'text_delta',
+      'text_delta',
+      'done',
+    ]);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/agent',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Accept: 'text/event-stream' }),
+      }),
+    );
+  });
+
+  it('accepts CRLF-framed SSE', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse([
+          'data: {"type":"text_delta","text":"A"}\r\n\r\n',
+          'data: {"type":"done","text":"A"}\r\n\r\n',
+        ]),
+      ),
+    );
+    const result = await sendAgentStream('x');
+    expect(result).toEqual({ ok: true, text: 'A' });
+  });
+
+  it('keeps delta text when done.text is empty', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse([
+          'data: {"type":"text_delta","text":"partial"}\n\n',
+          'data: {"type":"done","text":""}\n\n',
+        ]),
+      ),
+    );
+    const result = await sendAgentStream('x');
+    expect(result).toEqual({ ok: true, text: 'partial' });
+  });
+
+  it('returns stream error event', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse([
+          'data: {"type":"error","error":"boom","status":502}\n\n',
+        ]),
+      ),
+    );
+    const result = await sendAgentStream('x');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('boom');
+      expect(result.status).toBe(502);
+    }
+  });
+
+  it('parses early JSON 503 sandbox-not-configured', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json(
+          { error: SANDBOX_NOT_CONFIGURED_ERROR },
+          { status: 503, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    const result = await sendAgentStream('x');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.sandboxNotConfigured).toBe(true);
+      expect(result.status).toBe(503);
+    }
+  });
 });

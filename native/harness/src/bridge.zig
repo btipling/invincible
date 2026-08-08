@@ -11,7 +11,7 @@ const image_cache = @import("rich/image_cache.zig");
 const math_cache = @import("rich/math_cache.zig");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -230,6 +230,19 @@ export fn inv_push_message(kind: u8, ptr: [*]const u8, len: usize) void {
     msg_head = (msg_head + 1) % MAX_MSG;
     if (msg_count < MAX_MSG) msg_count += 1;
     refresh();
+}
+
+/// Replace the newest ring message when kind matches (protocol v7 — stream assistant growth).
+/// Returns 1 on update, 0 if empty ring or kind mismatch.
+export fn inv_update_last_message(kind: u8, ptr: [*]const u8, len: usize) u8 {
+    if (msg_count == 0) return 0;
+    const idx = (msg_head + MAX_MSG - 1) % MAX_MSG;
+    const slot = &messages[idx];
+    if (slot.kind != kind) return 0;
+    const src = ptr[0..len];
+    slot.len = copySlice(&slot.data, src);
+    refresh();
+    return 1;
 }
 
 export fn inv_clear_messages() void {

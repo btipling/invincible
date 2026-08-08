@@ -11,10 +11,16 @@ import {
 } from './chatApi';
 import {
   sendAgent,
+  sendAgentStream,
   type AgentResult,
   type SendAgentFn,
+  type SendAgentStreamFn,
   type ToolTraceEntry,
 } from './agentApi';
+import {
+  LIVE_TOOL_LINES_MAX,
+  type AgentStreamEvent,
+} from './agent/agentStream';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
 } from './sandbox/config';
@@ -72,8 +78,15 @@ export type RunHarnessTurnOptions = Omit<RunHarnessChatOptions, 'history'> & {
    * exact sandbox-not-configured 503.
    */
   preferAgent?: boolean;
-  /** Inject for tests; defaults to sendAgent. */
+  /** Inject for tests; defaults to sendAgent (JSON). */
   sendAgent?: SendAgentFn;
+  /**
+   * When true (default), use SSE stream for live tool/text updates.
+   * Set false to force JSON agent path.
+   */
+  streamAgent?: boolean;
+  /** Inject for tests; defaults to sendAgentStream. */
+  sendAgentStream?: SendAgentStreamFn;
 };
 
 export type HarnessTurnResult = {
@@ -259,6 +272,13 @@ export async function runHarnessTurn(
   const preferAgent = opts?.preferAgent !== false;
   const useHistory = opts?.useHistory !== false;
   const sendAgentFn = opts?.sendAgent ?? sendAgent;
+  const sendAgentStreamFn = opts?.sendAgentStream ?? sendAgentStream;
+  // Default: stream when using production client. Tests that only inject
+  // `sendAgent` keep the JSON path unless streamAgent/sendAgentStream set.
+  const streamAgent =
+    opts?.streamAgent !== undefined
+      ? opts.streamAgent
+      : opts?.sendAgentStream != null || opts?.sendAgent == null;
 
   const apiPrompt =
     useHistory && session.messages.length > 0
@@ -274,23 +294,153 @@ export async function runHarnessTurn(
       userPushedOnBridge = true;
     }
 
-    const agentResult = await sendAgentFn(apiPrompt, {
-      signal: opts?.signal,
-      modelId: opts?.modelId,
-    });
+    let agentResult: AgentResult;
+    let next = withUser;
+    let liveToolLines = 0;
+    let overflowNote = false;
+    let assistantStarted = false;
+    /** Full assistant text for session/result (all stream segments). */
+    let assistantAcc = '';
+    /**
+     * Text for the currently open assistant ring bubble only.
+     * Closed when a System tool line is pushed so post-tool deltas open a new
+     * bubble — `inv_update_last_message` only rewrites the last ring row.
+     */
+    let assistantSegment = '';
+    let assistantSegmentOpen = false;
+    let sawStreamTerminal = false;
+
+    const closeAssistantSegment = () => {
+      assistantSegmentOpen = false;
+      assistantSegment = '';
+    };
+
+    const growAssistant = (chunk: string) => {
+      if (!chunk) return;
+      assistantAcc += chunk;
+      if (!assistantSegmentOpen) {
+        assistantSegment = chunk;
+        bridge.pushMessage(MessageKind.Assistant, assistantSegment);
+        assistantSegmentOpen = true;
+        assistantStarted = true;
+        return;
+      }
+      assistantSegment += chunk;
+      if (!bridge.updateLastMessage(MessageKind.Assistant, assistantSegment)) {
+        // Last row is not assistant — open a fresh bubble with this segment.
+        bridge.pushMessage(MessageKind.Assistant, assistantSegment);
+      }
+    };
+
+    const finalizeAssistant = (finalText: string) => {
+      const text = finalText.trim();
+      if (!text) return;
+      if (!assistantStarted) {
+        bridge.pushMessage(MessageKind.Assistant, text);
+        assistantStarted = true;
+        assistantSegmentOpen = true;
+        assistantSegment = text;
+      } else if (assistantSegmentOpen) {
+        // Single continuous segment: rewrite to server final when it differs.
+        if (assistantAcc === assistantSegment) {
+          if (text !== assistantSegment) {
+            if (!bridge.updateLastMessage(MessageKind.Assistant, text)) {
+              bridge.pushMessage(MessageKind.Assistant, text);
+            }
+          }
+        } else {
+          // Multi-segment turn: adjust only the open tail if final extends it.
+          const prefixLen = Math.max(0, assistantAcc.length - assistantSegment.length);
+          const prefix = assistantAcc.slice(0, prefixLen);
+          if (text.startsWith(prefix) && text.length >= prefixLen) {
+            const tail = text.slice(prefixLen);
+            if (tail && tail !== assistantSegment) {
+              if (!bridge.updateLastMessage(MessageKind.Assistant, tail)) {
+                bridge.pushMessage(MessageKind.Assistant, tail);
+              }
+              assistantSegment = tail;
+            }
+          }
+          // else: leave streamed segments as-is; session still gets full text
+        }
+      } else {
+        // Stream ended on a tool line — only push if final adds unseen text.
+        if (text !== assistantAcc) {
+          bridge.pushMessage(MessageKind.Assistant, text);
+          assistantSegmentOpen = true;
+          assistantSegment = text;
+        }
+      }
+      assistantAcc = text;
+      scheduleImagesFromMarkdown(bridge, text);
+    };
+
+    if (streamAgent) {
+      agentResult = await sendAgentStreamFn(apiPrompt, {
+        signal: opts?.signal,
+        modelId: opts?.modelId,
+        onEvent: async (ev: AgentStreamEvent) => {
+          if (ev.type === 'tool_start' || ev.type === 'tool_result') {
+            closeAssistantSegment();
+            if (liveToolLines >= LIVE_TOOL_LINES_MAX) {
+              if (!overflowNote) {
+                const note = `+ more tools (live cap ${LIVE_TOOL_LINES_MAX})`;
+                bridge.pushMessage(MessageKind.System, note);
+                next = appendMessage(next, 'system', note);
+                overflowNote = true;
+              }
+              return;
+            }
+            const line =
+              ev.type === 'tool_start'
+                ? truncateToolTraceSummary(`${ev.name} · running…`)
+                : truncateToolTraceSummary(ev.summary);
+            if (!line) return;
+            bridge.pushMessage(MessageKind.System, line);
+            next = appendMessage(next, 'system', line);
+            liveToolLines += 1;
+            return;
+          }
+          if (ev.type === 'text_delta') {
+            growAssistant(ev.text);
+            return;
+          }
+          if (ev.type === 'done') {
+            sawStreamTerminal = true;
+            finalizeAssistant(ev.text ?? assistantAcc);
+            // Do not re-push toolTrace — live lines already shown.
+            return;
+          }
+          if (ev.type === 'error') {
+            sawStreamTerminal = true;
+          }
+        },
+      });
+    } else {
+      agentResult = await sendAgentFn(apiPrompt, {
+        signal: opts?.signal,
+        modelId: opts?.modelId,
+      });
+    }
 
     if (agentResult.ok) {
-      let next = withUser;
-      const lines = selectToolTraceLines(agentResult.toolTrace);
-      for (const line of lines) {
-        bridge.pushMessage(MessageKind.System, line);
-        next = appendMessage(next, 'system', line);
+      if (!streamAgent || !sawStreamTerminal) {
+        // JSON path (or stream that returned JSON): end-of-turn toolTrace + assistant.
+        const lines = selectToolTraceLines(agentResult.toolTrace);
+        for (const line of lines) {
+          bridge.pushMessage(MessageKind.System, line);
+          next = appendMessage(next, 'system', line);
+        }
+        if (!assistantStarted) {
+          bridge.pushMessage(MessageKind.Assistant, agentResult.text);
+          assistantStarted = true;
+        } else {
+          bridge.updateLastMessage(MessageKind.Assistant, agentResult.text);
+        }
+        scheduleImagesFromMarkdown(bridge, agentResult.text);
+        assistantAcc = agentResult.text;
       }
-      bridge.pushMessage(MessageKind.Assistant, agentResult.text);
-      scheduleImagesFromMarkdown(bridge, agentResult.text);
-      next = appendMessage(next, 'assistant', agentResult.text);
-      // Full-transcript math schedule so putOk LRU drops can re-put after
-      // Wasm math_cache eviction while older formulas remain visible.
+      next = appendMessage(next, 'assistant', agentResult.text || assistantAcc);
       scheduleMathFromTexts(
         bridge,
         next.messages
@@ -299,7 +449,7 @@ export async function runHarnessTurn(
       );
       bridge.setLifecycle(Lifecycle.Ready);
       return {
-        result: { ok: true, text: agentResult.text },
+        result: { ok: true, text: agentResult.text || assistantAcc },
         session: next,
       };
     }
@@ -314,7 +464,7 @@ export async function runHarnessTurn(
           error: agentResult.error,
           status: agentResult.status,
         },
-        session: appendMessage(withUser, 'error', agentResult.error),
+        session: appendMessage(next, 'error', agentResult.error),
       };
     }
     // sandboxNotConfigured → fall through to chat once

@@ -27,7 +27,7 @@ optional login chrome).
 | Session ring window + Load earlier poll | **DOM** host + **Wasm** control | Host slices ≤48; Wasm `Load earlier` pending (protocol v6); no React transcript |
 | Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status; model chip is a **mirror** of Wasm selection, not a second picker |
 | Model catalog fetch (`GET /api/models`) | **DOM** | Session-gated; host pushes ids into Wasm catalog |
-| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v6**) |
+| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v7**) |
 | Selected `modelId` on inference | **DOM host** → **Vercel backend** | Host reads bridge; POST body; server re-authorizes grants + BYOK |
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
 | Per-user MCP config UI | **DOM** | `/settings`, `/settings/mcp` — not dual chat; not Admin |
@@ -70,14 +70,16 @@ User types in Wasm composer
   → inv_* pending submit (poll)
   → Host runHarnessTurn / SessionStore
   → formatPromptWithHistory (user/assistant only)
-  → POST /api/agent { prompt, modelId? }
+  → POST /api/agent { prompt, modelId? } with Accept: text/event-stream (default host)
        if 503 + exact sandbox-not-configured → POST /api/chat { prompt, modelId? }
        tenancy on: server attaches request-scoped BYOK for authorized modelId
        tools → sandbox (env SANDBOX_* when tenancy off; DB grants when on)
               + optional builtin http_get (Vercel Sandbox egress; env BUILTIN_HTTP_FETCH)
               + enabled per-user MCP tools (server-side only; soft-fail dead servers)
-  → Host pushes ≤6 system toolTrace lines + assistant/error into Wasm
-  → User reads reply in Wasm transcript
+       SSE: tool_start / tool_result / text_delta / done (see docs/agent-stream.md)
+       JSON fallback when Accept is not event-stream (tests / simple clients)
+  → Host pushes live System tool lines + growing Assistant (protocol v7 update-last)
+  → User reads tools + reply in Wasm transcript while Busy
 ```
 
 **toolTrace display (host → Wasm system lines):** short human lines only —
@@ -90,7 +92,7 @@ are flattened server-side before the model and before summaries.
 | Concern | Path |
 |---------|------|
 | Host shell | `app/harness/HarnessHost.tsx` |
-| Bridge TS (protocol **v6**) | `lib/harnessBridge.ts` |
+| Bridge TS (protocol **v7**) | `lib/harnessBridge.ts` |
 | Image fetch/decode | `lib/harnessImages.ts` |
 | Model catalog API | `app/api/models/route.ts` |
 | Admin inference keys | `app/admin/inference/*` |
@@ -103,7 +105,7 @@ are flattened server-side before the model and before summaries.
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
 | Export whitelist | `native/harness/build.zig` |
 
-Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **6**).
+Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **7**).
 Mismatch → load error; rebuild both sides. Image **bytes** enter only via bridge put; never dual DOM `<img>` product surface.
 
 ## Related
@@ -113,4 +115,5 @@ Mismatch → load error; rebuild both sides. Image **bytes** enter only via brid
 - Wasm supply / runner: [runner.md](runner.md)  
 - Limits: [harness-limits.md](harness-limits.md)  
 - Session restore: [session-model.md](session-model.md)  
+- Agent SSE: [agent-stream.md](agent-stream.md)  
 - Per-user MCP: [mcp.md](mcp.md)  
