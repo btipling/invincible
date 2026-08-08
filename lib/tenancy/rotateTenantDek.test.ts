@@ -24,6 +24,7 @@ async function applyMigrations(client: PGlite) {
     '0003_provider_secrets.sql',
     '0004_user_mcp_servers.sql',
     '0005_sandbox_backend.sql',
+    '0006_user_github_tokens.sql',
   ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     for (const stmt of sql
@@ -60,6 +61,7 @@ describe('rotateTenantDek', () => {
   });
 
   beforeEach(async () => {
+    await db.delete(schema.userGithubTokens);
     await db.delete(schema.userMcpServers);
     await db.delete(schema.providerSecretGrants);
     await db.delete(schema.providerSecretModels);
@@ -198,9 +200,16 @@ describe('rotateTenantDek', () => {
         enabled: true,
       },
     ]);
+
+    await db.insert(schema.userGithubTokens).values({
+      userId: ownerId,
+      tenantId,
+      tokenCiphertext: encryptSecret('ghp_pat_rotate_test', dek),
+      tokenKekVersion: 1,
+    });
   });
 
-  it('owner rotates: re-encrypts sandboxes + provider_secrets + MCP; old DEK fails', async () => {
+  it('owner rotates: re-encrypts sandboxes + provider_secrets + MCP + GitHub PAT; old DEK fails', async () => {
     const before = await loadTenantDek(tenantId, {
       db: db as never,
       amk: AMK,
@@ -267,6 +276,19 @@ describe('rotateTenantDek', () => {
     ).toThrow();
     expect(noKey.authHeaderValueCiphertext).toBeNull();
     expect(noKey.authHeaderKekVersion).toBeNull();
+
+    const ghRows = await db
+      .select()
+      .from(schema.userGithubTokens)
+      .where(eq(schema.userGithubTokens.tenantId, tenantId));
+    expect(ghRows).toHaveLength(1);
+    expect(ghRows[0].tokenKekVersion).toBe(2);
+    expect(decryptSecret(ghRows[0].tokenCiphertext!, after.dek)).toBe(
+      'ghp_pat_rotate_test',
+    );
+    expect(() =>
+      decryptSecret(ghRows[0].tokenCiphertext!, before.dek),
+    ).toThrow();
   });
 
   it('admin cannot rotate DEK', async () => {

@@ -43,6 +43,13 @@
       "when": 1785900000000,
       "tag": "0005_sandbox_backend",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785920000000,
+      "tag": "0006_user_github_tokens",
+      "breakpoints": true
     }
   ]
 }

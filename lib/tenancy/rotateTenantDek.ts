@@ -1,11 +1,11 @@
 /**
  * Owner-only tenant DEK rotation.
  * Re-encrypts all sandbox tokens, provider secret credentials, and non-null
- * user_mcp_servers header ciphertexts under a new DEK; bumps dek_version
+ * user_mcp_servers header ciphertexts and user_github_tokens under a new DEK; bumps dek_version
  * atomically. Never returns key material.
  *
  * Concurrency: SELECT … FOR UPDATE on the tenant row (and sandboxes / secrets /
- * MCP rows) for the full re-encrypt so concurrent writers cannot write under a
+ * MCP / GitHub token rows) for the full re-encrypt so concurrent writers cannot write under a
  * discarded DEK. Authz is re-checked under the same lock.
  */
 import { and, eq } from 'drizzle-orm';
@@ -16,6 +16,7 @@ import {
   tenantMembers,
   tenants,
   userMcpServers,
+  userGithubTokens,
   type Db,
 } from '../../db';
 import {
@@ -46,8 +47,8 @@ export type RotateTenantDekDeps = {
 
 /**
  * Owner-only: generate a new tenant DEK, re-encrypt every sandbox token,
- * provider_secrets credential, and non-null user_mcp_servers header ciphertext,
- * bump versions.
+ * provider_secrets credential, non-null user_mcp_servers header ciphertext,
+ * and non-null user_github_tokens ciphertext, bump versions.
  * Single transaction + SELECT … FOR UPDATE on the tenant row.
  */
 export async function rotateTenantDek(
@@ -242,6 +243,32 @@ async function rotateWithDb(
             updatedAt: new Date(),
           })
           .where(eq(userMcpServers.id, mcp.id));
+      }
+
+      // GitHub PATs: DEK-only; skip null ciphertext (cleared / unset).
+      const ghRows = await tx
+        .select({
+          userId: userGithubTokens.userId,
+          tokenCiphertext: userGithubTokens.tokenCiphertext,
+        })
+        .from(userGithubTokens)
+        .where(eq(userGithubTokens.tenantId, tenantId))
+        .for('update');
+
+      for (const gh of ghRows) {
+        if (!gh.tokenCiphertext) {
+          continue;
+        }
+        const plain = decryptProviderCredential(gh.tokenCiphertext, oldDek);
+        const nextCt = encryptSecret(plain, newDek);
+        await tx
+          .update(userGithubTokens)
+          .set({
+            tokenCiphertext: nextCt,
+            tokenKekVersion: nextVersion,
+            updatedAt: new Date(),
+          })
+          .where(eq(userGithubTokens.userId, gh.userId));
       }
 
       await tx

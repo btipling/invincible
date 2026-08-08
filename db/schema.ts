@@ -235,3 +235,28 @@ export const userMcpServers = pgTable(
 );
 
 export type UserMcpServer = typeof userMcpServers.$inferSelect;
+
+/**
+ * Per-user GitHub PAT (parent #291 / phase #292).
+ * Token ciphertext is DEK-only (nullable when cleared). Server-only — never
+ * expose ciphertext to client.
+ */
+export const userGithubTokens = pgTable(
+  'user_github_tokens',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    /** DEK ciphertext of raw PAT; null when cleared / unset. Never log. */
+    tokenCiphertext: text('token_ciphertext'),
+    /** Tenant dek_version at write; null when no ciphertext. */
+    tokenKekVersion: integer('token_kek_version'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('user_github_tokens_tenant_id_idx').on(t.tenantId)],
+);
+
+export type UserGithubToken = typeof userGithubTokens.$inferSelect;
