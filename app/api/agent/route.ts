@@ -4,8 +4,8 @@ import {
   mapByokResolveFailure,
   mapInferenceError,
   missingGatewayKeyError,
-  parseChatBody,
 } from '../../../lib/chatServer';
+import { parseAgentBody } from '../../../lib/agent/agentBody';
 import {
   SANDBOX_NOT_CONFIGURED_ERROR,
   sandboxConfigured,
@@ -60,8 +60,8 @@ async function closeRunners(
 /**
  * Multi-step agent with sandbox tools (+ builtin HTTP + per-user MCP when enabled).
  *
- * POST { prompt: string, modelId?: string }
- * → JSON { text, toolTrace? } | { error }
+ * POST { prompt: string, modelId?: string, cwd?: string }
+ * → JSON { text, toolTrace?, cwd? } | { error }
  * → or SSE (Accept: text/event-stream) agent events (docs/agent-stream.md)
  *
  * Tenancy on: DB-resolved sandbox + grants + request-scoped BYOK + user MCP tools.
@@ -99,7 +99,7 @@ export async function POST(req: Request): Promise<Response> {
     );
   }
 
-  const parsed = parseChatBody(body);
+  const parsed = parseAgentBody(body);
   if (!parsed.ok) {
     return Response.json({ error: parsed.error }, { status: parsed.status });
   }
@@ -115,6 +115,7 @@ export async function POST(req: Request): Promise<Response> {
     let runParams: Parameters<typeof runAgent>[0] = {
       prompt: parsed.prompt,
       signal: req.signal,
+      initialCwd: parsed.cwd,
     };
 
     if (tenancyOn) {
@@ -261,7 +262,7 @@ export async function POST(req: Request): Promise<Response> {
       });
     }
 
-    const { text, toolTrace } = await runAgent(runParams);
+    const { text, toolTrace, cwd } = await runAgent(runParams);
 
     if (!text) {
       return Response.json({ error: 'Empty model response.' }, { status: 502 });
@@ -270,6 +271,7 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({
       text,
       ...(toolTrace.length > 0 ? { toolTrace } : {}),
+      ...(cwd != null ? { cwd } : {}),
     });
   } catch (err) {
     if (isAbortError(err)) {

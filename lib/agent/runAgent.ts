@@ -7,7 +7,8 @@ import {
   getSandboxConfig,
 } from '../sandbox/config';
 import { createSandboxClient, type SandboxClient } from '../sandbox/client';
-import { createAgentTools } from './tools';
+import { createAgentTools, type CwdState } from './tools';
+import { normalizeWorkspaceRel } from './workPath';
 import { redactSecrets } from './redact';
 import {
   flattenToolResultText,
@@ -65,18 +66,26 @@ export type RunAgentParams = {
    * FS tools are unavailable). Default false.
    */
   skipSandboxTools?: boolean;
+  /**
+   * Logical workspace cwd for this turn (workspace-root-relative).
+   * Default `"."`. Host supplies session cwd; route validates via parseAgentBody.
+   */
+  initialCwd?: string;
 };
 
 export type RunAgentResult = {
   text: string;
   toolTrace: ToolTraceEntry[];
+  /** Present when FS sandbox tools were active for the turn. */
+  cwd?: string;
 };
 
 export const DEFAULT_AGENT_SYSTEM = [
   'You are the Invincible coding agent.',
-  'The workspace is a remote sandbox root. Prefer tools (list_dir, read_file, write_file, str_replace, exec) for filesystem and command work. Use str_replace for surgical edits (unique old_string unless replace_all); write_file to create or fully rewrite.',
-  'Use paths relative to the workspace root. Do not invent host absolute paths outside the sandbox.',
-  'Be concise in final answers; cite relative paths when useful.',
+  'The workspace is a remote sandbox root. Prefer tools (list_dir, read_file, write_file, str_replace, exec, change_dir, pwd) for filesystem and command work. Use str_replace for surgical edits (unique old_string unless replace_all); write_file to create or fully rewrite.',
+  'Logical cwd starts at the workspace root (or the session cwd). Prefer change_dir into the project once, then short relative paths under that cwd. Prefer change_dir as its own step before a burst of path tools. Use pwd to inspect cwd.',
+  'Tool results always show workspace-root-relative paths (and cwd= when not at root). Paths that already include the cwd prefix also work. Do not invent host absolute paths outside the sandbox.',
+  'Be concise in final answers; cite workspace-relative paths when useful.',
   'If the user message includes Previous conversation with Tool: lines, those tools already ran — reuse that work; do not redo identical tool calls unless asked or the files may have changed.',
 ].join(' ');
 
@@ -111,6 +120,15 @@ export function resolveAgentStopWhen(
     return stepCountIs(Math.floor(maxSteps));
   }
   return isLoopFinished();
+}
+
+
+function makeCwdState(initialCwd?: string): CwdState {
+  try {
+    return { current: normalizeWorkspaceRel(initialCwd ?? '.') };
+  } catch {
+    return { current: '.' };
+  }
 }
 
 /**
@@ -148,6 +166,8 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
     hasFsTools = true;
   }
 
+  const cwdState = makeCwdState(params.initialCwd);
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sandboxTools: Record<string, any> = hasFsTools && client
     ? createAgentTools({
@@ -155,6 +175,7 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
         secrets,
         signal: params.signal,
         permissions: params.permissions,
+        cwdState,
       })
     : {};
 
@@ -190,7 +211,11 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
   if (unwrapped != null) {
     text = redactSecrets(unwrapped, secrets);
   }
-  return { text, toolTrace };
+  return {
+    text,
+    toolTrace,
+    ...(hasFsTools ? { cwd: cwdState.current } : {}),
+  };
 }
 
 export type RunAgentStreamHandlers = {
@@ -234,6 +259,8 @@ export async function runAgentStream(
     hasFsTools = true;
   }
 
+  const cwdState = makeCwdState(params.initialCwd);
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sandboxTools: Record<string, any> = hasFsTools && client
     ? createAgentTools({
@@ -241,6 +268,7 @@ export async function runAgentStream(
         secrets,
         signal: params.signal,
         permissions: params.permissions,
+        cwdState,
       })
     : {};
 
@@ -287,12 +315,18 @@ export async function runAgentStream(
     }
     const steps = result.steps != null ? await result.steps : undefined;
     const toolTrace = collectToolTrace({ steps }, secrets);
+    const cwdOut = hasFsTools ? cwdState.current : undefined;
     await handlers.onEvent({
       type: 'done',
       text,
       ...(toolTrace.length > 0 ? { toolTrace } : {}),
+      ...(cwdOut != null ? { cwd: cwdOut } : {}),
     });
-    return { text, toolTrace };
+    return {
+      text,
+      toolTrace,
+      ...(cwdOut != null ? { cwd: cwdOut } : {}),
+    };
   } catch (err) {
     if (err instanceof Error && (err.name === 'AbortError' || err.name === 'ResponseAborted')) {
       await handlers.onEvent({ type: 'error', error: 'Request cancelled.', status: 499 });

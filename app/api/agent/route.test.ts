@@ -686,4 +686,77 @@ describe('POST /api/agent', () => {
     expect(closeHttp).toHaveBeenCalled();
   });
 
+
+  it('returns 400 for host-absolute cwd', async () => {
+    clearTenancyEnv();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.SANDBOX_URL = 'http://127.0.0.1:8787';
+    process.env.SANDBOX_TOKEN = 'tok';
+
+    vi.resetModules();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: null,
+      })),
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(),
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi', cwd: '/etc' }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/cwd|absolute/i);
+  });
+
+  it('passes initialCwd and returns cwd from runAgent', async () => {
+    clearTenancyEnv();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.SANDBOX_URL = 'http://127.0.0.1:8787';
+    process.env.SANDBOX_TOKEN = 'tok';
+
+    const runAgent = vi.fn(async (arg: { initialCwd?: string }) => ({
+      text: 'ok',
+      toolTrace: [],
+      cwd: arg.initialCwd ?? '.',
+    }));
+
+    vi.resetModules();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: null,
+      })),
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent,
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi', cwd: 'invincible' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { text: string; cwd?: string };
+    expect(body.text).toBe('ok');
+    expect(body.cwd).toBe('invincible');
+    expect(runAgent).toHaveBeenCalled();
+    const arg = runAgent.mock.calls[0]?.[0] as { initialCwd?: string };
+    expect(arg.initialCwd).toBe('invincible');
+  });
+
 });
