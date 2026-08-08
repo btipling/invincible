@@ -228,7 +228,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             modelId,
           },
         );
-        if (controller.signal.aborted) return;
+        // Always persist — including user Stop/cancel (and late abort after a finished
+        // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
+        // Load earlier / refresh could wipe the cancelled turn from the ring.
         persist(next);
         if (!result.ok) {
           setHostNote(result.error);
