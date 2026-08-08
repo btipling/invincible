@@ -384,14 +384,14 @@ describe('runHarnessTurn', () => {
     ).toHaveLength(n);
   });
 
-  it('history fold ignores system tool lines', async () => {
+  it('history fold includes system tool lines for continue', async () => {
     let session = createEmptySession();
     session = appendMessage(session, 'user', 'first');
     session = appendMessage(session, 'system', 'write_file a ok');
     session = appendMessage(session, 'assistant', 'done');
 
     const folded = formatPromptWithHistory(session.messages, 'second');
-    expect(folded).not.toContain('write_file');
+    expect(folded).toContain('Tool: write_file a ok');
     expect(folded).toContain('User: first');
     expect(folded).toContain('Assistant: done');
     expect(folded).toContain('User: second');
@@ -399,7 +399,7 @@ describe('runHarnessTurn', () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const sendAgent = vi.fn(async (prompt: string): Promise<AgentResult> => {
-      expect(prompt).not.toContain('write_file');
+      expect(prompt).toContain('write_file a ok');
       return { ok: true, text: 'ok2' };
     });
 
@@ -748,6 +748,37 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     expect(collapseThinkingDisplay('short')).toBe('short');
     const long = 'x'.repeat(200);
     expect(collapseThinkingDisplay(long)).toBe(long);
+  });
+
+  it('persists partial assistant + tools on cancel so continue has memory', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const { runHarnessTurn } = await import('./harnessChat');
+    const { session: next } = await runHarnessTurn(bridge, session, 'work', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'read_file' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'read_file',
+          ok: true,
+          summary: 'read_file · ✓ ok · a.ts · 3 lines · 10 B',
+        });
+        await init?.onEvent?.({ type: 'text_delta', text: 'I read a.ts and' });
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(next.messages.some((m) => m.role === 'system' && m.text.includes('read_file'))).toBe(
+      true,
+    );
+    expect(next.messages.some((m) => m.role === 'assistant' && m.text.includes('I read a.ts'))).toBe(
+      true,
+    );
+    expect(next.messages.some((m) => m.role === 'error')).toBe(true);
+    const folded = formatPromptWithHistory(next.messages, 'continue');
+    expect(folded).toContain('Tool: read_file');
+    expect(folded).toContain('I read a.ts');
   });
 
   it('keeps full thinking when stream cancels without SSE terminal', async () => {

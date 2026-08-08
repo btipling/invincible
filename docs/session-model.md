@@ -18,8 +18,8 @@ How browser session restore works for the harness (memory + `localStorage`).
 | Agent loop | `lib/harnessChat.ts` `runHarnessTurn` | multi-turn via folded history |
 
 Multi-turn continuity: history is folded into a single `POST /api/chat` (or
-`/api/agent`) prompt (`formatPromptWithHistory`, default **maxTurns=8** /
-**maxChars=12 000**). The API remains single-shot per request; multi-turn lives
+`/api/agent`) prompt (`formatPromptWithHistory`, default **maxMessages=400** /
+**maxChars=100 000**; folds **Tool:** system lines so continue does not re-run work). The API remains single-shot per request; multi-turn lives
 in the host session + Wasm transcript.
 
 Blob shape (messages only — never env secrets):
@@ -44,10 +44,10 @@ messages into the ring. After a turn on the latest window, new lines are pushed
 incrementally (`pushMessage`); the host updates `ringWindowStart` /
 `can_load_earlier` without a full re-hydrate.
 
-When the session is longer than 48, the canvas shows a **Load earlier** control
+When the session is longer than 512, the canvas shows a **Load earlier** control
 (protocol **v6**). Activating it asks the host (poll/ack, same pattern as submit)
-to hydrate an older window: step back **24** messages (`HISTORY_PAGE`), still
-capping the hydrate at 48. Sending a new message always **snaps** the ring back
+to hydrate an older window: step back **128** messages (`HISTORY_PAGE`), still
+capping the hydrate at 512. Sending a new message always **snaps** the ring back
 to the latest window so the live turn stays coherent.
 
 | Piece | Location |

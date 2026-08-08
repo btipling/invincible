@@ -537,13 +537,21 @@ export async function runHarnessTurn(
     if (!agentResult.sandboxNotConfigured || isCancelledAgent(agentResult)) {
       bridge.pushMessage(MessageKind.Error, agentResult.error);
       bridge.setLifecycle(Lifecycle.Ready);
+      // Keep partial assistant text + tool System lines already in `next` so
+      // continue-after-stall history still knows what ran.
+      let failedSession = next;
+      const partial = (assistantAcc || '').trim();
+      if (partial) {
+        failedSession = appendMessage(failedSession, 'assistant', partial);
+      }
+      failedSession = appendMessage(failedSession, 'error', agentResult.error);
       return {
         result: {
           ok: false,
           error: agentResult.error,
           status: agentResult.status,
         },
-        session: appendMessage(next, 'error', agentResult.error),
+        session: failedSession,
       };
     }
     // sandboxNotConfigured → fall through to chat once

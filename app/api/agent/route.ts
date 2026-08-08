@@ -29,7 +29,7 @@ import { createVercelSandboxHttpRunner } from '../../../lib/agent/vercelSandboxH
 import type { HttpFetchRunner } from '../../../lib/agent/httpFetchTypes';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 function isAbortError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
