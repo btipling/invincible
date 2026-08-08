@@ -98,7 +98,7 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 ## Rich transcript (Wasm)
 
 Markdown and fenced code for **user** and **assistant** bodies are painted in the
-Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain text
+Wasm canvas (`native/harness/src/rich/*`). **User, assistant, and thinking** get GFM. System and error lines stay plain text
 (EMBER for errors). There is **no** DOM/React markdown panel.
 
 | Topic | Behavior |

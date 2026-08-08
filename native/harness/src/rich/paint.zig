@@ -1,4 +1,4 @@
-//! Orchestrate message body paint for user/assistant kinds.
+//! Orchestrate message body paint for user/assistant/thinking kinds.
 const std = @import("std");
 const dvui = @import("dvui");
 const parse = @import("parse.zig");
@@ -19,8 +19,7 @@ pub const KIND_SYSTEM = kinds.KIND_SYSTEM;
 pub const KIND_ERROR = kinds.KIND_ERROR;
 pub const shouldPaintMarkdown = kinds.shouldPaintMarkdown;
 
-/// Paint user/assistant MD body, or plain fallback. System/error callers should
-/// keep their existing plain path; this still plain-paints if kind is not MD.
+/// Paint user/assistant/thinking MD body, or plain fallback. System/error stay plain.
 pub fn paintMessageBody(src: std.builtin.SourceLocation, kind: u8, text: []const u8, opts: MessagePaintOpts) void {
     if (text.len == 0) return;
 
