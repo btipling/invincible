@@ -86,6 +86,9 @@ jobs:
           if [ -z "${token}" ]; then
             echo "::error::VERCEL_TOKEN is missing or empty (set repository secret)"
             missing=1
+          else
+            # Length only — helps catch truncated paste; never print token.
+            echo "VERCEL_TOKEN length=${#token} (expect typically 20+ chars)"
           fi
           if [ -z "${team}" ]; then
             echo "::error::VERCEL_TEAM_ID is missing or empty (set repository variable or secret)"
@@ -153,7 +156,14 @@ jobs:
           PROJECT_SLUG: ${{ steps.cfg.outputs.project_slug }}
         run: |
           set -euo pipefail
-          # Never echo token.
+          # Never echo token. Trim whitespace from secret paste.
+          VERCEL_TOKEN="$(printf '%s' "${VERCEL_TOKEN}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          VERCEL_TEAM_ID="$(printf '%s' "${VERCEL_TEAM_ID}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          if [ -z "${VERCEL_TOKEN}" ] || [ -z "${VERCEL_TEAM_ID}" ]; then
+            echo "::error::empty VERCEL_TOKEN or VERCEL_TEAM_ID after trim"
+            exit 1
+          fi
+          echo "Using VERCEL_TOKEN length=${#VERCEL_TOKEN}"
           # Official path: Vercel CLI. Plain `docker login` fails because VCR
           # answers HEAD /v2/ with 404 (GET unauth is 401; GET+Basic is not 200).
           npm install -g vercel@latest
@@ -174,10 +184,23 @@ jobs:
           else
             echo "VCR repo ${IMAGE_REPO} ensured."
           fi
-          vercel vcr login docker \
-            --token "${VERCEL_TOKEN}" \
-            --scope "${TEAM_SLUG}" \
-            --project "${PROJECT_SLUG}"
+          # Prefer team slug scope; fall back to team_ id (docker username form).
+          set +e
+          login_out="$(vercel vcr login docker             --token "${VERCEL_TOKEN}"             --scope "${TEAM_SLUG}"             --project "${PROJECT_SLUG}" 2>&1)"
+          login_ec=$?
+          if [ "${login_ec}" -ne 0 ]; then
+            echo "vercel vcr login with team slug failed; retrying with team id scope..."
+            login_out="$(vercel vcr login docker               --token "${VERCEL_TOKEN}"               --scope "${VERCEL_TEAM_ID}"               --project "${PROJECT_SLUG}" 2>&1)"
+            login_ec=$?
+          fi
+          set -e
+          if [ "${login_ec}" -ne 0 ]; then
+            echo "::error::vercel vcr login failed. Vercel API rejected the token (often: wrong/truncated secret, or token not an Account Access Token from https://vercel.com/account/tokens scoped to this team)."
+            # Redact token-like strings from CLI output.
+            printf '%s\n' "${login_out}" | sed -E 's/vcp_[A-Za-z0-9_-]+/[redacted]/g; s/[A-Za-z0-9_-]{24,}/[redacted]/g'
+            exit 1
+          fi
+          printf '%s\n' "${login_out}" | sed -E 's/vcp_[A-Za-z0-9_-]+/[redacted]/g' || true
           # Also write Basic auth (team id + token) as backup for docker push.
           mkdir -p "${HOME}/.docker"
           AUTH_B64="$(printf '%s:%s' "${VERCEL_TEAM_ID}" "${VERCEL_TOKEN}" | base64 -w0 2>/dev/null || printf '%s:%s' "${VERCEL_TEAM_ID}" "${VERCEL_TOKEN}" | base64 | tr -d '\n')"
