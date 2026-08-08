@@ -38,6 +38,7 @@ import {
   formatPromptWithHistory,
   type SessionSnapshot,
 } from './sessionStore';
+import { canLoadEarlier, latestRingStart, sliceMessagesForRing } from './sessionWindow';
 
 /** Parent #45 / phase 3 — max system toolTrace lines per turn. */
 export const TOOL_TRACE_MAX_LINES = 6;
@@ -121,13 +122,23 @@ export function selectToolTraceLines(
   return lines;
 }
 
-/** Mirror session into Wasm (batched hydrate when clearing). Truncated by MAX_MSG_LEN on Zig. */
+/** Mirror a SessionStore window (≤48) into Wasm. Returns ringWindowStart used. */
 export function pushSessionToBridge(
   bridge: HarnessBridge,
   session: SessionSnapshot,
-  opts?: { clear?: boolean; lifecycle?: import('./harnessBridge').Lifecycle },
-): void {
-  const msgs = session.messages.map((m) => ({
+  opts?: {
+    clear?: boolean;
+    lifecycle?: import('./harnessBridge').Lifecycle;
+    /** Oldest session index to place in the ring; default = latest window. */
+    windowStart?: number;
+  },
+): number {
+  const windowStart =
+    opts?.windowStart !== undefined
+      ? Math.max(0, opts.windowStart)
+      : latestRingStart(session.messages.length);
+  const slice = sliceMessagesForRing(session.messages, windowStart);
+  const msgs = slice.map((m) => ({
     kind: roleToKind(m.role),
     text: m.text,
   }));
@@ -137,21 +148,18 @@ export function pushSessionToBridge(
     bridge.hydrateMessages(msgs, {
       lifecycle: opts?.lifecycle,
     });
-    const texts = session.messages
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m) => m.text);
-    scheduleImagesFromTexts(bridge, texts);
-    scheduleMathFromTexts(bridge, texts);
-    return;
+  } else {
+    for (const m of msgs) {
+      bridge.pushMessage(m.kind, m.text);
+    }
   }
-  for (const m of msgs) {
-    bridge.pushMessage(m.kind, m.text);
-  }
-  const texts = session.messages
+  const texts = slice
     .filter((m) => m.role === 'user' || m.role === 'assistant')
     .map((m) => m.text);
   scheduleImagesFromTexts(bridge, texts);
   scheduleMathFromTexts(bridge, texts);
+  bridge.setCanLoadEarlier(canLoadEarlier(windowStart));
+  return windowStart;
 }
 
 /**

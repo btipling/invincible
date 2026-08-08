@@ -11,7 +11,7 @@ const image_cache = @import("rich/image_cache.zig");
 const math_cache = @import("rich/math_cache.zig");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -53,6 +53,9 @@ var echo_len: u32 = 0;
 var pending_submit: [SUBMIT_CAP]u8 = undefined;
 var pending_submit_len: u32 = 0;
 var has_pending_submit: bool = false;
+/// Host sets when SessionStore has messages older than the current ring window.
+var can_load_earlier: bool = false;
+var has_pending_load_earlier: bool = false;
 var suppress_refresh: bool = false;
 
 const CatalogEntry = struct {
@@ -99,8 +102,8 @@ pub fn queueSubmitFromUi(text: []const u8) void {
     var start: usize = 0;
     while (start < text.len and (text[start] == ' ' or text[start] == '\t' or text[start] == '\n' or text[start] == '\r')) : (start += 1) {}
     if (start >= text.len) return;
-    // Ignore while host is already processing or a submit is still pending.
-    if (lifecycle == .busy or has_pending_submit) return;
+    // Ignore while host is processing, submit pending, or load-earlier pending.
+    if (lifecycle == .busy or has_pending_submit or has_pending_load_earlier) return;
     pending_submit_len = copySlice(&pending_submit, text[start..]);
     has_pending_submit = pending_submit_len > 0;
     if (!has_pending_submit) return;
@@ -123,6 +126,8 @@ pub fn reset() void {
     echo_len = 0;
     has_pending_submit = false;
     pending_submit_len = 0;
+    can_load_earlier = false;
+    has_pending_load_earlier = false;
     suppress_refresh = false;
     catalog_count = 0;
     selected_index = 0;
@@ -160,6 +165,18 @@ pub fn selectedModelLabel() []const u8 {
 pub fn cycleSelectedModel() void {
     if (catalog_count <= 1) return;
     selected_index = (selected_index + 1) % catalog_count;
+    refresh();
+}
+
+pub fn canLoadEarlier() bool {
+    return can_load_earlier;
+}
+
+/// Canvas "Load earlier" — host polls pending and hydrates an older SessionStore window.
+pub fn queueLoadEarlierFromUi() void {
+    if (!can_load_earlier or has_pending_load_earlier) return;
+    if (lifecycle == .busy or has_pending_submit) return;
+    has_pending_load_earlier = true;
     refresh();
 }
 
@@ -260,6 +277,23 @@ export fn inv_ack_pending_submit() void {
     pending_submit_len = 0;
     refresh();
 }
+
+export fn inv_set_can_load_earlier(v: u8) void {
+    const next = v != 0;
+    if (can_load_earlier == next) return;
+    can_load_earlier = next;
+    if (!can_load_earlier) has_pending_load_earlier = false;
+    refresh();
+}
+
+export fn inv_has_pending_load_earlier() u8 {
+    return if (has_pending_load_earlier) 1 else 0;
+}
+
+export fn inv_ack_pending_load_earlier() void {
+    has_pending_load_earlier = false;
+}
+
 
 // ── Protocol v3 model catalog ──────────────────────────────────────────────
 

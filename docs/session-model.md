@@ -35,6 +35,31 @@ Blob shape (messages only — never env secrets):
 Wasm stays free of persistence I/O; the host loads/saves session and pushes
 transcript via the bridge on load / Clear.
 
+
+## Ring window vs full session
+
+The Wasm transcript ring holds at most **48** messages (`MAX_MSG`). The host
+`SessionStore` may hold more. On restore the host hydrates the **latest** ≤48
+messages into the ring. After a turn on the latest window, new lines are pushed
+incrementally (`pushMessage`); the host updates `ringWindowStart` /
+`can_load_earlier` without a full re-hydrate.
+
+When the session is longer than 48, the canvas shows a **Load earlier** control
+(protocol **v6**). Activating it asks the host (poll/ack, same pattern as submit)
+to hydrate an older window: step back **24** messages (`HISTORY_PAGE`), still
+capping the hydrate at 48. Sending a new message always **snaps** the ring back
+to the latest window so the live turn stays coherent.
+
+| Piece | Location |
+|-------|----------|
+| Window math | `lib/sessionWindow.ts` |
+| Hydrate ≤48 | `lib/harnessChat.ts` `pushSessionToBridge` |
+| Host state + poll | `app/harness/HarnessHost.tsx` |
+| Load earlier control | `native/harness/src/ui.zig` |
+| Bridge pending | `inv_set_can_load_earlier` / `inv_has_pending_load_earlier` / `inv_ack_pending_load_earlier` |
+
+This is **not** multi-device cloud sync (see optional cloud backends below).
+
 ## Cloud backends (optional follow-ups)
 
 | Approach | Fit | Notes |
