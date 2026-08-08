@@ -22,15 +22,33 @@ Multi-turn continuity: history is folded into a single `POST /api/chat` (or
 **maxChars≈3.5M** (body guard; model token limit is the real cap); folds **Tool:** system lines so continue does not re-run work). The API remains single-shot per request; multi-turn lives
 in the host session + Wasm transcript.
 
-Blob shape (messages only — never env secrets):
+Blob shape (never env secrets / sandbox tokens):
 
 ```json
 {
   "id": "sess_…",
   "updatedAt": 0,
-  "messages": [{ "id": "m_…", "role": "user|assistant|system|error", "text": "…", "at": 0 }]
+  "messages": [{ "id": "m_…", "role": "user|assistant|system|error", "text": "…", "at": 0 }],
+  "cwd": "invincible"
 }
 ```
+
+| Field | Notes |
+|-------|--------|
+| `messages` | Full transcript for history fold + ring hydrate |
+| `cwd` | **Optional** logical workspace directory (workspace-root-relative). Omitted = no remembered cwd (host omits request field → server default / `SANDBOX_DEFAULT_CWD` / `"."`). |
+
+### Logical cwd rules
+
+| Event | Behavior |
+|-------|----------|
+| Successful agent turn with FS tools | Host may set `cwd` from JSON / SSE `done.cwd` |
+| Failed / aborted turn | **Keep** prior `cwd` |
+| Chat fallback (sandbox not configured) | **Keep** prior `cwd` |
+| Clear / `createEmptySession` | **Omit** `cwd` |
+| Load from localStorage | Keep only safe workspace-relative strings (`sanitizeSessionCwd`); drop non-string, empty, host-absolute, control characters |
+
+Storage key stays `invincible.harness.session.v1` (optional field; no forced version bump).
 
 Wasm stays free of persistence I/O; the host loads/saves session and pushes
 transcript via the bridge on load / Clear.

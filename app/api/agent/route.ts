@@ -62,6 +62,7 @@ async function closeRunners(
  *
  * POST { prompt: string, modelId?: string, cwd?: string }
  * → JSON { text, toolTrace?, cwd? } | { error }
+ * Omitted cwd → SANDBOX_DEFAULT_CWD if valid, else ".".
  * → or SSE (Accept: text/event-stream) agent events (docs/agent-stream.md)
  *
  * Tenancy on: DB-resolved sandbox + grants + request-scoped BYOK + user MCP tools.
