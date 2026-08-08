@@ -23,7 +23,11 @@ pub fn isEmojiRelated(cp: u21) bool {
         0x231A...0x23FA => true,
         0x24C2 => true,
         0x25AA...0x25FE => true,
-        0x2600...0x27BF => true,
+        // Misc symbols + dingbats as emoji — except text check/ballot marks used in
+        // toolTrace ("✓ ok" / "✗ failed"). OpenMoji subset lacks those glyphs; DejaVu
+        // symbols has them (isSymbolRelated). Without this carve-out paint shows tofu.
+        0x2600...0x2712 => true,
+        0x2719...0x27BF => true,
         0x2934...0x2935 => true,
         0x2B05...0x2B55 => true,
         0x3030, 0x303D => true,
@@ -89,6 +93,22 @@ test "text arrows route to symbols not emoji" {
     try std.testing.expect(faceFor('A') == .body);
     // Grin stays emoji
     try std.testing.expect(faceFor(0x1F600) == .emoji);
+}
+
+
+test "tool status check and ballot marks route to symbols not emoji" {
+    // U+2713 CHECK MARK, U+2717 BALLOT X — summarizeToolLine status
+    try std.testing.expect(!isEmojiRelated(0x2713));
+    try std.testing.expect(!isEmojiRelated(0x2717));
+    try std.testing.expect(isSymbolRelated(0x2713));
+    try std.testing.expect(isSymbolRelated(0x2717));
+    try std.testing.expect(faceFor(0x2713) == .symbols);
+    try std.testing.expect(faceFor(0x2717) == .symbols);
+    // Heavy variants too
+    try std.testing.expect(faceFor(0x2714) == .symbols);
+    try std.testing.expect(faceFor(0x2718) == .symbols);
+    // Still-emoji dingbat (e.g. heavy black heart U+2764) stays emoji
+    try std.testing.expect(faceFor(0x2764) == .emoji);
 }
 
 test "utf8 stress sample splits emoji from latin" {
