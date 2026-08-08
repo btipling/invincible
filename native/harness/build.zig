@@ -71,6 +71,7 @@ pub fn build(b: *std.Build) void {
         "inv_begin_batch",
         "inv_end_batch",
         "inv_push_message",
+        "inv_update_last_message",
         "inv_clear_messages",
         "inv_echo",
         "inv_echo_len",

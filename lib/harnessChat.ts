@@ -11,10 +11,16 @@ import {
 } from './chatApi';
 import {
   sendAgent,
+  sendAgentStream,
   type AgentResult,
   type SendAgentFn,
+  type SendAgentStreamFn,
   type ToolTraceEntry,
 } from './agentApi';
+import {
+  LIVE_TOOL_LINES_MAX,
+  type AgentStreamEvent,
+} from './agent/agentStream';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
 } from './sandbox/config';
@@ -72,8 +78,15 @@ export type RunHarnessTurnOptions = Omit<RunHarnessChatOptions, 'history'> & {
    * exact sandbox-not-configured 503.
    */
   preferAgent?: boolean;
-  /** Inject for tests; defaults to sendAgent. */
+  /** Inject for tests; defaults to sendAgent (JSON). */
   sendAgent?: SendAgentFn;
+  /**
+   * When true (default), use SSE stream for live tool/text updates.
+   * Set false to force JSON agent path.
+   */
+  streamAgent?: boolean;
+  /** Inject for tests; defaults to sendAgentStream. */
+  sendAgentStream?: SendAgentStreamFn;
 };
 
 export type HarnessTurnResult = {
@@ -259,6 +272,13 @@ export async function runHarnessTurn(
   const preferAgent = opts?.preferAgent !== false;
   const useHistory = opts?.useHistory !== false;
   const sendAgentFn = opts?.sendAgent ?? sendAgent;
+  const sendAgentStreamFn = opts?.sendAgentStream ?? sendAgentStream;
+  // Default: stream when using production client. Tests that only inject
+  // `sendAgent` keep the JSON path unless streamAgent/sendAgentStream set.
+  const streamAgent =
+    opts?.streamAgent !== undefined
+      ? opts.streamAgent
+      : opts?.sendAgentStream != null || opts?.sendAgent == null;
 
   const apiPrompt =
     useHistory && session.messages.length > 0
@@ -274,23 +294,96 @@ export async function runHarnessTurn(
       userPushedOnBridge = true;
     }
 
-    const agentResult = await sendAgentFn(apiPrompt, {
-      signal: opts?.signal,
-      modelId: opts?.modelId,
-    });
+    let agentResult: AgentResult;
+    let next = withUser;
+    let liveToolLines = 0;
+    let overflowNote = false;
+    let assistantStarted = false;
+    let assistantAcc = '';
+    let sawStreamTerminal = false;
+
+    if (streamAgent) {
+      agentResult = await sendAgentStreamFn(apiPrompt, {
+        signal: opts?.signal,
+        modelId: opts?.modelId,
+        onEvent: async (ev: AgentStreamEvent) => {
+          if (ev.type === 'tool_start' || ev.type === 'tool_result') {
+            if (liveToolLines >= LIVE_TOOL_LINES_MAX) {
+              if (!overflowNote) {
+                const note = `+ more tools (live cap ${LIVE_TOOL_LINES_MAX})`;
+                bridge.pushMessage(MessageKind.System, note);
+                next = appendMessage(next, 'system', note);
+                overflowNote = true;
+              }
+              return;
+            }
+            const line =
+              ev.type === 'tool_start'
+                ? truncateToolTraceSummary(`${ev.name} · running…`)
+                : truncateToolTraceSummary(ev.summary);
+            if (!line) return;
+            bridge.pushMessage(MessageKind.System, line);
+            next = appendMessage(next, 'system', line);
+            liveToolLines += 1;
+            return;
+          }
+          if (ev.type === 'text_delta') {
+            if (!ev.text) return;
+            assistantAcc += ev.text;
+            if (!assistantStarted) {
+              bridge.pushMessage(MessageKind.Assistant, assistantAcc);
+              assistantStarted = true;
+            } else {
+              bridge.updateLastMessage(MessageKind.Assistant, assistantAcc);
+            }
+            return;
+          }
+          if (ev.type === 'done') {
+            sawStreamTerminal = true;
+            const finalText = (ev.text ?? assistantAcc).trim();
+            if (finalText) {
+              if (!assistantStarted) {
+                bridge.pushMessage(MessageKind.Assistant, finalText);
+                assistantStarted = true;
+              } else if (finalText !== assistantAcc) {
+                bridge.updateLastMessage(MessageKind.Assistant, finalText);
+              }
+              assistantAcc = finalText;
+              scheduleImagesFromMarkdown(bridge, finalText);
+            }
+            // Do not re-push toolTrace — live lines already shown.
+            return;
+          }
+          if (ev.type === 'error') {
+            sawStreamTerminal = true;
+          }
+        },
+      });
+    } else {
+      agentResult = await sendAgentFn(apiPrompt, {
+        signal: opts?.signal,
+        modelId: opts?.modelId,
+      });
+    }
 
     if (agentResult.ok) {
-      let next = withUser;
-      const lines = selectToolTraceLines(agentResult.toolTrace);
-      for (const line of lines) {
-        bridge.pushMessage(MessageKind.System, line);
-        next = appendMessage(next, 'system', line);
+      if (!streamAgent || !sawStreamTerminal) {
+        // JSON path (or stream that returned JSON): end-of-turn toolTrace + assistant.
+        const lines = selectToolTraceLines(agentResult.toolTrace);
+        for (const line of lines) {
+          bridge.pushMessage(MessageKind.System, line);
+          next = appendMessage(next, 'system', line);
+        }
+        if (!assistantStarted) {
+          bridge.pushMessage(MessageKind.Assistant, agentResult.text);
+          assistantStarted = true;
+        } else {
+          bridge.updateLastMessage(MessageKind.Assistant, agentResult.text);
+        }
+        scheduleImagesFromMarkdown(bridge, agentResult.text);
+        assistantAcc = agentResult.text;
       }
-      bridge.pushMessage(MessageKind.Assistant, agentResult.text);
-      scheduleImagesFromMarkdown(bridge, agentResult.text);
-      next = appendMessage(next, 'assistant', agentResult.text);
-      // Full-transcript math schedule so putOk LRU drops can re-put after
-      // Wasm math_cache eviction while older formulas remain visible.
+      next = appendMessage(next, 'assistant', agentResult.text || assistantAcc);
       scheduleMathFromTexts(
         bridge,
         next.messages
@@ -299,7 +392,7 @@ export async function runHarnessTurn(
       );
       bridge.setLifecycle(Lifecycle.Ready);
       return {
-        result: { ok: true, text: agentResult.text },
+        result: { ok: true, text: agentResult.text || assistantAcc },
         session: next,
       };
     }
@@ -314,7 +407,7 @@ export async function runHarnessTurn(
           error: agentResult.error,
           status: agentResult.status,
         },
-        session: appendMessage(withUser, 'error', agentResult.error),
+        session: appendMessage(next, 'error', agentResult.error),
       };
     }
     // sandboxNotConfigured → fall through to chat once

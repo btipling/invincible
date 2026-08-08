@@ -70,6 +70,13 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_push_message: (kind: number, ptr: number, len: number) => {
       messages.push({ kind, text: len === 0 ? '' : read(ptr, len) });
     },
+    inv_update_last_message: (kind: number, ptr: number, len: number) => {
+      if (messages.length === 0) return 0;
+      const last = messages[messages.length - 1]!;
+      if (last.kind !== kind) return 0;
+      last.text = len === 0 ? '' : read(ptr, len);
+      return 1;
+    },
     inv_clear_messages: () => {
       messages.length = 0;
     },
@@ -593,5 +600,61 @@ describe('pushSessionToBridge window (protocol v6)', () => {
     expect(start).toBe(0);
     expect(exp.__messages).toHaveLength(10);
     expect(exp.__canLoadEarlier()).toBe(0);
+  });
+});
+
+describe('runHarnessTurn stream agent (phase 1)', () => {
+  it('pushes system tool lines before done and grows one assistant bubble', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'list files', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'list_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'list_dir',
+          ok: true,
+          summary: 'list_dir · ok · a.txt',
+        });
+        await init?.onEvent?.({ type: 'text_delta', text: 'Here' });
+        await init?.onEvent?.({ type: 'text_delta', text: ' you go' });
+        await init?.onEvent?.({ type: 'done', text: 'Here you go' });
+        return { ok: true, text: 'Here you go' };
+      },
+    });
+
+    expect(result.result.ok).toBe(true);
+    const texts = exp.__messages.map((m) => m.text);
+    const kinds = exp.__messages.map((m) => m.kind);
+    // user may be pushed
+    expect(texts.some((t) => t.includes('list_dir · running'))).toBe(true);
+    expect(texts.some((t) => t.includes('list_dir · ok'))).toBe(true);
+    // single assistant bubble with full text
+    const assistants = exp.__messages.filter((m) => m.kind === MessageKind.Assistant);
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]!.text).toBe('Here you go');
+    expect(kinds.filter((k) => k === MessageKind.Assistant)).toHaveLength(1);
+  });
+
+  it('JSON streamAgent:false still uses end toolTrace', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async () => ({
+        ok: true,
+        text: 'pong',
+        toolTrace: [{ name: 'x', ok: true, summary: 'x · ok · done' }],
+      }),
+    });
+    expect(result.result.ok).toBe(true);
+    expect(exp.__messages.some((m) => m.text.includes('x · ok'))).toBe(true);
+    expect(exp.__messages.some((m) => m.text === 'pong')).toBe(true);
   });
 });

@@ -1,4 +1,5 @@
-import { generateText, stepCountIs } from 'ai';
+import { generateText, streamText, stepCountIs } from 'ai';
+import { mapFullStreamPart } from './agentStream';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
   resolveAgentMaxSteps,
@@ -37,6 +38,9 @@ export type RunAgentParams = {
   /** Inject for tests — same shape as `generateText` from `ai`. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   generateTextImpl?: (args: any) => Promise<any>;
+  /** Inject for tests — same shape as `streamText` from `ai`. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  streamTextImpl?: (args: any) => any;
   /**
    * Optional. When omitted and sandbox env is missing, FS tools are skipped
    * (http-only / MCP-only paths). Throws only when no tools at all would remain
@@ -172,6 +176,115 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
     text = redactSecrets(unwrapped, secrets);
   }
   return { text, toolTrace };
+}
+
+export type RunAgentStreamHandlers = {
+  onEvent: (event: import('./agentStream').AgentStreamEvent) => void | Promise<void>;
+};
+
+/**
+ * Multi-step streamText path — emits normalized AgentStreamEvents (SSE wire).
+ * Caller owns http/MCP runner lifecycle around the full stream.
+ */
+export async function runAgentStream(
+  params: RunAgentParams,
+  handlers: RunAgentStreamHandlers,
+): Promise<RunAgentResult> {
+  const maxSteps = params.maxSteps ?? resolveAgentMaxSteps();
+  const modelId = params.modelId ?? resolveAgentModelId();
+  const stream = params.streamTextImpl ?? streamText;
+
+  let secrets: Array<string | undefined | null> = [
+    ...(params.secrets ?? []),
+    process.env.AI_GATEWAY_API_KEY,
+    process.env.SANDBOX_TOKEN,
+  ];
+
+  let client = params.sandboxClient;
+  let hasFsTools = false;
+
+  if (!params.skipSandboxTools) {
+    if (!client) {
+      const cfg = getSandboxConfig();
+      if (cfg) {
+        client = createSandboxClient(cfg);
+        secrets = [...secrets, cfg.token];
+      }
+    }
+    if (client) {
+      hasFsTools = true;
+    }
+  } else if (client) {
+    hasFsTools = true;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sandboxTools: Record<string, any> = hasFsTools && client
+    ? createAgentTools({
+        client,
+        secrets,
+        signal: params.signal,
+        permissions: params.permissions,
+      })
+    : {};
+
+  const tools = {
+    ...sandboxTools,
+    ...(params.extraTools ?? {}),
+  };
+
+  if (Object.keys(tools).length === 0) {
+    throw new Error('Sandbox not configured');
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const streamArgs: any = {
+    model: modelId,
+    system: resolveSystem(params, hasFsTools),
+    prompt: params.prompt,
+    tools,
+    stopWhen: stepCountIs(maxSteps),
+    abortSignal: params.signal,
+  };
+  if (params.providerOptions) {
+    streamArgs.providerOptions = params.providerOptions;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result: any = stream(streamArgs);
+
+  try {
+    for await (const part of result.fullStream) {
+      for (const ev of mapFullStreamPart(part, secrets)) {
+        await handlers.onEvent(ev);
+      }
+    }
+
+    let text = redactSecrets(((await result.text) ?? '').trim(), secrets);
+    const unwrapped = parseAndFlattenIfMcpEnvelope(text);
+    if (unwrapped != null) {
+      text = redactSecrets(unwrapped, secrets);
+    }
+    const steps = result.steps != null ? await result.steps : undefined;
+    const toolTrace = collectToolTrace({ steps }, secrets);
+    await handlers.onEvent({
+      type: 'done',
+      text,
+      ...(toolTrace.length > 0 ? { toolTrace } : {}),
+    });
+    return { text, toolTrace };
+  } catch (err) {
+    if (err instanceof Error && (err.name === 'AbortError' || err.name === 'ResponseAborted')) {
+      await handlers.onEvent({ type: 'error', error: 'Request cancelled.', status: 499 });
+      throw err;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    await handlers.onEvent({
+      type: 'error',
+      error: redactSecrets(msg, secrets),
+    });
+    throw err;
+  }
 }
 
 /** @internal exported for tests */

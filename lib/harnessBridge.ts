@@ -10,7 +10,7 @@
  */
 
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
-export const HARNESS_PROTOCOL_VERSION = 6 as const;
+export const HARNESS_PROTOCOL_VERSION = 7 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -68,6 +68,7 @@ export type HarnessBridgeExports = {
   inv_begin_batch: () => void;
   inv_end_batch: () => void;
   inv_push_message: (kind: number, ptr: number, len: number) => void;
+  inv_update_last_message: (kind: number, ptr: number, len: number) => number;
   inv_clear_messages: () => void;
   inv_echo: (ptr: number, len: number) => number;
   inv_echo_len: () => number;
@@ -115,6 +116,7 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_begin_batch',
   'inv_end_batch',
   'inv_push_message',
+  'inv_update_last_message',
   'inv_clear_messages',
   'inv_echo',
   'inv_echo_len',
@@ -256,6 +258,19 @@ export class HarnessBridge {
     const { ptr, len } = this.writeUtf8(text);
     try {
       this.exports.inv_push_message(kind, ptr, len);
+    } finally {
+      this.exports.gpa_free(ptr, len);
+    }
+  }
+
+  /**
+   * Replace last ring message when kind matches (protocol v7).
+   * Used to grow a streaming assistant bubble without N new messages.
+   */
+  updateLastMessage(kind: MessageKind, text: string): boolean {
+    const { ptr, len } = this.writeUtf8(text);
+    try {
+      return this.exports.inv_update_last_message(kind, ptr, len) !== 0;
     } finally {
       this.exports.gpa_free(ptr, len);
     }

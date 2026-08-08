@@ -76,6 +76,13 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_push_message: (kind: number, ptr: number, len: number) => {
       messages.push({ kind, text: len === 0 ? '' : read(ptr, len) });
     },
+    inv_update_last_message: (kind: number, ptr: number, len: number) => {
+      if (messages.length === 0) return 0;
+      const last = messages[messages.length - 1]!;
+      if (last.kind !== kind) return 0;
+      last.text = len === 0 ? '' : read(ptr, len);
+      return 1;
+    },
     inv_clear_messages: () => {
       messages.length = 0;
     },
@@ -421,5 +428,24 @@ describe('load earlier pending (protocol v6)', () => {
     exp.__setLoadEarlierPending(true);
     expect(bridge.takePendingLoadEarlier()).toBe(true);
     expect(bridge.takePendingLoadEarlier()).toBe(false);
+  });
+});
+
+describe('updateLastMessage (protocol v7)', () => {
+  it('replaces last message when kind matches', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.Assistant, 'Hel');
+    expect(bridge.updateLastMessage(MessageKind.Assistant, 'Hello')).toBe(true);
+    expect(exp.__messages.map((m) => m.text)).toEqual(['Hello']);
+  });
+
+  it('returns false when kind mismatches or empty', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    expect(bridge.updateLastMessage(MessageKind.Assistant, 'x')).toBe(false);
+    bridge.pushMessage(MessageKind.User, 'hi');
+    expect(bridge.updateLastMessage(MessageKind.Assistant, 'x')).toBe(false);
+    expect(exp.__messages.map((m) => m.text)).toEqual(['hi']);
   });
 });
