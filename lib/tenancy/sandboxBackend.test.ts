@@ -3,6 +3,7 @@ import {
   assertSandboxCredentials,
   DEFAULT_VERCEL_SANDBOX_IMAGE,
   isSandboxBackend,
+  isValidByoBaseUrl,
   normalizeSandboxFieldsForBackend,
   parseVercelSandboxImageInput,
   resolveVercelSandboxImage,
@@ -77,13 +78,15 @@ describe('assertSandboxCredentials', () => {
         tokenCiphertext: 'ct',
       }).ok,
     ).toBe(true);
-    expect(
-      assertSandboxCredentials({
-        backend: 'byo',
-        baseUrl: null,
-        tokenCiphertext: 'ct',
-      }).ok,
-    ).toBe(false);
+    const missingUrl = assertSandboxCredentials({
+      backend: 'byo',
+      baseUrl: null,
+      tokenCiphertext: 'ct',
+    });
+    expect(missingUrl.ok).toBe(false);
+    if (missingUrl.ok) throw new Error('expected fail');
+    expect(missingUrl.error).toMatch(/base URL and token/i);
+    expect(missingUrl.error).not.toMatch(/tokenCiphertext/);
     expect(
       assertSandboxCredentials({
         backend: 'byo',
@@ -171,5 +174,19 @@ describe('parseVercelSandboxImageInput', () => {
 
   it('invalid non-empty → error', () => {
     expect(parseVercelSandboxImageInput('not a ref').ok).toBe(false);
+  });
+});
+
+describe('isValidByoBaseUrl', () => {
+  it('accepts http(s) absolute URLs', () => {
+    expect(isValidByoBaseUrl('https://sandbox.example')).toBe(true);
+    expect(isValidByoBaseUrl('http://127.0.0.1:8787/')).toBe(true);
+  });
+
+  it('rejects empty, relative, and non-http schemes', () => {
+    expect(isValidByoBaseUrl('')).toBe(false);
+    expect(isValidByoBaseUrl('not-a-url')).toBe(false);
+    expect(isValidByoBaseUrl('ftp://x')).toBe(false);
+    expect(isValidByoBaseUrl('/relative')).toBe(false);
   });
 });

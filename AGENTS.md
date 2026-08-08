@@ -28,7 +28,7 @@ work — **independent of the language or platform** of the target project, and
 | Today | Intent |
 |-------|--------|
 | Single public deploy + this author’s infra are documented for operators | Multi-operator / bring-your-own Vercel + keys |
-| Sandbox MVP **shipped** via `SANDBOX_URL` + `SANDBOX_TOKEN` ([docs/sandbox.md](docs/sandbox.md)) | Pluggable sandbox without rewriting the harness |
+| Sandbox MVP **shipped** via `SANDBOX_URL` + `SANDBOX_TOKEN`; tenancy **per-row** `backend`/`image` (BYO or Vercel) via admin ([docs/sandbox.md](docs/sandbox.md)) | No host-wide `SANDBOX_BACKEND`; dogfood image pipeline optional |
 | Stack is Next + Zig/dvui Wasm + AI Gateway | Target projects can be **any** stack; the harness is the workspace |
 | Tenancy code + origin Production cutover **Done** (login + DB grants) | Optional login/grants **and** cloud-native bootstrap (no personal machine) |
 
@@ -245,6 +245,7 @@ invincible/
 | Tenancy schema / migrations | `db/schema.ts`, `db/migrations/` |
 | Tenancy crypto / seed helpers | `lib/tenancy/*`, `scripts/seed-tenancy.ts` |
 | Tenant BYOK / inference grants | `app/admin/inference/*`, `lib/tenancy/providerSecrets*`, `lib/tenancy/resolveInference*`, `lib/gateway/byokProviders.ts`, `app/api/models/*` |
+| Tenant sandboxes (backend + image) | `app/admin/sandboxes/*`, `lib/tenancy/manageSandbox.ts`, `lib/tenancy/sandboxBackend.ts`, `lib/tenancy/resolveSandbox.ts`, `lib/sandbox/vercelClient.ts`, [docs/sandbox.md](docs/sandbox.md) |
 | User Settings / per-user MCP | `app/settings/*`, `lib/tenancy/userMcpServers.ts`, `lib/mcp/*` |
 | Harness model catalog (protocol v3) | `lib/harnessBridge.ts`, `native/harness/src/bridge.zig`, `app/harness/HarnessHost.tsx` |
 | Schema-only migrate (GHA) | `.github/workflows/db-migrate.yml` |

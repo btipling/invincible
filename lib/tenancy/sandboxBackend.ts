@@ -11,6 +11,22 @@ export const DEFAULT_VERCEL_SANDBOX_IMAGE = 'vercel/sandbox/universal:latest';
 export const VERCEL_SANDBOX_IMAGE_MAX_LENGTH = 512;
 
 /**
+ * Admin image preset options (VMI tags). Value `null` means store null
+ * (runtime uses {@link DEFAULT_VERCEL_SANDBOX_IMAGE}).
+ */
+export const VERCEL_SANDBOX_IMAGE_PRESETS: ReadonlyArray<{
+  label: string;
+  /** Stored image; null = product default at resolve. */
+  value: string | null;
+}> = [
+  { label: 'Default (universal)', value: null },
+  { label: 'Node 24', value: 'vercel/sandbox/node:24' },
+  { label: 'Python 3.14', value: 'vercel/sandbox/python:3.14' },
+  { label: 'Ubuntu', value: 'vercel/sandbox/ubuntu:latest' },
+  { label: 'Arch', value: 'vercel/sandbox/arch:latest' },
+];
+
+/**
  * VMI / short / team VCR refs + optional tag and @sha256 digest.
  * No whitespace or control characters (checked separately).
  */
@@ -110,6 +126,21 @@ function emptyToNull(v: string | null | undefined): string | null {
 }
 
 /**
+ * BYO daemon base URL: absolute http(s) only.
+ * Private/RFC1918 hosts are allowed (operator-owned daemon); unlike MCP public URL policy.
+ */
+export function isValidByoBaseUrl(raw: string): boolean {
+  const t = raw.trim();
+  if (!t) return false;
+  try {
+    const u = new URL(t);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Backend switch hygiene: clear fields that do not apply.
  * vercel → null credentials; byo → null image.
  */
@@ -153,7 +184,7 @@ export function assertSandboxCredentials(row: {
     if (!url || !token) {
       return {
         ok: false,
-        error: 'byo sandbox requires baseUrl and tokenCiphertext',
+        error: 'BYO sandbox requires a base URL and token.',
       };
     }
     return { ok: true };
@@ -164,8 +195,19 @@ export function assertSandboxCredentials(row: {
   if (url || token) {
     return {
       ok: false,
-      error: 'vercel sandbox must not store baseUrl or tokenCiphertext',
+      error: 'Vercel sandbox cannot store a base URL or token.',
     };
   }
   return { ok: true };
+}
+
+/** Display helper for admin list (never invent a host URL). */
+export function formatSandboxImageLabel(
+  backend: string,
+  image: string | null | undefined,
+): string {
+  if (backend !== 'vercel') return '—';
+  const t = image?.trim() ?? '';
+  if (!t) return 'default (universal)';
+  return t;
 }

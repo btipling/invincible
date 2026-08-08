@@ -76,6 +76,12 @@ The **agent sandbox** is an optional remote workspace for model tools
 (`list_dir` / `read_file` / `write_file` / `exec`). It is **not** the
 self-hosted GHA runner that compiles Zig.
 
+Under tenancy, each sandbox row may use **`backend=byo`** (URL + DEK-encrypted
+token) or **`backend=vercel`** (host Vercel project OIDC for `Sandbox.create`;
+no BYO token; optional image ref). There is **no** product host env
+`SANDBOX_BACKEND`. Registry credentials for custom images stay on the host
+Vercel/CI side — never in the DB. Token rotate applies to **byo** only.
+
 | Rule | Detail |
 |------|--------|
 | Separate process | Dedicated OS user/unit; do **not** share Actions credentials with the sandbox env |
