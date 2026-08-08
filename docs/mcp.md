@@ -132,7 +132,7 @@ If harness has no tools: confirm **Enabled**, tenancy on, and agent path (not ch
 | Servers per user | 5 |
 | Connect / list timeout | ~5 seconds per server |
 | MCP tools merged cap | ~48 total |
-| Host toolTrace lines | 128 (`TOOL_TRACE_MAX_LINES`) |
+| Host toolTrace lines | unbounded (`TOOL_TRACE_MAX_LINES`) |
 
 ## Non-goals
 

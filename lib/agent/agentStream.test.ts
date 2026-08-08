@@ -1,3 +1,4 @@
+import { TOOL_TRACE_SUMMARY_MAX_CHARS } from '../sandbox/config';
 import { describe, expect, it } from 'vitest';
 import {
   encodeSseData,
@@ -112,9 +113,9 @@ describe('mapFullStreamPart', () => {
 });
 
 describe('summarizeToolLine', () => {
-  it('caps length', () => {
-    const line = summarizeToolLine('x', 'y'.repeat(500), true);
-    expect(line.length).toBeLessThanOrEqual(240);
+  it('soft-caps length at TOOL_TRACE_SUMMARY_MAX_CHARS', () => {
+    const line = summarizeToolLine('x', 'y'.repeat(TOOL_TRACE_SUMMARY_MAX_CHARS + 100), true);
+    expect(line.length).toBeLessThanOrEqual(TOOL_TRACE_SUMMARY_MAX_CHARS);
   });
 
   it('marks ok and failed clearly', () => {
@@ -124,7 +125,7 @@ describe('summarizeToolLine', () => {
 });
 
 describe('LIVE_TOOL_LINES_MAX', () => {
-  it('is 128', () => {
-    expect(LIVE_TOOL_LINES_MAX).toBe(128);
+  it('is unbounded (no host live-tool product cap)', () => {
+    expect(LIVE_TOOL_LINES_MAX).toBe(Number.POSITIVE_INFINITY);
   });
 });

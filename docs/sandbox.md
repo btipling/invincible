@@ -224,7 +224,7 @@ Origin may run a DigitalOcean-hosted **reference** sample. Host inventory
 | read/write maxBytes | 256 KiB | |
 | stdout/stderr per exec | 32 KiB each | truncated |
 | tool result to model | 8_192 chars | |
-| toolTrace lines to Wasm | 128 | host cap |
+| toolTrace lines to Wasm | unbounded | no host product cap |
 | toolTrace summary chars | 240 | host + server |
 
 ---

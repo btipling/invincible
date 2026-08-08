@@ -17,10 +17,7 @@ import {
   type SendAgentStreamFn,
   type ToolTraceEntry,
 } from './agentApi';
-import {
-  LIVE_TOOL_LINES_MAX,
-  type AgentStreamEvent,
-} from './agent/agentStream';
+import { type AgentStreamEvent } from './agent/agentStream';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
 } from './sandbox/config';
@@ -46,17 +43,28 @@ import {
 } from './sessionStore';
 import { canLoadEarlier, latestRingStart, sliceMessagesForRing } from './sessionWindow';
 
-/** Match Wasm MAX_MSG_LEN — single thinking bubble cap (live segment). */
-export const THINKING_DISPLAY_MAX = 4096;
+/**
+ * Match Wasm MAX_MSG_LEN (`native/harness/src/bridge.zig`).
+ * Only hard edge for a single ring line — not a product "thinking budget".
+ */
+export const THINKING_DISPLAY_MAX = 65_536;
 
-/** Max Thinking segments pushed per turn before overflow notice. */
-export const THINKING_SEGMENTS_MAX = 32;
+/**
+ * @deprecated No per-turn thinking segment cap (was a UX wall). Kept as Infinity
+ * for any leftover imports/tests.
+ */
+export const THINKING_SEGMENTS_MAX = Number.POSITIVE_INFINITY;
 
-/** Collapsed thinking one-liner max body chars (before ellipsis). */
-export const THINKING_COLLAPSED_MAX = 160;
+/**
+ * @deprecated Thinking is no longer collapsed to a one-liner on tool boundaries.
+ * Kept for tests that call collapseThinkingDisplay (now identity-ish soft trim).
+ */
+export const THINKING_COLLAPSED_MAX = THINKING_DISPLAY_MAX;
 
-/** Parent #45 / phase 3 — max system toolTrace lines per turn. */
-export const TOOL_TRACE_MAX_LINES = 128;
+/**
+ * @deprecated No host toolTrace line cap. Kept as Infinity for import stability.
+ */
+export const TOOL_TRACE_MAX_LINES = Number.POSITIVE_INFINITY;
 
 /** Prompt used for end-to-end smoke (model should reply with PONG). */
 export const HARNESS_SMOKE_PROMPT = 'Reply with exactly: PONG';
@@ -117,7 +125,7 @@ function roleToKind(role: 'user' | 'assistant' | 'system' | 'error'): MessageKin
   }
 }
 
-/** Truncate toolTrace summary for bridge (≤240). */
+/** Soft-truncate for bridge only when past Wasm MAX_MSG_LEN-scale limits. */
 export function truncateToolTraceSummary(
   text: string,
   maxChars: number = TOOL_TRACE_SUMMARY_MAX_CHARS,
@@ -126,7 +134,7 @@ export function truncateToolTraceSummary(
   return `${text.slice(0, Math.max(0, maxChars - 1))}…`;
 }
 
-/** Truncate thinking monologue for bridge (≤4096 live). */
+/** Soft-truncate thinking to Wasm line max (MAX_MSG_LEN). */
 export function truncateThinkingDisplay(
   text: string,
   maxChars: number = THINKING_DISPLAY_MAX,
@@ -136,21 +144,22 @@ export function truncateThinkingDisplay(
 }
 
 /**
- * Collapse a finished thinking monologue for ring display (≤160 + ellipsis).
- * Used when tools/text supersede the segment so the ring is not flooded.
+ * Keep full thinking when a segment closes (no one-liner collapse).
+ * Whitespace-normalized only so the ring still shows the monologue.
  */
 export function collapseThinkingDisplay(
   text: string,
   maxChars: number = THINKING_COLLAPSED_MAX,
 ): string {
-  const one = (text ?? '').replace(/\s+/g, ' ').trim();
-  if (!one) return 'Thinking · collapsed';
-  if (one.length <= maxChars) return one;
-  return `${one.slice(0, Math.max(0, maxChars - 1))}…`;
+  const raw = text ?? '';
+  if (!raw.trim()) return 'Thinking';
+  // Preserve newlines in long monologues — only soft-cap to line max.
+  if (raw.length <= maxChars) return raw;
+  return `${raw.slice(0, Math.max(0, maxChars - 1))}…`;
 }
 
 /**
- * Cap and clean toolTrace for host display (≤128 non-empty summaries, ≤240 chars).
+ * All non-empty toolTrace summaries for host display (no line-count product cap).
  */
 export function selectToolTraceLines(
   toolTrace: ToolTraceEntry[] | undefined,
@@ -159,7 +168,7 @@ export function selectToolTraceLines(
   if (!toolTrace?.length) return [];
   const lines: string[] = [];
   for (const entry of toolTrace) {
-    if (lines.length >= maxLines) break;
+    if (Number.isFinite(maxLines) && lines.length >= maxLines) break;
     const summary = truncateToolTraceSummary((entry.summary ?? '').trim());
     if (!summary) continue;
     lines.push(summary);
@@ -167,7 +176,7 @@ export function selectToolTraceLines(
   return lines;
 }
 
-/** Mirror a SessionStore window (≤48) into Wasm. Returns ringWindowStart used. */
+/** Mirror a SessionStore window (≤ HARNESS_RING_MAX) into Wasm. Returns ringWindowStart used. */
 export function pushSessionToBridge(
   bridge: HarnessBridge,
   session: SessionSnapshot,
@@ -328,8 +337,6 @@ export async function runHarnessTurn(
 
     let agentResult: AgentResult;
     let next = withUser;
-    let liveToolLines = 0;
-    let overflowNote = false;
     let assistantStarted = false;
     /** Full assistant text for session/result (all stream segments). */
     let assistantAcc = '';
@@ -342,8 +349,6 @@ export async function runHarnessTurn(
     let assistantSegmentOpen = false;
     let thinkingSegment = '';
     let thinkingSegmentOpen = false;
-    let thinkingSegments = 0;
-    let thinkingOverflowNote = false;
     let sawStreamTerminal = false;
 
     const closeAssistantSegment = () => {
@@ -352,10 +357,14 @@ export async function runHarnessTurn(
     };
 
     const closeThinkingSegment = () => {
-      if (thinkingSegmentOpen) {
-        const collapsed = collapseThinkingDisplay(thinkingSegment);
-        if (!bridge.updateLastMessage(MessageKind.Thinking, collapsed)) {
-          // Last row is no longer Thinking — leave ring as-is.
+      // Keep full monologue visible — do not collapse to a one-liner.
+      // Soft-trim only to Wasm MAX_MSG_LEN via collapseThinkingDisplay.
+      if (thinkingSegmentOpen && thinkingSegment) {
+        const kept = collapseThinkingDisplay(thinkingSegment);
+        if (kept !== thinkingSegment) {
+          if (!bridge.updateLastMessage(MessageKind.Thinking, kept)) {
+            /* last row changed — leave as-is */
+          }
         }
       }
       thinkingSegmentOpen = false;
@@ -377,19 +386,9 @@ export async function runHarnessTurn(
         return;
       }
 
-      if (thinkingSegments >= THINKING_SEGMENTS_MAX) {
-        if (!thinkingOverflowNote) {
-          const note = `+ more thinking (live cap ${THINKING_SEGMENTS_MAX})`;
-          bridge.pushMessage(MessageKind.System, note);
-          thinkingOverflowNote = true;
-        }
-        return;
-      }
-
       thinkingSegment = truncateThinkingDisplay(chunk);
       bridge.pushMessage(MessageKind.Thinking, thinkingSegment);
       thinkingSegmentOpen = true;
-      thinkingSegments += 1;
     };
 
     const growAssistant = (chunk: string) => {
@@ -461,15 +460,6 @@ export async function runHarnessTurn(
           if (ev.type === 'tool_start' || ev.type === 'tool_result') {
             closeAssistantSegment();
             closeThinkingSegment();
-            if (liveToolLines >= LIVE_TOOL_LINES_MAX) {
-              if (!overflowNote) {
-                const note = `+ more tools (live cap ${LIVE_TOOL_LINES_MAX})`;
-                bridge.pushMessage(MessageKind.System, note);
-                next = appendMessage(next, 'system', note);
-                overflowNote = true;
-              }
-              return;
-            }
             const line =
               ev.type === 'tool_start'
                 ? truncateToolTraceSummary(`${ev.name} · running…`)
@@ -477,7 +467,6 @@ export async function runHarnessTurn(
             if (!line) return;
             bridge.pushMessage(MessageKind.System, line);
             next = appendMessage(next, 'system', line);
-            liveToolLines += 1;
             return;
           }
           if (ev.type === 'reasoning_delta') {
