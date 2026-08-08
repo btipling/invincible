@@ -23,6 +23,7 @@ function dirent(name: string, kind: 'file' | 'dir' | 'other'): VercelFsDirentLik
 function mockSandbox(overrides: Partial<VercelFsSandboxLike> = {}): VercelFsSandboxLike {
   const files = new Map<string, string>();
   const dirs = new Set<string>([VERCEL_FS_WORKSPACE_ROOT]);
+  const { fs: fsOverrides, ...restOverrides } = overrides;
 
   const base: VercelFsSandboxLike = {
     fs: {
@@ -58,14 +59,46 @@ function mockSandbox(overrides: Partial<VercelFsSandboxLike> = {}): VercelFsSand
       mkdir: vi.fn(async (dirPath: string) => {
         dirs.add(dirPath);
       }),
+      stat: vi.fn(async (filePath: string) => {
+        if (dirs.has(filePath)) {
+          return {
+            isFile: () => false,
+            isDirectory: () => true,
+            size: 0,
+          };
+        }
+        if (files.has(filePath)) {
+          const content = files.get(filePath)!;
+          return {
+            isFile: () => true,
+            isDirectory: () => false,
+            size: Buffer.byteLength(content, 'utf8'),
+          };
+        }
+        throw new Error(`ENOENT: ${filePath}`);
+      }),
+      ...fsOverrides,
     },
-    runCommand: vi.fn(async () => ({
-      exitCode: 0,
-      stdout: 'ok',
-      stderr: '',
-    })),
+    runCommand: vi.fn(async (cmd: string, args?: string[]) => {
+      if (cmd === 'head' && args?.[0] === '-c' && args[2]) {
+        const filePath = args[2];
+        const max = Number(args[1]);
+        const content = files.get(filePath) ?? '';
+        const buf = Buffer.from(content, 'utf8');
+        return {
+          exitCode: 0,
+          stdout: buf.subarray(0, max).toString('utf8'),
+          stderr: '',
+        };
+      }
+      return {
+        exitCode: 0,
+        stdout: 'ok',
+        stderr: '',
+      };
+    }),
     stop: vi.fn(async () => ({})),
-    ...overrides,
+    ...restOverrides,
   };
 
   return base;
@@ -305,6 +338,87 @@ describe('createVercelSandboxClient', () => {
     await Promise.all([p1, p2]);
     expect(createCount).toBe(1);
     expect(createSandbox).toHaveBeenCalledTimes(1);
+    await client.close?.();
+  });
+
+  it('mkdir failure stops VM, clears latch, and allows retry', async () => {
+    const sbFail = mockSandbox({
+      fs: {
+        readdir: vi.fn(async () => []),
+        readFile: vi.fn(async () => ''),
+        writeFile: vi.fn(async () => {}),
+        mkdir: vi.fn(async () => {
+          throw new Error('ENOSPC: no space left');
+        }),
+        stat: vi.fn(async () => ({
+          isFile: () => false,
+          isDirectory: () => true,
+          size: 0,
+        })),
+      },
+    });
+    const sbOk = mockSandbox();
+    let n = 0;
+    const createSandbox = vi.fn<CreateVercelFsSandboxFn>(async () => {
+      n += 1;
+      return n === 1 ? sbFail : sbOk;
+    });
+    const client = createVercelSandboxClient({ createSandbox });
+
+    await expect(client.listDir('.')).rejects.toThrow(/ENOSPC|space|failed/i);
+    expect(sbFail.stop).toHaveBeenCalledTimes(1);
+
+    await expect(client.listDir('.')).resolves.toMatchObject({ entries: expect.any(Array) });
+    expect(createSandbox).toHaveBeenCalledTimes(2);
+    await client.close?.();
+  });
+
+  it('readFile uses stat size gate + byte truncate (not full multi-GB load path)', async () => {
+    const big = 'x'.repeat(100);
+    const sb = mockSandbox();
+    // Pretend file is huge so readFile takes the head -c path.
+    sb.fs.stat = vi.fn(async () => ({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: 50_000_000,
+    }));
+    // Seed content for head path
+    await (async () => {
+      const createSandbox = vi.fn<CreateVercelFsSandboxFn>(async () => sb);
+      const client = createVercelSandboxClient({ createSandbox });
+      // write via underlying map through writeFile (size not used when we override stat)
+      await client.writeFile('big.txt', big, true);
+      // Override stat after write so size stays huge
+      sb.fs.stat = vi.fn(async () => ({
+        isFile: () => true,
+        isDirectory: () => false,
+        size: 50_000_000,
+      }));
+      const res = await client.readFile('big.txt', 10);
+      expect(res.truncated).toBe(true);
+      expect(Buffer.byteLength(res.content, 'utf8')).toBeLessThanOrEqual(10);
+      expect(sb.fs.readFile).not.toHaveBeenCalledWith(
+        expect.stringContaining('big.txt'),
+        expect.anything(),
+      );
+      // head path used
+      expect(sb.runCommand).toHaveBeenCalledWith(
+        'head',
+        expect.arrayContaining(['-c', '11']),
+        expect.anything(),
+      );
+      await client.close?.();
+    })();
+  });
+
+  it('readFile rejects directories; listDir rejects files', async () => {
+    const sb = mockSandbox();
+    const createSandbox = vi.fn<CreateVercelFsSandboxFn>(async () => sb);
+    const client = createVercelSandboxClient({ createSandbox });
+    await client.writeFile('a.txt', 'hi', true);
+
+    await expect(client.readFile('.')).rejects.toThrow(/not a file/i);
+    await expect(client.listDir('a.txt')).rejects.toThrow(/not a directory/i);
     await client.close?.();
   });
 });

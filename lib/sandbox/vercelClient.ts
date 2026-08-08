@@ -153,13 +153,17 @@ function mapFsError(err: unknown, fallbackStatus = 502): never {
   else if (
     lower.includes('not ready') ||
     lower.includes('unoptimized') ||
-    lower.includes('image')
+    lower.includes('unknown image') ||
+    lower.includes('invalid image') ||
+    lower.includes('image not found') ||
+    lower.includes('image is not')
   ) {
     status = 400;
   } else if (
     lower.includes('unauthorized') ||
     lower.includes('forbidden') ||
-    lower.includes('auth')
+    lower.includes('authentication') ||
+    lower.includes('not authenticated')
   ) {
     status = 403;
   }
@@ -270,6 +274,16 @@ export function createVercelSandboxClient(
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             if (!/exist/i.test(msg) && !/EEXIST/i.test(msg)) {
+              // Create succeeded but root is not ready: stop the VM and clear the
+              // latch so a later tool call can retry (do not brick the client).
+              sandbox = null;
+              rootReady = false;
+              createPromise = null;
+              try {
+                await sb.stop();
+              } catch {
+                // ignore stop errors
+              }
               mapFsError(err, 502);
             }
           }
@@ -280,6 +294,8 @@ export function createVercelSandboxClient(
           return sb;
         })
         .catch((err) => {
+          // Create itself failed with no retained instance, or mkdir path already
+          // cleared sandbox above — allow a later ensure to create again.
           if (!sandbox) {
             createPromise = null;
             rootReady = false;
@@ -325,6 +341,17 @@ export function createVercelSandboxClient(
       try {
         const abs = resolveVercelFsPath(workspaceRoot, userPath);
         const sb = await ensureSandbox(init?.signal);
+        if (typeof sb.fs.stat === 'function') {
+          let st;
+          try {
+            st = await sb.fs.stat(abs, { signal: init?.signal });
+          } catch (err) {
+            mapFsError(err, 404);
+          }
+          if (!st.isDirectory()) {
+            throw new SandboxHttpError('Not a directory', 400);
+          }
+        }
         const raw = await sb.fs.readdir(abs, {
           withFileTypes: true,
           signal: init?.signal,
@@ -351,13 +378,44 @@ export function createVercelSandboxClient(
         const abs = resolveVercelFsPath(workspaceRoot, userPath);
         const sb = await ensureSandbox(init?.signal);
         const max = clampMaxBytes(maxBytes);
+
+        // Prefer stat when available (real @vercel/sandbox): type-check + size gate
+        // so we never pull multi-GB files into the host process for a truncated read.
+        if (typeof sb.fs.stat === 'function') {
+          let st;
+          try {
+            st = await sb.fs.stat(abs, { signal: init?.signal });
+          } catch (err) {
+            mapFsError(err, 404);
+          }
+          if (!st.isFile()) {
+            throw new SandboxHttpError('Not a file', 400);
+          }
+          if (st.size > max) {
+            // Byte-capped read via head (matches BYO daemon open+read max+1 pattern).
+            const cmd = await sb.runCommand('head', ['-c', String(max + 1), abs], {
+              signal: init?.signal,
+              timeoutMs: 120_000,
+              cwd: workspaceRoot,
+            });
+            const { stdout } = await commandOutput(cmd);
+            const buf = Buffer.from(stdout, 'utf8');
+            const slice = buf.byteLength > max ? buf.subarray(0, max) : buf;
+            return {
+              content: slice.toString('utf8'),
+              truncated: true,
+            };
+          }
+        }
+
         const content = await sb.fs.readFile(abs, {
           encoding: 'utf8',
           signal: init?.signal,
         });
         const text = typeof content === 'string' ? content : content.toString('utf8');
-        if (text.length > max) {
-          return { content: text.slice(0, max), truncated: true };
+        const buf = Buffer.from(text, 'utf8');
+        if (buf.byteLength > max) {
+          return { content: buf.subarray(0, max).toString('utf8'), truncated: true };
         }
         return { content: text };
       } catch (err) {
