@@ -11,7 +11,7 @@ export type ParsedAgentBody =
 
 /**
  * Parse POST /api/agent body: { prompt, modelId?, cwd? }.
- * - Body omits `cwd` → `resolveSandboxDefaultCwd(env)` (env or `.`).
+ * - Body omits `cwd` (or null) → `resolveSandboxDefaultCwd(env)` (env or `.`).
  * - Body provides `cwd` → `parseInitialCwd` (host-absolute / invalid → 400).
  */
 export function parseAgentBody(
@@ -28,8 +28,8 @@ export function parseAgentBody(
       ? (body as { cwd?: unknown })
       : {};
 
-  // Distinguish omitted vs present: parseChatBody already validated shape.
-  if (!('cwd' in obj) || obj.cwd === undefined) {
+  // Omit / null → server default. Distinguish from present invalid (400) or empty (→ ".").
+  if (!('cwd' in obj) || obj.cwd === undefined || obj.cwd === null) {
     return {
       ok: true,
       prompt: base.prompt,

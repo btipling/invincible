@@ -20,6 +20,19 @@ describe('parseAgentBody', () => {
     });
   });
 
+  it('null cwd uses SANDBOX_DEFAULT_CWD (same as omit)', () => {
+    expect(
+      parseAgentBody(
+        { prompt: 'hi', cwd: null },
+        { SANDBOX_DEFAULT_CWD: 'invincible' },
+      ),
+    ).toEqual({
+      ok: true,
+      prompt: 'hi',
+      cwd: 'invincible',
+    });
+  });
+
   it('omitted cwd ignores invalid SANDBOX_DEFAULT_CWD', () => {
     expect(
       parseAgentBody({ prompt: 'hi' }, { SANDBOX_DEFAULT_CWD: '/etc' }),

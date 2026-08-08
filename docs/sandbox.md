@@ -322,8 +322,8 @@ not at root) so models can copy paths without double-prefix mistakes.
 | Source | When used |
 |--------|-----------|
 | Host session `cwd` | Sent on each agent POST when the browser session remembers a cwd |
-| Request body `cwd` | Present → validated; invalid → **400** |
-| `SANDBOX_DEFAULT_CWD` | Body **omits** `cwd` → server default (workspace-relative only) |
+| Request body `cwd` | Present (non-null) → validated; invalid → **400** |
+| `SANDBOX_DEFAULT_CWD` | Body **omits** `cwd` (or null) → server default (workspace-relative only) |
 | `"."` | Env unset or invalid |
 
 Invalid `SANDBOX_DEFAULT_CWD` is ignored (falls back to `"."`) with a one-time

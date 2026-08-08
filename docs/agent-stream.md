@@ -23,7 +23,7 @@ Response hints: `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`
 | `modelId` | no | Gateway model id |
 | `cwd` | no | Logical **workspace-root-relative** directory for this turn |
 
-**Omitted `cwd`:** server uses `SANDBOX_DEFAULT_CWD` when set and valid, else `"."`.  
+**Omitted / null `cwd`:** server uses `SANDBOX_DEFAULT_CWD` when set and valid, else `"."`.  
 **Present but invalid** (host-absolute, control chars, non-string): **400** JSON error — not a stream.  
 **Response `cwd`:** included on JSON success and SSE `done` only when FS tools ran this turn; always a normalized workspace-relative path. Host session should update stored cwd **only on success** (never on abort/error).
 
