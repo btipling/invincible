@@ -950,8 +950,11 @@ describe('POST /api/agent', () => {
     expect(res.status).toBe(200);
     expect(res.body).toBeTruthy();
     await res.body!.cancel();
-    // Allow cancel handler to run
-    await new Promise((r) => setTimeout(r, 20));
+    // cancel() is async — wait until close runs (not a fixed sleep).
+    const deadline = Date.now() + 2000;
+    while (!closeSandbox.mock.calls.length && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
     expect(closeSandbox).toHaveBeenCalled();
     releaseStream();
   });

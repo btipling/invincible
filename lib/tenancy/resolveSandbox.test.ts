@@ -430,9 +430,36 @@ describe('resolveAgentSandbox', () => {
       })
       .where(eq(schema.sandboxes.id, sandboxId));
 
+    const createVercelClient = vi.fn(() => {
+      throw new Error('should not reach factory for invalid shape');
+    });
     const result = await resolveAgentSandbox(userId, {
       db: db as never,
-      // default factory would throw; inject throw too
+      createVercelClient,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected fail');
+    expect(result.response.status).toBe(403);
+    const body = (await result.response.json()) as { error: string };
+    expect(body.error).toBe(SANDBOX_FORBIDDEN_ERROR);
+    expect(JSON.stringify(body)).not.toContain('spaces');
+    // Shape fails before factory — inject must not run.
+    expect(createVercelClient).not.toHaveBeenCalled();
+  });
+
+  it('vercel factory throw with valid image → 403 without leaking detail', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({
+        backend: 'vercel',
+        baseUrl: null,
+        tokenCiphertext: null,
+        image: 'vercel/sandbox/universal:latest',
+      })
+      .where(eq(schema.sandboxes.id, sandboxId));
+
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
       createVercelClient: () => {
         throw new Error('invalid image secret-detail');
       },
@@ -443,6 +470,5 @@ describe('resolveAgentSandbox', () => {
     const body = (await result.response.json()) as { error: string };
     expect(body.error).toBe(SANDBOX_FORBIDDEN_ERROR);
     expect(JSON.stringify(body)).not.toContain('secret-detail');
-    expect(JSON.stringify(body)).not.toContain('spaces');
   });
 });
