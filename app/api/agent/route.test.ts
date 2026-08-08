@@ -759,4 +759,202 @@ describe('POST /api/agent', () => {
     expect(arg.initialCwd).toBe('invincible');
   });
 
+
+  it('JSON finally closes vercel sandbox client close()', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+    delete process.env.BUILTIN_HTTP_FETCH;
+
+    const closeSandbox = vi.fn(async () => {});
+    const fakeClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      exec: vi.fn(),
+      close: closeSandbox,
+    };
+    const runAgent = vi.fn(async () => ({ text: 'ok', toolTrace: [] }));
+
+    vi.resetModules();
+    mockMcpEmpty();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1', email: 'a@b.c' },
+      })),
+    }));
+    mockByokOk();
+    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          client: fakeClient,
+          permissions: { canRead: true, canWrite: true },
+          secrets: [] as string[],
+          sandboxId: 'sbx-v',
+          tenantId: 'ten-1',
+          backend: 'vercel' as const,
+          resolvedImage: 'vercel/sandbox/universal:latest',
+        },
+      })),
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(runAgent).toHaveBeenCalled();
+    expect(closeSandbox).toHaveBeenCalledTimes(1);
+  });
+
+  it('stream start finally closes sandbox client', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+    delete process.env.BUILTIN_HTTP_FETCH;
+
+    const closeSandbox = vi.fn(async () => {});
+    const fakeClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      exec: vi.fn(),
+      close: closeSandbox,
+    };
+
+    vi.resetModules();
+    mockMcpEmpty();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1', email: 'a@b.c' },
+      })),
+    }));
+    mockByokOk();
+    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          client: fakeClient,
+          permissions: { canRead: true, canWrite: true },
+          secrets: [] as string[],
+          sandboxId: 'sbx-v',
+          tenantId: 'ten-1',
+          backend: 'vercel' as const,
+          resolvedImage: 'vercel/sandbox/universal:latest',
+        },
+      })),
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(),
+      runAgentStream: vi.fn(async (_p, handlers: { onEvent: (e: unknown) => Promise<void> }) => {
+        await handlers.onEvent({ type: 'text', text: 'hi' });
+        await handlers.onEvent({ type: 'done' });
+      }),
+    }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    // Drain stream so start() finally runs
+    await res.text();
+    expect(closeSandbox).toHaveBeenCalledTimes(1);
+  });
+
+  it('stream cancel closes sandbox client', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+    delete process.env.BUILTIN_HTTP_FETCH;
+
+    const closeSandbox = vi.fn(async () => {});
+    const fakeClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      exec: vi.fn(),
+      close: closeSandbox,
+    };
+
+    let releaseStream!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseStream = r;
+    });
+
+    vi.resetModules();
+    mockMcpEmpty();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1', email: 'a@b.c' },
+      })),
+    }));
+    mockByokOk();
+    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          client: fakeClient,
+          permissions: { canRead: true, canWrite: true },
+          secrets: [] as string[],
+          sandboxId: 'sbx-v',
+          tenantId: 'ten-1',
+          backend: 'vercel' as const,
+          resolvedImage: 'vercel/sandbox/universal:latest',
+        },
+      })),
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(),
+      runAgentStream: vi.fn(async () => {
+        await gate;
+      }),
+    }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body).toBeTruthy();
+    await res.body!.cancel();
+    // Allow cancel handler to run
+    await new Promise((r) => setTimeout(r, 20));
+    expect(closeSandbox).toHaveBeenCalled();
+    releaseStream();
+  });
+
+
 });
