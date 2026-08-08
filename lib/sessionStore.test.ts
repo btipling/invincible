@@ -93,3 +93,64 @@ describe('formatPromptWithHistory', () => {
     expect(out).toContain('User: continue');
   });
 });
+
+describe('session cwd', () => {
+  afterEach(() => {
+    if (typeof localStorage !== 'undefined') localStorage.clear();
+  });
+
+  it('round-trips cwd on MemorySessionStore', () => {
+    const store = new MemorySessionStore();
+    const s: ReturnType<typeof createEmptySession> = {
+      ...appendMessage(createEmptySession('c'), 'user', 'hi'),
+      cwd: 'invincible',
+    };
+    store.save(s);
+    expect(store.load()?.cwd).toBe('invincible');
+  });
+
+  it('createEmptySession has no cwd', () => {
+    const s = createEmptySession();
+    expect(s.cwd).toBeUndefined();
+  });
+
+  it('appendMessage preserves cwd', () => {
+    const base = { ...createEmptySession('x'), cwd: 'proj' };
+    const s = appendMessage(base, 'user', 'a');
+    expect(s.cwd).toBe('proj');
+  });
+
+  it('LocalStorage load drops non-string cwd', () => {
+    if (typeof localStorage === 'undefined') {
+      // Node vitest without jsdom — Memory path covered above.
+      return;
+    }
+    const key = 'test-cwd-key';
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        id: 's',
+        messages: [],
+        updatedAt: 1,
+        cwd: 42,
+      }),
+    );
+    const store = new LocalStorageSessionStore(key);
+    const loaded = store.load();
+    expect(loaded).not.toBeNull();
+    expect(loaded?.cwd).toBeUndefined();
+
+    store.save({ id: 's2', messages: [], updatedAt: 2, cwd: 'ok' });
+    expect(store.load()?.cwd).toBe('ok');
+    store.clear();
+    expect(store.load()).toBeNull();
+  });
+
+  it('Memory clear drops cwd', () => {
+    const store = new MemorySessionStore();
+    store.save({ ...createEmptySession('z'), cwd: 'x' });
+    store.clear();
+    expect(store.load()).toBeNull();
+  });
+});
+

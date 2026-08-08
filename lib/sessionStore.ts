@@ -20,6 +20,11 @@ export type SessionSnapshot = {
   id: string;
   messages: SessionMessage[];
   updatedAt: number;
+  /**
+   * Logical workspace cwd (workspace-root-relative), set by successful agent turns.
+   * Omitted = no remembered cwd (host omits request field; server defaults).
+   */
+  cwd?: string;
 };
 
 export interface SessionStore {
@@ -92,6 +97,11 @@ export class LocalStorageSessionStore implements SessionStore {
       if (!raw) return null;
       const data = JSON.parse(raw) as SessionSnapshot;
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) return null;
+      // Tolerant: only keep cwd when it is a string (parent #270 / phase 2).
+      if (!('cwd' in data) || typeof data.cwd !== 'string') {
+        const { cwd: _drop, ...rest } = data as SessionSnapshot & { cwd?: unknown };
+        return rest as SessionSnapshot;
+      }
       return data;
     } catch {
       return null;

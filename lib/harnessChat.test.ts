@@ -922,3 +922,76 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     expect(exp.__messages.some((m) => m.text === 'pong')).toBe(true);
   });
 });
+
+describe('runHarnessTurn session cwd', () => {
+  it('passes session cwd and updates on success', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (_p: string, init?: { cwd?: string }) => {
+      expect(init?.cwd).toBe('invincible');
+      return {
+        ok: true as const,
+        text: 'done',
+        cwd: 'invincible/sub',
+      };
+    });
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    const { session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(sendAgent).toHaveBeenCalled();
+    expect(next.cwd).toBe('invincible/sub');
+  });
+
+  it('keeps prior cwd on failure', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async () => ({
+      ok: false as const,
+      error: 'boom',
+      status: 500,
+    }));
+    const session = { ...createEmptySession('s'), cwd: 'keep-me' };
+    const { session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(next.cwd).toBe('keep-me');
+  });
+
+  it('leaves prior cwd when success omits cwd', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async () => ({
+      ok: true as const,
+      text: 'http only',
+    }));
+    const session = { ...createEmptySession('s'), cwd: 'prior' };
+    const { session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(next.cwd).toBe('prior');
+  });
+
+  it('does not send cwd when session has none', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (_p: string, init?: { cwd?: string }) => {
+      expect(init?.cwd).toBeUndefined();
+      return { ok: true as const, text: 'ok', cwd: '.' };
+    });
+    const { session: next } = await runHarnessTurn(
+      bridge,
+      createEmptySession('s'),
+      'hi',
+      { sendAgent, pushUser: false, streamAgent: false },
+    );
+    expect(next.cwd).toBe('.');
+  });
+});
+
