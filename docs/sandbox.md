@@ -282,6 +282,60 @@ npm run test:sandbox
 
 ---
 
+
+## Logical workspace cwd
+
+The sandbox **jail root** (`SANDBOX_WORKSPACE` on the daemon) does not change per turn.
+Agents also have a **logical cwd** owned by the agent tool layer + host session — not
+`process.chdir` on the daemon.
+
+### Why it exists
+
+When the git repo is nested under the workspace (e.g. workspace root contains
+`invincible/…`), models often invent wrong prefixes (`sandbox/x` instead of
+`invincible/sandbox/x`). Logical cwd lets the agent `change_dir` once and then use
+short relative paths.
+
+### Tools
+
+| Tool | Role |
+|------|------|
+| `change_dir` | Set logical cwd for subsequent tools this turn (host may persist on success) |
+| `pwd` | Print current logical cwd (workspace-root-relative) |
+| path tools (`list_dir`, `read_file`, `write_file`, `str_replace`, `exec`) | Resolve paths against logical cwd |
+
+### Prefix-aware resolve
+
+Paths resolve with **prefix-aware** join (not naive always-join):
+
+| Argument path | Behavior |
+|---------------|----------|
+| Equals current cwd, or starts with `cwd/` | Treated as already workspace-root-relative — **not** re-joined under cwd |
+| Relative (`sandbox/x`, `./x`, `..`) | Joined under current logical cwd |
+| Host-absolute (`/…`, drive letters) | Rejected |
+
+Tool success lines always show **workspace-root-relative** paths (and `cwd=…` when
+not at root) so models can copy paths without double-prefix mistakes.
+
+### Defaults and session
+
+| Source | When used |
+|--------|-----------|
+| Host session `cwd` | Sent on each agent POST when the browser session remembers a cwd |
+| Request body `cwd` | Present (non-null) → validated; invalid → **400** |
+| `SANDBOX_DEFAULT_CWD` | Body **omits** `cwd` (or null) → server default (workspace-relative only) |
+| `"."` | Env unset or invalid |
+
+Invalid `SANDBOX_DEFAULT_CWD` is ignored (falls back to `"."`) with a one-time
+server warning — it does not fail process boot. Set it in the **Vercel project
+env** UI for Production/Preview (e.g. `invincible` for a nested checkout). Verify
+with the `pwd` tool after a harness turn.
+
+Host updates stored session cwd **only on agent success**; failure, abort, and
+chat-fallback leave the prior value. Clear session omits cwd.
+
+See also [session-model.md](session-model.md) and [agent-stream.md](agent-stream.md).
+
 ## 12. Tenancy cutover (origin / BYO)
 
 When Production enables the tenancy triple env, agent tools move to **DB grants**

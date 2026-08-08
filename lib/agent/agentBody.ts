@@ -2,6 +2,7 @@
  * Agent-only request body parse. Chat stays on parseChatBody (no cwd).
  */
 import { parseChatBody } from '../chatServer';
+import { resolveSandboxDefaultCwd } from '../sandbox/config';
 import { parseInitialCwd } from './workPath';
 
 export type ParsedAgentBody =
@@ -10,9 +11,13 @@ export type ParsedAgentBody =
 
 /**
  * Parse POST /api/agent body: { prompt, modelId?, cwd? }.
- * Missing cwd → `"."`. Host-absolute / invalid cwd → 400.
+ * - Body omits `cwd` (or null) → `resolveSandboxDefaultCwd(env)` (env or `.`).
+ * - Body provides `cwd` → `parseInitialCwd` (host-absolute / invalid → 400).
  */
-export function parseAgentBody(body: unknown): ParsedAgentBody {
+export function parseAgentBody(
+  body: unknown,
+  env: Record<string, string | undefined> = process.env,
+): ParsedAgentBody {
   const base = parseChatBody(body);
   if (!base.ok) {
     return base;
@@ -23,13 +28,13 @@ export function parseAgentBody(body: unknown): ParsedAgentBody {
       ? (body as { cwd?: unknown })
       : {};
 
-  // Distinguish omitted vs present: parseChatBody already validated shape.
-  if (!('cwd' in obj) || obj.cwd === undefined) {
+  // Omit / null → server default. Distinguish from present invalid (400) or empty (→ ".").
+  if (!('cwd' in obj) || obj.cwd === undefined || obj.cwd === null) {
     return {
       ok: true,
       prompt: base.prompt,
       modelId: base.modelId,
-      cwd: '.',
+      cwd: resolveSandboxDefaultCwd(env),
     };
   }
 
