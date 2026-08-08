@@ -17,7 +17,7 @@
 ## Coverage honesty
 
 - Noto Sans: Latin, Greek, Cyrillic, and broad European punctuation — **not** full CJK; **not** the Unicode Arrows block (U+2190–U+21FF). Four faces: Regular, Bold, Italic, Bold Italic (rich MD emph/strong compose).
-- DejaVu symbols subset: arrows (including **→**), many math operators and geometric/dingbat code points that Noto omits. Paint routes via `isSymbolRelated` in `rich/unicode_face.zig`.
+- DejaVu symbols subset: arrows (including **→**), tool status **✓**/**✗**, many math operators and geometric/dingbat code points that Noto omits. Paint routes via `isSymbolRelated` in `rich/unicode_face.zig` (check/ballot marks are carved out of the emoji face so they do not tofu).
 - OpenMoji subset: common emoji + modifiers (ZWJ, VS16, skin tones, regional indicators). Color emoji and perfect ZWJ family glyphs depend on the shaper; FreeType/stb outline path is monochrome single-glyph.
 - CJK (e.g. 日本語) may still missing-glyph until a CJK face is added.
 - Mono (Vera) still lacks arrows — fence code with `→` may still tofu; body/system/tool lines use mixed body+symbols.
