@@ -29,7 +29,8 @@ import { createVercelSandboxHttpRunner } from '../../../lib/agent/vercelSandboxH
 import type { HttpFetchRunner } from '../../../lib/agent/httpFetchTypes';
 
 export const runtime = 'nodejs';
-export const maxDuration = 300;
+// Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
+export const maxDuration = 1800;
 
 function isAbortError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
