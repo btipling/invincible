@@ -1,15 +1,14 @@
 import { generateText, streamText, stepCountIs } from 'ai';
-import { mapFullStreamPart } from './agentStream';
+import { mapFullStreamPart, summarizeToolLine } from './agentStream';
 import { resolveAgentReasoning } from './reasoningConfig';
 import {
-  TOOL_TRACE_SUMMARY_MAX_CHARS,
   resolveAgentMaxSteps,
   resolveAgentModelId,
   getSandboxConfig,
 } from '../sandbox/config';
 import { createSandboxClient, type SandboxClient } from '../sandbox/client';
 import { createAgentTools } from './tools';
-import { redactSecrets, truncateSummary } from './redact';
+import { redactSecrets } from './redact';
 import {
   flattenToolResultText,
   parseAndFlattenIfMcpEnvelope,
@@ -357,20 +356,14 @@ export function collectToolTrace(
         match != null &&
         !/^\s*ERROR\b/i.test(redacted) &&
         !/\bTIMED_OUT\b/.test(redacted);
-      const summary = truncateSummary(
-        summarizeTool(name, redacted || (errorPart ? 'ERROR tool-error' : ''), ok),
-        TOOL_TRACE_SUMMARY_MAX_CHARS,
+      const summary = summarizeToolLine(
+        name,
+        redacted || (errorPart ? 'ERROR tool-error' : ''),
+        ok,
+        secrets,
       );
       entries.push({ name, ok, summary });
     }
   }
   return entries;
-}
-
-function summarizeTool(name: string, resultText: string, ok: boolean): string {
-  const status = ok ? 'ok' : 'failed';
-  const oneLine = resultText.replace(/\s+/g, ' ').trim();
-  if (!oneLine) return `${name} · ${status}`;
-  const preview = oneLine.length > 200 ? oneLine.slice(0, 200) : oneLine;
-  return `${name} · ${status} · ${preview}`;
 }

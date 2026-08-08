@@ -87,6 +87,12 @@ self-hosted GHA runner that compiles Zig.
 Inference is server-side only (`POST /api/chat`, `POST /api/agent`). Report
 client-side key or sandbox-token exposure immediately.
 
+**Agent SSE:** when `Accept: text/event-stream`, event string fields (`text`,
+`summary`, `error`, tool names, etc.) are redacted with the same secret list as
+JSON responses before they hit the wire. Never put Gateway keys, sandbox tokens,
+provider/MCP secrets, or raw DEK material in stream payloads. See
+[docs/agent-stream.md](docs/agent-stream.md).
+
 ## Multi-tenant auth (optional)
 
 | Rule | Detail |

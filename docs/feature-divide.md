@@ -79,6 +79,7 @@ User types in Wasm composer
        SSE: tool_start / tool_result / reasoning_delta / text_delta / done (see docs/agent-stream.md)
        JSON fallback when Accept is not event-stream (tests / simple clients)
   → Host pushes live System tool lines + Thinking monologue + growing Assistant (protocol v8 update-last)
+  → Thinking rows **collapse** when tools/text supersede them (short ring residue; not SessionStore)
   → User reads thinking + tools + reply in Wasm transcript while Busy
 ```
 
