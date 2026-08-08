@@ -11,6 +11,7 @@ import { TOOL_TRACE_SUMMARY_MAX_CHARS } from '../sandbox/config';
 export type AgentStreamEvent =
   | { type: 'tool_start'; name: string; id?: string }
   | { type: 'tool_result'; name: string; ok: boolean; summary: string }
+  | { type: 'reasoning_delta'; text: string }
   | { type: 'text_delta'; text: string }
   | { type: 'done'; text: string; toolTrace?: ToolTraceEntry[] }
   | { type: 'error'; error: string; status?: number };
@@ -60,7 +61,8 @@ function toolIdOf(part: { toolCallId?: unknown }): string | undefined {
 
 /**
  * Map one AI SDK fullStream part to zero or more agent events.
- * Reasoning parts are ignored (phase 2).
+ * Reasoning: reasoning-delta / reasoning text parts → reasoning_delta.
+ * reasoning-start / reasoning-end / reasoning-file are ignored (v1).
  */
 export function mapFullStreamPart(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -118,6 +120,17 @@ export function mapFullStreamPart(
         summary: summarizeToolLine(name, redacted, false, secrets),
       },
     ];
+  }
+
+  if (type === 'reasoning-delta' || type === 'reasoning') {
+    const text =
+      typeof part.text === 'string'
+        ? part.text
+        : typeof part.delta === 'string'
+          ? part.delta
+          : '';
+    if (!text) return [];
+    return [{ type: 'reasoning_delta', text: redactSecrets(text, secrets) }];
   }
 
   if (type === 'text-delta') {

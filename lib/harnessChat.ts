@@ -21,6 +21,9 @@ import {
   LIVE_TOOL_LINES_MAX,
   type AgentStreamEvent,
 } from './agent/agentStream';
+
+/** Match Wasm MAX_MSG_LEN — single thinking bubble cap. */
+export const THINKING_DISPLAY_MAX = 4096;
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
 } from './sandbox/config';
@@ -112,6 +115,15 @@ function roleToKind(role: 'user' | 'assistant' | 'system' | 'error'): MessageKin
 export function truncateToolTraceSummary(
   text: string,
   maxChars: number = TOOL_TRACE_SUMMARY_MAX_CHARS,
+): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+/** Truncate thinking monologue for bridge (≤4096). */
+export function truncateThinkingDisplay(
+  text: string,
+  maxChars: number = THINKING_DISPLAY_MAX,
 ): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, Math.max(0, maxChars - 1))}…`;
@@ -308,6 +320,8 @@ export async function runHarnessTurn(
      */
     let assistantSegment = '';
     let assistantSegmentOpen = false;
+    let thinkingSegment = '';
+    let thinkingSegmentOpen = false;
     let sawStreamTerminal = false;
 
     const closeAssistantSegment = () => {
@@ -315,8 +329,29 @@ export async function runHarnessTurn(
       assistantSegment = '';
     };
 
+    const closeThinkingSegment = () => {
+      thinkingSegmentOpen = false;
+      thinkingSegment = '';
+    };
+
+    const growThinking = (chunk: string) => {
+      if (!chunk) return;
+      // Thinking is ephemeral UI — do not append to SessionStore.
+      if (!thinkingSegmentOpen) {
+        thinkingSegment = truncateThinkingDisplay(chunk);
+        bridge.pushMessage(MessageKind.Thinking, thinkingSegment);
+        thinkingSegmentOpen = true;
+        return;
+      }
+      thinkingSegment = truncateThinkingDisplay(thinkingSegment + chunk);
+      if (!bridge.updateLastMessage(MessageKind.Thinking, thinkingSegment)) {
+        bridge.pushMessage(MessageKind.Thinking, thinkingSegment);
+      }
+    };
+
     const growAssistant = (chunk: string) => {
       if (!chunk) return;
+      closeThinkingSegment();
       assistantAcc += chunk;
       if (!assistantSegmentOpen) {
         assistantSegment = chunk;
@@ -382,6 +417,7 @@ export async function runHarnessTurn(
         onEvent: async (ev: AgentStreamEvent) => {
           if (ev.type === 'tool_start' || ev.type === 'tool_result') {
             closeAssistantSegment();
+            closeThinkingSegment();
             if (liveToolLines >= LIVE_TOOL_LINES_MAX) {
               if (!overflowNote) {
                 const note = `+ more tools (live cap ${LIVE_TOOL_LINES_MAX})`;
@@ -399,6 +435,10 @@ export async function runHarnessTurn(
             bridge.pushMessage(MessageKind.System, line);
             next = appendMessage(next, 'system', line);
             liveToolLines += 1;
+            return;
+          }
+          if (ev.type === 'reasoning_delta') {
+            growThinking(ev.text);
             return;
           }
           if (ev.type === 'text_delta') {

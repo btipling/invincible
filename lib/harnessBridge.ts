@@ -10,7 +10,7 @@
  */
 
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
-export const HARNESS_PROTOCOL_VERSION = 7 as const;
+export const HARNESS_PROTOCOL_VERSION = 8 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -31,6 +31,8 @@ export enum MessageKind {
   Assistant = 2,
   System = 3,
   Error = 4,
+  /** Protocol v8 — model reasoning / thinking monologue (display-only). */
+  Thinking = 5,
 }
 
 export type LifecycleName = 'boot' | 'ready' | 'busy' | 'error';
@@ -539,6 +541,8 @@ export function messageKindLabel(kind: MessageKind): string {
       return 'system';
     case MessageKind.Error:
       return 'error';
+    case MessageKind.Thinking:
+      return 'thinking';
     default:
       return 'msg';
   }

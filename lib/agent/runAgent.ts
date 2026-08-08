@@ -1,5 +1,6 @@
 import { generateText, streamText, stepCountIs } from 'ai';
 import { mapFullStreamPart } from './agentStream';
+import { resolveAgentReasoning } from './reasoningConfig';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
   resolveAgentMaxSteps,
@@ -248,6 +249,10 @@ export async function runAgentStream(
   };
   if (params.providerOptions) {
     streamArgs.providerOptions = params.providerOptions;
+  }
+  const reasoning = resolveAgentReasoning(modelId);
+  if (reasoning) {
+    streamArgs.reasoning = reasoning;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
