@@ -141,8 +141,27 @@ jobs:
           VERCEL_TEAM_ID: ${{ steps.cfg.outputs.team_id }}
         run: |
           set -euo pipefail
-          # Never echo token. Stdin login only.
-          printf '%s' "${VERCEL_TOKEN}" | docker login vcr.vercel.com -u "${VERCEL_TEAM_ID}" --password-stdin
+          # Never echo token.
+          # `docker login` pings the registry with HEAD /v2/, which VCR answers
+          # 404 (GET returns 401 + WWW-Authenticate). Write Docker config auth
+          # directly and validate with GET + Basic (expect 200).
+          mkdir -p "${HOME}/.docker"
+          auth="$(printf '%s:%s' "${VERCEL_TEAM_ID}" "${VERCEL_TOKEN}" | base64 -w0 2>/dev/null || printf '%s:%s' "${VERCEL_TEAM_ID}" "${VERCEL_TOKEN}" | base64 | tr -d '\n')"
+          umask 077
+          printf '%s\n' "{\"auths\":{\"vcr.vercel.com\":{\"auth\":\"${auth}\"}}}" > "${HOME}/.docker/config.json"
+          code="$(curl -sS -o /tmp/vcr-auth-body.json -w '%{http_code}' \
+            -u "${VERCEL_TEAM_ID}:${VERCEL_TOKEN}" \
+            "https://vcr.vercel.com/v2/")"
+          if [ "${code}" != "200" ]; then
+            echo "::error::VCR auth failed (HTTP ${code}). Check VERCEL_TOKEN (account token scoped to the team) and VERCEL_TEAM_ID (team_… id, not slug)."
+            # Body may mention invalidToken; never dump Authorization.
+            if [ -f /tmp/vcr-auth-body.json ]; then
+              # Strip anything that looks like a token-ish string just in case.
+              sed -E 's/vcp_[A-Za-z0-9_-]+/[redacted]/g; s/[A-Za-z0-9_-]{32,}/[redacted]/g' /tmp/vcr-auth-body.json || true
+            fi
+            exit 1
+          fi
+          echo "VCR credentials OK (docker config written; skipped docker login HEAD quirk)."
 
       - name: Build linux/amd64 image
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run == true) }}
