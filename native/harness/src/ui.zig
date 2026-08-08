@@ -1,6 +1,7 @@
 //! Harness product UI (dvui) — Phase 4 Wasm-primary agent workspace.
 //! Polish (4.7): density, focus composer, touch targets, scroll stick-to-bottom.
 //! #131 / plan #135: persistent transcript ScrollInfo + conditional stick rules.
+//! #251: stick also on in-place stream growth (update_last / content height).
 //! #137: IMGUI absolute-rect bands (header / transcript / composer) so content
 //! min-size cannot push chrome off-canvas. Build id (`h:…`) detects stale wasm.
 const dvui = @import("dvui");
@@ -21,6 +22,8 @@ var want_composer_focus: bool = true;
 var last_shown_count: usize = 0;
 /// Ring message count last frame (for clear / hydrate / user-send detection).
 var last_msg_count: usize = 0;
+/// Virtual content scrollMax from last frame — stream growth detection (#251).
+var last_scroll_max_y: f32 = 0;
 /// Persistent across frames — frame-local ScrollInfo zeros viewport every paint.
 var transcript_scroll: dvui.ScrollInfo = .{
     .vertical = .auto,
@@ -32,6 +35,8 @@ const SMOKE_PROMPT = "Reply with exactly: PONG";
 const TOUCH_H: f32 = 40;
 /// Near-bottom epsilon for stick-to-bottom follow (plan #135).
 const NEAR_BOTTOM_PX: f32 = 48;
+/// Ignore subpixel layout noise when detecting in-place stream growth (#251).
+const CONTENT_GREW_EPS: f32 = 1.0;
 /// Reserved bottom chrome: textEntry + action row + margins (plan #138).
 /// Height budget: header + this win over transcript min on short canvases.
 const COMPOSER_CHROME_MIN: f32 = 2 * TOUCH_H + 20;
@@ -57,6 +62,7 @@ fn resetTranscriptScroll() void {
     };
     last_shown_count = 0;
     last_msg_count = 0;
+    last_scroll_max_y = 0;
 }
 
 fn isNearBottom(si: *const dvui.ScrollInfo) bool {
@@ -389,15 +395,19 @@ pub fn frame() !void {
         }
     }
 
-    // Conditional stick-to-bottom (plan #135 / #131).
+    // Conditional stick-to-bottom (plan #135 / #131 / #251).
+    // Count changes cover pushMessage; content_grew covers inv_update_last_message
+    // stream growth (thinking/assistant) where msg_count is unchanged.
+    const max_y = transcript_scroll.scrollMax(.vertical);
+    const content_grew = max_y > last_scroll_max_y + CONTENT_GREW_EPS;
+    const count_changed = shown != prev_shown;
+
     if (n < prev_msg) {
         // Ring cleared or truncated — drop parse cache (generation bump).
         if (n == 0) rich.clearCache();
         transcript_scroll.velocity = .{ .x = 0, .y = 0 };
         scrollToBottom(&transcript_scroll);
-        last_shown_count = shown;
-        last_msg_count = n;
-    } else if (shown != prev_shown) {
+    } else if (count_changed or content_grew) {
         const newest_is_user = blk: {
             if (n == 0) break :blk false;
             if (bridge.messageAt(n - 1)) |m| break :blk m.kind == @intFromEnum(bridge.MessageKind.user);
@@ -411,11 +421,13 @@ pub fn frame() !void {
         } else {
             clampScrollToContent(&transcript_scroll);
         }
-        last_shown_count = shown;
-        last_msg_count = n;
     } else {
         clampScrollToContent(&transcript_scroll);
     }
+    // Always refresh trackers (grow, shrink, no-op) so stream deltas stay accurate.
+    last_shown_count = shown;
+    last_msg_count = n;
+    last_scroll_max_y = transcript_scroll.scrollMax(.vertical);
 
     // ── Composer chrome (absolute bottom band — always on-canvas) ─────────
     var typed: []const u8 = prompt_buf[0..0];

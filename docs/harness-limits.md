@@ -64,8 +64,8 @@ Vertical bands inside the Wasm root (not a DOM panel):
 | Scroller | One outer **Wasm** `scrollArea` for the whole transcript (not a DOM panel) |
 | State | `ScrollInfo` persists across frames (`native/harness/src/ui.zig`) |
 | Input | Mouse wheel / trackpad / touch drag on the canvas **transcript region only** |
-| Stick-to-bottom | Follow when user was **near bottom** (~48px), when a **new user** line arrives, or on **session hydrate** / Clear |
-| Reading older lines | If the user scrolled **up**, new assistant/tool/system lines do **not** yank the viewport down |
+| Stick-to-bottom | Follow when user was **near bottom** (~48px), when a **new user** line arrives, on **session hydrate** / Clear, or when **in-place stream growth** makes the transcript taller (`update_last` thinking/assistant tokens) while still near bottom |
+| Reading older lines | If the user scrolled **up**, new assistant/tool/system lines **and** stream growth do **not** yank the viewport down |
 | Long messages | Multi-screen assistant text is reachable by scrolling; still capped at 4 KiB per line |
 | vs composer | Scrolling never covers or moves the reserved composer band |
 
