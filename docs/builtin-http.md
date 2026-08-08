@@ -76,7 +76,7 @@ Host chat fallback still triggers **only** on HTTP **503** with the exact
 
 | Knob | Value |
 |------|--------|
-| Route `maxDuration` | 3600s (1h) |
+| Route `maxDuration` | 1800s (30m; Vercel max) |
 | VMs per agent request | ≤ 1 (single-flight create) |
 | Sandbox VM lifetime | ≤ 55s (`persistent: false`) |
 | Per-fetch timeout | default 10s, max 20s |
