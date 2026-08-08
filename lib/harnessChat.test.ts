@@ -356,10 +356,10 @@ describe('runHarnessTurn', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it('caps toolTrace to 6 system lines', async () => {
+  it('caps toolTrace to TOOL_TRACE_MAX_LINES system lines', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
-    const toolTrace = Array.from({ length: 10 }, (_, i) => ({
+    const toolTrace = Array.from({ length: TOOL_TRACE_MAX_LINES + 10 }, (_, i) => ({
       name: `t${i}`,
       ok: true,
       summary: `step ${i}`,

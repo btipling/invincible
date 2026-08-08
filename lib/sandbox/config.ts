@@ -14,7 +14,7 @@ export const MIN_AGENT_MAX_STEPS = 1;
 /** Tool result string cap before returning to the model. */
 export const TOOL_RESULT_MAX_CHARS = 8_192;
 
-/** toolTrace summary cap (host will also ≤6 lines). */
+/** toolTrace summary cap (host also caps line count). */
 export const TOOL_TRACE_SUMMARY_MAX_CHARS = 240;
 
 export const DEFAULT_EXEC_TIMEOUT_MS = 10_000;

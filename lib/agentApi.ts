@@ -54,8 +54,8 @@ export type SendAgentStreamFn = (
   },
 ) => Promise<AgentResult>;
 
-/** Soft cap on raw toolTrace entries accepted from the wire (host still displays ≤6). */
-const TOOL_TRACE_PARSE_MAX = 32;
+/** Soft cap on raw toolTrace entries accepted from the wire (host displays ≤ TOOL_TRACE_MAX_LINES). */
+const TOOL_TRACE_PARSE_MAX = 128;
 
 function parseToolTrace(raw: unknown): ToolTraceEntry[] | undefined {
   if (!Array.isArray(raw) || raw.length === 0) return undefined;

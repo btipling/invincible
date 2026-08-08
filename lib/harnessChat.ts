@@ -50,13 +50,13 @@ import { canLoadEarlier, latestRingStart, sliceMessagesForRing } from './session
 export const THINKING_DISPLAY_MAX = 4096;
 
 /** Max Thinking segments pushed per turn before overflow notice. */
-export const THINKING_SEGMENTS_MAX = 6;
+export const THINKING_SEGMENTS_MAX = 32;
 
 /** Collapsed thinking one-liner max body chars (before ellipsis). */
 export const THINKING_COLLAPSED_MAX = 160;
 
 /** Parent #45 / phase 3 — max system toolTrace lines per turn. */
-export const TOOL_TRACE_MAX_LINES = 6;
+export const TOOL_TRACE_MAX_LINES = 128;
 
 /** Prompt used for end-to-end smoke (model should reply with PONG). */
 export const HARNESS_SMOKE_PROMPT = 'Reply with exactly: PONG';
@@ -150,7 +150,7 @@ export function collapseThinkingDisplay(
 }
 
 /**
- * Cap and clean toolTrace for host display (≤6 non-empty summaries, ≤240 chars).
+ * Cap and clean toolTrace for host display (≤128 non-empty summaries, ≤240 chars).
  */
 export function selectToolTraceLines(
   toolTrace: ToolTraceEntry[] | undefined,
