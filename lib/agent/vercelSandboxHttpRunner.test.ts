@@ -214,14 +214,14 @@ describe('VercelSandboxHttpRunner', () => {
     expect(sb.stop).toHaveBeenCalledTimes(1);
   });
 
-  it('clamps sandbox create timeout to max 55s', async () => {
+  it('clamps sandbox create timeout to platform max', async () => {
     const createSandbox: CreateSandboxFn = vi.fn(async (params) => {
       expect(params.timeout).toBe(MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS);
       return mockSandbox();
     });
     const runner = new VercelSandboxHttpRunner({
       createSandbox,
-      sandboxTimeoutMs: 999_999,
+      sandboxTimeoutMs: 9_999_999,
     });
     // force create via get with head
     const sb = await (runner as unknown as {

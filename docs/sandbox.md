@@ -101,8 +101,8 @@ if unauthenticated) — see above.
 |--------|------|------|---------|
 | `GET` | `/health` | none | `{ ok: true, version: 1 }` |
 | `POST` | `/v1/list_dir` | Bearer | List directory entries |
-| `POST` | `/v1/read_file` | Bearer | Read file (max 256 KiB) |
-| `POST` | `/v1/write_file` | Bearer | Write file (max 256 KiB) |
+| `POST` | `/v1/read_file` | Bearer | Read file (max 16 MiB) |
+| `POST` | `/v1/write_file` | Bearer | Write file (max 16 MiB) |
 | `POST` | `/v1/exec` | Bearer | Run argv command (no shell) |
 
 Full contract, jail rules, and exec shape: [`sandbox/README.md`](../sandbox/README.md).
@@ -220,9 +220,9 @@ Origin may run a DigitalOcean-hosted **reference** sample. Host inventory
 |------|---------|-------------|
 | Route `maxDuration` | **1800s (30m)** — Vercel Fluid extended max; 1h not offered | `app/api/agent` (long multi-tool turns) |
 | `AGENT_MAX_STEPS` | unset (model-ended) | optional 1…256 safety ceiling |
-| exec `timeoutMs` | 10_000 | max 30_000 |
-| read/write maxBytes | 256 KiB | |
-| stdout/stderr per exec | 32 KiB each | truncated |
+| exec `timeoutMs` | 10_000 | max 1_800_000 |
+| read/write maxBytes | 16 MiB | |
+| stdout/stderr per exec | 4 MiB each | truncated |
 | tool result to model | 8_192 chars | |
 | toolTrace lines to Wasm | unbounded | no host product cap |
 | toolTrace summary chars | 240 | host + server |

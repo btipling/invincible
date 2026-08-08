@@ -5,20 +5,23 @@ export const SANDBOX_NOT_CONFIGURED_ERROR =
   'Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.' as const;
 
 /**
- * Optional safety ceiling when `AGENT_MAX_STEPS` is set.
- * Unset env → natural model-ended loop (no product default).
+ * Only applies when `AGENT_MAX_STEPS` is explicitly set.
+ * No product default step ceiling — model-ended loop otherwise.
+ * Absurd upper bound so env cannot silently re-introduce a toy 256 wall.
  */
-export const MAX_AGENT_MAX_STEPS = 256;
+export const MAX_AGENT_MAX_STEPS = 1_000_000;
 export const MIN_AGENT_MAX_STEPS = 1;
 
-/** Tool result string cap before returning to the model. */
-export const TOOL_RESULT_MAX_CHARS = 65_536;
+/** Tool result string returned to the model (not a turn-stop). */
+export const TOOL_RESULT_MAX_CHARS = 2_000_000;
 
-/** toolTrace / live tool line summary soft max (chars). Not a product "stop". */
-export const TOOL_TRACE_SUMMARY_MAX_CHARS = 8_192;
+/** Soft max for any single tool summary string (display path also uses salient bits). */
+export const TOOL_TRACE_SUMMARY_MAX_CHARS = 100_000;
 
-export const DEFAULT_EXEC_TIMEOUT_MS = 10_000;
-export const MAX_EXEC_TIMEOUT_MS = 30_000;
+/** Default exec timeout when the model omits timeoutMs. */
+export const DEFAULT_EXEC_TIMEOUT_MS = 300_000; // 5 min
+/** Hard ceiling for one exec — aligned with route maxDuration (30m). */
+export const MAX_EXEC_TIMEOUT_MS = 1_800_000; // 30 min
 
 /**
  * Both URL and token required (trimmed non-empty).

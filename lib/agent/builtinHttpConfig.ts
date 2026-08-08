@@ -10,16 +10,16 @@ export type BuiltinHttpFetchMode =
   | typeof BUILTIN_HTTP_FETCH_OFF
   | typeof BUILTIN_HTTP_FETCH_SANDBOX;
 
-export const DEFAULT_BUILTIN_HTTP_TIMEOUT_MS = 10_000;
-export const MAX_BUILTIN_HTTP_TIMEOUT_MS = 20_000;
+export const DEFAULT_BUILTIN_HTTP_TIMEOUT_MS = 120_000; // 2 min
+export const MAX_BUILTIN_HTTP_TIMEOUT_MS = 1_800_000; // 30 min
 export const MIN_BUILTIN_HTTP_TIMEOUT_MS = 1;
 
-export const DEFAULT_BUILTIN_HTTP_MAX_BYTES = 65_536;
-export const MAX_BUILTIN_HTTP_MAX_BYTES = 256 * 1024;
+export const DEFAULT_BUILTIN_HTTP_MAX_BYTES = 2 * 1024 * 1024; // 2 MiB
+export const MAX_BUILTIN_HTTP_MAX_BYTES = 16 * 1024 * 1024; // 16 MiB
 
-/** Sandbox.create lifetime clamp — fits route maxDuration 60s + cleanup. */
-export const MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS = 55_000;
-export const DEFAULT_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS = 55_000;
+/** Sandbox.create lifetime — match agent route maxDuration headroom. */
+export const MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS = 1_800_000;
+export const DEFAULT_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS = 1_800_000;
 
 export type BuiltinHttpConfig = {
   enabled: boolean;

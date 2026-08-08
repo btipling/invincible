@@ -75,14 +75,14 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
   });
 
   const read_file = tool({
-    description: 'Read a text file from the sandbox workspace (max 256 KiB).',
+    description: 'Read a text file from the sandbox workspace (max 16 MiB).',
     inputSchema: jsonSchema<{ path: string; maxBytes?: number }>({
       type: 'object',
       properties: {
         path: { type: 'string', description: 'File path relative to workspace root' },
         maxBytes: {
           type: 'number',
-          description: 'Optional max bytes to read (server-capped at 256 KiB)',
+          description: 'Optional max bytes to read (server-capped at 16 MiB)',
         },
       },
       required: ['path'],
@@ -106,7 +106,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
   });
 
   const write_file = tool({
-    description: 'Write a text file in the sandbox workspace (max 256 KiB).',
+    description: 'Write a text file in the sandbox workspace (max 16 MiB).',
     inputSchema: jsonSchema<{ path: string; content: string; mkdir?: boolean }>({
       type: 'object',
       properties: {
@@ -164,7 +164,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           description: 'Argument vector',
         },
         cwd: { type: 'string', description: 'Working directory under workspace' },
-        timeoutMs: { type: 'number', description: 'Timeout in ms (1–30000)' },
+        timeoutMs: { type: 'number', description: 'Timeout in ms (default 5 min, max 30 min)' },
       },
       required: ['cmd'],
       additionalProperties: false,

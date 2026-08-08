@@ -31,14 +31,14 @@ pub const MessageKind = enum(u8) {
 };
 
 /// Transcript ring slots. Host `HARNESS_RING_MAX` must match.
-/// Sized for multi-tool agent turns (tools + thinking + assistant), not a toy 48.
-const MAX_MSG = 512;
+/// Sized for long multi-tool agent turns — not a toy ring.
+const MAX_MSG = 2048;
 /// Cap per transcript line (UTF-8 bytes). Host truncates to this before push/update.
-/// 64 KiB — long thinking / assistant monologues (was 4 KiB and clipped mid-stream).
-pub const MAX_MSG_LEN = 65536;
+/// 256 KiB — long thinking / assistant monologues (caution-theater 4–64 KiB removed).
+pub const MAX_MSG_LEN = 262144;
 const ECHO_CAP = 1024;
-/// User submit buffer (composer → host). Match long paste comfort.
-pub const SUBMIT_CAP = 65536;
+/// User submit buffer (composer → host).
+pub const SUBMIT_CAP = 262144;
 /// Protocol v3 model catalog caps (host pushes UTF-8 model ids).
 pub const MAX_CATALOG = 64;
 pub const MAX_MODEL_ID_LEN = 128;

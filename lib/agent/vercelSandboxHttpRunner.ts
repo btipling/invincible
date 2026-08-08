@@ -296,7 +296,7 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
       const readCmd = await sb.runCommand(
         'head',
         ['-c', String(maxBytes + 1), bodyPath],
-        { signal: input.signal, timeoutMs: 10_000 },
+        { signal: input.signal, timeoutMs: 120_000 },
       );
       const out = await commandOutput(readCmd);
       const raw = out.stdout;

@@ -32,17 +32,18 @@ describe('sandbox config', () => {
     });
   });
 
-  it('resolveAgentMaxSteps is null when unset; clamps 1…256 when set', () => {
+  it('resolveAgentMaxSteps is null when unset; clamps only absurd extremes', () => {
     expect(resolveAgentMaxSteps({})).toBeNull();
     expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '' })).toBeNull();
     expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '   ' })).toBeNull();
     expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: 'nope' })).toBeNull();
     expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '3' })).toBe(3);
     expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '0' })).toBe(1);
-    expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '999' })).toBe(
-      MAX_AGENT_MAX_STEPS,
-    );
+    expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '999' })).toBe(999);
     expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '256' })).toBe(256);
+    expect(
+      resolveAgentMaxSteps({ AGENT_MAX_STEPS: String(MAX_AGENT_MAX_STEPS + 1) }),
+    ).toBe(MAX_AGENT_MAX_STEPS);
   });
 
   it('resolveAgentModelId prefers AGENT_MODEL', () => {
