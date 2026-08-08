@@ -19,7 +19,7 @@ How browser session restore works for the harness (memory + `localStorage`).
 
 Multi-turn continuity: history is folded into a single `POST /api/chat` (or
 `/api/agent`) prompt (`formatPromptWithHistory`, default **maxMessages=400** /
-**maxChars=100 000**; folds **Tool:** system lines so continue does not re-run work). The API remains single-shot per request; multi-turn lives
+**maxChars≈3.5M** (body guard; model token limit is the real cap); folds **Tool:** system lines so continue does not re-run work). The API remains single-shot per request; multi-turn lives
 in the host session + Wasm transcript.
 
 Blob shape (messages only — never env secrets):

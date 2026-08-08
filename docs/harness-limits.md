@@ -78,7 +78,7 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 | Ring capacity | 512 messages in Wasm (`bridge.zig` `MAX_MSG`) |
 | Visible paint | **All** messages currently in the ring (≤512); scroll to read older in-ring turns. Ring still drops oldest when full. No “N earlier” black-hole hint |
 | Line size | 64 KiB UTF-8 max per message (`MAX_MSG_LEN`) |
-| Host history | Host folds last **~8** user/assistant turns (`formatPromptWithHistory` maxTurns=8, maxChars=12 000); prefer Clear for a fresh workspace |
+| Host history | Host folds last **~8** user/assistant turns (`formatPromptWithHistory` maxTurns=8, maxChars≈3.5M); prefer Clear for a fresh workspace |
 | Session longer than ring | Host `SessionStore` may hold M>512; ring shows a **window** of ≤512. **Load earlier** (Wasm) steps the window back by 128; new send snaps to latest window |
 
 
