@@ -11,6 +11,13 @@ export type ReadFileResult = { content: string; truncated?: boolean };
 
 export type WriteFileResult = { ok: true; bytes: number };
 
+export type StrReplaceResult = {
+  ok: true;
+  path: string;
+  replacements: number;
+  bytes: number;
+};
+
 export type ExecResult = {
   exitCode: number | null;
   stdout: string;

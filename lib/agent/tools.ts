@@ -146,9 +146,68 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
     },
   });
 
+
+  const str_replace = tool({
+    description:
+      'Replace exact text in a sandbox file. old_string must match uniquely unless replace_all is true. Prefer this over write_file for small edits; use write_file to create or fully rewrite files.',
+    inputSchema: jsonSchema<{
+      path: string;
+      old_string: string;
+      new_string: string;
+      replace_all?: boolean;
+    }>({
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path relative to workspace root' },
+        old_string: {
+          type: 'string',
+          description: 'Exact text to find (must be unique unless replace_all)',
+        },
+        new_string: { type: 'string', description: 'Replacement text (may be empty to delete)' },
+        replace_all: {
+          type: 'boolean',
+          description: 'If true, replace every non-overlapping match',
+        },
+      },
+      required: ['path', 'old_string', 'new_string'],
+      additionalProperties: false,
+    }),
+    execute: async (input) => {
+      if (!permissions.canWrite) {
+        return deny('str_replace', 'write', secrets);
+      }
+      try {
+        if (!input.path) return finalize('ERROR str_replace: path is required', secrets);
+        if (typeof input.old_string !== 'string' || input.old_string.length === 0) {
+          return finalize(
+            'ERROR str_replace: old_string is required and must be non-empty',
+            secrets,
+          );
+        }
+        if (typeof input.new_string !== 'string') {
+          return finalize('ERROR str_replace: new_string must be a string', secrets);
+        }
+        const result = await client.strReplace(
+          input.path,
+          input.old_string,
+          input.new_string,
+          input.replace_all,
+          { signal },
+        );
+        return finalize(
+          `str_replace ${input.path}: ok replacements=${result.replacements} bytes=${result.bytes}`,
+          secrets,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return finalize(`ERROR str_replace: ${msg}`, secrets);
+      }
+    },
+  });
+
   const exec = tool({
     description:
-      'Run a command in the sandbox (argv only, no shell). cwd is path-jailed. Default timeout 10s, max 30s.',
+      'Run a command in the sandbox (argv only, no shell). cwd is path-jailed. Default timeout 5 min, max 30 min.',
     inputSchema: jsonSchema<{
       cmd: string;
       args?: string[];
@@ -201,7 +260,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
     },
   });
 
-  return { list_dir, read_file, write_file, exec };
+  return { list_dir, read_file, write_file, str_replace, exec };
 }
 
 export type AgentToolSet = ReturnType<typeof createAgentTools>;
