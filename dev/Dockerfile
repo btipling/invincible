@@ -1,6 +1,7 @@
 # Invincible dogfood sandbox image — toolchain only (no app source).
-# Build (repo root): docker buildx build --platform linux/amd64 -f dev/Dockerfile -t invincible-dev .
-# Context must include native/ZIG_VERSION.
+# Build: docker buildx build --platform linux/amd64 -f dev/Dockerfile -t invincible-dev native
+# Context is native/ (provides ZIG_VERSION only — lean, no monorepo).
+# Product FS jail is /vercel/workspace (lib/sandbox/vercelClient.ts VERCEL_FS_WORKSPACE_ROOT).
 # Sandbox.create ignores ENTRYPOINT/CMD; tools run via exec/runCommand.
 
 FROM --platform=linux/amd64 ubuntu:24.04
@@ -15,8 +16,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Pin Node major 22 (match origin GHA). Bump patch intentionally when refreshing image.
 ARG NODE_VERSION=22.17.0
-# Zig pin file from repo (must match native/ZIG_VERSION on the build ref).
-COPY native/ZIG_VERSION /tmp/ZIG_VERSION
+# Zig pin file from native/ context (must match native/ZIG_VERSION on the build ref).
+COPY ZIG_VERSION /tmp/ZIG_VERSION
 
 RUN set -eux; \
     apt-get update; \
@@ -72,9 +73,10 @@ RUN set -eux; \
     apt-get purge -y gnupg || true; \
     apt-get autoremove -y; \
     rm -rf /var/lib/apt/lists/*; \
-    mkdir -p /workspace
+    # Align with product jail root (vercelClient VERCEL_FS_WORKSPACE_ROOT)
+    mkdir -p /vercel/workspace
 
-WORKDIR /workspace
+WORKDIR /vercel/workspace
 
 # No secrets. No app tree. Sandbox does not rely on CMD.
 CMD ["/bin/bash"]

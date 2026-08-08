@@ -254,6 +254,7 @@ invincible/
 | User Settings / per-user MCP | `app/settings/*`, `lib/tenancy/userMcpServers.ts`, `lib/mcp/*` |
 | Harness model catalog (protocol v3) | `lib/harnessBridge.ts`, `native/harness/src/bridge.zig`, `app/harness/HarnessHost.tsx` |
 | Schema-only migrate (GHA) | `.github/workflows/db-migrate.yml` |
+| Dogfood sandbox image (VCR) | `dev/Dockerfile`, `dev/README.md`, `.github/workflows/dev-image-build.yml`, [docs/sandbox.md](docs/sandbox.md) |
 | Sandbox daemon | `sandbox/` |
 | Colors / tokens (DOM) | `lib/palette.ts` |
 | Colors / tokens (dvui) | `native/harness/src/palette.zig` (hex sync with palette.ts) |

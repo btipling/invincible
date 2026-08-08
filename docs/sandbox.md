@@ -65,7 +65,7 @@ To run Invincible **on Invincible** without reinstalling Node/Zig/gh/rg every tu
 
 | Piece | Role |
 |-------|------|
-| [`dev/Dockerfile`](../dev/Dockerfile) | Toolchain image (Ubuntu amd64, Node 22, Zig from `native/ZIG_VERSION`, `gh`, `rg`) — **no** app source |
+| [`dev/Dockerfile`](../dev/Dockerfile) | Toolchain image (Ubuntu amd64, Node 22, Zig from `native/ZIG_VERSION`, `gh`, `rg`) — **no** app source; WORKDIR `/vercel/workspace` |
 | GHA **`dev-image-build`** | Official build/push to **Vercel Container Registry** (`linux/amd64`) |
 | Admin sandbox row | `backend=vercel`, `image=` full VCR ref to `…/invincible-dev:latest` (or sha tag) |
 

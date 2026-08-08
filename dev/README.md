@@ -20,8 +20,9 @@ the Zig **build-harness** CI runner.
 | `rg` | ripgrep 14.1.1 |
 | Basics | git, curl, ca-certificates, build-essential, python3 |
 
-**WORKDIR:** `/workspace`. Image is toolchain-only — **do not** expect the
-Invincible monorepo inside the image. Agents clone or write files via tools.
+**WORKDIR / product jail:** `/vercel/workspace` (matches `VERCEL_FS_WORKSPACE_ROOT`
+in `lib/sandbox/vercelClient.ts`). Image is toolchain-only — **do not** expect
+the Invincible monorepo inside the image. Agents clone or write files via tools.
 
 Vercel Sandbox **`Sandbox.create({ image })` does not run** Docker
 `ENTRYPOINT`/`CMD`.
@@ -54,8 +55,8 @@ Tags pushed:
 Platform: **`linux/amd64` only** (Sandbox requirement). After push, wait until
 VCR status is **Ready** before relying on the image in agent turns.
 
-Optional: path-filtered `push` to **`main`** for `dev/**` and the workflow file
-(same guards). **No** `pull_request` trigger.
+Optional: path-filtered `push` to **`main`** for `dev/**`, `native/ZIG_VERSION`,
+and the workflow file (same guards). **No** `pull_request` trigger.
 
 Laptop `docker build` / `docker push` is **not** the official origin path.
 
@@ -89,8 +90,8 @@ and `VCR_IMAGE_PREFIX`. App runtime never builds images.
 ## Local smoke (optional, non-official)
 
 ```bash
-# From repo root (agent/CI workspace with Docker)
-docker buildx build --platform linux/amd64 -f dev/Dockerfile -t invincible-dev:local --load .
+# From repo root (agent/CI workspace with Docker). Context is native/ only.
+docker buildx build --platform linux/amd64 -f dev/Dockerfile -t invincible-dev:local --load native
 docker run --rm --platform linux/amd64 invincible-dev:local node -v
 docker run --rm --platform linux/amd64 invincible-dev:local zig version
 docker run --rm --platform linux/amd64 invincible-dev:local gh --version

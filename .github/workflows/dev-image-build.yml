@@ -13,8 +13,9 @@
 # Image: ${VCR_IMAGE_PREFIX}/invincible-dev:latest and :sha-<short>
 # Platform: linux/amd64 only (Vercel Sandbox).
 #
-# Safety: workflow_dispatch primary; optional push to main only; never
-# pull_request; ubuntu-latest only (not self-hosted zig); never echo tokens.
+# Safety: workflow_dispatch primary; optional push to main only (dev/**,
+# native/ZIG_VERSION, this workflow); never pull_request; ubuntu-latest only
+# (not self-hosted zig); never echo tokens. Build context: native/ only.
 
 name: dev-image-build
 
@@ -34,6 +35,7 @@ on:
     branches: [main]
     paths:
       - 'dev/**'
+      - 'native/ZIG_VERSION'
       - '.github/workflows/dev-image-build.yml'
 
 permissions:
@@ -99,6 +101,13 @@ jobs:
               missing=1
               ;;
           esac
+          case "${prefix}" in
+            vcr.vercel.com/*) ;;
+            *)
+              echo "::error::VCR_IMAGE_PREFIX must start with vcr.vercel.com/ (e.g. vcr.vercel.com/team/project)"
+              missing=1
+              ;;
+          esac
           if [ "${missing}" -ne 0 ]; then
             exit 1
           fi
@@ -148,7 +157,7 @@ jobs:
             -t "${IMAGE_BASE}:sha-${SHORT_SHA}" \
             -t "${IMAGE_BASE}:latest" \
             --load \
-            .
+            native
 
       - name: Smoke tools inside image
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run == true) }}
