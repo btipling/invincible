@@ -314,8 +314,8 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
             finalText = ev.text;
           }
           toolTrace = parseToolTrace(ev.toolTrace) ?? toolTrace;
-          if (typeof (ev as { cwd?: unknown }).cwd === 'string') {
-            streamCwd = (ev as { cwd: string }).cwd;
+          if (typeof ev.cwd === 'string') {
+            streamCwd = ev.cwd;
           }
         } else if (ev.type === 'error') {
           streamError = {
@@ -342,8 +342,8 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
             finalText = ev.text;
           }
           toolTrace = parseToolTrace(ev.toolTrace) ?? toolTrace;
-          if (typeof (ev as { cwd?: unknown }).cwd === 'string') {
-            streamCwd = (ev as { cwd: string }).cwd;
+          if (typeof ev.cwd === 'string') {
+            streamCwd = ev.cwd;
           }
         } else if (ev.type === 'error') {
           streamError = {

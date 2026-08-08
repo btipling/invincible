@@ -27,6 +27,25 @@ export type SessionSnapshot = {
   cwd?: string;
 };
 
+
+/**
+ * Host-side cwd hygiene for session blobs (localStorage).
+ * Keeps only non-empty workspace-relative strings; drops host-absolute,
+ * drive/UNC, control characters, and non-strings. Server still re-validates.
+ */
+export function sanitizeSessionCwd(cwd: unknown): string | undefined {
+  if (typeof cwd !== 'string') return undefined;
+  const trimmed = cwd.trim();
+  if (!trimmed) return undefined;
+  // Host-absolute / UNC / Windows drive — would 400 every agent turn if sticky.
+  if (trimmed.startsWith('/') || trimmed.startsWith('\\') || /^[a-zA-Z]:/.test(trimmed)) {
+    return undefined;
+  }
+  // C0 controls + DEL (break annotations / SSE if ever reflected).
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return undefined;
+  return trimmed;
+}
+
 export interface SessionStore {
   readonly kind: 'memory' | 'localStorage' | string;
   load(): SessionSnapshot | null;
@@ -97,12 +116,10 @@ export class LocalStorageSessionStore implements SessionStore {
       if (!raw) return null;
       const data = JSON.parse(raw) as SessionSnapshot;
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) return null;
-      // Tolerant: only keep cwd when it is a string (parent #270 / phase 2).
-      if (!('cwd' in data) || typeof data.cwd !== 'string') {
-        const { cwd: _drop, ...rest } = data as SessionSnapshot & { cwd?: unknown };
-        return rest as SessionSnapshot;
-      }
-      return data;
+      // Tolerant: only keep safe workspace-relative cwd strings (parent #270 / phase 2).
+      const { cwd: _rawCwd, ...rest } = data as SessionSnapshot & { cwd?: unknown };
+      const cwd = sanitizeSessionCwd(_rawCwd);
+      return cwd !== undefined ? { ...rest, cwd } : (rest as SessionSnapshot);
     } catch {
       return null;
     }

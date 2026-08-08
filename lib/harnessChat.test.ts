@@ -978,6 +978,24 @@ describe('runHarnessTurn session cwd', () => {
     expect(next.cwd).toBe('prior');
   });
 
+  it('ignores whitespace-only success cwd', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async () => ({
+      ok: true as const,
+      text: 'ok',
+      cwd: '   ',
+    }));
+    const session = { ...createEmptySession('s'), cwd: 'prior' };
+    const { session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(next.cwd).toBe('prior');
+  });
+
+
   it('does not send cwd when session has none', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);

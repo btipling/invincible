@@ -629,8 +629,11 @@ export async function runHarnessTurn(
       );
       next = pushTurnEnd(bridge, next, 'model');
       // Success-only cwd apply (parent #270 / phase 2): never on failure/abort.
-      if (typeof agentResult.cwd === 'string') {
-        next = { ...next, cwd: agentResult.cwd };
+      // Non-empty trim only — match send path; avoid sticky whitespace cwd.
+      const appliedCwd =
+        typeof agentResult.cwd === 'string' ? agentResult.cwd.trim() : '';
+      if (appliedCwd) {
+        next = { ...next, cwd: appliedCwd };
       }
       bridge.setLifecycle(Lifecycle.Ready);
       return {
