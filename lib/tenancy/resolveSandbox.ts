@@ -1,6 +1,7 @@
 /**
  * Phase 3 — resolve default sandbox + grants for an authenticated user (v1).
  * Phase 2 (#94): decrypt sandbox token via tenant DEK (dual-read / dek-only mode).
+ * Phase 1 sandbox backend (#281): null/empty URL or token → 403 fail-closed (vercel until phase 3).
  */
 import { and, eq } from 'drizzle-orm';
 import {
@@ -132,13 +133,20 @@ async function resolveWithDb(
       canWrite: row.canWrite,
     });
 
+    // Fail closed before decrypt when BYO credentials missing (vercel rows until phase 3).
+    const baseUrlRaw = row.baseUrl?.trim() ?? '';
+    const tokenCt = row.tokenCiphertext?.trim() ?? '';
+    if (!baseUrlRaw || !tokenCt) {
+      return forbidden();
+    }
+
     const decrypt =
       deps.decryptSandboxToken ??
       ((tid: string, ct: string) =>
         decryptSandboxToken(tid, ct, { db }));
     let token: string;
     try {
-      token = await decrypt(tenantId, row.tokenCiphertext);
+      token = await decrypt(tenantId, tokenCt);
     } catch {
       return forbidden();
     }
@@ -146,7 +154,7 @@ async function resolveWithDb(
       return forbidden();
     }
 
-    const baseUrl = normalizeBaseUrl(row.baseUrl);
+    const baseUrl = normalizeBaseUrl(baseUrlRaw);
     const createClient =
       deps.createClient ??
       ((opts: { baseUrl: string; token: string }) => createSandboxClient(opts));

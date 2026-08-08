@@ -18,7 +18,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, '../../db/migrations');
 
 async function applyMigrations(client: PGlite) {
-  for (const name of ['0000_tenancy_phase1.sql', '0001_sso_scim_identity.sql', '0002_tenant_deks.sql']) {
+  for (const name of [
+    '0000_tenancy_phase1.sql',
+    '0001_sso_scim_identity.sql',
+    '0002_tenant_deks.sql',
+    '0003_provider_secrets.sql',
+    '0004_user_mcp_servers.sql',
+    '0005_sandbox_backend.sql',
+  ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     for (const stmt of sql
       .split('--> statement-breakpoint')
@@ -259,6 +266,23 @@ describe('resolveAgentSandbox', () => {
     expect(body.error).toBe(SANDBOX_FORBIDDEN_ERROR);
     expect(JSON.stringify(body)).not.toContain('secret-key');
     expect(JSON.stringify(body)).not.toContain('decryption');
+  });
+
+  it('403 when baseUrl or tokenCiphertext null/empty (vercel rows until phase 3)', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({ baseUrl: null, tokenCiphertext: null })
+      .where(eq(schema.sandboxes.id, sandboxId));
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      decryptSandboxToken: decrypt,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected fail');
+    expect(result.response.status).toBe(403);
+    expect(await result.response.json()).toEqual({
+      error: SANDBOX_FORBIDDEN_ERROR,
+    });
   });
 
   it('403 for empty userId', async () => {

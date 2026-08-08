@@ -1,6 +1,7 @@
 /**
  * Phase 4 — load admin context for the signed-in user (v1 sole membership).
  * Phase 2 (#94): mask sandbox tokens via tenant DEK (dual-read / dek-only).
+ * Phase 1 sandbox backend (#281): null token → mask without decrypt; null baseUrl → ''.
  */
 import { and, eq } from 'drizzle-orm';
 import {
@@ -141,18 +142,21 @@ async function loadWithDb(
     const sandboxRows: AdminSandboxRow[] = [];
     for (const r of rows) {
       let tokenMasked = '********';
-      try {
-        const plain = await decrypt(m.tenantId, r.tokenCiphertext);
-        tokenMasked = maskSecret(plain);
-      } catch {
-        tokenMasked = '********';
+      const ct = r.tokenCiphertext?.trim() ?? '';
+      if (ct) {
+        try {
+          const plain = await decrypt(m.tenantId, ct);
+          tokenMasked = maskSecret(plain);
+        } catch {
+          tokenMasked = '********';
+        }
       }
       sandboxRows.push({
         id: r.id,
         name: r.name,
         slug: r.slug,
         status: r.status,
-        baseUrl: r.baseUrl,
+        baseUrl: r.baseUrl ?? '',
         tokenMasked,
         canRead: Boolean(r.canRead),
         canWrite: Boolean(r.canWrite),

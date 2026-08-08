@@ -14,7 +14,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, '../../db/migrations');
 
 async function applyMigrations(client: PGlite) {
-  for (const name of ['0000_tenancy_phase1.sql', '0001_sso_scim_identity.sql', '0002_tenant_deks.sql']) {
+  for (const name of [
+    '0000_tenancy_phase1.sql',
+    '0001_sso_scim_identity.sql',
+    '0002_tenant_deks.sql',
+    '0003_provider_secrets.sql',
+    '0004_user_mcp_servers.sql',
+    '0005_sandbox_backend.sql',
+  ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     for (const stmt of sql
       .split('--> statement-breakpoint')
@@ -114,10 +121,10 @@ describe('rotateSandboxToken', () => {
       db: db as never,
       amk: AMK,
     });
-    expect(decryptSecret(row.tokenCiphertext, dek)).toBe('brand-new-token');
+    expect(decryptSecret(row.tokenCiphertext!, dek)).toBe('brand-new-token');
     expect(row.tokenKekVersion).toBe(version);
     // not decryptable with AMK
-    expect(() => decryptSecret(row.tokenCiphertext, AMK)).toThrow();
+    expect(() => decryptSecret(row.tokenCiphertext!, AMK)).toThrow();
   });
 
   it('admin cannot rotate', async () => {

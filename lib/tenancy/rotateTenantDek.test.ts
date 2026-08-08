@@ -23,6 +23,7 @@ async function applyMigrations(client: PGlite) {
     '0002_tenant_deks.sql',
     '0003_provider_secrets.sql',
     '0004_user_mcp_servers.sql',
+    '0005_sandbox_backend.sql',
   ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     for (const stmt of sql
@@ -226,16 +227,16 @@ describe('rotateTenantDek', () => {
       .where(eq(schema.sandboxes.tenantId, tenantId));
     expect(rows).toHaveLength(2);
     const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
-    expect(decryptSecret(byId[sandboxA1].tokenCiphertext, after.dek)).toBe(
+    expect(decryptSecret(byId[sandboxA1].tokenCiphertext!, after.dek)).toBe(
       'token-a1',
     );
-    expect(decryptSecret(byId[sandboxA2].tokenCiphertext, after.dek)).toBe(
+    expect(decryptSecret(byId[sandboxA2].tokenCiphertext!, after.dek)).toBe(
       'token-a2',
     );
     expect(byId[sandboxA1].tokenKekVersion).toBe(2);
     expect(byId[sandboxA2].tokenKekVersion).toBe(2);
     expect(() =>
-      decryptSecret(byId[sandboxA1].tokenCiphertext, before.dek),
+      decryptSecret(byId[sandboxA1].tokenCiphertext!, before.dek),
     ).toThrow();
 
     const secrets = await db
@@ -313,7 +314,7 @@ describe('rotateTenantDek', () => {
       .where(eq(schema.sandboxes.id, sandboxB));
     expect(sbAfter.tokenCiphertext).toBe(sbBefore.tokenCiphertext);
     expect(sbAfter.tokenKekVersion).toBe(sbBefore.tokenKekVersion);
-    expect(decryptSecret(sbAfter.tokenCiphertext, otherAfter.dek)).toBe(
+    expect(decryptSecret(sbAfter.tokenCiphertext!, otherAfter.dek)).toBe(
       'token-b',
     );
   });
@@ -371,7 +372,7 @@ describe('rotateTenantDek', () => {
       .from(schema.sandboxes)
       .where(eq(schema.sandboxes.id, sandboxA1));
     expect(a1After.tokenCiphertext).toBe(a1Before.tokenCiphertext);
-    expect(decryptSecret(a1After.tokenCiphertext, before.dek)).toBe('token-a1');
+    expect(decryptSecret(a1After.tokenCiphertext!, before.dek)).toBe('token-a1');
   });
 
   it('dual-mode rotates leftover AMK ciphertext', async () => {
@@ -395,10 +396,10 @@ describe('rotateTenantDek', () => {
       .select()
       .from(schema.sandboxes)
       .where(eq(schema.sandboxes.id, sandboxA1));
-    expect(decryptSecret(row.tokenCiphertext, after.dek)).toBe(
+    expect(decryptSecret(row.tokenCiphertext!, after.dek)).toBe(
       'legacy-amk-token',
     );
-    expect(() => decryptSecret(row.tokenCiphertext, AMK)).toThrow();
+    expect(() => decryptSecret(row.tokenCiphertext!, AMK)).toThrow();
   });
 
   it('dek-only mode fails closed on leftover AMK ciphertext (no partial commit)', async () => {
@@ -435,7 +436,80 @@ describe('rotateTenantDek', () => {
       .from(schema.sandboxes)
       .where(eq(schema.sandboxes.id, sandboxA2));
     expect(a2After.tokenCiphertext).toBe(a2Before.tokenCiphertext);
-    expect(decryptSecret(a2After.tokenCiphertext, before.dek)).toBe('token-a2');
+    expect(decryptSecret(a2After.tokenCiphertext!, before.dek)).toBe('token-a2');
+  });
+
+  it('skips null/empty tokenCiphertext (vercel rows) while rotating BYO', async () => {
+    const [vercelSb] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'Vercel',
+        slug: 'vercel',
+        backend: 'vercel',
+        image: 'vercel/sandbox/universal:latest',
+        baseUrl: null,
+        tokenCiphertext: null,
+        tokenKekVersion: 1,
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+
+    // empty string ciphertext must also skip (not throw)
+    const [emptySb] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'EmptyCt',
+        slug: 'empty-ct',
+        backend: 'byo',
+        baseUrl: 'https://empty.example',
+        tokenCiphertext: '   ',
+        tokenKekVersion: 1,
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+
+    const before = await loadTenantDek(tenantId, {
+      db: db as never,
+      amk: AMK,
+    });
+
+    const res = await rotateTenantDek(ownerId, tenantId, {
+      db: db as never,
+      amk: AMK,
+      mode: 'dek-only',
+    });
+    expect(res).toEqual({ ok: true, dekVersion: before.version + 1 });
+
+    const after = await loadTenantDek(tenantId, {
+      db: db as never,
+      amk: AMK,
+    });
+    expect(after.version).toBe(before.version + 1);
+
+    const [vercelAfter] = await db
+      .select()
+      .from(schema.sandboxes)
+      .where(eq(schema.sandboxes.id, vercelSb.id));
+    expect(vercelAfter.tokenCiphertext).toBeNull();
+    expect(vercelAfter.baseUrl).toBeNull();
+    expect(vercelAfter.tokenKekVersion).toBe(1);
+
+    const [emptyAfter] = await db
+      .select()
+      .from(schema.sandboxes)
+      .where(eq(schema.sandboxes.id, emptySb.id));
+    expect(emptyAfter.tokenCiphertext?.trim() ?? '').toBe('');
+    expect(emptyAfter.tokenKekVersion).toBe(1);
+
+    // BYO rows still re-encrypted under new DEK
+    const [a1After] = await db
+      .select()
+      .from(schema.sandboxes)
+      .where(eq(schema.sandboxes.id, sandboxA1));
+    expect(decryptSecret(a1After.tokenCiphertext!, after.dek)).toBe('token-a1');
+    expect(a1After.tokenKekVersion).toBe(after.version);
   });
 
   it('not_found when user has no membership on tenant', async () => {
