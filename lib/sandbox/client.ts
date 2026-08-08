@@ -5,6 +5,7 @@ import {
   type ReadFileResult,
   type SandboxClientOptions,
   type WriteFileResult,
+  type StrReplaceResult,
 } from './types';
 import { normalizeBaseUrl } from './config';
 
@@ -23,6 +24,13 @@ export type SandboxClient = {
     mkdir?: boolean,
     init?: { signal?: AbortSignal },
   ) => Promise<WriteFileResult>;
+  strReplace: (
+    path: string,
+    oldString: string,
+    newString: string,
+    replaceAll?: boolean,
+    init?: { signal?: AbortSignal },
+  ) => Promise<StrReplaceResult>;
   exec: (
     body: {
       cmd: string;
@@ -116,6 +124,17 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
       postJson<WriteFileResult>(
         '/v1/write_file',
         { path, content, ...(mkdir ? { mkdir: true } : {}) },
+        init,
+      ),
+    strReplace: (path, oldString, newString, replaceAll, init) =>
+      postJson<StrReplaceResult>(
+        '/v1/str_replace',
+        {
+          path,
+          old_string: oldString,
+          new_string: newString,
+          ...(replaceAll ? { replace_all: true } : {}),
+        },
         init,
       ),
     exec: (body, init) => postJson<ExecResult>('/v1/exec', body, init),

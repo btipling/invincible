@@ -8,6 +8,12 @@ function mockClient(partial: Partial<SandboxClient>): SandboxClient {
     listDir: vi.fn(async () => ({ entries: [] })),
     readFile: vi.fn(async () => ({ content: '' })),
     writeFile: vi.fn(async () => ({ ok: true as const, bytes: 0 })),
+    strReplace: vi.fn(async () => ({
+      ok: true as const,
+      path: 'a.ts',
+      replacements: 1,
+      bytes: 10,
+    })),
     exec: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
     ...partial,
   };
@@ -85,11 +91,17 @@ describe('createAgentTools', () => {
 });
 
 describe('createAgentTools permissions', () => {
-  it('read-only denies write_file and exec without calling client', async () => {
+  it('read-only denies write_file, str_replace and exec without calling client', async () => {
     const writeFile = vi.fn(async () => ({ ok: true as const, bytes: 1 }));
+    const strReplace = vi.fn(async () => ({
+      ok: true as const,
+      path: 'a',
+      replacements: 1,
+      bytes: 1,
+    }));
     const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
     const listDir = vi.fn(async () => ({ entries: [{ name: 'a', type: 'file' as const }] }));
-    const client = mockClient({ writeFile, exec, listDir });
+    const client = mockClient({ writeFile, strReplace, exec, listDir });
     const tools = createAgentTools({
       client,
       permissions: { canRead: true, canWrite: false },
@@ -159,5 +171,35 @@ describe('createAgentTools permissions', () => {
     )) as string;
     expect(r).toMatch(/permission denied \(need read\)/);
     expect(readFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('str_replace tool', () => {
+  it('returns ok summary on success', async () => {
+    const strReplace = vi.fn(async () => ({
+      ok: true as const,
+      path: 'a.ts',
+      replacements: 2,
+      bytes: 99,
+    }));
+    const client = mockClient({ strReplace });
+    const tools = createAgentTools({ client });
+    const out = (await tools.str_replace.execute!(
+      {
+        path: 'a.ts',
+        old_string: 'foo',
+        new_string: 'bar',
+        replace_all: true,
+      },
+      { toolCallId: 'sr1', messages: [] } as never,
+    )) as string;
+    expect(out).toMatch(/str_replace a\.ts: ok replacements=2 bytes=99/);
+    expect(strReplace).toHaveBeenCalledWith(
+      'a.ts',
+      'foo',
+      'bar',
+      true,
+      expect.objectContaining({ signal: undefined }),
+    );
   });
 });

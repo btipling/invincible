@@ -8,6 +8,7 @@ import {
   listDir,
   readFileTool,
   writeFileTool,
+  strReplaceTool,
 } from './tools.mjs';
 
 /**
@@ -132,6 +133,13 @@ export function createSandboxServer(opts) {
       if (method === 'POST' && url.pathname === '/v1/write_file') {
         const body = await readJsonBody(req);
         const result = await writeFileTool(workspace, body ?? {});
+        sendJson(res, 200, result);
+        return;
+      }
+
+      if (method === 'POST' && url.pathname === '/v1/str_replace') {
+        const body = await readJsonBody(req);
+        const result = await strReplaceTool(workspace, body ?? {});
         sendJson(res, 200, result);
         return;
       }

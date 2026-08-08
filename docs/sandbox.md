@@ -1,7 +1,7 @@
 # Agent sandbox (BYO)
 
 What tools the agent gets when a sandbox is configured: a remote path-jailed
-workspace with `list_dir` / `read_file` / `write_file` / `exec` during a
+workspace with `list_dir` / `read_file` / `write_file` / `str_replace` / `exec` during a
 harness turn.
 
 Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-divide.md) ·
@@ -103,6 +103,7 @@ if unauthenticated) — see above.
 | `POST` | `/v1/list_dir` | Bearer | List directory entries |
 | `POST` | `/v1/read_file` | Bearer | Read file (max 16 MiB) |
 | `POST` | `/v1/write_file` | Bearer | Write file (max 16 MiB) |
+| `POST` | `/v1/str_replace` | Bearer | Exact string replace (unique match or `replace_all`) |
 | `POST` | `/v1/exec` | Bearer | Run argv command (no shell) |
 
 Full contract, jail rules, and exec shape: [`sandbox/README.md`](../sandbox/README.md).

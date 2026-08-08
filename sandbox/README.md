@@ -6,8 +6,9 @@ Standalone HTTP service that exposes a **path-jailed workspace** with four tools
 |--------|------|---------|
 | `GET` | `/health` | `{ ok: true, version: 1 }` (no auth) |
 | `POST` | `/v1/list_dir` | List directory entries |
-| `POST` | `/v1/read_file` | Read file (max 256 KiB) |
-| `POST` | `/v1/write_file` | Write file (max 256 KiB) |
+| `POST` | `/v1/read_file` | Read file (max 16 MiB) |
+| `POST` | `/v1/write_file` | Write file (max 16 MiB) |
+| `POST` | `/v1/str_replace` | Exact string replace |
 | `POST` | `/v1/exec` | Run argv command (no shell) |
 
 Parent plan: [#45](https://github.com/btipling/invincible/issues/45) · Phase 1: [#46](https://github.com/btipling/invincible/issues/46)

@@ -5,9 +5,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { MAX_STDIO_BYTES } from './constants.mjs';
 import { JailError } from './paths.mjs';
 import {
+  ToolError,
   execCmd,
   listDir,
   readFileTool,
+  strReplaceTool,
   writeFileTool,
 } from './tools.mjs';
 
@@ -160,4 +162,62 @@ describe('sandbox tools', () => {
     }
   });
 
+
+  it('str_replace unique match', async () => {
+    const ws = await mkWorkspace();
+    await writeFileTool(ws, { path: 'a.ts', content: 'const x = 1;\nconst y = 2;\n' });
+    const r = await strReplaceTool(ws, {
+      path: 'a.ts',
+      old_string: 'const x = 1;',
+      new_string: 'const x = 42;',
+    });
+    expect(r.replacements).toBe(1);
+    const read = await readFileTool(ws, { path: 'a.ts' });
+    expect(read.content).toContain('const x = 42;');
+    expect(read.content).toContain('const y = 2;');
+  });
+
+  it('str_replace multi without replace_all fails', async () => {
+    const ws = await mkWorkspace();
+    await writeFileTool(ws, { path: 'b.ts', content: 'aa aa aa' });
+    await expect(
+      strReplaceTool(ws, { path: 'b.ts', old_string: 'aa', new_string: 'bb' }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('str_replace replace_all', async () => {
+    const ws = await mkWorkspace();
+    await writeFileTool(ws, { path: 'c.ts', content: 'aa aa aa' });
+    const r = await strReplaceTool(ws, {
+      path: 'c.ts',
+      old_string: 'aa',
+      new_string: 'bb',
+      replace_all: true,
+    });
+    expect(r.replacements).toBe(3);
+    const read = await readFileTool(ws, { path: 'c.ts' });
+    expect(read.content).toBe('bb bb bb');
+  });
+
+  it('str_replace not found and empty old', async () => {
+    const ws = await mkWorkspace();
+    await writeFileTool(ws, { path: 'd.ts', content: 'hello' });
+    await expect(
+      strReplaceTool(ws, { path: 'd.ts', old_string: 'nope', new_string: 'x' }),
+    ).rejects.toBeInstanceOf(ToolError);
+    await expect(
+      strReplaceTool(ws, { path: 'd.ts', old_string: '', new_string: 'x' }),
+    ).rejects.toBeInstanceOf(ToolError);
+  });
+
+  it('str_replace rejects jail escape', async () => {
+    const ws = await mkWorkspace();
+    await expect(
+      strReplaceTool(ws, {
+        path: '../x',
+        old_string: 'a',
+        new_string: 'b',
+      }),
+    ).rejects.toThrow(JailError);
+  });
 });

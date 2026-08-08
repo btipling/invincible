@@ -157,6 +157,92 @@ export async function writeFileTool(workspace, body) {
 }
 
 /**
+ * Exact string replace in a workspace file (coding-agent search_replace semantics).
+ * @param {string} workspace
+ * @param {{ path?: string, old_string?: string, new_string?: string, replace_all?: boolean }} body
+ */
+export async function strReplaceTool(workspace, body) {
+  if (body?.path == null || body.path === '') {
+    throw new ToolError('path is required');
+  }
+  if (typeof body.old_string !== 'string' || body.old_string.length === 0) {
+    throw new ToolError('old_string is required and must be non-empty');
+  }
+  if (typeof body.new_string !== 'string') {
+    throw new ToolError('new_string must be a string');
+  }
+  if (body.old_string === body.new_string) {
+    throw new ToolError('old_string and new_string are identical');
+  }
+
+  const replaceAll = Boolean(body.replace_all);
+  const target = resolveJailPath(workspace, body.path);
+
+  let stat;
+  try {
+    stat = await fs.stat(target);
+  } catch {
+    throw new ToolError('File not found', 404);
+  }
+  if (!stat.isFile()) {
+    throw new ToolError('Not a file', 400);
+  }
+  if (stat.size > MAX_READ_WRITE_BYTES) {
+    throw new ToolError(
+      `content exceeds maxBytes limit (${MAX_READ_WRITE_BYTES})`,
+      413,
+    );
+  }
+
+  const content = await fs.readFile(target, 'utf8');
+  const oldStr = body.old_string;
+  const newStr = body.new_string;
+
+  // Non-overlapping left-to-right count
+  let count = 0;
+  let from = 0;
+  while (from <= content.length) {
+    const idx = content.indexOf(oldStr, from);
+    if (idx === -1) break;
+    count += 1;
+    from = idx + oldStr.length;
+    if (oldStr.length === 0) break; // defensive; empty already rejected
+  }
+
+  if (count === 0) {
+    throw new ToolError('old_string not found in file', 400);
+  }
+  if (count > 1 && !replaceAll) {
+    throw new ToolError(
+      `old_string matched ${count} times; pass replace_all: true or provide a unique snippet`,
+      409,
+    );
+  }
+
+  const next = replaceAll
+    ? content.split(oldStr).join(newStr)
+    : content.replace(oldStr, newStr);
+
+  const outBuf = Buffer.from(next, 'utf8');
+  if (outBuf.byteLength > MAX_READ_WRITE_BYTES) {
+    throw new ToolError(
+      `content exceeds maxBytes limit (${MAX_READ_WRITE_BYTES})`,
+      413,
+    );
+  }
+
+  await fs.writeFile(target, outBuf);
+  return {
+    ok: true,
+    path: String(body.path),
+    replacements: replaceAll ? count : 1,
+    bytes: outBuf.byteLength,
+  };
+}
+
+
+
+/**
  * @param {import('node:stream').Readable | null | undefined} stream
  * @param {number} max
  */

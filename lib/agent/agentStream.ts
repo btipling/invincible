@@ -89,6 +89,18 @@ export function salientToolBits(name: string, resultText: string): string {
     if (writeM) return `${writeM[1]} · ${writeM[2]} B written`;
   }
 
+  // str_replace path: ok replacements=N bytes=M
+  const repM = text.match(
+    /^str_replace\s+(\S+):\s+ok\s+replacements=(\d+)\s+bytes=(\d+)/i,
+  );
+  if (repM || name === 'str_replace') {
+    if (repM) {
+      const n = repM[2]!;
+      const unit = n === '1' ? 'replacement' : 'replacements';
+      return `${repM[1]} · ${n} ${unit} · ${repM[3]} B`;
+    }
+  }
+
   // exec cmd\nexit=N|TIMED_OUT\nstdout:\n…\nstderr:\n…
   if (/^exec\s+/i.test(text) || name === 'exec') {
     const head = (text.split('\n')[0] ?? 'exec').replace(/\s+/g, ' ').trim();
