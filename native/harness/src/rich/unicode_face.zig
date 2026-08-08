@@ -1,8 +1,15 @@
-//! Which face paints which code point (body vs emoji). Pure — host-testable.
+//! Which face paints which code point (body vs emoji vs symbols). Pure — host-testable.
+//!
+//! Paint has no automatic per-glyph fallback across faces. Route code points to a face
+//! that embeds the glyph: Noto Sans (body), OpenMoji subset (emoji), DejaVu symbols subset
+//! (arrows / math / dingbats missing from Noto).
 const std = @import("std");
 
-/// True for code points that should paint with the emoji face.
+/// True for code points that should paint with the emoji face (OpenMoji).
 /// Includes ZWJ / VS / skin tones so clusters stay on one face.
+///
+/// Note: basic text arrows (U+2190–U+2193 → etc.) are **not** here — OpenMoji lacks
+/// those code points; they go to the symbols face (DejaVu subset).
 pub fn isEmojiRelated(cp: u21) bool {
     return switch (cp) {
         0x200D => true, // ZWJ
@@ -10,7 +17,9 @@ pub fn isEmojiRelated(cp: u21) bool {
         0xFE0E, 0xFE0F => true, // text/emoji variation selectors
         // Pictographs / emoticons / skin tones / many supplemental symbols
         0x1F000...0x1FAFF => true,
-        0x2194...0x21AA => true,
+        // Emoji-style arrows OpenMoji actually ships (not U+2190–U+2193 text arrows)
+        0x2194...0x2199 => true,
+        0x21A9...0x21AA => true,
         0x231A...0x23FA => true,
         0x24C2 => true,
         0x25AA...0x25FE => true,
@@ -23,6 +32,38 @@ pub fn isEmojiRelated(cp: u21) bool {
     };
 }
 
+/// True for text symbols missing from Noto Sans body that paint with DejaVu symbols.
+/// Checked **after** isEmojiRelated — emoji face wins when both could apply.
+pub fn isSymbolRelated(cp: u21) bool {
+    if (isEmojiRelated(cp)) return false;
+    return switch (cp) {
+        // Arrows (includes → U+2192 used in toolTrace / prose)
+        0x2190...0x21FF => true,
+        // Mathematical operators (minus, etc. when not in Noto)
+        0x2200...0x22FF => true,
+        // Miscellaneous technical
+        0x2300...0x23FF => true,
+        // Geometric shapes
+        0x25A0...0x25FF => true,
+        // Misc symbols / dingbats (only those not claimed by emoji face)
+        0x2600...0x27BF => true,
+        // Supplemental arrows A/B + misc arrows
+        0x27F0...0x27FF => true,
+        0x2900...0x297F => true,
+        0x2B00...0x2BFF => true,
+        else => false,
+    };
+}
+
+/// Paint face for a code point.
+pub const Face = enum { body, emoji, symbols };
+
+pub fn faceFor(cp: u21) Face {
+    if (isEmojiRelated(cp)) return .emoji;
+    if (isSymbolRelated(cp)) return .symbols;
+    return .body;
+}
+
 test "isEmojiRelated covers smile and zwj" {
     try std.testing.expect(isEmojiRelated(0x1F600));
     try std.testing.expect(isEmojiRelated(0x200D));
@@ -32,6 +73,22 @@ test "isEmojiRelated covers smile and zwj" {
     try std.testing.expect(!isEmojiRelated('A'));
     try std.testing.expect(!isEmojiRelated(0x00E9));
     try std.testing.expect(!isEmojiRelated(0x65E5));
+}
+
+test "text arrows route to symbols not emoji" {
+    // U+2192 RIGHTWARDS ARROW — toolTrace / http_get summaries
+    try std.testing.expect(!isEmojiRelated(0x2192));
+    try std.testing.expect(isSymbolRelated(0x2192));
+    try std.testing.expect(faceFor(0x2192) == .symbols);
+    try std.testing.expect(faceFor(0x2190) == .symbols);
+    try std.testing.expect(faceFor(0x2191) == .symbols);
+    try std.testing.expect(faceFor(0x2193) == .symbols);
+    // Double arrow ⇒
+    try std.testing.expect(faceFor(0x21D2) == .symbols);
+    // Latin stays body
+    try std.testing.expect(faceFor('A') == .body);
+    // Grin stays emoji
+    try std.testing.expect(faceFor(0x1F600) == .emoji);
 }
 
 test "utf8 stress sample splits emoji from latin" {
@@ -54,4 +111,21 @@ test "utf8 stress sample splits emoji from latin" {
     }
     try std.testing.expectEqual(@as(usize, 1), n_emoji);
     try std.testing.expectEqual(@as(usize, 8), n_body);
+}
+
+test "arrow in tool-style summary is symbols face" {
+    const s = "http_get https://example.com/ \xe2\x86\x92 200"; // →
+    var saw_sym = false;
+    var i: usize = 0;
+    while (i < s.len) {
+        const need = std.unicode.utf8ByteSequenceLength(s[i]) catch {
+            i += 1;
+            continue;
+        };
+        if (i + need > s.len) break;
+        const cp = try std.unicode.utf8Decode(s[i .. i + need]);
+        if (faceFor(cp) == .symbols) saw_sym = true;
+        i += need;
+    }
+    try std.testing.expect(saw_sym);
 }

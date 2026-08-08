@@ -4,7 +4,8 @@
 //! WARM  — intentional amber accent (busy, smoke, assistant label)
 //! EMBER — danger / error only
 //!
-//! Fonts: Noto Sans Regular/Bold/Italic/BoldItalic + OpenMoji + Vera Mono. See `fonts/README.md`.
+//! Fonts: Noto Sans Regular/Bold/Italic/BoldItalic + OpenMoji + DejaVu symbols + Vera Mono.
+//! See `fonts/README.md`.
 const dvui = @import("dvui");
 
 const Color = dvui.Color;
@@ -43,6 +44,8 @@ pub const ember_accent_dark = Color.fromHex("#b83420");
 pub const family_body = "Noto Sans";
 /// Monochrome outline emoji face (subset).
 pub const family_emoji = "OpenMoji";
+/// Text symbols missing from Noto (arrows, math ops) — DejaVu subset.
+pub const family_symbols = "DejaVu Sans Symbols";
 /// Fences / inline code.
 pub const family_mono = "Vera Sans Mono";
 
@@ -72,6 +75,10 @@ const embedded_fonts: []const Font.Source = &.{
         .bytes = @embedFile("fonts/OpenMoji-subset.ttf"),
     },
     .{
+        .family = Font.array(family_symbols),
+        .bytes = @embedFile("fonts/DejaVuSans-symbols.ttf"),
+    },
+    .{
         .family = Font.array(family_mono),
         .bytes = @embedFile("fonts/VeraMono.ttf"),
     },
@@ -92,6 +99,11 @@ pub fn fontEmoji() Font {
     return .find(.{ .family = family_emoji });
 }
 
+/// Symbols face (DejaVu subset — arrows etc. missing from Noto).
+pub fn fontSymbols() Font {
+    return .find(.{ .family = family_symbols });
+}
+
 /// OpenMoji black is thin outline art — at body px it reads as noise.
 /// Scale relative to the surrounding run so glyphs stay legible in the transcript.
 pub const emoji_size_scale: f32 = 2.25;
@@ -104,13 +116,13 @@ pub fn fontMono() Font {
     return .find(.{ .family = family_mono });
 }
 
-/// Full dvui theme: Noto/OpenMoji/Vera Mono + Asteronica colors.
+/// Full dvui theme: Noto/OpenMoji/DejaVu symbols/Vera Mono + Asteronica colors.
 pub fn theme() Theme {
     var t = Theme.builtin.adwaita_dark;
     t.name = "Asteronica";
     t.dark = true;
 
-    // Replace Adwaita Vera embeds with our pack (body + emoji + mono).
+    // Replace Adwaita Vera embeds with our pack (body + emoji + symbols + mono).
     t.embedded_fonts = embedded_fonts;
     t.font_body = .find(.{ .family = family_body });
     t.font_heading = .find(.{ .family = family_body, .weight = .bold });

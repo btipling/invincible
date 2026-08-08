@@ -1,5 +1,6 @@
-//! Split text runs across body + emoji faces (dvui has no per-glyph fallback).
+//! Split text runs across body + emoji + symbols faces (dvui has no per-glyph fallback).
 //! Emoji: OpenMoji monochrome outlines inked with Asteronica teal_accent.
+//! Symbols: DejaVu subset (arrows / math / dingbats missing from Noto) at body size + body ink.
 //! Zig 0.16: `utf8Decode` requires an exact one-codepoint byte slice (len 1–4).
 const std = @import("std");
 const dvui = @import("dvui");
@@ -7,6 +8,9 @@ const palette = @import("../palette.zig");
 const unicode_face = @import("unicode_face.zig");
 
 pub const isEmojiRelated = unicode_face.isEmojiRelated;
+pub const isSymbolRelated = unicode_face.isSymbolRelated;
+pub const Face = unicode_face.Face;
+pub const faceFor = unicode_face.faceFor;
 
 pub const PaintOpts = struct {
     color_text: ?dvui.Color = null,
@@ -22,7 +26,7 @@ fn nextCodepoint(text: []const u8, i: usize) ?struct { cp: u21, len: usize } {
     return .{ .cp = cp, .len = need };
 }
 
-/// Paint `text` switching between `base` and emoji face at run boundaries.
+/// Paint `text` switching faces at run boundaries (emoji / symbols / body).
 pub fn addTextMixed(
     tl: *dvui.TextLayoutWidget,
     text: []const u8,
@@ -40,6 +44,11 @@ pub fn addTextMixed(
         .withStyle(base.style)
         .withStrike(base.strike)
         .withLineHeight(1.0); // size already enlarged; don't double vertical gap
+    const symbols_font = palette.fontSymbols()
+        .withSize(base.size)
+        .withWeight(base.weight)
+        .withStyle(base.style)
+        .withStrike(base.strike);
 
     var i: usize = 0;
     while (i < text.len) {
@@ -50,23 +59,28 @@ pub fn addTextMixed(
             paintSlice(tl, text[start..i], base, opts);
             continue;
         };
-        const want_emoji = isEmojiRelated(first.cp);
+        const want = faceFor(first.cp);
         i += first.len;
 
         while (nextCodepoint(text, i)) |n| {
-            if (isEmojiRelated(n.cp) != want_emoji) break;
+            if (faceFor(n.cp) != want) break;
             i += n.len;
         }
 
         const slice = text[start..i];
-        if (want_emoji) {
-            // Monochrome OpenMoji, always Asteronica teal (not body/link/error ink).
-            paintSlice(tl, slice, emoji_font, .{
-                .color_text = palette.emoji_ink,
-                .color_fill = opts.color_fill,
-            });
-        } else {
-            paintSlice(tl, slice, base, opts);
+        switch (want) {
+            .emoji => {
+                // Monochrome OpenMoji, always Asteronica teal (not body/link/error ink).
+                paintSlice(tl, slice, emoji_font, .{
+                    .color_text = palette.emoji_ink,
+                    .color_fill = opts.color_fill,
+                });
+            },
+            .symbols => {
+                // DejaVu symbols — body size and caller ink (tool lines, prose arrows).
+                paintSlice(tl, slice, symbols_font, opts);
+            },
+            .body => paintSlice(tl, slice, base, opts),
         }
     }
 }

@@ -121,8 +121,8 @@ Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain tex
 | Cache | Fingerprint (FNV-1a) over full body; cap 48 entries; cleared on transcript clear |
 | Caps | Same ring / 4 KiB line / 28 visible as above |
 | Unicode | Message bodies are **UTF-8** end-to-end (host `TextEncoder` → Wasm ring → zmd parse → paint → Copy source). Integrity = scalars/bytes preserved; glyphs depend on the faces below |
-| Fonts (embedded) | **Noto Sans** Regular/Bold/Italic/BoldItalic (body + rich emph) · **OpenMoji** black outline subset (emoji) · **Vera Sans Mono** Regular/Bold (fences / inline code). Licenses: `native/harness/src/fonts/README.md` |
-| Paint faces | Transcript paint **splits** emoji-related code points onto OpenMoji and everything else onto Noto Sans / mono (dvui has no automatic per-glyph fallback) |
+| Fonts (embedded) | **Noto Sans** Regular/Bold/Italic/BoldItalic (body + rich emph) · **OpenMoji** black outline subset (emoji) · **DejaVu symbols** subset (arrows / math / dingbats missing from Noto, e.g. →) · **Vera Sans Mono** Regular/Bold (fences / inline code). Licenses: `native/harness/src/fonts/README.md` |
+| Paint faces | Transcript paint **splits** emoji → OpenMoji, text symbols (arrows etc.) → DejaVu symbols, else Noto Sans / mono (dvui has no automatic per-glyph fallback) |
 | Missing glyphs | Scripts outside these faces (notably **full CJK**) may still show a **missing-glyph placeholder**. That is **not** mojibake; **Copy** still yields UTF-8 source when the browser allows clipboard write |
 | Truncation | `MAX_MSG_LEN` (4 KiB) is a **byte** cap — a multi-byte sequence at the limit may be cut mid-code-point (pre-existing ring behavior) |
 
@@ -132,9 +132,9 @@ Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain tex
 |-------|----------|
 | Host → Wasm | UTF-8 via `TextEncoder`; ring stores raw bytes |
 | Parse / fences | Non-ASCII kept in inline and fence text; allowlisted token HL keeps complete UTF-8 sequences whole on the default path |
-| Paint | Mixed runs: Noto Sans for letters/punctuation; OpenMoji for emoji / pictographs (**monochrome outlines, inked teal_accent**). ZWJ / skin-tone / VS stay on the emoji face |
-| Composer | Canvas `textEntry` uses theme body (Noto Sans); emoji while typing follows the same face rules when painted in the transcript after send |
-| Coverage | Latin / Greek / Cyrillic (Noto) + common emoji (OpenMoji subset). **Not** full CJK; **not** color emoji; complex ZWJ families are best-effort without a full shaper |
+| Paint | Mixed runs: Noto Sans for letters/punctuation; DejaVu symbols for arrows / math ops missing from Noto; OpenMoji for emoji / pictographs (**monochrome outlines, inked teal_accent**). ZWJ / skin-tone / VS stay on the emoji face |
+| Composer | Canvas `textEntry` uses theme body (Noto Sans); emoji/symbol while typing follows the same face rules when painted in the transcript after send |
+| Coverage | Latin / Greek / Cyrillic (Noto) + arrows/operators (DejaVu symbols subset) + common emoji (OpenMoji subset). **Not** full CJK; **not** color emoji; complex ZWJ families are best-effort without a full shaper |
 | Out of scope (today) | Full CJK face pack; **color** emoji (monochrome teal is intentional); full BiDi |
 
 Feature divide: transcript **read** path remains canvas-only — see [feature-divide.md](feature-divide.md).
