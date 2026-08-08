@@ -508,6 +508,11 @@ export async function runHarnessTurn(
       });
     }
 
+    // Safety net: collapse open thinking when the stream ends without a terminal
+    // SSE event (abort, network drop, empty body). Mid-stream closes already ran
+    // for tool/text/done/error; this is a no-op when the segment is already closed.
+    closeThinkingSegment();
+
     if (agentResult.ok) {
       if (!streamAgent || !sawStreamTerminal) {
         // JSON path (or stream that returned JSON): end-of-turn toolTrace + assistant.

@@ -748,6 +748,33 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     expect(c.endsWith('…')).toBe(true);
   });
 
+  it('collapses thinking when stream cancels without SSE terminal', async () => {
+    const long = 'B'.repeat(300);
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'cancel-thinking', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'reasoning_delta', text: long });
+        // No done/error event — mirrors AbortError mid-read.
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(result.result.ok).toBe(false);
+    const thinking = exp.__messages.filter((m) => m.kind === MessageKind.Thinking);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]!.text.length).toBeLessThanOrEqual(160);
+    expect(thinking[0]!.text.endsWith('…')).toBe(true);
+    expect(thinking[0]!.text.startsWith('B')).toBe(true);
+    expect(
+      exp.__messages.some(
+        (m) => m.kind === MessageKind.Error && m.text === 'Request cancelled.',
+      ),
+    ).toBe(true);
+  });
+
   it('text then reasoning then text does not duplicate assistant segment', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);

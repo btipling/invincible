@@ -84,7 +84,7 @@ User types in Wasm composer
 ```
 
 **toolTrace display (host → Wasm system lines):** short human lines only —
-``{toolName} · ok|failed · {preview}`` (≤6 lines, ≤240 chars). Not raw MCP/server
+``{toolName} · ✓ ok|✗ failed · {preview}`` (≤6 lines, ≤240 chars). Not raw MCP/server
 JSON envelopes such as `{"content":[{"type":"text",…}]}`. Tool execute results
 are flattened server-side before the model and before summaries.
 

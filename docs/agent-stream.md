@@ -35,7 +35,7 @@ Assistant and thinking growth use **protocol v8** `inv_update_last_message` so s
 
 ### Thinking collapse
 
-While a Thinking segment is **open**, the host grows the full monologue (≤4096). When the segment **closes** (tool line, assistant text, `done`, or `error`), the host rewrites the last Thinking row to a **collapsed** one-liner (≤160 chars + ellipsis) via `updateLastMessage`. Multi-step turns may leave several short Thinking rows in the ring.
+While a Thinking segment is **open**, the host grows the full monologue (≤4096). When the segment **closes** (tool line, assistant text, `done`, or `error`), the host rewrites the last Thinking row to a **collapsed** one-liner (≤160 chars + ellipsis) via `updateLastMessage`. After the stream promise settles, the host also collapses any still-open segment (abort / network drop without a terminal SSE event). Multi-step turns may leave several short Thinking rows in the ring.
 
 ### Session save
 
