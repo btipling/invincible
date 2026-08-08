@@ -36,6 +36,13 @@
       "when": 1785880000000,
       "tag": "0004_user_mcp_servers",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785900000000,
+      "tag": "0005_harness_sessions",
+      "breakpoints": true
     }
   ]
 }

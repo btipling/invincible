@@ -223,3 +223,24 @@ export const userMcpServers = pgTable(
 );
 
 export type UserMcpServer = typeof userMcpServers.$inferSelect;
+
+/**
+ * Cloud multi-device harness session (parent #242 / phase #243).
+ * One row per user. snapshot_id is opaque client SessionSnapshot.id (e.g. sess_…),
+ * not a UUID — never uuid-validate client ids.
+ * messages is SessionMessage[] JSON only (no secrets).
+ */
+export const harnessSessions = pgTable('harness_sessions', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  /** Opaque client SessionSnapshot.id (e.g. sess_…); not a DB uuid. */
+  snapshotId: text('snapshot_id').notNull(),
+  /** Wall time of last accepted write; API exposes as epoch ms. */
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+  /** SessionMessage[] — id/role/text/at only. */
+  messages: jsonb('messages').notNull().default([]),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type HarnessSession = typeof harnessSessions.$inferSelect;
