@@ -176,8 +176,17 @@ export function formatPromptWithHistory(
   for (const m of recent) {
     if (m.role === 'user') lines.push(`User: ${m.text}`);
     else if (m.role === 'assistant') lines.push(`Assistant: ${m.text}`);
-    else if (m.role === 'system') lines.push(`Tool: ${m.text}`);
-    else if (m.role === 'error') lines.push(`Error: ${m.text}`);
+    else if (m.role === 'system') {
+      // Skip end-of-turn markers (not tools).
+      if ((m.text ?? '').startsWith('Turn ended ·')) continue;
+      lines.push(`Tool: ${m.text}`);
+    } else if (m.role === 'error') {
+      if ((m.text ?? '').startsWith('Turn ended ·')) {
+        lines.push(`Error: ${m.text}`);
+        continue;
+      }
+      lines.push(`Error: ${m.text}`);
+    }
   }
   lines.push('', `User: ${newUserPrompt}`, '', 'Assistant:');
   let out = lines.join('\n');

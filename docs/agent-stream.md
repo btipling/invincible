@@ -63,6 +63,19 @@ submit so no ghost request is sent.
 
 When `AGENT_REASONING` is unset, the server enables `reasoning: provider-default` only if the model id looks reasoning-capable (`reasoning` / `thinking` in the id, but not `non-reasoning`). Other models omit the option.
 
+## End of turn
+
+Every harness turn paints a final line:
+
+| Outcome | Line |
+|---------|------|
+| Model finished | `Turn ended · model finished` (System) |
+| User Stop | `Turn ended · you stopped` (System) |
+| Error / timeout / empty | `Turn ended · error · …` / timed out / empty (Error) |
+| Chat fallback | `Turn ended · chat finished` (System) |
+
+These markers are **not** folded as tools into the next prompt.
+
 ## Caps
 
 Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with **Stop**.

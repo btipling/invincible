@@ -272,17 +272,111 @@ export async function runHarnessChat(
         ],
       );
     }
+    bridge.pushMessage(MessageKind.System, describeTurnEnd('chat'));
     bridge.setLifecycle(Lifecycle.Ready);
     return result;
   }
 
-  bridge.pushMessage(MessageKind.Error, result.error);
+  const fail = classifyTurnFailure(result.error, result.status, opts?.signal);
+  bridge.pushMessage(
+    fail.kind === 'stop' ? MessageKind.System : MessageKind.Error,
+    describeTurnEnd(fail.kind, fail.detail),
+  );
   bridge.setLifecycle(Lifecycle.Ready);
   return result;
 }
 
 function isCancelledAgent(result: AgentResult): boolean {
   return !result.ok && result.error === 'Request cancelled.';
+}
+
+/** Prefix for end-of-turn canvas lines (excluded from Tool: history fold). */
+export const TURN_END_PREFIX = 'Turn ended · ';
+
+export function isTurnEndLine(text: string): boolean {
+  return (text ?? '').startsWith(TURN_END_PREFIX);
+}
+
+export type TurnEndKind =
+  | 'model'
+  | 'stop'
+  | 'error'
+  | 'timeout'
+  | 'empty'
+  | 'validation'
+  | 'chat';
+
+/**
+ * Human-readable why this turn stopped. Always starts with TURN_END_PREFIX.
+ */
+export function describeTurnEnd(kind: TurnEndKind, detail?: string): string {
+  const d = (detail ?? '').replace(/\s+/g, ' ').trim();
+  switch (kind) {
+    case 'model':
+      return `${TURN_END_PREFIX}model finished`;
+    case 'stop':
+      return `${TURN_END_PREFIX}you stopped`;
+    case 'timeout':
+      return d
+        ? `${TURN_END_PREFIX}timed out · ${d}`
+        : `${TURN_END_PREFIX}timed out`;
+    case 'empty':
+      return `${TURN_END_PREFIX}empty model response`;
+    case 'validation':
+      return d
+        ? `${TURN_END_PREFIX}invalid input · ${d}`
+        : `${TURN_END_PREFIX}invalid input`;
+    case 'chat':
+      return `${TURN_END_PREFIX}chat finished`;
+    case 'error':
+    default:
+      return d
+        ? `${TURN_END_PREFIX}error · ${d}`
+        : `${TURN_END_PREFIX}error`;
+  }
+}
+
+/** Classify a failed agent/chat result into an end reason. */
+export function classifyTurnFailure(
+  error: string,
+  status?: number,
+  signal?: AbortSignal,
+): { kind: TurnEndKind; detail?: string } {
+  const msg = (error ?? '').trim();
+  if (signal?.aborted || msg === 'Request cancelled.' || status === 499) {
+    return { kind: 'stop' };
+  }
+  const lower = msg.toLowerCase();
+  if (
+    status === 504 ||
+    status === 408 ||
+    /\btimeout\b|timed out|time-?out|maxduration|invocation timeout|function_invocation_timeout/i.test(
+      msg,
+    )
+  ) {
+    return { kind: 'timeout', detail: msg || undefined };
+  }
+  if (/empty model response/i.test(msg)) {
+    return { kind: 'empty' };
+  }
+  return { kind: 'error', detail: msg || undefined };
+}
+
+function pushTurnEnd(
+  bridge: HarnessBridge,
+  session: SessionSnapshot,
+  kind: TurnEndKind,
+  detail?: string,
+): SessionSnapshot {
+  const line = describeTurnEnd(kind, detail);
+  // Stop / model / chat → System. Real failures → Error so they stay ember-tinted.
+  const asError = kind === 'error' || kind === 'timeout' || kind === 'empty' || kind === 'validation';
+  if (asError) {
+    bridge.pushMessage(MessageKind.Error, line);
+    return appendMessage(session, 'error', line);
+  }
+  bridge.pushMessage(MessageKind.System, line);
+  return appendMessage(session, 'system', line);
 }
 
 /**
@@ -296,8 +390,8 @@ export async function runHarnessTurn(
 ): Promise<HarnessTurnResult> {
   const validation = validatePrompt(rawPrompt);
   if (validation) {
-    const next = appendMessage(session, 'error', validation);
-    bridge.pushMessage(MessageKind.Error, validation);
+    bridge.pushMessage(MessageKind.Error, describeTurnEnd('validation', validation));
+    const next = appendMessage(session, 'error', describeTurnEnd('validation', validation));
     bridge.setLifecycle(Lifecycle.Ready);
     return { result: { ok: false, error: validation }, session: next };
   }
@@ -526,6 +620,7 @@ export async function runHarnessTurn(
           .filter((m) => m.role === 'user' || m.role === 'assistant')
           .map((m) => m.text),
       );
+      next = pushTurnEnd(bridge, next, 'model');
       bridge.setLifecycle(Lifecycle.Ready);
       return {
         result: { ok: true, text: agentResult.text || assistantAcc },
@@ -535,8 +630,6 @@ export async function runHarnessTurn(
 
     // Cancel or hard agent failure — never fall back to chat.
     if (!agentResult.sandboxNotConfigured || isCancelledAgent(agentResult)) {
-      bridge.pushMessage(MessageKind.Error, agentResult.error);
-      bridge.setLifecycle(Lifecycle.Ready);
       // Keep partial assistant text + tool System lines already in `next` so
       // continue-after-stall history still knows what ran.
       let failedSession = next;
@@ -544,7 +637,13 @@ export async function runHarnessTurn(
       if (partial) {
         failedSession = appendMessage(failedSession, 'assistant', partial);
       }
-      failedSession = appendMessage(failedSession, 'error', agentResult.error);
+      const fail = classifyTurnFailure(
+        agentResult.error,
+        agentResult.status,
+        opts?.signal,
+      );
+      failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail);
+      bridge.setLifecycle(Lifecycle.Ready);
       return {
         result: {
           ok: false,
@@ -567,13 +666,19 @@ export async function runHarnessTurn(
   });
 
   if (result.ok) {
-    return {
-      result,
-      session: appendMessage(withUser, 'assistant', result.text),
-    };
+    // runHarnessChat already painted Turn ended · chat finished on the bridge.
+    let sess = appendMessage(withUser, 'assistant', result.text);
+    sess = appendMessage(sess, 'system', describeTurnEnd('chat'));
+    return { result, session: sess };
   }
+  const fail = classifyTurnFailure(result.error, result.status, opts?.signal);
+  // runHarnessChat already painted the end reason on the bridge.
   return {
     result,
-    session: appendMessage(withUser, 'error', result.error),
+    session: appendMessage(
+      withUser,
+      fail.kind === 'stop' ? 'system' : 'error',
+      describeTurnEnd(fail.kind, fail.detail),
+    ),
   };
 }
