@@ -37,6 +37,10 @@ export type SandboxClient = {
       args?: string[];
       cwd?: string;
       timeoutMs?: number;
+      /** Optional stdin body (heredoc) — fed without a shell. */
+      stdin?: string;
+      /** Alias for stdin. */
+      heredoc?: string;
     },
     init?: { signal?: AbortSignal },
   ) => Promise<ExecResult>;

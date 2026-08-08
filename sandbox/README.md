@@ -94,7 +94,20 @@ Body:
 }
 ```
 
+Optional **stdin / heredoc** (multi-line input without a shell):
+
+```json
+{
+  "cmd": "python3",
+  "args": ["-"],
+  "stdin": "print('hello from heredoc')\n",
+  "timeoutMs": 10000
+}
+```
+
 - **argv only** — no `shell: true`
+- Optional `stdin` (or alias `heredoc`) is written to the child process stdin, then closed — safe substitute for shell `<<EOF` heredocs
+- Stdin cap matches stdout/stderr (`MAX_STDIO_BYTES`, 4 MiB)
 - `cwd` is path-jailed under the workspace
 - Child env is **minimal** (`PATH`, `HOME`/`TMPDIR` under workspace, locale) — does **not** inherit `SANDBOX_TOKEN` or host secrets
 - On timeout the process group is killed; response includes `"timedOut": true`

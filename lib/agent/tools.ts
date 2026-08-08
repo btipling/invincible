@@ -207,12 +207,14 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const exec = tool({
     description:
-      'Run a command in the sandbox (argv only, no shell). cwd is path-jailed. Default timeout 5 min, max 30 min.',
+      'Run a command in the sandbox (argv only, no shell). Optional stdin/heredoc feeds multi-line input on the process stdin without a shell. cwd is path-jailed. Default timeout 5 min, max 30 min.',
     inputSchema: jsonSchema<{
       cmd: string;
       args?: string[];
       cwd?: string;
       timeoutMs?: number;
+      stdin?: string;
+      heredoc?: string;
     }>({
       type: 'object',
       properties: {
@@ -224,6 +226,15 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         },
         cwd: { type: 'string', description: 'Working directory under workspace' },
         timeoutMs: { type: 'number', description: 'Timeout in ms (default 5 min, max 30 min)' },
+        stdin: {
+          type: 'string',
+          description:
+            'Optional UTF-8 body written to the process stdin (heredoc-style; no shell). Prefer this over shell <<EOF.',
+        },
+        heredoc: {
+          type: 'string',
+          description: 'Alias for stdin — multi-line input fed to the process without a shell',
+        },
       },
       required: ['cmd'],
       additionalProperties: false,
@@ -235,17 +246,28 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
       try {
         if (!input.cmd) return finalize('ERROR exec: cmd is required', secrets);
         const timeoutMs = clampExecTimeoutMs(input.timeoutMs);
+        const stdin =
+          typeof input.stdin === 'string'
+            ? input.stdin
+            : typeof input.heredoc === 'string'
+              ? input.heredoc
+              : undefined;
         const result = await client.exec(
           {
             cmd: input.cmd,
             args: input.args,
             cwd: input.cwd,
             timeoutMs,
+            ...(stdin !== undefined ? { stdin } : {}),
           },
           { signal },
         );
+        const head =
+          stdin !== undefined
+            ? `exec ${input.cmd} stdin=${Buffer.byteLength(stdin, 'utf8')}B`
+            : `exec ${input.cmd}`;
         const parts = [
-          `exec ${input.cmd}`,
+          head,
           result.timedOut ? 'TIMED_OUT' : `exit=${result.exitCode}`,
         ];
         if (result.stdout) parts.push(`stdout:\n${result.stdout}`);

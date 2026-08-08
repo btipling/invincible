@@ -274,8 +274,35 @@ function attachCappedCollector(stream, max) {
 }
 
 /**
+ * Resolve optional stdin / heredoc body for exec.
+ * Accepts `stdin` (preferred) or `heredoc` alias. Still argv-only — no shell.
+ * @param {{ stdin?: unknown, heredoc?: unknown }} body
+ * @returns {Buffer | null} null = leave stdin closed (ignore); Buffer may be empty
+ */
+export function resolveExecStdin(body) {
+  const raw =
+    body?.stdin !== undefined && body?.stdin !== null
+      ? body.stdin
+      : body?.heredoc !== undefined && body?.heredoc !== null
+        ? body.heredoc
+        : undefined;
+  if (raw === undefined) return null;
+  if (typeof raw !== 'string') {
+    throw new ToolError('stdin must be a string (heredoc body)');
+  }
+  const buf = Buffer.from(raw, 'utf8');
+  if (buf.byteLength > MAX_STDIO_BYTES) {
+    throw new ToolError(
+      `stdin exceeds maxBytes limit (${MAX_STDIO_BYTES})`,
+      413,
+    );
+  }
+  return buf;
+}
+
+/**
  * @param {string} workspace
- * @param {{ cmd?: string, args?: string[], cwd?: string, timeoutMs?: number }} body
+ * @param {{ cmd?: string, args?: string[], cwd?: string, timeoutMs?: number, stdin?: string, heredoc?: string }} body
  */
 export async function execCmd(workspace, body) {
   if (body?.cmd == null || typeof body.cmd !== 'string' || body.cmd === '') {
@@ -288,6 +315,8 @@ export async function execCmd(workspace, body) {
     if (typeof a !== 'string') throw new ToolError('args must be an array of strings');
     return a;
   });
+
+  const stdinBuf = resolveExecStdin(body ?? {});
 
   const cwd = resolveJailPath(workspace, body.cwd ?? '.');
   let cwdStat;
@@ -302,6 +331,7 @@ export async function execCmd(workspace, body) {
 
   const timeoutMs = clampTimeout(body.timeoutMs);
   const useDetached = process.platform !== 'win32';
+  const pipeStdin = stdinBuf != null;
 
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -314,7 +344,7 @@ export async function execCmd(workspace, body) {
         shell: false,
         env: buildExecEnv(path.resolve(workspace)),
         detached: useDetached,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [pipeStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
       reject(
@@ -350,6 +380,21 @@ export async function execCmd(workspace, body) {
       timedOut = true;
       killTree();
     }, timeoutMs);
+
+    if (pipeStdin && child.stdin) {
+      child.stdin.on('error', (err) => {
+        // EPIPE if child exits before consuming all stdin — not a hard failure.
+        if (err && /** @type {NodeJS.ErrnoException} */ (err).code === 'EPIPE') {
+          return;
+        }
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        killTree();
+        reject(new ToolError(err.message || 'stdin write failed', 500));
+      });
+      child.stdin.end(stdinBuf);
+    }
 
     const finish = (code) => {
       if (settled) return;

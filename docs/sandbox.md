@@ -104,7 +104,7 @@ if unauthenticated) — see above.
 | `POST` | `/v1/read_file` | Bearer | Read file (max 16 MiB) |
 | `POST` | `/v1/write_file` | Bearer | Write file (max 16 MiB) |
 | `POST` | `/v1/str_replace` | Bearer | Exact string replace (unique match or `replace_all`) |
-| `POST` | `/v1/exec` | Bearer | Run argv command (no shell) |
+| `POST` | `/v1/exec` | Bearer | Run argv command (no shell); optional `stdin`/`heredoc` |
 
 Full contract, jail rules, and exec shape: [`sandbox/README.md`](../sandbox/README.md).
 
