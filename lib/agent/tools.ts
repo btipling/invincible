@@ -243,7 +243,10 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
     inputSchema: jsonSchema<{ path: string; content: string; mkdir?: boolean }>({
       type: 'object',
       properties: {
-        path: { type: 'string' },
+        path: {
+          type: 'string',
+          description: 'File path relative to logical cwd or workspace-root-relative under cwd',
+        },
         content: { type: 'string' },
         mkdir: {
           type: 'boolean',

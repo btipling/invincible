@@ -28,6 +28,13 @@ describe('normalizeWorkspaceRel', () => {
     expect(() => normalizeWorkspaceRel('a\0b')).toThrow(WorkPathError);
   });
 
+  it('rejects newlines and other control characters', () => {
+    expect(() => normalizeWorkspaceRel('a\nb')).toThrow(/control/i);
+    expect(() => normalizeWorkspaceRel('a\rb')).toThrow(/control/i);
+    expect(() => normalizeWorkspaceRel('a\tb')).toThrow(/control/i);
+    expect(() => normalizeWorkspaceRel('foo\n:evil')).toThrow(/control/i);
+  });
+
   it('rejects escape above root', () => {
     expect(() => normalizeWorkspaceRel('..')).toThrow(/escapes/);
     expect(() => normalizeWorkspaceRel('a/../../b')).toThrow(/escapes/);
@@ -60,6 +67,10 @@ describe('resolveAgainstCwd (prefix-aware)', () => {
 
   it('does not treat similar prefixes as rooted', () => {
     expect(resolveAgainstCwd('foo', 'foobar/x')).toBe('foo/foobar/x');
+  });
+
+  it('rejects control characters on path arg', () => {
+    expect(() => resolveAgainstCwd('invincible', 'a\nb')).toThrow(/control/i);
   });
 });
 
@@ -95,6 +106,11 @@ describe('parseInitialCwd', () => {
   it('rejects non-string', () => {
     const r = parseInitialCwd(1);
     expect(r.ok).toBe(false);
+  });
+  it('rejects control characters', () => {
+    const r = parseInitialCwd('a\nb');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/control/i);
   });
   it('accepts relative', () => {
     expect(parseInitialCwd('invincible')).toEqual({

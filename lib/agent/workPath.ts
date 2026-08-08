@@ -11,17 +11,20 @@ export class WorkPathError extends Error {
   }
 }
 
+/** C0 controls + DEL — break tool-result lines, annotations, and SSE framing. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
 /**
  * Normalize a workspace-relative path.
- * Rejects host-absolute paths, null bytes; collapses `.` / `..`.
+ * Rejects host-absolute paths, null bytes / control characters; collapses `.` / `..`.
  * Empty / whitespace → `"."`.
  */
 export function normalizeWorkspaceRel(userPath: string): string {
   if (typeof userPath !== 'string') {
     throw new WorkPathError('Path must be a string');
   }
-  if (userPath.includes('\0')) {
-    throw new WorkPathError('Path contains null byte');
+  if (CONTROL_CHARS.test(userPath)) {
+    throw new WorkPathError('Path contains control characters');
   }
 
   let rel = userPath.replace(/\\/g, '/').trim();
@@ -63,8 +66,8 @@ export function normalizeWorkspaceRel(userPath: string): string {
 export function resolveAgainstCwd(cwd: string, path: string): string {
   const c = normalizeWorkspaceRel(cwd || '.');
   let raw = path == null || path === '' ? '.' : String(path);
-  if (raw.includes('\0')) {
-    throw new WorkPathError('Path contains null byte');
+  if (CONTROL_CHARS.test(raw)) {
+    throw new WorkPathError('Path contains control characters');
   }
   raw = raw.replace(/\\/g, '/').trim();
   if (raw === '') raw = '.';
