@@ -14,6 +14,7 @@ import {
 } from '../lib/tenancy/tenantKeys';
 import {
   countSeedRows,
+  resolveSandboxEnv,
   SANDBOX_SLUG,
   seedTenancy,
   TENANT_SLUG,
@@ -22,8 +23,16 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, '../db/migrations');
 
+/** Apply all SQL migrations through sandbox backend (#281). */
 async function applyMigrations(client: PGlite) {
-  for (const name of ['0000_tenancy_phase1.sql', '0001_sso_scim_identity.sql', '0002_tenant_deks.sql']) {
+  for (const name of [
+    '0000_tenancy_phase1.sql',
+    '0001_sso_scim_identity.sql',
+    '0002_tenant_deks.sql',
+    '0003_provider_secrets.sql',
+    '0004_user_mcp_servers.sql',
+    '0005_sandbox_backend.sql',
+  ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     const statements = sql
       .split('--> statement-breakpoint')
@@ -47,6 +56,62 @@ function seedEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     ...overrides,
   };
 }
+
+describe('resolveSandboxEnv', () => {
+  it('default byo requires url+token', () => {
+    expect(() =>
+      resolveSandboxEnv({
+        SEED_SANDBOX_URL: 'http://x',
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(/URL\/token/);
+    expect(
+      resolveSandboxEnv({
+        SEED_SANDBOX_URL: 'http://x/',
+        SEED_SANDBOX_TOKEN: 't',
+      } as unknown as NodeJS.ProcessEnv),
+    ).toEqual({
+      backend: 'byo',
+      baseUrl: 'http://x',
+      token: 't',
+      image: null,
+    });
+  });
+
+  it('vercel does not require url/token; optional image', () => {
+    expect(
+      resolveSandboxEnv({
+        SEED_SANDBOX_BACKEND: 'vercel',
+      } as unknown as NodeJS.ProcessEnv),
+    ).toEqual({
+      backend: 'vercel',
+      baseUrl: null,
+      token: null,
+      image: null,
+    });
+    expect(
+      resolveSandboxEnv({
+        SEED_SANDBOX_BACKEND: 'vercel',
+        SEED_SANDBOX_IMAGE: 'vercel/sandbox/node:24',
+        SEED_SANDBOX_URL: 'http://ignored',
+        SEED_SANDBOX_TOKEN: 'ignored',
+      } as unknown as NodeJS.ProcessEnv),
+    ).toEqual({
+      backend: 'vercel',
+      baseUrl: null,
+      token: null,
+      image: 'vercel/sandbox/node:24',
+    });
+  });
+
+  it('vercel rejects invalid image', () => {
+    expect(() =>
+      resolveSandboxEnv({
+        SEED_SANDBOX_BACKEND: 'vercel',
+        SEED_SANDBOX_IMAGE: 'not a valid image',
+      } as unknown as NodeJS.ProcessEnv),
+    ).toThrow(/SEED_SANDBOX_IMAGE/);
+  });
+});
 
 describe('seedTenancy (pglite)', () => {
   let client: PGlite;
@@ -122,17 +187,19 @@ describe('seedTenancy (pglite)', () => {
       .where(eq(schema.sandboxes.id, first.sandboxId))
       .limit(1);
     expect(sb.slug).toBe(SANDBOX_SLUG);
+    expect(sb.backend).toBe('byo');
+    expect(sb.image).toBeNull();
     expect(sb.baseUrl).toBe('http://127.0.0.1:9999');
     const amk = resolveCredentialsKey({
       CREDENTIALS_ENCRYPTION_KEY: env.CREDENTIALS_ENCRYPTION_KEY,
     });
     // token under DEK, not AMK
-    expect(() => decryptSecret(sb.tokenCiphertext, amk)).toThrow();
+    expect(() => decryptSecret(sb.tokenCiphertext!, amk)).toThrow();
     const { dek, version } = await loadTenantDek(first.tenantId, {
       db: db as never,
       amk,
     });
-    expect(decryptSecret(sb.tokenCiphertext, dek)).toBe('rotated-token');
+    expect(decryptSecret(sb.tokenCiphertext!, dek)).toBe('rotated-token');
     expect(sb.tokenKekVersion).toBe(version);
 
     const [tenant] = await db
@@ -146,6 +213,30 @@ describe('seedTenancy (pglite)', () => {
     // re-seed keeps same DEK
     const dekAgain = unwrapTenantDek(tenant.dekCiphertext!, amk);
     expect(dekAgain.equals(dek)).toBe(true);
+  });
+
+  it('seed vercel + optional image; no URL/token required', async () => {
+    const env = seedEnv({
+      SEED_SANDBOX_BACKEND: 'vercel',
+      SEED_SANDBOX_IMAGE: 'team/project/invincible-dev:latest',
+      SEED_SANDBOX_URL: '',
+      SEED_SANDBOX_TOKEN: '',
+    });
+    // clear byo defaults from seedEnv by deleting after spread... seedEnv always sets URL/token;
+    // resolveSandboxEnv vercel path ignores them after normalize.
+    delete (env as Record<string, string | undefined>).SEED_SANDBOX_URL;
+    delete (env as Record<string, string | undefined>).SEED_SANDBOX_TOKEN;
+
+    const result = await seedTenancy(env, { db: db as never });
+    const [sb] = await db
+      .select()
+      .from(schema.sandboxes)
+      .where(eq(schema.sandboxes.id, result.sandboxId))
+      .limit(1);
+    expect(sb.backend).toBe('vercel');
+    expect(sb.baseUrl).toBeNull();
+    expect(sb.tokenCiphertext).toBeNull();
+    expect(sb.image).toBe('team/project/invincible-dev:latest');
   });
 
   it('re-seed does not overwrite provision_source on conflict', async () => {

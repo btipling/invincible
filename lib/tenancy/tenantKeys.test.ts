@@ -35,6 +35,9 @@ async function applyMigrations(client: PGlite) {
     '0000_tenancy_phase1.sql',
     '0001_sso_scim_identity.sql',
     '0002_tenant_deks.sql',
+    '0003_provider_secrets.sql',
+    '0004_user_mcp_servers.sql',
+    '0005_sandbox_backend.sql',
   ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     const statements = sql
@@ -217,8 +220,8 @@ describe('tenantKeys (pglite)', () => {
       .limit(1);
 
     // no longer decryptable with AMK
-    expect(() => decryptSecret(sb[0]!.ct, amk)).toThrow(CredentialsError);
-    expect(decryptSecret(sb[0]!.ct, dek)).toBe(legacyToken);
+    expect(() => decryptSecret(sb[0]!.ct!, amk)).toThrow(CredentialsError);
+    expect(decryptSecret(sb[0]!.ct!, dek)).toBe(legacyToken);
     expect(sb[0]!.ver).toBe(tenantRow[0]!.ver);
 
     const second = await backfillTenantDeks({ db: db as never, amk });

@@ -83,8 +83,20 @@ export const sandboxes = pgTable(
       .references(() => tenants.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     slug: text('slug').notNull(),
-    baseUrl: text('base_url').notNull(),
-    tokenCiphertext: text('token_ciphertext').notNull(),
+    /**
+     * Per-sandbox backend (#281 / parent #280): byo | vercel.
+     * App validates enum; no DB CHECK in v1.
+     */
+    backend: text('backend').notNull().default('byo'),
+    /**
+     * Vercel Sandbox image ref when backend=vercel (VMI or VCR).
+     * Null when byo or when product default should apply at resolve time.
+     */
+    image: text('image'),
+    /** Required for backend=byo; null for backend=vercel. */
+    baseUrl: text('base_url'),
+    /** DEK ciphertext of BYO token; null for backend=vercel. Never log. */
+    tokenCiphertext: text('token_ciphertext'),
     tokenKekVersion: integer('token_kek_version').notNull().default(1),
     status: text('status').notNull().default('active'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

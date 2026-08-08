@@ -1,14 +1,16 @@
 /**
  * Idempotent tenancy seed (phase 1 / #55 + phase 2 DEK wire / #94).
+ * Sandbox backend foundation (#281): optional SEED_SANDBOX_BACKEND=vercel.
  *
  * Requires (live run):
  *   DATABASE_URL
  *   CREDENTIALS_ENCRYPTION_KEY  (base64 32-byte AES key = AMK)
  *   SEED_ADMIN_EMAIL
  *   SEED_ADMIN_PASSWORD
- *   SEED_SANDBOX_URL + SEED_SANDBOX_TOKEN  (or SANDBOX_URL + SANDBOX_TOKEN)
+ *   BYO (default): SEED_SANDBOX_URL + SEED_SANDBOX_TOKEN  (or SANDBOX_URL + SANDBOX_TOKEN)
+ *   vercel: SEED_SANDBOX_BACKEND=vercel (URL/token not required); optional SEED_SANDBOX_IMAGE
  *
- * Ensures per-tenant DEK then encrypts sandbox token under DEK.
+ * Ensures per-tenant DEK then encrypts sandbox token under DEK (byo only).
  * Never prints password, token, DEK, or encryption key.
  * Re-running resets bootstrap password_hash + sandbox token ciphertext (by design);
  * existing tenant DEK is kept (ensure never overwrites).
@@ -31,6 +33,12 @@ import {
   resolveCredentialsKey,
 } from '../lib/tenancy/credentials';
 import { hashPassword } from '../lib/tenancy/password';
+import {
+  isSandboxBackend,
+  normalizeSandboxFieldsForBackend,
+  parseVercelSandboxImageInput,
+  type SandboxBackend,
+} from '../lib/tenancy/sandboxBackend';
 import { ensureTenantDek } from '../lib/tenancy/tenantKeys';
 
 export const TENANT_SLUG = 'default';
@@ -44,10 +52,47 @@ function requireEnv(name: string, env: NodeJS.ProcessEnv = process.env): string 
   return v;
 }
 
-function resolveSandboxEnv(env: NodeJS.ProcessEnv = process.env): {
-  baseUrl: string;
-  token: string;
-} {
+export type ResolvedSeedSandbox = {
+  backend: SandboxBackend;
+  baseUrl: string | null;
+  token: string | null;
+  image: string | null;
+};
+
+/**
+ * Resolve sandbox backend + credentials for seed.
+ * Seed-only envs — not product host config.
+ */
+export function resolveSandboxEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ResolvedSeedSandbox {
+  const rawBackend = env.SEED_SANDBOX_BACKEND?.trim().toLowerCase() || 'byo';
+  if (!isSandboxBackend(rawBackend)) {
+    throw new Error(
+      `SEED_SANDBOX_BACKEND must be byo or vercel (got ${rawBackend})`,
+    );
+  }
+
+  if (rawBackend === 'vercel') {
+    const imageRaw = env.SEED_SANDBOX_IMAGE;
+    const parsed = parseVercelSandboxImageInput(imageRaw);
+    if (!parsed.ok) {
+      throw new Error(`SEED_SANDBOX_IMAGE invalid: ${parsed.error}`);
+    }
+    const normalized = normalizeSandboxFieldsForBackend({
+      backend: 'vercel',
+      baseUrl: env.SEED_SANDBOX_URL ?? env.SANDBOX_URL ?? null,
+      tokenCiphertext: env.SEED_SANDBOX_TOKEN ?? env.SANDBOX_TOKEN ?? null,
+      image: parsed.image,
+    });
+    return {
+      backend: 'vercel',
+      baseUrl: null,
+      token: null,
+      image: normalized.image,
+    };
+  }
+
   const baseUrl =
     env.SEED_SANDBOX_URL?.trim() || env.SANDBOX_URL?.trim() || '';
   const token =
@@ -57,7 +102,12 @@ function resolveSandboxEnv(env: NodeJS.ProcessEnv = process.env): {
       'Sandbox URL/token required: set SEED_SANDBOX_URL+SEED_SANDBOX_TOKEN or SANDBOX_URL+SANDBOX_TOKEN',
     );
   }
-  return { baseUrl: baseUrl.replace(/\/+$/, ''), token };
+  return {
+    backend: 'byo',
+    baseUrl: baseUrl.replace(/\/+$/, ''),
+    token,
+    image: null,
+  };
 }
 
 export type SeedResult = {
@@ -86,7 +136,7 @@ export async function seedTenancy(
   const amk = resolveCredentialsKey(env as Record<string, string | undefined>);
   const email = requireEnv('SEED_ADMIN_EMAIL', env).toLowerCase();
   const password = requireEnv('SEED_ADMIN_PASSWORD', env);
-  const { baseUrl, token } = resolveSandboxEnv(env);
+  const sandboxEnv = resolveSandboxEnv(env);
 
   const passwordHash = await hashPassword(password);
 
@@ -117,7 +167,11 @@ export async function seedTenancy(
         tx: tx as never,
         amk,
       });
-      const tokenCiphertext = encryptSecret(token, dek);
+
+      let tokenCiphertext: string | null = null;
+      if (sandboxEnv.backend === 'byo' && sandboxEnv.token) {
+        tokenCiphertext = encryptSecret(sandboxEnv.token, dek);
+      }
 
       // 2) user by email — re-seed refreshes password_hash (bootstrap contract).
       // Insert sets provision_source=credentials; conflict does NOT overwrite
@@ -163,23 +217,34 @@ export async function seedTenancy(
           set: { role: 'owner' },
         });
 
-      // 4) sandbox under tenant — token under DEK
+      // 4) sandbox under tenant — token under DEK when byo
+      const fields = normalizeSandboxFieldsForBackend({
+        backend: sandboxEnv.backend,
+        baseUrl: sandboxEnv.baseUrl,
+        tokenCiphertext,
+        image: sandboxEnv.image,
+      });
+
       await tx
         .insert(sandboxes)
         .values({
           tenantId,
           name: 'Default',
           slug: SANDBOX_SLUG,
-          baseUrl,
-          tokenCiphertext,
+          backend: fields.backend,
+          image: fields.image,
+          baseUrl: fields.baseUrl,
+          tokenCiphertext: fields.tokenCiphertext,
           tokenKekVersion: version,
           status: 'active',
         })
         .onConflictDoUpdate({
           target: [sandboxes.tenantId, sandboxes.slug],
           set: {
-            baseUrl,
-            tokenCiphertext,
+            backend: fields.backend,
+            image: fields.image,
+            baseUrl: fields.baseUrl,
+            tokenCiphertext: fields.tokenCiphertext,
             tokenKekVersion: version,
             status: 'active',
           },

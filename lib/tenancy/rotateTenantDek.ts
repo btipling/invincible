@@ -168,8 +168,13 @@ async function rotateWithDb(
         .for('update');
 
       for (const sb of sbRows) {
+        // Vercel backend rows store null credentials (#281) — skip.
+        const ct = sb.tokenCiphertext?.trim() ?? '';
+        if (!ct) {
+          continue;
+        }
         const plain = decryptTokenForRotate(
-          sb.tokenCiphertext,
+          ct,
           oldDek,
           amk,
           mode,
