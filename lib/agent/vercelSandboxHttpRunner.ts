@@ -113,22 +113,30 @@ export async function commandOutput(
 export function parseCurlHeaders(headerText: string): {
   status: number;
   contentType?: string;
+  location?: string;
 } {
   const lines = headerText.replace(/\r\n/g, '\n').split('\n');
   let status = 0;
   let contentType: string | undefined;
+  let location: string | undefined;
   for (const line of lines) {
     const m = line.match(/^HTTP\/[\d.]+ (\d{3})/i);
     if (m) {
+      // With -D -, intermediate proxy 100-continue etc. may appear; keep last status.
       status = Number(m[1]);
       continue;
     }
     const ct = line.match(/^content-type:\s*(.+)$/i);
     if (ct) {
       contentType = ct[1].trim();
+      continue;
+    }
+    const loc = line.match(/^location:\s*(.+)$/i);
+    if (loc) {
+      location = loc[1].trim();
     }
   }
-  return { status, contentType };
+  return { status, contentType, location };
 }
 
 function clampSandboxTimeout(ms: number | undefined): number {
@@ -239,11 +247,12 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
           stderr.trim() || `curl exit ${cmd.exitCode ?? 'unknown'}`,
         );
       }
-      const { status, contentType } = parseCurlHeaders(stdout);
+      const { status, contentType, location } = parseCurlHeaders(stdout);
       return {
         status: status || (cmd.exitCode === 0 ? 200 : 0),
         contentType,
         body: '',
+        ...(location ? { location } : {}),
       };
     }
 
@@ -278,7 +287,7 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
       );
     }
 
-    const { status, contentType } = parseCurlHeaders(stdout);
+    const { status, contentType, location } = parseCurlHeaders(stdout);
 
     // Read body with byte cap via head -c
     let body = '';
@@ -311,6 +320,7 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
       contentType,
       body,
       truncated,
+      ...(location ? { location } : {}),
     };
   }
 
