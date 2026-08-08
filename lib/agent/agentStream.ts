@@ -19,8 +19,8 @@ export type AgentStreamEvent =
 export const AGENT_STREAM_ACCEPT = 'text/event-stream';
 export const AGENT_STREAM_CONTENT_TYPE = 'text/event-stream; charset=utf-8';
 
-/** Live System tool lines per turn before a single overflow notice. */
-export const LIVE_TOOL_LINES_MAX = 128;
+/** @deprecated No host live-tool cap — kept for test import stability (Infinity). */
+export const LIVE_TOOL_LINES_MAX = Number.POSITIVE_INFINITY;
 
 export function wantsAgentStream(req: Request): boolean {
   const accept = req.headers.get('accept') ?? '';
@@ -46,8 +46,8 @@ export function summarizeToolLine(
   if (!oneLine) {
     return truncateSummary(`${name} · ${status}`, TOOL_TRACE_SUMMARY_MAX_CHARS);
   }
-  const preview = oneLine.length > 200 ? oneLine.slice(0, 200) : oneLine;
-  return truncateSummary(`${name} · ${status} · ${preview}`, TOOL_TRACE_SUMMARY_MAX_CHARS);
+  // Full result in the summary (soft-truncated only by TOOL_TRACE_SUMMARY_MAX_CHARS).
+  return truncateSummary(`${name} · ${status} · ${oneLine}`, TOOL_TRACE_SUMMARY_MAX_CHARS);
 }
 
 function toolNameOf(part: { toolName?: unknown }): string {

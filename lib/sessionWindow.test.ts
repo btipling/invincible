@@ -12,22 +12,22 @@ import { makeMessage } from './sessionStore';
 describe('latestRingStart', () => {
   it('is 0 when M ≤ ring', () => {
     expect(latestRingStart(0)).toBe(0);
-    expect(latestRingStart(48)).toBe(0);
+    expect(latestRingStart(HARNESS_RING_MAX)).toBe(0);
     expect(latestRingStart(10)).toBe(0);
   });
 
-  it('is M-48 when M > ring', () => {
-    expect(latestRingStart(49)).toBe(1);
-    expect(latestRingStart(60)).toBe(12);
-    expect(latestRingStart(100)).toBe(52);
+  it('is M-ringMax when M > ring', () => {
+    expect(latestRingStart(HARNESS_RING_MAX + 1)).toBe(1);
+    expect(latestRingStart(HARNESS_RING_MAX + 12)).toBe(12);
+    expect(latestRingStart(HARNESS_RING_MAX + 52)).toBe(52);
   });
 });
 
 describe('earlierRingStart', () => {
   it('steps back by HISTORY_PAGE', () => {
-    expect(earlierRingStart(36)).toBe(36 - HISTORY_PAGE);
-    expect(earlierRingStart(12)).toBe(0);
-    expect(earlierRingStart(30)).toBe(6);
+    expect(earlierRingStart(HISTORY_PAGE + 10)).toBe(10);
+    expect(earlierRingStart(HISTORY_PAGE)).toBe(0);
+    expect(earlierRingStart(HISTORY_PAGE - 1)).toBe(0);
   });
 
   it('clamps at 0', () => {
@@ -44,20 +44,21 @@ describe('canLoadEarlier', () => {
 });
 
 describe('sliceMessagesForRing', () => {
-  const msgs = Array.from({ length: 60 }, (_, i) => makeMessage('user', `m${i}`));
+  const total = HARNESS_RING_MAX + 12;
+  const msgs = Array.from({ length: total }, (_, i) => makeMessage('user', `m${i}`));
 
   it('never exceeds ring max', () => {
     const slice = sliceMessagesForRing(msgs, 12);
     expect(slice).toHaveLength(HARNESS_RING_MAX);
     expect(slice[0]!.text).toBe('m12');
-    expect(slice[47]!.text).toBe('m59');
+    expect(slice[HARNESS_RING_MAX - 1]!.text).toBe(`m${total - 1}`);
   });
 
-  it('load earlier to 0 returns first 48', () => {
+  it('load earlier to 0 returns first ringMax messages', () => {
     const slice = sliceMessagesForRing(msgs, 0);
-    expect(slice).toHaveLength(48);
+    expect(slice).toHaveLength(HARNESS_RING_MAX);
     expect(slice[0]!.text).toBe('m0');
-    expect(slice[47]!.text).toBe('m47');
+    expect(slice[HARNESS_RING_MAX - 1]!.text).toBe(`m${HARNESS_RING_MAX - 1}`);
   });
 
   it('short session returns all', () => {

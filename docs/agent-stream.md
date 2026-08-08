@@ -35,7 +35,7 @@ Assistant and thinking growth use **protocol v8** `inv_update_last_message` so s
 
 ### Thinking collapse
 
-While a Thinking segment is **open**, the host grows the full monologue (≤4096). When the segment **closes** (tool line, assistant text, `done`, or `error`), the host rewrites the last Thinking row to a **collapsed** one-liner (≤160 chars + ellipsis) via `updateLastMessage`. After the stream promise settles, the host also collapses any still-open segment (abort / network drop without a terminal SSE event). Multi-step turns may leave several short Thinking rows in the ring.
+While a Thinking segment is **open**, the host grows the full monologue (≤ Wasm `MAX_MSG_LEN`, currently 64 KiB). When the segment **closes** (tool line, assistant text, `done`, or `error`), the monologue **stays fully visible** (no one-liner collapse). Multi-step turns may leave several Thinking rows in the ring. There is **no** per-turn thinking-segment or live-tool line product cap — use **Stop** to cancel.
 
 ### User cancel (Stop)
 
@@ -64,14 +64,16 @@ When `AGENT_REASONING` is unset, the server enables `reasoning: provider-default
 
 ## Caps
 
+Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with **Stop**.
+
 | Cap | Value | Behavior |
 |-----|------:|----------|
-| Live tool System lines | **128** / turn | Then one `+ more tools (live cap 128)` notice |
-| Thinking **segments** | **32** / turn | Then one `+ more thinking (live cap 32)`; further monologue ignored |
-| Thinking chars (live segment) | **4096** | Wasm `MAX_MSG_LEN` |
-| Collapsed thinking | **≤160** + ellipsis | After segment close |
-| Tool summary length | **≤240** | `summarizeToolLine` / toolTrace |
-| JSON end-of-turn toolTrace lines | **128** | Non-stream / finalize path only |
+| Live tool System lines | **none** | Every tool start/result paints |
+| Thinking **segments** | **none** | Every reasoning segment paints |
+| Thinking / line chars | **64 KiB** | Wasm `MAX_MSG_LEN` only (bridge hard edge) |
+| Ring slots | **512** | Wasm `MAX_MSG`; older drop when full; Load earlier for SessionStore |
+| Tool summary length | **≤8 KiB** | Soft truncate for one System line |
+| JSON end-of-turn toolTrace lines | **none** | All entries shown |
 
 ## Deferred (not in stream contract yet)
 

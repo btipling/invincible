@@ -6,10 +6,9 @@ import {
   runHarnessChat,
   runHarnessTurn,
   selectToolTraceLines,
-  THINKING_SEGMENTS_MAX,
-  TOOL_TRACE_MAX_LINES,
   truncateToolTraceSummary,
 } from './harnessChat';
+import { HARNESS_RING_MAX } from './sessionWindow';
 import {
   HARNESS_PROTOCOL_VERSION,
   HarnessBridge,
@@ -118,8 +117,8 @@ describe('HARNESS_SMOKE_PROMPT', () => {
   });
 });
 
-describe('toolTrace host caps', () => {
-  it('truncates summaries and caps line count', () => {
+describe('toolTrace host display', () => {
+  it('soft-truncates oversize summaries and keeps all non-empty lines', () => {
     const long = 'x'.repeat(TOOL_TRACE_SUMMARY_MAX_CHARS + 50);
     expect(truncateToolTraceSummary(long).length).toBeLessThanOrEqual(
       TOOL_TRACE_SUMMARY_MAX_CHARS,
@@ -130,7 +129,7 @@ describe('toolTrace host caps', () => {
       summary: i === 0 ? '' : `line ${i}`,
     }));
     const lines = selectToolTraceLines(many);
-    expect(lines.length).toBeLessThanOrEqual(TOOL_TRACE_MAX_LINES);
+    expect(lines.length).toBe(9);
     expect(lines.every((l) => l.length > 0)).toBe(true);
     expect(lines[0]).toBe('line 1');
   });
@@ -356,10 +355,11 @@ describe('runHarnessTurn', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it('caps toolTrace to TOOL_TRACE_MAX_LINES system lines', async () => {
+  it('keeps all toolTrace system lines (no host line-count cap)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
-    const toolTrace = Array.from({ length: TOOL_TRACE_MAX_LINES + 10 }, (_, i) => ({
+    const n = 40;
+    const toolTrace = Array.from({ length: n }, (_, i) => ({
       name: `t${i}`,
       ok: true,
       summary: `step ${i}`,
@@ -378,10 +378,10 @@ describe('runHarnessTurn', () => {
     );
 
     const systems = next.messages.filter((m) => m.role === 'system');
-    expect(systems).toHaveLength(TOOL_TRACE_MAX_LINES);
+    expect(systems).toHaveLength(n);
     expect(
       exp.__messages.filter((m) => m.kind === MessageKind.System),
-    ).toHaveLength(TOOL_TRACE_MAX_LINES);
+    ).toHaveLength(n);
   });
 
   it('history fold ignores system tool lines', async () => {
@@ -560,35 +560,37 @@ describe('modelId forwarding', () => {
 });
 
 describe('pushSessionToBridge window (protocol v6)', () => {
-  it('hydrates at most 48 messages from the latest window', () => {
+  it('hydrates at most HARNESS_RING_MAX messages from the latest window', () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
+    const total = HARNESS_RING_MAX + 12;
     const session = {
       id: 's1',
       updatedAt: 0,
-      messages: Array.from({ length: 60 }, (_, i) => makeMessage('user', `m${i}`)),
+      messages: Array.from({ length: total }, (_, i) => makeMessage('user', `m${i}`)),
     };
     const start = pushSessionToBridge(bridge, session, { clear: true });
     expect(start).toBe(12);
-    expect(exp.__messages).toHaveLength(48);
+    expect(exp.__messages).toHaveLength(HARNESS_RING_MAX);
     expect(exp.__messages[0]!.text).toBe('m12');
-    expect(exp.__messages[47]!.text).toBe('m59');
+    expect(exp.__messages[HARNESS_RING_MAX - 1]!.text).toBe(`m${total - 1}`);
     expect(exp.__canLoadEarlier()).toBe(1);
   });
 
   it('earlier windowStart surfaces older turns and clears can-load at 0', () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
+    const total = HARNESS_RING_MAX + 12;
     const session = {
       id: 's1',
       updatedAt: 0,
-      messages: Array.from({ length: 60 }, (_, i) => makeMessage('user', `m${i}`)),
+      messages: Array.from({ length: total }, (_, i) => makeMessage('user', `m${i}`)),
     };
     const start = pushSessionToBridge(bridge, session, { clear: true, windowStart: 0 });
     expect(start).toBe(0);
-    expect(exp.__messages).toHaveLength(48);
+    expect(exp.__messages).toHaveLength(HARNESS_RING_MAX);
     expect(exp.__messages[0]!.text).toBe('m0');
-    expect(exp.__messages[47]!.text).toBe('m47');
+    expect(exp.__messages[HARNESS_RING_MAX - 1]!.text).toBe(`m${HARNESS_RING_MAX - 1}`);
     expect(exp.__canLoadEarlier()).toBe(0);
   });
 
@@ -681,7 +683,7 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     expect(result.session.messages.some((m) => m.text.includes('Hmm'))).toBe(false);
   });
 
-  it('collapses long thinking when tools supersede the segment', async () => {
+  it('keeps full thinking when tools supersede the segment', async () => {
     const long = 'A'.repeat(300);
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
@@ -704,21 +706,20 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     });
     const thinking = exp.__messages.filter((m) => m.kind === MessageKind.Thinking);
     expect(thinking).toHaveLength(1);
-    expect(thinking[0]!.text.length).toBeLessThanOrEqual(160);
-    expect(thinking[0]!.text.endsWith('…')).toBe(true);
-    expect(thinking[0]!.text.startsWith('A')).toBe(true);
+    expect(thinking[0]!.text).toBe(long);
   });
 
-  it('caps thinking segments per turn with overflow notice', async () => {
+  it('keeps all thinking segments per turn (no overflow notice)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const session = createEmptySession();
     const { runHarnessTurn } = await import('./harnessChat');
+    const n = 20;
     await runHarnessTurn(bridge, session, 'cap', {
       streamAgent: true,
       sendAgentStream: async (_prompt, init) => {
-        for (let i = 0; i < THINKING_SEGMENTS_MAX + 2; i++) {
-          await init?.onEvent?.({ type: 'reasoning_delta', text: `seg${i}` });
+        for (let i = 0; i < n; i++) {
+          await init?.onEvent?.({ type: 'reasoning_delta', text: `seg${i} long enough` });
           await init?.onEvent?.({ type: 'tool_start', name: `t${i}` });
           await init?.onEvent?.({
             type: 'tool_result',
@@ -732,25 +733,24 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
       },
     });
     const thinking = exp.__messages.filter((m) => m.kind === MessageKind.Thinking);
-    expect(thinking).toHaveLength(THINKING_SEGMENTS_MAX);
+    expect(thinking).toHaveLength(n);
     expect(
       exp.__messages.some(
         (m) =>
           m.kind === MessageKind.System &&
-          m.text.includes(`+ more thinking (live cap ${THINKING_SEGMENTS_MAX})`),
+          m.text.includes('+ more thinking'),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it('collapseThinkingDisplay truncates long monologue', () => {
-    expect(collapseThinkingDisplay('')).toBe('Thinking · collapsed');
+  it('collapseThinkingDisplay keeps monologue (no one-liner wall)', () => {
+    expect(collapseThinkingDisplay('')).toBe('Thinking');
     expect(collapseThinkingDisplay('short')).toBe('short');
-    const c = collapseThinkingDisplay('x'.repeat(200));
-    expect(c.length).toBeLessThanOrEqual(160);
-    expect(c.endsWith('…')).toBe(true);
+    const long = 'x'.repeat(200);
+    expect(collapseThinkingDisplay(long)).toBe(long);
   });
 
-  it('collapses thinking when stream cancels without SSE terminal', async () => {
+  it('keeps full thinking when stream cancels without SSE terminal', async () => {
     const long = 'B'.repeat(300);
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
@@ -767,9 +767,7 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     expect(result.result.ok).toBe(false);
     const thinking = exp.__messages.filter((m) => m.kind === MessageKind.Thinking);
     expect(thinking).toHaveLength(1);
-    expect(thinking[0]!.text.length).toBeLessThanOrEqual(160);
-    expect(thinking[0]!.text.endsWith('…')).toBe(true);
-    expect(thinking[0]!.text.startsWith('B')).toBe(true);
+    expect(thinking[0]!.text).toBe(long);
     expect(
       exp.__messages.some(
         (m) => m.kind === MessageKind.Error && m.text === 'Request cancelled.',

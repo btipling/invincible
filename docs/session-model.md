@@ -38,8 +38,8 @@ transcript via the bridge on load / Clear.
 
 ## Ring window vs full session
 
-The Wasm transcript ring holds at most **48** messages (`MAX_MSG`). The host
-`SessionStore` may hold more. On restore the host hydrates the **latest** ≤48
+The Wasm transcript ring holds at most **512** messages (`MAX_MSG`). The host
+`SessionStore` may hold more. On restore the host hydrates the **latest** ≤512
 messages into the ring. After a turn on the latest window, new lines are pushed
 incrementally (`pushMessage`); the host updates `ringWindowStart` /
 `can_load_earlier` without a full re-hydrate.
@@ -53,7 +53,7 @@ to the latest window so the live turn stays coherent.
 | Piece | Location |
 |-------|----------|
 | Window math | `lib/sessionWindow.ts` |
-| Hydrate ≤48 | `lib/harnessChat.ts` `pushSessionToBridge` |
+| Hydrate ≤512 | `lib/harnessChat.ts` `pushSessionToBridge` |
 | Host state + poll | `app/harness/HarnessHost.tsx` |
 | Load earlier control | `native/harness/src/ui.zig` |
 | Bridge pending | `inv_set_can_load_earlier` / `inv_has_pending_load_earlier` / `inv_ack_pending_load_earlier` |

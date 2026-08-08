@@ -12,10 +12,10 @@ export const MAX_AGENT_MAX_STEPS = 256;
 export const MIN_AGENT_MAX_STEPS = 1;
 
 /** Tool result string cap before returning to the model. */
-export const TOOL_RESULT_MAX_CHARS = 8_192;
+export const TOOL_RESULT_MAX_CHARS = 65_536;
 
-/** toolTrace summary cap (host also caps line count). */
-export const TOOL_TRACE_SUMMARY_MAX_CHARS = 240;
+/** toolTrace / live tool line summary soft max (chars). Not a product "stop". */
+export const TOOL_TRACE_SUMMARY_MAX_CHARS = 8_192;
 
 export const DEFAULT_EXEC_TIMEOUT_MS = 10_000;
 export const MAX_EXEC_TIMEOUT_MS = 30_000;
