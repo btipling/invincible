@@ -53,7 +53,7 @@ Set on the **Vercel project** (server-only). No `NEXT_PUBLIC_*`.
 2. Vercel → Project → Environment Variables → set `BUILTIN_HTTP_FETCH=sandbox` (Production / Preview as needed).
 3. Confirm the Vercel team can use **Vercel Sandbox** (product entitlement on the team — see Vercel docs; do not invent pricing).
 4. Smoke from the harness: ask the agent to fetch `https://example.com` and summarize.
-5. Expect a short toolTrace system line (`http_get · ok · …`) and a grounded assistant reply.
+5. Expect a short toolTrace system line (`http_get · ✓ ok · …`) and a grounded assistant reply.
 6. Disable: set `BUILTIN_HTTP_FETCH=off` (or unset) and redeploy.
 
 Cloud agents may use `vercel link` + `vercel env pull` in the **agent workspace** for OIDC smoke — not a human laptop requirement.

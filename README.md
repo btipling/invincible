@@ -112,7 +112,7 @@ Full ownership table: [`docs/feature-divide.md`](docs/feature-divide.md).
 | Auth (optional) | Auth.js credentials + optional OIDC; SCIM Users API |
 | Palette | Asteronica TEAL / WARM / EMBER |
 | Session | `lib/sessionStore.ts` |
-| Bridge | Protocol **v2** (`lib/harnessBridge.ts`) |
+| Bridge | Protocol **v8** (`lib/harnessBridge.ts`) |
 | Tests | Vitest |
 
 ## Docs
@@ -126,6 +126,7 @@ Living guides only (process / phase history lives in closed GitHub issues).
 | [builtin-http.md](docs/builtin-http.md) | Operator — builtin HTTPS fetch (`http_get`) |
 | [mcp.md](docs/mcp.md) | Operator — per-user MCP servers + Exa smoke |
 | [feature-divide.md](docs/feature-divide.md) | Product — DOM shell vs Wasm harness |
+| [agent-stream.md](docs/agent-stream.md) | Product — agent SSE events, thinking collapse, caps |
 | [runner.md](docs/runner.md) | Operator — self-hosted Zig runner + workflows |
 | [session-model.md](docs/session-model.md) | Product — session restore behavior |
 | [harness-limits.md](docs/harness-limits.md) | Product — browser / mobile / density limits |

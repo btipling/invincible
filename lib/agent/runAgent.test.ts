@@ -246,7 +246,7 @@ describe('runAgent', () => {
     });
     expect(trace).toHaveLength(1);
     expect(trace[0].ok).toBe(true);
-    expect(trace[0].summary).toMatch(/^mcp_exa__web_search_exa · ok ·/);
+    expect(trace[0].summary).toMatch(/^mcp_exa__web_search_exa · ✓ ok ·/);
     expect(trace[0].summary).toContain('Introducing Exa 2.0');
     expect(trace[0].summary).not.toContain('"content"');
   });
@@ -347,7 +347,7 @@ describe('runAgentStream reasoning option', () => {
     process.env.AGENT_REASONING = 'high';
     try {
       const events: unknown[] = [];
-      const streamTextImpl = vi.fn(() => ({
+      const streamTextImpl = vi.fn((_args: Record<string, unknown>) => ({
         fullStream: (async function* () {
           yield { type: 'text-delta', text: 'ok' };
         })(),
@@ -374,7 +374,7 @@ describe('runAgentStream reasoning option', () => {
         },
       );
       expect(streamTextImpl).toHaveBeenCalledTimes(1);
-      const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
+      const args = streamTextImpl.mock.calls[0]![0];
       expect(args.reasoning).toBe('high');
       expect(events.some((e) => (e as { type?: string }).type === 'done')).toBe(true);
     } finally {
@@ -387,7 +387,7 @@ describe('runAgentStream reasoning option', () => {
     const prev = process.env.AGENT_REASONING;
     delete process.env.AGENT_REASONING;
     try {
-      const streamTextImpl = vi.fn(() => ({
+      const streamTextImpl = vi.fn((_args: Record<string, unknown>) => ({
         fullStream: (async function* () {
           yield { type: 'text-delta', text: 'ok' };
         })(),
@@ -409,7 +409,7 @@ describe('runAgentStream reasoning option', () => {
         },
         { onEvent: async () => {} },
       );
-      const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
+      const args = streamTextImpl.mock.calls[0]![0];
       expect(args).not.toHaveProperty('reasoning');
     } finally {
       if (prev != null) process.env.AGENT_REASONING = prev;

@@ -40,7 +40,8 @@ export function summarizeToolLine(
   ok: boolean,
   secrets: Array<string | undefined | null> = [],
 ): string {
-  const status = ok ? 'ok' : 'failed';
+  // System kind only — do not use Error/EMBER for routine tool failures.
+  const status = ok ? '✓ ok' : '✗ failed';
   const oneLine = redactSecrets(resultText, secrets).replace(/\s+/g, ' ').trim();
   if (!oneLine) {
     return truncateSummary(`${name} · ${status}`, TOOL_TRACE_SUMMARY_MAX_CHARS);

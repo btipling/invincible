@@ -46,8 +46,14 @@ import {
 } from './sessionStore';
 import { canLoadEarlier, latestRingStart, sliceMessagesForRing } from './sessionWindow';
 
-/** Match Wasm MAX_MSG_LEN — single thinking bubble cap. */
+/** Match Wasm MAX_MSG_LEN — single thinking bubble cap (live segment). */
 export const THINKING_DISPLAY_MAX = 4096;
+
+/** Max Thinking segments pushed per turn before overflow notice. */
+export const THINKING_SEGMENTS_MAX = 6;
+
+/** Collapsed thinking one-liner max body chars (before ellipsis). */
+export const THINKING_COLLAPSED_MAX = 160;
 
 /** Parent #45 / phase 3 — max system toolTrace lines per turn. */
 export const TOOL_TRACE_MAX_LINES = 6;
@@ -120,13 +126,27 @@ export function truncateToolTraceSummary(
   return `${text.slice(0, Math.max(0, maxChars - 1))}…`;
 }
 
-/** Truncate thinking monologue for bridge (≤4096). */
+/** Truncate thinking monologue for bridge (≤4096 live). */
 export function truncateThinkingDisplay(
   text: string,
   maxChars: number = THINKING_DISPLAY_MAX,
 ): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+/**
+ * Collapse a finished thinking monologue for ring display (≤160 + ellipsis).
+ * Used when tools/text supersede the segment so the ring is not flooded.
+ */
+export function collapseThinkingDisplay(
+  text: string,
+  maxChars: number = THINKING_COLLAPSED_MAX,
+): string {
+  const one = (text ?? '').replace(/\s+/g, ' ').trim();
+  if (!one) return 'Thinking · collapsed';
+  if (one.length <= maxChars) return one;
+  return `${one.slice(0, Math.max(0, maxChars - 1))}…`;
 }
 
 /**
@@ -322,6 +342,8 @@ export async function runHarnessTurn(
     let assistantSegmentOpen = false;
     let thinkingSegment = '';
     let thinkingSegmentOpen = false;
+    let thinkingSegments = 0;
+    let thinkingOverflowNote = false;
     let sawStreamTerminal = false;
 
     const closeAssistantSegment = () => {
@@ -330,6 +352,12 @@ export async function runHarnessTurn(
     };
 
     const closeThinkingSegment = () => {
+      if (thinkingSegmentOpen) {
+        const collapsed = collapseThinkingDisplay(thinkingSegment);
+        if (!bridge.updateLastMessage(MessageKind.Thinking, collapsed)) {
+          // Last row is no longer Thinking — leave ring as-is.
+        }
+      }
       thinkingSegmentOpen = false;
       thinkingSegment = '';
     };
@@ -340,16 +368,28 @@ export async function runHarnessTurn(
       // Close assistant so a later text_delta cannot updateLast-fail and
       // re-push a full duplicated assistant segment (text→reason→text).
       closeAssistantSegment();
-      if (!thinkingSegmentOpen) {
-        thinkingSegment = truncateThinkingDisplay(chunk);
-        bridge.pushMessage(MessageKind.Thinking, thinkingSegment);
-        thinkingSegmentOpen = true;
+
+      if (thinkingSegmentOpen) {
+        thinkingSegment = truncateThinkingDisplay(thinkingSegment + chunk);
+        if (!bridge.updateLastMessage(MessageKind.Thinking, thinkingSegment)) {
+          bridge.pushMessage(MessageKind.Thinking, thinkingSegment);
+        }
         return;
       }
-      thinkingSegment = truncateThinkingDisplay(thinkingSegment + chunk);
-      if (!bridge.updateLastMessage(MessageKind.Thinking, thinkingSegment)) {
-        bridge.pushMessage(MessageKind.Thinking, thinkingSegment);
+
+      if (thinkingSegments >= THINKING_SEGMENTS_MAX) {
+        if (!thinkingOverflowNote) {
+          const note = `+ more thinking (live cap ${THINKING_SEGMENTS_MAX})`;
+          bridge.pushMessage(MessageKind.System, note);
+          thinkingOverflowNote = true;
+        }
+        return;
       }
+
+      thinkingSegment = truncateThinkingDisplay(chunk);
+      bridge.pushMessage(MessageKind.Thinking, thinkingSegment);
+      thinkingSegmentOpen = true;
+      thinkingSegments += 1;
     };
 
     const growAssistant = (chunk: string) => {
@@ -450,12 +490,14 @@ export async function runHarnessTurn(
           }
           if (ev.type === 'done') {
             sawStreamTerminal = true;
+            closeThinkingSegment();
             finalizeAssistant(ev.text ?? assistantAcc);
             // Do not re-push toolTrace — live lines already shown.
             return;
           }
           if (ev.type === 'error') {
             sawStreamTerminal = true;
+            closeThinkingSegment();
           }
         },
       });
@@ -465,6 +507,11 @@ export async function runHarnessTurn(
         modelId: opts?.modelId,
       });
     }
+
+    // Safety net: collapse open thinking when the stream ends without a terminal
+    // SSE event (abort, network drop, empty body). Mid-stream closes already ran
+    // for tool/text/done/error; this is a no-op when the segment is already closed.
+    closeThinkingSegment();
 
     if (agentResult.ok) {
       if (!streamAgent || !sawStreamTerminal) {

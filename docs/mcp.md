@@ -91,7 +91,7 @@ User enables MCP servers on /settings/mcp
   → merge tools with sandbox tools (name prefix mcp_<slug>__)
   → soft-fail: dead servers set last_error; do not brick the turn
   → generateText multi-step; tool results flattened server-side → host toolTrace
-    (≤6 system lines: `mcp_{slug}__{tool} · ok|failed · preview`, not raw MCP JSON)
+    (≤6 system lines: `mcp_{slug}__{tool} · ✓ ok|✗ failed · preview`, not raw MCP JSON)
   → close MCP clients in finally
   → User reads results in the **Wasm** transcript (not a DOM chat panel)
 ```
@@ -118,7 +118,7 @@ Primary smoke MCP for operators (hosted Streamable HTTP + API key).
 5. **Test connection** — expect success and a non-zero tool count (or a clear error without leaking the key).
 6. Open **`/harness`** — type a prompt that needs web search / research tools.
 7. Confirm the canvas shows tool activity: system toolTrace lines look like
-   `mcp_exa__web_search_exa · ok · …` (short preview; **not** `{"content":[…]}` raw envelopes).
+   `mcp_exa__web_search_exa · ✓ ok · …` (short preview; **not** `{"content":[…]}` raw envelopes).
    Host caps display at **6** lines. The assistant message should be prose, not the MCP JSON envelope.
 8. Optional: **Disable** the server and confirm a later turn no longer loads it; re-enable as needed.
 

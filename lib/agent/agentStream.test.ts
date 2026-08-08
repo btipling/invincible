@@ -61,7 +61,8 @@ describe('mapFullStreamPart', () => {
     expect(evs).toHaveLength(1);
     expect(evs[0]).toMatchObject({ type: 'tool_result', name: 'list_dir', ok: true });
     if (evs[0]!.type === 'tool_result') {
-      expect(evs[0].summary).toContain('list_dir · ok');
+      expect(evs[0].summary).toContain('list_dir · ✓ ok');
+
     }
   });
 
@@ -114,6 +115,11 @@ describe('summarizeToolLine', () => {
   it('caps length', () => {
     const line = summarizeToolLine('x', 'y'.repeat(500), true);
     expect(line.length).toBeLessThanOrEqual(240);
+  });
+
+  it('marks ok and failed clearly', () => {
+    expect(summarizeToolLine('list_dir', 'a', true)).toContain('✓ ok');
+    expect(summarizeToolLine('list_dir', 'boom', false)).toContain('✗ failed');
   });
 });
 
