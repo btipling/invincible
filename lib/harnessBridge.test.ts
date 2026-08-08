@@ -14,6 +14,7 @@ import {
 type MockExtras = {
   __messages: { kind: number; text: string }[];
   __setPending: (s: string | null) => void;
+  __setLoadEarlierPending: (on: boolean) => void;
   __lifecycle: () => Lifecycle;
 };
 
@@ -30,6 +31,8 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
   const messages: { kind: number; text: string }[] = [];
   let echo = '';
   let pending: string | null = null;
+  let loadEarlier = false;
+  let canLoad = 0;
   const catalog: string[] = [];
   let selected = 0;
 
@@ -97,6 +100,14 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_ack_pending_submit: () => {
       pending = null;
     },
+    inv_set_can_load_earlier: (v: number) => {
+      canLoad = v ? 1 : 0;
+      if (!canLoad) loadEarlier = false;
+    },
+    inv_has_pending_load_earlier: () => (loadEarlier ? 1 : 0),
+    inv_ack_pending_load_earlier: () => {
+      loadEarlier = false;
+    },
     inv_clear_model_catalog: () => {
       catalog.length = 0;
       selected = 0;
@@ -136,10 +147,20 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     __setPending: (s) => {
       pending = s;
     },
+    __setLoadEarlierPending: (on) => {
+      loadEarlier = !!on;
+    },
     __lifecycle: () => lifecycle,
   };
 
-  return { ...base, ...overrides, __messages: messages, __setPending: base.__setPending, __lifecycle: base.__lifecycle };
+  return {
+    ...base,
+    ...overrides,
+    __messages: messages,
+    __setPending: base.__setPending,
+    __setLoadEarlierPending: base.__setLoadEarlierPending,
+    __lifecycle: base.__lifecycle,
+  };
 }
 
 describe('lifecycleName / messageKindLabel', () => {
@@ -388,5 +409,17 @@ describe("mathCachePut (protocol v5)", () => {
     expect(bridge.mathCachePut("x", false, rgba, 0, 2)).toBe(false);
     // 513 ASCII bytes > MAX_TEX_LEN
     expect(bridge.mathCachePut("x".repeat(513), false, rgba, 2, 2)).toBe(false);
+  });
+});
+
+
+describe('load earlier pending (protocol v6)', () => {
+  it('takePendingLoadEarlier acks once', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setCanLoadEarlier(true);
+    exp.__setLoadEarlierPending(true);
+    expect(bridge.takePendingLoadEarlier()).toBe(true);
+    expect(bridge.takePendingLoadEarlier()).toBe(false);
   });
 });

@@ -10,7 +10,7 @@
  */
 
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
-export const HARNESS_PROTOCOL_VERSION = 5 as const;
+export const HARNESS_PROTOCOL_VERSION = 6 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -76,6 +76,9 @@ export type HarnessBridgeExports = {
   inv_pending_submit_len: () => number;
   inv_pending_submit_copy: (outPtr: number, maxLen: number) => number;
   inv_ack_pending_submit: () => void;
+  inv_set_can_load_earlier: (v: number) => void;
+  inv_has_pending_load_earlier: () => number;
+  inv_ack_pending_load_earlier: () => void;
   inv_clear_model_catalog: () => void;
   inv_push_model_catalog_entry: (ptr: number, len: number) => number;
   inv_model_catalog_count: () => number;
@@ -120,6 +123,9 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_pending_submit_len',
   'inv_pending_submit_copy',
   'inv_ack_pending_submit',
+  'inv_set_can_load_earlier',
+  'inv_has_pending_load_earlier',
+  'inv_ack_pending_load_earlier',
   'inv_clear_model_catalog',
   'inv_push_model_catalog_entry',
   'inv_model_catalog_count',
@@ -396,6 +402,19 @@ export class HarnessBridge {
     }
   }
 
+
+  setCanLoadEarlier(can: boolean): void {
+    this.exports.inv_set_can_load_earlier(can ? 1 : 0);
+  }
+
+  /**
+   * Read + ack pending Wasm→JS "Load earlier" (protocol v6), or false if none.
+   */
+  takePendingLoadEarlier(): boolean {
+    if (this.exports.inv_has_pending_load_earlier() === 0) return false;
+    this.exports.inv_ack_pending_load_earlier();
+    return true;
+  }
 
   clearModelCatalog(): void {
     this.exports.inv_clear_model_catalog();

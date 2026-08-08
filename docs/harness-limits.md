@@ -79,6 +79,7 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 | Visible paint | **All** messages currently in the ring (≤48); scroll to read older in-ring turns. Ring still drops oldest when full. No “N earlier” black-hole hint |
 | Line size | 4 KB UTF-8 max per message (`MAX_MSG_LEN`) |
 | Host history | Host folds last **~8** user/assistant turns (`formatPromptWithHistory` maxTurns=8, maxChars=12 000); prefer Clear for a fresh workspace |
+| Session longer than ring | Host `SessionStore` may hold M>48; ring shows a **window** of ≤48. **Load earlier** (Wasm) steps the window back by 24; new send snaps to latest window |
 
 
 

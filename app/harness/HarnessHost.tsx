@@ -22,6 +22,11 @@ import {
   type SessionSnapshot,
   type SessionStore,
 } from '../../lib/sessionStore';
+import {
+  canLoadEarlier as sessionCanLoadEarlier,
+  earlierRingStart,
+  latestRingStart,
+} from '../../lib/sessionWindow';
 import AppNav from '../components/AppNav';
 import HarnessLoading from './HarnessLoading';
 
@@ -139,6 +144,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const abortRef = useRef<AbortController | null>(null);
   const inflightRef = useRef(false);
   const sessionRef = useRef<SessionSnapshot>(createEmptySession());
+  /** Oldest session.messages index currently hydrated into the Wasm ring. */
+  const ringWindowStartRef = useRef(0);
   const loadStarted = useRef(
     typeof performance !== 'undefined' ? performance.now() : 0,
   );
@@ -157,10 +164,30 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const persist = useCallback((next: SessionSnapshot) => {
     sessionRef.current = next;
     storeRef.current?.save(next);
+    // Incremental pushMessage turns keep the ring on the latest window.
+    const latest = latestRingStart(next.messages.length);
+    ringWindowStartRef.current = latest;
+    try {
+      bridgeRef.current?.setCanLoadEarlier(sessionCanLoadEarlier(latest));
+    } catch {
+      /* ignore */
+    }
   }, []);
 
+  const hydrateRingWindow = useCallback(
+    (bridge: HarnessBridge, session: SessionSnapshot, windowStart: number) => {
+      const start = pushSessionToBridge(bridge, session, {
+        clear: true,
+        windowStart,
+      });
+      ringWindowStartRef.current = start;
+      return start;
+    },
+    [],
+  );
+
   const runPrompt = useCallback(
-    async (prompt: string) => {
+    async (prompt: string, opts?: { pushUser?: boolean }) => {
       const bridge = bridgeRef.current;
       if (!bridge || inflightRef.current) return;
 
@@ -195,8 +222,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           prompt,
           {
             signal: controller.signal,
-            // Wasm already painted the user line in queueSubmitFromUi.
-            pushUser: false,
+            // Default false: Wasm already painted the user line in queueSubmitFromUi.
+            // true when host snapped from a historical ring window before the turn.
+            pushUser: opts?.pushUser ?? false,
             modelId,
           },
         );
@@ -274,10 +302,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         const restored = store.load();
         if (restored && restored.messages.some((m) => m.role === 'user' || m.role === 'assistant')) {
           sessionRef.current = restored;
-          pushSessionToBridge(bridge, restored, { clear: true });
+          hydrateRingWindow(bridge, restored, latestRingStart(restored.messages.length));
         } else {
           const empty = createEmptySession();
           sessionRef.current = empty;
+          ringWindowStartRef.current = 0;
+          bridge.setCanLoadEarlier(false);
           bridge.clearMessages();
           const sel = bridge.getSelectedModel();
           let systemLine: string;
@@ -307,9 +337,22 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               /* ignore */
             }
             if (!inflightRef.current) {
-              const pending = b.takePendingSubmit();
-              if (pending != null && pending.length > 0) {
-                void runPrompt(pending);
+              if (b.takePendingLoadEarlier()) {
+                const session = sessionRef.current;
+                const nextStart = earlierRingStart(ringWindowStartRef.current);
+                hydrateRingWindow(b, session, nextStart);
+              } else {
+                const pending = b.takePendingSubmit();
+                if (pending != null && pending.length > 0) {
+                  const latest = latestRingStart(sessionRef.current.messages.length);
+                  const needSnap = ringWindowStartRef.current !== latest;
+                  if (needSnap) {
+                    hydrateRingWindow(b, sessionRef.current, latest);
+                    void runPrompt(pending, { pushUser: true });
+                  } else {
+                    void runPrompt(pending);
+                  }
+                }
               }
             }
           }
@@ -338,7 +381,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       }
       bridgeRef.current = null;
     };
-  }, [runPrompt]);
+  }, [runPrompt, hydrateRingWindow]);
 
   const onClear = useCallback(() => {
     if (inflightRef.current) return;
@@ -351,6 +394,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     if (bridge) {
       resetHarnessImageSession();
       resetHarnessMathSession();
+      ringWindowStartRef.current = 0;
+      bridge.setCanLoadEarlier(false);
       bridge.clearMessages();
       bridge.pushMessage(MessageKind.System, 'Session cleared.');
       bridge.setLifecycle(Lifecycle.Ready);

@@ -264,6 +264,24 @@ pub fn frame() !void {
             .expand = .horizontal,
         });
         defer body.deinit();
+
+        // Protocol v6: host sets can_load_earlier when SessionStore has older turns.
+        if (bridge.canLoadEarlier()) {
+            if (dvui.button(@src(), "Load earlier", .{}, .{
+                .expand = .horizontal,
+                .style = .content,
+                .min_size_content = .{ .w = 120, .h = TOUCH_H - 4 },
+                .corners = .round(6),
+                .color_fill = palette.teal_bg,
+                .color_text = palette.teal_accent,
+                .color_border = palette.teal_border,
+                .margin = .{ .x = 0, .y = 0, .w = 0, .h = 8 },
+                .id_extra = 0xffff_fffd,
+            })) {
+                if (!busy) bridge.queueLoadEarlierFromUi();
+            }
+        }
+
         if (n == 0) {
             var tl = dvui.textLayout(@src(), .{}, .{
                 .expand = .horizontal,

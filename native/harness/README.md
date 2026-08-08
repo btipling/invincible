@@ -102,6 +102,7 @@ Host is dvui’s `web.js`. Required exports (app + backend):
 | `inv_push_message` / `inv_clear_messages` / … | Transcript ring buffer |
 | `inv_echo*` | UTF-8 round-trip stub |
 | `inv_has_pending_submit` / `inv_pending_submit_*` / `inv_ack_pending_submit` | Host polls user submits |
+| `inv_set_can_load_earlier` / `inv_has_pending_load_earlier` / `inv_ack_pending_load_earlier` | Host enables Load earlier; polls window step-back (protocol v6) |
 | `inv_clear_model_catalog` / `inv_push_model_catalog_entry` / `inv_model_catalog_count` | Protocol v3 model catalog |
 | `inv_selected_model_len` / `inv_selected_model_copy` / `inv_cycle_selected_model` | Protocol v3 selection |
 
