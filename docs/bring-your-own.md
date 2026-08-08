@@ -173,6 +173,14 @@ Create and edit at **`/admin/sandboxes`**. Schema for `backend`/`image` ships vi
 GHA **`db-migrate`**. Seed bootstrap may set `SEED_SANDBOX_BACKEND=vercel` and
 optional `SEED_SANDBOX_IMAGE` (seed-only env names).
 
+**Dogfood / custom toolchain images:** the app runtime does **not** build images.
+Origin (and forks) may push a first-party image with Docker + VCR auth. Origin
+reference: repo [`dev/Dockerfile`](../dev/Dockerfile) + GHA **`dev-image-build`**
+(`confirm=push`; secrets/vars **`VERCEL_TOKEN`**, **`VERCEL_TEAM_ID`**,
+**`VCR_IMAGE_PREFIX`** — names only). Point the sandbox **image** field at
+`${VCR_IMAGE_PREFIX}/invincible-dev:latest` after VCR shows **Ready**. Details:
+[dev/README.md](../dev/README.md), [sandbox.md](sandbox.md).
+
 V1 agent resolve still requires **exactly one** usable grant per user. Creating a
 sandbox in admin grants you R/W and revokes your other grants on that tenant so
 the agent keeps a single workspace.
