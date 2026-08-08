@@ -34,9 +34,10 @@ Related: [feature-divide.md](feature-divide.md) · [sandbox.md](sandbox.md) ·
 - **Sandbox MVP is shipped** as a config seam (`SANDBOX_URL` + `SANDBOX_TOKEN`).
   Without it, harness falls back to chat. Full guide: [sandbox.md](sandbox.md).
 - **Optional multi-tenant auth** (login + DB sandbox grants) is **shipped** —
-  see [§4a](#4a-optional-multi-tenant-auth). **Per-user MCP** is shipped —
-  [mcp.md](mcp.md). Multi-tenant sandbox fleet isolation remains future —
-  see [§8 Future](#8-future-not-shipped).
+  see [§4a](#4a-optional-multi-tenant-auth). Per-row sandbox **backend** + image
+  admin is at `/admin/sandboxes` ([sandbox.md](sandbox.md)). **Per-user MCP** is
+  shipped — [mcp.md](mcp.md). Multi-tenant process/fleet isolation (single
+  workspace root per process) remains future — see [§8 Future](#8-future-not-shipped).
 
 ---
 

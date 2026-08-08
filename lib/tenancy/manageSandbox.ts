@@ -17,6 +17,7 @@ import { canAccessAdmin } from './roles';
 import {
   assertSandboxCredentials,
   isSandboxBackend,
+  isValidByoBaseUrl,
   normalizeSandboxFieldsForBackend,
   parseVercelSandboxImageInput,
   type SandboxBackend,
@@ -74,6 +75,25 @@ function slugOk(slug: string): boolean {
   return /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(slug);
 }
 
+
+function isUniqueViolation(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let i = 0; i < 5 && cur != null; i++) {
+    if (typeof cur === 'object') {
+      const o = cur as { code?: unknown; message?: unknown; cause?: unknown };
+      if (o.code === '23505') return true;
+      const msg = typeof o.message === 'string' ? o.message : '';
+      if (/unique|duplicate/i.test(msg)) return true;
+      cur = o.cause;
+      continue;
+    }
+    if (typeof cur === 'string' && /unique|duplicate/i.test(cur)) return true;
+    break;
+  }
+  return false;
+}
+
+
 /**
  * Create a sandbox for the actor's sole tenant membership.
  * Grants actor R/W and revokes their other grants on this tenant.
@@ -117,6 +137,13 @@ export async function createSandboxForAdmin(
   if (backend === 'byo') {
     if (!baseUrlRaw) {
       return { ok: false, reason: 'validation', error: 'Base URL is required for BYO.' };
+    }
+    if (!isValidByoBaseUrl(baseUrlRaw)) {
+      return {
+        ok: false,
+        reason: 'validation',
+        error: 'Base URL must be an absolute http(s) URL.',
+      };
     }
     if (!plainToken) {
       return { ok: false, reason: 'validation', error: 'Token is required for BYO.' };
@@ -195,8 +222,7 @@ export async function createSandboxForAdmin(
             })
             .returning({ id: sandboxes.id });
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (/unique|duplicate/i.test(msg)) {
+          if (isUniqueViolation(err)) {
             return {
               ok: false as const,
               reason: 'conflict' as const,
@@ -367,6 +393,20 @@ export async function updateSandboxForAdmin(
           }
           if (input.baseUrl !== undefined) {
             baseUrl = input.baseUrl?.trim() || null;
+          }
+          if (!baseUrl) {
+            return {
+              ok: false as const,
+              reason: 'validation' as const,
+              error: 'Base URL is required for BYO.',
+            };
+          }
+          if (!isValidByoBaseUrl(baseUrl)) {
+            return {
+              ok: false as const,
+              reason: 'validation' as const,
+              error: 'Base URL must be an absolute http(s) URL.',
+            };
           }
         }
 

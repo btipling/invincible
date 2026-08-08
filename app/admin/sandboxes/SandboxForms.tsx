@@ -270,6 +270,12 @@ export function EditSandboxForm({ sandbox }: { sandbox: SandboxRow }) {
           initialImage={sandbox.image}
           showTokenHint="New token (leave blank to keep)"
         />
+        {sandbox.backend === 'byo' && backend === 'vercel' ? (
+          <p style={{ color: ember.accent, fontSize: 12, margin: '0 0 12px' }} role="status">
+            Switching to Vercel clears the stored BYO URL and token ciphertext. Save only if you
+            intend to drop BYO credentials for this row.
+          </p>
+        ) : null}
         {state.error && state.sandboxId === sandbox.id ? (
           <p style={{ color: ember.accent, fontSize: 13, margin: '0 0 12px' }} role="alert">
             {state.error}

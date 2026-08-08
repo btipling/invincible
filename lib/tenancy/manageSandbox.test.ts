@@ -6,12 +6,12 @@ import { and, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
-import { encryptSecret } from './credentials';
+import { decryptSecret, encryptSecret } from './credentials';
 import {
   createSandboxForAdmin,
   updateSandboxForAdmin,
 } from './manageSandbox';
-import { ensureTenantDek } from './tenantKeys';
+import { ensureTenantDek, loadTenantDek } from './tenantKeys';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, '../../db/migrations');
@@ -292,5 +292,162 @@ describe('manageSandbox', () => {
         ),
       );
     expect(grants).toHaveLength(1);
+  });
+
+  it('update leave token blank keeps ciphertext', async () => {
+    const { dek, version } = await ensureTenantDek(tenantId, {
+      db: db as never,
+      amk: AMK,
+    });
+    const ct = encryptSecret('keep-me-token', dek);
+    const [sb] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'Keep',
+        slug: 'keep',
+        backend: 'byo',
+        baseUrl: 'https://keep.example',
+        tokenCiphertext: ct,
+        tokenKekVersion: version,
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+
+    const r = await updateSandboxForAdmin(
+      ownerId,
+      {
+        sandboxId: sb.id,
+        name: 'Keep Renamed',
+        // token omitted
+      },
+      { db: db as never, amk: AMK },
+    );
+    expect(r.ok).toBe(true);
+    const rows = await db
+      .select()
+      .from(schema.sandboxes)
+      .where(eq(schema.sandboxes.id, sb.id));
+    expect(rows[0].name).toBe('Keep Renamed');
+    expect(rows[0].tokenCiphertext).toBe(ct);
+    const loaded = await loadTenantDek(tenantId, { db: db as never, amk: AMK });
+    expect(decryptSecret(rows[0].tokenCiphertext!, loaded.dek)).toBe('keep-me-token');
+  });
+
+  it('member cannot update', async () => {
+    const { dek, version } = await ensureTenantDek(tenantId, {
+      db: db as never,
+      amk: AMK,
+    });
+    const [sb] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'M',
+        slug: 'm',
+        backend: 'byo',
+        baseUrl: 'https://m.example',
+        tokenCiphertext: encryptSecret('t', dek),
+        tokenKekVersion: version,
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+
+    const r = await updateSandboxForAdmin(
+      memberId,
+      { sandboxId: sb.id, name: 'Nope' },
+      { db: db as never, amk: AMK },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected fail');
+    expect(r.reason).toBe('forbidden');
+  });
+
+  it('update vercel→byo requires URL and token', async () => {
+    const [sb] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'V',
+        slug: 'vswitch',
+        backend: 'vercel',
+        baseUrl: null,
+        tokenCiphertext: null,
+        image: null,
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+
+    const missing = await updateSandboxForAdmin(
+      ownerId,
+      { sandboxId: sb.id, backend: 'byo', baseUrl: 'https://new.example' },
+      { db: db as never, amk: AMK },
+    );
+    expect(missing.ok).toBe(false);
+    if (missing.ok) throw new Error('expected fail');
+    expect(missing.reason).toBe('validation');
+
+    const ok = await updateSandboxForAdmin(
+      ownerId,
+      {
+        sandboxId: sb.id,
+        backend: 'byo',
+        baseUrl: 'https://new.example',
+        token: 'new-plain-token',
+      },
+      { db: db as never, amk: AMK },
+    );
+    expect(ok.ok).toBe(true);
+    const rows = await db
+      .select()
+      .from(schema.sandboxes)
+      .where(eq(schema.sandboxes.id, sb.id));
+    expect(rows[0].backend).toBe('byo');
+    expect(rows[0].baseUrl).toBe('https://new.example');
+    expect(rows[0].image).toBeNull();
+    expect(rows[0].tokenCiphertext).toBeTruthy();
+  });
+
+  it('rejects non-http(s) BYO base URL on create', async () => {
+    const r = await createSandboxForAdmin(
+      ownerId,
+      {
+        name: 'Bad',
+        slug: 'badurl',
+        backend: 'byo',
+        baseUrl: 'not-a-url',
+        token: 'tok',
+      },
+      { db: db as never, amk: AMK },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected fail');
+    expect(r.reason).toBe('validation');
+    expect(r.error).toMatch(/http/i);
+  });
+
+  it('slug conflict returns conflict', async () => {
+    const a = await createSandboxForAdmin(
+      ownerId,
+      {
+        name: 'One',
+        slug: 'dup',
+        backend: 'vercel',
+      },
+      { db: db as never, amk: AMK },
+    );
+    expect(a.ok).toBe(true);
+    const b = await createSandboxForAdmin(
+      ownerId,
+      {
+        name: 'Two',
+        slug: 'dup',
+        backend: 'vercel',
+      },
+      { db: db as never, amk: AMK },
+    );
+    expect(b.ok).toBe(false);
+    if (b.ok) throw new Error('expected fail');
+    expect(b.reason).toBe('conflict');
   });
 });

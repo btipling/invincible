@@ -126,6 +126,21 @@ function emptyToNull(v: string | null | undefined): string | null {
 }
 
 /**
+ * BYO daemon base URL: absolute http(s) only.
+ * Private/RFC1918 hosts are allowed (operator-owned daemon); unlike MCP public URL policy.
+ */
+export function isValidByoBaseUrl(raw: string): boolean {
+  const t = raw.trim();
+  if (!t) return false;
+  try {
+    const u = new URL(t);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Backend switch hygiene: clear fields that do not apply.
  * vercel → null credentials; byo → null image.
  */
@@ -169,7 +184,7 @@ export function assertSandboxCredentials(row: {
     if (!url || !token) {
       return {
         ok: false,
-        error: 'byo sandbox requires baseUrl and tokenCiphertext',
+        error: 'BYO sandbox requires a base URL and token.',
       };
     }
     return { ok: true };
@@ -180,7 +195,7 @@ export function assertSandboxCredentials(row: {
   if (url || token) {
     return {
       ok: false,
-      error: 'vercel sandbox must not store baseUrl or tokenCiphertext',
+      error: 'Vercel sandbox cannot store a base URL or token.',
     };
   }
   return { ok: true };
