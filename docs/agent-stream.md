@@ -49,8 +49,9 @@ submit so no ghost request is sent.
 
 | Kind | SessionStore | History fold |
 |------|--------------|--------------|
-| User / Assistant | **Yes** | user + assistant only |
-| System (live tools) | **Yes** (live path) | **Excluded** from next-turn fold |
+| User / Assistant | **Yes** | Included |
+| System (live tools) | **Yes** (live path) | **Included** as `Tool:` lines (continue must not re-run work) |
+| Error | **Yes** | Included as `Error:` (stall/cancel context) |
 | Thinking | **No** (display-only) | Never |
 
 ## Reasoning / model config

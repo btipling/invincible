@@ -64,18 +64,32 @@ describe('formatPromptWithHistory', () => {
     expect(formatPromptWithHistory([], 'hello')).toBe('hello');
   });
 
-  it('folds recent user/assistant turns', () => {
+  it('folds user/assistant/tool lines and errors for continuity', () => {
     const history = [
-      makeMessage('system', 'ignore me'),
+      makeMessage('system', 'read_file · ✓ ok · src/a.ts · 10 lines · 100 B'),
       makeMessage('user', 'ping'),
       makeMessage('assistant', 'pong'),
-      makeMessage('error', 'nope'),
+      makeMessage('error', 'Request cancelled.'),
     ];
     const out = formatPromptWithHistory(history, 'again');
     expect(out).toContain('User: ping');
     expect(out).toContain('Assistant: pong');
     expect(out).toContain('User: again');
-    expect(out).not.toContain('ignore me');
-    expect(out).not.toContain('nope');
+    // Tool lines must fold so continue does not re-run prior work
+    expect(out).toContain('Tool: read_file · ✓ ok · src/a.ts');
+    expect(out).toContain('Error: Request cancelled.');
+    expect(out).toMatch(/do not repeat/i);
+  });
+
+  it('keeps tool history when only system lines exist after user', () => {
+    const history = [
+      makeMessage('user', 'explore'),
+      makeMessage('system', 'list_dir · ✓ ok · .: 3 entries'),
+      makeMessage('system', 'read_file · ✓ ok · README.md · 20 lines · 400 B'),
+    ];
+    const out = formatPromptWithHistory(history, 'continue');
+    expect(out).toContain('Tool: list_dir');
+    expect(out).toContain('Tool: read_file');
+    expect(out).toContain('User: continue');
   });
 });

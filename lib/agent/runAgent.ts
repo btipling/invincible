@@ -77,6 +77,7 @@ export const DEFAULT_AGENT_SYSTEM = [
   'The workspace is a remote sandbox root. Prefer tools (list_dir, read_file, write_file, exec) for filesystem and command work.',
   'Use paths relative to the workspace root. Do not invent host absolute paths outside the sandbox.',
   'Be concise in final answers; cite relative paths when useful.',
+  'If the user message includes Previous conversation with Tool: lines, those tools already ran — reuse that work; do not redo identical tool calls unless asked or the files may have changed.',
 ].join(' ');
 
 function resolveSystem(
