@@ -546,10 +546,16 @@ export async function runHarnessTurn(
       scheduleImagesFromMarkdown(bridge, text);
     };
 
+    const sessionCwd =
+      typeof session.cwd === 'string' && session.cwd.trim()
+        ? session.cwd.trim()
+        : undefined;
+
     if (streamAgent) {
       agentResult = await sendAgentStreamFn(apiPrompt, {
         signal: opts?.signal,
         modelId: opts?.modelId,
+        ...(sessionCwd != null ? { cwd: sessionCwd } : {}),
         onEvent: async (ev: AgentStreamEvent) => {
           if (ev.type === 'tool_start' || ev.type === 'tool_result') {
             closeAssistantSegment();
@@ -588,6 +594,7 @@ export async function runHarnessTurn(
       agentResult = await sendAgentFn(apiPrompt, {
         signal: opts?.signal,
         modelId: opts?.modelId,
+        ...(sessionCwd != null ? { cwd: sessionCwd } : {}),
       });
     }
 
@@ -621,6 +628,13 @@ export async function runHarnessTurn(
           .map((m) => m.text),
       );
       next = pushTurnEnd(bridge, next, 'model');
+      // Success-only cwd apply (parent #270 / phase 2): never on failure/abort.
+      // Non-empty trim only — match send path; avoid sticky whitespace cwd.
+      const appliedCwd =
+        typeof agentResult.cwd === 'string' ? agentResult.cwd.trim() : '';
+      if (appliedCwd) {
+        next = { ...next, cwd: appliedCwd };
+      }
       bridge.setLifecycle(Lifecycle.Ready);
       return {
         result: { ok: true, text: agentResult.text || assistantAcc },
