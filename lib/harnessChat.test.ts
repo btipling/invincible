@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   HARNESS_SMOKE_PROMPT,
   collapseThinkingDisplay,
+  classifyTurnFailure,
+  describeTurnEnd,
+  isTurnEndLine,
   pushSessionToBridge,
   runHarnessChat,
   runHarnessTurn,
@@ -117,6 +120,21 @@ describe('HARNESS_SMOKE_PROMPT', () => {
   });
 });
 
+describe('describeTurnEnd / classifyTurnFailure', () => {
+  it('labels model / stop / error clearly', () => {
+    expect(describeTurnEnd('model')).toBe('Turn ended · model finished');
+    expect(describeTurnEnd('stop')).toBe('Turn ended · you stopped');
+    expect(describeTurnEnd('error', 'boom')).toBe('Turn ended · error · boom');
+    expect(isTurnEndLine(describeTurnEnd('chat'))).toBe(true);
+  });
+
+  it('classifies cancel and timeout', () => {
+    expect(classifyTurnFailure('Request cancelled.', 499).kind).toBe('stop');
+    expect(classifyTurnFailure('Gateway timeout', 504).kind).toBe('timeout');
+    expect(classifyTurnFailure('down', 502).kind).toBe('error');
+  });
+});
+
 describe('toolTrace host display', () => {
   it('soft-truncates oversize summaries and keeps all non-empty lines', () => {
     const long = 'x'.repeat(TOOL_TRACE_SUMMARY_MAX_CHARS + 50);
@@ -148,6 +166,7 @@ describe('runHarnessChat', () => {
     expect(exp.__messages).toEqual([
       { kind: MessageKind.User, text: 'Reply with exactly: PONG' },
       { kind: MessageKind.Assistant, text: 'PONG' },
+      { kind: MessageKind.System, text: describeTurnEnd('chat') },
     ]);
     expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
   });
@@ -189,7 +208,10 @@ describe('runHarnessChat', () => {
     expect(result.ok).toBe(false);
     expect(exp.__messages).toEqual([
       { kind: MessageKind.User, text: 'hello' },
-      { kind: MessageKind.Error, text: 'AI_GATEWAY_API_KEY is not configured.' },
+      {
+        kind: MessageKind.Error,
+        text: describeTurnEnd('error', 'AI_GATEWAY_API_KEY is not configured.'),
+      },
     ]);
     expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
   });
@@ -226,7 +248,8 @@ describe('runHarnessTurn', () => {
     expect(result.ok).toBe(true);
     expect(sendAgent).toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
-    expect(next.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(next.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'system']);
+    expect(next.messages.at(-1)!.text).toBe(describeTurnEnd('model'));
     expect(next.messages[1]?.text).toBe('PONG');
   });
 
@@ -254,11 +277,14 @@ describe('runHarnessTurn', () => {
       'system',
       'system',
       'assistant',
+      'system',
     ]);
+    expect(next.messages.at(-1)!.text).toBe(describeTurnEnd('model'));
     expect(exp.__messages.map((m) => m.kind)).toEqual([
       MessageKind.System,
       MessageKind.System,
       MessageKind.Assistant,
+      MessageKind.System,
     ]);
     expect(exp.__messages[0]?.text).toContain('write_file');
   });
@@ -284,7 +310,8 @@ describe('runHarnessTurn', () => {
     expect(sendAgent).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ ok: true, text: 'PONG' });
-    expect(next.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(next.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'system']);
+    expect(next.messages.at(-1)!.text).toBe(describeTurnEnd('chat'));
     expect(exp.__messages.some((m) => m.kind === MessageKind.Assistant)).toBe(true);
   });
 
@@ -378,9 +405,10 @@ describe('runHarnessTurn', () => {
     );
 
     const systems = next.messages.filter((m) => m.role === 'system');
-    expect(systems).toHaveLength(n);
+    expect(systems.filter((m) => !isTurnEndLine(m.text))).toHaveLength(n);
+    expect(systems.some((m) => isTurnEndLine(m.text))).toBe(true);
     expect(
-      exp.__messages.filter((m) => m.kind === MessageKind.System),
+      exp.__messages.filter((m) => m.kind === MessageKind.System && !isTurnEndLine(m.text)),
     ).toHaveLength(n);
   });
 
@@ -410,7 +438,7 @@ describe('runHarnessTurn', () => {
     expect(sendAgent).toHaveBeenCalled();
   });
 
-  it('appends error role on failure', async () => {
+  it('appends turn-end error reason on failure', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
@@ -422,6 +450,8 @@ describe('runHarnessTurn', () => {
       sendAgent,
     });
     expect(next.messages.map((m) => m.role)).toEqual(['user', 'error']);
+    expect(next.messages[1]!.text).toBe(describeTurnEnd('error', 'down'));
+    expect(exp.__messages.some((m) => m.text === describeTurnEnd('error', 'down'))).toBe(true);
   });
 
   it('pushUser:false does not double-paint user on bridge', async () => {
@@ -644,6 +674,7 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     expect(assistants).toHaveLength(1);
     expect(assistants[0]!.text).toBe('Here you go');
     expect(kinds.filter((k) => k === MessageKind.Assistant)).toHaveLength(1);
+    expect(texts.some((t) => t === describeTurnEnd('model'))).toBe(true);
   });
 
   it('grows Thinking on reasoning_delta then tools then assistant', async () => {
@@ -677,9 +708,14 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     const assistants = exp.__messages.filter((m) => m.kind === MessageKind.Assistant);
     expect(assistants.some((m) => m.text === 'Done')).toBe(true);
     // Session must not store thinking lines
-    expect(result.session.messages.every((m) => m.role !== 'system' || m.text.includes('list_dir'))).toBe(
-      true,
-    );
+    expect(
+      result.session.messages.every(
+        (m) =>
+          m.role !== 'system' ||
+          m.text.includes('list_dir') ||
+          isTurnEndLine(m.text),
+      ),
+    ).toBe(true);
     expect(result.session.messages.some((m) => m.text.includes('Hmm'))).toBe(false);
   });
 
@@ -775,10 +811,16 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     expect(next.messages.some((m) => m.role === 'assistant' && m.text.includes('I read a.ts'))).toBe(
       true,
     );
-    expect(next.messages.some((m) => m.role === 'error')).toBe(true);
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(true);
     const folded = formatPromptWithHistory(next.messages, 'continue');
     expect(folded).toContain('Tool: read_file');
     expect(folded).toContain('I read a.ts');
+    // Turn-end markers must not pollute tool history
+    expect(folded).not.toContain('Turn ended');
   });
 
   it('keeps full thinking when stream cancels without SSE terminal', async () => {
@@ -801,7 +843,7 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     expect(thinking[0]!.text).toBe(long);
     expect(
       exp.__messages.some(
-        (m) => m.kind === MessageKind.Error && m.text === 'Request cancelled.',
+        (m) => m.kind === MessageKind.System && m.text === describeTurnEnd('stop'),
       ),
     ).toBe(true);
   });
