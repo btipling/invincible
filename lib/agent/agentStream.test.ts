@@ -129,7 +129,7 @@ describe('salientToolBits / summarizeToolLine', () => {
   });
 
   it('exec shows exit + line counts, not full stdout', () => {
-    const raw = 'exec npm\nexit=0\nstdout:\n' + 'ok\n' * 40 + 'stderr:\n';
+    const raw = 'exec npm\nexit=0\nstdout:\n' + 'ok\n'.repeat(40) + 'stderr:\n';
     const bits = salientToolBits('exec', raw);
     expect(bits).toContain('exit=0');
     expect(bits).toMatch(/stdout/);
@@ -168,5 +168,22 @@ describe('salientToolBits / summarizeToolLine', () => {
 describe('LIVE_TOOL_LINES_MAX', () => {
   it('is unbounded (no host live-tool product cap)', () => {
     expect(LIVE_TOOL_LINES_MAX).toBe(Number.POSITIVE_INFINITY);
+  });
+});
+
+describe('salientToolBits cwd tools', () => {
+  it('summarizes change_dir and pwd', () => {
+    expect(
+      salientToolBits('change_dir', 'change_dir invincible: ok cwd=invincible'),
+    ).toBe('invincible · cwd=invincible');
+    expect(salientToolBits('pwd', 'pwd: invincible')).toBe('invincible');
+  });
+
+  it('read_file with cwd annotation', () => {
+    const raw = 'read_file invincible/a.ts cwd=invincible:\nline1\nline2';
+    const bits = salientToolBits('read_file', raw);
+    expect(bits).toContain('invincible/a.ts');
+    expect(bits).toContain('cwd=invincible');
+    expect(bits).toContain('2 lines');
   });
 });

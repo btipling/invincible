@@ -32,6 +32,7 @@ describe('runAgent', () => {
       listDir: vi.fn(),
       readFile: vi.fn(),
       writeFile: vi.fn(),
+      strReplace: vi.fn(),
       exec: vi.fn(),
     };
 
@@ -60,6 +61,7 @@ describe('runAgent', () => {
       listDir: vi.fn(),
       readFile: vi.fn(),
       writeFile: vi.fn(),
+      strReplace: vi.fn(),
       exec: vi.fn(),
     };
     await runAgent({
@@ -92,6 +94,7 @@ describe('runAgent', () => {
       listDir: vi.fn(),
       readFile: vi.fn(),
       writeFile: vi.fn(),
+      strReplace: vi.fn(),
       exec: vi.fn(),
     };
     await runAgent({
@@ -118,6 +121,7 @@ describe('runAgent', () => {
       listDir: vi.fn(),
       readFile: vi.fn(),
       writeFile: vi.fn(),
+      strReplace: vi.fn(),
       exec: vi.fn(),
     };
     await runAgent({
@@ -140,6 +144,7 @@ describe('runAgent', () => {
       listDir: vi.fn(),
       readFile: vi.fn(),
       writeFile: vi.fn(),
+      strReplace: vi.fn(),
       exec: vi.fn(),
     };
     await runAgent({
@@ -164,6 +169,7 @@ describe('runAgent', () => {
       listDir: vi.fn(),
       readFile: vi.fn(),
       writeFile: vi.fn(),
+      strReplace: vi.fn(),
       exec: vi.fn(),
     };
     const result = await runAgent({
@@ -396,6 +402,7 @@ describe('runAgentStream reasoning option', () => {
         listDir: vi.fn(),
         readFile: vi.fn(),
         writeFile: vi.fn(),
+        strReplace: vi.fn(),
         exec: vi.fn(),
       };
       await runAgentStream(
@@ -436,6 +443,7 @@ describe('runAgentStream reasoning option', () => {
         listDir: vi.fn(),
         readFile: vi.fn(),
         writeFile: vi.fn(),
+        strReplace: vi.fn(),
         exec: vi.fn(),
       };
       await runAgentStream(
@@ -452,5 +460,91 @@ describe('runAgentStream reasoning option', () => {
     } finally {
       if (prev != null) process.env.AGENT_REASONING = prev;
     }
+  });
+});
+
+describe('runAgent cwd', () => {
+  it('returns cwd when FS tools active', async () => {
+    const generateTextImpl = vi.fn(async () => ({
+      text: 'done',
+      steps: [],
+    }));
+    const client: SandboxClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      strReplace: vi.fn(),
+      exec: vi.fn(),
+    };
+    const result = await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: client,
+      initialCwd: 'invincible',
+    });
+    expect(result.cwd).toBe('invincible');
+    expect(result.text).toBe('done');
+    // tools include pwd + change_dir
+    expect(generateTextImpl).toHaveBeenCalled();
+    const firstCall = generateTextImpl.mock.calls.at(0) as
+      | [{ tools?: Record<string, unknown> }]
+      | undefined;
+    const tools = firstCall?.[0]?.tools;
+    expect(tools?.pwd).toBeTruthy();
+    expect(tools?.change_dir).toBeTruthy();
+  });
+
+  it('omits cwd when FS tools skipped', async () => {
+    const generateTextImpl = vi.fn(async () => ({
+      text: 'http only',
+      steps: [],
+    }));
+    const result = await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      skipSandboxTools: true,
+      extraTools: {
+        http_get: { description: 'x', execute: async () => 'ok' },
+      },
+    });
+    expect(result.cwd).toBeUndefined();
+  });
+
+  it('runAgentStream done event includes cwd', async () => {
+    const events: Array<{ type: string; cwd?: string }> = [];
+    async function* emptyStream() {
+      // no parts
+    }
+    const streamTextImpl = vi.fn(() => ({
+      fullStream: emptyStream(),
+      text: Promise.resolve('streamed'),
+      steps: Promise.resolve([]),
+    }));
+    const client: SandboxClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      strReplace: vi.fn(),
+      exec: vi.fn(),
+    };
+    const result = await runAgentStream(
+      {
+        prompt: 'hi',
+        modelId: 'test-model',
+        streamTextImpl: streamTextImpl as never,
+        sandboxClient: client,
+        initialCwd: 'proj',
+      },
+      {
+        onEvent: async (ev) => {
+          events.push(ev as { type: string; cwd?: string });
+        },
+      },
+    );
+    expect(result.cwd).toBe('proj');
+    const done = events.find((e) => e.type === 'done');
+    expect(done?.cwd).toBe('proj');
   });
 });
