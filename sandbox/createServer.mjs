@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { INVINCIBLE_SANDBOX_PROTOCOL } from './constants.mjs';
+import { INVINCIBLE_SANDBOX_PROTOCOL, MAX_JSON_BODY_BYTES } from './constants.mjs';
 import { JailError } from './paths.mjs';
 import {
   ToolError,
@@ -35,7 +35,7 @@ function parseBearer(header) {
  * @param {import('node:http').IncomingMessage} req
  * @param {number} [maxBytes]
  */
-async function readJsonBody(req, maxBytes = 512 * 1024) {
+async function readJsonBody(req, maxBytes = MAX_JSON_BODY_BYTES) {
   /** @type {Buffer[]} */
   const chunks = [];
   let len = 0;

@@ -26,9 +26,9 @@ describe('resolveBuiltinHttpConfig', () => {
   it('clamps timeout and max bytes', () => {
     const c = resolveBuiltinHttpConfig({
       BUILTIN_HTTP_FETCH: 'sandbox',
-      BUILTIN_HTTP_TIMEOUT_MS: '999999',
+      BUILTIN_HTTP_TIMEOUT_MS: '9999999',
       BUILTIN_HTTP_MAX_BYTES: '999999999',
-      BUILTIN_HTTP_SANDBOX_TIMEOUT_MS: '999999',
+      BUILTIN_HTTP_SANDBOX_TIMEOUT_MS: '9999999',
     });
     expect(c.timeoutMs).toBe(MAX_BUILTIN_HTTP_TIMEOUT_MS);
     expect(c.maxBytes).toBe(MAX_BUILTIN_HTTP_MAX_BYTES);

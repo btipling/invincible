@@ -6,10 +6,10 @@
 import type { SessionMessage } from './sessionStore';
 
 /** Must match Zig `MAX_MSG`. */
-export const HARNESS_RING_MAX = 512;
+export const HARNESS_RING_MAX = 2048;
 
 /** How far “Load earlier” steps back along session.messages. */
-export const HISTORY_PAGE = 128;
+export const HISTORY_PAGE = 512;
 
 /** Index of the oldest message in the latest ring window. */
 export function latestRingStart(

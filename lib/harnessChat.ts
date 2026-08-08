@@ -47,7 +47,7 @@ import { canLoadEarlier, latestRingStart, sliceMessagesForRing } from './session
  * Match Wasm MAX_MSG_LEN (`native/harness/src/bridge.zig`).
  * Only hard edge for a single ring line — not a product "thinking budget".
  */
-export const THINKING_DISPLAY_MAX = 65_536;
+export const THINKING_DISPLAY_MAX = 262_144;
 
 /**
  * @deprecated No per-turn thinking segment cap (was a UX wall). Kept as Infinity
