@@ -94,6 +94,8 @@ function makeMockExports(): HarnessBridgeExports & {
     },
     inv_has_pending_load_earlier: () => 0,
     inv_ack_pending_load_earlier: () => {},
+    inv_has_pending_cancel: () => 0,
+    inv_ack_pending_cancel: () => {},
     inv_clear_model_catalog: () => {},
     inv_push_model_catalog_entry: () => 0,
     inv_model_catalog_count: () => 0,

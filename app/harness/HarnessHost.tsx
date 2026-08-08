@@ -336,7 +336,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             } catch {
               /* ignore */
             }
-            if (!inflightRef.current) {
+            // Protocol v9: Stop first — abort inflight and skip starting a turn this tick.
+            if (b.takePendingCancel()) {
+              abortRef.current?.abort();
+            } else if (!inflightRef.current) {
               if (b.takePendingLoadEarlier()) {
                 const session = sessionRef.current;
                 const nextStart = earlierRingStart(ringWindowStartRef.current);

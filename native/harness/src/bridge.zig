@@ -11,7 +11,8 @@ const image_cache = @import("rich/image_cache.zig");
 const math_cache = @import("rich/math_cache.zig");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
-pub const PROTOCOL_VERSION: u32 = 8;
+/// v9: pending cancel (user Stop) — additive exports.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -58,6 +59,8 @@ var has_pending_submit: bool = false;
 /// Host sets when SessionStore has messages older than the current ring window.
 var can_load_earlier: bool = false;
 var has_pending_load_earlier: bool = false;
+/// Protocol v9 — user Stop; host polls and aborts inflight turn.
+var has_pending_cancel: bool = false;
 var suppress_refresh: bool = false;
 
 const CatalogEntry = struct {
@@ -121,6 +124,15 @@ pub fn queueSubmitFromUi(text: []const u8) void {
     refresh();
 }
 
+/// User Stop — discard unacked submit and signal host to abort. Does not set Ready.
+pub fn queueCancelFromUi() void {
+    if (lifecycle != .busy and !has_pending_submit) return;
+    has_pending_submit = false;
+    pending_submit_len = 0;
+    has_pending_cancel = true;
+    refresh();
+}
+
 pub fn reset() void {
     lifecycle = .boot;
     msg_head = 0;
@@ -130,6 +142,7 @@ pub fn reset() void {
     pending_submit_len = 0;
     can_load_earlier = false;
     has_pending_load_earlier = false;
+    has_pending_cancel = false;
     suppress_refresh = false;
     catalog_count = 0;
     selected_index = 0;
@@ -250,6 +263,7 @@ export fn inv_update_last_message(kind: u8, ptr: [*]const u8, len: usize) u8 {
 export fn inv_clear_messages() void {
     msg_head = 0;
     msg_count = 0;
+    has_pending_cancel = false;
     image_cache.clear();
     math_cache.clear();
     refresh();
@@ -309,6 +323,14 @@ export fn inv_ack_pending_load_earlier() void {
     has_pending_load_earlier = false;
 }
 
+/// Protocol v9 — host polls user Stop.
+export fn inv_has_pending_cancel() u8 {
+    return if (has_pending_cancel) 1 else 0;
+}
+
+export fn inv_ack_pending_cancel() void {
+    has_pending_cancel = false;
+}
 
 // ── Protocol v3 model catalog ──────────────────────────────────────────────
 

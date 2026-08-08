@@ -4,8 +4,11 @@ import { resolveModelId } from '../model';
 export const SANDBOX_NOT_CONFIGURED_ERROR =
   'Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.' as const;
 
-export const DEFAULT_AGENT_MAX_STEPS = 6;
-export const MAX_AGENT_MAX_STEPS = 12;
+/**
+ * Optional safety ceiling when `AGENT_MAX_STEPS` is set.
+ * Unset env → natural model-ended loop (no product default).
+ */
+export const MAX_AGENT_MAX_STEPS = 256;
 export const MIN_AGENT_MAX_STEPS = 1;
 
 /** Tool result string cap before returning to the model. */
@@ -45,13 +48,17 @@ export function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, '');
 }
 
+/**
+ * Optional multi-step safety ceiling.
+ * @returns `null` when unset/invalid → caller uses model-ended stop (`isLoopFinished`).
+ */
 export function resolveAgentMaxSteps(
   env: Record<string, string | undefined> = process.env,
-): number {
+): number | null {
   const raw = env.AGENT_MAX_STEPS?.trim();
-  if (!raw) return DEFAULT_AGENT_MAX_STEPS;
+  if (!raw) return null;
   const n = Number(raw);
-  if (!Number.isFinite(n)) return DEFAULT_AGENT_MAX_STEPS;
+  if (!Number.isFinite(n)) return null;
   const i = Math.floor(n);
   if (i < MIN_AGENT_MAX_STEPS) return MIN_AGENT_MAX_STEPS;
   if (i > MAX_AGENT_MAX_STEPS) return MAX_AGENT_MAX_STEPS;
