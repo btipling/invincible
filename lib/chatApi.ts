@@ -28,10 +28,20 @@ export function normalizePrompt(raw: string): string {
   return raw.trim();
 }
 
+/**
+ * Absolute wire/body guard only — NOT model context.
+ * Request body includes folded history ("please continue" + prior Tool/User/Assistant).
+ * Grok-class models are token-limited by the gateway; do not invent small char budgets here.
+ * ~4e6 chars ≈ under typical ~4.5 MB serverless body limits.
+ */
+export const PROMPT_BODY_MAX_CHARS = 4_000_000;
+
 export function validatePrompt(raw: string): string | null {
   const prompt = normalizePrompt(raw);
   if (!prompt) return 'Enter a prompt.';
-  if (prompt.length > 32_000) return 'Prompt is too long (max 32,000 characters).';
+  if (prompt.length > PROMPT_BODY_MAX_CHARS) {
+    return `Prompt body is too large (max ${PROMPT_BODY_MAX_CHARS.toLocaleString()} characters including history).`;
+  }
   return null;
 }
 

@@ -155,7 +155,8 @@ export function formatPromptWithHistory(
   const maxMessages =
     opts?.maxMessages ??
     (opts?.maxTurns != null ? Math.max(opts.maxTurns * 4, opts.maxTurns) : 400);
-  const maxChars = opts?.maxChars ?? 100_000;
+  // Host fold budget — leave model/token limits to the gateway, not a toy 12k/32k char wall.
+  const maxChars = opts?.maxChars ?? 3_500_000;
 
   // user + assistant + system (live tool lines) + error (stall/cancel context).
   // Thinking is never stored in SessionStore.
