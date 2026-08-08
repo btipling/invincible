@@ -218,7 +218,7 @@ Origin may run a DigitalOcean-hosted **reference** sample. Host inventory
 
 | Knob | Default | Cap / notes |
 |------|---------|-------------|
-| Route `maxDuration` | **300s** | `app/api/agent` (long multi-tool turns) |
+| Route `maxDuration` | **3600s (1h)** | `app/api/agent` (long multi-tool turns) |
 | `AGENT_MAX_STEPS` | unset (model-ended) | optional 1…256 safety ceiling |
 | exec `timeoutMs` | 10_000 | max 30_000 |
 | read/write maxBytes | 256 KiB | |
@@ -237,7 +237,7 @@ while the model calls tools and stops when it returns a final answer. Optional
 `AGENT_MAX_STEPS` applies `stepCountIs(n)` as a safety ceiling only.
 
 Users can **Stop** a running turn from the harness composer (abort via host
-`AbortSignal`). Wall-clock limit remains route `maxDuration` (300s).
+`AbortSignal`). Wall-clock limit remains route `maxDuration` (3600s / 1h).
 
 If the default gateway model cannot call tools, set **`AGENT_MODEL`** to a
 tool-capable id on the server (tenancy off). Under tenancy on, use granted

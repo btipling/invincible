@@ -13,7 +13,7 @@ import { redactSecrets } from '../../../lib/agent/redact';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 
 export const runtime = 'nodejs';
-export const maxDuration = 300;
+export const maxDuration = 3600;
 
 /**
  * Non-streaming chat via Vercel AI Gateway.
