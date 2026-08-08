@@ -117,7 +117,7 @@ Full contract, jail rules, and exec shape: [`sandbox/README.md`](../sandbox/READ
 |------|----------|---------|
 | `SANDBOX_URL` | for tools (tenancy **off**) | Base URL of the sandbox (no trailing slash required) |
 | `SANDBOX_TOKEN` | for tools (tenancy **off**) / seed | Shared bearer secret (must match daemon); also used by seed to encrypt into DB when enabling tenancy |
-| `AGENT_MAX_STEPS` | no | Default **6**, hard max **12** |
+| `AGENT_MAX_STEPS` | no | Optional safety ceiling (1…256). **Unset** = model-ended tool loop (no default step cap) |
 | `AGENT_MODEL` | no | Optional tool-capable model override |
 
 Also requires existing `AI_GATEWAY_API_KEY` for inference.
@@ -164,7 +164,7 @@ AI_GATEWAY_API_KEY=…
 SANDBOX_URL=http://127.0.0.1:8787
 SANDBOX_TOKEN=dev-secret-change-me
 # optional:
-# AGENT_MAX_STEPS=6
+# AGENT_MAX_STEPS=32   # safety ceiling only; omit for model-ended loop
 # AGENT_MODEL=provider/model-with-tools
 
 npm run dev
@@ -219,7 +219,7 @@ Origin may run a DigitalOcean-hosted **reference** sample. Host inventory
 | Knob | Default | Cap / notes |
 |------|---------|-------------|
 | Route `maxDuration` | 60s | `app/api/agent` |
-| `AGENT_MAX_STEPS` | 6 | max 12 |
+| `AGENT_MAX_STEPS` | unset (model-ended) | optional 1…256 safety ceiling |
 | exec `timeoutMs` | 10_000 | max 30_000 |
 | read/write maxBytes | 256 KiB | |
 | stdout/stderr per exec | 32 KiB each | truncated |
@@ -231,12 +231,17 @@ Origin may run a DigitalOcean-hosted **reference** sample. Host inventory
 
 ## 9. Model tool-calling
 
-The agent path uses the Vercel AI SDK with tools and
-`stopWhen: stepCountIs(n)` (never the SDK default of 1 step).
+The agent path uses the Vercel AI SDK with tools and multi-step generation.
+By default `stopWhen` is **model-ended** (`isLoopFinished`): the loop continues
+while the model calls tools and stops when it returns a final answer. Optional
+`AGENT_MAX_STEPS` applies `stepCountIs(n)` as a safety ceiling only.
+
+Users can **Stop** a running turn from the harness composer (abort via host
+`AbortSignal`). Wall-clock limit remains route `maxDuration` (60s).
 
 If the default gateway model cannot call tools, set **`AGENT_MODEL`** to a
-tool-capable id on the server. Product DoD for a full tool epic requires a
-working tool-capable model (see parent #45).
+tool-capable id on the server (tenancy off). Under tenancy on, use granted
+catalog + BYOK only.
 
 ---
 

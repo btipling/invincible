@@ -478,25 +478,38 @@ pub fn frame() !void {
             });
             defer row.deinit();
 
-            if (dvui.button(@src(), "Send", .{}, .{
+            if (busy) {
+                // Stop cancels inflight turn (protocol v9 pending cancel → host abort).
+                if (dvui.button(@src(), "Stop", .{}, .{
+                    .gravity_y = 0.5,
+                    .style = .content,
+                    .min_size_content = .{ .w = 72, .h = TOUCH_H },
+                    .corners = .round(8),
+                    .color_fill = palette.warm_bg,
+                    .color_text = palette.warm_accent,
+                    .color_border = palette.ember_border,
+                })) {
+                    bridge.queueCancelFromUi();
+                }
+            } else if (dvui.button(@src(), "Send", .{}, .{
                 .gravity_y = 0.5,
                 .style = .highlight,
                 .min_size_content = .{ .w = 72, .h = TOUCH_H },
                 .corners = .round(8),
             })) {
-                if (!busy and typed.len > 0) {
+                if (typed.len > 0) {
                     submitText(typed);
                     want_composer_focus = true;
                 }
             }
-            if (dvui.button(@src(), "PONG", .{}, .{
-                .gravity_y = 0.5,
-                .style = .app1,
-                .min_size_content = .{ .w = 72, .h = TOUCH_H },
-                .corners = .round(8),
-                .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
-            })) {
-                if (!busy) {
+            if (!busy) {
+                if (dvui.button(@src(), "PONG", .{}, .{
+                    .gravity_y = 0.5,
+                    .style = .app1,
+                    .min_size_content = .{ .w = 72, .h = TOUCH_H },
+                    .corners = .round(8),
+                    .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
+                })) {
                     submitText(SMOKE_PROMPT);
                     want_composer_focus = true;
                 }
@@ -508,7 +521,7 @@ pub fn frame() !void {
                     .margin = .{ .x = 10, .y = 0, .w = 0, .h = 0 },
                 });
                 if (busy) {
-                    tl.addText("busy…", .{});
+                    tl.addText("busy… Stop to cancel", .{});
                 } else {
                     tl.addText("Enter to send", .{});
                 }

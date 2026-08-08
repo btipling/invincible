@@ -37,6 +37,14 @@ Assistant and thinking growth use **protocol v8** `inv_update_last_message` so s
 
 While a Thinking segment is **open**, the host grows the full monologue (≤4096). When the segment **closes** (tool line, assistant text, `done`, or `error`), the host rewrites the last Thinking row to a **collapsed** one-liner (≤160 chars + ellipsis) via `updateLastMessage`. After the stream promise settles, the host also collapses any still-open segment (abort / network drop without a terminal SSE event). Multi-step turns may leave several short Thinking rows in the ring.
 
+### User cancel (Stop)
+
+While a turn is **busy**, the harness shows **Stop**. That sets a protocol **v9**
+pending cancel; the host polls it, aborts the in-flight `fetch` (`AbortSignal`),
+and the existing cancel path surfaces `Request cancelled.` (no new SSE event type,
+no chat fallback). Stopping before the host starts the turn discards a pending
+submit so no ghost request is sent.
+
 ### Session save
 
 | Kind | SessionStore | History fold |

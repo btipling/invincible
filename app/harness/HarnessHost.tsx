@@ -228,7 +228,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             modelId,
           },
         );
-        if (controller.signal.aborted) return;
+        // Always persist — including user Stop/cancel (and late abort after a finished
+        // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
+        // Load earlier / refresh could wipe the cancelled turn from the ring.
         persist(next);
         if (!result.ok) {
           setHostNote(result.error);
@@ -336,7 +338,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             } catch {
               /* ignore */
             }
-            if (!inflightRef.current) {
+            // Protocol v9: Stop first — abort inflight and skip starting a turn this tick.
+            if (b.takePendingCancel()) {
+              abortRef.current?.abort();
+            } else if (!inflightRef.current) {
               if (b.takePendingLoadEarlier()) {
                 const session = sessionRef.current;
                 const nextStart = earlierRingStart(ringWindowStartRef.current);

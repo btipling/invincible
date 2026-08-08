@@ -1,4 +1,4 @@
-import { generateText, streamText, stepCountIs } from 'ai';
+import { generateText, streamText, stepCountIs, isLoopFinished } from 'ai';
 import { mapFullStreamPart, summarizeToolLine } from './agentStream';
 import { resolveAgentReasoning } from './reasoningConfig';
 import {
@@ -28,8 +28,11 @@ export type ToolTraceEntry = {
 export type RunAgentParams = {
   prompt: string;
   signal?: AbortSignal;
-  /** Override env-derived max steps. */
-  maxSteps?: number;
+  /**
+   * Optional step ceiling (tests / explicit override).
+   * When omitted, uses `resolveAgentMaxSteps()` — `null` means model-ended loop.
+   */
+  maxSteps?: number | null;
   modelId?: string;
   system?: string;
   /** Request-scoped Gateway BYOK (tenancy on). */
@@ -99,12 +102,23 @@ function resolveSystem(
   return parts.join(' ');
 }
 
+/** Model-ended loop, or stepCountIs when an optional ceiling is set. */
+export function resolveAgentStopWhen(
+  maxSteps: number | null | undefined,
+): ReturnType<typeof stepCountIs> | ReturnType<typeof isLoopFinished> {
+  if (maxSteps != null && Number.isFinite(maxSteps) && maxSteps >= 1) {
+    return stepCountIs(Math.floor(maxSteps));
+  }
+  return isLoopFinished();
+}
+
 /**
  * Multi-step generateText + optional sandbox / extra tools.
  * Sandbox client is optional when extraTools (http / MCP) supply the tool surface.
  */
 export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> {
-  const maxSteps = params.maxSteps ?? resolveAgentMaxSteps();
+  const maxSteps =
+    params.maxSteps !== undefined ? params.maxSteps : resolveAgentMaxSteps();
   const modelId = params.modelId ?? resolveAgentModelId();
   const generate = params.generateTextImpl ?? generateText;
 
@@ -159,7 +173,7 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
     system: resolveSystem(params, hasFsTools),
     prompt: params.prompt,
     tools,
-    stopWhen: stepCountIs(maxSteps),
+    stopWhen: resolveAgentStopWhen(maxSteps),
     abortSignal: params.signal,
   };
   if (params.providerOptions) {
@@ -190,7 +204,8 @@ export async function runAgentStream(
   params: RunAgentParams,
   handlers: RunAgentStreamHandlers,
 ): Promise<RunAgentResult> {
-  const maxSteps = params.maxSteps ?? resolveAgentMaxSteps();
+  const maxSteps =
+    params.maxSteps !== undefined ? params.maxSteps : resolveAgentMaxSteps();
   const modelId = params.modelId ?? resolveAgentModelId();
   const stream = params.streamTextImpl ?? streamText;
 
@@ -243,7 +258,7 @@ export async function runAgentStream(
     system: resolveSystem(params, hasFsTools),
     prompt: params.prompt,
     tools,
-    stopWhen: stepCountIs(maxSteps),
+    stopWhen: resolveAgentStopWhen(maxSteps),
     abortSignal: params.signal,
   };
   if (params.providerOptions) {

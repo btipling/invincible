@@ -27,7 +27,7 @@ optional login chrome).
 | Session ring window + Load earlier poll | **DOM** host + **Wasm** control | Host slices ≤48; Wasm `Load earlier` pending (protocol v6); no React transcript |
 | Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status; model chip is a **mirror** of Wasm selection, not a second picker |
 | Model catalog fetch (`GET /api/models`) | **DOM** | Session-gated; host pushes ids into Wasm catalog |
-| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v8**) |
+| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v9**) |
 | Selected `modelId` on inference | **DOM host** → **Vercel backend** | Host reads bridge; POST body; server re-authorizes grants + BYOK |
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
 | Per-user MCP config UI | **DOM** | `/settings`, `/settings/mcp` — not dual chat; not Admin |
@@ -37,6 +37,7 @@ optional login chrome).
 | Image bytes (fetch/decode) | **DOM host** | Browser fetch → RGBA → `inv_image_cache_put`; paint stays Wasm |
 | Math pixels (TeX raster) | **DOM host** | Host MathJax SVG → RGBA → `inv_math_cache_put`; paint stays Wasm |
 | **Composer + Send / smoke** | **Wasm** | Primary input |
+| **Stop / cancel turn** | **Wasm** control + **DOM** abort | Canvas **Stop** while busy → pending cancel (protocol v9); host aborts `AbortController` |
 | Busy / error presentation for turns | **Wasm** | EMBER for errors |
 | Empty / onboarding copy for agent | **Wasm** | |
 | Asteronica canvas theme | **Wasm** | `palette.zig` |
@@ -93,7 +94,7 @@ are flattened server-side before the model and before summaries.
 | Concern | Path |
 |---------|------|
 | Host shell | `app/harness/HarnessHost.tsx` |
-| Bridge TS (protocol **v8**) | `lib/harnessBridge.ts` |
+| Bridge TS (protocol **v9**) | `lib/harnessBridge.ts` |
 | Image fetch/decode | `lib/harnessImages.ts` |
 | Model catalog API | `app/api/models/route.ts` |
 | Admin inference keys | `app/admin/inference/*` |
@@ -106,7 +107,7 @@ are flattened server-side before the model and before summaries.
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
 | Export whitelist | `native/harness/build.zig` |
 
-Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **8**).
+Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **9**).
 Mismatch → load error; rebuild both sides. Image **bytes** enter only via bridge put; never dual DOM `<img>` product surface.
 
 ## Related

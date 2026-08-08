@@ -22,7 +22,7 @@ Public-facing IDs and URLs. **No host IPs, droplet IDs, or cloud account GUIDs**
 | `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions secret | `build-harness` may ping after artifact upload |
 | `SANDBOX_URL` | Vercel / local server | Agent sandbox base URL — **must be Vercel-reachable in prod**; never commit real hosts |
 | `SANDBOX_TOKEN` | Vercel + sandbox process | Shared bearer; server-only |
-| `AGENT_MAX_STEPS` | Vercel (optional) | Tool-loop step cap (default 6) |
+| `AGENT_MAX_STEPS` | Vercel (optional) | Optional tool-loop safety ceiling (1…256); unset = model-ended |
 | `AGENT_MODEL` | Vercel (optional) | Tool-capable model override |
 
 Agents on **origin**: secrets listed as **Done** in [`AGENTS.md`](../AGENTS.md)

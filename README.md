@@ -112,7 +112,7 @@ Full ownership table: [`docs/feature-divide.md`](docs/feature-divide.md).
 | Auth (optional) | Auth.js credentials + optional OIDC; SCIM Users API |
 | Palette | Asteronica TEAL / WARM / EMBER |
 | Session | `lib/sessionStore.ts` |
-| Bridge | Protocol **v8** (`lib/harnessBridge.ts`) |
+| Bridge | Protocol **v9** (`lib/harnessBridge.ts`) |
 | Tests | Vitest |
 
 ## Docs

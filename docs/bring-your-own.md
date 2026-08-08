@@ -105,7 +105,7 @@ documented in `scripts/harnessRepo.mjs`.
 | `HARNESS_OWNER` / `HARNESS_REPO` | **Yes until your repo publishes `harness-wasm`** | Point at a repo that already has artifact `harness-wasm` (typical cold-start: path **B**). Once path **A** has uploaded artifacts on **your** repo, omit these so Vercel Git env (`VERCEL_GIT_REPO_OWNER` / `VERCEL_GIT_REPO_SLUG`) is used |
 | `DEFAULT_MODEL` | No | **Tenancy off only** — gateway model id (code / `.env.example` default). Under tenancy **on**, ignored for routing; use [§4a Inference keys](#inference-keys-byok) |
 | `SANDBOX_URL` / `SANDBOX_TOKEN` | No (tenancy **off**: tools off without both) | Agent sandbox base URL + bearer when tenancy is **off** — **server only**; URL must be **reachable from Vercel** in prod ([sandbox.md](sandbox.md)). Optional tenancy: [§4a](#4a-optional-multi-tenant-auth) |
-| `AGENT_MAX_STEPS` / `AGENT_MODEL` | No | Tool-loop step cap; `AGENT_MODEL` is **tenancy off only** (tool-capable override). Under tenancy **on**, ignored for routing — granted catalog + BYOK only |
+| `AGENT_MAX_STEPS` / `AGENT_MODEL` | No | `AGENT_MAX_STEPS` optional safety ceiling (1…256); **omit** for model-ended tool loop + user Stop. `AGENT_MODEL` is **tenancy off only** (tool-capable override). Under tenancy **on**, ignored for routing — granted catalog + BYOK only |
 
 4. Optional GitHub Actions **secret** (on **your** repo): `VERCEL_DEPLOY_HOOK_URL` —
    only if you use `build-harness`’s post-artifact deploy-hook ping. Not required

@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SandboxClient } from '../sandbox/client';
-import { collectToolTrace, DEFAULT_AGENT_SYSTEM, runAgent, runAgentStream } from './runAgent';
+import {
+  collectToolTrace,
+  DEFAULT_AGENT_SYSTEM,
+  resolveAgentStopWhen,
+  runAgent,
+  runAgentStream,
+} from './runAgent';
 import { TOOL_TRACE_SUMMARY_MAX_CHARS } from '../sandbox/config';
 import { MCP_SYSTEM_ADDENDUM } from '../mcp/toolNames';
 
@@ -9,7 +15,7 @@ describe('runAgent', () => {
     const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
       // stopWhen is a function (stepCountIs(n)); identity differs across calls
       expect(typeof args.stopWhen).toBe('function');
-      // Compare behavior: stepCountIs(4) stops when steps.length >= 4
+      // Compare behavior: stepCountIs(4) stops when steps.length === 4
       const stopWhen = args.stopWhen as (ctx: { steps: unknown[] }) => boolean;
       expect(stopWhen({ steps: [1, 2, 3] })).toBe(false);
       expect(stopWhen({ steps: [1, 2, 3, 4] })).toBe(true);
@@ -41,6 +47,38 @@ describe('runAgent', () => {
 
     expect(result.text).toBe('done');
     expect(generateTextImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses isLoopFinished (never step-stops) when maxSteps is null', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      const stopWhen = args.stopWhen as (ctx: { steps: unknown[] }) => boolean;
+      expect(stopWhen({ steps: [] })).toBe(false);
+      expect(stopWhen({ steps: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] })).toBe(false);
+      return { text: 'natural', steps: [] };
+    });
+    const client: SandboxClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      exec: vi.fn(),
+    };
+    await runAgent({
+      prompt: 'hi',
+      maxSteps: null,
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: client,
+    });
+    expect(generateTextImpl).toHaveBeenCalled();
+  });
+
+  it('resolveAgentStopWhen pins ceiling vs natural stop behavior', () => {
+    const ceiling = resolveAgentStopWhen(2);
+    expect(ceiling({ steps: [1] } as never)).toBe(false);
+    expect(ceiling({ steps: [1, 2] } as never)).toBe(true);
+
+    const natural = resolveAgentStopWhen(null);
+    expect(natural({ steps: [1, 2, 3, 4, 5] } as never)).toBe(false);
   });
 
   it('merges extraTools into generateText tools', async () => {

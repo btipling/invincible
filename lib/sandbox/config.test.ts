@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DEFAULT_AGENT_MAX_STEPS,
   MAX_AGENT_MAX_STEPS,
   SANDBOX_NOT_CONFIGURED_ERROR,
   getSandboxConfig,
@@ -33,16 +32,17 @@ describe('sandbox config', () => {
     });
   });
 
-  it('resolveAgentMaxSteps default and clamp 1…12', () => {
-    expect(resolveAgentMaxSteps({})).toBe(DEFAULT_AGENT_MAX_STEPS);
+  it('resolveAgentMaxSteps is null when unset; clamps 1…256 when set', () => {
+    expect(resolveAgentMaxSteps({})).toBeNull();
+    expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '' })).toBeNull();
+    expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '   ' })).toBeNull();
+    expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: 'nope' })).toBeNull();
     expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '3' })).toBe(3);
     expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '0' })).toBe(1);
-    expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '99' })).toBe(
+    expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '999' })).toBe(
       MAX_AGENT_MAX_STEPS,
     );
-    expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: 'nope' })).toBe(
-      DEFAULT_AGENT_MAX_STEPS,
-    );
+    expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '256' })).toBe(256);
   });
 
   it('resolveAgentModelId prefers AGENT_MODEL', () => {

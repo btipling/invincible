@@ -83,6 +83,8 @@ pub fn build(b: *std.Build) void {
         "inv_set_can_load_earlier",
         "inv_has_pending_load_earlier",
         "inv_ack_pending_load_earlier",
+        "inv_has_pending_cancel",
+        "inv_ack_pending_cancel",
         "inv_clear_model_catalog",
         "inv_push_model_catalog_entry",
         "inv_model_catalog_count",

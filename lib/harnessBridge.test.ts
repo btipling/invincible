@@ -15,6 +15,7 @@ type MockExtras = {
   __messages: { kind: number; text: string }[];
   __setPending: (s: string | null) => void;
   __setLoadEarlierPending: (on: boolean) => void;
+  __setCancelPending: (on: boolean) => void;
   __lifecycle: () => Lifecycle;
 };
 
@@ -32,6 +33,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
   let echo = '';
   let pending: string | null = null;
   let loadEarlier = false;
+  let cancelPending = false;
   let canLoad = 0;
   const catalog: string[] = [];
   let selected = 0;
@@ -115,6 +117,10 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_ack_pending_load_earlier: () => {
       loadEarlier = false;
     },
+    inv_has_pending_cancel: () => (cancelPending ? 1 : 0),
+    inv_ack_pending_cancel: () => {
+      cancelPending = false;
+    },
     inv_clear_model_catalog: () => {
       catalog.length = 0;
       selected = 0;
@@ -157,6 +163,9 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     __setLoadEarlierPending: (on) => {
       loadEarlier = !!on;
     },
+    __setCancelPending: (on) => {
+      cancelPending = !!on;
+    },
     __lifecycle: () => lifecycle,
   };
 
@@ -166,6 +175,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     __messages: messages,
     __setPending: base.__setPending,
     __setLoadEarlierPending: base.__setLoadEarlierPending,
+    __setCancelPending: base.__setCancelPending,
     __lifecycle: base.__lifecycle,
   };
 }
@@ -448,5 +458,16 @@ describe('updateLastMessage (protocol v8 stream growth)', () => {
     bridge.pushMessage(MessageKind.User, 'hi');
     expect(bridge.updateLastMessage(MessageKind.Assistant, 'x')).toBe(false);
     expect(exp.__messages.map((m) => m.text)).toEqual(['hi']);
+  });
+});
+
+
+describe('pending cancel (protocol v9)', () => {
+  it('takePendingCancel acks once', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    exp.__setCancelPending(true);
+    expect(bridge.takePendingCancel()).toBe(true);
+    expect(bridge.takePendingCancel()).toBe(false);
   });
 });
