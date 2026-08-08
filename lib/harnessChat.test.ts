@@ -640,6 +640,35 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     expect(kinds.filter((k) => k === MessageKind.Assistant)).toHaveLength(1);
   });
 
+  it('opens a new assistant bubble after tools when text was already streaming', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'multi', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'text_delta', text: 'Looking…' });
+        await init?.onEvent?.({ type: 'tool_start', name: 'list_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'list_dir',
+          ok: true,
+          summary: 'list_dir · ok · a.txt',
+        });
+        await init?.onEvent?.({ type: 'text_delta', text: 'Found a.txt' });
+        await init?.onEvent?.({ type: 'done', text: 'Looking…Found a.txt' });
+        return { ok: true, text: 'Looking…Found a.txt' };
+      },
+    });
+    expect(result.result.ok).toBe(true);
+    const assistants = exp.__messages.filter((m) => m.kind === MessageKind.Assistant);
+    expect(assistants.length).toBeGreaterThanOrEqual(2);
+    expect(assistants[0]!.text).toBe('Looking…');
+    expect(assistants[assistants.length - 1]!.text).toContain('Found a.txt');
+    expect(exp.__messages.some((m) => m.text.includes('list_dir · running'))).toBe(true);
+  });
+
   it('JSON streamAgent:false still uses end toolTrace', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);

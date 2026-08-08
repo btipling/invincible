@@ -299,8 +299,81 @@ export async function runHarnessTurn(
     let liveToolLines = 0;
     let overflowNote = false;
     let assistantStarted = false;
+    /** Full assistant text for session/result (all stream segments). */
     let assistantAcc = '';
+    /**
+     * Text for the currently open assistant ring bubble only.
+     * Closed when a System tool line is pushed so post-tool deltas open a new
+     * bubble — `inv_update_last_message` only rewrites the last ring row.
+     */
+    let assistantSegment = '';
+    let assistantSegmentOpen = false;
     let sawStreamTerminal = false;
+
+    const closeAssistantSegment = () => {
+      assistantSegmentOpen = false;
+      assistantSegment = '';
+    };
+
+    const growAssistant = (chunk: string) => {
+      if (!chunk) return;
+      assistantAcc += chunk;
+      if (!assistantSegmentOpen) {
+        assistantSegment = chunk;
+        bridge.pushMessage(MessageKind.Assistant, assistantSegment);
+        assistantSegmentOpen = true;
+        assistantStarted = true;
+        return;
+      }
+      assistantSegment += chunk;
+      if (!bridge.updateLastMessage(MessageKind.Assistant, assistantSegment)) {
+        // Last row is not assistant — open a fresh bubble with this segment.
+        bridge.pushMessage(MessageKind.Assistant, assistantSegment);
+      }
+    };
+
+    const finalizeAssistant = (finalText: string) => {
+      const text = finalText.trim();
+      if (!text) return;
+      if (!assistantStarted) {
+        bridge.pushMessage(MessageKind.Assistant, text);
+        assistantStarted = true;
+        assistantSegmentOpen = true;
+        assistantSegment = text;
+      } else if (assistantSegmentOpen) {
+        // Single continuous segment: rewrite to server final when it differs.
+        if (assistantAcc === assistantSegment) {
+          if (text !== assistantSegment) {
+            if (!bridge.updateLastMessage(MessageKind.Assistant, text)) {
+              bridge.pushMessage(MessageKind.Assistant, text);
+            }
+          }
+        } else {
+          // Multi-segment turn: adjust only the open tail if final extends it.
+          const prefixLen = Math.max(0, assistantAcc.length - assistantSegment.length);
+          const prefix = assistantAcc.slice(0, prefixLen);
+          if (text.startsWith(prefix) && text.length >= prefixLen) {
+            const tail = text.slice(prefixLen);
+            if (tail && tail !== assistantSegment) {
+              if (!bridge.updateLastMessage(MessageKind.Assistant, tail)) {
+                bridge.pushMessage(MessageKind.Assistant, tail);
+              }
+              assistantSegment = tail;
+            }
+          }
+          // else: leave streamed segments as-is; session still gets full text
+        }
+      } else {
+        // Stream ended on a tool line — only push if final adds unseen text.
+        if (text !== assistantAcc) {
+          bridge.pushMessage(MessageKind.Assistant, text);
+          assistantSegmentOpen = true;
+          assistantSegment = text;
+        }
+      }
+      assistantAcc = text;
+      scheduleImagesFromMarkdown(bridge, text);
+    };
 
     if (streamAgent) {
       agentResult = await sendAgentStreamFn(apiPrompt, {
@@ -308,6 +381,7 @@ export async function runHarnessTurn(
         modelId: opts?.modelId,
         onEvent: async (ev: AgentStreamEvent) => {
           if (ev.type === 'tool_start' || ev.type === 'tool_result') {
+            closeAssistantSegment();
             if (liveToolLines >= LIVE_TOOL_LINES_MAX) {
               if (!overflowNote) {
                 const note = `+ more tools (live cap ${LIVE_TOOL_LINES_MAX})`;
@@ -328,29 +402,12 @@ export async function runHarnessTurn(
             return;
           }
           if (ev.type === 'text_delta') {
-            if (!ev.text) return;
-            assistantAcc += ev.text;
-            if (!assistantStarted) {
-              bridge.pushMessage(MessageKind.Assistant, assistantAcc);
-              assistantStarted = true;
-            } else {
-              bridge.updateLastMessage(MessageKind.Assistant, assistantAcc);
-            }
+            growAssistant(ev.text);
             return;
           }
           if (ev.type === 'done') {
             sawStreamTerminal = true;
-            const finalText = (ev.text ?? assistantAcc).trim();
-            if (finalText) {
-              if (!assistantStarted) {
-                bridge.pushMessage(MessageKind.Assistant, finalText);
-                assistantStarted = true;
-              } else if (finalText !== assistantAcc) {
-                bridge.updateLastMessage(MessageKind.Assistant, finalText);
-              }
-              assistantAcc = finalText;
-              scheduleImagesFromMarkdown(bridge, finalText);
-            }
+            finalizeAssistant(ev.text ?? assistantAcc);
             // Do not re-push toolTrace — live lines already shown.
             return;
           }

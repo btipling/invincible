@@ -174,7 +174,8 @@ function parseSseChunk(
   buffer: string,
 ): { events: AgentStreamEvent[]; rest: string } {
   const events: AgentStreamEvent[] = [];
-  let rest = buffer;
+  // Normalize CRLF so proxies that emit \r\n still frame correctly.
+  let rest = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   // SSE events separated by blank line
   for (;;) {
     const idx = rest.indexOf('\n\n');
@@ -188,7 +189,7 @@ function parseSseChunk(
       }
     }
     if (dataLines.length === 0) continue;
-    const raw = dataLines.join('\n');
+    const raw = dataLines.join('\n').trimEnd();
     if (!raw || raw === '[DONE]') continue;
     try {
       const parsed = JSON.parse(raw) as AgentStreamEvent;
@@ -295,8 +296,13 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
           await init.onEvent(ev);
         }
         if (ev.type === 'done') {
-          finalText = ev.text ?? '';
-          toolTrace = parseToolTrace(ev.toolTrace);
+          // Prefer non-empty done.text; do not wipe delta accumulation with "".
+          if (typeof ev.text === 'string' && ev.text.trim()) {
+            finalText = ev.text;
+          } else if (!finalText.trim() && typeof ev.text === 'string') {
+            finalText = ev.text;
+          }
+          toolTrace = parseToolTrace(ev.toolTrace) ?? toolTrace;
         } else if (ev.type === 'error') {
           streamError = {
             ok: false,
@@ -316,7 +322,11 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
       for (const ev of events) {
         if (init?.onEvent) await init.onEvent(ev);
         if (ev.type === 'done') {
-          finalText = ev.text ?? finalText;
+          if (typeof ev.text === 'string' && ev.text.trim()) {
+            finalText = ev.text;
+          } else if (!finalText.trim() && typeof ev.text === 'string') {
+            finalText = ev.text;
+          }
           toolTrace = parseToolTrace(ev.toolTrace) ?? toolTrace;
         } else if (ev.type === 'error') {
           streamError = {

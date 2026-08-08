@@ -208,8 +208,14 @@ export async function POST(req: Request): Promise<Response> {
 
       const bodyStream = new ReadableStream<Uint8Array>({
         async start(controller) {
+          let closed = false;
           const enqueue = (ev: AgentStreamEvent) => {
-            controller.enqueue(encoder.encode(encodeSseData(ev)));
+            if (closed) return;
+            try {
+              controller.enqueue(encoder.encode(encodeSseData(ev)));
+            } catch {
+              closed = true;
+            }
           };
           try {
             await runAgentStream(runParams, {
@@ -230,6 +236,7 @@ export async function POST(req: Request): Promise<Response> {
             }
           } finally {
             await closeRunners(httpRef, mcpRef);
+            closed = true;
             try {
               controller.close();
             } catch {
