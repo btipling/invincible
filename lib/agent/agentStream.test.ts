@@ -5,6 +5,8 @@ import {
   mapFullStreamPart,
   wantsAgentStream,
   summarizeToolLine,
+  salientToolBits,
+  TOOL_LINE_SALIENT_MAX,
   LIVE_TOOL_LINES_MAX,
 } from './agentStream';
 
@@ -112,15 +114,54 @@ describe('mapFullStreamPart', () => {
   });
 });
 
-describe('summarizeToolLine', () => {
-  it('soft-caps length at TOOL_TRACE_SUMMARY_MAX_CHARS', () => {
-    const line = summarizeToolLine('x', 'y'.repeat(TOOL_TRACE_SUMMARY_MAX_CHARS + 100), true);
-    expect(line.length).toBeLessThanOrEqual(TOOL_TRACE_SUMMARY_MAX_CHARS);
+describe('salientToolBits / summarizeToolLine', () => {
+  it('read_file shows path + size, not body', () => {
+    const body = 'line1\nline2\nline3\n' + 'x'.repeat(500);
+    const raw = `read_file src/foo.ts:\n${body}`;
+    const bits = salientToolBits('read_file', raw);
+    expect(bits).toContain('src/foo.ts');
+    expect(bits).toMatch(/lines/);
+    expect(bits).not.toContain('xxxxx');
+    const line = summarizeToolLine('read_file', raw, true);
+    expect(line).toMatch(/^read_file · ✓ ok ·/);
+    expect(line).not.toContain('xxxxx');
+    expect(line.length).toBeLessThanOrEqual(TOOL_LINE_SALIENT_MAX);
+  });
+
+  it('exec shows exit + line counts, not full stdout', () => {
+    const raw = 'exec npm\nexit=0\nstdout:\n' + 'ok\n' * 40 + 'stderr:\n';
+    const bits = salientToolBits('exec', raw);
+    expect(bits).toContain('exit=0');
+    expect(bits).toMatch(/stdout/);
+    expect(bits).not.toContain('ok\nok\nok');
+  });
+
+  it('list_dir keeps entry count', () => {
+    const bits = salientToolBits(
+      'list_dir',
+      'list_dir .: 3 entries — a(file), b(dir), c(file)',
+    );
+    expect(bits).toContain('3 entries');
+  });
+
+  it('http_get shows status + body size, not body', () => {
+    const bits = salientToolBits(
+      'http_get',
+      'http_get https://example.com/docs → 200\n' + '<html>' + 'z'.repeat(2000),
+    );
+    expect(bits).toContain('→ 200');
+    expect(bits).toMatch(/B$/);
+    expect(bits).not.toContain('<html>zzzz');
   });
 
   it('marks ok and failed clearly', () => {
     expect(summarizeToolLine('list_dir', 'a', true)).toContain('✓ ok');
-    expect(summarizeToolLine('list_dir', 'boom', false)).toContain('✗ failed');
+    expect(summarizeToolLine('list_dir', 'ERROR boom', false)).toContain('✗ failed');
+  });
+
+  it('soft-caps final line length', () => {
+    const line = summarizeToolLine('x', 'y'.repeat(5000), true);
+    expect(line.length).toBeLessThanOrEqual(TOOL_LINE_SALIENT_MAX);
   });
 });
 

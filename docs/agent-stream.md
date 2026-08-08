@@ -72,7 +72,7 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Thinking **segments** | **none** | Every reasoning segment paints |
 | Thinking / line chars | **64 KiB** | Wasm `MAX_MSG_LEN` only (bridge hard edge) |
 | Ring slots | **512** | Wasm `MAX_MSG`; older drop when full; Load earlier for SessionStore |
-| Tool summary length | **≤8 KiB** | Soft truncate for one System line |
+| Tool summary length | **salient ≤160** | `salientToolBits` — path/counts/status only; **not** full read_file/exec/http bodies |
 | JSON end-of-turn toolTrace lines | **none** | All entries shown |
 
 ## Deferred (not in stream contract yet)
