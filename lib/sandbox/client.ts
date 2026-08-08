@@ -40,6 +40,11 @@ export type SandboxClient = {
     },
     init?: { signal?: AbortSignal },
   ) => Promise<ExecResult>;
+  /**
+   * Optional lifecycle hook for ephemeral backends (Vercel Sandbox).
+   * BYO HTTP client omits this. Idempotent when present.
+   */
+  close?: () => Promise<void>;
 };
 
 export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
