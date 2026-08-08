@@ -160,4 +160,26 @@ describe('rotateSandboxToken', () => {
     );
     expect(res).toEqual({ ok: false, reason: 'not_found' });
   });
+
+  it('rejects rotate for vercel backend', async () => {
+    const [vsb] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'V',
+        slug: 'vercel-sb',
+        backend: 'vercel',
+        baseUrl: null,
+        tokenCiphertext: null,
+        image: null,
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+
+    const res = await rotateSandboxToken(ownerId, vsb.id, 'nope', {
+      db: db as never,
+      amk: AMK,
+    });
+    expect(res).toEqual({ ok: false, reason: 'wrong_backend' });
+  });
 });

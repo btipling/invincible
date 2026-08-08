@@ -1,7 +1,8 @@
 /**
- * Phase 4 — load admin context for the signed-in user (v1 sole membership).
+ * Load admin context for the signed-in user (v1 sole membership).
  * Phase 2 (#94): mask sandbox tokens via tenant DEK (dual-read / dek-only).
  * Phase 1 sandbox backend (#281): null token → mask without decrypt; null baseUrl → ''.
+ * Phase 4 (#284): expose backend + image; vercel rows never decrypt.
  */
 import { and, eq } from 'drizzle-orm';
 import {
@@ -15,6 +16,7 @@ import {
 } from '../../db';
 import { maskSecret } from './maskSecret';
 import { canAccessAdmin, canRotateSandboxToken, type TenantRole } from './roles';
+import { formatSandboxImageLabel } from './sandboxBackend';
 import { decryptSandboxToken } from './tenantKeys';
 
 export type AdminSandboxRow = {
@@ -22,6 +24,10 @@ export type AdminSandboxRow = {
   name: string;
   slug: string;
   status: string;
+  backend: string;
+  image: string | null;
+  /** Display label for image column. */
+  imageLabel: string;
   baseUrl: string;
   tokenMasked: string;
   canRead: boolean;
@@ -124,6 +130,8 @@ async function loadWithDb(
         name: sandboxes.name,
         slug: sandboxes.slug,
         status: sandboxes.status,
+        backend: sandboxes.backend,
+        image: sandboxes.image,
         baseUrl: sandboxes.baseUrl,
         tokenCiphertext: sandboxes.tokenCiphertext,
         canRead: sandboxGrants.canRead,
@@ -141,22 +149,35 @@ async function loadWithDb(
 
     const sandboxRows: AdminSandboxRow[] = [];
     for (const r of rows) {
-      let tokenMasked = '********';
-      const ct = r.tokenCiphertext?.trim() ?? '';
-      if (ct) {
-        try {
-          const plain = await decrypt(m.tenantId, ct);
-          tokenMasked = maskSecret(plain);
-        } catch {
-          tokenMasked = '********';
+      const backend = (r.backend ?? 'byo').trim() || 'byo';
+      let tokenMasked = '—';
+      let baseUrl = '—';
+
+      if (backend === 'byo') {
+        baseUrl = r.baseUrl?.trim() ? r.baseUrl : '—';
+        tokenMasked = '********';
+        const ct = r.tokenCiphertext?.trim() ?? '';
+        if (ct) {
+          try {
+            const plain = await decrypt(m.tenantId, ct);
+            tokenMasked = maskSecret(plain);
+          } catch {
+            tokenMasked = '********';
+          }
+        } else {
+          tokenMasked = '—';
         }
       }
+
       sandboxRows.push({
         id: r.id,
         name: r.name,
         slug: r.slug,
         status: r.status,
-        baseUrl: r.baseUrl ?? '',
+        backend,
+        image: r.image ?? null,
+        imageLabel: formatSandboxImageLabel(backend, r.image),
+        baseUrl,
         tokenMasked,
         canRead: Boolean(r.canRead),
         canWrite: Boolean(r.canWrite),

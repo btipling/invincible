@@ -18,6 +18,7 @@ Related: [sandbox.md](sandbox.md) · [mcp.md](mcp.md) · [feature-divide.md](fea
 | **Is** | Target fetch inside **Vercel Sandbox** (isolated network) after app-side SSRF policy |
 | **Is** | Env-gated (`BUILTIN_HTTP_FETCH=sandbox`); default **off** |
 | **Is not** | The DO / BYO sandbox daemon (`list_dir` / `read_file` / `write_file` / `exec`) |
+| **Is not** | A tenant sandbox-row `backend=vercel` FS workspace — hop-B is a **separate** microVM. When both hop-B and a vercel FS sandbox run on one agent turn, **two** ephemeral VMs may be created |
 | **Is not** | Per-user remote MCP (Exa etc.) — that remains [mcp.md](mcp.md) |
 | **Is not** | Browser or Wasm fetch of arbitrary agent URLs |
 | **Is not** | POST/PUT/DELETE, or a public MCP server |

@@ -7,6 +7,10 @@ import { rotateTenantDek } from '../../lib/tenancy/rotateTenantDek';
 import { tenancyEnabled } from '../../lib/tenancy/enabled';
 import { loadAdminContext } from '../../lib/tenancy/adminContext';
 import {
+  createSandboxForAdmin,
+  updateSandboxForAdmin,
+} from '../../lib/tenancy/manageSandbox';
+import {
   createProviderSecret,
   disableProviderSecret,
   setProviderSecretGrants,
@@ -88,6 +92,12 @@ export async function rotateTokenAction(
     if (result.reason === 'not_found') {
       return { error: 'Sandbox not found.', sandboxId };
     }
+    if (result.reason === 'wrong_backend') {
+      return {
+        error: 'Token rotate applies to BYO sandboxes only.',
+        sandboxId,
+      };
+    }
     return { error: 'Could not rotate token.', sandboxId };
   }
 
@@ -136,6 +146,102 @@ export async function rotateTenantDekAction(
 
   revalidateAdmin();
   return { ok: true, tenantId };
+}
+
+export type SandboxActionState = {
+  ok?: boolean;
+  error?: string;
+  sandboxId?: string;
+};
+
+function imageFromForm(formData: FormData): string | null {
+  const mode = String(formData.get('imageMode') ?? 'preset').trim();
+  if (mode === 'custom') {
+    return String(formData.get('imageCustom') ?? '');
+  }
+  const preset = String(formData.get('imagePreset') ?? '').trim();
+  // empty preset = null default
+  return preset || null;
+}
+
+export async function createSandboxAction(
+  _prev: SandboxActionState,
+  formData: FormData,
+): Promise<SandboxActionState> {
+  const gate = await requireAdminSession();
+  if (!gate.ok) return { error: gate.error };
+
+  const name = String(formData.get('name') ?? '').trim();
+  const slug = String(formData.get('slug') ?? '').trim();
+  const backend = String(formData.get('backend') ?? 'byo').trim();
+  const baseUrl = String(formData.get('baseUrl') ?? '');
+  const token = String(formData.get('token') ?? '');
+  const image = imageFromForm(formData);
+
+  const result = await createSandboxForAdmin(gate.userId, {
+    name,
+    slug,
+    backend,
+    baseUrl,
+    token,
+    image,
+  });
+  if (!result.ok) {
+    if (result.reason === 'forbidden') {
+      return { error: 'Admin access required.' };
+    }
+    if (result.reason === 'conflict') {
+      return { error: result.error ?? 'Slug already in use.' };
+    }
+    if (result.reason === 'validation') {
+      return { error: result.error ?? 'Invalid sandbox fields.' };
+    }
+    return { error: 'Could not create sandbox.' };
+  }
+
+  revalidateAdmin();
+  return { ok: true, sandboxId: result.sandboxId };
+}
+
+export async function updateSandboxAction(
+  _prev: SandboxActionState,
+  formData: FormData,
+): Promise<SandboxActionState> {
+  const gate = await requireAdminSession();
+  if (!gate.ok) return { error: gate.error };
+
+  const sandboxId = String(formData.get('sandboxId') ?? '').trim();
+  if (!sandboxId) return { error: 'Missing sandbox.' };
+
+  const name = String(formData.get('name') ?? '').trim();
+  const backend = String(formData.get('backend') ?? 'byo').trim();
+  const baseUrl = String(formData.get('baseUrl') ?? '');
+  const token = String(formData.get('token') ?? '');
+  const image = imageFromForm(formData);
+
+  const result = await updateSandboxForAdmin(gate.userId, {
+    sandboxId,
+    name,
+    backend,
+    baseUrl,
+    token: token.trim() ? token : undefined,
+    image,
+  });
+  if (!result.ok) {
+    if (result.reason === 'forbidden') {
+      return { error: 'Admin access required.', sandboxId };
+    }
+    if (result.reason === 'not_found') {
+      return { error: 'Sandbox not found.', sandboxId };
+    }
+    if (result.reason === 'validation') {
+      return { error: result.error ?? 'Invalid sandbox fields.', sandboxId };
+    }
+    return { error: 'Could not update sandbox.', sandboxId };
+  }
+
+  revalidateAdmin();
+  return { ok: true, sandboxId };
 }
 
 export type InferenceActionState = {

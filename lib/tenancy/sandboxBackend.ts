@@ -11,6 +11,22 @@ export const DEFAULT_VERCEL_SANDBOX_IMAGE = 'vercel/sandbox/universal:latest';
 export const VERCEL_SANDBOX_IMAGE_MAX_LENGTH = 512;
 
 /**
+ * Admin image preset options (VMI tags). Value `null` means store null
+ * (runtime uses {@link DEFAULT_VERCEL_SANDBOX_IMAGE}).
+ */
+export const VERCEL_SANDBOX_IMAGE_PRESETS: ReadonlyArray<{
+  label: string;
+  /** Stored image; null = product default at resolve. */
+  value: string | null;
+}> = [
+  { label: 'Default (universal)', value: null },
+  { label: 'Node 24', value: 'vercel/sandbox/node:24' },
+  { label: 'Python 3.14', value: 'vercel/sandbox/python:3.14' },
+  { label: 'Ubuntu', value: 'vercel/sandbox/ubuntu:latest' },
+  { label: 'Arch', value: 'vercel/sandbox/arch:latest' },
+];
+
+/**
  * VMI / short / team VCR refs + optional tag and @sha256 digest.
  * No whitespace or control characters (checked separately).
  */
@@ -168,4 +184,15 @@ export function assertSandboxCredentials(row: {
     };
   }
   return { ok: true };
+}
+
+/** Display helper for admin list (never invent a host URL). */
+export function formatSandboxImageLabel(
+  backend: string,
+  image: string | null | undefined,
+): string {
+  if (backend !== 'vercel') return '—';
+  const t = image?.trim() ?? '';
+  if (!t) return 'default (universal)';
+  return t;
 }

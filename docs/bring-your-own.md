@@ -158,7 +158,29 @@ If **any** is missing → **legacy open mode**: anonymous `POST /api/chat` and
 Grant failures return **403** `{ "error": "Sandbox access denied." }`
 (`SANDBOX_FORBIDDEN_ERROR`). See [sandbox.md](sandbox.md).
 
+### Sandboxes (BYO daemon vs Vercel)
+
+When tenancy is on, each **sandbox row** chooses a backend — not a host env flip
+(`SANDBOX_BACKEND` is **not** a product setting).
+
+| Backend | Admin | Credentials |
+|---------|-------|-------------|
+| **byo** | URL + token | Token encrypted under tenant DEK |
+| **vercel** | Image preset or custom VCR/VMI ref (null = universal default) | Host Vercel project OIDC/quota; no BYO URL/token on the row |
+
+Create and edit at **`/admin/sandboxes`**. Schema for `backend`/`image` ships via
+GHA **`db-migrate`**. Seed bootstrap may set `SEED_SANDBOX_BACKEND=vercel` and
+optional `SEED_SANDBOX_IMAGE` (seed-only env names).
+
+V1 agent resolve still requires **exactly one** usable grant per user. Creating a
+sandbox in admin grants you R/W and revokes your other grants on that tenant so
+the agent keeps a single workspace.
+
+Builtin HTTPS fetch (`http_get`) is unrelated to `backend=vercel` — see
+[builtin-http.md](builtin-http.md) (possible second VM when both are enabled).
+
 ### Inference keys (BYOK)
+
 
 When **tenancy is on**, inference uses **tenant Bring-Your-Own-Key (BYOK)** so
 **provider billing is the tenant’s**, not Invincible host system credits.

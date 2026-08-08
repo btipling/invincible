@@ -20,7 +20,7 @@ project and keys, and run the same harness on **your** work.
 |---|---------|--------|
 | **Core** | Wasm harness chat | Transcript, composer, and turn UX live in the canvas (`/harness`) |
 | **Core** | AI Gateway inference | `POST /api/chat` — `AI_GATEWAY_API_KEY` stays on the server |
-| **Optional** | Agent tools + sandbox | `POST /api/agent` — tenancy **off**: `SANDBOX_URL` + `SANDBOX_TOKEN`; tenancy **on**: DB sandbox grants (not env `SANDBOX_*`) |
+| **Optional** | Agent tools + sandbox | `POST /api/agent` — tenancy **off**: env BYO `SANDBOX_*`; tenancy **on**: DB grants + per-row `backend` (`byo`\|`vercel`) and image — [docs/sandbox.md](docs/sandbox.md) |
 | **Optional** | Builtin HTTPS fetch | `http_get` via Vercel Sandbox when `BUILTIN_HTTP_FETCH=sandbox` — [docs/builtin-http.md](docs/builtin-http.md) |
 | **Optional** | Multi-tenant login + admin | Credentials auth, grants, `/login` + `/admin` — **on** for the reference Production deploy |
 | **Optional** | Tenant BYOK inference | When tenancy is on: admin **Inference keys** (`/admin/inference`), harness model cycle (canvas **Next**), request-scoped Gateway BYOK |
