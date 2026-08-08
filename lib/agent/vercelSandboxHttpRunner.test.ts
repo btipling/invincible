@@ -30,6 +30,15 @@ describe('parseCurlHeaders', () => {
     expect(r.status).toBe(200);
     expect(r.contentType).toMatch(/text\/html/);
   });
+
+  it('parses Location for redirect responses', () => {
+    const r = parseCurlHeaders(
+      'HTTP/1.1 302 Found\r\nLocation: https://example.com/next\r\nContent-Type: text/html\r\n\r\n',
+    );
+    expect(r.status).toBe(302);
+    expect(r.location).toBe('https://example.com/next');
+    expect(r.contentType).toMatch(/text\/html/);
+  });
 });
 
 

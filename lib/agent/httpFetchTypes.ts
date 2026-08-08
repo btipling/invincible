@@ -18,6 +18,8 @@ export type HttpFetchGetResult = {
   contentType?: string;
   body: string;
   truncated?: boolean;
+  /** Absolute or relative Location header when present (3xx). */
+  location?: string;
 };
 
 /**

@@ -20,7 +20,7 @@ Related: [sandbox.md](sandbox.md) · [mcp.md](mcp.md) · [feature-divide.md](fea
 | **Is not** | The DO / BYO sandbox daemon (`list_dir` / `read_file` / `write_file` / `exec`) |
 | **Is not** | Per-user remote MCP (Exa etc.) — that remains [mcp.md](mcp.md) |
 | **Is not** | Browser or Wasm fetch of arbitrary agent URLs |
-| **Is not** | POST/PUT/DELETE, redirect following, or a public MCP server |
+| **Is not** | POST/PUT/DELETE, or a public MCP server |
 
 ## 2. Trust boundary (hop A / hop B)
 
@@ -29,12 +29,12 @@ User (Wasm composer)
   → host POST /api/agent
   → app SSRF policy (https-only, no private/metadata hosts)
   → Hop A: app → Vercel Sandbox control plane (OIDC on Vercel)
-  → Hop B: Sandbox microVM → target URL (curl, no redirects)
+  → Hop B: Sandbox microVM → target URL (curl `--max-redirs 0`; app follows redirects hop-by-hop)
   → body truncated / content-type filtered → model + toolTrace
 ```
 
 - **Gateway keys**, **sandbox tokens**, and **MCP secrets** never enter the microVM env or the client/Wasm.
-- Policy runs **before** egress. Redirects are **not** followed (`--max-redirs 0`).
+- Policy runs **before** each hop. Curl does **not** auto-follow (`--max-redirs 0`); the app follows **≤5** redirects only after re-running SSRF policy on each `Location`.
 
 ## 3. Enablement
 
@@ -82,12 +82,13 @@ Host chat fallback still triggers **only** on HTTP **503** with the exact
 | Per-fetch timeout | default 10s, max 20s |
 | Hop-B transfer cap | curl `--max-filesize` = per-fetch `maxBytes` (default 64 KiB) |
 | Model-facing result | `TOOL_RESULT_MAX_CHARS` (8192) |
+| Redirect hops | ≤ **5** (policy-checked each) |
 
 ## 6. SSRF & content policy
 
 - https only; no URL userinfo
 - Block private / link-local / metadata hosts (literal + DNS **preflight** on the app)
-- No redirect follow (`--max-redirs 0`)
+- Curl `--max-redirs 0`; app hop-by-hop follow (≤5) with `assertSafePublicHttps` on every `Location` (blocks private/metadata redirect targets)
 - Bodies returned only for text-ish types (`text/*`, JSON, XML, `+json`/`+xml`)
 - Soft-fail tool strings (`ERROR http_get: …`); never throw into the route
 

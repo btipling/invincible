@@ -27,15 +27,17 @@ Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
 
 When `BUILTIN_HTTP_FETCH=sandbox`, agent tools may fetch **public HTTPS** URLs via a
 Vercel Sandbox microVM (hop B). App-side SSRF policy runs first (https-only; no
-private/metadata hosts; no redirect follow). Never put Gateway, DO sandbox, or
+private/metadata hosts; redirects only after re-check of each Location). Never put Gateway, DO sandbox, or
 MCP secrets into the Sandbox child env. No `NEXT_PUBLIC_*` for this feature.
 See [docs/builtin-http.md](docs/builtin-http.md).
 
 **Residual (v1):** Policy is preflight-only on the app (literal + DNS at check
 time). Hop B re-resolves the hostname under Sandbox `networkPolicy: allow-all`.
 A short-TTL / DNS-rebinding name could flip to a private or link-local address
-between preflight and curl. Redirects are not followed. Accept for v1; harden
-later (IP pin / egress deny) if product needs stronger guarantees.
+between preflight and curl. Redirects are followed **hop-by-hop** with the same
+policy on each `Location` (curl still `--max-redirs 0` so the microVM never
+blind-follows). Accept residual DNS rebinding for v1; harden later (IP pin /
+egress deny) if product needs stronger guarantees.
 
 
 ## Self-hosted runner (public repo policy)
