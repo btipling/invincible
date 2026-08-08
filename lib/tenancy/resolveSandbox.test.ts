@@ -132,6 +132,8 @@ describe('resolveAgentSandbox', () => {
     expect(result.value.permissions).toEqual({ canRead: true, canWrite: true });
     expect(result.value.secrets).toContain('sandbox-token-secret-xyz');
     expect(result.value.baseUrl).toBe('http://127.0.0.1:8787');
+    expect(result.value.backend).toBe('byo');
+    expect(result.value.resolvedImage).toBeNull();
     expect((result.value.client as { __meta?: { token: string } }).__meta?.token).toBe(
       'sandbox-token-secret-xyz',
     );
@@ -268,10 +270,10 @@ describe('resolveAgentSandbox', () => {
     expect(JSON.stringify(body)).not.toContain('decryption');
   });
 
-  it('403 when baseUrl or tokenCiphertext null/empty (vercel rows until phase 3)', async () => {
+  it('403 when byo baseUrl or tokenCiphertext null/empty', async () => {
     await db
       .update(schema.sandboxes)
-      .set({ baseUrl: null, tokenCiphertext: null })
+      .set({ baseUrl: null, tokenCiphertext: null, backend: 'byo' })
       .where(eq(schema.sandboxes.id, sandboxId));
     const result = await resolveAgentSandbox(userId, {
       db: db as never,
@@ -290,5 +292,183 @@ describe('resolveAgentSandbox', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected fail');
     expect(result.response.status).toBe(403);
+  });
+
+  it('vercel row → Vercel client; no decrypt; secrets empty; no baseUrl', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({
+        backend: 'vercel',
+        baseUrl: null,
+        tokenCiphertext: null,
+        image: null,
+      })
+      .where(eq(schema.sandboxes.id, sandboxId));
+
+    const decryptSpy = vi.fn(decrypt);
+    const vercelClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      exec: vi.fn(),
+      close: vi.fn(async () => {}),
+      __kind: 'vercel',
+    };
+    const createVercelClient = vi.fn(() => vercelClient as never);
+
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      decryptSandboxToken: decryptSpy,
+      createVercelClient,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value.client).toBe(vercelClient);
+    expect(result.value.backend).toBe('vercel');
+    expect(result.value.secrets).toEqual([]);
+    expect(result.value.baseUrl).toBeUndefined();
+    expect(result.value.resolvedImage).toBe('vercel/sandbox/universal:latest');
+    expect(decryptSpy).not.toHaveBeenCalled();
+    expect(createVercelClient).toHaveBeenCalledWith({ image: null });
+  });
+
+  it('vercel row custom image → factory receives that image', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({
+        backend: 'vercel',
+        baseUrl: null,
+        tokenCiphertext: null,
+        image: 'vercel/sandbox/node:24',
+      })
+      .where(eq(schema.sandboxes.id, sandboxId));
+
+    const createVercelClient = vi.fn(() => stubClient() as never);
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      createVercelClient,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(createVercelClient).toHaveBeenCalledWith({
+      image: 'vercel/sandbox/node:24',
+    });
+    expect(result.value.resolvedImage).toBe('vercel/sandbox/node:24');
+  });
+
+  it('vercel row empty image → factory receives empty; resolvedImage default', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({
+        backend: 'vercel',
+        baseUrl: null,
+        tokenCiphertext: null,
+        image: '',
+      })
+      .where(eq(schema.sandboxes.id, sandboxId));
+
+    const createVercelClient = vi.fn(() => stubClient() as never);
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      createVercelClient,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(createVercelClient).toHaveBeenCalledWith({ image: '' });
+    expect(result.value.resolvedImage).toBe('vercel/sandbox/universal:latest');
+  });
+
+  it('vercel row with stale URL/token still succeeds without decrypt', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({
+        backend: 'vercel',
+        baseUrl: 'http://stale.example',
+        tokenCiphertext: 'stale-ct',
+        image: 'vercel/sandbox/universal:latest',
+      })
+      .where(eq(schema.sandboxes.id, sandboxId));
+
+    const decryptSpy = vi.fn(async () => {
+      throw new Error('should not decrypt');
+    });
+    const createVercelClient = vi.fn(() => stubClient() as never);
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      decryptSandboxToken: decryptSpy,
+      createVercelClient,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(decryptSpy).not.toHaveBeenCalled();
+    expect(result.value.secrets).toEqual([]);
+    expect(result.value.baseUrl).toBeUndefined();
+  });
+
+  it('unknown backend string → 403', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({ backend: 'other' })
+      .where(eq(schema.sandboxes.id, sandboxId));
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      decryptSandboxToken: decrypt,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected fail');
+    expect(result.response.status).toBe(403);
+  });
+
+  it('vercel invalid image shape → 403 without leaking detail', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({
+        backend: 'vercel',
+        baseUrl: null,
+        tokenCiphertext: null,
+        image: 'bad image with spaces',
+      })
+      .where(eq(schema.sandboxes.id, sandboxId));
+
+    const createVercelClient = vi.fn(() => {
+      throw new Error('should not reach factory for invalid shape');
+    });
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      createVercelClient,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected fail');
+    expect(result.response.status).toBe(403);
+    const body = (await result.response.json()) as { error: string };
+    expect(body.error).toBe(SANDBOX_FORBIDDEN_ERROR);
+    expect(JSON.stringify(body)).not.toContain('spaces');
+    // Shape fails before factory — inject must not run.
+    expect(createVercelClient).not.toHaveBeenCalled();
+  });
+
+  it('vercel factory throw with valid image → 403 without leaking detail', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({
+        backend: 'vercel',
+        baseUrl: null,
+        tokenCiphertext: null,
+        image: 'vercel/sandbox/universal:latest',
+      })
+      .where(eq(schema.sandboxes.id, sandboxId));
+
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      createVercelClient: () => {
+        throw new Error('invalid image secret-detail');
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected fail');
+    expect(result.response.status).toBe(403);
+    const body = (await result.response.json()) as { error: string };
+    expect(body.error).toBe(SANDBOX_FORBIDDEN_ERROR);
+    expect(JSON.stringify(body)).not.toContain('secret-detail');
   });
 });

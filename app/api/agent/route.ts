@@ -10,6 +10,7 @@ import {
   SANDBOX_NOT_CONFIGURED_ERROR,
   sandboxConfigured,
 } from '../../../lib/sandbox/config';
+import type { SandboxClient } from '../../../lib/sandbox/client';
 import { runAgent, runAgentStream } from '../../../lib/agent/runAgent';
 import {
   AGENT_STREAM_CONTENT_TYPE,
@@ -37,10 +38,23 @@ function isAbortError(err: unknown): boolean {
   return err.name === 'AbortError' || err.name === 'ResponseAborted';
 }
 
+/**
+ * Stop ephemeral runners: hop-B http sandbox, MCP sessions, and FS SandboxClient
+ * (Vercel adapter implements optional close → stop).
+ * Called from JSON finally, stream start finally, and stream cancel.
+ */
 async function closeRunners(
   httpRunner: HttpFetchRunner | undefined,
   mcpClose: (() => Promise<void>) | undefined,
+  sandboxClient?: SandboxClient | undefined,
 ): Promise<void> {
+  if (sandboxClient?.close) {
+    try {
+      await sandboxClient.close();
+    } catch {
+      // ignore sandbox client close errors
+    }
+  }
   if (httpRunner) {
     try {
       await httpRunner.close();
@@ -108,6 +122,7 @@ export async function POST(req: Request): Promise<Response> {
   let redactList: string[] = [];
   let mcpClose: (() => Promise<void>) | undefined;
   let httpRunner: HttpFetchRunner | undefined;
+  let sandboxClient: SandboxClient | undefined;
   let runnersOwnedByStream = false;
 
   try {
@@ -147,6 +162,7 @@ export async function POST(req: Request): Promise<Response> {
           secrets: [...byok.secretsToRedact],
         };
       } else {
+        sandboxClient = resolved.value.client;
         redactList = [...redactList, ...resolved.value.secrets];
         runParams = {
           ...runParams,
@@ -207,6 +223,7 @@ export async function POST(req: Request): Promise<Response> {
       const encoder = new TextEncoder();
       const httpRef = httpRunner;
       const mcpRef = mcpClose;
+      const sandboxRef = sandboxClient;
       const secretsForErr = redactList;
 
       const bodyStream = new ReadableStream<Uint8Array>({
@@ -238,7 +255,7 @@ export async function POST(req: Request): Promise<Response> {
               enqueue({ type: 'error', error: safe });
             }
           } finally {
-            await closeRunners(httpRef, mcpRef);
+            await closeRunners(httpRef, mcpRef, sandboxRef);
             closed = true;
             try {
               controller.close();
@@ -248,7 +265,7 @@ export async function POST(req: Request): Promise<Response> {
           }
         },
         async cancel() {
-          await closeRunners(httpRef, mcpRef);
+          await closeRunners(httpRef, mcpRef, sandboxRef);
         },
       });
 
@@ -284,7 +301,7 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: safe }, { status });
   } finally {
     if (!runnersOwnedByStream) {
-      await closeRunners(httpRunner, mcpClose);
+      await closeRunners(httpRunner, mcpClose, sandboxClient);
     }
   }
 }

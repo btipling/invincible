@@ -1,7 +1,8 @@
 /**
- * Phase 3 — resolve default sandbox + grants for an authenticated user (v1).
- * Phase 2 (#94): decrypt sandbox token via tenant DEK (dual-read / dek-only mode).
- * Phase 1 sandbox backend (#281): null/empty URL or token → 403 fail-closed (vercel until phase 3).
+ * Resolve default sandbox + grants for an authenticated user (v1).
+ * Phase 3 (#283 / parent #280): branch on per-row `backend` (byo | vercel) and
+ * pass `image` into the Vercel SandboxClient factory.
+ * Phase 2 (#94): decrypt sandbox token via tenant DEK (dual-read / dek-only mode) for byo only.
  */
 import { and, eq } from 'drizzle-orm';
 import {
@@ -13,22 +14,35 @@ import {
 } from '../../db';
 import { createSandboxClient, type SandboxClient } from '../sandbox/client';
 import { normalizeBaseUrl } from '../sandbox/config';
+import {
+  createVercelSandboxClient,
+  type CreateVercelSandboxClientOptions,
+} from '../sandbox/vercelClient';
 import { SANDBOX_FORBIDDEN_ERROR } from './errors';
 import {
   effectiveGrantPermissions,
   isUsableGrant,
   type EffectivePermissions,
 } from './grants';
+import {
+  isSandboxBackend,
+  resolveVercelSandboxImage,
+  type SandboxBackend,
+} from './sandboxBackend';
 import { decryptSandboxToken } from './tenantKeys';
 
 export type ResolvedAgentSandbox = {
   client: SandboxClient;
   permissions: EffectivePermissions;
-  /** Plaintext secrets to scrub (includes decrypted sandbox token). */
+  /** Plaintext secrets to scrub (BYO decrypted token only; empty for vercel). */
   secrets: string[];
   sandboxId: string;
   tenantId: string;
-  baseUrl: string;
+  backend: SandboxBackend;
+  /** Present for byo only — never invent a host URL for vercel. */
+  baseUrl?: string;
+  /** Resolved Vercel image ref; null for byo. */
+  resolvedImage: string | null;
 };
 
 export type ResolveAgentSandboxResult =
@@ -40,13 +54,22 @@ export type ResolveAgentSandboxDeps = {
   /**
    * Override sandbox-token decrypt for tests.
    * Product default: mode-aware tenant DEK (dual / dek-only).
+   * Never called for backend=vercel.
    */
   decryptSandboxToken?: (
     tenantId: string,
     ciphertext: string,
   ) => string | Promise<string>;
-  /** Override client factory for tests. */
+  /** BYO HTTP client factory (tests). */
+  createByoClient?: (opts: { baseUrl: string; token: string }) => SandboxClient;
+  /**
+   * @deprecated Prefer createByoClient. Alias kept for older tests.
+   */
   createClient?: (opts: { baseUrl: string; token: string }) => SandboxClient;
+  /** Vercel FS client factory (tests). Receives raw row image. */
+  createVercelClient?: (
+    opts: Pick<CreateVercelSandboxClientOptions, 'image'>,
+  ) => SandboxClient;
 };
 
 function forbidden(): ResolveAgentSandboxResult {
@@ -107,6 +130,8 @@ async function resolveWithDb(
     const rows = await db
       .select({
         sandboxId: sandboxes.id,
+        backend: sandboxes.backend,
+        image: sandboxes.image,
         baseUrl: sandboxes.baseUrl,
         tokenCiphertext: sandboxes.tokenCiphertext,
         status: sandboxes.status,
@@ -133,7 +158,47 @@ async function resolveWithDb(
       canWrite: row.canWrite,
     });
 
-    // Fail closed before decrypt when BYO credentials missing (vercel rows until phase 3).
+    const backendRaw = (row.backend ?? 'byo').trim();
+    if (!isSandboxBackend(backendRaw)) {
+      return forbidden();
+    }
+    const backend: SandboxBackend = backendRaw;
+
+    if (backend === 'vercel') {
+      // Never decrypt BYO token for vercel rows (even if stale ciphertext remains).
+      const image = row.image;
+      const resolvedImg = resolveVercelSandboxImage(image);
+      if (!resolvedImg.ok) {
+        return forbidden();
+      }
+
+      let client: SandboxClient;
+      try {
+        const createVercel =
+          deps.createVercelClient ??
+          ((opts: Pick<CreateVercelSandboxClientOptions, 'image'>) =>
+            createVercelSandboxClient(opts));
+        client = createVercel({ image });
+      } catch {
+        // Invalid image / factory throw — fail closed, no message leak.
+        return forbidden();
+      }
+
+      return {
+        ok: true,
+        value: {
+          client,
+          permissions,
+          secrets: [],
+          sandboxId: row.sandboxId,
+          tenantId,
+          backend: 'vercel',
+          resolvedImage: resolvedImg.image,
+        },
+      };
+    }
+
+    // backend === 'byo'
     const baseUrlRaw = row.baseUrl?.trim() ?? '';
     const tokenCt = row.tokenCiphertext?.trim() ?? '';
     if (!baseUrlRaw || !tokenCt) {
@@ -142,8 +207,7 @@ async function resolveWithDb(
 
     const decrypt =
       deps.decryptSandboxToken ??
-      ((tid: string, ct: string) =>
-        decryptSandboxToken(tid, ct, { db }));
+      ((tid: string, ct: string) => decryptSandboxToken(tid, ct, { db }));
     let token: string;
     try {
       token = await decrypt(tenantId, tokenCt);
@@ -155,10 +219,11 @@ async function resolveWithDb(
     }
 
     const baseUrl = normalizeBaseUrl(baseUrlRaw);
-    const createClient =
+    const createByo =
+      deps.createByoClient ??
       deps.createClient ??
       ((opts: { baseUrl: string; token: string }) => createSandboxClient(opts));
-    const client = createClient({ baseUrl, token });
+    const client = createByo({ baseUrl, token });
 
     return {
       ok: true,
@@ -168,7 +233,9 @@ async function resolveWithDb(
         secrets: [token],
         sandboxId: row.sandboxId,
         tenantId,
+        backend: 'byo',
         baseUrl,
+        resolvedImage: null,
       },
     };
   } catch {
