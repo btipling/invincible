@@ -76,7 +76,7 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 | Topic | Behavior |
 |-------|----------|
 | Ring capacity | 48 messages in Wasm (`bridge.zig` `MAX_MSG`) |
-| Visible paint | Last **28** lines (+ “N earlier” hint) |
+| Visible paint | **All** messages currently in the ring (≤48); scroll to read older in-ring turns. Ring still drops oldest when full. No “N earlier” black-hole hint |
 | Line size | 4 KB UTF-8 max per message (`MAX_MSG_LEN`) |
 | Host history | Host folds last **~8** user/assistant turns (`formatPromptWithHistory` maxTurns=8, maxChars=12 000); prefer Clear for a fresh workspace |
 
@@ -119,7 +119,7 @@ Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain tex
 | Math | Inline `$...$` and display `$$...$$` (same-line or multi-line). **Host** MathJax (`mathjax-full`) TeX→**SVG paths** → data-URL canvas raster → RGBA → bridge `inv_math_cache_put` (protocol **v5**); Wasm paints via **dvui.image**. **Ink** palette `teal.text` on **transparent** pixels (no white cards); host super-samples 2× for sharpness. (KaTeX HTML→foreignObject→blob abandoned: Chromium taints canvas so pixels never reached Wasm.) Currency-like `$5` / `$10` / `$1,234.56` stay plain text; `\$` literal dollar. Caps: TeX ≤512 **UTF-8 bytes** (host + Wasm); cache ≤48 (cleared with transcript; host putOk is LRU of 48 and full-transcript re-schedule after turns can re-put after eviction); concurrent renders ≤3; max edge 1280; inline max height 64; display max height 320; width ≤ content. Inline interiors trimmed for cache-key parity host↔Wasm. Miss / TeX error / oversize → muted **TEAL** mono TeX source box. **Not:** dual DOM math bubbles, freestanding TeX engine in Wasm, live streaming partial `$` in composer, editable equation editor |
 | Fallback | Parse failure / OOM → raw body text (never empty bubble) |
 | Cache | Fingerprint (FNV-1a) over full body; cap 48 entries; cleared on transcript clear |
-| Caps | Same ring / 4 KiB line / 28 visible as above |
+| Caps | Same ring / 4 KiB line; paint all in-ring (≤48) as above |
 | Unicode | Message bodies are **UTF-8** end-to-end (host `TextEncoder` → Wasm ring → zmd parse → paint → Copy source). Integrity = scalars/bytes preserved; glyphs depend on the faces below |
 | Fonts (embedded) | **Noto Sans** Regular/Bold/Italic/BoldItalic (body + rich emph) · **OpenMoji** black outline subset (emoji) · **DejaVu symbols** subset (arrows / math / dingbats missing from Noto, e.g. →) · **Vera Sans Mono** Regular/Bold (fences / inline code). Licenses: `native/harness/src/fonts/README.md` |
 | Paint faces | Transcript paint **splits** emoji → OpenMoji, text symbols (arrows etc.) → DejaVu symbols, else Noto Sans / mono (dvui has no automatic per-glyph fallback) |

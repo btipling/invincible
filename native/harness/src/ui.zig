@@ -28,8 +28,6 @@ var transcript_scroll: dvui.ScrollInfo = .{
 };
 
 const SMOKE_PROMPT = "Reply with exactly: PONG";
-/// Cap visible lines for density (ring may hold more).
-const VISIBLE_MSG_CAP: usize = 28;
 /// Touch-friendly control height (CSS px ≈).
 const TOUCH_H: f32 = 40;
 /// Near-bottom epsilon for stick-to-bottom follow (plan #135).
@@ -284,17 +282,8 @@ pub fn frame() !void {
             }
             tl.deinit();
         } else {
-            const start_i: usize = if (n > VISIBLE_MSG_CAP) n - VISIBLE_MSG_CAP else 0;
-            if (start_i > 0) {
-                var tl = dvui.textLayout(@src(), .{}, .{
-                    .expand = .horizontal,
-                    .color_text = palette.teal_muted,
-                    .id_extra = 0xffff_fffe,
-                });
-                tl.format("… {d} earlier messages\n", .{start_i}, .{});
-                tl.deinit();
-            }
-            var i: usize = start_i;
+            // Paint entire in-ring transcript (MAX_MSG=48). No paint-cap / earlier hint.
+            var i: usize = 0;
             while (i < n) : (i += 1) {
                 if (bridge.messageAt(i)) |m| {
                     const is_err = m.kind == 4;
