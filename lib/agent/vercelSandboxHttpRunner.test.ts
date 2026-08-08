@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   VercelSandboxHttpRunner,
   parseCurlHeaders,
+  commandOutput,
   type CreateSandboxFn,
   type SandboxLike,
+  type SandboxCommandResult,
 } from './vercelSandboxHttpRunner';
 import { MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS } from './builtinHttpConfig';
 
@@ -27,6 +29,73 @@ describe('parseCurlHeaders', () => {
     );
     expect(r.status).toBe(200);
     expect(r.contentType).toMatch(/text\/html/);
+  });
+});
+
+
+/** Mimics @vercel/sandbox CommandFinished: stdout/stderr are methods using `this`. */
+function sdkStyleCommandResult(headers: string, body = ''): SandboxCommandResult {
+  const cache = {
+    stdout: headers,
+    stderr: '',
+    both: headers + body,
+  };
+  return {
+    exitCode: 0,
+    async output(stream: 'stdout' | 'stderr' | 'both' = 'both') {
+      // Same failure mode as real SDK if `this` is lost: this.cache undefined.
+      return cache[stream];
+    },
+    async stdout() {
+      return this.output!('stdout');
+    },
+    async stderr() {
+      return this.output!('stderr');
+    },
+  };
+}
+
+describe('commandOutput this-binding (SDK CommandFinished)', () => {
+  it('reads stdout via methods without detaching this', async () => {
+    const cmd = sdkStyleCommandResult(
+      'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n',
+    );
+    const { stdout, stderr } = await commandOutput(cmd);
+    expect(stdout).toMatch(/200 OK/);
+    expect(stderr).toBe('');
+  });
+
+  it('does not throw Cannot read properties of undefined (reading output)', async () => {
+    const cmd = sdkStyleCommandResult(
+      'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n',
+    );
+    await expect(commandOutput(cmd)).resolves.toMatchObject({
+      stdout: expect.stringContaining('200'),
+    });
+  });
+});
+
+describe('VercelSandboxHttpRunner with SDK-style CommandFinished', () => {
+  it('head path works when runCommand returns method-based stdout', async () => {
+    const createSandbox: CreateSandboxFn = vi.fn(async () =>
+      mockSandbox({
+        runCommand: vi.fn(async () =>
+          sdkStyleCommandResult(
+            'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n',
+          ),
+        ),
+      }),
+    );
+    const runner = new VercelSandboxHttpRunner({ createSandbox });
+    const r = await runner.get({
+      url: 'https://example.com/',
+      maxBytes: 0,
+      timeoutMs: 1000,
+      head: true,
+    });
+    expect(r.status).toBe(200);
+    expect(r.contentType).toMatch(/text\/html/);
+    await runner.close();
   });
 });
 

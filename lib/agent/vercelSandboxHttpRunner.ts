@@ -50,27 +50,51 @@ export type VercelSandboxHttpRunnerOptions = {
   sandboxTimeoutMs?: number;
 };
 
-async function readStream(
-  value: string | ((opts?: { signal?: AbortSignal }) => Promise<string>) | undefined,
-): Promise<string> {
-  if (value == null) return '';
-  if (typeof value === 'function') return value();
-  return value;
-}
-
-async function commandOutput(
+/**
+ * Read stdout/stderr from a Sandbox CommandFinished (or test double).
+ *
+ * Real @vercel/sandbox CommandFinished exposes `stdout`/`stderr`/`output` as
+ * **methods** that must keep `this`. Extracting `cmd.stdout` and calling it
+ * unbound throws: `Cannot read properties of undefined (reading 'output')`.
+ */
+export async function commandOutput(
   cmd: SandboxCommandResult,
 ): Promise<{ stdout: string; stderr: string }> {
-  // Prefer dedicated stdout/stderr (SDK CommandFinished methods or test strings).
-  if (typeof cmd.stdout === 'function' || typeof cmd.stdout === 'string') {
+  // String fields (unit-test doubles).
+  if (typeof cmd.stdout === 'string' || typeof cmd.stderr === 'string') {
     return {
-      stdout: await readStream(cmd.stdout),
-      stderr: await readStream(cmd.stderr),
+      stdout: typeof cmd.stdout === 'string' ? cmd.stdout : '',
+      stderr: typeof cmd.stderr === 'string' ? cmd.stderr : '',
     };
   }
+
+  // SDK methods — always call with receiver so `this.output` works.
+  if (typeof cmd.stdout === 'function') {
+    const stdoutFn = cmd.stdout as (
+      this: SandboxCommandResult,
+      opts?: { signal?: AbortSignal },
+    ) => Promise<string>;
+    const stderrFn =
+      typeof cmd.stderr === 'function'
+        ? (cmd.stderr as (
+            this: SandboxCommandResult,
+            opts?: { signal?: AbortSignal },
+          ) => Promise<string>)
+        : null;
+    return {
+      stdout: await stdoutFn.call(cmd),
+      stderr: stderrFn ? await stderrFn.call(cmd) : '',
+    };
+  }
+
   if (typeof cmd.output === 'function') {
     try {
-      const both = await cmd.output('both');
+      const outputFn = cmd.output as (
+        this: SandboxCommandResult,
+        stream?: 'stdout' | 'stderr' | 'both',
+        opts?: { signal?: AbortSignal },
+      ) => Promise<string>;
+      const both = await outputFn.call(cmd, 'both');
       if (typeof both === 'string') {
         return { stdout: both, stderr: '' };
       }
@@ -78,6 +102,7 @@ async function commandOutput(
       // fall through
     }
   }
+
   return { stdout: '', stderr: '' };
 }
 
