@@ -21,9 +21,6 @@ import {
   LIVE_TOOL_LINES_MAX,
   type AgentStreamEvent,
 } from './agent/agentStream';
-
-/** Match Wasm MAX_MSG_LEN — single thinking bubble cap. */
-export const THINKING_DISPLAY_MAX = 4096;
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
 } from './sandbox/config';
@@ -48,6 +45,9 @@ import {
   type SessionSnapshot,
 } from './sessionStore';
 import { canLoadEarlier, latestRingStart, sliceMessagesForRing } from './sessionWindow';
+
+/** Match Wasm MAX_MSG_LEN — single thinking bubble cap. */
+export const THINKING_DISPLAY_MAX = 4096;
 
 /** Parent #45 / phase 3 — max system toolTrace lines per turn. */
 export const TOOL_TRACE_MAX_LINES = 6;
@@ -337,6 +337,9 @@ export async function runHarnessTurn(
     const growThinking = (chunk: string) => {
       if (!chunk) return;
       // Thinking is ephemeral UI — do not append to SessionStore.
+      // Close assistant so a later text_delta cannot updateLast-fail and
+      // re-push a full duplicated assistant segment (text→reason→text).
+      closeAssistantSegment();
       if (!thinkingSegmentOpen) {
         thinkingSegment = truncateThinkingDisplay(chunk);
         bridge.pushMessage(MessageKind.Thinking, thinkingSegment);

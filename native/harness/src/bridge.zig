@@ -234,7 +234,7 @@ export fn inv_push_message(kind: u8, ptr: [*]const u8, len: usize) void {
     refresh();
 }
 
-/// Replace the newest ring message when kind matches (protocol v7 — stream assistant growth).
+/// Replace the newest ring message when kind matches (protocol v7+ stream growth; Thinking in v8).
 /// Returns 1 on update, 0 if empty ring or kind mismatch.
 export fn inv_update_last_message(kind: u8, ptr: [*]const u8, len: usize) u8 {
     if (msg_count == 0) return 0;

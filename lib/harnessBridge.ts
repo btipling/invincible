@@ -266,8 +266,8 @@ export class HarnessBridge {
   }
 
   /**
-   * Replace last ring message when kind matches (protocol v7).
-   * Used to grow a streaming assistant bubble without N new messages.
+   * Replace last ring message when kind matches (protocol v7+ stream growth; Thinking kind in v8).
+   * Used to grow a streaming assistant/thinking bubble without N new messages.
    */
   updateLastMessage(kind: MessageKind, text: string): boolean {
     const { ptr, len } = this.writeUtf8(text);

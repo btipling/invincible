@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SandboxClient } from '../sandbox/client';
-import { collectToolTrace, DEFAULT_AGENT_SYSTEM, runAgent } from './runAgent';
+import { collectToolTrace, DEFAULT_AGENT_SYSTEM, runAgent, runAgentStream } from './runAgent';
 import { TOOL_TRACE_SUMMARY_MAX_CHARS } from '../sandbox/config';
 import { MCP_SYSTEM_ADDENDUM } from '../mcp/toolNames';
 
@@ -337,6 +337,82 @@ describe('runAgent http-only / optional sandbox', () => {
     } finally {
       if (prevUrl != null) process.env.SANDBOX_URL = prevUrl;
       if (prevTok != null) process.env.SANDBOX_TOKEN = prevTok;
+    }
+  });
+});
+
+describe('runAgentStream reasoning option', () => {
+  it('passes resolveAgentReasoning result into streamText', async () => {
+    const prev = process.env.AGENT_REASONING;
+    process.env.AGENT_REASONING = 'high';
+    try {
+      const events: unknown[] = [];
+      const streamTextImpl = vi.fn(() => ({
+        fullStream: (async function* () {
+          yield { type: 'text-delta', text: 'ok' };
+        })(),
+        text: Promise.resolve('ok'),
+        steps: Promise.resolve([]),
+      }));
+      const client: SandboxClient = {
+        listDir: vi.fn(),
+        readFile: vi.fn(),
+        writeFile: vi.fn(),
+        exec: vi.fn(),
+      };
+      await runAgentStream(
+        {
+          prompt: 'hi',
+          modelId: 'xai/grok-4.1-fast-non-reasoning',
+          streamTextImpl: streamTextImpl as never,
+          sandboxClient: client,
+        },
+        {
+          onEvent: async (ev) => {
+            events.push(ev);
+          },
+        },
+      );
+      expect(streamTextImpl).toHaveBeenCalledTimes(1);
+      const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
+      expect(args.reasoning).toBe('high');
+      expect(events.some((e) => (e as { type?: string }).type === 'done')).toBe(true);
+    } finally {
+      if (prev == null) delete process.env.AGENT_REASONING;
+      else process.env.AGENT_REASONING = prev;
+    }
+  });
+
+  it('omits reasoning for non-reasoning models when env unset', async () => {
+    const prev = process.env.AGENT_REASONING;
+    delete process.env.AGENT_REASONING;
+    try {
+      const streamTextImpl = vi.fn(() => ({
+        fullStream: (async function* () {
+          yield { type: 'text-delta', text: 'ok' };
+        })(),
+        text: Promise.resolve('ok'),
+        steps: Promise.resolve([]),
+      }));
+      const client: SandboxClient = {
+        listDir: vi.fn(),
+        readFile: vi.fn(),
+        writeFile: vi.fn(),
+        exec: vi.fn(),
+      };
+      await runAgentStream(
+        {
+          prompt: 'hi',
+          modelId: 'anthropic/claude-sonnet-4',
+          streamTextImpl: streamTextImpl as never,
+          sandboxClient: client,
+        },
+        { onEvent: async () => {} },
+      );
+      const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
+      expect(args).not.toHaveProperty('reasoning');
+    } finally {
+      if (prev != null) process.env.AGENT_REASONING = prev;
     }
   });
 });
