@@ -4,6 +4,7 @@ import {
   type ListDirResult,
   type ReadFileResult,
   type SandboxClientOptions,
+  type StatResult,
   type WriteFileResult,
   type StrReplaceResult,
 } from './types';
@@ -39,6 +40,8 @@ export type SandboxClient = {
     replaceAll?: boolean,
     init?: { signal?: AbortSignal },
   ) => Promise<StrReplaceResult>;
+  /** Cheap metadata for create-vs-update / freshness re-check (no content). */
+  stat: (path: string, init?: { signal?: AbortSignal }) => Promise<StatResult>;
   exec: (
     body: {
       cmd: string;
@@ -266,6 +269,7 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
         },
         init,
       ),
+    stat: (path, init) => postJson<StatResult>('/v1/stat', { path }, init),
     exec: async (body, init) => {
       const stdinRaw =
         body?.stdin !== undefined && body?.stdin !== null

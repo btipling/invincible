@@ -7,15 +7,28 @@ export type SandboxDirEntry = {
 
 export type ListDirResult = { entries: SandboxDirEntry[] };
 
-export type ReadFileResult = { content: string; truncated?: boolean };
+/** On-disk fingerprint (additive; optional when daemon/backend omits). */
+export type FileFingerprint = {
+  mtimeMs?: number;
+  size?: number;
+};
 
-export type WriteFileResult = { ok: true; bytes: number };
+export type ReadFileResult = { content: string; truncated?: boolean } & FileFingerprint;
+
+export type WriteFileResult = { ok: true; bytes: number } & FileFingerprint;
 
 export type StrReplaceResult = {
   ok: true;
   path: string;
   replacements: number;
   bytes: number;
+} & FileFingerprint;
+
+export type StatResult = {
+  path: string;
+  type: 'file' | 'dir' | 'other';
+  mtimeMs: number;
+  size: number;
 };
 
 export type ExecResult = {

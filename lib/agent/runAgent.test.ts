@@ -34,6 +34,7 @@ describe('runAgent', () => {
       writeFile: vi.fn(),
       strReplace: vi.fn(),
       exec: vi.fn(),
+      stat: vi.fn(),
     };
 
     const signal = new AbortController().signal;
@@ -63,6 +64,7 @@ describe('runAgent', () => {
       writeFile: vi.fn(),
       strReplace: vi.fn(),
       exec: vi.fn(),
+      stat: vi.fn(),
     };
     await runAgent({
       prompt: 'hi',
@@ -96,6 +98,7 @@ describe('runAgent', () => {
       writeFile: vi.fn(),
       strReplace: vi.fn(),
       exec: vi.fn(),
+      stat: vi.fn(),
     };
     await runAgent({
       prompt: 'hi',
@@ -123,6 +126,7 @@ describe('runAgent', () => {
       writeFile: vi.fn(),
       strReplace: vi.fn(),
       exec: vi.fn(),
+      stat: vi.fn(),
     };
     await runAgent({
       prompt: 'hi',
@@ -146,6 +150,7 @@ describe('runAgent', () => {
       writeFile: vi.fn(),
       strReplace: vi.fn(),
       exec: vi.fn(),
+      stat: vi.fn(),
     };
     await runAgent({
       prompt: 'hi',
@@ -171,6 +176,7 @@ describe('runAgent', () => {
       writeFile: vi.fn(),
       strReplace: vi.fn(),
       exec: vi.fn(),
+      stat: vi.fn(),
     };
     const result = await runAgent({
       prompt: 'hi',
@@ -404,6 +410,7 @@ describe('runAgentStream reasoning option', () => {
         writeFile: vi.fn(),
         strReplace: vi.fn(),
         exec: vi.fn(),
+        stat: vi.fn(),
       };
       await runAgentStream(
         {
@@ -445,6 +452,7 @@ describe('runAgentStream reasoning option', () => {
         writeFile: vi.fn(),
         strReplace: vi.fn(),
         exec: vi.fn(),
+        stat: vi.fn(),
       };
       await runAgentStream(
         {
@@ -475,6 +483,7 @@ describe('runAgent cwd', () => {
       writeFile: vi.fn(),
       strReplace: vi.fn(),
       exec: vi.fn(),
+      stat: vi.fn(),
     };
     const result = await runAgent({
       prompt: 'hi',
@@ -528,6 +537,7 @@ describe('runAgent cwd', () => {
       writeFile: vi.fn(),
       strReplace: vi.fn(),
       exec: vi.fn(),
+      stat: vi.fn(),
     };
     const result = await runAgentStream(
       {

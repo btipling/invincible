@@ -6,7 +6,7 @@ import { SandboxHttpError } from './types';
 describe('sandbox client', () => {
   const token = 'test-token-secret-xyz';
 
-  it('list/read/write/exec call correct paths with bearer', async () => {
+  it('list/read/write/stat/exec call correct paths with bearer', async () => {
     const calls: { url: string; init: RequestInit }[] = [];
     const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
@@ -15,10 +15,18 @@ describe('sandbox client', () => {
         return Response.json({ entries: [{ name: 'a', type: 'file' }] });
       }
       if (path.endsWith('/v1/read_file')) {
-        return Response.json({ content: 'hi' });
+        return Response.json({ content: 'hi', mtimeMs: 1000, size: 2 });
       }
       if (path.endsWith('/v1/write_file')) {
-        return Response.json({ ok: true, bytes: 2 });
+        return Response.json({ ok: true, bytes: 2, mtimeMs: 1001, size: 2 });
+      }
+      if (path.endsWith('/v1/stat')) {
+        return Response.json({
+          path: 'a.txt',
+          type: 'file',
+          mtimeMs: 1000,
+          size: 2,
+        });
       }
       if (path.endsWith('/v1/exec')) {
         return Response.json({ exitCode: 0, stdout: 'ok', stderr: '' });
@@ -35,10 +43,22 @@ describe('sandbox client', () => {
     await expect(client.listDir('.')).resolves.toEqual({
       entries: [{ name: 'a', type: 'file' }],
     });
-    await expect(client.readFile('a.txt')).resolves.toEqual({ content: 'hi' });
+    await expect(client.readFile('a.txt')).resolves.toEqual({
+      content: 'hi',
+      mtimeMs: 1000,
+      size: 2,
+    });
     await expect(client.writeFile('a.txt', 'hi')).resolves.toEqual({
       ok: true,
       bytes: 2,
+      mtimeMs: 1001,
+      size: 2,
+    });
+    await expect(client.stat('a.txt')).resolves.toEqual({
+      path: 'a.txt',
+      type: 'file',
+      mtimeMs: 1000,
+      size: 2,
     });
     await expect(client.exec({ cmd: 'node', args: ['-e', '1'] })).resolves.toEqual({
       exitCode: 0,
@@ -46,7 +66,7 @@ describe('sandbox client', () => {
       stderr: '',
     });
 
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
     for (const c of calls) {
       const headers = c.init.headers as Record<string, string>;
       expect(headers.Authorization).toBe(`Bearer ${token}`);
@@ -290,5 +310,30 @@ describe('sandbox client', () => {
     });
     await client.exec({ cmd: 'true' });
     expect(paths).toEqual(['/v1/exec']);
+  });
+
+  it('accepts optional fingerprint fields from old daemons', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      const path = String(url);
+      if (path.endsWith('/v1/read_file')) {
+        return Response.json({ content: 'legacy' });
+      }
+      if (path.endsWith('/v1/stat')) {
+        return Response.json({
+          path: 'x',
+          type: 'file',
+          mtimeMs: 1,
+          size: 0,
+        });
+      }
+      return new Response('nope', { status: 404 });
+    });
+    const client = createSandboxClient({
+      baseUrl: 'http://sandbox.test/',
+      token,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(client.readFile('x')).resolves.toEqual({ content: 'legacy' });
+    await expect(client.stat('x')).resolves.toMatchObject({ type: 'file', size: 0 });
   });
 });

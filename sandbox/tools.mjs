@@ -106,6 +106,18 @@ function entryType(dirent) {
 }
 
 /**
+ * On-disk fingerprint for read-before-edit gate 2 (additive protocol fields).
+ * @param {{ mtimeMs: number, size: number }} stat
+ * @returns {{ mtimeMs: number, size: number }}
+ */
+function fingerprintFromStat(stat) {
+  return {
+    mtimeMs: Math.trunc(stat.mtimeMs),
+    size: stat.size,
+  };
+}
+
+/**
  * @param {string} workspace
  * @param {{ path?: string }} body
  */
@@ -130,6 +142,7 @@ export async function listDir(workspace, body) {
 /**
  * @param {string} workspace
  * @param {{ path?: string, maxBytes?: number }} body
+ * @returns {Promise<{ content: string, truncated?: boolean, mtimeMs: number, size: number }>}
  */
 export async function readFileTool(workspace, body) {
   if (body?.path == null || body.path === '') {
@@ -152,7 +165,10 @@ export async function readFileTool(workspace, body) {
     const { bytesRead } = await fh.read(buf, 0, max + 1, 0);
     const truncated = bytesRead > max;
     const content = buf.subarray(0, Math.min(bytesRead, max)).toString('utf8');
-    return truncated ? { content, truncated: true } : { content };
+    const fp = fingerprintFromStat(stat);
+    return truncated
+      ? { content, truncated: true, ...fp }
+      : { content, ...fp };
   } finally {
     await fh.close();
   }
@@ -161,6 +177,7 @@ export async function readFileTool(workspace, body) {
 /**
  * @param {string} workspace
  * @param {{ path?: string, content?: string, mkdir?: boolean }} body
+ * @returns {Promise<{ ok: true, bytes: number, mtimeMs: number, size: number }>}
  */
 export async function writeFileTool(workspace, body) {
   if (body?.path == null || body.path === '') {
@@ -190,13 +207,19 @@ export async function writeFileTool(workspace, body) {
   }
 
   await fs.writeFile(target, contentBuf);
-  return { ok: true, bytes: contentBuf.byteLength };
+  const st = await fs.stat(target);
+  return {
+    ok: true,
+    bytes: contentBuf.byteLength,
+    ...fingerprintFromStat(st),
+  };
 }
 
 /**
  * Exact string replace in a workspace file (coding-agent search_replace semantics).
  * @param {string} workspace
  * @param {{ path?: string, old_string?: string, new_string?: string, replace_all?: boolean }} body
+ * @returns {Promise<{ ok: true, path: string, replacements: number, bytes: number, mtimeMs: number, size: number }>}
  */
 export async function strReplaceTool(workspace, body) {
   if (body?.path == null || body.path === '') {
@@ -269,15 +292,45 @@ export async function strReplaceTool(workspace, body) {
   }
 
   await fs.writeFile(target, outBuf);
+  const stAfter = await fs.stat(target);
   return {
     ok: true,
     path: String(body.path),
     replacements: replaceAll ? count : 1,
     bytes: outBuf.byteLength,
+    ...fingerprintFromStat(stAfter),
   };
 }
 
 
+
+/**
+ * Cheap path metadata for create-vs-update and freshness re-check (no content).
+ * @param {string} workspace
+ * @param {{ path?: string }} body
+ * @returns {Promise<{ path: string, type: 'file' | 'dir' | 'other', mtimeMs: number, size: number }>}
+ */
+export async function statTool(workspace, body) {
+  if (body?.path == null || body.path === '') {
+    throw new ToolError('path is required');
+  }
+  const target = resolveJailPath(workspace, body.path);
+  let st;
+  try {
+    st = await fs.stat(target);
+  } catch {
+    throw new ToolError('Path not found', 404);
+  }
+  /** @type {'file' | 'dir' | 'other'} */
+  let type = 'other';
+  if (st.isFile()) type = 'file';
+  else if (st.isDirectory()) type = 'dir';
+  return {
+    path: String(body.path),
+    type,
+    ...fingerprintFromStat(st),
+  };
+}
 
 /**
  * @param {import('node:stream').Readable | null | undefined} stream

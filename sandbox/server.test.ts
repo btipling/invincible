@@ -91,7 +91,9 @@ describe('sandbox HTTP server', () => {
       body: JSON.stringify({ path: 'note.txt', content: 'hi' }),
     });
     expect(write.status).toBe(200);
-    expect(await write.json()).toEqual({ ok: true, bytes: 2 });
+    const writeBody = await write.json();
+    expect(writeBody).toMatchObject({ ok: true, bytes: 2, size: 2 });
+    expect(Number.isInteger(writeBody.mtimeMs)).toBe(true);
 
     const read = await fetch(`${base}/v1/read_file`, {
       method: 'POST',
@@ -99,7 +101,9 @@ describe('sandbox HTTP server', () => {
       body: JSON.stringify({ path: 'note.txt' }),
     });
     expect(read.status).toBe(200);
-    expect(await read.json()).toEqual({ content: 'hi' });
+    const readBody = await read.json();
+    expect(readBody).toMatchObject({ content: 'hi', size: 2 });
+    expect(Number.isInteger(readBody.mtimeMs)).toBe(true);
 
     const list = await fetch(`${base}/v1/list_dir`, {
       method: 'POST',
@@ -192,5 +196,61 @@ describe('sandbox HTTP server', () => {
     const body = (await res.json()) as { exitCode: number; stdout: string };
     expect(body.exitCode).toBe(0);
     expect(body.stdout).toBe('via-http-heredoc');
+  });
+
+  it('POST /v1/stat returns file metadata; 404 missing; 400 empty; jail 400', async () => {
+    const { base, token } = await start();
+    const write = await fetch(`${base}/v1/write_file`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ path: 's.txt', content: 'ab' }),
+    });
+    expect(write.status).toBe(200);
+
+    const st = await fetch(`${base}/v1/stat`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ path: 's.txt' }),
+    });
+    expect(st.status).toBe(200);
+    const body = await st.json();
+    expect(body).toMatchObject({ path: 's.txt', type: 'file', size: 2 });
+    expect(Number.isInteger(body.mtimeMs)).toBe(true);
+
+    const missing = await fetch(`${base}/v1/stat`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ path: 'nope.txt' }),
+    });
+    expect(missing.status).toBe(404);
+
+    const empty = await fetch(`${base}/v1/stat`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ path: '' }),
+    });
+    expect(empty.status).toBe(400);
+
+    const jail = await fetch(`${base}/v1/stat`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ path: '../etc/passwd' }),
+    });
+    expect(jail.status).toBe(400);
   });
 });

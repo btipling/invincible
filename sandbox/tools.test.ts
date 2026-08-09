@@ -11,6 +11,7 @@ import {
   listDir,
   parseExecEnvOverlay,
   readFileTool,
+  statTool,
   strReplaceTool,
   writeFileTool,
 } from './tools.mjs';
@@ -33,11 +34,18 @@ describe('sandbox tools', () => {
       path: 'hello.txt',
       content: 'hello world',
     });
-    expect(w).toEqual({ ok: true, bytes: Buffer.byteLength('hello world') });
+    expect(w.ok).toBe(true);
+    expect(w.bytes).toBe(Buffer.byteLength('hello world'));
+    expect(typeof w.mtimeMs).toBe('number');
+    expect(Number.isInteger(w.mtimeMs)).toBe(true);
+    expect(w.size).toBe(Buffer.byteLength('hello world'));
 
     const r = await readFileTool(ws, { path: 'hello.txt' });
     expect(r.content).toBe('hello world');
     expect(r.truncated).toBeUndefined();
+    expect(typeof r.mtimeMs).toBe('number');
+    expect(Number.isInteger(r.mtimeMs)).toBe(true);
+    expect(r.size).toBe(Buffer.byteLength('hello world'));
 
     const list = await listDir(ws, { path: '.' });
     expect(list.entries).toContainEqual({ name: 'hello.txt', type: 'file' });
@@ -333,5 +341,78 @@ describe('sandbox tools', () => {
         new_string: 'b',
       }),
     ).rejects.toThrow(JailError);
+  });
+});
+
+describe('sandbox tools fingerprints + stat', () => {
+  let tmp: string;
+
+  afterEach(async () => {
+    if (tmp) await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  async function mkWorkspace(): Promise<string> {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'sandbox-fp-'));
+    return tmp;
+  }
+
+  it('read returns mtimeMs/size; truncated still full-file size', async () => {
+    const ws = await mkWorkspace();
+    await writeFileTool(ws, { path: 'big.txt', content: 'abcdefghij' });
+    const full = await readFileTool(ws, { path: 'big.txt' });
+    expect(full.size).toBe(10);
+    expect(Number.isInteger(full.mtimeMs)).toBe(true);
+
+    const r = await readFileTool(ws, { path: 'big.txt', maxBytes: 4 });
+    expect(r.content).toBe('abcd');
+    expect(r.truncated).toBe(true);
+    expect(r.size).toBe(10);
+    expect(Number.isInteger(r.mtimeMs)).toBe(true);
+  });
+
+  it('write and str_replace return post-write fingerprint', async () => {
+    const ws = await mkWorkspace();
+    const w = await writeFileTool(ws, { path: 'a.ts', content: 'const x = 1;\n' });
+    expect(w.bytes).toBe(Buffer.byteLength('const x = 1;\n'));
+    expect(w.size).toBe(w.bytes);
+    expect(Number.isInteger(w.mtimeMs)).toBe(true);
+
+    const s = await strReplaceTool(ws, {
+      path: 'a.ts',
+      old_string: '1',
+      new_string: '2',
+    });
+    expect(s.ok).toBe(true);
+    expect(s.replacements).toBe(1);
+    expect(s.size).toBe(s.bytes);
+    expect(Number.isInteger(s.mtimeMs)).toBe(true);
+  });
+
+  it('stat file / dir / 404 / empty path / jail escape', async () => {
+    const ws = await mkWorkspace();
+    await writeFileTool(ws, { path: 'f.txt', content: 'hi' });
+    await fs.mkdir(path.join(ws, 'subdir'));
+
+    const fileSt = await statTool(ws, { path: 'f.txt' });
+    expect(fileSt).toMatchObject({ path: 'f.txt', type: 'file', size: 2 });
+    expect(Number.isInteger(fileSt.mtimeMs)).toBe(true);
+
+    const dirSt = await statTool(ws, { path: 'subdir' });
+    expect(dirSt).toMatchObject({ path: 'subdir', type: 'dir' });
+    expect(Number.isInteger(dirSt.mtimeMs)).toBe(true);
+
+    await expect(statTool(ws, { path: 'missing.txt' })).rejects.toMatchObject({
+      name: 'ToolError',
+      status: 404,
+    });
+    await expect(statTool(ws, { path: '' })).rejects.toMatchObject({
+      name: 'ToolError',
+      status: 400,
+    });
+    await expect(statTool(ws, {})).rejects.toMatchObject({
+      name: 'ToolError',
+      status: 400,
+    });
+    await expect(statTool(ws, { path: '../escape' })).rejects.toThrow(JailError);
   });
 });

@@ -79,6 +79,7 @@ function mockSandbox(overrides: Partial<VercelFsSandboxLike> = {}): VercelFsSand
             isFile: () => false,
             isDirectory: () => true,
             size: 0,
+            mtimeMs: 1_700_000_000_000,
           };
         }
         if (files.has(filePath)) {
@@ -87,6 +88,7 @@ function mockSandbox(overrides: Partial<VercelFsSandboxLike> = {}): VercelFsSand
             isFile: () => true,
             isDirectory: () => false,
             size: Buffer.byteLength(content, 'utf8'),
+            mtimeMs: 1_700_000_000_123,
           };
         }
         throw new Error(`ENOENT: ${filePath}`);
@@ -184,6 +186,28 @@ describe('createVercelSandboxClient', () => {
 
     await client.close?.();
   });
+
+  it('stat maps type/size/mtimeMs; 404 on missing', async () => {
+    const createSandbox = vi.fn(async () => mockSandbox());
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox: createSandbox,
+    });
+    await client.writeFile('hello.txt', 'hi');
+    await expect(client.stat('hello.txt')).resolves.toEqual({
+      path: 'hello.txt',
+      type: 'file',
+      mtimeMs: 1_700_000_000_123,
+      size: 2,
+    });
+    await expect(client.stat('.')).resolves.toMatchObject({
+      path: '.',
+      type: 'dir',
+      size: 0,
+    });
+    await expect(client.stat('missing.txt')).rejects.toBeInstanceOf(SandboxHttpError);
+  });
+
 
   it('exec passes allowlisted execEnv to runCommand', async () => {
     const sb = mockSandbox();
