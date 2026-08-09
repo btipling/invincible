@@ -15,6 +15,12 @@ function mockClient(partial: Partial<SandboxClient>): SandboxClient {
       bytes: 10,
     })),
     exec: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
+    stat: vi.fn(async () => ({
+      path: '.',
+      type: 'file' as const,
+      mtimeMs: 0,
+      size: 0,
+    })),
     ...partial,
   };
 }

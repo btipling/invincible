@@ -23,6 +23,7 @@ import {
   type ExecResult,
   type ListDirResult,
   type ReadFileResult,
+  type StatResult,
   type StrReplaceResult,
   type WriteFileResult,
 } from './types';
@@ -85,7 +86,13 @@ export type VercelFsSandboxLike = {
     stat?(
       filePath: string,
       options?: { signal?: AbortSignal },
-    ): Promise<{ isFile(): boolean; isDirectory(): boolean; size: number }>;
+    ): Promise<{
+      isFile(): boolean;
+      isDirectory(): boolean;
+      size: number;
+      /** Present when the SDK/surface provides it; optional for gate 2. */
+      mtimeMs?: number;
+    }>;
   };
   /**
    * Mirrors @vercel/sandbox: string form only forwards signal/timeoutMs;
@@ -609,6 +616,42 @@ export function createVercelSandboxClient(
             replacements: replaceAll ? count : 1,
             bytes: outBuf.byteLength,
           };
+        }, init?.signal);
+      } catch (err) {
+        mapFsError(err);
+      }
+    },
+
+    async stat(userPath, init): Promise<StatResult> {
+      try {
+        if (userPath == null || userPath === '') {
+          throw new SandboxHttpError('path is required', 400);
+        }
+        const abs = resolveVercelFsPath(workspaceRoot, userPath);
+        const sb = await ensureSandbox(init?.signal);
+        await maybeExtend(sb);
+        return await runRs(async () => {
+          if (typeof sb.fs.stat !== 'function') {
+            throw new SandboxHttpError(
+              'stat is not supported on this Vercel sandbox handle',
+              501,
+            );
+          }
+          const st = await sb.fs.stat(abs, { signal: init?.signal });
+          let type: StatResult['type'] = 'other';
+          if (st.isFile()) type = 'file';
+          else if (st.isDirectory()) type = 'dir';
+          const mtimeRaw = st.mtimeMs;
+          const result: StatResult = {
+            path: userPath,
+            type,
+            size: st.size,
+          };
+          // Never invent 0 — missing mtime must stay omitted so phase 2 can degrade.
+          if (typeof mtimeRaw === 'number' && Number.isFinite(mtimeRaw)) {
+            result.mtimeMs = Math.trunc(mtimeRaw);
+          }
+          return result;
         }, init?.signal);
       } catch (err) {
         mapFsError(err);

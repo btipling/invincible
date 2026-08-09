@@ -79,6 +79,7 @@ function mockSandbox(overrides: Partial<VercelFsSandboxLike> = {}): VercelFsSand
             isFile: () => false,
             isDirectory: () => true,
             size: 0,
+            mtimeMs: 1_700_000_000_000,
           };
         }
         if (files.has(filePath)) {
@@ -87,6 +88,7 @@ function mockSandbox(overrides: Partial<VercelFsSandboxLike> = {}): VercelFsSand
             isFile: () => true,
             isDirectory: () => false,
             size: Buffer.byteLength(content, 'utf8'),
+            mtimeMs: 1_700_000_000_123,
           };
         }
         throw new Error(`ENOENT: ${filePath}`);
@@ -183,6 +185,71 @@ describe('createVercelSandboxClient', () => {
     expect((execCall![0] as { env?: Record<string, string> }).env).toBeUndefined();
 
     await client.close?.();
+  });
+
+  it('stat maps type/size/mtimeMs; 404 on missing; 400 empty path', async () => {
+    const createSandbox = vi.fn(async () => mockSandbox());
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox: createSandbox,
+    });
+    await client.writeFile('hello.txt', 'hi');
+    await expect(client.stat('hello.txt')).resolves.toEqual({
+      path: 'hello.txt',
+      type: 'file',
+      mtimeMs: 1_700_000_000_123,
+      size: 2,
+    });
+    await expect(client.stat('.')).resolves.toMatchObject({
+      path: '.',
+      type: 'dir',
+      size: 0,
+    });
+    await expect(client.stat('missing.txt')).rejects.toBeInstanceOf(SandboxHttpError);
+    await expect(client.stat('')).rejects.toMatchObject({
+      name: 'SandboxHttpError',
+      status: 400,
+    });
+  });
+
+  it('stat omits mtimeMs when SDK does not provide it (never invents 0)', async () => {
+    const createSandbox = vi.fn(async () =>
+      mockSandbox({
+        fs: {
+          stat: vi.fn(async (filePath: string) => {
+            // No mtimeMs on purpose — mirrors SDK surfaces that only expose type/size.
+            if (filePath === VERCEL_FS_WORKSPACE_ROOT || filePath.endsWith('/')) {
+              return {
+                isFile: () => false,
+                isDirectory: () => true,
+                size: 0,
+              };
+            }
+            // After writeFile, path is absolute under workspace root
+            if (filePath.endsWith('hello.txt') || filePath.includes('/hello.txt')) {
+              return {
+                isFile: () => true,
+                isDirectory: () => false,
+                size: 2,
+              };
+            }
+            throw new Error(`ENOENT: ${filePath}`);
+          }),
+        } as never,
+      }),
+    );
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox: createSandbox,
+    });
+    await client.writeFile('hello.txt', 'hi');
+    const st = await client.stat('hello.txt');
+    expect(st).toEqual({
+      path: 'hello.txt',
+      type: 'file',
+      size: 2,
+    });
+    expect(st).not.toHaveProperty('mtimeMs');
   });
 
   it('exec passes allowlisted execEnv to runCommand', async () => {
