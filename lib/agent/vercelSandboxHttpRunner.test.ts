@@ -1,13 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   VercelSandboxHttpRunner,
   parseCurlHeaders,
   commandOutput,
-  type CreateSandboxFn,
+  DEFAULT_HTTP_ATTACH_IDLE_TIMEOUT_MS,
+  type GetSandboxFn,
   type SandboxLike,
   type SandboxCommandResult,
 } from './vercelSandboxHttpRunner';
-import { MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS } from './builtinHttpConfig';
+import { USER_SANDBOX_IDLE_TIMEOUT_MS } from '../tenancy/userSandboxInstance';
 
 function mockSandbox(overrides: Partial<SandboxLike> = {}): SandboxLike {
   return {
@@ -18,6 +22,7 @@ function mockSandbox(overrides: Partial<SandboxLike> = {}): SandboxLike {
       stderr: '',
     })),
     stop: vi.fn(async () => ({})),
+    extendTimeout: vi.fn(async () => ({})),
     ...overrides,
   };
 }
@@ -52,7 +57,6 @@ function sdkStyleCommandResult(headers: string, body = ''): SandboxCommandResult
   return {
     exitCode: 0,
     async output(stream: 'stdout' | 'stderr' | 'both' = 'both') {
-      // Same failure mode as real SDK if `this` is lost: this.cache undefined.
       return cache[stream];
     },
     async stdout() {
@@ -86,7 +90,7 @@ describe('commandOutput this-binding (SDK CommandFinished)', () => {
 
 describe('VercelSandboxHttpRunner with SDK-style CommandFinished', () => {
   it('head path works when runCommand returns method-based stdout', async () => {
-    const createSandbox: CreateSandboxFn = vi.fn(async () =>
+    const getSandbox: GetSandboxFn = vi.fn(async () =>
       mockSandbox({
         runCommand: vi.fn(async () =>
           sdkStyleCommandResult(
@@ -95,7 +99,10 @@ describe('VercelSandboxHttpRunner with SDK-style CommandFinished', () => {
         ),
       }),
     );
-    const runner = new VercelSandboxHttpRunner({ createSandbox });
+    const runner = new VercelSandboxHttpRunner({
+      name: 'inv-http-test',
+      getSandbox,
+    });
     const r = await runner.get({
       url: 'https://example.com/',
       maxBytes: 0,
@@ -109,20 +116,49 @@ describe('VercelSandboxHttpRunner with SDK-style CommandFinished', () => {
 });
 
 describe('VercelSandboxHttpRunner', () => {
-  it('creates sandbox once for two concurrent gets (single-flight)', async () => {
-    let createCount = 0;
-    let resolveCreate!: (sb: SandboxLike) => void;
-    const createGate = new Promise<SandboxLike>((r) => {
-      resolveCreate = r;
+  it('get called with name + resume:true; never create-shaped params', async () => {
+    const sb = mockSandbox();
+    const getSandbox = vi.fn<GetSandboxFn>(async () => sb);
+    const runner = new VercelSandboxHttpRunner({
+      name: 'inv-http-abc',
+      getSandbox,
     });
-    const createSandbox: CreateSandboxFn = vi.fn(async (params) => {
-      createCount += 1;
-      expect(params.persistent).toBe(false);
-      expect(params.networkPolicy).toBe('allow-all');
-      expect(params.timeout).toBeLessThanOrEqual(
-        MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS,
-      );
-      return createGate;
+    await runner.get({
+      url: 'https://example.com/',
+      maxBytes: 0,
+      timeoutMs: 1000,
+      head: true,
+    });
+    expect(getSandbox).toHaveBeenCalledWith({
+      name: 'inv-http-abc',
+      resume: true,
+      signal: undefined,
+    });
+    const params = getSandbox.mock.calls[0]![0];
+    expect(params).not.toHaveProperty('image');
+    expect(params).not.toHaveProperty('persistent');
+    expect(params).not.toHaveProperty('timeout');
+    expect(params).not.toHaveProperty('env');
+    await runner.close();
+  });
+
+  it('empty name throws before get', () => {
+    const getSandbox = vi.fn<GetSandboxFn>(async () => mockSandbox());
+    expect(
+      () => new VercelSandboxHttpRunner({ name: '  ', getSandbox }),
+    ).toThrow(/name is required/i);
+    expect(getSandbox).not.toHaveBeenCalled();
+  });
+
+  it('attaches once for two concurrent gets (single-flight)', async () => {
+    let attachCount = 0;
+    let resolveGet!: (sb: SandboxLike) => void;
+    const gate = new Promise<SandboxLike>((r) => {
+      resolveGet = r;
+    });
+    const getSandbox: GetSandboxFn = vi.fn(async () => {
+      attachCount += 1;
+      return gate;
     });
 
     const bodySandbox = mockSandbox({
@@ -141,7 +177,10 @@ describe('VercelSandboxHttpRunner', () => {
       }),
     });
 
-    const runner = new VercelSandboxHttpRunner({ createSandbox });
+    const runner = new VercelSandboxHttpRunner({
+      name: 'inv-http-test',
+      getSandbox,
+    });
     const p1 = runner.get({
       url: 'https://example.com/a',
       maxBytes: 100,
@@ -152,25 +191,100 @@ describe('VercelSandboxHttpRunner', () => {
       maxBytes: 100,
       timeoutMs: 5000,
     });
-    // Still one create while pending
-    expect(createCount).toBe(1);
-    resolveCreate(bodySandbox);
+    expect(attachCount).toBe(1);
+    resolveGet(bodySandbox);
     const [r1, r2] = await Promise.all([p1, p2]);
-    expect(createCount).toBe(1);
+    expect(attachCount).toBe(1);
     expect(r1.body).toBe('ok-body');
     expect(r2.body).toBe('ok-body');
     await runner.close();
-    expect(bodySandbox.stop).toHaveBeenCalledTimes(1);
+    expect(bodySandbox.stop).not.toHaveBeenCalled();
   });
 
-  it('stop/close is idempotent and runs after failure path', async () => {
+  it('attach extends timeout; close extends again and never stops', async () => {
+    const sb = mockSandbox();
+    const getSandbox = vi.fn<GetSandboxFn>(async () => sb);
+    const runner = new VercelSandboxHttpRunner({
+      name: 'inv-http-test',
+      getSandbox,
+      idleTimeoutMs: 60_000,
+    });
+    await runner.get({
+      url: 'https://example.com/',
+      maxBytes: 0,
+      timeoutMs: 1000,
+      head: true,
+    });
+    const extend = vi.mocked(sb.extendTimeout!);
+    expect(extend).toHaveBeenCalledWith(60_000);
+    const afterAttach = extend.mock.calls.length;
+    await runner.close();
+    await runner.close();
+    expect(extend.mock.calls.length).toBeGreaterThan(afterAttach);
+    expect(sb.stop).not.toHaveBeenCalled();
+  });
+
+  it('close during attach does not stop VM', async () => {
+    let resolveGet!: (sb: SandboxLike) => void;
+    const gate = new Promise<SandboxLike>((r) => {
+      resolveGet = r;
+    });
+    const sb = mockSandbox();
+    const getSandbox: GetSandboxFn = vi.fn(async () => gate);
+
+    const runner = new VercelSandboxHttpRunner({
+      name: 'inv-http-test',
+      getSandbox,
+    });
+    const getPromise = runner.get({
+      url: 'https://example.com/',
+      maxBytes: 0,
+      timeoutMs: 1000,
+      head: true,
+    });
+
+    const closePromise = runner.close();
+    await Promise.resolve();
+    resolveGet(sb);
+    await closePromise;
+
+    expect(sb.stop).not.toHaveBeenCalled();
+    await expect(getPromise).rejects.toThrow(/closed|curl|HTTP/i);
+    await runner.close();
+    expect(sb.stop).not.toHaveBeenCalled();
+  });
+
+  it('default idle timeout is USER_SANDBOX_IDLE family', async () => {
+    const sb = mockSandbox();
+    const getSandbox = vi.fn<GetSandboxFn>(async () => sb);
+    const runner = new VercelSandboxHttpRunner({
+      name: 'inv-http-test',
+      getSandbox,
+    });
+    await runner.get({
+      url: 'https://example.com/',
+      maxBytes: 0,
+      timeoutMs: 1000,
+      head: true,
+    });
+    expect(vi.mocked(sb.extendTimeout!)).toHaveBeenCalledWith(
+      DEFAULT_HTTP_ATTACH_IDLE_TIMEOUT_MS,
+    );
+    expect(DEFAULT_HTTP_ATTACH_IDLE_TIMEOUT_MS).toBe(USER_SANDBOX_IDLE_TIMEOUT_MS);
+    await runner.close();
+  });
+
+  it('close after failure still never stops', async () => {
     const sb = mockSandbox({
       runCommand: vi.fn(async () => {
         throw new Error('curl boom');
       }),
     });
-    const createSandbox: CreateSandboxFn = vi.fn(async () => sb);
-    const runner = new VercelSandboxHttpRunner({ createSandbox });
+    const getSandbox: GetSandboxFn = vi.fn(async () => sb);
+    const runner = new VercelSandboxHttpRunner({
+      name: 'inv-http-test',
+      getSandbox,
+    });
     await expect(
       runner.get({
         url: 'https://example.com/',
@@ -180,73 +294,20 @@ describe('VercelSandboxHttpRunner', () => {
     ).rejects.toThrow(/curl boom/);
     await runner.close();
     await runner.close();
-    expect(sb.stop).toHaveBeenCalledTimes(1);
+    expect(sb.stop).not.toHaveBeenCalled();
   });
 
-  it('close during in-flight create still stops the VM (no orphan)', async () => {
-    let resolveCreate!: (sb: SandboxLike) => void;
-    const createGate = new Promise<SandboxLike>((r) => {
-      resolveCreate = r;
-    });
-    const sb = mockSandbox();
-    const createSandbox: CreateSandboxFn = vi.fn(async () => createGate);
-
-    const runner = new VercelSandboxHttpRunner({ createSandbox });
-    const getPromise = runner.get({
-      url: 'https://example.com/',
-      maxBytes: 0,
-      timeoutMs: 1000,
-      head: true,
-    });
-
-    // Abort path: close while Sandbox.create is still pending.
-    const closePromise = runner.close();
-    // Allow close to park on pending create
-    await Promise.resolve();
-    resolveCreate(sb);
-    await closePromise;
-
-    expect(sb.stop).toHaveBeenCalledTimes(1);
-    // In-flight get must not leave runner usable
-    await expect(getPromise).rejects.toThrow(/closed|curl|HTTP/i);
-    // Second close is idempotent (no double-stop)
-    await runner.close();
-    expect(sb.stop).toHaveBeenCalledTimes(1);
-  });
-
-  it('clamps sandbox create timeout to platform max', async () => {
-    const createSandbox: CreateSandboxFn = vi.fn(async (params) => {
-      expect(params.timeout).toBe(MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS);
+  it('does not pass secrets in get params env', async () => {
+    const getSandbox: GetSandboxFn = vi.fn(async (params) => {
+      expect(params).not.toHaveProperty('env');
+      const json = JSON.stringify(params);
+      expect(json).not.toMatch(/AI_GATEWAY|SANDBOX_TOKEN|Bearer /i);
       return mockSandbox();
     });
     const runner = new VercelSandboxHttpRunner({
-      createSandbox,
-      sandboxTimeoutMs: 9_999_999,
+      name: 'inv-http-test',
+      getSandbox,
     });
-    // force create via get with head
-    const sb = await (runner as unknown as {
-      ensureSandbox: () => Promise<SandboxLike>;
-    }).ensureSandbox?.().catch(() => null);
-    // use public get head
-    await runner.get({
-      url: 'https://example.com/',
-      maxBytes: 0,
-      timeoutMs: 1000,
-      head: true,
-    });
-    expect(createSandbox).toHaveBeenCalled();
-    const arg = (createSandbox as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(arg.timeout).toBe(MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS);
-    await runner.close();
-    void sb;
-  });
-
-  it('does not pass secrets in create params env', async () => {
-    const createSandbox: CreateSandboxFn = vi.fn(async (params) => {
-      expect(params).not.toHaveProperty('env');
-      return mockSandbox();
-    });
-    const runner = new VercelSandboxHttpRunner({ createSandbox });
     await runner.get({
       url: 'https://example.com/',
       maxBytes: 0,
@@ -274,8 +335,11 @@ describe('VercelSandboxHttpRunner', () => {
       return { exitCode: 0, stdout: '', stderr: '' };
     });
     const sb = mockSandbox({ runCommand });
-    const createSandbox: CreateSandboxFn = vi.fn(async () => sb);
-    const runner = new VercelSandboxHttpRunner({ createSandbox });
+    const getSandbox: GetSandboxFn = vi.fn(async () => sb);
+    const runner = new VercelSandboxHttpRunner({
+      name: 'inv-http-test',
+      getSandbox,
+    });
     const r = await runner.get({
       url: 'https://example.com/big',
       maxBytes: 2048,
@@ -284,5 +348,15 @@ describe('VercelSandboxHttpRunner', () => {
     expect(r.body).toBe('tiny');
     expect(runCommand).toHaveBeenCalled();
     await runner.close();
+  });
+
+  it('product source has no Sandbox.create / getOrCreate / stop-on-close path', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const srcText = readFileSync(join(here, 'vercelSandboxHttpRunner.ts'), 'utf8');
+    expect(srcText).not.toMatch(/Sandbox\.create\s*\(/);
+    expect(srcText).not.toMatch(/\.getOrCreate\s*\(/);
+    expect(srcText).not.toMatch(/Sandbox\.getOrCreate\s*\(/);
+    expect(srcText).not.toMatch(/await sb\.stop\(/);
+    expect(srcText).not.toMatch(/await sb\?\.stop\(/);
   });
 });

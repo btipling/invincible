@@ -1,6 +1,7 @@
 /**
- * Vercel Sandbox-backed HttpFetchRunner (hop B egress).
- * Single-flight create; persistent:false; stop on close.
+ * Vercel Sandbox–backed HttpFetchRunner (hop-B egress) — attach-only.
+ * Product path: Sandbox.get({ name, resume: true }) + extendTimeout; close never stops.
+ * Never create or get-or-create; never stop or delete here (lifecycle = userSandboxInstance / host env name).
  */
 
 import type {
@@ -8,12 +9,12 @@ import type {
   HttpFetchGetResult,
   HttpFetchRunner,
 } from './httpFetchTypes';
-import {
-  MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS,
-  DEFAULT_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS,
-} from './builtinHttpConfig';
+import { USER_SANDBOX_IDLE_TIMEOUT_MS } from '../tenancy/userSandboxInstance';
 
 export const BUILTIN_HTTP_USER_AGENT = 'InvincibleBuiltinHttp/1.0';
+
+/** Default idle extendTimeout — same family as Workspace attach. */
+export const DEFAULT_HTTP_ATTACH_IDLE_TIMEOUT_MS = USER_SANDBOX_IDLE_TIMEOUT_MS;
 
 /** Minimal surface we use from @vercel/sandbox (injectable for tests). */
 export type SandboxCommandResult = {
@@ -33,21 +34,29 @@ export type SandboxLike = {
     args?: string[],
     opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<SandboxCommandResult>;
-  stop(opts?: { signal?: AbortSignal }): Promise<unknown>;
+  /** Present on real SDK; attach runner never calls stop. */
+  stop?(opts?: { signal?: AbortSignal }): Promise<unknown>;
+  extendTimeout?(
+    durationMs: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<unknown>;
 };
 
-export type CreateSandboxFn = (params: {
-  timeout: number;
-  networkPolicy: 'allow-all';
-  persistent: false;
+export type GetSandboxParams = {
+  name: string;
+  resume?: boolean;
   signal?: AbortSignal;
-}) => Promise<SandboxLike>;
+};
+
+export type GetSandboxFn = (params: GetSandboxParams) => Promise<SandboxLike>;
 
 export type VercelSandboxHttpRunnerOptions = {
-  /** Inject Sandbox.create (tests). Default loads @vercel/sandbox. */
-  createSandbox?: CreateSandboxFn;
-  /** VM lifetime ms (clamped ≤ 55s). */
-  sandboxTimeoutMs?: number;
+  /** Durable instance name (Settings HTTP instance or host env). Required. */
+  name: string;
+  /** Inject Sandbox.get (tests). Default loads @vercel/sandbox. */
+  getSandbox?: GetSandboxFn;
+  /** Idle extendTimeout ms (default USER_SANDBOX_IDLE_TIMEOUT_MS / 30m). */
+  idleTimeoutMs?: number;
 };
 
 /**
@@ -139,44 +148,53 @@ export function parseCurlHeaders(headerText: string): {
   return { status, contentType, location };
 }
 
-function clampSandboxTimeout(ms: number | undefined): number {
+function clampIdleTimeout(ms: number | undefined): number {
   const n =
     ms == null || !Number.isFinite(ms)
-      ? DEFAULT_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS
+      ? DEFAULT_HTTP_ATTACH_IDLE_TIMEOUT_MS
       : Math.floor(ms);
   if (n < 5_000) return 5_000;
-  if (n > MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS) {
-    return MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS;
+  if (n > DEFAULT_HTTP_ATTACH_IDLE_TIMEOUT_MS) {
+    return DEFAULT_HTTP_ATTACH_IDLE_TIMEOUT_MS;
   }
   return n;
 }
 
-async function defaultCreateSandbox(params: {
-  timeout: number;
-  networkPolicy: 'allow-all';
-  persistent: false;
-  signal?: AbortSignal;
-}): Promise<SandboxLike> {
+async function defaultGetSandbox(params: GetSandboxParams): Promise<SandboxLike> {
   const { Sandbox } = await import('@vercel/sandbox');
-  const sb = await Sandbox.create({
-    timeout: params.timeout,
-    networkPolicy: params.networkPolicy,
-    persistent: params.persistent,
+  const sb = await Sandbox.get({
+    name: params.name,
+    resume: params.resume ?? true,
     signal: params.signal,
   });
   return sb as unknown as SandboxLike;
 }
 
 export class VercelSandboxHttpRunner implements HttpFetchRunner {
-  private readonly createSandbox: CreateSandboxFn;
-  private readonly sandboxTimeoutMs: number;
-  private createPromise: Promise<SandboxLike> | null = null;
+  private readonly name: string;
+  private readonly getSandbox: GetSandboxFn;
+  private readonly idleTimeoutMs: number;
+  private attachPromise: Promise<SandboxLike> | null = null;
   private sandbox: SandboxLike | null = null;
   private closed = false;
 
-  constructor(opts: VercelSandboxHttpRunnerOptions = {}) {
-    this.createSandbox = opts.createSandbox ?? defaultCreateSandbox;
-    this.sandboxTimeoutMs = clampSandboxTimeout(opts.sandboxTimeoutMs);
+  constructor(opts: VercelSandboxHttpRunnerOptions) {
+    const name = opts.name?.trim();
+    if (!name) {
+      throw new Error('HTTP sandbox instance name is required');
+    }
+    this.name = name;
+    this.getSandbox = opts.getSandbox ?? defaultGetSandbox;
+    this.idleTimeoutMs = clampIdleTimeout(opts.idleTimeoutMs);
+  }
+
+  private async bestEffortExtend(sb: SandboxLike): Promise<void> {
+    if (typeof sb.extendTimeout !== 'function') return;
+    try {
+      await sb.extendTimeout(this.idleTimeoutMs);
+    } catch {
+      // best-effort — never fail the turn
+    }
   }
 
   private async ensureSandbox(signal?: AbortSignal): Promise<SandboxLike> {
@@ -184,31 +202,28 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
       throw new Error('http runner is closed');
     }
     if (this.sandbox) return this.sandbox;
-    if (!this.createPromise) {
-      this.createPromise = this.createSandbox({
-        timeout: this.sandboxTimeoutMs,
-        networkPolicy: 'allow-all',
-        persistent: false,
+    if (!this.attachPromise) {
+      this.attachPromise = this.getSandbox({
+        name: this.name,
+        resume: true,
         signal,
       })
-        .then((sb) => {
-          // Always retain the instance so close() can stop even if we closed mid-create.
+        .then(async (sb) => {
           this.sandbox = sb;
           if (this.closed) {
             throw new Error('http runner is closed');
           }
+          await this.bestEffortExtend(sb);
           return sb;
         })
         .catch((err) => {
-          // Leave this.sandbox set if create succeeded then closed (close stops it).
-          // Only clear latch when create itself failed with no sandbox retained.
           if (!this.sandbox) {
-            this.createPromise = null;
+            this.attachPromise = null;
           }
           throw err;
         });
     }
-    return this.createPromise;
+    return this.attachPromise;
   }
 
   async get(input: HttpFetchGetInput): Promise<HttpFetchGetResult> {
@@ -325,44 +340,38 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
   }
 
   /**
-   * Idempotent stop. Always drains in-flight create so abort-during-cold-start
-   * cannot orphan a microVM until TTL.
+   * Idempotent release. Drop handle + best-effort extendTimeout.
+   * Never stop/delete durable HTTP instances.
    */
   async close(): Promise<void> {
     if (this.closed) {
-      // Second close: still try to stop if a prior close raced create completion.
-      await this.stopSandboxIfAny();
+      await this.releaseHandle();
       return;
     }
     this.closed = true;
-    const pending = this.createPromise;
-    this.createPromise = null;
+    const pending = this.attachPromise;
+    this.attachPromise = null;
     if (pending) {
       try {
         await pending;
       } catch {
-        // Create failed or rejected because closed mid-create — sandbox may still
-        // have been assigned in the create .then for stop below.
+        // attach failed mid-flight — handle may still be set
       }
     }
-    await this.stopSandboxIfAny();
+    await this.releaseHandle();
   }
 
-  private async stopSandboxIfAny(): Promise<void> {
+  private async releaseHandle(): Promise<void> {
     const sb = this.sandbox;
     this.sandbox = null;
     if (!sb) return;
-    try {
-      await sb.stop();
-    } catch {
-      // ignore stop errors
-    }
+    await this.bestEffortExtend(sb);
   }
 }
 
-/** Factory used by the agent route when env enables sandbox mode. */
+/** Factory used by the agent route when env enables sandbox mode + attach name. */
 export function createVercelSandboxHttpRunner(
-  opts: VercelSandboxHttpRunnerOptions = {},
+  opts: VercelSandboxHttpRunnerOptions,
 ): HttpFetchRunner {
   return new VercelSandboxHttpRunner(opts);
 }

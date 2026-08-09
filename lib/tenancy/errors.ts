@@ -21,3 +21,7 @@ export const INFERENCE_UNAVAILABLE_ERROR = 'Inference temporarily unavailable.';
 /** Parent #298 / phase #301 — Workspace instance missing, stopped, or error. */
 export const WORKSPACE_INSTANCE_REQUIRED_ERROR =
   'Workspace instance is not running. Create or Start it under Settings → Sandbox.';
+
+/** Parent #298 / phase #302 — tenancy-off hop-B without host attach name. */
+export const BUILTIN_HTTP_INSTANCE_REQUIRED_ERROR =
+  'Builtin HTTP is enabled but no instance name is configured. Set BUILTIN_HTTP_INSTANCE_NAME or disable BUILTIN_HTTP_FETCH.';
