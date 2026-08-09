@@ -152,6 +152,25 @@ node scripts/fetch-harness-artifact.mjs
 On Vercel this runs as `npm run prebuild`. Race wait: `docs/harness-deploy-race.md`.  
 Product path: [README](../README.md) · [feature-divide.md](../docs/feature-divide.md).
 
+## Sandbox orphan cleanup (optional)
+
+List/delete leftover **product** Vercel Sandbox names (`inv-workspace-…` / `inv-http-…`)
+that are **not** in `user_sandbox_instances`. Primary operator path is GitHub Actions:
+
+**Actions → `sandbox-orphan-cleanup` → Run workflow**
+
+| Input | Default | Meaning |
+|-------|---------|---------|
+| `confirm` | (required) | must equal `cleanup` |
+| `dry_run` | `true` | list candidates only |
+| `include_non_product` | `false` | if true, also old non-persistent non-product VMs ≥24h (project-wide) |
+
+Secrets (names only; dual-store `DATABASE_URL` with Production): `DATABASE_URL`,
+`VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`.
+
+Script: `scripts/sandbox-orphan-cleanup.mjs` (never `Sandbox.create` / `getOrCreate`).
+Docs: [docs/sandbox.md](../docs/sandbox.md).
+
 ## Safety
 
 - Never pass live tokens into chat, issues, or commits.

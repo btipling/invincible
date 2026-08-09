@@ -4,8 +4,8 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Parent #298 / phase 5: Sandbox.create and getOrCreate only in the lifecycle
- * domain module. Agent, hop-B, resolve, and Settings must never call create.
+ * Epic #298: Sandbox.create and getOrCreate only in the lifecycle domain module.
+ * Agent, hop-B, resolve, Settings, and scripts must never call create.
  */
 const ROOT = join(fileURLToPath(new URL('../..', import.meta.url)));
 
@@ -19,29 +19,45 @@ const CREATE_PATTERNS = [
   /\.getOrCreate\s*\(/,
 ];
 
-function walkTsFiles(dir: string, out: string[] = []): string[] {
+/** Product trees that must not introduce create/getOrCreate outside the allowlist. */
+const SCAN_ROOTS = ['app', 'lib', 'scripts', 'sandbox'];
+
+function walkSourceFiles(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     if (name === 'node_modules' || name === '.git' || name === 'dist') continue;
     const full = join(dir, name);
     const st = statSync(full);
     if (st.isDirectory()) {
-      walkTsFiles(full, out);
+      walkSourceFiles(full, out);
       continue;
     }
-    if (!/\.(ts|tsx)$/.test(name)) continue;
-    if (/\.test\.(ts|tsx)$/.test(name)) continue;
+    // TS product + JS scripts that may import @vercel/sandbox
+    if (!/\.(ts|tsx|mjs|js|cjs)$/.test(name)) continue;
+    if (/\.test\.(ts|tsx|mjs|js)$/.test(name)) continue;
     out.push(full);
   }
   return out;
 }
 
-describe('sandbox create/getOrCreate allowlist (#298 phase 5)', () => {
+function relFromRoot(file: string): string {
+  return relative(ROOT, file).replace(/\\/g, '/');
+}
+
+describe('sandbox create/getOrCreate allowlist (#298)', () => {
   it('forbids Sandbox.create / getOrCreate outside userSandboxInstance', () => {
-    const roots = [join(ROOT, 'app'), join(ROOT, 'lib')];
     const offenders: string[] = [];
-    for (const root of roots) {
-      for (const file of walkTsFiles(root)) {
-        const rel = relative(ROOT, file).replace(/\\/g, '/');
+    const missingRoots: string[] = [];
+    for (const rootName of SCAN_ROOTS) {
+      const root = join(ROOT, rootName);
+      try {
+        statSync(root);
+      } catch {
+        // Fail closed: a declared root that vanished would silently skip that tree.
+        missingRoots.push(rootName);
+        continue;
+      }
+      for (const file of walkSourceFiles(root)) {
+        const rel = relFromRoot(file);
         const text = readFileSync(file, 'utf8');
         const hit = CREATE_PATTERNS.some((re) => re.test(text));
         if (!hit) continue;
@@ -49,6 +65,10 @@ describe('sandbox create/getOrCreate allowlist (#298 phase 5)', () => {
         offenders.push(rel);
       }
     }
+    expect(
+      missingRoots,
+      `SCAN_ROOT missing on disk (would skip create scan): ${missingRoots.join(', ')}`,
+    ).toEqual([]);
     expect(offenders, `create/getOrCreate outside allowlist: ${offenders.join(', ')}`).toEqual(
       [],
     );
@@ -67,5 +87,20 @@ describe('sandbox create/getOrCreate allowlist (#298 phase 5)', () => {
     const text = readFileSync(script, 'utf8');
     expect(text).not.toMatch(/Sandbox\.create\s*\(/);
     expect(text).not.toMatch(/getOrCreate\s*\(/);
+  });
+
+  it('scans scripts/ and sandbox/ trees (not only app/lib)', () => {
+    expect(SCAN_ROOTS).toEqual(expect.arrayContaining(['app', 'lib', 'scripts', 'sandbox']));
+    for (const rootName of SCAN_ROOTS) {
+      expect(
+        () => statSync(join(ROOT, rootName)),
+        `missing SCAN_ROOT on disk: ${rootName}`,
+      ).not.toThrow();
+    }
+    // Prove walk actually visits the create-adjacent orphan script and sandbox tree.
+    const scriptFiles = walkSourceFiles(join(ROOT, 'scripts')).map(relFromRoot);
+    const sandboxFiles = walkSourceFiles(join(ROOT, 'sandbox')).map(relFromRoot);
+    expect(scriptFiles).toContain('scripts/sandbox-orphan-cleanup.mjs');
+    expect(sandboxFiles.length).toBeGreaterThan(0);
   });
 });
