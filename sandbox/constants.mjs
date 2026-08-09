@@ -6,6 +6,31 @@
  */
 export const INVINCIBLE_SANDBOX_PROTOCOL = 2;
 
+/**
+ * Monotonic daemon revision, distinct from `INVINCIBLE_SANDBOX_PROTOCOL`.
+ * Bump in the SAME PR that changes daemon tool surface / jail / budgets in a way
+ * deployed Next relies on. Clients treat a missing `daemonVersion` as 0 (older
+ * daemons). Keep the TS mirror `EXPECTED_SANDBOX_DAEMON_VERSION` in
+ * `lib/sandbox/daemonVersion.ts` in sync (enforced by a parity test).
+ */
+export const INVINCIBLE_SANDBOX_DAEMON_VERSION = 1;
+
+/** Header the Next backend sends on every `/v1/*` request (string int). */
+export const SANDBOX_EXPECTED_DAEMON_VERSION_HEADER = 'x-invincible-expected-daemon-version';
+
+/** Stable `code` for the out-of-date JSON error body. */
+export const SANDBOX_DAEMON_OUT_OF_DATE_CODE = 'SANDBOX_DAEMON_OUT_OF_DATE';
+
+/**
+ * Locked exact error string. Mirrored in `lib/sandbox/daemonVersion.ts` (client)
+ * so both sides match the model-visible contract.
+ * @param {number} running
+ * @param {number} expected
+ */
+export function sandboxDaemonOutOfDateError(running, expected) {
+  return `Sandbox daemon out of date (running ${running}, expected ${expected}). Update and restart the sandbox process.`;
+}
+
 /** Minimum health.version that supports exec stdin/heredoc. */
 export const MIN_SANDBOX_PROTOCOL_STDIN = 2;
 

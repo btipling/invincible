@@ -1,6 +1,13 @@
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { INVINCIBLE_SANDBOX_PROTOCOL, MAX_JSON_BODY_BYTES } from './constants.mjs';
+import {
+  INVINCIBLE_SANDBOX_PROTOCOL,
+  INVINCIBLE_SANDBOX_DAEMON_VERSION,
+  SANDBOX_EXPECTED_DAEMON_VERSION_HEADER,
+  SANDBOX_DAEMON_OUT_OF_DATE_CODE,
+  sandboxDaemonOutOfDateError,
+  MAX_JSON_BODY_BYTES,
+} from './constants.mjs';
 import { JailError } from './paths.mjs';
 import {
   ToolError,
@@ -82,8 +89,22 @@ function sendError(res, status, error) {
 }
 
 /**
+ * @param {string | undefined} value
+ * @returns {number | null} finite non-negative int, or null when absent/malformed
+ */
+function parseExpectedDaemonVersion(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') return null;
+  const n = Number(value.trim());
+  if (!Number.isFinite(n)) return null;
+  const i = Math.floor(n);
+  if (i < 0) return null;
+  return i;
+}
+
+/**
  * Create the Invincible sandbox HTTP server (protocol v{@link INVINCIBLE_SANDBOX_PROTOCOL}).
- * @param {{ token: string, workspace: string }} opts
+ * @param {{ token: string, workspace: string, onOutOfDate?: (info: { running: number, expected: number }) => void }} opts
  */
 export function createSandboxServer(opts) {
   if (!opts.token || typeof opts.token !== 'string') {
@@ -104,6 +125,7 @@ export function createSandboxServer(opts) {
         sendJson(res, 200, {
           ok: true,
           version: INVINCIBLE_SANDBOX_PROTOCOL,
+          daemonVersion: INVINCIBLE_SANDBOX_DAEMON_VERSION,
         });
         return;
       }
@@ -113,6 +135,25 @@ export function createSandboxServer(opts) {
         if (provided == null || !safeEqualToken(token, provided)) {
           req.resume();
           sendError(res, 401, 'Unauthorized');
+          return;
+        }
+      }
+
+      // Daemon version gate: refuse tool work (426) when the caller expects a
+      // newer daemon. Runs AFTER bearer auth so a wrong token still wins with 401.
+      if (method === 'POST' && url.pathname.startsWith('/v1/')) {
+        const expected = parseExpectedDaemonVersion(
+          req.headers[SANDBOX_EXPECTED_DAEMON_VERSION_HEADER.toLowerCase()],
+        );
+        if (expected != null && expected > INVINCIBLE_SANDBOX_DAEMON_VERSION) {
+          const running = INVINCIBLE_SANDBOX_DAEMON_VERSION;
+          opts.onOutOfDate?.({ running, expected });
+          sendJson(res, 426, {
+            error: sandboxDaemonOutOfDateError(running, expected),
+            code: SANDBOX_DAEMON_OUT_OF_DATE_CODE,
+            running,
+            expected,
+          });
           return;
         }
       }

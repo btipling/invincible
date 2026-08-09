@@ -73,6 +73,27 @@ describe('createAgentTools', () => {
     expect(out as string).toContain('[redacted]');
   });
 
+  it('soft-fails with the out-of-date message when client throws 426', async () => {
+    const message =
+      'Sandbox daemon out of date (running 0, expected 1). Update and restart the sandbox process.';
+    const client = mockClient({
+      listDir: vi.fn(async () => {
+        throw new SandboxHttpError(message, 426, 'SANDBOX_DAEMON_OUT_OF_DATE');
+      }),
+    });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+    });
+    const out = (await tools.list_dir.execute!({ path: '.' }, {
+      toolCallId: '1',
+      messages: [],
+    } as never)) as string;
+    expect(out).toMatch(/^ERROR list_dir:/);
+    expect(out).toContain('Sandbox daemon out of date');
+    expect(out).toMatch(/running 0, expected 1/);
+  });
+
   it('includes timed out exec in result text', async () => {
     const client = mockClient({
       exec: vi.fn(async () => ({

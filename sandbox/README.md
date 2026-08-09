@@ -4,7 +4,7 @@ Standalone HTTP service that exposes a **path-jailed workspace** with agent tool
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/health` | `{ ok: true, version: 2 }` (no auth) |
+| `GET` | `/health` | `{ ok: true, version: 2, daemonVersion: N }` (no auth) |
 | `POST` | `/v1/list_dir` | List directory entries |
 | `POST` | `/v1/read_file` | Read file (max 16 MiB); response includes additive `mtimeMs` + `size` |
 | `POST` | `/v1/write_file` | Write file (max 16 MiB); response includes post-write `mtimeMs` + `size` |
@@ -13,6 +13,16 @@ Standalone HTTP service that exposes a **path-jailed workspace** with agent tool
 | `POST` | `/v1/exec` | Run argv command (no shell); optional `stdin`/`heredoc` |
 
 **Fingerprints (additive):** `mtimeMs` is `Math.trunc(stat.mtimeMs)` when measurable; **omit** (do not invent `0`) when the backend cannot provide it so freshness gates can degrade. `size` is full on-disk byte length (even when `read_file` content is truncated). Old clients may ignore these fields. BYO daemons should ship them so agent freshness checks work. Protocol version stays **v2** (additive JSON only).
+
+**Daemon version (out-of-date gate):** `daemonVersion` is a **separate**, monotonic
+daemon revision from `version` (protocol). The Next backend ships an expected
+revision and refuses tools on daemons behind it — the daemon answers **426**
+`SANDBOX_DAEMON_OUT_OF_DATE` with an exact error string when a request carries an
+`X-Invincible-Expected-Daemon-Version` header that is higher than its own revision
+(older clients / curls without the header are unaffected). Bump
+`INVINCIBLE_SANDBOX_DAEMON_VERSION` here (and the TS mirror
+`EXPECTED_SANDBOX_DAEMON_VERSION`) in the same PR that changes the daemon tool
+surface / jail / budgets; the parity unit test keeps them from drifting.
 
 Parent plan: [#45](https://github.com/btipling/invincible/issues/45) · Phase 1: [#46](https://github.com/btipling/invincible/issues/46)
 
@@ -34,6 +44,15 @@ Origin may use a DigitalOcean-hosted sample (reverse-proxy TLS, Vercel-reachable
 | `SANDBOX_TOKEN` | **yes** | — | Shared bearer secret (same value Vercel uses as `SANDBOX_TOKEN`) |
 | `SANDBOX_WORKSPACE` | **yes** | — | Absolute path to workspace root (jail) |
 | `SANDBOX_LISTEN` | no | `127.0.0.1:8787` | Bind address. Localhost is fine behind a reverse proxy |
+| `SANDBOX_AUTO_UPDATE` | no | off | Opt-in: git ff-only self-update then exit for `Restart=always` |
+| `SANDBOX_GIT_DIR` | yes if auto-update on | — | Repo-root checkout path (contains `sandbox/`) |
+| `SANDBOX_GIT_REF` | no | `origin/main` | ff-only merge target after `git fetch` |
+| `SANDBOX_UPDATE_CHECK_MS` | no | `60000` | Background check interval; `0` disables the timer (header-trigger only) |
+
+Auto-update runs `git fetch` + `git merge --ff-only <ref>` (argv only, minimal
+env), advances HEAD, then the process exits `0` for the supervisor to restart on
+the new code. Fails closed on divergent local work / git errors (stays up and
+keeps serving 426). These env vars belong on the **daemon process**, not Vercel.
 
 ## Local run
 
@@ -53,7 +72,7 @@ Smoke:
 
 ```bash
 curl -s http://127.0.0.1:8787/health
-# {"ok":true,"version":2}
+# {"ok":true,"version":2,"daemonVersion":1}
 
 curl -s -X POST http://127.0.0.1:8787/v1/list_dir \
   -H "Authorization: Bearer $SANDBOX_TOKEN" \

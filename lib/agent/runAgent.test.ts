@@ -9,6 +9,7 @@ import {
 } from './runAgent';
 import { TOOL_TRACE_SUMMARY_MAX_CHARS } from '../sandbox/config';
 import { MCP_SYSTEM_ADDENDUM } from '../mcp/toolNames';
+import { SandboxHttpError } from '../sandbox/types';
 
 describe('runAgent', () => {
   it('passes stopWhen stepCountIs(maxSteps) to generateText', async () => {
@@ -564,6 +565,73 @@ describe('DEFAULT_AGENT_SYSTEM read-before-edit', () => {
     expect(DEFAULT_AGENT_SYSTEM).toMatch(/read_file a path in this agent run/i);
     expect(DEFAULT_AGENT_SYSTEM).toMatch(/read_file again before editing/i);
     expect(DEFAULT_AGENT_SYSTEM).toMatch(/Creating a new file with write_file does not require/i);
+  });
+});
+
+describe('runAgent daemon-version preflight', () => {
+  function clientWith(
+    checkDaemonCurrent: (() => Promise<void>) | undefined,
+  ): SandboxClient {
+    return {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      strReplace: vi.fn(),
+      exec: vi.fn(),
+      stat: vi.fn(),
+      checkDaemonCurrent,
+    };
+  }
+
+  it('fails the turn (not chat fallback) when the sandbox daemon is out of date', async () => {
+    const generateTextImpl = vi.fn(async () => ({
+      text: 'SHOULD NOT RUN',
+      steps: [],
+    }));
+    const client = clientWith(async () => {
+      throw new SandboxHttpError(
+        'Sandbox daemon out of date (running 0, expected 1). Update and restart the sandbox process.',
+        426,
+        'SANDBOX_DAEMON_OUT_OF_DATE',
+      );
+    });
+    await expect(
+      runAgent({
+        prompt: 'go',
+        modelId: 'test-model',
+        generateTextImpl: generateTextImpl as never,
+        sandboxClient: client,
+      }),
+    ).rejects.toMatchObject({ status: 426, code: 'SANDBOX_DAEMON_OUT_OF_DATE' });
+    // Turn must stop before any model step.
+    expect(generateTextImpl).not.toHaveBeenCalled();
+  });
+
+  it('runs normally when the daemon is current', async () => {
+    const generateTextImpl = vi.fn(async () => ({ text: 'ok', steps: [] }));
+    const client = clientWith(async () => {});
+    await expect(
+      runAgent({
+        prompt: 'go',
+        modelId: 'test-model',
+        generateTextImpl: generateTextImpl as never,
+        sandboxClient: client,
+      }),
+    ).resolves.toMatchObject({ text: 'ok' });
+    expect(generateTextImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('still runs when the backend client has no daemon gate (Vercel sandbox)', async () => {
+    const generateTextImpl = vi.fn(async () => ({ text: 'vercel-ok', steps: [] }));
+    const client = clientWith(undefined);
+    await expect(
+      runAgent({
+        prompt: 'go',
+        modelId: 'test-model',
+        generateTextImpl: generateTextImpl as never,
+        sandboxClient: client,
+      }),
+    ).resolves.toMatchObject({ text: 'vercel-ok' });
   });
 });
 

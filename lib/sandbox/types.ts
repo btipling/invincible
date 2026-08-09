@@ -56,15 +56,24 @@ export type SandboxClientOptions = {
    * Only GH_TOKEN / GITHUB_TOKEN should be supplied. Never from the model.
    */
   execEnv?: Record<string, string>;
+  /**
+   * Expected daemon `daemonVersion` for the out-of-date gate. Defaults to
+   * `EXPECTED_SANDBOX_DAEMON_VERSION`. Sending a higher value than the running
+   * daemon makes every tool call fail closed with 426.
+   */
+  expectedDaemonVersion?: number;
 };
+
+export type SandboxHttpErrorCode = 'SANDBOX_HTTP' | 'SANDBOX_DAEMON_OUT_OF_DATE';
 
 export class SandboxHttpError extends Error {
   readonly status: number;
-  readonly code = 'SANDBOX_HTTP' as const;
+  readonly code: SandboxHttpErrorCode;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code: SandboxHttpErrorCode = 'SANDBOX_HTTP') {
     super(message);
     this.name = 'SandboxHttpError';
     this.status = status;
+    this.code = code;
   }
 }

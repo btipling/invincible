@@ -120,6 +120,8 @@ runner.
 | Path jail | Workspace root + symlink-safe resolve; argv-only `exec` with timeouts |
 | Public inventory | Host IPs / droplet IDs stay offline ([docs/sandbox.md](docs/sandbox.md)) |
 | No PR trigger surface | Sandbox is not executed by untrusted PR workflows |
+| Daemon version gate | BYO daemons behind the expected `daemonVersion` return **426** out-of-date (exact string + `code`); never mapped to the 503 chat fallback. Client probes `/health` once per instance; missing daemonVersion = 0 |
+| Auto-update trust | Opt-in `SANDBOX_AUTO_UPDATE` runs `git fetch` + **ff-only** merge on `SANDBOX_GIT_DIR`, then exits for supervisor restart. Fails closed on divergent/dirty checkouts (stays up, keeps serving 426). Uses a **local** repo checkout / optional **read-only** deploy key — never Actions or GitHub write credentials in the sandbox unit env |
 
 ## Production app
 

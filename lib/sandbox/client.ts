@@ -14,11 +14,20 @@ import {
   MIN_SANDBOX_PROTOCOL_STDIN,
   normalizeBaseUrl,
 } from './config';
+import {
+  EXPECTED_SANDBOX_DAEMON_VERSION,
+  EXPECTED_DAEMON_VERSION_HEADER,
+  SANDBOX_DAEMON_OUT_OF_DATE_CODE,
+  sandboxDaemonOutOfDateError,
+} from './daemonVersion';
 
 const DEFAULT_TIMEOUT_MS = 45_000;
 
-/** Cached health.version per client instance (null = not yet probed). */
-type ProtocolCache = { version: number | null; inflight: Promise<number> | null };
+/** Parsed `GET /health` body of interest to the client. */
+type HealthInfo = { version: number; daemonVersion: number };
+
+/** Per-client-instance health cache (null = not yet probed). */
+type HealthCache = { health: HealthInfo | null; inflight: Promise<HealthInfo> | null };
 
 export type SandboxClient = {
   listDir: (path?: string, init?: { signal?: AbortSignal }) => Promise<ListDirResult>;
@@ -58,6 +67,13 @@ export type SandboxClient = {
     init?: { signal?: AbortSignal },
   ) => Promise<ExecResult>;
   /**
+   * Fail-fast: reject when the running daemon's `daemonVersion` < expected
+   * (or the daemon predates the field). Used by runAgent preflight so a turn
+   * errors out before the first tool call. Absent on non-HTTP backends
+   * (Vercel Sandbox SDK), which have no daemon `daemonVersion` to compare.
+   */
+  checkDaemonCurrent?: () => Promise<void>;
+  /**
    * Optional lifecycle hook for ephemeral backends (Vercel Sandbox).
    * BYO HTTP client omits this. Idempotent when present.
    */
@@ -78,14 +94,6 @@ function normalizeExecEnv(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/**
- * Client-side HTTP abort deadline for `/v1/exec`, derived from the request's
- * (already clamped) `timeoutMs` + `EXEC_TIMEOUT_BUFFER_MS`. Falls back to the
- * client default (`defaultTimeout`) when omitted/NaN so short commands keep the
- * existing fast abort. The buffer keeps the client abort strictly after the
- * daemon's own timeout kill, so `timedOut: true` reaches the model (TIMED_OUT)
- * rather than surfacing as a client 504.
- */
 export function execAbortTimeoutMs(timeoutMs?: number): number | undefined {
   if (timeoutMs == null || Number.isNaN(Number(timeoutMs))) return undefined;
   const clamped = Math.min(
@@ -101,7 +109,9 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const defaultTimeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const execEnv = normalizeExecEnv(opts.execEnv);
-  const protocolCache: ProtocolCache = { version: null, inflight: null };
+  const expectedDaemonVersion =
+    opts.expectedDaemonVersion ?? EXPECTED_SANDBOX_DAEMON_VERSION;
+  const healthCache: HealthCache = { health: null, inflight: null };
 
   function redactedMessage(message: string): string {
     return message.includes(token) ? message.split(token).join('[redacted]') : message;
@@ -129,14 +139,18 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
   }
 
   /**
-   * Probe GET /health once per client. Stale v1 daemons report version 1 and
-   * must not receive stdin (they would ignore it silently).
+   * Probe `GET /health` once per client, then reuse the cached body. A stale
+   * daemon with no `daemonVersion` field reports running `0` (out-of-date);
+   * a missing **protocol** version is a hard 502 (restart the daemon). On
+   * error nothing is cached, so the next call retries the probe.
    */
-  async function ensureProtocolVersion(init?: { signal?: AbortSignal }): Promise<number> {
-    if (protocolCache.version != null) return protocolCache.version;
-    if (protocolCache.inflight) return protocolCache.inflight;
+  async function fetchHealth(
+    init?: { signal?: AbortSignal },
+  ): Promise<HealthInfo> {
+    if (healthCache.health) return healthCache.health;
+    if (healthCache.inflight) return healthCache.inflight;
 
-    protocolCache.inflight = (async () => {
+    healthCache.inflight = (async () => {
       try {
         const res = await withTimeoutFetch(`${baseUrl}/health`, {
           method: 'GET',
@@ -159,11 +173,10 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
             res.status >= 400 && res.status < 600 ? res.status : 502,
           );
         }
+        const rec = (data ?? {}) as { version?: unknown; daemonVersion?: unknown };
         const version =
-          data &&
-          typeof data === 'object' &&
-          typeof (data as { version?: unknown }).version === 'number'
-            ? (data as { version: number }).version
+          typeof rec.version === 'number' && Number.isFinite(rec.version)
+            ? rec.version
             : NaN;
         if (!Number.isFinite(version) || version < 1) {
           throw new SandboxHttpError(
@@ -171,8 +184,13 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
             502,
           );
         }
-        protocolCache.version = version;
-        return version;
+        const daemonVersion =
+          typeof rec.daemonVersion === 'number' && Number.isFinite(rec.daemonVersion)
+            ? Math.floor(rec.daemonVersion)
+            : 0;
+        const health: HealthInfo = { version, daemonVersion };
+        healthCache.health = health;
+        return health;
       } catch (err) {
         if (err instanceof SandboxHttpError) throw err;
         if (err instanceof Error && err.name === 'AbortError') {
@@ -181,11 +199,36 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
         const message = err instanceof Error ? err.message : 'Sandbox health check failed';
         throw new SandboxHttpError(redactedMessage(message), 502);
       } finally {
-        protocolCache.inflight = null;
+        healthCache.inflight = null;
       }
     })();
 
-    return protocolCache.inflight;
+    return healthCache.inflight;
+  }
+
+  /**
+   * Gate: reject when the daemon is behind the expected revision. Clears the
+   * health cache on out-of-date so the next call re-probes (e.g. after the
+   * operator upgrades/restarts the daemon) instead of pinning the stale value.
+   */
+  async function ensureDaemonCurrent(
+    init?: { signal?: AbortSignal },
+  ): Promise<void> {
+    const health = await fetchHealth(init);
+    if (health.daemonVersion >= expectedDaemonVersion) return;
+    healthCache.health = null; // refresh on out-of-date
+    throw new SandboxHttpError(
+      sandboxDaemonOutOfDateError(health.daemonVersion, expectedDaemonVersion),
+      426,
+      SANDBOX_DAEMON_OUT_OF_DATE_CODE,
+    );
+  }
+
+  /** Backward-compatible protocol-version accessor (exec stdin gate). */
+  async function ensureProtocolVersion(
+    init?: { signal?: AbortSignal },
+  ): Promise<number> {
+    return (await fetchHealth(init)).version;
   }
 
   async function postJson<T>(
@@ -194,6 +237,10 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
     init?: { signal?: AbortSignal },
     timeoutMs?: number,
   ): Promise<T> {
+    // Any FS tool call fails loudly when the daemon is out of date (goal 3).
+    // Uses the cached health probe; on an outdated daemon it re-probes.
+    await ensureDaemonCurrent(init);
+
     const url = `${baseUrl}${path}`;
     try {
       const res = await withTimeoutFetch(
@@ -203,6 +250,7 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
+            [EXPECTED_DAEMON_VERSION_HEADER]: String(expectedDaemonVersion),
           },
           body: JSON.stringify(body ?? {}),
           signal: init?.signal,
@@ -223,11 +271,32 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
       }
 
       if (!res.ok) {
+        const rec = (data ?? {}) as {
+          error?: unknown;
+          code?: unknown;
+          running?: unknown;
+          expected?: unknown;
+        };
+        // 426 (or a daemon that signals SANDBOX_DAEMON_OUT_OF_DATE) → exact error.
+        if (res.status === 426 || rec.code === SANDBOX_DAEMON_OUT_OF_DATE_CODE) {
+          const running =
+            typeof rec.running === 'number' ? rec.running : 0;
+          const expected =
+            typeof rec.expected === 'number' ? rec.expected : expectedDaemonVersion;
+          const msg =
+            typeof rec.error === 'string'
+              ? rec.error
+              : sandboxDaemonOutOfDateError(running, expected);
+          healthCache.health = null; // refresh so a same-turn retry can re-probe
+          throw new SandboxHttpError(
+            redactedMessage(msg),
+            426,
+            SANDBOX_DAEMON_OUT_OF_DATE_CODE,
+          );
+        }
         const errMsg =
-          data &&
-          typeof data === 'object' &&
-          typeof (data as { error?: unknown }).error === 'string'
-            ? (data as { error: string }).error
+          typeof rec.error === 'string'
+            ? rec.error
             : `Sandbox request failed (${res.status})`;
         // Never include token in thrown message
         throw new SandboxHttpError(redactedMessage(errMsg), res.status);
@@ -245,6 +314,7 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
   }
 
   return {
+    checkDaemonCurrent: () => ensureDaemonCurrent(),
     listDir: (path = '.', init) => postJson<ListDirResult>('/v1/list_dir', { path }, init),
     readFile: (path, maxBytes, init) =>
       postJson<ReadFileResult>(

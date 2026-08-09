@@ -267,7 +267,7 @@ unauthenticated) — see above.
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| `GET` | `/health` | none | `{ ok: true, version: 2 }` |
+| `GET` | `/health` | none | `{ ok: true, version: 2, daemonVersion: N }` |
 | `POST` | `/v1/list_dir` | Bearer | List directory entries |
 | `POST` | `/v1/read_file` | Bearer | Read file (max 16 MiB); additive `mtimeMs` + `size` when daemon supports |
 | `POST` | `/v1/write_file` | Bearer | Write file (max 16 MiB); post-write fingerprint when supported |
@@ -279,6 +279,75 @@ unauthenticated) — see above.
 
 If you hit the stale-daemon error (`…need v2+…`), your running daemon is pinned
 to old code — upgrade/restart it per [§7 Upgrade a live daemon deployment](#7-byo-deploy-patterns).
+
+### Daemon version → out-of-date gate
+
+`health.version` is the **protocol**; `health.daemonVersion` is a separate
+**monotonic daemon revision** (starts at **1**; older daemons without the field
+report running `0`). The Next backend ships a matching expected revision
+(`lib/sandbox/daemonVersion.ts` `EXPECTED_SANDBOX_DAEMON_VERSION`) and refuses
+**any** FS tool call on a long-lived BYO daemon that is behind it — otherwise
+deployed Next would send tools (e.g. `str_replace`) a long-lived unit does not
+serve yet.
+
+Out-of-date behavior:
+
+- Client sends `X-Invincible-Expected-Daemon-Version: <expected>` on every
+  `/v1/*` request and probes `GET /health` **once per client instance**.
+- A daemon behind the expected revision (or one that predates `daemonVersion`)
+  is rejected **before** the tool runs with HTTP **426** and
+  `code: "SANDBOX_DAEMON_OUT_OF_DATE"`:
+
+  ```json
+  { "error": "Sandbox daemon out of date (running 0, expected N). Update and restart the sandbox process.",
+    "code": "SANDBOX_DAEMON_OUT_OF_DATE", "running": 0, "expected": N }
+  ```
+
+- Tools soft-fail as `ERROR <tool>: Sandbox daemon out of date (…)`, and the
+  agent preflight fails the turn before the first tool call. It is NOT mapped to
+  the `Sandbox not configured` 503 chat fallback (different status + string).
+- Health-unreachable stays a normal network error (502/504) — it is **not** an
+  out-of-date signal.
+- Missing **protocol** version is a hard 502 (`restart the daemon`); missing or
+  low **daemonVersion** is a **426** out-of-date (treat running as `0`).
+
+**Bump policy:** increment `INVINCIBLE_SANDBOX_DAEMON_VERSION`
+(`sandbox/constants.mjs`) **and** `EXPECTED_SANDBOX_DAEMON_VERSION`
+(`lib/sandbox/daemonVersion.ts`) in the **same PR** whenever the daemon tool
+surface / jail / budgets change in a way deployed Next depends on. A parity
+unit test fails the merge if they diverge. Protocol bumps only for
+wire-incompatible HTTP JSON.
+
+#### Optional auto-update + self-restart
+
+Opt-in so static/binary/BYO installs never require git. When enabled the daemon
+`git fetch` + **ff-only** merges its checkout and exits `0` so a supervisor with
+`Restart=always` reloads the new code. Fails closed: divergent local work or a
+git error leaves the daemon up and serving 426 (operator-visible), never a crash
+loop.
+
+| Env (sandbox process, **not** Vercel) | Required | Default | Purpose |
+|------|----------|---------|---------|
+| `SANDBOX_AUTO_UPDATE` | no | off | `1`/`true` enables git self-update |
+| `SANDBOX_GIT_DIR` | **yes** if auto-update on | — | Absolute path to the repo-root checkout (contains `sandbox/`) |
+| `SANDBOX_GIT_REF` | no | `origin/main` | ff-only merge target after `git fetch` |
+| `SANDBOX_UPDATE_CHECK_MS` | no | `60000` | Background check interval; `0` disables the timer (header-triggered only) |
+
+systemd auto-update example (no secrets in the unit):
+
+```ini
+[Service]
+Restart=always
+RestartSec=2
+WorkingDirectory=/path/to/invincible/checkout
+Environment=SANDBOX_AUTO_UPDATE=1
+Environment=SANDBOX_GIT_DIR=/path/to/invincible/checkout
+```
+
+Public repo clones need no token; private forks use a **read-only** deploy key
+configured in that checkout's git config (operator-managed). Never put GitHub
+Actions write credentials in the sandbox unit env. See
+[`sandbox/README.md`](../sandbox/README.md) for package-level detail.
 
 **Exec timeout & argv contract:** `exec` runs **argv only (no shell)** — pass
 `args` as an array; a shell-style single-string `cmd` (whitespace + no `args`)
@@ -315,6 +384,10 @@ Also requires existing `AI_GATEWAY_API_KEY` for inference.
 | `SANDBOX_TOKEN` | **yes** | — | Same secret as Vercel |
 | `SANDBOX_WORKSPACE` | **yes** | — | Absolute jail root (must exist) |
 | `SANDBOX_LISTEN` | no | `127.0.0.1:8787` | Bind address (localhost OK behind proxy) |
+| `SANDBOX_AUTO_UPDATE` | no | off | Opt-in git self-update (`1`/`true`); see §3 daemon-version gate |
+| `SANDBOX_GIT_DIR` | yes if auto-update on | — | Repo-root checkout path (contains `sandbox/`) |
+| `SANDBOX_GIT_REF` | no | `origin/main` | ff-only merge target |
+| `SANDBOX_UPDATE_CHECK_MS` | no | `60000` | Background update interval; `0` disables timer |
 
 ---
 
@@ -335,7 +408,7 @@ Smoke:
 
 ```bash
 curl -s http://127.0.0.1:8787/health
-# {"ok":true,"version":2}
+# {"ok":true,"version":2,"daemonVersion":1}
 ```
 
 Terminal B — Next (`.env.local`):
@@ -430,8 +503,16 @@ what makes `exec` stdin/heredoc available through the BYO client):
 
 ```bash
 curl -s http://127.0.0.1:8787/health
-# expect: {"ok":true,"version":2}
+# expect: {"ok":true,"version":2,"daemonVersion":1}
 ```
+
+**Version gate after upgrade:** once deployed Next sends an expected
+`daemonVersion`, the long-lived unit must report `daemonVersion >=` that expected
+revision or every tool call returns **426 out-of-date**. Options to get a unit
+current: follow steps 1–5 once, **or** enable `SANDBOX_AUTO_UPDATE=1` +
+`SANDBOX_GIT_DIR` on the unit as a one-time (or ongoing) path — the daemon ff-only
+pulls and exits `0` so `Restart=always` loads the new code. See §3 daemon-version
+gate for the env table and systemd example.
 
 **Why v2 matters:** BYO `exec` accepts optional `stdin` / heredoc (multi-line
 input without a shell) only on health `version >= 2`. The app BYO client probes
@@ -526,7 +607,7 @@ See also [SECURITY.md](../SECURITY.md).
 
 | # | Check | Expect |
 |---|--------|--------|
-| 1 | `GET /health` (local or off-box prod) | `{ ok: true, version: 2 }` |
+| 1 | `GET /health` (local or off-box prod) | `{ ok: true, version: 2, daemonVersion: N }` |
 | 2 | Harness with `SANDBOX_*` set | tool system lines + assistant for a write/exec prompt |
 | 3 | Harness with `SANDBOX_*` **unset** | PONG / chat still works (agent 503 → chat) |
 | 4 | Wrong/missing Bearer on `/v1/*` | `401` without echoing the token |
