@@ -57,6 +57,13 @@
       "when": 1785940000000,
       "tag": "0007_user_preferred_sandbox",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785960000000,
+      "tag": "0008_user_sandbox_instances",
+      "breakpoints": true
     }
   ]
 }
