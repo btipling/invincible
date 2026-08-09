@@ -23,6 +23,10 @@ import {
   type SessionStore,
 } from '../../lib/sessionStore';
 import {
+  createHttpSessionRepository,
+  type SessionRepository,
+} from '../../lib/sessionRepository';
+import {
   canLoadEarlier as sessionCanLoadEarlier,
   earlierRingStart,
   latestRingStart,
@@ -140,6 +144,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bridgeRef = useRef<HarnessBridge | null>(null);
   const storeRef = useRef<SessionStore | null>(null);
+  /** Cloud multi-device session repo (phase #244); disabled on 401 / tenancy-off. */
+  const repoRef = useRef<SessionRepository | null>(null);
   const pollRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const inflightRef = useRef(false);
@@ -161,7 +167,19 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   /** Wasm build id from public/harness/build-id.txt — stale-cache detector. */
   const [harnessBuildId, setHarnessBuildId] = useState<string>('');
 
-  const persist = useCallback((next: SessionSnapshot) => {
+  const hydrateRingWindow = useCallback(
+    (bridge: HarnessBridge, session: SessionSnapshot, windowStart: number) => {
+      const start = pushSessionToBridge(bridge, session, {
+        clear: true,
+        windowStart,
+      });
+      ringWindowStartRef.current = start;
+      return start;
+    },
+    [],
+  );
+
+  const writeLocalSession = useCallback((next: SessionSnapshot) => {
     sessionRef.current = next;
     storeRef.current?.save(next);
     // Incremental pushMessage turns keep the ring on the latest window.
@@ -174,16 +192,25 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     }
   }, []);
 
-  const hydrateRingWindow = useCallback(
-    (bridge: HarnessBridge, session: SessionSnapshot, windowStart: number) => {
-      const start = pushSessionToBridge(bridge, session, {
-        clear: true,
-        windowStart,
-      });
-      ringWindowStartRef.current = start;
-      return start;
+  /** Apply server snapshot to local store + latest Wasm ring window. */
+  const adoptCloudSession = useCallback(
+    (next: SessionSnapshot) => {
+      writeLocalSession(next);
+      const bridge = bridgeRef.current;
+      if (bridge) {
+        hydrateRingWindow(bridge, next, latestRingStart(next.messages.length));
+      }
     },
-    [],
+    [writeLocalSession, hydrateRingWindow],
+  );
+
+  const persist = useCallback(
+    (next: SessionSnapshot) => {
+      writeLocalSession(next);
+      // Hybrid cloud push — never blocks the turn; coalesced in repository.
+      repoRef.current?.schedulePush(next);
+    },
+    [writeLocalSession],
   );
 
   const runPrompt = useCallback(
@@ -254,6 +281,14 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         const store = createDefaultSessionStore();
         storeRef.current = store;
         setStoreKind(store.kind);
+        // Cloud repo for multi-device sync — pull is async after first paint path.
+        const repo = createHttpSessionRepository({
+          onAdopt: (snap) => {
+            if (cancelled) return;
+            adoptCloudSession(snap);
+          },
+        });
+        repoRef.current = repo;
 
         const buildId = await fetchHarnessBuildId();
         if (cancelled) return;
@@ -324,6 +359,14 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           bridge.pushMessage(MessageKind.System, systemLine);
         }
 
+        // Cloud pull must not gate first paint — fire-and-forget after local hydrate.
+        void repo.pull(sessionRef.current).then((result) => {
+          if (cancelled) return;
+          if (result.action === 'adopt') {
+            // onAdopt already applied; no-op
+          }
+        });
+
         setLoadMs(Math.round(performance.now() - loadStarted.current));
         setLifecycle(lifecycleName(Lifecycle.Ready));
 
@@ -385,16 +428,19 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         pollRef.current = null;
       }
       bridgeRef.current = null;
+      repoRef.current = null;
     };
-  }, [runPrompt, hydrateRingWindow]);
+  }, [runPrompt, hydrateRingWindow, adoptCloudSession]);
 
   const onClear = useCallback(() => {
     if (inflightRef.current) return;
     abortRef.current?.abort();
     const empty = createEmptySession();
-    persist(empty);
+    // Local only — never schedulePush empty. Cloud clear is DELETE.
+    writeLocalSession(empty);
     storeRef.current?.clear();
     storeRef.current?.save(empty);
+    void repoRef.current?.remove();
     const bridge = bridgeRef.current;
     if (bridge) {
       resetHarnessImageSession();
@@ -408,7 +454,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     setHostNote(null);
     setLifecycle(lifecycleName(Lifecycle.Ready));
     canvasRef.current?.focus();
-  }, [persist]);
+  }, [writeLocalSession]);
 
   // Single always-mounted canvas — never unmount across phase changes.
   const canvasNode = (
