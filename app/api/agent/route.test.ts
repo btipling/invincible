@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AUTH_REQUIRED_ERROR,
   SANDBOX_FORBIDDEN_ERROR,
+  WORKSPACE_INSTANCE_REQUIRED_ERROR,
 } from '../../../lib/tenancy/errors';
 
 /**
@@ -288,6 +289,66 @@ describe('POST /api/agent', () => {
     // sandbox failed before MCP
     expect(mcp.buildUserMcpTools).not.toHaveBeenCalled();
   });
+
+  it('softContinue from resolve skips FS tools and still runs agent (MCP may load)', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+    delete process.env.BUILTIN_HTTP_FETCH;
+
+    type RunArg = {
+      skipSandboxTools?: boolean;
+      sandboxClient?: unknown;
+      secrets: string[];
+      prompt: string;
+    };
+    const runAgent = vi.fn(async (_arg: RunArg) => ({
+      text: 'soft-ok',
+      toolTrace: [],
+    }));
+    vi.resetModules();
+    const mcp = mockMcpEmpty();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1', email: 'a@b.c' },
+      })),
+    }));
+    mockByokOk();
+    mockGithubToken();
+    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: false as const,
+        softContinue: true as const,
+        response: Response.json(
+          { error: WORKSPACE_INSTANCE_REQUIRED_ERROR },
+          { status: 403 },
+        ),
+      })),
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { text: string };
+    expect(body.text).toBe('soft-ok');
+    expect(runAgent).toHaveBeenCalled();
+    const arg = runAgent.mock.calls[0]![0] as RunArg;
+    expect(arg.skipSandboxTools).toBe(true);
+    expect(arg.sandboxClient).toBeUndefined();
+    expect(mcp.buildUserMcpTools).toHaveBeenCalled();
+  });
+
 
   it('tenancy on injects resolved client + BYOK without requiring env SANDBOX_*', async () => {
     process.env.AI_GATEWAY_API_KEY = 'gw-key';

@@ -6,6 +6,7 @@ import {
   INFERENCE_UNAVAILABLE_ERROR,
   SANDBOX_FORBIDDEN_ERROR,
   SANDBOX_SELECTION_REQUIRED_ERROR,
+  WORKSPACE_INSTANCE_REQUIRED_ERROR,
 } from './errors';
 
 describe('tenancy error constants', () => {
@@ -19,6 +20,12 @@ describe('tenancy error constants', () => {
 
   it('locks SANDBOX_SELECTION_REQUIRED_ERROR string', () => {
     expect(SANDBOX_SELECTION_REQUIRED_ERROR).toMatch(/Settings → Sandbox/);
+  });
+
+  it('locks WORKSPACE_INSTANCE_REQUIRED_ERROR string (#301)', () => {
+    expect(WORKSPACE_INSTANCE_REQUIRED_ERROR).toBe(
+      'Workspace instance is not running. Create or Start it under Settings → Sandbox.',
+    );
   });
 
   it('locks BYOK inference error strings (#103)', () => {

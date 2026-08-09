@@ -40,8 +40,8 @@ function isAbortError(err: unknown): boolean {
 }
 
 /**
- * Stop ephemeral runners: hop-B http sandbox, MCP sessions, and FS SandboxClient
- * (Vercel adapter implements optional close → stop).
+ * Release runners: hop-B http sandbox, MCP sessions, and FS SandboxClient.
+ * Attach FS client close = extendTimeout + drop handle (never stop).
  * Called from JSON finally, stream start finally, and stream cancel.
  */
 async function closeRunners(
@@ -164,16 +164,17 @@ export async function POST(req: Request): Promise<Response> {
       });
 
       if (!resolved.ok) {
-        if (!builtinHttp.enabled) {
-          // Preserve hard 403 when no FS grant and no builtin HTTP path.
+        if (resolved.softContinue || builtinHttp.enabled) {
+          // Soft-continue: no FS tools; MCP + builtin HTTP may still run.
+          runParams = {
+            ...runParams,
+            skipSandboxTools: true,
+            secrets: [...byok.secretsToRedact, ...ghSecrets],
+          };
+        } else {
+          // Hard 403: grant/membership/selection without alternate soft path.
           return resolved.response;
         }
-        // Soft-continue: http ± MCP only (no FS tools).
-        runParams = {
-          ...runParams,
-          skipSandboxTools: true,
-          secrets: [...byok.secretsToRedact, ...ghSecrets],
-        };
       } else {
         sandboxClient = resolved.value.client;
         redactList = [...redactList, ...resolved.value.secrets];

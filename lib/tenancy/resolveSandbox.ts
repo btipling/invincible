@@ -1,5 +1,6 @@
 /**
  * Resolve sandbox + grants for an authenticated user.
+ * Vercel backend: attach-only Workspace instance (status running); never create.
  * Exactly one sole tenant membership. Among usable grants: use the user's
  * preferred sandbox when set and usable; if exactly one usable grant, use it;
  * if multiple usable and no valid preference → selection-required error.
@@ -22,6 +23,7 @@ import {
 import {
   SANDBOX_FORBIDDEN_ERROR,
   SANDBOX_SELECTION_REQUIRED_ERROR,
+  WORKSPACE_INSTANCE_REQUIRED_ERROR,
 } from './errors';
 import {
   effectiveGrantPermissions,
@@ -35,6 +37,7 @@ import {
 } from './sandboxBackend';
 import { decryptSandboxToken } from './tenantKeys';
 import { getUserPreferredSandboxId } from './userPreferredSandbox';
+import { loadInstance } from './userSandboxInstance';
 
 export type ResolvedAgentSandbox = {
   client: SandboxClient;
@@ -52,7 +55,15 @@ export type ResolvedAgentSandbox = {
 
 export type ResolveAgentSandboxResult =
   | { ok: true; value: ResolvedAgentSandbox }
-  | { ok: false; response: Response };
+  | {
+      ok: false;
+      response: Response;
+      /**
+       * When true, agent may continue without FS tools (MCP / builtin HTTP).
+       * Grant/selection failures omit this (hard 403 unless route builtin soft path).
+       */
+      softContinue?: boolean;
+    };
 
 export type ResolveAgentSandboxDeps = {
   db?: Db;
@@ -84,9 +95,9 @@ export type ResolveAgentSandboxDeps = {
     token: string;
     execEnv?: Record<string, string>;
   }) => SandboxClient;
-  /** Vercel FS client factory (tests). Receives raw row image (+ optional execEnv). */
+  /** Vercel FS client factory (tests). Receives attach name (+ optional image/execEnv). */
   createVercelClient?: (
-    opts: Pick<CreateVercelSandboxClientOptions, 'image' | 'execEnv'>,
+    opts: Pick<CreateVercelSandboxClientOptions, 'name' | 'image' | 'execEnv'>,
   ) => SandboxClient;
 };
 
@@ -202,7 +213,31 @@ async function resolveWithDb(
 
     if (backend === 'vercel') {
       // Never decrypt BYO token for vercel rows (even if stale ciphertext remains).
-      const image = row.image;
+      // Attach-only: require durable Workspace instance running (Settings Create/Start).
+      const loaded = await loadInstance(userId, 'workspace', { db });
+      if (!loaded.ok) {
+        return {
+          ok: false,
+          softContinue: true,
+          response: Response.json(
+            { error: WORKSPACE_INSTANCE_REQUIRED_ERROR },
+            { status: 403 },
+          ),
+        };
+      }
+      const instance = loaded.value;
+      if (!instance || instance.status !== 'running') {
+        return {
+          ok: false,
+          softContinue: true,
+          response: Response.json(
+            { error: WORKSPACE_INSTANCE_REQUIRED_ERROR },
+            { status: 403 },
+          ),
+        };
+      }
+
+      const image = instance.image ?? row.image;
       const resolvedImg = resolveVercelSandboxImage(image);
       if (!resolvedImg.ok) {
         return forbidden();
@@ -212,14 +247,19 @@ async function resolveWithDb(
       try {
         const createVercel =
           deps.createVercelClient ??
-          ((opts: Pick<CreateVercelSandboxClientOptions, 'image' | 'execEnv'>) =>
-            createVercelSandboxClient(opts));
+          ((
+            opts: Pick<
+              CreateVercelSandboxClientOptions,
+              'name' | 'image' | 'execEnv'
+            >,
+          ) => createVercelSandboxClient(opts));
         client = createVercel({
-          image,
+          name: instance.vercelName,
+          image: instance.image,
           ...(deps.execEnv ? { execEnv: deps.execEnv } : {}),
         });
       } catch {
-        // Invalid image / factory throw — fail closed, no message leak.
+        // Invalid name / factory throw — fail closed, no message leak.
         return forbidden();
       }
 

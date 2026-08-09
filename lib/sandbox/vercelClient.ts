@@ -1,7 +1,7 @@
 /**
- * Vercel Sandbox–backed SandboxClient (per-tenant FS backend, phase 2 / #282).
- * Ephemeral microVM; image/timeout/networkPolicy from factory opts (not host env).
- * Pattern mirrors hop-B single-flight + close→stop; does not reuse that runner.
+ * Vercel Sandbox–backed SandboxClient — attach-only durable Workspace instance.
+ * Product path: Sandbox.get({ name, resume: true }) + extendTimeout; close never stops.
+ * Never create or get-or-create; never stop or delete here (lifecycle = userSandboxInstance).
  */
 
 import path from 'node:path';
@@ -103,28 +103,36 @@ export type VercelFsSandboxLike = {
       timeoutMs?: number;
     },
   ): Promise<VercelFsSandboxCommandResult>;
-  stop(opts?: { signal?: AbortSignal }): Promise<unknown>;
+  /** Present on real SDK; attach client never calls stop. */
+  stop?(opts?: { signal?: AbortSignal }): Promise<unknown>;
+  extendTimeout?(
+    durationMs: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<unknown>;
 };
 
-export type CreateVercelFsSandboxParams = {
-  image: string;
-  timeout: number;
-  networkPolicy: 'allow-all';
-  persistent: false;
+export type GetVercelFsSandboxParams = {
+  name: string;
+  resume?: boolean;
   signal?: AbortSignal;
 };
 
-export type CreateVercelFsSandboxFn = (
-  params: CreateVercelFsSandboxParams,
+export type GetVercelFsSandboxFn = (
+  params: GetVercelFsSandboxParams,
 ) => Promise<VercelFsSandboxLike>;
 
 export type CreateVercelSandboxClientOptions = {
-  /** Raw row image; empty/null → product default. */
+  /** Durable instance name (`user_sandbox_instances.vercel_name`). Required. */
+  name: string;
+  /**
+   * Frozen image from instance row (optional; used for preflight shape only).
+   * Attach does not create an image.
+   */
   image?: string | null;
-  /** Inject Sandbox.create (tests). */
-  createSandbox?: CreateVercelFsSandboxFn;
-  /** VM lifetime ms (clamped 5s–30m). Default 30m. */
-  sandboxTimeoutMs?: number;
+  /** Inject Sandbox.get (tests). Default: @vercel/sandbox Sandbox.get. */
+  getSandbox?: GetVercelFsSandboxFn;
+  /** Idle extendTimeout ms (default 30m — USER_SANDBOX_IDLE family). */
+  idleTimeoutMs?: number;
   /** Absolute jail root inside the VM. Default `/vercel/workspace`. */
   workspaceRoot?: string;
   /**
@@ -186,15 +194,13 @@ function mapFsError(err: unknown, fallbackStatus = 502): never {
   throw new SandboxHttpError(safe || 'Sandbox request failed', status);
 }
 
-async function defaultCreateSandbox(
-  params: CreateVercelFsSandboxParams,
+async function defaultGetSandbox(
+  params: GetVercelFsSandboxParams,
 ): Promise<VercelFsSandboxLike> {
   const { Sandbox } = await import('@vercel/sandbox');
-  const sb = await Sandbox.create({
-    image: params.image,
-    timeout: params.timeout,
-    networkPolicy: params.networkPolicy,
-    persistent: params.persistent,
+  const sb = await Sandbox.get({
+    name: params.name,
+    resume: params.resume ?? true,
     signal: params.signal,
   });
   return sb as unknown as VercelFsSandboxLike;
@@ -260,39 +266,51 @@ function normalizeExecEnv(
 }
 
 export function createVercelSandboxClient(
-  opts: CreateVercelSandboxClientOptions = {},
+  opts: CreateVercelSandboxClientOptions,
 ): SandboxClient {
-  const resolved = resolveVercelSandboxImage(opts.image);
-  if (!resolved.ok) {
-    // Fail closed before any Sandbox.create (invalid shape never reaches SDK).
-    throw new SandboxHttpError(resolved.error, 400);
+  const name = opts.name?.trim();
+  if (!name) {
+    throw new SandboxHttpError('Sandbox instance name is required', 400);
+  }
+  // Optional image preflight (instance row may carry frozen image); never used to create.
+  if (opts.image !== undefined && opts.image !== null) {
+    const resolved = resolveVercelSandboxImage(opts.image);
+    if (!resolved.ok) {
+      throw new SandboxHttpError(resolved.error, 400);
+    }
   }
 
-  const image = resolved.image;
-  const createSandbox = opts.createSandbox ?? defaultCreateSandbox;
-  const sandboxTimeoutMs = clampSandboxTimeout(opts.sandboxTimeoutMs);
+  const getSandbox = opts.getSandbox ?? defaultGetSandbox;
+  const idleTimeoutMs = clampSandboxTimeout(opts.idleTimeoutMs);
   const workspaceRoot = (opts.workspaceRoot?.trim() || VERCEL_FS_WORKSPACE_ROOT).replace(
     /\/+$/,
     '',
   );
   const execEnv = normalizeExecEnv(opts.execEnv);
 
-  let createPromise: Promise<VercelFsSandboxLike> | null = null;
+  let attachPromise: Promise<VercelFsSandboxLike> | null = null;
   let sandbox: VercelFsSandboxLike | null = null;
   let closed = false;
   let rootReady = false;
+
+  async function bestEffortExtend(sb: VercelFsSandboxLike): Promise<void> {
+    if (typeof sb.extendTimeout !== 'function') return;
+    try {
+      await sb.extendTimeout(idleTimeoutMs);
+    } catch {
+      // best-effort — never fail the turn
+    }
+  }
 
   async function ensureSandbox(signal?: AbortSignal): Promise<VercelFsSandboxLike> {
     if (closed) {
       throw new SandboxHttpError('Sandbox client is closed', 400);
     }
     if (sandbox && rootReady) return sandbox;
-    if (!createPromise) {
-      createPromise = createSandbox({
-        image,
-        timeout: sandboxTimeoutMs,
-        networkPolicy: 'allow-all',
-        persistent: false,
+    if (!attachPromise) {
+      attachPromise = getSandbox({
+        name,
+        resume: true,
         signal,
       })
         .then(async (sb) => {
@@ -300,21 +318,16 @@ export function createVercelSandboxClient(
           if (closed) {
             throw new SandboxHttpError('Sandbox client is closed', 400);
           }
+          await bestEffortExtend(sb);
           try {
             await sb.fs.mkdir(workspaceRoot, { recursive: true, signal });
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             if (!/exist/i.test(msg) && !/EEXIST/i.test(msg)) {
-              // Create succeeded but root is not ready: stop the VM and clear the
-              // latch so a later tool call can retry (do not brick the client).
+              // Do not stop durable VM — clear latch for retry only.
               sandbox = null;
               rootReady = false;
-              createPromise = null;
-              try {
-                await sb.stop();
-              } catch {
-                // ignore stop errors
-              }
+              attachPromise = null;
               mapFsError(err, 502);
             }
           }
@@ -325,46 +338,41 @@ export function createVercelSandboxClient(
           return sb;
         })
         .catch((err) => {
-          // Create itself failed with no retained instance, or mkdir path already
-          // cleared sandbox above — allow a later ensure to create again.
           if (!sandbox) {
-            createPromise = null;
+            attachPromise = null;
             rootReady = false;
           }
           mapFsError(err, 502);
         });
     }
-    return createPromise;
+    return attachPromise;
   }
 
-  async function stopSandboxIfAny(): Promise<void> {
+  async function releaseHandle(): Promise<void> {
     const sb = sandbox;
     sandbox = null;
     rootReady = false;
     if (!sb) return;
-    try {
-      await sb.stop();
-    } catch {
-      // ignore stop errors
-    }
+    // Keep warm — never stop/delete attach clients.
+    await bestEffortExtend(sb);
   }
 
   async function close(): Promise<void> {
     if (closed) {
-      await stopSandboxIfAny();
+      await releaseHandle();
       return;
     }
     closed = true;
-    const pending = createPromise;
-    createPromise = null;
+    const pending = attachPromise;
+    attachPromise = null;
     if (pending) {
       try {
         await pending;
       } catch {
-        // create failed or closed mid-create — sandbox may still be assigned
+        // attach failed mid-flight — handle may still be set
       }
     }
-    await stopSandboxIfAny();
+    await releaseHandle();
   }
 
   const client: SandboxClient = {
