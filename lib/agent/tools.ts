@@ -17,7 +17,6 @@ import {
   type DiskFingerprint,
   type RunFileFreshness,
 } from './fileFreshness';
-import { SandboxHttpError } from '../sandbox/types';
 
 export type ToolPermissions = {
   canRead: boolean;
@@ -79,19 +78,23 @@ function resolvePathOrError(
   }
 }
 
-function isNotFoundError(err: unknown): boolean {
-  if (err instanceof SandboxHttpError && err.status === 404) return true;
-  if (
-    err &&
-    typeof err === 'object' &&
-    'status' in err &&
-    typeof (err as { status: unknown }).status === 'number' &&
-    (err as { status: number }).status === 404
-  ) {
-    return true;
-  }
-  const msg = err instanceof Error ? err.message : String(err);
-  return /\bENOENT\b|not found|Path not found|File not found/i.test(msg);
+/**
+ * True only when the sandbox reports the **path** is missing (create-new
+ * write_file). Must not treat protocol/route 404s (e.g. stale BYO daemon
+ * missing `POST /v1/stat` → `{ error: "Not found" }`) as path absence — that
+ * would skip read-before-edit and overwrite existing files.
+ *
+ * Accept: BYO `Path not found` / `File not found` / `Directory not found`,
+ * Node/Vercel `ENOENT` / "no such file or directory".
+ * Reject: bare `Not found`, `Sandbox request failed (404)`, any non-path 404.
+ */
+export function isPathMissingError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).trim();
+  if (/\bENOENT\b/i.test(msg)) return true;
+  if (/no such file or directory/i.test(msg)) return true;
+  // Exact BYO tool strings (stat/read/list)
+  if (/^(Path|File|Directory) not found$/i.test(msg)) return true;
+  return false;
 }
 
 function finiteFp(partial: DiskFingerprint): DiskFingerprint {
@@ -358,7 +361,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           const st = await client.stat(path, { signal });
           live = finiteFp({ mtimeMs: st.mtimeMs, size: st.size });
         } catch (err) {
-          if (isNotFoundError(err)) {
+          if (isPathMissingError(err)) {
             exists = false;
           } else {
             const msg = err instanceof Error ? err.message : String(err);
@@ -450,7 +453,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           const st = await client.stat(path, { signal });
           live = finiteFp({ mtimeMs: st.mtimeMs, size: st.size });
         } catch (err) {
-          if (isNotFoundError(err)) {
+          if (isPathMissingError(err)) {
             return finalize('ERROR str_replace: File not found', secrets);
           }
           const msg = err instanceof Error ? err.message : String(err);

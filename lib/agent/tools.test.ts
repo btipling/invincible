@@ -1,20 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TOOL_RESULT_MAX_CHARS } from '../sandbox/config';
 import type { SandboxClient } from '../sandbox/client';
-import { createAgentTools } from './tools';
+import { createAgentTools, isPathMissingError } from './tools';
 import { createRunFileFreshness } from './fileFreshness';
 import { SandboxHttpError } from '../sandbox/types';
-
-function toolsWith(
-  client: SandboxClient,
-  extra?: Partial<Parameters<typeof createAgentTools>[0]>,
-) {
-  return createAgentTools({
-    client,
-    freshness: createRunFileFreshness(),
-    ...extra,
-  });
-}
 
 function mockClient(partial: Partial<SandboxClient>): SandboxClient {
   return {
@@ -37,6 +26,30 @@ function mockClient(partial: Partial<SandboxClient>): SandboxClient {
     ...partial,
   };
 }
+
+
+describe('isPathMissingError', () => {
+  it('accepts path-missing messages from BYO and Vercel/Node', () => {
+    expect(isPathMissingError(new SandboxHttpError('Path not found', 404))).toBe(true);
+    expect(isPathMissingError(new SandboxHttpError('File not found', 404))).toBe(true);
+    expect(isPathMissingError(new SandboxHttpError('Directory not found', 404))).toBe(true);
+    expect(isPathMissingError(new Error('ENOENT: no such file or directory'))).toBe(true);
+    expect(isPathMissingError(new SandboxHttpError('ENOENT: /vercel/workspace/x', 404))).toBe(
+      true,
+    );
+  });
+
+  it('rejects protocol/route 404 and ambiguous not-found', () => {
+    expect(isPathMissingError(new SandboxHttpError('Not found', 404))).toBe(false);
+    expect(isPathMissingError(new SandboxHttpError('Sandbox request failed (404)', 404))).toBe(
+      false,
+    );
+    expect(isPathMissingError(new SandboxHttpError('old_string not found in file', 400))).toBe(
+      false,
+    );
+    expect(isPathMissingError(new SandboxHttpError('Unauthorized', 401))).toBe(false);
+  });
+});
 
 describe('createAgentTools', () => {
   it('soft-fails on client error without throwing', async () => {
@@ -807,5 +820,51 @@ describe('read-before-edit gates', () => {
     )) as string;
     expect(w2).toMatch(/^write_file a\.txt/);
     expect(client.stat).toHaveBeenCalled();
+  });
+
+  it('stat route 404 "Not found" fail-closes write_file (no create bypass)', async () => {
+    // Stale BYO daemon without POST /v1/stat → createServer unknown route
+    const writeFile = vi.fn(async () => ({ ok: true as const, bytes: 1 }));
+    const client = mockClient({
+      writeFile,
+      stat: vi.fn(async () => {
+        throw new SandboxHttpError('Not found', 404);
+      }),
+    });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    const out = (await tools.write_file.execute!(
+      { path: 'existing.txt', content: 'overwrite' },
+      execCtx,
+    )) as string;
+    expect(out).toMatch(/^ERROR write_file: Not found/);
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('ENOENT from stat still allows create-new write_file', async () => {
+    const writeFile = vi.fn(async () => ({
+      ok: true as const,
+      bytes: 2,
+      mtimeMs: 1,
+      size: 2,
+    }));
+    const client = mockClient({
+      writeFile,
+      stat: vi.fn(async () => {
+        throw new SandboxHttpError('ENOENT: /vercel/workspace/new.txt', 404);
+      }),
+    });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    const out = (await tools.write_file.execute!(
+      { path: 'new.txt', content: 'hi' },
+      execCtx,
+    )) as string;
+    expect(out).toMatch(/^write_file new\.txt/);
+    expect(writeFile).toHaveBeenCalled();
   });
 });
