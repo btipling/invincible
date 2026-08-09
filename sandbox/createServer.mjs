@@ -148,6 +148,7 @@ export function createSandboxServer(opts) {
         if (expected != null && expected > INVINCIBLE_SANDBOX_DAEMON_VERSION) {
           const running = INVINCIBLE_SANDBOX_DAEMON_VERSION;
           opts.onOutOfDate?.({ running, expected });
+          req.resume();
           sendJson(res, 426, {
             error: sandboxDaemonOutOfDateError(running, expected),
             code: SANDBOX_DAEMON_OUT_OF_DATE_CODE,

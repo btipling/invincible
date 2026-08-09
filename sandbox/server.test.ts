@@ -78,7 +78,7 @@ describe('sandbox HTTP server', () => {
     void token;
   });
 
-  it('daemon gate: header expected > running → 426, tool not executed', async () => {
+  it('daemon gate: header expected > running → 426, tool not executed, body drained', async () => {
     const { base, token } = await start();
     const headers = {
       'Content-Type': 'application/json',
@@ -87,10 +87,16 @@ describe('sandbox HTTP server', () => {
         INVINCIBLE_SANDBOX_DAEMON_VERSION + 1,
       ),
     };
+    // Large non-empty body so a missing req.resume()/drain would leave the
+    // socket buffered; the gate must still answer 426 and free the connection.
+    const payload = JSON.stringify({
+      path: '.',
+      filler: 'x'.repeat(64 * 1024),
+    });
     const res = await fetch(`${base}/v1/list_dir`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ path: '.' }),
+      body: payload,
     });
     expect(res.status).toBe(426);
     const body = (await res.json()) as {
