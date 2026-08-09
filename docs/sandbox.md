@@ -408,7 +408,7 @@ input without a shell) only on health `version >= 2`. The app BYO client probes
 below `MIN_SANDBOX_PROTOCOL_STDIN` (2) — it throws `Sandbox daemon protocol v<N>
 does not support exec stdin/heredoc (need v2+). Restart/upgrade the BYO daemon.`
 If you see that error, the running daemon is pinned to old code and hasn't
-picked up the v2 change; repeat steps 3–6 above.
+picked up the v2 change; repeat steps 3–5 above.
 
 **Gotchas**
 

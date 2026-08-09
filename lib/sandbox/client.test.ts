@@ -182,6 +182,62 @@ describe('sandbox client', () => {
   });
 
   it('exec client abort deadline follows request timeoutMs (+ buffer), not fixed 45s', async () => {
+    // Prove the derived deadline is actually wired into withTimeoutFetch — not only
+    // the pure helper. Fake timers: must survive past the old 45s ceiling and only
+    // abort at clamp(timeoutMs) + EXEC_TIMEOUT_BUFFER_MS.
+    vi.useFakeTimers();
+    try {
+      let aborted = false;
+      const fetchImpl = vi.fn(
+        (_input: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            const sig = init?.signal as AbortSignal | undefined;
+            const onAbort = () => {
+              aborted = true;
+              sig?.removeEventListener('abort', onAbort);
+              reject(new DOMException('Aborted', 'AbortError'));
+            };
+            if (sig?.aborted) onAbort();
+            else sig?.addEventListener('abort', onAbort, { once: true });
+          }),
+      );
+      const client = createSandboxClient({
+        baseUrl: 'http://sandbox.test',
+        token: 'tok',
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const pending = client
+        .exec({ cmd: 'make', args: ['build'], timeoutMs: 300_000 })
+        .then(
+          () => null,
+          (err: unknown) => err,
+        );
+      // Daemon still sees the request timeoutMs (not a client-side 45s ceiling).
+      const body = vi.mocked(fetchImpl).mock.calls[0][1]?.body;
+      expect(JSON.parse(String(body))).toMatchObject({ cmd: 'make', timeoutMs: 300_000 });
+      const deadline = execAbortTimeoutMs(300_000)!;
+      expect(deadline).toBe(305_000);
+
+      // Old fixed 45s ceiling must not abort.
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(aborted).toBe(false);
+
+      // One ms before derived deadline still open.
+      await vi.advanceTimersByTimeAsync(deadline - 45_000 - 1);
+      expect(aborted).toBe(false);
+
+      // At derived deadline the client aborts (surfaces as 504).
+      await vi.advanceTimersByTimeAsync(1);
+      expect(aborted).toBe(true);
+      const err = await pending;
+      expect(err).toBeInstanceOf(SandboxHttpError);
+      expect((err as SandboxHttpError).status).toBe(504);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('exec turn-cancel abort wins immediately over the client timer', async () => {
     let aborted = false;
     const fetchImpl = vi.fn(
       (_input: RequestInfo | URL, init?: RequestInit) =>
@@ -201,16 +257,9 @@ describe('sandbox client', () => {
       token: 'tok',
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    void client.exec({ cmd: 'make', args: ['build'], timeoutMs: 300_000 });
-    // Derived deadline is the pure helper's return; the 45s cap is gone.
-    expect(execAbortTimeoutMs(300_000)).toBe(305_000);
-    // The daemon sees the request timeoutMs (not a client-side 45s ceiling).
-    const body = vi.mocked(fetchImpl).mock.calls[0][1]?.body;
-    expect(JSON.parse(String(body))).toMatchObject({ cmd: 'make', timeoutMs: 300_000 });
-    // Turn-cancel still wins immediately (outer abort → inner abort).
     const controller = new AbortController();
     void client
-      .exec({ cmd: 'sleep', args: ['10'] }, { signal: controller.signal })
+      .exec({ cmd: 'sleep', args: ['10'], timeoutMs: 300_000 }, { signal: controller.signal })
       .catch(() => {});
     controller.abort();
     await vi.waitFor(() => expect(aborted).toBe(true));
