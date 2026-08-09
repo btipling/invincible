@@ -79,8 +79,8 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 | Visible paint | **All** messages currently in the ring (≤2048); scroll to read older in-ring turns. Ring still drops oldest when full. No “N earlier” black-hole hint |
 | Line size | **262 144** UTF-8 bytes max per message (`MAX_MSG_LEN`) |
 | Host history fold | `formatPromptWithHistory` default **maxMessages=400**, **maxChars≈3.5M** (model token limit is the real cap); prefer Clear for a fresh workspace |
-| Session longer than ring | Host `SessionStore` may hold **more** than the ring; **cloud row max 500** (≤ ring). Ring shows a **window** of ≤2048. **Load earlier** steps back by **`HISTORY_PAGE` = 512**; new send snaps to latest window |
-| Cloud row caps | **500** messages · **262 144** UTF-8 bytes/msg · **~2 MiB** body (`lib/sessionCloudCaps.ts`) — see [session-model.md](session-model.md) |
+| Session longer than ring | Host `SessionStore` and cloud row may hold more than the ring (cloud still subject to ~2 MiB body). Ring shows a **window** of ≤2048. **Load earlier** steps back by **`HISTORY_PAGE` = 512**; new send snaps to latest window |
+| Cloud row caps | **No message-count cap** · **262 144** UTF-8 bytes/msg · **~2 MiB** body (`lib/sessionCloudCaps.ts`) — see [session-model.md](session-model.md) |
 
 
 

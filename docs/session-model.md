@@ -118,7 +118,7 @@ status.
 
 | Cap | Value | Notes |
 |-----|-------|--------|
-| Messages per row | **500** | Drop oldest first |
+| Messages per row | **no count cap** | Body ~2 MiB may drop oldest if needed |
 | Per-message text | **262 144** UTF-8 bytes | Aligns with bridge `MAX_MSG_LEN` |
 | Raw PUT body | **~2 MiB** | Reject oversize; host trims before PUT |
 | Snapshot id | max **128** chars | Opaque printable |
@@ -135,8 +135,8 @@ Host `trimForCloudPut` omits `cwd`, enforces count/byte/body caps, then PUT.
 ## Ring window vs full session
 
 The Wasm transcript ring holds at most **2048** messages (`MAX_MSG` /
-`HARNESS_RING_MAX`). The host `SessionStore` (and cloud row, up to 500) may
-differ in length. On restore the host hydrates the **latest** window into the
+`HARNESS_RING_MAX`). The host `SessionStore` and cloud row may
+differ in length (body trim can shorten cloud vs local). On restore the host hydrates the **latest** window into the
 ring. After a turn on the latest window, new lines push incrementally; the host
 updates `ringWindowStart` / `can_load_earlier` without a full re-hydrate.
 

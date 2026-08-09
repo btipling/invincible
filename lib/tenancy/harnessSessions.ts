@@ -14,7 +14,6 @@ import {
   CLOUD_SESSION_DISABLED_CODE,
   CLOUD_SESSION_DISABLED_ERROR,
   HARNESS_SESSION_MAX_BODY_BYTES,
-  HARNESS_SESSION_MAX_MESSAGES,
   HARNESS_SESSION_MAX_MSG_BYTES,
   HARNESS_SESSION_SNAPSHOT_ID_MAX,
 } from '../sessionCloudCaps';
@@ -23,7 +22,6 @@ export {
   CLOUD_SESSION_DISABLED_CODE,
   CLOUD_SESSION_DISABLED_ERROR,
   HARNESS_SESSION_MAX_BODY_BYTES,
-  HARNESS_SESSION_MAX_MESSAGES,
   HARNESS_SESSION_MAX_MSG_BYTES,
   HARNESS_SESSION_SNAPSHOT_ID_MAX,
 };
@@ -42,7 +40,6 @@ export type HarnessSessionErrorCode =
   | 'invalid_updated_at'
   | 'invalid_messages'
   | 'message_too_large'
-  | 'too_many_messages'
   | 'body_too_large'
   | 'unavailable';
 
@@ -99,7 +96,8 @@ function rowToSnapshot(row: {
 
 /**
  * Validate a client SessionSnapshot for PUT.
- * Caps: 500 messages, 262144 UTF-8 bytes per text (bridge MAX_MSG_LEN), opaque id ≤128.
+ * Caps: 262144 UTF-8 bytes per text (bridge MAX_MSG_LEN), opaque id ≤128.
+ * No message-count ceiling — raw body ~2 MiB is enforced on the route.
  */
 export function validateSessionSnapshot(
   body: unknown,
@@ -135,14 +133,6 @@ export function validateSessionSnapshot(
       ok: false,
       code: 'invalid_messages',
       error: 'messages must be an array.',
-    };
-  }
-
-  if (o.messages.length > HARNESS_SESSION_MAX_MESSAGES) {
-    return {
-      ok: false,
-      code: 'too_many_messages',
-      error: `messages must have at most ${HARNESS_SESSION_MAX_MESSAGES} entries.`,
     };
   }
 

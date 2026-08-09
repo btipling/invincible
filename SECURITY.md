@@ -35,7 +35,7 @@ Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
 | Tenancy off | **404** + `CLOUD_SESSION_DISABLED` (not 501); local-only continues |
 | Unauthenticated (tenancy on) | **401** — client disables cloud sync for the page load |
 | Conflict | LWW on `updatedAt` (epoch ms); stale PUT → **409** + server body |
-| Caps (abuse / size) | ≤**500** messages; ≤**262 144** UTF-8 bytes per message text; ≤**~2 MiB** raw body; opaque snapshot id ≤128 |
+| Caps (abuse / size) | No message-count cap; ≤**262 144** UTF-8 bytes per message text; ≤**~2 MiB** raw body; opaque snapshot id ≤128 |
 | Blob contents | Message roles/text/ids/timestamps only — **never** Gateway keys, sandbox tokens, MCP secrets, PATs, or host absolute paths |
 | `cwd` | Optional **local-only** workspace-relative field; **not** stored in the cloud row |
 | Client bundle | Session repository is client-safe (`lib/sessionRepository.ts`); must **not** import server `db` / Drizzle modules |

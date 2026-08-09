@@ -5,7 +5,6 @@
 import {
   CLOUD_SESSION_DISABLED_CODE,
   HARNESS_SESSION_MAX_BODY_BYTES,
-  HARNESS_SESSION_MAX_MESSAGES,
   HARNESS_SESSION_MAX_MSG_BYTES,
 } from './sessionCloudCaps';
 import type { SessionMessage, SessionRole, SessionSnapshot } from './sessionStore';
@@ -140,7 +139,8 @@ function cloudBodyBytes(snapshot: SessionSnapshot): number {
 }
 
 /**
- * Prepare local snapshot for PUT: omit cwd; enforce server caps (count, bytes, body).
+ * Prepare local snapshot for PUT: omit cwd; enforce per-message + body byte caps.
+ * No message-count ceiling — body size is the storage/wire guard.
  */
 export function trimForCloudPut(snapshot: SessionSnapshot): SessionSnapshot {
   let messages = snapshot.messages.map((m) => ({
@@ -152,10 +152,6 @@ export function trimForCloudPut(snapshot: SessionSnapshot): SessionSnapshot {
         : m.text,
     at: m.at,
   }));
-
-  if (messages.length > HARNESS_SESSION_MAX_MESSAGES) {
-    messages = messages.slice(messages.length - HARNESS_SESSION_MAX_MESSAGES);
-  }
 
   let out: SessionSnapshot = {
     id: snapshot.id,
