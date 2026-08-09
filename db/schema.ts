@@ -287,3 +287,46 @@ export const userPreferredSandbox = pgTable(
 
 export type UserPreferredSandbox = typeof userPreferredSandbox.$inferSelect;
 
+
+/**
+ * Per-user durable Vercel Sandbox instances (parent #298 / phase 1 #299).
+ * One workspace + one http slot per user. Server-only registry; agent never creates.
+ */
+export const userSandboxInstances = pgTable(
+  'user_sandbox_instances',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** workspace | http — app-validated. */
+    purpose: text('purpose').notNull(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    /**
+     * Catalog sandbox used at workspace Create; null for http.
+     * SET NULL if catalog row deleted (image remains frozen on this row).
+     */
+    catalogSandboxId: uuid('catalog_sandbox_id').references(() => sandboxes.id, {
+      onDelete: 'set null',
+    }),
+    /** Server-generated inv-{purpose}-{hash}; unique. Never client-supplied. */
+    vercelName: text('vercel_name').notNull(),
+    /** Image frozen at Create. */
+    image: text('image').notNull(),
+    /** running | stopped | error — app-validated. */
+    status: text('status').notNull(),
+    /** Last platform/reconcile error; no secrets. */
+    lastError: text('last_error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.purpose] }),
+    unique('user_sandbox_instances_vercel_name_unique').on(t.vercelName),
+    index('user_sandbox_instances_tenant_id_idx').on(t.tenantId),
+  ],
+);
+
+export type UserSandboxInstance = typeof userSandboxInstances.$inferSelect;
+export type UserSandboxInstanceInsert = typeof userSandboxInstances.$inferInsert;
