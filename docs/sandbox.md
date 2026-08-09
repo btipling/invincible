@@ -14,7 +14,7 @@ Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-d
 
 | | |
 |--|--|
-| **Is** | A **workspace for agent tools** — either a BYO HTTP daemon (protocol v1) or a **Vercel Sandbox** microVM (ephemeral FS adapter) |
+| **Is** | A **workspace for agent tools** — either a BYO HTTP daemon (protocol v1) or a **durable Vercel Sandbox Workspace instance** (user-created in Settings; agent **attach-only**) |
 | **Is** | **Per sandbox row under a tenant** when tenancy is on: each row chooses `backend` (`byo` \| `vercel`) and, for vercel, an optional **image** |
 | **Is** | **BYO** path: any operator points URL + token at **their** daemon (env when tenancy off; admin/seed when tenancy on) |
 | **Is not** | The Zig **GHA build runner** (`invincible-do-1` / `self-hosted` + `zig` labels) |
@@ -39,29 +39,45 @@ When tenancy is on, operators create and edit sandboxes in **Admin → Sandboxes
 | `image` | Vercel image ref when `backend=vercel`; **null** means product default `vercel/sandbox/universal:latest` at resolve time |
 | `base_url` / `token_ciphertext` | Required for `byo`; **null** for `vercel` |
 
+### Catalog vs user instances
+
+| Layer | What it is | Who manages |
+|-------|------------|-------------|
+| **Catalog sandbox** | Admin `sandboxes` row (`backend` / `image` / BYO URL) + grants | Admin |
+| **Preferred catalog** | Settings preference when multiple usable grants | User |
+| **Workspace instance** | Durable named Vercel microVM (`user_sandbox_instances`, purpose `workspace`) | User — **Settings → Sandbox** Create/Start/Stop/Destroy |
+| **HTTP / curl instance** | Separate durable microVM for `http_get` / `http_head` (purpose `http`) | User — same Settings page |
+
+The agent and hop-B **only attach** (`Sandbox.get` + `extendTimeout`). They **never**
+`Sandbox.create` / `getOrCreate` / stop-on-turn-end. Files on a **running** Workspace
+instance survive across turns until idle auto-stop (~30m) or user Stop/Destroy.
+
 ### BYO vs Vercel vs hop-B
 
 | Kind | How tools reach a workspace | Credentials |
 |------|----------------------------|-------------|
 | **byo** | HTTP client → protocol v1 daemon | URL + token (DEK-encrypted at rest) |
-| **vercel** (FS tools) | `@vercel/sandbox` adapter; ephemeral `persistent: false` microVM per agent turn | **Host** Invincible Vercel project OIDC/quota (same control plane family as hop-B). No per-tenant Vercel tokens in DB |
-| **hop-B** `http_get` | Separate microVM when `BUILTIN_HTTP_FETCH=sandbox` | Not a sandbox-row backend |
+| **vercel** (FS tools) | Attach-only `@vercel/sandbox` client to the user's **Workspace instance** | **Host** Vercel project OIDC/quota. No per-tenant Vercel tokens in DB |
+| **hop-B** `http_get` | Attach-only runner to the user's **HTTP instance** when `BUILTIN_HTTP_FETCH=sandbox` | Same host OIDC; not a catalog-row backend |
 
-When hop-B and a `backend=vercel` FS client both run on one turn, **two** ephemeral
-Vercel Sandboxes may be created (sharing one VM is not a product goal).
+When hop-B and Workspace FS both run on one turn, **two durable** named VMs may be
+attached (sharing one VM is not a product goal). Missing Workspace → soft-continue
+without FS when HTTP/MCP can still run. Missing HTTP instance → **omit** http tools
+(no create).
 
 ### How to get a useful toolchain on Vercel rows
 
-1. **Managed image (VMI)** — pick a preset in admin (Node, Python, Ubuntu, Arch, or default universal).
+1. **Managed image (VMI)** — pick a preset in admin (Node, Python, Ubuntu, Arch, or default universal). Snapshot freezes onto the Workspace instance at **Create**.
 2. **Origin dogfood image** — first-party `invincible-dev` on Vercel Container Registry (see below).
 3. **Custom VCR ref** — build/push an image your **host** Vercel team can pull, paste the ref in admin. The **Next.js / agent runtime does not build images**.
 4. **Runtime `exec` install** — still available inside the VM; image is the durable deps path.
 
-Ephemeral vercel VMs are stopped after the agent turn (route finally and stream cancel). Do **not** treat them as durable multi-turn disks (use BYO for long-lived workspaces).
+After **Settings → Create Workspace**, the agent attaches to that VM. Do **not** expect
+the agent to provision a microVM for you.
 
 ### Origin dogfood image (`dev/` + GHA)
 
-To run Invincible **on Invincible** without reinstalling Node/Zig/gh/rg every turn:
+To run Invincible **on Invincible** with a prebuilt toolchain image (Node/Zig/gh/rg) on durable Workspace instances:
 
 | Piece | Role |
 |-------|------|
@@ -110,6 +126,39 @@ Schema: GHA **db-migrate** for `user_preferred_sandbox`.
 
 
 ---
+
+
+## 1c. User durable instances (Settings)
+
+Tenancy on: each user may own **at most one Workspace** and **one HTTP/curl**
+Vercel Sandbox instance (server-generated names `inv-workspace-…` /
+`inv-http-…`).
+
+| Action | Effect |
+|--------|--------|
+| **Create** | `Sandbox.create` once (lifecycle module only); row `status=running` |
+| **Stop** | Platform stop; row `stopped` |
+| **Start** | `Sandbox.get` + resume only — **never** create/getOrCreate if missing |
+| **Destroy** | stop + delete platform VM + delete DB row |
+| **Agent attach** | `get({ name, resume: true })` + best-effort `extendTimeout(30m)`; turn end **releases** the handle (no stop) |
+
+**Preconditions**
+
+- Workspace Create: sole tenant membership + preferred catalog row with `backend=vercel` + usable grant.
+- HTTP Create: sole membership only (host OIDC entitlement).
+
+**Errors**
+
+- No/stopped Workspace and no alternate tools → 403 with Settings guidance.
+- No/stopped Workspace but HTTP/MCP available → soft-continue without FS tools.
+- Builtin HTTP on but no running HTTP instance → omit `http_get` / `http_head`.
+
+**Orphan cleanup (optional):** user Destroy is primary. Operators may run GitHub
+Actions workflow **`sandbox-orphan-cleanup`** (`confirm=cleanup`, `dry_run` default
+true) to list/delete leftover names that are **not** in `user_sandbox_instances`
+(product prefixes or old non-persistent VMs). Secrets: `DATABASE_URL`,
+`VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` (names only).
+
 
 ## 2. Architecture (product path)
 
@@ -460,7 +509,7 @@ personal laptop as the migrate/seed host.
 3. Smoke: unauth `POST /api/agent` → **401**
    `{ "error": "Authentication required." }`; `/login` → harness; optional `/admin`.
 4. Origin only: mark `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`
-   **Done** in [AGENTS.md](../AGENTS.md) after smoke (phase 3 / #70).
+   **Done** in [AGENTS.md](../AGENTS.md) after smoke.
 
 GHA workflow: [`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml).
 

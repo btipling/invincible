@@ -28,10 +28,12 @@ Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
 ## Builtin HTTPS fetch (Vercel Sandbox)
 
 When `BUILTIN_HTTP_FETCH=sandbox`, agent tools may fetch **public HTTPS** URLs via a
-Vercel Sandbox microVM (hop B). App-side SSRF policy runs first (https-only; no
-private/metadata hosts; redirects only after re-check of each Location). Never put Gateway, DO sandbox, or
-MCP secrets into the Sandbox child env. No `NEXT_PUBLIC_*` for this feature.
-See [docs/builtin-http.md](docs/builtin-http.md).
+**durable HTTP/curl** Vercel Sandbox instance (hop B) — attach-only to a name from
+Settings (tenancy on) or `BUILTIN_HTTP_INSTANCE_NAME` (tenancy off). App-side SSRF
+policy runs first (https-only; no private/metadata hosts; redirects only after
+re-check of each Location). Never put Gateway, BYO sandbox, or MCP secrets into
+the Sandbox child env. No `NEXT_PUBLIC_*` for this feature. Instance names and
+control-plane credentials never enter client/Wasm. See [docs/builtin-http.md](docs/builtin-http.md).
 
 **Residual (v1):** Policy is preflight-only on the app (literal + DNS at check
 time). Hop B re-resolves the hostname under Sandbox `networkPolicy: allow-all`.
@@ -79,10 +81,13 @@ The **agent sandbox** is an optional remote workspace for model tools
 self-hosted GHA runner that compiles Zig.
 
 Under tenancy, each sandbox row may use **`backend=byo`** (URL + DEK-encrypted
-token) or **`backend=vercel`** (host Vercel project OIDC for `Sandbox.create`;
-no BYO token; optional image ref). There is **no** product host env
+token) or **`backend=vercel`** (host Vercel project OIDC; optional image ref).
+Users **Create** durable Workspace/HTTP instances in **Settings**; the agent only
+**attaches** (never `Sandbox.create` / `getOrCreate` on a turn). Destroy removes
+the platform VM and the DB row. There is **no** product host env
 `SANDBOX_BACKEND`. Registry credentials for custom images stay on the host
-Vercel/CI side — never in the DB. Token rotate applies to **byo** only.
+Vercel/CI side — never in the DB. Token rotate applies to **byo** only. Per-user
+instance names are server-generated and never exposed as client secrets.
 
 **Dogfood image push (GHA `dev-image-build`):** builds a toolchain OCI image
 from `dev/Dockerfile` and pushes to Vercel Container Registry. Uses Actions
