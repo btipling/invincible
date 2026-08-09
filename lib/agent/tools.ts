@@ -398,6 +398,18 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
       }
       try {
         if (!input.cmd) return finalize('ERROR exec: cmd is required', secrets);
+        // argv-only (no shell): a shell-style single-string command (whitespace
+        // in `cmd` and no explicit `args`) almost always means the caller forgot
+        // to split into argv. Fail loudly with guidance instead of a bare
+        // ENOENT/"cannot execute" from the daemon. A single executable name has
+        // no whitespace, so `true`/`ls` etc. are unaffected.
+        if (!input.args?.length && /\s/.test(input.cmd)) {
+          return finalize(
+            'ERROR exec: cmd is a shell string but exec runs argv only (no shell). ' +
+              'Pass args as an array, or use cmd for a single executable.',
+            secrets,
+          );
+        }
         const cwdSnap = cwdState.current;
         let execCwd: string;
         try {

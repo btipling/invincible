@@ -7,7 +7,12 @@ import {
   type WriteFileResult,
   type StrReplaceResult,
 } from './types';
-import { MIN_SANDBOX_PROTOCOL_STDIN, normalizeBaseUrl } from './config';
+import {
+  EXEC_TIMEOUT_BUFFER_MS,
+  MAX_EXEC_TIMEOUT_MS,
+  MIN_SANDBOX_PROTOCOL_STDIN,
+  normalizeBaseUrl,
+} from './config';
 
 const DEFAULT_TIMEOUT_MS = 45_000;
 
@@ -70,6 +75,23 @@ function normalizeExecEnv(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/**
+ * Client-side HTTP abort deadline for `/v1/exec`, derived from the request's
+ * (already clamped) `timeoutMs` + `EXEC_TIMEOUT_BUFFER_MS`. Falls back to the
+ * client default (`defaultTimeout`) when omitted/NaN so short commands keep the
+ * existing fast abort. The buffer keeps the client abort strictly after the
+ * daemon's own timeout kill, so `timedOut: true` reaches the model (TIMED_OUT)
+ * rather than surfacing as a client 504.
+ */
+export function execAbortTimeoutMs(timeoutMs?: number): number | undefined {
+  if (timeoutMs == null || Number.isNaN(Number(timeoutMs))) return undefined;
+  const clamped = Math.min(
+    Math.max(1, Math.floor(Number(timeoutMs))),
+    MAX_EXEC_TIMEOUT_MS,
+  );
+  return clamped + EXEC_TIMEOUT_BUFFER_MS;
+}
+
 export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
   const baseUrl = normalizeBaseUrl(opts.baseUrl);
   const token = opts.token;
@@ -85,9 +107,10 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
   async function withTimeoutFetch(
     url: string,
     init: RequestInit & { signal?: AbortSignal },
+    timeoutMs?: number,
   ): Promise<Response> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), defaultTimeout);
+    const timer = setTimeout(() => controller.abort(), timeoutMs ?? defaultTimeout);
     const onOuterAbort = () => controller.abort();
     const outer = init.signal;
     if (outer) {
@@ -166,18 +189,23 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
     path: string,
     body: unknown,
     init?: { signal?: AbortSignal },
+    timeoutMs?: number,
   ): Promise<T> {
     const url = `${baseUrl}${path}`;
     try {
-      const res = await withTimeoutFetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+      const res = await withTimeoutFetch(
+        url,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(body ?? {}),
+          signal: init?.signal,
         },
-        body: JSON.stringify(body ?? {}),
-        signal: init?.signal,
-      });
+        timeoutMs,
+      );
 
       let data: unknown = null;
       const ct = res.headers.get('content-type') ?? '';
@@ -268,6 +296,9 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
         '/v1/exec',
         execEnv ? { ...wire, env: execEnv } : wire,
         init,
+        // Client abort deadline follows the request's (already clamped) timeoutMs,
+        // plus a buffer so the daemon's own kill lands first (TIMED_OUT, not 504).
+        execAbortTimeoutMs(body?.timeoutMs),
       );
     },
   };

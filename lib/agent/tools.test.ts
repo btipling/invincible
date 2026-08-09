@@ -115,6 +115,35 @@ describe('createAgentTools', () => {
       expect.arrayContaining(['cmd', 'args', 'cwd', 'timeoutMs']),
     );
   });
+
+  it('exec rejects a shell-string cmd (no args) with a clear argv-only error', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ client });
+    const out = (await tools.exec.execute!(
+      { cmd: 'grep -r foo .' },
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(out).toMatch(/^ERROR exec:/);
+    expect(out).toMatch(/argv only \(no shell\)/);
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it('exec forwards timeoutMs and args for a normal argv invocation', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: 'ok', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ client });
+    const out = (await tools.exec.execute!(
+      { cmd: 'grep', args: ['-r', 'foo', '.'], timeoutMs: 120_000 },
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(exec).toHaveBeenCalledWith(
+      expect.objectContaining({ cmd: 'grep', args: ['-r', 'foo', '.'], timeoutMs: 120_000 }),
+      expect.anything(),
+    );
+    expect(out).toContain('exec grep');
+  });
 });
 
 describe('createAgentTools permissions', () => {
@@ -410,7 +439,11 @@ describe('exec stdin / heredoc', () => {
   });
 
   it('prefers stdin over heredoc when both are set', async () => {
-    const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    let seen: Record<string, unknown> | undefined;
+    const exec = vi.fn(async (req: Record<string, unknown>) => {
+      seen = req;
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
     const client = mockClient({ exec });
     const tools = createAgentTools({ client });
     await tools.exec.execute!(
@@ -421,6 +454,10 @@ describe('exec stdin / heredoc', () => {
       expect.objectContaining({ cmd: 'cat', stdin: 'primary' }),
       expect.anything(),
     );
-    expect(exec.mock.calls[0]?.[0]).not.toHaveProperty('heredoc');
+    expect(seen).toBeDefined();
+    expect(seen).toEqual(
+      expect.objectContaining({ cmd: 'cat', stdin: 'primary' }),
+    );
+    expect(seen).not.toHaveProperty('heredoc');
   });
 });

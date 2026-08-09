@@ -246,6 +246,18 @@ unauthenticated) — see above.
 
 **Backend split:** BYO daemons implement stdin/heredoc on `/v1/exec`. The Vercel Sandbox SDK has no stdin channel — the Vercel client **fails soft** (400) and the agent should `write_file` then pass a path via args. App BYO clients probe `/health` and refuse stdin when `version < 2`.
 
+If you hit the stale-daemon error (`…need v2+…`), your running daemon is pinned
+to old code — upgrade/restart it per [§7 Upgrade a live daemon deployment](#7-byo-deploy-patterns).
+
+**Exec timeout & argv contract:** `exec` runs **argv only (no shell)** — pass
+`args` as an array; a shell-style single-string `cmd` (whitespace + no `args`)
+is rejected with a clear error. The client's HTTP abort for `/v1/exec` follows
+the request's `timeoutMs` (5-min default / 30-min max) **plus**
+`EXEC_TIMEOUT_BUFFER_MS`, not a fixed 45 s — so a command that legitimately runs
+longer than 45 s completes, and the daemon's own timeout kill surfaces as
+`TIMED_OUT` rather than a client 504. Non-exec calls keep the fast 45 s abort;
+agent turn-cancel (Stop) still aborts immediately.
+
 Full contract, jail rules, and exec shape: [`sandbox/README.md`](../sandbox/README.md).
 
 ---
@@ -352,6 +364,61 @@ curl -sS https://<your-sandbox-host>/health
 
 Origin may run a DigitalOcean-hosted **reference** sample. Host inventory
 (IPs, droplet IDs) stays in **private operator notes** — never this repo.
+
+### Upgrade / restart a live daemon deployment
+
+A production BYO daemon commonly runs from a **separate deployment checkout**
+(e.g. a systemd unit with `WorkingDirectory` pointing at an `app-src` clone owned
+by a dedicated `sandbox` user) — **not** the repo you develop in. Code changes
+only reach the live daemon once that checkout is updated **and** the service is
+restarted. Style these as operator notes; never leak host inventory.
+
+```bash
+# On the BYO host, as the sandbox-owning operator (root or sudo).
+
+# 1. Enter the deployment checkout (not your dev checkout)
+cd /var/lib/invincible-sandbox/app-src
+
+# 2. If you run git as root over a checkout owned by the sandbox user, git
+#    refuses with "detected dubious ownership". Whitelist that one path:
+git config --global --add safe.directory /var/lib/invincible-sandbox/app-src
+
+# 3. Update the checkout to latest main
+git fetch origin
+git reset --hard origin/main
+
+# 4. Reinstall runtime deps (harmless when they did not change)
+npm install --omit=dev
+
+# 5. Restart the daemon so it serves the new code
+sudo systemctl restart invincible-sandbox
+```
+
+**Verify the upgrade landed** — the daemon must report protocol **v2** (this is
+what makes `exec` stdin/heredoc available through the BYO client):
+
+```bash
+curl -s http://127.0.0.1:8787/health
+# expect: {"ok":true,"version":2}
+```
+
+**Why v2 matters:** BYO `exec` accepts optional `stdin` / heredoc (multi-line
+input without a shell) only on health `version >= 2`. The app BYO client probes
+`GET /health` once and **refuses stdin** when a stale daemon reports `version`
+below `MIN_SANDBOX_PROTOCOL_STDIN` (2) — it throws `Sandbox daemon protocol v<N>
+does not support exec stdin/heredoc (need v2+). Restart/upgrade the BYO daemon.`
+If you see that error, the running daemon is pinned to old code and hasn't
+picked up the v2 change; repeat steps 3–6 above.
+
+**Gotchas**
+
+- The deployment checkout is a **separate git clone** from the repo you develop
+  in — pulling in your dev checkout does not update the live daemon.
+- After `git reset --hard`, the daemon only serves what is on disk in `app-src`;
+  the running service still serves the old module graph until restart.
+- If the unit runs the code as the `sandbox` user, prefer `sudo systemctl
+  restart` over a manual process kill so the unit env (token, workspace) is
+  preserved. Never put a GitHub Actions token in the unit env.
 
 ---
 
