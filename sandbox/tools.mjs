@@ -22,11 +22,16 @@ export class ToolError extends Error {
   }
 }
 
+/** Allowlisted keys for request-scoped exec env overlay (user GitHub PAT). */
+export const ALLOWED_EXEC_ENV_KEYS = Object.freeze(['GH_TOKEN', 'GITHUB_TOKEN']);
+
 /**
  * Minimal env for child processes — never inherit SANDBOX_TOKEN or host secrets.
+ * Optional allowlisted overlay (e.g. user GitHub PAT) is merged after base env.
  * @param {string} workspace
+ * @param {Record<string, string>} [overlay]
  */
-export function buildExecEnv(workspace) {
+export function buildExecEnv(workspace, overlay) {
   /** @type {Record<string, string>} */
   const env = {
     PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
@@ -36,7 +41,39 @@ export function buildExecEnv(workspace) {
   };
   if (process.env.TERM) env.TERM = process.env.TERM;
   if (process.env.LC_ALL) env.LC_ALL = process.env.LC_ALL;
+  if (overlay) {
+    for (const key of ALLOWED_EXEC_ENV_KEYS) {
+      const v = overlay[key];
+      if (typeof v === 'string' && v.length > 0) {
+        env[key] = v;
+      }
+    }
+  }
   return env;
+}
+
+/**
+ * Validate request body.env for /v1/exec. Returns allowlisted overlay or null.
+ * @param {unknown} raw
+ * @returns {Record<string, string> | null}
+ */
+export function parseExecEnvOverlay(raw) {
+  if (raw == null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ToolError('env must be an object', 400);
+  }
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const [key, value] of Object.entries(/** @type {Record<string, unknown>} */ (raw))) {
+    if (!ALLOWED_EXEC_ENV_KEYS.includes(key)) {
+      throw new ToolError(`env key not allowed: ${key}`, 400);
+    }
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new ToolError(`env.${key} must be a non-empty string`, 400);
+    }
+    out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 /** @param {number} [timeoutMs] */
@@ -302,7 +339,7 @@ export function resolveExecStdin(body) {
 
 /**
  * @param {string} workspace
- * @param {{ cmd?: string, args?: string[], cwd?: string, timeoutMs?: number, stdin?: string, heredoc?: string }} body
+ * @param {{ cmd?: string, args?: string[], cwd?: string, timeoutMs?: number, stdin?: string, heredoc?: string, env?: Record<string, string> }} body
  */
 export async function execCmd(workspace, body) {
   if (body?.cmd == null || typeof body.cmd !== 'string' || body.cmd === '') {
@@ -332,6 +369,7 @@ export async function execCmd(workspace, body) {
   const timeoutMs = clampTimeout(body.timeoutMs);
   const useDetached = process.platform !== 'win32';
   const pipeStdin = stdinBuf != null;
+  const overlay = parseExecEnvOverlay(body.env);
 
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -342,7 +380,7 @@ export async function execCmd(workspace, body) {
       child = spawn(body.cmd, args, {
         cwd,
         shell: false,
-        env: buildExecEnv(path.resolve(workspace)),
+        env: buildExecEnv(path.resolve(workspace), overlay ?? undefined),
         detached: useDetached,
         stdio: [pipeStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       });

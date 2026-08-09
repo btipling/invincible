@@ -1,4 +1,4 @@
-# Agent sandbox (BYO)
+# Agent sandbox
 
 What tools the agent gets when a sandbox is configured: a remote path-jailed
 workspace with `list_dir` / `read_file` / `write_file` / `str_replace` / `exec` during a
@@ -14,17 +14,154 @@ Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-d
 
 | | |
 |--|--|
-| **Is** | A **separate HTTP daemon** (protocol v1) with a workspace root jail + four tools |
-| **Is** | **BYO** — any operator points `SANDBOX_URL` + `SANDBOX_TOKEN` at **their** process |
+| **Is** | A **workspace for agent tools** — either a BYO HTTP daemon (protocol v1) or a **durable Vercel Sandbox Workspace instance** (user-created in Settings; agent **attach-only**) |
+| **Is** | **Per sandbox row under a tenant** when tenancy is on: each row chooses `backend` (`byo` \| `vercel`) and, for vercel, an optional **image** |
+| **Is** | **BYO** path: any operator points URL + token at **their** daemon (env when tenancy off; admin/seed when tenancy on) |
 | **Is not** | The Zig **GHA build runner** (`invincible-do-1` / `self-hosted` + `zig` labels) |
-| **Is not** | Multi-tenant **fleet** isolation (still future). **Per-user MCP** is separate and **shipped** — [mcp.md](mcp.md). Optional **login tenancy** — [bring-your-own.md §4a](bring-your-own.md#4a-optional-multi-tenant-auth); optional **OIDC/SCIM** — [§4b](bring-your-own.md#4b-optional-sso-oidc--scim) |
-| **Is not** | Required for basic chat — without env, harness falls back to `POST /api/chat` |
-| **Is not** | Builtin HTTPS fetch (`http_get`) — that is **Vercel Sandbox** hop B; see [builtin-http.md](builtin-http.md) |
+| **Is not** | A host-wide product env like `SANDBOX_BACKEND` — backend is **never** a deploy-global switch |
+| **Is not** | A multi-sandbox picker **inside the harness canvas**. Prefer sandbox under **Settings → Sandbox** when you have multiple usable grants |
+| **Is not** | Required for basic chat — without tools, harness falls back to `POST /api/chat` when the 503 contract applies (tenancy off) |
+| **Is not** | Builtin HTTPS fetch (`http_get`) — that is a separate **Vercel Sandbox hop B** path; see [builtin-http.md](builtin-http.md) |
 
-Never put GHA Actions credentials in the sandbox process env. Prefer a dedicated
-OS user and reverse-proxy TLS in production.
+Never put GHA Actions credentials in a BYO sandbox process env. Prefer a dedicated
+OS user and reverse-proxy TLS in production for BYO daemons.
 
 ---
+
+## 1b. Per-row backend and image (tenancy)
+
+When tenancy is on, operators create and edit sandboxes in **Admin → Sandboxes**
+(`/admin/sandboxes`). Schema columns:
+
+| Column | Meaning |
+|--------|---------|
+| `backend` | `byo` (default) or `vercel` |
+| `image` | Vercel image ref when `backend=vercel`; **null** means product default `vercel/sandbox/universal:latest` at resolve time |
+| `base_url` / `token_ciphertext` | Required for `byo`; **null** for `vercel` |
+
+### Catalog vs user instances
+
+| Layer | What it is | Who manages |
+|-------|------------|-------------|
+| **Catalog sandbox** | Admin `sandboxes` row (`backend` / `image` / BYO URL) + grants | Admin |
+| **Preferred catalog** | Settings preference when multiple usable grants | User |
+| **Workspace instance** | Durable named Vercel microVM (`user_sandbox_instances`, purpose `workspace`) | User — **Settings → Sandbox** Create/Start/Stop/Destroy |
+| **HTTP / curl instance** | Separate durable microVM for `http_get` / `http_head` (purpose `http`) | User — same Settings page |
+
+The agent and hop-B **only attach** (`Sandbox.get` + `extendTimeout`). They **never**
+`Sandbox.create` / `getOrCreate` / stop-on-turn-end. Files on a **running** Workspace
+instance survive across turns until idle auto-stop (~30m) or user Stop/Destroy.
+
+### BYO vs Vercel vs hop-B
+
+| Kind | How tools reach a workspace | Credentials |
+|------|----------------------------|-------------|
+| **byo** | HTTP client → protocol v1 daemon | URL + token (DEK-encrypted at rest) |
+| **vercel** (FS tools) | Attach-only `@vercel/sandbox` client to the user's **Workspace instance** | **Host** Vercel project OIDC/quota. No per-tenant Vercel tokens in DB |
+| **hop-B** `http_get` | Attach-only runner to the user's **HTTP instance** when `BUILTIN_HTTP_FETCH=sandbox` | Same host OIDC; not a catalog-row backend |
+
+When hop-B and Workspace FS both run on one turn, **two durable** named VMs may be
+attached (sharing one VM is not a product goal). Missing Workspace → soft-continue
+without FS when HTTP/MCP can still run. Missing HTTP instance → **omit** http tools
+(no create).
+
+### How to get a useful toolchain on Vercel rows
+
+1. **Managed image (VMI)** — pick a preset in admin (Node, Python, Ubuntu, Arch, or default universal). Snapshot freezes onto the Workspace instance at **Create**.
+2. **Origin dogfood image** — first-party `invincible-dev` on Vercel Container Registry (see below).
+3. **Custom VCR ref** — build/push an image your **host** Vercel team can pull, paste the ref in admin. The **Next.js / agent runtime does not build images**.
+4. **Runtime `exec` install** — still available inside the VM; image is the durable deps path.
+
+After **Settings → Create Workspace**, the agent attaches to that VM. Do **not** expect
+the agent to provision a microVM for you.
+
+### Origin dogfood image (`dev/` + GHA)
+
+To run Invincible **on Invincible** with a prebuilt toolchain image (Node/Zig/gh/rg) on durable Workspace instances:
+
+| Piece | Role |
+|-------|------|
+| [`dev/Dockerfile`](../dev/Dockerfile) | Toolchain image (Ubuntu amd64, Node 22, Zig from `native/ZIG_VERSION`, `gh`, `rg`) — **no** app source; WORKDIR `/vercel/workspace` |
+| GHA **`dev-image-build`** | Official build/push to **Vercel Container Registry** (`linux/amd64`) |
+| Admin sandbox row | `backend=vercel`, `image=` full VCR ref to `…/invincible-dev:latest` (or sha tag) |
+
+**Operator path (cloud-native):**
+
+1. Set GitHub Actions secret **`VERCEL_TOKEN`**, variable **`VERCEL_TEAM_ID`** (docker username; secret allowed), variable **`VCR_IMAGE_PREFIX`** = `vcr.vercel.com/<team-slug>/<project-slug>` (no trailing slash). Names only — never commit values.
+2. Actions → **dev-image-build** → Run workflow with **`confirm=push`** (optional **`dry_run`** validates config only).
+3. Wait until the image is **Ready** in the Vercel project Container Registry UI.
+4. **Admin → Sandboxes**: create/edit `backend=vercel`, set image to  
+   `${VCR_IMAGE_PREFIX}/invincible-dev:latest`  
+   (short `team/project/invincible-dev:latest` also passes shape validation; prefer full prefix in ops notes).
+5. Smoke via harness tools: `node -v`, `zig version`, `gh --version`, `rg --version`.
+
+This image is **not** the self-hosted Zig **build-harness** runner that produces production `harness.wasm`. See [runner.md](runner.md) and [dev/README.md](../dev/README.md).
+
+Forks/BYO: copy `dev/` + the workflow; use **your** team/project prefix and token.
+
+### Operator path (schema + create)
+
+| Step | Surface |
+|------|---------|
+| Schema migrate | GitHub Actions **`db-migrate`** (`confirm=migrate`) — not laptop-primary |
+| Create / edit / image | Browser **/admin/sandboxes** |
+| Seed bootstrap (optional) | GHA **`db-tenancy-bootstrap`** / seed with `SEED_SANDBOX_BACKEND` + optional `SEED_SANDBOX_IMAGE` |
+| Smoke | Harness agent tools with a usable grant (or preferred when several) |
+
+### Preferred sandbox (Settings)
+
+When a user has **more than one usable grant**, agent resolve requires a **preferred**
+sandbox stored per user (`user_preferred_sandbox`). Set it under **Settings → Sandbox**.
+
+| Case | Behavior |
+|------|----------|
+| Zero usable grants | 403 sandbox access denied |
+| Exactly one usable grant | That row (preference optional) |
+| Multiple usable, preference set and usable | Preferred row |
+| Multiple usable, no / invalid preference | 403 — choose under Settings → Sandbox |
+| Admin selects ungranted tenant sandbox | Selection **grants** the admin R/W on that row + saves preference |
+
+Creating a sandbox still grants the actor R/W but **no longer revokes** their other grants.
+Schema: GHA **db-migrate** for `user_preferred_sandbox`.
+
+
+---
+
+
+## 1c. User durable instances (Settings)
+
+Tenancy on: each user may own **at most one Workspace** and **one HTTP/curl**
+Vercel Sandbox instance (server-generated names `inv-workspace-…` /
+`inv-http-…`).
+
+| Action | Effect |
+|--------|--------|
+| **Create** | `Sandbox.create` once (lifecycle module only); row `status=running` |
+| **Stop** | Platform stop; row `stopped` |
+| **Start** | `Sandbox.get` + resume only — **never** create/getOrCreate if missing |
+| **Destroy** | stop + delete platform VM + delete DB row |
+| **Agent attach** | `get({ name, resume: true })` + best-effort `extendTimeout(30m)`; turn end **releases** the handle (no stop) |
+
+**Preconditions**
+
+- Workspace Create: sole tenant membership + preferred catalog row with `backend=vercel` + usable grant.
+- HTTP Create: sole membership only (host OIDC entitlement).
+
+**Errors**
+
+- No/stopped Workspace and no alternate tools → 403 with Settings guidance.
+- No/stopped Workspace but HTTP/MCP available → soft-continue without FS tools.
+- Builtin HTTP on but no running HTTP instance → omit `http_get` / `http_head`.
+
+**Orphan cleanup (optional):** user Destroy is primary. Operators may run GitHub
+Actions workflow **`sandbox-orphan-cleanup`** (`confirm=cleanup`, `dry_run` default
+true) to list/delete leftover **product** names (`inv-workspace-…` / `inv-http-…`)
+that are **not** in `user_sandbox_instances`. Non-product non-persistent VMs are
+**not** swept unless `include_non_product=true` (project-wide; avoid on shared
+host projects). Hard delete failures fail the job (not counted as deleted).
+Secrets: `DATABASE_URL`, `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`
+(names only).
+
 
 ## 2. Architecture (product path)
 
@@ -37,7 +174,7 @@ User types in Wasm composer
             if HTTP 503 + exact not-configured string
               → POST /api/chat   (today’s single-shot path)
             else
-              generateText + tools → sandbox (env SANDBOX_* / DB grants)
+              generateText + tools → sandbox (env SANDBOX_* / DB grants + backend)
                                    + enabled per-user MCP tools (server-side; soft-fail)
               (sandbox Bearer + MCP header secrets; server-only)
   → host pushes ≤6 system toolTrace lines (≤240 chars) + assistant/error into Wasm
@@ -64,14 +201,14 @@ The host falls back to chat **only** for status **503** and this **exact**
 `error` string (`SANDBOX_NOT_CONFIGURED_ERROR` in `lib/sandbox/config.ts`).
 Other 4xx/5xx/network errors are shown as error lines — **no** chat fallback.
 
-### Tenancy on vs legacy env (parent #54)
+### Tenancy on vs legacy env
 
 | Mode | When | Sandbox credentials |
 |------|------|---------------------|
-| **Legacy (tenancy off)** | Any of `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY` missing | Process env `SANDBOX_URL` + `SANDBOX_TOKEN` (this guide’s original path) |
-| **Tenancy on** | All three set | **DB-resolved** sandbox for the signed-in user (`resolveAgentSandbox`): decrypt `token_ciphertext` server-side; enforce `sandbox_grants` R/W. Env `SANDBOX_*` still used for **seed** / local daemon, not as the sole Production path once tenancy is on. |
+| **Legacy (tenancy off)** | Any of `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY` missing | Process env `SANDBOX_URL` + `SANDBOX_TOKEN` (BYO only — no host vercel backend switch) |
+| **Tenancy on** | All three set | **DB-resolved** sandbox for the signed-in user (`resolveAgentSandbox`): branch on row `backend`; **byo** decrypts `token_ciphertext`; **vercel** uses host Sandbox control plane + row `image`. Env `SANDBOX_*` still used for **seed** / local daemon |
 
-When tenancy is on and the user has no usable grant / ambiguous membership:
+When tenancy is on and the user has no usable grant / multiple usable grants without a Settings preference / ambiguous membership / invalid backend:
 
 ```http
 HTTP/1.1 403
@@ -90,8 +227,9 @@ Unauthenticated API calls when tenancy is on → **401**
 host falls back to chat.
 
 When tenancy is **on**, missing env `SANDBOX_*` does **not** produce this 503:
-tools use DB grants; failures are **403** `Sandbox access denied.` (or **401**
-if unauthenticated) — see above.
+tools use DB grants + backend; a valid **vercel** grant works without env
+`SANDBOX_*`. Failures are **403** `Sandbox access denied.` (or **401** if
+unauthenticated) — see above.
 
 ---
 
@@ -256,6 +394,29 @@ catalog + BYOK only.
 - [ ] No `pull_request` execution path for the sandbox service  
 - [ ] No host IPs / droplet IDs / cloud GUIDs committed  
 - [ ] Prod URL health-checked from **outside** the host  
+- [ ] User GitHub PAT (if configured) is DEK ciphertext only; injected **exec-only** as `GH_TOKEN`/`GITHUB_TOKEN`; never Wasm/client/image; redacted from tool/stream output  
+
+### User GitHub personal access token (Settings)
+
+When tenancy is on, each user may store a **GitHub personal access token** under
+**Settings → GitHub token** (ciphertext under the tenant DEK). On agent turns the
+server decrypts it and injects **only** into sandbox **FS `exec`** child env as
+**`GH_TOKEN`** and **`GITHUB_TOKEN`** (same value), for **both** backends
+(`vercel` and `byo`):
+
+| Path | Behavior |
+|------|----------|
+| Vercel Sandbox | Merged into each `runCommand` via server client options |
+| BYO daemon | JSON `env` on `/v1/exec`; daemon allowlists only those two keys |
+
+Rules:
+
+- **Omit** both keys when the user has no token (never empty strings).
+- **Not** written into dogfood/VCR images, host Next env, or Wasm/client.
+- **Not** model-visible: the agent `exec` tool schema has no `env` field.
+- BYO daemons reject unknown `env` keys (400). Upgrade the daemon to get inject.
+- Tool/stream output redacts the plaintext when present on the turn secret list.
+- Prefer a fine-grained PAT with least scopes; rotate or clear from Settings.
 
 See also [SECURITY.md](../SECURITY.md).
 
@@ -282,6 +443,60 @@ npm run test:sandbox
 
 ---
 
+
+## Logical workspace cwd
+
+The sandbox **jail root** (`SANDBOX_WORKSPACE` on the daemon) does not change per turn.
+Agents also have a **logical cwd** owned by the agent tool layer + host session — not
+`process.chdir` on the daemon.
+
+### Why it exists
+
+When the git repo is nested under the workspace (e.g. workspace root contains
+`invincible/…`), models often invent wrong prefixes (`sandbox/x` instead of
+`invincible/sandbox/x`). Logical cwd lets the agent `change_dir` once and then use
+short relative paths.
+
+### Tools
+
+| Tool | Role |
+|------|------|
+| `change_dir` | Set logical cwd for subsequent tools this turn (host may persist on success) |
+| `pwd` | Print current logical cwd (workspace-root-relative) |
+| path tools (`list_dir`, `read_file`, `write_file`, `str_replace`, `exec`) | Resolve paths against logical cwd |
+
+### Prefix-aware resolve
+
+Paths resolve with **prefix-aware** join (not naive always-join):
+
+| Argument path | Behavior |
+|---------------|----------|
+| Equals current cwd, or starts with `cwd/` | Treated as already workspace-root-relative — **not** re-joined under cwd |
+| Relative (`sandbox/x`, `./x`, `..`) | Joined under current logical cwd |
+| Host-absolute (`/…`, drive letters) | Rejected |
+
+Tool success lines always show **workspace-root-relative** paths (and `cwd=…` when
+not at root) so models can copy paths without double-prefix mistakes.
+
+### Defaults and session
+
+| Source | When used |
+|--------|-----------|
+| Host session `cwd` | Sent on each agent POST when the browser session remembers a cwd |
+| Request body `cwd` | Present (non-null) → validated; invalid → **400** |
+| `SANDBOX_DEFAULT_CWD` | Body **omits** `cwd` (or null) → server default (workspace-relative only) |
+| `"."` | Env unset or invalid |
+
+Invalid `SANDBOX_DEFAULT_CWD` is ignored (falls back to `"."`) with a one-time
+server warning — it does not fail process boot. Set it in the **Vercel project
+env** UI for Production/Preview (e.g. `invincible` for a nested checkout). Verify
+with the `pwd` tool after a harness turn.
+
+Host updates stored session cwd **only on agent success**; failure, abort, and
+chat-fallback leave the prior value. Clear session omits cwd.
+
+See also [session-model.md](session-model.md) and [agent-stream.md](agent-stream.md).
+
 ## 12. Tenancy cutover (origin / BYO)
 
 When Production enables the tenancy triple env, agent tools move to **DB grants**
@@ -297,7 +512,7 @@ personal laptop as the migrate/seed host.
 3. Smoke: unauth `POST /api/agent` → **401**
    `{ "error": "Authentication required." }`; `/login` → harness; optional `/admin`.
 4. Origin only: mark `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`
-   **Done** in [AGENTS.md](../AGENTS.md) after smoke (phase 3 / #70).
+   **Done** in [AGENTS.md](../AGENTS.md) after smoke.
 
 GHA workflow: [`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml).
 

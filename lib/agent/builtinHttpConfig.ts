@@ -1,6 +1,8 @@
 /**
- * Env config for builtin HTTPS fetch via Vercel Sandbox.
+ * Env config for builtin HTTPS fetch via Vercel Sandbox (hop-B).
  * Server-only — never NEXT_PUBLIC_*.
+ * Attach-only when enabled: tenancy on uses Settings HTTP instance;
+ * tenancy off requires BUILTIN_HTTP_INSTANCE_NAME (never create on hot path).
  */
 
 export const BUILTIN_HTTP_FETCH_OFF = 'off' as const;
@@ -17,7 +19,10 @@ export const MIN_BUILTIN_HTTP_TIMEOUT_MS = 1;
 export const DEFAULT_BUILTIN_HTTP_MAX_BYTES = 2 * 1024 * 1024; // 2 MiB
 export const MAX_BUILTIN_HTTP_MAX_BYTES = 16 * 1024 * 1024; // 16 MiB
 
-/** Sandbox.create lifetime — match agent route maxDuration headroom. */
+/**
+ * Legacy env clamp range for BUILTIN_HTTP_SANDBOX_TIMEOUT_MS (docs/tests).
+ * Product attach idle uses USER_SANDBOX_IDLE_TIMEOUT_MS via the runner.
+ */
 export const MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS = 1_800_000;
 export const DEFAULT_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS = 1_800_000;
 
@@ -26,7 +31,13 @@ export type BuiltinHttpConfig = {
   mode: BuiltinHttpFetchMode;
   timeoutMs: number;
   maxBytes: number;
+  /** Legacy VM-lifetime env clamp (not used for attach create). */
   sandboxTimeoutMs: number;
+  /**
+   * Tenancy-off host attach name (`BUILTIN_HTTP_INSTANCE_NAME`).
+   * Empty when unset — route fail-closed when builtin enabled and tenancy off.
+   */
+  instanceNameTenancyOff: string;
 };
 
 function clampInt(
@@ -78,11 +89,14 @@ export function resolveBuiltinHttpConfig(
     MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS,
   );
 
+  const instanceNameTenancyOff = (env.BUILTIN_HTTP_INSTANCE_NAME ?? '').trim();
+
   return {
     enabled: mode === BUILTIN_HTTP_FETCH_SANDBOX,
     mode,
     timeoutMs,
     maxBytes,
     sandboxTimeoutMs,
+    instanceNameTenancyOff,
   };
 }

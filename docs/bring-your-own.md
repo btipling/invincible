@@ -34,9 +34,10 @@ Related: [feature-divide.md](feature-divide.md) · [sandbox.md](sandbox.md) ·
 - **Sandbox MVP is shipped** as a config seam (`SANDBOX_URL` + `SANDBOX_TOKEN`).
   Without it, harness falls back to chat. Full guide: [sandbox.md](sandbox.md).
 - **Optional multi-tenant auth** (login + DB sandbox grants) is **shipped** —
-  see [§4a](#4a-optional-multi-tenant-auth). **Per-user MCP** is shipped —
-  [mcp.md](mcp.md). Multi-tenant sandbox fleet isolation remains future —
-  see [§8 Future](#8-future-not-shipped).
+  see [§4a](#4a-optional-multi-tenant-auth). Per-row sandbox **backend** + image
+  admin is at `/admin/sandboxes` ([sandbox.md](sandbox.md)). **Per-user MCP** is
+  shipped — [mcp.md](mcp.md). Multi-tenant process/fleet isolation (single
+  workspace root per process) remains future — see [§8 Future](#8-future-not-shipped).
 
 ---
 
@@ -158,7 +159,37 @@ If **any** is missing → **legacy open mode**: anonymous `POST /api/chat` and
 Grant failures return **403** `{ "error": "Sandbox access denied." }`
 (`SANDBOX_FORBIDDEN_ERROR`). See [sandbox.md](sandbox.md).
 
+### Sandboxes (BYO daemon vs Vercel)
+
+When tenancy is on, each **sandbox row** chooses a backend — not a host env flip
+(`SANDBOX_BACKEND` is **not** a product setting).
+
+| Backend | Admin | Credentials |
+|---------|-------|-------------|
+| **byo** | URL + token | Token encrypted under tenant DEK |
+| **vercel** | Image preset or custom VCR/VMI ref (null = universal default) | Host Vercel project OIDC/quota; no BYO URL/token on the row |
+
+Create and edit at **`/admin/sandboxes`**. Schema for `backend`/`image` ships via
+GHA **`db-migrate`**. Seed bootstrap may set `SEED_SANDBOX_BACKEND=vercel` and
+optional `SEED_SANDBOX_IMAGE` (seed-only env names).
+
+**Dogfood / custom toolchain images:** the app runtime does **not** build images.
+Origin (and forks) may push a first-party image with Docker + VCR auth. Origin
+reference: repo [`dev/Dockerfile`](../dev/Dockerfile) + GHA **`dev-image-build`**
+(`confirm=push`; secrets/vars **`VERCEL_TOKEN`**, **`VERCEL_TEAM_ID`**,
+**`VCR_IMAGE_PREFIX`** — names only). Point the sandbox **image** field at
+`${VCR_IMAGE_PREFIX}/invincible-dev:latest` after VCR shows **Ready**. Details:
+[dev/README.md](../dev/README.md), [sandbox.md](sandbox.md).
+
+V1 agent resolve still requires **exactly one** usable grant per user. Creating a
+sandbox in admin grants you R/W and revokes your other grants on that tenant so
+the agent keeps a single workspace.
+
+Builtin HTTPS fetch (`http_get`) is unrelated to `backend=vercel` — see
+[builtin-http.md](builtin-http.md) (possible second VM when both are enabled).
+
 ### Inference keys (BYOK)
+
 
 When **tenancy is on**, inference uses **tenant Bring-Your-Own-Key (BYOK)** so
 **provider billing is the tenant’s**, not Invincible host system credits.

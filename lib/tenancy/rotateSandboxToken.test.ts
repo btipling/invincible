@@ -14,7 +14,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, '../../db/migrations');
 
 async function applyMigrations(client: PGlite) {
-  for (const name of ['0000_tenancy_phase1.sql', '0001_sso_scim_identity.sql', '0002_tenant_deks.sql']) {
+  for (const name of [
+    '0000_tenancy_phase1.sql',
+    '0001_sso_scim_identity.sql',
+    '0002_tenant_deks.sql',
+    '0003_provider_secrets.sql',
+    '0004_user_mcp_servers.sql',
+    '0005_sandbox_backend.sql',
+    '0006_user_github_tokens.sql',
+    '0007_user_preferred_sandbox.sql',
+  ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     for (const stmt of sql
       .split('--> statement-breakpoint')
@@ -114,10 +123,10 @@ describe('rotateSandboxToken', () => {
       db: db as never,
       amk: AMK,
     });
-    expect(decryptSecret(row.tokenCiphertext, dek)).toBe('brand-new-token');
+    expect(decryptSecret(row.tokenCiphertext!, dek)).toBe('brand-new-token');
     expect(row.tokenKekVersion).toBe(version);
     // not decryptable with AMK
-    expect(() => decryptSecret(row.tokenCiphertext, AMK)).toThrow();
+    expect(() => decryptSecret(row.tokenCiphertext!, AMK)).toThrow();
   });
 
   it('admin cannot rotate', async () => {
@@ -152,5 +161,27 @@ describe('rotateSandboxToken', () => {
       { db: db as never, amk: AMK },
     );
     expect(res).toEqual({ ok: false, reason: 'not_found' });
+  });
+
+  it('rejects rotate for vercel backend', async () => {
+    const [vsb] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'V',
+        slug: 'vercel-sb',
+        backend: 'vercel',
+        baseUrl: null,
+        tokenCiphertext: null,
+        image: null,
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+
+    const res = await rotateSandboxToken(ownerId, vsb.id, 'nope', {
+      db: db as never,
+      amk: AMK,
+    });
+    expect(res).toEqual({ ok: false, reason: 'wrong_backend' });
   });
 });

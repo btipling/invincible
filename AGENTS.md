@@ -28,7 +28,7 @@ work — **independent of the language or platform** of the target project, and
 | Today | Intent |
 |-------|--------|
 | Single public deploy + this author’s infra are documented for operators | Multi-operator / bring-your-own Vercel + keys |
-| Sandbox MVP **shipped** via `SANDBOX_URL` + `SANDBOX_TOKEN` ([docs/sandbox.md](docs/sandbox.md)) | Pluggable sandbox without rewriting the harness |
+| Sandbox MVP **shipped** via `SANDBOX_URL` + `SANDBOX_TOKEN`; tenancy **per-row** `backend`/`image` (BYO or Vercel) via admin ([docs/sandbox.md](docs/sandbox.md)) | No host-wide `SANDBOX_BACKEND`; origin dogfood image: `dev/` + GHA **`dev-image-build`** → VCR ([dev/README.md](dev/README.md)) |
 | Stack is Next + Zig/dvui Wasm + AI Gateway | Target projects can be **any** stack; the harness is the workspace |
 | Tenancy code + origin Production cutover **Done** (login + DB grants) | Optional login/grants **and** cloud-native bootstrap (no personal machine) |
 
@@ -93,6 +93,11 @@ Do **not** write product/ops guides as phase narratives or issue archaeology
   reusable BYO seams — not a single-owner IdP hardcoding.
 - Origin `SANDBOX_*` is **Done** for the reference deploy (private host inventory
   stays offline). Still never invent a host URL; forks set their own env.
+- Origin **dogfood VCR image** (`dev/` + GHA `dev-image-build`) is **code on
+  main** when landed; **secrets/vars + first push + admin image** remain
+  **Not Done** until an operator configures them. Do not nag as forgotten
+  Product env; treat as optional origin infra like OIDC. Never put `VERCEL_TOKEN`
+  in client/Wasm/git.
 - Origin **tenancy** (`DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`)
   is **Done** on Production (cutover smoke: unauth 401 + login). Per-tenant DEK
   **code** is on `main` (envelope + dual-read + owner DEK rotate). Origin **data**
@@ -171,6 +176,7 @@ ops inventory).
 | `AI_GATEWAY_API_KEY` (Vercel) | **Done** | server-side only |
 | Tenant BYOK provider secrets (DB) | **Done** (code) | Admin `/admin/inference`; ciphertext under tenant DEK; grants + model catalog; tenancy-on chat/agent attach request-scoped Gateway BYOK (never env model routing). Schema-only Production: GHA **`db-migrate`** (`confirm=migrate`) |
 | Per-user MCP servers (DB) | **Done** (code) | Settings `/settings/mcp`; header secrets under tenant DEK; tools on `/api/agent` only; SSRF url policy; DEK rotate re-encrypts. Schema: GHA **`db-migrate`**. Ops/smoke: [docs/mcp.md](docs/mcp.md) |
+| Per-user GitHub PAT (DB + inject) | **Done** (code) | Settings `/settings/github`; DEK ciphertext; sandbox **exec** inject `GH_TOKEN`/`GITHUB_TOKEN` (both backends); redact on turn; DEK rotate re-encrypts. Schema: GHA **`db-migrate`**. Ops: [docs/sandbox.md](docs/sandbox.md) |
 | `HARNESS_ARTIFACT_TOKEN` (Vercel) | **Done** | PAT Actions: Read — prebuild downloads `harness-wasm` |
 | `VERCEL_DEPLOY_HOOK_URL` (GitHub secret) | **Done** | deploy hooks; `build-harness` pings after artifact upload |
 | DO runner `invincible-do-1` labels `invincible`,`zig` | **Done** | Zig 0.16.0 only there |
@@ -196,7 +202,7 @@ ops inventory).
   `db-tenancy-bootstrap` for re-seed (resets bootstrap password + token
   ciphertext by design) or GHA `db-tenancy-backfill-deks` for legacy AMK→DEK
   data cutover (never seed for that). Public smoke: `npm run smoke:tenancy`.
-- Per-user **MCP** code is on `main` (Settings + agent merge). Schema on Production still needs GHA **`db-migrate`** when `user_mcp_servers` is missing. Operator smoke: [docs/mcp.md](docs/mcp.md) (Exa). Never put MCP API keys in client/Wasm/git.
+- Per-user **MCP** code is on `main` (Settings + agent merge). Schema on Production still needs GHA **`db-migrate`** when `user_mcp_servers` is missing. Operator smoke: [docs/mcp.md](docs/mcp.md) (Exa). Never put MCP API keys or user GitHub PATs in client/Wasm/git.
 - Optional **OIDC / SCIM** on origin are **Not Done** until an operator sets env
   and smokes. Do **not** claim they are configured, invent IdP URLs, or nag to
   “enable SSO” as a forgotten secret. When configuring: follow
@@ -239,14 +245,20 @@ invincible/
 | UI page / layout | `app/` |
 | API / AI Gateway / agent | `app/api/*`, `lib/agent/*`, `lib/sandbox/*` |
 | Agent SSE stream (tools + text + reasoning) | `lib/agent/agentStream.ts`, `lib/agent/runAgent.ts`, `lib/agent/reasoningConfig.ts`, `app/api/agent/route.ts`, `lib/agentApi.ts`, `docs/agent-stream.md` |
+| Logical agent cwd (`change_dir` / session / default env) | `lib/agent/workPath.ts`, `lib/agent/tools.ts`, `lib/agent/agentBody.ts`, `lib/sandbox/config.ts` (`SANDBOX_DEFAULT_CWD`), `lib/sessionStore.ts`, `lib/harnessChat.ts`, `lib/agentApi.ts`, [docs/sandbox.md](docs/sandbox.md), [docs/session-model.md](docs/session-model.md), [docs/agent-stream.md](docs/agent-stream.md) |
 | Harness stream chrome (Thinking collapse/caps, live tools) | `lib/harnessChat.ts`, `native/harness/src/ui.zig` (Thinking kind), protocol v9 in `lib/harnessBridge.ts` (Stop cancel; Thinking kind from v8) |
-| Builtin HTTPS fetch (`http_get`) | `lib/agent/httpFetch*.ts`, `lib/agent/vercelSandboxHttpRunner.ts`, `lib/net/publicUrlPolicy.ts`, `docs/builtin-http.md` — env `BUILTIN_HTTP_FETCH` |
+| Builtin HTTPS fetch (`http_get`) | `lib/agent/httpFetch*.ts`, `lib/agent/vercelSandboxHttpRunner.ts`, `lib/net/publicUrlPolicy.ts`, `docs/builtin-http.md` — env `BUILTIN_HTTP_FETCH`; tenancy on: Settings HTTP instance attach-only; tenancy off: `BUILTIN_HTTP_INSTANCE_NAME` |
 | Tenancy schema / migrations | `db/schema.ts`, `db/migrations/` |
 | Tenancy crypto / seed helpers | `lib/tenancy/*`, `scripts/seed-tenancy.ts` |
 | Tenant BYOK / inference grants | `app/admin/inference/*`, `lib/tenancy/providerSecrets*`, `lib/tenancy/resolveInference*`, `lib/gateway/byokProviders.ts`, `app/api/models/*` |
+| Tenant sandboxes (backend + image) | `app/admin/sandboxes/*`, `lib/tenancy/manageSandbox.ts`, `lib/tenancy/sandboxBackend.ts`, `lib/tenancy/resolveSandbox.ts`, `lib/sandbox/vercelClient.ts`, [docs/sandbox.md](docs/sandbox.md) |
+| User durable Vercel instances (Settings create; agent attach-only) | `lib/tenancy/userSandboxInstance.ts`, `app/settings/sandbox/*`, `lib/sandbox/vercelClient.ts`, `lib/agent/vercelSandboxHttpRunner.ts`, `app/api/agent/route.ts`, guard `lib/tenancy/sandboxCreateGuard.test.ts`, orphan GHA `sandbox-orphan-cleanup`, [docs/sandbox.md](docs/sandbox.md), [docs/builtin-http.md](docs/builtin-http.md) — **never** `Sandbox.create` / `getOrCreate` outside `userSandboxInstance` |
 | User Settings / per-user MCP | `app/settings/*`, `lib/tenancy/userMcpServers.ts`, `lib/mcp/*` |
+| User GitHub PAT (Settings + sandbox exec inject) | `app/settings/github/*`, `lib/tenancy/userGithubToken.ts`, `lib/sandbox/{client,vercelClient}.ts`, `sandbox/tools.mjs`, `app/api/agent/route.ts`, [docs/sandbox.md](docs/sandbox.md) |
+| User preferred sandbox (Settings) | `app/settings/sandbox/*`, `lib/tenancy/userPreferredSandbox.ts`, `lib/tenancy/resolveSandbox.ts`, [docs/sandbox.md](docs/sandbox.md) |
 | Harness model catalog (protocol v3) | `lib/harnessBridge.ts`, `native/harness/src/bridge.zig`, `app/harness/HarnessHost.tsx` |
 | Schema-only migrate (GHA) | `.github/workflows/db-migrate.yml` |
+| Dogfood sandbox image (VCR) | `dev/Dockerfile`, `dev/README.md`, `.github/workflows/dev-image-build.yml`, [docs/sandbox.md](docs/sandbox.md) |
 | Sandbox daemon | `sandbox/` |
 | Colors / tokens (DOM) | `lib/palette.ts` |
 | Colors / tokens (dvui) | `native/harness/src/palette.zig` (hex sync with palette.ts) |

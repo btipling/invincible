@@ -1,4 +1,5 @@
 import { resolveModelId } from '../model';
+import { parseInitialCwd } from '../agent/workPath';
 
 /** Exact 503 body — host phase 3 matches this string. */
 export const SANDBOX_NOT_CONFIGURED_ERROR =
@@ -49,6 +50,37 @@ export function getSandboxConfig(
 
 export function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, '');
+}
+
+
+/**
+ * Optional default logical workspace cwd when the agent request omits `cwd`.
+ * Server-only (`SANDBOX_DEFAULT_CWD`). Invalid values → `"."` + one-time warn.
+ * Never throws at boot/import.
+ */
+let invalidDefaultCwdLogged = false;
+
+export function resolveSandboxDefaultCwd(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const raw = env.SANDBOX_DEFAULT_CWD?.trim();
+  if (!raw) return '.';
+  const parsed = parseInitialCwd(raw);
+  if (!parsed.ok) {
+    if (!invalidDefaultCwdLogged) {
+      invalidDefaultCwdLogged = true;
+      console.warn(
+        `[sandbox] Invalid SANDBOX_DEFAULT_CWD ignored (using "."): ${parsed.error}`,
+      );
+    }
+    return '.';
+  }
+  return parsed.cwd;
+}
+
+/** Test-only: reset one-time invalid-env log latch. */
+export function resetSandboxDefaultCwdLogForTests(): void {
+  invalidDefaultCwdLogged = false;
 }
 
 /**

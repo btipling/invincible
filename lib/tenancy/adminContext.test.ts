@@ -3,7 +3,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
 import * as schema from '../../db/schema';
 import { loadAdminContext } from './adminContext';
 import {
@@ -15,7 +16,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, '../../db/migrations');
 
 async function applyMigrations(client: PGlite) {
-  for (const name of ['0000_tenancy_phase1.sql', '0001_sso_scim_identity.sql', '0002_tenant_deks.sql']) {
+  for (const name of [
+    '0000_tenancy_phase1.sql',
+    '0001_sso_scim_identity.sql',
+    '0002_tenant_deks.sql',
+    '0003_provider_secrets.sql',
+    '0004_user_mcp_servers.sql',
+    '0005_sandbox_backend.sql',
+    '0006_user_github_tokens.sql',
+    '0007_user_preferred_sandbox.sql',
+  ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     for (const stmt of sql
       .split('--> statement-breakpoint')
@@ -125,8 +135,38 @@ describe('loadAdminContext', () => {
     expect(res.value.canRotate).toBe(true);
     expect(res.value.sandboxes).toHaveLength(1);
     expect(res.value.sandboxes[0].baseUrl).toBe('https://sandbox.example');
+    expect(res.value.sandboxes[0].backend).toBe('byo');
+    expect(res.value.sandboxes[0].imageLabel).toBe('—');
     expect(res.value.sandboxes[0].tokenMasked).toMatch(/••••••••/);
     expect(res.value.sandboxes[0].tokenMasked).not.toContain('super-secret');
+  });
+
+  it('vercel sandbox: no decrypt; image label; em dash token/url', async () => {
+    await db.delete(schema.sandboxGrants);
+    await db.delete(schema.sandboxes);
+    const decryptSpy = vi.fn(decrypt);
+    await db.insert(schema.sandboxes).values({
+      tenantId,
+      name: 'Vercel',
+      slug: 'vercel',
+      backend: 'vercel',
+      baseUrl: null,
+      tokenCiphertext: null,
+      image: null,
+      status: 'active',
+    });
+    const res = await loadAdminContext(ownerId, {
+      db: db as never,
+      decryptSandboxToken: decryptSpy,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.sandboxes).toHaveLength(1);
+    expect(res.value.sandboxes[0].backend).toBe('vercel');
+    expect(res.value.sandboxes[0].imageLabel).toBe('default (universal)');
+    expect(res.value.sandboxes[0].baseUrl).toBe('—');
+    expect(res.value.sandboxes[0].tokenMasked).toBe('—');
+    expect(decryptSpy).not.toHaveBeenCalled();
   });
 
   it('forbids member role', async () => {

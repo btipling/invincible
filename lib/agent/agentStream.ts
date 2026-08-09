@@ -12,7 +12,7 @@ export type AgentStreamEvent =
   | { type: 'tool_result'; name: string; ok: boolean; summary: string }
   | { type: 'reasoning_delta'; text: string }
   | { type: 'text_delta'; text: string }
-  | { type: 'done'; text: string; toolTrace?: ToolTraceEntry[] }
+  | { type: 'done'; text: string; toolTrace?: ToolTraceEntry[]; cwd?: string }
   | { type: 'error'; error: string; status?: number };
 
 export const AGENT_STREAM_ACCEPT = 'text/event-stream';
@@ -52,26 +52,42 @@ export function salientToolBits(name: string, resultText: string): string {
     return text.split('\n')[0]!.replace(/\s+/g, ' ').trim();
   }
 
-  // read_file path (truncated)?:\n<body>
+  // change_dir target: ok cwd=...
+  const cdM = text.match(/^change_dir\s+(\S+):\s+ok\s+cwd=(\S+)/i);
+  if (cdM || name === 'change_dir') {
+    if (cdM) return `${cdM[1]} · cwd=${cdM[2]}`;
+    return text.replace(/\s+/g, ' ').trim().slice(0, TOOL_LINE_SALIENT_MAX);
+  }
+
+  // pwd: path
+  const pwdM = text.match(/^pwd:\s+(\S+)/i);
+  if (pwdM || name === 'pwd') {
+    if (pwdM) return pwdM[1]!;
+    return text.replace(/\s+/g, ' ').trim().slice(0, TOOL_LINE_SALIENT_MAX);
+  }
+
+  // read_file path (truncated)? (cwd=...)?:\n<body>
   const readM = text.match(
-    /^read_file\s+(\S+)((?:\s*\(truncated\))?)\s*:\s*\n?([\s\S]*)$/i,
+    /^read_file\s+(\S+)((?:\s*\(truncated\))?)((?:\s+cwd=\S+)?)\s*:\s*\n?([\s\S]*)$/i,
   );
   if (readM || name === 'read_file' || /(^|_)read_file$/i.test(name)) {
     if (readM) {
       const path = readM[1]!;
       const trunc = (readM[2] ?? '').includes('truncated') ? ' truncated' : '';
-      const body = readM[3] ?? '';
+      const cwdBit = (readM[3] ?? '').trim();
+      const body = readM[4] ?? '';
       const lineCount = body.length === 0 ? 0 : body.split('\n').length;
-      return `${path}${trunc} · ${lineCount} lines · ${body.length} B`;
+      const cwd = cwdBit ? ` · ${cwdBit}` : '';
+      return `${path}${trunc}${cwd} · ${lineCount} lines · ${body.length} B`;
     }
     // Unknown shape — stats only
     const lineCount = text.split('\n').length;
     return `${lineCount} lines · ${text.length} B`;
   }
 
-  // list_dir path: N entries — names…
+  // list_dir path (cwd=...)?: N entries — names…
   const listM = text.match(
-    /^list_dir\s+(\S+):\s+(\d+)\s+entries(?:\s+[—\-]\s+([\s\S]*))?$/i,
+    /^list_dir\s+(\S+)(?:\s+cwd=\S+)?:\s+(\d+)\s+entries(?:\s+[—\-]\s+([\s\S]*))?$/i,
   );
   if (listM || name === 'list_dir') {
     if (listM) {
@@ -83,15 +99,17 @@ export function salientToolBits(name: string, resultText: string): string {
     }
   }
 
-  // write_file path: ok bytes=N
-  const writeM = text.match(/^write_file\s+(\S+):\s+ok\s+bytes=(\d+)/i);
+  // write_file path (cwd=...)?: ok bytes=N
+  const writeM = text.match(
+    /^write_file\s+(\S+)(?:\s+cwd=\S+)?:\s+ok\s+bytes=(\d+)/i,
+  );
   if (writeM || name === 'write_file') {
     if (writeM) return `${writeM[1]} · ${writeM[2]} B written`;
   }
 
-  // str_replace path: ok replacements=N bytes=M
+  // str_replace path (cwd=...)?: ok replacements=N bytes=M
   const repM = text.match(
-    /^str_replace\s+(\S+):\s+ok\s+replacements=(\d+)\s+bytes=(\d+)/i,
+    /^str_replace\s+(\S+)(?:\s+cwd=\S+)?:\s+ok\s+replacements=(\d+)\s+bytes=(\d+)/i,
   );
   if (repM || name === 'str_replace') {
     if (repM) {

@@ -83,8 +83,20 @@ export const sandboxes = pgTable(
       .references(() => tenants.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     slug: text('slug').notNull(),
-    baseUrl: text('base_url').notNull(),
-    tokenCiphertext: text('token_ciphertext').notNull(),
+    /**
+     * Per-sandbox backend (#281 / parent #280): byo | vercel.
+     * App validates enum; no DB CHECK in v1.
+     */
+    backend: text('backend').notNull().default('byo'),
+    /**
+     * Vercel Sandbox image ref when backend=vercel (VMI or VCR).
+     * Null when byo or when product default should apply at resolve time.
+     */
+    image: text('image'),
+    /** Required for backend=byo; null for backend=vercel. */
+    baseUrl: text('base_url'),
+    /** DEK ciphertext of BYO token; null for backend=vercel. Never log. */
+    tokenCiphertext: text('token_ciphertext'),
     tokenKekVersion: integer('token_kek_version').notNull().default(1),
     status: text('status').notNull().default('active'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -223,3 +235,98 @@ export const userMcpServers = pgTable(
 );
 
 export type UserMcpServer = typeof userMcpServers.$inferSelect;
+
+/**
+ * Per-user GitHub PAT (parent #291 / phase #292).
+ * Token ciphertext is DEK-only (nullable when cleared). Server-only — never
+ * expose ciphertext to client.
+ */
+export const userGithubTokens = pgTable(
+  'user_github_tokens',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    /** DEK ciphertext of raw PAT; null when cleared / unset. Never log. */
+    tokenCiphertext: text('token_ciphertext'),
+    /** Tenant dek_version at write; null when no ciphertext. */
+    tokenKekVersion: integer('token_kek_version'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('user_github_tokens_tenant_id_idx').on(t.tenantId)],
+);
+
+export type UserGithubToken = typeof userGithubTokens.$inferSelect;
+
+/**
+ * Per-user preferred sandbox when multiple grants exist.
+ * Server-only preference; resolve uses it to pick among usable grants.
+ */
+export const userPreferredSandbox = pgTable(
+  'user_preferred_sandbox',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    sandboxId: uuid('sandbox_id')
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: 'cascade' }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('user_preferred_sandbox_tenant_id_idx').on(t.tenantId),
+    index('user_preferred_sandbox_sandbox_id_idx').on(t.sandboxId),
+  ],
+);
+
+export type UserPreferredSandbox = typeof userPreferredSandbox.$inferSelect;
+
+
+/**
+ * Per-user durable Vercel Sandbox instances (parent #298 / phase 1 #299).
+ * One workspace + one http slot per user. Server-only registry; agent never creates.
+ */
+export const userSandboxInstances = pgTable(
+  'user_sandbox_instances',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** workspace | http — app-validated. */
+    purpose: text('purpose').notNull(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    /**
+     * Catalog sandbox used at workspace Create; null for http.
+     * SET NULL if catalog row deleted (image remains frozen on this row).
+     */
+    catalogSandboxId: uuid('catalog_sandbox_id').references(() => sandboxes.id, {
+      onDelete: 'set null',
+    }),
+    /** Server-generated inv-{purpose}-{hash}; unique. Never client-supplied. */
+    vercelName: text('vercel_name').notNull(),
+    /** Image frozen at Create. */
+    image: text('image').notNull(),
+    /** running | stopped | error — app-validated. */
+    status: text('status').notNull(),
+    /** Last platform/reconcile error; no secrets. */
+    lastError: text('last_error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.purpose] }),
+    unique('user_sandbox_instances_vercel_name_unique').on(t.vercelName),
+    index('user_sandbox_instances_tenant_id_idx').on(t.tenantId),
+  ],
+);
+
+export type UserSandboxInstance = typeof userSandboxInstances.$inferSelect;
+export type UserSandboxInstanceInsert = typeof userSandboxInstances.$inferInsert;

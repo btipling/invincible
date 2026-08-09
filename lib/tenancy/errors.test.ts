@@ -5,6 +5,9 @@ import {
   INFERENCE_MODEL_REQUIRED_ERROR,
   INFERENCE_UNAVAILABLE_ERROR,
   SANDBOX_FORBIDDEN_ERROR,
+  SANDBOX_SELECTION_REQUIRED_ERROR,
+  WORKSPACE_INSTANCE_REQUIRED_ERROR,
+  BUILTIN_HTTP_INSTANCE_REQUIRED_ERROR,
 } from './errors';
 
 describe('tenancy error constants', () => {
@@ -14,6 +17,22 @@ describe('tenancy error constants', () => {
 
   it('locks parent SANDBOX_FORBIDDEN_ERROR string', () => {
     expect(SANDBOX_FORBIDDEN_ERROR).toBe('Sandbox access denied.');
+  });
+
+  it('locks SANDBOX_SELECTION_REQUIRED_ERROR string', () => {
+    expect(SANDBOX_SELECTION_REQUIRED_ERROR).toMatch(/Settings → Sandbox/);
+  });
+
+  it('locks WORKSPACE_INSTANCE_REQUIRED_ERROR string (#301)', () => {
+    expect(WORKSPACE_INSTANCE_REQUIRED_ERROR).toBe(
+      'Workspace instance is not running. Create or Start it under Settings → Sandbox.',
+    );
+  });
+
+  it('locks BUILTIN_HTTP_INSTANCE_REQUIRED_ERROR string (#302)', () => {
+    expect(BUILTIN_HTTP_INSTANCE_REQUIRED_ERROR).toBe(
+      'Builtin HTTP is enabled but no instance name is configured. Set BUILTIN_HTTP_INSTANCE_NAME or disable BUILTIN_HTTP_FETCH.',
+    );
   });
 
   it('locks BYOK inference error strings (#103)', () => {

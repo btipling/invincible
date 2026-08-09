@@ -88,6 +88,33 @@ describe('createAgentTools', () => {
     expect(out).toContain('2 entries');
     expect(out).toContain('a.ts');
   });
+
+  it('exec tool schema has no env (additionalProperties false, no env key)', () => {
+    const client = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      strReplace: vi.fn(),
+      exec: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
+    } as unknown as SandboxClient;
+    const tools = createAgentTools({ client });
+    const execTool = tools.exec as {
+      inputSchema?: {
+        jsonSchema?: {
+          properties?: Record<string, unknown>;
+          additionalProperties?: boolean;
+        };
+      };
+    };
+    const js = execTool.inputSchema?.jsonSchema;
+    expect(js).toBeDefined();
+    expect(js!.additionalProperties).toBe(false);
+    expect(js!.properties).toBeDefined();
+    expect(js!.properties).not.toHaveProperty('env');
+    expect(Object.keys(js!.properties!)).toEqual(
+      expect.arrayContaining(['cmd', 'args', 'cwd', 'timeoutMs']),
+    );
+  });
 });
 
 describe('createAgentTools permissions', () => {
@@ -204,6 +231,149 @@ describe('str_replace tool', () => {
   });
 });
 
+describe('createAgentTools cwd', () => {
+  it('change_dir then read_file joins path for client', async () => {
+    const listDir = vi.fn(async (path?: string) => {
+      if (path === 'invincible') {
+        return { entries: [{ name: 'sandbox', type: 'dir' as const }] };
+      }
+      return { entries: [] };
+    });
+    const readFile = vi.fn(async () => ({ content: 'ok' }));
+    const client = mockClient({ listDir, readFile });
+    const tools = createAgentTools({ client, initialCwd: '.' });
+
+    const cd = (await tools.change_dir.execute!(
+      { path: 'invincible' },
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(cd).toMatch(/change_dir invincible: ok cwd=invincible/);
+
+    const out = (await tools.read_file.execute!(
+      { path: 'sandbox/x.ts' },
+      { toolCallId: '2', messages: [] } as never,
+    )) as string;
+    expect(readFile).toHaveBeenCalledWith(
+      'invincible/sandbox/x.ts',
+      undefined,
+      expect.anything(),
+    );
+    expect(out).toContain('read_file invincible/sandbox/x.ts cwd=invincible:');
+    expect(out).toContain('ok');
+  });
+
+  it('does not double-prefix already-rooted paths under cwd', async () => {
+    const readFile = vi.fn(async () => ({ content: 'body' }));
+    const client = mockClient({ readFile });
+    const tools = createAgentTools({ client, initialCwd: 'invincible' });
+    await tools.read_file.execute!(
+      { path: 'invincible/a.ts' },
+      { toolCallId: '1', messages: [] } as never,
+    );
+    expect(readFile).toHaveBeenCalledWith(
+      'invincible/a.ts',
+      undefined,
+      expect.anything(),
+    );
+  });
+
+  it('pwd reports current cwd', async () => {
+    const client = mockClient({});
+    const tools = createAgentTools({ client, initialCwd: 'invincible' });
+    const out = (await tools.pwd.execute!(
+      {},
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(out).toBe('pwd: invincible');
+  });
+
+  it('host-absolute path soft-fails mid-turn', async () => {
+    const readFile = vi.fn(async () => ({ content: 'x' }));
+    const client = mockClient({ readFile });
+    const tools = createAgentTools({ client });
+    const out = (await tools.read_file.execute!(
+      { path: '/etc/passwd' },
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(out).toMatch(/^ERROR read_file:/);
+    expect(out).toMatch(/absolute|not allowed/i);
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it('change_dir failure does not mutate cwd', async () => {
+    const listDir = vi.fn(async () => {
+      throw new Error('Directory not found');
+    });
+    const client = mockClient({ listDir });
+    const tools = createAgentTools({ client, initialCwd: '.' });
+    const cd = (await tools.change_dir.execute!(
+      { path: 'missing' },
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(cd).toMatch(/^ERROR change_dir:/);
+    const pwd = (await tools.pwd.execute!(
+      {},
+      { toolCallId: '2', messages: [] } as never,
+    )) as string;
+    expect(pwd).toBe('pwd: .');
+  });
+
+  it('read-only grant allows change_dir', async () => {
+    const listDir = vi.fn(async () => ({
+      entries: [{ name: 'a', type: 'dir' as const }],
+    }));
+    const client = mockClient({ listDir });
+    const tools = createAgentTools({
+      client,
+      permissions: { canRead: true, canWrite: false },
+    });
+    const cd = (await tools.change_dir.execute!(
+      { path: 'proj' },
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(cd).toMatch(/ok cwd=proj/);
+    expect(listDir).toHaveBeenCalledWith('proj', expect.anything());
+  });
+
+  it('no-read denies change_dir and pwd', async () => {
+    const listDir = vi.fn(async () => ({ entries: [] }));
+    const client = mockClient({ listDir });
+    const tools = createAgentTools({
+      client,
+      permissions: { canRead: false, canWrite: false },
+    });
+    const cd = (await tools.change_dir.execute!(
+      { path: 'x' },
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(cd).toMatch(/permission denied \(need read\)/);
+    expect(listDir).not.toHaveBeenCalled();
+    const pwd = (await tools.pwd.execute!(
+      {},
+      { toolCallId: '2', messages: [] } as never,
+    )) as string;
+    expect(pwd).toMatch(/permission denied \(need read\)/);
+  });
+
+  it('exec defaults cwd to logical cwd', async () => {
+    const exec = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ client, initialCwd: 'invincible' });
+    await tools.exec.execute!(
+      { cmd: 'true' },
+      { toolCallId: '1', messages: [] } as never,
+    );
+    expect(exec).toHaveBeenCalledWith(
+      expect.objectContaining({ cmd: 'true', cwd: 'invincible' }),
+      expect.anything(),
+    );
+  });
+});
+
 describe('exec stdin / heredoc', () => {
   it('passes stdin to sandbox client', async () => {
     const exec = vi.fn(async () => ({ exitCode: 0, stdout: 'ok', stderr: '' }));
@@ -239,4 +409,3 @@ describe('exec stdin / heredoc', () => {
     );
   });
 });
-

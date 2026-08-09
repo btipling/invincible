@@ -4,12 +4,13 @@ import {
   mapByokResolveFailure,
   mapInferenceError,
   missingGatewayKeyError,
-  parseChatBody,
 } from '../../../lib/chatServer';
+import { parseAgentBody } from '../../../lib/agent/agentBody';
 import {
   SANDBOX_NOT_CONFIGURED_ERROR,
   sandboxConfigured,
 } from '../../../lib/sandbox/config';
+import type { SandboxClient } from '../../../lib/sandbox/client';
 import { runAgent, runAgentStream } from '../../../lib/agent/runAgent';
 import {
   AGENT_STREAM_CONTENT_TYPE,
@@ -20,6 +21,7 @@ import {
 import { tenancyEnabled } from '../../../lib/tenancy/enabled';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 import { resolveAgentSandbox } from '../../../lib/tenancy/resolveSandbox';
+import { decryptUserGithubTokenForServer } from '../../../lib/tenancy/userGithubToken';
 import { resolveByokForRequest } from '../../../lib/tenancy/resolveInferenceForRequest';
 import { redactSecrets } from '../../../lib/agent/redact';
 import { buildUserMcpTools } from '../../../lib/mcp/client';
@@ -27,6 +29,8 @@ import { resolveBuiltinHttpConfig } from '../../../lib/agent/builtinHttpConfig';
 import { createHttpFetchTools } from '../../../lib/agent/httpFetchTools';
 import { createVercelSandboxHttpRunner } from '../../../lib/agent/vercelSandboxHttpRunner';
 import type { HttpFetchRunner } from '../../../lib/agent/httpFetchTypes';
+import { loadInstance } from '../../../lib/tenancy/userSandboxInstance';
+import { BUILTIN_HTTP_INSTANCE_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
@@ -37,10 +41,23 @@ function isAbortError(err: unknown): boolean {
   return err.name === 'AbortError' || err.name === 'ResponseAborted';
 }
 
+/**
+ * Release runners: hop-B http sandbox, MCP sessions, and FS SandboxClient.
+ * Attach FS/HTTP close = extendTimeout + drop handle (never stop).
+ * Called from JSON finally, stream start finally, and stream cancel.
+ */
 async function closeRunners(
   httpRunner: HttpFetchRunner | undefined,
   mcpClose: (() => Promise<void>) | undefined,
+  sandboxClient?: SandboxClient | undefined,
 ): Promise<void> {
+  if (sandboxClient?.close) {
+    try {
+      await sandboxClient.close();
+    } catch {
+      // ignore sandbox client close errors
+    }
+  }
   if (httpRunner) {
     try {
       await httpRunner.close();
@@ -60,13 +77,15 @@ async function closeRunners(
 /**
  * Multi-step agent with sandbox tools (+ builtin HTTP + per-user MCP when enabled).
  *
- * POST { prompt: string, modelId?: string }
- * → JSON { text, toolTrace? } | { error }
+ * POST { prompt: string, modelId?: string, cwd?: string }
+ * → JSON { text, toolTrace?, cwd? } | { error }
+ * Omitted cwd → SANDBOX_DEFAULT_CWD if valid, else ".".
  * → or SSE (Accept: text/event-stream) agent events (docs/agent-stream.md)
  *
  * Tenancy on: DB-resolved sandbox + grants + request-scoped BYOK + user MCP tools.
  * Tenancy off: env SANDBOX_* + env model (no BYOK, no MCP).
- * Builtin HTTP: BUILTIN_HTTP_FETCH=sandbox enables http_get without requiring DO workspace.
+ * Builtin HTTP: BUILTIN_HTTP_FETCH=sandbox + attach name (Settings HTTP instance or
+ * BUILTIN_HTTP_INSTANCE_NAME when tenancy off); never create on the hot path.
  */
 export async function POST(req: Request): Promise<Response> {
   const sessionGate = await requireSessionUser();
@@ -99,7 +118,7 @@ export async function POST(req: Request): Promise<Response> {
     );
   }
 
-  const parsed = parseChatBody(body);
+  const parsed = parseAgentBody(body);
   if (!parsed.ok) {
     return Response.json({ error: parsed.error }, { status: parsed.status });
   }
@@ -107,6 +126,7 @@ export async function POST(req: Request): Promise<Response> {
   let redactList: string[] = [];
   let mcpClose: (() => Promise<void>) | undefined;
   let httpRunner: HttpFetchRunner | undefined;
+  let sandboxClient: SandboxClient | undefined;
   let runnersOwnedByStream = false;
 
   try {
@@ -115,7 +135,14 @@ export async function POST(req: Request): Promise<Response> {
     let runParams: Parameters<typeof runAgent>[0] = {
       prompt: parsed.prompt,
       signal: req.signal,
+      initialCwd: parsed.cwd,
     };
+    /**
+     * When resolve fails but we soft-path (softContinue or builtin HTTP),
+     * keep the 403 body and return it only if no tools assemble later.
+     */
+    let deferredNoFsResponse: Response | undefined;
+    let tenancyUserId: string | undefined;
 
     if (tenancyOn) {
       const userId = sessionGate.user?.id;
@@ -123,6 +150,7 @@ export async function POST(req: Request): Promise<Response> {
         const { AUTH_REQUIRED_ERROR } = await import('../../../lib/tenancy/errors');
         return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
       }
+      tenancyUserId = userId;
 
       const byok = await resolveByokForRequest(userId, parsed.modelId);
       if (!byok.ok) {
@@ -131,20 +159,37 @@ export async function POST(req: Request): Promise<Response> {
       }
       redactList = byok.secretsToRedact;
 
-      const resolved = await resolveAgentSandbox(userId);
+      // Per-user GitHub PAT → sandbox exec env (client options only; never tool schema).
+      const gh = await decryptUserGithubTokenForServer(userId);
+      const ghSecrets: string[] = [];
+      let execEnv: Record<string, string> | undefined;
+      if (gh.ok && gh.value) {
+        ghSecrets.push(gh.value);
+        execEnv = { GH_TOKEN: gh.value, GITHUB_TOKEN: gh.value };
+      }
+      redactList = [...redactList, ...ghSecrets];
 
+      const resolved = await resolveAgentSandbox(userId, {
+        ...(execEnv ? { execEnv } : {}),
+      });
+
+      // When resolve soft-continues (e.g. Workspace not running), keep the 403
+      // body and only proceed if MCP and/or builtin HTTP supply tools later.
       if (!resolved.ok) {
-        if (!builtinHttp.enabled) {
-          // Preserve hard 403 when no FS grant and no builtin HTTP path.
+        if (resolved.softContinue || builtinHttp.enabled) {
+          // Soft path: no FS tools; MCP + builtin HTTP may still run.
+          runParams = {
+            ...runParams,
+            skipSandboxTools: true,
+            secrets: [...byok.secretsToRedact, ...ghSecrets],
+          };
+          deferredNoFsResponse = resolved.response;
+        } else {
+          // Hard 403: grant/membership/selection without alternate soft path.
           return resolved.response;
         }
-        // Soft-continue: http ± MCP only (no FS tools).
-        runParams = {
-          ...runParams,
-          skipSandboxTools: true,
-          secrets: [...byok.secretsToRedact],
-        };
       } else {
+        sandboxClient = resolved.value.client;
         redactList = [...redactList, ...resolved.value.secrets];
         runParams = {
           ...runParams,
@@ -153,6 +198,7 @@ export async function POST(req: Request): Promise<Response> {
           secrets: [
             ...resolved.value.secrets,
             ...byok.secretsToRedact,
+            ...ghSecrets,
           ],
         };
       }
@@ -185,26 +231,65 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     if (builtinHttp.enabled) {
-      httpRunner = createVercelSandboxHttpRunner({
-        sandboxTimeoutMs: builtinHttp.sandboxTimeoutMs,
-      });
-      const httpTools = createHttpFetchTools({
-        runner: httpRunner,
-        secrets: runParams.secrets,
-        signal: req.signal,
-        maxBytes: builtinHttp.maxBytes,
-        timeoutMs: builtinHttp.timeoutMs,
-      });
-      extraTools = { ...extraTools, ...httpTools };
+      let httpAttachName: string | undefined;
+
+      if (tenancyOn) {
+        // Settings HTTP/curl instance — omit tools when missing/stopped/error.
+        if (tenancyUserId) {
+          const loaded = await loadInstance(tenancyUserId, 'http');
+          if (
+            loaded.ok &&
+            loaded.value &&
+            loaded.value.status === 'running' &&
+            loaded.value.vercelName?.trim()
+          ) {
+            httpAttachName = loaded.value.vercelName.trim();
+          }
+        }
+      } else {
+        // Tenancy off: host env name required — never create.
+        const envName = builtinHttp.instanceNameTenancyOff;
+        if (!envName) {
+          return Response.json(
+            { error: BUILTIN_HTTP_INSTANCE_REQUIRED_ERROR },
+            { status: 503 },
+          );
+        }
+        httpAttachName = envName;
+      }
+
+      if (httpAttachName) {
+        httpRunner = createVercelSandboxHttpRunner({
+          name: httpAttachName,
+        });
+        const httpTools = createHttpFetchTools({
+          runner: httpRunner,
+          secrets: runParams.secrets,
+          signal: req.signal,
+          maxBytes: builtinHttp.maxBytes,
+          timeoutMs: builtinHttp.timeoutMs,
+        });
+        extraTools = { ...extraTools, ...httpTools };
+      }
     }
 
     runParams = { ...runParams, extraTools };
+
+    // Soft path only when non-FS tools exist; else return resolve 403 body.
+    if (
+      deferredNoFsResponse &&
+      !sandboxClient &&
+      Object.keys(extraTools).length === 0
+    ) {
+      return deferredNoFsResponse;
+    }
 
     if (stream) {
       runnersOwnedByStream = true;
       const encoder = new TextEncoder();
       const httpRef = httpRunner;
       const mcpRef = mcpClose;
+      const sandboxRef = sandboxClient;
       const secretsForErr = redactList;
 
       const bodyStream = new ReadableStream<Uint8Array>({
@@ -236,7 +321,7 @@ export async function POST(req: Request): Promise<Response> {
               enqueue({ type: 'error', error: safe });
             }
           } finally {
-            await closeRunners(httpRef, mcpRef);
+            await closeRunners(httpRef, mcpRef, sandboxRef);
             closed = true;
             try {
               controller.close();
@@ -246,7 +331,7 @@ export async function POST(req: Request): Promise<Response> {
           }
         },
         async cancel() {
-          await closeRunners(httpRef, mcpRef);
+          await closeRunners(httpRef, mcpRef, sandboxRef);
         },
       });
 
@@ -261,7 +346,7 @@ export async function POST(req: Request): Promise<Response> {
       });
     }
 
-    const { text, toolTrace } = await runAgent(runParams);
+    const { text, toolTrace, cwd } = await runAgent(runParams);
 
     if (!text) {
       return Response.json({ error: 'Empty model response.' }, { status: 502 });
@@ -270,6 +355,7 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({
       text,
       ...(toolTrace.length > 0 ? { toolTrace } : {}),
+      ...(cwd != null ? { cwd } : {}),
     });
   } catch (err) {
     if (isAbortError(err)) {
@@ -281,7 +367,7 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: safe }, { status });
   } finally {
     if (!runnersOwnedByStream) {
-      await closeRunners(httpRunner, mcpClose);
+      await closeRunners(httpRunner, mcpClose, sandboxClient);
     }
   }
 }

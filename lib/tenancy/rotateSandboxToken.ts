@@ -1,6 +1,7 @@
 /**
- * Phase 4 — owner-only rotate sandbox token (re-encrypt at rest).
+ * Owner-only rotate sandbox token (re-encrypt at rest).
  * Phase 2 (#94): re-encrypt under tenant DEK; token_kek_version = dek_version.
+ * Phase 4 (#284): reject backend=vercel (no BYO token).
  * Holds tenant SELECT … FOR UPDATE for ensure+encrypt+write so concurrent
  * rotateTenantDek cannot interleave a discarded DEK.
  */
@@ -18,7 +19,10 @@ import { ensureTenantDek } from './tenantKeys';
 
 export type RotateResult =
   | { ok: true }
-  | { ok: false; reason: 'forbidden' | 'not_found' | 'empty' | 'db' };
+  | {
+      ok: false;
+      reason: 'forbidden' | 'not_found' | 'empty' | 'wrong_backend' | 'db';
+    };
 
 export type RotateDeps = {
   db?: Db;
@@ -30,7 +34,7 @@ export type RotateDeps = {
 
 /**
  * Re-encrypt and persist a new sandbox token for an owner of the sandbox's tenant.
- * Never returns the token.
+ * Never returns the token. Fails for backend=vercel.
  */
 export async function rotateSandboxToken(
   userId: string,
@@ -77,6 +81,7 @@ async function rotateWithDb(
         .select({
           id: sandboxes.id,
           tenantId: sandboxes.tenantId,
+          backend: sandboxes.backend,
         })
         .from(sandboxes)
         .where(eq(sandboxes.id, sandboxId))
@@ -85,6 +90,11 @@ async function rotateWithDb(
       const sb = sbRows[0];
       if (!sb) {
         return { ok: false as const, reason: 'not_found' as const };
+      }
+
+      const backend = (sb.backend ?? 'byo').trim();
+      if (backend === 'vercel') {
+        return { ok: false as const, reason: 'wrong_backend' as const };
       }
 
       // Serialize with rotateTenantDek: hold tenant row for ensure + write.

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   LocalStorageSessionStore,
   MemorySessionStore,
@@ -6,6 +6,7 @@ import {
   createEmptySession,
   formatPromptWithHistory,
   makeMessage,
+  sanitizeSessionCwd,
 } from './sessionStore';
 
 describe('createEmptySession / appendMessage', () => {
@@ -93,3 +94,102 @@ describe('formatPromptWithHistory', () => {
     expect(out).toContain('User: continue');
   });
 });
+
+describe('session cwd', () => {
+  /** Minimal localStorage stand-in for node vitest (environment: 'node'). */
+  function installMemoryLocalStorage() {
+    const map = new Map<string, string>();
+    const ls = {
+      getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+      setItem: (k: string, v: string) => {
+        map.set(k, String(v));
+      },
+      removeItem: (k: string) => {
+        map.delete(k);
+      },
+      clear: () => {
+        map.clear();
+      },
+    };
+    vi.stubGlobal('localStorage', ls);
+    return ls;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('round-trips cwd on MemorySessionStore', () => {
+    const store = new MemorySessionStore();
+    const s: ReturnType<typeof createEmptySession> = {
+      ...appendMessage(createEmptySession('c'), 'user', 'hi'),
+      cwd: 'invincible',
+    };
+    store.save(s);
+    expect(store.load()?.cwd).toBe('invincible');
+  });
+
+  it('createEmptySession has no cwd', () => {
+    const s = createEmptySession();
+    expect(s.cwd).toBeUndefined();
+  });
+
+  it('appendMessage preserves cwd', () => {
+    const base = { ...createEmptySession('x'), cwd: 'proj' };
+    const s = appendMessage(base, 'user', 'a');
+    expect(s.cwd).toBe('proj');
+  });
+
+  it('sanitizeSessionCwd drops non-string, empty, absolute, control chars', () => {
+    expect(sanitizeSessionCwd(undefined)).toBeUndefined();
+    expect(sanitizeSessionCwd(42)).toBeUndefined();
+    expect(sanitizeSessionCwd('')).toBeUndefined();
+    expect(sanitizeSessionCwd('   ')).toBeUndefined();
+    expect(sanitizeSessionCwd('/etc')).toBeUndefined();
+    expect(sanitizeSessionCwd('C:\\Windows')).toBeUndefined();
+    expect(sanitizeSessionCwd('foo\u0000bar')).toBeUndefined();
+    expect(sanitizeSessionCwd('  invincible/sub  ')).toBe('invincible/sub');
+  });
+
+  it('LocalStorage load drops non-string and poisoned cwd', () => {
+    installMemoryLocalStorage();
+    const key = 'test-cwd-key';
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        id: 's',
+        messages: [],
+        updatedAt: 1,
+        cwd: 42,
+      }),
+    );
+    const store = new LocalStorageSessionStore(key);
+    const loaded = store.load();
+    expect(loaded).not.toBeNull();
+    expect(loaded?.cwd).toBeUndefined();
+
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        id: 's',
+        messages: [],
+        updatedAt: 1,
+        cwd: '/etc',
+      }),
+    );
+    expect(store.load()?.cwd).toBeUndefined();
+
+    store.save({ id: 's2', messages: [], updatedAt: 2, cwd: 'ok' });
+    expect(store.load()?.cwd).toBe('ok');
+    store.clear();
+    expect(store.load()).toBeNull();
+  });
+
+  it('Memory clear drops cwd', () => {
+    const store = new MemorySessionStore();
+    store.save({ ...createEmptySession('z'), cwd: 'x' });
+    store.clear();
+    expect(store.load()).toBeNull();
+  });
+});
+

@@ -1,18 +1,31 @@
 # Agent stream (SSE)
 
 `POST /api/agent` can return a **Server-Sent Events** body when the client asks for it.
-Default remains a single JSON `{ text, toolTrace? }` response for tests and simple clients.
+Default remains a single JSON `{ text, toolTrace?, cwd? }` response for tests and simple clients.
 
 ## Negotiation
 
 | Client | Server |
 |--------|--------|
 | Header `Accept: text/event-stream` | `Content-Type: text/event-stream; charset=utf-8` + SSE events |
-| Other / missing Accept | JSON `{ text, toolTrace? }` or `{ error }` |
+| Other / missing Accept | JSON `{ text, toolTrace?, cwd? }` or `{ error }` |
 
 Early failures (auth, missing sandbox, bad body, BYOK) always use **JSON** status responses — even if Accept requested a stream. Host stream clients must parse JSON errors (including the exact sandbox-not-configured **503** string for chat fallback).
 
 Response hints: `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`.
+
+
+## Request body (cwd)
+
+| Field | Required | Notes |
+|-------|----------|--------|
+| `prompt` | yes | Same limits as chat |
+| `modelId` | no | Gateway model id |
+| `cwd` | no | Logical **workspace-root-relative** directory for this turn |
+
+**Omitted / null `cwd`:** server uses `SANDBOX_DEFAULT_CWD` when set and valid, else `"."`.  
+**Present but invalid** (host-absolute, control chars, non-string): **400** JSON error — not a stream.  
+**Response `cwd`:** included on JSON success and SSE `done` only when FS tools ran this turn; always a normalized workspace-relative path. Host session should update stored cwd **only on success** (never on abort/error).
 
 ## Events
 
@@ -24,7 +37,7 @@ Each SSE block is one `data: <json>\n\n` line:
 | `tool_result` | `name`, `ok`, `summary` | System line (summary already formatted; `✓ ok` / `✗ failed`) |
 | `reasoning_delta` | `text` (chunk) | Grow a **Thinking** bubble (protocol v8) |
 | `text_delta` | `text` (chunk) | Grow Assistant bubble(s) |
-| `done` | `text`, optional `toolTrace` | Collapse open thinking; finalize session; Ready |
+| `done` | `text`, optional `toolTrace`, optional `cwd` | Collapse open thinking; finalize session; apply `cwd` on success only; Ready |
 | `error` | `error`, optional `status` | Collapse open thinking; Error message; Ready |
 
 Unknown types are ignored (forward-compatible). String fields are redacted server-side with the same secret list as JSON responses.
@@ -101,6 +114,7 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Event map / tool summary | `lib/agent/agentStream.ts` |
 | streamText + reasoning option | `lib/agent/runAgent.ts`, `lib/agent/reasoningConfig.ts` |
 | Route SSE vs JSON | `app/api/agent/route.ts` |
+| Logical cwd parse / default env | `lib/agent/agentBody.ts`, `lib/sandbox/config.ts` (`SANDBOX_DEFAULT_CWD`), `lib/agent/workPath.ts` |
 | Host consumer + collapse/caps | `lib/harnessChat.ts`, `lib/agentApi.ts` |
 | Thinking paint | `native/harness/src/ui.zig` (protocol v8 kind) |
 | Feature divide | [feature-divide.md](feature-divide.md) |

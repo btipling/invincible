@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   MAX_AGENT_MAX_STEPS,
   SANDBOX_NOT_CONFIGURED_ERROR,
   getSandboxConfig,
   resolveAgentMaxSteps,
   resolveAgentModelId,
+  resolveSandboxDefaultCwd,
+  resetSandboxDefaultCwdLogForTests,
   sandboxConfigured,
 } from './config';
 
@@ -58,6 +60,34 @@ describe('sandbox config', () => {
   it('503 error string is stable for host matching', () => {
     expect(SANDBOX_NOT_CONFIGURED_ERROR).toBe(
       'Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.',
+    );
+  });
+});
+
+describe('resolveSandboxDefaultCwd', () => {
+  afterEach(() => {
+    resetSandboxDefaultCwdLogForTests();
+  });
+
+  it('returns . when unset or blank', () => {
+    expect(resolveSandboxDefaultCwd({})).toBe('.');
+    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: '' })).toBe('.');
+    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: '   ' })).toBe('.');
+  });
+
+  it('returns normalized workspace-relative path', () => {
+    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: 'invincible' })).toBe(
+      'invincible',
+    );
+    expect(
+      resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: '  invincible/sub  ' }),
+    ).toBe('invincible/sub');
+  });
+
+  it('invalid env falls back to . without throw', () => {
+    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: '/etc' })).toBe('.');
+    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: 'C:\\Windows' })).toBe(
+      '.',
     );
   });
 });
