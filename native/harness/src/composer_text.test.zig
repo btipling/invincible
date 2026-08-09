@@ -68,6 +68,23 @@ test "clamp stops at a UTF-8 codepoint boundary, not mid-codepoint" {
     try t.expectEqualStrings("a" ++ "\xc3\xa9", keep.text);
 }
 
+test "truncated multi-byte at end of src emits no partial sequence" {
+    // "a" (valid) + first byte of a 2-byte codepoint (0xC3) with no continuation
+    // byte left in `src`. The invalid tail must be dropped, not copied.
+    const src = "a" ++ "\xc3";
+    const r = normalize(src, 64);
+    try t.expectEqual(1, r.text.len);
+    try t.expectEqualStrings("a", r.text);
+    try t.expect(std.mem.indexOfScalar(u8, r.text, 0xc3) == null);
+
+    // 3-byte lead (0xE2) truncated the same way — still no partial sequence.
+    const src3 = "xy" ++ "\xe2\x82";
+    const r3 = normalize(src3, 64);
+    try t.expectEqual(2, r3.text.len);
+    try t.expectEqualStrings("xy", r3.text);
+    try t.expect(std.mem.indexOfScalar(u8, r3.text, 0xe2) == null);
+}
+
 test "clamp with oversized cap keeps the whole multiline source" {
     const src = "line one\nline two\nline three";
     const r = normalize(src, 64);

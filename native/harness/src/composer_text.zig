@@ -45,13 +45,16 @@ pub fn normalizeInto(src: []const u8, dest: []u8, cap: usize) NormalizeResult {
             continue;
         }
 
-        // Ordinary byte: copy a whole UTF-8 sequence (only if it fits `cap`).
+        // Ordinary byte: copy a whole UTF-8 sequence — only if it fits `cap`
+        // AND the input actually has a full sequence remaining. Never emit a
+        // truncated/partial codepoint at the end of `src` (matches how the cap
+        // stops cleanly at a codepoint boundary rather than mid-sequence).
         const seq_len = std.unicode.utf8ByteSequenceLength(b) catch 1;
         if (out_len + seq_len > cap) break;
-        const n = @min(seq_len, src.len - i);
-        @memcpy(dest[out_len..][0..n], src[i..][0..n]);
-        out_len += n;
-        i += n;
+        if (src.len - i < seq_len) break;
+        @memcpy(dest[out_len..][0..seq_len], src[i..][0..seq_len]);
+        out_len += seq_len;
+        i += seq_len;
     }
 
     const text = dest[0..out_len];

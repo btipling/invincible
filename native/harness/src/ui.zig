@@ -474,12 +474,14 @@ pub fn frame() !void {
                     .key => |k| k,
                     else => continue,
                 };
-                if (ke.code == .enter and ke.action == .down and
-                    (ke.mod.control() or ke.mod.command()))
-                {
+                if (ke.code == .enter and (ke.mod.control() or ke.mod.command())) {
+                    // A multiline textEntry consumes Enter and inserts '\n',
+                    // ignoring the modifier (verified against pinned dvui), so
+                    // mark EVERY enter-chord event (.down and .repeat) handled
+                    // to stop it injecting a stray newline for the submit
+                    // stroke. Submit once per gesture, on the initial .down.
                     e.handled = true;
-                    composer_submit = true;
-                    break;
+                    if (ke.action == .down) composer_submit = true;
                 }
             }
         }
@@ -563,7 +565,7 @@ pub fn frame() !void {
                 if (busy) {
                     tl.addText("busy… Stop to cancel", .{});
                 } else {
-                    tl.addText("Ctrl+Enter to send", .{});
+                    tl.addText("Ctrl/Cmd+Enter to send", .{});
                 }
                 tl.deinit();
             }

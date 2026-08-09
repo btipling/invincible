@@ -9,6 +9,7 @@
 const WebBackend = @import("web-backend");
 const image_cache = @import("rich/image_cache.zig");
 const math_cache = @import("rich/math_cache.zig");
+const composer_text = @import("composer_text.zig");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
 /// v9: pending cancel (user Stop) — additive exports.
@@ -107,13 +108,14 @@ pub fn lastEcho() []const u8 {
 }
 
 pub fn queueSubmitFromUi(text: []const u8) void {
-    // Drop empty / whitespace-only; host validates again.
-    var start: usize = 0;
-    while (start < text.len and (text[start] == ' ' or text[start] == '\t' or text[start] == '\n' or text[start] == '\r')) : (start += 1) {}
-    if (start >= text.len) return;
+    // Preserve leading whitespace/newlines so a multi-line paste that starts
+    // with blank lines or an indented first line is not silently flattened on
+    // submit (composer_text.zig already normalized CRLF -> LF). We only reject
+    // when the *entire* text is blank/whitespace (host validates again).
+    if (composer_text.isBlank(text)) return;
     // Ignore while host is processing, submit pending, or load-earlier pending.
     if (lifecycle == .busy or has_pending_submit or has_pending_load_earlier) return;
-    pending_submit_len = copySlice(&pending_submit, text[start..]);
+    pending_submit_len = copySlice(&pending_submit, text);
     has_pending_submit = pending_submit_len > 0;
     if (!has_pending_submit) return;
     // Immediate user line in Wasm transcript; host uses pushUser:false on this path.
