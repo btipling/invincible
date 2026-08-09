@@ -328,6 +328,16 @@ pub fn frame() !void {
             var i: usize = 0;
             while (i < n) : (i += 1) {
                 if (bridge.messageAt(i)) |m| {
+                    // Skip empty/blank assistant bands at paint (issue #324).
+                    // The host opens a transient zero-visible-text assistant slot
+                    // during multi-tool turns that would otherwise render as a
+                    // full blank card ("stuck" look). Ring data is untouched —
+                    // skip at paint only, so Copy/update_last/id_extra still key
+                    // off ring index `i`. System/error rows and tool traces stay
+                    // visible, and the busy row ("Waiting for model…") still shows.
+                    if (m.kind == @intFromEnum(bridge.MessageKind.assistant) and composer_text.isBlank(m.text)) {
+                        continue;
+                    }
                     const is_err = m.kind == 4;
                     var row = dvui.box(@src(), .{ .dir = .vertical }, .{
                         .expand = .horizontal,

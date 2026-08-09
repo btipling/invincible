@@ -78,6 +78,8 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 |-------|----------|
 | Ring capacity | **2048** messages in Wasm (`bridge.zig` `MAX_MSG` / `HARNESS_RING_MAX`) |
 | Visible paint | **All** messages currently in the ring (≤2048); scroll to read older in-ring turns. Ring still drops oldest when full. No “N earlier” black-hole hint |
+| Empty assistant rows | An **assistant** message whose text is empty or whitespace-only (e.g. a transient host slot opened during a multi-tool turn) is **omitted at paint** — no blank card. System/error lines and tool traces stay visible; while busy the compact `Waiting for model…` status keeps the turn honest. Ring data is untouched (skip is paint-time only), so Copy, `update_last`, and id allocation still work off ring indices |
+| Row height | Message rows have **no reserved min-height band**; height tracks content + normal padding (`padding .y=6`, `margin .y=4`). The only enforced touch target is the `≈40px` **Copy** control on the kind row, which shows only for non-empty bodies. Omitting the empty card removes the large blank band without adding a new height contract |
 | Line size | **262 144** UTF-8 bytes max per message (`MAX_MSG_LEN`) |
 | Host history fold | `formatPromptWithHistory` default **maxMessages=400**, **maxChars≈3.5M** (model token limit is the real cap); prefer Clear for a fresh workspace |
 | Session longer than ring | Host `SessionStore` and cloud row may hold more than the ring (cloud still subject to ~2 MiB body). Ring shows a **window** of ≤2048. **Load earlier** steps back by **`HISTORY_PAGE` = 512**; new send snaps to latest window |
