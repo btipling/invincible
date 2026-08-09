@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createSandboxClient } from './client';
+import { createSandboxClient, execAbortTimeoutMs } from './client';
+import { EXEC_TIMEOUT_BUFFER_MS, MAX_EXEC_TIMEOUT_MS } from './config';
 import { SandboxHttpError } from './types';
 
 describe('sandbox client', () => {
@@ -178,6 +179,102 @@ describe('sandbox client', () => {
       .mocked(fetchImpl)
       .mock.calls.filter((c) => String(c[0]).includes('/v1/exec'));
     expect(posts).toHaveLength(0);
+  });
+
+  it('exec client abort deadline follows request timeoutMs (+ buffer), not fixed 45s', async () => {
+    // Prove the derived deadline is actually wired into withTimeoutFetch — not only
+    // the pure helper. Fake timers: must survive past the old 45s ceiling and only
+    // abort at clamp(timeoutMs) + EXEC_TIMEOUT_BUFFER_MS.
+    vi.useFakeTimers();
+    try {
+      let aborted = false;
+      const fetchImpl = vi.fn(
+        (_input: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            const sig = init?.signal as AbortSignal | undefined;
+            const onAbort = () => {
+              aborted = true;
+              sig?.removeEventListener('abort', onAbort);
+              reject(new DOMException('Aborted', 'AbortError'));
+            };
+            if (sig?.aborted) onAbort();
+            else sig?.addEventListener('abort', onAbort, { once: true });
+          }),
+      );
+      const client = createSandboxClient({
+        baseUrl: 'http://sandbox.test',
+        token: 'tok',
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const pending = client
+        .exec({ cmd: 'make', args: ['build'], timeoutMs: 300_000 })
+        .then(
+          () => null,
+          (err: unknown) => err,
+        );
+      // Daemon still sees the request timeoutMs (not a client-side 45s ceiling).
+      const body = vi.mocked(fetchImpl).mock.calls[0][1]?.body;
+      expect(JSON.parse(String(body))).toMatchObject({ cmd: 'make', timeoutMs: 300_000 });
+      const deadline = execAbortTimeoutMs(300_000)!;
+      expect(deadline).toBe(305_000);
+
+      // Old fixed 45s ceiling must not abort.
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(aborted).toBe(false);
+
+      // One ms before derived deadline still open.
+      await vi.advanceTimersByTimeAsync(deadline - 45_000 - 1);
+      expect(aborted).toBe(false);
+
+      // At derived deadline the client aborts (surfaces as 504).
+      await vi.advanceTimersByTimeAsync(1);
+      expect(aborted).toBe(true);
+      const err = await pending;
+      expect(err).toBeInstanceOf(SandboxHttpError);
+      expect((err as SandboxHttpError).status).toBe(504);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('exec turn-cancel abort wins immediately over the client timer', async () => {
+    let aborted = false;
+    const fetchImpl = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          const sig = init?.signal as AbortSignal | undefined;
+          const onAbort = () => {
+            aborted = true;
+            sig?.removeEventListener('abort', onAbort);
+            reject(new DOMException('Aborted', 'AbortError'));
+          };
+          if (sig?.aborted) onAbort();
+          else sig?.addEventListener('abort', onAbort, { once: true });
+        }),
+    );
+    const client = createSandboxClient({
+      baseUrl: 'http://sandbox.test',
+      token: 'tok',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const controller = new AbortController();
+    void client
+      .exec({ cmd: 'sleep', args: ['10'], timeoutMs: 300_000 }, { signal: controller.signal })
+      .catch(() => {});
+    controller.abort();
+    await vi.waitFor(() => expect(aborted).toBe(true));
+  });
+
+  it('execAbortTimeoutMs: deadline = clamp(timeoutMs) + buffer', async () => {
+    expect(execAbortTimeoutMs(1_000)).toBe(6_000);
+    expect(execAbortTimeoutMs(300_000)).toBe(305_000);
+    expect(execAbortTimeoutMs(MAX_EXEC_TIMEOUT_MS)).toBe(MAX_EXEC_TIMEOUT_MS + EXEC_TIMEOUT_BUFFER_MS);
+    expect(execAbortTimeoutMs(undefined)).toBeUndefined();
+    expect(execAbortTimeoutMs(Number.NaN)).toBeUndefined();
+    // Non-finite floors behave like the daemon clampTimeout: clamp to MAX.
+    expect(execAbortTimeoutMs(Number.POSITIVE_INFINITY)).toBe(
+      MAX_EXEC_TIMEOUT_MS + EXEC_TIMEOUT_BUFFER_MS,
+    );
   });
 
   it('exec without stdin does not probe health', async () => {

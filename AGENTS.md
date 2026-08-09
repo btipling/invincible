@@ -259,7 +259,7 @@ invincible/
 | Harness model catalog (protocol v3) | `lib/harnessBridge.ts`, `native/harness/src/bridge.zig`, `app/harness/HarnessHost.tsx` |
 | Schema-only migrate (GHA) | `.github/workflows/db-migrate.yml` |
 | Dogfood sandbox image (VCR) | `dev/Dockerfile`, `dev/README.md`, `.github/workflows/dev-image-build.yml`, [docs/sandbox.md](docs/sandbox.md) |
-| Sandbox daemon | `sandbox/` |
+| Sandbox daemon | `sandbox/` — `exec` is argv-only (no shell); client `/v1/exec` HTTP abort follows request `timeoutMs` + `EXEC_TIMEOUT_BUFFER_MS`, not a fixed 45 s ([docs/sandbox.md](docs/sandbox.md)) |
 | Colors / tokens (DOM) | `lib/palette.ts` |
 | Colors / tokens (dvui) | `native/harness/src/palette.zig` (hex sync with palette.ts) |
 | JS ↔ Wasm bridge | `lib/harnessBridge.ts` + `native/harness/src/bridge.zig` |

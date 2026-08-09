@@ -23,6 +23,13 @@ export const TOOL_TRACE_SUMMARY_MAX_CHARS = 100_000;
 export const DEFAULT_EXEC_TIMEOUT_MS = 300_000; // 5 min
 /** Hard ceiling for one exec — aligned with route maxDuration (30m). */
 export const MAX_EXEC_TIMEOUT_MS = 1_800_000; // 30 min
+/**
+ * Client-side HTTP abort buffer added to an exec request's `timeoutMs`.
+ * Keeps the client abort deadline strictly after the daemon's own timeout kill
+ * (which returns `timedOut: true`) so TIMED_OUT reaches the model instead of a
+ * client 504. Only used for `/v1/exec`; non-exec calls keep DEFAULT_TIMEOUT_MS.
+ */
+export const EXEC_TIMEOUT_BUFFER_MS = 5_000;
 
 /**
  * Minimum BYO daemon health.version that supports exec stdin/heredoc.
