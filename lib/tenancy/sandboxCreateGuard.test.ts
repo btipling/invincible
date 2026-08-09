@@ -39,18 +39,25 @@ function walkSourceFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
+function relFromRoot(file: string): string {
+  return relative(ROOT, file).replace(/\\/g, '/');
+}
+
 describe('sandbox create/getOrCreate allowlist (#298)', () => {
   it('forbids Sandbox.create / getOrCreate outside userSandboxInstance', () => {
     const offenders: string[] = [];
+    const missingRoots: string[] = [];
     for (const rootName of SCAN_ROOTS) {
       const root = join(ROOT, rootName);
       try {
         statSync(root);
       } catch {
+        // Fail closed: a declared root that vanished would silently skip that tree.
+        missingRoots.push(rootName);
         continue;
       }
       for (const file of walkSourceFiles(root)) {
-        const rel = relative(ROOT, file).replace(/\\/g, '/');
+        const rel = relFromRoot(file);
         const text = readFileSync(file, 'utf8');
         const hit = CREATE_PATTERNS.some((re) => re.test(text));
         if (!hit) continue;
@@ -58,6 +65,10 @@ describe('sandbox create/getOrCreate allowlist (#298)', () => {
         offenders.push(rel);
       }
     }
+    expect(
+      missingRoots,
+      `SCAN_ROOT missing on disk (would skip create scan): ${missingRoots.join(', ')}`,
+    ).toEqual([]);
     expect(offenders, `create/getOrCreate outside allowlist: ${offenders.join(', ')}`).toEqual(
       [],
     );
@@ -80,5 +91,16 @@ describe('sandbox create/getOrCreate allowlist (#298)', () => {
 
   it('scans scripts/ and sandbox/ trees (not only app/lib)', () => {
     expect(SCAN_ROOTS).toEqual(expect.arrayContaining(['app', 'lib', 'scripts', 'sandbox']));
+    for (const rootName of SCAN_ROOTS) {
+      expect(
+        () => statSync(join(ROOT, rootName)),
+        `missing SCAN_ROOT on disk: ${rootName}`,
+      ).not.toThrow();
+    }
+    // Prove walk actually visits the create-adjacent orphan script and sandbox tree.
+    const scriptFiles = walkSourceFiles(join(ROOT, 'scripts')).map(relFromRoot);
+    const sandboxFiles = walkSourceFiles(join(ROOT, 'sandbox')).map(relFromRoot);
+    expect(scriptFiles).toContain('scripts/sandbox-orphan-cleanup.mjs');
+    expect(sandboxFiles.length).toBeGreaterThan(0);
   });
 });
