@@ -1,0 +1,125 @@
+# Optional orphan Vercel Sandbox cleanup (parent user-managed durable instances).
+#
+# Operator: Actions → sandbox-orphan-cleanup → Run workflow
+#   inputs: confirm=cleanup (required to run); dry_run=true default (list only)
+#   include_non_product=false default — product prefixes only; opt in for
+#   project-wide non-persistent ≥24h sweep (shared-project footgun)
+#
+# Repository secrets / vars (names only — never commit values):
+#   DATABASE_URL       — dual-store with Vercel Production (instance denylist)
+#   VERCEL_TOKEN       — token scoped to the Sandbox host team
+#   VERCEL_TEAM_ID     — team id for Sandbox API
+#   VERCEL_PROJECT_ID  — project id for Sandbox API
+#
+# Safety: workflow_dispatch only; ubuntu-latest only; never self-hosted;
+# never echo secret values; dry_run default true; never delete names in
+# user_sandbox_instances.vercel_name; never Sandbox.create / getOrCreate;
+# hard failures on stop/delete do not count as deleted.
+
+name: sandbox-orphan-cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Must equal "cleanup" to run (misclick guard)'
+        required: true
+        type: string
+      dry_run:
+        description: 'If true (default), list orphan candidates only — no stop/delete'
+        required: false
+        type: boolean
+        default: true
+      include_non_product:
+        description: 'If true, also delete non-product non-persistent VMs ≥24h (project-wide; default false = product prefixes only)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-orphan-cleanup-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: orphan list/delete
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Guard confirm input
+        if: ${{ inputs.confirm != 'cleanup' }}
+        run: |
+          set -euo pipefail
+          echo "::error::confirm input must equal 'cleanup'. Aborting with no mutate."
+          exit 1
+
+      - name: Fail closed — required secrets present
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          trim() {
+            local s="$1"
+            s="${s#"${s%%[![:space:]]*}"}"
+            s="${s%"${s##*[![:space:]]}"}"
+            printf '%s' "$s"
+          }
+          for name in DATABASE_URL VERCEL_TOKEN VERCEL_TEAM_ID VERCEL_PROJECT_ID; do
+            eval "val=\$(trim \"\${$name:-}\")"
+            if [ -z "${val}" ]; then
+              echo "::error::${name} is missing or empty (set repository secret/var; never commit values)"
+              exit 1
+            fi
+            echo "${name} present (value not printed)."
+          done
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install app dependencies
+        run: npm ci
+
+      - name: Run orphan cleanup script
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          CONFIRM_CLEANUP: ${{ inputs.dry_run && '0' || '1' }}
+          INCLUDE_NON_PRODUCT: ${{ inputs.include_non_product && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          EXTRA=()
+          if [ "${INCLUDE_NON_PRODUCT}" = "1" ]; then
+            EXTRA+=(--include-non-product)
+          fi
+          if [ "${DRY_RUN}" = "1" ]; then
+            node scripts/sandbox-orphan-cleanup.mjs --dry-run "${EXTRA[@]}"
+          else
+            node scripts/sandbox-orphan-cleanup.mjs --cleanup "${EXTRA[@]}"
+          fi
+
+      - name: Job summary
+        if: ${{ always() && inputs.confirm == 'cleanup' }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### sandbox-orphan-cleanup"
+            echo "- result: ${{ job.status }}"
+            echo "- dry_run: ${{ inputs.dry_run }}"
+            echo "- include_non_product: ${{ inputs.include_non_product }}"
+            echo "- note: default = product prefixes only; never deletes denylist names; never create/getOrCreate; delete failures exit non-zero"
+          } >> "${GITHUB_STEP_SUMMARY}"
