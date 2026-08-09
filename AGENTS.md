@@ -245,6 +245,7 @@ invincible/
 | UI page / layout | `app/` |
 | API / AI Gateway / agent | `app/api/*`, `lib/agent/*`, `lib/sandbox/*` |
 | Agent SSE stream (tools + text + reasoning) | `lib/agent/agentStream.ts`, `lib/agent/runAgent.ts`, `lib/agent/reasoningConfig.ts`, `app/api/agent/route.ts`, `lib/agentApi.ts`, `docs/agent-stream.md` |
+| Agent read-before-edit / file freshness | `lib/agent/fileFreshness.ts`, `lib/agent/tools.ts`, `lib/agent/runAgent.ts`, [docs/sandbox.md](docs/sandbox.md) |
 | Logical agent cwd (`change_dir` / session / default env) | `lib/agent/workPath.ts`, `lib/agent/tools.ts`, `lib/agent/agentBody.ts`, `lib/sandbox/config.ts` (`SANDBOX_DEFAULT_CWD`), `lib/sessionStore.ts`, `lib/harnessChat.ts`, `lib/agentApi.ts`, [docs/sandbox.md](docs/sandbox.md), [docs/session-model.md](docs/session-model.md), [docs/agent-stream.md](docs/agent-stream.md) |
 | Cloud multi-device harness session (`/api/session`, hybrid local+cloud) | `app/api/session/*`, `lib/sessionRepository.ts`, `lib/sessionCloudCaps.ts`, `lib/tenancy/harnessSessions.ts`, `app/harness/HarnessHost.tsx`, `middleware.ts` (`/api/session`), [docs/session-model.md](docs/session-model.md), [SECURITY.md](SECURITY.md) — schema: GHA **`db-migrate`** |
 | Harness stream chrome (Thinking collapse/caps, live tools) | `lib/harnessChat.ts`, `native/harness/src/ui.zig` (Thinking kind), protocol v9 in `lib/harnessBridge.ts` (Stop cancel; Thinking kind from v8) |

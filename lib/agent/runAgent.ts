@@ -8,6 +8,10 @@ import {
 } from '../sandbox/config';
 import { createSandboxClient, type SandboxClient } from '../sandbox/client';
 import { createAgentTools, type CwdState } from './tools';
+import {
+  createRunFileFreshness,
+  type RunFileFreshness,
+} from './fileFreshness';
 import { normalizeWorkspaceRel } from './workPath';
 import { redactSecrets } from './redact';
 import {
@@ -71,6 +75,11 @@ export type RunAgentParams = {
    * Default `"."`. Host supplies session cwd; route validates via parseAgentBody.
    */
   initialCwd?: string;
+  /**
+   * Optional inject of the run-scoped file freshness ledger (tests / advanced).
+   * When omitted, a new ledger is created for this runAgent / runAgentStream call.
+   */
+  freshness?: RunFileFreshness;
 };
 
 export type RunAgentResult = {
@@ -84,6 +93,7 @@ export const DEFAULT_AGENT_SYSTEM = [
   'You are the Invincible coding agent.',
   'The workspace is a remote sandbox root. Prefer tools (list_dir, read_file, write_file, str_replace, exec, change_dir, pwd) for filesystem and command work. Use str_replace for surgical edits (unique old_string unless replace_all); write_file to create or fully rewrite. For multi-line process input prefer exec stdin (heredoc alias ok) on BYO sandboxes; if exec rejects stdin (Vercel backend), write_file the input and pass the path via args instead — never claim stdin was fed when the tool errors.',
   'Logical cwd starts at the workspace root (or the session cwd). Prefer change_dir into the project once, then short relative paths under that cwd. Prefer change_dir as its own step before a burst of path tools. Use pwd to inspect cwd.',
+  'Must read_file a path in this agent run before str_replace or overwriting an existing file with write_file. Creating a new file with write_file does not require a prior read. If tools report the file changed since your last read (another edit, command, concurrent session, or device on the same sandbox), read_file again before editing.',
   'Tool results always show workspace-root-relative paths (and cwd= when not at root). Paths that already include the cwd prefix also work. Do not invent host absolute paths outside the sandbox.',
   'Be concise in final answers; cite workspace-relative paths when useful.',
   'If the user message includes Previous conversation with Tool: lines, those tools already ran — reuse that work; do not redo identical tool calls unless asked or the files may have changed.',
@@ -167,11 +177,13 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
   }
 
   const cwdState = makeCwdState(params.initialCwd);
+  const freshness = params.freshness ?? createRunFileFreshness();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sandboxTools: Record<string, any> = hasFsTools && client
     ? createAgentTools({
         client,
+        freshness,
         secrets,
         signal: params.signal,
         permissions: params.permissions,
@@ -260,11 +272,13 @@ export async function runAgentStream(
   }
 
   const cwdState = makeCwdState(params.initialCwd);
+  const freshness = params.freshness ?? createRunFileFreshness();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sandboxTools: Record<string, any> = hasFsTools && client
     ? createAgentTools({
         client,
+        freshness,
         secrets,
         signal: params.signal,
         permissions: params.permissions,

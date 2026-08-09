@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TOOL_RESULT_MAX_CHARS } from '../sandbox/config';
 import type { SandboxClient } from '../sandbox/client';
-import { createAgentTools } from './tools';
+import { createAgentTools, isPathMissingError } from './tools';
+import { createRunFileFreshness } from './fileFreshness';
+import { SandboxHttpError } from '../sandbox/types';
 
 function mockClient(partial: Partial<SandboxClient>): SandboxClient {
   return {
@@ -25,6 +27,30 @@ function mockClient(partial: Partial<SandboxClient>): SandboxClient {
   };
 }
 
+
+describe('isPathMissingError', () => {
+  it('accepts path-missing messages from BYO and Vercel/Node', () => {
+    expect(isPathMissingError(new SandboxHttpError('Path not found', 404))).toBe(true);
+    expect(isPathMissingError(new SandboxHttpError('File not found', 404))).toBe(true);
+    expect(isPathMissingError(new SandboxHttpError('Directory not found', 404))).toBe(true);
+    expect(isPathMissingError(new Error('ENOENT: no such file or directory'))).toBe(true);
+    expect(isPathMissingError(new SandboxHttpError('ENOENT: /vercel/workspace/x', 404))).toBe(
+      true,
+    );
+  });
+
+  it('rejects protocol/route 404 and ambiguous not-found', () => {
+    expect(isPathMissingError(new SandboxHttpError('Not found', 404))).toBe(false);
+    expect(isPathMissingError(new SandboxHttpError('Sandbox request failed (404)', 404))).toBe(
+      false,
+    );
+    expect(isPathMissingError(new SandboxHttpError('old_string not found in file', 400))).toBe(
+      false,
+    );
+    expect(isPathMissingError(new SandboxHttpError('Unauthorized', 401))).toBe(false);
+  });
+});
+
 describe('createAgentTools', () => {
   it('soft-fails on client error without throwing', async () => {
     const client = mockClient({
@@ -33,6 +59,7 @@ describe('createAgentTools', () => {
       }),
     });
     const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
       client,
       secrets: ['secret-token-value'],
     });
@@ -55,7 +82,8 @@ describe('createAgentTools', () => {
         timedOut: true,
       })),
     });
-    const tools = createAgentTools({ client });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client });
     const out = (await tools.exec.execute!(
       { cmd: 'sleep', args: ['99'], timeoutMs: 100 },
       { toolCallId: '1', messages: [] } as never,
@@ -68,7 +96,8 @@ describe('createAgentTools', () => {
     const client = mockClient({
       readFile: vi.fn(async () => ({ content: big })),
     });
-    const tools = createAgentTools({ client });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client });
     const out = (await tools.read_file.execute!(
       { path: 'big.txt' },
       { toolCallId: '1', messages: [] } as never,
@@ -86,7 +115,8 @@ describe('createAgentTools', () => {
         ],
       })),
     });
-    const tools = createAgentTools({ client });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client });
     const out = (await tools.list_dir.execute!(
       { path: '.' },
       { toolCallId: '1', messages: [] } as never,
@@ -103,7 +133,8 @@ describe('createAgentTools', () => {
       strReplace: vi.fn(),
       exec: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
     } as unknown as SandboxClient;
-    const tools = createAgentTools({ client });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client });
     const execTool = tools.exec as {
       inputSchema?: {
         jsonSchema?: {
@@ -125,7 +156,8 @@ describe('createAgentTools', () => {
   it('exec rejects a shell-string cmd (no args) with a clear argv-only error', async () => {
     const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
     const client = mockClient({ exec });
-    const tools = createAgentTools({ client });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client });
     const out = (await tools.exec.execute!(
       { cmd: 'grep -r foo .' },
       { toolCallId: '1', messages: [] } as never,
@@ -138,7 +170,8 @@ describe('createAgentTools', () => {
   it('exec forwards timeoutMs and args for a normal argv invocation', async () => {
     const exec = vi.fn(async () => ({ exitCode: 0, stdout: 'ok', stderr: '' }));
     const client = mockClient({ exec });
-    const tools = createAgentTools({ client });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client });
     const out = (await tools.exec.execute!(
       { cmd: 'grep', args: ['-r', 'foo', '.'], timeoutMs: 120_000 },
       { toolCallId: '1', messages: [] } as never,
@@ -165,6 +198,7 @@ describe('createAgentTools permissions', () => {
     const listDir = vi.fn(async () => ({ entries: [{ name: 'a', type: 'file' as const }] }));
     const client = mockClient({ writeFile, strReplace, exec, listDir });
     const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
       client,
       permissions: { canRead: true, canWrite: false },
     });
@@ -195,9 +229,14 @@ describe('createAgentTools permissions', () => {
     // Caller passes *effective* flags (write⇒read already applied)
     const client = mockClient({
       listDir: vi.fn(async () => ({ entries: [] })),
-      writeFile: vi.fn(async () => ({ ok: true as const, bytes: 2 })),
+      writeFile: vi.fn(async () => ({ ok: true as const, bytes: 2, mtimeMs: 1, size: 2 })),
+      // Create path — no prior read required
+      stat: vi.fn(async () => {
+        throw new SandboxHttpError('Path not found', 404);
+      }),
     });
     const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
       client,
       permissions: { canRead: true, canWrite: true },
     });
@@ -218,6 +257,7 @@ describe('createAgentTools permissions', () => {
     const readFile = vi.fn(async () => ({ content: 'x' }));
     const client = mockClient({ listDir, readFile });
     const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
       client,
       permissions: { canRead: false, canWrite: false },
     });
@@ -243,9 +283,27 @@ describe('str_replace tool', () => {
       path: 'a.ts',
       replacements: 2,
       bytes: 99,
+      mtimeMs: 5,
+      size: 99,
     }));
-    const client = mockClient({ strReplace });
-    const tools = createAgentTools({ client });
+    const client = mockClient({
+      strReplace,
+      readFile: vi.fn(async () => ({ content: 'foo', mtimeMs: 5, size: 3 })),
+      stat: vi.fn(async () => ({
+        path: 'a.ts',
+        type: 'file' as const,
+        mtimeMs: 5,
+        size: 3,
+      })),
+    });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+    });
+    await tools.read_file.execute!(
+      { path: 'a.ts' },
+      { toolCallId: 'sr0', messages: [] } as never,
+    );
     const out = (await tools.str_replace.execute!(
       {
         path: 'a.ts',
@@ -276,7 +334,8 @@ describe('createAgentTools cwd', () => {
     });
     const readFile = vi.fn(async () => ({ content: 'ok' }));
     const client = mockClient({ listDir, readFile });
-    const tools = createAgentTools({ client, initialCwd: '.' });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client, initialCwd: '.' });
 
     const cd = (await tools.change_dir.execute!(
       { path: 'invincible' },
@@ -300,7 +359,8 @@ describe('createAgentTools cwd', () => {
   it('does not double-prefix already-rooted paths under cwd', async () => {
     const readFile = vi.fn(async () => ({ content: 'body' }));
     const client = mockClient({ readFile });
-    const tools = createAgentTools({ client, initialCwd: 'invincible' });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client, initialCwd: 'invincible' });
     await tools.read_file.execute!(
       { path: 'invincible/a.ts' },
       { toolCallId: '1', messages: [] } as never,
@@ -314,7 +374,8 @@ describe('createAgentTools cwd', () => {
 
   it('pwd reports current cwd', async () => {
     const client = mockClient({});
-    const tools = createAgentTools({ client, initialCwd: 'invincible' });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client, initialCwd: 'invincible' });
     const out = (await tools.pwd.execute!(
       {},
       { toolCallId: '1', messages: [] } as never,
@@ -325,7 +386,8 @@ describe('createAgentTools cwd', () => {
   it('host-absolute path soft-fails mid-turn', async () => {
     const readFile = vi.fn(async () => ({ content: 'x' }));
     const client = mockClient({ readFile });
-    const tools = createAgentTools({ client });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client });
     const out = (await tools.read_file.execute!(
       { path: '/etc/passwd' },
       { toolCallId: '1', messages: [] } as never,
@@ -340,7 +402,8 @@ describe('createAgentTools cwd', () => {
       throw new Error('Directory not found');
     });
     const client = mockClient({ listDir });
-    const tools = createAgentTools({ client, initialCwd: '.' });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client, initialCwd: '.' });
     const cd = (await tools.change_dir.execute!(
       { path: 'missing' },
       { toolCallId: '1', messages: [] } as never,
@@ -359,6 +422,7 @@ describe('createAgentTools cwd', () => {
     }));
     const client = mockClient({ listDir });
     const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
       client,
       permissions: { canRead: true, canWrite: false },
     });
@@ -374,6 +438,7 @@ describe('createAgentTools cwd', () => {
     const listDir = vi.fn(async () => ({ entries: [] }));
     const client = mockClient({ listDir });
     const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
       client,
       permissions: { canRead: false, canWrite: false },
     });
@@ -397,7 +462,8 @@ describe('createAgentTools cwd', () => {
       stderr: '',
     }));
     const client = mockClient({ exec });
-    const tools = createAgentTools({ client, initialCwd: 'invincible' });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client, initialCwd: 'invincible' });
     await tools.exec.execute!(
       { cmd: 'true' },
       { toolCallId: '1', messages: [] } as never,
@@ -413,7 +479,8 @@ describe('exec stdin / heredoc', () => {
   it('passes stdin to sandbox client', async () => {
     const exec = vi.fn(async () => ({ exitCode: 0, stdout: 'ok', stderr: '' }));
     const client = mockClient({ exec });
-    const tools = createAgentTools({ client });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client });
     const out = (await tools.exec.execute!(
       { cmd: 'python3', args: ['-'], stdin: 'print(1)\n' },
       { toolCallId: 'e1', messages: [] } as never,
@@ -433,7 +500,8 @@ describe('exec stdin / heredoc', () => {
   it('maps heredoc alias to stdin', async () => {
     const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
     const client = mockClient({ exec });
-    const tools = createAgentTools({ client });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client });
     await tools.exec.execute!(
       { cmd: 'cat', heredoc: 'hello' },
       { toolCallId: 'e2', messages: [] } as never,
@@ -451,7 +519,8 @@ describe('exec stdin / heredoc', () => {
       return { exitCode: 0, stdout: '', stderr: '' };
     });
     const client = mockClient({ exec });
-    const tools = createAgentTools({ client });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(), client });
     await tools.exec.execute!(
       { cmd: 'cat', stdin: 'primary', heredoc: 'alias' },
       { toolCallId: 'e3', messages: [] } as never,
@@ -465,5 +534,337 @@ describe('exec stdin / heredoc', () => {
       expect.objectContaining({ cmd: 'cat', stdin: 'primary' }),
     );
     expect(seen).not.toHaveProperty('heredoc');
+  });
+});
+
+describe('read-before-edit gates', () => {
+  const execCtx = { toolCallId: '1', messages: [] } as never;
+
+  function fpClient(overrides: Partial<SandboxClient> = {}): SandboxClient {
+    let mtime = 1000;
+    let size = 11;
+    let content = 'hello world';
+    return mockClient({
+      readFile: vi.fn(async () => ({ content, mtimeMs: mtime, size })),
+      writeFile: vi.fn(async (_p, c) => {
+        content = c;
+        size = Buffer.byteLength(c, 'utf8');
+        mtime += 1;
+        return { ok: true as const, bytes: size, mtimeMs: mtime, size };
+      }),
+      strReplace: vi.fn(async () => {
+        content = content.replace('hello', 'HELLO');
+        size = Buffer.byteLength(content, 'utf8');
+        mtime += 1;
+        return {
+          ok: true as const,
+          path: 'a.txt',
+          replacements: 1,
+          bytes: size,
+          mtimeMs: mtime,
+          size,
+        };
+      }),
+      stat: vi.fn(async () => ({
+        path: 'a.txt',
+        type: 'file' as const,
+        mtimeMs: mtime,
+        size,
+      })),
+      ...overrides,
+    });
+  }
+
+  it('str_replace without read → ERROR read_required', async () => {
+    const client = fpClient();
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    const out = (await tools.str_replace.execute!(
+      { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
+      execCtx,
+    )) as string;
+    expect(out).toMatch(/^ERROR str_replace: read_file required/);
+    expect(client.strReplace).not.toHaveBeenCalled();
+  });
+
+  it('read then str_replace OK', async () => {
+    const client = fpClient();
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    await tools.read_file.execute!({ path: 'a.txt' }, execCtx);
+    const out = (await tools.str_replace.execute!(
+      { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
+      execCtx,
+    )) as string;
+    expect(out).toMatch(/^str_replace a\.txt/);
+    expect(client.strReplace).toHaveBeenCalled();
+  });
+
+  it('read → disk mtime bump → stale → re-read → OK', async () => {
+    let mtime = 1000;
+    const size = 11;
+    const client = mockClient({
+      readFile: vi.fn(async () => ({
+        content: 'hello world',
+        mtimeMs: mtime,
+        size,
+      })),
+      strReplace: vi.fn(async () => ({
+        ok: true as const,
+        path: 'a.txt',
+        replacements: 1,
+        bytes: size,
+        mtimeMs: mtime + 1,
+        size,
+      })),
+      stat: vi.fn(async () => ({
+        path: 'a.txt',
+        type: 'file' as const,
+        mtimeMs: mtime,
+        size,
+      })),
+    });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    await tools.read_file.execute!({ path: 'a.txt' }, execCtx);
+    mtime = 2000; // external change
+    const stale = (await tools.str_replace.execute!(
+      { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
+      execCtx,
+    )) as string;
+    expect(stale).toMatch(/^ERROR str_replace: file changed since last read_file/);
+    await tools.read_file.execute!({ path: 'a.txt' }, execCtx);
+    const ok = (await tools.str_replace.execute!(
+      { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
+      execCtx,
+    )) as string;
+    expect(ok).toMatch(/^str_replace a\.txt/);
+  });
+
+  it('write_file create OK; existing without read ERROR', async () => {
+    const client = mockClient({
+      stat: vi.fn(async (path: string) => {
+        if (path === 'new.txt') {
+          throw new SandboxHttpError('Path not found', 404);
+        }
+        return { path, type: 'file' as const, mtimeMs: 1, size: 2 };
+      }),
+      writeFile: vi.fn(async () => ({
+        ok: true as const,
+        bytes: 2,
+        mtimeMs: 3,
+        size: 2,
+      })),
+    });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    const created = (await tools.write_file.execute!(
+      { path: 'new.txt', content: 'hi' },
+      execCtx,
+    )) as string;
+    expect(created).toMatch(/^write_file new\.txt/);
+    const denied = (await tools.write_file.execute!(
+      { path: 'old.txt', content: 'x' },
+      execCtx,
+    )) as string;
+    expect(denied).toMatch(/^ERROR write_file: read_file required/);
+  });
+
+  it('own write refreshes; second edit OK', async () => {
+    const client = fpClient();
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    await tools.read_file.execute!({ path: 'a.txt' }, execCtx);
+    const w1 = (await tools.write_file.execute!(
+      { path: 'a.txt', content: 'hello world!' },
+      execCtx,
+    )) as string;
+    expect(w1).toMatch(/^write_file a\.txt/);
+    const w2 = (await tools.write_file.execute!(
+      { path: 'a.txt', content: 'hello world!!' },
+      execCtx,
+    )) as string;
+    expect(w2).toMatch(/^write_file a\.txt/);
+  });
+
+  it('truncated read no grant', async () => {
+    const client = mockClient({
+      readFile: vi.fn(async () => ({
+        content: 'abcd',
+        truncated: true,
+        mtimeMs: 1,
+        size: 100,
+      })),
+      stat: vi.fn(async () => ({
+        path: 'big.txt',
+        type: 'file' as const,
+        mtimeMs: 1,
+        size: 100,
+      })),
+    });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    await tools.read_file.execute!({ path: 'big.txt' }, execCtx);
+    const out = (await tools.str_replace.execute!(
+      { path: 'big.txt', old_string: 'a', new_string: 'b' },
+      execCtx,
+    )) as string;
+    expect(out).toMatch(/truncated read_file/);
+  });
+
+  it('shared freshness: read via A, edit via B OK', async () => {
+    const client = fpClient();
+    const freshness = createRunFileFreshness();
+    const A = createAgentTools({ client, freshness });
+    const B = createAgentTools({ client, freshness });
+    await A.read_file.execute!({ path: 'a.txt' }, execCtx);
+    const out = (await B.str_replace.execute!(
+      { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
+      execCtx,
+    )) as string;
+    expect(out).toMatch(/^str_replace a\.txt/);
+  });
+
+  it('isolated freshness: read via A, edit via B with new object → ERROR', async () => {
+    const client = fpClient();
+    const A = createAgentTools({ client, freshness: createRunFileFreshness() });
+    const B = createAgentTools({ client, freshness: createRunFileFreshness() });
+    await A.read_file.execute!({ path: 'a.txt' }, execCtx);
+    const out = (await B.str_replace.execute!(
+      { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
+      execCtx,
+    )) as string;
+    expect(out).toMatch(/^ERROR str_replace: read_file required/);
+  });
+
+  it('read omits mtime; stat supplies it → stale detect works', async () => {
+    let mtime = 50;
+    const size = 4;
+    const client = mockClient({
+      readFile: vi.fn(async () => ({ content: 'abcd' })), // no fingerprint
+      strReplace: vi.fn(async () => ({
+        ok: true as const,
+        path: 'a.txt',
+        replacements: 1,
+        bytes: 4,
+        mtimeMs: mtime,
+        size,
+      })),
+      stat: vi.fn(async () => ({
+        path: 'a.txt',
+        type: 'file' as const,
+        mtimeMs: mtime,
+        size,
+      })),
+    });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    await tools.read_file.execute!({ path: 'a.txt' }, execCtx);
+    mtime = 99;
+    const stale = (await tools.str_replace.execute!(
+      { path: 'a.txt', old_string: 'a', new_string: 'b' },
+      execCtx,
+    )) as string;
+    expect(stale).toMatch(/file changed since last read_file/);
+  });
+
+  it('write result omits fp; post-mutate stat fills ledger', async () => {
+    let mtime = 10;
+    let size = 2;
+    const client = mockClient({
+      readFile: vi.fn(async () => ({
+        content: 'hi',
+        mtimeMs: mtime,
+        size,
+      })),
+      writeFile: vi.fn(async () => {
+        mtime = 11;
+        size = 3;
+        return { ok: true as const, bytes: 3 }; // no fingerprint fields
+      }),
+      stat: vi.fn(async () => ({
+        path: 'a.txt',
+        type: 'file' as const,
+        mtimeMs: mtime,
+        size,
+      })),
+    });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    await tools.read_file.execute!({ path: 'a.txt' }, execCtx);
+    const w = (await tools.write_file.execute!(
+      { path: 'a.txt', content: 'hey' },
+      execCtx,
+    )) as string;
+    expect(w).toMatch(/^write_file a\.txt/);
+    // second write should use filled ledger (mtime 11)
+    const w2 = (await tools.write_file.execute!(
+      { path: 'a.txt', content: 'hey!' },
+      execCtx,
+    )) as string;
+    expect(w2).toMatch(/^write_file a\.txt/);
+    expect(client.stat).toHaveBeenCalled();
+  });
+
+  it('stat route 404 "Not found" fail-closes write_file (no create bypass)', async () => {
+    // Stale BYO daemon without POST /v1/stat → createServer unknown route
+    const writeFile = vi.fn(async () => ({ ok: true as const, bytes: 1 }));
+    const client = mockClient({
+      writeFile,
+      stat: vi.fn(async () => {
+        throw new SandboxHttpError('Not found', 404);
+      }),
+    });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    const out = (await tools.write_file.execute!(
+      { path: 'existing.txt', content: 'overwrite' },
+      execCtx,
+    )) as string;
+    expect(out).toMatch(/^ERROR write_file: Not found/);
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('ENOENT from stat still allows create-new write_file', async () => {
+    const writeFile = vi.fn(async () => ({
+      ok: true as const,
+      bytes: 2,
+      mtimeMs: 1,
+      size: 2,
+    }));
+    const client = mockClient({
+      writeFile,
+      stat: vi.fn(async () => {
+        throw new SandboxHttpError('ENOENT: /vercel/workspace/new.txt', 404);
+      }),
+    });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    const out = (await tools.write_file.execute!(
+      { path: 'new.txt', content: 'hi' },
+      execCtx,
+    )) as string;
+    expect(out).toMatch(/^write_file new\.txt/);
+    expect(writeFile).toHaveBeenCalled();
   });
 });

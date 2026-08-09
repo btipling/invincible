@@ -558,3 +558,12 @@ describe('runAgent cwd', () => {
     expect(done?.cwd).toBe('proj');
   });
 });
+
+describe('DEFAULT_AGENT_SYSTEM read-before-edit', () => {
+  it('mentions read before edit, re-read on change, and create exception', () => {
+    expect(DEFAULT_AGENT_SYSTEM).toMatch(/read_file a path in this agent run/i);
+    expect(DEFAULT_AGENT_SYSTEM).toMatch(/read_file again before editing/i);
+    expect(DEFAULT_AGENT_SYSTEM).toMatch(/Creating a new file with write_file does not require/i);
+  });
+});
+
