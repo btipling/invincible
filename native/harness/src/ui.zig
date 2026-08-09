@@ -324,7 +324,9 @@ pub fn frame() !void {
             }
             tl.deinit();
         } else {
-            // Paint entire in-ring transcript (MAX_MSG=512). No paint-cap / earlier hint.
+            // Paint entire in-ring transcript (≤ bridge.MAX_MSG = 2048). No
+            // paint-cap / earlier hint. Empty/blank assistant rows are omitted
+            // at paint (issue #324) — rule lives in composer_text.zig.
             var i: usize = 0;
             while (i < n) : (i += 1) {
                 if (bridge.messageAt(i)) |m| {
@@ -335,7 +337,7 @@ pub fn frame() !void {
                     // skip at paint only, so Copy/update_last/id_extra still key
                     // off ring index `i`. System/error rows and tool traces stay
                     // visible, and the busy row ("Waiting for model…") still shows.
-                    if (m.kind == @intFromEnum(bridge.MessageKind.assistant) and composer_text.isBlank(m.text)) {
+                    if (composer_text.shouldOmitMessageAtPaint(m.kind, m.text)) {
                         continue;
                     }
                     const is_err = m.kind == 4;
