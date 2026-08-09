@@ -1,5 +1,5 @@
 /**
- * Cloud multi-device harness session CRUD (parent #242 / phase #243).
+ * Cloud multi-device harness session CRUD.
  * Server-only. One row per user; ownership always from session user id.
  * Never log full message bodies at info; never store secrets in messages.
  */

@@ -75,11 +75,12 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 
 | Topic | Behavior |
 |-------|----------|
-| Ring capacity | 2048 messages in Wasm (`bridge.zig` `MAX_MSG`) |
+| Ring capacity | **2048** messages in Wasm (`bridge.zig` `MAX_MSG` / `HARNESS_RING_MAX`) |
 | Visible paint | **All** messages currently in the ring (≤2048); scroll to read older in-ring turns. Ring still drops oldest when full. No “N earlier” black-hole hint |
-| Line size | 256 KiB UTF-8 max per message (`MAX_MSG_LEN`) |
-| Host history | Host folds last **~8** user/assistant turns (`formatPromptWithHistory` maxTurns=8, maxChars≈3.5M); prefer Clear for a fresh workspace |
-| Session longer than ring | Host `SessionStore` may hold M>512; ring shows a **window** of ≤2048. **Load earlier** (Wasm) steps the window back by 128; new send snaps to latest window |
+| Line size | **262 144** UTF-8 bytes max per message (`MAX_MSG_LEN`) |
+| Host history fold | `formatPromptWithHistory` default **maxMessages=400**, **maxChars≈3.5M** (model token limit is the real cap); prefer Clear for a fresh workspace |
+| Session longer than ring | Host `SessionStore` may hold **more** than the ring; **cloud row max 500** (≤ ring). Ring shows a **window** of ≤2048. **Load earlier** steps back by **`HISTORY_PAGE` = 512**; new send snaps to latest window |
+| Cloud row caps | **500** messages · **262 144** UTF-8 bytes/msg · **~2 MiB** body (`lib/sessionCloudCaps.ts`) — see [session-model.md](session-model.md) |
 
 
 
@@ -157,8 +158,15 @@ should stay free of uncaught host errors.
 
 ## Session
 
-Browser memory + `localStorage` only — see [session-model.md](session-model.md).
-No secrets in session blobs.
+Local-first (memory + `localStorage`) plus optional **cloud multi-device** sync when
+tenancy is on and the user is signed in — see [session-model.md](session-model.md).
+
+| Topic | Behavior |
+|-------|----------|
+| First paint | Always from local store (cloud pull is async; never blocks Ready) |
+| Cloud API | `GET` / `PUT` / `DELETE` `/api/session` — fail-closed when tenancy off or unauth |
+| Clear | Local empty + **DELETE** only (never PUT empty) |
+| Secrets | Never in session blobs (local or cloud) |
 
 ## CI / deploy
 

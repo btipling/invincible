@@ -1,5 +1,5 @@
 /**
- * GET/PUT/DELETE /api/session — cloud multi-device harness session (phase #243).
+ * GET/PUT/DELETE /api/session — cloud multi-device harness session.
  * Tenancy on + auth required. Ownership always from session user id.
  * Tenancy off → 404 + CLOUD_SESSION_DISABLED (not 501).
  */

@@ -1,5 +1,5 @@
 /**
- * Client-safe cloud session limits (phase #243 / #244).
+ * Client-safe cloud session limits.
  * Shared by server validation and host pre-PUT trim.
  * Do not import server/db modules from here.
  */
