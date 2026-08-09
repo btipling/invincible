@@ -6,8 +6,10 @@ import { MAX_STDIO_BYTES } from './constants.mjs';
 import { JailError } from './paths.mjs';
 import {
   ToolError,
+  buildExecEnv,
   execCmd,
   listDir,
+  parseExecEnvOverlay,
   readFileTool,
   strReplaceTool,
   writeFileTool,
@@ -160,6 +162,52 @@ describe('sandbox tools', () => {
       if (prevKey === undefined) delete process.env.AI_GATEWAY_API_KEY;
       else process.env.AI_GATEWAY_API_KEY = prevKey;
     }
+  });
+
+  it('exec merges allowlisted env overlay (GH_TOKEN / GITHUB_TOKEN)', async () => {
+    const ws = await mkWorkspace();
+    const result = await execCmd(ws, {
+      cmd: process.execPath,
+      args: [
+        '-e',
+        'process.stdout.write(String(process.env.GH_TOKEN)+"|"+String(process.env.GITHUB_TOKEN))',
+      ],
+      env: { GH_TOKEN: 'ghp_test_pat', GITHUB_TOKEN: 'ghp_test_pat' },
+      timeoutMs: 5000,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe('ghp_test_pat|ghp_test_pat');
+  });
+
+  it('exec rejects unknown env keys and empty values', async () => {
+    const ws = await mkWorkspace();
+    await expect(
+      execCmd(ws, {
+        cmd: process.execPath,
+        args: ['-e', '1'],
+        env: { PATH: '/evil' },
+        timeoutMs: 5000,
+      }),
+    ).rejects.toMatchObject({ name: 'ToolError', status: 400 });
+
+    await expect(
+      execCmd(ws, {
+        cmd: process.execPath,
+        args: ['-e', '1'],
+        env: { GH_TOKEN: '' },
+        timeoutMs: 5000,
+      }),
+    ).rejects.toMatchObject({ name: 'ToolError', status: 400 });
+  });
+
+  it('parseExecEnvOverlay and buildExecEnv helpers', () => {
+    expect(parseExecEnvOverlay(undefined)).toBeNull();
+    expect(parseExecEnvOverlay({ GH_TOKEN: 'x' })).toEqual({ GH_TOKEN: 'x' });
+    expect(() => parseExecEnvOverlay({ FOO: 'bar' })).toThrow(ToolError);
+    const env = buildExecEnv('/tmp/ws', { GH_TOKEN: 't', GITHUB_TOKEN: 't' });
+    expect(env.GH_TOKEN).toBe('t');
+    expect(env.HOME).toBe('/tmp/ws');
+    expect(env.SANDBOX_TOKEN).toBeUndefined();
   });
 
 

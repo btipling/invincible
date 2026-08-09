@@ -156,10 +156,30 @@ describe('createVercelSandboxClient', () => {
         cwd: VERCEL_FS_WORKSPACE_ROOT,
       }),
     );
-    // No env secrets on runCommand
+    // No env secrets on runCommand when execEnv unset
     const runOpts = vi.mocked(sb.runCommand).mock.calls[0]?.[2];
     expect(runOpts?.env).toBeUndefined();
 
+    await client.close?.();
+  });
+
+  it('exec passes allowlisted execEnv to runCommand', async () => {
+    const sb = mockSandbox();
+    const createSandbox: CreateVercelFsSandboxFn = vi.fn(async () => sb);
+    const client = createVercelSandboxClient({
+      createSandbox,
+      execEnv: {
+        GH_TOKEN: 'ghp_pat',
+        GITHUB_TOKEN: 'ghp_pat',
+        PATH: '/should-not-pass',
+      },
+    });
+    await client.exec({ cmd: 'gh', args: ['auth', 'status'] });
+    const runOpts = vi.mocked(sb.runCommand).mock.calls[0]?.[2];
+    expect(runOpts?.env).toEqual({
+      GH_TOKEN: 'ghp_pat',
+      GITHUB_TOKEN: 'ghp_pat',
+    });
     await client.close?.();
   });
 

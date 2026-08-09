@@ -37,6 +37,8 @@ export type SandboxClient = {
       args?: string[];
       cwd?: string;
       timeoutMs?: number;
+      /** Reserved — clients merge construction execEnv; tools must not set. */
+      env?: Record<string, string>;
     },
     init?: { signal?: AbortSignal },
   ) => Promise<ExecResult>;
@@ -47,11 +49,26 @@ export type SandboxClient = {
   close?: () => Promise<void>;
 };
 
+function normalizeExecEnv(
+  raw: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!raw) return undefined;
+  const out: Record<string, string> = {};
+  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN'] as const) {
+    const v = raw[key];
+    if (typeof v === 'string' && v.length > 0) {
+      out[key] = v;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
   const baseUrl = normalizeBaseUrl(opts.baseUrl);
   const token = opts.token;
   const fetchImpl = opts.fetchImpl ?? fetch;
   const defaultTimeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const execEnv = normalizeExecEnv(opts.execEnv);
 
   async function postJson<T>(
     path: string,
@@ -142,6 +159,11 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
         },
         init,
       ),
-    exec: (body, init) => postJson<ExecResult>('/v1/exec', body, init),
+    exec: (body, init) =>
+      postJson<ExecResult>(
+        '/v1/exec',
+        execEnv ? { ...body, env: execEnv } : body,
+        init,
+      ),
   };
 }
