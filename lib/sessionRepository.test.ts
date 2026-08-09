@@ -233,6 +233,42 @@ describe('createHttpSessionRepository', () => {
     expect(result.action).toBe('adopt');
   });
 
+  it('pull re-checks getLocal after round-trip (no clobber of newer turn)', async () => {
+    let live = snap({
+      updatedAt: 100,
+      messages: [{ id: 'm', role: 'user', text: 'local', at: 1 }],
+    });
+    let resolveGet!: (r: Response) => void;
+    const getGate = new Promise<Response>((r) => {
+      resolveGet = r;
+    });
+    const server = {
+      id: 'sess_s',
+      updatedAt: 150,
+      messages: [{ id: 'm', role: 'user', text: 'server', at: 1 }],
+    };
+    const fetchImpl = vi.fn(async () => getGate);
+    const onAdopt = vi.fn();
+    const repo = createHttpSessionRepository({
+      fetchImpl,
+      onAdopt,
+      getLocal: () => live,
+    });
+    const pullPromise = repo.pull(live);
+    // Local advanced while GET in flight.
+    live = snap({
+      updatedAt: 200,
+      messages: [
+        { id: 'm', role: 'user', text: 'local', at: 1 },
+        { id: 'm2', role: 'user', text: 'newer', at: 2 },
+      ],
+    });
+    resolveGet(Response.json(server, { status: 200 }));
+    const result = await pullPromise;
+    expect(result.action).toBe('noop');
+    expect(onAdopt).not.toHaveBeenCalled();
+  });
+
   it('401 disables repository', async () => {
     const fetchImpl = vi.fn(async () =>
       Response.json({ error: 'auth' }, { status: 401 }),
@@ -283,6 +319,41 @@ describe('createHttpSessionRepository', () => {
     await vi.waitFor(() => expect(onAdopt).toHaveBeenCalledWith(server));
   });
 
+  it('409 does not adopt when getLocal is already newer', async () => {
+    let live = snap({
+      updatedAt: 100,
+      messages: [{ id: 'm', role: 'user', text: 'stale', at: 1 }],
+    });
+    const server = {
+      id: 'sess_s',
+      updatedAt: 150,
+      messages: [{ id: 'm', role: 'user', text: 'server', at: 1 }],
+    };
+    let resolvePut!: (r: Response) => void;
+    const putGate = new Promise<Response>((r) => {
+      resolvePut = r;
+    });
+    const fetchImpl = vi.fn(async () => putGate);
+    const onAdopt = vi.fn();
+    const repo = createHttpSessionRepository({
+      fetchImpl,
+      onAdopt,
+      getLocal: () => live,
+    });
+    repo.schedulePush(live);
+    await Promise.resolve();
+    live = snap({
+      updatedAt: 200,
+      messages: [{ id: 'm2', role: 'user', text: 'newer', at: 2 }],
+    });
+    resolvePut(Response.json(server, { status: 409 }));
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    // give putOnce time to finish 409 path
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onAdopt).not.toHaveBeenCalled();
+  });
+
   it('remove issues DELETE only (no PUT)', async () => {
     const fetchImpl = vi.fn(async () => new Response(null, { status: 204 }));
     const repo = createHttpSessionRepository({ fetchImpl });
@@ -328,10 +399,50 @@ describe('createHttpSessionRepository', () => {
     );
     await repo.remove();
     resolvePut(Response.json(snap({ updatedAt: 1, messages: [] })));
-    await vi.waitFor(() => expect(calls).toContain('DELETE'));
+    await vi.waitFor(() => expect(calls.filter((m) => m === 'DELETE').length).toBeGreaterThanOrEqual(1));
     // No second PUT after remove drained pending
     expect(calls.filter((m) => m === 'PUT')).toHaveLength(1);
+    // Initial DELETE + compensatory DELETE after in-flight PUT completes
+    expect(calls.filter((m) => m === 'DELETE').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('remove during in-flight PUT issues compensatory DELETE after PUT lands', async () => {
+    let resolvePut!: (r: Response) => void;
+    const putGate = new Promise<Response>((r) => {
+      resolvePut = r;
+    });
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      calls.push(method);
+      if (method === 'PUT') {
+        return putGate;
+      }
+      return new Response(null, { status: 204 });
+    });
+    const repo = createHttpSessionRepository({ fetchImpl });
+    repo.schedulePush(
+      snap({
+        updatedAt: 1,
+        messages: [{ id: 'm', role: 'user', text: 'a', at: 1 }],
+      }),
+    );
+    await Promise.resolve();
+    expect(calls).toEqual(['PUT']);
+    // Clear while PUT in flight — epoch bump + immediate DELETE
+    await repo.remove();
     expect(calls.filter((m) => m === 'DELETE')).toHaveLength(1);
+    // PUT completes after clear (would resurrect row without compensatory DELETE)
+    resolvePut(
+      Response.json(
+        snap({
+          updatedAt: 1,
+          messages: [{ id: 'm', role: 'user', text: 'a', at: 1 }],
+        }),
+      ),
+    );
+    await vi.waitFor(() => expect(calls.filter((m) => m === 'DELETE')).toHaveLength(2));
+    expect(calls.filter((m) => m === 'PUT')).toHaveLength(1);
   });
 
   it('coalesce: rapid pushes serialize and last pending is sent', async () => {

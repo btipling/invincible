@@ -24,6 +24,7 @@ import {
 } from '../../lib/sessionStore';
 import {
   createHttpSessionRepository,
+  shouldAdoptServer,
   type SessionRepository,
 } from '../../lib/sessionRepository';
 import {
@@ -283,8 +284,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         setStoreKind(store.kind);
         // Cloud repo for multi-device sync — pull is async after first paint path.
         const repo = createHttpSessionRepository({
+          getLocal: () => sessionRef.current,
           onAdopt: (snap) => {
             if (cancelled) return;
+            // Never clobber an in-flight turn's session/ring mid-stream.
+            if (inflightRef.current) return;
+            // Defense in depth: repository already re-checks getLocal.
+            if (!shouldAdoptServer(sessionRef.current, snap)) return;
             adoptCloudSession(snap);
           },
         });
@@ -360,12 +366,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         }
 
         // Cloud pull must not gate first paint — fire-and-forget after local hydrate.
-        void repo.pull(sessionRef.current).then((result) => {
-          if (cancelled) return;
-          if (result.action === 'adopt') {
-            // onAdopt already applied; no-op
-          }
-        });
+        void repo.pull(sessionRef.current);
 
         setLoadMs(Math.round(performance.now() - loadStarted.current));
         setLifecycle(lifecycleName(Lifecycle.Ready));
