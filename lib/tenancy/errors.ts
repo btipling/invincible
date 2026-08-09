@@ -17,3 +17,7 @@ export const INFERENCE_MODEL_REQUIRED_ERROR = 'A valid model is required.';
 
 /** Parent #102 — decrypt / DB failure fail-soft (no crypto details). */
 export const INFERENCE_UNAVAILABLE_ERROR = 'Inference temporarily unavailable.';
+
+/** Parent #298 / phase #301 — Workspace instance missing, stopped, or error. */
+export const WORKSPACE_INSTANCE_REQUIRED_ERROR =
+  'Workspace instance is not running. Create or Start it under Settings → Sandbox.';

@@ -7,7 +7,11 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as schema from '../../db/schema';
 import { encryptSecret } from './credentials';
-import { SANDBOX_FORBIDDEN_ERROR } from './errors';
+import {
+  SANDBOX_FORBIDDEN_ERROR,
+  WORKSPACE_INSTANCE_REQUIRED_ERROR,
+} from './errors';
+import { buildUserSandboxVercelName } from './userSandboxInstance';
 import { resolveAgentSandbox } from './resolveSandbox';
 import {
   decryptSandboxToken,
@@ -27,6 +31,7 @@ async function applyMigrations(client: PGlite) {
     '0005_sandbox_backend.sql',
     '0006_user_github_tokens.sql',
     '0007_user_preferred_sandbox.sql',
+    '0008_user_sandbox_instances.sql',
   ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     for (const stmt of sql
@@ -39,6 +44,24 @@ async function applyMigrations(client: PGlite) {
 }
 
 const AMK = Buffer.alloc(32, 9);
+
+
+async function insertRunningWorkspace(
+  db: ReturnType<typeof drizzle<typeof schema>>,
+  opts: { userId: string; tenantId: string; catalogSandboxId: string; image?: string | null },
+) {
+  const name = buildUserSandboxVercelName('workspace', opts.tenantId, opts.userId);
+  await db.insert(schema.userSandboxInstances).values({
+    userId: opts.userId,
+    purpose: 'workspace',
+    tenantId: opts.tenantId,
+    catalogSandboxId: opts.catalogSandboxId,
+    vercelName: name,
+    image: opts.image ?? 'vercel/sandbox/universal:latest',
+    status: 'running',
+  });
+  return name;
+}
 
 function stubClient(meta?: { baseUrl: string; token: string }) {
   return {
@@ -68,6 +91,8 @@ describe('resolveAgentSandbox', () => {
   });
 
   beforeEach(async () => {
+    await db.delete(schema.userSandboxInstances);
+    await db.delete(schema.userPreferredSandbox);
     await db.delete(schema.sandboxGrants);
     await db.delete(schema.sandboxes);
     await db.delete(schema.tenantMembers);
@@ -296,7 +321,7 @@ describe('resolveAgentSandbox', () => {
     expect(result.response.status).toBe(403);
   });
 
-  it('vercel row → Vercel client; no decrypt; secrets empty; no baseUrl', async () => {
+  it('vercel row + running workspace → attach client by vercelName', async () => {
     await db
       .update(schema.sandboxes)
       .set({
@@ -306,6 +331,13 @@ describe('resolveAgentSandbox', () => {
         image: null,
       })
       .where(eq(schema.sandboxes.id, sandboxId));
+
+    const name = await insertRunningWorkspace(db, {
+      userId,
+      tenantId,
+      catalogSandboxId: sandboxId,
+      image: 'vercel/sandbox/universal:latest',
+    });
 
     const decryptSpy = vi.fn(decrypt);
     const vercelClient = {
@@ -331,10 +363,103 @@ describe('resolveAgentSandbox', () => {
     expect(result.value.baseUrl).toBeUndefined();
     expect(result.value.resolvedImage).toBe('vercel/sandbox/universal:latest');
     expect(decryptSpy).not.toHaveBeenCalled();
-    expect(createVercelClient).toHaveBeenCalledWith({ image: null });
+    expect(createVercelClient).toHaveBeenCalledWith({
+      name,
+      image: 'vercel/sandbox/universal:latest',
+    });
   });
 
-  it('vercel row custom image → factory receives that image', async () => {
+  it('vercel row without workspace instance → softContinue + WORKSPACE_INSTANCE_REQUIRED', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({
+        backend: 'vercel',
+        baseUrl: null,
+        tokenCiphertext: null,
+        image: null,
+      })
+      .where(eq(schema.sandboxes.id, sandboxId));
+
+    const createVercelClient = vi.fn(() => stubClient() as never);
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      createVercelClient,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected fail');
+    expect(result.softContinue).toBe(true);
+    expect(result.response.status).toBe(403);
+    expect(await result.response.json()).toEqual({
+      error: WORKSPACE_INSTANCE_REQUIRED_ERROR,
+    });
+    expect(createVercelClient).not.toHaveBeenCalled();
+  });
+
+  it('vercel row + stopped workspace → softContinue', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({
+        backend: 'vercel',
+        baseUrl: null,
+        tokenCiphertext: null,
+        image: null,
+      })
+      .where(eq(schema.sandboxes.id, sandboxId));
+    const name = buildUserSandboxVercelName('workspace', tenantId, userId);
+    await db.insert(schema.userSandboxInstances).values({
+      userId,
+      purpose: 'workspace',
+      tenantId,
+      catalogSandboxId: sandboxId,
+      vercelName: name,
+      image: 'vercel/sandbox/universal:latest',
+      status: 'stopped',
+    });
+
+    const createVercelClient = vi.fn(() => stubClient() as never);
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      createVercelClient,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected fail');
+    expect(result.softContinue).toBe(true);
+    expect(createVercelClient).not.toHaveBeenCalled();
+  });
+
+  it('vercel row + error workspace → softContinue', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({
+        backend: 'vercel',
+        baseUrl: null,
+        tokenCiphertext: null,
+        image: null,
+      })
+      .where(eq(schema.sandboxes.id, sandboxId));
+    const name = buildUserSandboxVercelName('workspace', tenantId, userId);
+    await db.insert(schema.userSandboxInstances).values({
+      userId,
+      purpose: 'workspace',
+      tenantId,
+      catalogSandboxId: sandboxId,
+      vercelName: name,
+      image: 'vercel/sandbox/universal:latest',
+      status: 'error',
+    });
+
+    const createVercelClient = vi.fn(() => stubClient() as never);
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      createVercelClient,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected fail');
+    expect(result.softContinue).toBe(true);
+    expect(createVercelClient).not.toHaveBeenCalled();
+  });
+
+  it('vercel instance custom image → factory receives that image + name', async () => {
     await db
       .update(schema.sandboxes)
       .set({
@@ -345,6 +470,13 @@ describe('resolveAgentSandbox', () => {
       })
       .where(eq(schema.sandboxes.id, sandboxId));
 
+    const name = await insertRunningWorkspace(db, {
+      userId,
+      tenantId,
+      catalogSandboxId: sandboxId,
+      image: 'vercel/sandbox/node:24',
+    });
+
     const createVercelClient = vi.fn(() => stubClient() as never);
     const result = await resolveAgentSandbox(userId, {
       db: db as never,
@@ -353,31 +485,10 @@ describe('resolveAgentSandbox', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('expected ok');
     expect(createVercelClient).toHaveBeenCalledWith({
+      name,
       image: 'vercel/sandbox/node:24',
     });
     expect(result.value.resolvedImage).toBe('vercel/sandbox/node:24');
-  });
-
-  it('vercel row empty image → factory receives empty; resolvedImage default', async () => {
-    await db
-      .update(schema.sandboxes)
-      .set({
-        backend: 'vercel',
-        baseUrl: null,
-        tokenCiphertext: null,
-        image: '',
-      })
-      .where(eq(schema.sandboxes.id, sandboxId));
-
-    const createVercelClient = vi.fn(() => stubClient() as never);
-    const result = await resolveAgentSandbox(userId, {
-      db: db as never,
-      createVercelClient,
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error('expected ok');
-    expect(createVercelClient).toHaveBeenCalledWith({ image: '' });
-    expect(result.value.resolvedImage).toBe('vercel/sandbox/universal:latest');
   });
 
   it('threads execEnv into vercel and byo client factories', async () => {
@@ -393,6 +504,12 @@ describe('resolveAgentSandbox', () => {
       })
       .where(eq(schema.sandboxes.id, sandboxId));
 
+    const name = await insertRunningWorkspace(db, {
+      userId,
+      tenantId,
+      catalogSandboxId: sandboxId,
+    });
+
     const createVercelClient = vi.fn(() => stubClient() as never);
     let result = await resolveAgentSandbox(userId, {
       db: db as never,
@@ -401,7 +518,8 @@ describe('resolveAgentSandbox', () => {
     });
     expect(result.ok).toBe(true);
     expect(createVercelClient).toHaveBeenCalledWith({
-      image: null,
+      name,
+      image: 'vercel/sandbox/universal:latest',
       execEnv,
     });
 
@@ -440,7 +558,7 @@ describe('resolveAgentSandbox', () => {
     );
   });
 
-  it('vercel row with stale URL/token still succeeds without decrypt', async () => {
+  it('vercel row with stale URL/token still succeeds without decrypt when instance running', async () => {
     await db
       .update(schema.sandboxes)
       .set({
@@ -450,6 +568,13 @@ describe('resolveAgentSandbox', () => {
         image: 'vercel/sandbox/universal:latest',
       })
       .where(eq(schema.sandboxes.id, sandboxId));
+
+    await insertRunningWorkspace(db, {
+      userId,
+      tenantId,
+      catalogSandboxId: sandboxId,
+      image: 'vercel/sandbox/universal:latest',
+    });
 
     const decryptSpy = vi.fn(async () => {
       throw new Error('should not decrypt');
@@ -465,6 +590,17 @@ describe('resolveAgentSandbox', () => {
     expect(decryptSpy).not.toHaveBeenCalled();
     expect(result.value.secrets).toEqual([]);
     expect(result.value.baseUrl).toBeUndefined();
+  });
+
+  it('BYO without workspace instance still succeeds', async () => {
+    // default beforeEach is byo with token — no instance row
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      decryptSandboxToken: decrypt,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value.backend).toBe('byo');
   });
 
 
@@ -531,6 +667,13 @@ describe('resolveAgentSandbox', () => {
       .set({ backend: 'byo' })
       .where(eq(schema.sandboxes.id, sandboxId));
 
+    const name = await insertRunningWorkspace(db, {
+      userId,
+      tenantId,
+      catalogSandboxId: sb2.id,
+      image: 'vercel/sandbox/node:24',
+    });
+
     const result = await resolveAgentSandbox(userId, {
       db: db as never,
       decryptSandboxToken: decrypt,
@@ -540,9 +683,10 @@ describe('resolveAgentSandbox', () => {
     if (!result.ok) throw new Error('expected ok');
     expect(result.value.sandboxId).toBe(sb2.id);
     expect(result.value.backend).toBe('vercel');
-    expect(createVercelClient).toHaveBeenCalledWith(
-      expect.objectContaining({ image: 'vercel/sandbox/node:24' }),
-    );
+    expect(createVercelClient).toHaveBeenCalledWith({
+      name,
+      image: 'vercel/sandbox/node:24',
+    });
   });
 
   it('unknown backend string → 403', async () => {
@@ -559,16 +703,23 @@ describe('resolveAgentSandbox', () => {
     expect(result.response.status).toBe(403);
   });
 
-  it('vercel invalid image shape → 403 without leaking detail', async () => {
+  it('vercel invalid instance image shape → 403 without leaking detail', async () => {
     await db
       .update(schema.sandboxes)
       .set({
         backend: 'vercel',
         baseUrl: null,
         tokenCiphertext: null,
-        image: 'bad image with spaces',
+        image: 'vercel/sandbox/universal:latest',
       })
       .where(eq(schema.sandboxes.id, sandboxId));
+
+    await insertRunningWorkspace(db, {
+      userId,
+      tenantId,
+      catalogSandboxId: sandboxId,
+      image: 'bad image with spaces',
+    });
 
     const createVercelClient = vi.fn(() => {
       throw new Error('should not reach factory for invalid shape');
@@ -597,6 +748,13 @@ describe('resolveAgentSandbox', () => {
         image: 'vercel/sandbox/universal:latest',
       })
       .where(eq(schema.sandboxes.id, sandboxId));
+
+    await insertRunningWorkspace(db, {
+      userId,
+      tenantId,
+      catalogSandboxId: sandboxId,
+      image: 'vercel/sandbox/universal:latest',
+    });
 
     const result = await resolveAgentSandbox(userId, {
       db: db as never,
