@@ -58,7 +58,7 @@ User (Wasm composer)
 
 Set on the **Vercel project** (server-only). No `NEXT_PUBLIC_*`.
 
-Idle extendTimeout for the attached VM uses the same **30 minute** family as Workspace instances (not a short ephemeral create timeout).
+Idle extendTimeout for the attached VM uses the same **30 minute** family as Workspace instances (not a short ephemeral create timeout). The hop-B runner uses the **same Vercel attach-retry seam** as the Workspace FS tools (`lib/sandbox/resilience.ts`): each `curl`/`head` VM command runs inside a bounded transient retry (readiness `image_not_ready` / `preparing`, `408/429/5xx`), SDK-owned stop resume passes through, permanent errors fail fast, and a throttled `extendTimeout` heartbeat (≥5 min) keeps long turns alive. See [sandbox.md](sandbox.md) → *Vercel attach resilience*. The runner adds **no** separate attach probe — the first command absorbs any boot window.
 
 ### Operator steps (tenancy on)
 

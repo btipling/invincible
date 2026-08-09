@@ -12,6 +12,11 @@ import {
   resolveVercelSandboxImage,
 } from '../tenancy/sandboxBackend';
 import { clampExecTimeoutMs } from './config';
+import {
+  EXTEND_THROTTLE_MS,
+  statusFromClassified,
+  withTransientRetry,
+} from './resilience';
 import type { SandboxClient } from './client';
 import {
   SandboxHttpError,
@@ -140,6 +145,11 @@ export type CreateVercelSandboxClientOptions = {
    * Only GH_TOKEN / GITHUB_TOKEN should be supplied. Never from the model.
    */
   execEnv?: Record<string, string>;
+  /**
+   * Minimum gap (ms) between throttled mid-turn `extendTimeout` heartbeats.
+   * Default `EXTEND_THROTTLE_MS` (5 min). Injectable for tests.
+   */
+  extendThrottleMs?: number;
 };
 
 function clampSandboxTimeout(ms: number | undefined): number {
@@ -152,46 +162,29 @@ function clampSandboxTimeout(ms: number | undefined): number {
   return n;
 }
 
-function isAbortError(err: unknown): boolean {
-  return err instanceof Error && err.name === 'AbortError';
+// Strip common secret-looking substrings (tokens often appear in SDK auth errors).
+function sanitizeFsMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : 'Sandbox request failed';
+  return message
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/VERCEL_TOKEN[=:]\S+/gi, 'VERCEL_TOKEN=[redacted]')
+    .replace(/oidc[^\s]*/gi, 'oidc[redacted]');
 }
 
-/** Map SDK/path failures to tool-visible errors without secrets. */
-function mapFsError(err: unknown, fallbackStatus = 502): never {
+/**
+ * Map SDK/path failures to tool-visible errors without secrets.
+ * Status is decided by the shared classifier (drop the old single-bucket 400
+ * that merged transient readiness with permanent image-config errors).
+ */
+function mapFsError(err: unknown): never {
   if (err instanceof SandboxHttpError) throw err;
   if (err instanceof WorkPathError) {
     throw new SandboxHttpError(err.message, 400);
   }
-  if (isAbortError(err)) {
-    throw new SandboxHttpError('Sandbox request aborted or timed out', 504);
-  }
-  const message = err instanceof Error ? err.message : 'Sandbox request failed';
-  // Strip common secret-looking substrings (tokens often appear in SDK auth errors).
-  const safe = message
-    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
-    .replace(/VERCEL_TOKEN[=:]\S+/gi, 'VERCEL_TOKEN=[redacted]')
-    .replace(/oidc[^\s]*/gi, 'oidc[redacted]');
-  const lower = safe.toLowerCase();
-  let status = fallbackStatus;
-  if (lower.includes('not found') || lower.includes('enoent')) status = 404;
-  else if (
-    lower.includes('not ready') ||
-    lower.includes('unoptimized') ||
-    lower.includes('unknown image') ||
-    lower.includes('invalid image') ||
-    lower.includes('image not found') ||
-    lower.includes('image is not')
-  ) {
-    status = 400;
-  } else if (
-    lower.includes('unauthorized') ||
-    lower.includes('forbidden') ||
-    lower.includes('authentication') ||
-    lower.includes('not authenticated')
-  ) {
-    status = 403;
-  }
-  throw new SandboxHttpError(safe || 'Sandbox request failed', status);
+  throw new SandboxHttpError(
+    sanitizeFsMessage(err) || 'Sandbox request failed',
+    statusFromClassified(err),
+  );
 }
 
 async function defaultGetSandbox(
@@ -287,11 +280,23 @@ export function createVercelSandboxClient(
     '',
   );
   const execEnv = normalizeExecEnv(opts.execEnv);
+  const extendThrottleMs =
+    opts.extendThrottleMs == null
+      ? EXTEND_THROTTLE_MS
+      : Math.max(0, Math.floor(opts.extendThrottleMs));
 
   let attachPromise: Promise<VercelFsSandboxLike> | null = null;
   let sandbox: VercelFsSandboxLike | null = null;
   let closed = false;
   let rootReady = false;
+  let lastExtendAt = 0;
+
+  /** Drop a handle that is no longer trustworthy. Next tool call re-attaches. */
+  function invalidateHandle(): void {
+    sandbox = null;
+    rootReady = false;
+    attachPromise = null;
+  }
 
   async function bestEffortExtend(sb: VercelFsSandboxLike): Promise<void> {
     if (typeof sb.extendTimeout !== 'function') return;
@@ -300,6 +305,24 @@ export function createVercelSandboxClient(
     } catch {
       // best-effort — never fail the turn
     }
+    lastExtendAt = Date.now();
+  }
+
+  /** Throttled mid-turn heartbeat so long turns do not idle-stop from forget. */
+  async function maybeExtend(sb: VercelFsSandboxLike): Promise<void> {
+    if (Date.now() - lastExtendAt < extendThrottleMs) return;
+    await bestEffortExtend(sb);
+  }
+
+  /**
+   * Bounded transient retry around a single user-visible FS op. On exhausted
+   * retryable budget the latch is invalidated so the next tool call re-attaches.
+   */
+  function runRs<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return withTransientRetry(fn, {
+      signal,
+      onExhaustedRetryable: invalidateHandle,
+    });
   }
 
   async function ensureSandbox(signal?: AbortSignal): Promise<VercelFsSandboxLike> {
@@ -319,18 +342,28 @@ export function createVercelSandboxClient(
             throw new SandboxHttpError('Sandbox client is closed', 400);
           }
           await bestEffortExtend(sb);
-          try {
-            await sb.fs.mkdir(workspaceRoot, { recursive: true, signal });
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (!/exist/i.test(msg) && !/EEXIST/i.test(msg)) {
-              // Do not stop durable VM — clear latch for retry only.
-              sandbox = null;
-              rootReady = false;
-              attachPromise = null;
-              mapFsError(err, 502);
-            }
-          }
+          // Attach pipeline: ensure jail root + absorb the boot window BEFORE the
+          // first user tool call so `rootReady` only becomes true once the VM can
+          // actually run commands (readiness probe through the same path tools use).
+          await withTransientRetry(
+            async () => {
+              try {
+                await sb.fs.mkdir(workspaceRoot, { recursive: true, signal });
+              } catch (errMk) {
+                const msg =
+                  errMk instanceof Error ? errMk.message : String(errMk);
+                if (!/exist/i.test(msg) && !/EEXIST/i.test(msg)) throw errMk;
+              }
+              const probe = await sb.runCommand('true', [], { signal });
+              if (probe.exitCode !== 0) {
+                throw new Error('sandbox readiness probe failed');
+              }
+            },
+            {
+              signal,
+              onExhaustedRetryable: invalidateHandle,
+            },
+          );
           rootReady = true;
           if (closed) {
             throw new SandboxHttpError('Sandbox client is closed', 400);
@@ -338,11 +371,10 @@ export function createVercelSandboxClient(
           return sb;
         })
         .catch((err) => {
-          if (!sandbox) {
-            attachPromise = null;
-            rootReady = false;
-          }
-          mapFsError(err, 502);
+          // Attach never became ready — drop the partial handle so the next call
+          // re-attaches fresh (matches #312: post-handle blips must not stick).
+          invalidateHandle();
+          mapFsError(err);
         });
     }
     return attachPromise;
@@ -380,30 +412,28 @@ export function createVercelSandboxClient(
       try {
         const abs = resolveVercelFsPath(workspaceRoot, userPath);
         const sb = await ensureSandbox(init?.signal);
-        if (typeof sb.fs.stat === 'function') {
-          let st;
-          try {
-            st = await sb.fs.stat(abs, { signal: init?.signal });
-          } catch (err) {
-            mapFsError(err, 404);
-          }
-          if (!st.isDirectory()) {
-            throw new SandboxHttpError('Not a directory', 400);
-          }
-        }
-        const raw = await sb.fs.readdir(abs, {
-          withFileTypes: true,
-          signal: init?.signal,
-        });
-        const entries = (raw as Array<string | VercelFsDirentLike>)
-          .map((d) => {
-            if (typeof d === 'string') {
-              return { name: d, type: 'other' as const };
+        await maybeExtend(sb);
+        return await runRs(async () => {
+          if (typeof sb.fs.stat === 'function') {
+            const st = await sb.fs.stat(abs, { signal: init?.signal });
+            if (!st.isDirectory()) {
+              throw new SandboxHttpError('Not a directory', 400);
             }
-            return { name: d.name, type: entryType(d) };
-          })
-          .sort((a, b) => a.name.localeCompare(b.name));
-        return { entries };
+          }
+          const raw = await sb.fs.readdir(abs, {
+            withFileTypes: true,
+            signal: init?.signal,
+          });
+          const entries = (raw as Array<string | VercelFsDirentLike>)
+            .map((d) => {
+              if (typeof d === 'string') {
+                return { name: d, type: 'other' as const };
+              }
+              return { name: d.name, type: entryType(d) };
+            })
+            .sort((a, b) => a.name.localeCompare(b.name));
+          return { entries };
+        }, init?.signal);
       } catch (err) {
         mapFsError(err);
       }
@@ -417,46 +447,48 @@ export function createVercelSandboxClient(
         const abs = resolveVercelFsPath(workspaceRoot, userPath);
         const sb = await ensureSandbox(init?.signal);
         const max = clampMaxBytes(maxBytes);
+        await maybeExtend(sb);
 
-        // Prefer stat when available (real @vercel/sandbox): type-check + size gate
-        // so we never pull multi-GB files into the host process for a truncated read.
-        if (typeof sb.fs.stat === 'function') {
-          let st;
-          try {
-            st = await sb.fs.stat(abs, { signal: init?.signal });
-          } catch (err) {
-            mapFsError(err, 404);
+        return await runRs(async () => {
+          // Prefer stat when available (real @vercel/sandbox): type-check + size gate
+          // so we never pull multi-GB files into the host process for a truncated read.
+          if (typeof sb.fs.stat === 'function') {
+            const st = await sb.fs.stat(abs, { signal: init?.signal });
+            if (!st.isFile()) {
+              throw new SandboxHttpError('Not a file', 400);
+            }
+            if (st.size > max) {
+              // Byte-capped read via head (matches BYO daemon open+read max+1 pattern).
+              // String form: only signal/timeoutMs (path is absolute; cwd unused).
+              const cmd = await sb.runCommand('head', ['-c', String(max + 1), abs], {
+                signal: init?.signal,
+                timeoutMs: 120_000,
+              });
+              const { stdout } = await commandOutput(cmd);
+              const buf = Buffer.from(stdout, 'utf8');
+              const slice = buf.byteLength > max ? buf.subarray(0, max) : buf;
+              return {
+                content: slice.toString('utf8'),
+                truncated: true,
+              };
+            }
           }
-          if (!st.isFile()) {
-            throw new SandboxHttpError('Not a file', 400);
-          }
-          if (st.size > max) {
-            // Byte-capped read via head (matches BYO daemon open+read max+1 pattern).
-            // String form: only signal/timeoutMs (path is absolute; cwd unused).
-            const cmd = await sb.runCommand('head', ['-c', String(max + 1), abs], {
-              signal: init?.signal,
-              timeoutMs: 120_000,
-            });
-            const { stdout } = await commandOutput(cmd);
-            const buf = Buffer.from(stdout, 'utf8');
-            const slice = buf.byteLength > max ? buf.subarray(0, max) : buf;
+
+          const content = await sb.fs.readFile(abs, {
+            encoding: 'utf8',
+            signal: init?.signal,
+          });
+          const text =
+            typeof content === 'string' ? content : content.toString('utf8');
+          const buf = Buffer.from(text, 'utf8');
+          if (buf.byteLength > max) {
             return {
-              content: slice.toString('utf8'),
+              content: buf.subarray(0, max).toString('utf8'),
               truncated: true,
             };
           }
-        }
-
-        const content = await sb.fs.readFile(abs, {
-          encoding: 'utf8',
-          signal: init?.signal,
-        });
-        const text = typeof content === 'string' ? content : content.toString('utf8');
-        const buf = Buffer.from(text, 'utf8');
-        if (buf.byteLength > max) {
-          return { content: buf.subarray(0, max).toString('utf8'), truncated: true };
-        }
-        return { content: text };
+          return { content: text };
+        }, init?.signal);
       } catch (err) {
         mapFsError(err);
       }
@@ -479,14 +511,20 @@ export function createVercelSandboxClient(
         }
         const abs = resolveVercelFsPath(workspaceRoot, userPath);
         const sb = await ensureSandbox(init?.signal);
-        if (mkdir) {
-          const parent = path.posix.dirname(abs);
-          if (parent !== abs) {
-            await sb.fs.mkdir(parent, { recursive: true, signal: init?.signal });
+        await maybeExtend(sb);
+        return await runRs(async () => {
+          if (mkdir) {
+            const parent = path.posix.dirname(abs);
+            if (parent !== abs) {
+              await sb.fs.mkdir(parent, {
+                recursive: true,
+                signal: init?.signal,
+              });
+            }
           }
-        }
-        await sb.fs.writeFile(abs, content, { signal: init?.signal });
-        return { ok: true, bytes: buf.byteLength };
+          await sb.fs.writeFile(abs, content, { signal: init?.signal });
+          return { ok: true, bytes: buf.byteLength };
+        }, init?.signal);
       } catch (err) {
         mapFsError(err);
       }
@@ -515,53 +553,59 @@ export function createVercelSandboxClient(
 
         const abs = resolveVercelFsPath(workspaceRoot, userPath);
         const sb = await ensureSandbox(init?.signal);
-        const raw = await sb.fs.readFile(abs, {
-          encoding: 'utf8',
-          signal: init?.signal,
-        });
-        const content = typeof raw === 'string' ? raw : raw.toString('utf8');
-        if (Buffer.byteLength(content, 'utf8') > VERCEL_FS_MAX_READ_WRITE_BYTES) {
-          throw new SandboxHttpError(
-            `content exceeds maxBytes limit (${VERCEL_FS_MAX_READ_WRITE_BYTES})`,
-            413,
-          );
-        }
+        await maybeExtend(sb);
+        return await runRs(async () => {
+          const raw = await sb.fs.readFile(abs, {
+            encoding: 'utf8',
+            signal: init?.signal,
+          });
+          const content =
+            typeof raw === 'string' ? raw : raw.toString('utf8');
+          if (
+            Buffer.byteLength(content, 'utf8') > VERCEL_FS_MAX_READ_WRITE_BYTES
+          ) {
+            throw new SandboxHttpError(
+              `content exceeds maxBytes limit (${VERCEL_FS_MAX_READ_WRITE_BYTES})`,
+              413,
+            );
+          }
 
-        let count = 0;
-        let from = 0;
-        while (from <= content.length) {
-          const idx = content.indexOf(oldString, from);
-          if (idx === -1) break;
-          count += 1;
-          from = idx + oldString.length;
-        }
-        if (count === 0) {
-          throw new SandboxHttpError('old_string not found in file', 400);
-        }
-        if (count > 1 && !replaceAll) {
-          throw new SandboxHttpError(
-            `old_string matched ${count} times; pass replace_all: true or provide a unique snippet`,
-            409,
-          );
-        }
+          let count = 0;
+          let from = 0;
+          while (from <= content.length) {
+            const idx = content.indexOf(oldString, from);
+            if (idx === -1) break;
+            count += 1;
+            from = idx + oldString.length;
+          }
+          if (count === 0) {
+            throw new SandboxHttpError('old_string not found in file', 400);
+          }
+          if (count > 1 && !replaceAll) {
+            throw new SandboxHttpError(
+              `old_string matched ${count} times; pass replace_all: true or provide a unique snippet`,
+              409,
+            );
+          }
 
-        const next = replaceAll
-          ? content.split(oldString).join(newString)
-          : content.replace(oldString, newString);
-        const outBuf = Buffer.from(next, 'utf8');
-        if (outBuf.byteLength > VERCEL_FS_MAX_READ_WRITE_BYTES) {
-          throw new SandboxHttpError(
-            `content exceeds maxBytes limit (${VERCEL_FS_MAX_READ_WRITE_BYTES})`,
-            413,
-          );
-        }
-        await sb.fs.writeFile(abs, next, { signal: init?.signal });
-        return {
-          ok: true,
-          path: userPath,
-          replacements: replaceAll ? count : 1,
-          bytes: outBuf.byteLength,
-        };
+          const next = replaceAll
+            ? content.split(oldString).join(newString)
+            : content.replace(oldString, newString);
+          const outBuf = Buffer.from(next, 'utf8');
+          if (outBuf.byteLength > VERCEL_FS_MAX_READ_WRITE_BYTES) {
+            throw new SandboxHttpError(
+              `content exceeds maxBytes limit (${VERCEL_FS_MAX_READ_WRITE_BYTES})`,
+              413,
+            );
+          }
+          await sb.fs.writeFile(abs, next, { signal: init?.signal });
+          return {
+            ok: true,
+            path: userPath,
+            replacements: replaceAll ? count : 1,
+            bytes: outBuf.byteLength,
+          };
+        }, init?.signal);
       } catch (err) {
         mapFsError(err);
       }
@@ -603,26 +647,29 @@ export function createVercelSandboxClient(
         const cwdAbs = resolveVercelFsPath(workspaceRoot, body.cwd ?? '.');
         const timeoutMs = clampExecTimeoutMs(body.timeoutMs);
         const sb = await ensureSandbox(init?.signal);
+        await maybeExtend(sb);
         // Object form required: @vercel/sandbox 3-arg string form drops cwd/env.
-        const cmd = await sb.runCommand({
-          cmd: body.cmd,
-          args,
-          cwd: cwdAbs,
-          signal: init?.signal,
-          timeoutMs,
-          // Only server-owned allowlisted execEnv (user GitHub PAT). Never host secrets.
-          ...(execEnv ? { env: execEnv } : {}),
-        });
-        const { stdout, stderr } = await commandOutput(cmd);
-        const out = capStdio(stdout);
-        const err = capStdio(stderr);
-        return {
-          exitCode: cmd.exitCode,
-          stdout: out.text,
-          stderr: err.text,
-          ...(out.truncated ? { stdoutTruncated: true } : {}),
-          ...(err.truncated ? { stderrTruncated: true } : {}),
-        };
+        return await runRs(async () => {
+          const cmd = await sb.runCommand({
+            cmd: body.cmd,
+            args,
+            cwd: cwdAbs,
+            signal: init?.signal,
+            timeoutMs,
+            // Only server-owned allowlisted execEnv (user GitHub PAT). Never host secrets.
+            ...(execEnv ? { env: execEnv } : {}),
+          });
+          const { stdout, stderr } = await commandOutput(cmd);
+          const out = capStdio(stdout);
+          const errC = capStdio(stderr);
+          return {
+            exitCode: cmd.exitCode,
+            stdout: out.text,
+            stderr: errC.text,
+            ...(out.truncated ? { stdoutTruncated: true } : {}),
+            ...(errC.truncated ? { stderrTruncated: true } : {}),
+          };
+        }, init?.signal);
       } catch (err) {
         mapFsError(err);
       }

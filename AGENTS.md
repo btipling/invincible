@@ -252,6 +252,7 @@ invincible/
 | Tenancy crypto / seed helpers | `lib/tenancy/*`, `scripts/seed-tenancy.ts` |
 | Tenant BYOK / inference grants | `app/admin/inference/*`, `lib/tenancy/providerSecrets*`, `lib/tenancy/resolveInference*`, `lib/gateway/byokProviders.ts`, `app/api/models/*` |
 | Tenant sandboxes (backend + image) | `app/admin/sandboxes/*`, `lib/tenancy/manageSandbox.ts`, `lib/tenancy/sandboxBackend.ts`, `lib/tenancy/resolveSandbox.ts`, `lib/sandbox/vercelClient.ts`, [docs/sandbox.md](docs/sandbox.md) |
+| Vercel attach resilience (transient classify + bounded retry, both FS + hop-B) | `lib/sandbox/resilience.ts`, `lib/sandbox/vercelClient.ts`, `lib/agent/vercelSandboxHttpRunner.ts` — shared seam; BYO daemon (`lib/sandbox/client.ts`) is **untouched** |
 | User durable Vercel instances (Settings create; agent attach-only) | `lib/tenancy/userSandboxInstance.ts`, `app/settings/sandbox/*`, `lib/sandbox/vercelClient.ts`, `lib/agent/vercelSandboxHttpRunner.ts`, `app/api/agent/route.ts`, guard `lib/tenancy/sandboxCreateGuard.test.ts`, orphan GHA `sandbox-orphan-cleanup`, [docs/sandbox.md](docs/sandbox.md), [docs/builtin-http.md](docs/builtin-http.md) — **never** `Sandbox.create` / `getOrCreate` outside `userSandboxInstance` |
 | User Settings / per-user MCP | `app/settings/*`, `lib/tenancy/userMcpServers.ts`, `lib/mcp/*` |
 | User GitHub PAT (Settings + sandbox exec inject) | `app/settings/github/*`, `lib/tenancy/userGithubToken.ts`, `lib/sandbox/{client,vercelClient}.ts`, `sandbox/tools.mjs`, `app/api/agent/route.ts`, [docs/sandbox.md](docs/sandbox.md) |
