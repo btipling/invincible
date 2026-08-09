@@ -176,6 +176,14 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
     hasFsTools = true;
   }
 
+  // Fail-fast: refuse to run a turn when the sandbox daemon is out of date,
+  // rather than letting each tool soft-fail across multiple steps. Tools still
+  // soft-fail as belt-and-suspenders if a race bumps expected mid-turn. Absent
+  // on non-HTTP backends (Vercel Sandbox SDK), which have no daemonVersion.
+  if (client && hasFsTools && typeof client.checkDaemonCurrent === 'function') {
+    await client.checkDaemonCurrent();
+  }
+
   const cwdState = makeCwdState(params.initialCwd);
   const freshness = params.freshness ?? createRunFileFreshness();
 
@@ -269,6 +277,14 @@ export async function runAgentStream(
     }
   } else if (client) {
     hasFsTools = true;
+  }
+
+  // Fail-fast: refuse to run a turn when the sandbox daemon is out of date,
+  // rather than letting each tool soft-fail across multiple steps. Tools still
+  // soft-fail as belt-and-suspenders if a race bumps expected mid-turn. Absent
+  // on non-HTTP backends (Vercel Sandbox SDK), which have no daemonVersion.
+  if (client && hasFsTools && typeof client.checkDaemonCurrent === 'function') {
+    await client.checkDaemonCurrent();
   }
 
   const cwdState = makeCwdState(params.initialCwd);

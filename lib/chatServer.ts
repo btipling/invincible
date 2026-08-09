@@ -10,6 +10,8 @@ import {
   INFERENCE_MODEL_REQUIRED_ERROR,
   INFERENCE_UNAVAILABLE_ERROR,
 } from './tenancy/errors';
+import { SandboxHttpError } from './sandbox/types';
+import { SANDBOX_DAEMON_OUT_OF_DATE_CODE } from './sandbox/daemonVersion';
 
 export type ParsedChatBody =
   | { ok: true; prompt: string; modelId?: string }
@@ -65,7 +67,23 @@ export function gatewayConfigured(env: Record<string, string | undefined> = proc
 }
 
 /** Map AI SDK / network failures to a safe client-facing message. */
-export function mapInferenceError(err: unknown): { error: string; status: number } {
+export function mapInferenceError(err: unknown): {
+  error: string;
+  status: number;
+  code?: string;
+} {
+  // Preserve the sandbox out-of-date 426 verbatim so BYO hosts get a real 426
+  // (not the inference 502) and a stable code they can key on: the sandbox is
+  // configured and running, just older than the backend expects. Never degrade
+  // to 503 / SANDBOX_NOT_CONFIGURED (that string means "host chat fallback").
+  if (
+    err instanceof SandboxHttpError &&
+    err.status === 426 &&
+    err.code === SANDBOX_DAEMON_OUT_OF_DATE_CODE
+  ) {
+    return { status: 426, error: err.message, code: SANDBOX_DAEMON_OUT_OF_DATE_CODE };
+  }
+
   const message = err instanceof Error ? err.message : String(err);
   const lower = message.toLowerCase();
 

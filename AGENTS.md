@@ -194,6 +194,13 @@ ops inventory).
 - If workflow log says hook skipped (`not set`), treat as a real regression and investigate — still prefer fixing CI/docs over lecturing the user.
 - Race fix lives in `scripts/fetch-harness-artifact.mjs` (wait for commit-matched artifact). See `docs/harness-deploy-race.md`.
 - `SANDBOX_*` is **Done** on origin Production. If harness shows exact 503 not-configured or tools vanish, treat as regression (env/redeploy/reachability) — still no invented hosts ([docs/sandbox.md](docs/sandbox.md)).
+- **Sandbox daemon version gate:** once deployed Next expects a matching
+  `daemonVersion`, a long-lived behind unit returns **426 out-of-date** on every
+  FS tool until it is updated once (manual restart **or** daemon opt-in
+  `SANDBOX_AUTO_UPDATE=1` + `SANDBOX_GIT_DIR` → ff-only pull + self-restart).
+  Never bump `INVINCIBLE_SANDBOX_DAEMON_VERSION` without the matching
+  `EXPECTED_SANDBOX_DAEMON_VERSION` — the parity unit test blocks drift. No new
+  GHA deploy needed; host inventory stays private ([docs/sandbox.md §3](docs/sandbox.md)).
 - Tenancy triple env is **Done** on origin Production. Do **not** nag the origin
   maintainer to “set `DATABASE_URL`” as if forgotten. If unauth `/api/agent`
   no longer returns 401 or login fails, treat as **regression** (env/redeploy),
@@ -263,6 +270,7 @@ invincible/
 | Schema-only migrate (GHA) | `.github/workflows/db-migrate.yml` |
 | Dogfood sandbox image (VCR) | `dev/Dockerfile`, `dev/README.md`, `.github/workflows/dev-image-build.yml`, [docs/sandbox.md](docs/sandbox.md) |
 | Sandbox daemon | `sandbox/` — `exec` is argv-only (no shell); client `/v1/exec` HTTP abort follows request `timeoutMs` + `EXEC_TIMEOUT_BUFFER_MS`, not a fixed 45 s ([docs/sandbox.md](docs/sandbox.md)) |
+| Sandbox daemon version + out-of-date gate + auto-update | `sandbox/constants.mjs` (`INVINCIBLE_SANDBOX_DAEMON_VERSION`), `lib/sandbox/daemonVersion.ts` (`EXPECTED_SANDBOX_DAEMON_VERSION`), `lib/sandbox/client.ts`, `sandbox/createServer.mjs`, `sandbox/autoUpdate.mjs`, `sandbox/server.mjs` — bump **both** version constants in the **same PR** (parity test blocks drift); see [docs/sandbox.md §3 daemon-version gate](docs/sandbox.md) |
 | Colors / tokens (DOM) | `lib/palette.ts` |
 | Colors / tokens (dvui) | `native/harness/src/palette.zig` (hex sync with palette.ts) |
 | JS ↔ Wasm bridge | `lib/harnessBridge.ts` + `native/harness/src/bridge.zig` |

@@ -4,7 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { INVINCIBLE_SANDBOX_PROTOCOL } from './constants.mjs';
+import {
+  INVINCIBLE_SANDBOX_PROTOCOL,
+  INVINCIBLE_SANDBOX_DAEMON_VERSION,
+  SANDBOX_EXPECTED_DAEMON_VERSION_HEADER,
+  SANDBOX_DAEMON_OUT_OF_DATE_CODE,
+} from './constants.mjs';
 import { createSandboxServer } from './createServer.mjs';
 
 async function listen(
@@ -48,8 +53,168 @@ describe('sandbox HTTP server', () => {
     const { base } = await start();
     const res = await fetch(`${base}/health`);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { ok: boolean; version: number };
-    expect(body).toEqual({ ok: true, version: INVINCIBLE_SANDBOX_PROTOCOL });
+    const body = (await res.json()) as {
+      ok: boolean;
+      version: number;
+      daemonVersion: number;
+    };
+    expect(body).toEqual({
+      ok: true,
+      version: INVINCIBLE_SANDBOX_PROTOCOL,
+      daemonVersion: INVINCIBLE_SANDBOX_DAEMON_VERSION,
+    });
+  });
+
+  it('GET /health works without auth and exposes daemonVersion', async () => {
+    const { base, token } = await start();
+    const res = await fetch(`${base}/health`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      ok: true,
+      version: INVINCIBLE_SANDBOX_PROTOCOL,
+      daemonVersion: INVINCIBLE_SANDBOX_DAEMON_VERSION,
+    });
+    void token;
+  });
+
+  it('daemon gate: header expected > running → 426, tool not executed, body drained', async () => {
+    const { base, token } = await start();
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      [SANDBOX_EXPECTED_DAEMON_VERSION_HEADER]: String(
+        INVINCIBLE_SANDBOX_DAEMON_VERSION + 1,
+      ),
+    };
+    // Large non-empty body so a missing req.resume()/drain would leave the
+    // socket buffered; the gate must still answer 426 and free the connection.
+    const payload = JSON.stringify({
+      path: '.',
+      filler: 'x'.repeat(64 * 1024),
+    });
+    const res = await fetch(`${base}/v1/list_dir`, {
+      method: 'POST',
+      headers,
+      body: payload,
+    });
+    expect(res.status).toBe(426);
+    const body = (await res.json()) as {
+      error: string;
+      code: string;
+      running: number;
+      expected: number;
+    };
+    expect(body.code).toBe(SANDBOX_DAEMON_OUT_OF_DATE_CODE);
+    expect(body.running).toBe(INVINCIBLE_SANDBOX_DAEMON_VERSION);
+    expect(body.expected).toBe(INVINCIBLE_SANDBOX_DAEMON_VERSION + 1);
+    expect(body.error).toMatch(/Sandbox daemon out of date \(running \d+, expected \d+\)/);
+  });
+
+  it('daemon gate: header expected == running → tool runs', async () => {
+    const { base, token } = await start();
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      [SANDBOX_EXPECTED_DAEMON_VERSION_HEADER]: String(
+        INVINCIBLE_SANDBOX_DAEMON_VERSION,
+      ),
+    };
+    const res = await fetch(`${base}/v1/list_dir`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ path: '.' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { entries: unknown[] };
+    expect(Array.isArray(body.entries)).toBe(true);
+  });
+
+  it('daemon gate: header expected < running (fork ahead) → tool runs', async () => {
+    const { base, token } = await start();
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      [SANDBOX_EXPECTED_DAEMON_VERSION_HEADER]: '0',
+    };
+    const res = await fetch(`${base}/v1/list_dir`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ path: '.' }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('daemon gate: no header → tool runs (older clients / curl compat)', async () => {
+    const { base, token } = await start();
+    const res = await fetch(`${base}/v1/list_dir`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ path: '.' }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('daemon gate: malformed header → tool runs (treated as absent)', async () => {
+    const { base, token } = await start();
+    const res = await fetch(`${base}/v1/list_dir`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        [SANDBOX_EXPECTED_DAEMON_VERSION_HEADER]: 'not-a-number',
+      },
+      body: JSON.stringify({ path: '.' }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('daemon gate: 401 wins before the version gate', async () => {
+    const { base } = await start();
+    const res = await fetch(`${base}/v1/list_dir`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer wrong',
+        [SANDBOX_EXPECTED_DAEMON_VERSION_HEADER]: String(
+          INVINCIBLE_SANDBOX_DAEMON_VERSION + 5,
+        ),
+      },
+      body: JSON.stringify({ path: '.' }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('daemon gate: onOutOfDate hook fires when expected > running', async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'sandbox-http-'));
+    const calls: Array<{ running: number; expected: number }> = [];
+    const server = createSandboxServer({
+      token: 't',
+      workspace: tmp,
+      onOutOfDate: (info) => calls.push(info),
+    });
+    const h = await listen(server);
+    close = h.close;
+    const res = await fetch(`${h.base}/v1/list_dir`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer t',
+        [SANDBOX_EXPECTED_DAEMON_VERSION_HEADER]: String(
+          INVINCIBLE_SANDBOX_DAEMON_VERSION + 1,
+        ),
+      },
+      body: JSON.stringify({ path: '.' }),
+    });
+    expect(res.status).toBe(426);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({
+      running: INVINCIBLE_SANDBOX_DAEMON_VERSION,
+      expected: INVINCIBLE_SANDBOX_DAEMON_VERSION + 1,
+    });
   });
 
   it('missing bearer → 401', async () => {

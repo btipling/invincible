@@ -313,12 +313,16 @@ export async function POST(req: Request): Promise<Response> {
             if (isAbortError(err)) {
               enqueue({ type: 'error', error: 'Request cancelled.', status: 499 });
             } else {
-              const { error } = mapInferenceError(err);
+              const { error, status } = mapInferenceError(err);
               const safe =
                 secretsForErr.length > 0
                   ? redactSecrets(error, secretsForErr)
                   : error;
-              enqueue({ type: 'error', error: safe });
+              enqueue({
+                type: 'error',
+                error: safe,
+                ...(status === 426 ? { status } : {}),
+              });
             }
           } finally {
             await closeRunners(httpRef, mcpRef, sandboxRef);
@@ -361,10 +365,13 @@ export async function POST(req: Request): Promise<Response> {
     if (isAbortError(err)) {
       return Response.json({ error: 'Request cancelled.' }, { status: 499 });
     }
-    const { status, error } = mapInferenceError(err);
+    const { status, error, code } = mapInferenceError(err);
     const safe =
       redactList.length > 0 ? redactSecrets(error, redactList) : error;
-    return Response.json({ error: safe }, { status });
+    return Response.json(
+      { error: safe, ...(code != null ? { code } : {}) },
+      { status },
+    );
   } finally {
     if (!runnersOwnedByStream) {
       await closeRunners(httpRunner, mcpClose, sandboxClient);

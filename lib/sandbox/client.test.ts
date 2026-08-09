@@ -1,16 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createSandboxClient, execAbortTimeoutMs } from './client';
 import { EXEC_TIMEOUT_BUFFER_MS, MAX_EXEC_TIMEOUT_MS } from './config';
+import { EXPECTED_SANDBOX_DAEMON_VERSION } from './daemonVersion';
 import { SandboxHttpError } from './types';
+
+/** Health body served by the fake daemon; daemonVersion omitted → running 0. */
+function healthJson(opts: { version?: number; daemonVersion?: number } = {}) {
+  const body: Record<string, unknown> = { ok: true, version: opts.version ?? 2 };
+  if (opts.daemonVersion !== undefined) {
+    body.daemonVersion = opts.daemonVersion;
+  }
+  return Response.json(body);
+}
 
 describe('sandbox client', () => {
   const token = 'test-token-secret-xyz';
 
-  it('list/read/write/stat/exec call correct paths with bearer', async () => {
+  it('list/read/write/stat/exec call correct paths with bearer + expected header', async () => {
     const calls: { url: string; init: RequestInit }[] = [];
     const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
       calls.push({ url: String(url), init: init ?? {} });
       const path = String(url);
+      if (path.endsWith('/health')) {
+        return healthJson({ version: 2, daemonVersion: 1 });
+      }
       if (path.endsWith('/v1/list_dir')) {
         return Response.json({ entries: [{ name: 'a', type: 'file' }] });
       }
@@ -66,10 +79,17 @@ describe('sandbox client', () => {
       stderr: '',
     });
 
-    expect(calls).toHaveLength(5);
-    for (const c of calls) {
+    // One health probe + five tool calls.
+    expect(calls).toHaveLength(6);
+    expect(calls[0].url.endsWith('/health')).toBe(true);
+    const toolCalls = calls.filter((c) => c.url.includes('/v1/'));
+    expect(toolCalls).toHaveLength(5);
+    for (const c of toolCalls) {
       const headers = c.init.headers as Record<string, string>;
       expect(headers.Authorization).toBe(`Bearer ${token}`);
+      expect(headers['x-invincible-expected-daemon-version']).toBe(
+        String(EXPECTED_SANDBOX_DAEMON_VERSION),
+      );
       expect(c.url.startsWith('http://sandbox.test/v1/')).toBe(true);
     }
   });
@@ -98,6 +118,9 @@ describe('sandbox client', () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const path = url.replace(/^https?:\/\/[^/]+/, '');
+      if (path === '/health') {
+        return healthJson({ version: 2, daemonVersion: 1 });
+      }
       const body = init?.body ? JSON.parse(String(init.body)) : {};
       calls.push({ path, body });
       return new Response(JSON.stringify({ exitCode: 0, stdout: '', stderr: '' }), {
@@ -123,7 +146,12 @@ describe('sandbox client', () => {
 
   it('exec omits env when execEnv unset', async () => {
     const calls: Array<{ body: unknown }> = [];
-    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.replace(/^https?:\/\/[^/]+/, '');
+      if (path === '/health') {
+        return healthJson({ version: 2, daemonVersion: 1 });
+      }
       const body = init?.body ? JSON.parse(String(init.body)) : {};
       calls.push({ body });
       return new Response(JSON.stringify({ exitCode: 0, stdout: '', stderr: '' }), {
@@ -141,7 +169,7 @@ describe('sandbox client', () => {
     expect(calls[0].body).not.toHaveProperty('env');
   });
 
-  it('exec with stdin probes health and forwards stdin on protocol v2+', async () => {
+  it('events include one health probe; exec with stdin reuses it', async () => {
     const calls: Array<{ method?: string; path: string; body?: unknown }> = [];
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -149,7 +177,7 @@ describe('sandbox client', () => {
       const method = (init?.method ?? 'GET').toUpperCase();
       if (path === '/health') {
         calls.push({ method, path });
-        return Response.json({ ok: true, version: 2 });
+        return healthJson({ version: 2, daemonVersion: 1 });
       }
       const body = init?.body ? JSON.parse(String(init.body)) : {};
       calls.push({ method, path, body });
@@ -181,7 +209,7 @@ describe('sandbox client', () => {
       const url = String(input);
       const path = url.replace(/^https?:\/\/[^/]+/, '');
       if (path === '/health') {
-        return Response.json({ ok: true, version: 1 });
+        return healthJson({ version: 1 });
       }
       return Response.json({ exitCode: 0, stdout: '', stderr: '' });
     });
@@ -201,16 +229,121 @@ describe('sandbox client', () => {
     expect(posts).toHaveLength(0);
   });
 
+  it('daemonVersion missing → 426 exact out-of-date error, no POST', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith('/health')) {
+        return healthJson({ version: 2 }); // no daemonVersion → running 0
+      }
+      return Response.json({ ok: true });
+    });
+    const client = createSandboxClient({
+      baseUrl: 'http://sandbox.test',
+      token,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(client.listDir()).rejects.toMatchObject({
+      status: 426,
+      code: 'SANDBOX_DAEMON_OUT_OF_DATE',
+      message:
+        'Sandbox daemon out of date (running 0, expected ' +
+        `${EXPECTED_SANDBOX_DAEMON_VERSION}). Update and restart the sandbox process.`,
+    });
+    const posts = vi
+      .mocked(fetchImpl)
+      .mock.calls.filter((c) => String(c[0]).includes('/v1/'));
+    expect(posts).toHaveLength(0);
+  });
+
+  it('daemonVersion < expected → 426 thrown before the tool POST', async () => {
+    const posts: string[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith('/health')) {
+        return healthJson({ version: 2, daemonVersion: 0 });
+      }
+      posts.push(path);
+      return Response.json({ ok: true });
+    });
+    const client = createSandboxClient({
+      baseUrl: 'http://sandbox.test',
+      // Expect a daemon revision beyond what the mock advertises (running 0).
+      expectedDaemonVersion: EXPECTED_SANDBOX_DAEMON_VERSION,
+      token,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(client.readFile('a')).rejects.toMatchObject({ status: 426 });
+    expect(posts).toHaveLength(0);
+  });
+
+  it('daemonVersion >= expected → tools POST as today', async () => {
+    const posts: string[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith('/health')) {
+        return healthJson({ version: 2, daemonVersion: EXPECTED_SANDBOX_DAEMON_VERSION });
+      }
+      posts.push(path.replace(/^https?:\/\/[^/]+/, ''));
+      return Response.json({ entries: [] });
+    });
+    const client = createSandboxClient({
+      baseUrl: 'http://sandbox.test',
+      token,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(client.listDir()).resolves.toEqual({ entries: [] });
+    expect(posts).toEqual(['/v1/list_dir']);
+  });
+
+  it('daemon 426 response → exact SandboxHttpError, no token leak', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith('/health')) {
+        return healthJson({ version: 2, daemonVersion: 1 });
+      }
+      if (path.endsWith('/v1/list_dir')) {
+        return Response.json(
+          {
+            error: `Sandbox daemon out of date (running 1, expected ${EXPECTED_SANDBOX_DAEMON_VERSION + 1}). Update and restart the sandbox process.`,
+            code: 'SANDBOX_DAEMON_OUT_OF_DATE',
+            running: 1,
+            expected: EXPECTED_SANDBOX_DAEMON_VERSION + 1,
+          },
+          { status: 426 },
+        );
+      }
+      return Response.json({ ok: true });
+    });
+    const client = createSandboxClient({
+      baseUrl: 'http://sandbox.test',
+      token,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(client.listDir()).rejects.toMatchObject({
+      status: 426,
+      code: 'SANDBOX_DAEMON_OUT_OF_DATE',
+      message: expect.stringMatching(/out of date/),
+    });
+    try {
+      await client.listDir();
+    } catch (err) {
+      expect((err as Error).message).not.toContain(token);
+    }
+  });
+
   it('exec client abort deadline follows request timeoutMs (+ buffer), not fixed 45s', async () => {
-    // Prove the derived deadline is actually wired into withTimeoutFetch — not only
-    // the pure helper. Fake timers: must survive past the old 45s ceiling and only
-    // abort at clamp(timeoutMs) + EXEC_TIMEOUT_BUFFER_MS.
     vi.useFakeTimers();
     try {
       let aborted = false;
       const fetchImpl = vi.fn(
-        (_input: RequestInfo | URL, init?: RequestInit) =>
-          new Promise<Response>((_resolve, reject) => {
+        (input: RequestInfo | URL, init?: RequestInit) => {
+          const path = String(input);
+          if (path.endsWith('/health')) {
+            return Promise.resolve(
+              healthJson({ version: 2, daemonVersion: 1 }),
+            );
+          }
+          return new Promise<Response>((_resolve, reject) => {
             const sig = init?.signal as AbortSignal | undefined;
             const onAbort = () => {
               aborted = true;
@@ -219,21 +352,28 @@ describe('sandbox client', () => {
             };
             if (sig?.aborted) onAbort();
             else sig?.addEventListener('abort', onAbort, { once: true });
-          }),
+          });
+        },
       );
       const client = createSandboxClient({
         baseUrl: 'http://sandbox.test',
         token: 'tok',
         fetchImpl: fetchImpl as unknown as typeof fetch,
       });
+      // Prime + cache the health probe first, so exec's daemon gate is a no-op
+      // and the /v1/exec request reaches the daemon synchronously for the timer test.
+      await client.checkDaemonCurrent?.();
       const pending = client
         .exec({ cmd: 'make', args: ['build'], timeoutMs: 300_000 })
         .then(
           () => null,
           (err: unknown) => err,
         );
-      // Daemon still sees the request timeoutMs (not a client-side 45s ceiling).
-      const body = vi.mocked(fetchImpl).mock.calls[0][1]?.body;
+      // Flush the async gate (cached health) so the /v1/exec request lands.
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      const body = vi
+        .mocked(fetchImpl)
+        .mock.calls.find((c) => String(c[0]).endsWith('/v1/exec'))?.[1]?.body;
       expect(JSON.parse(String(body))).toMatchObject({ cmd: 'make', timeoutMs: 300_000 });
       const deadline = execAbortTimeoutMs(300_000)!;
       expect(deadline).toBe(305_000);
@@ -260,8 +400,12 @@ describe('sandbox client', () => {
   it('exec turn-cancel abort wins immediately over the client timer', async () => {
     let aborted = false;
     const fetchImpl = vi.fn(
-      (_input: RequestInfo | URL, init?: RequestInit) =>
-        new Promise<Response>((_resolve, reject) => {
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path.endsWith('/health')) {
+          return Promise.resolve(healthJson({ version: 2, daemonVersion: 1 }));
+        }
+        return new Promise<Response>((_resolve, reject) => {
           const sig = init?.signal as AbortSignal | undefined;
           const onAbort = () => {
             aborted = true;
@@ -270,7 +414,8 @@ describe('sandbox client', () => {
           };
           if (sig?.aborted) onAbort();
           else sig?.addEventListener('abort', onAbort, { once: true });
-        }),
+        });
+      },
     );
     const client = createSandboxClient({
       baseUrl: 'http://sandbox.test',
@@ -297,10 +442,15 @@ describe('sandbox client', () => {
     );
   });
 
-  it('exec without stdin does not probe health', async () => {
+  it('exec without stdin still gates on daemon health (one probe)', async () => {
     const paths: string[] = [];
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
-      paths.push(String(input).replace(/^https?:\/\/[^/]+/, ''));
+      const p = String(input).replace(/^https?:\/\/[^/]+/, '');
+      if (p === '/health') {
+        paths.push(p);
+        return healthJson({ version: 2, daemonVersion: 1 });
+      }
+      paths.push(p);
       return Response.json({ exitCode: 0, stdout: '', stderr: '' });
     });
     const client = createSandboxClient({
@@ -309,12 +459,15 @@ describe('sandbox client', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     await client.exec({ cmd: 'true' });
-    expect(paths).toEqual(['/v1/exec']);
+    expect(paths).toEqual(['/health', '/v1/exec']);
   });
 
-  it('accepts optional fingerprint fields from old daemons', async () => {
+  it('accepts optional fingerprint fields from current daemons', async () => {
     const fetchImpl = vi.fn(async (url: string | URL) => {
       const path = String(url);
+      if (path.endsWith('/health')) {
+        return healthJson({ version: 2, daemonVersion: 1 });
+      }
       if (path.endsWith('/v1/read_file')) {
         return Response.json({ content: 'legacy' });
       }
@@ -335,5 +488,25 @@ describe('sandbox client', () => {
     });
     await expect(client.readFile('x')).resolves.toEqual({ content: 'legacy' });
     await expect(client.stat('x')).resolves.toMatchObject({ type: 'file', size: 0 });
+  });
+
+  it('checkDaemonCurrent rejects when daemon out of date, passes when current', async () => {
+    let backend = 0; // running daemonVersion
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith('/health')) {
+        return healthJson({ version: 2, daemonVersion: backend });
+      }
+      return Response.json({ ok: true });
+    });
+    const client = createSandboxClient({
+      baseUrl: 'http://sandbox.test',
+      token,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(client.checkDaemonCurrent?.()).rejects.toMatchObject({ status: 426 });
+    // After the daemon is upgraded, the same client re-probes (cache was cleared).
+    backend = EXPECTED_SANDBOX_DAEMON_VERSION;
+    await expect(client.checkDaemonCurrent?.()).resolves.toBeUndefined();
   });
 });
