@@ -325,6 +325,29 @@ catalog + BYOK only.
 - [ ] No `pull_request` execution path for the sandbox service  
 - [ ] No host IPs / droplet IDs / cloud GUIDs committed  
 - [ ] Prod URL health-checked from **outside** the host  
+- [ ] User GitHub PAT (if configured) is DEK ciphertext only; injected **exec-only** as `GH_TOKEN`/`GITHUB_TOKEN`; never Wasm/client/image; redacted from tool/stream output  
+
+### User GitHub personal access token (Settings)
+
+When tenancy is on, each user may store a **GitHub personal access token** under
+**Settings → GitHub token** (ciphertext under the tenant DEK). On agent turns the
+server decrypts it and injects **only** into sandbox **FS `exec`** child env as
+**`GH_TOKEN`** and **`GITHUB_TOKEN`** (same value), for **both** backends
+(`vercel` and `byo`):
+
+| Path | Behavior |
+|------|----------|
+| Vercel Sandbox | Merged into each `runCommand` via server client options |
+| BYO daemon | JSON `env` on `/v1/exec`; daemon allowlists only those two keys |
+
+Rules:
+
+- **Omit** both keys when the user has no token (never empty strings).
+- **Not** written into dogfood/VCR images, host Next env, or Wasm/client.
+- **Not** model-visible: the agent `exec` tool schema has no `env` field.
+- BYO daemons reject unknown `env` keys (400). Upgrade the daemon to get inject.
+- Tool/stream output redacts the plaintext when present on the turn secret list.
+- Prefer a fine-grained PAT with least scopes; rotate or clear from Settings.
 
 See also [SECURITY.md](../SECURITY.md).
 

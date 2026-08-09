@@ -71,4 +71,53 @@ describe('sandbox client', () => {
       expect((err as Error).message).not.toContain(token);
     }
   });
+
+  it('exec merges construction execEnv into body', async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.replace(/^https?:\/\/[^/]+/, '');
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      calls.push({ path, body });
+      return new Response(JSON.stringify({ exitCode: 0, stdout: '', stderr: '' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const client = createSandboxClient({
+      baseUrl: 'http://sandbox.test',
+      token: 'tok',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      execEnv: { GH_TOKEN: 'ghp_x', GITHUB_TOKEN: 'ghp_x', PATH: '/evil' },
+    });
+    await client.exec({ cmd: 'echo', args: ['hi'] });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].path).toBe('/v1/exec');
+    expect(calls[0].body).toEqual({
+      cmd: 'echo',
+      args: ['hi'],
+      env: { GH_TOKEN: 'ghp_x', GITHUB_TOKEN: 'ghp_x' },
+    });
+  });
+
+  it('exec omits env when execEnv unset', async () => {
+    const calls: Array<{ body: unknown }> = [];
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      calls.push({ body });
+      return new Response(JSON.stringify({ exitCode: 0, stdout: '', stderr: '' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const client = createSandboxClient({
+      baseUrl: 'http://sandbox.test',
+      token: 'tok',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await client.exec({ cmd: 'true' });
+    expect(calls[0].body).toEqual({ cmd: 'true' });
+    expect(calls[0].body).not.toHaveProperty('env');
+  });
+
 });

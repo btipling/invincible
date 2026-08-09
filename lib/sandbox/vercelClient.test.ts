@@ -150,16 +150,50 @@ describe('createVercelSandboxClient', () => {
       expect.objectContaining({ recursive: true }),
     );
     expect(sb.runCommand).toHaveBeenCalledWith(
-      'echo',
-      ['x'],
       expect.objectContaining({
+        cmd: 'echo',
+        args: ['x'],
         cwd: VERCEL_FS_WORKSPACE_ROOT,
       }),
     );
-    // No env secrets on runCommand
-    const runOpts = vi.mocked(sb.runCommand).mock.calls[0]?.[2];
-    expect(runOpts?.env).toBeUndefined();
+    // Object form; no env when execEnv unset (SDK 3-arg would drop cwd/env)
+    const runParams = vi.mocked(sb.runCommand).mock.calls[0]?.[0] as {
+      env?: Record<string, string>;
+    };
+    expect(runParams.env).toBeUndefined();
 
+    await client.close?.();
+  });
+
+  it('exec passes allowlisted execEnv to runCommand', async () => {
+    const sb = mockSandbox();
+    const createSandbox: CreateVercelFsSandboxFn = vi.fn(async () => sb);
+    const client = createVercelSandboxClient({
+      createSandbox,
+      execEnv: {
+        GH_TOKEN: 'ghp_pat',
+        GITHUB_TOKEN: 'ghp_pat',
+        PATH: '/should-not-pass',
+      },
+    });
+    await client.exec({ cmd: 'gh', args: ['auth', 'status'] });
+    const runParams = vi.mocked(sb.runCommand).mock.calls[0]?.[0] as {
+      cmd: string;
+      args?: string[];
+      env?: Record<string, string>;
+    };
+    expect(runParams).toEqual(
+      expect.objectContaining({
+        cmd: 'gh',
+        args: ['auth', 'status'],
+        env: {
+          GH_TOKEN: 'ghp_pat',
+          GITHUB_TOKEN: 'ghp_pat',
+        },
+      }),
+    );
+    // Must be object form — string+opts would drop env in real SDK
+    expect(typeof vi.mocked(sb.runCommand).mock.calls[0]?.[0]).toBe('object');
     await client.close?.();
   });
 

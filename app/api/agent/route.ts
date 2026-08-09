@@ -21,6 +21,7 @@ import {
 import { tenancyEnabled } from '../../../lib/tenancy/enabled';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 import { resolveAgentSandbox } from '../../../lib/tenancy/resolveSandbox';
+import { decryptUserGithubTokenForServer } from '../../../lib/tenancy/userGithubToken';
 import { resolveByokForRequest } from '../../../lib/tenancy/resolveInferenceForRequest';
 import { redactSecrets } from '../../../lib/agent/redact';
 import { buildUserMcpTools } from '../../../lib/mcp/client';
@@ -148,7 +149,19 @@ export async function POST(req: Request): Promise<Response> {
       }
       redactList = byok.secretsToRedact;
 
-      const resolved = await resolveAgentSandbox(userId);
+      // Per-user GitHub PAT → sandbox exec env (client options only; never tool schema).
+      const gh = await decryptUserGithubTokenForServer(userId);
+      const ghSecrets: string[] = [];
+      let execEnv: Record<string, string> | undefined;
+      if (gh.ok && gh.value) {
+        ghSecrets.push(gh.value);
+        execEnv = { GH_TOKEN: gh.value, GITHUB_TOKEN: gh.value };
+      }
+      redactList = [...redactList, ...ghSecrets];
+
+      const resolved = await resolveAgentSandbox(userId, {
+        ...(execEnv ? { execEnv } : {}),
+      });
 
       if (!resolved.ok) {
         if (!builtinHttp.enabled) {
@@ -159,7 +172,7 @@ export async function POST(req: Request): Promise<Response> {
         runParams = {
           ...runParams,
           skipSandboxTools: true,
-          secrets: [...byok.secretsToRedact],
+          secrets: [...byok.secretsToRedact, ...ghSecrets],
         };
       } else {
         sandboxClient = resolved.value.client;
@@ -171,6 +184,7 @@ export async function POST(req: Request): Promise<Response> {
           secrets: [
             ...resolved.value.secrets,
             ...byok.secretsToRedact,
+            ...ghSecrets,
           ],
         };
       }

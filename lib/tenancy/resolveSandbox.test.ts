@@ -379,6 +379,66 @@ describe('resolveAgentSandbox', () => {
     expect(result.value.resolvedImage).toBe('vercel/sandbox/universal:latest');
   });
 
+  it('threads execEnv into vercel and byo client factories', async () => {
+    const execEnv = { GH_TOKEN: 'ghp_thread', GITHUB_TOKEN: 'ghp_thread' };
+
+    await db
+      .update(schema.sandboxes)
+      .set({
+        backend: 'vercel',
+        baseUrl: null,
+        tokenCiphertext: null,
+        image: null,
+      })
+      .where(eq(schema.sandboxes.id, sandboxId));
+
+    const createVercelClient = vi.fn(() => stubClient() as never);
+    let result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      createVercelClient,
+      execEnv,
+    });
+    expect(result.ok).toBe(true);
+    expect(createVercelClient).toHaveBeenCalledWith({
+      image: null,
+      execEnv,
+    });
+
+    // Restore byo row with ciphertext (re-encrypt for this test)
+    const { ciphertext } = await encryptTenantSecret(
+      tenantId,
+      'sandbox-token-secret-xyz',
+      { db: db as never, amk: AMK },
+    );
+    await db
+      .update(schema.sandboxes)
+      .set({
+        backend: 'byo',
+        baseUrl: 'http://127.0.0.1:8787/',
+        tokenCiphertext: ciphertext,
+        image: null,
+      })
+      .where(eq(schema.sandboxes.id, sandboxId));
+
+    const createByoClient = vi.fn(
+      (opts: { baseUrl: string; token: string; execEnv?: Record<string, string> }) =>
+        stubClient({ baseUrl: opts.baseUrl, token: opts.token }),
+    );
+    result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      decryptSandboxToken: decrypt,
+      createByoClient,
+      execEnv,
+    });
+    expect(result.ok).toBe(true);
+    expect(createByoClient).toHaveBeenCalledWith(
+      expect.objectContaining({
+        execEnv,
+        token: 'sandbox-token-secret-xyz',
+      }),
+    );
+  });
+
   it('vercel row with stale URL/token still succeeds without decrypt', async () => {
     await db
       .update(schema.sandboxes)

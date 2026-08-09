@@ -88,6 +88,33 @@ describe('createAgentTools', () => {
     expect(out).toContain('2 entries');
     expect(out).toContain('a.ts');
   });
+
+  it('exec tool schema has no env (additionalProperties false, no env key)', () => {
+    const client = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      strReplace: vi.fn(),
+      exec: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
+    } as unknown as SandboxClient;
+    const tools = createAgentTools({ client });
+    const execTool = tools.exec as {
+      inputSchema?: {
+        jsonSchema?: {
+          properties?: Record<string, unknown>;
+          additionalProperties?: boolean;
+        };
+      };
+    };
+    const js = execTool.inputSchema?.jsonSchema;
+    expect(js).toBeDefined();
+    expect(js!.additionalProperties).toBe(false);
+    expect(js!.properties).toBeDefined();
+    expect(js!.properties).not.toHaveProperty('env');
+    expect(Object.keys(js!.properties!)).toEqual(
+      expect.arrayContaining(['cmd', 'args', 'cwd', 'timeoutMs']),
+    );
+  });
 });
 
 describe('createAgentTools permissions', () => {

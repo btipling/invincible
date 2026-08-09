@@ -82,14 +82,25 @@ export type VercelFsSandboxLike = {
       options?: { signal?: AbortSignal },
     ): Promise<{ isFile(): boolean; isDirectory(): boolean; size: number }>;
   };
+  /**
+   * Mirrors @vercel/sandbox: string form only forwards signal/timeoutMs;
+   * cwd/env require the object form (RunCommandParams).
+   */
   runCommand(
-    command: string,
+    commandOrParams:
+      | string
+      | {
+          cmd: string;
+          args?: string[];
+          cwd?: string;
+          env?: Record<string, string>;
+          signal?: AbortSignal;
+          timeoutMs?: number;
+        },
     args?: string[],
     opts?: {
       signal?: AbortSignal;
       timeoutMs?: number;
-      cwd?: string;
-      env?: Record<string, string>;
     },
   ): Promise<VercelFsSandboxCommandResult>;
   stop(opts?: { signal?: AbortSignal }): Promise<unknown>;
@@ -116,6 +127,11 @@ export type CreateVercelSandboxClientOptions = {
   sandboxTimeoutMs?: number;
   /** Absolute jail root inside the VM. Default `/vercel/workspace`. */
   workspaceRoot?: string;
+  /**
+   * Server-owned allowlisted env merged into every `runCommand` (exec only).
+   * Only GH_TOKEN / GITHUB_TOKEN should be supplied. Never from the model.
+   */
+  execEnv?: Record<string, string>;
 };
 
 function clampSandboxTimeout(ms: number | undefined): number {
@@ -229,6 +245,20 @@ function capStdio(text: string): { text: string; truncated: boolean } {
   return { text: text.slice(0, MAX_STDIO_BYTES), truncated: true };
 }
 
+function normalizeExecEnv(
+  raw: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!raw) return undefined;
+  const out: Record<string, string> = {};
+  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN'] as const) {
+    const v = raw[key];
+    if (typeof v === 'string' && v.length > 0) {
+      out[key] = v;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export function createVercelSandboxClient(
   opts: CreateVercelSandboxClientOptions = {},
 ): SandboxClient {
@@ -245,6 +275,7 @@ export function createVercelSandboxClient(
     /\/+$/,
     '',
   );
+  const execEnv = normalizeExecEnv(opts.execEnv);
 
   let createPromise: Promise<VercelFsSandboxLike> | null = null;
   let sandbox: VercelFsSandboxLike | null = null;
@@ -393,10 +424,10 @@ export function createVercelSandboxClient(
           }
           if (st.size > max) {
             // Byte-capped read via head (matches BYO daemon open+read max+1 pattern).
+            // String form: only signal/timeoutMs (path is absolute; cwd unused).
             const cmd = await sb.runCommand('head', ['-c', String(max + 1), abs], {
               signal: init?.signal,
               timeoutMs: 120_000,
-              cwd: workspaceRoot,
             });
             const { stdout } = await commandOutput(cmd);
             const buf = Buffer.from(stdout, 'utf8');
@@ -545,11 +576,15 @@ export function createVercelSandboxClient(
         const cwdAbs = resolveVercelFsPath(workspaceRoot, body.cwd ?? '.');
         const timeoutMs = clampExecTimeoutMs(body.timeoutMs);
         const sb = await ensureSandbox(init?.signal);
-        const cmd = await sb.runCommand(body.cmd, args, {
+        // Object form required: @vercel/sandbox 3-arg string form drops cwd/env.
+        const cmd = await sb.runCommand({
+          cmd: body.cmd,
+          args,
           cwd: cwdAbs,
           signal: init?.signal,
           timeoutMs,
-          // Intentionally omit env — never inject gateway/BYO secrets.
+          // Only server-owned allowlisted execEnv (user GitHub PAT). Never host secrets.
+          ...(execEnv ? { env: execEnv } : {}),
         });
         const { stdout, stderr } = await commandOutput(cmd);
         const out = capStdio(stdout);

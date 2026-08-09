@@ -17,6 +17,7 @@ describe('POST /api/agent', () => {
     vi.doUnmock('../../../lib/agent/runAgent');
     vi.doUnmock('../../../lib/tenancy/session');
     vi.doUnmock('../../../lib/tenancy/resolveSandbox');
+    vi.doUnmock('../../../lib/tenancy/userGithubToken');
     vi.doUnmock('../../../lib/tenancy/resolveInferenceForRequest');
     vi.doUnmock('../../../lib/mcp/client');
     vi.doUnmock('../../../lib/agent/vercelSandboxHttpRunner');
@@ -72,6 +73,18 @@ describe('POST /api/agent', () => {
     }));
     vi.doMock('../../../lib/mcp/client', () => ({ buildUserMcpTools }));
     return { close, buildUserMcpTools };
+  }
+
+  function mockGithubToken(value: string | null = null) {
+    const decryptUserGithubTokenForServer = vi.fn(async () =>
+      value
+        ? { ok: true as const, value }
+        : { ok: true as const, value: null },
+    );
+    vi.doMock('../../../lib/tenancy/userGithubToken', () => ({
+      decryptUserGithubTokenForServer,
+    }));
+    return { decryptUserGithubTokenForServer };
   }
 
   it('returns 500 when gateway key missing', async () => {
@@ -248,6 +261,7 @@ describe('POST /api/agent', () => {
       })),
     }));
     mockByokOk();
+    mockGithubToken();
     vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
       resolveAgentSandbox: vi.fn(async () => ({
         ok: false as const,
@@ -314,6 +328,7 @@ describe('POST /api/agent', () => {
       })),
     }));
     mockByokOk();
+    mockGithubToken();
     vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
       resolveAgentSandbox: vi.fn(async () => ({
         ok: true as const,
@@ -406,6 +421,7 @@ describe('POST /api/agent', () => {
       })),
     }));
     mockByokOk();
+    mockGithubToken();
     vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
       resolveAgentSandbox: vi.fn(async () => ({
         ok: true as const,
@@ -475,6 +491,7 @@ describe('POST /api/agent', () => {
       })),
     }));
     mockByokFail('forbidden');
+    mockGithubToken();
     vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
       resolveAgentSandbox,
     }));
@@ -598,6 +615,7 @@ describe('POST /api/agent', () => {
       })),
     }));
     mockByokOk();
+    mockGithubToken();
     vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
       resolveAgentSandbox: vi.fn(async () => ({
         ok: false as const,
@@ -788,6 +806,7 @@ describe('POST /api/agent', () => {
       })),
     }));
     mockByokOk();
+    mockGithubToken();
     vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
       resolveAgentSandbox: vi.fn(async () => ({
         ok: true as const,
@@ -844,6 +863,7 @@ describe('POST /api/agent', () => {
       })),
     }));
     mockByokOk();
+    mockGithubToken();
     vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
       resolveAgentSandbox: vi.fn(async () => ({
         ok: true as const,
@@ -915,6 +935,7 @@ describe('POST /api/agent', () => {
       })),
     }));
     mockByokOk();
+    mockGithubToken();
     vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
       resolveAgentSandbox: vi.fn(async () => ({
         ok: true as const,
@@ -959,5 +980,121 @@ describe('POST /api/agent', () => {
     releaseStream();
   });
 
+
+
+  it('tenancy on injects GitHub PAT into resolveAgentSandbox execEnv and secrets', async () => {
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+
+    const resolveAgentSandbox = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        client: { listDir: vi.fn(), close: vi.fn(async () => {}) },
+        permissions: { canRead: true, canWrite: true },
+        secrets: ['decrypted-db-token'],
+        sandboxId: 'sb-1',
+        tenantId: 't-1',
+        backend: 'byo' as const,
+        baseUrl: 'http://sb',
+        resolvedImage: null,
+      },
+    }));
+
+    vi.resetModules();
+    mockByokOk();
+    mockMcpEmpty();
+    mockGithubToken('ghp_pat_secret_value');
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1' },
+      })),
+    }));
+    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({ resolveAgentSandbox }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(async (arg: { secrets?: string[] }) => ({
+        text: 'ok',
+        toolTrace: [],
+      })),
+      runAgentStream: vi.fn(),
+    }));
+    vi.doMock('../../../lib/agent/builtinHttpConfig', () => ({
+      resolveBuiltinHttpConfig: () => ({ enabled: false }),
+    }));
+
+    const { POST } = await loadRoute();
+    const { runAgent } = await import('../../../lib/agent/runAgent');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(resolveAgentSandbox).toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({
+        execEnv: {
+          GH_TOKEN: 'ghp_pat_secret_value',
+          GITHUB_TOKEN: 'ghp_pat_secret_value',
+        },
+      }),
+    );
+    const arg = vi.mocked(runAgent).mock.calls[0]?.[0] as { secrets?: string[] };
+    expect(arg.secrets).toContain('ghp_pat_secret_value');
+    expect(arg.secrets).toContain('decrypted-db-token');
+  });
+
+  it('tenancy on omits execEnv when GitHub token unset', async () => {
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+
+    const resolveAgentSandbox = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        client: { listDir: vi.fn(), close: vi.fn(async () => {}) },
+        permissions: { canRead: true, canWrite: true },
+        secrets: [],
+        sandboxId: 'sb-1',
+        tenantId: 't-1',
+        backend: 'vercel' as const,
+        resolvedImage: 'img',
+      },
+    }));
+
+    vi.resetModules();
+    mockByokOk();
+    mockMcpEmpty();
+    mockGithubToken(null);
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1' },
+      })),
+    }));
+    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({ resolveAgentSandbox }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(async () => ({ text: 'ok', toolTrace: [] })),
+      runAgentStream: vi.fn(),
+    }));
+    vi.doMock('../../../lib/agent/builtinHttpConfig', () => ({
+      resolveBuiltinHttpConfig: () => ({ enabled: false }),
+    }));
+
+    const { POST } = await loadRoute();
+    await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(resolveAgentSandbox).toHaveBeenCalledWith('user-1', {});
+  });
 
 });

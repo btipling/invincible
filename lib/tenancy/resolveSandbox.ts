@@ -60,15 +60,28 @@ export type ResolveAgentSandboxDeps = {
     tenantId: string,
     ciphertext: string,
   ) => string | Promise<string>;
+  /**
+   * Server-owned exec env (user GitHub PAT) merged into sandbox clients.
+   * Only allowlisted keys; never from the model.
+   */
+  execEnv?: Record<string, string>;
   /** BYO HTTP client factory (tests). */
-  createByoClient?: (opts: { baseUrl: string; token: string }) => SandboxClient;
+  createByoClient?: (opts: {
+    baseUrl: string;
+    token: string;
+    execEnv?: Record<string, string>;
+  }) => SandboxClient;
   /**
    * @deprecated Prefer createByoClient. Alias kept for older tests.
    */
-  createClient?: (opts: { baseUrl: string; token: string }) => SandboxClient;
-  /** Vercel FS client factory (tests). Receives raw row image. */
+  createClient?: (opts: {
+    baseUrl: string;
+    token: string;
+    execEnv?: Record<string, string>;
+  }) => SandboxClient;
+  /** Vercel FS client factory (tests). Receives raw row image (+ optional execEnv). */
   createVercelClient?: (
-    opts: Pick<CreateVercelSandboxClientOptions, 'image'>,
+    opts: Pick<CreateVercelSandboxClientOptions, 'image' | 'execEnv'>,
   ) => SandboxClient;
 };
 
@@ -176,9 +189,12 @@ async function resolveWithDb(
       try {
         const createVercel =
           deps.createVercelClient ??
-          ((opts: Pick<CreateVercelSandboxClientOptions, 'image'>) =>
+          ((opts: Pick<CreateVercelSandboxClientOptions, 'image' | 'execEnv'>) =>
             createVercelSandboxClient(opts));
-        client = createVercel({ image });
+        client = createVercel({
+          image,
+          ...(deps.execEnv ? { execEnv: deps.execEnv } : {}),
+        });
       } catch {
         // Invalid image / factory throw — fail closed, no message leak.
         return forbidden();
@@ -222,8 +238,13 @@ async function resolveWithDb(
     const createByo =
       deps.createByoClient ??
       deps.createClient ??
-      ((opts: { baseUrl: string; token: string }) => createSandboxClient(opts));
-    const client = createByo({ baseUrl, token });
+      ((opts: { baseUrl: string; token: string; execEnv?: Record<string, string> }) =>
+        createSandboxClient(opts));
+    const client = createByo({
+      baseUrl,
+      token,
+      ...(deps.execEnv ? { execEnv: deps.execEnv } : {}),
+    });
 
     return {
       ok: true,

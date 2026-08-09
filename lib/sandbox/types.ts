@@ -34,6 +34,11 @@ export type SandboxClientOptions = {
   fetchImpl?: typeof fetch;
   /** Default per-request timeout when no signal (ms). */
   timeoutMs?: number;
+  /**
+   * Server-owned allowlisted env merged into every `/v1/exec` body.
+   * Only GH_TOKEN / GITHUB_TOKEN should be supplied. Never from the model.
+   */
+  execEnv?: Record<string, string>;
 };
 
 export class SandboxHttpError extends Error {
