@@ -144,4 +144,53 @@ describe('sandbox HTTP server', () => {
     const body = (await res.json()) as { error: string };
     expect(body.error).toMatch(/jail|escape/i);
   });
+
+  it('POST /v1/exec feeds stdin through HTTP', async () => {
+    const { base, token } = await start();
+    const payload = 'hello-from-http-stdin\n';
+    const res = await fetch(`${base}/v1/exec`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        cmd: process.execPath,
+        args: [
+          '-e',
+          'let s=""; process.stdin.on("data",d=>s+=d); process.stdin.on("end",()=>{process.stdout.write(s); process.exit(0);});',
+        ],
+        stdin: payload,
+        timeoutMs: 5000,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { exitCode: number; stdout: string };
+    expect(body.exitCode).toBe(0);
+    expect(body.stdout).toBe(payload);
+  });
+
+  it('POST /v1/exec accepts heredoc alias over HTTP', async () => {
+    const { base, token } = await start();
+    const res = await fetch(`${base}/v1/exec`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        cmd: process.execPath,
+        args: [
+          '-e',
+          'let s=""; process.stdin.on("data",d=>s+=d); process.stdin.on("end",()=>{process.stdout.write(s); process.exit(0);});',
+        ],
+        heredoc: 'via-http-heredoc',
+        timeoutMs: 5000,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { exitCode: number; stdout: string };
+    expect(body.exitCode).toBe(0);
+    expect(body.stdout).toBe('via-http-heredoc');
+  });
 });

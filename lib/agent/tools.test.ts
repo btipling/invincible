@@ -408,4 +408,19 @@ describe('exec stdin / heredoc', () => {
       expect.anything(),
     );
   });
+
+  it('prefers stdin over heredoc when both are set', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ client });
+    await tools.exec.execute!(
+      { cmd: 'cat', stdin: 'primary', heredoc: 'alias' },
+      { toolCallId: 'e3', messages: [] } as never,
+    );
+    expect(exec).toHaveBeenCalledWith(
+      expect.objectContaining({ cmd: 'cat', stdin: 'primary' }),
+      expect.anything(),
+    );
+    expect(exec.mock.calls[0]?.[0]).not.toHaveProperty('heredoc');
+  });
 });

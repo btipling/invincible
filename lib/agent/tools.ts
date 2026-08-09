@@ -381,11 +381,12 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         stdin: {
           type: 'string',
           description:
-            'Optional UTF-8 body written to the process stdin (heredoc-style; no shell). Prefer this over shell <<EOF.',
+            'Optional UTF-8 body written to the process stdin (no shell). Prefer stdin over heredoc. Prefer this over shell <<EOF. Unsupported on Vercel backend.',
         },
         heredoc: {
           type: 'string',
-          description: 'Alias for stdin — multi-line input fed to the process without a shell',
+          description:
+            'Alias for stdin (use stdin when possible). Multi-line input without a shell; unsupported on Vercel backend',
         },
       },
       required: ['cmd'],

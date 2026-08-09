@@ -203,6 +203,26 @@ describe('createVercelSandboxClient', () => {
     await client.close?.();
   });
 
+  it('exec rejects stdin/heredoc (SDK has no stdin) without calling runCommand', async () => {
+    const sb = mockSandbox();
+    const createSandbox: GetVercelFsSandboxFn = vi.fn(async () => sb);
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox: createSandbox,
+    });
+    await expect(
+      client.exec({ cmd: 'python3', args: ['-'], stdin: 'print(1)\n' }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/stdin\/heredoc is not supported on the Vercel/i),
+    });
+    await expect(
+      client.exec({ cmd: 'cat', heredoc: 'x' }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(sb.runCommand).not.toHaveBeenCalled();
+    await client.close?.();
+  });
+
   it('get called with name + resume:true; never create-shaped params', async () => {
     const sb = mockSandbox();
     const getSandbox = vi.fn<GetVercelFsSandboxFn>(async () => sb);

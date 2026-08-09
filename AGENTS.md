@@ -231,7 +231,7 @@ invincible/
 ├── app/                 # Next App Router (/, /harness, /login, /admin, /settings, /api/*)
 ├── db/                  # Drizzle schema + SQL migrations (tenancy)
 ├── lib/                 # palette, chat, agent, bridge, session, sandbox, tenancy
-├── sandbox/             # protocol v1 daemon (BYO tools workspace)
+├── sandbox/             # protocol v2 daemon (BYO tools workspace)
 ├── native/harness/      # Zig + dvui Wasm (CI on self-hosted runner)
 ├── scripts/             # fetch-harness, seed-tenancy, runner scripts
 ├── docs/                # BYO, sandbox, mcp, builtin-http, feature-divide, limits, deploy race

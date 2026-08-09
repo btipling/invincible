@@ -81,7 +81,7 @@ function sendError(res, status, error) {
 }
 
 /**
- * Create the Invincible sandbox HTTP server (protocol v1).
+ * Create the Invincible sandbox HTTP server (protocol v{@link INVINCIBLE_SANDBOX_PROTOCOL}).
  * @param {{ token: string, workspace: string }} opts
  */
 export function createSandboxServer(opts) {

@@ -165,6 +165,22 @@ describe('sandbox tools', () => {
     expect(result.stdout).toBe('via-heredoc');
   });
 
+  it('exec prefers stdin over heredoc when both are set', async () => {
+    const ws = await mkWorkspace();
+    const result = await execCmd(ws, {
+      cmd: process.execPath,
+      args: [
+        '-e',
+        'let s=""; process.stdin.on("data",d=>s+=d); process.stdin.on("end",()=>{process.stdout.write(s); process.exit(0);});',
+      ],
+      stdin: 'from-stdin',
+      heredoc: 'from-heredoc',
+      timeoutMs: 5000,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe('from-stdin');
+  });
+
   it('exec rejects non-string stdin', async () => {
     const ws = await mkWorkspace();
     await expect(

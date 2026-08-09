@@ -581,6 +581,25 @@ export function createVercelSandboxClient(
           }
           return a;
         });
+        // @vercel/sandbox RunCommandParams has no stdin — fail soft so the agent
+        // never sees a false stdin=NB success (use write_file + argv path instead).
+        const stdinRaw =
+          body?.stdin !== undefined && body?.stdin !== null
+            ? body.stdin
+            : body?.heredoc !== undefined && body?.heredoc !== null
+              ? body.heredoc
+              : undefined;
+        if (stdinRaw !== undefined) {
+          if (typeof stdinRaw !== 'string') {
+            throw new SandboxHttpError('stdin must be a string (heredoc body)', 400);
+          }
+          throw new SandboxHttpError(
+            'exec stdin/heredoc is not supported on the Vercel sandbox backend ' +
+              '(SDK has no stdin). Write input to a file (write_file) and pass its path via args, ' +
+              'or use a BYO daemon (protocol v2+).',
+            400,
+          );
+        }
         const cwdAbs = resolveVercelFsPath(workspaceRoot, body.cwd ?? '.');
         const timeoutMs = clampExecTimeoutMs(body.timeoutMs);
         const sb = await ensureSandbox(init?.signal);

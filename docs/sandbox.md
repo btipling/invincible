@@ -14,7 +14,7 @@ Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-d
 
 | | |
 |--|--|
-| **Is** | A **workspace for agent tools** — either a BYO HTTP daemon (protocol v1) or a **durable Vercel Sandbox Workspace instance** (user-created in Settings; agent **attach-only**) |
+| **Is** | A **workspace for agent tools** — either a BYO HTTP daemon (protocol v2) or a **durable Vercel Sandbox Workspace instance** (user-created in Settings; agent **attach-only**) |
 | **Is** | **Per sandbox row under a tenant** when tenancy is on: each row chooses `backend` (`byo` \| `vercel`) and, for vercel, an optional **image** |
 | **Is** | **BYO** path: any operator points URL + token at **their** daemon (env when tenancy off; admin/seed when tenancy on) |
 | **Is not** | The Zig **GHA build runner** (`invincible-do-1` / `self-hosted` + `zig` labels) |
@@ -56,7 +56,7 @@ instance survive across turns until idle auto-stop (~30m) or user Stop/Destroy.
 
 | Kind | How tools reach a workspace | Credentials |
 |------|----------------------------|-------------|
-| **byo** | HTTP client → protocol v1 daemon | URL + token (DEK-encrypted at rest) |
+| **byo** | HTTP client → protocol v2 daemon | URL + token (DEK-encrypted at rest) |
 | **vercel** (FS tools) | Attach-only `@vercel/sandbox` client to the user's **Workspace instance** | **Host** Vercel project OIDC/quota. No per-tenant Vercel tokens in DB |
 | **hop-B** `http_get` | Attach-only runner to the user's **HTTP instance** when `BUILTIN_HTTP_FETCH=sandbox` | Same host OIDC; not a catalog-row backend |
 
@@ -233,16 +233,18 @@ unauthenticated) — see above.
 
 ---
 
-## 3. Protocol v1 (summary)
+## 3. Protocol v2 (summary)
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| `GET` | `/health` | none | `{ ok: true, version: 1 }` |
+| `GET` | `/health` | none | `{ ok: true, version: 2 }` |
 | `POST` | `/v1/list_dir` | Bearer | List directory entries |
 | `POST` | `/v1/read_file` | Bearer | Read file (max 16 MiB) |
 | `POST` | `/v1/write_file` | Bearer | Write file (max 16 MiB) |
 | `POST` | `/v1/str_replace` | Bearer | Exact string replace (unique match or `replace_all`) |
-| `POST` | `/v1/exec` | Bearer | Run argv command (no shell); optional `stdin`/`heredoc` |
+| `POST` | `/v1/exec` | Bearer | Run argv command (no shell); optional `stdin`/`heredoc` (v2+) |
+
+**Backend split:** BYO daemons implement stdin/heredoc on `/v1/exec`. The Vercel Sandbox SDK has no stdin channel — the Vercel client **fails soft** (400) and the agent should `write_file` then pass a path via args. App BYO clients probe `/health` and refuse stdin when `version < 2`.
 
 Full contract, jail rules, and exec shape: [`sandbox/README.md`](../sandbox/README.md).
 
@@ -290,7 +292,7 @@ Smoke:
 
 ```bash
 curl -s http://127.0.0.1:8787/health
-# {"ok":true,"version":1}
+# {"ok":true,"version":2}
 ```
 
 Terminal B — Next (`.env.local`):
@@ -359,9 +361,9 @@ Origin may run a DigitalOcean-hosted **reference** sample. Host inventory
 |------|---------|-------------|
 | Route `maxDuration` | **1800s (30m)** — Vercel Fluid extended max; 1h not offered | `app/api/agent` (long multi-tool turns) |
 | `AGENT_MAX_STEPS` | unset (model-ended) | optional 1…256 safety ceiling |
-| exec `timeoutMs` | 10_000 | max 1_800_000 |
+| exec `timeoutMs` | 300_000 (5 min) | max 1_800_000 (30 min) |
 | read/write maxBytes | 16 MiB | |
-| stdout/stderr per exec | 4 MiB each | truncated |
+| stdout/stderr/stdin per exec | 4 MiB each | truncated / rejected |
 | tool result to model | 8_192 chars | |
 | toolTrace lines to Wasm | unbounded | no host product cap |
 | toolTrace summary chars | 240 | host + server |
@@ -426,7 +428,7 @@ See also [SECURITY.md](../SECURITY.md).
 
 | # | Check | Expect |
 |---|--------|--------|
-| 1 | `GET /health` (local or off-box prod) | `{ ok: true, version: 1 }` |
+| 1 | `GET /health` (local or off-box prod) | `{ ok: true, version: 2 }` |
 | 2 | Harness with `SANDBOX_*` set | tool system lines + assistant for a write/exec prompt |
 | 3 | Harness with `SANDBOX_*` **unset** | PONG / chat still works (agent 503 → chat) |
 | 4 | Wrong/missing Bearer on `/v1/*` | `401` without echoing the token |

@@ -9,7 +9,7 @@
  * Run: npm run sandbox:start
  *   or: node sandbox/server.mjs
  */
-import { DEFAULT_LISTEN } from './constants.mjs';
+import { DEFAULT_LISTEN, INVINCIBLE_SANDBOX_PROTOCOL } from './constants.mjs';
 import { createSandboxServer, parseListen } from './createServer.mjs';
 
 function main() {
@@ -31,7 +31,7 @@ function main() {
 
   server.listen(port, host, () => {
     console.log(
-      `[sandbox] protocol v1 listening on http://${host}:${port} workspace=${workspace}`,
+      `[sandbox] protocol v${INVINCIBLE_SANDBOX_PROTOCOL} listening on http://${host}:${port} workspace=${workspace}`,
     );
   });
 
