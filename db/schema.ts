@@ -260,3 +260,30 @@ export const userGithubTokens = pgTable(
 );
 
 export type UserGithubToken = typeof userGithubTokens.$inferSelect;
+
+/**
+ * Per-user preferred sandbox when multiple grants exist.
+ * Server-only preference; resolve uses it to pick among usable grants.
+ */
+export const userPreferredSandbox = pgTable(
+  'user_preferred_sandbox',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    sandboxId: uuid('sandbox_id')
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: 'cascade' }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('user_preferred_sandbox_tenant_id_idx').on(t.tenantId),
+    index('user_preferred_sandbox_sandbox_id_idx').on(t.sandboxId),
+  ],
+);
+
+export type UserPreferredSandbox = typeof userPreferredSandbox.$inferSelect;
+

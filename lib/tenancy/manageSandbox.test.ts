@@ -25,6 +25,7 @@ async function applyMigrations(client: PGlite) {
     '0004_user_mcp_servers.sql',
     '0005_sandbox_backend.sql',
     '0006_user_github_tokens.sql',
+    '0007_user_preferred_sandbox.sql',
   ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     for (const stmt of sql
@@ -164,7 +165,7 @@ describe('manageSandbox', () => {
     expect(r.error).not.toMatch(/secret/i);
   });
 
-  it('create revokes actor other grants; sole R/W on new', async () => {
+  it('create keeps actor other grants; R/W on new', async () => {
     const { dek, version } = await ensureTenantDek(tenantId, {
       db: db as never,
       amk: AMK,
@@ -207,9 +208,11 @@ describe('manageSandbox', () => {
       .select()
       .from(schema.sandboxGrants)
       .where(eq(schema.sandboxGrants.userId, ownerId));
-    expect(grants).toHaveLength(1);
-    expect(grants[0].sandboxId).toBe(r.sandboxId);
-    expect(grants[0].canWrite).toBe(true);
+    expect(grants).toHaveLength(2);
+    const ids = new Set(grants.map((g) => g.sandboxId));
+    expect(ids.has(old.id)).toBe(true);
+    expect(ids.has(r.sandboxId)).toBe(true);
+    expect(grants.every((g) => g.canWrite)).toBe(true);
   });
 
   it('member cannot create', async () => {

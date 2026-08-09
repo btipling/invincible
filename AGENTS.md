@@ -254,6 +254,7 @@ invincible/
 | Tenant sandboxes (backend + image) | `app/admin/sandboxes/*`, `lib/tenancy/manageSandbox.ts`, `lib/tenancy/sandboxBackend.ts`, `lib/tenancy/resolveSandbox.ts`, `lib/sandbox/vercelClient.ts`, [docs/sandbox.md](docs/sandbox.md) |
 | User Settings / per-user MCP | `app/settings/*`, `lib/tenancy/userMcpServers.ts`, `lib/mcp/*` |
 | User GitHub PAT (Settings + sandbox exec inject) | `app/settings/github/*`, `lib/tenancy/userGithubToken.ts`, `lib/sandbox/{client,vercelClient}.ts`, `sandbox/tools.mjs`, `app/api/agent/route.ts`, [docs/sandbox.md](docs/sandbox.md) |
+| User preferred sandbox (Settings) | `app/settings/sandbox/*`, `lib/tenancy/userPreferredSandbox.ts`, `lib/tenancy/resolveSandbox.ts`, [docs/sandbox.md](docs/sandbox.md) |
 | Harness model catalog (protocol v3) | `lib/harnessBridge.ts`, `native/harness/src/bridge.zig`, `app/harness/HarnessHost.tsx` |
 | Schema-only migrate (GHA) | `.github/workflows/db-migrate.yml` |
 | Dogfood sandbox image (VCR) | `dev/Dockerfile`, `dev/README.md`, `.github/workflows/dev-image-build.yml`, [docs/sandbox.md](docs/sandbox.md) |

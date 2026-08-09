@@ -26,6 +26,7 @@ project and keys, and run the same harness on **your** work.
 | **Optional** | Tenant BYOK inference | When tenancy is on: admin **Inference keys** (`/admin/inference`), harness model cycle (canvas **Next**), request-scoped Gateway BYOK |
 | **Optional** | Per-user MCP tools | Tenancy on: Settings → MCP servers; tools on agent turns ([docs/mcp.md](docs/mcp.md)) |
 | **Optional** | User GitHub PAT | Tenancy on: Settings → GitHub token; sandbox **exec** injects `GH_TOKEN`/`GITHUB_TOKEN` ([docs/sandbox.md](docs/sandbox.md)) |
+| **Optional** | Preferred sandbox | Tenancy on: Settings → Sandbox when multiple grants ([docs/sandbox.md](docs/sandbox.md)) |
 | **Optional** | OIDC SSO + SCIM | Code on `main`; enable with env ([docs/bring-your-own.md §4b](docs/bring-your-own.md#4b-optional-sso-oidc--scim)) |
 
 ## Try it
