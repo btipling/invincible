@@ -12,6 +12,12 @@ import {
   resolveAgainstCwd,
   resolveExecCwd,
 } from './workPath';
+import {
+  editGateError,
+  type DiskFingerprint,
+  type RunFileFreshness,
+} from './fileFreshness';
+import { SandboxHttpError } from '../sandbox/types';
 
 export type ToolPermissions = {
   canRead: boolean;
@@ -25,6 +31,12 @@ export type CwdState = {
 
 export type CreateAgentToolsOptions = {
   client: SandboxClient;
+  /**
+   * Run-scoped read-before-edit ledger. Required — create once in runAgent /
+   * runAgentStream and pass the same object into every createAgentTools call
+   * in that HTTP turn (including future in-process sub-agents).
+   */
+  freshness: RunFileFreshness;
   /** Secrets to redact from tool results (token, etc.). */
   secrets?: Array<string | undefined | null>;
   signal?: AbortSignal;
@@ -67,12 +79,69 @@ function resolvePathOrError(
   }
 }
 
+function isNotFoundError(err: unknown): boolean {
+  if (err instanceof SandboxHttpError && err.status === 404) return true;
+  if (
+    err &&
+    typeof err === 'object' &&
+    'status' in err &&
+    typeof (err as { status: unknown }).status === 'number' &&
+    (err as { status: number }).status === 404
+  ) {
+    return true;
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  return /\bENOENT\b|not found|Path not found|File not found/i.test(msg);
+}
+
+function finiteFp(partial: DiskFingerprint): DiskFingerprint {
+  const out: DiskFingerprint = {};
+  if (typeof partial.mtimeMs === 'number' && Number.isFinite(partial.mtimeMs)) {
+    out.mtimeMs = partial.mtimeMs;
+  }
+  if (typeof partial.size === 'number' && Number.isFinite(partial.size)) {
+    out.size = partial.size;
+  }
+  return out;
+}
+
+/**
+ * Prefer fingerprint fields on the tool result; fill via client.stat when incomplete
+ * so Production Vercel (often no mtime on read/write) still powers gate 2.
+ */
+async function resolveFingerprint(
+  client: SandboxClient,
+  path: string,
+  partial: DiskFingerprint,
+  signal?: AbortSignal,
+): Promise<DiskFingerprint> {
+  const base = finiteFp(partial);
+  if (
+    typeof base.mtimeMs === 'number' &&
+    Number.isFinite(base.mtimeMs) &&
+    typeof base.size === 'number' &&
+    Number.isFinite(base.size)
+  ) {
+    return base;
+  }
+  try {
+    const st = await client.stat(path, { signal });
+    const filled = finiteFp({
+      mtimeMs: base.mtimeMs ?? st.mtimeMs,
+      size: base.size ?? st.size,
+    });
+    return filled;
+  } catch {
+    return base;
+  }
+}
+
 /**
  * AI SDK tools bound to a sandbox client. Soft-fail: never throw.
  * Paths resolve against turn logical cwd (prefix-aware); results are root-relative.
  */
 export function createAgentTools(opts: CreateAgentToolsOptions) {
-  const { client, signal } = opts;
+  const { client, signal, freshness } = opts;
   const secrets = opts.secrets ?? [];
   const permissions: ToolPermissions = opts.permissions ?? {
     canRead: true,
@@ -195,7 +264,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const read_file = tool({
     description:
-      'Read a text file from the sandbox workspace (max 16 MiB). Path is relative to logical cwd unless already workspace-root-relative under cwd.',
+      'Read a text file from the sandbox workspace (max 16 MiB). A successful full (non-truncated) read authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. Path is relative to logical cwd unless already workspace-root-relative under cwd.',
     inputSchema: jsonSchema<{ path: string; maxBytes?: number }>({
       type: 'object',
       properties: {
@@ -224,6 +293,17 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         }
         const path = resolved.path;
         const result = await client.readFile(path, input.maxBytes, { signal });
+        if (result.truncated) {
+          freshness.recordRead(path, { truncated: true });
+        } else {
+          const fp = await resolveFingerprint(
+            client,
+            path,
+            { mtimeMs: result.mtimeMs, size: result.size },
+            signal,
+          );
+          freshness.recordRead(path, { ...fp, truncated: false });
+        }
         const flag = result.truncated ? ' (truncated)' : '';
         const ann = formatCwdAnnotation(cwdSnap);
         return finalize(
@@ -239,7 +319,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const write_file = tool({
     description:
-      'Write a text file in the sandbox workspace (max 16 MiB). Path relative to logical cwd unless already rooted under cwd.',
+      'Write a text file in the sandbox workspace (max 16 MiB). Creating a new path does not require a prior read. Overwriting an existing file requires a successful full read_file of that path earlier in this agent run (re-read if the file changed on disk). Path relative to logical cwd unless already rooted under cwd.',
     inputSchema: jsonSchema<{ path: string; content: string; mkdir?: boolean }>({
       type: 'object',
       properties: {
@@ -271,9 +351,38 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           return finalize(`ERROR write_file: ${resolved.error}`, secrets);
         }
         const path = resolved.path;
+
+        let exists = true;
+        let live: DiskFingerprint = {};
+        try {
+          const st = await client.stat(path, { signal });
+          live = finiteFp({ mtimeMs: st.mtimeMs, size: st.size });
+        } catch (err) {
+          if (isNotFoundError(err)) {
+            exists = false;
+          } else {
+            const msg = err instanceof Error ? err.message : String(err);
+            return finalize(`ERROR write_file: ${msg}`, secrets);
+          }
+        }
+
+        if (exists) {
+          const gate = freshness.assertCanEdit(path, live);
+          if (!gate.ok) {
+            return finalize(editGateError('write_file', gate.code), secrets);
+          }
+        }
+
         const result = await client.writeFile(path, input.content, input.mkdir, {
           signal,
         });
+        const fp = await resolveFingerprint(
+          client,
+          path,
+          { mtimeMs: result.mtimeMs, size: result.size },
+          signal,
+        );
+        freshness.recordWrite(path, fp);
         const ann = formatCwdAnnotation(cwdSnap);
         return finalize(
           `write_file ${path}${ann}: ok bytes=${result.bytes}`,
@@ -288,7 +397,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const str_replace = tool({
     description:
-      'Replace exact text in a sandbox file. old_string must match uniquely unless replace_all is true. Prefer this over write_file for small edits; use write_file to create or fully rewrite files. Path relative to logical cwd unless already rooted under cwd.',
+      'Exact string replace in a workspace file (coding-agent search_replace). Requires a successful full read_file of the path earlier in this agent run; re-read if the file changed on disk (other session, device, tool, or exec). old_string must match uniquely unless replace_all is true. Prefer this over write_file for small edits; use write_file to create or fully rewrite files. Path relative to logical cwd unless already rooted under cwd.',
     inputSchema: jsonSchema<{
       path: string;
       old_string: string;
@@ -335,6 +444,24 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           return finalize(`ERROR str_replace: ${resolved.error}`, secrets);
         }
         const path = resolved.path;
+
+        let live: DiskFingerprint = {};
+        try {
+          const st = await client.stat(path, { signal });
+          live = finiteFp({ mtimeMs: st.mtimeMs, size: st.size });
+        } catch (err) {
+          if (isNotFoundError(err)) {
+            return finalize('ERROR str_replace: File not found', secrets);
+          }
+          const msg = err instanceof Error ? err.message : String(err);
+          return finalize(`ERROR str_replace: ${msg}`, secrets);
+        }
+
+        const gate = freshness.assertCanEdit(path, live);
+        if (!gate.ok) {
+          return finalize(editGateError('str_replace', gate.code), secrets);
+        }
+
         const result = await client.strReplace(
           path,
           input.old_string,
@@ -342,6 +469,13 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           input.replace_all,
           { signal },
         );
+        const fp = await resolveFingerprint(
+          client,
+          path,
+          { mtimeMs: result.mtimeMs, size: result.size },
+          signal,
+        );
+        freshness.recordWrite(path, fp);
         const ann = formatCwdAnnotation(cwdSnap);
         return finalize(
           `str_replace ${path}${ann}: ok replacements=${result.replacements} bytes=${result.bytes}`,

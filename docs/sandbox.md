@@ -269,9 +269,10 @@ unauthenticated) — see above.
 |--------|------|------|---------|
 | `GET` | `/health` | none | `{ ok: true, version: 2 }` |
 | `POST` | `/v1/list_dir` | Bearer | List directory entries |
-| `POST` | `/v1/read_file` | Bearer | Read file (max 16 MiB) |
-| `POST` | `/v1/write_file` | Bearer | Write file (max 16 MiB) |
-| `POST` | `/v1/str_replace` | Bearer | Exact string replace (unique match or `replace_all`) |
+| `POST` | `/v1/read_file` | Bearer | Read file (max 16 MiB); additive `mtimeMs` + `size` when daemon supports |
+| `POST` | `/v1/write_file` | Bearer | Write file (max 16 MiB); post-write fingerprint when supported |
+| `POST` | `/v1/str_replace` | Bearer | Exact string replace (unique match or `replace_all`); post-write fingerprint when supported |
+| `POST` | `/v1/stat` | Bearer | Path metadata `{ path, type, size, mtimeMs? }` (404 missing; no content) |
 | `POST` | `/v1/exec` | Bearer | Run argv command (no shell); optional `stdin`/`heredoc` (v2+) |
 
 **Backend split:** BYO daemons implement stdin/heredoc on `/v1/exec`. The Vercel Sandbox SDK has no stdin channel — the Vercel client **fails soft** (400) and the agent should `write_file` then pass a path via args. App BYO clients probe `/health` and refuse stdin when `version < 2`.
@@ -542,6 +543,22 @@ npm run test:sandbox
 
 ---
 
+
+## Read-before-edit (agent tools)
+
+Agent filesystem tools enforce **read-before-edit** on the shared sandbox jail:
+
+| Rule | Behavior |
+|------|----------|
+| Edit existing file | A successful full **`read_file`** of that path is required **in this agent run** before **`str_replace`** or overwriting with **`write_file`** |
+| Create new file | **`write_file`** to a path that does not exist yet does **not** require a prior read |
+| Truncated read | Does **not** authorize edit — read the full file first |
+| Concurrent change | Before each mutate, tools **re-stat** the path. If mtime/size changed since the last observation (another browser tab, device, agent run, **`exec`**, or human on the same workspace), the tool soft-fails and the model must **`read_file` again** |
+| Soft fail | Tools return `ERROR write_file:` / `ERROR str_replace:` strings — they do not throw |
+
+**What is not a cache:** file observations live only for one agent HTTP run. They are **not** stored in harness SessionStore or multi-device session blobs. Tabs and devices that share a sandbox share **disk only** — safety is the re-stat, not session sync.
+
+**Fingerprints:** BYO daemon responses include additive `mtimeMs` + `size` on read/write/str_replace and **`POST /v1/stat`**. When a backend omits mtime, tools still require a prior read (gate 1) but cannot detect same-size silent rewrites (gate 2 degrades). Prefer a daemon that ships fingerprints.
 
 ## Logical workspace cwd
 
