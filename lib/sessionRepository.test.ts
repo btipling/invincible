@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CLOUD_SESSION_DISABLED_CODE,
   HARNESS_SESSION_MAX_BODY_BYTES,
-  HARNESS_SESSION_MAX_MESSAGES,
   HARNESS_SESSION_MAX_MSG_BYTES,
 } from './sessionCloudCaps';
 import {
@@ -42,17 +41,17 @@ describe('trimForCloudPut', () => {
     expect('cwd' in out).toBe(false);
   });
 
-  it('drops oldest messages to ≤ max count', () => {
-    const messages = Array.from({ length: HARNESS_SESSION_MAX_MESSAGES + 3 }, (_, i) => ({
+  it('keeps message count; body trim drops oldest only when over ~2 MiB', () => {
+    const messages = Array.from({ length: 50 }, (_, i) => ({
       id: `m_${i}`,
       role: 'user' as const,
       text: `t${i}`,
       at: i,
     }));
     const out = trimForCloudPut(snap({ messages }));
-    expect(out.messages).toHaveLength(HARNESS_SESSION_MAX_MESSAGES);
-    expect(out.messages[0]?.id).toBe('m_3');
-    expect(out.messages.at(-1)?.id).toBe(`m_${HARNESS_SESSION_MAX_MESSAGES + 2}`);
+    expect(out.messages).toHaveLength(50);
+    expect(out.messages[0]?.id).toBe('m_0');
+    expect(out.messages.at(-1)?.id).toBe('m_49');
   });
 
   it('truncates oversize UTF-8 text', () => {
