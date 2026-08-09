@@ -12,6 +12,8 @@
 //!     by the caller (preserves the existing empty-send guard).
 
 const std = @import("std");
+/// Pure kind gates (mirror `bridge.MessageKind` without pulling in the frame).
+const kinds = @import("rich/kinds.zig");
 
 pub const NormalizeResult = struct {
     /// Normalized bytes within `dest` (caller-owned). `len <= cap`.
@@ -70,4 +72,21 @@ pub fn isBlank(s: []const u8) bool {
         }
     }
     return true;
+}
+
+/// Paint-time row-omission rule for the transcript (issue #324 / plan #340).
+///
+/// A message is skipped at paint — not dropped from the ring — only when it is
+/// an **assistant** message whose body is empty or whitespace-only. This hides
+/// the transient zero-visible-text assistant slot the host opens during
+/// multi-tool turns (which rendered as a full blank card) without touching the
+/// ring, Copy, `update_last`, or id allocation (which key off ring indices).
+/// Empty/blank rows of any other kind (user/system/error/thinking) are still
+/// painted, so tool traces and error lines stay visible.
+///
+/// `kind` is a `bridge.MessageKind` value (or the mirrored `rich/kinds.zig`
+/// constants); `text` is the message body bytes. Pure and host-testable — no
+/// dvui or bridge frame.
+pub fn shouldOmitMessageAtPaint(kind: u8, text: []const u8) bool {
+    return kind == kinds.KIND_ASSISTANT and isBlank(text);
 }

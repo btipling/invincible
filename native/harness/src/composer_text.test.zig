@@ -4,12 +4,54 @@
 const std = @import("std");
 const t = std.testing;
 const composer_text = @import("composer_text.zig");
+const kinds = @import("rich/kinds.zig");
 
 const BUF: [64]u8 = undefined;
 
 fn normalize(src: []const u8, cap: usize) composer_text.NormalizeResult {
     var dest: [BUF.len]u8 = BUF;
     return composer_text.normalizeInto(src, dest[0..], cap);
+}
+
+// ── paint-omit rule (issue #324 / plan #340) ────────────────────────────────
+
+test "empty assistant -> omit at paint" {
+    try t.expect(composer_text.shouldOmitMessageAtPaint(kinds.KIND_ASSISTANT, ""));
+}
+
+test "whitespace-only assistant -> omit at paint" {
+    try t.expect(composer_text.shouldOmitMessageAtPaint(kinds.KIND_ASSISTANT, " \n\t "));
+    try t.expect(composer_text.shouldOmitMessageAtPaint(kinds.KIND_ASSISTANT, "\n\n "));
+}
+
+test "non-blank assistant -> paint" {
+    try t.expect(!composer_text.shouldOmitMessageAtPaint(kinds.KIND_ASSISTANT, "hello"));
+    try t.expect(!composer_text.shouldOmitMessageAtPaint(kinds.KIND_ASSISTANT, "x"));
+}
+
+test "empty/blank user -> do not omit" {
+    try t.expect(!composer_text.shouldOmitMessageAtPaint(kinds.KIND_USER, ""));
+    try t.expect(!composer_text.shouldOmitMessageAtPaint(kinds.KIND_USER, "   \n"));
+}
+
+test "empty/blank system -> do not omit" {
+    try t.expect(!composer_text.shouldOmitMessageAtPaint(kinds.KIND_SYSTEM, ""));
+    try t.expect(!composer_text.shouldOmitMessageAtPaint(kinds.KIND_SYSTEM, " "));
+}
+
+test "empty/blank error -> do not omit" {
+    try t.expect(!composer_text.shouldOmitMessageAtPaint(kinds.KIND_ERROR, ""));
+    try t.expect(!composer_text.shouldOmitMessageAtPaint(kinds.KIND_ERROR, "\t\n"));
+}
+
+test "empty/blank thinking -> do not omit" {
+    try t.expect(!composer_text.shouldOmitMessageAtPaint(kinds.KIND_THINKING, ""));
+    try t.expect(!composer_text.shouldOmitMessageAtPaint(kinds.KIND_THINKING, "  "));
+}
+
+test "unknown kind with blank text -> do not omit" {
+    try t.expect(!composer_text.shouldOmitMessageAtPaint(0, ""));
+    try t.expect(!composer_text.shouldOmitMessageAtPaint(99, " "));
 }
 
 test "empty input is blank and zero length" {
