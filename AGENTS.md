@@ -170,6 +170,7 @@ policy, so fall back to these defaults for consistency.
 | Merge type | **Merge commit** — `gh pr merge <n> --merge` (keep each PR’s conventional commits intact; **no squash / no linearize**) |
 | Author identity | Every commit authored `btipling <btipling@users.noreply.github.com>` per the hard constraint above; do **not** rebase or rewrite authorship on a PR |
 | When to merge | **Only on explicit request.** Default is do **not** merge (agents stop at “merge-ready from review”) |
+| CI before merge | Wait for the PR’s checks to complete and show green **before** merging (e.g. `test`, `typecheck`, `build`, `build-harness`). Do not merge while required checks are `pending`/`failed`; if `main` has no enforced branch protection, still wait for the PR’s CI unless the only outstanding checks are unrequired/infrastructure ones you call out explicitly |
 | Issue close-out | PR body carries `Fixes #N` / `Refs #N`; merge auto-closes linked issues. For plan issues, close as **completed** and reference the merge |
 | After merge | Delete the merged branch, then in any agent/local checkout `git checkout main && git pull` and prune stale remote-tracking refs (`git remote prune origin`) |
 
