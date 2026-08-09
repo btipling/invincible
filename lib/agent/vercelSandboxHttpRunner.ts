@@ -9,12 +9,15 @@ import type {
   HttpFetchGetResult,
   HttpFetchRunner,
 } from './httpFetchTypes';
-import { USER_SANDBOX_IDLE_TIMEOUT_MS } from '../tenancy/userSandboxInstance';
 
 export const BUILTIN_HTTP_USER_AGENT = 'InvincibleBuiltinHttp/1.0';
 
-/** Default idle extendTimeout — same family as Workspace attach. */
-export const DEFAULT_HTTP_ATTACH_IDLE_TIMEOUT_MS = USER_SANDBOX_IDLE_TIMEOUT_MS;
+/**
+ * Default idle extendTimeout — same family as Workspace attach
+ * (`USER_SANDBOX_IDLE_TIMEOUT_MS` = 30m). Inlined so hop-B does not import
+ * the tenancy instance domain / drizzle graph (mirror FS vercelClient).
+ */
+export const DEFAULT_HTTP_ATTACH_IDLE_TIMEOUT_MS = 1_800_000;
 
 /** Minimal surface we use from @vercel/sandbox (injectable for tests). */
 export type SandboxCommandResult = {
@@ -55,7 +58,7 @@ export type VercelSandboxHttpRunnerOptions = {
   name: string;
   /** Inject Sandbox.get (tests). Default loads @vercel/sandbox. */
   getSandbox?: GetSandboxFn;
-  /** Idle extendTimeout ms (default USER_SANDBOX_IDLE_TIMEOUT_MS / 30m). */
+  /** Idle extendTimeout ms (default 30m — USER_SANDBOX_IDLE family). */
   idleTimeoutMs?: number;
 };
 
