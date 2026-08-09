@@ -59,6 +59,7 @@ function mockGit(
   const fn = vi.fn(
     (_cmd: string, args: string[], _opts: Record<string, unknown>): ChildLike => {
       const sub = args[0];
+      if (sub === 'status') return plan.status?.() ?? fakeChild(0);
       if (sub === 'fetch') return plan.fetch?.() ?? fakeChild(0);
       if (sub === 'merge') return plan.merge?.() ?? fakeChild(0);
       if (sub === 'rev-parse') {
@@ -95,6 +96,32 @@ describe('resolveAutoUpdateConfig', () => {
     expect(on.enabled).toBe(true);
     expect(on.gitDir).toBe('/srv/invincible');
   });
+
+  it('unset / empty UPDATE_CHECK_MS → default background interval 60000', () => {
+    expect(resolveAutoUpdateConfig({}).intervalMs).toBe(60_000);
+    expect(
+      resolveAutoUpdateConfig({ SANDBOX_UPDATE_CHECK_MS: '  ' }).intervalMs,
+    ).toBe(60_000);
+  });
+
+  it('UPDATE_CHECK_MS=0 disables the background timer (header-trigger only)', () => {
+    expect(resolveAutoUpdateConfig({ SANDBOX_UPDATE_CHECK_MS: '0' }).intervalMs).toBe(0);
+    expect(resolveAutoUpdateConfig({ SANDBOX_UPDATE_CHECK_MS: '0.0' }).intervalMs).toBe(0);
+  });
+
+  it('UPDATE_CHECK_MS=120000 → floored positive interval', () => {
+    expect(
+      resolveAutoUpdateConfig({ SANDBOX_UPDATE_CHECK_MS: '120000' }).intervalMs,
+    ).toBe(120_000);
+    expect(
+      resolveAutoUpdateConfig({ SANDBOX_UPDATE_CHECK_MS: '120000.9' }).intervalMs,
+    ).toBe(120_000);
+  });
+
+  it('negative / non-numeric UPDATE_CHECK_MS fails closed to default 60000', () => {
+    expect(resolveAutoUpdateConfig({ SANDBOX_UPDATE_CHECK_MS: '-1' }).intervalMs).toBe(60_000);
+    expect(resolveAutoUpdateConfig({ SANDBOX_UPDATE_CHECK_MS: 'abc' }).intervalMs).toBe(60_000);
+  });
 });
 
 describe('attemptAutoUpdate', () => {
@@ -121,10 +148,13 @@ describe('attemptAutoUpdate', () => {
       ref: 'origin/main',
     });
     expect(res).toEqual({ updated: true });
-    // Full argv-only sequence, never a shell.
-    expect(spawnMock).toHaveBeenCalledTimes(4);
+    // Full argv-only sequence, never a shell: status, fetch, rev-parse x2, merge.
+    expect(spawnMock).toHaveBeenCalledTimes(5);
     const mergeArgs = spawnMock.mock.calls.find((c) => c[1][0] === 'merge');
-    expect(mergeArgs?.[1].slice(1)).toEqual(['--ff-only', 'origin/main']);
+    // `--` protects the ref from being parsed as a git option (fix #4).
+    expect(mergeArgs?.[1].slice(1)).toEqual(['--ff-only', '--', 'origin/main']);
+    const statusArgs = spawnMock.mock.calls.find((c) => c[1][0] === 'status');
+    expect(statusArgs?.[1].slice(1)).toEqual(['--porcelain']);
   });
 
   it('fetch failure → no exit, update false', async () => {
@@ -169,7 +199,7 @@ describe('attemptAutoUpdate', () => {
 
   it('git binary missing → soft failure, no throw', async () => {
     mockGit({
-      fetch: () => fakeChild(0, '', '', 'git not found'),
+      status: () => fakeChild(0, '', '', 'git not found'),
     });
     const res = await attemptAutoUpdate({
       enabled: true,
@@ -177,6 +207,70 @@ describe('attemptAutoUpdate', () => {
       ref: 'origin/main',
     });
     expect(res.updated).toBe(false);
-    expect(res.reason).toBe('fetch-failed');
+    expect(res.reason).toBe('status-check-failed');
+  });
+
+  it('dirty working tree → fail closed, no fetch/merge/exit', async () => {
+    const fn = mockGit({
+      status: () => fakeChild(0, ' M package.json\n'),
+    });
+    const res = await attemptAutoUpdate({
+      enabled: true,
+      gitDir: '/srv/invincible',
+      ref: 'origin/main',
+    });
+    expect(res).toEqual({ updated: false, reason: 'dirty' });
+    // status ran; fetch/merge must not.
+    expect(fn.mock.calls.filter((c) => c[1][0] === 'status')).toHaveLength(1);
+    expect(fn.mock.calls.filter((c) => c[1][0] === 'fetch')).toHaveLength(0);
+    expect(fn.mock.calls.filter((c) => c[1][0] === 'merge')).toHaveLength(0);
+  });
+
+  it('dirty check failure → fail closed (cannot know if tree is safe)', async () => {
+    mockGit({
+      status: () => fakeChild(1, '', 'fatal: not a git repository'),
+    });
+    const res = await attemptAutoUpdate({
+      enabled: true,
+      gitDir: '/srv/invincible',
+      ref: 'origin/main',
+    });
+    expect(res.updated).toBe(false);
+    expect(res.reason).toBe('status-check-failed');
+  });
+
+  it('single-flight: concurrent update is rejected while one is in progress', async () => {
+    mockGit({
+      fetch: () => fakeChild(0),
+      merge: () => fakeChild(0),
+      'rev-parse': () => fakeChild(0, 'same\n'),
+    });
+    const cfg = { enabled: true, gitDir: '/srv/invincible', ref: 'origin/main' };
+    const p1 = attemptAutoUpdate(cfg);
+    const p2 = attemptAutoUpdate(cfg);
+    const [r1, r2] = await Promise.all([p1, p2]);
+    // First completes; the concurrent second is a fail-closed no-op (no crash loop).
+    expect(r1).toBeDefined();
+    expect(r2).toEqual({ updated: false, reason: 'in-progress' });
+  });
+
+  it('dash-prefixed ref is passed after `--` and never becomes a git option', async () => {
+    mockGit({
+      fetch: () => fakeChild(0),
+      merge: () => fakeChild(0),
+      'rev-parse': (n) => (n === 1 ? fakeChild(0, 'aaaa\n') : fakeChild(0, 'bbbb\n')),
+    });
+    const res = await attemptAutoUpdate({
+      enabled: true,
+      gitDir: '/srv/invincible',
+      ref: '--allow-unrelated-histories',
+    });
+    expect(res).toEqual({ updated: true });
+    const mergeArgs = spawnMock.mock.calls.find((c) => c[1][0] === 'merge');
+    expect(mergeArgs?.[1].slice(1)).toEqual([
+      '--ff-only',
+      '--',
+      '--allow-unrelated-histories',
+    ]);
   });
 });

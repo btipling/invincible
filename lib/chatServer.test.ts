@@ -7,6 +7,8 @@ import {
   parseChatBody,
 } from './chatServer';
 import { resolveModelId, DEFAULT_MODEL } from './model';
+import { SandboxHttpError } from './sandbox/types';
+import { sandboxDaemonOutOfDateError } from './sandbox/daemonVersion';
 import {
   INFERENCE_FORBIDDEN_ERROR,
   INFERENCE_MODEL_REQUIRED_ERROR,
@@ -117,6 +119,22 @@ describe('mapInferenceError', () => {
   });
   it('defaults to 502', () => {
     expect(mapInferenceError(new Error('upstream boom')).status).toBe(502);
+  });
+  it('preserves sandbox out-of-date 426 with stable code', () => {
+    const err = new SandboxHttpError(
+      sandboxDaemonOutOfDateError(2, 3),
+      426,
+      'SANDBOX_DAEMON_OUT_OF_DATE',
+    );
+    const r = mapInferenceError(err);
+    expect(r.status).toBe(426);
+    expect(r.code).toBe('SANDBOX_DAEMON_OUT_OF_DATE');
+    expect(r.error).toBe(sandboxDaemonOutOfDateError(2, 3));
+  });
+  it('does not let a generic 426 sandbox error leak code', () => {
+    const r = mapInferenceError(new SandboxHttpError('anything', 426, 'SANDBOX_HTTP'));
+    expect(r.status).toBe(502); // non-out-of-date statuses keep inference mapping
+    expect(r.code).toBeUndefined();
   });
 });
 

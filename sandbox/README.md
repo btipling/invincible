@@ -46,13 +46,16 @@ Origin may use a DigitalOcean-hosted sample (reverse-proxy TLS, Vercel-reachable
 | `SANDBOX_LISTEN` | no | `127.0.0.1:8787` | Bind address. Localhost is fine behind a reverse proxy |
 | `SANDBOX_AUTO_UPDATE` | no | off | Opt-in: git ff-only self-update then exit for `Restart=always` |
 | `SANDBOX_GIT_DIR` | yes if auto-update on | — | Repo-root checkout path (contains `sandbox/`) |
-| `SANDBOX_GIT_REF` | no | `origin/main` | ff-only merge target after `git fetch` |
-| `SANDBOX_UPDATE_CHECK_MS` | no | `60000` | Background check interval; `0` disables the timer (header-trigger only) |
+| `SANDBOX_GIT_REF` | no | `origin/main` | ff-only merge target after `git fetch`; passed after `--` so a dash-prefixed ref is never treated as a git option |
+| `SANDBOX_UPDATE_CHECK_MS` | no | `60000` | Background check interval; `0` disables the timer (header-trigger only); negative / non-numeric values fail closed to `60000` |
 
-Auto-update runs `git fetch` + `git merge --ff-only <ref>` (argv only, minimal
-env), advances HEAD, then the process exits `0` for the supervisor to restart on
-the new code. Fails closed on divergent local work / git errors (stays up and
-keeps serving 426). These env vars belong on the **daemon process**, not Vercel.
+Auto-update runs `git status --porcelain` then (only when clean) `git fetch` +
+`git merge --ff-only -- <ref>` (argv only, minimal env), advances HEAD, then the
+process exits `0` for the supervisor to restart on the new code. Fails closed on
+a **dirty** working tree, divergent local work, or git errors (stays up and keeps
+serving 426) — and is **single-flight**: a background timer and a request-triggered
+out-of-date restart can never run parallel updates concurrently. These env vars
+belong on the **daemon process**, not Vercel.
 
 ## Local run
 

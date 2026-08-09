@@ -321,17 +321,20 @@ wire-incompatible HTTP JSON.
 #### Optional auto-update + self-restart
 
 Opt-in so static/binary/BYO installs never require git. When enabled the daemon
-`git fetch` + **ff-only** merges its checkout and exits `0` so a supervisor with
-`Restart=always` reloads the new code. Fails closed: divergent local work or a
-git error leaves the daemon up and serving 426 (operator-visible), never a crash
-loop.
+runs `git status --porcelain`, then (only when **clean** and ff-able) `git fetch`
++ **ff-only** merges its checkout and exits `0` so a supervisor with
+`Restart=always` reloads the new code. Fails closed: a **dirty** working tree,
+divergent local work, or a git error leaves the daemon up and serving 426
+(operator-visible), never a crash loop. Updates are **single-flight** — a
+background timer and a request-triggered restart never run concurrent `git`
+operations in parallel.
 
 | Env (sandbox process, **not** Vercel) | Required | Default | Purpose |
 |------|----------|---------|---------|
 | `SANDBOX_AUTO_UPDATE` | no | off | `1`/`true` enables git self-update |
 | `SANDBOX_GIT_DIR` | **yes** if auto-update on | — | Absolute path to the repo-root checkout (contains `sandbox/`) |
-| `SANDBOX_GIT_REF` | no | `origin/main` | ff-only merge target after `git fetch` |
-| `SANDBOX_UPDATE_CHECK_MS` | no | `60000` | Background check interval; `0` disables the timer (header-triggered only) |
+| `SANDBOX_GIT_REF` | no | `origin/main` | ff-only merge target after `git fetch`; passed to git after `--` so a dash-prefixed ref is never a git option |
+| `SANDBOX_UPDATE_CHECK_MS` | no | `60000` | Background check interval; `0` disables the timer (header-triggered only); negative / non-numeric fail closed to `60000` |
 
 systemd auto-update example (no secrets in the unit):
 
@@ -386,8 +389,8 @@ Also requires existing `AI_GATEWAY_API_KEY` for inference.
 | `SANDBOX_LISTEN` | no | `127.0.0.1:8787` | Bind address (localhost OK behind proxy) |
 | `SANDBOX_AUTO_UPDATE` | no | off | Opt-in git self-update (`1`/`true`); see §3 daemon-version gate |
 | `SANDBOX_GIT_DIR` | yes if auto-update on | — | Repo-root checkout path (contains `sandbox/`) |
-| `SANDBOX_GIT_REF` | no | `origin/main` | ff-only merge target |
-| `SANDBOX_UPDATE_CHECK_MS` | no | `60000` | Background update interval; `0` disables timer |
+| `SANDBOX_GIT_REF` | no | `origin/main` | ff-only merge target; passed after `--` (dash-prefixed refs never become flags) |
+| `SANDBOX_UPDATE_CHECK_MS` | no | `60000` | Background update interval; `0` disables timer; negative/non-num fail closed to `60000` |
 
 ---
 
