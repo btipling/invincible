@@ -82,14 +82,25 @@ export type VercelFsSandboxLike = {
       options?: { signal?: AbortSignal },
     ): Promise<{ isFile(): boolean; isDirectory(): boolean; size: number }>;
   };
+  /**
+   * Mirrors @vercel/sandbox: string form only forwards signal/timeoutMs;
+   * cwd/env require the object form (RunCommandParams).
+   */
   runCommand(
-    command: string,
+    commandOrParams:
+      | string
+      | {
+          cmd: string;
+          args?: string[];
+          cwd?: string;
+          env?: Record<string, string>;
+          signal?: AbortSignal;
+          timeoutMs?: number;
+        },
     args?: string[],
     opts?: {
       signal?: AbortSignal;
       timeoutMs?: number;
-      cwd?: string;
-      env?: Record<string, string>;
     },
   ): Promise<VercelFsSandboxCommandResult>;
   stop(opts?: { signal?: AbortSignal }): Promise<unknown>;
@@ -413,10 +424,10 @@ export function createVercelSandboxClient(
           }
           if (st.size > max) {
             // Byte-capped read via head (matches BYO daemon open+read max+1 pattern).
+            // String form: only signal/timeoutMs (path is absolute; cwd unused).
             const cmd = await sb.runCommand('head', ['-c', String(max + 1), abs], {
               signal: init?.signal,
               timeoutMs: 120_000,
-              cwd: workspaceRoot,
             });
             const { stdout } = await commandOutput(cmd);
             const buf = Buffer.from(stdout, 'utf8');
@@ -565,7 +576,10 @@ export function createVercelSandboxClient(
         const cwdAbs = resolveVercelFsPath(workspaceRoot, body.cwd ?? '.');
         const timeoutMs = clampExecTimeoutMs(body.timeoutMs);
         const sb = await ensureSandbox(init?.signal);
-        const cmd = await sb.runCommand(body.cmd, args, {
+        // Object form required: @vercel/sandbox 3-arg string form drops cwd/env.
+        const cmd = await sb.runCommand({
+          cmd: body.cmd,
+          args,
           cwd: cwdAbs,
           signal: init?.signal,
           timeoutMs,

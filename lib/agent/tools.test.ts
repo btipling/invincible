@@ -88,8 +88,6 @@ describe('createAgentTools', () => {
     expect(out).toContain('2 entries');
     expect(out).toContain('a.ts');
   });
-});
-
 
   it('exec tool schema has no env (additionalProperties false, no env key)', () => {
     const client = {
@@ -117,6 +115,7 @@ describe('createAgentTools', () => {
       expect.arrayContaining(['cmd', 'args', 'cwd', 'timeoutMs']),
     );
   });
+});
 
 describe('createAgentTools permissions', () => {
   it('read-only denies write_file, str_replace and exec without calling client', async () => {
