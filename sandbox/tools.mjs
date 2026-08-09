@@ -22,11 +22,16 @@ export class ToolError extends Error {
   }
 }
 
+/** Allowlisted keys for request-scoped exec env overlay (user GitHub PAT). */
+export const ALLOWED_EXEC_ENV_KEYS = Object.freeze(['GH_TOKEN', 'GITHUB_TOKEN']);
+
 /**
  * Minimal env for child processes — never inherit SANDBOX_TOKEN or host secrets.
+ * Optional allowlisted overlay (e.g. user GitHub PAT) is merged after base env.
  * @param {string} workspace
+ * @param {Record<string, string>} [overlay]
  */
-export function buildExecEnv(workspace) {
+export function buildExecEnv(workspace, overlay) {
   /** @type {Record<string, string>} */
   const env = {
     PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
@@ -36,7 +41,39 @@ export function buildExecEnv(workspace) {
   };
   if (process.env.TERM) env.TERM = process.env.TERM;
   if (process.env.LC_ALL) env.LC_ALL = process.env.LC_ALL;
+  if (overlay) {
+    for (const key of ALLOWED_EXEC_ENV_KEYS) {
+      const v = overlay[key];
+      if (typeof v === 'string' && v.length > 0) {
+        env[key] = v;
+      }
+    }
+  }
   return env;
+}
+
+/**
+ * Validate request body.env for /v1/exec. Returns allowlisted overlay or null.
+ * @param {unknown} raw
+ * @returns {Record<string, string> | null}
+ */
+export function parseExecEnvOverlay(raw) {
+  if (raw == null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ToolError('env must be an object', 400);
+  }
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const [key, value] of Object.entries(/** @type {Record<string, unknown>} */ (raw))) {
+    if (!ALLOWED_EXEC_ENV_KEYS.includes(key)) {
+      throw new ToolError(`env key not allowed: ${key}`, 400);
+    }
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new ToolError(`env.${key} must be a non-empty string`, 400);
+    }
+    out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 /** @param {number} [timeoutMs] */
@@ -157,6 +194,92 @@ export async function writeFileTool(workspace, body) {
 }
 
 /**
+ * Exact string replace in a workspace file (coding-agent search_replace semantics).
+ * @param {string} workspace
+ * @param {{ path?: string, old_string?: string, new_string?: string, replace_all?: boolean }} body
+ */
+export async function strReplaceTool(workspace, body) {
+  if (body?.path == null || body.path === '') {
+    throw new ToolError('path is required');
+  }
+  if (typeof body.old_string !== 'string' || body.old_string.length === 0) {
+    throw new ToolError('old_string is required and must be non-empty');
+  }
+  if (typeof body.new_string !== 'string') {
+    throw new ToolError('new_string must be a string');
+  }
+  if (body.old_string === body.new_string) {
+    throw new ToolError('old_string and new_string are identical');
+  }
+
+  const replaceAll = Boolean(body.replace_all);
+  const target = resolveJailPath(workspace, body.path);
+
+  let stat;
+  try {
+    stat = await fs.stat(target);
+  } catch {
+    throw new ToolError('File not found', 404);
+  }
+  if (!stat.isFile()) {
+    throw new ToolError('Not a file', 400);
+  }
+  if (stat.size > MAX_READ_WRITE_BYTES) {
+    throw new ToolError(
+      `content exceeds maxBytes limit (${MAX_READ_WRITE_BYTES})`,
+      413,
+    );
+  }
+
+  const content = await fs.readFile(target, 'utf8');
+  const oldStr = body.old_string;
+  const newStr = body.new_string;
+
+  // Non-overlapping left-to-right count
+  let count = 0;
+  let from = 0;
+  while (from <= content.length) {
+    const idx = content.indexOf(oldStr, from);
+    if (idx === -1) break;
+    count += 1;
+    from = idx + oldStr.length;
+    if (oldStr.length === 0) break; // defensive; empty already rejected
+  }
+
+  if (count === 0) {
+    throw new ToolError('old_string not found in file', 400);
+  }
+  if (count > 1 && !replaceAll) {
+    throw new ToolError(
+      `old_string matched ${count} times; pass replace_all: true or provide a unique snippet`,
+      409,
+    );
+  }
+
+  const next = replaceAll
+    ? content.split(oldStr).join(newStr)
+    : content.replace(oldStr, newStr);
+
+  const outBuf = Buffer.from(next, 'utf8');
+  if (outBuf.byteLength > MAX_READ_WRITE_BYTES) {
+    throw new ToolError(
+      `content exceeds maxBytes limit (${MAX_READ_WRITE_BYTES})`,
+      413,
+    );
+  }
+
+  await fs.writeFile(target, outBuf);
+  return {
+    ok: true,
+    path: String(body.path),
+    replacements: replaceAll ? count : 1,
+    bytes: outBuf.byteLength,
+  };
+}
+
+
+
+/**
  * @param {import('node:stream').Readable | null | undefined} stream
  * @param {number} max
  */
@@ -188,8 +311,35 @@ function attachCappedCollector(stream, max) {
 }
 
 /**
+ * Resolve optional stdin / heredoc body for exec.
+ * Accepts `stdin` (preferred) or `heredoc` alias. Still argv-only — no shell.
+ * @param {{ stdin?: unknown, heredoc?: unknown }} body
+ * @returns {Buffer | null} null = leave stdin closed (ignore); Buffer may be empty
+ */
+export function resolveExecStdin(body) {
+  const raw =
+    body?.stdin !== undefined && body?.stdin !== null
+      ? body.stdin
+      : body?.heredoc !== undefined && body?.heredoc !== null
+        ? body.heredoc
+        : undefined;
+  if (raw === undefined) return null;
+  if (typeof raw !== 'string') {
+    throw new ToolError('stdin must be a string (heredoc body)');
+  }
+  const buf = Buffer.from(raw, 'utf8');
+  if (buf.byteLength > MAX_STDIO_BYTES) {
+    throw new ToolError(
+      `stdin exceeds maxBytes limit (${MAX_STDIO_BYTES})`,
+      413,
+    );
+  }
+  return buf;
+}
+
+/**
  * @param {string} workspace
- * @param {{ cmd?: string, args?: string[], cwd?: string, timeoutMs?: number }} body
+ * @param {{ cmd?: string, args?: string[], cwd?: string, timeoutMs?: number, stdin?: string, heredoc?: string, env?: Record<string, string> }} body
  */
 export async function execCmd(workspace, body) {
   if (body?.cmd == null || typeof body.cmd !== 'string' || body.cmd === '') {
@@ -202,6 +352,8 @@ export async function execCmd(workspace, body) {
     if (typeof a !== 'string') throw new ToolError('args must be an array of strings');
     return a;
   });
+
+  const stdinBuf = resolveExecStdin(body ?? {});
 
   const cwd = resolveJailPath(workspace, body.cwd ?? '.');
   let cwdStat;
@@ -216,6 +368,8 @@ export async function execCmd(workspace, body) {
 
   const timeoutMs = clampTimeout(body.timeoutMs);
   const useDetached = process.platform !== 'win32';
+  const pipeStdin = stdinBuf != null;
+  const overlay = parseExecEnvOverlay(body.env);
 
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -226,9 +380,9 @@ export async function execCmd(workspace, body) {
       child = spawn(body.cmd, args, {
         cwd,
         shell: false,
-        env: buildExecEnv(path.resolve(workspace)),
+        env: buildExecEnv(path.resolve(workspace), overlay ?? undefined),
         detached: useDetached,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [pipeStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
       reject(
@@ -264,6 +418,21 @@ export async function execCmd(workspace, body) {
       timedOut = true;
       killTree();
     }, timeoutMs);
+
+    if (pipeStdin && child.stdin) {
+      child.stdin.on('error', (err) => {
+        // EPIPE if child exits before consuming all stdin — not a hard failure.
+        if (err && /** @type {NodeJS.ErrnoException} */ (err).code === 'EPIPE') {
+          return;
+        }
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        killTree();
+        reject(new ToolError(err.message || 'stdin write failed', 500));
+      });
+      child.stdin.end(stdinBuf);
+    }
 
     const finish = (code) => {
       if (settled) return;

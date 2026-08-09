@@ -20,7 +20,31 @@ export type SessionSnapshot = {
   id: string;
   messages: SessionMessage[];
   updatedAt: number;
+  /**
+   * Logical workspace cwd (workspace-root-relative), set by successful agent turns.
+   * Omitted = no remembered cwd (host omits request field; server defaults).
+   */
+  cwd?: string;
 };
+
+
+/**
+ * Host-side cwd hygiene for session blobs (localStorage).
+ * Keeps only non-empty workspace-relative strings; drops host-absolute,
+ * drive/UNC, control characters, and non-strings. Server still re-validates.
+ */
+export function sanitizeSessionCwd(cwd: unknown): string | undefined {
+  if (typeof cwd !== 'string') return undefined;
+  const trimmed = cwd.trim();
+  if (!trimmed) return undefined;
+  // Host-absolute / UNC / Windows drive — would 400 every agent turn if sticky.
+  if (trimmed.startsWith('/') || trimmed.startsWith('\\') || /^[a-zA-Z]:/.test(trimmed)) {
+    return undefined;
+  }
+  // C0 controls + DEL (break annotations / SSE if ever reflected).
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return undefined;
+  return trimmed;
+}
 
 export interface SessionStore {
   readonly kind: 'memory' | 'localStorage' | string;
@@ -92,7 +116,10 @@ export class LocalStorageSessionStore implements SessionStore {
       if (!raw) return null;
       const data = JSON.parse(raw) as SessionSnapshot;
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) return null;
-      return data;
+      // Tolerant: only keep safe workspace-relative cwd strings (parent #270 / phase 2).
+      const { cwd: _rawCwd, ...rest } = data as SessionSnapshot & { cwd?: unknown };
+      const cwd = sanitizeSessionCwd(_rawCwd);
+      return cwd !== undefined ? { ...rest, cwd } : (rest as SessionSnapshot);
     } catch {
       return null;
     }
@@ -137,28 +164,65 @@ export function createDefaultSessionStore(): SessionStore {
 /**
  * Build a single prompt that includes recent turns for multi-turn continuity.
  * API remains Phase 1 single-shot { prompt }; history is folded into the text.
+ *
+ * Includes **system** tool lines so continue-after-stall does not re-run work
+ * the agent already performed. Prefer tail of history when over maxChars.
  */
 export function formatPromptWithHistory(
   history: SessionMessage[],
   newUserPrompt: string,
-  opts?: { maxTurns?: number; maxChars?: number },
+  opts?: {
+    /** @deprecated use maxMessages — kept for call sites */
+    maxTurns?: number;
+    maxMessages?: number;
+    maxChars?: number;
+  },
 ): string {
-  const maxTurns = opts?.maxTurns ?? 8;
-  const maxChars = opts?.maxChars ?? 12_000;
-  const dialogue = history.filter((m) => m.role === 'user' || m.role === 'assistant');
-  const recent = dialogue.slice(-maxTurns);
+  // Generous defaults: multi-tool turns are long; 8/12k was a continuity killer.
+  const maxMessages =
+    opts?.maxMessages ??
+    (opts?.maxTurns != null ? Math.max(opts.maxTurns * 4, opts.maxTurns) : 400);
+  // Host fold budget — leave model/token limits to the gateway, not a toy 12k/32k char wall.
+  const maxChars = opts?.maxChars ?? 3_500_000;
+
+  // user + assistant + system (live tool lines) + error (stall/cancel context).
+  // Thinking is never stored in SessionStore.
+  const dialogue = history.filter(
+    (m) =>
+      m.role === 'user' ||
+      m.role === 'assistant' ||
+      m.role === 'system' ||
+      m.role === 'error',
+  );
+  const recent = dialogue.slice(-Math.max(1, maxMessages));
 
   if (recent.length === 0) return newUserPrompt;
 
-  const lines: string[] = ['Previous conversation:'];
+  const lines: string[] = [
+    'Previous conversation (Tool lines already ran this session — reuse results; do not repeat the same tool calls unless the user asks or files may have changed):',
+  ];
   for (const m of recent) {
-    const label = m.role === 'user' ? 'User' : 'Assistant';
-    lines.push(`${label}: ${m.text}`);
+    if (m.role === 'user') lines.push(`User: ${m.text}`);
+    else if (m.role === 'assistant') lines.push(`Assistant: ${m.text}`);
+    else if (m.role === 'system') {
+      // Skip end-of-turn markers (not tools).
+      if ((m.text ?? '').startsWith('Turn ended ·')) continue;
+      lines.push(`Tool: ${m.text}`);
+    } else if (m.role === 'error') {
+      if ((m.text ?? '').startsWith('Turn ended ·')) {
+        lines.push(`Error: ${m.text}`);
+        continue;
+      }
+      lines.push(`Error: ${m.text}`);
+    }
   }
   lines.push('', `User: ${newUserPrompt}`, '', 'Assistant:');
   let out = lines.join('\n');
   if (out.length > maxChars) {
+    // Keep the most recent context (tail).
     out = out.slice(out.length - maxChars);
+    const nl = out.indexOf('\n');
+    if (nl > 0 && nl < 240) out = out.slice(nl + 1);
   }
   return out;
 }

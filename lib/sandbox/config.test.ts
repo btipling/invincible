@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   MAX_AGENT_MAX_STEPS,
   SANDBOX_NOT_CONFIGURED_ERROR,
   getSandboxConfig,
   resolveAgentMaxSteps,
   resolveAgentModelId,
+  resolveSandboxDefaultCwd,
+  resetSandboxDefaultCwdLogForTests,
   sandboxConfigured,
 } from './config';
 
@@ -32,17 +34,18 @@ describe('sandbox config', () => {
     });
   });
 
-  it('resolveAgentMaxSteps is null when unset; clamps 1…256 when set', () => {
+  it('resolveAgentMaxSteps is null when unset; clamps only absurd extremes', () => {
     expect(resolveAgentMaxSteps({})).toBeNull();
     expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '' })).toBeNull();
     expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '   ' })).toBeNull();
     expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: 'nope' })).toBeNull();
     expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '3' })).toBe(3);
     expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '0' })).toBe(1);
-    expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '999' })).toBe(
-      MAX_AGENT_MAX_STEPS,
-    );
+    expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '999' })).toBe(999);
     expect(resolveAgentMaxSteps({ AGENT_MAX_STEPS: '256' })).toBe(256);
+    expect(
+      resolveAgentMaxSteps({ AGENT_MAX_STEPS: String(MAX_AGENT_MAX_STEPS + 1) }),
+    ).toBe(MAX_AGENT_MAX_STEPS);
   });
 
   it('resolveAgentModelId prefers AGENT_MODEL', () => {
@@ -57,6 +60,34 @@ describe('sandbox config', () => {
   it('503 error string is stable for host matching', () => {
     expect(SANDBOX_NOT_CONFIGURED_ERROR).toBe(
       'Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.',
+    );
+  });
+});
+
+describe('resolveSandboxDefaultCwd', () => {
+  afterEach(() => {
+    resetSandboxDefaultCwdLogForTests();
+  });
+
+  it('returns . when unset or blank', () => {
+    expect(resolveSandboxDefaultCwd({})).toBe('.');
+    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: '' })).toBe('.');
+    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: '   ' })).toBe('.');
+  });
+
+  it('returns normalized workspace-relative path', () => {
+    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: 'invincible' })).toBe(
+      'invincible',
+    );
+    expect(
+      resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: '  invincible/sub  ' }),
+    ).toBe('invincible/sub');
+  });
+
+  it('invalid env falls back to . without throw', () => {
+    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: '/etc' })).toBe('.');
+    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: 'C:\\Windows' })).toBe(
+      '.',
     );
   });
 });

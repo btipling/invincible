@@ -20,11 +20,13 @@ project and keys, and run the same harness on **your** work.
 |---|---------|--------|
 | **Core** | Wasm harness chat | Transcript, composer, and turn UX live in the canvas (`/harness`) |
 | **Core** | AI Gateway inference | `POST /api/chat` — `AI_GATEWAY_API_KEY` stays on the server |
-| **Optional** | Agent tools + sandbox | `POST /api/agent` — tenancy **off**: `SANDBOX_URL` + `SANDBOX_TOKEN`; tenancy **on**: DB sandbox grants (not env `SANDBOX_*`) |
-| **Optional** | Builtin HTTPS fetch | `http_get` via Vercel Sandbox when `BUILTIN_HTTP_FETCH=sandbox` — [docs/builtin-http.md](docs/builtin-http.md) |
+| **Optional** | Agent tools + sandbox | `POST /api/agent` — tenancy **off**: env BYO `SANDBOX_*`; tenancy **on**: DB grants + per-row `backend` (`byo`|`vercel`) and image; **Settings → Sandbox** durable Workspace (attach-only) — [docs/sandbox.md](docs/sandbox.md); origin dogfood: [dev/README.md](dev/README.md) |
+| **Optional** | Builtin HTTPS fetch | `http_get` via durable HTTP instance when `BUILTIN_HTTP_FETCH=sandbox` (Settings Create HTTP; tenancy-off name env) — [docs/builtin-http.md](docs/builtin-http.md) |
 | **Optional** | Multi-tenant login + admin | Credentials auth, grants, `/login` + `/admin` — **on** for the reference Production deploy |
 | **Optional** | Tenant BYOK inference | When tenancy is on: admin **Inference keys** (`/admin/inference`), harness model cycle (canvas **Next**), request-scoped Gateway BYOK |
 | **Optional** | Per-user MCP tools | Tenancy on: Settings → MCP servers; tools on agent turns ([docs/mcp.md](docs/mcp.md)) |
+| **Optional** | User GitHub PAT | Tenancy on: Settings → GitHub token; sandbox **exec** injects `GH_TOKEN`/`GITHUB_TOKEN` ([docs/sandbox.md](docs/sandbox.md)) |
+| **Optional** | Preferred sandbox + instances | Tenancy on: Settings → Sandbox (catalog preference + Workspace/HTTP instance lifecycle) ([docs/sandbox.md](docs/sandbox.md)) |
 | **Optional** | OIDC SSO + SCIM | Code on `main`; enable with env ([docs/bring-your-own.md §4b](docs/bring-your-own.md#4b-optional-sso-oidc--scim)) |
 
 ## Try it
@@ -85,6 +87,7 @@ secrets → Wasm supply → verify `/harness`.
 | Tenant BYOK inference | [docs/bring-your-own.md §4a Inference keys](docs/bring-your-own.md#inference-keys-byok) |
 | OIDC + SCIM | [docs/bring-your-own.md §4b](docs/bring-your-own.md#4b-optional-sso-oidc--scim) |
 | Per-user MCP | [docs/mcp.md](docs/mcp.md) |
+| User GitHub PAT (Settings) | [docs/sandbox.md](docs/sandbox.md) (GitHub token section) |
 | Self-hosted Zig runner | [docs/runner.md](docs/runner.md) |
 
 Anyone can connect this repo to **their** Vercel project and keys — no single-host
@@ -123,6 +126,7 @@ Living guides only (process / phase history lives in closed GitHub issues).
 |-----|----------|
 | [bring-your-own.md](docs/bring-your-own.md) | Operator — your Vercel + keys + Wasm paths |
 | [sandbox.md](docs/sandbox.md) | Operator — agent tools workspace |
+| [dev/README.md](dev/README.md) | Dogfood sandbox image (`dev/Dockerfile` + GHA→VCR) |
 | [builtin-http.md](docs/builtin-http.md) | Operator — builtin HTTPS fetch (`http_get`) |
 | [mcp.md](docs/mcp.md) | Operator — per-user MCP servers + Exa smoke |
 | [feature-divide.md](docs/feature-divide.md) | Product — DOM shell vs Wasm harness |

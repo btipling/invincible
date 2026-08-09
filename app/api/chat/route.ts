@@ -13,7 +13,8 @@ import { redactSecrets } from '../../../lib/agent/redact';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+// Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
+export const maxDuration = 1800;
 
 /**
  * Non-streaming chat via Vercel AI Gateway.

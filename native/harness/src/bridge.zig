@@ -30,11 +30,15 @@ pub const MessageKind = enum(u8) {
     thinking = 5,
 };
 
-const MAX_MSG = 48;
-/// Cap per transcript line (UTF-8). Longer Gateway replies are truncated at the host edge.
-pub const MAX_MSG_LEN = 4096;
+/// Transcript ring slots. Host `HARNESS_RING_MAX` must match.
+/// Sized for long multi-tool agent turns — not a toy ring.
+const MAX_MSG = 2048;
+/// Cap per transcript line (UTF-8 bytes). Host truncates to this before push/update.
+/// 256 KiB — long thinking / assistant monologues (caution-theater 4–64 KiB removed).
+pub const MAX_MSG_LEN = 262144;
 const ECHO_CAP = 1024;
-pub const SUBMIT_CAP = 4096;
+/// User submit buffer (composer → host).
+pub const SUBMIT_CAP = 262144;
 /// Protocol v3 model catalog caps (host pushes UTF-8 model ids).
 pub const MAX_CATALOG = 64;
 pub const MAX_MODEL_ID_LEN = 128;

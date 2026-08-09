@@ -24,7 +24,11 @@ async function applyMigrations(client: PGlite) {
     '0002_tenant_deks.sql',
     '0003_provider_secrets.sql',
     '0004_user_mcp_servers.sql',
-    '0005_harness_sessions.sql',
+    '0005_sandbox_backend.sql',
+    '0006_user_github_tokens.sql',
+    '0007_user_preferred_sandbox.sql',
+    '0008_user_sandbox_instances.sql',
+    '0009_harness_sessions.sql',
   ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     for (const stmt of sql

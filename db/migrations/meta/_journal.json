@@ -41,7 +41,35 @@
       "idx": 5,
       "version": "7",
       "when": 1785900000000,
-      "tag": "0005_harness_sessions",
+      "tag": "0005_sandbox_backend",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785920000000,
+      "tag": "0006_user_github_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1785940000000,
+      "tag": "0007_user_preferred_sandbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785960000000,
+      "tag": "0008_user_sandbox_instances",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1785980000000,
+      "tag": "0009_harness_sessions",
       "breakpoints": true
     }
   ]

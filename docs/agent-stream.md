@@ -1,18 +1,31 @@
 # Agent stream (SSE)
 
 `POST /api/agent` can return a **Server-Sent Events** body when the client asks for it.
-Default remains a single JSON `{ text, toolTrace? }` response for tests and simple clients.
+Default remains a single JSON `{ text, toolTrace?, cwd? }` response for tests and simple clients.
 
 ## Negotiation
 
 | Client | Server |
 |--------|--------|
 | Header `Accept: text/event-stream` | `Content-Type: text/event-stream; charset=utf-8` + SSE events |
-| Other / missing Accept | JSON `{ text, toolTrace? }` or `{ error }` |
+| Other / missing Accept | JSON `{ text, toolTrace?, cwd? }` or `{ error }` |
 
 Early failures (auth, missing sandbox, bad body, BYOK) always use **JSON** status responses — even if Accept requested a stream. Host stream clients must parse JSON errors (including the exact sandbox-not-configured **503** string for chat fallback).
 
 Response hints: `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`.
+
+
+## Request body (cwd)
+
+| Field | Required | Notes |
+|-------|----------|--------|
+| `prompt` | yes | Same limits as chat |
+| `modelId` | no | Gateway model id |
+| `cwd` | no | Logical **workspace-root-relative** directory for this turn |
+
+**Omitted / null `cwd`:** server uses `SANDBOX_DEFAULT_CWD` when set and valid, else `"."`.  
+**Present but invalid** (host-absolute, control chars, non-string): **400** JSON error — not a stream.  
+**Response `cwd`:** included on JSON success and SSE `done` only when FS tools ran this turn; always a normalized workspace-relative path. Host session should update stored cwd **only on success** (never on abort/error).
 
 ## Events
 
@@ -24,18 +37,18 @@ Each SSE block is one `data: <json>\n\n` line:
 | `tool_result` | `name`, `ok`, `summary` | System line (summary already formatted; `✓ ok` / `✗ failed`) |
 | `reasoning_delta` | `text` (chunk) | Grow a **Thinking** bubble (protocol v8) |
 | `text_delta` | `text` (chunk) | Grow Assistant bubble(s) |
-| `done` | `text`, optional `toolTrace` | Collapse open thinking; finalize session; Ready |
+| `done` | `text`, optional `toolTrace`, optional `cwd` | Collapse open thinking; finalize session; apply `cwd` on success only; Ready |
 | `error` | `error`, optional `status` | Collapse open thinking; Error message; Ready |
 
 Unknown types are ignored (forward-compatible). String fields are redacted server-side with the same secret list as JSON responses.
 
 ## Wasm bridge
 
-Assistant and thinking growth use **protocol v8** `inv_update_last_message` so streaming does not create one ring message per token. Tool lines use System `pushMessage`. Thinking uses `MessageKind.Thinking` (muted warm chrome). No dual DOM transcript. In-place stream growth relies on harness stick-to-bottom (content height) so the viewport follows when the user is near the bottom — not on new SSE event types.
+Assistant and thinking growth use **protocol v8** `inv_update_last_message` so streaming does not create one ring message per token. Tool lines use System `pushMessage`. Thinking uses `MessageKind.Thinking` (muted warm chrome + **same GFM paint** as assistant). No dual DOM transcript. In-place stream growth relies on harness stick-to-bottom (content height) so the viewport follows when the user is near the bottom — not on new SSE event types.
 
 ### Thinking collapse
 
-While a Thinking segment is **open**, the host grows the full monologue (≤4096). When the segment **closes** (tool line, assistant text, `done`, or `error`), the host rewrites the last Thinking row to a **collapsed** one-liner (≤160 chars + ellipsis) via `updateLastMessage`. After the stream promise settles, the host also collapses any still-open segment (abort / network drop without a terminal SSE event). Multi-step turns may leave several short Thinking rows in the ring.
+While a Thinking segment is **open**, the host grows the full monologue (≤ Wasm `MAX_MSG_LEN`, currently 64 KiB). When the segment **closes** (tool line, assistant text, `done`, or `error`), the monologue **stays fully visible** (no one-liner collapse). Multi-step turns may leave several Thinking rows in the ring. There is **no** per-turn thinking-segment or live-tool line product cap — use **Stop** to cancel.
 
 ### User cancel (Stop)
 
@@ -49,8 +62,9 @@ submit so no ghost request is sent.
 
 | Kind | SessionStore | History fold |
 |------|--------------|--------------|
-| User / Assistant | **Yes** | user + assistant only |
-| System (live tools) | **Yes** (live path) | **Excluded** from next-turn fold |
+| User / Assistant | **Yes** | Included |
+| System (live tools) | **Yes** (live path) | **Included** as `Tool:` lines (continue must not re-run work) |
+| Error | **Yes** | Included as `Error:` (stall/cancel context) |
 | Thinking | **No** (display-only) | Never |
 
 ## Reasoning / model config
@@ -62,16 +76,31 @@ submit so no ghost request is sent.
 
 When `AGENT_REASONING` is unset, the server enables `reasoning: provider-default` only if the model id looks reasoning-capable (`reasoning` / `thinking` in the id, but not `non-reasoning`). Other models omit the option.
 
+## End of turn
+
+Every harness turn paints a final line:
+
+| Outcome | Line |
+|---------|------|
+| Model finished | `Turn ended · model finished` (System) |
+| User Stop | `Turn ended · you stopped` (System) |
+| Error / timeout / empty | `Turn ended · error · …` / timed out / empty (Error) |
+| Chat fallback | `Turn ended · chat finished` (System) |
+
+These markers are **not** folded as tools into the next prompt.
+
 ## Caps
+
+Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with **Stop**.
 
 | Cap | Value | Behavior |
 |-----|------:|----------|
-| Live tool System lines | **128** / turn | Then one `+ more tools (live cap 128)` notice |
-| Thinking **segments** | **32** / turn | Then one `+ more thinking (live cap 32)`; further monologue ignored |
-| Thinking chars (live segment) | **4096** | Wasm `MAX_MSG_LEN` |
-| Collapsed thinking | **≤160** + ellipsis | After segment close |
-| Tool summary length | **≤240** | `summarizeToolLine` / toolTrace |
-| JSON end-of-turn toolTrace lines | **128** | Non-stream / finalize path only |
+| Live tool System lines | **none** | Every tool start/result paints |
+| Thinking **segments** | **none** | Every reasoning segment paints |
+| Thinking / line chars | **256 KiB** | Wasm `MAX_MSG_LEN` only (bridge hard edge) |
+| Ring slots | **2048** | Wasm `MAX_MSG`; older drop when full; Load earlier for SessionStore |
+| Tool summary length | **salient ≤160** | `salientToolBits` — path/counts/status only; **not** full read_file/exec/http bodies |
+| JSON end-of-turn toolTrace lines | **none** | All entries shown |
 
 ## Deferred (not in stream contract yet)
 
@@ -85,6 +114,7 @@ When `AGENT_REASONING` is unset, the server enables `reasoning: provider-default
 | Event map / tool summary | `lib/agent/agentStream.ts` |
 | streamText + reasoning option | `lib/agent/runAgent.ts`, `lib/agent/reasoningConfig.ts` |
 | Route SSE vs JSON | `app/api/agent/route.ts` |
+| Logical cwd parse / default env | `lib/agent/agentBody.ts`, `lib/sandbox/config.ts` (`SANDBOX_DEFAULT_CWD`), `lib/agent/workPath.ts` |
 | Host consumer + collapse/caps | `lib/harnessChat.ts`, `lib/agentApi.ts` |
 | Thinking paint | `native/harness/src/ui.zig` (protocol v8 kind) |
 | Feature divide | [feature-divide.md](feature-divide.md) |

@@ -344,15 +344,21 @@ export async function backfillTenantDeks(
           .where(eq(sandboxes.tenantId, t.id));
 
         for (const sb of sbRows) {
+          // Vercel backend rows store null credentials (#281) — skip.
+          const ct = sb.tokenCiphertext?.trim() ?? '';
+          if (!ct) {
+            continue;
+          }
+
           let plain: string | null = null;
           let legacy = false;
 
           try {
-            plain = decryptSecret(sb.tokenCiphertext, amk);
+            plain = decryptSecret(ct, amk);
             legacy = true;
           } catch {
             try {
-              decryptSecret(sb.tokenCiphertext, dek);
+              decryptSecret(ct, dek);
               // already under DEK — skip
               continue;
             } catch {

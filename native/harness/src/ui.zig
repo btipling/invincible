@@ -310,7 +310,7 @@ pub fn frame() !void {
             }
             tl.deinit();
         } else {
-            // Paint entire in-ring transcript (MAX_MSG=48). No paint-cap / earlier hint.
+            // Paint entire in-ring transcript (MAX_MSG=512). No paint-cap / earlier hint.
             var i: usize = 0;
             while (i < n) : (i += 1) {
                 if (bridge.messageAt(i)) |m| {

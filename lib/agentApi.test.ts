@@ -234,3 +234,57 @@ describe('sendAgentStream', () => {
     }
   });
 });
+
+describe('sendAgent cwd', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('includes cwd in JSON body when set', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as {
+        prompt?: string;
+        cwd?: string;
+      };
+      expect(body.cwd).toBe('invincible');
+      return Response.json({ text: 'ok', cwd: 'invincible' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await sendAgent('hi', { cwd: 'invincible' });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.cwd).toBe('invincible');
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it('omits cwd from body when unset', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      expect(body).not.toHaveProperty('cwd');
+      return Response.json({ text: 'ok' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await sendAgent('hi');
+  });
+
+  it('parses cwd from stream done event', async () => {
+    const sse =
+      'data: {"type":"text_delta","text":"hi"}\n\n' +
+      'data: {"type":"done","text":"hi","cwd":"proj"}\n\n';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(sse, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      ),
+    );
+    const result = await sendAgentStream('x', { cwd: 'proj' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.text).toBe('hi');
+      expect(result.cwd).toBe('proj');
+    }
+  });
+});
+

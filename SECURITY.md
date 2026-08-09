@@ -19,6 +19,8 @@ If you find a vulnerability in Invincible, please open a **private** security ad
 | `AUTH_OIDC_CLIENT_SECRET` | Optional OIDC client secret — Vercel/server only; never `NEXT_PUBLIC_*` |
 | `SCIM_BEARER_TOKEN` | Optional SCIM shared bearer — Vercel/server only; IdP → `/api/scim/v2`; never client/Wasm |
 | Runner registration tokens, DO API tokens | Operator machines only |
+| `VERCEL_TOKEN` (GHA secret for **dev-image-build** VCR push) | GitHub Actions only — docker login password to `vcr.vercel.com`; never commit; never echo in logs/summaries |
+| `VERCEL_TEAM_ID` / `VCR_IMAGE_PREFIX` (GHA vars for dogfood image) | Identifiers for VCR push; not app runtime env; never put production DB/Gateway secrets in the dogfood image |
 
 Session blobs and Wasm must never contain API keys or sandbox tokens.  
 Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
@@ -26,10 +28,12 @@ Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
 ## Builtin HTTPS fetch (Vercel Sandbox)
 
 When `BUILTIN_HTTP_FETCH=sandbox`, agent tools may fetch **public HTTPS** URLs via a
-Vercel Sandbox microVM (hop B). App-side SSRF policy runs first (https-only; no
-private/metadata hosts; redirects only after re-check of each Location). Never put Gateway, DO sandbox, or
-MCP secrets into the Sandbox child env. No `NEXT_PUBLIC_*` for this feature.
-See [docs/builtin-http.md](docs/builtin-http.md).
+**durable HTTP/curl** Vercel Sandbox instance (hop B) — attach-only to a name from
+Settings (tenancy on) or `BUILTIN_HTTP_INSTANCE_NAME` (tenancy off). App-side SSRF
+policy runs first (https-only; no private/metadata hosts; redirects only after
+re-check of each Location). Never put Gateway, BYO sandbox, or MCP secrets into
+the Sandbox child env. No `NEXT_PUBLIC_*` for this feature. Instance names and
+control-plane credentials never enter client/Wasm. See [docs/builtin-http.md](docs/builtin-http.md).
 
 **Residual (v1):** Policy is preflight-only on the app (literal + DNS at check
 time). Hop B re-resolves the hostname under Sandbox `networkPolicy: allow-all`.
@@ -76,6 +80,22 @@ The **agent sandbox** is an optional remote workspace for model tools
 (`list_dir` / `read_file` / `write_file` / `exec`). It is **not** the
 self-hosted GHA runner that compiles Zig.
 
+Under tenancy, each sandbox row may use **`backend=byo`** (URL + DEK-encrypted
+token) or **`backend=vercel`** (host Vercel project OIDC; optional image ref).
+Users **Create** durable Workspace/HTTP instances in **Settings**; the agent only
+**attaches** (never `Sandbox.create` / `getOrCreate` on a turn). Destroy removes
+the platform VM and the DB row. There is **no** product host env
+`SANDBOX_BACKEND`. Registry credentials for custom images stay on the host
+Vercel/CI side — never in the DB. Token rotate applies to **byo** only. Per-user
+instance names are server-generated and never exposed as client secrets.
+
+**Dogfood image push (GHA `dev-image-build`):** builds a toolchain OCI image
+from `dev/Dockerfile` and pushes to Vercel Container Registry. Uses Actions
+`VERCEL_TOKEN` + team/prefix identifiers only. **Never** bake
+`AI_GATEWAY_API_KEY`, `DATABASE_URL`, sandbox tokens, or AMK/DEK material into
+image layers. The dogfood image is **not** the self-hosted Zig build-harness
+runner.
+
 | Rule | Detail |
 |------|--------|
 | Separate process | Dedicated OS user/unit; do **not** share Actions credentials with the sandbox env |
@@ -103,13 +123,14 @@ provider/MCP secrets, or raw DEK material in stream payloads. See
 | Tokens at rest | Envelope: env **AMK** (`CREDENTIALS_ENCRYPTION_KEY`) wraps each **per-tenant DEK**; sandbox bearer secrets AES-256-GCM under that tenant’s DEK only. Decrypt server-side for agent tools / admin mask only |
 | Provider secrets (BYOK) | Ciphertext under **tenant DEK only** (no AMK dual-read path). Admin mask only; never plaintext in client/Wasm/logs. Schema migrate: GHA **`db-migrate`** |
 | Per-user MCP API keys | Ciphertext under **tenant DEK** on `user_mcp_servers`. Settings mask only; never plaintext in client/Wasm/logs. HTTPS-only URL policy + no redirect follow (SSRF). Schema: GHA **`db-migrate`**. Ops: [docs/mcp.md](docs/mcp.md) |
+| Per-user GitHub PAT | Ciphertext under **tenant DEK** on `user_github_tokens`. Settings mask only; decrypt server-side for sandbox **exec** inject as `GH_TOKEN` + `GITHUB_TOKEN` (omit when unset). Never client/Wasm/image/host env. Schema: GHA **`db-migrate`**. Ops: [docs/sandbox.md](docs/sandbox.md) |
 | Tenancy-on inference | Chat/agent always attach request-scoped `providerOptions.gateway.byok` + `only` for a **granted** model. **Never** route via env `DEFAULT_MODEL` / `AGENT_MODEL` when tenancy is on. Unauthorized / empty grants → **4xx** |
 | Residual (platform) | Invincible does **not** fall back to host env-model routing under tenancy on. Vercel AI Gateway remains a third party: (1) **BYOK requires paid AI Gateway credits** on the Vercel team — free tier does not allow request-scoped BYOK even with valid provider keys ([pricing](https://vercel.com/docs/ai-gateway/pricing)); (2) misconfigured BYOK / provider errors still surface from the platform. Mitigate with always-send BYOK, `only: [provider]`, top up credits, surface errors, redact secret material from error JSON |
 | Redaction | Inference error paths redact provider secret material via resolve redact lists |
 | Dual-read cutover | `TENANT_TOKEN_DECRYPT_MODE`: default **`dual`** (DEK then AMK) until backfill verified; then **`dek-only`**. Order: dual-read app live → GHA **db-tenancy-backfill-deks** (`confirm=backfill`, job sets `ALLOW_TENANT_DEK_BACKFILL=1`) → verify → dek-only. **Never** backfill under AMK-only runtime |
-| DEK rotate | Owner-only (`rotateTenantDek` / `/admin`); re-encrypts that tenant’s sandbox tokens, provider secrets, **and** MCP header ciphertexts; never shows DEK/token/plaintext. Other tenants untouched |
+| DEK rotate | Owner-only (`rotateTenantDek` / `/admin`); re-encrypts that tenant’s sandbox tokens, provider secrets, MCP header ciphertexts, **and** user GitHub PAT ciphertext; never shows DEK/token/plaintext. Other tenants untouched |
 | AMK rotate | **Not automated.** Changing Production AMK without a re-wrap tool breaks all DEK unwraps. Keep GHA `CREDENTIALS_ENCRYPTION_KEY` **===** Vercel Production AMK (dual-store). Re-wrap is a future sequel |
-| Never client | No `NEXT_PUBLIC_*` for DB, Auth.js secret, AMK/DEK, sandbox token, provider API keys, MCP API keys, OIDC client secret, or SCIM bearer |
+| Never client | No `NEXT_PUBLIC_*` for DB, Auth.js secret, AMK/DEK, sandbox token, provider API keys, MCP API keys, user GitHub PATs, OIDC client secret, or SCIM bearer |
 | Preview isolation | Prefer separate DB or tenancy off on public previews; avoid reusing Production AMK, OIDC client secret, or `SCIM_BEARER_TOKEN` casually |
 | Seed vs backfill | Seed = greenfield / bootstrap via GHA `db-tenancy-bootstrap` (resets password hash + token ciphertext; **keeps** existing DEK). Existing Production data = GHA **`db-tenancy-backfill-deks`** only — **not** seed |
 | Bootstrap / backfill / schema surface | Prefer GitHub Actions: **`db-tenancy-bootstrap`** (seed), **`db-tenancy-backfill-deks`** (AMK→DEK data), **`db-migrate`** (schema-only, e.g. provider secrets / `user_mcp_servers`) — or cloud agent workspace. Not personal-laptop primary ops |
@@ -121,7 +142,7 @@ provider/MCP secrets, or raw DEK material in stream payloads. See
 Unauthenticated API when tenancy is on returns **401** with JSON
 `{ "error": "Authentication required." }` (stable `error` constant
 `AUTH_REQUIRED_ERROR`). Sandbox grant failures return **403**
-`{ "error": "Sandbox access denied." }` (`SANDBOX_FORBIDDEN_ERROR`).
+`{ "error": "Sandbox access denied." }` (`SANDBOX_FORBIDDEN_ERROR`). Multiple usable sandboxes without a Settings preference → 403 selection-required message.
 Inference grant / model failures return **403** / **400**
 (`INFERENCE_FORBIDDEN_ERROR` / `INFERENCE_MODEL_REQUIRED_ERROR`); temporary
 resolve/catalog failures return **503** (`INFERENCE_UNAVAILABLE_ERROR`).

@@ -1,15 +1,15 @@
 /**
  * Host-side ring window math for SessionStore → Wasm hydrate.
- * Zig ring capacity is MAX_MSG=48 (`native/harness/src/bridge.zig`) — keep in sync.
+ * Zig ring capacity is MAX_MSG (`native/harness/src/bridge.zig`) — keep in sync.
  */
 
 import type { SessionMessage } from './sessionStore';
 
 /** Must match Zig `MAX_MSG`. */
-export const HARNESS_RING_MAX = 48;
+export const HARNESS_RING_MAX = 2048;
 
 /** How far “Load earlier” steps back along session.messages. */
-export const HISTORY_PAGE = 24;
+export const HISTORY_PAGE = 512;
 
 /** Index of the oldest message in the latest ring window. */
 export function latestRingStart(

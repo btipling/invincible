@@ -75,11 +75,11 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 
 | Topic | Behavior |
 |-------|----------|
-| Ring capacity | 48 messages in Wasm (`bridge.zig` `MAX_MSG`) |
-| Visible paint | **All** messages currently in the ring (≤48); scroll to read older in-ring turns. Ring still drops oldest when full. No “N earlier” black-hole hint |
-| Line size | 4 KB UTF-8 max per message (`MAX_MSG_LEN`) |
-| Host history | Host folds last **~8** user/assistant turns (`formatPromptWithHistory` maxTurns=8, maxChars=12 000); prefer Clear for a fresh workspace |
-| Session longer than ring | Host `SessionStore` may hold M>48; ring shows a **window** of ≤48. **Load earlier** (Wasm) steps the window back by 24; new send snaps to latest window |
+| Ring capacity | 2048 messages in Wasm (`bridge.zig` `MAX_MSG`) |
+| Visible paint | **All** messages currently in the ring (≤2048); scroll to read older in-ring turns. Ring still drops oldest when full. No “N earlier” black-hole hint |
+| Line size | 256 KiB UTF-8 max per message (`MAX_MSG_LEN`) |
+| Host history | Host folds last **~8** user/assistant turns (`formatPromptWithHistory` maxTurns=8, maxChars≈3.5M); prefer Clear for a fresh workspace |
+| Session longer than ring | Host `SessionStore` may hold M>512; ring shows a **window** of ≤2048. **Load earlier** (Wasm) steps the window back by 128; new send snaps to latest window |
 
 
 
@@ -98,7 +98,7 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 ## Rich transcript (Wasm)
 
 Markdown and fenced code for **user** and **assistant** bodies are painted in the
-Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain text
+Wasm canvas (`native/harness/src/rich/*`). **User, assistant, and thinking** get GFM. System and error lines stay plain text
 (EMBER for errors). There is **no** DOM/React markdown panel.
 
 | Topic | Behavior |
@@ -117,15 +117,15 @@ Wasm canvas (`native/harness/src/rich/*`). System and error lines stay plain tex
 | Task lists | GFM task markers on list items: `- [ ]` / `- [x]` / `- [X]` (also `*`/`+` list markers and ordered `1. [ ]`). IR: `list_item.checked` (`null` = ordinary, `false`/`true` = task). Marker stripped from body text. Paint: **display-only checkbox chrome** (custom; not `dvui.checkbox`) — unchecked = **2px TEAL muted stroke** ring (checkmark’s 1px inset border is invisible on dark bg); checked = TEAL accent fill + dark check; 8px gap to label; non-interactive spacer (no click/tab/AccessKit toggle; does **not** rewrite source / SessionStore) in place of bullet/number, then item inlines. Nested + ordered tasks allowed. **Not:** click-to-toggle, interactive `dvui.checkbox`, HTML checkbox forms, dual React MD panel, strike-on-checked (v1) |
 | Links | **http(s) only** (allowlist). **Markdown** `[label](url)` and **bare** `http://` / `https://` in text runs (query + fragment preserved; trailing `.,;:!?` / unpaired closers stripped; mixed-case scheme OK). Same TEAL + underline paint + open path. **Not** autolinked inside inline code, fenced code, or existing link/image spans. **Not:** `www.` without scheme, `mailto:`, custom schemes. Other schemes show as plain label text. |
 | Images | CommonMark `![alt](url)` only (reference-style deferred). **http(s)** only — same allowlist spirit as Links (`javascript:` / `file:` / `data:` never fetched). **Host** browser `fetch` + decode → RGBA → bridge `inv_image_cache_put` (protocol **v4**); Wasm paints via **dvui.image** (`ImageSource.pixels`). Caps: URL ≤2048 bytes; concurrent fetches ≤3; cache ≤24 entries (cleared with transcript); body ≤1.5 MiB; decode max edge 1280; display max height 280, width ≤ content, aspect preserved. CORS / network / decode failure → muted **TEAL** placeholder + alt (or `(image)`). **Not:** `data:` blobs, server image proxy, click-to-zoom lightbox, HTML `<img>` attribute soup, freestanding Wasm HTTP/stb decode, dual DOM image gallery |
-| Math | Inline `$...$` and display `$$...$$` (same-line or multi-line). **Host** MathJax (`mathjax-full`) TeX→**SVG paths** → data-URL canvas raster → RGBA → bridge `inv_math_cache_put` (protocol **v5**); Wasm paints via **dvui.image**. **Ink** palette `teal.text` on **transparent** pixels (no white cards); host super-samples 2× for sharpness. (KaTeX HTML→foreignObject→blob abandoned: Chromium taints canvas so pixels never reached Wasm.) Currency-like `$5` / `$10` / `$1,234.56` stay plain text; `\$` literal dollar. Caps: TeX ≤512 **UTF-8 bytes** (host + Wasm); cache ≤48 (cleared with transcript; host putOk is LRU of 48 and full-transcript re-schedule after turns can re-put after eviction); concurrent renders ≤3; max edge 1280; inline max height 64; display max height 320; width ≤ content. Inline interiors trimmed for cache-key parity host↔Wasm. Miss / TeX error / oversize → muted **TEAL** mono TeX source box. **Not:** dual DOM math bubbles, freestanding TeX engine in Wasm, live streaming partial `$` in composer, editable equation editor |
+| Math | Inline `$...$` and display `$$...$$` (same-line or multi-line). **Host** MathJax (`mathjax-full`) TeX→**SVG paths** → data-URL canvas raster → RGBA → bridge `inv_math_cache_put` (protocol **v5**); Wasm paints via **dvui.image**. **Ink** palette `teal.text` on **transparent** pixels (no white cards); host super-samples 2× for sharpness. (KaTeX HTML→foreignObject→blob abandoned: Chromium taints canvas so pixels never reached Wasm.) Currency-like `$5` / `$10` / `$1,234.56` stay plain text; `\$` literal dollar. Caps: TeX ≤2048 **UTF-8 bytes** (host + Wasm); cache ≤48 (cleared with transcript; host putOk is LRU of 48 and full-transcript re-schedule after turns can re-put after eviction); concurrent renders ≤3; max edge 1280; inline max height 64; display max height 320; width ≤ content. Inline interiors trimmed for cache-key parity host↔Wasm. Miss / TeX error / oversize → muted **TEAL** mono TeX source box. **Not:** dual DOM math bubbles, freestanding TeX engine in Wasm, live streaming partial `$` in composer, editable equation editor |
 | Fallback | Parse failure / OOM → raw body text (never empty bubble) |
 | Cache | Fingerprint (FNV-1a) over full body; cap 48 entries; cleared on transcript clear |
-| Caps | Same ring / 4 KiB line; paint all in-ring (≤48) as above |
+| Caps | Same ring / 256 KiB line; paint all in-ring (≤2048) as above |
 | Unicode | Message bodies are **UTF-8** end-to-end (host `TextEncoder` → Wasm ring → zmd parse → paint → Copy source). Integrity = scalars/bytes preserved; glyphs depend on the faces below |
 | Fonts (embedded) | **Noto Sans** Regular/Bold/Italic/BoldItalic (body + rich emph) · **OpenMoji** black outline subset (emoji) · **DejaVu symbols** subset (arrows / math / dingbats missing from Noto, e.g. →) · **Vera Sans Mono** Regular/Bold (fences / inline code). Licenses: `native/harness/src/fonts/README.md` |
 | Paint faces | Transcript paint **splits** emoji → OpenMoji, text symbols (arrows etc.) → DejaVu symbols, else Noto Sans / mono (dvui has no automatic per-glyph fallback) |
 | Missing glyphs | Scripts outside these faces (notably **full CJK**) may still show a **missing-glyph placeholder**. That is **not** mojibake; **Copy** still yields UTF-8 source when the browser allows clipboard write |
-| Truncation | `MAX_MSG_LEN` (4 KiB) is a **byte** cap — a multi-byte sequence at the limit may be cut mid-code-point (pre-existing ring behavior) |
+| Truncation | `MAX_MSG_LEN` (256 KiB) is a **byte** cap — a multi-byte sequence at the limit may be cut mid-code-point (pre-existing ring behavior) |
 
 ### Unicode / fonts (detail)
 

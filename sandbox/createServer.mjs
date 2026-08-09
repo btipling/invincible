@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { INVINCIBLE_SANDBOX_PROTOCOL } from './constants.mjs';
+import { INVINCIBLE_SANDBOX_PROTOCOL, MAX_JSON_BODY_BYTES } from './constants.mjs';
 import { JailError } from './paths.mjs';
 import {
   ToolError,
@@ -8,6 +8,7 @@ import {
   listDir,
   readFileTool,
   writeFileTool,
+  strReplaceTool,
 } from './tools.mjs';
 
 /**
@@ -35,7 +36,7 @@ function parseBearer(header) {
  * @param {import('node:http').IncomingMessage} req
  * @param {number} [maxBytes]
  */
-async function readJsonBody(req, maxBytes = 512 * 1024) {
+async function readJsonBody(req, maxBytes = MAX_JSON_BODY_BYTES) {
   /** @type {Buffer[]} */
   const chunks = [];
   let len = 0;
@@ -80,7 +81,7 @@ function sendError(res, status, error) {
 }
 
 /**
- * Create the Invincible sandbox HTTP server (protocol v1).
+ * Create the Invincible sandbox HTTP server (protocol v{@link INVINCIBLE_SANDBOX_PROTOCOL}).
  * @param {{ token: string, workspace: string }} opts
  */
 export function createSandboxServer(opts) {
@@ -132,6 +133,13 @@ export function createSandboxServer(opts) {
       if (method === 'POST' && url.pathname === '/v1/write_file') {
         const body = await readJsonBody(req);
         const result = await writeFileTool(workspace, body ?? {});
+        sendJson(res, 200, result);
+        return;
+      }
+
+      if (method === 'POST' && url.pathname === '/v1/str_replace') {
+        const body = await readJsonBody(req);
+        const result = await strReplaceTool(workspace, body ?? {});
         sendJson(res, 200, result);
         return;
       }

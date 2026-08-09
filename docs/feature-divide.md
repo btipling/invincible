@@ -24,7 +24,7 @@ optional login chrome).
 | `POST /api/agent` | **Vercel backend** | Multi-step tools (sandbox + per-user MCP when configured); server-only secrets |
 | Fold multi-turn history into prompt | **DOM** | `lib/harnessChat.ts` (user/assistant only; system tool lines display-only) |
 | `SessionStore` load/save/clear | **DOM** | memory / localStorage |
-| Session ring window + Load earlier poll | **DOM** host + **Wasm** control | Host slices ≤48; Wasm `Load earlier` pending (protocol v6); no React transcript |
+| Session ring window + Load earlier poll | **DOM** host + **Wasm** control | Host slices ≤512; Wasm `Load earlier` pending (protocol v6); no React transcript |
 | Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status; model chip is a **mirror** of Wasm selection, not a second picker |
 | Model catalog fetch (`GET /api/models`) | **DOM** | Session-gated; host pushes ids into Wasm catalog |
 | Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v9**) |
@@ -32,7 +32,7 @@ optional login chrome).
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
 | Per-user MCP config UI | **DOM** | `/settings`, `/settings/mcp` — not dual chat; not Admin |
 | Per-user MCP tools (connect + execute) | **Vercel backend** | `lib/mcp/*`; keys under tenant DEK; never Wasm/client |
-| Builtin HTTPS fetch (`http_get`) | **Vercel backend** | Env `BUILTIN_HTTP_FETCH`; Vercel Sandbox egress; see [builtin-http.md](builtin-http.md) |
+| Builtin HTTPS fetch (`http_get`) | **Vercel backend** | Env `BUILTIN_HTTP_FETCH`; attach-only durable HTTP instance (Settings Create or tenancy-off name); see [builtin-http.md](builtin-http.md) |
 | **Transcript (read messages)** | **Wasm** | Primary UX; rich MD + images + math + diff/patch fence paint in-canvas (`rich/*`) — no DOM markdown |
 | Image bytes (fetch/decode) | **DOM host** | Browser fetch → RGBA → `inv_image_cache_put`; paint stays Wasm |
 | Math pixels (TeX raster) | **DOM host** | Host MathJax SVG → RGBA → `inv_math_cache_put`; paint stays Wasm |
@@ -74,8 +74,8 @@ User types in Wasm composer
   → POST /api/agent { prompt, modelId? } with Accept: text/event-stream (default host)
        if 503 + exact sandbox-not-configured → POST /api/chat { prompt, modelId? }
        tenancy on: server attaches request-scoped BYOK for authorized modelId
-       tools → sandbox (env SANDBOX_* when tenancy off; DB grants when on)
-              + optional builtin http_get (Vercel Sandbox egress; env BUILTIN_HTTP_FETCH)
+       tools → sandbox (env SANDBOX_* when tenancy off; DB grants + Settings Workspace attach when on)
+              + optional builtin http_get (attach-only durable HTTP instance; env BUILTIN_HTTP_FETCH)
               + enabled per-user MCP tools (server-side only; soft-fail dead servers)
        SSE: tool_start / tool_result / reasoning_delta / text_delta / done (see docs/agent-stream.md)
        JSON fallback when Accept is not event-stream (tests / simple clients)

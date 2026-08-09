@@ -4,6 +4,7 @@ import {
   normalizePrompt,
   sendChat,
   validatePrompt,
+  PROMPT_BODY_MAX_CHARS,
 } from './chatApi';
 
 afterEach(() => {
@@ -21,8 +22,9 @@ describe('validatePrompt', () => {
     expect(validatePrompt('hello')).toBeNull();
   });
 
-  it('rejects overlong prompts', () => {
-    expect(validatePrompt('x'.repeat(32_001))).toMatch(/too long/i);
+  it('allows large folded history; only guards absurd body size', () => {
+    expect(validatePrompt('x'.repeat(100_000))).toBeNull();
+    expect(validatePrompt('x'.repeat(PROMPT_BODY_MAX_CHARS + 1))).toMatch(/too large/i);
   });
 });
 

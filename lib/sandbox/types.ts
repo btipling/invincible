@@ -1,4 +1,4 @@
-/** Mirror of sandbox protocol v1 (phase 1 / #46). */
+/** Mirror of sandbox protocol (BYO daemon health.version; stdin requires v2+). */
 
 export type SandboxDirEntry = {
   name: string;
@@ -10,6 +10,13 @@ export type ListDirResult = { entries: SandboxDirEntry[] };
 export type ReadFileResult = { content: string; truncated?: boolean };
 
 export type WriteFileResult = { ok: true; bytes: number };
+
+export type StrReplaceResult = {
+  ok: true;
+  path: string;
+  replacements: number;
+  bytes: number;
+};
 
 export type ExecResult = {
   exitCode: number | null;
@@ -27,6 +34,11 @@ export type SandboxClientOptions = {
   fetchImpl?: typeof fetch;
   /** Default per-request timeout when no signal (ms). */
   timeoutMs?: number;
+  /**
+   * Server-owned allowlisted env merged into every `/v1/exec` body.
+   * Only GH_TOKEN / GITHUB_TOKEN should be supplied. Never from the model.
+   */
+  execEnv?: Record<string, string>;
 };
 
 export class SandboxHttpError extends Error {

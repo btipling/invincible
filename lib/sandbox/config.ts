@@ -1,24 +1,41 @@
 import { resolveModelId } from '../model';
+import { parseInitialCwd } from '../agent/workPath';
 
 /** Exact 503 body — host phase 3 matches this string. */
 export const SANDBOX_NOT_CONFIGURED_ERROR =
   'Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.' as const;
 
 /**
- * Optional safety ceiling when `AGENT_MAX_STEPS` is set.
- * Unset env → natural model-ended loop (no product default).
+ * Only applies when `AGENT_MAX_STEPS` is explicitly set.
+ * No product default step ceiling — model-ended loop otherwise.
+ * Absurd upper bound so env cannot silently re-introduce a toy 256 wall.
  */
-export const MAX_AGENT_MAX_STEPS = 256;
+export const MAX_AGENT_MAX_STEPS = 1_000_000;
 export const MIN_AGENT_MAX_STEPS = 1;
 
-/** Tool result string cap before returning to the model. */
-export const TOOL_RESULT_MAX_CHARS = 8_192;
+/** Tool result string returned to the model (not a turn-stop). */
+export const TOOL_RESULT_MAX_CHARS = 2_000_000;
 
-/** toolTrace summary cap (host also caps line count). */
-export const TOOL_TRACE_SUMMARY_MAX_CHARS = 240;
+/** Soft max for any single tool summary string (display path also uses salient bits). */
+export const TOOL_TRACE_SUMMARY_MAX_CHARS = 100_000;
 
-export const DEFAULT_EXEC_TIMEOUT_MS = 10_000;
-export const MAX_EXEC_TIMEOUT_MS = 30_000;
+/** Default exec timeout when the model omits timeoutMs. */
+export const DEFAULT_EXEC_TIMEOUT_MS = 300_000; // 5 min
+/** Hard ceiling for one exec — aligned with route maxDuration (30m). */
+export const MAX_EXEC_TIMEOUT_MS = 1_800_000; // 30 min
+/**
+ * Client-side HTTP abort buffer added to an exec request's `timeoutMs`.
+ * Keeps the client abort deadline strictly after the daemon's own timeout kill
+ * (which returns `timedOut: true`) so TIMED_OUT reaches the model instead of a
+ * client 504. Only used for `/v1/exec`; non-exec calls keep DEFAULT_TIMEOUT_MS.
+ */
+export const EXEC_TIMEOUT_BUFFER_MS = 5_000;
+
+/**
+ * Minimum BYO daemon health.version that supports exec stdin/heredoc.
+ * Mirrors sandbox/constants.mjs MIN_SANDBOX_PROTOCOL_STDIN.
+ */
+export const MIN_SANDBOX_PROTOCOL_STDIN = 2;
 
 /**
  * Both URL and token required (trimmed non-empty).
@@ -46,6 +63,37 @@ export function getSandboxConfig(
 
 export function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, '');
+}
+
+
+/**
+ * Optional default logical workspace cwd when the agent request omits `cwd`.
+ * Server-only (`SANDBOX_DEFAULT_CWD`). Invalid values → `"."` + one-time warn.
+ * Never throws at boot/import.
+ */
+let invalidDefaultCwdLogged = false;
+
+export function resolveSandboxDefaultCwd(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const raw = env.SANDBOX_DEFAULT_CWD?.trim();
+  if (!raw) return '.';
+  const parsed = parseInitialCwd(raw);
+  if (!parsed.ok) {
+    if (!invalidDefaultCwdLogged) {
+      invalidDefaultCwdLogged = true;
+      console.warn(
+        `[sandbox] Invalid SANDBOX_DEFAULT_CWD ignored (using "."): ${parsed.error}`,
+      );
+    }
+    return '.';
+  }
+  return parsed.cwd;
+}
+
+/** Test-only: reset one-time invalid-env log latch. */
+export function resetSandboxDefaultCwdLogForTests(): void {
+  invalidDefaultCwdLogged = false;
 }
 
 /**

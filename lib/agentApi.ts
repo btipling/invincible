@@ -20,6 +20,8 @@ export type AgentSuccess = {
   ok: true;
   text: string;
   toolTrace?: ToolTraceEntry[];
+  /** Final logical cwd when the server included it (FS tools active). */
+  cwd?: string;
 };
 
 export type AgentFailure = {
@@ -37,7 +39,7 @@ export type AgentResult = AgentSuccess | AgentFailure;
 
 export type SendAgentFn = (
   prompt: string,
-  init?: { signal?: AbortSignal; path?: string; modelId?: string },
+  init?: { signal?: AbortSignal; path?: string; modelId?: string; cwd?: string },
 ) => Promise<AgentResult>;
 
 export type SendAgentStreamHandlers = {
@@ -50,18 +52,17 @@ export type SendAgentStreamFn = (
     signal?: AbortSignal;
     path?: string;
     modelId?: string;
+    /** Session logical cwd (workspace-relative); omit when unset. */
+    cwd?: string;
     onEvent?: (event: AgentStreamEvent) => void | Promise<void>;
   },
 ) => Promise<AgentResult>;
 
-/** Soft cap on raw toolTrace entries accepted from the wire (host displays ≤ TOOL_TRACE_MAX_LINES). */
-const TOOL_TRACE_PARSE_MAX = 128;
-
+/** Wire parse: accept all toolTrace entries (no host-side product cap). */
 function parseToolTrace(raw: unknown): ToolTraceEntry[] | undefined {
   if (!Array.isArray(raw) || raw.length === 0) return undefined;
   const out: ToolTraceEntry[] = [];
   for (const item of raw) {
-    if (out.length >= TOOL_TRACE_PARSE_MAX) break;
     if (!item || typeof item !== 'object') continue;
     const rec = item as Record<string, unknown>;
     const summary = typeof rec.summary === 'string' ? rec.summary : '';
@@ -107,10 +108,13 @@ function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
   }
 
   const toolTrace = parseToolTrace(record?.toolTrace);
+  const cwdField =
+    record && typeof record.cwd === 'string' ? record.cwd : undefined;
   return {
     ok: true,
     text: textField,
     ...(toolTrace ? { toolTrace } : {}),
+    ...(cwdField !== undefined ? { cwd: cwdField } : {}),
   };
 }
 
@@ -118,13 +122,23 @@ function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
  * Call the multi-step agent endpoint (JSON body).
  * Expects JSON `{ prompt, modelId? }` and `{ text, toolTrace? }` or `{ error }`.
  */
-export const sendAgent: SendAgentFn = async (prompt, init) => {
-  const path = init?.path ?? '/api/agent';
-  const body: { prompt: string; modelId?: string } = {
+function agentRequestBody(
+  prompt: string,
+  init?: { modelId?: string; cwd?: string },
+): { prompt: string; modelId?: string; cwd?: string } {
+  const body: { prompt: string; modelId?: string; cwd?: string } = {
     prompt: normalizePrompt(prompt),
   };
   const mid = init?.modelId?.trim();
   if (mid) body.modelId = mid;
+  const cwd = init?.cwd?.trim();
+  if (cwd) body.cwd = cwd;
+  return body;
+}
+
+export const sendAgent: SendAgentFn = async (prompt, init) => {
+  const path = init?.path ?? '/api/agent';
+  const body = agentRequestBody(prompt, init);
 
   let res: Response;
   try {
@@ -209,11 +223,7 @@ function parseSseChunk(
  */
 export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
   const path = init?.path ?? '/api/agent';
-  const body: { prompt: string; modelId?: string } = {
-    prompt: normalizePrompt(prompt),
-  };
-  const mid = init?.modelId?.trim();
-  if (mid) body.modelId = mid;
+  const body = agentRequestBody(prompt, init);
 
   let res: Response;
   try {
@@ -282,6 +292,7 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
   let buf = '';
   let finalText = '';
   let toolTrace: ToolTraceEntry[] | undefined;
+  let streamCwd: string | undefined;
   let streamError: AgentFailure | null = null;
 
   try {
@@ -303,6 +314,9 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
             finalText = ev.text;
           }
           toolTrace = parseToolTrace(ev.toolTrace) ?? toolTrace;
+          if (typeof ev.cwd === 'string') {
+            streamCwd = ev.cwd;
+          }
         } else if (ev.type === 'error') {
           streamError = {
             ok: false,
@@ -328,6 +342,9 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
             finalText = ev.text;
           }
           toolTrace = parseToolTrace(ev.toolTrace) ?? toolTrace;
+          if (typeof ev.cwd === 'string') {
+            streamCwd = ev.cwd;
+          }
         } else if (ev.type === 'error') {
           streamError = {
             ok: false,
@@ -364,6 +381,7 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
     ok: true,
     text: finalText.trim(),
     ...(toolTrace ? { toolTrace } : {}),
+    ...(streamCwd !== undefined ? { cwd: streamCwd } : {}),
   };
 };
 
