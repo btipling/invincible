@@ -6,6 +6,8 @@ export const AUTH_REQUIRED_ERROR = 'Authentication required.';
  * Defined early so host constants stay stable.
  */
 export const SANDBOX_FORBIDDEN_ERROR = 'Sandbox access denied.';
+export const SANDBOX_SELECTION_REQUIRED_ERROR =
+  'Multiple sandboxes available — choose one under Settings → Sandbox.';
 
 /** Parent #102 / phase #103 — no grant, disabled secret, or empty catalog. */
 export const INFERENCE_FORBIDDEN_ERROR = 'Inference access denied.';

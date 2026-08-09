@@ -50,6 +50,13 @@
       "when": 1785920000000,
       "tag": "0006_user_github_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1785940000000,
+      "tag": "0007_user_preferred_sandbox",
+      "breakpoints": true
     }
   ]
 }

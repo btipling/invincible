@@ -1,9 +1,9 @@
 /**
  * Admin create/update for per-tenant sandboxes (phase 4 / #284).
- * Grants: actor R/W on the target row; on create, revokes actor's other
- * grants on this tenant (v1 exactly-one usable grant for the actor).
+ * Grants: actor R/W on the target row on create. Other grants are kept so
+ * users can hold multiple sandboxes and pick a preferred one in Settings.
  */
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import {
   createDbConnection,
   sandboxGrants,
@@ -237,28 +237,20 @@ export async function createSandboxForAdmin(
           return { ok: false as const, reason: 'db' as const };
         }
 
-        const otherIds = await tx
-          .select({ id: sandboxes.id })
-          .from(sandboxes)
-          .where(and(eq(sandboxes.tenantId, tenantId), ne(sandboxes.id, sandboxId)));
-        const otherSandboxIds = otherIds.map((r) => r.id);
-        if (otherSandboxIds.length > 0) {
-          await tx
-            .delete(sandboxGrants)
-            .where(
-              and(
-                eq(sandboxGrants.userId, uid),
-                inArray(sandboxGrants.sandboxId, otherSandboxIds),
-              ),
-            );
-        }
-
-        await tx.insert(sandboxGrants).values({
-          sandboxId,
-          userId: uid,
-          canRead: true,
-          canWrite: true,
-        });
+        // Keep existing grants so multi-sandbox + Settings preference works.
+        // Upsert actor R/W on the new row only.
+        await tx
+          .insert(sandboxGrants)
+          .values({
+            sandboxId,
+            userId: uid,
+            canRead: true,
+            canWrite: true,
+          })
+          .onConflictDoUpdate({
+            target: [sandboxGrants.sandboxId, sandboxGrants.userId],
+            set: { canRead: true, canWrite: true },
+          });
 
         return { ok: true as const, sandboxId };
       });

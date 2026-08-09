@@ -22,6 +22,7 @@ async function applyMigrations(client: PGlite) {
     '0004_user_mcp_servers.sql',
     '0005_sandbox_backend.sql',
     '0006_user_github_tokens.sql',
+    '0007_user_preferred_sandbox.sql',
   ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     for (const stmt of sql

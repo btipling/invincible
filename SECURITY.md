@@ -137,7 +137,7 @@ provider/MCP secrets, or raw DEK material in stream payloads. See
 Unauthenticated API when tenancy is on returns **401** with JSON
 `{ "error": "Authentication required." }` (stable `error` constant
 `AUTH_REQUIRED_ERROR`). Sandbox grant failures return **403**
-`{ "error": "Sandbox access denied." }` (`SANDBOX_FORBIDDEN_ERROR`).
+`{ "error": "Sandbox access denied." }` (`SANDBOX_FORBIDDEN_ERROR`). Multiple usable sandboxes without a Settings preference → 403 selection-required message.
 Inference grant / model failures return **403** / **400**
 (`INFERENCE_FORBIDDEN_ERROR` / `INFERENCE_MODEL_REQUIRED_ERROR`); temporary
 resolve/catalog failures return **503** (`INFERENCE_UNAVAILABLE_ERROR`).

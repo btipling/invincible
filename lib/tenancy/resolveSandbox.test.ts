@@ -26,6 +26,7 @@ async function applyMigrations(client: PGlite) {
     '0004_user_mcp_servers.sql',
     '0005_sandbox_backend.sql',
     '0006_user_github_tokens.sql',
+    '0007_user_preferred_sandbox.sql',
   ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     for (const stmt of sql
@@ -464,6 +465,84 @@ describe('resolveAgentSandbox', () => {
     expect(decryptSpy).not.toHaveBeenCalled();
     expect(result.value.secrets).toEqual([]);
     expect(result.value.baseUrl).toBeUndefined();
+  });
+
+
+  it('multiple usable without preference → selection required error', async () => {
+    const [sb2] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'second',
+        slug: 'second',
+        backend: 'vercel',
+        image: null,
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+    await db.insert(schema.sandboxGrants).values({
+      sandboxId: sb2.id,
+      userId,
+      canRead: true,
+      canWrite: true,
+    });
+
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      decryptSandboxToken: decrypt,
+      createVercelClient: () => stubClient() as never,
+      createByoClient: () => stubClient() as never,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected fail');
+    expect(result.response.status).toBe(403);
+    const body = (await result.response.json()) as { error: string };
+    expect(body.error).toMatch(/Settings → Sandbox|Multiple sandboxes/i);
+  });
+
+  it('multiple usable with preference → preferred row', async () => {
+    const [sb2] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'second',
+        slug: 'second',
+        backend: 'vercel',
+        image: 'vercel/sandbox/node:24',
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+    await db.insert(schema.sandboxGrants).values({
+      sandboxId: sb2.id,
+      userId,
+      canRead: true,
+      canWrite: true,
+    });
+    await db.insert(schema.userPreferredSandbox).values({
+      userId,
+      tenantId,
+      sandboxId: sb2.id,
+    });
+
+    const createVercelClient = vi.fn(() => stubClient() as never);
+    // Prefer sb2 (vercel). Default fixture sandbox is byo — ensure preference wins.
+    await db
+      .update(schema.sandboxes)
+      .set({ backend: 'byo' })
+      .where(eq(schema.sandboxes.id, sandboxId));
+
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      decryptSandboxToken: decrypt,
+      createVercelClient,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value.sandboxId).toBe(sb2.id);
+    expect(result.value.backend).toBe('vercel');
+    expect(createVercelClient).toHaveBeenCalledWith(
+      expect.objectContaining({ image: 'vercel/sandbox/node:24' }),
+    );
   });
 
   it('unknown backend string → 403', async () => {

@@ -193,8 +193,7 @@ export function CreateSandboxForm() {
         Create sandbox
       </h2>
       <p style={{ margin: '0 0 12px', fontSize: 13, color: teal.muted }}>
-        Creates an active sandbox and grants you read+write. Your other sandbox grants on this
-        tenant are revoked so the agent still sees exactly one usable grant.
+        Creates an active sandbox and grants you read+write. Existing grants are kept — pick the active workspace under Settings → Sandbox when you have more than one.
       </p>
       <form action={action}>
         <Field label="Name">

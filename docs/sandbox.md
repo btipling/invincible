@@ -19,7 +19,7 @@ Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-d
 | **Is** | **BYO** path: any operator points URL + token at **their** daemon (env when tenancy off; admin/seed when tenancy on) |
 | **Is not** | The Zig **GHA build runner** (`invincible-do-1` / `self-hosted` + `zig` labels) |
 | **Is not** | A host-wide product env like `SANDBOX_BACKEND` — backend is **never** a deploy-global switch |
-| **Is not** | Multi-sandbox **picker** in the harness (v1 still resolves **exactly one** usable grant per user). Tenants may own multiple sandboxes; grants select which row a user gets |
+| **Is not** | A multi-sandbox picker **inside the harness canvas**. Prefer sandbox under **Settings → Sandbox** when you have multiple usable grants |
 | **Is not** | Required for basic chat — without tools, harness falls back to `POST /api/chat` when the 503 contract applies (tenancy off) |
 | **Is not** | Builtin HTTPS fetch (`http_get`) — that is a separate **Vercel Sandbox hop B** path; see [builtin-http.md](builtin-http.md) |
 
@@ -90,7 +90,24 @@ Forks/BYO: copy `dev/` + the workflow; use **your** team/project prefix and toke
 | Schema migrate | GitHub Actions **`db-migrate`** (`confirm=migrate`) — not laptop-primary |
 | Create / edit / image | Browser **/admin/sandboxes** |
 | Seed bootstrap (optional) | GHA **`db-tenancy-bootstrap`** / seed with `SEED_SANDBOX_BACKEND` + optional `SEED_SANDBOX_IMAGE` |
-| Smoke | Harness agent tools with a usable grant |
+| Smoke | Harness agent tools with a usable grant (or preferred when several) |
+
+### Preferred sandbox (Settings)
+
+When a user has **more than one usable grant**, agent resolve requires a **preferred**
+sandbox stored per user (`user_preferred_sandbox`). Set it under **Settings → Sandbox**.
+
+| Case | Behavior |
+|------|----------|
+| Zero usable grants | 403 sandbox access denied |
+| Exactly one usable grant | That row (preference optional) |
+| Multiple usable, preference set and usable | Preferred row |
+| Multiple usable, no / invalid preference | 403 — choose under Settings → Sandbox |
+| Admin selects ungranted tenant sandbox | Selection **grants** the admin R/W on that row + saves preference |
+
+Creating a sandbox still grants the actor R/W but **no longer revokes** their other grants.
+Schema: GHA **db-migrate** for `user_preferred_sandbox`.
+
 
 ---
 
@@ -139,7 +156,7 @@ Other 4xx/5xx/network errors are shown as error lines — **no** chat fallback.
 | **Legacy (tenancy off)** | Any of `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY` missing | Process env `SANDBOX_URL` + `SANDBOX_TOKEN` (BYO only — no host vercel backend switch) |
 | **Tenancy on** | All three set | **DB-resolved** sandbox for the signed-in user (`resolveAgentSandbox`): branch on row `backend`; **byo** decrypts `token_ciphertext`; **vercel** uses host Sandbox control plane + row `image`. Env `SANDBOX_*` still used for **seed** / local daemon |
 
-When tenancy is on and the user has no usable grant / ambiguous membership / invalid backend:
+When tenancy is on and the user has no usable grant / multiple usable grants without a Settings preference / ambiguous membership / invalid backend:
 
 ```http
 HTTP/1.1 403

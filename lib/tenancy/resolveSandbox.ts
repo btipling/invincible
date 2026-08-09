@@ -1,8 +1,9 @@
 /**
- * Resolve default sandbox + grants for an authenticated user (v1).
- * Phase 3 (#283 / parent #280): branch on per-row `backend` (byo | vercel) and
- * pass `image` into the Vercel SandboxClient factory.
- * Phase 2 (#94): decrypt sandbox token via tenant DEK (dual-read / dek-only mode) for byo only.
+ * Resolve sandbox + grants for an authenticated user.
+ * Exactly one sole tenant membership. Among usable grants: use the user's
+ * preferred sandbox when set and usable; if exactly one usable grant, use it;
+ * if multiple usable and no valid preference → selection-required error.
+ * Branch on per-row `backend` (byo | vercel); BYO decrypts token via tenant DEK.
  */
 import { and, eq } from 'drizzle-orm';
 import {
@@ -18,7 +19,10 @@ import {
   createVercelSandboxClient,
   type CreateVercelSandboxClientOptions,
 } from '../sandbox/vercelClient';
-import { SANDBOX_FORBIDDEN_ERROR } from './errors';
+import {
+  SANDBOX_FORBIDDEN_ERROR,
+  SANDBOX_SELECTION_REQUIRED_ERROR,
+} from './errors';
 import {
   effectiveGrantPermissions,
   isUsableGrant,
@@ -30,6 +34,7 @@ import {
   type SandboxBackend,
 } from './sandboxBackend';
 import { decryptSandboxToken } from './tenantKeys';
+import { getUserPreferredSandboxId } from './userPreferredSandbox';
 
 export type ResolvedAgentSandbox = {
   client: SandboxClient;
@@ -93,8 +98,8 @@ function forbidden(): ResolveAgentSandboxResult {
 }
 
 /**
- * v1: exactly one tenant membership and exactly one usable granted active sandbox.
- * Fail closed with 403 SANDBOX_FORBIDDEN_ERROR (no crypto/env details).
+ * Exactly one tenant membership. Usable grants: one → use it; many → preferred
+ * sandbox from Settings (or 403 selection-required). Fail closed otherwise.
  */
 export async function resolveAgentSandbox(
   userId: string,
@@ -161,11 +166,29 @@ async function resolveWithDb(
       isUsableGrant(r.status, { canRead: r.canRead, canWrite: r.canWrite }),
     );
 
-    if (usable.length !== 1) {
+    if (usable.length === 0) {
       return forbidden();
     }
 
-    const row = usable[0];
+    let row = usable[0];
+    if (usable.length > 1) {
+      const preferredId = await getUserPreferredSandboxId(userId, tenantId, {
+        db,
+      });
+      const match = preferredId
+        ? usable.find((r) => r.sandboxId === preferredId)
+        : undefined;
+      if (!match) {
+        return {
+          ok: false,
+          response: Response.json(
+            { error: SANDBOX_SELECTION_REQUIRED_ERROR },
+            { status: 403 },
+          ),
+        };
+      }
+      row = match;
+    }
     const permissions = effectiveGrantPermissions({
       canRead: row.canRead,
       canWrite: row.canWrite,
