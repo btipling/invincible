@@ -272,7 +272,7 @@ unauthenticated) — see above.
 | `POST` | `/v1/read_file` | Bearer | Read file (max 16 MiB); additive `mtimeMs` + `size` when daemon supports |
 | `POST` | `/v1/write_file` | Bearer | Write file (max 16 MiB); post-write fingerprint when supported |
 | `POST` | `/v1/str_replace` | Bearer | Exact string replace (unique match or `replace_all`); post-write fingerprint when supported |
-| `POST` | `/v1/stat` | Bearer | Path metadata `{ path, type, size, mtimeMs? }` (404 missing; no content) |
+| `POST` | `/v1/stat` | Bearer | Path metadata `{ path, type, size, mtimeMs? }` — path missing: **404** with path-missing body (e.g. `Path not found`); not bare `Not found` (that is unknown-route). No file content |
 | `POST` | `/v1/exec` | Bearer | Run argv command (no shell); optional `stdin`/`heredoc` (v2+) |
 
 **Backend split:** BYO daemons implement stdin/heredoc on `/v1/exec`. The Vercel Sandbox SDK has no stdin channel — the Vercel client **fails soft** (400) and the agent should `write_file` then pass a path via args. App BYO clients probe `/health` and refuse stdin when `version < 2`.
