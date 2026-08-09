@@ -19,7 +19,12 @@ function apiError(status: number, opts: { code?: string; message?: string } = {}
 }
 
 function streamError(code: string): Error {
-  return Object.assign(new Error(code), { code }) as Error;
+  // Match @vercel/sandbox StreamError identity (name + code + sessionId).
+  return Object.assign(new Error(code), {
+    name: 'StreamError',
+    code,
+    sessionId: 'test-session',
+  }) as Error;
 }
 
 afterEach(() => {
@@ -111,6 +116,56 @@ describe('classifyVercelError', () => {
     expect(classifyVercelError(new Error('resource not found'))).toEqual({
       kind: 'permanent',
       status: 404,
+    });
+  });
+
+  it('message "image is not ready" (no machine code) is retryable, not permanent', () => {
+    // Regression: permanent phrase must NOT be a prefix of the readiness message.
+    expect(classifyVercelError(new Error('image is not ready'))).toEqual({
+      kind: 'retryable',
+    });
+    expect(classifyVercelError(new Error('Image is not ready for use'))).toEqual({
+      kind: 'retryable',
+    });
+    // APIError 400 with message only (code absent) must also retry.
+    expect(
+      classifyVercelError(apiError(400, { message: 'image is not ready' })),
+    ).toMatchObject({ kind: 'retryable', status: 400 });
+    // Distinct permanent config still permanent.
+    expect(classifyVercelError(new Error('image is not valid'))).toEqual({
+      kind: 'permanent',
+      status: 400,
+    });
+  });
+
+  it('Node system errors with .code (ENOENT) stay 404 — not StreamError 502', () => {
+    const enoent = Object.assign(new Error('ENOENT: no such file or directory'), {
+      code: 'ENOENT',
+    });
+    expect(classifyVercelError(enoent)).toEqual({
+      kind: 'permanent',
+      status: 404,
+    });
+    expect(statusFromClassified(enoent)).toBe(404);
+
+    const eacces = Object.assign(new Error('EACCES: permission denied'), {
+      code: 'EACCES',
+    });
+    // No message match for 403/404 — fail-closed permanent without inventing StreamError.
+    expect(classifyVercelError(eacces).kind).toBe('permanent');
+    expect(classifyVercelError(eacces)).not.toHaveProperty('code');
+  });
+
+  it('StreamError is only recognized by name/sessionId, not bare .code', () => {
+    const stream = streamError('sandbox_booting');
+    expect(classifyVercelError(stream)).toMatchObject({
+      kind: 'retryable',
+      code: 'sandbox_booting',
+    });
+    const permanentStream = streamError('other_code');
+    expect(classifyVercelError(permanentStream)).toMatchObject({
+      kind: 'permanent',
+      code: 'other_code',
     });
   });
 

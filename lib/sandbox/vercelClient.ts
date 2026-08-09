@@ -356,7 +356,11 @@ export function createVercelSandboxClient(
               }
               const probe = await sb.runCommand('true', [], { signal });
               if (probe.exitCode !== 0) {
-                throw new Error('sandbox readiness probe failed');
+                // Phrase includes "not ready" so the classifier treats a soft
+                // non-zero probe as retryable boot-window flakiness (not permanent).
+                throw new Error(
+                  `sandbox readiness probe not ready (exit ${probe.exitCode ?? 'null'})`,
+                );
               }
             },
             {

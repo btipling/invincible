@@ -77,10 +77,17 @@ const PERMANENT_BAD_IMAGE_PHRASES = [
   'unknown image',
   'invalid image',
   'image not found',
-  'image is not',
+  // Narrow: do NOT use bare "image is not" — that is a prefix of the canonical
+  // readiness phrase "image is not ready" (must stay retryable when code is absent).
+  'image is not valid',
+  'image is not supported',
+  'image is not allowed',
+  'image is not compatible',
+  'image is not available for sandbox',
   'unoptimized',
   'unsupported architecture',
-  'linux/amd64',
+  'not linux/amd64',
+  'unsupported platform',
 ];
 
 const PERMANENT_AUTH_PHRASES = ['unauthorized', 'forbidden', 'not authenticated'];
@@ -108,13 +115,19 @@ function asAPIError(
   return null;
 }
 
-/** Duck-typed `StreamError` (`{ code }`, no `response`). */
+/**
+ * Duck-typed @vercel/sandbox `StreamError` only — NOT every Node system error
+ * that happens to carry `.code` (ENOENT/EACCES/…). Those must fall through to
+ * the message classifier so ENOENT stays 404, not a StreamError permanent 502.
+ */
 function asStreamError(err: unknown): { code?: string } | null {
-  if (err && typeof err === 'object' && 'code' in err && !('response' in err)) {
-    const code = (err as { code?: unknown }).code;
-    return { code: typeof code === 'string' ? code : undefined };
-  }
-  return null;
+  if (!err || typeof err !== 'object' || 'response' in err) return null;
+  // Prefer explicit StreamError identity; fall back to sessionId (SDK field).
+  const name = (err as { name?: unknown }).name;
+  const hasSession = 'sessionId' in err;
+  if (name !== 'StreamError' && !hasSession) return null;
+  const code = (err as { code?: unknown }).code;
+  return { code: typeof code === 'string' ? code : undefined };
 }
 
 function messageOf(err: unknown): string {
@@ -172,11 +185,13 @@ export function classifyVercelError(err: unknown): VercelErrorClass {
     }
 
     const msg = api.message ? api.message.toLowerCase() : '';
-    if (PERMANENT_BAD_IMAGE_PHRASES.some((p) => msg.includes(p))) {
-      return { kind: 'permanent', status: status ?? 400 };
-    }
+    // Readiness phrases before permanent image-config: avoids prefix collisions
+    // (e.g. historical "image is not…" vs "image is not ready").
     if (RETRYABLE_MESSAGE_PHRASES.some((p) => msg.includes(p))) {
       return { kind: 'retryable', status, code };
+    }
+    if (PERMANENT_BAD_IMAGE_PHRASES.some((p) => msg.includes(p))) {
+      return { kind: 'permanent', status: status ?? 400 };
     }
     if (PERMANENT_AUTH_PHRASES.some((p) => msg.includes(p))) {
       return { kind: 'permanent', status: status ?? 403 };
@@ -194,11 +209,12 @@ export function classifyVercelError(err: unknown): VercelErrorClass {
   }
 
   const msg = messageOf(err);
-  if (PERMANENT_BAD_IMAGE_PHRASES.some((p) => msg.includes(p))) {
-    return { kind: 'permanent', status: 400 };
-  }
+  // Readiness before permanent image-config (same collision guard as API path).
   if (RETRYABLE_MESSAGE_PHRASES.some((p) => msg.includes(p))) {
     return { kind: 'retryable' };
+  }
+  if (PERMANENT_BAD_IMAGE_PHRASES.some((p) => msg.includes(p))) {
+    return { kind: 'permanent', status: 400 };
   }
   if (PERMANENT_AUTH_PHRASES.some((p) => msg.includes(p))) {
     return { kind: 'permanent', status: 403 };
