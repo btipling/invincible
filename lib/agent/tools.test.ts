@@ -373,3 +373,54 @@ describe('createAgentTools cwd', () => {
     );
   });
 });
+
+describe('exec stdin / heredoc', () => {
+  it('passes stdin to sandbox client', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: 'ok', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ client });
+    const out = (await tools.exec.execute!(
+      { cmd: 'python3', args: ['-'], stdin: 'print(1)\n' },
+      { toolCallId: 'e1', messages: [] } as never,
+    )) as string;
+    expect(out).toContain('stdin=');
+    expect(out).toContain('exit=0');
+    expect(exec).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cmd: 'python3',
+        args: ['-'],
+        stdin: 'print(1)\n',
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('maps heredoc alias to stdin', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ client });
+    await tools.exec.execute!(
+      { cmd: 'cat', heredoc: 'hello' },
+      { toolCallId: 'e2', messages: [] } as never,
+    );
+    expect(exec).toHaveBeenCalledWith(
+      expect.objectContaining({ cmd: 'cat', stdin: 'hello' }),
+      expect.anything(),
+    );
+  });
+
+  it('prefers stdin over heredoc when both are set', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ client });
+    await tools.exec.execute!(
+      { cmd: 'cat', stdin: 'primary', heredoc: 'alias' },
+      { toolCallId: 'e3', messages: [] } as never,
+    );
+    expect(exec).toHaveBeenCalledWith(
+      expect.objectContaining({ cmd: 'cat', stdin: 'primary' }),
+      expect.anything(),
+    );
+    expect(exec.mock.calls[0]?.[0]).not.toHaveProperty('heredoc');
+  });
+});

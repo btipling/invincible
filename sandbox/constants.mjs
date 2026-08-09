@@ -1,5 +1,13 @@
-/** Invincible sandbox HTTP protocol version (health.version). */
-export const INVINCIBLE_SANDBOX_PROTOCOL = 1;
+/**
+ * Invincible sandbox HTTP protocol version (health.version).
+ * v2: exec accepts optional stdin/heredoc (multi-line input without a shell).
+ * Clients that send stdin must require health.version >= 2 so stale daemons
+ * cannot silently ignore the field.
+ */
+export const INVINCIBLE_SANDBOX_PROTOCOL = 2;
+
+/** Minimum health.version that supports exec stdin/heredoc. */
+export const MIN_SANDBOX_PROTOCOL_STDIN = 2;
 
 /** Default exec timeout (ms) when client omits timeoutMs. */
 export const DEFAULT_EXEC_TIMEOUT_MS = 300_000; // 5 min

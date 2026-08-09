@@ -356,12 +356,14 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const exec = tool({
     description:
-      'Run a command in the sandbox (argv only, no shell). Optional cwd is resolved against the logical workspace cwd (default = logical cwd). Default timeout 5 min, max 30 min.',
+      'Run a command in the sandbox (argv only, no shell). Optional cwd is resolved against the logical workspace cwd (default = logical cwd). Optional stdin/heredoc feeds multi-line input on the process stdin without a shell. Default timeout 5 min, max 30 min.',
     inputSchema: jsonSchema<{
       cmd: string;
       args?: string[];
       cwd?: string;
       timeoutMs?: number;
+      stdin?: string;
+      heredoc?: string;
     }>({
       type: 'object',
       properties: {
@@ -376,6 +378,16 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           description: 'Working directory under workspace (relative to logical cwd; default = logical cwd)',
         },
         timeoutMs: { type: 'number', description: 'Timeout in ms (default 5 min, max 30 min)' },
+        stdin: {
+          type: 'string',
+          description:
+            'Optional UTF-8 body written to the process stdin (no shell). Prefer stdin over heredoc. Prefer this over shell <<EOF. Unsupported on Vercel backend.',
+        },
+        heredoc: {
+          type: 'string',
+          description:
+            'Alias for stdin (use stdin when possible). Multi-line input without a shell; unsupported on Vercel backend',
+        },
       },
       required: ['cmd'],
       additionalProperties: false,
@@ -395,17 +407,28 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           return finalize(`ERROR exec: ${msg}`, secrets);
         }
         const timeoutMs = clampExecTimeoutMs(input.timeoutMs);
+        const stdin =
+          typeof input.stdin === 'string'
+            ? input.stdin
+            : typeof input.heredoc === 'string'
+              ? input.heredoc
+              : undefined;
         const result = await client.exec(
           {
             cmd: input.cmd,
             args: input.args,
             cwd: execCwd,
             timeoutMs,
+            ...(stdin !== undefined ? { stdin } : {}),
           },
           { signal },
         );
+        const head =
+          stdin !== undefined
+            ? `exec ${input.cmd} stdin=${Buffer.byteLength(stdin, 'utf8')}B`
+            : `exec ${input.cmd}`;
         const parts = [
-          `exec ${input.cmd}`,
+          head,
           result.timedOut ? 'TIMED_OUT' : `exit=${result.exitCode}`,
         ];
         if (result.stdout) parts.push(`stdout:\n${result.stdout}`);

@@ -25,6 +25,12 @@ export const DEFAULT_EXEC_TIMEOUT_MS = 300_000; // 5 min
 export const MAX_EXEC_TIMEOUT_MS = 1_800_000; // 30 min
 
 /**
+ * Minimum BYO daemon health.version that supports exec stdin/heredoc.
+ * Mirrors sandbox/constants.mjs MIN_SANDBOX_PROTOCOL_STDIN.
+ */
+export const MIN_SANDBOX_PROTOCOL_STDIN = 2;
+
+/**
  * Both URL and token required (trimmed non-empty).
  * Server-only — never NEXT_PUBLIC_*.
  */

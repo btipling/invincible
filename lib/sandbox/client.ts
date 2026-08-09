@@ -7,9 +7,12 @@ import {
   type WriteFileResult,
   type StrReplaceResult,
 } from './types';
-import { normalizeBaseUrl } from './config';
+import { MIN_SANDBOX_PROTOCOL_STDIN, normalizeBaseUrl } from './config';
 
 const DEFAULT_TIMEOUT_MS = 45_000;
+
+/** Cached health.version per client instance (null = not yet probed). */
+type ProtocolCache = { version: number | null; inflight: Promise<number> | null };
 
 export type SandboxClient = {
   listDir: (path?: string, init?: { signal?: AbortSignal }) => Promise<ListDirResult>;
@@ -37,6 +40,10 @@ export type SandboxClient = {
       args?: string[];
       cwd?: string;
       timeoutMs?: number;
+      /** Optional stdin body (heredoc) — fed without a shell. */
+      stdin?: string;
+      /** Alias for stdin. */
+      heredoc?: string;
       /** Reserved — clients merge construction execEnv; tools must not set. */
       env?: Record<string, string>;
     },
@@ -69,6 +76,91 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const defaultTimeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const execEnv = normalizeExecEnv(opts.execEnv);
+  const protocolCache: ProtocolCache = { version: null, inflight: null };
+
+  function redactedMessage(message: string): string {
+    return message.includes(token) ? message.split(token).join('[redacted]') : message;
+  }
+
+  async function withTimeoutFetch(
+    url: string,
+    init: RequestInit & { signal?: AbortSignal },
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), defaultTimeout);
+    const onOuterAbort = () => controller.abort();
+    const outer = init.signal;
+    if (outer) {
+      if (outer.aborted) controller.abort();
+      else outer.addEventListener('abort', onOuterAbort, { once: true });
+    }
+    try {
+      return await fetchImpl(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+      outer?.removeEventListener('abort', onOuterAbort);
+    }
+  }
+
+  /**
+   * Probe GET /health once per client. Stale v1 daemons report version 1 and
+   * must not receive stdin (they would ignore it silently).
+   */
+  async function ensureProtocolVersion(init?: { signal?: AbortSignal }): Promise<number> {
+    if (protocolCache.version != null) return protocolCache.version;
+    if (protocolCache.inflight) return protocolCache.inflight;
+
+    protocolCache.inflight = (async () => {
+      try {
+        const res = await withTimeoutFetch(`${baseUrl}/health`, {
+          method: 'GET',
+          signal: init?.signal,
+        });
+        let data: unknown = null;
+        const ct = res.headers.get('content-type') ?? '';
+        if (ct.includes('application/json')) {
+          try {
+            data = await res.json();
+          } catch {
+            data = null;
+          }
+        } else {
+          await res.text().catch(() => '');
+        }
+        if (!res.ok) {
+          throw new SandboxHttpError(
+            `Sandbox health check failed (${res.status})`,
+            res.status >= 400 && res.status < 600 ? res.status : 502,
+          );
+        }
+        const version =
+          data &&
+          typeof data === 'object' &&
+          typeof (data as { version?: unknown }).version === 'number'
+            ? (data as { version: number }).version
+            : NaN;
+        if (!Number.isFinite(version) || version < 1) {
+          throw new SandboxHttpError(
+            'Sandbox health response missing protocol version — restart the BYO daemon',
+            502,
+          );
+        }
+        protocolCache.version = version;
+        return version;
+      } catch (err) {
+        if (err instanceof SandboxHttpError) throw err;
+        if (err instanceof Error && err.name === 'AbortError') {
+          throw new SandboxHttpError('Sandbox request aborted or timed out', 504);
+        }
+        const message = err instanceof Error ? err.message : 'Sandbox health check failed';
+        throw new SandboxHttpError(redactedMessage(message), 502);
+      } finally {
+        protocolCache.inflight = null;
+      }
+    })();
+
+    return protocolCache.inflight;
+  }
 
   async function postJson<T>(
     path: string,
@@ -76,23 +168,15 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
     init?: { signal?: AbortSignal },
   ): Promise<T> {
     const url = `${baseUrl}${path}`;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), defaultTimeout);
-    const onOuterAbort = () => controller.abort();
-    if (init?.signal) {
-      if (init.signal.aborted) controller.abort();
-      else init.signal.addEventListener('abort', onOuterAbort, { once: true });
-    }
-
     try {
-      const res = await fetchImpl(url, {
+      const res = await withTimeoutFetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify(body ?? {}),
-        signal: controller.signal,
+        signal: init?.signal,
       });
 
       let data: unknown = null;
@@ -115,8 +199,7 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
             ? (data as { error: string }).error
             : `Sandbox request failed (${res.status})`;
         // Never include token in thrown message
-        const safe = errMsg.includes(token) ? errMsg.split(token).join('[redacted]') : errMsg;
-        throw new SandboxHttpError(safe, res.status);
+        throw new SandboxHttpError(redactedMessage(errMsg), res.status);
       }
 
       return data as T;
@@ -126,11 +209,7 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
         throw new SandboxHttpError('Sandbox request aborted or timed out', 504);
       }
       const message = err instanceof Error ? err.message : 'Sandbox request failed';
-      const safe = message.includes(token) ? message.split(token).join('[redacted]') : message;
-      throw new SandboxHttpError(safe, 502);
-    } finally {
-      clearTimeout(timer);
-      init?.signal?.removeEventListener('abort', onOuterAbort);
+      throw new SandboxHttpError(redactedMessage(message), 502);
     }
   }
 
@@ -159,11 +238,37 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
         },
         init,
       ),
-    exec: (body, init) =>
-      postJson<ExecResult>(
+    exec: async (body, init) => {
+      const stdinRaw =
+        body?.stdin !== undefined && body?.stdin !== null
+          ? body.stdin
+          : body?.heredoc !== undefined && body?.heredoc !== null
+            ? body.heredoc
+            : undefined;
+      if (stdinRaw !== undefined) {
+        if (typeof stdinRaw !== 'string') {
+          throw new SandboxHttpError('stdin must be a string (heredoc body)', 400);
+        }
+        const version = await ensureProtocolVersion(init);
+        if (version < MIN_SANDBOX_PROTOCOL_STDIN) {
+          throw new SandboxHttpError(
+            `Sandbox daemon protocol v${version} does not support exec stdin/heredoc ` +
+              `(need v${MIN_SANDBOX_PROTOCOL_STDIN}+). Restart/upgrade the BYO daemon.`,
+            400,
+          );
+        }
+      }
+      // Prefer stdin; drop heredoc alias so the wire body is canonical.
+      const { heredoc: _heredoc, ...rest } = body ?? { cmd: '' };
+      const wire = {
+        ...rest,
+        ...(typeof stdinRaw === 'string' ? { stdin: stdinRaw } : {}),
+      };
+      return postJson<ExecResult>(
         '/v1/exec',
-        execEnv ? { ...body, env: execEnv } : body,
+        execEnv ? { ...wire, env: execEnv } : wire,
         init,
-      ),
+      );
+    },
   };
 }

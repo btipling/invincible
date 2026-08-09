@@ -120,4 +120,78 @@ describe('sandbox client', () => {
     expect(calls[0].body).not.toHaveProperty('env');
   });
 
+  it('exec with stdin probes health and forwards stdin on protocol v2+', async () => {
+    const calls: Array<{ method?: string; path: string; body?: unknown }> = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.replace(/^https?:\/\/[^/]+/, '');
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (path === '/health') {
+        calls.push({ method, path });
+        return Response.json({ ok: true, version: 2 });
+      }
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      calls.push({ method, path, body });
+      return Response.json({ exitCode: 0, stdout: 'fed', stderr: '' });
+    });
+    const client = createSandboxClient({
+      baseUrl: 'http://sandbox.test',
+      token: 'tok',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(
+      client.exec({ cmd: 'cat', stdin: 'hello\n' }),
+    ).resolves.toEqual({ exitCode: 0, stdout: 'fed', stderr: '' });
+    expect(calls[0]).toEqual({ method: 'GET', path: '/health' });
+    expect(calls[1]).toEqual({
+      method: 'POST',
+      path: '/v1/exec',
+      body: { cmd: 'cat', stdin: 'hello\n' },
+    });
+    // Second stdin exec reuses cached health (no extra /health).
+    await client.exec({ cmd: 'cat', heredoc: 'again' });
+    const healthCalls = calls.filter((c) => c.path === '/health');
+    expect(healthCalls).toHaveLength(1);
+    expect(calls.at(-1)?.body).toEqual({ cmd: 'cat', stdin: 'again' });
+  });
+
+  it('exec with stdin refuses stale protocol v1 daemon', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.replace(/^https?:\/\/[^/]+/, '');
+      if (path === '/health') {
+        return Response.json({ ok: true, version: 1 });
+      }
+      return Response.json({ exitCode: 0, stdout: '', stderr: '' });
+    });
+    const client = createSandboxClient({
+      baseUrl: 'http://sandbox.test',
+      token: 'tok',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(client.exec({ cmd: 'cat', stdin: 'nope' })).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/protocol v1.*stdin/i),
+    });
+    // Must not POST /v1/exec when protocol is too old.
+    const posts = vi
+      .mocked(fetchImpl)
+      .mock.calls.filter((c) => String(c[0]).includes('/v1/exec'));
+    expect(posts).toHaveLength(0);
+  });
+
+  it('exec without stdin does not probe health', async () => {
+    const paths: string[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      paths.push(String(input).replace(/^https?:\/\/[^/]+/, ''));
+      return Response.json({ exitCode: 0, stdout: '', stderr: '' });
+    });
+    const client = createSandboxClient({
+      baseUrl: 'http://sandbox.test',
+      token: 'tok',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await client.exec({ cmd: 'true' });
+    expect(paths).toEqual(['/v1/exec']);
+  });
 });

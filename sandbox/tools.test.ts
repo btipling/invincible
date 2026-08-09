@@ -139,6 +139,72 @@ describe('sandbox tools', () => {
     }
   });
 
+  it('exec feeds stdin (heredoc) to the child', async () => {
+    const ws = await mkWorkspace();
+    const payload = 'line1\nline2\n';
+    const result = await execCmd(ws, {
+      cmd: process.execPath,
+      args: ['-e', 'let s=""; process.stdin.on("data",d=>s+=d); process.stdin.on("end",()=>{process.stdout.write(s); process.exit(0);});'],
+      stdin: payload,
+      timeoutMs: 5000,
+    });
+    expect(result.timedOut).toBeUndefined();
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(payload);
+  });
+
+  it('exec accepts heredoc alias for stdin', async () => {
+    const ws = await mkWorkspace();
+    const result = await execCmd(ws, {
+      cmd: process.execPath,
+      args: ['-e', 'let s=""; process.stdin.on("data",d=>s+=d); process.stdin.on("end",()=>{process.stdout.write(s); process.exit(0);});'],
+      heredoc: 'via-heredoc',
+      timeoutMs: 5000,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe('via-heredoc');
+  });
+
+  it('exec prefers stdin over heredoc when both are set', async () => {
+    const ws = await mkWorkspace();
+    const result = await execCmd(ws, {
+      cmd: process.execPath,
+      args: [
+        '-e',
+        'let s=""; process.stdin.on("data",d=>s+=d); process.stdin.on("end",()=>{process.stdout.write(s); process.exit(0);});',
+      ],
+      stdin: 'from-stdin',
+      heredoc: 'from-heredoc',
+      timeoutMs: 5000,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe('from-stdin');
+  });
+
+  it('exec rejects non-string stdin', async () => {
+    const ws = await mkWorkspace();
+    await expect(
+      execCmd(ws, {
+        cmd: process.execPath,
+        args: ['-e', '1'],
+        // @ts-expect-error intentional bad type
+        stdin: 123,
+      }),
+    ).rejects.toBeInstanceOf(ToolError);
+  });
+
+  it('exec rejects oversized stdin', async () => {
+    const ws = await mkWorkspace();
+    const huge = 'x'.repeat(MAX_STDIO_BYTES + 1);
+    await expect(
+      execCmd(ws, {
+        cmd: process.execPath,
+        args: ['-e', '1'],
+        stdin: huge,
+      }),
+    ).rejects.toMatchObject({ status: 413 });
+  });
+
   it('exec does not inherit SANDBOX_TOKEN or host secrets', async () => {
     const ws = await mkWorkspace();
     const prevToken = process.env.SANDBOX_TOKEN;

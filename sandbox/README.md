@@ -1,15 +1,15 @@
-# Invincible sandbox daemon (protocol v1)
+# Invincible sandbox daemon (protocol v2)
 
-Standalone HTTP service that exposes a **path-jailed workspace** with four tools:
+Standalone HTTP service that exposes a **path-jailed workspace** with agent tools:
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/health` | `{ ok: true, version: 1 }` (no auth) |
+| `GET` | `/health` | `{ ok: true, version: 2 }` (no auth) |
 | `POST` | `/v1/list_dir` | List directory entries |
 | `POST` | `/v1/read_file` | Read file (max 16 MiB) |
 | `POST` | `/v1/write_file` | Write file (max 16 MiB) |
 | `POST` | `/v1/str_replace` | Exact string replace |
-| `POST` | `/v1/exec` | Run argv command (no shell) |
+| `POST` | `/v1/exec` | Run argv command (no shell); optional `stdin`/`heredoc` |
 
 Parent plan: [#45](https://github.com/btipling/invincible/issues/45) · Phase 1: [#46](https://github.com/btipling/invincible/issues/46)
 
@@ -50,7 +50,7 @@ Smoke:
 
 ```bash
 curl -s http://127.0.0.1:8787/health
-# {"ok":true,"version":1}
+# {"ok":true,"version":2}
 
 curl -s -X POST http://127.0.0.1:8787/v1/list_dir \
   -H "Authorization: Bearer $SANDBOX_TOKEN" \
@@ -76,10 +76,10 @@ Missing or wrong token → `401` `{ "error": "Unauthorized" }` (token never refl
 
 | Knob | Value |
 |------|--------|
-| exec `timeoutMs` default | 10_000 |
-| exec `timeoutMs` max | 30_000 |
-| read/write max bytes | 256 KiB |
-| stdout / stderr per exec | 32 KiB each (truncated) |
+| exec `timeoutMs` default | 300_000 (5 min) |
+| exec `timeoutMs` max | 1_800_000 (30 min) |
+| read/write max bytes | 16 MiB |
+| stdout / stderr / stdin per exec | 4 MiB each (truncated / rejected) |
 
 ## exec
 
@@ -90,13 +90,27 @@ Body:
   "cmd": "node",
   "args": ["-e", "console.log('hi')"],
   "cwd": ".",
-  "timeoutMs": 10000
+  "timeoutMs": 300000
+}
+```
+
+Optional **stdin / heredoc** (multi-line input without a shell; **protocol v2+**):
+
+```json
+{
+  "cmd": "python3",
+  "args": ["-"],
+  "stdin": "print('hello from heredoc')\n",
+  "timeoutMs": 300000
 }
 ```
 
 - **argv only** — no `shell: true`
+- Optional `stdin` (or alias `heredoc`) is written to the child process stdin, then closed — safe substitute for shell `<<EOF` heredocs. Prefer `stdin` over `heredoc` when both could apply.
+- Stdin cap matches stdout/stderr (`MAX_STDIO_BYTES`, 4 MiB)
+- App clients probe `GET /health` and refuse stdin when `version < 2` so stale daemons cannot silently drop the field
 - `cwd` is path-jailed under the workspace
-- Child env is **minimal** (`PATH`, `HOME`/`TMPDIR` under workspace, locale) — does **not** inherit `SANDBOX_TOKEN` or host secrets
+- Child env is **minimal** (`PATH`, `HOME`/`TMPDIR` under workspace, locale) — does **not** inherit `SANDBOX_TOKEN` or host secrets. Optional allowlisted overlay (`GH_TOKEN` / `GITHUB_TOKEN`) may be merged by the app client only
 - On timeout the process group is killed; response includes `"timedOut": true`
 
 ## Production notes

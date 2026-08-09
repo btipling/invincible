@@ -1,4 +1,4 @@
-/** Mirror of sandbox protocol v1 (phase 1 / #46). */
+/** Mirror of sandbox protocol (BYO daemon health.version; stdin requires v2+). */
 
 export type SandboxDirEntry = {
   name: string;
