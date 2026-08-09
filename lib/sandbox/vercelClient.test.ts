@@ -187,7 +187,7 @@ describe('createVercelSandboxClient', () => {
     await client.close?.();
   });
 
-  it('stat maps type/size/mtimeMs; 404 on missing', async () => {
+  it('stat maps type/size/mtimeMs; 404 on missing; 400 empty path', async () => {
     const createSandbox = vi.fn(async () => mockSandbox());
     const client = createVercelSandboxClient({
       name: 'inv-workspace-test',
@@ -206,8 +206,51 @@ describe('createVercelSandboxClient', () => {
       size: 0,
     });
     await expect(client.stat('missing.txt')).rejects.toBeInstanceOf(SandboxHttpError);
+    await expect(client.stat('')).rejects.toMatchObject({
+      name: 'SandboxHttpError',
+      status: 400,
+    });
   });
 
+  it('stat omits mtimeMs when SDK does not provide it (never invents 0)', async () => {
+    const createSandbox = vi.fn(async () =>
+      mockSandbox({
+        fs: {
+          stat: vi.fn(async (filePath: string) => {
+            // No mtimeMs on purpose — mirrors SDK surfaces that only expose type/size.
+            if (filePath === VERCEL_FS_WORKSPACE_ROOT || filePath.endsWith('/')) {
+              return {
+                isFile: () => false,
+                isDirectory: () => true,
+                size: 0,
+              };
+            }
+            // After writeFile, path is absolute under workspace root
+            if (filePath.endsWith('hello.txt') || filePath.includes('/hello.txt')) {
+              return {
+                isFile: () => true,
+                isDirectory: () => false,
+                size: 2,
+              };
+            }
+            throw new Error(`ENOENT: ${filePath}`);
+          }),
+        } as never,
+      }),
+    );
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox: createSandbox,
+    });
+    await client.writeFile('hello.txt', 'hi');
+    const st = await client.stat('hello.txt');
+    expect(st).toEqual({
+      path: 'hello.txt',
+      type: 'file',
+      size: 2,
+    });
+    expect(st).not.toHaveProperty('mtimeMs');
+  });
 
   it('exec passes allowlisted execEnv to runCommand', async () => {
     const sb = mockSandbox();

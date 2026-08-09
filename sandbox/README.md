@@ -9,10 +9,10 @@ Standalone HTTP service that exposes a **path-jailed workspace** with agent tool
 | `POST` | `/v1/read_file` | Read file (max 16 MiB); response includes additive `mtimeMs` + `size` |
 | `POST` | `/v1/write_file` | Write file (max 16 MiB); response includes post-write `mtimeMs` + `size` |
 | `POST` | `/v1/str_replace` | Exact string replace; response includes post-write `mtimeMs` + `size` |
-| `POST` | `/v1/stat` | Path metadata only: `{ path, type, mtimeMs, size }` (404 if missing; no content) |
+| `POST` | `/v1/stat` | Path metadata only: `{ path, type, size, mtimeMs? }` (404 if missing; no content; omit `mtimeMs` when unknown) |
 | `POST` | `/v1/exec` | Run argv command (no shell); optional `stdin`/`heredoc` |
 
-**Fingerprints (additive):** `mtimeMs` is `Math.trunc(stat.mtimeMs)`; `size` is full on-disk byte length (even when `read_file` content is truncated). Old clients may ignore these fields. BYO daemons should ship them so agent freshness checks work. Protocol version stays **v2** (additive JSON only).
+**Fingerprints (additive):** `mtimeMs` is `Math.trunc(stat.mtimeMs)` when measurable; **omit** (do not invent `0`) when the backend cannot provide it so freshness gates can degrade. `size` is full on-disk byte length (even when `read_file` content is truncated). Old clients may ignore these fields. BYO daemons should ship them so agent freshness checks work. Protocol version stays **v2** (additive JSON only).
 
 Parent plan: [#45](https://github.com/btipling/invincible/issues/45) · Phase 1: [#46](https://github.com/btipling/invincible/issues/46)
 

@@ -111,10 +111,12 @@ function entryType(dirent) {
  * @returns {{ mtimeMs: number, size: number }}
  */
 function fingerprintFromStat(stat) {
-  return {
-    mtimeMs: Math.trunc(stat.mtimeMs),
-    size: stat.size,
-  };
+  const mtimeRaw = stat.mtimeMs;
+  const out = { size: stat.size };
+  if (typeof mtimeRaw === 'number' && Number.isFinite(mtimeRaw)) {
+    out.mtimeMs = Math.trunc(mtimeRaw);
+  }
+  return out;
 }
 
 /**
@@ -301,8 +303,6 @@ export async function strReplaceTool(workspace, body) {
     ...fingerprintFromStat(stAfter),
   };
 }
-
-
 
 /**
  * Cheap path metadata for create-vs-update and freshness re-check (no content).

@@ -642,16 +642,16 @@ export function createVercelSandboxClient(
           if (st.isFile()) type = 'file';
           else if (st.isDirectory()) type = 'dir';
           const mtimeRaw = st.mtimeMs;
-          const mtimeMs =
-            typeof mtimeRaw === 'number' && Number.isFinite(mtimeRaw)
-              ? Math.trunc(mtimeRaw)
-              : 0;
-          return {
+          const result: StatResult = {
             path: userPath,
             type,
-            mtimeMs,
             size: st.size,
           };
+          // Never invent 0 — missing mtime must stay omitted so phase 2 can degrade.
+          if (typeof mtimeRaw === 'number' && Number.isFinite(mtimeRaw)) {
+            result.mtimeMs = Math.trunc(mtimeRaw);
+          }
+          return result;
         }, init?.signal);
       } catch (err) {
         mapFsError(err);

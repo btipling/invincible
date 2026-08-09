@@ -27,7 +27,11 @@ export type StrReplaceResult = {
 export type StatResult = {
   path: string;
   type: 'file' | 'dir' | 'other';
-  mtimeMs: number;
+  /**
+   * On-disk mtime when the backend can measure it.
+   * Omit when unknown — never invent `0` (phase 2 degrades on missing mtime).
+   */
+  mtimeMs?: number;
   size: number;
 };
 
