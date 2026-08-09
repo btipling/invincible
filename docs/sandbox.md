@@ -162,6 +162,36 @@ host projects). Hard delete failures fail the job (not counted as deleted).
 Secrets: `DATABASE_URL`, `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`
 (names only).
 
+### Vercel attach resilience
+
+The durable Workspace/HTTP attach path (`get({ name, resume: true })`) retries
+**transient readiness** so a VM that is still booting or preparing its image does
+not surface as a bogus user error on the first tool call:
+
+- **Shared seam** (`lib/sandbox/resilience.ts`) used by the FS client and the
+  hop-B HTTP runner. The BYO HTTP daemon backend is **not** changed.
+- **Classifier**: retries bounded (exponential backoff, hard cap ~4 s) only on
+  transient readiness — `image_not_ready` / `not ready` / `preparing`, HTTP
+  `408/429/5xx`. Permanent config/auth/path errors and bad-image errors
+  (`unoptimized`, invalid/unknown image, non-`linux/amd64`) fail **fast** with
+  **zero** retries — a misconfigured sandbox never busy-loops.
+- **SDK-owned resume is not re-retried**. `@vercel/sandbox` already re-resumes on
+  `410` (any) and `422 sandbox_stopping/sandbox_snapshotting`; those are passed
+  through so app-level retries do not amplify the platform's own recovery.
+- **Readiness probe after attach**: the FS client runs a no-op command through
+  the same VM path the tools use before `rootReady` becomes true, absorbing the
+  boot window once at attach. hop-B has **no** separate probe — its first
+  `curl`/`head` command already runs inside the same bounded retry.
+- **Surfaced status**: when the retry budget is exhausted on a retryable, mapping
+  yields **502** ("sandbox backend unavailable / preparing"); abort/timeout maps
+  to **504**; permanent errors keep their own status (bad image stays a
+  distinct 400, not merged with readiness). A blip after attach invalidates the
+  handle so the next tool call re-attaches.
+- **Throttled extend heartbeat**: `extendTimeout` is best-effort at attach and
+  close and, additionally, as a throttled mid-turn heartbeat (every ≥
+  `EXTEND_THROTTLE_MS`, default 5 min) so long multi-step turns do not idle out
+  from a forgotten extend. It never fails the turn.
+
 
 ## 2. Architecture (product path)
 

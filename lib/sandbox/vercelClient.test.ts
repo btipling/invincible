@@ -16,6 +16,16 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SandboxHttpError } from './types';
 
+/** Duck-typed @vercel/sandbox APIError for simulation. */
+function sdkError(message: string, status: number, code?: string): Error {
+  const e = new Error(message);
+  (e as unknown as { response: { status: number } }).response = { status };
+  (e as unknown as { json: { error: { code?: string } } }).json = {
+    error: { code },
+  };
+  return e;
+}
+
 function dirent(name: string, kind: 'file' | 'dir' | 'other'): VercelFsDirentLike {
   return {
     name,
@@ -162,10 +172,15 @@ describe('createVercelSandboxClient', () => {
       }),
     );
     // Object form; no env when execEnv unset (SDK 3-arg would drop cwd/env)
-    const runParams = vi.mocked(sb.runCommand).mock.calls[0]?.[0] as {
-      env?: Record<string, string>;
-    };
-    expect(runParams.env).toBeUndefined();
+    const execCall = vi
+      .mocked(sb.runCommand)
+      .mock.calls.find(
+        (c) =>
+          typeof c[0] === 'object' &&
+          (c[0] as { cmd?: string }).cmd === 'echo',
+      );
+    expect(execCall).toBeDefined();
+    expect((execCall![0] as { env?: Record<string, string> }).env).toBeUndefined();
 
     await client.close?.();
   });
@@ -183,12 +198,15 @@ describe('createVercelSandboxClient', () => {
       },
     });
     await client.exec({ cmd: 'gh', args: ['auth', 'status'] });
-    const runParams = vi.mocked(sb.runCommand).mock.calls[0]?.[0] as {
-      cmd: string;
-      args?: string[];
-      env?: Record<string, string>;
-    };
-    expect(runParams).toEqual(
+    const execCall = vi
+      .mocked(sb.runCommand)
+      .mock.calls.find(
+        (c) =>
+          typeof c[0] === 'object' &&
+          (c[0] as { cmd?: string }).cmd === 'gh',
+      );
+    expect(execCall).toBeDefined();
+    expect(execCall![0]).toEqual(
       expect.objectContaining({
         cmd: 'gh',
         args: ['auth', 'status'],
@@ -199,7 +217,7 @@ describe('createVercelSandboxClient', () => {
       }),
     );
     // Must be object form — string+opts would drop env in real SDK
-    expect(typeof vi.mocked(sb.runCommand).mock.calls[0]?.[0]).toBe('object');
+    expect(typeof execCall![0]).toBe('object');
     await client.close?.();
   });
 
@@ -502,6 +520,98 @@ describe('createVercelSandboxClient', () => {
     await expect(client.readFile('.')).rejects.toThrow(/not a file/i);
     await expect(client.listDir('a.txt')).rejects.toThrow(/not a directory/i);
     await client.close?.();
+  });
+
+  it('retries a transient runCommand (image_not_ready) then succeeds; stays attached', async () => {
+    let execCalls = 0;
+    const runCommand = vi.fn(async (params: unknown) => {
+      // readiness probe (string form) passes
+      if (typeof params === 'string') return { exitCode: 0, stdout: '', stderr: '' };
+      execCalls += 1;
+      if (execCalls === 1) {
+        throw sdkError('image not ready yet', 400, 'image_not_ready');
+      }
+      return { exitCode: 0, stdout: 'ok', stderr: '' };
+    });
+    const sb = mockSandbox({ runCommand });
+    const getSandbox = vi.fn<GetVercelFsSandboxFn>(async () => sb);
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox,
+    });
+    await expect(client.exec({ cmd: 'echo', args: ['x'] })).resolves.toMatchObject({
+      exitCode: 0,
+      stdout: 'ok',
+    });
+    expect(execCalls).toBe(2);
+    // No latch invalidation on success — later calls stay attached.
+    await client.exec({ cmd: 'echo', args: ['y'] });
+    expect(getSandbox).toHaveBeenCalledTimes(1);
+    await client.close?.();
+  });
+
+  it('exhausted transient surfaces 502 and invalidates latch; next call re-attaches', async () => {
+    vi.useFakeTimers();
+    const failingRun = vi.fn(async (params: unknown) => {
+      if (typeof params === 'string') return { exitCode: 0, stdout: '', stderr: '' };
+      throw sdkError('sandbox preparing', 503);
+    });
+    const sbFail = mockSandbox({ runCommand: failingRun });
+    const sbOk = mockSandbox();
+    let n = 0;
+    const getSandbox = vi.fn<GetVercelFsSandboxFn>(async () => {
+      n += 1;
+      return n === 1 ? sbFail : sbOk;
+    });
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox,
+    });
+
+    // Attach handlers immediately so fake-timer rejections are never unhandled.
+    const p1 = client.exec({ cmd: 'echo', args: ['x'] });
+    const p1Done = expect(p1).rejects.toMatchObject({ status: 502 });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await p1Done;
+
+    const p2 = client.exec({ cmd: 'echo', args: ['y'] });
+    const p2Done = expect(p2).resolves.toMatchObject({ exitCode: 0, stdout: 'ok' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await p2Done;
+    expect(getSandbox).toHaveBeenCalledTimes(2);
+    expect(sbFail.stop).not.toHaveBeenCalled();
+    await client.close?.();
+    vi.useRealTimers();
+  });
+
+  it('permanent op error does not retry or invalidate ready handle', async () => {
+    vi.useFakeTimers();
+    const runCommand = vi.fn(async (params: unknown) => {
+      if (typeof params === 'string') return { exitCode: 0, stdout: '', stderr: '' };
+      throw new Error('forbidden');
+    });
+    const sb = mockSandbox({ runCommand });
+    const getSandbox = vi.fn<GetVercelFsSandboxFn>(async () => sb);
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox,
+    });
+
+    // Attach handlers immediately so fake-timer rejections are never unhandled.
+    const p1 = client.exec({ cmd: 'git', args: ['x'] });
+    const p1Done = expect(p1).rejects.toMatchObject({ status: 403 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await p1Done;
+    expect(runCommand).toHaveBeenCalledTimes(2); // probe + one exec attempt (no retry)
+
+    // Handle not invalidated: a second op stays attached (still probe + one exec).
+    const p2 = client.exec({ cmd: 'git', args: ['y'] });
+    const p2Done = expect(p2).rejects.toMatchObject({ status: 403 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await p2Done;
+    expect(getSandbox).toHaveBeenCalledTimes(1);
+    await client.close?.();
+    vi.useRealTimers();
   });
 
   it('product source has no Sandbox.create / getOrCreate call / stop-on-close path', () => {

@@ -9,6 +9,10 @@ import type {
   HttpFetchGetResult,
   HttpFetchRunner,
 } from './httpFetchTypes';
+import {
+  EXTEND_THROTTLE_MS,
+  withTransientRetry,
+} from '../sandbox/resilience';
 
 export const BUILTIN_HTTP_USER_AGENT = 'InvincibleBuiltinHttp/1.0';
 
@@ -60,6 +64,11 @@ export type VercelSandboxHttpRunnerOptions = {
   getSandbox?: GetSandboxFn;
   /** Idle extendTimeout ms (default 30m — USER_SANDBOX_IDLE family). */
   idleTimeoutMs?: number;
+  /**
+   * Minimum gap (ms) between throttled mid-turn `extendTimeout` heartbeats.
+   * Default `EXTEND_THROTTLE_MS` (5 min). Injectable for tests.
+   */
+  extendThrottleMs?: number;
 };
 
 /**
@@ -180,6 +189,8 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
   private attachPromise: Promise<SandboxLike> | null = null;
   private sandbox: SandboxLike | null = null;
   private closed = false;
+  private lastExtendAt = 0;
+  private readonly extendThrottleMs: number;
 
   constructor(opts: VercelSandboxHttpRunnerOptions) {
     const name = opts.name?.trim();
@@ -189,6 +200,10 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
     this.name = name;
     this.getSandbox = opts.getSandbox ?? defaultGetSandbox;
     this.idleTimeoutMs = clampIdleTimeout(opts.idleTimeoutMs);
+    this.extendThrottleMs =
+      opts.extendThrottleMs == null
+        ? EXTEND_THROTTLE_MS
+        : Math.max(0, Math.floor(opts.extendThrottleMs));
   }
 
   private async bestEffortExtend(sb: SandboxLike): Promise<void> {
@@ -198,6 +213,27 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
     } catch {
       // best-effort — never fail the turn
     }
+    this.lastExtendAt = Date.now();
+  }
+
+  /** Throttled mid-turn heartbeat so long turns do not idle-stop from forget. */
+  private async maybeExtend(sb: SandboxLike): Promise<void> {
+    if (Date.now() - this.lastExtendAt < this.extendThrottleMs) return;
+    await this.bestEffortExtend(sb);
+  }
+
+  /** Drop a handle that is no longer trustworthy so the next get re-attaches. */
+  private invalidateHandle(): void {
+    this.sandbox = null;
+    this.attachPromise = null;
+  }
+
+  /** Bounded transient retry around a hop-B VM command (curl / head). */
+  private runRetry<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return withTransientRetry(fn, {
+      signal,
+      onExhaustedRetryable: () => this.invalidateHandle(),
+    });
   }
 
   private async ensureSandbox(signal?: AbortSignal): Promise<SandboxLike> {
@@ -240,24 +276,32 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
     }
 
     const sb = await this.ensureSandbox(input.signal);
+    // Attach does not probe separately (locked): the first VM command below
+    // already runs inside the shared transient retry, absorbing any boot window
+    // on the first get of the call.
+    await this.maybeExtend(sb);
     const maxTimeSec = Math.max(1, Math.ceil(input.timeoutMs / 1000));
     const maxBytes = Math.max(0, Math.floor(input.maxBytes));
 
     if (input.head) {
-      const cmd = await sb.runCommand(
-        'curl',
-        [
-          '-sS',
-          '-I',
-          '--max-time',
-          String(maxTimeSec),
-          '--max-redirs',
-          '0',
-          '-A',
-          BUILTIN_HTTP_USER_AGENT,
-          input.url,
-        ],
-        { signal: input.signal, timeoutMs: input.timeoutMs + 2000 },
+      const cmd = await this.runRetry(
+        () =>
+          sb.runCommand(
+            'curl',
+            [
+              '-sS',
+              '-I',
+              '--max-time',
+              String(maxTimeSec),
+              '--max-redirs',
+              '0',
+              '-A',
+              BUILTIN_HTTP_USER_AGENT,
+              input.url,
+            ],
+            { signal: input.signal, timeoutMs: input.timeoutMs + 2000 },
+          ),
+        input.signal,
       );
       const { stdout, stderr } = await commandOutput(cmd);
       if (cmd.exitCode !== 0 && !stdout.trim()) {
@@ -278,25 +322,29 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
     const bodyPath = `/tmp/inv-http-body-${Date.now()}-${Math.random().toString(36).slice(2)}.bin`;
     // Cap transfer size at the hop-B layer (not only post-download head -c).
     // Without --max-filesize, curl can write unbounded bytes until --max-time.
-    const cmd = await sb.runCommand(
-      'curl',
-      [
-        '-sS',
-        '-D',
-        '-',
-        '-o',
-        bodyPath,
-        '--max-time',
-        String(maxTimeSec),
-        '--max-redirs',
-        '0',
-        '--max-filesize',
-        String(Math.max(1, maxBytes)),
-        '-A',
-        BUILTIN_HTTP_USER_AGENT,
-        input.url,
-      ],
-      { signal: input.signal, timeoutMs: input.timeoutMs + 2000 },
+    const cmd = await this.runRetry(
+      () =>
+        sb.runCommand(
+          'curl',
+          [
+            '-sS',
+            '-D',
+            '-',
+            '-o',
+            bodyPath,
+            '--max-time',
+            String(maxTimeSec),
+            '--max-redirs',
+            '0',
+            '--max-filesize',
+            String(Math.max(1, maxBytes)),
+            '-A',
+            BUILTIN_HTTP_USER_AGENT,
+            input.url,
+          ],
+          { signal: input.signal, timeoutMs: input.timeoutMs + 2000 },
+        ),
+      input.signal,
     );
     const { stdout, stderr } = await commandOutput(cmd);
     if (cmd.exitCode !== 0 && !stdout.includes('HTTP/')) {
@@ -311,10 +359,14 @@ export class VercelSandboxHttpRunner implements HttpFetchRunner {
     let body = '';
     let truncated = false;
     if (maxBytes > 0) {
-      const readCmd = await sb.runCommand(
-        'head',
-        ['-c', String(maxBytes + 1), bodyPath],
-        { signal: input.signal, timeoutMs: 120_000 },
+      const readCmd = await this.runRetry(
+        () =>
+          sb.runCommand(
+            'head',
+            ['-c', String(maxBytes + 1), bodyPath],
+            { signal: input.signal, timeoutMs: 120_000 },
+          ),
+        input.signal,
       );
       const out = await commandOutput(readCmd);
       const raw = out.stdout;

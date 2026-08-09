@@ -350,6 +350,46 @@ describe('VercelSandboxHttpRunner', () => {
     await runner.close();
   });
 
+  it('retries a transient curl runCommand and succeeds (boot absorbed on first command; no separate probe)', async () => {
+    let curlCalls = 0;
+    const runCommand = vi.fn(async (cmd: string) => {
+      if (cmd === 'curl') {
+        curlCalls += 1;
+        if (curlCalls === 1) {
+          const e = new Error('image not ready yet');
+          (e as unknown as { response: { status: number } }).response = { status: 400 };
+          (e as unknown as { json: { error: { code?: string } } }).json = {
+            error: { code: 'image_not_ready' },
+          };
+          throw e;
+        }
+        return {
+          exitCode: 0,
+          stdout: 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n',
+          stderr: '',
+        };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+    const sb = mockSandbox({ runCommand });
+    const getSandbox = vi.fn<GetSandboxFn>(async () => sb);
+    const runner = new VercelSandboxHttpRunner({
+      name: 'inv-http-test',
+      getSandbox,
+    });
+    const r = await runner.get({
+      url: 'https://example.com/',
+      maxBytes: 0,
+      timeoutMs: 1000,
+      head: true,
+    });
+    expect(r.status).toBe(200);
+    expect(curlCalls).toBe(2);
+    // No dedicated attach probe was issued (only curl + close retry).
+    expect(runCommand).toHaveBeenCalledWith('curl', expect.anything(), expect.anything());
+    await runner.close();
+  });
+
   it('product source has no Sandbox.create / getOrCreate / stop-on-close path', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const srcText = readFileSync(join(here, 'vercelSandboxHttpRunner.ts'), 'utf8');
