@@ -551,14 +551,15 @@ Agent filesystem tools enforce **read-before-edit** on the shared sandbox jail:
 | Rule | Behavior |
 |------|----------|
 | Edit existing file | A successful full **`read_file`** of that path is required **in this agent run** before **`str_replace`** or overwriting with **`write_file`** |
-| Create new file | **`write_file`** to a path that does not exist yet does **not** require a prior read |
+| Create new file | **`write_file`** to a path that does not exist yet does **not** require a prior read. Existence is decided only when **`stat` reports true path-missing** (e.g. ENOENT / daemon `Path not found`) — not on bare HTTP 404 or generic `Not found` from a missing route |
 | Truncated read | Does **not** authorize edit — read the full file first |
 | Concurrent change | Before each mutate, tools **re-stat** the path. If mtime/size changed since the last observation (another browser tab, device, agent run, **`exec`**, or human on the same workspace), the tool soft-fails and the model must **`read_file` again** |
 | Soft fail | Tools return `ERROR write_file:` / `ERROR str_replace:` strings — they do not throw |
+| Unknown existence | If pre-mutate **`stat` fails** for a reason other than path-missing (including a daemon that does not implement **`POST /v1/stat`** yet), tools **fail closed** — they do **not** treat the path as create-new and do **not** overwrite |
 
 **What is not a cache:** file observations live only for one agent HTTP run. They are **not** stored in harness SessionStore or multi-device session blobs. Tabs and devices that share a sandbox share **disk only** — safety is the re-stat, not session sync.
 
-**Fingerprints:** BYO daemon responses include additive `mtimeMs` + `size` on read/write/str_replace and **`POST /v1/stat`**. When a backend omits mtime, tools still require a prior read (gate 1) but cannot detect same-size silent rewrites (gate 2 degrades). Prefer a daemon that ships fingerprints.
+**Fingerprints:** BYO daemon responses include additive `mtimeMs` + `size` on read/write/str_replace and **`POST /v1/stat`**. When a backend omits mtime, tools still require a prior read (gate 1) but cannot detect same-size silent rewrites (gate 2 degrades). Prefer a daemon that ships fingerprints. Restart/upgrade a long-lived BYO unit if `stat` is missing so create-vs-edit stays accurate.
 
 ## Logical workspace cwd
 
