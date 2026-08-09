@@ -1,8 +1,8 @@
 /**
  * Per-user durable Vercel Sandbox instance lifecycle (parent #298 / phase 1 #299).
  * Server-only domain: Create / Start / Stop / Destroy / load / reconcile.
- * Agent and hop-B must not call Sandbox.create — only this module (and later orphan GHA).
- * Never call Sandbox.getOrCreate.
+ * Agent and hop-B must not call Sandbox.create — only this module.
+ * Never call Sandbox.getOrCreate. Orphan GHA lists/deletes only (no create).
  */
 import { createHash } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';

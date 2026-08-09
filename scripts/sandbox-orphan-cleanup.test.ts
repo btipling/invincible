@@ -27,7 +27,7 @@ describe('sandbox-orphan-cleanup filters', () => {
     ).toBe(false);
   });
 
-  it('selects product prefixes not in denylist', () => {
+  it('selects product prefixes not in denylist by default', () => {
     const denylist = new Set<string>();
     for (const p of PRODUCT_NAME_PREFIXES) {
       expect(
@@ -40,8 +40,17 @@ describe('sandbox-orphan-cleanup filters', () => {
     }
   });
 
-  it('selects old non-persistent ephemerals only after age threshold', () => {
+  it('does not select non-product ephemerals unless includeNonProduct', () => {
     const denylist = new Set<string>();
+    const oldEph = {
+      name: 'sbx_ephemeral_1',
+      persistent: false,
+      createdAt: now - ORPHAN_AGE_MS,
+    };
+    expect(isOrphanCandidate(oldEph, denylist, now)).toBe(false);
+    expect(isOrphanCandidate(oldEph, denylist, now, { includeNonProduct: true })).toBe(
+      true,
+    );
     expect(
       isOrphanCandidate(
         {
@@ -51,22 +60,12 @@ describe('sandbox-orphan-cleanup filters', () => {
         },
         denylist,
         now,
+        { includeNonProduct: true },
       ),
     ).toBe(false);
-    expect(
-      isOrphanCandidate(
-        {
-          name: 'sbx_ephemeral_1',
-          persistent: false,
-          createdAt: now - ORPHAN_AGE_MS,
-        },
-        denylist,
-        now,
-      ),
-    ).toBe(true);
   });
 
-  it('does not select persistent non-product names', () => {
+  it('does not select persistent non-product names even with includeNonProduct', () => {
     expect(
       isOrphanCandidate(
         {
@@ -76,11 +75,12 @@ describe('sandbox-orphan-cleanup filters', () => {
         },
         new Set(),
         now,
+        { includeNonProduct: true },
       ),
     ).toBe(false);
   });
 
-  it('selectOrphanCandidates maps a list', () => {
+  it('selectOrphanCandidates defaults to product prefixes only', () => {
     const out = selectOrphanCandidates(
       [
         { name: 'inv-http-gone', persistent: true, createdAt: now },
@@ -93,6 +93,24 @@ describe('sandbox-orphan-cleanup filters', () => {
       ],
       ['keep-me'],
       now,
+    );
+    expect(out.map((c) => c.name)).toEqual(['inv-http-gone']);
+  });
+
+  it('selectOrphanCandidates can include non-product when opted in', () => {
+    const out = selectOrphanCandidates(
+      [
+        { name: 'inv-http-gone', persistent: true, createdAt: now },
+        { name: 'keep-me', persistent: true, createdAt: now },
+        {
+          name: 'old-eph',
+          persistent: false,
+          createdAt: now - ORPHAN_AGE_MS * 2,
+        },
+      ],
+      ['keep-me'],
+      now,
+      { includeNonProduct: true },
     );
     expect(out.map((c) => c.name).sort()).toEqual(['inv-http-gone', 'old-eph']);
   });

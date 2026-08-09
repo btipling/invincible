@@ -8,11 +8,13 @@
  *   DATABASE_URL, VERCEL_TOKEN, VERCEL_TEAM_ID, VERCEL_PROJECT_ID
  *
  * Flags:
- *   --dry-run   list candidates only (default when DRY_RUN=1)
- *   --cleanup   stop+delete candidates (requires CONFIRM_CLEANUP=1 or --cleanup)
+ *   --dry-run                 list candidates only (default when DRY_RUN=1)
+ *   --cleanup                 stop+delete candidates (requires CONFIRM_CLEANUP=1 or --cleanup)
+ *   --include-non-product     also select non-product non-persistent VMs ≥ age (off by default)
  *
  * Never Sandbox.create / getOrCreate. Never delete names present in
  * user_sandbox_instances.vercel_name.
+ * Default selection: product prefixes (inv-workspace- / inv-http-) not on denylist only.
  */
 
 import postgres from 'postgres';
@@ -26,15 +28,19 @@ export const PRODUCT_NAME_PREFIXES = ['inv-workspace-', 'inv-http-'];
  * @param {{ name: string, persistent?: boolean, createdAt?: number }} sb
  * @param {Set<string>} denylist
  * @param {number} nowMs
- * @param {number} [ageMs]
+ * @param {{ ageMs?: number, includeNonProduct?: boolean }} [opts]
  */
-export function isOrphanCandidate(sb, denylist, nowMs, ageMs = ORPHAN_AGE_MS) {
+export function isOrphanCandidate(sb, denylist, nowMs, opts = {}) {
+  const ageMs = opts.ageMs ?? ORPHAN_AGE_MS;
+  const includeNonProduct = opts.includeNonProduct === true;
   const name = (sb?.name ?? '').trim();
   if (!name) return false;
   if (denylist.has(name)) return false;
 
   const prefixHit = PRODUCT_NAME_PREFIXES.some((p) => name.startsWith(p));
   if (prefixHit) return true;
+
+  if (!includeNonProduct) return false;
 
   const persistent = sb.persistent === true;
   if (persistent) return false;
@@ -49,12 +55,28 @@ export function isOrphanCandidate(sb, denylist, nowMs, ageMs = ORPHAN_AGE_MS) {
  * @param {Array<{ name: string, persistent?: boolean, createdAt?: number, status?: string }>} sandboxes
  * @param {Iterable<string>} denylistNames
  * @param {number} [nowMs]
+ * @param {{ includeNonProduct?: boolean, ageMs?: number }} [opts]
  */
-export function selectOrphanCandidates(sandboxes, denylistNames, nowMs = Date.now()) {
+export function selectOrphanCandidates(
+  sandboxes,
+  denylistNames,
+  nowMs = Date.now(),
+  opts = {},
+) {
   const denylist = new Set(
     [...denylistNames].map((n) => String(n).trim()).filter(Boolean),
   );
-  return sandboxes.filter((sb) => isOrphanCandidate(sb, denylist, nowMs));
+  return sandboxes.filter((sb) => isOrphanCandidate(sb, denylist, nowMs, opts));
+}
+
+function isNotFoundError(err) {
+  if (!err || typeof err !== 'object') return false;
+  const e = err;
+  if (e.response?.status === 404) return true;
+  if (e.code === 'not_found') return true;
+  if (e.json?.error?.code === 'not_found') return true;
+  const msg = typeof e.message === 'string' ? e.message : '';
+  return /not[_ ]found/i.test(msg);
 }
 
 function parseArgs(argv) {
@@ -66,14 +88,21 @@ function parseArgs(argv) {
     argv.includes('--cleanup') ||
     process.env.CONFIRM_CLEANUP === '1' ||
     process.env.CONFIRM_CLEANUP === 'cleanup';
+  const includeNonProduct =
+    argv.includes('--include-non-product') ||
+    process.env.INCLUDE_NON_PRODUCT === '1' ||
+    process.env.INCLUDE_NON_PRODUCT === 'true';
   // Explicit --dry-run wins; else cleanup when requested; else dry-run safe default.
+  let dryRun = true;
+  let cleanup = false;
   if (argv.includes('--dry-run') || (wantDry && !wantCleanup)) {
-    return { dryRun: true, cleanup: false };
+    dryRun = true;
+    cleanup = false;
+  } else if (wantCleanup) {
+    dryRun = false;
+    cleanup = true;
   }
-  if (wantCleanup) {
-    return { dryRun: false, cleanup: true };
-  }
-  return { dryRun: true, cleanup: false };
+  return { dryRun, cleanup, includeNonProduct };
 }
 
 function requireEnv(name) {
@@ -123,28 +152,49 @@ async function listAllSandboxes(creds) {
   }));
 }
 
-async function deleteCandidate(name, creds) {
-  const sb = await Sandbox.get({
-    name,
-    token: creds.token,
-    teamId: creds.teamId,
-    projectId: creds.projectId,
-    resume: false,
-  });
+/**
+ * Stop + delete one candidate. Rethrows non-not_found failures so callers
+ * do not count a successful delete when the platform still has the VM.
+ * @param {string} name
+ * @param {{ token: string, teamId: string, projectId: string }} creds
+ */
+export async function deleteCandidate(name, creds) {
+  let sb;
+  try {
+    sb = await Sandbox.get({
+      name,
+      token: creds.token,
+      teamId: creds.teamId,
+      projectId: creds.projectId,
+      resume: false,
+    });
+  } catch (err) {
+    if (isNotFoundError(err)) {
+      return { deleted: false, alreadyGone: true };
+    }
+    throw err;
+  }
   try {
     await sb.stop();
-  } catch {
-    // ignore stop errors
+  } catch (err) {
+    // Stop may fail if already stopped — only ignore not_found-ish; keep going to delete.
+    if (!isNotFoundError(err)) {
+      // still attempt delete; stop failure alone is not fatal if delete works
+    }
   }
   try {
     await sb.delete();
-  } catch {
-    // ignore delete errors (not_found)
+  } catch (err) {
+    if (isNotFoundError(err)) {
+      return { deleted: false, alreadyGone: true };
+    }
+    throw err;
   }
+  return { deleted: true, alreadyGone: false };
 }
 
 async function main() {
-  const { dryRun, cleanup } = parseArgs(process.argv.slice(2));
+  const { dryRun, cleanup, includeNonProduct } = parseArgs(process.argv.slice(2));
   const databaseUrl = requireEnv('DATABASE_URL');
   const creds = {
     token: requireEnv('VERCEL_TOKEN'),
@@ -154,14 +204,18 @@ async function main() {
 
   const denylist = await loadDenylist(databaseUrl);
   const listed = await listAllSandboxes(creds);
-  const candidates = selectOrphanCandidates(listed, denylist);
+  const candidates = selectOrphanCandidates(listed, denylist, Date.now(), {
+    includeNonProduct,
+  });
 
   const summary = {
     listed: listed.length,
     denylist: denylist.length,
     candidates: candidates.length,
+    includeNonProduct,
     dryRun: dryRun || !cleanup,
     deleted: 0,
+    alreadyGone: 0,
     errors: 0,
   };
 
@@ -184,8 +238,9 @@ async function main() {
   if (!summary.dryRun) {
     for (const c of candidates) {
       try {
-        await deleteCandidate(c.name, creds);
-        summary.deleted += 1;
+        const result = await deleteCandidate(c.name, creds);
+        if (result.deleted) summary.deleted += 1;
+        else if (result.alreadyGone) summary.alreadyGone += 1;
       } catch (err) {
         summary.errors += 1;
         console.error(

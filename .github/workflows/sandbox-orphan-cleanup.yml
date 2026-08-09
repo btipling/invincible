@@ -2,6 +2,8 @@
 #
 # Operator: Actions → sandbox-orphan-cleanup → Run workflow
 #   inputs: confirm=cleanup (required to run); dry_run=true default (list only)
+#   include_non_product=false default — product prefixes only; opt in for
+#   project-wide non-persistent ≥24h sweep (shared-project footgun)
 #
 # Repository secrets / vars (names only — never commit values):
 #   DATABASE_URL       — dual-store with Vercel Production (instance denylist)
@@ -11,7 +13,8 @@
 #
 # Safety: workflow_dispatch only; ubuntu-latest only; never self-hosted;
 # never echo secret values; dry_run default true; never delete names in
-# user_sandbox_instances.vercel_name; never Sandbox.create / getOrCreate.
+# user_sandbox_instances.vercel_name; never Sandbox.create / getOrCreate;
+# hard failures on stop/delete do not count as deleted.
 
 name: sandbox-orphan-cleanup
 
@@ -27,6 +30,11 @@ on:
         required: false
         type: boolean
         default: true
+      include_non_product:
+        description: 'If true, also delete non-product non-persistent VMs ≥24h (project-wide; default false = product prefixes only)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -91,12 +99,17 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           CONFIRM_CLEANUP: ${{ inputs.dry_run && '0' || '1' }}
+          INCLUDE_NON_PRODUCT: ${{ inputs.include_non_product && '1' || '0' }}
         run: |
           set -euo pipefail
+          EXTRA=()
+          if [ "${INCLUDE_NON_PRODUCT}" = "1" ]; then
+            EXTRA+=(--include-non-product)
+          fi
           if [ "${DRY_RUN}" = "1" ]; then
-            node scripts/sandbox-orphan-cleanup.mjs --dry-run
+            node scripts/sandbox-orphan-cleanup.mjs --dry-run "${EXTRA[@]}"
           else
-            node scripts/sandbox-orphan-cleanup.mjs --cleanup
+            node scripts/sandbox-orphan-cleanup.mjs --cleanup "${EXTRA[@]}"
           fi
 
       - name: Job summary
@@ -107,5 +120,6 @@ jobs:
             echo "### sandbox-orphan-cleanup"
             echo "- result: ${{ job.status }}"
             echo "- dry_run: ${{ inputs.dry_run }}"
-            echo "- note: never deletes names present in user_sandbox_instances; never create/getOrCreate"
+            echo "- include_non_product: ${{ inputs.include_non_product }}"
+            echo "- note: default = product prefixes only; never deletes denylist names; never create/getOrCreate; delete failures exit non-zero"
           } >> "${GITHUB_STEP_SUMMARY}"

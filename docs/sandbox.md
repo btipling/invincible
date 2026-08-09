@@ -155,9 +155,12 @@ Vercel Sandbox instance (server-generated names `inv-workspace-…` /
 
 **Orphan cleanup (optional):** user Destroy is primary. Operators may run GitHub
 Actions workflow **`sandbox-orphan-cleanup`** (`confirm=cleanup`, `dry_run` default
-true) to list/delete leftover names that are **not** in `user_sandbox_instances`
-(product prefixes or old non-persistent VMs). Secrets: `DATABASE_URL`,
-`VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` (names only).
+true) to list/delete leftover **product** names (`inv-workspace-…` / `inv-http-…`)
+that are **not** in `user_sandbox_instances`. Non-product non-persistent VMs are
+**not** swept unless `include_non_product=true` (project-wide; avoid on shared
+host projects). Hard delete failures fail the job (not counted as deleted).
+Secrets: `DATABASE_URL`, `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`
+(names only).
 
 
 ## 2. Architecture (product path)
