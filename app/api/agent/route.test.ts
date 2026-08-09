@@ -3,6 +3,7 @@ import {
   AUTH_REQUIRED_ERROR,
   SANDBOX_FORBIDDEN_ERROR,
   WORKSPACE_INSTANCE_REQUIRED_ERROR,
+  BUILTIN_HTTP_INSTANCE_REQUIRED_ERROR,
 } from '../../../lib/tenancy/errors';
 
 /**
@@ -24,6 +25,7 @@ describe('POST /api/agent', () => {
     vi.doUnmock('../../../lib/agent/vercelSandboxHttpRunner');
     vi.doUnmock('../../../lib/agent/httpFetchTools');
     vi.doUnmock('../../../lib/agent/builtinHttpConfig');
+    vi.doUnmock('../../../lib/tenancy/userSandboxInstance');
   });
 
   async function loadRoute() {
@@ -74,6 +76,40 @@ describe('POST /api/agent', () => {
     }));
     vi.doMock('../../../lib/mcp/client', () => ({ buildUserMcpTools }));
     return { close, buildUserMcpTools };
+  }
+
+
+  function mockHttpInstance(
+    value:
+      | null
+      | { status: 'running' | 'stopped' | 'error'; vercelName: string } = {
+        status: 'running',
+        vercelName: 'inv-http-test',
+      },
+  ) {
+    const loadInstance = vi.fn(async () =>
+      value == null
+        ? { ok: true as const, value: null }
+        : {
+            ok: true as const,
+            value: {
+              userId: 'user-1',
+              purpose: 'http' as const,
+              tenantId: 't1',
+              catalogSandboxId: null,
+              vercelName: value.vercelName,
+              image: 'vercel/sandbox/universal:latest',
+              status: value.status,
+              lastError: null,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            },
+          },
+    );
+    vi.doMock('../../../lib/tenancy/userSandboxInstance', () => ({
+      loadInstance,
+    }));
+    return { loadInstance };
   }
 
   function mockGithubToken(value: string | null = null) {
@@ -647,6 +683,7 @@ describe('POST /api/agent', () => {
     delete process.env.SANDBOX_URL;
     delete process.env.SANDBOX_TOKEN;
     process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+    process.env.BUILTIN_HTTP_INSTANCE_NAME = 'inv-http-host';
 
     const close = vi.fn(async () => {});
     type HttpRunArg = {
@@ -661,11 +698,12 @@ describe('POST /api/agent', () => {
 
     vi.resetModules();
     mockMcpEmpty();
+    const createRunner = vi.fn(() => ({
+      get: vi.fn(),
+      close,
+    }));
     vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
-      createVercelSandboxHttpRunner: vi.fn(() => ({
-        get: vi.fn(),
-        close,
-      })),
+      createVercelSandboxHttpRunner: createRunner,
     }));
     vi.doMock('../../../lib/agent/httpFetchTools', () => ({
       createHttpFetchTools: vi.fn(() => ({
@@ -688,9 +726,43 @@ describe('POST /api/agent', () => {
     expect(arg).toBeDefined();
     expect(arg!.skipSandboxTools).toBe(true);
     expect(arg!.extraTools?.http_get).toBeTruthy();
+    expect(createRunner).toHaveBeenCalledWith({ name: 'inv-http-host' });
     expect(close).toHaveBeenCalled();
     const body = await res.json();
     expect(body.text).toBe('fetched');
+  });
+
+  it('tenancy off, builtin on, empty instance name → fail closed', async () => {
+    clearTenancyEnv();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+    process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+    delete process.env.BUILTIN_HTTP_INSTANCE_NAME;
+
+    const runAgent = vi.fn(async () => ({ text: 'nope', toolTrace: [] }));
+    vi.resetModules();
+    mockMcpEmpty();
+    const createRunner = vi.fn(() => ({ get: vi.fn(), close: vi.fn() }));
+    vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
+      createVercelSandboxHttpRunner: createRunner,
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: BUILTIN_HTTP_INSTANCE_REQUIRED_ERROR,
+    });
+    expect(createRunner).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
   });
 
   it('tenancy off, builtin off, no DO → exact 503 string (host chat fallback)', async () => {
@@ -714,7 +786,7 @@ describe('POST /api/agent', () => {
     );
   });
 
-  it('tenancy on, grant deny, builtin on → not 403; http tools only', async () => {
+  it('tenancy on, grant deny, builtin on + running HTTP instance → not 403; http tools only', async () => {
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
     process.env.DATABASE_URL = 'postgres://localhost/db';
     process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
@@ -744,6 +816,7 @@ describe('POST /api/agent', () => {
     }));
     mockByokOk();
     mockGithubToken();
+    mockHttpInstance({ status: 'running', vercelName: 'inv-http-user1' });
     vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
       resolveAgentSandbox: vi.fn(async () => ({
         ok: false as const,
@@ -762,11 +835,12 @@ describe('POST /api/agent', () => {
         skipped: [],
       })),
     }));
+    const createRunner = vi.fn(() => ({
+      get: vi.fn(),
+      close: closeHttp,
+    }));
     vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
-      createVercelSandboxHttpRunner: vi.fn(() => ({
-        get: vi.fn(),
-        close: closeHttp,
-      })),
+      createVercelSandboxHttpRunner: createRunner,
     }));
     vi.doMock('../../../lib/agent/httpFetchTools', () => ({
       createHttpFetchTools: vi.fn(() => ({
@@ -789,8 +863,278 @@ describe('POST /api/agent', () => {
     expect(arg).toBeDefined();
     expect(arg!.skipSandboxTools).toBe(true);
     expect(arg!.extraTools?.http_get).toBeTruthy();
+    expect(createRunner).toHaveBeenCalledWith({ name: 'inv-http-user1' });
     expect(closeHttp).toHaveBeenCalled();
     expect(closeMcp).toHaveBeenCalled();
+  });
+
+  it('tenancy on, grant deny, builtin on, no HTTP instance → hard 403 grant', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+
+    const runAgent = vi.fn(async () => ({ text: 'nope', toolTrace: [] }));
+    vi.resetModules();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1', email: 'a@b.c' },
+      })),
+    }));
+    mockByokOk();
+    mockGithubToken();
+    mockHttpInstance(null);
+    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: false as const,
+        response: Response.json(
+          { error: SANDBOX_FORBIDDEN_ERROR },
+          { status: 403 },
+        ),
+      })),
+    }));
+    mockMcpEmpty();
+    const createRunner = vi.fn(() => ({ get: vi.fn(), close: vi.fn() }));
+    vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
+      createVercelSandboxHttpRunner: createRunner,
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SANDBOX_FORBIDDEN_ERROR });
+    expect(createRunner).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+
+  it('tenancy on, FS ok, stopped HTTP instance → omit http tools; runAgent still runs', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+
+    const closeHttp = vi.fn(async () => {});
+    type RunArg = {
+      skipSandboxTools?: boolean;
+      sandboxClient?: unknown;
+      extraTools?: Record<string, unknown>;
+      prompt: string;
+    };
+    const runAgent = vi.fn(async (_arg: RunArg) => ({
+      text: 'fs only',
+      toolTrace: [],
+    }));
+    const sandboxClient = { close: vi.fn(async () => {}) };
+
+    vi.resetModules();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1', email: 'a@b.c' },
+      })),
+    }));
+    mockByokOk();
+    mockGithubToken();
+    mockHttpInstance({ status: 'stopped', vercelName: 'inv-http-stopped' });
+    mockMcpEmpty();
+    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          client: sandboxClient,
+          permissions: { canRead: true, canWrite: true },
+          secrets: [] as string[],
+          sandboxId: 'sbx-1',
+          tenantId: 'ten-1',
+          baseUrl: 'http://sandbox.example',
+        },
+      })),
+    }));
+    const createRunner = vi.fn(() => ({
+      get: vi.fn(),
+      close: closeHttp,
+    }));
+    vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
+      createVercelSandboxHttpRunner: createRunner,
+    }));
+    vi.doMock('../../../lib/agent/httpFetchTools', () => ({
+      createHttpFetchTools: vi.fn(() => ({
+        http_get: { description: 'get', execute: async () => 'ok' },
+      })),
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    const arg = runAgent.mock.calls[0]?.[0];
+    expect(arg).toBeDefined();
+    expect(arg!.sandboxClient).toBe(sandboxClient);
+    expect(arg!.extraTools?.http_get).toBeUndefined();
+    expect(createRunner).not.toHaveBeenCalled();
+    expect(closeHttp).not.toHaveBeenCalled();
+  });
+
+  it('tenancy on, FS ok, error HTTP status → omit http tools; runAgent still runs', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+
+    type RunArg = {
+      sandboxClient?: unknown;
+      extraTools?: Record<string, unknown>;
+    };
+    const runAgent = vi.fn(async (_arg: RunArg) => ({
+      text: 'fs only',
+      toolTrace: [],
+    }));
+    const sandboxClient = { close: vi.fn(async () => {}) };
+
+    vi.resetModules();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1', email: 'a@b.c' },
+      })),
+    }));
+    mockByokOk();
+    mockGithubToken();
+    mockHttpInstance({ status: 'error', vercelName: 'inv-http-err' });
+    mockMcpEmpty();
+    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          client: sandboxClient,
+          permissions: { canRead: true, canWrite: true },
+          secrets: [] as string[],
+          sandboxId: 'sbx-1',
+          tenantId: 'ten-1',
+          baseUrl: 'http://sandbox.example',
+        },
+      })),
+    }));
+    const createRunner = vi.fn(() => ({ get: vi.fn(), close: vi.fn() }));
+    vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
+      createVercelSandboxHttpRunner: createRunner,
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(runAgent).toHaveBeenCalled();
+    const arg = runAgent.mock.calls[0]?.[0];
+    expect(arg!.sandboxClient).toBe(sandboxClient);
+    expect(arg!.extraTools?.http_get).toBeUndefined();
+    expect(createRunner).not.toHaveBeenCalled();
+  });
+
+  it('tenancy on, FS ok, running HTTP instance → http tools + FS; attach name from instance', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+
+    const closeHttp = vi.fn(async () => {});
+    type RunArg = {
+      sandboxClient?: unknown;
+      extraTools?: Record<string, unknown>;
+    };
+    const runAgent = vi.fn(async (_arg: RunArg) => ({
+      text: 'fs+http',
+      toolTrace: [],
+    }));
+    const sandboxClient = { close: vi.fn(async () => {}) };
+
+    vi.resetModules();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1', email: 'a@b.c' },
+      })),
+    }));
+    mockByokOk();
+    mockGithubToken();
+    mockHttpInstance({ status: 'running', vercelName: '  inv-http-both  ' });
+    mockMcpEmpty();
+    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          client: sandboxClient,
+          permissions: { canRead: true, canWrite: true },
+          secrets: [] as string[],
+          sandboxId: 'sbx-1',
+          tenantId: 'ten-1',
+          baseUrl: 'http://sandbox.example',
+        },
+      })),
+    }));
+    const createRunner = vi.fn(() => ({
+      get: vi.fn(),
+      close: closeHttp,
+    }));
+    vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
+      createVercelSandboxHttpRunner: createRunner,
+    }));
+    vi.doMock('../../../lib/agent/httpFetchTools', () => ({
+      createHttpFetchTools: vi.fn(() => ({
+        http_get: { description: 'get', execute: async () => 'ok' },
+      })),
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(runAgent).toHaveBeenCalled();
+    const arg = runAgent.mock.calls[0]?.[0];
+    expect(arg!.sandboxClient).toBe(sandboxClient);
+    expect(arg!.extraTools?.http_get).toBeTruthy();
+    expect(createRunner).toHaveBeenCalledWith({ name: 'inv-http-both' });
+    expect(closeHttp).toHaveBeenCalled();
   });
 
   it('finally closes http runner when runAgent throws', async () => {
@@ -799,6 +1143,7 @@ describe('POST /api/agent', () => {
     process.env.SANDBOX_URL = 'http://127.0.0.1:8787';
     process.env.SANDBOX_TOKEN = 'tok';
     process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+    process.env.BUILTIN_HTTP_INSTANCE_NAME = 'inv-http-host';
 
     const closeHttp = vi.fn(async () => {});
     vi.resetModules();

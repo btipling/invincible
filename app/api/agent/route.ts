@@ -29,6 +29,8 @@ import { resolveBuiltinHttpConfig } from '../../../lib/agent/builtinHttpConfig';
 import { createHttpFetchTools } from '../../../lib/agent/httpFetchTools';
 import { createVercelSandboxHttpRunner } from '../../../lib/agent/vercelSandboxHttpRunner';
 import type { HttpFetchRunner } from '../../../lib/agent/httpFetchTypes';
+import { loadInstance } from '../../../lib/tenancy/userSandboxInstance';
+import { BUILTIN_HTTP_INSTANCE_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
@@ -41,7 +43,7 @@ function isAbortError(err: unknown): boolean {
 
 /**
  * Release runners: hop-B http sandbox, MCP sessions, and FS SandboxClient.
- * Attach FS client close = extendTimeout + drop handle (never stop).
+ * Attach FS/HTTP close = extendTimeout + drop handle (never stop).
  * Called from JSON finally, stream start finally, and stream cancel.
  */
 async function closeRunners(
@@ -82,7 +84,8 @@ async function closeRunners(
  *
  * Tenancy on: DB-resolved sandbox + grants + request-scoped BYOK + user MCP tools.
  * Tenancy off: env SANDBOX_* + env model (no BYOK, no MCP).
- * Builtin HTTP: BUILTIN_HTTP_FETCH=sandbox enables http_get without requiring DO workspace.
+ * Builtin HTTP: BUILTIN_HTTP_FETCH=sandbox + attach name (Settings HTTP instance or
+ * BUILTIN_HTTP_INSTANCE_NAME when tenancy off); never create on the hot path.
  */
 export async function POST(req: Request): Promise<Response> {
   const sessionGate = await requireSessionUser();
@@ -134,8 +137,12 @@ export async function POST(req: Request): Promise<Response> {
       signal: req.signal,
       initialCwd: parsed.cwd,
     };
-    /** Instance soft-continue 403 — return only if no non-FS tools assemble. */
-    let deferredSoftResponse: Response | undefined;
+    /**
+     * When resolve fails but we soft-path (softContinue or builtin HTTP),
+     * keep the 403 body and return it only if no tools assemble later.
+     */
+    let deferredNoFsResponse: Response | undefined;
+    let tenancyUserId: string | undefined;
 
     if (tenancyOn) {
       const userId = sessionGate.user?.id;
@@ -143,6 +150,7 @@ export async function POST(req: Request): Promise<Response> {
         const { AUTH_REQUIRED_ERROR } = await import('../../../lib/tenancy/errors');
         return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
       }
+      tenancyUserId = userId;
 
       const byok = await resolveByokForRequest(userId, parsed.modelId);
       if (!byok.ok) {
@@ -169,15 +177,13 @@ export async function POST(req: Request): Promise<Response> {
       // body and only proceed if MCP and/or builtin HTTP supply tools later.
       if (!resolved.ok) {
         if (resolved.softContinue || builtinHttp.enabled) {
-          // Soft-continue candidate: no FS tools; MCP + builtin HTTP may still run.
+          // Soft path: no FS tools; MCP + builtin HTTP may still run.
           runParams = {
             ...runParams,
             skipSandboxTools: true,
             secrets: [...byok.secretsToRedact, ...ghSecrets],
           };
-          if (resolved.softContinue) {
-            deferredSoftResponse = resolved.response;
-          }
+          deferredNoFsResponse = resolved.response;
         } else {
           // Hard 403: grant/membership/selection without alternate soft path.
           return resolved.response;
@@ -225,29 +231,57 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     if (builtinHttp.enabled) {
-      httpRunner = createVercelSandboxHttpRunner({
-        sandboxTimeoutMs: builtinHttp.sandboxTimeoutMs,
-      });
-      const httpTools = createHttpFetchTools({
-        runner: httpRunner,
-        secrets: runParams.secrets,
-        signal: req.signal,
-        maxBytes: builtinHttp.maxBytes,
-        timeoutMs: builtinHttp.timeoutMs,
-      });
-      extraTools = { ...extraTools, ...httpTools };
+      let httpAttachName: string | undefined;
+
+      if (tenancyOn) {
+        // Settings HTTP/curl instance — omit tools when missing/stopped/error.
+        if (tenancyUserId) {
+          const loaded = await loadInstance(tenancyUserId, 'http');
+          if (
+            loaded.ok &&
+            loaded.value &&
+            loaded.value.status === 'running' &&
+            loaded.value.vercelName?.trim()
+          ) {
+            httpAttachName = loaded.value.vercelName.trim();
+          }
+        }
+      } else {
+        // Tenancy off: host env name required — never create.
+        const envName = builtinHttp.instanceNameTenancyOff;
+        if (!envName) {
+          return Response.json(
+            { error: BUILTIN_HTTP_INSTANCE_REQUIRED_ERROR },
+            { status: 503 },
+          );
+        }
+        httpAttachName = envName;
+      }
+
+      if (httpAttachName) {
+        httpRunner = createVercelSandboxHttpRunner({
+          name: httpAttachName,
+        });
+        const httpTools = createHttpFetchTools({
+          runner: httpRunner,
+          secrets: runParams.secrets,
+          signal: req.signal,
+          maxBytes: builtinHttp.maxBytes,
+          timeoutMs: builtinHttp.timeoutMs,
+        });
+        extraTools = { ...extraTools, ...httpTools };
+      }
     }
 
     runParams = { ...runParams, extraTools };
 
-    // Parent #298: soft-continue only when HTTP±MCP can still run the turn.
-    // Empty tool set → surface locked Workspace guidance (not runAgent 502).
+    // Soft path only when non-FS tools exist; else return resolve 403 body.
     if (
-      deferredSoftResponse &&
+      deferredNoFsResponse &&
       !sandboxClient &&
       Object.keys(extraTools).length === 0
     ) {
-      return deferredSoftResponse;
+      return deferredNoFsResponse;
     }
 
     if (stream) {
