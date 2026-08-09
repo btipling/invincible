@@ -181,4 +181,30 @@ describe('userGithubToken', () => {
     if (!status.ok) throw new Error(status.error);
     expect(status.value).toEqual({ configured: false, updatedAt: null });
   });
+
+  it('status/decrypt treat tenant_id mismatch as unset', async () => {
+    await setUserGithubToken(userId, 'ghp_old_tenant', deps());
+
+    // Simulate membership move: another tenant becomes sole membership.
+    const [newTenant] = await db
+      .insert(schema.tenants)
+      .values({ slug: 'other', name: 'Other' })
+      .returning({ id: schema.tenants.id });
+    await db.delete(schema.tenantMembers).where(eq(schema.tenantMembers.userId, userId));
+    await db.insert(schema.tenantMembers).values({
+      tenantId: newTenant.id,
+      userId,
+      role: 'owner',
+    });
+
+    const status = await getUserGithubTokenStatus(userId, deps());
+    expect(status.ok).toBe(true);
+    if (!status.ok) throw new Error(status.error);
+    expect(status.value).toEqual({ configured: false, updatedAt: null });
+
+    const dec = await decryptUserGithubTokenForServer(userId, deps());
+    expect(dec.ok).toBe(true);
+    if (!dec.ok) throw new Error(dec.error);
+    expect(dec.value).toBeNull();
+  });
 });

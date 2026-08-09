@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = {
   title: 'Settings · Invincible',
-  description: 'User settings and MCP servers',
+  description: 'User settings — MCP servers and GitHub token',
 };
 
 export default function SettingsLayout({ children }: { children: ReactNode }) {

@@ -8,7 +8,7 @@
  * MCP / GitHub token rows) for the full re-encrypt so concurrent writers cannot write under a
  * discarded DEK. Authz is re-checked under the same lock.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   createDbConnection,
   providerSecrets,
@@ -98,6 +98,26 @@ function decryptTokenForRotate(
 function decryptProviderCredential(ciphertext: string, oldDek: Buffer): string {
   return decryptSecret(ciphertext, oldDek);
 }
+
+
+/** True when public.user_github_tokens exists (deploy-before-migrate safe). */
+async function userGithubTokensTableExists(
+  tx: {
+    execute: <T extends Record<string, unknown> = Record<string, unknown>>(
+      query: ReturnType<typeof sql>,
+    ) => Promise<unknown>;
+  },
+): Promise<boolean> {
+  const result = await tx.execute(
+    sql`select to_regclass('public.user_github_tokens') as reg`,
+  );
+  const rows = Array.isArray(result)
+    ? result
+    : ((result as { rows?: Array<{ reg?: string | null }> }).rows ?? []);
+  const reg = (rows[0] as { reg?: string | null } | undefined)?.reg;
+  return reg != null && String(reg).length > 0;
+}
+
 
 async function rotateWithDb(
   db: Db,
@@ -246,29 +266,33 @@ async function rotateWithDb(
       }
 
       // GitHub PATs: DEK-only; skip null ciphertext (cleared / unset).
-      const ghRows = await tx
-        .select({
-          userId: userGithubTokens.userId,
-          tokenCiphertext: userGithubTokens.tokenCiphertext,
-        })
-        .from(userGithubTokens)
-        .where(eq(userGithubTokens.tenantId, tenantId))
-        .for('update');
-
-      for (const gh of ghRows) {
-        if (!gh.tokenCiphertext) {
-          continue;
-        }
-        const plain = decryptProviderCredential(gh.tokenCiphertext, oldDek);
-        const nextCt = encryptSecret(plain, newDek);
-        await tx
-          .update(userGithubTokens)
-          .set({
-            tokenCiphertext: nextCt,
-            tokenKekVersion: nextVersion,
-            updatedAt: new Date(),
+      // Soft-skip when migration 0006 not applied yet so deploy-before-migrate
+      // does not abort rotate for sandboxes / provider secrets / MCP.
+      if (await userGithubTokensTableExists(tx)) {
+        const ghRows = await tx
+          .select({
+            userId: userGithubTokens.userId,
+            tokenCiphertext: userGithubTokens.tokenCiphertext,
           })
-          .where(eq(userGithubTokens.userId, gh.userId));
+          .from(userGithubTokens)
+          .where(eq(userGithubTokens.tenantId, tenantId))
+          .for('update');
+
+        for (const gh of ghRows) {
+          if (!gh.tokenCiphertext) {
+            continue;
+          }
+          const plain = decryptProviderCredential(gh.tokenCiphertext, oldDek);
+          const nextCt = encryptSecret(plain, newDek);
+          await tx
+            .update(userGithubTokens)
+            .set({
+              tokenCiphertext: nextCt,
+              tokenKekVersion: nextVersion,
+              updatedAt: new Date(),
+            })
+            .where(eq(userGithubTokens.userId, gh.userId));
+        }
       }
 
       await tx

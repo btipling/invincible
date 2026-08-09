@@ -129,6 +129,12 @@ export async function setUserGithubToken(
       return await db.transaction(async (tx) => {
         // Lock order matches rotateTenantDek: tenant DEK first, then token row.
         const dek = await ensureTenantDek(tid.value, { ...deps, db, tx });
+        await tx
+          .select({ userId: userGithubTokens.userId })
+          .from(userGithubTokens)
+          .where(eq(userGithubTokens.userId, uid))
+          .for('update')
+          .limit(1);
         const enc = await encryptTenantSecret(tid.value, validated.value, {
           ...deps,
           db,
@@ -259,6 +265,7 @@ export async function getUserGithubTokenStatus(
     return await withDb(deps, async (db) => {
       const rows = await db
         .select({
+          tenantId: userGithubTokens.tenantId,
           tokenCiphertext: userGithubTokens.tokenCiphertext,
           updatedAt: userGithubTokens.updatedAt,
         })
@@ -268,6 +275,13 @@ export async function getUserGithubTokenStatus(
 
       const row = rows[0];
       if (!row) {
+        return {
+          ok: true as const,
+          value: { configured: false, updatedAt: null },
+        };
+      }
+      // Stale row from a prior sole-membership tenant — treat as unset.
+      if (row.tenantId !== tid.value) {
         return {
           ok: true as const,
           value: { configured: false, updatedAt: null },
@@ -315,13 +329,19 @@ export async function decryptUserGithubTokenForServer(
     return await withDb(deps, async (db) => {
       const rows = await db
         .select({
+          tenantId: userGithubTokens.tenantId,
           tokenCiphertext: userGithubTokens.tokenCiphertext,
         })
         .from(userGithubTokens)
         .where(eq(userGithubTokens.userId, uid))
         .limit(1);
 
-      const ct = rows[0]?.tokenCiphertext?.trim() ?? '';
+      const row = rows[0];
+      if (!row || row.tenantId !== tid.value) {
+        // Missing row or tenant mismatch (membership moved) → unset for inject.
+        return { ok: true as const, value: null };
+      }
+      const ct = row.tokenCiphertext?.trim() ?? '';
       if (!ct) {
         return { ok: true as const, value: null };
       }
