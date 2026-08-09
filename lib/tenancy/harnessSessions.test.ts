@@ -89,7 +89,7 @@ describe('harnessSessions', () => {
   });
 
   it('rejects oversize message UTF-8 bytes', () => {
-    const text = 'é'.repeat(HARNESS_SESSION_MAX_MSG_BYTES); // 2 bytes each → over 4096
+    const text = 'é'.repeat(HARNESS_SESSION_MAX_MSG_BYTES); // 2 bytes each → over MAX_MSG_LEN
     expect(Buffer.byteLength(text, 'utf8')).toBeGreaterThan(HARNESS_SESSION_MAX_MSG_BYTES);
     const v = validateSessionSnapshot({
       id: 'sess_x',
@@ -196,6 +196,56 @@ describe('harnessSessions', () => {
 
     const rows = await db.select().from(schema.harnessSessions);
     expect(rows).toHaveLength(2);
+  });
+
+  it('LWW concurrent: older writer cannot clobber newer after race window', async () => {
+    const t0 = 1_700_000_000_000;
+    const newer = await putHarnessSession(
+      userId,
+      {
+        id: 'sess_new',
+        updatedAt: t0 + 200,
+        messages: [{ id: 'm_n', role: 'user', text: 'newer', at: t0 }],
+      },
+      deps(),
+    );
+    expect(newer.ok).toBe(true);
+
+    // Simulate a stale concurrent writer that already passed a soft pre-check at t0+100
+    // against a previous server value — atomic setWhere must still reject.
+    const stale = await putHarnessSession(
+      userId,
+      {
+        id: 'sess_stale_race',
+        updatedAt: t0 + 100,
+        messages: [{ id: 'm_s', role: 'user', text: 'stale-race', at: t0 }],
+      },
+      deps(),
+    );
+    expect(stale.ok).toBe(false);
+    if (stale.ok) throw new Error('expected conflict');
+    expect(stale.code).toBe('conflict');
+    expect(stale.value?.id).toBe('sess_new');
+    expect(stale.value?.messages[0]?.text).toBe('newer');
+
+    const got = await getHarnessSession(userId, deps());
+    expect(got.ok).toBe(true);
+    if (!got.ok) throw new Error(got.error);
+    expect(got.value.id).toBe('sess_new');
+    expect(got.value.messages[0]?.text).toBe('newer');
+  });
+
+  it('rejects non-integer / negative updatedAt', () => {
+    for (const updatedAt of [1.5, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const v = validateSessionSnapshot({
+        id: 'sess_x',
+        updatedAt,
+        messages: [],
+      });
+      expect(v.ok).toBe(false);
+      if (v.ok) throw new Error('expected fail');
+      expect(v.code).toBe('invalid_updated_at');
+    }
   });
 
   it('DELETE is idempotent', async () => {

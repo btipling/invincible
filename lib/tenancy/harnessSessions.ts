@@ -3,7 +3,7 @@
  * Server-only. One row per user; ownership always from session user id.
  * Never log full message bodies at info; never store secrets in messages.
  */
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import {
   createDbConnection,
   harnessSessions,
@@ -16,8 +16,8 @@ export const CLOUD_SESSION_DISABLED_CODE = 'CLOUD_SESSION_DISABLED';
 
 export const CLOUD_SESSION_DISABLED_ERROR = 'Cloud session sync is disabled.';
 
-/** Align with bridge MAX_MSG_LEN (UTF-8 bytes). */
-export const HARNESS_SESSION_MAX_MSG_BYTES = 4096;
+/** Align with bridge MAX_MSG_LEN (UTF-8 bytes) — native/harness/src/bridge.zig. */
+export const HARNESS_SESSION_MAX_MSG_BYTES = 262_144;
 
 /** Max messages stored per user session row. */
 export const HARNESS_SESSION_MAX_MESSAGES = 500;
@@ -99,7 +99,7 @@ function rowToSnapshot(row: {
 
 /**
  * Validate a client SessionSnapshot for PUT.
- * Caps: 500 messages, 4096 UTF-8 bytes per text, opaque id ≤128.
+ * Caps: 500 messages, 262144 UTF-8 bytes per text (bridge MAX_MSG_LEN), opaque id ≤128.
  */
 export function validateSessionSnapshot(
   body: unknown,
@@ -117,11 +117,16 @@ export function validateSessionSnapshot(
     };
   }
 
-  if (typeof o.updatedAt !== 'number' || !Number.isFinite(o.updatedAt)) {
+  if (
+    typeof o.updatedAt !== 'number' ||
+    !Number.isFinite(o.updatedAt) ||
+    !Number.isSafeInteger(o.updatedAt) ||
+    o.updatedAt < 0
+  ) {
     return {
       ok: false,
       code: 'invalid_updated_at',
-      error: 'updatedAt must be a finite number (epoch ms).',
+      error: 'updatedAt must be a non-negative safe integer (epoch ms).',
     };
   }
 
@@ -253,30 +258,10 @@ export async function putHarnessSession(
   }
   try {
     return await withDb(deps, async (db) => {
-      const existing = await db
-        .select({
-          snapshotId: harnessSessions.snapshotId,
-          updatedAt: harnessSessions.updatedAt,
-          messages: harnessSessions.messages,
-        })
-        .from(harnessSessions)
-        .where(eq(harnessSessions.userId, id))
-        .limit(1);
-
-      if (existing.length > 0) {
-        const server = rowToSnapshot(existing[0]);
-        if (snapshot.updatedAt < server.updatedAt) {
-          return {
-            ok: false,
-            code: 'conflict',
-            error: 'Server has a newer session.',
-            value: server,
-          };
-        }
-      }
-
       const updatedAt = new Date(snapshot.updatedAt);
-      await db
+      // Atomic LWW: only overwrite when incoming updatedAt >= stored (equal = idempotent).
+      // Avoids TOCTOU where concurrent older writers can clobber a newer row after a soft check.
+      const written = await db
         .insert(harnessSessions)
         .values({
           userId: id,
@@ -291,15 +276,40 @@ export async function putHarnessSession(
             updatedAt,
             messages: snapshot.messages,
           },
+          setWhere: sql`${harnessSessions.updatedAt} <= ${updatedAt}`,
+        })
+        .returning({
+          snapshotId: harnessSessions.snapshotId,
+          updatedAt: harnessSessions.updatedAt,
+          messages: harnessSessions.messages,
         });
 
+      if (written.length > 0) {
+        return { ok: true, value: rowToSnapshot(written[0]) };
+      }
+
+      const existing = await db
+        .select({
+          snapshotId: harnessSessions.snapshotId,
+          updatedAt: harnessSessions.updatedAt,
+          messages: harnessSessions.messages,
+        })
+        .from(harnessSessions)
+        .where(eq(harnessSessions.userId, id))
+        .limit(1);
+      if (existing.length === 0) {
+        // Should not happen after a no-op conflict update; treat as unavailable.
+        return {
+          ok: false,
+          code: 'unavailable',
+          error: 'Session store temporarily unavailable.',
+        };
+      }
       return {
-        ok: true,
-        value: {
-          id: snapshot.id,
-          updatedAt: snapshot.updatedAt,
-          messages: snapshot.messages,
-        },
+        ok: false,
+        code: 'conflict',
+        error: 'Server has a newer session.',
+        value: rowToSnapshot(existing[0]),
       };
     });
   } catch {

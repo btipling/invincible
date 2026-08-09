@@ -108,6 +108,31 @@ describe('/api/session', () => {
     expect(body.messages).toHaveLength(1);
   });
 
+  it('PUT Content-Length over body cap → 413 without full parse', async () => {
+    vi.resetModules();
+    mockTenancyOn();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true,
+        user: { id: 'u1' },
+      })),
+    }));
+    const { PUT } = await import('./route');
+    const { HARNESS_SESSION_MAX_BODY_BYTES } = await import(
+      '../../../lib/tenancy/harnessSessions'
+    );
+    const res = await PUT(
+      new Request('http://localhost/api/session', {
+        method: 'PUT',
+        headers: { 'content-length': String(HARNESS_SESSION_MAX_BODY_BYTES + 1) },
+        body: '{}',
+      }),
+    );
+    expect(res.status).toBe(413);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe('BODY_TOO_LARGE');
+  });
+
   it('PUT oversize message bytes → 400', async () => {
     vi.resetModules();
     mockTenancyOn();
@@ -126,7 +151,10 @@ describe('/api/session', () => {
         putHarnessSession: vi.fn(),
       };
     });
-    const text = 'x'.repeat(4097);
+    const { HARNESS_SESSION_MAX_MSG_BYTES } = await import(
+      '../../../lib/tenancy/harnessSessions'
+    );
+    const text = 'x'.repeat(HARNESS_SESSION_MAX_MSG_BYTES + 1);
     const { PUT } = await import('./route');
     const res = await PUT(
       new Request('http://localhost/api/session', {

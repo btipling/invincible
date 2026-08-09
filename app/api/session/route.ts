@@ -70,6 +70,17 @@ export async function PUT(req: Request): Promise<Response> {
   const gate = await requireAuthedUserId();
   if (!gate.ok) return gate.response;
 
+  const contentLength = req.headers.get('content-length');
+  if (contentLength !== null) {
+    const n = Number(contentLength);
+    if (Number.isFinite(n) && n > HARNESS_SESSION_MAX_BODY_BYTES) {
+      return Response.json(
+        { error: 'Request body too large.', code: 'BODY_TOO_LARGE' },
+        { status: 413 },
+      );
+    }
+  }
+
   const raw = await req.text();
   if (Buffer.byteLength(raw, 'utf8') > HARNESS_SESSION_MAX_BODY_BYTES) {
     return Response.json(
