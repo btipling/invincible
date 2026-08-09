@@ -123,6 +123,24 @@ export function isNotFoundPlatformError(err: unknown): boolean {
   return false;
 }
 
+/** Postgres unique_violation (23505) and common driver message shapes. */
+function isUniqueViolation(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let i = 0; i < 5 && cur != null; i++) {
+    if (typeof cur === 'object') {
+      const o = cur as { code?: unknown; message?: unknown; cause?: unknown };
+      if (o.code === '23505') return true;
+      const msg = typeof o.message === 'string' ? o.message : '';
+      if (/unique|duplicate/i.test(msg)) return true;
+      cur = o.cause;
+      continue;
+    }
+    if (typeof cur === 'string' && /unique|duplicate/i.test(cur)) return true;
+    break;
+  }
+  return false;
+}
+
 function mapPlatformStatus(status: string | undefined): UserSandboxStatus {
   const s = (status ?? '').toLowerCase();
   if (s === 'running' || s === 'pending' || s === 'snapshotting') return 'running';
@@ -364,6 +382,28 @@ export async function createWorkspace(
         membership.tenantId,
         uid,
       );
+      // Claim PK/name first so concurrent Creates cannot both platform-create.
+      let row: UserSandboxInstance;
+      try {
+        row = await insertRunning(db, {
+          userId: uid,
+          purpose: 'workspace',
+          tenantId: membership.tenantId,
+          catalogSandboxId: catalog.value.catalogSandboxId,
+          vercelName,
+          image: catalog.value.image,
+        });
+      } catch (err) {
+        if (isUniqueViolation(err)) {
+          return {
+            ok: false,
+            code: 'already_exists',
+            error: 'workspace instance already exists',
+          };
+        }
+        throw err;
+      }
+
       const api = await resolveApi(deps);
       try {
         await api.create({
@@ -374,18 +414,17 @@ export async function createWorkspace(
           networkPolicy: 'allow-all',
         });
       } catch (err) {
+        await db
+          .delete(userSandboxInstances)
+          .where(
+            and(
+              eq(userSandboxInstances.userId, uid),
+              eq(userSandboxInstances.purpose, 'workspace'),
+            ),
+          );
         const msg = err instanceof Error ? err.message : 'Sandbox.create failed';
         return { ok: false, code: 'platform', error: msg.slice(0, 500) };
       }
-
-      const row = await insertRunning(db, {
-        userId: uid,
-        purpose: 'workspace',
-        tenantId: membership.tenantId,
-        catalogSandboxId: catalog.value.catalogSandboxId,
-        vercelName,
-        image: catalog.value.image,
-      });
       return { ok: true, value: row };
     });
   } catch (err) {
@@ -431,6 +470,28 @@ export async function createHttp(
         uid,
       );
       const image = USER_SANDBOX_HTTP_IMAGE;
+      // Claim PK/name first so concurrent Creates cannot both platform-create.
+      let row: UserSandboxInstance;
+      try {
+        row = await insertRunning(db, {
+          userId: uid,
+          purpose: 'http',
+          tenantId: membership.tenantId,
+          catalogSandboxId: null,
+          vercelName,
+          image,
+        });
+      } catch (err) {
+        if (isUniqueViolation(err)) {
+          return {
+            ok: false,
+            code: 'already_exists',
+            error: 'http instance already exists',
+          };
+        }
+        throw err;
+      }
+
       const api = await resolveApi(deps);
       try {
         await api.create({
@@ -441,18 +502,17 @@ export async function createHttp(
           networkPolicy: 'allow-all',
         });
       } catch (err) {
+        await db
+          .delete(userSandboxInstances)
+          .where(
+            and(
+              eq(userSandboxInstances.userId, uid),
+              eq(userSandboxInstances.purpose, 'http'),
+            ),
+          );
         const msg = err instanceof Error ? err.message : 'Sandbox.create failed';
         return { ok: false, code: 'platform', error: msg.slice(0, 500) };
       }
-
-      const row = await insertRunning(db, {
-        userId: uid,
-        purpose: 'http',
-        tenantId: membership.tenantId,
-        catalogSandboxId: null,
-        vercelName,
-        image,
-      });
       return { ok: true, value: row };
     });
   } catch (err) {
@@ -628,11 +688,20 @@ export async function destroyInstance(
         }
         try {
           await sb.delete();
-        } catch {
-          // ignore delete errors
+        } catch (err) {
+          // not_found: already gone — safe to drop row. Other errors: keep row for retry.
+          if (!isNotFoundPlatformError(err)) {
+            const msg =
+              err instanceof Error ? err.message : 'Sandbox.delete failed';
+            return { ok: false, code: 'platform', error: msg.slice(0, 500) };
+          }
         }
-      } catch {
-        // get failed (including not_found) — still remove row
+      } catch (err) {
+        // only remove row when platform says gone; control-plane blips keep the row
+        if (!isNotFoundPlatformError(err)) {
+          const msg = err instanceof Error ? err.message : 'Sandbox.get failed';
+          return { ok: false, code: 'platform', error: msg.slice(0, 500) };
+        }
       }
 
       await db

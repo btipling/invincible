@@ -452,4 +452,107 @@ describe('userSandboxInstance', () => {
     expect(r.value.status).toBe('error');
     expect(fake.creates).toHaveLength(0);
   });
+
+  it('destroy keeps row when get fails non-not_found', async () => {
+    const name = buildUserSandboxVercelName('http', tenantId, userId);
+    await db.insert(schema.userSandboxInstances).values({
+      userId,
+      purpose: 'http',
+      tenantId,
+      catalogSandboxId: null,
+      vercelName: name,
+      image: USER_SANDBOX_HTTP_IMAGE,
+      status: 'running',
+    });
+    const fake = makeFakeApi({
+      getImpl: async () => {
+        throw new Error('upstream 503');
+      },
+    });
+    const d = await destroyInstance(userId, 'http', {
+      db: depsDb(),
+      sandboxApi: fake.api,
+    });
+    expect(d.ok).toBe(false);
+    if (d.ok) return;
+    expect(d.code).toBe('platform');
+    const load = await loadInstance(userId, 'http', { db: depsDb() });
+    expect(load.ok).toBe(true);
+    if (!load.ok) return;
+    expect(load.value?.vercelName).toBe(name);
+    expect(fake.deletes).toHaveLength(0);
+  });
+
+  it('destroy keeps row when delete fails non-not_found', async () => {
+    const fake = makeFakeApi({
+      getImpl: async (n) => ({
+        name: n,
+        status: 'running',
+        stop: async () => {
+          fake.stops.push(n);
+        },
+        delete: async () => {
+          throw new Error('delete denied');
+        },
+        extendTimeout: async () => {},
+      }),
+    });
+    const created = await createHttp(userId, { db: depsDb(), sandboxApi: fake.api });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    // After create, getImpl still overrides get — destroy will hit delete denied
+    const d = await destroyInstance(userId, 'http', {
+      db: depsDb(),
+      sandboxApi: fake.api,
+    });
+    expect(d.ok).toBe(false);
+    if (d.ok) return;
+    expect(d.code).toBe('platform');
+    const load = await loadInstance(userId, 'http', { db: depsDb() });
+    expect(load.ok).toBe(true);
+    if (!load.ok) return;
+    expect(load.value).not.toBeNull();
+  });
+
+  it('create rolls back claim when platform create fails', async () => {
+    const failing = makeFakeApi();
+    failing.api.create = async () => {
+      throw new Error('quota exceeded');
+    };
+    const r = await createHttp(userId, {
+      db: depsDb(),
+      sandboxApi: failing.api,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('platform');
+    expect(failing.creates).toHaveLength(0);
+    const load = await loadInstance(userId, 'http', { db: depsDb() });
+    expect(load.ok).toBe(true);
+    if (!load.ok) return;
+    expect(load.value).toBeNull();
+  });
+
+  it('destroy not_found still removes row', async () => {
+    const name = buildUserSandboxVercelName('workspace', tenantId, userId);
+    await db.insert(schema.userSandboxInstances).values({
+      userId,
+      purpose: 'workspace',
+      tenantId,
+      catalogSandboxId: catalogVercelId,
+      vercelName: name,
+      image: 'vercel/sandbox/node:24',
+      status: 'error',
+    });
+    const fake = makeFakeApi(); // get → not_found (not in alive)
+    const d = await destroyInstance(userId, 'workspace', {
+      db: depsDb(),
+      sandboxApi: fake.api,
+    });
+    expect(d.ok).toBe(true);
+    const load = await loadInstance(userId, 'workspace', { db: depsDb() });
+    expect(load.ok).toBe(true);
+    if (!load.ok) return;
+    expect(load.value).toBeNull();
+  });
 });
