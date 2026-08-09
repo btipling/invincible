@@ -10,6 +10,7 @@ const palette = @import("palette.zig");
 const build_options = @import("build_options");
 const rich = @import("rich/root.zig");
 const mixed_text = @import("rich/mixed_text.zig");
+const composer_text = @import("composer_text.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
@@ -42,6 +43,10 @@ const CONTENT_GREW_EPS: f32 = 1.0;
 const COMPOSER_CHROME_MIN: f32 = 2 * TOUCH_H + 20;
 /// Chrome box top padding (Options.padding.y) — outside min_size_content.
 const COMPOSER_PAD_Y: f32 = 4;
+/// Multi-line composer visible-height cap (px). Stays inside the reserved
+/// bottom band so the absolute-rect transcript height is unchanged; taller
+/// pasted content scrolls internally (plan #334 / #323).
+const COMPOSER_INPUT_MAX_H: f32 = 52;
 /// Vertical margins between header→scroll and scroll→chrome (Options.margin.h).
 const BAND_GAP: f32 = 6;
 /// Absolute floor so a short canvas still has a scroll band.
@@ -129,7 +134,16 @@ fn clearPrompt() void {
 }
 
 fn submitText(text: []const u8) void {
-    bridge.queueSubmitFromUi(text);
+    // Normalize CRLF/lone-CR -> LF and clamp to SUBMIT_CAP at a codepoint
+    // boundary (composer_text.zig). Blank/whitespace after normalization is
+    // rejected, preserving the existing empty-send guard. In-place into
+    // prompt_buf is safe: normalized length never exceeds the input consumed.
+    const norm = composer_text.normalizeInto(text, prompt_buf[0..], bridge.SUBMIT_CAP);
+    if (norm.is_blank) {
+        clearPrompt();
+        return;
+    }
+    bridge.queueSubmitFromUi(norm.text);
     clearPrompt();
 }
 
@@ -304,7 +318,7 @@ pub fn frame() !void {
                 );
             } else {
                 tl.addText(
-                    "Start a conversation\n\nType below, then Enter or Send.\nUse Next in the header to cycle models.\n",
+                    "Start a conversation\n\nType below, then Ctrl+Enter or Send.\nUse Next in the header to cycle models.\n",
                     .{},
                 );
             }
@@ -444,14 +458,43 @@ pub fn frame() !void {
         });
         defer chrome.deinit();
 
+        // Multi-line composer. Plain Enter inserts a newline; the send chord is
+        // Ctrl+Enter (Cmd+Enter on mac). dvui's web backend reports modifier
+        // bits on keydown, and a multiline `textEntry` ignores modifiers on
+        // Enter (it consumes Enter and inserts '\n'), so we detect the chord
+        // here in the pending event list and mark it handled — which also stops
+        // the widget from inserting a stray newline for the submit keystroke.
+        var composer_submit = false;
+        if (!busy) {
+            const es = dvui.events();
+            for (0..es.len) |idx| {
+                const e = &es[idx];
+                if (e.handled) continue;
+                const ke = switch (e.evt) {
+                    .key => |k| k,
+                    else => continue,
+                };
+                if (ke.code == .enter and (ke.mod.control() or ke.mod.command())) {
+                    // A multiline textEntry consumes Enter and inserts '\n',
+                    // ignoring the modifier (verified against pinned dvui), so
+                    // mark EVERY enter-chord event (.down and .repeat) handled
+                    // to stop it injecting a stray newline for the submit
+                    // stroke. Submit once per gesture, on the initial .down.
+                    e.handled = true;
+                    if (ke.action == .down) composer_submit = true;
+                }
+            }
+        }
         {
             var te = dvui.textEntry(@src(), .{
                 .text = .{ .buffer = prompt_buf[0..] },
                 .placeholder = "Message the model…",
-                .multiline = false,
+                .multiline = true,
+                .break_lines = true,
             }, .{
                 .expand = .horizontal,
                 .min_size_content = .{ .w = 120, .h = TOUCH_H },
+                .max_size_content = .{ .w = 0, .h = COMPOSER_INPUT_MAX_H },
                 .color_fill = palette.teal_surface,
                 .color_text = palette.teal_text,
                 .color_border = if (busy) palette.teal_border else palette.teal_accent,
@@ -462,9 +505,8 @@ pub fn frame() !void {
                 dvui.focusWidget(te.data().id, null, null);
                 want_composer_focus = false;
             }
-            const enter = te.enter_pressed and !busy;
             te.deinit();
-            if (enter and typed.len > 0) {
+            if (composer_submit and typed.len > 0) {
                 submitText(typed);
                 typed = prompt_buf[0..0];
                 want_composer_focus = true;
@@ -523,7 +565,7 @@ pub fn frame() !void {
                 if (busy) {
                     tl.addText("busy… Stop to cancel", .{});
                 } else {
-                    tl.addText("Enter to send", .{});
+                    tl.addText("Ctrl/Cmd+Enter to send", .{});
                 }
                 tl.deinit();
             }

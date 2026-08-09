@@ -136,7 +136,7 @@ pub fn build(b: *std.Build) void {
     test_parse.dependOn(&run_parse_tests.step);
 
     // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
-    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist)");
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text");
     test_rich.dependOn(&run_parse_tests.step);
 
     const cache_tests = b.addTest(.{
@@ -149,6 +149,20 @@ pub fn build(b: *std.Build) void {
     });
     cache_tests.root_module.addImport("zmd", zmd_host.module("zmd"));
     test_rich.dependOn(&b.addRunArtifact(cache_tests).step);
+
+    // Host unit tests for composer_text.zig (#323 / plan #334): CRLF->LF
+    // normalization + SUBMIT_CAP clamp at UTF-8 boundaries. Pure, no dvui.
+    {
+        const composer_text_tests = b.addTest(.{
+            .name = "composer_text",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/composer_text.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(composer_text_tests).step);
+    }
 
     const link_tests = b.addTest(.{
         .name = "rich-link-url",

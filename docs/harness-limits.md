@@ -26,7 +26,8 @@ See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 
 | Chord | Action |
 |-------|--------|
-| **Enter** (canvas composer focused) | Send prompt (single-line entry) |
+| **Enter** (composer focused) | Insert a newline (composer is multi-line) |
+| **Ctrl+Enter** / **Cmd+Enter** (composer focused) | Send prompt |
 | Tab | DOM nav / Clear (canvas uses pointer + dvui focus) |
 | Composer focus | Requested on ready and after each send |
 
@@ -92,7 +93,7 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 | Clipboard payload | **Message source** UTF-8 as stored in the Wasm ring (markdown as produced) — not re-serialized paint colors or “… N more” chrome |
 | Drag-select | Best-effort **within a single** `textLayout` only (rich MD is many widgets per body). Whole-reply drag-select is not the product path |
 | Cross-message selection | Not supported |
-| Composer paste | Supported via dvui text entry when the composer is focused. Composer is **single-line** — pasted newlines may flatten |
+| Composer paste | Supported via dvui text entry when the composer is focused. Composer is **multi-line** — pasted newlines are preserved; submission is normalized (CRLF → LF) and clamped to the prompt submit cap (`SUBMIT_CAP`). Leading whitespace / blank first lines in a paste are **preserved** on submit (not stripped); only a wholly blank/whitespace prompt is rejected |
 | Mobile / touch | **Copy** is the supported path; multi-block drag-select on canvas is unreliable |
 | Secure context | System clipboard write needs https (or localhost); silent no-op possible if the browser blocks clipboard |
 
