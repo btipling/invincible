@@ -748,7 +748,9 @@ export async function loadInstance(
 }
 
 /**
- * Probe platform and reconcile DB status (Settings load / Start support).
+ * Probe platform and reconcile DB status (Settings load).
+ * Uses resume:false so a Settings page view never wakes a stopped VM —
+ * Start is the only path that resumes (get + resume:true).
  */
 export async function reconcileStatus(
   userId: string,
@@ -772,7 +774,8 @@ export async function reconcileStatus(
 
       const api = await resolveApi(deps);
       try {
-        const sb = await api.get({ name: row.vercelName, resume: true });
+        // Status probe only — do not resume (would undo Stop / idle stop).
+        const sb = await api.get({ name: row.vercelName, resume: false });
         const status = mapPlatformStatus(sb.status);
         const [updated] = await db
           .update(userSandboxInstances)
