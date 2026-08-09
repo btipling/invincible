@@ -24,6 +24,7 @@ async function applyMigrations(client: PGlite) {
     '0003_provider_secrets.sql',
     '0004_user_mcp_servers.sql',
     '0005_sandbox_backend.sql',
+    '0006_user_github_tokens.sql',
   ]) {
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
     for (const stmt of sql
@@ -60,6 +61,7 @@ describe('rotateTenantDek', () => {
   });
 
   beforeEach(async () => {
+    await db.delete(schema.userGithubTokens);
     await db.delete(schema.userMcpServers);
     await db.delete(schema.providerSecretGrants);
     await db.delete(schema.providerSecretModels);
@@ -198,9 +200,16 @@ describe('rotateTenantDek', () => {
         enabled: true,
       },
     ]);
+
+    await db.insert(schema.userGithubTokens).values({
+      userId: ownerId,
+      tenantId,
+      tokenCiphertext: encryptSecret('ghp_pat_rotate_test', dek),
+      tokenKekVersion: 1,
+    });
   });
 
-  it('owner rotates: re-encrypts sandboxes + provider_secrets + MCP; old DEK fails', async () => {
+  it('owner rotates: re-encrypts sandboxes + provider_secrets + MCP + GitHub PAT; old DEK fails', async () => {
     const before = await loadTenantDek(tenantId, {
       db: db as never,
       amk: AMK,
@@ -267,6 +276,19 @@ describe('rotateTenantDek', () => {
     ).toThrow();
     expect(noKey.authHeaderValueCiphertext).toBeNull();
     expect(noKey.authHeaderKekVersion).toBeNull();
+
+    const ghRows = await db
+      .select()
+      .from(schema.userGithubTokens)
+      .where(eq(schema.userGithubTokens.tenantId, tenantId));
+    expect(ghRows).toHaveLength(1);
+    expect(ghRows[0].tokenKekVersion).toBe(2);
+    expect(decryptSecret(ghRows[0].tokenCiphertext!, after.dek)).toBe(
+      'ghp_pat_rotate_test',
+    );
+    expect(() =>
+      decryptSecret(ghRows[0].tokenCiphertext!, before.dek),
+    ).toThrow();
   });
 
   it('admin cannot rotate DEK', async () => {
@@ -522,5 +544,85 @@ describe('rotateTenantDek', () => {
       amk: AMK,
     });
     expect(res).toEqual({ ok: false, reason: 'not_found' });
+  });
+});
+
+
+describe('rotateTenantDek without user_github_tokens table', () => {
+  let client: PGlite;
+  let db: ReturnType<typeof drizzle<typeof schema>>;
+  let ownerId: string;
+  let tenantId: string;
+
+  async function applyThrough0005(c: PGlite) {
+    for (const name of [
+      '0000_tenancy_phase1.sql',
+      '0001_sso_scim_identity.sql',
+      '0002_tenant_deks.sql',
+      '0003_provider_secrets.sql',
+      '0004_user_mcp_servers.sql',
+      '0005_sandbox_backend.sql',
+    ]) {
+      const sql = readFileSync(join(migrationsDir, name), 'utf8');
+      for (const stmt of sql
+        .split('--> statement-breakpoint')
+        .map((s) => s.trim())
+        .filter(Boolean)) {
+        await c.exec(stmt);
+      }
+    }
+  }
+
+  beforeAll(async () => {
+    client = new PGlite();
+    await applyThrough0005(client);
+    db = drizzle(client, { schema });
+  });
+
+  afterAll(async () => {
+    await client.close();
+  });
+
+  it('owner rotate succeeds (deploy-before-migrate soft-skip)', async () => {
+    const [tenant] = await db
+      .insert(schema.tenants)
+      .values({ slug: 'pre-gh', name: 'Pre GH' })
+      .returning({ id: schema.tenants.id });
+    tenantId = tenant.id;
+    const [owner] = await db
+      .insert(schema.users)
+      .values({ email: 'pre-gh-owner@example.com', status: 'active' })
+      .returning({ id: schema.users.id });
+    ownerId = owner.id;
+    await db.insert(schema.tenantMembers).values({
+      tenantId,
+      userId: ownerId,
+      role: 'owner',
+    });
+
+    const dek = await ensureTenantDek(tenantId, { db: db as never, amk: AMK });
+    await db.insert(schema.sandboxes).values({
+      tenantId,
+      name: 'box',
+      slug: 'box',
+      baseUrl: 'https://sandbox.example',
+      tokenCiphertext: encryptSecret('tok-pre-gh', dek.dek),
+      tokenKekVersion: dek.version,
+    });
+
+    const res = await rotateTenantDek(ownerId, tenantId, {
+      db: db as never,
+      amk: AMK,
+      mode: 'dek-only',
+    });
+    expect(res).toEqual({ ok: true, dekVersion: dek.version + 1 });
+
+    const after = await loadTenantDek(tenantId, { db: db as never, amk: AMK });
+    const rows = await db
+      .select()
+      .from(schema.sandboxes)
+      .where(eq(schema.sandboxes.tenantId, tenantId));
+    expect(rows).toHaveLength(1);
+    expect(decryptSecret(rows[0].tokenCiphertext!, after.dek)).toBe('tok-pre-gh');
   });
 });
