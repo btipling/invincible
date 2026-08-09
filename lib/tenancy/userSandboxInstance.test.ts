@@ -59,6 +59,7 @@ function makeFakeApi(opts?: {
   stops: string[];
   deletes: string[];
   extends: Array<{ name: string; ms: number }>;
+  getCalls: Array<{ name: string; resume?: boolean }>;
 } {
   const creates: Array<{
     name: string;
@@ -68,6 +69,7 @@ function makeFakeApi(opts?: {
     networkPolicy: string;
   }> = [];
   const gets: string[] = [];
+  const getCalls: Array<{ name: string; resume?: boolean }> = [];
   const stops: string[] = [];
   const deletes: string[] = [];
   const extendsMs: Array<{ name: string; ms: number }> = [];
@@ -104,6 +106,7 @@ function makeFakeApi(opts?: {
     },
     get: async (params) => {
       gets.push(params.name);
+      getCalls.push({ name: params.name, resume: params.resume });
       if (opts?.getImpl) return opts.getImpl(params.name);
       if (!alive.has(params.name)) {
         const err = new Error(`not_found: ${params.name}`) as Error & {
@@ -118,7 +121,7 @@ function makeFakeApi(opts?: {
     },
   };
 
-  return { api, creates, gets, stops, deletes, extends: extendsMs };
+  return { api, creates, gets, stops, deletes, extends: extendsMs, getCalls };
 }
 
 describe('userSandboxInstance', () => {
@@ -451,6 +454,70 @@ describe('userSandboxInstance', () => {
     if (!r.ok) return;
     expect(r.value.status).toBe('error');
     expect(fake.creates).toHaveLength(0);
+  });
+
+  it('reconcileStatus probes with resume:false (does not wake stopped VMs)', async () => {
+    const name = buildUserSandboxVercelName('workspace', tenantId, userId);
+    await db.insert(schema.userSandboxInstances).values({
+      userId,
+      purpose: 'workspace',
+      tenantId,
+      catalogSandboxId: catalogVercelId,
+      vercelName: name,
+      image: 'img:test',
+      status: 'stopped',
+    });
+    const fake = makeFakeApi();
+    // Seed platform row as stopped so get succeeds without 404.
+    await fake.api.create({
+      name,
+      image: 'img:test',
+      persistent: true,
+      timeout: 1_800_000,
+      networkPolicy: 'allow-all',
+    });
+    await fake.api.get({ name, resume: true });
+    // mark stopped via handle stop after create
+    const h = await fake.api.get({ name, resume: false });
+    await h.stop();
+    const r = await reconcileStatus(userId, 'workspace', {
+      db: depsDb(),
+      sandboxApi: fake.api,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.status).toBe('stopped');
+    // Last get from reconcile must be resume:false
+    const reconcileGets = fake.getCalls.filter((c) => c.name === name);
+    expect(reconcileGets.at(-1)?.resume).toBe(false);
+  });
+
+  it('startInstance resumes with resume:true', async () => {
+    const name = buildUserSandboxVercelName('http', tenantId, userId);
+    await db.insert(schema.userSandboxInstances).values({
+      userId,
+      purpose: 'http',
+      tenantId,
+      catalogSandboxId: null,
+      vercelName: name,
+      image: USER_SANDBOX_HTTP_IMAGE,
+      status: 'stopped',
+    });
+    const fake = makeFakeApi();
+    await fake.api.create({
+      name,
+      image: USER_SANDBOX_HTTP_IMAGE,
+      persistent: true,
+      timeout: 1_800_000,
+      networkPolicy: 'allow-all',
+    });
+    const r = await startInstance(userId, 'http', {
+      db: depsDb(),
+      sandboxApi: fake.api,
+    });
+    expect(r.ok).toBe(true);
+    const startGets = fake.getCalls.filter((c) => c.name === name);
+    expect(startGets.some((c) => c.resume === true)).toBe(true);
   });
 
   it('destroy keeps row when get fails non-not_found', async () => {
