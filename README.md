@@ -40,7 +40,7 @@ triple unset: `DATABASE_URL`, `AUTH_SECRET`, `CREDENTIALS_ENCRYPTION_KEY`).
 2. `npm run dev` → open [http://localhost:3000/harness](http://localhost:3000/harness).
 3. Type in the **canvas** composer → **Enter** or **Send**.
 4. **PONG** smokes the host Gateway path (reply appears in the canvas).
-5. Refresh restores session into Wasm; nav **Clear** resets.
+5. Refresh restores session into Wasm (and cloud when signed in under tenancy); nav **Clear** resets local + cloud row.
 
 ### Reference deploy
 
@@ -100,7 +100,7 @@ hardcoding required.
   bridge poll/submit, thin nav/status chips (not a second chat).
 - **Vercel backend** — `POST /api/chat` and `POST /api/agent`; Gateway key and
   sandbox tokens never enter the client or Wasm.
-- **Session** — browser `SessionStore` (memory + localStorage) restored into Wasm.
+- **Session** — local-first `SessionStore` (memory + localStorage) restored into Wasm; optional **cloud multi-device** sync via `/api/session` when tenancy is on and the user is signed in.
 
 Full ownership table: [`docs/feature-divide.md`](docs/feature-divide.md).
 
@@ -114,7 +114,7 @@ Full ownership table: [`docs/feature-divide.md`](docs/feature-divide.md).
 | Harness UI | Zig 0.16 + dvui Wasm (**primary** product surface) |
 | Auth (optional) | Auth.js credentials + optional OIDC; SCIM Users API |
 | Palette | Asteronica TEAL / WARM / EMBER |
-| Session | `lib/sessionStore.ts` |
+| Session | `lib/sessionStore.ts` + `lib/sessionRepository.ts` (cloud hybrid) |
 | Bridge | Protocol **v9** (`lib/harnessBridge.ts`) |
 | Tests | Vitest |
 

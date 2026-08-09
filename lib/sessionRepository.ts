@@ -1,5 +1,5 @@
 /**
- * Async cloud session repository (parent #242 / phase #244).
+ * Async cloud session repository.
  * Client-safe — no Node/db imports. Host uses hybrid local SessionStore + this.
  */
 import {

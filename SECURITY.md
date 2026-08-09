@@ -25,6 +25,23 @@ If you find a vulnerability in Invincible, please open a **private** security ad
 Session blobs and Wasm must never contain API keys or sandbox tokens.  
 Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
 
+### Harness session store (local + cloud)
+
+| Surface | Trust rule |
+|---------|------------|
+| Browser `localStorage` / memory | UX convenience only; same-origin; **not** multi-tenant isolation |
+| Cloud row (`harness_sessions`) | **One row per Auth.js `user_id`**; ownership always from session — never client-supplied user id |
+| API | `GET` / `PUT` / `DELETE` `/api/session` — tenancy on + signed in; middleware-protected |
+| Tenancy off | **404** + `CLOUD_SESSION_DISABLED` (not 501); local-only continues |
+| Unauthenticated (tenancy on) | **401** — client disables cloud sync for the page load |
+| Conflict | LWW on `updatedAt` (epoch ms); stale PUT → **409** + server body |
+| Caps (abuse / size) | ≤**500** messages; ≤**262 144** UTF-8 bytes per message text; ≤**~2 MiB** raw body; opaque snapshot id ≤128 |
+| Blob contents | Message roles/text/ids/timestamps only — **never** Gateway keys, sandbox tokens, MCP secrets, PATs, or host absolute paths |
+| `cwd` | Optional **local-only** workspace-relative field; **not** stored in the cloud row |
+| Client bundle | Session repository is client-safe (`lib/sessionRepository.ts`); must **not** import server `db` / Drizzle modules |
+
+Ops: schema for `harness_sessions` via GHA **`db-migrate`**. Product behavior: [docs/session-model.md](docs/session-model.md).
+
 ## Builtin HTTPS fetch (Vercel Sandbox)
 
 When `BUILTIN_HTTP_FETCH=sandbox`, agent tools may fetch **public HTTPS** URLs via a

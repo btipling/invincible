@@ -23,7 +23,8 @@ optional login chrome).
 | `POST /api/chat` | **Vercel backend** | Single-shot inference; `AI_GATEWAY_API_KEY` never in Wasm |
 | `POST /api/agent` | **Vercel backend** | Multi-step tools (sandbox + per-user MCP when configured); server-only secrets |
 | Fold multi-turn history into prompt | **DOM** | `lib/harnessChat.ts` (user/assistant only; system tool lines display-only) |
-| `SessionStore` load/save/clear | **DOM** | memory / localStorage |
+| `SessionStore` load/save/clear | **DOM** | memory / localStorage (first paint) |
+| Cloud session pull/push/DELETE (`/api/session`) | **DOM** host + **Vercel backend** | Hybrid async; never blocks first paint; no dual chat |
 | Session ring window + Load earlier poll | **DOM** host + **Wasm** control | Host slices ≤512; Wasm `Load earlier` pending (protocol v6); no React transcript |
 | Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status; model chip is a **mirror** of Wasm selection, not a second picker |
 | Model catalog fetch (`GET /api/models`) | **DOM** | Session-gated; host pushes ids into Wasm catalog |
@@ -101,7 +102,7 @@ are flattened server-side before the model and before summaries.
 | User Settings / MCP servers | `app/settings/*` · `lib/tenancy/userMcpServers.ts` · `lib/mcp/client.ts` |
 | BYOK resolve | `lib/tenancy/resolveInference*.ts`, `lib/gateway/byokProviders.ts` |
 | Chat turn | `lib/harnessChat.ts` |
-| Session | `lib/sessionStore.ts` |
+| Session | `lib/sessionStore.ts`, `lib/sessionRepository.ts`, [session-model.md](session-model.md) |
 | Zig UI | `native/harness/src/ui.zig` |
 | Bridge Zig | `native/harness/src/bridge.zig` |
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
