@@ -290,7 +290,58 @@ describe('POST /api/agent', () => {
     expect(mcp.buildUserMcpTools).not.toHaveBeenCalled();
   });
 
-  it('softContinue from resolve skips FS tools and still runs agent (MCP may load)', async () => {
+  it('softContinue + empty MCP + no builtin → 403 WORKSPACE_INSTANCE_REQUIRED (no runAgent)', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    process.env.DATABASE_URL = 'postgres://localhost/db';
+    process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
+    delete process.env.SANDBOX_URL;
+    delete process.env.SANDBOX_TOKEN;
+    delete process.env.BUILTIN_HTTP_FETCH;
+
+    const runAgent = vi.fn(async () => ({
+      text: 'should-not-run',
+      toolTrace: [],
+    }));
+    vi.resetModules();
+    const mcp = mockMcpEmpty();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1', email: 'a@b.c' },
+      })),
+    }));
+    mockByokOk();
+    mockGithubToken();
+    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: false as const,
+        softContinue: true as const,
+        response: Response.json(
+          { error: WORKSPACE_INSTANCE_REQUIRED_ERROR },
+          { status: 403 },
+        ),
+      })),
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({
+      error: WORKSPACE_INSTANCE_REQUIRED_ERROR,
+    });
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(mcp.buildUserMcpTools).toHaveBeenCalled();
+  });
+
+  it('softContinue from resolve skips FS tools and still runs agent when MCP tools exist', async () => {
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
     process.env.DATABASE_URL = 'postgres://localhost/db';
     process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
@@ -304,13 +355,28 @@ describe('POST /api/agent', () => {
       sandboxClient?: unknown;
       secrets: string[];
       prompt: string;
+      extraTools?: Record<string, unknown>;
     };
     const runAgent = vi.fn(async (_arg: RunArg) => ({
       text: 'soft-ok',
       toolTrace: [],
     }));
     vi.resetModules();
-    const mcp = mockMcpEmpty();
+    const close = vi.fn(async () => {});
+    const buildUserMcpTools = vi.fn(async () => ({
+      tools: {
+        mcp_demo_ping: {
+          description: 'ping',
+          parameters: {},
+          execute: async () => 'pong',
+        },
+      },
+      secretsToRedact: [] as string[],
+      close,
+      connectedSlugs: ['demo'] as string[],
+      skipped: [] as Array<{ slug: string; reason: string }>,
+    }));
+    vi.doMock('../../../lib/mcp/client', () => ({ buildUserMcpTools }));
     vi.doMock('../../../lib/tenancy/session', () => ({
       requireSessionUser: vi.fn(async () => ({
         ok: true as const,
@@ -346,7 +412,8 @@ describe('POST /api/agent', () => {
     const arg = runAgent.mock.calls[0]![0] as RunArg;
     expect(arg.skipSandboxTools).toBe(true);
     expect(arg.sandboxClient).toBeUndefined();
-    expect(mcp.buildUserMcpTools).toHaveBeenCalled();
+    expect(arg.extraTools).toMatchObject({ mcp_demo_ping: expect.anything() });
+    expect(buildUserMcpTools).toHaveBeenCalled();
   });
 
 

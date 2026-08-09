@@ -424,6 +424,55 @@ describe('createVercelSandboxClient', () => {
     })();
   });
 
+  it('strReplace unique / multi / replace_all / not found / empty old', async () => {
+    const sb = mockSandbox();
+    const getSandbox = vi.fn<GetVercelFsSandboxFn>(async () => sb);
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox,
+    });
+
+    await client.writeFile('a.ts', 'const x = 1;\n', true);
+    await expect(
+      client.strReplace('a.ts', 'const x = 1;', 'const x = 2;'),
+    ).resolves.toMatchObject({ ok: true, replacements: 1 });
+    await expect(client.readFile('a.ts')).resolves.toEqual({
+      content: 'const x = 2;\n',
+    });
+
+    await client.writeFile('b.ts', 'aa aa aa', true);
+    await expect(client.strReplace('b.ts', 'aa', 'bb')).rejects.toThrow(/matched 3 times/i);
+    await expect(
+      client.strReplace('b.ts', 'aa', 'bb', true),
+    ).resolves.toMatchObject({ ok: true, replacements: 3 });
+    await expect(client.readFile('b.ts')).resolves.toEqual({ content: 'bb bb bb' });
+
+    await client.writeFile('c.ts', 'hello', true);
+    await expect(client.strReplace('c.ts', 'nope', 'x')).rejects.toThrow(/not found/i);
+    await expect(client.strReplace('c.ts', '', 'x')).rejects.toThrow(/non-empty/i);
+
+    await client.close?.();
+  });
+
+  it('path escape rejected on tools', async () => {
+    const sb = mockSandbox();
+    const getSandbox = vi.fn<GetVercelFsSandboxFn>(async () => sb);
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox,
+    });
+
+    await expect(client.readFile('../etc/passwd')).rejects.toBeInstanceOf(SandboxHttpError);
+    await expect(client.readFile('/etc/passwd')).rejects.toBeInstanceOf(SandboxHttpError);
+    await expect(
+      client.exec({ cmd: 'ls', cwd: '../' }),
+    ).rejects.toBeInstanceOf(SandboxHttpError);
+    // Path is checked before ensureSandbox
+    expect(getSandbox).not.toHaveBeenCalled();
+
+    await client.close?.();
+  });
+
   it('readFile rejects directories; listDir rejects files', async () => {
     const sb = mockSandbox();
     const createSandbox = vi.fn<GetVercelFsSandboxFn>(async () => sb);

@@ -134,6 +134,8 @@ export async function POST(req: Request): Promise<Response> {
       signal: req.signal,
       initialCwd: parsed.cwd,
     };
+    /** Instance soft-continue 403 — return only if no non-FS tools assemble. */
+    let deferredSoftResponse: Response | undefined;
 
     if (tenancyOn) {
       const userId = sessionGate.user?.id;
@@ -163,14 +165,19 @@ export async function POST(req: Request): Promise<Response> {
         ...(execEnv ? { execEnv } : {}),
       });
 
+      // When resolve soft-continues (e.g. Workspace not running), keep the 403
+      // body and only proceed if MCP and/or builtin HTTP supply tools later.
       if (!resolved.ok) {
         if (resolved.softContinue || builtinHttp.enabled) {
-          // Soft-continue: no FS tools; MCP + builtin HTTP may still run.
+          // Soft-continue candidate: no FS tools; MCP + builtin HTTP may still run.
           runParams = {
             ...runParams,
             skipSandboxTools: true,
             secrets: [...byok.secretsToRedact, ...ghSecrets],
           };
+          if (resolved.softContinue) {
+            deferredSoftResponse = resolved.response;
+          }
         } else {
           // Hard 403: grant/membership/selection without alternate soft path.
           return resolved.response;
@@ -232,6 +239,16 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     runParams = { ...runParams, extraTools };
+
+    // Parent #298: soft-continue only when HTTP±MCP can still run the turn.
+    // Empty tool set → surface locked Workspace guidance (not runAgent 502).
+    if (
+      deferredSoftResponse &&
+      !sandboxClient &&
+      Object.keys(extraTools).length === 0
+    ) {
+      return deferredSoftResponse;
+    }
 
     if (stream) {
       runnersOwnedByStream = true;
