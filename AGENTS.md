@@ -159,6 +159,24 @@ command -v gh >/dev/null || exit 1
 gh auth status || exit 1
 ```
 
+## PR merge convention (optional)
+
+This is an **optional** convention — apply it only when an operator asks you to
+merge a PR. There is no hard wiring; the repo currently has no enforced merge
+policy, so fall back to these defaults for consistency.
+
+| Item | Default |
+|------|---------|
+| Merge type | **Merge commit** — `gh pr merge <n> --merge` (keep each PR’s conventional commits intact; **no squash / no linearize**) |
+| Author identity | Every commit authored `btipling <btipling@users.noreply.github.com>` per the hard constraint above; do **not** rebase or rewrite authorship on a PR |
+| When to merge | **Only on explicit request.** Default is do **not** merge (agents stop at “merge-ready from review”) |
+| Issue close-out | PR body carries `Fixes #N` / `Refs #N`; merge auto-closes linked issues. For plan issues, close as **completed** and reference the merge |
+| After merge | Delete the merged branch, then in any agent/local checkout `git checkout main && git pull` and prune stale remote-tracking refs (`git remote prune origin`) |
+
+Once merged, linked self-hosted workflows (`build-harness`, DB migrations)
+run on the runner and ship through the artifact→Vercel seam; operator smoke
+items remain gated on Preview/Production as the plan’s DoD requires.
+
 ## Infrastructure already configured (origin maintainer only)
 
 **Scope: origin `btipling/invincible` only.** Do **not** assume these exist on
