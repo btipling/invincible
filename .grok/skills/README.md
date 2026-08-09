@@ -31,6 +31,7 @@ gh api "repos/btipling/invincible/contents/.grok/skills/<name>/SKILL.md?ref=main
 | **create-plan** | `create-plan/` | Author feature plans as **GitHub issues** (parent + optional phase issues); **cloud ops + living docs** required |
 | **plan-review** | `plan-review/` | Review plan issues: correctness, perf, architecture, tests, layers, **cloud ops**, **living docs**, parent; default **edit issue body** via `gh` |
 | **adversarial-review** | `adversarial-review/` | Hostile **PR** review (break scenarios, security, feature-divide, runner/CI); default **comment on PR** via `gh` |
+| **cleanup-sandbox** | `cleanup-sandbox/` | Post-session hygiene: checkout + pull latest `main`, delete leftover local branches / agent scratch; **refuses** to discard current uncommitted work without explicit operator consent |
 
 ## Cloud-native ops (create-plan + plan-review)
 
@@ -80,6 +81,19 @@ See [`adversarial-review/LOAD.md`](adversarial-review/LOAD.md):
 4. Self-refute findings; verdict BLOCK / CONCERNS / PASS WITH NOTES  
 5. Default `mode=comment` → `gh pr review` / `gh pr comment`  
 6. Does **not** implement fixes unless asked  
+
+## cleanup-sandbox
+
+User: “clean up the sandbox” / “reset this checkout” / “remove stray branches”
+
+See [`cleanup-sandbox/LOAD.md`](cleanup-sandbox/LOAD.md):
+
+1. `gh`/`git` gate; read `AGENTS.md`  
+2. Stage A hygiene: `fetch --prune origin`, checkout `main`, `pull --ff-only`, `gc --auto`  
+3. Inventory leftovers (local branches, unpushed commits, uncommitted/untracked files)  
+4. Delete only obvious **agent artifacts** (`.tmp-plan-*`, logs, swaps)  
+5. Current uncommitted work / unpushed branch → **stop and ask** (default `ask`); only discard on explicit operator instruction  
+6. Never push, never delete remote branches, never force-reset without consent  
 
 ## Push / GitHub doctrine
 
