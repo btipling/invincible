@@ -248,10 +248,13 @@ export function decodeToolRun(text: string): ToolRunPayload | null {
   if (head[0] !== 'toolrun') return null;
   if (Number(head[1]) !== TOOL_RUN_VERSION) return null;
   const counts = head[2].split('/');
-  const ok = Number(counts[0]);
-  const fail = Number(counts[1]);
-  const pending = Number(counts[2]);
-  if (!Number.isInteger(ok) || !Number.isInteger(fail) || !Number.isInteger(pending)) {
+  // Parsed for header validity only — recount from the kept items below so a
+  // hostile/dense blob's header can never disagree with what actually decodes
+  // after the TOOL_RUN_ITEMS_MAX cap (review Minor).
+  if (
+    counts.length !== 3 ||
+    !counts.every((c) => c !== undefined && c !== '' && Number.isInteger(Number(c)))
+  ) {
     return null;
   }
   const items: ToolRunItem[] = [];
@@ -275,5 +278,8 @@ export function decodeToolRun(text: string): ToolRunPayload | null {
       detail: unesc(p[4]),
     });
   }
-  return { ok, fail, pending, items };
+  // Recount from the kept items so the header display can never disagree with
+  // the decoded list after the TOOL_RUN_ITEMS_MAX cap (review Minor).
+  const c = countToolRunItems(items);
+  return { ok: c.ok, fail: c.fail, pending: c.pending, items };
 }

@@ -109,9 +109,12 @@ pub fn decode(alloc: std.mem.Allocator, text: []const u8) ?Decoded {
     if (ver != TOOL_RUN_VERSION) return null;
     const counts_s = hf.next() orelse return null;
     var cc = std.mem.splitScalar(u8, counts_s, '/');
-    const ok = parseIntOrZero(cc.next());
-    const fail = parseIntOrZero(cc.next());
-    const pending = parseIntOrZero(cc.next());
+    // Parsed for header validity only — we recount from the kept items below so
+    // a hostile/dense blob's header can never disagree with what actually paints
+    // (e.g. header "205/0/0" while the MAX_ITEMS cap keeps only 200 rows).
+    _ = parseIntOrZero(cc.next());
+    _ = parseIntOrZero(cc.next());
+    _ = parseIntOrZero(cc.next());
 
     var items: std.ArrayList(Item) = .empty;
     errdefer items.deinit(alloc);
@@ -140,6 +143,18 @@ pub fn decode(alloc: std.mem.Allocator, text: []const u8) ?Decoded {
             .detail = detail,
         }) catch return null;
     }
+    // Recount statuses from the kept items so the UI header can never disagree
+    // with the painted list after the MAX_ITEMS cap (review Minor).
+    var ok: u32 = 0;
+    var fail: u32 = 0;
+    var pending: u32 = 0;
+    for (items.items) |it| {
+        switch (it.status) {
+            .ok => ok += 1,
+            .fail => fail += 1,
+            .running => pending += 1,
+        }
+    }
     const run = ToolRun{
         .ok = ok,
         .fail = fail,
@@ -154,8 +169,10 @@ test "decode round-trip with escaping" {
     defer arena.deinit();
     const a = arena.allocator();
 
+    // Header counts are recounted from the kept items (review Minor), so even a
+    // lying wire header `9/9/9` can never disagree with the painted items.
     const text =
-        "toolrun\t1\t1/2/1\n" ++
+        "toolrun\t1\t9/9/9\n" ++
         "1\tok\tread_file\tread_file lib/x.ts ok\tread_file · ✓ ok · lib/x.ts · 3 lines\n" ++
         "2\tfail\texec\t\texec · ✗ failed · exit=1\n" ++
         "3\trunning\tcat\tcat · running…\t";
@@ -163,7 +180,7 @@ test "decode round-trip with escaping" {
     defer d.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), d.run.ok);
-    try std.testing.expectEqual(@as(u32, 2), d.run.fail);
+    try std.testing.expectEqual(@as(u32, 1), d.run.fail);
     try std.testing.expectEqual(@as(u32, 1), d.run.pending);
     try std.testing.expectEqual(@as(usize, 3), d.run.items.len);
 

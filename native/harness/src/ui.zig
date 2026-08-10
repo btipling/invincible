@@ -182,9 +182,20 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
     var decoded = toolrun.decode(dvui.currentWindow().arena(), text) orelse return false;
     defer decoded.deinit();
     const run = decoded.run;
+    // Decoders recount ok/fail/pending from the kept (capped) items, so the
+    // header count can never disagree with what actually paints (review).
     const total = run.ok + run.fail + run.pending;
 
-    const l1_raw: u64 = @as(u64, msg_index) *% 1000003 + 7;
+    // IMGUI identity: every widget in this control is keyed off `src` (the
+    // single paintToolRun call site), so two tool-run rows must NOT share
+    // id_extra — the codebase pattern is `msg_index *% …` (rich/paint.zig,
+    // message Copy). `id_base` = msg_index times an odd factor; for the ring's
+    // realistic msg_index (≤ MAX_MSG) products stay < 2^32 with no wrap, and
+    // the per-item band offsets below stay < 1024, so rows never collide and
+    // item bands never wrap into the next row's.
+    const id_base: usize = @as(usize, msg_index) *% 1000003;
+
+    const l1_raw: usize = id_base + 7;
     const l1_key: dvui.Id = @enumFromInt(l1_raw);
     var l1_expanded = toolrun_open_l1.contains(l1_key);
 
@@ -202,7 +213,7 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
         var head = dvui.box(src, .{ .dir = .horizontal }, .{
             .expand = .horizontal,
             .min_size_content = .{ .w = 120, .h = TOUCH_H - 4 },
-            .id_extra = 1,
+            .id_extra = id_base + 1,
         });
         defer head.deinit();
 
@@ -210,7 +221,7 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
             .expand = .horizontal,
             .min_size_content = .{ .h = TOUCH_H - 4 },
             .gravity_y = 0.5,
-            .id_extra = 0,
+            .id_extra = id_base + 2,
         });
         if (open) toolrun_open_l1.put(l1_key, {}) catch {} else _ = toolrun_open_l1.remove(l1_key);
 
@@ -219,10 +230,12 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                 .gravity_x = 1.0,
                 .gravity_y = 0.5,
                 .min_size_content = .{ .w = 0, .h = TOUCH_H - 8 },
+                .id_extra = id_base + 3,
             });
             defer chips.deinit();
             if (run.ok > 0) {
                 var tl = dvui.textLayout(src, .{}, .{
+                    .id_extra = id_base + 4,
                     .color_text = palette.teal_accent,
                     .gravity_y = 0.5,
                     .font = .theme(.heading),
@@ -233,6 +246,7 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
             }
             if (run.fail > 0) {
                 var tl = dvui.textLayout(src, .{}, .{
+                    .id_extra = id_base + 5,
                     .color_text = palette.ember_accent,
                     .gravity_y = 0.5,
                     .font = .theme(.heading),
@@ -243,6 +257,7 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
             }
             if (run.pending > 0) {
                 var tl = dvui.textLayout(src, .{}, .{
+                    .id_extra = id_base + 6,
                     .color_text = palette.warm_accent,
                     .gravity_y = 0.5,
                     .font = .theme(.heading),
@@ -259,24 +274,26 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
         var list = dvui.box(src, .{ .dir = .vertical }, .{
             .expand = .horizontal,
             .margin = .{ .x = 10, .y = 0, .w = 0, .h = 0 },
+            .id_extra = id_base + 10,
         });
         defer list.deinit();
 
         for (run.items) |it| {
-            const l2_key: dvui.Id = @enumFromInt(l1_raw *% 31 + @as(u64, it.id));
-            var l2_expanded = toolrun_open_l2.contains(l2_key);
-
-            // IMGUI identity discipline (see message rows `i *% 1024 + N`): every
-            // widget in this item loop must carry a per-item-unique id_extra or
-            // items 2..N share ids → hit-testing/focus attach to the last-drawn
-            // row (wrong row toggles / dead clicks). `it.id` is 1-based per group.
+            const l2_key: dvui.Id = @enumFromInt(l1_raw *% 31 + it.id);
+            // `it.id` is 1-based per group. Every widget in this loop carries a
+            // unique id_extra namespaced under this message's `id_base` — both a
+            // per-item (items 2..N in one group) AND a per-row (two tool-run
+            // groups) distinction, matching rich/paint.zig's `msg_index *% …`
+            // discipline. Widgets from different rows can never share an id.
             const it_id: usize = it.id;
+            const has_detail = it.detail.len > 0;
+            var l2_expanded = toolrun_open_l2.contains(l2_key);
 
             {
                 var item_head = dvui.box(src, .{ .dir = .horizontal }, .{
                     .expand = .horizontal,
                     .min_size_content = .{ .w = 120, .h = TOUCH_H - 6 },
-                    .id_extra = it_id *% 1024 + 2,
+                    .id_extra = id_base + 64 + it_id,
                 });
                 defer item_head.deinit();
 
@@ -287,7 +304,7 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                 };
                 {
                     var tl = dvui.textLayout(src, .{}, .{
-                        .id_extra = it_id *% 1024 + 3,
+                        .id_extra = id_base + 192 + it_id,
                         .color_text = glyph_color,
                         .gravity_y = 0.5,
                         .font = .theme(.heading),
@@ -302,33 +319,45 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                 }
 
                 const item_label: []const u8 = if (it.brief.len > 0) it.brief else it.name;
-                const open = dvui.expander(src, item_label, .{ .expanded = &l2_expanded }, .{
-                    .id_extra = it_id *% 1024 + 4,
-                    .expand = .horizontal,
-                    .gravity_y = 0.5,
-                    .min_size_content = .{ .h = TOUCH_H - 6 },
-                });
-                if (open) toolrun_open_l2.put(l2_key, {}) catch {} else _ = toolrun_open_l2.remove(l2_key);
+                if (has_detail) {
+                    const open = dvui.expander(src, item_label, .{ .expanded = &l2_expanded }, .{
+                        .id_extra = id_base + 320 + it_id,
+                        .expand = .horizontal,
+                        .gravity_y = 0.5,
+                        .min_size_content = .{ .h = TOUCH_H - 6 },
+                    });
+                    if (open) toolrun_open_l2.put(l2_key, {}) catch {} else _ = toolrun_open_l2.remove(l2_key);
+                } else {
+                    // No level-2 detail (e.g. a short/empty summary) — mount a
+                    // static label, not a blank expander (review nit). The name+
+                    // status one-liner is still useful at level 1.
+                    var tl = dvui.textLayout(src, .{}, .{
+                        .id_extra = id_base + 256 + it_id,
+                        .expand = .horizontal,
+                        .color_text = palette.teal_text,
+                        .gravity_y = 0.5,
+                    });
+                    tl.addText(item_label, .{});
+                    tl.deinit();
+                }
             }
 
-            if (l2_expanded) {
+            if (has_detail and l2_expanded) {
                 var detail = dvui.box(src, .{ .dir = .vertical }, .{
-                    .id_extra = it_id *% 1024 + 5,
+                    .id_extra = id_base + 448 + it_id,
                     .expand = .horizontal,
                     .margin = .{ .x = 22, .y = 0, .w = 0, .h = 0 },
                 });
                 defer detail.deinit();
-                if (it.detail.len > 0) {
-                    var tl = dvui.textLayout(src, .{}, .{
-                        .id_extra = it_id *% 1024 + 6,
-                        .expand = .horizontal,
-                        .color_text = palette.teal_text,
-                    });
-                    mixed_text.addTextMixed(tl, it.detail, .theme(.body), .{
-                        .color_text = palette.teal_text,
-                    });
-                    tl.deinit();
-                }
+                var tl = dvui.textLayout(src, .{}, .{
+                    .id_extra = id_base + 576 + it_id,
+                    .expand = .horizontal,
+                    .color_text = palette.teal_text,
+                });
+                mixed_text.addTextMixed(tl, it.detail, .theme(.body), .{
+                    .color_text = palette.teal_text,
+                });
+                tl.deinit();
             }
         }
     }

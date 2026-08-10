@@ -801,6 +801,52 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     ).toBe(false);
   });
 
+  it('reasoning interleaved with tools does not clone the tool-run streak', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const { runHarnessTurn } = await import('./harnessChat');
+    const n = 5;
+    const result = await runHarnessTurn(bridge, session, 'interleave', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        for (let i = 0; i < n; i++) {
+          await init?.onEvent?.({ type: 'reasoning_delta', text: `seg${i}` });
+          await init?.onEvent?.({ type: 'tool_start', name: `t${i}` });
+          await init?.onEvent?.({
+            type: 'tool_result',
+            name: `t${i}`,
+            ok: true,
+            summary: `t${i} · ✓ ok`,
+          });
+        }
+        await init?.onEvent?.({ type: 'done', text: 'done' });
+        return { ok: true, text: 'done' };
+      },
+    });
+    expect(result.result.ok).toBe(true);
+    // Each reasoning boundary flushes the open streak (flush-on-think), so N
+    // contiguous tool streaks become N size-1 groups — never N growing clones
+    // [1,2,...,n] re-pushing the whole accumulated group (review Major).
+    const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
+    expect(toolRuns).toHaveLength(n);
+    let totalItems = 0;
+    for (const tr of toolRuns) {
+      const d = decodeToolRun(tr.text);
+      expect(d).not.toBeNull();
+      expect(d!.items.length).toBe(1);
+      totalItems += d!.items.length;
+    }
+    expect(totalItems).toBe(n);
+    // Session persists one display-only tool_run per streak.
+    const sessionRuns = result.session.messages.filter((m) => m.role === 'tool_run');
+    expect(sessionRuns).toHaveLength(n);
+    // Thinking is ephemeral — one bubble per reasoning block, none persisted.
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.Thinking)).toHaveLength(n);
+    const folded = formatPromptWithHistory(result.session.messages, 'continue');
+    expect(folded).not.toContain('Tool:');
+  });
+
   it('collapseThinkingDisplay keeps monologue (no one-liner wall)', () => {
     expect(collapseThinkingDisplay('')).toBe('Thinking');
     expect(collapseThinkingDisplay('short')).toBe('short');

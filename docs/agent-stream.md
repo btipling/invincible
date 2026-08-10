@@ -33,8 +33,8 @@ Each SSE block is one `data: <json>\n\n` line:
 
 | `type` | Fields | Host use |
 |--------|--------|----------|
-| `tool_start` | `name`, optional `id` | System line `{name} · running…` |
-| `tool_result` | `name`, `ok`, `summary` | System line (summary already formatted; `✓ ok` / `✗ failed`) |
+| `tool_start` | `name`, optional `id` | Aggregate into one display-only `tool_run` message (protocol v10 / kind 6) |
+| `tool_result` | `name`, `ok`, `summary` | Aggregate into the same `tool_run` group; paints an interactive N-tools card |
 | `reasoning_delta` | `text` (chunk) | Grow a **Thinking** bubble (protocol v8) |
 | `text_delta` | `text` (chunk) | Grow Assistant bubble(s) |
 | `done` | `text`, optional `toolTrace`, optional `cwd` | Collapse open thinking; finalize session; apply `cwd` on success only; Ready |
@@ -44,7 +44,7 @@ Unknown types are ignored (forward-compatible). String fields are redacted serve
 
 ## Wasm bridge
 
-Assistant and thinking growth use **protocol v8** `inv_update_last_message` so streaming does not create one ring message per token. Tool lines use System `pushMessage`. Thinking uses `MessageKind.Thinking` (muted warm chrome + **same GFM paint** as assistant). No dual DOM transcript. In-place stream growth relies on harness stick-to-bottom (content height) so the viewport follows when the user is near the bottom — not on new SSE event types.
+Assistant and thinking growth use **protocol v8** `inv_update_last_message` so streaming does not create one ring message per token. Each **uninterrupted** tool streak is aggregated by the host into ONE `tool_run` message (protocol v10 / bridge **kind 6**) that the Wasm paints as a default-collapsed expandable control — **not** System lines. Reasoning between tools flushes the open streak to its own group (see [harness-limits.md](harness-limits.md)). Thinking uses `MessageKind.Thinking` (muted warm chrome + **same GFM paint** as assistant). No dual DOM transcript. In-place stream growth relies on harness stick-to-bottom (content height) so the viewport follows when the user is near the bottom — not on new SSE event types.
 
 ### Thinking collapse
 
@@ -63,7 +63,7 @@ submit so no ghost request is sent.
 | Kind | SessionStore | History fold |
 |------|--------------|--------------|
 | User / Assistant | **Yes** | Included |
-| System (live tools) | **Yes** (live path) | **Included** as `Tool:` lines (continue must not re-run work) |
+| `tool_run` (live tools, protocol v10) | **Yes** (live path) | **Not folded** (display-only, plan #345) — continue may re-run tools |
 | Error | **Yes** | Included as `Error:` (stall/cancel context) |
 | Thinking | **No** (display-only) | Never |
 
@@ -95,7 +95,7 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 
 | Cap | Value | Behavior |
 |-----|------:|----------|
-| Live tool System lines | **none** | Every tool start/result paints |
+| Live `tool_run` groups | **one per uninterrupted streak** | Reasoning or assistant text flushes the open streak to its own group |
 | Thinking **segments** | **none** | Every reasoning segment paints |
 | Thinking / line chars | **256 KiB** | Wasm `MAX_MSG_LEN` only (bridge hard edge) |
 | Ring slots | **2048** | Wasm `MAX_MSG`; older drop when full; Load earlier for SessionStore |

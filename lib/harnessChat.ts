@@ -537,6 +537,16 @@ export async function runHarnessTurn(
       // re-push a full duplicated assistant segment (text→reason→text).
       closeAssistantSegment();
 
+      // A live tool-run group sits on the last ring row. `reasoning_delta` can
+      // arrive BETWEEN tools (reason then tool then reason then tool), and
+      // update_last cannot target a ToolRun row that is no longer newest. Flush
+      // the open streak to the bridge/session FIRST so the incoming Thinking
+      // opens above a settled group; otherwise each post-reasoning tool would
+      // push a progressively larger clone of the whole streak (review Major).
+      // Each contiguous tool streak then becomes its own group instead of N
+      // growing clones.
+      if (toolRunOnBridge) flushToolRun();
+
       if (thinkingSegmentOpen) {
         thinkingSegment = truncateThinkingDisplay(thinkingSegment + chunk);
         if (!bridge.updateLastMessage(MessageKind.Thinking, thinkingSegment)) {
