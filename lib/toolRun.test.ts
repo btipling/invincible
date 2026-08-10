@@ -5,6 +5,7 @@ import {
   TOOL_RUN_VERSION,
   addToolResult,
   addToolStart,
+  asciiStatus,
   buildTraceGroups,
   countToolRunItems,
   createToolRunGroup,
@@ -40,7 +41,10 @@ describe('toolRun encode/decode (protocol v10 / plan #345)', () => {
     addToolResult(g, 'read_file', true, 'read_file · ✓ ok · a.ts');
     expect(g.items.length).toBe(before);
     expect(g.items[0]!.status).toBe('ok');
-    expect(g.items[0]!.brief).toContain('✓ ok');
+    // #358 Major: brief text is ASCII (symbol glyph lives in the mark column only).
+    expect(g.items[0]!.brief).toContain('· ok');
+    expect(g.items[0]!.brief).not.toContain('✓');
+    expect(g.items[0]!.detail).toBe('read_file · ok · a.ts');
   });
 
   it('escapes tabs / newlines / backslashes across fields', () => {
@@ -150,10 +154,13 @@ describe('buildTraceGroups (JSON/non-stream fallback)', () => {
     expect(it0.brief).not.toContain('\n');
 
     // Short/empty summary → name+status fallback, empty detail (no phantom).
+    // #358 Major: brief/detail are ASCII — the ✓/✗ symbol is the mark column's job,
+    // and the Noto text faces the L1 expander / L2 body paint with do not cover it.
     addToolResult(g, 'read_file', true, 'read_file · ✓ ok · a.ts');
     addToolResult(g, 'noop', true, '');
-    expect(g.items[1]!.brief).toContain('✓ ok');
-    expect(g.items[2]!.brief).toBe('noop · ✓ ok');
+    expect(g.items[1]!.brief).toContain('· ok');
+    expect(g.items[1]!.brief).not.toContain('✓');
+    expect(g.items[2]!.brief).toBe('noop · ok');
     expect(g.items[2]!.detail).toBe('');
 
     // Tiering survives encode→decode round-trip.
@@ -163,5 +170,58 @@ describe('buildTraceGroups (JSON/non-stream fallback)', () => {
     expect(decoded!.items[0]!.detail.length).toBeGreaterThan(
       decoded!.items[0]!.brief.length,
     );
+  });
+});
+
+describe('asciiStatus / no symbol tofu in brief·detail text (#358 Major)', () => {
+  it('rewrites the deterministic status token to ASCII letters', () => {
+    expect(asciiStatus('list_dir · ✓ ok · a')).toBe('list_dir · ok · a');
+    expect(asciiStatus('exec · ✗ failed · exit=1')).toBe('exec · failed · exit=1');
+    expect(asciiStatus('tool · running…')).toBe('tool · running…');
+    expect(asciiStatus('no · token here')).toBe('no · token here');
+  });
+
+  it('brief/detail never carry the ✓/✗ glyphs the Noto text faces cannot paint', () => {
+    const g = createToolRunGroup();
+    addToolResult(g, 'list_dir', true, 'list_dir · ✓ ok · .: 3 entries');
+    addToolResult(g, 'exec', false, 'exec · ✗ failed · exit=1');
+    for (const it of g.items) {
+      expect(it.brief).not.toContain('✓');
+      expect(it.brief).not.toContain('✗');
+      expect(it.detail).not.toContain('✓');
+      expect(it.detail).not.toContain('✗');
+      // Letters remain so the status is still readable in text.
+      expect(it.brief).toContain(it.status === 'ok' ? '· ok' : '· failed');
+    }
+    // The wire payload that feeds the expander/body paint is symbol-free too.
+    const text = encodeToolRun(g);
+    expect(text).not.toContain('✓');
+    expect(text).not.toContain('✗');
+  });
+
+  it('buildTraceGroups also emits ASCII brief/detail (non-stream fallback)', () => {
+    const groups = buildTraceGroups([
+      { name: 'a', ok: true, summary: 'a · ✓ ok · x' },
+      { name: 'b', ok: false, summary: 'b · ✗ failed · y' },
+    ]);
+    const items = groups[0]!.items;
+    expect(items[0]!.brief).toBe('a · ok · x');
+    expect(items[0]!.detail).toBe('a · ok · x');
+    expect(items[1]!.brief).toBe('b · failed · y');
+    expect(items[1]!.brief).not.toContain('✗');
+    expect(items[1]!.detail).not.toContain('✗');
+  });
+
+  it('collapsed brief sanitizes the → symbol (single Noto run); detail keeps it', () => {
+    const g = createToolRunGroup();
+    addToolResult(g, 'http_get', true, 'http_get https://x.com → 200 · 12 B');
+    const it0 = g.items[0]!;
+    // L1 expander paints brief with a single Noto run — no symbol fallback →
+    // the arrow must become ASCII in the collapsed preview.
+    expect(it0.brief).toBe('http_get https://x.com -> 200 · 12 B');
+    expect(it0.brief).not.toContain('→');
+    // L2 body is symbols-aware (mixed_text) — keep the real glyph there.
+    expect(it0.detail).toBe('http_get https://x.com → 200 · 12 B');
+    expect(it0.detail).toContain('→');
   });
 });

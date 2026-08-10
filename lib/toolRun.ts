@@ -58,6 +58,35 @@ function compactPreview(s: string): string {
   return t.length > BRIEF_PREVIEW_MAX ? `${t.slice(0, BRIEF_PREVIEW_MAX)}…` : t;
 }
 
+/**
+ * The colored status glyph column is the single symbol status channel for a
+ * tool row (adversarial review #358 Major). The tool summary still embeds a
+ * `✓`/`✗` mark (`name · ✓ ok · …`) — those code points are NOT in the Noto text
+ * faces the L1 expander label and L2 detail body paint with (only the mark
+ * column uses the DejaVu Sans Symbols face that covers them), so leaving them in
+ * `brief`/`detail` rendered `.notdef` tofu right beside the real glyph. Rewrite
+ * the deterministic `· ✓ ok` / `· ✗ failed` token to its ASCII letters only; the
+ * symbol glyph lives in the mark column alone.
+ */
+export function asciiStatus(s: string): string {
+  return s
+    .replace(/·\s*✓\s*ok/g, '· ok')
+    .replace(/·\s*✗\s*failed/g, '· failed');
+}
+
+/**
+ * The L1 expander label is painted by dvui as a SINGLE Noto run — it has no
+ * per-glyph symbol fallback the way the L2 body does (`mixed_text.addTextMixed`
+ * routes symbols/emoji to a DejaVu symbols / OpenMoji face). So beyond the
+ * `✓`/`✗` status marks, the collapsed `brief` must not carry any symbol the Noto
+ * heading face lacks. The deterministic summary uses `→` (http_get lines), which
+ * is NOT in Noto — map it to ASCII for the collapsed preview only. The expanded
+ * L2 detail keeps the real glyph (rendered by the symbols-aware body).
+ */
+function briefSafe(s: string): string {
+  return s.replace(/→/g, '->');
+}
+
 export type ToolRunCounts = {
   ok: number;
   fail: number;
@@ -113,14 +142,14 @@ export function addToolResult(
   ok: boolean,
   summary: string,
 ): void {
-  const line = (summary ?? '').trim();
+  const line = asciiStatus((summary ?? '').trim());
   // Complete the most recent running item with the same name (in place), else
   // append a done item (e.g. a result for a start we never observed).
   for (let i = group.items.length - 1; i >= 0; i--) {
     const it = group.items[i];
     if (it && it.status === 'running' && it.name === name) {
       it.status = ok ? 'ok' : 'fail';
-      it.brief = compactPreview(line) || `${name} · ${ok ? '✓ ok' : '✗ failed'}`;
+      it.brief = briefSafe(compactPreview(line)) || `${name} · ${ok ? 'ok' : 'failed'}`;
       it.detail = line;
       return;
     }
@@ -129,7 +158,7 @@ export function addToolResult(
     id: group.items.length + 1,
     status: ok ? 'ok' : 'fail',
     name,
-    brief: compactPreview(line) || `${name} · ${ok ? '✓ ok' : '✗ failed'}`,
+    brief: briefSafe(compactPreview(line)) || `${name} · ${ok ? 'ok' : 'failed'}`,
     detail: line,
   });
 }
@@ -158,7 +187,7 @@ export function buildTraceGroups(
   let cur = createToolRunGroup();
   for (const entry of trace) {
     const name = entry.name || 'tool';
-    const line = (entry.summary ?? '').trim();
+    const line = asciiStatus((entry.summary ?? '').trim());
     const runningMatch = cur.items.find(
       (it) => it.status === 'running' && it.name === name,
     );
@@ -169,7 +198,7 @@ export function buildTraceGroups(
     if (runningMatch) {
       runningMatch.status = entry.ok ? 'ok' : 'fail';
       runningMatch.brief =
-        compactPreview(line) || `${name} · ${entry.ok ? '✓ ok' : '✗ failed'}`;
+        briefSafe(compactPreview(line)) || `${name} · ${entry.ok ? 'ok' : 'failed'}`;
       runningMatch.detail = line;
     } else {
       cur.items.push({
@@ -177,7 +206,7 @@ export function buildTraceGroups(
         status: entry.ok ? 'ok' : 'fail',
         name,
         brief:
-          compactPreview(line) || `${name} · ${entry.ok ? '✓ ok' : '✗ failed'}`,
+          briefSafe(compactPreview(line)) || `${name} · ${entry.ok ? 'ok' : 'failed'}`,
         detail: line,
       });
     }
