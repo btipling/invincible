@@ -116,7 +116,7 @@ Inference stays on the host: `POST /api/chat` and `POST /api/agent` hold
 
 | | |
 |--|--|
-| **Protocol version** | `3` |
+| **Protocol version** | `10` |
 | **TS** | `lib/harnessBridge.ts` |
 | **Zig** | `src/bridge.zig` |
 | **Host** | `app/harness/HarnessHost.tsx` (shell: load + bridge + APIs) |
@@ -129,8 +129,10 @@ Inference stays on the host: `POST /api/chat` and `POST /api/agent` hold
 |------|------:|-----|
 | user | 1 | Canvas prompt |
 | assistant | 2 | Model reply into Wasm |
-| system | 3 | Status / toolTrace lines |
+| system | 3 | Status / turn-end lines |
 | error | 4 | Errors (EMBER) |
+| thinking | 5 | Model reasoning (v8, display-only) |
+| tool_run | 6 | Host-aggregated tool-run group (v10, display-only; `rich/toolrun.zig` decode) |
 
 Host **polls** pending submit (~150 ms); no custom Wasm imports beyond stock dvui `web.js`.
 

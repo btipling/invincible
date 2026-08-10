@@ -7,7 +7,7 @@
  * Design note: docs/session-model.md
  */
 
-export type SessionRole = 'user' | 'assistant' | 'system' | 'error';
+export type SessionRole = 'user' | 'assistant' | 'system' | 'error' | 'tool_run';
 
 export type SessionMessage = {
   id: string;
@@ -165,8 +165,11 @@ export function createDefaultSessionStore(): SessionStore {
  * Build a single prompt that includes recent turns for multi-turn continuity.
  * API remains Phase 1 single-shot { prompt }; history is folded into the text.
  *
- * Includes **system** tool lines so continue-after-stall does not re-run work
- * the agent already performed. Prefer tail of history when over maxChars.
+ * Legacy `system` tool lines are folded as `Tool: …`. Aggregated `tool_run`
+ * messages are **not** folded (display-only, plan #345), so the agent path no
+ * longer re-sends tool summaries on continue — continuation context rides the
+ * persisted assistant prose (see docs/harness-limits.md for the re-run caveat).
+ * Prefer tail of history when over maxChars.
  */
 export function formatPromptWithHistory(
   history: SessionMessage[],
@@ -185,8 +188,10 @@ export function formatPromptWithHistory(
   // Host fold budget — leave model/token limits to the gateway, not a toy 12k/32k char wall.
   const maxChars = opts?.maxChars ?? 3_500_000;
 
-  // user + assistant + system (live tool lines) + error (stall/cancel context).
-  // Thinking is never stored in SessionStore.
+  // user + assistant + system (turn-end / legacy tool lines) + error (stall/cancel context).
+  // `tool_run` is display-only (plan #345) and is intentionally NOT folded into
+  // the model prompt: the aggregated payload is dense and the agent already saw
+  // its own tool results this turn. Thinking is never stored in SessionStore.
   const dialogue = history.filter(
     (m) =>
       m.role === 'user' ||

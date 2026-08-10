@@ -186,6 +186,7 @@ describe('lifecycleName / messageKindLabel', () => {
     expect(messageKindLabel(MessageKind.User)).toBe('user');
     expect(messageKindLabel(MessageKind.Error)).toBe('error');
     expect(messageKindLabel(MessageKind.Thinking)).toBe('thinking');
+    expect(messageKindLabel(MessageKind.ToolRun)).toBe('tools');
   });
 });
 

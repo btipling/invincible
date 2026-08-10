@@ -22,9 +22,11 @@ How harness continuity works: **local-first** browser restore plus optional
 
 Multi-turn continuity: history is folded into a single `POST /api/chat` (or
 `/api/agent`) prompt (`formatPromptWithHistory`, default **maxMessages=400** /
-**maxChars≈3.5M**; folds **Tool:** system lines so continue does not re-run work).
-The API remains single-shot per request; multi-turn lives in the host session +
-Wasm transcript.
+**maxChars≈3.5M**). Tool evidence is **display-only** in a `tool_run` role (plan
+#345) and is **not** folded as `Tool:` lines, so a continue-after-stop/cancel
+turn may re-run or infer tools from the persisted assistant prose only. The API
+remains single-shot per request; multi-turn lives in the host session + Wasm
+transcript.
 
 Blob shape (never env secrets / sandbox tokens):
 
@@ -32,7 +34,7 @@ Blob shape (never env secrets / sandbox tokens):
 {
   "id": "sess_…",
   "updatedAt": 0,
-  "messages": [{ "id": "m_…", "role": "user|assistant|system|error", "text": "…", "at": 0 }],
+  "messages": [{ "id": "m_…", "role": "user|assistant|system|error|tool_run", "text": "…", "at": 0 }],
   "cwd": "invincible"
 }
 ```

@@ -9,7 +9,7 @@ import {
 } from './sessionCloudCaps';
 import type { SessionMessage, SessionRole, SessionSnapshot } from './sessionStore';
 
-const SESSION_ROLES = new Set<SessionRole>(['user', 'assistant', 'system', 'error']);
+const SESSION_ROLES = new Set<SessionRole>(['user', 'assistant', 'system', 'error', 'tool_run']);
 
 const DEFAULT_PATH = '/api/session';
 
