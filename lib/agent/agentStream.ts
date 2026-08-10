@@ -9,7 +9,7 @@ import { redactSecrets, truncateSummary } from './redact';
 
 export type AgentStreamEvent =
   | { type: 'tool_start'; name: string; id?: string }
-  | { type: 'tool_result'; name: string; ok: boolean; summary: string }
+  | { type: 'tool_result'; name: string; ok: boolean; summary: string; preview?: string }
   | { type: 'reasoning_delta'; text: string }
   | { type: 'text_delta'; text: string }
   | { type: 'done'; text: string; toolTrace?: ToolTraceEntry[]; cwd?: string }
@@ -38,6 +38,46 @@ export function encodeSseData(event: AgentStreamEvent): string {
  * exec stdout, http bodies). Model still receives full results via the tool path.
  */
 export const TOOL_LINE_SALIENT_MAX = 160;
+
+/**
+ * Cap for the bounded, redacted L2 `preview` fed into the `toolrun` v1
+ * `detail` field (plan #353 / parent #352 decision C + B-source). Mirrors
+ * `TOOL_TRACE_SUMMARY_MAX_CHARS` (100k); always well under the 262 KiB/msg cap.
+ */
+export const TOOL_RUN_PREVIEW_MAX_CHARS = 100_000;
+
+/** A preview shorter than this adds nothing beyond the L1 one-liner — omit it. */
+export const TOOL_RUN_PREVIEW_MIN_LEN = TOOL_LINE_SALIENT_MAX;
+
+/** Head/tail line window for bounding a long tool body in the L2 preview. */
+export const TOOL_RUN_PREVIEW_HEAD_LINES = 40;
+export const TOOL_RUN_PREVIEW_TAIL_LINES = 10;
+
+/**
+ * Build the bounded, redacted L2 `preview` for a `tool_result` from already
+ * flattened + redacted tool output. Keeps the head + tail of long multi-line
+ * bodies joined by `… (M more lines)`, capped at `TOOL_RUN_PREVIEW_MAX_CHARS`.
+ * Returns `undefined` (not a pretend-expand) when the output is a short
+ * single-line result that adds nothing beyond the L1 one-liner — the host then
+ * keeps the static label path (no blank expander). Never raw MCP envelopes.
+ */
+export function buildToolPreview(redacted: string): string | undefined {
+  let text = (redacted ?? '').replace(/\r\n/g, '\n').replace(/\t/g, '    ').trim();
+  if (!text) return undefined;
+  const lines = text.split('\n');
+  if (lines.length === 1 && text.length <= TOOL_RUN_PREVIEW_MIN_LEN) return undefined;
+  if (text.length > TOOL_RUN_PREVIEW_MAX_CHARS) {
+    text = `${text.slice(0, TOOL_RUN_PREVIEW_MAX_CHARS)}…`;
+  }
+  const bounded = text.split('\n');
+  if (bounded.length <= TOOL_RUN_PREVIEW_HEAD_LINES + TOOL_RUN_PREVIEW_TAIL_LINES + 1) {
+    return text;
+  }
+  const head = bounded.slice(0, TOOL_RUN_PREVIEW_HEAD_LINES).join('\n');
+  const tail = bounded.slice(-TOOL_RUN_PREVIEW_TAIL_LINES).join('\n');
+  const skipped = bounded.length - TOOL_RUN_PREVIEW_HEAD_LINES - TOOL_RUN_PREVIEW_TAIL_LINES;
+  return `${head}\n… (${skipped} more lines)\n${tail}`;
+}
 
 /**
  * Extract short, tool-aware highlights for the harness System line.
@@ -234,12 +274,14 @@ export function mapFullStreamPart(
     const asText = flattenToolResultText(raw);
     const redacted = redactSecrets(asText, secrets);
     const ok = !/^\s*ERROR\b/i.test(redacted) && !/\bTIMED_OUT\b/.test(redacted);
+    const preview = buildToolPreview(redacted || '');
     return [
       {
         type: 'tool_result',
         name: redactSecrets(name, secrets),
         ok,
         summary: summarizeToolLine(name, redacted || '', ok, secrets),
+        ...(preview ? { preview } : {}),
       },
     ];
   }
@@ -254,12 +296,14 @@ export function mapFullStreamPart(
           : 'tool error';
     const asText = flattenToolResultText(raw);
     const redacted = redactSecrets(asText || 'ERROR tool-error', secrets);
+    const preview = buildToolPreview(redacted);
     return [
       {
         type: 'tool_result',
         name: redactSecrets(name, secrets),
         ok: false,
         summary: summarizeToolLine(name, redacted, false, secrets),
+        ...(preview ? { preview } : {}),
       },
     ];
   }

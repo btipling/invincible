@@ -34,13 +34,28 @@ Each SSE block is one `data: <json>\n\n` line:
 | `type` | Fields | Host use |
 |--------|--------|----------|
 | `tool_start` | `name`, optional `id` | Aggregate into one display-only `tool_run` message (protocol v10 / kind 6) |
-| `tool_result` | `name`, `ok`, `summary` | Aggregate into the same `tool_run` group; paints an interactive N-tools card |
+| `tool_result` | `name`, `ok`, `summary`, optional `preview` | Aggregate into the same `tool_run` group; paints an interactive N-tools card. `preview` is a bounded, redacted level-2 detail body (`TOOL_RUN_PREVIEW_MAX_CHARS` = 100k, head+tail `… (N more lines)`) built from flattened+redacted tool output — **not** raw MCP envelopes |
 | `reasoning_delta` | `text` (chunk) | Grow a **Thinking** bubble (protocol v8) |
 | `text_delta` | `text` (chunk) | Grow Assistant bubble(s) |
 | `done` | `text`, optional `toolTrace`, optional `cwd` | Collapse open thinking; finalize session; apply `cwd` on success only; Ready |
 | `error` | `error`, optional `status` | Collapse open thinking; Error message; Ready |
 
 Unknown types are ignored (forward-compatible). String fields are redacted server-side with the same secret list as JSON responses.
+
+### Level-2 preview (`tool_result.preview`)
+
+The stream `tool_result` event carries an **optional** `preview` field: a bounded,
+redacted level-2 detail body for the harness expander (phase 3 #353). It is built
+from the already **flattened + redacted** tool output (never a raw MCP JSON
+envelope), keeps the first **40** / last **10** lines joined by
+`… (M more lines)`, and is capped at `TOOL_RUN_PREVIEW_MAX_CHARS` (100k) — well
+under the 262 KiB/msg cap. Short single-line results omit `preview`, so the host
+paints a static label instead of a duplicate-of-L1 blank expander. The host feeds
+`preview` into the level-2 `detail` of the aggregated `tool_run` message.
+
+**JSON fallback** (`Accept` other than `text/event-stream`) keeps a **one-line
+level-2 detail from `summary`** — documented parity for the tests/simple-clients
+path, not silently diverging from the stream.
 
 ## Wasm bridge
 
@@ -100,7 +115,8 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Thinking / line chars | **256 KiB** | Wasm `MAX_MSG_LEN` only (bridge hard edge) |
 | Ring slots | **2048** | Wasm `MAX_MSG`; older drop when full; Load earlier for SessionStore |
 | Tool summary length | **salient ≤160** | `salientToolBits` — path/counts/status only; **not** full read_file/exec/http bodies |
-| JSON end-of-turn toolTrace lines | **none** | All entries shown |
+| Tool level-2 `preview` | **≤ 100k** (`TOOL_RUN_PREVIEW_MAX_CHARS`), head 40 / tail 10 lines + `… (M more lines)` | Bounded + redacted server-side; short single-line results omit it (static label) |
+| JSON end-of-turn toolTrace lines | **none** | All entries shown; level-2 detail stays the one-line `summary` (parity) |
 
 ## Deferred (not in stream contract yet)
 

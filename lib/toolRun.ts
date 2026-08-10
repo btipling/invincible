@@ -136,13 +136,38 @@ export function addToolStart(group: ToolRunGroup, name: string): void {
   });
 }
 
+/**
+ * Level-2 `detail` for a tool row. Prefers the bounded `preview` (real
+ * command/output detail from the backend tool_result) when it is meaningfully
+ * richer than the collapsible L1 `brief`; otherwise returns empty so the Wasm
+ * paints a static label instead of a duplicate-of-L1 blank expander (phase 3
+ * #353 / parent #352 decision C).
+ */
+export function meaningfulDetail(
+  summary: string,
+  preview: string | undefined,
+): string {
+  const line = asciiStatus((summary ?? '').trim());
+  if (!line) return '';
+  // Compare against the sanitized L1 brief (arrows already ASCII in brief) so a
+  // `→`-bearing preview is not mistaken for the identical one-liner.
+  const brief = briefSafe(compactPreview(line));
+  const p = (preview ?? '').replace(/\r\n/g, '\n').trim();
+  if (!p) return '';
+  // Identical to the collapsed one-liner (or the full summary) → no pretend expand.
+  if (p === brief || p === line) return '';
+  return p;
+}
+
 export function addToolResult(
   group: ToolRunGroup,
   name: string,
   ok: boolean,
   summary: string,
+  preview?: string,
 ): void {
   const line = asciiStatus((summary ?? '').trim());
+  const detail = meaningfulDetail(summary, preview);
   // Complete the most recent running item with the same name (in place), else
   // append a done item (e.g. a result for a start we never observed).
   for (let i = group.items.length - 1; i >= 0; i--) {
@@ -150,7 +175,7 @@ export function addToolResult(
     if (it && it.status === 'running' && it.name === name) {
       it.status = ok ? 'ok' : 'fail';
       it.brief = briefSafe(compactPreview(line)) || `${name} · ${ok ? 'ok' : 'failed'}`;
-      it.detail = line;
+      it.detail = detail;
       return;
     }
   }
@@ -159,7 +184,7 @@ export function addToolResult(
     status: ok ? 'ok' : 'fail',
     name,
     brief: briefSafe(compactPreview(line)) || `${name} · ${ok ? 'ok' : 'failed'}`,
-    detail: line,
+    detail,
   });
 }
 
