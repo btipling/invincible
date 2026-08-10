@@ -190,9 +190,10 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
     // single paintToolRun call site), so two tool-run rows must NOT share
     // id_extra — the codebase pattern is `msg_index *% …` (rich/paint.zig,
     // message Copy). `id_base` = msg_index times an odd factor; for the ring's
-    // realistic msg_index (≤ MAX_MSG) products stay < 2^32 with no wrap, and
-    // the per-item band offsets below stay < 1024, so rows never collide and
-    // item bands never wrap into the next row's.
+    // realistic msg_index (≤ MAX_MSG) products stay < 2^32 with no wrap.
+    // Items get a 1024-wide namespace each (see item loop); 1000003 > 200·1024,
+    // so the whole group stays below the next row's id_base and rows never
+    // overlap, and within a row no two (item, widget) pairs can alias.
     const id_base: usize = @as(usize, msg_index) *% 1000003;
 
     const l1_raw: usize = id_base + 7;
@@ -280,12 +281,18 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
 
         for (run.items) |it| {
             const l2_key: dvui.Id = @enumFromInt(l1_raw *% 31 + it.id);
-            // `it.id` is 1-based per group. Every widget in this loop carries a
-            // unique id_extra namespaced under this message's `id_base` — both a
-            // per-item (items 2..N in one group) AND a per-row (two tool-run
-            // groups) distinction, matching rich/paint.zig's `msg_index *% …`
-            // discipline. Widgets from different rows can never share an id.
+            // `it.id` is 1-based per group with up to MAX_ITEMS items. Each item
+            // owns a 1024-wide namespace (`it_id *% 1024`) under this message's
+            // id_base, holding up to 5 widget slots, so every (item, widget)
+            // pair is unique within the row even for a full 200-item group;
+            // 1000003 > 200·1024 keeps distinct rows disjoint. Matches the
+            // rich/paint.zig `msg_index *% …` discipline (id = src + id_extra,
+            // not a parent chain).
             const it_id: usize = it.id;
+            // Widget slots inside the item's 1024-wide namespace:
+            //   +0 item box · +1 status glyph · +2 expander / static label
+            //   +3 detail box · +4 detail body
+            const item_base: usize = id_base + it_id *% 1024;
             const has_detail = it.detail.len > 0;
             var l2_expanded = toolrun_open_l2.contains(l2_key);
 
@@ -293,7 +300,7 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                 var item_head = dvui.box(src, .{ .dir = .horizontal }, .{
                     .expand = .horizontal,
                     .min_size_content = .{ .w = 120, .h = TOUCH_H - 6 },
-                    .id_extra = id_base + 64 + it_id,
+                    .id_extra = item_base + 0,
                 });
                 defer item_head.deinit();
 
@@ -304,7 +311,7 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                 };
                 {
                     var tl = dvui.textLayout(src, .{}, .{
-                        .id_extra = id_base + 192 + it_id,
+                        .id_extra = item_base + 1,
                         .color_text = glyph_color,
                         .gravity_y = 0.5,
                         .font = .theme(.heading),
@@ -321,7 +328,7 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                 const item_label: []const u8 = if (it.brief.len > 0) it.brief else it.name;
                 if (has_detail) {
                     const open = dvui.expander(src, item_label, .{ .expanded = &l2_expanded }, .{
-                        .id_extra = id_base + 320 + it_id,
+                        .id_extra = item_base + 2,
                         .expand = .horizontal,
                         .gravity_y = 0.5,
                         .min_size_content = .{ .h = TOUCH_H - 6 },
@@ -332,7 +339,7 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                     // static label, not a blank expander (review nit). The name+
                     // status one-liner is still useful at level 1.
                     var tl = dvui.textLayout(src, .{}, .{
-                        .id_extra = id_base + 256 + it_id,
+                        .id_extra = item_base + 2, // expander slot — mutually exclusive
                         .expand = .horizontal,
                         .color_text = palette.teal_text,
                         .gravity_y = 0.5,
@@ -344,13 +351,13 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
 
             if (has_detail and l2_expanded) {
                 var detail = dvui.box(src, .{ .dir = .vertical }, .{
-                    .id_extra = id_base + 448 + it_id,
+                    .id_extra = item_base + 3,
                     .expand = .horizontal,
                     .margin = .{ .x = 22, .y = 0, .w = 0, .h = 0 },
                 });
                 defer detail.deinit();
                 var tl = dvui.textLayout(src, .{}, .{
-                    .id_extra = id_base + 576 + it_id,
+                    .id_extra = item_base + 4,
                     .expand = .horizontal,
                     .color_text = palette.teal_text,
                 });

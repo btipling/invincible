@@ -235,6 +235,34 @@ test "decode tolerates malformed item lines" {
     try std.testing.expectEqualStrings("read_file", d.run.items[0].name);
 }
 
+test "ui id packing is unique for a full group and across rows" {
+    // Mirrors the IMGUI id scheme in ui.zig paintToolRun: each item owns a
+    // `item_stride`-wide namespace (`it_id * item_stride + slot`) under a row
+    // that advances by `row_step` = msg_index *% 1000003. Serves as the
+    // reviewer-requested cheap guard that MAX_ITEMS items never alias.
+    const item_stride: usize = 1024;
+    const row_step: usize = 1000003;
+    const slot_max: usize = 4;
+
+    // Within one row: every (item, slot) pair maps to a distinct widget id.
+    var seen = std.AutoHashMap(u64, void).init(std.testing.allocator);
+    defer seen.deinit();
+    var it_id: usize = 1;
+    while (it_id <= MAX_ITEMS) : (it_id += 1) {
+        var slot: usize = 0;
+        while (slot <= slot_max) : (slot += 1) {
+            const id: u64 = @as(u64, it_id) * item_stride + slot;
+            // fetchPut returns null when the key is new — a non-null result
+            // means two (item, slot) pairs aliased.
+            try std.testing.expect(try seen.fetchPut(id, {}) == null);
+        }
+    }
+    // A full 200-item group's highest widget id stays below the next row step,
+    // so two tool-run rows (distinct msg_index) never overlap widget id space.
+    const group_span: u64 = @as(u64, MAX_ITEMS) * item_stride + slot_max;
+    try std.testing.expect(group_span < row_step);
+}
+
 test "decode caps items at MAX_ITEMS (defense against dense/restored blobs)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
