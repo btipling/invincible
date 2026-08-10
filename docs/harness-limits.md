@@ -36,7 +36,7 @@ See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 | Topic | Behavior |
 |-------|----------|
 | Layout | Full-bleed canvas under host nav; no horizontal overflow expected |
-| Hit targets | Send / PONG / message **📋** (clipboard / copy) ≥ ~40px tall |
+| Hit targets | Send / message **📋** (clipboard / copy) ≥ ~40px tall |
 | Fallback | No “use the DOM chat instead” product path |
 
 ## Layout / composer chrome
@@ -47,7 +47,7 @@ Vertical bands inside the Wasm root (not a DOM panel):
 |------|----------|
 | **Header** | Compact title / lifecycle / model cycle — height measured each frame |
 | **Transcript** | One outer `scrollArea` that takes **remaining** height only |
-| **Composer chrome** | Text field + Send / PONG (+ hint) in a **reserved bottom band** outside the scroller |
+| **Composer chrome** | Text field + Send (+ hint) in a **reserved bottom band** outside the scroller |
 
 | Rule | Behavior |
 |------|----------|
@@ -169,7 +169,7 @@ Feature divide: transcript **read** path remains canvas-only — see [feature-di
 | Family | Role |
 |--------|------|
 | **TEAL** | Default chrome |
-| **WARM** | Busy, PONG, assistant labels |
+| **WARM** | Busy, assistant labels |
 | **EMBER** | Danger / errors only |
 
 Sources: `lib/palette.ts` + `native/harness/src/palette.zig`.

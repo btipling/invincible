@@ -37,7 +37,7 @@ optional login chrome).
 | **Transcript (read messages)** | **Wasm** | Primary UX; rich MD + images + math + diff/patch fence paint in-canvas (`rich/*`) — no DOM markdown |
 | Image bytes (fetch/decode) | **DOM host** | Browser fetch → RGBA → `inv_image_cache_put`; paint stays Wasm |
 | Math pixels (TeX raster) | **DOM host** | Host MathJax SVG → RGBA → `inv_math_cache_put`; paint stays Wasm |
-| **Composer + Send / smoke** | **Wasm** | Primary input |
+| **Composer + Send** | **Wasm** | Primary input |
 | **Stop / cancel turn** | **Wasm** control + **DOM** abort | Canvas **Stop** while busy → pending cancel (protocol v9); host aborts `AbortController` |
 | Busy / error presentation for turns | **Wasm** | EMBER for errors |
 | Empty / onboarding copy for agent | **Wasm** | |

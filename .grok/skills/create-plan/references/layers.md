@@ -44,7 +44,7 @@ Is it multi-tenant config / bring-your-own project?
 **Put here:**
 
 - Transcript rendering and scroll/read UX
-- Composer, Send, smoke commands (e.g. PONG)
+- Composer, Send
 - In-canvas busy / error (EMBER for errors)
 - Onboarding / empty states for the agent workspace
 - Theme via `palette.zig` (synced with `lib/palette.ts`)

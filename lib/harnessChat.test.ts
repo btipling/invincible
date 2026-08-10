@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  HARNESS_SMOKE_PROMPT,
   coalesceToolRunMessages,
   collapseThinkingDisplay,
   classifyTurnFailure,
@@ -125,12 +124,6 @@ function makeMockExports(): HarnessBridgeExports & {
     __canLoadEarlier: () => canLoadEarlier,
   };
 }
-
-describe('HARNESS_SMOKE_PROMPT', () => {
-  it('asks for exact PONG', () => {
-    expect(HARNESS_SMOKE_PROMPT).toMatch(/PONG/);
-  });
-});
 
 describe('describeTurnEnd / classifyTurnFailure', () => {
   it('labels model / stop / error clearly', () => {
@@ -1544,5 +1537,15 @@ describe('hydrate coalesce — reload/hydrate scannability (plan #365)', () => {
     const out = coalesceToolRunMessages(msgs);
     expect(out).toHaveLength(msgs.length);
     expect(out.map((m) => m.text)).toEqual(msgs.map((m) => m.text));
+  });
+});
+
+describe('PONG smoke removal regression lock (#367)', () => {
+  it('does not export the host smoke constant', async () => {
+    const mod: Record<string, unknown> = await import('./harnessChat');
+    // Permanent absence lock: re-adding a dedicated PONG/SMOKE product control
+    // must fail this suite, not silently ship.
+    expect(mod.HARNESS_SMOKE_PROMPT).toBeUndefined();
+    expect(mod.SMOKE_PROMPT).toBeUndefined();
   });
 });

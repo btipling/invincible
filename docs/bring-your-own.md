@@ -23,7 +23,7 @@ Related: [feature-divide.md](feature-divide.md) · [sandbox.md](sandbox.md) ·
 
 | Piece | Role |
 |-------|------|
-| **Wasm harness** | Primary product UI — transcript, composer, Send / PONG, busy/error chrome |
+| **Wasm harness** | Primary product UI — transcript, composer, Send, busy/error chrome |
 | **Next.js host** | Shell only — nav, load module, bridge glue, SessionStore, thin status chips |
 | **`POST /api/chat`** | Server-side single-shot inference via **your** Vercel AI Gateway key |
 | **`POST /api/agent`** | Optional multi-step tools when you configure a **sandbox** ([sandbox.md](sandbox.md)) |
@@ -527,11 +527,11 @@ Use **your** deploy URL (local or Vercel). Do not require the maintainer prod ho
 
 1. Open `/harness` — after load, the **canvas** is the workspace (not a React chat card).  
 2. Type in the canvas composer → **Enter** or **Send**.  
-3. **PONG** smokes the host Gateway path (reply appears in canvas).  
+3. **Send** a short prompt to smoke the host Gateway path (reply appears in canvas).  
 4. Refresh restores session into Wasm; nav **Clear** resets.  
 5. DOM chrome = nav + status chips only (host shell).  
 6. ~390px width remains usable.  
-7. **Optional agent tools:** with `SANDBOX_*` set, try a write/exec prompt; without them, PONG/chat still works ([sandbox.md](sandbox.md)).
+7. **Optional agent tools:** with `SANDBOX_*` set, try a write/exec prompt; without them, chat still works ([sandbox.md](sandbox.md)).
 
 Feature divide: [feature-divide.md](feature-divide.md). Visitor try path / samples: [README](../README.md).
 
@@ -579,7 +579,7 @@ listed as Done in [AGENTS.md](../AGENTS.md). Operators on **forks/clones** use
 - [ ] `.env.local` / Vercel: `AI_GATEWAY_API_KEY` set (server only)
 - [ ] Harness path chosen (A / B / C); cold-start forks set `HARNESS_OWNER`/`HARNESS_REPO` (B) or publish path A first; Vercel has `HARNESS_ARTIFACT_TOKEN` with Actions:Read on the **artifact** repo
 - [ ] Deployed **your** Vercel project; opened **your** `/harness`
-- [ ] PONG + multi-turn + refresh + Clear work in canvas
+- [ ] Send + multi-turn + refresh + Clear work in canvas
 - [ ] If using self-hosted builds: runner online + `SELF_HOSTED_BUILDS=true`
 - [ ] Optional: sandbox daemon + Vercel/local `SANDBOX_URL`/`SANDBOX_TOKEN` ([sandbox.md](sandbox.md))
 - [ ] Optional tenancy: cloud cutover [§4a](#4a-optional-multi-tenant-auth) (GHA migrate/seed, then `AUTH_SECRET`)
