@@ -39,7 +39,7 @@ triple unset: `DATABASE_URL`, `AUTH_SECRET`, `CREDENTIALS_ENCRYPTION_KEY`).
 1. Set `AI_GATEWAY_API_KEY` (see [Run locally](#run-locally)).
 2. `npm run dev` → open [http://localhost:3000/harness](http://localhost:3000/harness).
 3. Type in the **canvas** composer → **Enter** or **Send**.
-4. **PONG** smokes the host Gateway path (reply appears in the canvas).
+4. **Send** a short prompt to smoke the host Gateway path (reply appears in the canvas).
 5. Refresh restores session into Wasm (and cloud when signed in under tenancy); nav **Clear** resets local + cloud row.
 
 ### Reference deploy

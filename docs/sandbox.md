@@ -437,7 +437,7 @@ Harness smoke with tools (example prompt):
 
 Expect muted **system** tool lines in the canvas, then an assistant reply.
 
-Without `SANDBOX_*` on Next: **PONG** / normal chat still works via 503 → chat.
+Without `SANDBOX_*` on Next: normal chat still works via 503 → chat.
 
 ---
 
@@ -612,7 +612,7 @@ See also [SECURITY.md](../SECURITY.md).
 |---|--------|--------|
 | 1 | `GET /health` (local or off-box prod) | `{ ok: true, version: 2, daemonVersion: N }` |
 | 2 | Harness with `SANDBOX_*` set | tool system lines + assistant for a write/exec prompt |
-| 3 | Harness with `SANDBOX_*` **unset** | PONG / chat still works (agent 503 → chat) |
+| 3 | Harness with `SANDBOX_*` **unset** | chat still works (agent 503 → chat) |
 | 4 | Wrong/missing Bearer on `/v1/*` | `401` without echoing the token |
 | 5 | Review git diff | no secrets, no private inventory |
 

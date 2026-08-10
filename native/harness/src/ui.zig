@@ -47,7 +47,6 @@ fn clearToolRunOpenState() void {
     toolrun_open_l2.clearRetainingCapacity();
 }
 
-const SMOKE_PROMPT = "Reply with exactly: PONG";
 /// Touch-friendly control height (CSS px ≈).
 const TOUCH_H: f32 = 40;
 /// Near-bottom epsilon for stick-to-bottom follow (plan #135).
@@ -943,18 +942,6 @@ pub fn frame() !void {
             })) {
                 if (typed.len > 0) {
                     submitText(typed);
-                    want_composer_focus = true;
-                }
-            }
-            if (!busy) {
-                if (dvui.button(@src(), "PONG", .{}, .{
-                    .gravity_y = 0.5,
-                    .style = .app1,
-                    .min_size_content = .{ .w = 72, .h = TOUCH_H },
-                    .corners = .round(8),
-                    .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
-                })) {
-                    submitText(SMOKE_PROMPT);
                     want_composer_focus = true;
                 }
             }

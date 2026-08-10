@@ -10,7 +10,7 @@ with Zig **0.16.0** on the self-hosted runner (maintainer sample: `invincible-do
 
 | Surface | Owns |
 |---------|------|
-| **This crate (Wasm)** | Transcript (incl. scroll, rich MD + diff/patch fences, per-message **Copy** of source via dvui clipboard, reserved composer layout), composer, Send/PONG, busy/error chrome, Asteronica theme |
+| **This crate (Wasm)** | Transcript (incl. scroll, rich MD + diff/patch fences, per-message **Copy** of source via dvui clipboard, reserved composer layout), composer, Send, busy/error chrome, Asteronica theme |
 | **DOM host** (`app/harness/HarnessHost.tsx`) | Load module, bridge poll, `/api/chat` + `/api/agent`, SessionStore, nav chips |
 
 Do **not** reintroduce a React chat panel as product UX. The canvas is the
@@ -64,7 +64,7 @@ build-harness → artifact harness-wasm
 
 ```text
 src/main.zig     # dvui_init / deinit / update + Asteronica themeSet
-src/ui.zig       # frame: transcript, composer, Send / PONG
+src/ui.zig       # frame: transcript, composer, Send
 src/bridge.zig   # inv_* export fns + ring buffer + pending submit
 src/palette.zig  # TEAL/WARM/EMBER hex (sync with lib/palette.ts)
 src/rich/        # Markdown + fence paint (zmd MIT parse → cache → registry)
@@ -152,7 +152,7 @@ Asteronica on **both** DOM and dvui:
 | Family | Role |
 |--------|------|
 | TEAL | Chrome, primary Send, user labels |
-| WARM | Smoke/PONG, busy, assistant labels |
+| WARM | Busy, assistant labels |
 | EMBER | Errors only |
 
 Hex source: `src/palette.zig` ↔ `lib/palette.ts`. Theme applied in `dvui_init` via `Window.init(.{ .theme = palette.theme() })`.

@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  HARNESS_SMOKE_PROMPT,
   coalesceToolRunMessages,
   collapseThinkingDisplay,
   classifyTurnFailure,
@@ -125,12 +124,6 @@ function makeMockExports(): HarnessBridgeExports & {
     __canLoadEarlier: () => canLoadEarlier,
   };
 }
-
-describe('HARNESS_SMOKE_PROMPT', () => {
-  it('asks for exact PONG', () => {
-    expect(HARNESS_SMOKE_PROMPT).toMatch(/PONG/);
-  });
-});
 
 describe('describeTurnEnd / classifyTurnFailure', () => {
   it('labels model / stop / error clearly', () => {

@@ -81,9 +81,6 @@ export const THINKING_COLLAPSED_MAX = THINKING_DISPLAY_MAX;
  */
 export const TOOL_TRACE_MAX_LINES = Number.POSITIVE_INFINITY;
 
-/** Prompt used for end-to-end smoke (model should reply with PONG). */
-export const HARNESS_SMOKE_PROMPT = 'Reply with exactly: PONG';
-
 export type RunHarnessChatOptions = {
   signal?: AbortSignal;
   /** Inject for tests; defaults to sendChat. */
