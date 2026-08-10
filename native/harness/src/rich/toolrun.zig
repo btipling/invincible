@@ -115,7 +115,11 @@ pub fn decode(alloc: std.mem.Allocator, text: []const u8) ?Decoded {
 
     var items: std.ArrayList(Item) = .empty;
     errdefer items.deinit(alloc);
+    // Defensive cap mirroring the host grouping bound (a restored/cloud/local
+    // blob can carry more than MAX_ITEMS; stop so a hostile/dense payload can't
+    // force unbounded per-item decode+unescape every frame).
     while (lines.next()) |lin| {
+        if (items.items.len >= MAX_ITEMS) break;
         if (lin.len == 0) continue;
         var f = std.mem.splitScalar(u8, lin, '\t');
         const id_s = f.next() orelse continue;
@@ -212,4 +216,33 @@ test "decode tolerates malformed item lines" {
     defer d.deinit();
     try std.testing.expectEqual(@as(usize, 1), d.run.items.len);
     try std.testing.expectEqualStrings("read_file", d.run.items[0].name);
+}
+
+test "decode caps items at MAX_ITEMS (defense against dense/restored blobs)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const ta = a;
+    var text = std.ArrayList(u8).empty;
+    var line_buf: [128]u8 = undefined;
+    const head = std.fmt.bufPrint(
+        &line_buf,
+        "toolrun\t{d}\t{d}/0/0\n",
+        .{ TOOL_RUN_VERSION, MAX_ITEMS + 5 },
+    ) catch unreachable;
+    try text.appendSlice(ta, head);
+    var i: u32 = 0;
+    while (i < MAX_ITEMS + 5) : (i += 1) {
+        const line = std.fmt.bufPrint(
+            &line_buf,
+            "{d}\tok\tt{d}\tbrief\tdetail\n",
+            .{ i + 1, i },
+        ) catch unreachable;
+        try text.appendSlice(ta, line);
+    }
+
+    var d = decode(a, text.items) orelse return error.ExpectedDecode;
+    defer d.deinit();
+    try std.testing.expectEqual(@as(usize, MAX_ITEMS), d.run.items.len);
 }

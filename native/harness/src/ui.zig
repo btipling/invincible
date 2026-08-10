@@ -37,7 +37,7 @@ var transcript_scroll: dvui.ScrollInfo = .{
 /// per-message and per-item ids. Keeps open groups across repaints/frames the
 /// way `reorder_tree.zig` keeps its open branches; cleared on reload/clear/
 /// truncate so a fresh surface starts collapsed.
-var toolrun_open_buf: [4096]u8 = undefined;
+var toolrun_open_buf: [16384]u8 = undefined;
 var toolrun_open_fba = std.heap.FixedBufferAllocator.init(&toolrun_open_buf);
 var toolrun_open_l1 = std.AutoHashMap(dvui.Id, void).init(toolrun_open_fba.allocator());
 var toolrun_open_l2 = std.AutoHashMap(dvui.Id, void).init(toolrun_open_fba.allocator());
@@ -147,6 +147,30 @@ fn kindFill(kind: u8) ?dvui.Color {
     };
 }
 
+/// Build a human-readable multi-line summary of a tool-run payload for the Copy
+/// button — never the dense `toolrun\t…` wire text. Falls back to the raw body
+/// when the payload doesn't decode so we never lose data.
+fn toolRunClipboard(text: []const u8) []const u8 {
+    const alloc = dvui.currentWindow().arena();
+    var decoded = toolrun.decode(alloc, text) orelse return text;
+    defer decoded.deinit();
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(alloc);
+    var line_buf: [512]u8 = undefined;
+    for (decoded.run.items) |it| {
+        const g: []const u8 = switch (it.status) {
+            .ok => "✓",
+            .fail => "✗",
+            .running => "…",
+        };
+        const name = if (it.name.len > 0) it.name else "tool";
+        const label = if (it.brief.len > 0) it.brief else name;
+        const line = std.fmt.bufPrint(&line_buf, "{s} {s} — {s}\n", .{ g, name, label }) catch continue;
+        out.appendSlice(alloc, line) catch break;
+    }
+    return out.toOwnedSlice(alloc) catch return text;
+}
+
 /// Paint an aggregated tool-run control (protocol v10 / kind 6).
 ///
 /// Level 0 (default-collapsed): header `N tools called` + colored count chips
@@ -242,11 +266,17 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
             const l2_key: dvui.Id = @enumFromInt(l1_raw *% 31 + @as(u64, it.id));
             var l2_expanded = toolrun_open_l2.contains(l2_key);
 
+            // IMGUI identity discipline (see message rows `i *% 1024 + N`): every
+            // widget in this item loop must carry a per-item-unique id_extra or
+            // items 2..N share ids → hit-testing/focus attach to the last-drawn
+            // row (wrong row toggles / dead clicks). `it.id` is 1-based per group.
+            const it_id: usize = it.id;
+
             {
                 var item_head = dvui.box(src, .{ .dir = .horizontal }, .{
                     .expand = .horizontal,
                     .min_size_content = .{ .w = 120, .h = TOUCH_H - 6 },
-                    .id_extra = 2,
+                    .id_extra = it_id *% 1024 + 2,
                 });
                 defer item_head.deinit();
 
@@ -257,6 +287,7 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                 };
                 {
                     var tl = dvui.textLayout(src, .{}, .{
+                        .id_extra = it_id *% 1024 + 3,
                         .color_text = glyph_color,
                         .gravity_y = 0.5,
                         .font = .theme(.heading),
@@ -272,22 +303,24 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
 
                 const item_label: []const u8 = if (it.brief.len > 0) it.brief else it.name;
                 const open = dvui.expander(src, item_label, .{ .expanded = &l2_expanded }, .{
+                    .id_extra = it_id *% 1024 + 4,
                     .expand = .horizontal,
                     .gravity_y = 0.5,
                     .min_size_content = .{ .h = TOUCH_H - 6 },
-                    .id_extra = 3,
                 });
                 if (open) toolrun_open_l2.put(l2_key, {}) catch {} else _ = toolrun_open_l2.remove(l2_key);
             }
 
             if (l2_expanded) {
                 var detail = dvui.box(src, .{ .dir = .vertical }, .{
+                    .id_extra = it_id *% 1024 + 5,
                     .expand = .horizontal,
                     .margin = .{ .x = 22, .y = 0, .w = 0, .h = 0 },
                 });
                 defer detail.deinit();
                 if (it.detail.len > 0) {
                     var tl = dvui.textLayout(src, .{}, .{
+                        .id_extra = it_id *% 1024 + 6,
                         .expand = .horizontal,
                         .color_text = palette.teal_text,
                     });
@@ -560,7 +593,11 @@ pub fn frame() !void {
                                 .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
                             })) {
                                 // Same-frame write only — do not retain ring slices.
-                                dvui.clipboardTextSet(m.text);
+                                // Tool-run rows copy a human-readable per-tool
+                                // summary, not the dense wire payload.
+                                dvui.clipboardTextSet(
+                                    if (m.kind == rich.KIND_TOOL) toolRunClipboard(m.text) else m.text,
+                                );
                             }
                         }
                     }

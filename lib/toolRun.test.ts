@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BRIEF_PREVIEW_MAX,
   TOOL_RUN_ITEMS_MAX,
   TOOL_RUN_VERSION,
   addToolResult,
@@ -133,5 +134,34 @@ describe('buildTraceGroups (JSON/non-stream fallback)', () => {
     addToolResult(g, 'ok1', true, 'ok1');
     addToolResult(g, 'fail1', false, 'fail1');
     expect(countToolRunItems(g.items)).toEqual({ ok: 1, fail: 1, pending: 1 });
+  });
+
+  it('level-2 detail carries the full summary while brief is a short preview', () => {
+    const long = Array.from({ length: 30 }, (_, i) => `line ${i} of output`).join(
+      '\n',
+    );
+    const g = createToolRunGroup();
+    addToolResult(g, 'exec', true, long);
+    const it0 = g.items[0]!;
+    // Acceptance for two-level detail: level-2 is genuinely longer than level-1.
+    expect(it0.detail).toBe(long);
+    expect(it0.detail.length).toBeGreaterThan(it0.brief.length);
+    expect(it0.brief.length).toBeLessThanOrEqual(BRIEF_PREVIEW_MAX + 1);
+    expect(it0.brief).not.toContain('\n');
+
+    // Short/empty summary → name+status fallback, empty detail (no phantom).
+    addToolResult(g, 'read_file', true, 'read_file · ✓ ok · a.ts');
+    addToolResult(g, 'noop', true, '');
+    expect(g.items[1]!.brief).toContain('✓ ok');
+    expect(g.items[2]!.brief).toBe('noop · ✓ ok');
+    expect(g.items[2]!.detail).toBe('');
+
+    // Tiering survives encode→decode round-trip.
+    const decoded = decodeToolRun(encodeToolRun(g)!);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.items[0]!.detail).toBe(long);
+    expect(decoded!.items[0]!.detail.length).toBeGreaterThan(
+      decoded!.items[0]!.brief.length,
+    );
   });
 });

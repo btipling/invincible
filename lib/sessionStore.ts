@@ -165,8 +165,11 @@ export function createDefaultSessionStore(): SessionStore {
  * Build a single prompt that includes recent turns for multi-turn continuity.
  * API remains Phase 1 single-shot { prompt }; history is folded into the text.
  *
- * Includes **system** tool lines so continue-after-stall does not re-run work
- * the agent already performed. Prefer tail of history when over maxChars.
+ * Legacy `system` tool lines are folded as `Tool: …`. Aggregated `tool_run`
+ * messages are **not** folded (display-only, plan #345), so the agent path no
+ * longer re-sends tool summaries on continue — continuation context rides the
+ * persisted assistant prose (see docs/harness-limits.md for the re-run caveat).
+ * Prefer tail of history when over maxChars.
  */
 export function formatPromptWithHistory(
   history: SessionMessage[],

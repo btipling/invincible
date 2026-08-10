@@ -37,10 +37,25 @@ export interface ToolRunItem {
   id: number;
   status: ToolRunStatus;
   name: string;
-  /** One-liner (name + salient args / running marker). */
+  /** One-liner level-1 preview (single line, ≤ BRIEF_PREVIEW_MAX chars). */
   brief: string;
-  /** Already-truncated per-tool summary. */
+  /** Full level-2 detail — the already-truncated per-tool summary (may be long). */
   detail: string;
+}
+
+/**
+ * Level-1 preview cap. Level-2 `detail` keeps the full (already server-truncated)
+ * tool summary; the collapsed `brief` is a collapse-whitespace preview so the
+ * expand-to-detail tier genuinely adds the full text once a summary exceeds a
+ * single short line. Empty/all-whitespace summaries fall back to a name+status
+ * one-liner.
+ */
+export const BRIEF_PREVIEW_MAX = 64 as const;
+
+function compactPreview(s: string): string {
+  const t = (s ?? '').replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  return t.length > BRIEF_PREVIEW_MAX ? `${t.slice(0, BRIEF_PREVIEW_MAX)}…` : t;
 }
 
 export type ToolRunCounts = {
@@ -105,7 +120,7 @@ export function addToolResult(
     const it = group.items[i];
     if (it && it.status === 'running' && it.name === name) {
       it.status = ok ? 'ok' : 'fail';
-      it.brief = line;
+      it.brief = compactPreview(line) || `${name} · ${ok ? '✓ ok' : '✗ failed'}`;
       it.detail = line;
       return;
     }
@@ -114,7 +129,7 @@ export function addToolResult(
     id: group.items.length + 1,
     status: ok ? 'ok' : 'fail',
     name,
-    brief: line,
+    brief: compactPreview(line) || `${name} · ${ok ? '✓ ok' : '✗ failed'}`,
     detail: line,
   });
 }
@@ -153,14 +168,16 @@ export function buildTraceGroups(
     }
     if (runningMatch) {
       runningMatch.status = entry.ok ? 'ok' : 'fail';
-      runningMatch.brief = line;
+      runningMatch.brief =
+        compactPreview(line) || `${name} · ${entry.ok ? '✓ ok' : '✗ failed'}`;
       runningMatch.detail = line;
     } else {
       cur.items.push({
         id: cur.items.length + 1,
         status: entry.ok ? 'ok' : 'fail',
         name,
-        brief: line,
+        brief:
+          compactPreview(line) || `${name} · ${entry.ok ? '✓ ok' : '✗ failed'}`,
         detail: line,
       });
     }
@@ -239,6 +256,10 @@ export function decodeToolRun(text: string): ToolRunPayload | null {
   }
   const items: ToolRunItem[] = [];
   for (let i = 1; i < lines.length; i++) {
+    // Defensive cap mirroring the host grouping bound (a restored blob could
+    // carry more than TOOL_RUN_ITEMS_MAX; stop reading so a hostile/dense
+    // payload can't force unbounded decode).
+    if (items.length >= TOOL_RUN_ITEMS_MAX) break;
     const row = lines[i];
     if (!row) continue;
     const p = row.split('\t');

@@ -710,8 +710,14 @@ export async function runHarnessTurn(
 
     // Cancel or hard agent failure — never fall back to chat.
     if (!agentResult.sandboxNotConfigured || isCancelledAgent(agentResult)) {
-      // Persist any live tool-run group so continue-after-stall history knows
-      // what ran. Keep partial assistant text + tool lines already in `next`.
+      // Persist any live tool-run group (display-only, plan #345). Caveat: the
+      // aggregated `tool_run` is NOT folded back into the model prompt, so a
+      // continue-after-stall turn no longer re-sends tool summaries — the model
+      // sees only the persisted assistant prose and may re-run tools or infer
+      // results. That is a documented product rule (docs/harness-limits.md); a
+      // "continue / finish that" prompt after a mid-tool cancel is the one path
+      // most likely to trigger a re-run. We still persist the group so the
+      // transcript + Copy show exactly what ran.
       flushToolRun();
       let failedSession = next;
       const partial = (assistantAcc || '').trim();
