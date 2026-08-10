@@ -94,15 +94,15 @@ expandable control.
 
 | Topic | Behavior |
 |-------|----------|
-| Header (default) | `N tools called` / `1 tool called`, default-**collapsed**. Right-aligned count chips shown only when >0: success **✓ N** (TEAL), failed **✗ N** (EMBER — danger only), pending **… N** (WARM) |
-| Two-level expand | Level 1: one one-liner per tool (colored status glyph ✓/✗/… + `brief` preview ≤64 chars). Level 2: that tool's inline `detail` — the full (server-truncated) summary, which is genuinely longer / multi-line than the preview for non-trivial results. Clicking a row toggles; second click collapses; per-item isolation |
+| Header (default) | `N tools called` / `1 tool called`, default-**collapsed**. Right-aligned count chips shown only when >0: success **✓ N** (TEAL), failed **✗ N** (EMBER — danger only), pending **… N** (WARM). Status marks paint from embedded faces (`✓`/`✗` via DejaVu Sans Symbols; `…` via Noto heading) — **no tofu**. The **Copy** control lives on this header row |
+| Two-level expand | Level 1: one one-liner per tool — colored status glyph **✓/✗/…** is the *single* status channel, plus a preview: `brief` (≤64 chars) when level-2 detail exists, else the tool **`name`** (no redundant `name · ok/failed` marker). Level 2: that tool's inline `detail` — the full (server-truncated) summary, which is genuinely longer / multi-line than the preview for non-trivial results. Clicking a row toggles; second click collapses; per-item isolation |
 | Detail vs scroll | Level-2 detail paints **inline** as normal body text inside the one outer transcript scroller — there is **no** nested `scrollArea`. Long detail is bounded by host per-summary truncation + the 200-item group cap (≤256 KiB/msg), so the transcript wheel is not trapped |
 | Painter | `native/harness/src/ui.zig` → `paintToolRun`; payload decode in `native/harness/src/rich/toolrun.zig` (fail-open → raw body text) |
 | Open state | Two module-level `std.AutoHashMap(dvui.Id, void)` open-branch maps (per message id / per item id) survive repaint / `update_last`; cleared on reload / Clear / truncate → collapsed-by-default |
 | Group boundaries | A new group starts on user send, on a real (non-empty) assistant segment, and at turn end. Thinking/reasoning between tools is **not** a group boundary — one row per uninterrupted streak. A group's counts are written **once** at the boundary (commit-once), not streamed live via `update_last` |
 | Group bound | A group stores at most **200** items (`TOOL_RUN_ITEMS_MAX`); a longer streak rolls a new `tool_run` group (counts stay exact across groups). Each line is server-truncated; a single payload stays far under the 262 KiB/msg cap |
 | Session | One `tool_run` message per group round-trips local + cloud and repaints collapsed on restore; **not** folded into the model prompt (display-only). Caveat: prior tool summaries no longer reach the model on a **continue after a mid-tool cancel** — the model sees only persisted assistant prose and may re-run or infer tools. That is the documented product rule (kept for the cancel/Copy-fed transcript). |
-| No System chrome | Tool-run rows carry a `tools` kind header on a TEAL surface — never a `system` header |
+| Headerless chrome | Tool-run rows are **headerless** — there is **no** `tools` kind band above the control. The only chrome is the `N tools called` expander header + its **Copy** control on that header row (never a `system` header). Same spirit as #325 DoD #5 (no System chrome on tool activity) |
 
 
 

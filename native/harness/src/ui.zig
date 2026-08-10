@@ -171,6 +171,49 @@ fn toolRunClipboard(text: []const u8) []const u8 {
     return out.toOwnedSlice(alloc) catch return text;
 }
 
+/// Paint one L0 count chip: a status mark run (a face that covers the code
+/// point — ✓/✗ come from the embedded DejaVu Sans Symbols face, `…` is already
+/// in the Noto heading face) followed by a heading-face count run. The glyph and
+/// the count are separate runs because each face only covers a subset of the
+/// code points (DejaVu Sans Symbols has ✓/✗ but no ASCII digits; Noto has digits
+/// but no ✓/✗), so a single-face combined "✓ 3" run would tofu the other half.
+fn paintStatusChip(
+    src: std.builtin.SourceLocation,
+    box_id: usize,
+    glyph_id: usize,
+    count_id: usize,
+    color: dvui.Color,
+    mark: []const u8,
+    count: u32,
+    mark_font: dvui.Font,
+) void {
+    var chip = dvui.box(src, .{ .dir = .horizontal }, .{
+        .gravity_y = 0.5,
+        .id_extra = box_id,
+    });
+    defer chip.deinit();
+    {
+        var tl = dvui.textLayout(src, .{}, .{
+            .id_extra = glyph_id,
+            .color_text = color,
+            .font = mark_font,
+            .margin = .{ .x = 0, .y = 0, .w = 4, .h = 0 },
+        });
+        tl.addText(mark, .{});
+        tl.deinit();
+    }
+    {
+        var tl = dvui.textLayout(src, .{}, .{
+            .id_extra = count_id,
+            .color_text = color,
+            .font = .theme(.heading),
+            .margin = .{ .x = 0, .y = 0, .w = 6, .h = 0 },
+        });
+        tl.format("{d}", .{count}, .{});
+        tl.deinit();
+    }
+}
+
 /// Paint an aggregated tool-run control (protocol v10 / kind 6).
 ///
 /// Level 0 (default-collapsed): header `N tools called` + colored count chips
@@ -234,38 +277,30 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                 .id_extra = id_base + 3,
             });
             defer chips.deinit();
-            if (run.ok > 0) {
-                var tl = dvui.textLayout(src, .{}, .{
-                    .id_extra = id_base + 4,
-                    .color_text = palette.teal_accent,
-                    .gravity_y = 0.5,
-                    .font = .theme(.heading),
-                    .margin = .{ .x = 0, .y = 0, .w = 6, .h = 0 },
-                });
-                tl.format("{s} {d}", .{ "✓", run.ok }, .{});
-                tl.deinit();
-            }
-            if (run.fail > 0) {
-                var tl = dvui.textLayout(src, .{}, .{
-                    .id_extra = id_base + 5,
-                    .color_text = palette.ember_accent,
-                    .gravity_y = 0.5,
-                    .font = .theme(.heading),
-                    .margin = .{ .x = 0, .y = 0, .w = 6, .h = 0 },
-                });
-                tl.format("{s} {d}", .{ "✗", run.fail }, .{});
-                tl.deinit();
-            }
-            if (run.pending > 0) {
-                var tl = dvui.textLayout(src, .{}, .{
-                    .id_extra = id_base + 6,
-                    .color_text = palette.warm_accent,
-                    .gravity_y = 0.5,
-                    .font = .theme(.heading),
-                    .margin = .{ .x = 0, .y = 0, .w = 6, .h = 0 },
-                });
-                tl.format("{s} {d}", .{ "…", run.pending }, .{});
-                tl.deinit();
+            // Status marks must not tofu: ✓/✗ come from DejaVu Sans Symbols,
+            // `…` from the Noto heading face (see paintStatusChip).
+            if (run.ok > 0) paintStatusChip(src, id_base + 20, id_base + 21, id_base + 22, palette.teal_accent, "✓", run.ok, palette.fontSymbols());
+            if (run.fail > 0) paintStatusChip(src, id_base + 23, id_base + 24, id_base + 25, palette.ember_accent, "✗", run.fail, palette.fontSymbols());
+            if (run.pending > 0) paintStatusChip(src, id_base + 26, id_base + 27, id_base + 28, palette.warm_accent, "…", run.pending, .theme(.heading));
+        }
+        // Headerless chrome (parent E): tool-run rows have no `tools` kind band
+        // (painted in the message loop only for non-tool kinds); the Copy
+        // affordance moves onto this L0 header row so it is never lost.
+        {
+            if (dvui.button(src, "Copy", .{}, .{
+                .gravity_y = 0.5,
+                .gravity_x = 1.0,
+                .style = .content,
+                .id_extra = id_base + 29,
+                .min_size_content = .{ .w = 56, .h = TOUCH_H - 8 },
+                .corners = .round(6),
+                .color_fill = palette.teal_bg,
+                .color_text = palette.teal_accent,
+                .color_border = palette.teal_border,
+                .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
+            })) {
+                // Same-frame write only — do not retain ring slices.
+                dvui.clipboardTextSet(toolRunClipboard(text));
             }
         }
     }
@@ -309,12 +344,18 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                     .fail => palette.ember_accent,
                     .running => palette.warm_accent,
                 };
+                // Status marks must render (no tofu): ✓/✗ come from the embedded
+                // DejaVu Sans Symbols face; `…` is already in the Noto heading face.
+                const glyph_font: dvui.Font = switch (it.status) {
+                    .ok, .fail => palette.fontSymbols(),
+                    .running => .theme(.heading),
+                };
                 {
                     var tl = dvui.textLayout(src, .{}, .{
                         .id_extra = item_base + 1,
                         .color_text = glyph_color,
                         .gravity_y = 0.5,
-                        .font = .theme(.heading),
+                        .font = glyph_font,
                         .margin = .{ .x = 4, .y = 0, .w = 4, .h = 0 },
                     });
                     tl.addText(switch (it.status) {
@@ -325,7 +366,11 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                     tl.deinit();
                 }
 
-                const item_label: []const u8 = if (it.brief.len > 0) it.brief else it.name;
+                // No-detail items carry only the host's status-suffixed fallback
+                // `brief` (`name · ✓/✗/running`); the colored glyph is the single
+                // status channel, so paint those labels from `name` to avoid a
+                // redundant second status affordance (parent Goal 3 / issue review).
+                const item_label: []const u8 = if (has_detail and it.brief.len > 0) it.brief else it.name;
                 if (has_detail) {
                     const open = dvui.expander(src, item_label, .{ .expanded = &l2_expanded }, .{
                         .id_extra = item_base + 2,
@@ -336,8 +381,8 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                     if (open) toolrun_open_l2.put(l2_key, {}) catch {} else _ = toolrun_open_l2.remove(l2_key);
                 } else {
                     // No level-2 detail (e.g. a short/empty summary) — mount a
-                    // static label, not a blank expander (review nit). The name+
-                    // status one-liner is still useful at level 1.
+                    // static label, not a blank expander (review nit). The no-detail label
+                    // is painted from `name`, so the colored glyph is the only status channel.
                     var tl = dvui.textLayout(src, .{}, .{
                         .id_extra = item_base + 2, // expander slot — mutually exclusive
                         .expand = .horizontal,
@@ -597,8 +642,10 @@ pub fn frame() !void {
                     defer row.deinit();
 
                     // Kind label + Copy (message source → system clipboard).
-                    // id_extra: label i*2; Copy i*%1024+2 (plain body uses +1).
-                    {
+                    // Tool-run (kind 6) rows are headerless (parent E): no `tools`
+                    // band — the copy affordance lives on the L0 header row inside
+                    // paintToolRun. id_extra: label i*2; Copy i*%1024+2 (plain +1).
+                    if (m.kind != rich.KIND_TOOL) {
                         var kind_row = dvui.box(@src(), .{ .dir = .horizontal }, .{
                             .expand = .horizontal,
                             .id_extra = i,
@@ -629,11 +676,7 @@ pub fn frame() !void {
                                 .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
                             })) {
                                 // Same-frame write only — do not retain ring slices.
-                                // Tool-run rows copy a human-readable per-tool
-                                // summary, not the dense wire payload.
-                                dvui.clipboardTextSet(
-                                    if (m.kind == rich.KIND_TOOL) toolRunClipboard(m.text) else m.text,
-                                );
+                                dvui.clipboardTextSet(m.text);
                             }
                         }
                     }
@@ -654,6 +697,22 @@ pub fn frame() !void {
                                     .color_text = palette.teal_text,
                                 });
                                 tl.deinit();
+                                // Keep the Copy affordance on a fail-open tool row
+                                // too — headerless chrome moved Copy off the kind
+                                // band, which is skipped for tool-run kinds.
+                                if (dvui.button(@src(), "Copy", .{}, .{
+                                    .gravity_y = 0.5,
+                                    .style = .content,
+                                    .id_extra = i *% 1024 + 2,
+                                    .min_size_content = .{ .w = 56, .h = TOUCH_H - 8 },
+                                    .corners = .round(6),
+                                    .color_fill = palette.teal_bg,
+                                    .color_text = palette.teal_accent,
+                                    .color_border = palette.teal_border,
+                                    .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
+                                })) {
+                                    dvui.clipboardTextSet(toolRunClipboard(m.text));
+                                }
                             }
                         } else {
                             var tl = dvui.textLayout(@src(), .{}, .{
