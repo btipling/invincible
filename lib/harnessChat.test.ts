@@ -819,32 +819,134 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
             ok: true,
             summary: `t${i} · ✓ ok`,
           });
+          // Commit-once timing: no ToolRun row may exist on the bridge while the
+          // streak is open — it commits only at the assistant/turn-end boundary.
+          expect(
+            exp.__messages.filter((m) => m.kind === MessageKind.ToolRun),
+          ).toHaveLength(0);
         }
         await init?.onEvent?.({ type: 'done', text: 'done' });
         return { ok: true, text: 'done' };
       },
     });
     expect(result.result.ok).toBe(true);
-    // Each reasoning boundary flushes the open streak (flush-on-think), so N
-    // contiguous tool streaks become N size-1 groups — never N growing clones
-    // [1,2,...,n] re-pushing the whole accumulated group (review Major).
+    // Commit-once (plan #355 / parent #352 C): a reason→tool→…→reason→tool→
+    // assistant turn commits exactly ONE complete tool_run row of N items on the
+    // bridge AND in session — never N size-1 groups (the old flush-on-think) or
+    // the progressive "1, 1+2, 1+2+3, …" growing clones.
     const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
-    expect(toolRuns).toHaveLength(n);
-    let totalItems = 0;
-    for (const tr of toolRuns) {
-      const d = decodeToolRun(tr.text);
-      expect(d).not.toBeNull();
-      expect(d!.items.length).toBe(1);
-      totalItems += d!.items.length;
-    }
-    expect(totalItems).toBe(n);
-    // Session persists one display-only tool_run per streak.
+    expect(toolRuns).toHaveLength(1);
+    const decoded = decodeToolRun(toolRuns[0]!.text);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.items).toHaveLength(n);
+    expect(decoded!.ok).toBe(n);
+    // The committed row lands directly before the assistant bubble so bridge
+    // order (tool_run → assistant) matches session order.
+    const kinds = exp.__messages.map((m) => m.kind);
+    const trIdx = kinds.indexOf(MessageKind.ToolRun);
+    expect(trIdx).toBeGreaterThanOrEqual(0);
+    expect(kinds[trIdx + 1]).toBe(MessageKind.Assistant);
+    // Session persists exactly one display-only tool_run per streak.
     const sessionRuns = result.session.messages.filter((m) => m.role === 'tool_run');
-    expect(sessionRuns).toHaveLength(n);
+    expect(sessionRuns).toHaveLength(1);
+    const sessDecoded = decodeToolRun(sessionRuns[0]!.text);
+    expect(sessDecoded).not.toBeNull();
+    expect(sessDecoded!.items).toHaveLength(n);
+    expect(
+      result.session.messages.some(
+        (m) => m.role === 'assistant' && m.text === 'done',
+      ),
+    ).toBe(true);
     // Thinking is ephemeral — one bubble per reasoning block, none persisted.
     expect(exp.__messages.filter((m) => m.kind === MessageKind.Thinking)).toHaveLength(n);
+    expect(result.session.messages.some((m) => m.text.includes('seg'))).toBe(false);
     const folded = formatPromptWithHistory(result.session.messages, 'continue');
     expect(folded).not.toContain('Tool:');
+  });
+
+  it('contiguous no-reasoning streak commits one complete tool_run at assistant text (commit-once)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const { runHarnessTurn } = await import('./harnessChat');
+    const n = 4;
+    const result = await runHarnessTurn(bridge, session, 'tools', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        for (let i = 0; i < n; i++) {
+          await init?.onEvent?.({ type: 'tool_start', name: `t${i}` });
+          await init?.onEvent?.({
+            type: 'tool_result',
+            name: `t${i}`,
+            ok: true,
+            summary: `t${i} · ✓ ok`,
+          });
+          // Commit-once: contiguous (no-reasoning) streaks also paint no ToolRun
+          // until a real boundary — here real assistant text via text_delta.
+          expect(
+            exp.__messages.filter((m) => m.kind === MessageKind.ToolRun),
+          ).toHaveLength(0);
+        }
+        await init?.onEvent?.({ type: 'text_delta', text: 'done' });
+        await init?.onEvent?.({ type: 'done', text: 'done' });
+        return { ok: true, text: 'done' };
+      },
+    });
+    expect(result.result.ok).toBe(true);
+    // Commit-once holds even for contiguous (no-reasoning) streaks: exactly one
+    // complete N-item row on the bridge, committed when real assistant text
+    // begins — no live `update_last` growing totals during the turn.
+    const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
+    expect(toolRuns).toHaveLength(1);
+    const decoded = decodeToolRun(toolRuns[0]!.text);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.items).toHaveLength(n);
+    const kinds = exp.__messages.map((m) => m.kind);
+    expect(kinds.indexOf(MessageKind.ToolRun) + 1).toBe(kinds.indexOf(MessageKind.Assistant));
+    const sessionRuns = result.session.messages.filter((m) => m.role === 'tool_run');
+    expect(sessionRuns).toHaveLength(1);
+    const sessDecoded = decodeToolRun(sessionRuns[0]!.text);
+    expect(sessDecoded).not.toBeNull();
+    expect(sessDecoded!.items).toHaveLength(n);
+  });
+
+  it('real assistant text still ends the group; a later tool opens a new group', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'twogroups', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'read_file' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'read_file',
+          ok: true,
+          summary: 'read_file · ✓ ok',
+        });
+        await init?.onEvent?.({ type: 'text_delta', text: 'I read the file.' });
+        await init?.onEvent?.({ type: 'tool_start', name: 'write_file' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'write_file',
+          ok: true,
+          summary: 'write_file · ✓ ok',
+        });
+        await init?.onEvent?.({ type: 'done', text: 'I read and wrote.' });
+        return { ok: true, text: 'I read and wrote.' };
+      },
+    });
+    expect(result.result.ok).toBe(true);
+    // Two distinct groups: the first ends at real assistant text, the second is
+    // a new group rather than being merged into the first.
+    const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
+    expect(toolRuns).toHaveLength(2);
+    const g1 = decodeToolRun(toolRuns[0]!.text)!;
+    const g2 = decodeToolRun(toolRuns[1]!.text)!;
+    expect(g1.items.map((i) => i.name)).toEqual(['read_file']);
+    expect(g2.items.map((i) => i.name)).toEqual(['write_file']);
+    expect(result.session.messages.filter((m) => m.role === 'tool_run')).toHaveLength(2);
   });
 
   it('collapseThinkingDisplay keeps monologue (no one-liner wall)', () => {

@@ -460,32 +460,29 @@ export async function runHarnessTurn(
     // Tool-run aggregation (protocol v10 / plan #345). The host owns the SSE and
     // knows the structured `tool_result.ok`, so it aggregates each uninterrupted
     // tool streak into ONE display-only `tool_run` message (bridge kind 6, session
-    // role `tool_run`). `next` (session) is written only on flush/boundary so we
-    // don't churn cloud pushes per tool; the Wasm transcript is updated live.
+    // role `tool_run`). Commit-once: the host aggregates the full streak and
+    // pushes ONE complete `tool_run` row to the bridge + session on flush at a
+    // true boundary (assistant text, turn end, or group-full roll). We never
+    // live-push/`update_last` a growing ToolRun row during the streak — the
+    // bridge shows tool chrome only when the streak commits.
     let toolRunGroup: ToolRunGroup = createToolRunGroup();
-    let toolRunOnBridge = false;
 
-    const pushOrUpdateToolRun = (payload: string) => {
-      if (!toolRunOnBridge) {
-        bridge.pushMessage(MessageKind.ToolRun, payload);
-        toolRunOnBridge = true;
-        return;
-      }
-      if (!bridge.updateLastMessage(MessageKind.ToolRun, payload)) {
-        // Newest ring row is a different kind (thinking/assistant) — open a
-        // fresh group slot conservatively.
-        bridge.pushMessage(MessageKind.ToolRun, payload);
-      }
-    };
-
+    /**
+     * Commit-once (plan #355 / parent #352 decision C). The group lives only in
+     * host memory while a streak is open and is written to the bridge + session
+     * as a SINGLE complete `tool_run` row at a true boundary (assistant text,
+     * turn end, or group-full roll). We never live-push/`update_last` a ToolRun
+     * row during the streak — for interleaved or contiguous streaks alike —
+     * because `updateLastMessage` only rewrites the LAST ring row: once a
+     * Thinking bubble opens above a ToolRun slot that slot can never grow, so a
+     * live partial row would end stale (parent locked: live per-tool paint is
+     * removed for EVERY streak).
+     */
     const flushToolRun = () => {
       const payload = encodeToolRun(toolRunGroup);
-      const hadBridge = toolRunOnBridge;
       toolRunGroup = createToolRunGroup();
-      toolRunOnBridge = false;
       if (!payload) return;
-      // Already the live last ring message (stream path) → no duplicate push.
-      if (!hadBridge) bridge.pushMessage(MessageKind.ToolRun, payload);
+      bridge.pushMessage(MessageKind.ToolRun, payload);
       next = appendMessage(next, 'tool_run', payload);
     };
 
@@ -506,8 +503,9 @@ export async function runHarnessTurn(
           truncateToolTraceSummary(ev.summary),
         );
       }
-      const payload = encodeToolRun(toolRunGroup);
-      if (payload) pushOrUpdateToolRun(payload);
+      // Aggregate only — the complete N-item row is pushed by flushToolRun at a
+      // true boundary, so the bridge shows exactly one card per streak (no live
+      // growing totals, no clones).
     };
 
     const closeAssistantSegment = () => {
@@ -537,15 +535,11 @@ export async function runHarnessTurn(
       // re-push a full duplicated assistant segment (text→reason→text).
       closeAssistantSegment();
 
-      // A live tool-run group sits on the last ring row. `reasoning_delta` can
-      // arrive BETWEEN tools (reason then tool then reason then tool), and
-      // update_last cannot target a ToolRun row that is no longer newest. Flush
-      // the open streak to the bridge/session FIRST so the incoming Thinking
-      // opens above a settled group; otherwise each post-reasoning tool would
-      // push a progressively larger clone of the whole streak (review Major).
-      // Each contiguous tool streak then becomes its own group instead of N
-      // growing clones.
-      if (toolRunOnBridge) flushToolRun();
+      // Commit-once (plan #355 / parent #352 C): thinking is NOT a group
+      // boundary. Keep the in-host group open across the think↔tool interleave
+      // (the complete row is pushed once at a true boundary by flushToolRun);
+      // the incoming Thinking opens above an open (host-held) group — never
+      // fragmenting or cloning on the bridge.
 
       if (thinkingSegmentOpen) {
         thinkingSegment = truncateThinkingDisplay(thinkingSegment + chunk);
@@ -585,6 +579,10 @@ export async function runHarnessTurn(
       const text = finalText.trim();
       if (!text) return;
       if (!assistantStarted) {
+        // Open the reply only after committing any open tool-run group, so the
+        // single N-item row lands directly before the assistant bubble (bridge
+        // order tool_run → assistant matches session order).
+        flushToolRun();
         bridge.pushMessage(MessageKind.Assistant, text);
         assistantStarted = true;
         assistantSegmentOpen = true;
