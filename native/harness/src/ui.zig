@@ -312,9 +312,11 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
         });
         defer head.deinit();
 
+        // Natural label height + gravity_y centers caret/text with the trail pack.
+        // Do NOT force TOUCH_H min height on the expander — dvui pins the label to
+        // the top of a tall expander box (operator: "1 tool called" looked top-aligned).
         const open = dvui.expander(src, label, .{ .expanded = &l1_expanded }, .{
             .expand = .horizontal,
-            .min_size_content = .{ .h = TOUCH_H - 4 },
             .gravity_y = 0.5,
             .id_extra = id_base + 2,
         });
@@ -425,11 +427,11 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                 // redundant second status affordance (parent Goal 3 / issue review).
                 const item_label: []const u8 = if (has_detail and it.brief.len > 0) it.brief else it.name;
                 if (has_detail) {
+                    // Same as L0: natural height so label centers with the status glyph.
                     const open = dvui.expander(src, item_label, .{ .expanded = &l2_expanded }, .{
                         .id_extra = item_base + 2,
                         .expand = .horizontal,
                         .gravity_y = 0.5,
-                        .min_size_content = .{ .h = TOUCH_H - 6 },
                     });
                     if (open) toolrun_open_l2.put(l2_key, {}) catch {} else _ = toolrun_open_l2.remove(l2_key);
                 } else {
