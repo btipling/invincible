@@ -177,6 +177,26 @@ fn toolRunClipboard(text: []const u8) []const u8 {
 /// the count are separate runs because each face only covers a subset of the
 /// code points (DejaVu Sans Symbols has ✓/✗ but no ASCII digits; Noto has digits
 /// but no ✓/✗), so a single-face combined "✓ 3" run would tofu the other half.
+/// L0 chrome mark size — DejaVu symbols at default body size read as dust next to
+/// the "N tools called" heading; bump so ✓/✗/… match the count digits.
+fn chromeMarkFont(base: dvui.Font) dvui.Font {
+    return base.withSize(base.size + 5).withLineHeight(1.0);
+}
+
+/// L0 count digit size — keep with the mark, slightly larger than default heading.
+fn chromeCountFont() dvui.Font {
+    const h = dvui.Font.theme(.heading);
+    return h.withSize(h.size + 2).withLineHeight(1.0);
+}
+
+/// Clipboard emoji on the copy control — OpenMoji outlines need ~2× body px.
+fn chromeCopyFont() dvui.Font {
+    const body = dvui.Font.theme(.body);
+    return palette.fontEmoji()
+        .withSize(body.size * 1.9)
+        .withLineHeight(1.0);
+}
+
 fn paintStatusChip(
     src: std.builtin.SourceLocation,
     box_id: usize,
@@ -190,14 +210,17 @@ fn paintStatusChip(
     var chip = dvui.box(src, .{ .dir = .horizontal }, .{
         .gravity_y = 0.5,
         .id_extra = box_id,
+        // No extra pad — chips sit in the trailing chrome row with the copy btn.
+        .margin = .{ .x = 0, .y = 0, .w = 2, .h = 0 },
     });
     defer chip.deinit();
     {
         var tl = dvui.textLayout(src, .{}, .{
             .id_extra = glyph_id,
             .color_text = color,
-            .font = mark_font,
-            .margin = .{ .x = 0, .y = 0, .w = 4, .h = 0 },
+            .font = chromeMarkFont(mark_font),
+            .gravity_y = 0.5,
+            .margin = .{ .x = 0, .y = 0, .w = 3, .h = 0 },
         });
         tl.addText(mark, .{});
         tl.deinit();
@@ -206,8 +229,9 @@ fn paintStatusChip(
         var tl = dvui.textLayout(src, .{}, .{
             .id_extra = count_id,
             .color_text = color,
-            .font = .theme(.heading),
-            .margin = .{ .x = 0, .y = 0, .w = 6, .h = 0 },
+            .font = chromeCountFont(),
+            .gravity_y = 0.5,
+            .margin = .{ .x = 0, .y = 0, .w = 4, .h = 0 },
         });
         tl.format("{d}", .{count}, .{});
         tl.deinit();
@@ -279,6 +303,8 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
         (std.fmt.bufPrint(&header_label, "{d} tools called", .{total}) catch "tools");
 
     {
+        // Single horizontal row: expander (fills) + one trailing chrome pack so
+        // clipboard + status chips share the same vertical center as the label.
         var head = dvui.box(src, .{ .dir = .horizontal }, .{
             .expand = .horizontal,
             .min_size_content = .{ .w = 120, .h = TOUCH_H - 4 },
@@ -294,40 +320,41 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
         });
         if (open) toolrun_open_l1.put(l1_key, {}) catch {} else _ = toolrun_open_l1.remove(l1_key);
 
-        if (run.ok > 0 or run.fail > 0 or run.pending > 0) {
-            var chips = dvui.box(src, .{ .dir = .horizontal }, .{
+        // Trailing pack (right): 📋 then ✓N / ✗N / …N — one gravity box so
+        // padding/baseline match (operator: glyphs were tiny + clipboard pad fat
+        // + row misaligned when chips and button were separate gravity_x children).
+        {
+            var trail = dvui.box(src, .{ .dir = .horizontal }, .{
                 .gravity_x = 1.0,
                 .gravity_y = 0.5,
                 .min_size_content = .{ .w = 0, .h = TOUCH_H - 8 },
                 .id_extra = id_base + 3,
             });
-            defer chips.deinit();
+            defer trail.deinit();
+
+            // Compact clipboard — tight pad, larger OpenMoji glyph.
+            if (dvui.button(src, "📋", .{}, .{
+                .gravity_y = 0.5,
+                .style = .content,
+                .id_extra = id_base + 29,
+                .min_size_content = .{ .w = 22, .h = 22 },
+                .padding = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
+                .font = chromeCopyFont(),
+                .corners = .round(5),
+                .color_fill = palette.teal_bg,
+                .color_text = palette.teal_accent,
+                .color_border = palette.teal_border,
+                .margin = .{ .x = 0, .y = 0, .w = 6, .h = 0 },
+            })) {
+                // Same-frame write only — do not retain ring slices.
+                dvui.clipboardTextSet(toolRunClipboard(text));
+            }
+
             // Status marks must not tofu: ✓/✗ come from DejaVu Sans Symbols,
             // `…` from the Noto heading face (see paintStatusChip).
             if (run.ok > 0) paintStatusChip(src, id_base + 20, id_base + 21, id_base + 22, palette.teal_accent, "✓", run.ok, palette.fontSymbols());
             if (run.fail > 0) paintStatusChip(src, id_base + 23, id_base + 24, id_base + 25, palette.ember_accent, "✗", run.fail, palette.fontSymbols());
             if (run.pending > 0) paintStatusChip(src, id_base + 26, id_base + 27, id_base + 28, palette.warm_accent, "…", run.pending, .theme(.heading));
-        }
-        // Headerless chrome (parent E): tool-run rows have no `tools` kind band
-        // (painted in the message loop only for non-tool kinds); the Copy
-        // affordance moves onto this L0 header row so it is never lost.
-        {
-            if (dvui.button(src, "📋", .{}, .{
-                .gravity_y = 0.5,
-                .gravity_x = 1.0,
-                .style = .content,
-                .id_extra = id_base + 29,
-                .min_size_content = .{ .w = 40, .h = TOUCH_H - 8 },
-                .font = palette.fontEmoji(),
-                .corners = .round(6),
-                .color_fill = palette.teal_bg,
-                .color_text = palette.teal_accent,
-                .color_border = palette.teal_border,
-                .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
-            })) {
-                // Same-frame write only — do not retain ring slices.
-                dvui.clipboardTextSet(toolRunClipboard(text));
-            }
         }
     }
 
@@ -381,7 +408,7 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                         .id_extra = item_base + 1,
                         .color_text = glyph_color,
                         .gravity_y = 0.5,
-                        .font = glyph_font,
+                        .font = chromeMarkFont(glyph_font),
                         .margin = .{ .x = 4, .y = 0, .w = 4, .h = 0 },
                     });
                     tl.addText(switch (it.status) {
@@ -702,9 +729,10 @@ pub fn frame() !void {
                                 .gravity_y = 0.5,
                                 .style = .content,
                                 .id_extra = i *% 1024 + 2,
-                                .min_size_content = .{ .w = 40, .h = TOUCH_H - 8 },
-                                .font = palette.fontEmoji(),
-                                .corners = .round(6),
+                                .min_size_content = .{ .w = 22, .h = 22 },
+                                .padding = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
+                                .font = chromeCopyFont(),
+                                .corners = .round(5),
                                 .color_fill = palette.teal_bg,
                                 .color_text = palette.teal_accent,
                                 .color_border = palette.teal_border,
@@ -739,9 +767,10 @@ pub fn frame() !void {
                                     .gravity_y = 0.5,
                                     .style = .content,
                                     .id_extra = i *% 1024 + 2,
-                                    .min_size_content = .{ .w = 40, .h = TOUCH_H - 8 },
-                                    .font = palette.fontEmoji(),
-                                    .corners = .round(6),
+                                    .min_size_content = .{ .w = 22, .h = 22 },
+                                    .padding = .{ .x = 4, .y = 4, .w = 4, .h = 4 },
+                                    .font = chromeCopyFont(),
+                                    .corners = .round(5),
                                     .color_fill = palette.teal_bg,
                                     .color_text = palette.teal_accent,
                                     .color_border = palette.teal_border,
