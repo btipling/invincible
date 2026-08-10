@@ -213,6 +213,28 @@ describe('buildToolPreview (phase 3 #353 — bounded redacted L2 detail)', () =>
     const preview = buildToolPreview('exec ls\r\nexit=0\r\nstdout:\r\n\tfoo\tbar');
     expect(preview).toBe('exec ls\nexit=0\nstdout:\n    foo    bar');
   });
+
+  it('keeps the REAL output tail when the assembled preview must be char-capped', () => {
+    // Adversarial review #359 Major: head/tail are chosen from the FULL output
+    // BEFORE the char cap, so a capped preview never shows a "tail" that is
+    // really a slice of a truncated prefix.
+    const HEAD = TOOL_RUN_PREVIEW_HEAD_LINES;
+    const TAIL = TOOL_RUN_PREVIEW_TAIL_LINES;
+    const headLines = Array.from({ length: HEAD }, () => 'H'.repeat(2400));
+    const tailLines = Array.from(
+      { length: TAIL },
+      (_, i) => `REAL_END_${i} ` + 'T'.repeat(2400),
+    );
+    const body = [...headLines, 'middle-a', 'middle-b', ...tailLines].join('\n');
+    const preview = buildToolPreview(body)!;
+    expect(preview.length).toBeLessThanOrEqual(TOOL_RUN_PREVIEW_MAX_CHARS + 1);
+    // The genuine end-of-output survives the cap (the last-tail marker is present).
+    expect(preview).toContain(`REAL_END_${TAIL - 1} `);
+    expect(preview).toContain('REAL_END_0 ');
+    // The collapsed middle lines are gone; head content is still present.
+    expect(preview).not.toContain('middle-b');
+    expect(preview).toContain('HHHH');
+  });
 });
 
 describe('LIVE_TOOL_LINES_MAX', () => {

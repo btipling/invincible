@@ -47,11 +47,15 @@ Unknown types are ignored (forward-compatible). String fields are redacted serve
 The stream `tool_result` event carries an **optional** `preview` field: a bounded,
 redacted level-2 detail body for the harness expander (phase 3 #353). It is built
 from the already **flattened + redacted** tool output (never a raw MCP JSON
-envelope), keeps the first **40** / last **10** lines joined by
-`… (M more lines)`, and is capped at `TOOL_RUN_PREVIEW_MAX_CHARS` (100k) — well
-under the 262 KiB/msg cap. Short single-line results omit `preview`, so the host
-paints a static label instead of a duplicate-of-L1 blank expander. The host feeds
-`preview` into the level-2 `detail` of the aggregated `tool_run` message.
+envelope), keeps the **real** first **40** / last **10** lines of the full output
+joined by `… (M more lines)` — head/tail are taken **before** the char cap, so
+the L2 "tail" is genuinely the end-of-output — and is capped at
+`TOOL_RUN_PREVIEW_MAX_CHARS` (100k) per tool. Short single-line results omit
+`preview`, so the host paints a static label instead of a duplicate-of-L1 blank
+expander. The host feeds `preview` into the level-2 `detail` of the aggregated
+`tool_run` message; because a whole `tool_run` row encodes into ONE message, a
+group-level encode budget + a hard clamp to the 262 144-byte/msg cap keep a
+multi-preview streak from overflowing it (never a silent mid-payload clip).
 
 **JSON fallback** (`Accept` other than `text/event-stream`) keeps a **one-line
 level-2 detail from `summary`** — documented parity for the tests/simple-clients
@@ -115,7 +119,8 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Thinking / line chars | **256 KiB** | Wasm `MAX_MSG_LEN` only (bridge hard edge) |
 | Ring slots | **2048** | Wasm `MAX_MSG`; older drop when full; Load earlier for SessionStore |
 | Tool summary length | **salient ≤160** | `salientToolBits` — path/counts/status only; **not** full read_file/exec/http bodies |
-| Tool level-2 `preview` | **≤ 100k** (`TOOL_RUN_PREVIEW_MAX_CHARS`), head 40 / tail 10 lines + `… (M more lines)` | Bounded + redacted server-side; short single-line results omit it (static label) |
+| Tool level-2 `preview` | **≤ 100k per tool** (`TOOL_RUN_PREVIEW_MAX_CHARS`), real head 40 / tail 10 lines + `… (M more lines)` | Bounded + redacted server-side; short single-line results omit it (static label). Whole-group encoded-detail budget + hard clamp keep any multi-preview `tool_run` row ≤ 262 144 B/msg |
+| `tool_run` group payload | **≤ 262 144 B** (`TOOL_RUN_MSG_HARD_MAX`) | Host clips/omits memorized previews (explicit `…` or static label) rather than overflowing the ring/cloud per-msg cap |
 | JSON end-of-turn toolTrace lines | **none** | All entries shown; level-2 detail stays the one-line `summary` (parity) |
 
 ## Deferred (not in stream contract yet)

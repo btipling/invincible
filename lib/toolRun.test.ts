@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BRIEF_PREVIEW_MAX,
   TOOL_RUN_ITEMS_MAX,
+  TOOL_RUN_MSG_HARD_MAX,
   TOOL_RUN_VERSION,
   addToolResult,
   addToolStart,
@@ -190,12 +191,49 @@ describe('buildTraceGroups (JSON/non-stream fallback)', () => {
     // No preview (short result from the backend) → empty detail.
     addToolResult(g, 'pwd', true, 'pwd · ✓ ok · /tmp');
     expect(g.items[1]!.detail).toBe('');
-    // Empty summary → empty detail regardless of preview.
+    // Empty summary but a real preview → keep the preview (backend only emits a
+    // preview when it is richer than an L1 one-liner; never silently drop a body).
     addToolResult(g, 'noop', true, '', 'some preview');
-    expect(g.items[2]!.detail).toBe('');
+    expect(g.items[2]!.detail).toBe('some preview');
     // Richer multi-line preview → kept verbatim (body keeps its symbols).
     addToolResult(g, 'exec', true, 'exec · ✓ ok · exit=0', 'cmd\nline two\n→ done');
     expect(g.items[3]!.detail).toBe('cmd\nline two\n→ done');
+  });
+
+  it('clamps a multi-preview group so the encoded message stays ≤ TOOL_RUN_MSG_HARD_MAX', () => {
+    // Adversarial review #359 Major / Nit L6: several near-100k previews in ONE
+    // group must never overflow the 262 144-byte ring/cloud per-msg cap. The
+    // group encode budget clips/omits later previews (explicit `…` or a dropped
+    // static-label detail), never a silent mid-payload truncation.
+    const g = createToolRunGroup();
+    const big = 'y'.repeat(99_000);
+    addToolResult(g, 'exec', true, 'exec · ✓ ok', big);
+    addToolResult(g, 'read_file', true, 'read_file · ✓ ok', big);
+    addToolResult(g, 'exec', true, 'exec · ✓ ok', big);
+    const text = encodeToolRun(g)!;
+    expect(text.length).toBeLessThanOrEqual(TOOL_RUN_MSG_HARD_MAX);
+    // Header + rows stay 5-field aligned → decodes cleanly, counts exact.
+    const decoded = decodeToolRun(text);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.items).toHaveLength(3);
+    expect(countToolRunItems(decoded!.items)).toEqual({ ok: 3, fail: 0, pending: 0 });
+    // At least the first preview survives fully; the message still fits.
+    expect(decoded!.items[0]!.detail).toBe(big);
+  });
+
+  it('buildTraceGroups can never overflow the per-message hard cap either', () => {
+    const trace = Array.from({ length: 40 }, (_, i) => ({
+      name: `t${i}`,
+      ok: true,
+      summary: 's'.repeat(20_000), // oversize summaries still bounded by group budget
+    }));
+    const groups = buildTraceGroups(trace);
+    expect(groups.length).toBeGreaterThan(0);
+    for (const group of groups) {
+      const text = encodeToolRun(group)!;
+      expect(text.length).toBeLessThanOrEqual(TOOL_RUN_MSG_HARD_MAX);
+      expect(decodeToolRun(text)).not.toBeNull();
+    }
   });
 });
 

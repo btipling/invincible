@@ -40,9 +40,13 @@ export function encodeSseData(event: AgentStreamEvent): string {
 export const TOOL_LINE_SALIENT_MAX = 160;
 
 /**
- * Cap for the bounded, redacted L2 `preview` fed into the `toolrun` v1
+ * Per-tool cap for the bounded, redacted L2 `preview` fed into the `toolrun` v1
  * `detail` field (plan #353 / parent #352 decision C + B-source). Mirrors
- * `TOOL_TRACE_SUMMARY_MAX_CHARS` (100k); always well under the 262 KiB/msg cap.
+ * `TOOL_TRACE_SUMMARY_MAX_CHARS` (100k). This is the per-tool character cap, not
+ * the per-message cap: the host enforces a whole-group encoded-detail budget
+ * (`lib/toolRun.ts` `TOOL_RUN_GROUP_DETAIL_ENC_MAX` + encode-time hard clamp) so
+ * a multi-item streak of large previews can never overflow the 262 144-byte
+ * ring/cloud message cap (adversarial review #359 Major).
  */
 export const TOOL_RUN_PREVIEW_MAX_CHARS = 100_000;
 
@@ -55,28 +59,56 @@ export const TOOL_RUN_PREVIEW_TAIL_LINES = 10;
 
 /**
  * Build the bounded, redacted L2 `preview` for a `tool_result` from already
- * flattened + redacted tool output. Keeps the head + tail of long multi-line
- * bodies joined by `… (M more lines)`, capped at `TOOL_RUN_PREVIEW_MAX_CHARS`.
- * Returns `undefined` (not a pretend-expand) when the output is a short
- * single-line result that adds nothing beyond the L1 one-liner — the host then
- * keeps the static label path (no blank expander). Never raw MCP envelopes.
+ * flattened + redacted tool output. Head/tail are taken from the FULL output
+ * (first `HEAD` lines / last `TAIL` lines) joined by `… (M more lines)` and only
+ * then is the assembled preview char-capped at `TOOL_RUN_PREVIEW_MAX_CHARS` — so
+ * the L2 "tail" is always the real end-of-output, never a slice of a truncated
+ * prefix (adversarial review #359 Major). Returns `undefined` (not a
+ * pretend-expand) when the output is a short single-line result that adds
+ * nothing beyond the L1 one-liner — the host then keeps the static label path
+ * (no blank expander). Never raw MCP envelopes.
  */
 export function buildToolPreview(redacted: string): string | undefined {
-  let text = (redacted ?? '').replace(/\r\n/g, '\n').replace(/\t/g, '    ').trim();
-  if (!text) return undefined;
-  const lines = text.split('\n');
-  if (lines.length === 1 && text.length <= TOOL_RUN_PREVIEW_MIN_LEN) return undefined;
-  if (text.length > TOOL_RUN_PREVIEW_MAX_CHARS) {
-    text = `${text.slice(0, TOOL_RUN_PREVIEW_MAX_CHARS)}…`;
+  const norm = (redacted ?? '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\t/g, '    ')
+    .trim();
+  if (!norm) return undefined;
+  const lines = norm.split('\n');
+  // Short single-line result adds nothing beyond the L1 one-liner — omit.
+  if (lines.length === 1 && norm.length <= TOOL_RUN_PREVIEW_MIN_LEN) return undefined;
+
+  const HEAD = TOOL_RUN_PREVIEW_HEAD_LINES;
+  const TAIL = TOOL_RUN_PREVIEW_TAIL_LINES;
+  // Line-window fits — no middle collapse, just char-cap the whole block
+  // (which ends on the real tail line; there is no mid-file "tail" here).
+  if (lines.length <= HEAD + TAIL) {
+    return capPrefix(norm, TOOL_RUN_PREVIEW_MAX_CHARS);
   }
-  const bounded = text.split('\n');
-  if (bounded.length <= TOOL_RUN_PREVIEW_HEAD_LINES + TOOL_RUN_PREVIEW_TAIL_LINES + 1) {
-    return text;
-  }
-  const head = bounded.slice(0, TOOL_RUN_PREVIEW_HEAD_LINES).join('\n');
-  const tail = bounded.slice(-TOOL_RUN_PREVIEW_TAIL_LINES).join('\n');
-  const skipped = bounded.length - TOOL_RUN_PREVIEW_HEAD_LINES - TOOL_RUN_PREVIEW_TAIL_LINES;
-  return `${head}\n… (${skipped} more lines)\n${tail}`;
+
+  // Collapse on the FULL output: real first HEAD lines + real last TAIL lines.
+  const headText = lines.slice(0, HEAD).join('\n');
+  const tailText = lines.slice(-TAIL).join('\n');
+  const skipped = lines.length - HEAD - TAIL;
+  const sep = `\n… (${skipped} more lines)\n`;
+  const body = `${headText}${sep}${tailText}`;
+  if (body.length <= TOOL_RUN_PREVIEW_MAX_CHARS) return body;
+
+  // Head+tail text alone exceeds the cap (a few huge lines). Keep the TRUE tail
+  // and fold the head down to fit (each side caps with an explicit `…`); never
+  // show a "tail" that is really a sliced prefix.
+  const tailBudget = Math.max(0, TOOL_RUN_PREVIEW_MAX_CHARS - sep.length);
+  const keptTail = capPrefix(tailText, tailBudget);
+  const remaining = TOOL_RUN_PREVIEW_MAX_CHARS - sep.length - keptTail.length;
+  const keptHead = capPrefix(headText, remaining);
+  return `${keptHead}${sep}${keptTail}`;
+}
+
+/** Keep the leading part of `s` within `max` chars, appending an explicit `…`. */
+function capPrefix(s: string, max: number): string {
+  if (s.length <= max) return s;
+  if (max <= 1) return '…';
+  return `${s.slice(0, max - 1)}…`;
 }
 
 /**

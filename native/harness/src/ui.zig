@@ -230,6 +230,15 @@ fn isCommandLikeRun(name: []const u8) bool {
         std.mem.eql(u8, name, "pwd");
 }
 
+/// True when a tool-run level-2 body should paint in the embedded Vera Sans Mono
+/// face: command-like builtins (allowlist above) OR any multi-line detail (an
+/// MCP/custom tool's dense stdout). Single-line prose detail stays the body face
+/// (adversarial review #359 Minor — multi-line output should read as a block).
+fn detailUsesMono(name: []const u8, detail: []const u8) bool {
+    if (isCommandLikeRun(name)) return true;
+    return std.mem.indexOfScalar(u8, detail, '\n') != null;
+}
+
 /// Paint an aggregated tool-run control (protocol v10 / kind 6).
 ///
 /// Level 0 (default-collapsed): header `N tools called` + colored count chips
@@ -426,7 +435,7 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                 // http) paint in the embedded Vera Sans Mono face for a readable
                 // aligned block; prose/other detail stays the body face. Symbols
                 // still route to their DejaVu/OpenMoji faces via addTextMixed.
-                const detail_font: dvui.Font = if (isCommandLikeRun(it.name))
+                const detail_font: dvui.Font = if (detailUsesMono(it.name, it.detail))
                     palette.fontMono()
                 else
                     .theme(.body);
