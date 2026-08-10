@@ -1539,3 +1539,13 @@ describe('hydrate coalesce — reload/hydrate scannability (plan #365)', () => {
     expect(out.map((m) => m.text)).toEqual(msgs.map((m) => m.text));
   });
 });
+
+describe('PONG smoke removal regression lock (#367)', () => {
+  it('does not export the host smoke constant', async () => {
+    const mod: Record<string, unknown> = await import('./harnessChat');
+    // Permanent absence lock: re-adding a dedicated PONG/SMOKE product control
+    // must fail this suite, not silently ship.
+    expect(mod.HARNESS_SMOKE_PROMPT).toBeUndefined();
+    expect(mod.SMOKE_PROMPT).toBeUndefined();
+  });
+});
