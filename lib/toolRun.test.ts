@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BRIEF_PREVIEW_MAX,
+  TOOL_RUN_GROUP_DETAIL_ENC_MAX,
   TOOL_RUN_ITEMS_MAX,
   TOOL_RUN_MSG_HARD_MAX,
   TOOL_RUN_VERSION,
@@ -12,9 +13,12 @@ import {
   createToolRunGroup,
   decodeToolRun,
   encodeToolRun,
+  encodeToolRunPayload,
   hasRunningTool,
+  mergeToolRunPayloads,
   toolRunIsFull,
 } from './toolRun';
+import type { ToolRunPayload } from './toolRun';
 
 describe('toolRun encode/decode (protocol v10 / plan #345)', () => {
   it('round-trips a group with all statuses + counts', () => {
@@ -296,5 +300,101 @@ describe('asciiStatus / no symbol tofu in brief·detail text (#358 Major)', () =
     // L1 `brief` (single Noto run) must be ASCII.
     expect(g.items[0]!.detail).toBe('title line\nbody → 200\nmore');
     expect(g.items[0]!.detail).toContain('→');
+  });
+});
+
+describe('toolRun hydrate coalesce (plan #365)', () => {
+  function mk(n: number, offset: number): ToolRunPayload {
+    return {
+      ok: n,
+      fail: 0,
+      pending: 0,
+      items: Array.from({ length: n }, (_, i) => ({
+        id: i + 1,
+        status: 'ok' as const,
+        name: `t${offset + i}`,
+        brief: `t${offset + i} ok`,
+        detail: '',
+      })),
+    };
+  }
+
+  it('mergeToolRunPayloads appends consecutive payload items and recounts the header', () => {
+    const g1 = createToolRunGroup();
+    addToolStart(g1, 'list_dir');
+    addToolResult(g1, 'list_dir', true, 'list_dir ok');
+    const g2 = createToolRunGroup();
+    addToolResult(g2, 'exec', false, 'exec failed');
+    const p1 = decodeToolRun(encodeToolRun(g1)!)!;
+    const p2 = decodeToolRun(encodeToolRun(g2)!)!;
+    const merged = mergeToolRunPayloads([p1, p2]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.items.map((it) => it.name)).toEqual(['list_dir', 'exec']);
+    expect(merged[0]!.items.map((it) => it.status)).toEqual(['ok', 'fail']);
+    expect(merged[0]!.ok).toBe(1);
+    expect(merged[0]!.fail).toBe(1);
+    // Re-encode and re-decode round-trips cleanly on the wire.
+    const text = encodeToolRunPayload(merged[0]!);
+    expect(text).not.toBeNull();
+    const d = decodeToolRun(text!);
+    expect(d).not.toBeNull();
+    expect(d!.items.map((it) => it.name)).toEqual(['list_dir', 'exec']);
+  });
+
+  it('renumbers ids so per-item expand keys stay unique after merging', () => {
+    // Both source groups independently start ids at 1 → merged ids must not collide.
+    const merged = mergeToolRunPayloads([mk(3, 0), mk(3, 10)]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.items.map((it) => it.id)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('rolls at TOOL_RUN_ITEMS_MAX and keeps counts exact across groups', () => {
+    const merged = mergeToolRunPayloads([mk(100, 0), mk(100, 100), mk(100, 200)]);
+    expect(merged).toHaveLength(2);
+    expect(merged[0]!.items).toHaveLength(TOOL_RUN_ITEMS_MAX);
+    expect(merged[1]!.items).toHaveLength(100);
+    let total = 0;
+    for (const g of merged) total += g.items.length;
+    expect(total).toBe(300);
+    let first = 0;
+    for (const g of merged) first += g.items[0]!.name === 't0' ? 1 : 0;
+    expect(first).toBe(1); // t0 lives in exactly one merged group
+  });
+
+  it('reclamps summed detail so a merged group fits the encode budget', () => {
+    const big = 'y'.repeat(150_000);
+    const mkBig = (detail: string): ToolRunPayload => ({
+      ok: 1,
+      fail: 0,
+      pending: 0,
+      items: [
+        { id: 1, status: 'ok', name: 'exec', brief: 'exec ok', detail },
+      ],
+    });
+    const merged = mergeToolRunPayloads([mkBig(big), mkBig(big)]);
+    expect(merged).toHaveLength(1);
+    // First detail survives fully; the second is clipped (explicit …) to the budget.
+    expect(merged[0]!.items[0]!.detail).toBe(big);
+    expect(merged[0]!.items[1]!.detail).toMatch(/…$/);
+    const text = encodeToolRunPayload(merged[0]!);
+    expect(text).not.toBeNull();
+    expect(text!.length).toBeLessThanOrEqual(TOOL_RUN_MSG_HARD_MAX);
+    const d = decodeToolRun(text!);
+    expect(d).not.toBeNull();
+    expect(d!.items).toHaveLength(2);
+    expect(d!.ok).toBe(2);
+  });
+
+  it('returns [] for empty input and is a no-op for a single small payload', () => {
+    expect(mergeToolRunPayloads([])).toEqual([]);
+    const single = mergeToolRunPayloads([mk(2, 0)]);
+    expect(single).toHaveLength(1);
+    expect(single[0]!.items.map((it) => it.name)).toEqual(['t0', 't1']);
+    // The merged payload never exceeds the per-group encode budget.
+    single.forEach((p) => {
+      let enc = 0;
+      for (const it of p.items) enc += JSON.stringify(it.detail).length;
+      expect(enc).toBeLessThanOrEqual(TOOL_RUN_GROUP_DETAIL_ENC_MAX);
+    });
   });
 });
