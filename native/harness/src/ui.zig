@@ -214,6 +214,31 @@ fn paintStatusChip(
     }
 }
 
+/// True for tool names whose level-2 detail is a command/output block (exec
+/// stdout/stderr, filesystem results, http bodies). Those previews paint in the
+/// embedded Vera Sans Mono face for readable alignment (phase 3 #353); other
+/// tools fall back to the body face.
+fn isCommandLikeRun(name: []const u8) bool {
+    return std.mem.eql(u8, name, "exec") or
+        std.mem.eql(u8, name, "http_get") or
+        std.mem.eql(u8, name, "http_head") or
+        std.mem.eql(u8, name, "read_file") or
+        std.mem.eql(u8, name, "write_file") or
+        std.mem.eql(u8, name, "str_replace") or
+        std.mem.eql(u8, name, "list_dir") or
+        std.mem.eql(u8, name, "change_dir") or
+        std.mem.eql(u8, name, "pwd");
+}
+
+/// True when a tool-run level-2 body should paint in the embedded Vera Sans Mono
+/// face: command-like builtins (allowlist above) OR any multi-line detail (an
+/// MCP/custom tool's dense stdout). Single-line prose detail stays the body face
+/// (adversarial review #359 Minor — multi-line output should read as a block).
+fn detailUsesMono(name: []const u8, detail: []const u8) bool {
+    if (isCommandLikeRun(name)) return true;
+    return std.mem.indexOfScalar(u8, detail, '\n') != null;
+}
+
 /// Paint an aggregated tool-run control (protocol v10 / kind 6).
 ///
 /// Level 0 (default-collapsed): header `N tools called` + colored count chips
@@ -398,7 +423,7 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                 var detail = dvui.box(src, .{ .dir = .vertical }, .{
                     .id_extra = item_base + 3,
                     .expand = .horizontal,
-                    .margin = .{ .x = 22, .y = 0, .w = 0, .h = 0 },
+                    .margin = .{ .x = 26, .y = 0, .w = 0, .h = 0 },
                 });
                 defer detail.deinit();
                 var tl = dvui.textLayout(src, .{}, .{
@@ -406,7 +431,15 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
                     .expand = .horizontal,
                     .color_text = palette.teal_text,
                 });
-                mixed_text.addTextMixed(tl, it.detail, .theme(.body), .{
+                // Phase 3 (#353): command/output previews (exec, filesystem,
+                // http) paint in the embedded Vera Sans Mono face for a readable
+                // aligned block; prose/other detail stays the body face. Symbols
+                // still route to their DejaVu/OpenMoji faces via addTextMixed.
+                const detail_font: dvui.Font = if (detailUsesMono(it.name, it.detail))
+                    palette.fontMono()
+                else
+                    .theme(.body);
+                mixed_text.addTextMixed(tl, it.detail, detail_font, .{
                     .color_text = palette.teal_text,
                 });
                 tl.deinit();

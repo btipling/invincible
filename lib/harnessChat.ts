@@ -501,6 +501,7 @@ export async function runHarnessTurn(
           ev.name,
           ev.ok,
           truncateToolTraceSummary(ev.summary),
+          ev.preview,
         );
       }
       // Aggregate only — the complete N-item row is pushed by flushToolRun at a

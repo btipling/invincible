@@ -23,12 +23,33 @@
 export const TOOL_RUN_VERSION = 1 as const;
 
 /**
- * Max items stored in a single `tool_run` group. Keeps any one session message
- * well under the cloud `~262 KiB`/msg cap even for very long uninterrupted
- * agentic streaks; when a group would exceed this the host rolls a new group
- * (counts stay exact across groups).
+ * Max items stored in a single `tool_run` group; when a group would exceed this
+ * the host rolls a new group (counts stay exact across groups). Separately, the
+ * whole group is encoded into ONE bridge message that must stay under
+ * `TOOL_RUN_MSG_HARD_MAX` (Wasm `MAX_MSG_LEN` = 262 144), so `addToolResult` /
+ * `buildTraceGroups` also enforce a whole-group encoded-`detail` budget
+ * (`TOOL_RUN_GROUP_DETAIL_ENC_MAX`) that clips or omits previews so a multi-item
+ * streak carrying several large previews can never overflow the ring/cloud cap.
  */
 export const TOOL_RUN_ITEMS_MAX = 200 as const;
+
+/**
+ * Hard cap for a single encoded `tool_run` payload — matches the Wasm ring
+ * `MAX_MSG_LEN` and the cloud `262 144`-byte-per-msg cap. `encodeToolRun` never
+ * emits a payload longer than this.
+ */
+export const TOOL_RUN_MSG_HARD_MAX = 262_144;
+
+/**
+ * Whole-group budget (in TLS-escaped chars) for the summed `detail` fields of a
+ * group. The encoded payload also carries the header, per-item `name`/`brief`,
+ * the tab/newline separators, and escape inflation, so this value leaves
+ * `262 144 − 229 376 = 32 768` bytes of headroom for that overhead. When a
+ * group's accumulated details would exceed this, later previews
+ * are clipped to the remaining budget (with an explicit `…`) or omitted entirely
+ * (static label) — never a silent mid-payload clip.
+ */
+export const TOOL_RUN_GROUP_DETAIL_ENC_MAX = 229_376;
 
 export type ToolRunStatus = 'running' | 'ok' | 'fail';
 
@@ -39,16 +60,19 @@ export interface ToolRunItem {
   name: string;
   /** One-liner level-1 preview (single line, ≤ BRIEF_PREVIEW_MAX chars). */
   brief: string;
-  /** Full level-2 detail — the already-truncated per-tool summary (may be long). */
+  /** Level-2 detail — the bounded, redacted `preview` head/tail (stream path)
+   * or the one-line summary (JSON fallback) when it meaningfully enriches
+   * `brief`; empty for short single-line results (Wasm paints a static label,
+   * no blank expander). Subject to the whole-group encode budget. */
   detail: string;
 }
 
 /**
- * Level-1 preview cap. Level-2 `detail` keeps the full (already server-truncated)
- * tool summary; the collapsed `brief` is a collapse-whitespace preview so the
- * expand-to-detail tier genuinely adds the full text once a summary exceeds a
- * single short line. Empty/all-whitespace summaries fall back to a name+status
- * one-liner.
+ * Level-1 preview cap. Level-2 `detail` is the bounded server-side `preview`
+ * (stream) or the one-line summary (JSON fallback) when it genuinely exceeds
+ * this one-liner, so the expand-to-detail tier adds real content; the collapsed
+ * `brief` is a collapse-whitespace preview. Empty/all-whitespace summaries fall
+ * back to a name+status one-liner.
  */
 export const BRIEF_PREVIEW_MAX = 64 as const;
 
@@ -103,10 +127,12 @@ export interface ToolRunPayload {
 /** Mutable in-turn aggregation state (host `harnessChat.runHarnessTurn`). */
 export interface ToolRunGroup {
   items: ToolRunItem[];
+  /** Running TLS-escaped-char total of all items' `detail` fields (group budget). */
+  detailEncUsed: number;
 }
 
 export function createToolRunGroup(): ToolRunGroup {
-  return { items: [] };
+  return { items: [], detailEncUsed: 0 };
 }
 
 /** True once a group stores TOOL_RUN_ITEMS_MAX items (roll to a new group). */
@@ -132,8 +158,91 @@ export function addToolStart(group: ToolRunGroup, name: string): void {
     status: 'running',
     name,
     brief: `${name} · running…`,
-    detail: '',
+    detail: storeDetail(group, ''),
   });
+}
+
+/**
+ * Clip `s` so its TLS-encoded length (`esc`) fits within `budget`, keeping a
+ * leading prefix plus a visible `…` marker. Bounded by the group encode budget —
+ * never a silent mid-payload clip. `'…'` is not escaped by `esc()`, so it
+ * counts 1 char.
+ */
+function clipToEncBudget(s: string, budget: number): string {
+  if (budget < 2) return '';
+  const keep = budget - 1; // room for the marker
+  let enc = 0;
+  let cut = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!;
+    const inc = c === '\\' || c === '\n' || c === '\t' ? 2 : 1;
+    if (enc + inc > keep) break;
+    enc += inc;
+    cut = i + 1;
+  }
+  if (cut === 0) return '…';
+  return `${s.slice(0, cut)}…`;
+}
+
+/**
+ * Store an item's `detail` against the group's encoded-detail budget
+ * (`TOOL_RUN_GROUP_DETAIL_ENC_MAX`). Returns the value to persist: the full
+ * `detail` when it and the existing items fit, a clipped prefix (with `…`) when
+ * only part fits, or `''` when no room remains → Wasm paints a static label (no
+ * pretend expand, never a silent overflow past `TOOL_RUN_MSG_HARD_MAX`).
+ * `prevDetail` lets an in-place replacement (completing a running item, or the
+ * JSON-path overwrite) release the old bytes before charging the new ones.
+ */
+function storeDetail(
+  group: ToolRunGroup,
+  detail: string,
+  prevDetail = '',
+): string {
+  const prevEnc = esc(prevDetail ?? '').length;
+  const base = Math.max(0, group.detailEncUsed - prevEnc);
+  if (!detail) {
+    group.detailEncUsed = base;
+    return '';
+  }
+  const remaining = TOOL_RUN_GROUP_DETAIL_ENC_MAX - base;
+  if (remaining <= 0) {
+    group.detailEncUsed = base;
+    return '';
+  }
+  const enc = esc(detail).length;
+  if (enc <= remaining) {
+    group.detailEncUsed = base + enc;
+    return detail;
+  }
+  const clipped = clipToEncBudget(detail, remaining);
+  group.detailEncUsed = base + esc(clipped).length;
+  return clipped;
+}
+
+/**
+ * Level-2 `detail` for a tool row. Prefers the bounded `preview` (real
+ * command/output detail from the backend tool_result) when it is meaningfully
+ * richer than the collapsible L1 `brief`; otherwise returns empty so the Wasm
+ * paints a static label instead of a duplicate-of-L1 blank expander (phase 3
+ * #353 / parent #352 decision C).
+ */
+export function meaningfulDetail(
+  summary: string,
+  preview: string | undefined,
+): string {
+  const line = asciiStatus((summary ?? '').trim());
+  const p = (preview ?? '').replace(/\r\n/g, '\n').trim();
+  if (!p) return '';
+  // No summary but a real preview → keep the preview (the backend only emits a
+  // preview when it is richer than an L1 one-liner, so there is no pretend
+  // expand and no silently dropped body — review #359 Minor).
+  if (!line) return p;
+  // Compare against the sanitized L1 brief (arrows already ASCII in brief) so a
+  // `→`-bearing preview is not mistaken for the identical one-liner.
+  const brief = briefSafe(compactPreview(line));
+  // Identical to the collapsed one-liner (or the full summary) → no pretend expand.
+  if (p === brief || p === line) return '';
+  return p;
 }
 
 export function addToolResult(
@@ -141,8 +250,10 @@ export function addToolResult(
   name: string,
   ok: boolean,
   summary: string,
+  preview?: string,
 ): void {
   const line = asciiStatus((summary ?? '').trim());
+  const detail = meaningfulDetail(summary, preview);
   // Complete the most recent running item with the same name (in place), else
   // append a done item (e.g. a result for a start we never observed).
   for (let i = group.items.length - 1; i >= 0; i--) {
@@ -150,7 +261,7 @@ export function addToolResult(
     if (it && it.status === 'running' && it.name === name) {
       it.status = ok ? 'ok' : 'fail';
       it.brief = briefSafe(compactPreview(line)) || `${name} · ${ok ? 'ok' : 'failed'}`;
-      it.detail = line;
+      it.detail = storeDetail(group, detail, it.detail);
       return;
     }
   }
@@ -159,7 +270,7 @@ export function addToolResult(
     status: ok ? 'ok' : 'fail',
     name,
     brief: briefSafe(compactPreview(line)) || `${name} · ${ok ? 'ok' : 'failed'}`,
-    detail: line,
+    detail: storeDetail(group, detail),
   });
 }
 
@@ -199,7 +310,7 @@ export function buildTraceGroups(
       runningMatch.status = entry.ok ? 'ok' : 'fail';
       runningMatch.brief =
         briefSafe(compactPreview(line)) || `${name} · ${entry.ok ? 'ok' : 'failed'}`;
-      runningMatch.detail = line;
+      runningMatch.detail = storeDetail(cur, line, runningMatch.detail);
     } else {
       cur.items.push({
         id: cur.items.length + 1,
@@ -207,7 +318,7 @@ export function buildTraceGroups(
         name,
         brief:
           briefSafe(compactPreview(line)) || `${name} · ${entry.ok ? 'ok' : 'failed'}`,
-        detail: line,
+        detail: storeDetail(cur, line),
       });
     }
   }
@@ -261,7 +372,25 @@ export function encodeToolRun(group: ToolRunGroup): string | null {
       `${it.id}\t${it.status}\t${esc(it.name)}\t${esc(it.brief)}\t${esc(it.detail)}`,
     );
   }
-  return lines.join('\n');
+  let out = lines.join('\n');
+  // Hard backstop (adversarial review #359 Major): never emit a payload over the
+  // ring/cloud cap. In normal operation the aggregation-time group detail budget
+  // keeps us far under it; this only fires for pathological `name`/`brief`
+  // escape bloat. It drops `detail` from trailing items in place (rows stay
+  // 5-field aligned, counts unchanged) until the payload fits — an explicit
+  // degradation, never a silent mid-payload clip.
+  if (out.length > TOOL_RUN_MSG_HARD_MAX) {
+    for (let i = lines.length - 1; i >= 1; i--) {
+      const cols = lines[i]!.split('\t');
+      if (cols.length === 5 && cols[4] !== '') {
+        cols[4] = '';
+        lines[i] = cols.join('\t');
+        out = lines.join('\n');
+        if (out.length <= TOOL_RUN_MSG_HARD_MAX) break;
+      }
+    }
+  }
+  return out;
 }
 
 /**

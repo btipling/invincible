@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BRIEF_PREVIEW_MAX,
   TOOL_RUN_ITEMS_MAX,
+  TOOL_RUN_MSG_HARD_MAX,
   TOOL_RUN_VERSION,
   addToolResult,
   addToolStart,
@@ -38,13 +39,20 @@ describe('toolRun encode/decode (protocol v10 / plan #345)', () => {
     const g = createToolRunGroup();
     addToolStart(g, 'read_file');
     const before = g.items.length;
-    addToolResult(g, 'read_file', true, 'read_file · ✓ ok · a.ts');
+    addToolResult(
+      g,
+      'read_file',
+      true,
+      'read_file · ✓ ok · a.ts',
+      'first line\nsecond line',
+    );
     expect(g.items.length).toBe(before);
     expect(g.items[0]!.status).toBe('ok');
     // #358 Major: brief text is ASCII (symbol glyph lives in the mark column only).
     expect(g.items[0]!.brief).toContain('· ok');
     expect(g.items[0]!.brief).not.toContain('✓');
-    expect(g.items[0]!.detail).toBe('read_file · ok · a.ts');
+    // #353: L2 detail carries the server preview when it enriches L1.
+    expect(g.items[0]!.detail).toBe('first line\nsecond line');
   });
 
   it('escapes tabs / newlines / backslashes across fields', () => {
@@ -140,12 +148,13 @@ describe('buildTraceGroups (JSON/non-stream fallback)', () => {
     expect(countToolRunItems(g.items)).toEqual({ ok: 1, fail: 1, pending: 1 });
   });
 
-  it('level-2 detail carries the full summary while brief is a short preview', () => {
+  it('level-2 detail carries the preview while brief is a short one-liner', () => {
     const long = Array.from({ length: 30 }, (_, i) => `line ${i} of output`).join(
       '\n',
     );
     const g = createToolRunGroup();
-    addToolResult(g, 'exec', true, long);
+    // #353: rich detail flows through the `preview` param (server tool_result.preview).
+    addToolResult(g, 'exec', true, 'exec · ✓ ok · exit=0', long);
     const it0 = g.items[0]!;
     // Acceptance for two-level detail: level-2 is genuinely longer than level-1.
     expect(it0.detail).toBe(long);
@@ -153,13 +162,15 @@ describe('buildTraceGroups (JSON/non-stream fallback)', () => {
     expect(it0.brief.length).toBeLessThanOrEqual(BRIEF_PREVIEW_MAX + 1);
     expect(it0.brief).not.toContain('\n');
 
-    // Short/empty summary → name+status fallback, empty detail (no phantom).
-    // #358 Major: brief/detail are ASCII — the ✓/✗ symbol is the mark column's job,
+    // Short/empty summary without a richer preview → name+status fallback, empty
+    // detail (static label — no duplicate-of-L1 expander, phase 3 #353).
+    // #358 Major: brief text is ASCII — the ✓/✗ symbol is the mark column's job,
     // and the Noto text faces the L1 expander / L2 body paint with do not cover it.
     addToolResult(g, 'read_file', true, 'read_file · ✓ ok · a.ts');
     addToolResult(g, 'noop', true, '');
     expect(g.items[1]!.brief).toContain('· ok');
     expect(g.items[1]!.brief).not.toContain('✓');
+    expect(g.items[1]!.detail).toBe('');
     expect(g.items[2]!.brief).toBe('noop · ok');
     expect(g.items[2]!.detail).toBe('');
 
@@ -170,6 +181,59 @@ describe('buildTraceGroups (JSON/non-stream fallback)', () => {
     expect(decoded!.items[0]!.detail.length).toBeGreaterThan(
       decoded!.items[0]!.brief.length,
     );
+  });
+
+  it('meaningfulDetail: preview only when it truly enriches the L1 one-liner', () => {
+    const g = createToolRunGroup();
+    // Identical preview → no pretend expand (empty detail → static label).
+    addToolResult(g, 'list_dir', true, 'list_dir · ✓ ok · .: 3 entries', 'list_dir · ok · .: 3 entries');
+    expect(g.items[0]!.detail).toBe('');
+    // No preview (short result from the backend) → empty detail.
+    addToolResult(g, 'pwd', true, 'pwd · ✓ ok · /tmp');
+    expect(g.items[1]!.detail).toBe('');
+    // Empty summary but a real preview → keep the preview (backend only emits a
+    // preview when it is richer than an L1 one-liner; never silently drop a body).
+    addToolResult(g, 'noop', true, '', 'some preview');
+    expect(g.items[2]!.detail).toBe('some preview');
+    // Richer multi-line preview → kept verbatim (body keeps its symbols).
+    addToolResult(g, 'exec', true, 'exec · ✓ ok · exit=0', 'cmd\nline two\n→ done');
+    expect(g.items[3]!.detail).toBe('cmd\nline two\n→ done');
+  });
+
+  it('clamps a multi-preview group so the encoded message stays ≤ TOOL_RUN_MSG_HARD_MAX', () => {
+    // Adversarial review #359 Major / Nit L6: several near-100k previews in ONE
+    // group must never overflow the 262 144-byte ring/cloud per-msg cap. The
+    // group encode budget clips/omits later previews (explicit `…` or a dropped
+    // static-label detail), never a silent mid-payload truncation.
+    const g = createToolRunGroup();
+    const big = 'y'.repeat(99_000);
+    addToolResult(g, 'exec', true, 'exec · ✓ ok', big);
+    addToolResult(g, 'read_file', true, 'read_file · ✓ ok', big);
+    addToolResult(g, 'exec', true, 'exec · ✓ ok', big);
+    const text = encodeToolRun(g)!;
+    expect(text.length).toBeLessThanOrEqual(TOOL_RUN_MSG_HARD_MAX);
+    // Header + rows stay 5-field aligned → decodes cleanly, counts exact.
+    const decoded = decodeToolRun(text);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.items).toHaveLength(3);
+    expect(countToolRunItems(decoded!.items)).toEqual({ ok: 3, fail: 0, pending: 0 });
+    // At least the first preview survives fully; the message still fits.
+    expect(decoded!.items[0]!.detail).toBe(big);
+  });
+
+  it('buildTraceGroups can never overflow the per-message hard cap either', () => {
+    const trace = Array.from({ length: 40 }, (_, i) => ({
+      name: `t${i}`,
+      ok: true,
+      summary: 's'.repeat(20_000), // oversize summaries still bounded by group budget
+    }));
+    const groups = buildTraceGroups(trace);
+    expect(groups.length).toBeGreaterThan(0);
+    for (const group of groups) {
+      const text = encodeToolRun(group)!;
+      expect(text.length).toBeLessThanOrEqual(TOOL_RUN_MSG_HARD_MAX);
+      expect(decodeToolRun(text)).not.toBeNull();
+    }
   });
 });
 
@@ -212,7 +276,7 @@ describe('asciiStatus / no symbol tofu in brief·detail text (#358 Major)', () =
     expect(items[1]!.detail).not.toContain('✗');
   });
 
-  it('collapsed brief sanitizes the → symbol (single Noto run); detail keeps it', () => {
+  it('collapsed brief sanitizes the → symbol (single Noto run)', () => {
     const g = createToolRunGroup();
     addToolResult(g, 'http_get', true, 'http_get https://x.com → 200 · 12 B');
     const it0 = g.items[0]!;
@@ -220,8 +284,17 @@ describe('asciiStatus / no symbol tofu in brief·detail text (#358 Major)', () =
     // the arrow must become ASCII in the collapsed preview.
     expect(it0.brief).toBe('http_get https://x.com -> 200 · 12 B');
     expect(it0.brief).not.toContain('→');
-    // L2 body is symbols-aware (mixed_text) — keep the real glyph there.
-    expect(it0.detail).toBe('http_get https://x.com → 200 · 12 B');
-    expect(it0.detail).toContain('→');
+    // #353: single-line result without a richer preview → static label (empty
+    // detail), no duplicate-of-L1 expander.
+    expect(it0.detail).toBe('');
+  });
+
+  it('L2 preview detail keeps symbols; the body face renders them (not tofu)', () => {
+    const g = createToolRunGroup();
+    addToolResult(g, 'http_get', true, 'http_get · ✓ ok', 'title line\nbody → 200\nmore');
+    // The symbols-aware L2 body (`mixed_text`) can paint `→`; only the collapsed
+    // L1 `brief` (single Noto run) must be ASCII.
+    expect(g.items[0]!.detail).toBe('title line\nbody → 200\nmore');
+    expect(g.items[0]!.detail).toContain('→');
   });
 });
