@@ -36,7 +36,7 @@ See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 | Topic | Behavior |
 |-------|----------|
 | Layout | Full-bleed canvas under host nav; no horizontal overflow expected |
-| Hit targets | Send / PONG / message **Copy** ≥ ~40px tall |
+| Hit targets | Send / PONG / message **📋** (clipboard / copy) ≥ ~40px tall |
 | Fallback | No “use the DOM chat instead” product path |
 
 ## Layout / composer chrome
@@ -79,7 +79,7 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 | Ring capacity | **2048** messages in Wasm (`bridge.zig` `MAX_MSG` / `HARNESS_RING_MAX`) |
 | Visible paint | Every in-ring message (≤2048) is painted **except** empty/blank **assistant** rows, which are omitted at paint (see **Empty assistant rows**); scroll to read older in-ring turns. Ring still drops oldest when full. No “N earlier” black-hole hint |
 | Empty assistant rows | An **assistant** message whose text is empty or whitespace-only (e.g. a transient host slot opened during a multi-tool turn) is **omitted at paint** — no blank card. System/error lines and tool traces stay visible; while busy the compact `Waiting for model…` status keeps the turn honest. Ring data is untouched (skip is paint-time only), so Copy, `update_last`, and id allocation still work off ring indices |
-| Row height | Message rows have **no reserved min-height band**; height tracks content + normal padding (`padding .y=6`, `margin .y=4`). The only enforced touch target is the `≈40px` **Copy** control on the kind row, which shows only for non-empty bodies. Omitting the empty card removes the large blank band without adding a new height contract |
+| Row height | Message rows have **no reserved min-height band**; height tracks content + normal padding (`padding .y=6`, `margin .y=4`). The only enforced touch target is the `≈40px` **📋** (copy) control on the kind row, which shows only for non-empty bodies. Omitting the empty card removes the large blank band without adding a new height contract |
 | Line size | **262 144** UTF-8 bytes max per message (`MAX_MSG_LEN`) |
 | Host history fold | `formatPromptWithHistory` default **maxMessages=400**, **maxChars≈3.5M** (model token limit is the real cap); prefer Clear for a fresh workspace |
 | Session longer than ring | Host `SessionStore` and cloud row may hold more than the ring (cloud still subject to ~2 MiB body). Ring shows a **window** of ≤2048. **Load earlier** steps back by **`HISTORY_PAGE` = 512**; new send snaps to latest window |
@@ -94,7 +94,7 @@ expandable control.
 
 | Topic | Behavior |
 |-------|----------|
-| Header (default) | `N tools called` / `1 tool called`, default-**collapsed**. Right-aligned count chips shown only when >0: success **✓ N** (TEAL), failed **✗ N** (EMBER — danger only), pending **… N** (WARM). Status marks paint from embedded faces (`✓`/`✗` via DejaVu Sans Symbols; `…` via Noto heading) — **no tofu**. The **Copy** control lives on this header row |
+| Header (default) | `N tools called` / `1 tool called`, default-**collapsed**. Right-aligned count chips shown only when >0: success **✓ N** (TEAL), failed **✗ N** (EMBER — danger only), pending **… N** (WARM). Status marks paint from embedded faces (`✓`/`✗` via DejaVu Sans Symbols; `…` via Noto heading) — **no tofu**. The **📋** (copy) control lives on this header row |
 | Two-level expand | Level 1: one one-liner per tool — colored status glyph **✓/✗/…** is the *single* status channel, plus a preview: `brief` (≤64 chars) when level-2 detail exists, else the tool **`name`** (no redundant `name · ok/failed` marker). Level 2: that tool's inline `detail` — a bounded, redacted **preview** (phase 3 #353) built server-side from flattened+redacted tool output: `exec` command/exit/stdout+stderr head/tail, `read_file`/`write_file`/`str_replace`/`list_dir` path/size/entries/brief preview, `http_*` URL/status/bounded body. Short single-line results carry **no** detail → a static label (no blank, duplicate-of-L1 expander). Clicking a row toggles; second click collapses; per-item isolation |
 | Detail vs scroll | Level-2 detail paints **inline** inside the one outer transcript scroller — there is **no** nested `scrollArea`. Command/output previews use the embedded **Vera Sans Mono** face (`exec`/filesystem/`http_*`, and any **multi-line** detail so MCP/custom-tool output also reads as a block); prose/single-line detail stays the body face. Long detail is bounded per-tool by the server preview cap (`TOOL_RUN_PREVIEW_MAX_CHARS` = 100k) with the **real** head **40** / tail **10** lines + `… (M more lines)`, and the whole group is bounded by the encode budget + hard clamp below, so the transcript wheel is not trapped |
 | Painter | `native/harness/src/ui.zig` → `paintToolRun`; payload decode in `native/harness/src/rich/toolrun.zig` (fail-open → raw body text) |
@@ -110,12 +110,12 @@ expandable control.
 
 | Topic | Behavior |
 |-------|----------|
-| **Primary path** | Per-message **Copy** control on the kind row (user / assistant / system / error when body non-empty) |
+| **Primary path** | Per-message **📋** (copy) control on the kind row (user / assistant / system / error when body non-empty) |
 | Clipboard payload | **Message source** UTF-8 as stored in the Wasm ring (markdown as produced) — not re-serialized paint colors or “… N more” chrome |
 | Drag-select | Best-effort **within a single** `textLayout` only (rich MD is many widgets per body). Whole-reply drag-select is not the product path |
 | Cross-message selection | Not supported |
 | Composer paste | Supported via dvui text entry when the composer is focused. Composer is **multi-line** — pasted newlines are preserved; submission is normalized (CRLF → LF) and clamped to the prompt submit cap (`SUBMIT_CAP`). Leading whitespace / blank first lines in a paste are **preserved** on submit (not stripped); only a wholly blank/whitespace prompt is rejected |
-| Mobile / touch | **Copy** is the supported path; multi-block drag-select on canvas is unreliable |
+| Mobile / touch | **📋** (copy) is the supported path; multi-block drag-select on canvas is unreliable |
 | Secure context | System clipboard write needs https (or localhost); silent no-op possible if the browser blocks clipboard |
 
 ## Rich transcript (Wasm)

@@ -312,12 +312,13 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
         // (painted in the message loop only for non-tool kinds); the Copy
         // affordance moves onto this L0 header row so it is never lost.
         {
-            if (dvui.button(src, "Copy", .{}, .{
+            if (dvui.button(src, "📋", .{}, .{
                 .gravity_y = 0.5,
                 .gravity_x = 1.0,
                 .style = .content,
                 .id_extra = id_base + 29,
-                .min_size_content = .{ .w = 56, .h = TOUCH_H - 8 },
+                .min_size_content = .{ .w = 40, .h = TOUCH_H - 8 },
+                .font = palette.fontEmoji(),
                 .corners = .round(6),
                 .color_fill = palette.teal_bg,
                 .color_text = palette.teal_accent,
@@ -697,11 +698,12 @@ pub fn frame() !void {
                             tl.deinit();
                         }
                         if (m.text.len > 0) {
-                            if (dvui.button(@src(), "Copy", .{}, .{
+                            if (dvui.button(@src(), "📋", .{}, .{
                                 .gravity_y = 0.5,
                                 .style = .content,
                                 .id_extra = i *% 1024 + 2,
-                                .min_size_content = .{ .w = 56, .h = TOUCH_H - 8 },
+                                .min_size_content = .{ .w = 40, .h = TOUCH_H - 8 },
+                                .font = palette.fontEmoji(),
                                 .corners = .round(6),
                                 .color_fill = palette.teal_bg,
                                 .color_text = palette.teal_accent,
@@ -733,11 +735,12 @@ pub fn frame() !void {
                                 // Keep the Copy affordance on a fail-open tool row
                                 // too — headerless chrome moved Copy off the kind
                                 // band, which is skipped for tool-run kinds.
-                                if (dvui.button(@src(), "Copy", .{}, .{
+                                if (dvui.button(@src(), "📋", .{}, .{
                                     .gravity_y = 0.5,
                                     .style = .content,
                                     .id_extra = i *% 1024 + 2,
-                                    .min_size_content = .{ .w = 56, .h = TOUCH_H - 8 },
+                                    .min_size_content = .{ .w = 40, .h = TOUCH_H - 8 },
+                                    .font = palette.fontEmoji(),
                                     .corners = .round(6),
                                     .color_fill = palette.teal_bg,
                                     .color_text = palette.teal_accent,
