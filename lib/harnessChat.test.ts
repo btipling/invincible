@@ -1446,6 +1446,35 @@ describe('hydrate coalesce — reload/hydrate scannability (plan #365)', () => {
     expect(decodeToolRun(toolRuns[1].text)!.items.map((i) => i.name)).toEqual(['b']);
   });
 
+  it('never merges across a system or error turn-end boundary', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      messages: [
+        makeMessage('user', 'q'),
+        makeMessage('tool_run', toolRunText(['a'])),
+        makeMessage('system', describeTurnEnd('model')),
+        makeMessage('tool_run', toolRunText(['b'])),
+        makeMessage('error', describeTurnEnd('error', 'boom')),
+        makeMessage('tool_run', toolRunText(['c'])),
+      ],
+    };
+    pushSessionToBridge(bridge, session, { clear: true });
+    const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
+    // Any non-`tool_run` row flushes the open run — so adjacent rows split by a
+    // System (turn-end) or Error (failure) line each stay their own card.
+    expect(toolRuns).toHaveLength(3);
+    expect(decodeToolRun(toolRuns[0].text)!.items.map((i) => i.name)).toEqual(['a']);
+    expect(decodeToolRun(toolRuns[1].text)!.items.map((i) => i.name)).toEqual(['b']);
+    expect(decodeToolRun(toolRuns[2].text)!.items.map((i) => i.name)).toEqual(['c']);
+    // Order preserved around the boundary rows.
+    const kinds = exp.__messages.map((m) => m.kind);
+    const errIdx = kinds.indexOf(MessageKind.Error);
+    expect(errIdx).toBeGreaterThan(kinds.indexOf(MessageKind.ToolRun));
+  });
+
   it('decode fail-open keeps a run ending malformed row raw and never drops counts', () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
