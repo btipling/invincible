@@ -819,6 +819,11 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
             ok: true,
             summary: `t${i} · ✓ ok`,
           });
+          // Commit-once timing: no ToolRun row may exist on the bridge while the
+          // streak is open — it commits only at the assistant/turn-end boundary.
+          expect(
+            exp.__messages.filter((m) => m.kind === MessageKind.ToolRun),
+          ).toHaveLength(0);
         }
         await init?.onEvent?.({ type: 'done', text: 'done' });
         return { ok: true, text: 'done' };
@@ -876,6 +881,11 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
             ok: true,
             summary: `t${i} · ✓ ok`,
           });
+          // Commit-once: contiguous (no-reasoning) streaks also paint no ToolRun
+          // until a real boundary — here real assistant text via text_delta.
+          expect(
+            exp.__messages.filter((m) => m.kind === MessageKind.ToolRun),
+          ).toHaveLength(0);
         }
         await init?.onEvent?.({ type: 'text_delta', text: 'done' });
         await init?.onEvent?.({ type: 'done', text: 'done' });

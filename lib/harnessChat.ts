@@ -460,8 +460,11 @@ export async function runHarnessTurn(
     // Tool-run aggregation (protocol v10 / plan #345). The host owns the SSE and
     // knows the structured `tool_result.ok`, so it aggregates each uninterrupted
     // tool streak into ONE display-only `tool_run` message (bridge kind 6, session
-    // role `tool_run`). `next` (session) is written only on flush/boundary so we
-    // don't churn cloud pushes per tool; the Wasm transcript is updated live.
+    // role `tool_run`). Commit-once: the host aggregates the full streak and
+    // pushes ONE complete `tool_run` row to the bridge + session on flush at a
+    // true boundary (assistant text, turn end, or group-full roll). We never
+    // live-push/`update_last` a growing ToolRun row during the streak — the
+    // bridge shows tool chrome only when the streak commits.
     let toolRunGroup: ToolRunGroup = createToolRunGroup();
 
     /**
