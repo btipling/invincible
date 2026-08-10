@@ -28,7 +28,7 @@ optional login chrome).
 | Session ring window + Load earlier poll | **DOM** host + **Wasm** control | Host slices ≤**2048** (`HARNESS_RING_MAX`); **Load earlier** steps by **`HISTORY_PAGE` = 512**; Wasm pending (protocol v6); no React transcript |
 | Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status; model chip is a **mirror** of Wasm selection, not a second picker |
 | Model catalog fetch (`GET /api/models`) | **DOM** | Session-gated; host pushes ids into Wasm catalog |
-| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v9**) |
+| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v10**) |
 | Selected `modelId` on inference | **DOM host** → **Vercel backend** | Host reads bridge; POST body; server re-authorizes grants + BYOK |
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
 | Per-user MCP config UI | **DOM** | `/settings`, `/settings/mcp` — not dual chat; not Admin |
@@ -80,22 +80,29 @@ User types in Wasm composer
               + enabled per-user MCP tools (server-side only; soft-fail dead servers)
        SSE: tool_start / tool_result / reasoning_delta / text_delta / done (see docs/agent-stream.md)
        JSON fallback when Accept is not event-stream (tests / simple clients)
-  → Host pushes live System tool lines + Thinking monologue + growing Assistant (protocol v8 update-last)
+  → Host aggregates each uninterrupted tool streak into ONE display-only `tool_run` message (kind 6, protocol v10) + Thinking monologue + growing Assistant (protocol v8 update-last)
   → Thinking rows **collapse** when tools/text supersede them (short ring residue; not SessionStore)
+  → Tool-run rows paint as a default-collapsed `N tools called` expandable control (counts + two-level detail); see [harness-limits.md](harness-limits.md)
   → User reads thinking + tools + reply in Wasm transcript while Busy
 ```
 
-**toolTrace display (host → Wasm system lines):** short human lines only —
-``{toolName} · ✓ ok|✗ failed · {preview}`` (≤6 lines, ≤240 chars). Not raw MCP/server
-JSON envelopes such as `{"content":[{"type":"text",…}]}`. Tool execute results
-are flattened server-side before the model and before summaries.
+**toolTrace display (host → Wasm tool_run):** the host aggregates each
+uninterrupted tool streak into **one** display-only `tool_run` message (bridge
+kind 6, protocol v10, session role `tool_run`; `lib/toolRun.ts` payload,
+`native/harness/src/rich/toolrun.zig` decoder). Short human one-liners only —
+``{toolName} · ✓ ok|✗ failed · {preview}``, never raw MCP/server JSON envelopes
+such as `{"content":[{"type":"text",…}]}`. Tool execute results are flattened
+server-side before the model and before summaries. **DOM owns aggregation** (it
+sees the structured `tool_result.ok`); **Wasm owns presentation** (expandable
+paint; default collapsed). `tool_run` is persisted + repainted but **not**
+folded into the model prompt (display-only).
 
 ## Key source paths
 
 | Concern | Path |
 |---------|------|
 | Host shell | `app/harness/HarnessHost.tsx` |
-| Bridge TS (protocol **v9**) | `lib/harnessBridge.ts` |
+| Bridge TS (protocol **v10**) | `lib/harnessBridge.ts` |
 | Image fetch/decode | `lib/harnessImages.ts` |
 | Model catalog API | `app/api/models/route.ts` |
 | Admin inference keys | `app/admin/inference/*` |

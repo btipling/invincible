@@ -26,7 +26,7 @@ export {
   HARNESS_SESSION_SNAPSHOT_ID_MAX,
 };
 
-const SESSION_ROLES = new Set<SessionRole>(['user', 'assistant', 'system', 'error']);
+const SESSION_ROLES = new Set<SessionRole>(['user', 'assistant', 'system', 'error', 'tool_run']);
 
 export type HarnessSessionsDeps = {
   db?: Db;

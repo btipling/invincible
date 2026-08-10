@@ -13,7 +13,8 @@ const composer_text = @import("composer_text.zig");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
 /// v9: pending cancel (user Stop) — additive exports.
-pub const PROTOCOL_VERSION: u32 = 9;
+/// v10: tool-run aggregation message kind (kind 6, `tool_run`) — no new export.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -29,6 +30,9 @@ pub const MessageKind = enum(u8) {
     error_msg = 4,
     /// Protocol v8 — model reasoning monologue (display-only; not folded into history).
     thinking = 5,
+    /// Protocol v10 — host-aggregated tool-run group (display-only, session role `tool_run`).
+    /// Payload is the versioned delimiter format decoded by `rich/toolrun.zig`.
+    tool_run = 6,
 };
 
 /// Transcript ring slots. Host `HARNESS_RING_MAX` must match.

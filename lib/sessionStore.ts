@@ -7,7 +7,7 @@
  * Design note: docs/session-model.md
  */
 
-export type SessionRole = 'user' | 'assistant' | 'system' | 'error';
+export type SessionRole = 'user' | 'assistant' | 'system' | 'error' | 'tool_run';
 
 export type SessionMessage = {
   id: string;
@@ -185,8 +185,10 @@ export function formatPromptWithHistory(
   // Host fold budget — leave model/token limits to the gateway, not a toy 12k/32k char wall.
   const maxChars = opts?.maxChars ?? 3_500_000;
 
-  // user + assistant + system (live tool lines) + error (stall/cancel context).
-  // Thinking is never stored in SessionStore.
+  // user + assistant + system (turn-end / legacy tool lines) + error (stall/cancel context).
+  // `tool_run` is display-only (plan #345) and is intentionally NOT folded into
+  // the model prompt: the aggregated payload is dense and the agent already saw
+  // its own tool results this turn. Thinking is never stored in SessionStore.
   const dialogue = history.filter(
     (m) =>
       m.role === 'user' ||

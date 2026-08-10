@@ -22,6 +22,15 @@ import {
 } from './harnessBridge';
 import type { ChatResult } from './chatApi';
 import type { AgentResult } from './agentApi';
+import {
+  TOOL_RUN_ITEMS_MAX,
+  addToolResult,
+  addToolStart,
+  buildTraceGroups,
+  createToolRunGroup,
+  decodeToolRun,
+  encodeToolRun,
+} from './toolRun';
 import { SANDBOX_NOT_CONFIGURED_ERROR } from './agentApi';
 import { AUTH_REQUIRED_ERROR, SANDBOX_FORBIDDEN_ERROR } from './tenancy/errors';
 import { createEmptySession, formatPromptWithHistory, appendMessage, makeMessage } from './sessionStore';
@@ -253,7 +262,7 @@ describe('runHarnessTurn', () => {
     expect(next.messages[1]?.text).toBe('PONG');
   });
 
-  it('pushes system toolTrace then assistant on agent success', async () => {
+  it('aggregates toolTrace into one tool_run then assistant on agent success', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
@@ -272,21 +281,25 @@ describe('runHarnessTurn', () => {
       { sendAgent, pushUser: false },
     );
 
+    // Per-tool System lines are replaced by one display-only tool_run message.
     expect(next.messages.map((m) => m.role)).toEqual([
       'user',
-      'system',
-      'system',
+      'tool_run',
       'assistant',
       'system',
     ]);
     expect(next.messages.at(-1)!.text).toBe(describeTurnEnd('model'));
+    const toolRun = next.messages.find((m) => m.role === 'tool_run');
+    expect(toolRun).toBeDefined();
+    const decoded = decodeToolRun(toolRun!.text);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.items.map((it) => it.name)).toEqual(['write_file', 'exec']);
+    expect(decoded!.ok).toBe(2);
     expect(exp.__messages.map((m) => m.kind)).toEqual([
-      MessageKind.System,
-      MessageKind.System,
+      MessageKind.ToolRun,
       MessageKind.Assistant,
       MessageKind.System,
     ]);
-    expect(exp.__messages[0]?.text).toContain('write_file');
   });
 
   it('503 exact sandbox-not-configured falls back to chat once', async () => {
@@ -382,7 +395,7 @@ describe('runHarnessTurn', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it('keeps all toolTrace system lines (no host line-count cap)', async () => {
+  it('aggregates a large toolTrace into one bounded tool_run group', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const n = 40;
@@ -404,12 +417,17 @@ describe('runHarnessTurn', () => {
       { sendAgent, pushUser: false },
     );
 
-    const systems = next.messages.filter((m) => m.role === 'system');
-    expect(systems.filter((m) => !isTurnEndLine(m.text))).toHaveLength(n);
-    expect(systems.some((m) => isTurnEndLine(m.text))).toBe(true);
+    const toolRuns = next.messages.filter((m) => m.role === 'tool_run');
+    expect(toolRuns).toHaveLength(1);
+    const decoded = decodeToolRun(toolRuns[0]!.text);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.items).toHaveLength(n);
+    // Turn-end System line still present, and no bare per-tool System rows remain.
+    expect(next.messages.some((m) => m.role === 'system' && isTurnEndLine(m.text))).toBe(true);
     expect(
-      exp.__messages.filter((m) => m.kind === MessageKind.System && !isTurnEndLine(m.text)),
-    ).toHaveLength(n);
+      next.messages.filter((m) => m.role === 'system' && !isTurnEndLine(m.text)),
+    ).toHaveLength(0);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.ToolRun)).toHaveLength(1);
   });
 
   it('history fold includes system tool lines for continue', async () => {
@@ -640,7 +658,7 @@ describe('pushSessionToBridge window (protocol v6)', () => {
 });
 
 describe('runHarnessTurn stream agent (phase 1)', () => {
-  it('pushes system tool lines before done and grows one assistant bubble', async () => {
+  it('aggregates stream tool events into one tool_run and grows one assistant bubble', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const session = createEmptySession();
@@ -664,17 +682,21 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     });
 
     expect(result.result.ok).toBe(true);
-    const texts = exp.__messages.map((m) => m.text);
-    const kinds = exp.__messages.map((m) => m.kind);
-    // user may be pushed
-    expect(texts.some((t) => t.includes('list_dir · running'))).toBe(true);
-    expect(texts.some((t) => t.includes('list_dir · ok'))).toBe(true);
-    // single assistant bubble with full text
+    // One aggregated ToolRun message (not bare System tool rows).
+    const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
+    expect(toolRuns).toHaveLength(1);
+    const decoded = decodeToolRun(toolRuns[0]!.text);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.items).toHaveLength(1);
+    expect(decoded!.items[0]!.name).toBe('list_dir');
+    expect(decoded!.items[0]!.status).toBe('ok');
+    // Session persists the tool_run group (display-only role).
+    expect(result.session.messages.some((m) => m.role === 'tool_run')).toBe(true);
+    // Single assistant bubble with full text.
     const assistants = exp.__messages.filter((m) => m.kind === MessageKind.Assistant);
     expect(assistants).toHaveLength(1);
     expect(assistants[0]!.text).toBe('Here you go');
-    expect(kinds.filter((k) => k === MessageKind.Assistant)).toHaveLength(1);
-    expect(texts.some((t) => t === describeTurnEnd('model'))).toBe(true);
+    expect(exp.__messages.some((m) => m.text === describeTurnEnd('model'))).toBe(true);
   });
 
   it('grows Thinking on reasoning_delta then tools then assistant', async () => {
@@ -805,9 +827,11 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
         return { ok: false, error: 'Request cancelled.' };
       },
     });
-    expect(next.messages.some((m) => m.role === 'system' && m.text.includes('read_file'))).toBe(
-      true,
-    );
+    expect(
+      next.messages.some(
+        (m) => m.role === 'tool_run' && m.text.includes('read_file'),
+      ),
+    ).toBe(true);
     expect(next.messages.some((m) => m.role === 'assistant' && m.text.includes('I read a.ts'))).toBe(
       true,
     );
@@ -817,9 +841,11 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
       ),
     ).toBe(true);
     const folded = formatPromptWithHistory(next.messages, 'continue');
-    expect(folded).toContain('Tool: read_file');
+    // tool_run is display-only and NOT folded into the model prompt (plan #345);
+    // the persisted assistant text still carries continuation context.
+    expect(folded).not.toContain('Tool: read_file');
     expect(folded).toContain('I read a.ts');
-    // Turn-end markers must not pollute tool history
+    // Turn-end markers must not pollute history
     expect(folded).not.toContain('Turn ended');
   });
 
@@ -901,7 +927,12 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     expect(assistants.length).toBeGreaterThanOrEqual(2);
     expect(assistants[0]!.text).toBe('Looking…');
     expect(assistants[assistants.length - 1]!.text).toContain('Found a.txt');
-    expect(exp.__messages.some((m) => m.text.includes('list_dir · running'))).toBe(true);
+    // Tools between assistant bubbles are aggregated into a ToolRun message.
+    const toolRun = exp.__messages.find((m) => m.kind === MessageKind.ToolRun);
+    expect(toolRun).toBeDefined();
+    const decoded = decodeToolRun(toolRun!.text);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.items[0]!.name).toBe('list_dir');
   });
 
   it('JSON streamAgent:false still uses end toolTrace', async () => {
@@ -920,6 +951,67 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     expect(result.result.ok).toBe(true);
     expect(exp.__messages.some((m) => m.text.includes('x · ok'))).toBe(true);
     expect(exp.__messages.some((m) => m.text === 'pong')).toBe(true);
+  });
+});
+
+describe('toolRun aggregation (protocol v10 / plan #345)', () => {
+  it('stream streak beyond TOOL_RUN_ITEMS_MAX rolls a new tool_run group', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const total = TOOL_RUN_ITEMS_MAX + 5;
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'many', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        for (let i = 0; i < total; i++) {
+          await init?.onEvent?.({ type: 'tool_start', name: `t${i}` });
+          await init?.onEvent?.({
+            type: 'tool_result',
+            name: `t${i}`,
+            ok: true,
+            summary: `t${i} · ✓ ok`,
+          });
+        }
+        await init?.onEvent?.({ type: 'done', text: 'done' });
+        return { ok: true, text: 'done' };
+      },
+    });
+    expect(result.result.ok).toBe(true);
+    const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
+    // MAX-sized group + one remainder group.
+    expect(toolRuns.length).toBeGreaterThan(1);
+    let totalCount = 0;
+    for (const tr of toolRuns) {
+      const d = decodeToolRun(tr.text);
+      expect(d).not.toBeNull();
+      expect(d!.items.length).toBeLessThanOrEqual(TOOL_RUN_ITEMS_MAX);
+      totalCount += d!.items.length;
+    }
+    expect(totalCount).toBe(total);
+  });
+
+  it('pushSessionToBridge maps restored tool_run role to kind 6', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      messages: [
+        { id: 'u', role: 'user' as const, text: 'hi', at: 1 },
+        {
+          id: 't',
+          role: 'tool_run' as const,
+          text: 'toolrun\t1\t1/0/0\n1\tok\tread_file\tbrief\tdetail',
+          at: 2,
+        },
+        { id: 'a', role: 'assistant' as const, text: 'done', at: 3 },
+      ],
+    };
+    pushSessionToBridge(bridge, session, { clear: false });
+    const kinds = exp.__messages.map((m) => m.kind);
+    expect(kinds[1]).toBe(MessageKind.ToolRun);
+    expect(exp.__messages[1]!.text).toContain('toolrun');
   });
 });
 

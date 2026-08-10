@@ -4,6 +4,7 @@
 //! #251: stick also on in-place stream growth (update_last / content height).
 //! #137: IMGUI absolute-rect bands (header / transcript / composer) so content
 //! min-size cannot push chrome off-canvas. Build id (`h:…`) detects stale wasm.
+const std = @import("std");
 const dvui = @import("dvui");
 const bridge = @import("bridge.zig");
 const palette = @import("palette.zig");
@@ -11,6 +12,7 @@ const build_options = @import("build_options");
 const rich = @import("rich/root.zig");
 const mixed_text = @import("rich/mixed_text.zig");
 const composer_text = @import("composer_text.zig");
+const toolrun = @import("rich/toolrun.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
@@ -30,6 +32,20 @@ var transcript_scroll: dvui.ScrollInfo = .{
     .vertical = .auto,
     .horizontal = .none,
 };
+
+/// Two-level expand state for tool-run rows (#325 / plan #345), keyed by
+/// per-message and per-item ids. Keeps open groups across repaints/frames the
+/// way `reorder_tree.zig` keeps its open branches; cleared on reload/clear/
+/// truncate so a fresh surface starts collapsed.
+var toolrun_open_buf: [4096]u8 = undefined;
+var toolrun_open_fba = std.heap.FixedBufferAllocator.init(&toolrun_open_buf);
+var toolrun_open_l1 = std.AutoHashMap(dvui.Id, void).init(toolrun_open_fba.allocator());
+var toolrun_open_l2 = std.AutoHashMap(dvui.Id, void).init(toolrun_open_fba.allocator());
+
+fn clearToolRunOpenState() void {
+    toolrun_open_l1.clearRetainingCapacity();
+    toolrun_open_l2.clearRetainingCapacity();
+}
 
 const SMOKE_PROMPT = "Reply with exactly: PONG";
 /// Touch-friendly control height (CSS px ≈).
@@ -68,6 +84,7 @@ fn resetTranscriptScroll() void {
     last_shown_count = 0;
     last_msg_count = 0;
     last_scroll_max_y = 0;
+    clearToolRunOpenState();
 }
 
 fn isNearBottom(si: *const dvui.ScrollInfo) bool {
@@ -93,6 +110,7 @@ fn kindLabel(kind: u8) []const u8 {
         3 => "system",
         4 => "error",
         5 => "thinking",
+        6 => "tools",
         else => "msg",
     };
 }
@@ -127,6 +145,161 @@ fn kindFill(kind: u8) ?dvui.Color {
         5 => palette.warm_bg,
         else => null,
     };
+}
+
+/// Paint an aggregated tool-run control (protocol v10 / kind 6).
+///
+/// Level 0 (default-collapsed): header `N tools called` + colored count chips
+/// (TEAL✓ success / EMBER✗ fail-only / WARM… pending) as a touch-height hit
+/// target. Level 1: one one-liner per tool (colored status glyph). Level 2:
+/// that tool's inline detail. Returns true when the payload decoded and painted;
+/// false means fail-open → caller renders the raw body as plain text.
+fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const u8) bool {
+    var decoded = toolrun.decode(dvui.currentWindow().arena(), text) orelse return false;
+    defer decoded.deinit();
+    const run = decoded.run;
+    const total = run.ok + run.fail + run.pending;
+
+    const l1_raw: u64 = @as(u64, msg_index) *% 1000003 + 7;
+    const l1_key: dvui.Id = @enumFromInt(l1_raw);
+    var l1_expanded = toolrun_open_l1.contains(l1_key);
+
+    if (total == 0) return false;
+
+    // ── Level 0 header: expander label + right-aligned colored count chips ──
+    var header_label: [40]u8 = undefined;
+    const label =
+        if (total == 1)
+        (std.fmt.bufPrint(&header_label, "1 tool called", .{}) catch "tools")
+    else
+        (std.fmt.bufPrint(&header_label, "{d} tools called", .{total}) catch "tools");
+
+    {
+        var head = dvui.box(src, .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .min_size_content = .{ .w = 120, .h = TOUCH_H - 4 },
+            .id_extra = 1,
+        });
+        defer head.deinit();
+
+        const open = dvui.expander(src, label, .{ .expanded = &l1_expanded }, .{
+            .expand = .horizontal,
+            .min_size_content = .{ .h = TOUCH_H - 4 },
+            .gravity_y = 0.5,
+            .id_extra = 0,
+        });
+        if (open) toolrun_open_l1.put(l1_key, {}) catch {} else _ = toolrun_open_l1.remove(l1_key);
+
+        if (run.ok > 0 or run.fail > 0 or run.pending > 0) {
+            var chips = dvui.box(src, .{ .dir = .horizontal }, .{
+                .gravity_x = 1.0,
+                .gravity_y = 0.5,
+                .min_size_content = .{ .w = 0, .h = TOUCH_H - 8 },
+            });
+            defer chips.deinit();
+            if (run.ok > 0) {
+                var tl = dvui.textLayout(src, .{}, .{
+                    .color_text = palette.teal_accent,
+                    .gravity_y = 0.5,
+                    .font = .theme(.heading),
+                    .margin = .{ .x = 0, .y = 0, .w = 6, .h = 0 },
+                });
+                tl.format("{s} {d}", .{ "✓", run.ok }, .{});
+                tl.deinit();
+            }
+            if (run.fail > 0) {
+                var tl = dvui.textLayout(src, .{}, .{
+                    .color_text = palette.ember_accent,
+                    .gravity_y = 0.5,
+                    .font = .theme(.heading),
+                    .margin = .{ .x = 0, .y = 0, .w = 6, .h = 0 },
+                });
+                tl.format("{s} {d}", .{ "✗", run.fail }, .{});
+                tl.deinit();
+            }
+            if (run.pending > 0) {
+                var tl = dvui.textLayout(src, .{}, .{
+                    .color_text = palette.warm_accent,
+                    .gravity_y = 0.5,
+                    .font = .theme(.heading),
+                    .margin = .{ .x = 0, .y = 0, .w = 6, .h = 0 },
+                });
+                tl.format("{s} {d}", .{ "…", run.pending }, .{});
+                tl.deinit();
+            }
+        }
+    }
+
+    // ── Level 1 + level 2 (expanded) ────────────────────────────────────────
+    if (l1_expanded) {
+        var list = dvui.box(src, .{ .dir = .vertical }, .{
+            .expand = .horizontal,
+            .margin = .{ .x = 10, .y = 0, .w = 0, .h = 0 },
+        });
+        defer list.deinit();
+
+        for (run.items) |it| {
+            const l2_key: dvui.Id = @enumFromInt(l1_raw *% 31 + @as(u64, it.id));
+            var l2_expanded = toolrun_open_l2.contains(l2_key);
+
+            {
+                var item_head = dvui.box(src, .{ .dir = .horizontal }, .{
+                    .expand = .horizontal,
+                    .min_size_content = .{ .w = 120, .h = TOUCH_H - 6 },
+                    .id_extra = 2,
+                });
+                defer item_head.deinit();
+
+                const glyph_color: dvui.Color = switch (it.status) {
+                    .ok => palette.teal_accent,
+                    .fail => palette.ember_accent,
+                    .running => palette.warm_accent,
+                };
+                {
+                    var tl = dvui.textLayout(src, .{}, .{
+                        .color_text = glyph_color,
+                        .gravity_y = 0.5,
+                        .font = .theme(.heading),
+                        .margin = .{ .x = 4, .y = 0, .w = 4, .h = 0 },
+                    });
+                    tl.addText(switch (it.status) {
+                        .ok => "✓",
+                        .fail => "✗",
+                        .running => "…",
+                    }, .{});
+                    tl.deinit();
+                }
+
+                const item_label: []const u8 = if (it.brief.len > 0) it.brief else it.name;
+                const open = dvui.expander(src, item_label, .{ .expanded = &l2_expanded }, .{
+                    .expand = .horizontal,
+                    .gravity_y = 0.5,
+                    .min_size_content = .{ .h = TOUCH_H - 6 },
+                    .id_extra = 3,
+                });
+                if (open) toolrun_open_l2.put(l2_key, {}) catch {} else _ = toolrun_open_l2.remove(l2_key);
+            }
+
+            if (l2_expanded) {
+                var detail = dvui.box(src, .{ .dir = .vertical }, .{
+                    .expand = .horizontal,
+                    .margin = .{ .x = 22, .y = 0, .w = 0, .h = 0 },
+                });
+                defer detail.deinit();
+                if (it.detail.len > 0) {
+                    var tl = dvui.textLayout(src, .{}, .{
+                        .expand = .horizontal,
+                        .color_text = palette.teal_text,
+                    });
+                    mixed_text.addTextMixed(tl, it.detail, .theme(.body), .{
+                        .color_text = palette.teal_text,
+                    });
+                    tl.deinit();
+                }
+            }
+        }
+    }
+    return true;
 }
 
 fn clearPrompt() void {
@@ -394,6 +567,21 @@ pub fn frame() !void {
                     {
                         if (rich.shouldPaintMarkdown(m.kind)) {
                             rich.paintMessageBody(@src(), m.kind, m.text, .{ .msg_index = i });
+                        } else if (m.kind == rich.KIND_TOOL) {
+                            if (!paintToolRun(@src(), i, m.text)) {
+                                // Fail-open (plan #345): unknown/old tool-run
+                                // payload decodes to nothing → render raw text.
+                                var tl = dvui.textLayout(@src(), .{}, .{
+                                    .expand = .horizontal,
+                                    .id_extra = i *% 1024 + 1,
+                                    .color_text = palette.teal_text,
+                                    .font = .theme(.body),
+                                });
+                                mixed_text.addTextMixed(tl, m.text, .theme(.body), .{
+                                    .color_text = palette.teal_text,
+                                });
+                                tl.deinit();
+                            }
                         } else {
                             var tl = dvui.textLayout(@src(), .{}, .{
                                 .expand = .horizontal,
@@ -430,8 +618,10 @@ pub fn frame() !void {
     const count_changed = shown != prev_shown;
 
     if (n < prev_msg) {
-        // Ring cleared or truncated — drop parse cache (generation bump).
+        // Ring cleared or truncated — drop parse cache (generation bump) and
+        // reset tool-run expand state so a fresh/old window starts collapsed.
         if (n == 0) rich.clearCache();
+        clearToolRunOpenState();
         transcript_scroll.velocity = .{ .x = 0, .y = 0 };
         scrollToBottom(&transcript_scroll);
     } else if (count_changed or content_grew) {

@@ -293,5 +293,16 @@ pub fn build(b: *std.Build) void {
     });
     test_rich.dependOn(&b.addRunArtifact(math_cache_tests).step);
 
+    // Protocol v10 tool-run payload decoder (#325 / plan #345). Pure, no dvui.
+    const toolrun_tests = b.addTest(.{
+        .name = "rich-toolrun",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/rich/toolrun.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+    test_rich.dependOn(&b.addRunArtifact(toolrun_tests).step);
+
 }
 

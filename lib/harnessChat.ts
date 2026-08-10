@@ -41,6 +41,16 @@ import {
   formatPromptWithHistory,
   type SessionSnapshot,
 } from './sessionStore';
+import {
+  addToolResult,
+  addToolStart,
+  buildTraceGroups,
+  createToolRunGroup,
+  encodeToolRun,
+  hasRunningTool,
+  toolRunIsFull,
+  type ToolRunGroup,
+} from './toolRun';
 import { canLoadEarlier, latestRingStart, sliceMessagesForRing } from './sessionWindow';
 
 /**
@@ -112,7 +122,7 @@ export type HarnessTurnResult = {
   session: SessionSnapshot;
 };
 
-function roleToKind(role: 'user' | 'assistant' | 'system' | 'error'): MessageKind {
+function roleToKind(role: 'user' | 'assistant' | 'system' | 'error' | 'tool_run'): MessageKind {
   switch (role) {
     case 'user':
       return MessageKind.User;
@@ -122,6 +132,8 @@ function roleToKind(role: 'user' | 'assistant' | 'system' | 'error'): MessageKin
       return MessageKind.System;
     case 'error':
       return MessageKind.Error;
+    case 'tool_run':
+      return MessageKind.ToolRun;
   }
 }
 
@@ -445,6 +457,59 @@ export async function runHarnessTurn(
     let thinkingSegmentOpen = false;
     let sawStreamTerminal = false;
 
+    // Tool-run aggregation (protocol v10 / plan #345). The host owns the SSE and
+    // knows the structured `tool_result.ok`, so it aggregates each uninterrupted
+    // tool streak into ONE display-only `tool_run` message (bridge kind 6, session
+    // role `tool_run`). `next` (session) is written only on flush/boundary so we
+    // don't churn cloud pushes per tool; the Wasm transcript is updated live.
+    let toolRunGroup: ToolRunGroup = createToolRunGroup();
+    let toolRunOnBridge = false;
+
+    const pushOrUpdateToolRun = (payload: string) => {
+      if (!toolRunOnBridge) {
+        bridge.pushMessage(MessageKind.ToolRun, payload);
+        toolRunOnBridge = true;
+        return;
+      }
+      if (!bridge.updateLastMessage(MessageKind.ToolRun, payload)) {
+        // Newest ring row is a different kind (thinking/assistant) — open a
+        // fresh group slot conservatively.
+        bridge.pushMessage(MessageKind.ToolRun, payload);
+      }
+    };
+
+    const flushToolRun = () => {
+      const payload = encodeToolRun(toolRunGroup);
+      const hadBridge = toolRunOnBridge;
+      toolRunGroup = createToolRunGroup();
+      toolRunOnBridge = false;
+      if (!payload) return;
+      // Already the live last ring message (stream path) → no duplicate push.
+      if (!hadBridge) bridge.pushMessage(MessageKind.ToolRun, payload);
+      next = appendMessage(next, 'tool_run', payload);
+    };
+
+    const handleToolEvent = (ev: AgentStreamEvent) => {
+      if (ev.type !== 'tool_start' && ev.type !== 'tool_result') return;
+      closeAssistantSegment();
+      closeThinkingSegment();
+      const grows =
+        ev.type === 'tool_start' || !hasRunningTool(toolRunGroup, ev.name);
+      if (grows && toolRunIsFull(toolRunGroup)) flushToolRun();
+      if (ev.type === 'tool_start') {
+        addToolStart(toolRunGroup, ev.name);
+      } else {
+        addToolResult(
+          toolRunGroup,
+          ev.name,
+          ev.ok,
+          truncateToolTraceSummary(ev.summary),
+        );
+      }
+      const payload = encodeToolRun(toolRunGroup);
+      if (payload) pushOrUpdateToolRun(payload);
+    };
+
     const closeAssistantSegment = () => {
       assistantSegmentOpen = false;
       assistantSegment = '';
@@ -490,6 +555,9 @@ export async function runHarnessTurn(
       closeThinkingSegment();
       assistantAcc += chunk;
       if (!assistantSegmentOpen) {
+        // Real assistant text begins — close the open tool-run group so it is a
+        // distinct group boundary (won't merge with tools after the reply).
+        flushToolRun();
         assistantSegment = chunk;
         bridge.pushMessage(MessageKind.Assistant, assistantSegment);
         assistantSegmentOpen = true;
@@ -558,15 +626,7 @@ export async function runHarnessTurn(
         ...(sessionCwd != null ? { cwd: sessionCwd } : {}),
         onEvent: async (ev: AgentStreamEvent) => {
           if (ev.type === 'tool_start' || ev.type === 'tool_result') {
-            closeAssistantSegment();
-            closeThinkingSegment();
-            const line =
-              ev.type === 'tool_start'
-                ? truncateToolTraceSummary(`${ev.name} · running…`)
-                : truncateToolTraceSummary(ev.summary);
-            if (!line) return;
-            bridge.pushMessage(MessageKind.System, line);
-            next = appendMessage(next, 'system', line);
+            handleToolEvent(ev);
             return;
           }
           if (ev.type === 'reasoning_delta') {
@@ -604,12 +664,18 @@ export async function runHarnessTurn(
     closeThinkingSegment();
 
     if (agentResult.ok) {
+      // Persist any live tool-run group (stream path). No-op when empty.
+      flushToolRun();
       if (!streamAgent || !sawStreamTerminal) {
-        // JSON path (or stream that returned JSON): end-of-turn toolTrace + assistant.
-        const lines = selectToolTraceLines(agentResult.toolTrace);
-        for (const line of lines) {
-          bridge.pushMessage(MessageKind.System, line);
-          next = appendMessage(next, 'system', line);
+        // JSON path (or stream that returned JSON): aggregate end-of-turn
+        // toolTrace into display-only tool_run group(s) instead of System lines;
+        // skip if empty.
+        const groups = buildTraceGroups(agentResult.toolTrace);
+        for (const group of groups) {
+          const payload = encodeToolRun(group);
+          if (!payload) continue;
+          bridge.pushMessage(MessageKind.ToolRun, payload);
+          next = appendMessage(next, 'tool_run', payload);
         }
         if (!assistantStarted) {
           bridge.pushMessage(MessageKind.Assistant, agentResult.text);
@@ -644,8 +710,9 @@ export async function runHarnessTurn(
 
     // Cancel or hard agent failure — never fall back to chat.
     if (!agentResult.sandboxNotConfigured || isCancelledAgent(agentResult)) {
-      // Keep partial assistant text + tool System lines already in `next` so
-      // continue-after-stall history still knows what ran.
+      // Persist any live tool-run group so continue-after-stall history knows
+      // what ran. Keep partial assistant text + tool lines already in `next`.
+      flushToolRun();
       let failedSession = next;
       const partial = (assistantAcc || '').trim();
       if (partial) {

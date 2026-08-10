@@ -1,0 +1,215 @@
+//! Tool-run payload decoder (protocol v10, kind 6) — pure, host-testable.
+//!
+//! Mirror of `lib/toolRun.ts` (TS encoder). The host aggregates each
+//! uninterrupted tool streak into one `tool_run` session message and encodes it
+//! as versioned, tab/newline-delimited text:
+//!
+//!   toolrun\t1\t{ok}/{fail}/{pending}
+//!   {id}\t{status}\t{name}\t{brief}\t{detail}
+//!   ...
+//!
+//! `status ∈ running | ok | fail`. Fields `name`/`brief`/`detail` escape
+//! `\t`, `\n`, `\\`. A malformed header or unknown `version` **fails open**
+//! (returns null) so the caller renders the raw body as plain text and never
+//! crashes. Malformed item lines are tolerated (skipped).
+const std = @import("std");
+
+pub const TOOL_RUN_VERSION: u8 = 1;
+pub const MAX_ITEMS: u32 = 200;
+
+pub const Status = enum(u8) {
+    running = 0,
+    ok = 1,
+    fail = 2,
+};
+
+pub const Item = struct {
+    id: u32,
+    status: Status,
+    name: []const u8,
+    brief: []const u8,
+    detail: []const u8,
+};
+
+pub const ToolRun = struct {
+    ok: u32 = 0,
+    fail: u32 = 0,
+    pending: u32 = 0,
+    items: []Item,
+};
+
+/// Owns the allocations backing a decoded `ToolRun` (string + item slices).
+pub const Decoded = struct {
+    run: ToolRun,
+    alloc: std.mem.Allocator,
+
+    pub fn deinit(self: *Decoded) void {
+        for (self.run.items) |it| {
+            self.alloc.free(it.name);
+            self.alloc.free(it.brief);
+            self.alloc.free(it.detail);
+        }
+        self.alloc.free(self.run.items);
+    }
+};
+
+fn parseStatus(s: []const u8) ?Status {
+    if (std.mem.eql(u8, s, "running")) return .running;
+    if (std.mem.eql(u8, s, "ok")) return .ok;
+    if (std.mem.eql(u8, s, "fail")) return .fail;
+    return null;
+}
+
+fn parseIntOrZero(s: ?[]const u8) u32 {
+    const v = s orelse return 0;
+    return std.fmt.parseInt(u32, v, 10) catch 0;
+}
+
+/// Unescape `\t`→TAB, `\n`→LF, `\\`→backslash into a fresh buffer.
+fn unescape(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        const c = s[i];
+        if (c == '\\' and i + 1 < s.len) {
+            const n = s[i + 1];
+            if (n == 't') {
+                try out.append(alloc, '\t');
+                i += 1;
+                continue;
+            }
+            if (n == 'n') {
+                try out.append(alloc, '\n');
+                i += 1;
+                continue;
+            }
+            if (n == '\\') {
+                try out.append(alloc, '\\');
+                i += 1;
+                continue;
+            }
+        }
+        try out.append(alloc, c);
+    }
+    return try out.toOwnedSlice(alloc);
+}
+
+/// Decode a protocol v1 tool-run payload, allocating from `alloc` (use a
+/// frame arena; call `Decoded.deinit` when the caller owns the lifetime).
+/// Returns null (fail-open) on a malformed header or unknown version.
+pub fn decode(alloc: std.mem.Allocator, text: []const u8) ?Decoded {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    const head = lines.next() orelse return null;
+    var hf = std.mem.splitScalar(u8, head, '\t');
+    const tag = hf.next() orelse return null;
+    if (!std.mem.eql(u8, tag, "toolrun")) return null;
+    const ver_s = hf.next() orelse return null;
+    const ver = std.fmt.parseInt(u8, ver_s, 10) catch return null;
+    if (ver != TOOL_RUN_VERSION) return null;
+    const counts_s = hf.next() orelse return null;
+    var cc = std.mem.splitScalar(u8, counts_s, '/');
+    const ok = parseIntOrZero(cc.next());
+    const fail = parseIntOrZero(cc.next());
+    const pending = parseIntOrZero(cc.next());
+
+    var items: std.ArrayList(Item) = .empty;
+    errdefer items.deinit(alloc);
+    while (lines.next()) |lin| {
+        if (lin.len == 0) continue;
+        var f = std.mem.splitScalar(u8, lin, '\t');
+        const id_s = f.next() orelse continue;
+        const status_s = f.next() orelse continue;
+        const name_s = f.next() orelse continue;
+        const brief_s = f.next() orelse continue;
+        const detail_s = f.next() orelse continue;
+        const id = std.fmt.parseInt(u32, id_s, 10) catch continue;
+        const status = parseStatus(status_s) orelse continue;
+        const name = unescape(alloc, name_s) catch continue;
+        const brief = unescape(alloc, brief_s) catch continue;
+        const detail = unescape(alloc, detail_s) catch continue;
+        items.append(alloc, .{
+            .id = id,
+            .status = status,
+            .name = name,
+            .brief = brief,
+            .detail = detail,
+        }) catch return null;
+    }
+    const run = ToolRun{
+        .ok = ok,
+        .fail = fail,
+        .pending = pending,
+        .items = items.toOwnedSlice(alloc) catch return null,
+    };
+    return .{ .run = run, .alloc = alloc };
+}
+
+test "decode round-trip with escaping" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const text =
+        "toolrun\t1\t1/2/1\n" ++
+        "1\tok\tread_file\tread_file lib/x.ts ok\tread_file · ✓ ok · lib/x.ts · 3 lines\n" ++
+        "2\tfail\texec\t\texec · ✗ failed · exit=1\n" ++
+        "3\trunning\tcat\tcat · running…\t";
+    var d = decode(a, text) orelse return error.ExpectedDecode;
+    defer d.deinit();
+
+    try std.testing.expectEqual(@as(u32, 1), d.run.ok);
+    try std.testing.expectEqual(@as(u32, 2), d.run.fail);
+    try std.testing.expectEqual(@as(u32, 1), d.run.pending);
+    try std.testing.expectEqual(@as(usize, 3), d.run.items.len);
+
+    try std.testing.expectEqual(@as(u32, 1), d.run.items[0].id);
+    try std.testing.expectEqual(Status.ok, d.run.items[0].status);
+    try std.testing.expectEqualStrings("read_file", d.run.items[0].name);
+    try std.testing.expectEqualStrings("read_file · ✓ ok · lib/x.ts · 3 lines", d.run.items[0].detail);
+
+    try std.testing.expectEqual(Status.fail, d.run.items[1].status);
+    try std.testing.expectEqual(Status.running, d.run.items[2].status);
+    try std.testing.expectEqualStrings("cat · running…", d.run.items[2].brief);
+}
+
+test "decode escapes tab/newline/backslash" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const text = "toolrun\t1\t0/0/1\n" ++
+        "1\tok\twith\\ttab\tline one\\nline two\tback\\\\slash\\tend";
+    var d = decode(a, text) orelse return error.ExpectedDecode;
+    defer d.deinit();
+    try std.testing.expectEqualStrings("with\ttab", d.run.items[0].name);
+    try std.testing.expectEqualStrings("line one\nline two", d.run.items[0].brief);
+    try std.testing.expectEqualStrings("back\\slash\tend", d.run.items[0].detail);
+}
+
+test "decode fails open on bad header / unknown version" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try std.testing.expect(decode(a, "") == null);
+    try std.testing.expect(decode(a, "garbage") == null);
+    try std.testing.expect(decode(a, "toolrun\t99\t1/0/0") == null);
+    try std.testing.expect(decode(a, "toolrun\tjunk\t1/0/0") == null);
+    try std.testing.expect(decode(a, "notatoolrun\t1\t1/0/0") == null);
+}
+
+test "decode tolerates malformed item lines" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const text = "toolrun\t1\t1/0/0\n" ++
+        "1\tok\tread_file\tbrief\tdetail\n" ++
+        "bad.line" ++
+        "\n2\twat\tbad\n";
+    var d = decode(a, text) orelse return error.ExpectedDecode;
+    defer d.deinit();
+    try std.testing.expectEqual(@as(usize, 1), d.run.items.len);
+    try std.testing.expectEqualStrings("read_file", d.run.items[0].name);
+}
