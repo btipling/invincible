@@ -95,7 +95,7 @@ such as `{"content":[{"type":"text",…}]}`. Tool execute results are flattened
 server-side before the model and before summaries. **DOM owns aggregation** (it
 sees the structured `tool_result.ok`); **Wasm owns presentation** (expandable
 paint; default collapsed). `tool_run` is persisted + repainted but **not**
-folded into the model prompt (display-only).
+folded into the model prompt (display-only). Grouping is driven by the single `lastUiKind` predicate in `lib/harnessChat.ts` (thinking keeps a streak; real assistant/user/error split; empty/whitespace-only assistant is not a boundary); reload coalescing of consecutive `tool_run` rows is a later phase (parent #363).
 
 ## Key source paths
 

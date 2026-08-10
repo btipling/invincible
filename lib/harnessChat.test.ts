@@ -7,8 +7,10 @@ import {
   isTurnEndLine,
   pushSessionToBridge,
   runHarnessChat,
+  restoreLastUiKind,
   runHarnessTurn,
   selectToolTraceLines,
+  shouldContinueStreak,
   truncateToolTraceSummary,
 } from './harnessChat';
 import { HARNESS_RING_MAX } from './sessionWindow';
@@ -1253,3 +1255,130 @@ describe('runHarnessTurn session cwd', () => {
   });
 });
 
+
+describe('lastUiKind boundary predicate helpers (plan #364)', () => {
+  it('continues a streak for thinking/tool_run/none; splits on assistant/user/error', () => {
+    expect(shouldContinueStreak('thinking')).toBe(true);
+    expect(shouldContinueStreak('tool_run')).toBe(true);
+    expect(shouldContinueStreak('none')).toBe(true);
+    expect(shouldContinueStreak('assistant')).toBe(false);
+    expect(shouldContinueStreak('user')).toBe(false);
+    expect(shouldContinueStreak('error')).toBe(false);
+    // system is a turn-end terminal — never a live continue.
+    expect(shouldContinueStreak('system')).toBe(false);
+  });
+
+  it('restoreLastUiKind returns none for a fresh session and a boundary for committed roles', () => {
+    expect(restoreLastUiKind([])).toBe('none');
+    expect(restoreLastUiKind([makeMessage('assistant', 'hi')])).toBe('assistant');
+    expect(restoreLastUiKind([makeMessage('user', 'hi')])).toBe('user');
+    expect(restoreLastUiKind([makeMessage('system', 'turn')])).toBe('system');
+    expect(restoreLastUiKind([makeMessage('error', 'oops')])).toBe('error');
+    expect(
+      restoreLastUiKind([
+        makeMessage('tool_run', 'toolrun\t1\t1/0/0'),
+      ]),
+    ).toBe('tool_run');
+  });
+});
+
+
+describe('runHarnessTurn — lastUiKind boundary predicate (plan #364)', () => {
+  it('empty/whitespace-only assistant text_delta is NOT a tool-run boundary', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'tools', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'a' });
+        await init?.onEvent?.({ type: 'tool_result', name: 'a', ok: true, summary: 'a ok' });
+        // Whitespace-only deltas must NOT split the open streak nor open a bubble.
+        await init?.onEvent?.({ type: 'text_delta', text: '   ' });
+        await init?.onEvent?.({ type: 'text_delta', text: ' \n\t ' });
+        await init?.onEvent?.({ type: 'tool_start', name: 'b' });
+        await init?.onEvent?.({ type: 'tool_result', name: 'b', ok: true, summary: 'b ok' });
+        await init?.onEvent?.({ type: 'done', text: 'done' });
+        return { ok: true, text: 'done' };
+      },
+    });
+    expect(result.result.ok).toBe(true);
+    // a + b remain ONE group — whitespace-only deltas never split the streak.
+    const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
+    expect(toolRuns).toHaveLength(1);
+    const decoded = decodeToolRun(toolRuns[0].text)!;
+    expect(decoded.items.map((i) => i.name)).toEqual(['a', 'b']);
+    // No blank assistant bubble was painted by the whitespace deltas.
+    const assistants = exp.__messages.filter((m) => m.kind === MessageKind.Assistant);
+    expect(assistants.some((m) => m.text.trim() === '')).toBe(false);
+    expect(assistants.some((m) => m.text === 'done')).toBe(true);
+  });
+
+  it('restore from a committed last role opens a new group for the first post-reload tool', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // Prior committed turn: tool_run + assistant + system (last role = system).
+    const session = createEmptySession('s1');
+    session.messages.push(
+      makeMessage('tool_run', 'toolrun\t1\t1/0/0\n1\tok\twrite_file\twrite_file ok\t'),
+      makeMessage('assistant', 'prev done'),
+      makeMessage('system', describeTurnEnd('model')),
+    );
+    const result = await runHarnessTurn(bridge, session, 'now', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'read_file' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'read_file',
+          ok: true,
+          summary: 'read_file ok',
+        });
+        await init?.onEvent?.({ type: 'done', text: 'read it' });
+        return { ok: true, text: 'read it' };
+      },
+    });
+    expect(result.result.ok).toBe(true);
+    // The new turn commits its OWN fresh row — it must NOT grow the restored one.
+    const runs = result.session.messages.filter((m) => m.role === 'tool_run');
+    expect(runs).toHaveLength(2);
+    const restored = decodeToolRun(runs[0].text)!;
+    const fresh = decodeToolRun(runs[1].text)!;
+    expect(restored.items.map((i) => i.name)).toEqual(['write_file']);
+    expect(fresh.items.map((i) => i.name)).toEqual(['read_file']);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.ToolRun)).toHaveLength(1);
+  });
+
+  it('JSON (non-stream) path shares the same tool_run -> assistant -> system end state', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'ran',
+      toolTrace: [
+        { name: 'exec', ok: true, summary: 'exec ok' },
+        { name: 'read_file', ok: false, summary: 'read_file failed' },
+      ],
+    }));
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'go', {
+      sendAgent,
+      pushUser: false,
+    });
+    expect(next.messages.map((m) => m.role)).toEqual([
+      'user',
+      'tool_run',
+      'assistant',
+      'system',
+    ]);
+    expect(next.messages.at(-1)!.text).toBe(describeTurnEnd('model'));
+    expect(exp.__messages.map((m) => m.kind)).toEqual([
+      MessageKind.ToolRun,
+      MessageKind.Assistant,
+      MessageKind.System,
+    ]);
+    const decoded = decodeToolRun(exp.__messages[0].text)!;
+    expect(decoded.items.map((i) => i.name)).toEqual(['exec', 'read_file']);
+    expect(decoded.fail).toBe(1);
+  });
+});

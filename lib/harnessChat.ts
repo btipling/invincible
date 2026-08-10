@@ -392,6 +392,60 @@ function pushTurnEnd(
 }
 
 /**
+ * The single tool-run boundary kind. Tracks the last kind pushed to the bridge
+ * (the row the user last saw) so grouping of the next `tool_start`/`tool_result`
+ * is one predicate instead of scattered flush call sites (plan #364 / residual
+ * #357). `'tool_run'` marks an open/committed tool streak; `'thinking'` and
+ * `'none'` also keep a streak open. `'assistant'`/`'user'`/`'error'` are true
+ * boundaries that split the streak. `'system'` is a turn-end terminal row.
+ */
+export type LastUiKind =
+  | 'none'
+  | 'user'
+  | 'assistant'
+  | 'thinking'
+  | 'tool_run'
+  | 'system'
+  | 'error';
+
+/**
+ * Single grouping predicate: whether an incoming `tool_start`/`tool_result`
+ * continues the open tool-run streak (aggregate into the current group) or
+ * must open a new group. Thinking between tools keeps a streak; a real painted
+ * assistant / user / error splits. `none` (fresh turn start / empty session)
+ * continues. `system` is a turn-end terminal — never a live continue.
+ */
+export function shouldContinueStreak(last: LastUiKind): boolean {
+  return last === 'thinking' || last === 'tool_run' || last === 'none';
+}
+
+/**
+ * Restore `lastUiKind` at turn start from the last persisted session role so
+ * the same predicate that drives a live turn also drives the first tool after a
+ * reload. A fresh/empty session returns `'none'` (first tool continues a
+ * brand-new group). After any committed row the first post-reload tool opens a
+ * new group so it never grows a committed restored row.
+ */
+export function restoreLastUiKind(
+  messages: SessionSnapshot['messages'],
+): LastUiKind {
+  const last = messages[messages.length - 1];
+  if (!last) return 'none';
+  switch (last.role) {
+    case 'user':
+      return 'user';
+    case 'assistant':
+      return 'assistant';
+    case 'error':
+      return 'error';
+    case 'system':
+      return 'system';
+    case 'tool_run':
+      return 'tool_run';
+  }
+}
+
+/**
  * Full agent turn: try /api/agent (tools) then optional chat fallback + session.
  */
 export async function runHarnessTurn(
@@ -436,8 +490,13 @@ export async function runHarnessTurn(
 
   if (preferAgent) {
     bridge.setLifecycle(Lifecycle.Busy);
+    // Grouping predicate restores from the last persisted role so a reload turns
+    // the same way a live turn does; a real user push then resets it to the
+    // 'user' boundary (plan #364).
+    let lastUiKind: LastUiKind = restoreLastUiKind(session.messages);
     if (pushUser) {
       bridge.pushMessage(MessageKind.User, prompt);
+      lastUiKind = 'user';
       userPushedOnBridge = true;
     }
 
@@ -484,10 +543,16 @@ export async function runHarnessTurn(
       if (!payload) return;
       bridge.pushMessage(MessageKind.ToolRun, payload);
       next = appendMessage(next, 'tool_run', payload);
+      lastUiKind = 'tool_run';
     };
 
     const handleToolEvent = (ev: AgentStreamEvent) => {
       if (ev.type !== 'tool_start' && ev.type !== 'tool_result') return;
+      // Single boundary predicate (plan #364): a split kind (assistant / user /
+      // error) opens a new group for this tool. The open group is normally
+      // already empty here (the boundary committed it); the flush is a
+      // defense-in-depth no-op that keeps one commit path.
+      if (!shouldContinueStreak(lastUiKind)) flushToolRun();
       closeAssistantSegment();
       closeThinkingSegment();
       const grows =
@@ -504,9 +569,11 @@ export async function runHarnessTurn(
           ev.preview,
         );
       }
-      // Aggregate only — the complete N-item row is pushed by flushToolRun at a
-      // true boundary, so the bridge shows exactly one card per streak (no live
-      // growing totals, no clones).
+      // Mark the streak open so a subsequent tool continues the same group. Not
+      // a live push — the complete N-item row is still committed once by
+      // flushToolRun at a true boundary (exactly one card per streak, never a
+      // growing/cloning row).
+      lastUiKind = 'tool_run';
     };
 
     const closeAssistantSegment = () => {
@@ -531,6 +598,8 @@ export async function runHarnessTurn(
 
     const growThinking = (chunk: string) => {
       if (!chunk) return;
+      // Thinking continues a tool streak (never a boundary), per plan #364.
+      lastUiKind = 'thinking';
       // Thinking is ephemeral UI — do not append to SessionStore.
       // Close assistant so a later text_delta cannot updateLast-fail and
       // re-push a full duplicated assistant segment (text→reason→text).
@@ -556,7 +625,9 @@ export async function runHarnessTurn(
     };
 
     const growAssistant = (chunk: string) => {
-      if (!chunk) return;
+      // Empty OR whitespace-only text_delta is NOT a boundary (plan #364): it
+      // never opens an assistant bubble nor flushes a tool streak.
+      if (!chunk.trim()) return;
       closeThinkingSegment();
       assistantAcc += chunk;
       if (!assistantSegmentOpen) {
@@ -567,6 +638,8 @@ export async function runHarnessTurn(
         bridge.pushMessage(MessageKind.Assistant, assistantSegment);
         assistantSegmentOpen = true;
         assistantStarted = true;
+        // Real assistant text is a boundary — later tools open a new group.
+        lastUiKind = 'assistant';
         return;
       }
       assistantSegment += chunk;
@@ -574,6 +647,7 @@ export async function runHarnessTurn(
         // Last row is not assistant — open a fresh bubble with this segment.
         bridge.pushMessage(MessageKind.Assistant, assistantSegment);
       }
+      lastUiKind = 'assistant';
     };
 
     const finalizeAssistant = (finalText: string) => {
@@ -588,6 +662,7 @@ export async function runHarnessTurn(
         assistantStarted = true;
         assistantSegmentOpen = true;
         assistantSegment = text;
+        lastUiKind = 'assistant';
       } else if (assistantSegmentOpen) {
         // Single continuous segment: rewrite to server final when it differs.
         if (assistantAcc === assistantSegment) {
@@ -692,6 +767,9 @@ export async function runHarnessTurn(
         } else {
           bridge.updateLastMessage(MessageKind.Assistant, agentResult.text);
         }
+        // JSON (non-stream) path ends with the same 'assistant' end state as the
+        // stream path so the predicate stays the single driver (plan #364).
+        lastUiKind = 'assistant';
         scheduleImagesFromMarkdown(bridge, agentResult.text);
         assistantAcc = agentResult.text;
       }
@@ -703,6 +781,7 @@ export async function runHarnessTurn(
           .map((m) => m.text),
       );
       next = pushTurnEnd(bridge, next, 'model');
+      lastUiKind = 'system';
       // Success-only cwd apply (parent #270 / phase 2): never on failure/abort.
       // Non-empty trim only — match send path; avoid sticky whitespace cwd.
       const appliedCwd =
@@ -739,6 +818,11 @@ export async function runHarnessTurn(
         opts?.signal,
       );
       failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail);
+      lastUiKind =
+        fail.kind === 'error' || fail.kind === 'timeout' ||
+        fail.kind === 'empty' || fail.kind === 'validation'
+          ? 'error'
+          : 'system';
       bridge.setLifecycle(Lifecycle.Ready);
       return {
         result: {
