@@ -28,6 +28,14 @@ turn may re-run or infer tools from the persisted assistant prose only. The API
 remains single-shot per request; multi-turn lives in the host session + Wasm
 transcript.
 
+**Reload / restore:** thinking never survives a refresh — it is ephemeral UI and
+is not stored in `SessionStore`, so the durable transcript after reload is
+`tool_run` + `user`/`assistant` (+ turn-end `system`/`error`). On hydrate
+(`pushSessionToBridge`) the host coalesces **consecutive** `tool_run` rows into
+scannable groups (`mergeToolRunPayloads`, rolling at `TOOL_RUN_ITEMS_MAX`) so a
+long multi-tool session is not a wall of `N×1` cards; rows separated by an
+assistant/user/error line stay distinct (never merged across a real boundary).
+
 Blob shape (never env secrets / sandbox tokens):
 
 ```json

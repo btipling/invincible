@@ -441,3 +441,62 @@ export function decodeToolRun(text: string): ToolRunPayload | null {
   const c = countToolRunItems(items);
   return { ok: c.ok, fail: c.fail, pending: c.pending, items };
 }
+
+/**
+ * Coalesce already-decoded `tool_run` payloads (e.g. consecutive rows restored
+ * from a session on hydrate) back into one scannable group per budget, plan
+ * #365. Each payload's items are appended in order, rolled to a new group at
+ * `TOOL_RUN_ITEMS_MAX`, and the summed `detail` is re-clamped against
+ * `TOOL_RUN_GROUP_DETAIL_ENC_MAX` (explicit `…` clip or omitted detail — the
+ * same explicit-degradation semantics `storeDetail` enforces during live
+ * aggregation). Item `id`s are renumbered 1-based within each merged group so
+ * the Wasm per-item expand keys stay unique; counts are recounted so the header
+ * can never disagree with the kept items. Returns `[]` for no input.
+ */
+export function mergeToolRunPayloads(
+  payloads: ToolRunPayload[],
+): ToolRunPayload[] {
+  const merged: ToolRunPayload[] = [];
+  let cur: ToolRunItem[] = [];
+  let detailEncUsed = 0;
+
+  const flush = () => {
+    if (cur.length === 0) return;
+    const items = cur.map((it, i) => ({ ...it, id: i + 1 }));
+    const counts = countToolRunItems(items);
+    merged.push({ ok: counts.ok, fail: counts.fail, pending: counts.pending, items });
+    cur = [];
+    detailEncUsed = 0;
+  };
+
+  for (const p of payloads) {
+    if (!p) continue;
+    for (const it of p.items) {
+      if (cur.length >= TOOL_RUN_ITEMS_MAX) flush();
+      let detail = it.detail ?? '';
+      const remaining = TOOL_RUN_GROUP_DETAIL_ENC_MAX - detailEncUsed;
+      if (remaining <= 0) {
+        detail = '';
+      } else {
+        const enc = esc(detail).length;
+        if (enc > remaining) detail = clipToEncBudget(detail, remaining);
+      }
+      cur.push({ ...it, detail });
+      detailEncUsed += esc(detail).length;
+    }
+  }
+  flush();
+  return merged;
+}
+
+/**
+ * Re-encode a decoded/merged `ToolRunPayload` back to wire text so a hydrate
+ * coalesce can push one kind-6 row per merged group. `encodeToolRun` only reads
+ * `ToolRunGroup.items` (the encode-time `detailEncUsed` is aggregation-only), so
+ * a temporary group with the payload's items encodes exactly. Returns null when
+ * there are no items (mirrors `encodeToolRun`).
+ */
+export function encodeToolRunPayload(payload: ToolRunPayload): string | null {
+  if (!payload || payload.items.length === 0) return null;
+  return encodeToolRun({ detailEncUsed: 0, items: payload.items });
+}

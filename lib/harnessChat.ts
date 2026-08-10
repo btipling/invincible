@@ -39,6 +39,7 @@ import {
 import {
   appendMessage,
   formatPromptWithHistory,
+  type SessionMessage,
   type SessionSnapshot,
 } from './sessionStore';
 import {
@@ -46,10 +47,14 @@ import {
   addToolStart,
   buildTraceGroups,
   createToolRunGroup,
+  decodeToolRun,
   encodeToolRun,
+  encodeToolRunPayload,
   hasRunningTool,
+  mergeToolRunPayloads,
   toolRunIsFull,
   type ToolRunGroup,
+  type ToolRunPayload,
 } from './toolRun';
 import { canLoadEarlier, latestRingStart, sliceMessagesForRing } from './sessionWindow';
 
@@ -188,6 +193,55 @@ export function selectToolTraceLines(
   return lines;
 }
 
+/**
+ * Coalesce consecutive `tool_run` rows on hydrate (plan #365) so a long restored
+ * session reads as scannable groups instead of a wall of N×1 cards. A run of
+ * adjacent `tool_run` messages is decoded and merged via `mergeToolRunPayloads`
+ * (rolling at `TOOL_RUN_ITEMS_MAX` + re-clamping the summed detail budget —
+ * never across an assistant/user/error/turn-end boundary, because those roles
+ * interrupt the run). A row that fails decode is kept as raw plain text
+ * (fail-open) and ends the run. Only the merged group's text (and row count)
+ * changes; the first source row's `id`/`at` anchor each merged group. Every item
+ * count stays exact (recounted), so no header can disagree with kept items.
+ */
+export function coalesceToolRunMessages(
+  messages: SessionMessage[],
+): SessionMessage[] {
+  const out: SessionMessage[] = [];
+  let run: ToolRunPayload[] = [];
+  let anchor: SessionMessage | undefined;
+
+  const flush = () => {
+    if (run.length === 0 || !anchor) return;
+    const merged = mergeToolRunPayloads(run);
+    for (const p of merged) {
+      const text = encodeToolRunPayload(p);
+      if (text) out.push({ id: anchor.id, role: 'tool_run', text, at: anchor.at });
+    }
+    run = [];
+    anchor = undefined;
+  };
+
+  for (const m of messages) {
+    if (m.role === 'tool_run') {
+      const p = decodeToolRun(m.text);
+      if (p) {
+        if (run.length === 0) anchor = m;
+        run.push(p);
+        continue;
+      }
+      // decode fail-open — flush the open run, keep this row raw.
+      flush();
+      out.push(m);
+      continue;
+    }
+    flush();
+    out.push(m);
+  }
+  flush();
+  return out;
+}
+
 /** Mirror a SessionStore window (≤ HARNESS_RING_MAX) into Wasm. Returns ringWindowStart used. */
 export function pushSessionToBridge(
   bridge: HarnessBridge,
@@ -203,7 +257,9 @@ export function pushSessionToBridge(
     opts?.windowStart !== undefined
       ? Math.max(0, opts.windowStart)
       : latestRingStart(session.messages.length);
-  const slice = sliceMessagesForRing(session.messages, windowStart);
+  const slice = coalesceToolRunMessages(
+    sliceMessagesForRing(session.messages, windowStart),
+  );
   const msgs = slice.map((m) => ({
     kind: roleToKind(m.role),
     text: m.text,

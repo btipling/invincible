@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   HARNESS_SMOKE_PROMPT,
+  coalesceToolRunMessages,
   collapseThinkingDisplay,
   classifyTurnFailure,
   describeTurnEnd,
@@ -1380,5 +1381,168 @@ describe('runHarnessTurn — lastUiKind boundary predicate (plan #364)', () => {
     const decoded = decodeToolRun(exp.__messages[0].text)!;
     expect(decoded.items.map((i) => i.name)).toEqual(['exec', 'read_file']);
     expect(decoded.fail).toBe(1);
+  });
+});
+
+describe('hydrate coalesce — reload/hydrate scannability (plan #365)', () => {
+  function toolRunText(names: string[], fail?: Set<string>): string {
+    const g = createToolRunGroup();
+    for (const n of names) {
+      addToolResult(g, n, !fail?.has(n), `${n} ok`);
+    }
+    return encodeToolRun(g)!;
+  }
+
+  it('coalesces consecutive tool_run rows on hydrate into a scannable group', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // A long session restores many adjacent tool_run rows (roll-bound streaks /
+    // older legacy sessions) that are not separated by a real boundary.
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      messages: [
+        makeMessage('user', 'go'),
+        makeMessage('tool_run', toolRunText(['a', 'b'])),
+        makeMessage('tool_run', toolRunText(['c', 'd'])),
+        makeMessage('tool_run', toolRunText(['e'])),
+        makeMessage('assistant', 'done'),
+      ],
+    };
+    pushSessionToBridge(bridge, session, { clear: true });
+    const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
+    // Three adjacent rows coalesce into ONE kind-6 group.
+    expect(toolRuns).toHaveLength(1);
+    const decoded = decodeToolRun(toolRuns[0].text)!;
+    expect(decoded.items.map((i) => i.name)).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(decoded.ok).toBe(5);
+    // No duplicate user rows; assistant follows the merged card.
+    const kinds = exp.__messages.map((m) => m.kind);
+    expect(kinds).toEqual([
+      MessageKind.User,
+      MessageKind.ToolRun,
+      MessageKind.Assistant,
+    ]);
+  });
+
+  it('never merges across an assistant/user/error boundary', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      messages: [
+        makeMessage('user', 'q'),
+        makeMessage('tool_run', toolRunText(['a'])),
+        makeMessage('assistant', 'did it'),
+        makeMessage('tool_run', toolRunText(['b'])),
+        makeMessage('assistant', 'then'),
+      ],
+    };
+    pushSessionToBridge(bridge, session, { clear: true });
+    const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
+    expect(toolRuns).toHaveLength(2);
+    expect(decodeToolRun(toolRuns[0].text)!.items.map((i) => i.name)).toEqual(['a']);
+    expect(decodeToolRun(toolRuns[1].text)!.items.map((i) => i.name)).toEqual(['b']);
+  });
+
+  it('never merges across a system or error turn-end boundary', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      messages: [
+        makeMessage('user', 'q'),
+        makeMessage('tool_run', toolRunText(['a'])),
+        makeMessage('system', describeTurnEnd('model')),
+        makeMessage('tool_run', toolRunText(['b'])),
+        makeMessage('error', describeTurnEnd('error', 'boom')),
+        makeMessage('tool_run', toolRunText(['c'])),
+      ],
+    };
+    pushSessionToBridge(bridge, session, { clear: true });
+    const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
+    // Any non-`tool_run` row flushes the open run — so adjacent rows split by a
+    // System (turn-end) or Error (failure) line each stay their own card.
+    expect(toolRuns).toHaveLength(3);
+    expect(decodeToolRun(toolRuns[0].text)!.items.map((i) => i.name)).toEqual(['a']);
+    expect(decodeToolRun(toolRuns[1].text)!.items.map((i) => i.name)).toEqual(['b']);
+    expect(decodeToolRun(toolRuns[2].text)!.items.map((i) => i.name)).toEqual(['c']);
+    // Order preserved around the boundary rows.
+    const kinds = exp.__messages.map((m) => m.kind);
+    const errIdx = kinds.indexOf(MessageKind.Error);
+    expect(errIdx).toBeGreaterThan(kinds.indexOf(MessageKind.ToolRun));
+  });
+
+  it('decode fail-open keeps a run ending malformed row raw and never drops counts', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      messages: [
+        makeMessage('user', 'q'),
+        makeMessage('tool_run', toolRunText(['a'])),
+        // Malformed/oversize blob must not crash hydrate: stays as raw text and
+        // ends the preceding run.
+        makeMessage('tool_run', 'not-a-toolrun payload'),
+        makeMessage('tool_run', toolRunText(['b'])),
+        makeMessage('assistant', 'done'),
+      ],
+    };
+    pushSessionToBridge(bridge, session, { clear: true });
+    const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
+    // 'a' → one group; malformed → one raw row; 'b' → one group.
+    expect(toolRuns).toHaveLength(3);
+    expect(exp.__messages.some((m) => m.text === 'not-a-toolrun payload')).toBe(true);
+    const mergedOk = toolRuns.filter((tr) => tr.text.startsWith('toolrun'));
+    expect(mergedOk.map((tr) => decodeToolRun(tr.text)!.items.map((i) => i.name))).toEqual([
+      ['a'],
+      ['b'],
+    ]);
+  });
+
+  it('a run longer than TOOL_RUN_ITEMS_MAX rolls into multiple merged groups', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // Two adjacent rows (each under the per-payload decode cap, combined > the
+    // group cap) merge into TWO bounded groups — never one oversized row.
+    const half = Math.floor((TOOL_RUN_ITEMS_MAX + 40) / 2);
+    const a = Array.from({ length: half }, (_, i) => `a${i}`);
+    const b = Array.from({ length: TOOL_RUN_ITEMS_MAX + 40 - half }, (_, i) => `b${i}`);
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      messages: [
+        makeMessage('user', 'go'),
+        makeMessage('tool_run', toolRunText(a)),
+        makeMessage('tool_run', toolRunText(b)),
+        makeMessage('assistant', 'done'),
+      ],
+    };
+    pushSessionToBridge(bridge, session, { clear: true });
+    const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
+    expect(toolRuns.length).toBeGreaterThan(1);
+    let total = 0;
+    for (const tr of toolRuns) {
+      const d = decodeToolRun(tr.text);
+      expect(d).not.toBeNull();
+      expect(d!.items.length).toBeLessThanOrEqual(TOOL_RUN_ITEMS_MAX);
+      total += d!.items.length;
+    }
+    expect(total).toBe(TOOL_RUN_ITEMS_MAX + 40);
+  });
+
+  it('coalesceToolRunMessages is a pure no-op for a session with no adjacent tool_run rows', () => {
+    const msgs = [
+      makeMessage('user', 'hi'),
+      makeMessage('tool_run', toolRunText(['a'])),
+      makeMessage('assistant', 'ok'),
+      makeMessage('tool_run', toolRunText(['b'])),
+    ];
+    const out = coalesceToolRunMessages(msgs);
+    expect(out).toHaveLength(msgs.length);
+    expect(out.map((m) => m.text)).toEqual(msgs.map((m) => m.text));
   });
 });
