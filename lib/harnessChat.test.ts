@@ -1579,6 +1579,10 @@ describe('#387 host seam — whitespace boundary fidelity (phase-2 roll-in)', ()
     const assistants = exp.__messages.filter((m) => m.kind === MessageKind.Assistant);
     expect(assistants.length).toBeGreaterThanOrEqual(2);
     expect(assistants.map((m) => m.text).join('')).toBe(AUTHORITATIVE);
+    // Stronger assert (review follow-up): the `\n\n` arrived while the first
+    // segment was still open (before the tool), so the FIRST bubble must OWN the
+    // boundary — not a wrong split that happens to concatenate.
+    expect(assistants[0]!.text).toBe('part one part two\n\n');
   });
 
   it('single-segment `## What I did` + boundary delta reassembles with the newline intact', async () => {
@@ -1629,6 +1633,50 @@ describe('#387 host seam — whitespace boundary fidelity (phase-2 roll-in)', ()
     // the leading whitespace-only delta).
     expect(assistants).toHaveLength(1);
     expect(assistants[0]!.text).toBe('ok');
+  });
+
+  it('whitespace-only boundary AFTER a tool closed the segment reattaches to the reopened bubble', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const AUTHORITATIVE = 'part one part two\n\nIt will 401';
+    const result = await runHarnessTurn(bridge, session, 'after', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        const onEvent = init?.onEvent;
+        await onEvent?.({ type: 'text_delta', text: 'part one ' });
+        await onEvent?.({ type: 'text_delta', text: 'part two' });
+        // This tool CLOSES the first assistant segment...
+        await onEvent?.({ type: 'tool_start', name: 'list_dir' });
+        await onEvent?.({
+          type: 'tool_result',
+          name: 'list_dir',
+          ok: true,
+          summary: 'list_dir · ok · a',
+        });
+        // ...so this whitespace-only boundary arrives while NO segment is open.
+        // It must be buffered and reattached as the LEADING newline of the next
+        // opened segment (#387 after-close residual, review follow-up #1).
+        await onEvent?.({ type: 'text_delta', text: '\n\n' });
+        await onEvent?.({ type: 'text_delta', text: 'It will 401' });
+        await onEvent?.({ type: 'done', text: AUTHORITATIVE });
+        return { ok: true, text: AUTHORITATIVE };
+      },
+    });
+    expect(result.result.ok).toBe(true);
+    // Session still settles exactly to the authoritative well-formed text.
+    const settled = result.session.messages.find((m) => m.role === 'assistant');
+    expect(settled?.text).toBe(AUTHORITATIVE);
+    // Decision for the after-close order: the blank line attaches as the LEADING
+    // newline of the reopened second bubble, so the canvas reconstitutes the
+    // exact authoritative text (the tool_run card sits in between, as expected).
+    const assistants = exp.__messages.filter((m) => m.kind === MessageKind.Assistant);
+    expect(assistants.length).toBeGreaterThanOrEqual(2);
+    expect(assistants[0]!.text).toBe('part one part two');
+    expect(assistants[assistants.length - 1]!.text).toBe('\n\nIt will 401');
+    expect(assistants.map((m) => m.text).join('')).toBe(AUTHORITATIVE);
+    // No blank/empty assistant bubble may be created by the whitespace delta.
+    expect(assistants.some((m) => m.text.trim() === '')).toBe(false);
   });
 });
 
