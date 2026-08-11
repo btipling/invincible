@@ -20,27 +20,29 @@ project and keys, and run the same harness on **your** work.
 |---|---------|--------|
 | **Core** | Wasm harness chat | Transcript, composer, and turn UX live in the canvas (`/harness`) |
 | **Core** | AI Gateway inference | `POST /api/chat` — `AI_GATEWAY_API_KEY` stays on the server |
-| **Optional** | Agent tools + sandbox | `POST /api/agent` — tenancy **off**: env BYO `SANDBOX_*`; tenancy **on**: DB grants + per-row `backend` (`byo`|`vercel`) and image; **Settings → Sandbox** durable Workspace (attach-only) — [docs/sandbox.md](docs/sandbox.md); origin dogfood: [dev/README.md](dev/README.md) |
-| **Optional** | Builtin HTTPS fetch | `http_get` via durable HTTP instance when `BUILTIN_HTTP_FETCH=sandbox` (Settings Create HTTP; tenancy-off name env) — [docs/builtin-http.md](docs/builtin-http.md) |
-| **Optional** | Multi-tenant login + admin | Credentials auth, grants, `/login` + `/admin` — **on** for the reference Production deploy |
-| **Optional** | Tenant BYOK inference | When tenancy is on: admin **Inference keys** (`/admin/inference`), harness model cycle (canvas **Next**), request-scoped Gateway BYOK |
-| **Optional** | Per-user MCP tools | Tenancy on: Settings → MCP servers; tools on agent turns ([docs/mcp.md](docs/mcp.md)) |
-| **Optional** | User GitHub PAT | Tenancy on: Settings → GitHub token; sandbox **exec** injects `GH_TOKEN`/`GITHUB_TOKEN` ([docs/sandbox.md](docs/sandbox.md)) |
-| **Optional** | Preferred sandbox + instances | Tenancy on: Settings → Sandbox (catalog preference + Workspace/HTTP instance lifecycle) ([docs/sandbox.md](docs/sandbox.md)) |
+| **Required** | Multi-tenant login + admin | Always on: credentials auth, grants, `/login` + `/admin` on every deploy (see [docs/bring-your-own.md](docs/bring-your-own.md)) |
+| **Optional** | Agent tools + sandbox | `POST /api/agent` — DB grants + per-row `backend` (`byo`|`vercel`) and image; **Settings → Sandbox** durable Workspace (attach-only) — [docs/sandbox.md](docs/sandbox.md); origin dogfood: [dev/README.md](dev/README.md) |
+| **Optional** | Builtin HTTPS fetch | `http_get` via a durable HTTP instance a user creates under **Settings → Sandbox** when `BUILTIN_HTTP_FETCH=sandbox` — [docs/builtin-http.md](docs/builtin-http.md) |
+| **Optional** | Tenant BYOK inference | Admin **Inference keys** (`/admin/inference`), harness model cycle (canvas **Next**), request-scoped Gateway BYOK |
+| **Optional** | Per-user MCP tools | Settings → MCP servers; tools on agent turns ([docs/mcp.md](docs/mcp.md)) |
+| **Optional** | User GitHub PAT | Settings → GitHub token; sandbox **exec** injects `GH_TOKEN`/`GITHUB_TOKEN` ([docs/sandbox.md](docs/sandbox.md)) |
+| **Optional** | Preferred sandbox + instances | Settings → Sandbox (catalog preference + Workspace/HTTP instance lifecycle) ([docs/sandbox.md](docs/sandbox.md)) |
 | **Optional** | OIDC SSO + SCIM | Code on `main`; enable with env ([docs/bring-your-own.md §4b](docs/bring-your-own.md#4b-optional-sso-oidc--scim)) |
 
 ## Try it
 
 ### Local (best for new visitors)
 
-Open harness is the default when multi-tenant auth is **off** (leave the tenancy
-triple unset: `DATABASE_URL`, `AUTH_SECRET`, `CREDENTIALS_ENCRYPTION_KEY`).
+For a full product path, configure the tenancy triple in `.env.local`
+(`DATABASE_URL`, `AUTH_SECRET`, `CREDENTIALS_ENCRYPTION_KEY`) and sign in. See
+[Run locally](#run-locally) and [docs/bring-your-own.md](docs/bring-your-own.md)
+for the required setup.
 
 1. Set `AI_GATEWAY_API_KEY` (see [Run locally](#run-locally)).
 2. `npm run dev` → open [http://localhost:3000/harness](http://localhost:3000/harness).
 3. Type in the **canvas** composer → **Enter** or **Send**.
 4. **Send** a short prompt to smoke the host Gateway path (reply appears in the canvas).
-5. Refresh restores session into Wasm (and cloud when signed in under tenancy); nav **Clear** resets local + cloud row.
+5. Refresh restores session into Wasm (and cloud when signed in); nav **Clear** resets local + cloud row.
 
 ### Reference deploy
 
@@ -51,10 +53,11 @@ Maintainer sample (not required for BYO success):
 | **Production** | https://invincible-dun-ten.vercel.app |
 | **Harness** | https://invincible-dun-ten.vercel.app/harness |
 
-That host runs **with multi-tenant auth enabled**. Unauthenticated visits to
+That host runs multi-tenant-only. Unauthenticated visits to
 `/harness` redirect to **`/login`**. Use an account **you** control on that
-deploy — this README does **not** publish seed passwords. Forks that want an
-open demo leave the tenancy triple unset.
+deploy — this README does **not** publish seed passwords. A fresh fork or
+`npm run dev` without the tenancy triple shows the login wall and fails closed
+until tenancy is configured ([docs/bring-your-own.md](docs/bring-your-own.md)).
 
 IDs and pointers: [`docs/project-ids.md`](docs/project-ids.md).
 
@@ -68,8 +71,10 @@ cp .env.example .env.local   # set AI_GATEWAY_API_KEY
 npm run dev
 ```
 
-Leave tenancy env unset for an open local harness. Optional `SANDBOX_*` enables
-agent tools ([docs/sandbox.md](docs/sandbox.md) · [Builtin HTTP](docs/builtin-http.md)).
+Configure the tenancy triple (`DATABASE_URL`, `AUTH_SECRET`,
+`CREDENTIALS_ENCRYPTION_KEY`) to use the full product path; without it the login
+wall applies and APIs fail closed. Optional `SANDBOX_*` enables agent tools
+([docs/sandbox.md](docs/sandbox.md) · [Builtin HTTP](docs/builtin-http.md)).
 
 ```bash
 npm test && npm run typecheck
@@ -83,7 +88,7 @@ secrets → Wasm supply → verify `/harness`.
 | Topic | Doc |
 |-------|-----|
 | Agent tools workspace | [docs/sandbox.md](docs/sandbox.md) |
-| Multi-tenant cutover | [docs/bring-your-own.md §4a](docs/bring-your-own.md#4a-optional-multi-tenant-auth) |
+| Multi-tenant setup | [docs/bring-your-own.md §4a](docs/bring-your-own.md#4a-multi-tenant-auth) |
 | Tenant BYOK inference | [docs/bring-your-own.md §4a Inference keys](docs/bring-your-own.md#inference-keys-byok) |
 | OIDC + SCIM | [docs/bring-your-own.md §4b](docs/bring-your-own.md#4b-optional-sso-oidc--scim) |
 | Per-user MCP | [docs/mcp.md](docs/mcp.md) |
@@ -100,7 +105,7 @@ hardcoding required.
   bridge poll/submit, thin nav/status chips (not a second chat).
 - **Vercel backend** — `POST /api/chat` and `POST /api/agent`; Gateway key and
   sandbox tokens never enter the client or Wasm.
-- **Session** — local-first `SessionStore` (memory + localStorage) restored into Wasm; optional **cloud multi-device** sync via `/api/session` when tenancy is on and the user is signed in.
+- **Session** — local-first `SessionStore` (memory + localStorage) restored into Wasm; optional **cloud multi-device** sync via `/api/session` when the user is signed in.
 
 Full ownership table: [`docs/feature-divide.md`](docs/feature-divide.md).
 

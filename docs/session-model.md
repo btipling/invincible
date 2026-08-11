@@ -72,7 +72,7 @@ Storage key: `invincible.harness.session.v1`.
 When the user has a valid Auth.js session, the host also uses an async
 **`SessionRepository`** (`lib/sessionRepository.ts`) against **`/api/session`**
 with `credentials: 'same-origin'`. `/api/session` always requires auth — there
-is no tenancy-off / disabled path from the route.
+is no disabled path from the route.
 
 | Piece | Location | Notes |
 |-------|----------|--------|
@@ -167,7 +167,7 @@ Cloud sync stores **messages** (trimmed), not the current ring window index.
 
 ## Operator: enable multi-device on a deploy
 
-1. Tenancy **on** (triple env: `DATABASE_URL`, `AUTH_SECRET`,
+1. Tenancy configured (triple env: `DATABASE_URL`, `AUTH_SECRET`,
    `CREDENTIALS_ENCRYPTION_KEY`) — see [bring-your-own.md](bring-your-own.md) §4a.  
 2. Schema: GitHub Actions → **`db-migrate`** → `confirm=migrate` (includes
    `harness_sessions`). Do **not** use `db-tenancy-bootstrap` / seed solely for

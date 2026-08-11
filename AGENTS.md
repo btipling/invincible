@@ -106,7 +106,7 @@ Do **not** write product/ops guides as phase narratives or issue archaeology
   do **not** use seed/bootstrap for that (seed resets password + token). Dual-read
   keeps Production working until the operator dispatches backfill + optional
   `TENANT_TOKEN_DECRYPT_MODE=dek-only`. Never laptop npm as the official cutover.
-- **Tenant BYOK inference** is on `main`: admin **`/admin/inference`**, `GET /api/models`, harness protocol v3 model cycle, chat/agent request-scoped BYOK. Under tenancy on, **never** route via `DEFAULT_MODEL` / `AGENT_MODEL`. Additive schema for provider tables: GHA **`db-migrate`** (not seed). Docs: [docs/bring-your-own.md](docs/bring-your-own.md) §4a Inference keys.
+- **Tenant BYOK inference** is on `main`: admin **`/admin/inference`**, `GET /api/models`, harness protocol v3 model cycle, chat/agent request-scoped BYOK. **Never** route via a host env-model fallback. Additive schema for provider tables: GHA **`db-migrate`** (not seed). Docs: [docs/bring-your-own.md](docs/bring-your-own.md) §4a Inference keys.
 
 - Do **not** instruct humans to clone the repo on a laptop to re-seed; use a
   cloud agent workspace, GitHub Actions `db-tenancy-bootstrap`, or
@@ -194,14 +194,14 @@ ops inventory).
 |------|--------|--------|
 | Vercel project + Git `main` | **Done** | prod URL above |
 | `AI_GATEWAY_API_KEY` (Vercel) | **Done** | server-side only |
-| Tenant BYOK provider secrets (DB) | **Done** (code) | Admin `/admin/inference`; ciphertext under tenant DEK; grants + model catalog; tenancy-on chat/agent attach request-scoped Gateway BYOK (never env model routing). Schema-only Production: GHA **`db-migrate`** (`confirm=migrate`) |
+| Tenant BYOK provider secrets (DB) | **Done** (code) | Admin `/admin/inference`; ciphertext under tenant DEK; grants + model catalog; chat/agent attach request-scoped Gateway BYOK (never env model routing). Schema-only Production: GHA **`db-migrate`** (`confirm=migrate`) |
 | Per-user MCP servers (DB) | **Done** (code) | Settings `/settings/mcp`; header secrets under tenant DEK; tools on `/api/agent` only; SSRF url policy; DEK rotate re-encrypts. Schema: GHA **`db-migrate`**. Ops/smoke: [docs/mcp.md](docs/mcp.md) |
 | Per-user GitHub PAT (DB + inject) | **Done** (code) | Settings `/settings/github`; DEK ciphertext; sandbox **exec** inject `GH_TOKEN`/`GITHUB_TOKEN` (both backends); redact on turn; DEK rotate re-encrypts. Schema: GHA **`db-migrate`**. Ops: [docs/sandbox.md](docs/sandbox.md) |
 | `HARNESS_ARTIFACT_TOKEN` (Vercel) | **Done** | PAT Actions: Read — prebuild downloads `harness-wasm` |
 | `VERCEL_DEPLOY_HOOK_URL` (GitHub secret) | **Done** | deploy hooks; `build-harness` pings after artifact upload |
 | DO runner `invincible-do-1` labels `invincible`,`zig` | **Done** | Zig 0.16.0 only there |
 | `SANDBOX_URL` / `SANDBOX_TOKEN` (Vercel) | **Done** | Agent sandbox on origin Production — see [docs/sandbox.md](docs/sandbox.md); host inventory private; never invent a host URL |
-| `DATABASE_URL` (Vercel) | **Done** | Pooled Postgres (Neon) for optional tenancy — Production cutover smoke passed (unauth 401 + login); no host inventory in git |
+| `DATABASE_URL` (Vercel) | **Done** | Pooled Postgres (Neon) for required multi-tenant auth — Production cutover smoke passed (unauth 401 + login); no host inventory in git |
 | `AUTH_SECRET` (Vercel) | **Done** | Auth.js signing secret — Production cutover smoke passed |
 | `CREDENTIALS_ENCRYPTION_KEY` (Vercel) | **Done** | AES-GCM AMK wrapping per-tenant DEKs (tokens under DEK; dual-read cutover) — dual-store with GHA; never reuse casually on public Preview. Owner DEK rotate via `/admin`. Existing-data backfill: GHA `db-tenancy-backfill-deks`. Do not rotate Production AMK without re-wrap tool |
 | Optional OIDC (`AUTH_OIDC_ISSUER` / `AUTH_OIDC_CLIENT_ID` / `AUTH_OIDC_CLIENT_SECRET` / `AUTH_OIDC_LABEL?`) | **Not Done** | Generic SSO — configure when operator wants IdP login; callback `{origin}/api/auth/callback/oidc`; BYO: [docs/bring-your-own.md](docs/bring-your-own.md) §4b |
@@ -222,11 +222,12 @@ ops inventory).
   `EXPECTED_SANDBOX_DAEMON_VERSION` — the parity unit test blocks drift. No new
   GHA deploy needed; host inventory stays private ([docs/sandbox.md §3](docs/sandbox.md)).
 - Tenancy triple env is **Done** on origin Production, and tenancy is now
-  **hard-on**: there is no tenancy-off / open shell (login wall + fail-closed
-  auth shipped in Phase 1). Do **not** nag the origin maintainer to “set
-  `DATABASE_URL`” as if forgotten. If unauth `/api/agent` no longer returns 401
-  or login fails, treat as **regression** (env/redeploy), not a greenfield
-  cutover. Prefer cloud cutover docs ([docs/bring-your-own.md](docs/bring-your-own.md) §4a) and GHA
+  **hard-on**: multi-tenant-only with a login wall + fail-closed auth. There is
+  no open shell (no login-free deploy mode). Do **not** nag the origin
+  maintainer to “set `DATABASE_URL`” as if forgotten. If unauth `/api/agent` no
+  longer returns 401 or login fails, treat as **regression** (env/redeploy),
+  not a greenfield cutover. Prefer cloud cutover docs
+  ([docs/bring-your-own.md](docs/bring-your-own.md) §4a) and GHA
   `db-tenancy-bootstrap` for re-seed (resets bootstrap password + token
   ciphertext by design) or GHA `db-tenancy-backfill-deks` for legacy AMK→DEK
   data cutover (never seed for that). Public smoke: `npm run smoke:tenancy`.
@@ -278,7 +279,7 @@ invincible/
 | Cloud multi-device harness session (`/api/session`, hybrid local+cloud) | `app/api/session/*`, `lib/sessionRepository.ts`, `lib/sessionCloudCaps.ts`, `lib/tenancy/harnessSessions.ts`, `app/harness/HarnessHost.tsx`, `middleware.ts` (`/api/session`), [docs/session-model.md](docs/session-model.md), [SECURITY.md](SECURITY.md) — schema: GHA **`db-migrate`** |
 | Harness stream chrome (Thinking collapse/caps, live tools) | `lib/harnessChat.ts`, `native/harness/src/ui.zig` (Thinking kind), protocol v10 in `lib/harnessBridge.ts` (Stop cancel v9; Thinking kind v8; tool-run kind 6 v10) |
 | Tool-run aggregation + expandable transcript control (#325) | `lib/agent/agentStream.ts` (backend `tool_result.preview` — bounded/redacted L2 detail), `lib/toolRun.ts` (encode/decode, host aggregation, `meaningfulDetail` preview→`detail`, `mergeToolRunPayloads`/`encodeToolRunPayload` hydrate coalesce), `lib/harnessChat.ts` (stream/JSON aggregation → kind 6 `tool_run`; grouping keys off last-UI/bridge row state `lastUiKind` — thinking continues a streak, commit-once, reload coalescing of consecutive `tool_run` rows via `coalesceToolRunMessages` in `pushSessionToBridge`), `lib/sessionStore.ts` role `tool_run`, `native/harness/src/rich/toolrun.zig` (decode), `native/harness/src/ui.zig` (`paintToolRun` — **headerless**: no `tools` kind band; 📋 copy on the header row; status glyphs as the single channel from embedded faces, `✓`/`✗` DejaVu symbols + `…` Noto; L2 preview in Vera Sans Mono for command/output tools **or any multi-line detail**, body otherwise; short single-line results → static label, no blank expander), protocol **v10**; expand state + stick-to-bottom reuse dvui `reorder_tree.zig` / `scrolling.zig` idioms |
-| Builtin HTTPS fetch (`http_get`) | `lib/agent/httpFetch*.ts`, `lib/agent/vercelSandboxHttpRunner.ts`, `lib/net/publicUrlPolicy.ts`, `docs/builtin-http.md` — env `BUILTIN_HTTP_FETCH`; tenancy on: Settings HTTP instance attach-only; tenancy off: `BUILTIN_HTTP_INSTANCE_NAME` |
+| Builtin HTTPS fetch (`http_get`) | `lib/agent/httpFetch*.ts`, `lib/agent/vercelSandboxHttpRunner.ts`, `lib/net/publicUrlPolicy.ts`, `docs/builtin-http.md` — env `BUILTIN_HTTP_FETCH`; user-created HTTP instance attach-only (Settings → Sandbox) |
 | Tenancy schema / migrations | `db/schema.ts`, `db/migrations/` |
 | Tenancy crypto / seed helpers | `lib/tenancy/*`, `scripts/seed-tenancy.ts` |
 | Tenant BYOK / inference grants | `app/admin/inference/*`, `lib/tenancy/providerSecrets*`, `lib/tenancy/resolveInference*`, `lib/gateway/byokProviders.ts`, `app/api/models/*` |

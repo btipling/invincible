@@ -90,7 +90,7 @@ submit so no ghost request is sent.
 
 | Control | Effect |
 |---------|--------|
-| Model id (harness picker / `AGENT_MODEL`) | Choose a reasoning-capable Gateway model when desired |
+| Model id (harness picker) | Choose a reasoning-capable granted model when desired |
 | `AGENT_REASONING` | Optional SDK effort: `provider-default` \| `none` \| `low` \| `medium` \| `high` |
 
 When `AGENT_REASONING` is unset, the server enables `reasoning: provider-default` only if the model id looks reasoning-capable (`reasoning` / `thinking` in the id, but not `non-reasoning`). Other models omit the option.

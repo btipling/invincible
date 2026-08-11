@@ -2,8 +2,8 @@
 
 Optional **native agent tools** (`http_get`, `http_head`) that retrieve public
 HTTPS pages during a harness agent turn. Egress for the **target URL** runs in a
-**durable user HTTP/curl Vercel Sandbox instance** (or a host-configured attach
-name when tenancy is off) — not as an open proxy from the Next.js route handler,
+**durable user HTTP/curl Vercel Sandbox instance** the user creates under
+**Settings → Sandbox** — not as an open proxy from the Next.js route handler,
 and not via the BYO path-jailed workspace daemon.
 
 Related: [sandbox.md](sandbox.md) · [mcp.md](mcp.md) · [feature-divide.md](feature-divide.md) ·
@@ -18,7 +18,7 @@ Related: [sandbox.md](sandbox.md) · [mcp.md](mcp.md) · [feature-divide.md](fea
 | **Is** | Server-side AI SDK tools on `POST /api/agent` |
 | **Is** | Target fetch inside a **Vercel Sandbox** microVM (isolated network) after app-side SSRF policy |
 | **Is** | Env-gated (`BUILTIN_HTTP_FETCH=sandbox`); default **off** |
-| **Is** | **Attach-only** to a durable **HTTP/curl instance** the user created under **Settings → Sandbox** (tenancy on), or to `BUILTIN_HTTP_INSTANCE_NAME` (tenancy off) |
+| **Is** | **Attach-only** to a durable **HTTP/curl instance** the user created under **Settings → Sandbox** |
 | **Is not** | The BYO sandbox daemon (`list_dir` / `read_file` / `write_file` / `exec`) |
 | **Is not** | The **Workspace** FS instance — hop-B uses a **separate** named microVM (`purpose=http`) |
 | **Is not** | Create-on-turn or create-on-fetch — the agent **never** `Sandbox.create` / `getOrCreate` for HTTP |
@@ -54,13 +54,12 @@ User (Wasm composer)
 | `BUILTIN_HTTP_FETCH` | `off` \| `sandbox` | `off` |
 | `BUILTIN_HTTP_TIMEOUT_MS` | 1–1800000 | `120000` (per fetch) |
 | `BUILTIN_HTTP_MAX_BYTES` | ≤ 16 MiB | `2 MiB` |
-| `BUILTIN_HTTP_INSTANCE_NAME` | durable instance name | empty — **tenancy off only** |
 
 Set on the **Vercel project** (server-only). No `NEXT_PUBLIC_*`.
 
 Idle extendTimeout for the attached VM uses the same **30 minute** family as Workspace instances (not a short ephemeral create timeout). The hop-B runner uses the **same Vercel attach-retry seam** as the Workspace FS tools (`lib/sandbox/resilience.ts`): each `curl`/`head` VM command runs inside a bounded transient retry (readiness `image_not_ready` / `preparing`, `408/429/5xx`), SDK-owned stop resume passes through, permanent errors fail fast, and a throttled `extendTimeout` heartbeat (≥5 min) keeps long turns alive. See [sandbox.md](sandbox.md) → *Vercel attach resilience*. The runner adds **no** separate attach probe — the first command absorbs any boot window.
 
-### Operator steps (tenancy on)
+### Operator steps
 
 1. Deploy a build that includes builtin HTTP.
 2. Vercel → Project → Environment Variables → set `BUILTIN_HTTP_FETCH=sandbox`.
@@ -71,12 +70,8 @@ Idle extendTimeout for the attached VM uses the same **30 minute** family as Wor
 7. If the HTTP instance is missing/stopped, the turn **omits** http tools (FS/MCP may still run) — the agent does **not** create a VM.
 8. Disable: set `BUILTIN_HTTP_FETCH=off` (or unset) and redeploy.
 
-### Operator steps (tenancy off)
-
-1. Set `BUILTIN_HTTP_FETCH=sandbox`.
-2. Set **`BUILTIN_HTTP_INSTANCE_NAME`** to an existing durable sandbox name in the **host** Vercel project (create that VM out of band / with host tooling — the agent never creates).
-3. If the name is empty while builtin is on → agent returns a **config error** (fail closed; no create).
-4. Optional: keep BYO `SANDBOX_URL`/`SANDBOX_TOKEN` for FS tools independently.
+If builtin is on but the user has no HTTP instance → the agent returns a
+**config error** (fail closed; no create).
 
 Cloud agents may use `vercel link` + `vercel env pull` in the **agent workspace** for OIDC smoke — not a human laptop requirement.
 
@@ -84,20 +79,17 @@ Cloud agents may use `vercel link` + `vercel env pull` in the **agent workspace*
 
 ## 4. Coexistence matrix
 
-| Tenancy | Workspace FS | Builtin HTTP | Agent route |
-|---------|--------------|--------------|-------------|
-| off | missing | off | **503** exact not-configured string → host falls back to chat |
-| off | missing | on + instance name | Agent OK — **http tools only** (attach) |
-| off | missing | on + **no** name | **503** config error (`BUILTIN_HTTP_INSTANCE_REQUIRED`) |
-| off | present (`SANDBOX_*`) | on + name | FS tools + http attach |
-| on | grant OK + Workspace running | on + HTTP running | FS tools + http + MCP |
-| on | Workspace missing/stopped | on + HTTP running | Soft-continue: **http ± MCP**, no FS |
-| on | grant OK + Workspace running | on + HTTP missing/stopped | FS ± MCP; **http tools omitted** |
-| on | grant deny | on + HTTP running | **http ± MCP** only |
-| on | grant deny | on + HTTP missing | **403** grant (no tools assembled) |
+| Workspace FS | Builtin HTTP | Agent route |
+|--------------|--------------|-------------|
+| grant OK + Workspace running | on + HTTP running | FS tools + http + MCP |
+| Workspace missing/stopped | on + HTTP running | Soft-continue: **http ± MCP**, no FS |
+| grant OK + Workspace running | on + HTTP missing/stopped | FS ± MCP; **http tools omitted** |
+| grant deny | on + HTTP running | **http ± MCP** only |
+| grant deny | on + HTTP missing | **403** grant (no tools assembled) |
+| no Workspace grant, builtin **off** | off | Agent route 503 `SANDBOX_NOT_CONFIGURED` → host falls back to chat |
 
-Host chat fallback still triggers **only** on HTTP **503** with the exact
-`SANDBOX_NOT_CONFIGURED_ERROR` string when builtin is off and no BYO sandbox.
+The 503 chat fallback triggers only on the exact `SANDBOX_NOT_CONFIGURED_ERROR`
+string when builtin is off and the session user has no sandbox grant.
 
 ---
 

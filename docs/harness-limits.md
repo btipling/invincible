@@ -187,7 +187,7 @@ user is signed in — see [session-model.md](session-model.md).
 | Topic | Behavior |
 |-------|----------|
 | First paint | Always from local store (cloud pull is async; never blocks Ready) |
-| Cloud API | `GET` / `PUT` / `DELETE` `/api/session` — auth required; fail-closed with **401** when unauth (no tenancy-off path) |
+| Cloud API | `GET` / `PUT` / `DELETE` `/api/session` — auth required; fail-closed with **401** when unauth |
 | Clear | Local empty + **DELETE** only (never PUT empty) |
 | Secrets | Never in session blobs (local or cloud) |
 
