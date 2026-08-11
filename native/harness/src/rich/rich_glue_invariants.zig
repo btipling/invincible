@@ -1,9 +1,12 @@
-//! Phase-1 rich-glue invariant / investigation suite for #387 (harness rich MD).
+//! Phase-1/3 rich-glue invariant suite for #387 (harness rich MD) + related-open
+//! bug drift-guards (#336 / #341 / #343).
 //!
 //! NOT linked into the default `test-rich` step — run explicitly with
 //! `zig build test-rich-invariants`. These pin the #387 assistant-transcript
 //! whitespace / block-boundary invariants so phase 2 (parent #390) has a
-//! concrete target and so no Wasm fix can regress the well-formed input path.
+//! concrete target and so no Wasm fix can regress the well-formed input path,
+//! plus the phase-3 current-behavior drift-guards for #336 / #341 / #343 (which
+//! remain OPEN and are NOT fixed here).
 //! Though parked under an investigation suite, these tests are GREEN (they pin
 //! the parse contract) — not red known-failures.
 //!
@@ -83,4 +86,63 @@ test "#387 heading immediately followed by strong keeps space between heading an
         if (inl.flags.strong) saw_strong = true;
     }
     try std.testing.expect(saw_strong);
+}
+
+// ---------------------------------------------------------------------------
+// Phase-3 (parent #390) related-open-bug drift-guards. #336 / #341 / #343 are
+// STILL OPEN and are OUT of scope to fix here. These tests are GREEN snapshot
+// guards that PIN THE CURRENT parse behavior so the #387 whitespace/boundary
+// change cannot silently shift them. They are drift-locks, NOT correctness
+// fixes: when a bug is independently fixed, update that guard in the bug's own
+// PR (and the guard may move from this suite into the normal parse tests).
+// They live here (not in `test-rich`) so an open-bug expectation never bakes
+// into the default release gate.
+// ---------------------------------------------------------------------------
+
+test "#336 drift-guard: snake_case identifier currently emph-splits (OPEN bug, not fixed here)" {
+    // #336: multi-word `snake_case` identifiers can render an underscore word
+    // as italics. On `main` today `use snake_case_here ok` splits `case` into
+    // an emph run. PIN THIS CURRENT OUTPUT as a drift guard — the fix for the
+    // emph-split belongs to #336, not phase 3.
+    var doc = try parse.parse(std.testing.allocator, "use snake_case_here ok");
+    defer doc.deinit();
+    try std.testing.expectEqual(@as(usize, 1), doc.blocks.len);
+    try std.testing.expectEqual(parse.BlockKind.paragraph, doc.blocks[0].kind);
+    try std.testing.expectEqual(@as(usize, 3), doc.blocks[0].inlines.len);
+    try std.testing.expectEqualStrings("use snake", doc.blocks[0].inlines[0].text);
+    try std.testing.expectEqualStrings("case", doc.blocks[0].inlines[1].text);
+    try std.testing.expect(doc.blocks[0].inlines[1].flags.emph);
+    try std.testing.expectEqualStrings("here ok", doc.blocks[0].inlines[2].text);
+}
+
+test "#343 drift-guard: angle-bracket autolink currently keeps trailing '>' (OPEN bug, not fixed here)" {
+    // #343: `<https://…>` keeps the closing `>` in the URL run. On `main` the
+    // https run is `https://example.com/a_b>` (trailing `>` included). Pin the
+    // CURRENT output as a drift guard; the corrected autolink belongs to #343.
+    var doc = try parse.parse(std.testing.allocator, "see <https://example.com/a_b> now");
+    defer doc.deinit();
+    try std.testing.expectEqual(@as(usize, 1), doc.blocks.len);
+    try std.testing.expectEqual(parse.BlockKind.paragraph, doc.blocks[0].kind);
+    try std.testing.expectEqual(@as(usize, 3), doc.blocks[0].inlines.len);
+    try std.testing.expectEqualStrings("see <", doc.blocks[0].inlines[0].text);
+    try std.testing.expectEqualStrings(
+        "https://example.com/a_b>",
+        doc.blocks[0].inlines[1].text,
+    );
+    try std.testing.expectEqualStrings(" now", doc.blocks[0].inlines[2].text);
+}
+
+test "#341 drift-guard: loose ordered list currently renumbers each item to 'o,1' (OPEN bug, not fixed here)" {
+    // #341: ordered markers reset to `1.` on the loose-list / blank-line path.
+    // On `main`, `1. one\\n\\n2. two\\n\\n1. reset` yields THREE `o,1` list_item
+    // blocks (the `2.` resets to `1.`). Pin the CURRENT output as a drift
+    // guard; the preserved-counter fix belongs to #341.
+    const src = "1. one\n\n2. two\n\n1. reset";
+    var doc = try parse.parse(std.testing.allocator, src);
+    defer doc.deinit();
+    try std.testing.expectEqual(@as(usize, 3), doc.blocks.len);
+    for (doc.blocks) |blk| {
+        try std.testing.expectEqual(parse.BlockKind.list_item, blk.kind);
+        try std.testing.expectEqualStrings("o,1", blk.meta orelse return error.NoOrderedMeta);
+    }
 }
