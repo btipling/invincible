@@ -1,6 +1,7 @@
 //! Public rich-transcript API for the harness UI.
 const paint = @import("paint.zig");
 const cache = @import("cache.zig");
+const toolrun_cache = @import("toolrun_cache.zig");
 const style_mod = @import("style.zig");
 const kinds = @import("kinds.zig");
 const link_url = @import("link_url.zig");
@@ -19,9 +20,20 @@ pub const KIND_TOOL = kinds.KIND_TOOL;
 pub const toolrun = @import("toolrun.zig");
 
 pub const setAllocator = cache.setAllocator;
-pub const clearCache = cache.clear;
+/// #404: clear the markdown parse caches (flat + slot) AND the slot-keyed
+/// tool-run decode cache, so a ring clear / redeploy starts every cache cold.
+pub fn clearCache() void {
+    cache.clear();
+    toolrun_cache.clear();
+}
 pub const parseCached = cache.parseCached;
 pub const fingerprint = cache.fingerprint;
+
+// #404 tool-run decode cache (per-slot + write-revision). Persistent allocator
+// is the same gpa; cleared via rich.clearCache() on ring clear/truncate.
+pub const toolrunCacheSetAllocator = toolrun_cache.setAllocator;
+pub const toolrunCacheClear = toolrun_cache.clear;
+pub const toolrunCacheSlot = toolrun_cache.parseSlot;
 
 pub const isSafeLinkUrl = link_url.isSafeLinkUrl;
 pub const StyleMap = style_mod.StyleMap;

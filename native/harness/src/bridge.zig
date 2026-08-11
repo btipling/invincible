@@ -10,6 +10,7 @@ const WebBackend = @import("web-backend");
 const image_cache = @import("rich/image_cache.zig");
 const math_cache = @import("rich/math_cache.zig");
 const composer_text = @import("composer_text.zig");
+const ring_slot = @import("ring_slot.zig");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
 /// v9: pending cancel (user Stop) — additive exports.
@@ -40,7 +41,8 @@ pub const MessageKind = enum(u8) {
 const MAX_MSG = 2048;
 /// Cap per transcript line (UTF-8 bytes). Host truncates to this before push/update.
 /// 256 KiB — long thinking / assistant monologues (caution-theater 4–64 KiB removed).
-pub const MAX_MSG_LEN = 262144;
+/// Single source of truth: `ring_slot.MAX_MSG_LEN` (host-unit-tested seam, #404).
+pub const MAX_MSG_LEN = ring_slot.MAX_MSG_LEN;
 const ECHO_CAP = 1024;
 /// User submit buffer (composer → host).
 pub const SUBMIT_CAP = 262144;
@@ -48,11 +50,13 @@ pub const SUBMIT_CAP = 262144;
 pub const MAX_CATALOG = 64;
 pub const MAX_MODEL_ID_LEN = 128;
 
-const StoredMsg = struct {
-    kind: u8 = 0,
-    len: u32 = 0,
-    data: [MAX_MSG_LEN]u8 = undefined,
-};
+/// Ring slot type. The per-slot `revision` (bumped by `ring_slot.write` on
+/// every body write — #404 dirty detection) lives in `ring_slot.Slot`; all
+/// body writes are routed through that single seam so the bump is structural,
+/// not remembered. Host-tested in `test-rich` (`ring_slot.zig`).
+/// Revision is internal only (read in-Wasm, never exported): no build.zig
+/// whitelist change.
+const StoredMsg = ring_slot.Slot;
 
 var lifecycle: Lifecycle = .boot;
 var messages: [MAX_MSG]StoredMsg = [_]StoredMsg{.{}} ** MAX_MSG;
@@ -107,6 +111,21 @@ pub fn messageAt(i: usize) ?struct { kind: u8, text: []const u8 } {
     return .{ .kind = m.kind, .text = m.data[0..m.len] };
 }
 
+/// Physical ring slot backing visible index `i` (0..msg_count), or null.
+/// #404: the slot-keyed caches key on this (not the visible index) so ring wrap
+/// / truncate can never alias a stale cache entry onto a different message.
+pub fn messageSlotAt(i: usize) ?usize {
+    if (i >= msg_count) return null;
+    return (msg_head + MAX_MSG - msg_count + i) % MAX_MSG;
+}
+
+/// Per-slot write-revision for visible index `i`, or 0 when out of range.
+/// #404: O(1) dirty detection — painter compares to its cached revision.
+pub fn messageRevisionAt(i: usize) u32 {
+    const s = messageSlotAt(i) orelse return 0;
+    return messages[s].revision;
+}
+
 pub fn lastEcho() []const u8 {
     return echo_buf[0..echo_len];
 }
@@ -124,9 +143,8 @@ pub fn queueSubmitFromUi(text: []const u8) void {
     if (!has_pending_submit) return;
     // Immediate user line in Wasm transcript; host uses pushUser:false on this path.
     {
-        const slot = &messages[msg_head];
-        slot.kind = 1; // user
-        slot.len = copySlice(&slot.data, pending_submit[0..pending_submit_len]);
+        // #404 write seam — bumps revision so slot-keyed caches re-parse.
+        ring_slot.write(&messages[msg_head], 1, pending_submit[0..pending_submit_len]);
         msg_head = (msg_head + 1) % MAX_MSG;
         if (msg_count < MAX_MSG) msg_count += 1;
     }
@@ -248,10 +266,8 @@ export fn inv_end_batch() void {
 }
 
 export fn inv_push_message(kind: u8, ptr: [*]const u8, len: usize) void {
-    const src = ptr[0..len];
-    const slot = &messages[msg_head];
-    slot.kind = kind;
-    slot.len = copySlice(&slot.data, src);
+    // #404 write seam — bumps revision so slot-keyed caches re-parse.
+    ring_slot.write(&messages[msg_head], kind, ptr[0..len]);
     msg_head = (msg_head + 1) % MAX_MSG;
     if (msg_count < MAX_MSG) msg_count += 1;
     refresh();
@@ -264,8 +280,8 @@ export fn inv_update_last_message(kind: u8, ptr: [*]const u8, len: usize) u8 {
     const idx = (msg_head + MAX_MSG - 1) % MAX_MSG;
     const slot = &messages[idx];
     if (slot.kind != kind) return 0;
-    const src = ptr[0..len];
-    slot.len = copySlice(&slot.data, src);
+    // #404 write seam — bumps revision (stream growth → re-parse the live row).
+    ring_slot.write(slot, kind, ptr[0..len]);
     refresh();
     return 1;
 }
