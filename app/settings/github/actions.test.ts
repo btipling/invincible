@@ -7,7 +7,6 @@ describe('settings GitHub token actions', () => {
     process.env = { ...originalEnv };
     vi.resetModules();
     vi.doUnmock('../../../auth');
-    vi.doUnmock('../../../lib/tenancy/enabled');
     vi.doUnmock('../../../lib/tenancy/soleMembership');
     vi.doUnmock('../../../lib/tenancy/userGithubToken');
     vi.doUnmock('next/cache');
@@ -25,9 +24,6 @@ describe('settings GitHub token actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => true,
-    }));
     vi.doMock('../../../auth', () => ({
       auth: vi.fn(async () => null),
     }));
@@ -52,9 +48,6 @@ describe('settings GitHub token actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => true,
-    }));
     vi.doMock('../../../auth', () => ({
       auth: vi.fn(async () => ({ user: { id: 'session-user' } })),
     }));
@@ -90,9 +83,6 @@ describe('settings GitHub token actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => true,
-    }));
     vi.doMock('../../../auth', () => ({
       auth: vi.fn(async () => ({ user: { id: 'session-user' } })),
     }));
@@ -120,26 +110,4 @@ describe('settings GitHub token actions', () => {
     expect(clearUserGithubToken).toHaveBeenCalledWith('session-user');
   });
 
-  it('setGithubTokenAction rejects when tenancy off', async () => {
-    vi.resetModules();
-    vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => false,
-    }));
-    vi.doMock('../../../auth', () => ({
-      auth: vi.fn(async () => ({ user: { id: 'u1' } })),
-    }));
-    const setUserGithubToken = vi.fn();
-    vi.doMock('../../../lib/tenancy/userGithubToken', () => ({
-      setUserGithubToken,
-      clearUserGithubToken: vi.fn(),
-    }));
-
-    const { setGithubTokenAction } = await import('./actions');
-    const fd = new FormData();
-    fd.set('token', 'ghp_x');
-    const r = await setGithubTokenAction({}, fd);
-    expect(r.error).toMatch(/Tenancy is not enabled/);
-    expect(setUserGithubToken).not.toHaveBeenCalled();
-  });
 });

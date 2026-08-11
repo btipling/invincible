@@ -30,7 +30,7 @@ work — **independent of the language or platform** of the target project, and
 | Single public deploy + this author’s infra are documented for operators | Multi-operator / bring-your-own Vercel + keys |
 | Sandbox MVP **shipped** via `SANDBOX_URL` + `SANDBOX_TOKEN`; tenancy **per-row** `backend`/`image` (BYO or Vercel) via admin ([docs/sandbox.md](docs/sandbox.md)) | No host-wide `SANDBOX_BACKEND`; origin dogfood image: `dev/` + GHA **`dev-image-build`** → VCR ([dev/README.md](dev/README.md)) |
 | Stack is Next + Zig/dvui Wasm + AI Gateway | Target projects can be **any** stack; the harness is the workspace |
-| Tenancy code + origin Production cutover **Done** (login + DB grants) | Optional login/grants **and** cloud-native bootstrap (no personal machine) |
+| Tenancy code + origin Production cutover **Done** (login + DB grants). Tenancy is **hard-on**: multi-tenant-only, login wall + fail-closed auth (Phase 1) | Login/grants required **and** cloud-native bootstrap (no personal machine) |
 
 
 **Third-party / fork deploy:** follow
@@ -221,11 +221,12 @@ ops inventory).
   Never bump `INVINCIBLE_SANDBOX_DAEMON_VERSION` without the matching
   `EXPECTED_SANDBOX_DAEMON_VERSION` — the parity unit test blocks drift. No new
   GHA deploy needed; host inventory stays private ([docs/sandbox.md §3](docs/sandbox.md)).
-- Tenancy triple env is **Done** on origin Production. Do **not** nag the origin
-  maintainer to “set `DATABASE_URL`” as if forgotten. If unauth `/api/agent`
-  no longer returns 401 or login fails, treat as **regression** (env/redeploy),
-  not a greenfield cutover. Prefer cloud cutover docs
-  ([docs/bring-your-own.md](docs/bring-your-own.md) §4a) and GHA
+- Tenancy triple env is **Done** on origin Production, and tenancy is now
+  **hard-on**: there is no tenancy-off / open shell (login wall + fail-closed
+  auth shipped in Phase 1). Do **not** nag the origin maintainer to “set
+  `DATABASE_URL`” as if forgotten. If unauth `/api/agent` no longer returns 401
+  or login fails, treat as **regression** (env/redeploy), not a greenfield
+  cutover. Prefer cloud cutover docs ([docs/bring-your-own.md](docs/bring-your-own.md) §4a) and GHA
   `db-tenancy-bootstrap` for re-seed (resets bootstrap password + token
   ciphertext by design) or GHA `db-tenancy-backfill-deks` for legacy AMK→DEK
   data cutover (never seed for that). Public smoke: `npm run smoke:tenancy`.

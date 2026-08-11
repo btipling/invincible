@@ -12,10 +12,16 @@ describe('GET /api/models', () => {
     vi.doUnmock('../../../lib/model');
   });
 
-  it('tenancy off returns single env model', async () => {
+  it('tenancy off returns single env model (fail-closed session required)', async () => {
     vi.resetModules();
     vi.doMock('../../../lib/tenancy/enabled', () => ({
       tenancyEnabled: () => false,
+    }));
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true,
+        user: { id: 'u1', email: 'a@t.com' },
+      })),
     }));
     vi.doMock('../../../lib/model', () => ({
       resolveModelId: () => 'xai/grok-test',
@@ -25,6 +31,22 @@ describe('GET /api/models', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.models).toEqual([{ id: 'xai/grok-test', label: 'grok-test' }]);
+  });
+
+  it('unauth (even when tenancy off) → 401', async () => {
+    vi.resetModules();
+    vi.doMock('../../../lib/tenancy/enabled', () => ({
+      tenancyEnabled: () => false,
+    }));
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: false,
+        response: Response.json({ error: 'Authentication required.' }, { status: 401 }),
+      })),
+    }));
+    const { GET } = await import('./route');
+    const res = await GET();
+    expect(res.status).toBe(401);
   });
 
   it('tenancy on unauthenticated → 401', async () => {

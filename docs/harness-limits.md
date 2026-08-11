@@ -181,13 +181,13 @@ should stay free of uncaught host errors.
 
 ## Session
 
-Local-first (memory + `localStorage`) plus optional **cloud multi-device** sync when
-tenancy is on and the user is signed in — see [session-model.md](session-model.md).
+Local-first (memory + `localStorage`) plus **cloud multi-device** sync when the
+user is signed in — see [session-model.md](session-model.md).
 
 | Topic | Behavior |
 |-------|----------|
 | First paint | Always from local store (cloud pull is async; never blocks Ready) |
-| Cloud API | `GET` / `PUT` / `DELETE` `/api/session` — fail-closed when tenancy off or unauth |
+| Cloud API | `GET` / `PUT` / `DELETE` `/api/session` — auth required; fail-closed with **401** when unauth (no tenancy-off path) |
 | Clear | Local empty + **DELETE** only (never PUT empty) |
 | Secrets | Never in session blobs (local or cloud) |
 

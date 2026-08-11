@@ -1,7 +1,7 @@
 # Session model
 
-How harness continuity works: **local-first** browser restore plus optional
-**cloud multi-device** sync when tenancy is on and the user is signed in.
+How harness continuity works: **local-first** browser restore plus
+**cloud multi-device** sync when the user is signed in (auth always required).
 
 ## Constraints
 
@@ -67,11 +67,12 @@ Blob shape (never env secrets / sandbox tokens):
 
 Storage key: `invincible.harness.session.v1`.
 
-## Cloud multi-device (tenancy on + signed in)
+## Cloud multi-device (signed in)
 
-When **tenancy is on** and the user has a valid Auth.js session, the host also
-uses an async **`SessionRepository`** (`lib/sessionRepository.ts`) against
-**`/api/session`** with `credentials: 'same-origin'`.
+When the user has a valid Auth.js session, the host also uses an async
+**`SessionRepository`** (`lib/sessionRepository.ts`) against **`/api/session`**
+with `credentials: 'same-origin'`. `/api/session` always requires auth — there
+is no tenancy-off / disabled path from the route.
 
 | Piece | Location | Notes |
 |-------|----------|--------|
@@ -102,7 +103,6 @@ Clear:
 | **200** GET/PUT | Snapshot body `{ id, updatedAt, messages }` | Pull: adopt if server newer or local empty-of-dialogue; PUT ok |
 | **204** DELETE | Idempotent remove | Clear path |
 | **401** | Not signed in | Disable cloud repo for this page load (local continues) |
-| **404** + `CLOUD_SESSION_DISABLED` | Tenancy off / feature disabled | Disable cloud repo |
 | **404** + `NOT_FOUND` | No row yet | Keep local; first PUT creates |
 | **409** | Server has newer `updatedAt` | Adopt server body + latest ring window |
 | **413** | Body too large | Host pre-trims; treat as error, keep local |

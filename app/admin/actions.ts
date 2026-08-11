@@ -4,7 +4,6 @@ import { revalidatePath } from 'next/cache';
 import { auth } from '../../auth';
 import { rotateSandboxToken } from '../../lib/tenancy/rotateSandboxToken';
 import { rotateTenantDek } from '../../lib/tenancy/rotateTenantDek';
-import { tenancyEnabled } from '../../lib/tenancy/enabled';
 import { loadAdminContext } from '../../lib/tenancy/adminContext';
 import {
   createSandboxForAdmin,
@@ -36,9 +35,6 @@ async function requireAdminSession(): Promise<
   | { ok: true; userId: string; tenantId: string }
   | { ok: false; error: string }
 > {
-  if (!tenancyEnabled()) {
-    return { ok: false, error: 'Tenancy is not enabled.' };
-  }
   const session = await auth();
   const userId = session?.user?.id;
   if (!userId) {
@@ -61,10 +57,6 @@ export async function rotateTokenAction(
   _prev: RotateState,
   formData: FormData,
 ): Promise<RotateState> {
-  if (!tenancyEnabled()) {
-    return { error: 'Tenancy is not enabled.' };
-  }
-
   const session = await auth();
   const userId = session?.user?.id;
   if (!userId) {
@@ -115,10 +107,6 @@ export async function rotateTenantDekAction(
   _prev: RotateDekState,
   formData: FormData,
 ): Promise<RotateDekState> {
-  if (!tenancyEnabled()) {
-    return { error: 'Tenancy is not enabled.' };
-  }
-
   const session = await auth();
   const userId = session?.user?.id;
   if (!userId) {

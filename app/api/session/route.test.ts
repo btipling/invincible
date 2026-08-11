@@ -1,8 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  CLOUD_SESSION_DISABLED_CODE,
-  CLOUD_SESSION_DISABLED_ERROR,
-} from '../../../lib/tenancy/harnessSessions';
 import { AUTH_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
 
 describe('/api/session', () => {
@@ -20,30 +16,9 @@ describe('/api/session', () => {
     process.env.DATABASE_URL = 'postgres://localhost/db';
     process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
     process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
-    vi.doMock('../../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => true,
-    }));
   }
 
-  it('tenancy off → 404 + CLOUD_SESSION_DISABLED', async () => {
-    vi.resetModules();
-    vi.doMock('../../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => false,
-    }));
-    const { GET, PUT, DELETE } = await import('./route');
-    for (const res of [
-      await GET(),
-      await PUT(new Request('http://localhost/api/session', { method: 'PUT', body: '{}' })),
-      await DELETE(),
-    ]) {
-      expect(res.status).toBe(404);
-      const body = (await res.json()) as { error: string; code: string };
-      expect(body.code).toBe(CLOUD_SESSION_DISABLED_CODE);
-      expect(body.error).toBe(CLOUD_SESSION_DISABLED_ERROR);
-    }
-  });
-
-  it('tenancy on unauthenticated → 401', async () => {
+  it('unauthenticated → 401', async () => {
     vi.resetModules();
     mockTenancyOn();
     vi.doMock('../../../lib/tenancy/session', () => ({

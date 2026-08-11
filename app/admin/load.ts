@@ -1,6 +1,5 @@
 import { redirect } from 'next/navigation';
 import { auth } from '../../auth';
-import { tenancyEnabled } from '../../lib/tenancy/enabled';
 import {
   loadAdminContext,
   type AdminContext,
@@ -8,7 +7,7 @@ import {
 
 export type AdminGateResult =
   | { ok: true; value: AdminContext }
-  | { ok: false; kind: 'tenancy_off' | 'forbidden' | 'error'; message: string; hint: string };
+  | { ok: false; kind: 'forbidden' | 'error'; message: string; hint: string };
 
 /**
  * Shared gate for all /admin/* pages (except layout chrome).
@@ -16,15 +15,6 @@ export type AdminGateResult =
 export async function gateAdminPage(
   callbackUrl = '/admin',
 ): Promise<AdminGateResult> {
-  if (!tenancyEnabled()) {
-    return {
-      ok: false,
-      kind: 'tenancy_off',
-      message: 'Tenancy is not enabled.',
-      hint: 'Set DATABASE_URL, AUTH_SECRET, and CREDENTIALS_ENCRYPTION_KEY to use admin.',
-    };
-  }
-
   const session = await auth();
   if (!session?.user?.id) {
     const cb = callbackUrl.startsWith('/') ? callbackUrl : '/admin';

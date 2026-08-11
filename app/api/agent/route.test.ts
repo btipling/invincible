@@ -38,6 +38,17 @@ describe('POST /api/agent', () => {
     delete process.env.CREDENTIALS_ENCRYPTION_KEY;
   }
 
+  // Phase 1 made requireSessionUser always fail-closed and import next-auth.
+  // These route branches stay until Phase 2, so mock the old tenancy-off open result.
+  function mockTenancyOffSession() {
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: null,
+      })),
+    }));
+  }
+
   function mockByokOk(overrides: Record<string, unknown> = {}) {
     vi.doMock('../../../lib/tenancy/resolveInferenceForRequest', () => ({
       resolveByokForRequest: vi.fn(async () => ({
@@ -126,6 +137,7 @@ describe('POST /api/agent', () => {
 
   it('returns 500 when gateway key missing', async () => {
     clearTenancyEnv();
+    mockTenancyOffSession();
     delete process.env.AI_GATEWAY_API_KEY;
     process.env.SANDBOX_URL = 'http://127.0.0.1:8787';
     process.env.SANDBOX_TOKEN = 'tok';
@@ -144,6 +156,7 @@ describe('POST /api/agent', () => {
 
   it('returns 503 with exact sandbox-not-configured string when tenancy off', async () => {
     clearTenancyEnv();
+    mockTenancyOffSession();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
     delete process.env.SANDBOX_URL;
     delete process.env.SANDBOX_TOKEN;
@@ -165,6 +178,7 @@ describe('POST /api/agent', () => {
 
   it('returns 400 on bad body', async () => {
     clearTenancyEnv();
+    mockTenancyOffSession();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
     process.env.SANDBOX_URL = 'http://127.0.0.1:8787';
     process.env.SANDBOX_TOKEN = 'sandbox-secret-token';
@@ -186,6 +200,7 @@ describe('POST /api/agent', () => {
     process.env.SANDBOX_TOKEN = 'sandbox-secret-token';
 
     vi.resetModules();
+    mockTenancyOffSession();
     const mcp = mockMcpEmpty();
     vi.doMock('../../../lib/agent/runAgent', () => ({
       runAgent: vi.fn(async () => ({
@@ -222,6 +237,7 @@ describe('POST /api/agent', () => {
     process.env.SANDBOX_TOKEN = 'sandbox-secret-token';
 
     vi.resetModules();
+    mockTenancyOffSession();
     vi.doMock('../../../lib/agent/runAgent', () => ({
       runAgent: vi.fn(async () => {
         const err = new Error('aborted');
@@ -697,6 +713,7 @@ describe('POST /api/agent', () => {
     }));
 
     vi.resetModules();
+    mockTenancyOffSession();
     mockMcpEmpty();
     const createRunner = vi.fn(() => ({
       get: vi.fn(),
@@ -742,6 +759,7 @@ describe('POST /api/agent', () => {
 
     const runAgent = vi.fn(async () => ({ text: 'nope', toolTrace: [] }));
     vi.resetModules();
+    mockTenancyOffSession();
     mockMcpEmpty();
     const createRunner = vi.fn(() => ({ get: vi.fn(), close: vi.fn() }));
     vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
@@ -767,6 +785,7 @@ describe('POST /api/agent', () => {
 
   it('tenancy off, builtin off, no DO → exact 503 string (host chat fallback)', async () => {
     clearTenancyEnv();
+    mockTenancyOffSession();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
     delete process.env.SANDBOX_URL;
     delete process.env.SANDBOX_TOKEN;
@@ -1147,6 +1166,7 @@ describe('POST /api/agent', () => {
 
     const closeHttp = vi.fn(async () => {});
     vi.resetModules();
+    mockTenancyOffSession();
     mockMcpEmpty();
     vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
       createVercelSandboxHttpRunner: vi.fn(() => ({

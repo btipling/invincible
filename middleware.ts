@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { getToken } from 'next-auth/jwt';
-import { tenancyEnabled } from './lib/tenancy/enabled';
 import { AUTH_REQUIRED_ERROR } from './lib/tenancy/errors';
 
 function isApiProtected(pathname: string): boolean {
@@ -34,10 +33,6 @@ export function useSecureAuthCookie(req: NextRequest | Request): boolean {
 }
 
 export async function middleware(req: NextRequest) {
-  if (!tenancyEnabled()) {
-    return NextResponse.next();
-  }
-
   const url = req.nextUrl ?? new URL(req.url);
   const { pathname } = url;
 
@@ -57,7 +52,7 @@ export async function middleware(req: NextRequest) {
 
   const secret = process.env.AUTH_SECRET?.trim();
   if (!secret) {
-    // tenancyEnabled requires AUTH_SECRET — defensive
+    // Defensive: AUTH_SECRET should always be set with the tenancy triple
     if (isApiProtected(pathname)) {
       return NextResponse.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
     }

@@ -7,7 +7,6 @@ describe('settings sandbox actions', () => {
     process.env = { ...originalEnv };
     vi.resetModules();
     vi.doUnmock('../../../auth');
-    vi.doUnmock('../../../lib/tenancy/enabled');
     vi.doUnmock('../../../lib/tenancy/soleMembership');
     vi.doUnmock('../../../lib/tenancy/userPreferredSandbox');
     vi.doUnmock('../../../lib/tenancy/userSandboxInstance');
@@ -24,16 +23,12 @@ describe('settings sandbox actions', () => {
 
   async function loadActions(mocks: {
     auth?: unknown;
-    tenancyEnabled?: boolean;
     membership?: unknown;
     domain?: Record<string, unknown>;
   }) {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => mocks.tenancyEnabled ?? true,
-    }));
     vi.doMock('../../../auth', () => ({
       auth:
         mocks.auth ??
@@ -73,15 +68,6 @@ describe('settings sandbox actions', () => {
     const r = await actions.createInstanceAction({}, fd);
     expect(r.error).toMatch(/Authentication required/);
     expect(domain.createWorkspace).not.toHaveBeenCalled();
-    expect(domain.createHttp).not.toHaveBeenCalled();
-  });
-
-  it('createInstanceAction rejects when tenancy off', async () => {
-    const { actions, domain } = await loadActions({ tenancyEnabled: false });
-    const fd = new FormData();
-    fd.set('purpose', 'http');
-    const r = await actions.createInstanceAction({}, fd);
-    expect(r.error).toMatch(/Tenancy is not enabled/);
     expect(domain.createHttp).not.toHaveBeenCalled();
   });
 

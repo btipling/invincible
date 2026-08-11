@@ -7,7 +7,6 @@ describe('settings MCP actions', () => {
     process.env = { ...originalEnv };
     vi.resetModules();
     vi.doUnmock('../../../auth');
-    vi.doUnmock('../../../lib/tenancy/enabled');
     vi.doUnmock('../../../lib/tenancy/soleMembership');
     vi.doUnmock('../../../lib/tenancy/userMcpServers');
     vi.doUnmock('../../../lib/mcp/client');
@@ -26,9 +25,6 @@ describe('settings MCP actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => true,
-    }));
     vi.doMock('../../../auth', () => ({
       auth: vi.fn(async () => null),
     }));
@@ -62,9 +58,6 @@ describe('settings MCP actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => true,
-    }));
     vi.doMock('../../../auth', () => ({
       auth: vi.fn(async () => ({ user: { id: 'u1' } })),
     }));
@@ -131,9 +124,6 @@ describe('settings MCP actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => true,
-    }));
     vi.doMock('../../../auth', () => ({
       auth: vi.fn(async () => ({ user: { id: 'u1' } })),
     }));
@@ -173,9 +163,6 @@ describe('settings MCP actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => true,
-    }));
     vi.doMock('../../../auth', () => ({
       auth: vi.fn(async () => ({ user: { id: 'u1' } })),
     }));
@@ -221,9 +208,6 @@ describe('settings MCP actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => true,
-    }));
     vi.doMock('../../../auth', () => ({
       auth: vi.fn(async () => ({ user: { id: 'u1' } })),
     }));
@@ -260,9 +244,6 @@ describe('settings MCP actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => true,
-    }));
     vi.doMock('../../../auth', () => ({
       auth: vi.fn(async () => ({ user: { id: 'u1' } })),
     }));

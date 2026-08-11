@@ -21,16 +21,20 @@ function shortLabel(modelId: string): string {
  * Tenancy off: single env model. Tenancy on: granted models only (never credentials).
  */
 export async function GET(): Promise<Response> {
+  // Fail closed: always require a session, independent of the tenancy branch.
+  // The middleware already gates /api/models (login wall); requiring a session
+  // here too keeps the route fail-closed if middleware coverage ever drifts.
+  const sessionGate = await requireSessionUser();
+  if (!sessionGate.ok) {
+    return sessionGate.response;
+  }
+  const userId = sessionGate.user?.id;
+  if (!userId) {
+    const { AUTH_REQUIRED_ERROR } = await import('../../../lib/tenancy/errors');
+    return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
+  }
+
   if (tenancyEnabled()) {
-    const sessionGate = await requireSessionUser();
-    if (!sessionGate.ok) {
-      return sessionGate.response;
-    }
-    const userId = sessionGate.user?.id;
-    if (!userId) {
-      const { AUTH_REQUIRED_ERROR } = await import('../../../lib/tenancy/errors');
-      return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
-    }
     try {
       const ids = await listModelsForUser(userId);
       const models: ModelCatalogEntry[] = ids.map((id) => ({

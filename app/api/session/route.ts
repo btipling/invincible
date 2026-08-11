@@ -1,13 +1,9 @@
 /**
  * GET/PUT/DELETE /api/session — cloud multi-device harness session.
- * Tenancy on + auth required. Ownership always from session user id.
- * Tenancy off → 404 + CLOUD_SESSION_DISABLED (not 501).
+ * Auth required. Ownership always from session user id.
  */
-import { tenancyEnabled } from '../../../lib/tenancy/enabled';
 import { AUTH_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
 import {
-  CLOUD_SESSION_DISABLED_CODE,
-  CLOUD_SESSION_DISABLED_ERROR,
   HARNESS_SESSION_MAX_BODY_BYTES,
   deleteHarnessSession,
   getHarnessSession,
@@ -18,19 +14,9 @@ import { requireSessionUser } from '../../../lib/tenancy/session';
 
 export const runtime = 'nodejs';
 
-function disabledResponse(): Response {
-  return Response.json(
-    { error: CLOUD_SESSION_DISABLED_ERROR, code: CLOUD_SESSION_DISABLED_CODE },
-    { status: 404 },
-  );
-}
-
 async function requireAuthedUserId(): Promise<
   { ok: true; userId: string } | { ok: false; response: Response }
 > {
-  if (!tenancyEnabled()) {
-    return { ok: false, response: disabledResponse() };
-  }
   const sessionGate = await requireSessionUser();
   if (!sessionGate.ok) {
     return { ok: false, response: sessionGate.response };

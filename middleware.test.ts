@@ -5,7 +5,7 @@ import { AUTH_REQUIRED_ERROR } from './lib/tenancy/errors';
  * Middleware is edge-oriented; we unit-test behavior via dynamic import
  * with env + getToken mocked.
  */
-describe('middleware tenancy gate', () => {
+describe('middleware auth gate', () => {
   const originalEnv = { ...process.env };
 
   afterEach(() => {
@@ -18,7 +18,7 @@ describe('middleware tenancy gate', () => {
     return import('./middleware');
   }
 
-  it('passes through when tenancy off', async () => {
+  it('401 JSON on unauth API when AUTH_SECRET missing', async () => {
     delete process.env.DATABASE_URL;
     delete process.env.AUTH_SECRET;
     delete process.env.CREDENTIALS_ENCRYPTION_KEY;
@@ -26,9 +26,27 @@ describe('middleware tenancy gate', () => {
     const res = await middleware(
       new Request('http://localhost/api/agent', { method: 'POST' }) as never,
     );
-    // next() returns a NextResponse with no redirect/401
-    expect(res.status).toBe(200);
-    expect(res.headers.get('location')).toBeNull();
+    expect(res.status).toBe(401);
+  });
+
+  it('401 JSON on unauth API when triple incomplete but AUTH_SECRET set (always wall)', async () => {
+    // Phase 1 hard-on: the login wall gates even with a partial triple — no
+    // tenancyEnabled() early-return anymore. DATABASE_URL missing is a
+    // misconfiguration, not an open mode.
+    delete process.env.DATABASE_URL;
+    process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';
+    delete process.env.CREDENTIALS_ENCRYPTION_KEY;
+    vi.resetModules();
+    vi.doMock('next-auth/jwt', () => ({
+      getToken: vi.fn(async () => null),
+    }));
+    const { middleware } = await loadMw();
+    const res = await middleware(
+      new Request('http://localhost/api/models', { method: 'GET' }) as never,
+    );
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe(AUTH_REQUIRED_ERROR);
   });
 
   it('401 JSON on unauth API when tenancy on', async () => {
