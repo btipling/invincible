@@ -305,13 +305,13 @@ pub fn build(b: *std.Build) void {
     test_rich.dependOn(&b.addRunArtifact(toolrun_tests).step);
 
     // Rich-glue invariants: #387 host/whitespace pins plus current-behavior
-    // drift-guards for still-OPEN rich bugs (#336 emph-split / #341 link-tail
-    // `>` / #343 ordered-marker renumber) that must be updated in the bug's
-    // own PR, not silently drifted. All GREEn contract pins. NOT part of the
-    // default `test-rich` release gate (open-bug expectations stay out of the
-    // blocking gate); `build-harness.yml` runs them as a non-blocking
-    // `continue-on-error` step so a rich parse change flags drift without
-    // blocking merge.
+    // drift-guards. #336's emph-split is fixed (guard pins the corrected
+    // literal-underscore behavior); #341 ordered-marker renumber / #343
+    // link-tail `>` are still-OPEN and must be updated in their own PR, not silently
+    // drifted. All GREEN contract pins. NOT part of the default `test-rich`
+    // release gate (open-bug expectations stay out of the blocking gate);
+    // `build-harness.yml` runs them as a non-blocking `continue-on-error` step
+    // so a rich parse change flags drift without blocking merge.
     // Run explicitly: `zig build test-rich-invariants`.
     const red_tests = b.addTest(.{
         .name = "rich-glue-invariants",
@@ -323,7 +323,7 @@ pub fn build(b: *std.Build) void {
     });
     red_tests.root_module.addImport("zmd", zmd_host.module("zmd"));
     const run_red_tests = b.addRunArtifact(red_tests);
-    const test_rich_invariants = b.step("test-rich-invariants", "Run rich-glue invariant suite (#387 white-space/glue pins + #336/#341/#343 open-bug drift-guards; green, non-blocking)");
+    const test_rich_invariants = b.step("test-rich-invariants", "Run rich-glue invariant suite (#387 white-space/glue pins + #336 fixed guard + #341/#343 open-bug drift-guards; green, non-blocking)");
     test_rich_invariants.dependOn(&run_red_tests.step);
 }
 

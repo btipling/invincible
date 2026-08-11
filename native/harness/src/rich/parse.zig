@@ -432,6 +432,77 @@ fn autolinkTextInlines(a: Allocator, inlines: []const Inline) ![]const Inline {
     return try out.toOwnedSlice(a);
 }
 
+/// Lower preprocess PUA literal sentinels to their ASCII characters in a string
+/// that carries preprocessed source (a link/image destination). This mirrors the
+/// mapping `appendText` applies to text runs, so a preprocessed intra-word `_`
+/// inside a URL or image destination returns to a real ASCII `_` instead of
+/// leaking U+E021 into `href` (PR #399 review - Major L1 / Nit L6).
+/// Always returns an arena-owned slice (even when no sentinel is present) so the
+/// caller's `href` is explicit and independent of the source IR lifetime.
+fn lowerPuaLiterals(a: Allocator, src: []const u8) ![]const u8 {
+    var needs = false;
+    var scan: usize = 0;
+    while (scan < src.len) {
+        const need = std.unicode.utf8ByteSequenceLength(src[scan]) catch {
+            scan += 1;
+            continue;
+        };
+        if (scan + need > src.len) break;
+        const cp = std.unicode.utf8Decode(src[scan .. scan + need]) catch {
+            scan += 1;
+            continue;
+        };
+        switch (cp) {
+            preprocess.pua_lit_star,
+            preprocess.pua_lit_under,
+            preprocess.pua_lit_tick,
+            preprocess.pua_lit_backslash,
+            preprocess.pua_lit_tilde,
+            preprocess.pua_lit_dollar,
+            => needs = true,
+            else => {},
+        }
+        scan += need;
+    }
+    if (!needs) return a.dupe(u8, src);
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(a);
+    var i: usize = 0;
+    while (i < src.len) {
+        const need = std.unicode.utf8ByteSequenceLength(src[i]) catch {
+            try out.append(a, src[i]);
+            i += 1;
+            continue;
+        };
+        if (i + need > src.len) {
+            try out.appendSlice(a, src[i..]);
+            break;
+        }
+        const cp = std.unicode.utf8Decode(src[i .. i + need]) catch {
+            try out.append(a, src[i]);
+            i += 1;
+            continue;
+        };
+        const ascii: ?u8 = switch (cp) {
+            preprocess.pua_lit_star => '*',
+            preprocess.pua_lit_under => '_',
+            preprocess.pua_lit_tick => '`',
+            preprocess.pua_lit_backslash => '\\',
+            preprocess.pua_lit_tilde => '~',
+            preprocess.pua_lit_dollar => '$',
+            else => null,
+        };
+        if (ascii) |c| {
+            try out.append(a, c);
+        } else {
+            try out.appendSlice(a, src[i .. i + need]);
+        }
+        i += need;
+    }
+    return try out.toOwnedSlice(a);
+}
+
 /// Fixed-buffer smoke used from harness init so the parser is not tree-shaken
 /// out of freestanding Wasm (phase 1 size budget truth).
 var smoke_buf: [16 * 1024]u8 = undefined;
@@ -819,9 +890,15 @@ const Builder = struct {
 
     fn openInline(self: *Builder, role: Role, href: ?[]const u8) !void {
         try self.flushText();
+        // Link/image destinations carry preprocessed source, so lower any PUA
+        // literal sentinel (e.g. an intra-word `_` that became pua_lit_under)
+        // back to its ASCII character. Otherwise a URL like
+        // `[t](https://example.com/a_b)` would leak U+E021 into `href`, because
+        // only text runs walk PUA->ASCII in appendText (PR #399 - L1/L6).
+        const dest: ?[]const u8 = if (href) |h| try lowerPuaLiterals(self.a, h) else null;
         try self.pending.append(self.a, .{
             .role = role,
-            .href = if (href) |h| try self.a.dupe(u8, h) else null,
+            .href = dest,
         });
     }
 
@@ -2839,4 +2916,283 @@ test "same-line display math" {
         }
     }
     try std.testing.expect(found);
+}
+
+/// Assert no inline in `doc` carries the emph flag (the #336 emph-split bug).
+fn expectNoEmphInDoc(doc: *const ParsedDoc) !void {
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            try std.testing.expect(!inl.flags.emph);
+        }
+    }
+}
+
+test "#336 identifiers keep underscores with no emph (paragraph)" {
+    // Word-internal `_` must be literal, never an emphasis delimiter pair.
+    var doc = try parse(std.testing.allocator, "use foo_bar here");
+    defer doc.deinit();
+    try std.testing.expectEqual(@as(usize, 1), doc.blocks.len);
+    try std.testing.expectEqual(BlockKind.paragraph, doc.blocks[0].kind);
+    const joined = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(joined);
+    try expectContains(joined, "foo_bar");
+    try expectNoEmphInDoc(&doc);
+}
+
+test "#336 multi-word identifiers literal (paragraph)" {
+    const src = "set foo_bar = foo_bar_baz; max_tokens from SANDBOX_AUTO_UPDATE";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    const joined = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(joined);
+    try expectContains(joined, "foo_bar");
+    try expectContains(joined, "foo_bar_baz");
+    try expectContains(joined, "max_tokens");
+    try expectContains(joined, "SANDBOX_AUTO_UPDATE");
+    try expectNoEmphInDoc(&doc);
+}
+
+test "#336 fix pin: snake_case_here stays one literal run" {
+    // Mirror of the pre-fix drift-guard input; now a single text run, no split.
+    var doc = try parse(std.testing.allocator, "use snake_case_here ok");
+    defer doc.deinit();
+    try std.testing.expectEqual(@as(usize, 1), doc.blocks.len);
+    try std.testing.expectEqual(BlockKind.paragraph, doc.blocks[0].kind);
+    try std.testing.expectEqual(@as(usize, 1), doc.blocks[0].inlines.len);
+    try std.testing.expectEqualStrings("use snake_case_here ok", doc.blocks[0].inlines[0].text);
+    try std.testing.expect(!doc.blocks[0].inlines[0].flags.emph);
+}
+
+test "#336 boundary underscore emphasis still works" {
+    var ok_emph = false;
+    {
+        var doc = try parse(std.testing.allocator, "_em_");
+        defer doc.deinit();
+        for (doc.blocks[0].inlines) |inl| {
+            if (std.mem.eql(u8, inl.text, "em") and inl.flags.emph) ok_emph = true;
+        }
+    }
+    var ok_bold = false;
+    {
+        var doc = try parse(std.testing.allocator, "__bold__");
+        defer doc.deinit();
+        for (doc.blocks[0].inlines) |inl| {
+            if (std.mem.eql(u8, inl.text, "bold") and inl.flags.strong) ok_bold = true;
+        }
+    }
+    var ok_star_emph = false;
+    {
+        var doc = try parse(std.testing.allocator, "*star*");
+        defer doc.deinit();
+        for (doc.blocks[0].inlines) |inl| {
+            if (std.mem.eql(u8, inl.text, "star") and inl.flags.emph) ok_star_emph = true;
+        }
+    }
+    var ok_star_bold = false;
+    {
+        var doc = try parse(std.testing.allocator, "**bold2**");
+        defer doc.deinit();
+        for (doc.blocks[0].inlines) |inl| {
+            if (std.mem.eql(u8, inl.text, "bold2") and inl.flags.strong) ok_star_bold = true;
+        }
+    }
+    try std.testing.expect(ok_emph);
+    try std.testing.expect(ok_bold);
+    try std.testing.expect(ok_star_emph);
+    try std.testing.expect(ok_star_bold);
+}
+
+test "#336 double underscore inside identifier stays literal" {
+    var doc = try parse(std.testing.allocator, "key foo__bar end");
+    defer doc.deinit();
+    const joined = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(joined);
+    try expectContains(joined, "foo__bar");
+    try expectNoEmphInDoc(&doc);
+}
+
+test "#336 inline code and fenced body keep underscores literal" {
+    const src = "x `foo_bar` y\n\n```\nfoo_baz\n```\n";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var saw_code = false;
+    var saw_fence = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .code_fence) {
+            saw_fence = true;
+            const j = try joinBlockText(std.testing.allocator, blk);
+            defer std.testing.allocator.free(j);
+            try expectContains(j, "foo_baz");
+            try expectNoEmphInDoc(&doc);
+        }
+        for (blk.inlines) |inl| {
+            if (inl.kind == .code and std.mem.eql(u8, inl.text, "foo_bar")) {
+                try std.testing.expect(!inl.flags.emph);
+                saw_code = true;
+            }
+        }
+    }
+    try std.testing.expect(saw_code);
+    try std.testing.expect(saw_fence);
+}
+
+test "#336 escape underscore still literal and strike keeps intra-word literal" {
+    {
+        var doc = try parse(std.testing.allocator, "\\_not emph\\_");
+        defer doc.deinit();
+        const joined = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+        defer std.testing.allocator.free(joined);
+        try expectContains(joined, "_not emph_");
+        for (doc.blocks[0].inlines) |inl| try std.testing.expect(!inl.flags.emph);
+    }
+    {
+        var doc = try parse(std.testing.allocator, "~~foo_bar~~");
+        defer doc.deinit();
+        var saw_strike = false;
+        for (doc.blocks[0].inlines) |inl| {
+            if (inl.flags.strike) {
+                saw_strike = true;
+                try std.testing.expect(!inl.flags.emph);
+                if (std.mem.indexOf(u8, inl.text, "foo_bar") != null) {
+                    try std.testing.expect(!inl.flags.emph);
+                }
+            }
+        }
+        try std.testing.expect(saw_strike);
+    }
+}
+
+test "#336 uniform intra-word rule across contexts" {
+    const src =
+        \\# max_tokens
+        \\
+        \\- use foo_bar
+        \\
+        \\> quote foo_baz
+        \\
+        \\| K |
+        \\| --- |
+        \\| foo_qux |
+        \\
+        \\Term a
+        \\: def foo_quux
+        \\
+    ;
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    try expectNoEmphInDoc(&doc);
+    var saw_heading = false;
+    var saw_list = false;
+    var saw_quote = false;
+    var saw_table = false;
+    var saw_term = false;
+    var saw_desc = false;
+    for (doc.blocks) |blk| {
+        switch (blk.kind) {
+            .heading => {
+                saw_heading = true;
+                const j = try joinBlockText(std.testing.allocator, blk);
+                defer std.testing.allocator.free(j);
+                try expectContains(j, "max_tokens");
+            },
+            .list_item => {
+                saw_list = true;
+                const j = try joinBlockText(std.testing.allocator, blk);
+                defer std.testing.allocator.free(j);
+                try expectContains(j, "foo_bar");
+            },
+            .blockquote => {
+                saw_quote = true;
+                const j = try joinBlockText(std.testing.allocator, blk);
+                defer std.testing.allocator.free(j);
+                try expectContains(j, "foo_baz");
+            },
+            .table => {
+                saw_table = true;
+                const j = try joinBlockText(std.testing.allocator, blk);
+                defer std.testing.allocator.free(j);
+                try expectContains(j, "foo_qux");
+            },
+            .def_term => {
+                saw_term = true;
+                try std.testing.expectEqualStrings("Term a", blk.inlines[0].text);
+            },
+            .def_desc => {
+                saw_desc = true;
+                const j = try joinBlockText(std.testing.allocator, blk);
+                defer std.testing.allocator.free(j);
+                try expectContains(j, "foo_quux");
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_heading);
+    try std.testing.expect(saw_list);
+    try std.testing.expect(saw_quote);
+    try std.testing.expect(saw_table);
+    try std.testing.expect(saw_term);
+    try std.testing.expect(saw_desc);
+}
+
+
+test "#336 link/image destinations keep ASCII underscores in href (#399 review L1/L6)" {
+    // Preprocess turns an intra-word `_` (alnum both sides) into pua_lit_under.
+    // That sentinel must be lowered back to ASCII `_` in the stored href - not
+    // leak U+E021 into the link/image destination, since only text runs walk
+    // PUA->ASCII in appendText (PR #399 Major L1 + Nit L6 locked here).
+    {
+        var doc = try parse(std.testing.allocator, "[docs](https://example.com/a_b)\n");
+        defer doc.deinit();
+        var ok = false;
+        for (doc.blocks) |blk| {
+            for (blk.inlines) |inl| {
+                if (inl.kind == .link) {
+                    ok = true;
+                    try std.testing.expectEqualStrings("docs", inl.text);
+                    try std.testing.expect(inl.href != null);
+                    try std.testing.expectEqualStrings("https://example.com/a_b", inl.href.?);
+                }
+            }
+        }
+        try std.testing.expect(ok);
+    }
+    {
+        var doc = try parse(std.testing.allocator, "![x](https://cdn.example.com/foo_bar.png)\n");
+        defer doc.deinit();
+        var ok = false;
+        for (doc.blocks) |blk| {
+            for (blk.inlines) |inl| {
+                if (inl.kind == .image) {
+                    ok = true;
+                    try std.testing.expectEqualStrings("x", inl.text);
+                    try std.testing.expect(inl.href != null);
+                    try std.testing.expectEqualStrings("https://cdn.example.com/foo_bar.png", inl.href.?);
+                }
+            }
+        }
+        try std.testing.expect(ok);
+    }
+    // Label/alt text still carries its literal `_` (lowered through appendText).
+    {
+        var doc = try parse(std.testing.allocator, "[my_key](https://example.com/a_b) ![a_b](https://example.com/x_y.png)\n");
+        defer doc.deinit();
+        var saw_link = false;
+        var saw_img = false;
+        for (doc.blocks) |blk| {
+            for (blk.inlines) |inl| {
+                if (inl.kind == .link) {
+                    saw_link = true;
+                    try std.testing.expectEqualStrings("my_key", inl.text);
+                    try std.testing.expectEqualStrings("https://example.com/a_b", inl.href.?);
+                }
+                if (inl.kind == .image) {
+                    saw_img = true;
+                    try std.testing.expectEqualStrings("a_b", inl.text);
+                    try std.testing.expectEqualStrings("https://example.com/x_y.png", inl.href.?);
+                }
+            }
+        }
+        try std.testing.expect(saw_link);
+        try std.testing.expect(saw_img);
+    }
 }
