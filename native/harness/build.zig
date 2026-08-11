@@ -307,8 +307,9 @@ pub fn build(b: *std.Build) void {
     // Rich-glue invariants: #387 host/whitespace pins plus current-behavior
     // drift-guards. #336's emph-split is fixed (guard pins the corrected
     // literal-underscore behavior); #343's link-tail `>` is fixed (guard pins
-    // the corrected clean-href output); #341 ordered-marker renumber is
-    // still-OPEN and must be updated in its own PR, not silently drifted.
+    // the corrected clean-href output); #341's loose-list marker renumber is
+    // now fixed too (guard pins the preserved counter; also locked by the
+    // parse-level #341 tests in `test-rich`).
     // All GREEN contract pins. NOT part of the default `test-rich`
     // release gate (open-bug expectations stay out of the blocking gate);
     // `build-harness.yml` runs them as a non-blocking `continue-on-error` step
@@ -324,7 +325,7 @@ pub fn build(b: *std.Build) void {
     });
     red_tests.root_module.addImport("zmd", zmd_host.module("zmd"));
     const run_red_tests = b.addRunArtifact(red_tests);
-    const test_rich_invariants = b.step("test-rich-invariants", "Run rich-glue invariant suite (#387 white-space/glue pins + #336 fixed guard + #341 open-bug drift-guard + #343 fixed guard; green, non-blocking)");
+    const test_rich_invariants = b.step("test-rich-invariants", "Run rich-glue invariant suite (#387 white-space/glue pins + #336 fixed guard + #341 fixed guard + #343 fixed guard; green, non-blocking)");
     test_rich_invariants.dependOn(&run_red_tests.step);
 }
 
