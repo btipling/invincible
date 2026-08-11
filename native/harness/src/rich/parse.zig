@@ -1969,6 +1969,59 @@ test "bare http and HTTPS schemes" {
     try std.testing.expect(saw_https);
 }
 
+test "#343 angle-bracket autolink yields clean href and label" {
+    // Input `see <https://example.com/a_b> now` (the #343 drift-guard source)
+    // must now produce a clean link URL with the `<>` wrappers as separate
+    // plain text runs.
+    var doc = try parse(std.testing.allocator, "see <https://example.com/a_b> now");
+    defer doc.deinit();
+    try std.testing.expectEqual(@as(usize, 1), doc.blocks.len);
+    try std.testing.expectEqual(BlockKind.paragraph, doc.blocks[0].kind);
+    try std.testing.expectEqual(@as(usize, 3), doc.blocks[0].inlines.len);
+    try std.testing.expectEqualStrings("see <", doc.blocks[0].inlines[0].text);
+    const inl = doc.blocks[0].inlines[1];
+    try std.testing.expectEqual(InlineKind.link, inl.kind);
+    try std.testing.expectEqualStrings("https://example.com/a_b", inl.text);
+    try std.testing.expect(inl.href != null);
+    try std.testing.expectEqualStrings("https://example.com/a_b", inl.href.?);
+    try std.testing.expectEqualStrings("> now", doc.blocks[0].inlines[2].text);
+}
+
+test "#343 angle-bracket autolink balanced parens and query frag" {
+    var doc = try parse(std.testing.allocator, "see <https://example.com/foo_(bar)?q=1> end");
+    defer doc.deinit();
+    var saw = false;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (inl.kind == .link) {
+                if (inl.href) |h| {
+                    if (std.mem.eql(u8, h, "https://example.com/foo_(bar)?q=1")) {
+                        saw = true;
+                        try std.testing.expectEqualStrings(h, inl.text);
+                    }
+                }
+            }
+        }
+    }
+    try std.testing.expect(saw);
+}
+
+test "#343 bare url (no angle brackets) is unchanged" {
+    var doc = try parse(std.testing.allocator, "see https://example.com/a_b now");
+    defer doc.deinit();
+    var saw = false;
+    for (doc.blocks) |blk| {
+        for (blk.inlines) |inl| {
+            if (inl.kind == .link) {
+                if (inl.href) |h| {
+                    if (std.mem.eql(u8, h, "https://example.com/a_b")) saw = true;
+                }
+            }
+        }
+    }
+    try std.testing.expect(saw);
+}
+
 test "bare url trailing punct not in href" {
     const src = "end https://example.com/a?b=c#d. and (https://example.com/x?y=1#z).\n";
     var doc = try parse(std.testing.allocator, src);
