@@ -1,9 +1,11 @@
-//! Phase-1 red-fixture / investigation suite for #387 (harness rich MD glue).
+//! Phase-1 rich-glue invariant / investigation suite for #387 (harness rich MD).
 //!
 //! NOT linked into the default `test-rich` step — run explicitly with
-//! `zig build test-rich-red`. These pin the #387 assistant-transcript
+//! `zig build test-rich-invariants`. These pin the #387 assistant-transcript
 //! whitespace / block-boundary invariants so phase 2 (parent #390) has a
 //! concrete target and so no Wasm fix can regress the well-formed input path.
+//! Though parked under an investigation suite, these tests are GREEN (they pin
+//! the parse contract) — not red known-failures.
 //!
 //! IMPORTANT (honest scoping): Wasm `parse.zig` is *faithful* — a glued source
 //! blob yields a glued flat AST, and a well-formed source already yields

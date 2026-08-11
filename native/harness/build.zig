@@ -304,21 +304,23 @@ pub fn build(b: *std.Build) void {
     });
     test_rich.dependOn(&b.addRunArtifact(toolrun_tests).step);
 
-    // Phase-1 red-fixture / investigation suite for #387 (rich MD glue). NOT
-    // part of the default `test-rich` gate: `build-harness` must stay green
-    // while the #387 invariant fixtures are triaged (parent #390 phase 1).
-    // Run explicitly: `zig build test-rich-red`.
+    // Phase-1 rich-glue invariants for #387 (rich MD glue). NOT part of the
+    // default `test-rich` gate: `build-harness` must stay green while the #387
+    // invariant fixtures are triaged (parent #390 phase 1). These tests are
+    // GREEn (they pin the parse contract) — the name reflects their *purpose*
+    // (a #387 investigation suite), not a failing state.
+    // Run explicitly: `zig build test-rich-invariants`.
     const red_tests = b.addTest(.{
-        .name = "rich-red-known-failures",
+        .name = "rich-glue-invariants",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/rich/red_known_failures.zig"),
+            .root_source_file = b.path("src/rich/rich_glue_invariants.zig"),
             .target = host_target,
             .optimize = optimize,
         }),
     });
     red_tests.root_module.addImport("zmd", zmd_host.module("zmd"));
     const run_red_tests = b.addRunArtifact(red_tests);
-    const test_rich_red = b.step("test-rich-red", "Run #387 red-fixture/investigation suite (rich parse invariants; not part of build-harness gate)");
-    test_rich_red.dependOn(&run_red_tests.step);
+    const test_rich_invariants = b.step("test-rich-invariants", "Run #387 rich-glue invariant suite (rich parse invariants; green, but not part of build-harness gate)");
+    test_rich_invariants.dependOn(&run_red_tests.step);
 }
 

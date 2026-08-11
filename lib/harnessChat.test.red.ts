@@ -2,12 +2,14 @@
  * Phase-1 red-fixture / investigation suite for #387 (harness rich MD glue).
  *
  * IMPORTANT — run coordination:
- *   - `npm run test:red` runs THIS file only.
- *   - Default `npm test` EXCLUDES any `*.test.red.ts` file (see package.json
- *     `test` script and vitest.config.ts `include`), so the ordinary gate stays
- *     green while #387 is triaged.
+ *   - `npm run test:red` runs THIS file only (via `vitest.config.red.ts`, which
+ *     confines discovery to `*.test.red.ts`).
+ *   - Default `npm test` (bare `vitest run` → `vitest.config.ts`) never
+ *     discovers `*.test.red.ts` (the default include glob doesn't match it), so
+ *     the ordinary gate stays green while #387 is triaged.
  *   - When phase 2 (parent #390) fixes the failing invariant, move this file to
- *     a normal `*.test.ts` so it becomes a locked regression test.
+ *     a normal `*.test.ts` so it becomes a locked regression test, delete
+ *     `vitest.config.red.ts`, and the default gate then runs it.
  *
  * What is genuinely RED here:
  *   A whitespace-only `text_delta` (the `\n\n` that separates an ATX heading
