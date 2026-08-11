@@ -565,6 +565,16 @@ export async function runHarnessTurn(
      */
     let assistantSegment = '';
     let assistantSegmentOpen = false;
+    /**
+     * Boundary whitespace buffered between streamed assistant segments (see
+     * growAssistant). When a whitespace-only delta arrives after the previous
+     * segment has been closed (e.g. by a tool), it is held here so it can be
+     * reattached as LEADING whitespace on the next opened assistant segment —
+     * keeping an inter-segment blank line on the canvas so it reconstitutes the
+     * authoritative text exactly (#387 after-close residual). Never opens a
+     * bubble on its own (plan #364).
+     */
+    let pendingAssistantWs = '';
     let thinkingSegment = '';
     let thinkingSegmentOpen = false;
     let sawStreamTerminal = false;
@@ -678,16 +688,43 @@ export async function runHarnessTurn(
     };
 
     const growAssistant = (chunk: string) => {
-      // Empty OR whitespace-only text_delta is NOT a boundary (plan #364): it
-      // never opens an assistant bubble nor flushes a tool streak.
-      if (!chunk.trim()) return;
+      // Whitespace-only text_delta is NOT a boundary (plan #364): it never
+      // opens an assistant bubble, closes thinking, or flushes a tool streak.
+      // But it MUST be accumulated faithfully (into the message buffer and any
+      // open bubble) so a boundary `\n\n` between streamed segments survives
+      // into `finalizeAssistant`. If we dropped it, the multi-segment tail-slice
+      // would mis-subtract and glue the finished row against a well-formed
+      // authoritative `done.text` (#387 host seam, phase-1 red fixture).
+      if (!chunk.trim()) {
+        assistantAcc += chunk;
+        if (assistantSegmentOpen) {
+          assistantSegment += chunk;
+          if (!bridge.updateLastMessage(MessageKind.Assistant, assistantSegment)) {
+            bridge.pushMessage(MessageKind.Assistant, assistantSegment);
+          }
+        } else if (assistantStarted) {
+          // Boundary whitespace that arrives AFTER the previous segment closed
+          // (e.g. a tool closed the bubble): buffer it so the next opened
+          // assistant segment leads with it, keeping the inter-segment blank
+          // line on the canvas (#387 after-close residual). Never opens an
+          // empty bubble on its own (plan #364). Leading whitespace before the
+          // FIRST segment (`assistantStarted === false`) is not buffered — it is
+          // a tokenization artifact that the authoritative final rewrites.
+          pendingAssistantWs += chunk;
+        }
+        return;
+      }
       closeThinkingSegment();
       assistantAcc += chunk;
       if (!assistantSegmentOpen) {
         // Real assistant text begins — close the open tool-run group so it is a
         // distinct group boundary (won't merge with tools after the reply).
         flushToolRun();
-        assistantSegment = chunk;
+        // Reattach any boundary whitespace buffered after the previous segment
+        // closed (tool boundary) so the completed canvas equals authoritative.
+        const leading = pendingAssistantWs;
+        pendingAssistantWs = '';
+        assistantSegment = leading + chunk;
         bridge.pushMessage(MessageKind.Assistant, assistantSegment);
         assistantSegmentOpen = true;
         assistantStarted = true;
