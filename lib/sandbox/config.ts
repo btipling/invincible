@@ -1,4 +1,3 @@
-import { resolveModelId } from '../model';
 import { parseInitialCwd } from '../agent/workPath';
 
 /** Exact 503 body — host phase 3 matches this string. */
@@ -111,14 +110,6 @@ export function resolveAgentMaxSteps(
   if (i < MIN_AGENT_MAX_STEPS) return MIN_AGENT_MAX_STEPS;
   if (i > MAX_AGENT_MAX_STEPS) return MAX_AGENT_MAX_STEPS;
   return i;
-}
-
-export function resolveAgentModelId(
-  env: Record<string, string | undefined> = process.env,
-): string {
-  const fromEnv = env.AGENT_MODEL?.trim();
-  if (fromEnv) return fromEnv;
-  return resolveModelId(env);
 }
 
 export function clampExecTimeoutMs(timeoutMs?: number): number {

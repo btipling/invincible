@@ -57,28 +57,20 @@ describe('isEmailVerifiedClaim', () => {
 });
 
 describe('shouldIncludeOidcProvider', () => {
-  const tenancy = {
-    DATABASE_URL: 'postgres://localhost/db',
-    AUTH_SECRET: 'secret-secret-secret-secret-secret',
-    CREDENTIALS_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
-  };
-  const oidc = {
+  const complete = {
     AUTH_OIDC_ISSUER: 'https://idp.example',
     AUTH_OIDC_CLIENT_ID: 'cid',
     AUTH_OIDC_CLIENT_SECRET: 'sec',
   };
 
-  it('false when tenancy off even if OIDC set', () => {
-    expect(shouldIncludeOidcProvider(oidc)).toBe(false);
-  });
-
-  it('false when tenancy on but OIDC incomplete', () => {
+  it('false when OIDC incomplete', () => {
+    expect(shouldIncludeOidcProvider({})).toBe(false);
     expect(
-      shouldIncludeOidcProvider({ ...tenancy, AUTH_OIDC_ISSUER: 'https://x' }),
+      shouldIncludeOidcProvider({ AUTH_OIDC_ISSUER: 'https://x' }),
     ).toBe(false);
   });
 
-  it('true when both complete', () => {
-    expect(shouldIncludeOidcProvider({ ...tenancy, ...oidc })).toBe(true);
+  it('true when OIDC complete (no triple gate)', () => {
+    expect(shouldIncludeOidcProvider(complete)).toBe(true);
   });
 });

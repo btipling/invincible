@@ -145,7 +145,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bridgeRef = useRef<HarnessBridge | null>(null);
   const storeRef = useRef<SessionStore | null>(null);
-  /** Cloud multi-device session repo (phase #244); disabled on 401 / tenancy-off. */
+  /** Cloud multi-device session repo (phase #244); disabled on 401. */
   const repoRef = useRef<SessionRepository | null>(null);
   const pollRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);

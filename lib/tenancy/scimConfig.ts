@@ -1,13 +1,9 @@
 /**
  * Pure SCIM env helpers (parent #64 / phase 3 #77).
  */
-import { tenancyEnabled } from './enabled';
 
 export type ScimEnv = {
   SCIM_BEARER_TOKEN?: string | undefined;
-  DATABASE_URL?: string | undefined;
-  AUTH_SECRET?: string | undefined;
-  CREDENTIALS_ENCRYPTION_KEY?: string | undefined;
 };
 
 export function scimBearerToken(
@@ -16,9 +12,9 @@ export function scimBearerToken(
   return env.SCIM_BEARER_TOKEN?.trim() ?? '';
 }
 
-/** Tenancy triple-gate AND non-empty SCIM_BEARER_TOKEN. */
+/** Configured when a non-empty SCIM_BEARER_TOKEN is present. */
 export function isScimConfigured(
   env: NodeJS.ProcessEnv | ScimEnv | Record<string, string | undefined> = process.env,
 ): boolean {
-  return tenancyEnabled(env) && Boolean(scimBearerToken(env));
+  return Boolean(scimBearerToken(env));
 }

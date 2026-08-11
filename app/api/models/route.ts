@@ -1,5 +1,3 @@
-import { resolveModelId } from '../../../lib/model';
-import { tenancyEnabled } from '../../../lib/tenancy/enabled';
 import { listModelsForUser } from '../../../lib/tenancy/resolveInference';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 
@@ -18,12 +16,12 @@ function shortLabel(modelId: string): string {
 
 /**
  * GET /api/models — session-gated model catalog for the harness picker.
- * Tenancy off: single env model. Tenancy on: granted models only (never credentials).
+ * Multi-tenant only: granted models only (never credentials, never a single env model).
  */
 export async function GET(): Promise<Response> {
-  // Fail closed: always require a session, independent of the tenancy branch.
-  // The middleware already gates /api/models (login wall); requiring a session
-  // here too keeps the route fail-closed if middleware coverage ever drifts.
+  // Fail closed: always require a session. The middleware already gates /api/models
+  // (login wall); requiring a session here too keeps the route fail-closed if
+  // middleware coverage ever drifts.
   const sessionGate = await requireSessionUser();
   if (!sessionGate.ok) {
     return sessionGate.response;
@@ -34,24 +32,17 @@ export async function GET(): Promise<Response> {
     return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
   }
 
-  if (tenancyEnabled()) {
-    try {
-      const ids = await listModelsForUser(userId);
-      const models: ModelCatalogEntry[] = ids.map((id) => ({
-        id,
-        label: shortLabel(id),
-      }));
-      return Response.json({ models });
-    } catch {
-      return Response.json(
-        { error: 'Could not load model catalog.' },
-        { status: 503 },
-      );
-    }
+  try {
+    const ids = await listModelsForUser(userId);
+    const models: ModelCatalogEntry[] = ids.map((id) => ({
+      id,
+      label: shortLabel(id),
+    }));
+    return Response.json({ models });
+  } catch {
+    return Response.json(
+      { error: 'Could not load model catalog.' },
+      { status: 503 },
+    );
   }
-
-  const id = resolveModelId();
-  return Response.json({
-    models: [{ id, label: shortLabel(id) }] satisfies ModelCatalogEntry[],
-  });
 }

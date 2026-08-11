@@ -2,8 +2,6 @@
  * Pure OIDC env helpers (parent #64 / phase 2 #76).
  * No Auth.js imports — unit-tested without Next.
  */
-import { tenancyEnabled } from './enabled';
-
 export type OidcEnv = {
   AUTH_OIDC_ISSUER?: string | undefined;
   AUTH_OIDC_CLIENT_ID?: string | undefined;
@@ -61,10 +59,11 @@ export function isEmailVerifiedClaim(value: unknown): boolean {
 }
 
 /**
- * OIDC button + Auth.js provider only when tenancy triple-gate AND OIDC env complete.
+ * OIDC button + Auth.js provider when OIDC env is complete.
+ * Multi-tenant only — no triple gate.
  */
 export function shouldIncludeOidcProvider(
   env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
 ): boolean {
-  return tenancyEnabled(env) && isOidcConfigured(env);
+  return isOidcConfigured(env);
 }

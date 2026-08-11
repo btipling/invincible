@@ -16,7 +16,7 @@ optional login chrome).
 | Concern | Owner | Notes |
 |---------|--------|--------|
 | Route `/harness`, App Router, code-split | **DOM** | Next.js |
-| Site chrome | **DOM** | `AppNav` brand header; optional `AuthNavLinks` (Sign in / Admin / Settings / Harness / Logout) when tenancy is on — **not** Playground tabs |
+| Site chrome | **DOM** | `AppNav` brand header; optional `AuthNavLinks` (Sign in / Admin / Settings / Harness / Logout) — **not** Playground tabs |
 | Load `web.js` + `harness.wasm` | **DOM** | Instantiate, MIME, errors |
 | JS ↔ Wasm bridge glue | **DOM** | `lib/harnessBridge.ts` |
 | Poll pending submit | **DOM** | No custom Wasm imports beyond stock dvui `web.js` |
@@ -33,7 +33,7 @@ optional login chrome).
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
 | Per-user MCP config UI | **DOM** | `/settings`, `/settings/mcp` — not dual chat; not Admin |
 | Per-user MCP tools (connect + execute) | **Vercel backend** | `lib/mcp/*`; keys under tenant DEK; never Wasm/client |
-| Builtin HTTPS fetch (`http_get`) | **Vercel backend** | Env `BUILTIN_HTTP_FETCH`; attach-only durable HTTP instance (Settings Create or tenancy-off name); see [builtin-http.md](builtin-http.md) |
+| Builtin HTTPS fetch (`http_get`) | **Vercel backend** | Env `BUILTIN_HTTP_FETCH`; attach-only durable HTTP instance (Settings Create HTTP instance); see [builtin-http.md](builtin-http.md) |
 | **Transcript (read messages)** | **Wasm** | Primary UX; rich MD + images + math + diff/patch fence paint in-canvas (`rich/*`) — no DOM markdown |
 | Image bytes (fetch/decode) | **DOM host** | Browser fetch → RGBA → `inv_image_cache_put`; paint stays Wasm |
 | Math pixels (TeX raster) | **DOM host** | Host MathJax SVG → RGBA → `inv_math_cache_put`; paint stays Wasm |
@@ -73,10 +73,9 @@ User types in Wasm composer
   → Host runHarnessTurn / SessionStore
   → formatPromptWithHistory (user/assistant only)
   → POST /api/agent { prompt, modelId? } with Accept: text/event-stream (default host)
-       if 503 + exact sandbox-not-configured → POST /api/chat { prompt, modelId? }
-       tenancy on: server attaches request-scoped BYOK for authorized modelId
-       tools → sandbox (env SANDBOX_* when tenancy off; DB grants + Settings Workspace attach when on)
-              + optional builtin http_get (attach-only durable HTTP instance; env BUILTIN_HTTP_FETCH)
+       server requires the session user: request-scoped BYOK for the authorized modelId
+       tools → sandbox (DB grants + Settings Workspace attach)
+              + optional builtin http_get (attach-only durable HTTPS instance; env BUILTIN_HTTP_FETCH)
               + enabled per-user MCP tools (server-side only; soft-fail dead servers)
        SSE: tool_start / tool_result / reasoning_delta / text_delta / done (see docs/agent-stream.md)
        JSON fallback when Accept is not event-stream (tests / simple clients)

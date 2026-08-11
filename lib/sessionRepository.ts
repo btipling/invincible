@@ -3,7 +3,6 @@
  * Client-safe — no Node/db imports. Host uses hybrid local SessionStore + this.
  */
 import {
-  CLOUD_SESSION_DISABLED_CODE,
   HARNESS_SESSION_MAX_BODY_BYTES,
   HARNESS_SESSION_MAX_MSG_BYTES,
 } from './sessionCloudCaps';
@@ -31,7 +30,7 @@ export type CloudPushResult =
   | { action: 'error'; status: number; message: string };
 
 export type SessionRepository = {
-  /** False after 401 / CLOUD_SESSION_DISABLED for this page load. */
+  /** False after 401 for this page load. */
   readonly enabled: boolean;
   pull(local: SessionSnapshot): Promise<CloudPullResult>;
   /** Coalesced fire-and-forget PUT of latest snapshot. */
@@ -198,15 +197,6 @@ export function trimForCloudPut(snapshot: SessionSnapshot): SessionSnapshot {
   return out;
 }
 
-async function readErrorCode(res: Response): Promise<string | undefined> {
-  try {
-    const j = (await res.json()) as { code?: string };
-    return j.code;
-  } catch {
-    return undefined;
-  }
-}
-
 export function createHttpSessionRepository(
   opts: HttpSessionRepositoryOptions = {},
 ): SessionRepository {
@@ -243,12 +233,7 @@ export function createHttpSessionRepository(
         disable();
         return;
       }
-      if (res.status === 404) {
-        const code = await readErrorCode(res);
-        if (code === CLOUD_SESSION_DISABLED_CODE) {
-          disable();
-        }
-      }
+      // DELETE 404 is idempotent (row absent) — nothing to disable.
     } catch {
       /* ignore network */
     }
@@ -266,12 +251,7 @@ export function createHttpSessionRepository(
         return { action: 'disabled' };
       }
       if (res.status === 404) {
-        const code = await readErrorCode(res);
-        if (code === CLOUD_SESSION_DISABLED_CODE) {
-          disable();
-          return { action: 'disabled' };
-        }
-        // NOT_FOUND or bare 404 — empty cloud
+        // NOT_FOUND — empty cloud
         return { action: 'noop' };
       }
       if (!res.ok) {
@@ -322,11 +302,6 @@ export function createHttpSessionRepository(
         return { action: 'disabled' };
       }
       if (res.status === 404) {
-        const code = await readErrorCode(res);
-        if (code === CLOUD_SESSION_DISABLED_CODE) {
-          disable();
-          return { action: 'disabled' };
-        }
         return {
           action: 'error',
           status: 404,

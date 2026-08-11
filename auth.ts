@@ -31,7 +31,7 @@ type OidcProfile = {
 
 /**
  * Auth.js v5 — JWT sessions; credentials + optional generic OIDC (#76).
- * OIDC provider registered only when tenancy triple-gate and OIDC env complete.
+ * OIDC provider registered only when OIDC env is complete (feature-env only).
  */
 function buildOidcProvider(): OIDCConfig<OidcProfile> {
   return {

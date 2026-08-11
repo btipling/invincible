@@ -7,7 +7,6 @@ describe('/api/session', () => {
   afterEach(() => {
     process.env = { ...originalEnv };
     vi.resetModules();
-    vi.doUnmock('../../../lib/tenancy/enabled');
     vi.doUnmock('../../../lib/tenancy/session');
     vi.doUnmock('../../../lib/tenancy/harnessSessions');
   });

@@ -6,10 +6,6 @@ import {
   missingGatewayKeyError,
 } from '../../../lib/chatServer';
 import { parseAgentBody } from '../../../lib/agent/agentBody';
-import {
-  SANDBOX_NOT_CONFIGURED_ERROR,
-  sandboxConfigured,
-} from '../../../lib/sandbox/config';
 import type { SandboxClient } from '../../../lib/sandbox/client';
 import { runAgent, runAgentStream } from '../../../lib/agent/runAgent';
 import {
@@ -18,7 +14,6 @@ import {
   wantsAgentStream,
   type AgentStreamEvent,
 } from '../../../lib/agent/agentStream';
-import { tenancyEnabled } from '../../../lib/tenancy/enabled';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 import { resolveAgentSandbox } from '../../../lib/tenancy/resolveSandbox';
 import { decryptUserGithubTokenForServer } from '../../../lib/tenancy/userGithubToken';
@@ -30,7 +25,6 @@ import { createHttpFetchTools } from '../../../lib/agent/httpFetchTools';
 import { createVercelSandboxHttpRunner } from '../../../lib/agent/vercelSandboxHttpRunner';
 import type { HttpFetchRunner } from '../../../lib/agent/httpFetchTypes';
 import { loadInstance } from '../../../lib/tenancy/userSandboxInstance';
-import { BUILTIN_HTTP_INSTANCE_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
@@ -82,10 +76,9 @@ async function closeRunners(
  * Omitted cwd → SANDBOX_DEFAULT_CWD if valid, else ".".
  * → or SSE (Accept: text/event-stream) agent events (docs/agent-stream.md)
  *
- * Tenancy on: DB-resolved sandbox + grants + request-scoped BYOK + user MCP tools.
- * Tenancy off: env SANDBOX_* + env model (no BYOK, no MCP).
- * Builtin HTTP: BUILTIN_HTTP_FETCH=sandbox + attach name (Settings HTTP instance or
- * BUILTIN_HTTP_INSTANCE_NAME when tenancy off); never create on the hot path.
+ * Always multi-tenant on: session user required, DB-resolved sandbox + grants +
+ * request-scoped BYOK + user MCP tools. Builtin HTTP: BUILTIN_HTTP_FETCH=sandbox +
+ * Settings HTTP instance attach; never create on the hot path.
  */
 export async function POST(req: Request): Promise<Response> {
   const sessionGate = await requireSessionUser();
@@ -98,15 +91,8 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error }, { status });
   }
 
-  const tenancyOn = tenancyEnabled();
   const builtinHttp = resolveBuiltinHttpConfig();
-  const envSandboxOk = sandboxConfigured();
   const stream = wantsAgentStream(req);
-
-  // Tenancy off: require DO sandbox OR builtin HTTP — never false 503 when http-only.
-  if (!tenancyOn && !envSandboxOk && !builtinHttp.enabled) {
-    return Response.json({ error: SANDBOX_NOT_CONFIGURED_ERROR }, { status: 503 });
-  }
 
   let body: unknown;
   try {
@@ -132,7 +118,12 @@ export async function POST(req: Request): Promise<Response> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let extraTools: Record<string, any> = {};
-    let runParams: Parameters<typeof runAgent>[0] = {
+    // Accumulates request fields + resolved tool wiring; modelId is only known
+    // after `resolveByokForRequest` returns, so it is added later (guarded below).
+    type RunParamsAcc = Omit<Parameters<typeof runAgent>[0], 'modelId'> & {
+      modelId?: string;
+    };
+    let runParams: RunParamsAcc = {
       prompt: parsed.prompt,
       signal: req.signal,
       initialCwd: parsed.cwd,
@@ -142,120 +133,96 @@ export async function POST(req: Request): Promise<Response> {
      * keep the 403 body and return it only if no tools assemble later.
      */
     let deferredNoFsResponse: Response | undefined;
-    let tenancyUserId: string | undefined;
 
-    if (tenancyOn) {
-      const userId = sessionGate.user?.id;
-      if (!userId) {
-        const { AUTH_REQUIRED_ERROR } = await import('../../../lib/tenancy/errors');
-        return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
-      }
-      tenancyUserId = userId;
+    const userId = sessionGate.user?.id;
+    if (!userId) {
+      const { AUTH_REQUIRED_ERROR } = await import('../../../lib/tenancy/errors');
+      return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
+    }
 
-      const byok = await resolveByokForRequest(userId, parsed.modelId);
-      if (!byok.ok) {
-        const { status, error } = mapByokResolveFailure(byok.reason);
-        return Response.json({ error }, { status });
-      }
-      redactList = byok.secretsToRedact;
+    const byok = await resolveByokForRequest(userId, parsed.modelId);
+    if (!byok.ok) {
+      const { status, error } = mapByokResolveFailure(byok.reason);
+      return Response.json({ error }, { status });
+    }
+    redactList = byok.secretsToRedact;
 
-      // Per-user GitHub PAT → sandbox exec env (client options only; never tool schema).
-      const gh = await decryptUserGithubTokenForServer(userId);
-      const ghSecrets: string[] = [];
-      let execEnv: Record<string, string> | undefined;
-      if (gh.ok && gh.value) {
-        ghSecrets.push(gh.value);
-        execEnv = { GH_TOKEN: gh.value, GITHUB_TOKEN: gh.value };
-      }
-      redactList = [...redactList, ...ghSecrets];
+    // Per-user GitHub PAT → sandbox exec env (client options only; never tool schema).
+    const gh = await decryptUserGithubTokenForServer(userId);
+    const ghSecrets: string[] = [];
+    let execEnv: Record<string, string> | undefined;
+    if (gh.ok && gh.value) {
+      ghSecrets.push(gh.value);
+      execEnv = { GH_TOKEN: gh.value, GITHUB_TOKEN: gh.value };
+    }
+    redactList = [...redactList, ...ghSecrets];
 
-      const resolved = await resolveAgentSandbox(userId, {
-        ...(execEnv ? { execEnv } : {}),
-      });
+    const resolved = await resolveAgentSandbox(userId, {
+      ...(execEnv ? { execEnv } : {}),
+    });
 
-      // When resolve soft-continues (e.g. Workspace not running), keep the 403
-      // body and only proceed if MCP and/or builtin HTTP supply tools later.
-      if (!resolved.ok) {
-        if (resolved.softContinue || builtinHttp.enabled) {
-          // Soft path: no FS tools; MCP + builtin HTTP may still run.
-          runParams = {
-            ...runParams,
-            skipSandboxTools: true,
-            secrets: [...byok.secretsToRedact, ...ghSecrets],
-          };
-          deferredNoFsResponse = resolved.response;
-        } else {
-          // Hard 403: grant/membership/selection without alternate soft path.
-          return resolved.response;
-        }
-      } else {
-        sandboxClient = resolved.value.client;
-        redactList = [...redactList, ...resolved.value.secrets];
+    // When resolve soft-continues (e.g. Workspace not running), keep the 403
+    // body and only proceed if MCP and/or builtin HTTP supply tools later.
+    if (!resolved.ok) {
+      if (resolved.softContinue || builtinHttp.enabled) {
+        // Soft path: no FS tools; MCP + builtin HTTP may still run.
         runParams = {
           ...runParams,
-          sandboxClient: resolved.value.client,
-          permissions: resolved.value.permissions,
-          secrets: [
-            ...resolved.value.secrets,
-            ...byok.secretsToRedact,
-            ...ghSecrets,
-          ],
+          skipSandboxTools: true,
+          secrets: [...byok.secretsToRedact, ...ghSecrets],
         };
+        deferredNoFsResponse = resolved.response;
+      } else {
+        // Hard 403: grant/membership/selection without alternate soft path.
+        return resolved.response;
       }
-
-      const mcp = await buildUserMcpTools(userId, { signal: req.signal });
-      mcpClose = mcp.close;
-      redactList = [...redactList, ...mcp.secretsToRedact];
-      extraTools = { ...extraTools, ...mcp.tools };
-
+    } else {
+      sandboxClient = resolved.value.client;
+      redactList = [...redactList, ...resolved.value.secrets];
       runParams = {
         ...runParams,
-        modelId: byok.modelId,
-        providerOptions: {
-          gateway: {
-            only: byok.only as JSONValue,
-            byok: byok.byok as JSONValue,
-          },
-        },
+        sandboxClient: resolved.value.client,
+        permissions: resolved.value.permissions,
         secrets: [
-          ...(runParams.secrets ?? []),
-          ...mcp.secretsToRedact,
+          ...resolved.value.secrets,
+          ...byok.secretsToRedact,
+          ...ghSecrets,
         ],
       };
-    } else if (!envSandboxOk) {
-      // Tenancy off + no DO sandbox: http-only (gate already required builtin on).
-      runParams = {
-        ...runParams,
-        skipSandboxTools: true,
-      };
     }
+
+    const mcp = await buildUserMcpTools(userId, { signal: req.signal });
+    mcpClose = mcp.close;
+    redactList = [...redactList, ...mcp.secretsToRedact];
+    extraTools = { ...extraTools, ...mcp.tools };
+
+    runParams = {
+      ...runParams,
+      modelId: byok.modelId,
+      providerOptions: {
+        gateway: {
+          only: byok.only as JSONValue,
+          byok: byok.byok as JSONValue,
+        },
+      },
+      secrets: [
+        ...(runParams.secrets ?? []),
+        ...mcp.secretsToRedact,
+      ],
+    };
 
     if (builtinHttp.enabled) {
       let httpAttachName: string | undefined;
 
-      if (tenancyOn) {
-        // Settings HTTP/curl instance — omit tools when missing/stopped/error.
-        if (tenancyUserId) {
-          const loaded = await loadInstance(tenancyUserId, 'http');
-          if (
-            loaded.ok &&
-            loaded.value &&
-            loaded.value.status === 'running' &&
-            loaded.value.vercelName?.trim()
-          ) {
-            httpAttachName = loaded.value.vercelName.trim();
-          }
-        }
-      } else {
-        // Tenancy off: host env name required — never create.
-        const envName = builtinHttp.instanceNameTenancyOff;
-        if (!envName) {
-          return Response.json(
-            { error: BUILTIN_HTTP_INSTANCE_REQUIRED_ERROR },
-            { status: 503 },
-          );
-        }
-        httpAttachName = envName;
+      // Settings HTTP/curl instance — omit tools when missing/stopped/error.
+      const loaded = await loadInstance(userId, 'http');
+      if (
+        loaded.ok &&
+        loaded.value &&
+        loaded.value.status === 'running' &&
+        loaded.value.vercelName?.trim()
+      ) {
+        httpAttachName = loaded.value.vercelName.trim();
       }
 
       if (httpAttachName) {
@@ -274,6 +241,21 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     runParams = { ...runParams, extraTools };
+
+    // Model id always resolved via BYOK above; guard so runAgent sees a required value.
+    if (!runParams.modelId) {
+      const { INFERENCE_MODEL_REQUIRED_ERROR } = await import(
+        '../../../lib/tenancy/errors'
+      );
+      return Response.json(
+        { error: INFERENCE_MODEL_REQUIRED_ERROR },
+        { status: 400 },
+      );
+    }
+    const finalRunParams: Parameters<typeof runAgent>[0] = {
+      ...runParams,
+      modelId: runParams.modelId,
+    };
 
     // Soft path only when non-FS tools exist; else return resolve 403 body.
     if (
@@ -304,7 +286,7 @@ export async function POST(req: Request): Promise<Response> {
             }
           };
           try {
-            await runAgentStream(runParams, {
+            await runAgentStream(finalRunParams, {
               onEvent: async (ev) => {
                 enqueue(ev);
               },
@@ -350,7 +332,7 @@ export async function POST(req: Request): Promise<Response> {
       });
     }
 
-    const { text, toolTrace, cwd } = await runAgent(runParams);
+    const { text, toolTrace, cwd } = await runAgent(finalRunParams);
 
     if (!text) {
       return Response.json({ error: 'Empty model response.' }, { status: 502 });
