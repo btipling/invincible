@@ -437,7 +437,8 @@ fn autolinkTextInlines(a: Allocator, inlines: []const Inline) ![]const Inline {
 /// mapping `appendText` applies to text runs, so a preprocessed intra-word `_`
 /// inside a URL or image destination returns to a real ASCII `_` instead of
 /// leaking U+E021 into `href` (PR #399 review - Major L1 / Nit L6).
-/// Returns the *input* unchanged (same slice) when no sentinel is present.
+/// Always returns an arena-owned slice (even when no sentinel is present) so the
+/// caller's `href` is explicit and independent of the source IR lifetime.
 fn lowerPuaLiterals(a: Allocator, src: []const u8) ![]const u8 {
     var needs = false;
     var scan: usize = 0;
@@ -463,7 +464,7 @@ fn lowerPuaLiterals(a: Allocator, src: []const u8) ![]const u8 {
         }
         scan += need;
     }
-    if (!needs) return src;
+    if (!needs) return a.dupe(u8, src);
 
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(a);
