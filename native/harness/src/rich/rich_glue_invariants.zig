@@ -133,6 +133,12 @@ test "#343 fixed: angle-bracket autolink href stays clean (no trailing '>' in th
     try std.testing.expectEqualStrings("see <", doc.blocks[0].inlines[0].text);
     try std.testing.expectEqualStrings("https://example.com/a_b", doc.blocks[0].inlines[1].text);
     try std.testing.expectEqualStrings("> now", doc.blocks[0].inlines[2].text);
+    // Belt-and-suspenders (PR #401 review L6 Nit): assert the stored href too,
+    // not just the label run. `autolinkTextInlines` currently uses one `url_dupe`
+    // for both `text` and `href`, so this is redundant today — but it locks the
+    // contract against a future divergence between the two.
+    try std.testing.expect(doc.blocks[0].inlines[1].href != null);
+    try std.testing.expectEqualStrings("https://example.com/a_b", doc.blocks[0].inlines[1].href.?);
 }
 
 test "#341 drift-guard: loose ordered list currently renumbers each item to 'o,1' (OPEN bug, not fixed here)" {
