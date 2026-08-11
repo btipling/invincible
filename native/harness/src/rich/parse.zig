@@ -1033,20 +1033,30 @@ const Builder = struct {
     /// list as several adjacent `<ol>` blocks) resumes numbering instead of
     /// restarting at `1.` every time.
     ///
-    /// Only resumes when the immediately preceding committed block is itself an
-    /// ordered `list_item` at the same depth. A genuinely distinct list (different
-    /// marker kind, a paragraph, or a list at a different nesting depth in
-    /// between) returns 0 so the new list starts fresh. Returns the PREVIOUS
-    /// item's marker number (not 1-based-advance): the frame counter starts at
-    /// this value and `listItemMeta` increments it for the next item.
+    /// Scans BACKWARD over committed blocks, skipping NESTED `list_item`s whose
+    /// `level > self.list_depth`, and resumes from the nearest prior ordered item
+    /// at EQUAL depth. This handles the loose-list path where an outer ordered
+    /// item whose last sibling content was a *nested* list (bullet or ordered)
+    /// still resumes the outer counter (PR #402 review Major L1). Stops (returns
+    /// 0) on any `list_item` shallower than the current depth (crossed out of
+    /// this list's subtree), on a non-`list_item` block (paragraph etc.), or on a
+    /// non-ordered (`u`) item at equal depth — a genuinely distinct list. Returns
+    /// the PREVIOUS matching item's marker number (not 1-based-advance): the
+    /// frame counter starts at this value and `listItemMeta` increments it for
+    /// the next item.
     fn resumeOlCounter(self: *Builder) u16 {
-        if (self.blocks.items.len == 0) return 0;
-        const prev = self.blocks.items[self.blocks.items.len - 1];
-        if (prev.kind != .list_item) return 0;
-        if (prev.level != self.list_depth) return 0;
-        const m = prev.meta orelse return 0;
-        if (m.len < 2 or m[0] != 'o' or m[1] != ',') return 0;
-        return std.fmt.parseInt(u16, m[2..], 10) catch 0;
+        var i = self.blocks.items.len;
+        while (i > 0) {
+            i -= 1;
+            const prev = self.blocks.items[i];
+            if (prev.kind != .list_item) return 0;
+            if (prev.level > self.list_depth) continue;
+            if (prev.level < self.list_depth) return 0;
+            const m = prev.meta orelse return 0;
+            if (m.len < 2 or m[0] != 'o' or m[1] != ',') return 0;
+            return std.fmt.parseInt(u16, m[2..], 10) catch 0;
+        }
+        return 0;
     }
 
     fn listItemMeta(self: *Builder) !?[]const u8 {
@@ -2641,6 +2651,72 @@ test "#341 non-regression: unordered list does not leak into ordered counter" {
             if (ordered == 1) try std.testing.expectEqualStrings("o,1", blk.meta.?);
             if (ordered == 2) try std.testing.expectEqualStrings("o,2", blk.meta.?);
         }
+    }
+    try std.testing.expectEqual(@as(usize, 2), ordered);
+}
+
+test "#341 Major L1: loose outer ol resumes past a nested bullet between blank-separated items" {
+    // PR #402 review Major L1: an outer ordered item whose last sibling content
+    // is a NESTED list (bullet here), followed by a blank (loose), reopens a
+    // fresh `<ol>` for the outer next item. resumeOlCounter must skip the nested
+    // `u` at deeper level and resume the outer counter → beta is o,2, not o,1.
+    var doc = try parse(std.testing.allocator, "1. alpha\n   - nested\n\n2. beta");
+    defer doc.deinit();
+    var ordered: usize = 0;
+    var saw_ul = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        const m = blk.meta orelse continue;
+        if (m[0] == 'u') {
+            saw_ul = true;
+            continue;
+        }
+        if (m[0] == 'o') {
+            ordered += 1;
+            if (ordered == 1) try std.testing.expectEqualStrings("o,1", m);
+            if (ordered == 2) try std.testing.expectEqualStrings("o,2", m);
+        }
+    }
+    try std.testing.expect(saw_ul);
+    try std.testing.expectEqual(@as(usize, 2), ordered);
+}
+
+test "#341 Major L1: loose outer ol resumes past a nested ordered item between blank-separated items" {
+    // Same as above but the nested block is itself an ordered list — the outer
+    // next item must STILL resume to o,2 even though the nearer (nested) ordered
+    // `o,1` is at a deeper level than the reopened outer `<ol>`.
+    var doc = try parse(std.testing.allocator, "1. alpha\n   1. nested\n\n2. beta");
+    defer doc.deinit();
+    var outer: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        const m = blk.meta orelse continue;
+        if (m[0] != 'o') continue;
+        if (blk.level == 1) {
+            outer += 1;
+            if (outer == 1) try std.testing.expectEqualStrings("o,1", m);
+            if (outer == 2) try std.testing.expectEqualStrings("o,2", m);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), outer);
+}
+
+test "#341 Minor L6: loose ordered list inside a blockquote still continues 1. 2." {
+    // Review Minor L6: quote path re-wraps list_items with quote_depth after
+    // lowerIr, so the counter carry must survive the empty `>` blank lines
+    // between numbered steps (a loose ordered list inside a quote).
+    const src = "> 1. alpha\n>\n> 2. beta";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var ordered: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind != .list_item) continue;
+        try std.testing.expect(blk.quote_depth >= 1);
+        const m = blk.meta orelse continue;
+        if (m[0] != 'o') continue;
+        ordered += 1;
+        if (ordered == 1) try std.testing.expectEqualStrings("o,1", m);
+        if (ordered == 2) try std.testing.expectEqualStrings("o,2", m);
     }
     try std.testing.expectEqual(@as(usize, 2), ordered);
 }

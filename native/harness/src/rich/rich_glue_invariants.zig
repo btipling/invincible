@@ -150,11 +150,12 @@ test "#341 fixed: loose ordered list preserves counter across blank lines" {
     // zmd emits a loose ordered list as several adjacent `<ol>` blocks, each
     // reopening with a fresh counter, so every item used to render `o,1`.
     // Fixed in #341's own PR (`parse.zig::resumeOlCounter`): the reopened `<ol>`
-    // carries the counter forward, so `1. one` / `2. two` / `3. reset` (blank
-    // separators) renders 1. 2. 3. instead of 1. 1. 1. This guard now pins the
-    // corrected output; the same behavior is also locked by the parse-level
-    // #341 tests in `test-rich`.
-    const src = "1. one\n\n2. two\n\n3. reset";
+    // carries the counter forward, so `1. one` / `2. two` / `1. reset` (blank
+    // separators, PLUS an author-re-typed `1.` marker that must continue to
+    // `3.` rather than restart — the harder drift case) renders 1. 2. 3. instead
+    // of 1. 1. 1. This guard now pins the corrected output; the same behavior is
+    // also locked by the parse-level #341 tests in `test-rich`.
+    const src = "1. one\n\n2. two\n\n1. reset";
     var doc = try parse.parse(std.testing.allocator, src);
     defer doc.deinit();
     try std.testing.expectEqual(@as(usize, 3), doc.blocks.len);

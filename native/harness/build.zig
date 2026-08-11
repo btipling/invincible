@@ -308,12 +308,14 @@ pub fn build(b: *std.Build) void {
     // drift-guards. #336's emph-split is fixed (guard pins the corrected
     // literal-underscore behavior); #343's link-tail `>` is fixed (guard pins
     // the corrected clean-href output); #341's loose-list marker renumber is
-    // now fixed too (guard pins the preserved counter; also locked by the
-    // parse-level #341 tests in `test-rich`).
-    // All GREEN contract pins. NOT part of the default `test-rich`
-    // release gate (open-bug expectations stay out of the blocking gate);
-    // `build-harness.yml` runs them as a non-blocking `continue-on-error` step
-    // so a rich parse change flags drift without blocking merge.
+    // fixed too (guard pins the preserved counter; also locked by the
+    // parse-level #341 tests in `test-rich`). All three related-bug guards are
+    // now FIXED pins, so there are no open-bug expectations left in this suite.
+    // All GREEN contract pins. NOT part of the default `test-rich` release
+    // gate (invariants are a complementary snapshot/drift-check layer, not
+    // a duplicate of the blocking gate); `build-harness.yml` runs them as a
+    // non-blocking `continue-on-error` step so a rich parse change flags drift
+    // without blocking merge.
     // Run explicitly: `zig build test-rich-invariants`.
     const red_tests = b.addTest(.{
         .name = "rich-glue-invariants",
