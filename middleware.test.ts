@@ -29,6 +29,26 @@ describe('middleware auth gate', () => {
     expect(res.status).toBe(401);
   });
 
+  it('401 JSON on unauth API when triple incomplete but AUTH_SECRET set (always wall)', async () => {
+    // Phase 1 hard-on: the login wall gates even with a partial triple — no
+    // tenancyEnabled() early-return anymore. DATABASE_URL missing is a
+    // misconfiguration, not an open mode.
+    delete process.env.DATABASE_URL;
+    process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';
+    delete process.env.CREDENTIALS_ENCRYPTION_KEY;
+    vi.resetModules();
+    vi.doMock('next-auth/jwt', () => ({
+      getToken: vi.fn(async () => null),
+    }));
+    const { middleware } = await loadMw();
+    const res = await middleware(
+      new Request('http://localhost/api/models', { method: 'GET' }) as never,
+    );
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe(AUTH_REQUIRED_ERROR);
+  });
+
   it('401 JSON on unauth API when tenancy on', async () => {
     process.env.DATABASE_URL = 'postgres://x';
     process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';

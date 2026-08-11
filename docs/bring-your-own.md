@@ -176,7 +176,7 @@ row in Postgres (`harness_sessions`), synced by the host after local first paint
 | Schema | GitHub Actions → **`db-migrate`** → `confirm=migrate` (includes `harness_sessions`). Workflow: [`.github/workflows/db-migrate.yml`](../.github/workflows/db-migrate.yml). Do **not** use `db-tenancy-bootstrap` / seed solely for this table. |
 | Runtime | Tenancy triple env already on; user signs in → `/harness` |
 | Smoke | Same user, two browsers: turn on A → refresh B shows messages; Clear on A → DELETE cloud row |
-| Tenancy off | Cloud session API returns **404** + `CLOUD_SESSION_DISABLED`; localStorage continues alone |
+| Failures | Unauth → **401**; no row yet → **404** `NOT_FOUND`; store unavailable → **503**. There is **no** tenancy-off `CLOUD_SESSION_DISABLED` disable path on this route — auth is always required |
 
 Product detail (LWW, caps, hybrid wire): [session-model.md](session-model.md).  
 Security boundary: [SECURITY.md](../SECURITY.md) (Harness session store).

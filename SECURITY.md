@@ -31,9 +31,10 @@ Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
 |---------|------------|
 | Browser `localStorage` / memory | UX convenience only; same-origin; **not** multi-tenant isolation |
 | Cloud row (`harness_sessions`) | **One row per Auth.js `user_id`**; ownership always from session — never client-supplied user id |
-| API | `GET` / `PUT` / `DELETE` `/api/session` — tenancy on + signed in; middleware-protected |
-| Tenancy off | **404** + `CLOUD_SESSION_DISABLED` (not 501); local-only continues |
-| Unauthenticated (tenancy on) | **401** — client disables cloud sync for the page load |
+| API | `GET` / `PUT` / `DELETE` `/api/session` — signed in + middleware-protected |
+| Unauthenticated | **401** — client disables cloud sync for the page load |
+| No row yet | **404** `NOT_FOUND` — local continues; first PUT creates |
+| Store unavailable | **503** — local continues |
 | Conflict | LWW on `updatedAt` (epoch ms); stale PUT → **409** + server body |
 | Caps (abuse / size) | No message-count cap; ≤**262 144** UTF-8 bytes per message text; ≤**~2 MiB** raw body; opaque snapshot id ≤128 |
 | Blob contents | Message roles/text/ids/timestamps only — **never** Gateway keys, sandbox tokens, MCP secrets, PATs, or host absolute paths |
