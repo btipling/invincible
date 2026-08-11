@@ -846,8 +846,11 @@ pub fn frame() !void {
     const count_changed = shown != prev_shown;
 
     if (n < prev_msg) {
-        // Ring cleared or truncated — drop parse cache (generation bump) and
-        // reset tool-run expand state so a fresh/old window starts collapsed.
+        // Ring cleared only (count->0). No partial-truncate path: bridge's
+        // msg_count drops solely via inv_clear_messages — update_last never
+        // decreases it — so (n == 0) below is exactly the clear case. Drop the
+        // parse cache (generation bump) and reset tool-run expand state so a
+        // fresh window starts collapsed.
         if (n == 0) rich.clearCache();
         clearToolRunOpenState();
         transcript_scroll.velocity = .{ .x = 0, .y = 0 };

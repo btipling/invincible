@@ -136,7 +136,7 @@ pub fn build(b: *std.Build) void {
     test_parse.dependOn(&run_parse_tests.step);
 
     // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
-    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text");
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + ring_slot (#404 write seam)");
     test_rich.dependOn(&run_parse_tests.step);
 
     const cache_tests = b.addTest(.{
@@ -314,6 +314,20 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_rich.dependOn(&b.addRunArtifact(toolrun_cache_tests).step);
+
+    // #404 follow-up (PR #407 review L6): pin the ring-slot write seam —
+    // the `bridge` producers route every body write through `ring_slot.write`,
+    // so a forgotten `revision` bump (stale parse/decode on a committed row)
+    // is structurally impossible. Pure, no dvui/wasm frame.
+    const ring_slot_tests = b.addTest(.{
+        .name = "ring-slot",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ring_slot.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+    test_rich.dependOn(&b.addRunArtifact(ring_slot_tests).step);
 
     // Rich-glue invariants: #387 host/whitespace pins plus current-behavior
     // drift-guards. #336's emph-split is fixed (guard pins the corrected
