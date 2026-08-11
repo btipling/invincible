@@ -969,7 +969,15 @@ const Builder = struct {
             // permanently desync markers after the deep nest closes.
             if (self.list_stack_len < self.list_stack.len) {
                 const kind: ListKind = if (std.mem.eql(u8, tag, "ol")) .ol else .ul;
-                self.list_stack[self.list_stack_len] = .{ .kind = kind, .counter = 0 };
+                // #341: zmd closes lists on blank lines (Parser.closeAllLists), so
+                // a LOOSE ordered list (items separated by blanks) arrives as
+                // several adjacent `<ol>` blocks, each reopening with a fresh
+                // counter. Without a carry-over that renders every item as `o,1`
+                // (the "1. 1. 1." bug). Seed the counter from the last committed
+                // ordered item at this depth so the reopened `<ol>` resumes, giving
+                // `o,1` → `o,2` → `o,3` for a loose ordered list.
+                const counter: u16 = if (kind == .ol) self.resumeOlCounter() else 0;
+                self.list_stack[self.list_stack_len] = .{ .kind = kind, .counter = counter };
                 self.list_stack_len += 1;
             }
             return;
@@ -1018,6 +1026,27 @@ const Builder = struct {
             try self.openBlock(.heading, tag[1] - '0', null);
             return;
         }
+    }
+
+    /// #341: return the last ordered-list counter already emitted at the current
+    /// list depth, so a blank-line-reopened `<ol>` (zmd emits a loose ordered
+    /// list as several adjacent `<ol>` blocks) resumes numbering instead of
+    /// restarting at `1.` every time.
+    ///
+    /// Only resumes when the immediately preceding committed block is itself an
+    /// ordered `list_item` at the same depth. A genuinely distinct list (different
+    /// marker kind, a paragraph, or a list at a different nesting depth in
+    /// between) returns 0 so the new list starts fresh. Returns the PREVIOUS
+    /// item's marker number (not 1-based-advance): the frame counter starts at
+    /// this value and `listItemMeta` increments it for the next item.
+    fn resumeOlCounter(self: *Builder) u16 {
+        if (self.blocks.items.len == 0) return 0;
+        const prev = self.blocks.items[self.blocks.items.len - 1];
+        if (prev.kind != .list_item) return 0;
+        if (prev.level != self.list_depth) return 0;
+        const m = prev.meta orelse return 0;
+        if (m.len < 2 or m[0] != 'o' or m[1] != ',') return 0;
+        return std.fmt.parseInt(u16, m[2..], 10) catch 0;
     }
 
     fn listItemMeta(self: *Builder) !?[]const u8 {
@@ -2548,6 +2577,71 @@ test "ordered list counter resumes after nested ul" {
         }
     }
     try std.testing.expect(saw_ul);
+    try std.testing.expectEqual(@as(usize, 2), ordered);
+}
+
+test "#341 fixed: loose ordered list preserves counter across blank lines" {
+    // The #341 repro: items separated by blank lines (a LOOSE ordered list).
+    // zmd emits these as several `<ol>` blocks; the builder must carry the
+    // counter forward so numbering is 1. 2. 3. and not 1. 1. 1.
+    var doc = try parse(std.testing.allocator, "1. alpha\n\n2. beta\n\n3. gamma");
+    defer doc.deinit();
+    try std.testing.expectEqual(@as(usize, 3), doc.blocks.len);
+    var n: usize = 0;
+    for (doc.blocks) |blk| {
+        n += 1;
+        try std.testing.expectEqual(BlockKind.list_item, blk.kind);
+        const expected = try std.fmt.allocPrint(std.testing.allocator, "o,{d}", .{n});
+        defer std.testing.allocator.free(expected);
+        try std.testing.expectEqualStrings(expected, blk.meta orelse return error.NoOrderedMeta);
+    }
+    try std.testing.expectEqual(@as(usize, 3), n);
+}
+
+test "#341 fixed: loose list with same marker numeral still continues" {
+    // Even when the author types `1.` again for a later item of a loose list,
+    // the display continues the sequence (1. 2. 3.) rather than restarting.
+    // Mirrors the original drift-guard input.
+    var doc = try parse(std.testing.allocator, "1. one\n\n2. two\n\n1. reset");
+    defer doc.deinit();
+    try std.testing.expectEqual(@as(usize, 3), doc.blocks.len);
+    try std.testing.expectEqualStrings("o,1", doc.blocks[0].meta.?);
+    try std.testing.expectEqualStrings("o,2", doc.blocks[1].meta.?);
+    try std.testing.expectEqualStrings("o,3", doc.blocks[2].meta.?);
+}
+
+test "#341 non-regression: distinct lists separated by a paragraph restart at 1" {
+    const src = "1. alpha\n\nsome paragraph\n\n2. beta";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var ordered: usize = 0;
+    var saw_para = false;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .paragraph) saw_para = true;
+        if (blk.kind == .list_item) {
+            ordered += 1;
+            if (ordered == 1) try std.testing.expectEqualStrings("o,1", blk.meta.?);
+            if (ordered == 2) try std.testing.expectEqualStrings("o,1", blk.meta.?);
+        }
+    }
+    try std.testing.expect(saw_para);
+    try std.testing.expectEqual(@as(usize, 2), ordered);
+}
+
+test "#341 non-regression: unordered list does not leak into ordered counter" {
+    // A bullet list before the ordered list must not contaminate the ordered
+    // counter (the resume hint only matches ordered list items).
+    const src = "- bullet\n\n1. first\n\n2. second";
+    var doc = try parse(std.testing.allocator, src);
+    defer doc.deinit();
+    var ordered: usize = 0;
+    for (doc.blocks) |blk| {
+        if (blk.kind == .list_item and blk.meta != null and blk.meta.?[0] == 'o') {
+            ordered += 1;
+            if (ordered == 1) try std.testing.expectEqualStrings("o,1", blk.meta.?);
+            if (ordered == 2) try std.testing.expectEqualStrings("o,2", blk.meta.?);
+        }
+    }
     try std.testing.expectEqual(@as(usize, 2), ordered);
 }
 

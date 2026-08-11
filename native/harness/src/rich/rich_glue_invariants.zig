@@ -1,12 +1,13 @@
 //! Phase-1/3 rich-glue invariant suite for #387 (harness rich MD) + related
-//! bug drift-guards (#341 still open / #343 fixed).
+//! bug drift-guards (#341 fixed / #343 fixed).
 //!
 //! NOT linked into the default `test-rich` step — run explicitly with
 //! `zig build test-rich-invariants`. These pin the #387 assistant-transcript
 //! whitespace / block-boundary invariants so phase 2 (parent #390) has a
 //! concrete target and so no Wasm fix can regress the well-formed input path,
-//! plus the phase-3 current-behavior drift-guards for #341 (still OPEN) and
-//! #343 (now FIXED; its guard pins the corrected angle-bracket-autolink href),
+//! plus the phase-3 current-behavior drift-guards for #341 (now FIXED; its
+//! guard below pins the preserved loose-list counter) and #343 (now FIXED; its
+//! guard pins the corrected angle-bracket-autolink href),
 //! alongside #336's fixed emph-split guard pinning the corrected literal
 //! underscore behavior.
 //! Though parked under an investigation suite, these tests are GREEN (they pin
@@ -91,10 +92,13 @@ test "#387 heading immediately followed by strong keeps space between heading an
 }
 
 // ---------------------------------------------------------------------------
-// Phase-3 (parent #390) related-bug drift-guards. #341 is STILL OPEN and is OUT
-// of scope to fix here; #336 was fixed in its own PR (its drift-guard below now
-// pins the corrected literal-underscore behavior); #343 was fixed in its own PR
-// too (its guard below now pins the corrected angle-bracket-autolink href).
+// Phase-3 (parent #390) related-bug drift-guards. #336 was fixed in its own PR
+// (its drift-guard below now pins the corrected literal-underscore behavior);
+// #343 was fixed in its own PR too (its guard below now pins the corrected
+// angle-bracket-autolink href); #341 was fixed in its own PR as well (its guard
+// below now pins the preserved loose-list ordered counter — the drift-guard's
+// corrected behavior is also locked by the parse-level #341 tests in
+// `test-rich`).
 // These tests are GREEN snapshot guards that PIN THE parse behavior so the
 // #387 whitespace/boundary change cannot silently shift them. They are
 // drift-locks, NOT correctness fixes: when a bug is independently fixed, update
@@ -141,17 +145,23 @@ test "#343 fixed: angle-bracket autolink href stays clean (no trailing '>' in th
     try std.testing.expectEqualStrings("https://example.com/a_b", doc.blocks[0].inlines[1].href.?);
 }
 
-test "#341 drift-guard: loose ordered list currently renumbers each item to 'o,1' (OPEN bug, not fixed here)" {
-    // #341: ordered markers reset to `1.` on the loose-list / blank-line path.
-    // On `main`, `1. one\\n\\n2. two\\n\\n1. reset` yields THREE `o,1` list_item
-    // blocks (the `2.` resets to `1.`). Pin the CURRENT output as a drift
-    // guard; the preserved-counter fix belongs to #341.
-    const src = "1. one\n\n2. two\n\n1. reset";
+test "#341 fixed: loose ordered list preserves counter across blank lines" {
+    // #341: ordered markers reset to `1.` on the loose-list / blank-line path —
+    // zmd emits a loose ordered list as several adjacent `<ol>` blocks, each
+    // reopening with a fresh counter, so every item used to render `o,1`.
+    // Fixed in #341's own PR (`parse.zig::resumeOlCounter`): the reopened `<ol>`
+    // carries the counter forward, so `1. one` / `2. two` / `3. reset` (blank
+    // separators) renders 1. 2. 3. instead of 1. 1. 1. This guard now pins the
+    // corrected output; the same behavior is also locked by the parse-level
+    // #341 tests in `test-rich`.
+    const src = "1. one\n\n2. two\n\n3. reset";
     var doc = try parse.parse(std.testing.allocator, src);
     defer doc.deinit();
     try std.testing.expectEqual(@as(usize, 3), doc.blocks.len);
-    for (doc.blocks) |blk| {
+    for (doc.blocks, 1..) |blk, i| {
         try std.testing.expectEqual(parse.BlockKind.list_item, blk.kind);
-        try std.testing.expectEqualStrings("o,1", blk.meta orelse return error.NoOrderedMeta);
+        const expected = try std.fmt.allocPrint(std.testing.allocator, "o,{d}", .{i});
+        defer std.testing.allocator.free(expected);
+        try std.testing.expectEqualStrings(expected, blk.meta orelse return error.NoOrderedMeta);
     }
 }
