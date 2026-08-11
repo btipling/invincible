@@ -59,8 +59,16 @@ pub fn findBareHttpUrl(s: []const u8, from: usize) ?BareUrlSpan {
             i += 1;
             continue;
         };
+        // CommonMark angle-bracket autolink: an http(s) scheme immediately
+        // preceded by `<` is the opening `<>` wrapper. Stop the body at the
+        // FIRST `>` (the closing CM autolink delimiter) so the href stays the
+        // clean inner URL instead of absorbing a trailing `>` (#343). Purely
+        // additive — bare URLs (no preceding `<`) are untouched.
+        const cm_auto = i > 0 and s[i - 1] == '<';
         var j = i + scheme_len;
-        while (j < s.len and isUrlBodyByte(s[j])) : (j += 1) {}
+        while (j < s.len and isUrlBodyByte(s[j])) : (j += 1) {
+            if (cm_auto and s[j] == '>') break;
+        }
         if (j <= i + scheme_len) {
             i += 1;
             continue;
@@ -232,6 +240,55 @@ test "findBareHttpUrl trailing punct not in span" {
     const s2 = "(https://example.com/x?y=1#z)";
     const sp2 = findBareHttpUrl(s2, 0).?;
     try std.testing.expectEqualStrings("https://example.com/x?y=1#z", s2[sp2.start..sp2.end]);
+}
+
+test "findBareHttpUrl CM angle-bracket autolink strips '>' from href" {
+    // #343: `<http://example.com/foo/bar>` must autolink to the clean URL; the
+    // leading `<` stays plain text and the closing `>` is NOT absorbed.
+    const s = "See <http://example.com/foo/bar> for details.";
+    const sp = findBareHttpUrl(s, 0).?;
+    try std.testing.expectEqualStrings("http://example.com/foo/bar", s[sp.start..sp.end]);
+    // Span starts at the scheme (after the leading `<`).
+    try std.testing.expect(sp.start > 0);
+    try std.testing.expect(s[sp.start - 1] == '<');
+    try std.testing.expect(sp.end < s.len and s[sp.end] == '>');
+}
+
+test "findBareHttpUrl CM autolink preserves query and fragment" {
+    const s = "<https://example.com/a?b=1#c>";
+    const sp = findBareHttpUrl(s, 0).?;
+    try std.testing.expectEqualStrings("https://example.com/a?b=1#c", s[sp.start..sp.end]);
+    try std.testing.expect(s[sp.end] == '>');
+}
+
+test "findBareHttpUrl CM autolink case-insensitive and sentence punct trim" {
+    const s = "go <HTTP://EXAMPLE.COM/X>.";
+    const sp = findBareHttpUrl(s, 0).?;
+    try std.testing.expectEqualStrings("HTTP://EXAMPLE.COM/X", s[sp.start..sp.end]);
+    // Trailing sentence punct before the closer is still trimmed; the trimmed
+    // `.` stays in source just after the span, and the `>` closer comes after it.
+    const s2 = "<https://example.com/x.>";
+    const sp2 = findBareHttpUrl(s2, 0).?;
+    try std.testing.expectEqualStrings("https://example.com/x", s2[sp2.start..sp2.end]);
+    try std.testing.expect(s2[sp2.end] == '.');
+    try std.testing.expect(s2[sp2.end + 1] == '>');
+}
+
+test "findBareHttpUrl CM autolink empty host no link and balanced parens kept" {
+    // Empty host: scheme immediately followed by the closer -> no link.
+    try std.testing.expect(findBareHttpUrl("<http://>", 0) == null);
+    try std.testing.expect(findBareHttpUrl("<https://>", 0) == null);
+    // Balanced parens inside an autolink are preserved.
+    const s = "<https://example.com/foo_(bar)>";
+    const sp = findBareHttpUrl(s, 0).?;
+    try std.testing.expectEqualStrings("https://example.com/foo_(bar)", s[sp.start..sp.end]);
+}
+
+test "findBareHttpUrl non-CM bare URL with '>' unchanged" {
+    // A bare URL NOT preceded by `<` keeps absorbing `>` (no behavior change).
+    const s = "x http://example.com/a>b y";
+    const sp = findBareHttpUrl(s, 0).?;
+    try std.testing.expectEqualStrings("http://example.com/a>b", s[sp.start..sp.end]);
 }
 
 test "findBareHttpUrl rejects non-http and overlong" {

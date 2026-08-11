@@ -1,13 +1,14 @@
-//! Phase-1/3 rich-glue invariant suite for #387 (harness rich MD) + related-open
-//! bug drift-guards (#341 / #343).
+//! Phase-1/3 rich-glue invariant suite for #387 (harness rich MD) + related
+//! bug drift-guards (#341 still open / #343 fixed).
 //!
 //! NOT linked into the default `test-rich` step — run explicitly with
 //! `zig build test-rich-invariants`. These pin the #387 assistant-transcript
 //! whitespace / block-boundary invariants so phase 2 (parent #390) has a
 //! concrete target and so no Wasm fix can regress the well-formed input path,
-//! plus the phase-3 current-behavior drift-guards for #341 / #343 (which remain
-//! OPEN; #336's emph-split was fixed in its own PR and its guard now pins the
-//! corrected literal-underscore behavior).
+//! plus the phase-3 current-behavior drift-guards for #341 (still OPEN) and
+//! #343 (now FIXED; its guard pins the corrected angle-bracket-autolink href),
+//! alongside #336's fixed emph-split guard pinning the corrected literal
+//! underscore behavior.
 //! Though parked under an investigation suite, these tests are GREEN (they pin
 //! the parse contract) — not red known-failures.
 //!
@@ -90,10 +91,11 @@ test "#387 heading immediately followed by strong keeps space between heading an
 }
 
 // ---------------------------------------------------------------------------
-// Phase-3 (parent #390) related-open-bug drift-guards. #341 / #343 are STILL
-// OPEN and are OUT of scope to fix here; #336 was fixed in its own PR (its
-// drift-guard below now pins the corrected literal-underscore behavior). These
-// tests are GREEN snapshot guards that PIN THE CURRENT parse behavior so the
+// Phase-3 (parent #390) related-bug drift-guards. #341 is STILL OPEN and is OUT
+// of scope to fix here; #336 was fixed in its own PR (its drift-guard below now
+// pins the corrected literal-underscore behavior); #343 was fixed in its own PR
+// too (its guard below now pins the corrected angle-bracket-autolink href).
+// These tests are GREEN snapshot guards that PIN THE parse behavior so the
 // #387 whitespace/boundary change cannot silently shift them. They are
 // drift-locks, NOT correctness fixes: when a bug is independently fixed, update
 // that guard in the bug's own PR (and the guard may move from this suite into
@@ -115,21 +117,22 @@ test "#336 fixed: word-internal underscore identifiers stay one literal run" {
     try std.testing.expect(!doc.blocks[0].inlines[0].flags.emph);
 }
 
-test "#343 drift-guard: angle-bracket autolink currently keeps trailing '>' (OPEN bug, not fixed here)" {
-    // #343: `<https://…>` keeps the closing `>` in the URL run. On `main` the
-    // https run is `https://example.com/a_b>` (trailing `>` included). Pin the
-    // CURRENT output as a drift guard; the corrected autolink belongs to #343.
+test "#343 fixed: angle-bracket autolink href stays clean (no trailing '>' in the URL run)" {
+    // #343: `<https://…>` must autolink to the clean inner URL — the closing `>`
+    // must NOT be absorbed into the href. Fixed in #343's own PR via a CM
+    // angle-bracket scan rule in `link_url.zig` (`findBareHttpUrl`: stop the
+    // body at the first `>` when the scheme is immediately preceded by `<`).
+    // This guard now pins the corrected output: the link run is
+    // `https://example.com/a_b` and the `<>` wrappers are separate plain runs.
     var doc = try parse.parse(std.testing.allocator, "see <https://example.com/a_b> now");
     defer doc.deinit();
     try std.testing.expectEqual(@as(usize, 1), doc.blocks.len);
     try std.testing.expectEqual(parse.BlockKind.paragraph, doc.blocks[0].kind);
     try std.testing.expectEqual(@as(usize, 3), doc.blocks[0].inlines.len);
+    try std.testing.expectEqual(parse.InlineKind.link, doc.blocks[0].inlines[1].kind);
     try std.testing.expectEqualStrings("see <", doc.blocks[0].inlines[0].text);
-    try std.testing.expectEqualStrings(
-        "https://example.com/a_b>",
-        doc.blocks[0].inlines[1].text,
-    );
-    try std.testing.expectEqualStrings(" now", doc.blocks[0].inlines[2].text);
+    try std.testing.expectEqualStrings("https://example.com/a_b", doc.blocks[0].inlines[1].text);
+    try std.testing.expectEqualStrings("> now", doc.blocks[0].inlines[2].text);
 }
 
 test "#341 drift-guard: loose ordered list currently renumbers each item to 'o,1' (OPEN bug, not fixed here)" {
