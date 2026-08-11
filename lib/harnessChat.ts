@@ -678,9 +678,23 @@ export async function runHarnessTurn(
     };
 
     const growAssistant = (chunk: string) => {
-      // Empty OR whitespace-only text_delta is NOT a boundary (plan #364): it
-      // never opens an assistant bubble nor flushes a tool streak.
-      if (!chunk.trim()) return;
+      // Whitespace-only text_delta is NOT a boundary (plan #364): it never
+      // opens an assistant bubble, closes thinking, or flushes a tool streak.
+      // But it MUST be accumulated faithfully (into the message buffer and any
+      // open bubble) so a boundary `\n\n` between streamed segments survives
+      // into `finalizeAssistant`. If we dropped it, the multi-segment tail-slice
+      // would mis-subtract and glue the finished row against a well-formed
+      // authoritative `done.text` (#387 host seam, phase-1 red fixture).
+      if (!chunk.trim()) {
+        assistantAcc += chunk;
+        if (assistantSegmentOpen) {
+          assistantSegment += chunk;
+          if (!bridge.updateLastMessage(MessageKind.Assistant, assistantSegment)) {
+            bridge.pushMessage(MessageKind.Assistant, assistantSegment);
+          }
+        }
+        return;
+      }
       closeThinkingSegment();
       assistantAcc += chunk;
       if (!assistantSegmentOpen) {

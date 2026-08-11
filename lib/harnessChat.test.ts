@@ -1540,6 +1540,98 @@ describe('hydrate coalesce — reload/hydrate scannability (plan #365)', () => {
   });
 });
 
+describe('#387 host seam — whitespace boundary fidelity (phase-2 roll-in)', () => {
+  it('multi-segment whitespace-only boundary reconstitutes authoritative text (previously RED)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const AUTHORITATIVE = 'part one part two\n\nIt will 401';
+    const result = await runHarnessTurn(bridge, session, 'repro', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        const onEvent = init?.onEvent;
+        await onEvent?.({ type: 'text_delta', text: 'part one ' });
+        await onEvent?.({ type: 'text_delta', text: 'part two' });
+        // Whitespace-only boundary (`\n\n` after a heading/paragraph). GrowAssistant
+        // must accumulate it faithfully: dropping it made the multi-segment
+        // tail-slice mis-glue to `...part two` + `It will 401` (#387 host seam).
+        await onEvent?.({ type: 'text_delta', text: '\n\n' });
+        // A tool closes the first assistant segment.
+        await onEvent?.({ type: 'tool_start', name: 'list_dir' });
+        await onEvent?.({
+          type: 'tool_result',
+          name: 'list_dir',
+          ok: true,
+          summary: 'list_dir · ok · a',
+        });
+        await onEvent?.({ type: 'text_delta', text: 'It will 401' });
+        await onEvent?.({ type: 'done', text: AUTHORITATIVE });
+        return { ok: true, text: AUTHORITATIVE };
+      },
+    });
+    expect(result.result.ok).toBe(true);
+    // Session settles to the authoritative (well-formed) text.
+    const settled = result.session.messages.find((m) => m.role === 'assistant');
+    expect(settled?.text).toBe(AUTHORITATIVE);
+    // The host never INDUCES glue: the visible assistant bubbles reconstitute the
+    // authoritative text across the tool boundary. Dropping the `\n\n` would join
+    // them as `...part two` + `It will 401` (missing the blank line).
+    const assistants = exp.__messages.filter((m) => m.kind === MessageKind.Assistant);
+    expect(assistants.length).toBeGreaterThanOrEqual(2);
+    expect(assistants.map((m) => m.text).join('')).toBe(AUTHORITATIVE);
+  });
+
+  it('single-segment `## What I did` + boundary delta reassembles with the newline intact', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const AUTHORITATIVE =
+      '## What I did\n\nThe adversarial review verdict was **CONCERNS**.';
+    const result = await runHarnessTurn(bridge, session, 'md', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        const onEvent = init?.onEvent;
+        await onEvent?.({ type: 'text_delta', text: '## What I did' });
+        await onEvent?.({ type: 'text_delta', text: '\n\n' });
+        await onEvent?.({
+          type: 'text_delta',
+          text: 'The adversarial review verdict was **CONCERNS**.',
+        });
+        await onEvent?.({ type: 'done', text: AUTHORITATIVE });
+        return { ok: true, text: AUTHORITATIVE };
+      },
+    });
+    expect(result.result.ok).toBe(true);
+    const assistants = exp.__messages.filter((m) => m.kind === MessageKind.Assistant);
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]!.text).toBe(AUTHORITATIVE);
+    const settled = result.session.messages.find((m) => m.role === 'assistant');
+    expect(settled?.text).toBe(AUTHORITATIVE);
+  });
+
+  it('a whitespace-only text_delta does NOT open an empty assistant bubble on its own', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const result = await runHarnessTurn(bridge, session, 'ws', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        const onEvent = init?.onEvent;
+        await onEvent?.({ type: 'text_delta', text: '   ' });
+        await onEvent?.({ type: 'text_delta', text: 'ok' });
+        await onEvent?.({ type: 'done', text: 'ok' });
+        return { ok: true, text: 'ok' };
+      },
+    });
+    expect(result.result.ok).toBe(true);
+    const assistants = exp.__messages.filter((m) => m.kind === MessageKind.Assistant);
+    // Exactly one assistant row containing the final text (no empty bubble from
+    // the leading whitespace-only delta).
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]!.text).toBe('ok');
+  });
+});
+
 describe('PONG smoke removal regression lock (#367)', () => {
   it('does not export the host smoke constant', async () => {
     const mod: Record<string, unknown> = await import('./harnessChat');

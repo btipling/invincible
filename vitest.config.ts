@@ -1,19 +1,12 @@
 import { defineConfig } from 'vitest/config';
 
-// Default (green) gate. The phase-1 #387 red-fixture suite (`*.test.red.ts`)
-// is deliberately NOT discovered here: vitest's default include glob
-// (`**/*.{test,spec}.?(c|m)[jt]s?(x)`) never matches `*.test.red.ts`, so a bare
-// `npx vitest run`, an IDE "run all", or any future CI job that forgets to
-// exclude the red suite stays green during triage.
-//
-// Run the red suite explicitly with `npm run test:red`, which switches to the
-// dedicated `vitest.config.red.ts` config (no `--exclude` footgun needed in the
-// default gate).
+// Default (green) gate — the single Vitest config. The short-lived phase-1
+// `*.test.red.ts` investigation suite and its `vitest.config.red.ts` were
+// folded into the normal suite when the #387 host-seam fix landed (parent #390
+// phase 2), so there is no separate red config or `npm run test:red` anymore.
 export default defineConfig({
   test: {
     environment: 'node',
-    // Explicit default include so it is obvious `.test.red.ts` is OUTSIDE this
-    // gate (and matches vitest's own default glob) — not discovered here.
     include: ['**/*.{test,spec}.?(c|m)[jt]s?(x)'],
   },
 });
