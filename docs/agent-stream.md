@@ -10,7 +10,7 @@ Default remains a single JSON `{ text, toolTrace?, cwd? }` response for tests an
 | Header `Accept: text/event-stream` | `Content-Type: text/event-stream; charset=utf-8` + SSE events |
 | Other / missing Accept | JSON `{ text, toolTrace?, cwd? }` or `{ error }` |
 
-Early failures (auth, missing sandbox, bad body, BYOK) always use **JSON** status responses — even if Accept requested a stream. Host stream clients must parse JSON errors (including the exact sandbox-not-configured **503** string for chat fallback).
+Early failures (auth, grants, bad body, BYOK) always use **JSON** status responses — even if Accept requested a stream. Typical statuses are **401** (unauthenticated), **403** (no usable sandbox grant and no alternate tools / denied), and other **4xx** for bad body or bad data. There is **no** sandbox-not-configured **503** → chat fallback; host stream clients must parse the JSON error and must **not** special-case a chat-fallback string (the route never emits it).
 
 Response hints: `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`.
 

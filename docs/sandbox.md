@@ -20,7 +20,7 @@ Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-d
 | **Is not** | The Zig **GHA build runner** (`invincible-do-1` / `self-hosted` + `zig` labels) |
 | **Is not** | A host-wide product env like `SANDBOX_BACKEND` — backend is **never** a deploy-global switch |
 | **Is not** | A multi-sandbox picker **inside the harness canvas**. Prefer sandbox under **Settings → Sandbox** when you have multiple usable grants |
-| **Is not** | Required for basic chat — chat-only turns run on `POST /api/agent` without FS tools. No usable grant + no alternate tools (MCP / builtin HTTP) → **403** `Sandbox access denied.`, not a 503→chat fallback |
+| **Is not** | Required for chat — chat-capable turns still need a signed-in session + a granted (BYOK) model; they run on `POST /api/agent` without FS tools. A tool-less empty surface (no usable grant + no MCP / builtin HTTP) → **403** `Sandbox access denied.`, not a 503→chat fallback |
 | **Is not** | Builtin HTTPS fetch (`http_get`) — that is a separate **Vercel Sandbox hop B** path; see [builtin-http.md](builtin-http.md) |
 
 Never put GHA Actions credentials in a BYO sandbox process env. Prefer a dedicated
