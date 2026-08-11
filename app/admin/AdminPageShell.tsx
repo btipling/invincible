@@ -24,24 +24,12 @@ export async function AdminPageShell({
         }}
       >
         <h1 style={{ margin: '0 0 8px', fontSize: 22 }}>{title}</h1>
-        {gate.kind === 'tenancy_off' ? (
-          <p style={{ color: teal.muted, margin: 0 }}>
-            Tenancy is not enabled. Set{' '}
-            <code style={{ color: warm.accent }}>DATABASE_URL</code>,{' '}
-            <code style={{ color: warm.accent }}>AUTH_SECRET</code>, and{' '}
-            <code style={{ color: warm.accent }}>CREDENTIALS_ENCRYPTION_KEY</code> to use
-            admin.
-          </p>
-        ) : (
-          <>
-            <p role="alert" style={{ color: ember.accent, margin: 0 }}>
-              {gate.message}
-            </p>
-            <p style={{ color: teal.muted, fontSize: 14, marginTop: 12 }}>
-              {gate.hint}
-            </p>
-          </>
-        )}
+        <p role="alert" style={{ color: ember.accent, margin: 0 }}>
+          {gate.message}
+        </p>
+        <p style={{ color: teal.muted, fontSize: 14, marginTop: 12 }}>
+          {gate.hint}
+        </p>
       </main>
     );
   }

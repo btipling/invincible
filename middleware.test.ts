@@ -5,7 +5,7 @@ import { AUTH_REQUIRED_ERROR } from './lib/tenancy/errors';
  * Middleware is edge-oriented; we unit-test behavior via dynamic import
  * with env + getToken mocked.
  */
-describe('middleware tenancy gate', () => {
+describe('middleware auth gate', () => {
   const originalEnv = { ...process.env };
 
   afterEach(() => {
@@ -18,7 +18,7 @@ describe('middleware tenancy gate', () => {
     return import('./middleware');
   }
 
-  it('passes through when tenancy off', async () => {
+  it('401 JSON on unauth API when AUTH_SECRET missing', async () => {
     delete process.env.DATABASE_URL;
     delete process.env.AUTH_SECRET;
     delete process.env.CREDENTIALS_ENCRYPTION_KEY;
@@ -26,9 +26,7 @@ describe('middleware tenancy gate', () => {
     const res = await middleware(
       new Request('http://localhost/api/agent', { method: 'POST' }) as never,
     );
-    // next() returns a NextResponse with no redirect/401
-    expect(res.status).toBe(200);
-    expect(res.headers.get('location')).toBeNull();
+    expect(res.status).toBe(401);
   });
 
   it('401 JSON on unauth API when tenancy on', async () => {

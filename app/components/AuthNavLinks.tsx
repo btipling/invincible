@@ -2,7 +2,6 @@ import type { CSSProperties } from 'react';
 import Link from 'next/link';
 import { auth } from '../../auth';
 import { teal } from '../../lib/palette';
-import { tenancyEnabled } from '../../lib/tenancy/enabled';
 import { canAccessAdmin } from '../../lib/tenancy/roles';
 import { loadSoleMembership } from '../../lib/tenancy/soleMembership';
 import { LogoutButton } from '../logout/LogoutButton';
@@ -23,10 +22,6 @@ const linkStyle: CSSProperties = {
  * Admin link only when sole membership role is owner|admin (light lookup).
  */
 export async function AuthNavLinks() {
-  if (!tenancyEnabled()) {
-    return null;
-  }
-
   const session = await auth();
   const userId = session?.user?.id;
 

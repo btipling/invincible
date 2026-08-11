@@ -2,7 +2,6 @@
 
 import { revalidatePath } from 'next/cache';
 import { auth } from '../../../auth';
-import { tenancyEnabled } from '../../../lib/tenancy/enabled';
 import { loadSoleMembership } from '../../../lib/tenancy/soleMembership';
 import {
   setUserPreferredSandbox,
@@ -26,9 +25,6 @@ function revalidateSettings() {
 async function requireSettingsSession(): Promise<
   { ok: true; userId: string } | { ok: false; error: string }
 > {
-  if (!tenancyEnabled()) {
-    return { ok: false, error: 'Tenancy is not enabled.' };
-  }
   const session = await auth();
   const userId = session?.user?.id;
   if (!userId) {

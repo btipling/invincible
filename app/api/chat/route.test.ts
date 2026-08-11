@@ -15,12 +15,24 @@ describe('POST /api/chat', () => {
     vi.doUnmock('ai');
   });
 
+  // Phase 1 made requireSessionUser always fail-closed and import next-auth.
+  // The tenancy-off route branch stays until Phase 2, so mock the old open result.
+  function mockTenancyOffSession() {
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: null,
+      })),
+    }));
+  }
+
   it('passes through to gateway gate when tenancy off', async () => {
     delete process.env.DATABASE_URL;
     delete process.env.AUTH_SECRET;
     delete process.env.CREDENTIALS_ENCRYPTION_KEY;
     delete process.env.AI_GATEWAY_API_KEY;
     vi.resetModules();
+    mockTenancyOffSession();
 
     const { POST } = await import('./route');
     const res = await POST(
@@ -170,6 +182,7 @@ describe('POST /api/chat', () => {
     const generateText = vi.fn(async (_args: unknown) => ({ text: 'env-hello' }));
 
     vi.resetModules();
+    mockTenancyOffSession();
     vi.doMock('ai', () => ({ generateText }));
 
     const { POST } = await import('./route');

@@ -1,6 +1,5 @@
 import { redirect } from 'next/navigation';
 import { auth } from '../../auth';
-import { tenancyEnabled } from '../../lib/tenancy/enabled';
 import { loadSoleMembership } from '../../lib/tenancy/soleMembership';
 import type { TenantRole } from '../../lib/tenancy/roles';
 
@@ -15,7 +14,7 @@ export type SettingsGateResult =
   | { ok: true; value: SettingsContext }
   | {
       ok: false;
-      kind: 'tenancy_off' | 'forbidden' | 'error';
+      kind: 'forbidden' | 'error';
       message: string;
       hint: string;
     };
@@ -27,15 +26,6 @@ export type SettingsGateResult =
 export async function gateSettingsPage(
   callbackUrl = '/settings',
 ): Promise<SettingsGateResult> {
-  if (!tenancyEnabled()) {
-    return {
-      ok: false,
-      kind: 'tenancy_off',
-      message: 'Tenancy is not enabled.',
-      hint: 'Set DATABASE_URL, AUTH_SECRET, and CREDENTIALS_ENCRYPTION_KEY to use Settings.',
-    };
-  }
-
   const session = await auth();
   if (!session?.user?.id) {
     const cb = callbackUrl.startsWith('/') ? callbackUrl : '/settings';

@@ -10,16 +10,7 @@ describe('requireSessionUser', () => {
     vi.unmock('../../auth');
   });
 
-  it('allows with null user when tenancy off', async () => {
-    delete process.env.DATABASE_URL;
-    delete process.env.AUTH_SECRET;
-    delete process.env.CREDENTIALS_ENCRYPTION_KEY;
-    const { requireSessionUser } = await import('./session');
-    const result = await requireSessionUser();
-    expect(result).toEqual({ ok: true, user: null });
-  });
-
-  it('401 when tenancy on and no session user id', async () => {
+  it('401 when no session user id', async () => {
     process.env.DATABASE_URL = 'postgres://x';
     process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
     process.env.CREDENTIALS_ENCRYPTION_KEY = 'key-material';
@@ -36,7 +27,7 @@ describe('requireSessionUser', () => {
     expect(body.error).toBe(AUTH_REQUIRED_ERROR);
   });
 
-  it('returns session user when tenancy on and auth has id', async () => {
+  it('returns session user when auth has id', async () => {
     process.env.DATABASE_URL = 'postgres://x';
     process.env.AUTH_SECRET = 'test-auth-secret-at-least-32-chars!!';
     process.env.CREDENTIALS_ENCRYPTION_KEY = 'key-material';

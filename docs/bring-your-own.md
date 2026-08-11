@@ -124,26 +124,33 @@ Race-safe wait for the matching `harness-wasm` artifact:
 
 ---
 
-## 4a. Optional multi-tenant auth
+## 4a. Multi-tenant auth
 
-**Optional** Postgres tenancy: credentials login, session gate on harness/APIs,
-DB-resolved sandbox credentials + R/W grants, and a minimal `/admin` shell.
+Postgres tenancy is **required**: credentials login, login wall + fail-closed
+session gate on harness/APIs, DB-resolved sandbox credentials + R/W grants, and
+a minimal `/admin` shell. There is **no legacy open mode** — every page is
+behind a login wall and protected APIs fail closed with 401 when unauthenticated.
+
+> **Phase 1 scope note (preliminary wording):** this phase ships the **login wall
+> + fail-closed auth core** (middleware always enforces login/401; the
+> chat/agent/models route tenancy branches and SCIM/OIDC config gates remain
+> until Phase 2; the repo-wide docs sweep lands in Phase 3). Wording below is
+> being tightened — the authoritative "multi-tenant only" front door is this
+> section.
 
 Cloud-native cutover (no personal hardware). GHA bootstrap workflow:
 [`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml).
 
 ### Enablement (triple env — no AUTH_ENABLED flag)
 
-Tenancy is **on** only when **all three** are non-empty on the **running** deploy:
+Tenancy is **on** when **all three** are non-empty on the **running** deploy;
+any missing var is a misconfiguration (no open fallback):
 
 | Variable | Purpose |
 |----------|---------|
 | `DATABASE_URL` | Postgres (prefer **pooled** Neon / PgBouncer URL on Vercel) |
 | `AUTH_SECRET` | Auth.js session signing (`openssl rand -base64 32`) |
 | `CREDENTIALS_ENCRYPTION_KEY` | Base64 **32-byte** AES-256-GCM **AMK** (wraps per-tenant DEKs; tokens encrypt under DEK) (`openssl rand -base64 32`) — not a fourth secret |
-
-If **any** is missing → **legacy open mode**: anonymous `POST /api/chat` and
-`/api/agent`; tools use process env `SANDBOX_URL` + `SANDBOX_TOKEN` as before.
 
 ### Behaviour when tenancy is on
 

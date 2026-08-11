@@ -8,7 +8,6 @@ describe('admin inference actions authz', () => {
     vi.resetModules();
     vi.doUnmock('../../auth');
     vi.doUnmock('../../lib/tenancy/adminContext');
-    vi.doUnmock('../../lib/tenancy/enabled');
     vi.doUnmock('../../lib/tenancy/providerSecrets');
     vi.doUnmock('next/cache');
   });
@@ -20,9 +19,6 @@ describe('admin inference actions authz', () => {
 
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => true,
-    }));
     vi.doMock('../../auth', () => ({
       auth: vi.fn(async () => null),
     }));
@@ -50,9 +46,6 @@ describe('admin inference actions authz', () => {
 
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => true,
-    }));
     vi.doMock('../../auth', () => ({
       auth: vi.fn(async () => ({ user: { id: 'u1' } })),
     }));
@@ -85,9 +78,6 @@ describe('admin inference actions authz', () => {
 
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => true,
-    }));
     vi.doMock('../../auth', () => ({
       auth: vi.fn(async () => ({ user: { id: 'u1' } })),
     }));
@@ -118,9 +108,6 @@ describe('admin inference actions authz', () => {
 
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../lib/tenancy/enabled', () => ({
-      tenancyEnabled: () => true,
-    }));
     vi.doMock('../../auth', () => ({
       auth: vi.fn(async () => ({ user: { id: 'admin-1' } })),
     }));
