@@ -103,6 +103,21 @@ jobs:
           cd native/harness
           zig build test-rich
 
+      # Non-blocking drift-guards for still-OPEN rich bugs (#336/#341/#343) and
+      # #387 host/whitespace pins. Runs on every native/harness/** change (path
+      # filter above includes native/harness/src/rich/**) but never blocks the
+      # release gate: these encode current-behavior snapshots of OPEN bugs, so a
+      # failure here is a deliberate intent-to-drift signal, not a merge block.
+      - name: Host invariants (rich/* drift-guards, non-blocking)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          export PATH="${HOME}/.local/bin:/usr/local/bin:${PATH}"
+          zig version
+          test "$(zig version)" = "$(tr -d '[:space:]' < native/ZIG_VERSION)"
+          cd native/harness
+          zig build test-rich-invariants
+
       - name: Build harness
         run: |
           set -euo pipefail
