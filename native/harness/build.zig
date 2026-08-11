@@ -306,8 +306,8 @@ pub fn build(b: *std.Build) void {
 
     // Rich-glue invariants: #387 host/whitespace pins plus current-behavior
     // drift-guards. #336's emph-split is fixed (guard pins the corrected
-    // literal-underscore behavior); #341 link-tail `>` / #343 ordered-marker
-    // renumber are still-OPEN and must be updated in their own PR, not silently
+    // literal-underscore behavior); #341 ordered-marker renumber / #343
+    // link-tail `>` are still-OPEN and must be updated in their own PR, not silently
     // drifted. All GREEN contract pins. NOT part of the default `test-rich`
     // release gate (open-bug expectations stay out of the blocking gate);
     // `build-harness.yml` runs them as a non-blocking `continue-on-error` step

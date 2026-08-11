@@ -432,6 +432,76 @@ fn autolinkTextInlines(a: Allocator, inlines: []const Inline) ![]const Inline {
     return try out.toOwnedSlice(a);
 }
 
+/// Lower preprocess PUA literal sentinels to their ASCII characters in a string
+/// that carries preprocessed source (a link/image destination). This mirrors the
+/// mapping `appendText` applies to text runs, so a preprocessed intra-word `_`
+/// inside a URL or image destination returns to a real ASCII `_` instead of
+/// leaking U+E021 into `href` (PR #399 review - Major L1 / Nit L6).
+/// Returns the *input* unchanged (same slice) when no sentinel is present.
+fn lowerPuaLiterals(a: Allocator, src: []const u8) ![]const u8 {
+    var needs = false;
+    var scan: usize = 0;
+    while (scan < src.len) {
+        const need = std.unicode.utf8ByteSequenceLength(src[scan]) catch {
+            scan += 1;
+            continue;
+        };
+        if (scan + need > src.len) break;
+        const cp = std.unicode.utf8Decode(src[scan .. scan + need]) catch {
+            scan += 1;
+            continue;
+        };
+        switch (cp) {
+            preprocess.pua_lit_star,
+            preprocess.pua_lit_under,
+            preprocess.pua_lit_tick,
+            preprocess.pua_lit_backslash,
+            preprocess.pua_lit_tilde,
+            preprocess.pua_lit_dollar,
+            => needs = true,
+            else => {},
+        }
+        scan += need;
+    }
+    if (!needs) return src;
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(a);
+    var i: usize = 0;
+    while (i < src.len) {
+        const need = std.unicode.utf8ByteSequenceLength(src[i]) catch {
+            try out.append(a, src[i]);
+            i += 1;
+            continue;
+        };
+        if (i + need > src.len) {
+            try out.appendSlice(a, src[i..]);
+            break;
+        }
+        const cp = std.unicode.utf8Decode(src[i .. i + need]) catch {
+            try out.append(a, src[i]);
+            i += 1;
+            continue;
+        };
+        const ascii: ?u8 = switch (cp) {
+            preprocess.pua_lit_star => '*',
+            preprocess.pua_lit_under => '_',
+            preprocess.pua_lit_tick => '`',
+            preprocess.pua_lit_backslash => '\\',
+            preprocess.pua_lit_tilde => '~',
+            preprocess.pua_lit_dollar => '$',
+            else => null,
+        };
+        if (ascii) |c| {
+            try out.append(a, c);
+        } else {
+            try out.appendSlice(a, src[i .. i + need]);
+        }
+        i += need;
+    }
+    return try out.toOwnedSlice(a);
+}
+
 /// Fixed-buffer smoke used from harness init so the parser is not tree-shaken
 /// out of freestanding Wasm (phase 1 size budget truth).
 var smoke_buf: [16 * 1024]u8 = undefined;
@@ -819,9 +889,15 @@ const Builder = struct {
 
     fn openInline(self: *Builder, role: Role, href: ?[]const u8) !void {
         try self.flushText();
+        // Link/image destinations carry preprocessed source, so lower any PUA
+        // literal sentinel (e.g. an intra-word `_` that became pua_lit_under)
+        // back to its ASCII character. Otherwise a URL like
+        // `[t](https://example.com/a_b)` would leak U+E021 into `href`, because
+        // only text runs walk PUA->ASCII in appendText (PR #399 - L1/L6).
+        const dest: ?[]const u8 = if (href) |h| try lowerPuaLiterals(self.a, h) else null;
         try self.pending.append(self.a, .{
             .role = role,
-            .href = if (href) |h| try self.a.dupe(u8, h) else null,
+            .href = dest,
         });
     }
 
@@ -3055,4 +3131,67 @@ test "#336 uniform intra-word rule across contexts" {
     try std.testing.expect(saw_table);
     try std.testing.expect(saw_term);
     try std.testing.expect(saw_desc);
+}
+
+
+test "#336 link/image destinations keep ASCII underscores in href (#399 review L1/L6)" {
+    // Preprocess turns an intra-word `_` (alnum both sides) into pua_lit_under.
+    // That sentinel must be lowered back to ASCII `_` in the stored href - not
+    // leak U+E021 into the link/image destination, since only text runs walk
+    // PUA->ASCII in appendText (PR #399 Major L1 + Nit L6 locked here).
+    {
+        var doc = try parse(std.testing.allocator, "[docs](https://example.com/a_b)\n");
+        defer doc.deinit();
+        var ok = false;
+        for (doc.blocks) |blk| {
+            for (blk.inlines) |inl| {
+                if (inl.kind == .link) {
+                    ok = true;
+                    try std.testing.expectEqualStrings("docs", inl.text);
+                    try std.testing.expect(inl.href != null);
+                    try std.testing.expectEqualStrings("https://example.com/a_b", inl.href.?);
+                }
+            }
+        }
+        try std.testing.expect(ok);
+    }
+    {
+        var doc = try parse(std.testing.allocator, "![x](https://cdn.example.com/foo_bar.png)\n");
+        defer doc.deinit();
+        var ok = false;
+        for (doc.blocks) |blk| {
+            for (blk.inlines) |inl| {
+                if (inl.kind == .image) {
+                    ok = true;
+                    try std.testing.expectEqualStrings("x", inl.text);
+                    try std.testing.expect(inl.href != null);
+                    try std.testing.expectEqualStrings("https://cdn.example.com/foo_bar.png", inl.href.?);
+                }
+            }
+        }
+        try std.testing.expect(ok);
+    }
+    // Label/alt text still carries its literal `_` (lowered through appendText).
+    {
+        var doc = try parse(std.testing.allocator, "[my_key](https://example.com/a_b) ![a_b](https://example.com/x_y.png)\n");
+        defer doc.deinit();
+        var saw_link = false;
+        var saw_img = false;
+        for (doc.blocks) |blk| {
+            for (blk.inlines) |inl| {
+                if (inl.kind == .link) {
+                    saw_link = true;
+                    try std.testing.expectEqualStrings("my_key", inl.text);
+                    try std.testing.expectEqualStrings("https://example.com/a_b", inl.href.?);
+                }
+                if (inl.kind == .image) {
+                    saw_img = true;
+                    try std.testing.expectEqualStrings("a_b", inl.text);
+                    try std.testing.expectEqualStrings("https://example.com/x_y.png", inl.href.?);
+                }
+            }
+        }
+        try std.testing.expect(saw_link);
+        try std.testing.expect(saw_img);
+    }
 }
