@@ -15,12 +15,12 @@ Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-d
 | | |
 |--|--|
 | **Is** | A **workspace for agent tools** — either a BYO HTTP daemon (protocol v2) or a **durable Vercel Sandbox Workspace instance** (user-created in Settings; agent **attach-only**) |
-| **Is** | **Per sandbox row under a tenant** when tenancy is on: each row chooses `backend` (`byo` \| `vercel`) and, for vercel, an optional **image** |
-| **Is** | **BYO** path: any operator points URL + token at **their** daemon (env when tenancy off; admin/seed when tenancy on) |
+| **Is** | **Per sandbox row under a tenant**: each row chooses `backend` (`byo` \| `vercel`) and, for vercel, an optional **image** |
+| **Is** | **BYO** path: any operator points URL + token at **their** daemon (seed / admin) |
 | **Is not** | The Zig **GHA build runner** (`invincible-do-1` / `self-hosted` + `zig` labels) |
 | **Is not** | A host-wide product env like `SANDBOX_BACKEND` — backend is **never** a deploy-global switch |
 | **Is not** | A multi-sandbox picker **inside the harness canvas**. Prefer sandbox under **Settings → Sandbox** when you have multiple usable grants |
-| **Is not** | Required for basic chat — without tools, harness falls back to `POST /api/chat` when the 503 contract applies (tenancy off) |
+| **Is not** | Required for chat — chat-capable turns still need a signed-in session + a granted (BYOK) model; they run on `POST /api/agent` without FS tools. A tool-less empty surface (no usable grant + no MCP / builtin HTTP) → **403** `Sandbox access denied.`, not a 503→chat fallback |
 | **Is not** | Builtin HTTPS fetch (`http_get`) — that is a separate **Vercel Sandbox hop B** path; see [builtin-http.md](builtin-http.md) |
 
 Never put GHA Actions credentials in a BYO sandbox process env. Prefer a dedicated
@@ -28,9 +28,9 @@ OS user and reverse-proxy TLS in production for BYO daemons.
 
 ---
 
-## 1b. Per-row backend and image (tenancy)
+## 1b. Per-row backend and image
 
-When tenancy is on, operators create and edit sandboxes in **Admin → Sandboxes**
+Operators create and edit sandboxes in **Admin → Sandboxes**
 (`/admin/sandboxes`). Schema columns:
 
 | Column | Meaning |
@@ -130,9 +130,8 @@ Schema: GHA **db-migrate** for `user_preferred_sandbox`.
 
 ## 1c. User durable instances (Settings)
 
-Tenancy on: each user may own **at most one Workspace** and **one HTTP/curl**
-Vercel Sandbox instance (server-generated names `inv-workspace-…` /
-`inv-http-…`).
+Each user may own **at most one Workspace** and **one HTTP/curl** Vercel Sandbox
+instance (server-generated names `inv-workspace-…` / `inv-http-…`).
 
 | Action | Effect |
 |--------|--------|
@@ -201,12 +200,11 @@ User types in Wasm composer
   → runHarnessTurn
        → formatPromptWithHistory(session user/assistant only)
        → POST /api/agent { prompt }
-            if HTTP 503 + exact not-configured string
-              → POST /api/chat   (today’s single-shot path)
-            else
-              generateText + tools → sandbox (env SANDBOX_* / DB grants + backend)
-                                   + enabled per-user MCP tools (server-side; soft-fail)
-              (sandbox Bearer + MCP header secrets; server-only)
+            generateText + tools → sandbox (DB grants + backend; attach-only Workspace)
+                                 + enabled per-user MCP tools (server-side; soft-fail)
+            no usable grant + no alternate tools → 403 Sandbox access denied
+              (no host 503 → chat fallback; the agent route never emits it)
+            (sandbox Bearer + MCP header secrets; server-only)
   → host pushes ≤6 system toolTrace lines (≤240 chars) + assistant/error into Wasm
   → user reads in canvas
 ```
@@ -216,29 +214,12 @@ User types in Wasm composer
 - Per-user MCP config lives under Settings (`/settings/mcp`) — not this sandbox daemon guide; see [mcp.md](mcp.md).
 - Detection is **server-side only** — no `NEXT_PUBLIC_SANDBOX_*`.
 
-### Exact 503 contract (host fallback)
+### No 503 chat fallback (multi-tenant product path)
 
-When `SANDBOX_URL` or `SANDBOX_TOKEN` is unset on the Next/Vercel server:
-
-```http
-HTTP/1.1 503
-Content-Type: application/json
-
-{ "error": "Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN." }
-```
-
-The host falls back to chat **only** for status **503** and this **exact**
-`error` string (`SANDBOX_NOT_CONFIGURED_ERROR` in `lib/sandbox/config.ts`).
-Other 4xx/5xx/network errors are shown as error lines — **no** chat fallback.
-
-### Tenancy on vs legacy env
-
-| Mode | When | Sandbox credentials |
-|------|------|---------------------|
-| **Legacy (tenancy off)** | Any of `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY` missing | Process env `SANDBOX_URL` + `SANDBOX_TOKEN` (BYO only — no host vercel backend switch) |
-| **Tenancy on** | All three set | **DB-resolved** sandbox for the signed-in user (`resolveAgentSandbox`): branch on row `backend`; **byo** decrypts `token_ciphertext`; **vercel** uses host Sandbox control plane + row `image`. Env `SANDBOX_*` still used for **seed** / local daemon |
-
-When tenancy is on and the user has no usable grant / multiple usable grants without a Settings preference / ambiguous membership / invalid backend:
+There is **no** 503 `SANDBOX_NOT_CONFIGURED` → chat fallback in the current
+product: the agent route never emits that status/string, and basic chat runs on
+`POST /api/agent` too. When the session user has no usable sandbox grant and no
+alternate tools (per-user MCP / builtin HTTP), the route returns **403**:
 
 ```http
 HTTP/1.1 403
@@ -247,19 +228,37 @@ Content-Type: application/json
 { "error": "Sandbox access denied." }
 ```
 
-Unauthenticated API calls when tenancy is on → **401**
+Other 4xx/5xx/network errors are shown as error lines — **no** chat fallback.
+A host-side legacy code path that would fall back to `/api/chat` on the exact
+old not-configured 503 string is **dead** — it is not the operator contract.
+
+### Sandbox resolve (DB grants)
+
+Sandbox credentials are always **DB-resolved** for the signed-in user
+(`resolveAgentSandbox`): branch on row `backend`; **byo** decrypts
+`token_ciphertext`; **vercel** uses the host Sandbox control plane + row
+`image`. Env `SANDBOX_*` is still used for **seed** / local daemon only —
+never as the product-path credential source.
+
+When the user has no usable grant / multiple usable grants without a Settings preference / ambiguous membership / invalid backend:
+
+```http
+HTTP/1.1 403
+Content-Type: application/json
+
+{ "error": "Sandbox access denied." }
+```
+
+Unauthenticated API calls → **401**
 `{ "error": "Authentication required." }` (not a sandbox config issue).
 
-### Exact 503 only when tenancy is off
+### No 503 for a missing local sandbox
 
-**Tenancy off only.** When tenancy is **off** and `SANDBOX_URL` or
-`SANDBOX_TOKEN` is unset, `/api/agent` returns the 503 contract above and the
-host falls back to chat.
-
-When tenancy is **on**, missing env `SANDBOX_*` does **not** produce this 503:
-tools use DB grants + backend; a valid **vercel** grant works without env
-`SANDBOX_*`. Failures are **403** `Sandbox access denied.` (or **401** if
-unauthenticated) — see above.
+Missing env `SANDBOX_*` does **not** produce any 503 contract: product tool
+turns resolve sandbox from **DB grants + row backend** (a valid `vercel` grant
+works without env `SANDBOX_*`). A session user with no usable grant and no
+alternate tools (MCP / builtin HTTP) gets **403** `Sandbox access denied.` (or
+**401** if unauthenticated) — see above. No 503 chat-fallback path exists.
 
 ---
 
@@ -305,7 +304,7 @@ Out-of-date behavior:
 
 - Tools soft-fail as `ERROR <tool>: Sandbox daemon out of date (…)`, and the
   agent preflight fails the turn before the first tool call. It is NOT mapped to
-  the `Sandbox not configured` 503 chat fallback (different status + string).
+  `Sandbox access denied.` 403 (different status + string).
 - Health-unreachable stays a normal network error (502/504) — it is **not** an
   out-of-date signal.
 - Missing **protocol** version is a hard 502 (`restart the daemon`); missing or
@@ -371,10 +370,9 @@ Full contract, jail rules, and exec shape: [`sandbox/README.md`](../sandbox/READ
 
 | Name | Required | Purpose |
 |------|----------|---------|
-| `SANDBOX_URL` | for tools (tenancy **off**) | Base URL of the sandbox (no trailing slash required) |
-| `SANDBOX_TOKEN` | for tools (tenancy **off**) / seed | Shared bearer secret (must match daemon); also used by seed to encrypt into DB when enabling tenancy |
+| `SANDBOX_URL` | seed / local daemon | Base URL of the sandbox (no trailing slash required) |
+| `SANDBOX_TOKEN` | seed / local daemon | Shared bearer secret (must match daemon); also used by seed to encrypt into DB |
 | `AGENT_MAX_STEPS` | no | Optional safety ceiling (1…256). **Unset** = model-ended tool loop (no default step cap) |
-| `AGENT_MODEL` | no | Optional tool-capable model override |
 
 Also requires existing `AI_GATEWAY_API_KEY` for inference.
 
@@ -425,7 +423,6 @@ SANDBOX_URL=http://127.0.0.1:8787
 SANDBOX_TOKEN=dev-secret-change-me
 # optional:
 # AGENT_MAX_STEPS=32   # safety ceiling only; omit for model-ended loop
-# AGENT_MODEL=provider/model-with-tools
 
 npm run dev
 # open http://localhost:3000/harness
@@ -437,7 +434,10 @@ Harness smoke with tools (example prompt):
 
 Expect muted **system** tool lines in the canvas, then an assistant reply.
 
-Without `SANDBOX_*` on Next: normal chat still works via 503 → chat.
+Without a usable sandbox grant on Next: agent turns return **403** `Sandbox
+access denied.` (there is no 503 → chat fallback). With a **vercel** grant you
+do **not** need env `SANDBOX_*`; `SANDBOX_URL`/`SANDBOX_TOKEN` here are for
+seed/local daemon only.
 
 ---
 
@@ -562,9 +562,8 @@ while the model calls tools and stops when it returns a final answer. Optional
 Users can **Stop** a running turn from the harness composer (abort via host
 `AbortSignal`). Wall-clock limit remains route `maxDuration` (1800s / 30m; Vercel platform max).
 
-If the default gateway model cannot call tools, set **`AGENT_MODEL`** to a
-tool-capable id on the server (tenancy off). Under tenancy on, use granted
-catalog + BYOK only.
+Use a granted model id from the catalog that is tool-capable. The agent always
+uses the granted catalog + BYOK; there is no host env-model override.
 
 ---
 
@@ -582,7 +581,7 @@ catalog + BYOK only.
 
 ### User GitHub personal access token (Settings)
 
-When tenancy is on, each user may store a **GitHub personal access token** under
+Each user may store a **GitHub personal access token** under
 **Settings → GitHub token** (ciphertext under the tenant DEK). On agent turns the
 server decrypts it and injects **only** into sandbox **FS `exec`** child env as
 **`GH_TOKEN`** and **`GITHUB_TOKEN`** (same value), for **both** backends
@@ -611,8 +610,8 @@ See also [SECURITY.md](../SECURITY.md).
 | # | Check | Expect |
 |---|--------|--------|
 | 1 | `GET /health` (local or off-box prod) | `{ ok: true, version: 2, daemonVersion: N }` |
-| 2 | Harness with `SANDBOX_*` set | tool system lines + assistant for a write/exec prompt |
-| 3 | Harness with `SANDBOX_*` **unset** | chat still works (agent 503 → chat) |
+| 2 | Harness with a usable sandbox grant | tool system lines + assistant for a write/exec prompt |
+| 3 | No usable sandbox grant + no alternate tools (MCP / builtin HTTP) | **403** `Sandbox access denied.` (no 503 → chat fallback) |
 | 4 | Wrong/missing Bearer on `/v1/*` | `401` without echoing the token |
 | 5 | Review git diff | no secrets, no private inventory |
 
@@ -693,23 +692,24 @@ server warning — it does not fail process boot. Set it in the **Vercel project
 env** UI for Production/Preview (e.g. `invincible` for a nested checkout). Verify
 with the `pwd` tool after a harness turn.
 
-Host updates stored session cwd **only on agent success**; failure, abort, and
-chat-fallback leave the prior value. Clear session omits cwd.
+Host updates stored session cwd **only on agent success**; failure or abort
+leave the prior value. Clear session omits cwd. (There is no 503 chat-fallback
+path in the current product.)
 
 See also [session-model.md](session-model.md) and [agent-stream.md](agent-stream.md).
 
-## 12. Tenancy cutover (origin / BYO)
+## 12. Tenancy bootstrap (origin / BYO)
 
-When Production enables the tenancy triple env, agent tools move to **DB grants**
-instead of process env alone. **Primary path is cloud-native** — do not treat a
+Agent tools resolve to **DB grants** for the signed-in user (never raw process
+env for product turns). **Primary path is cloud-native** — do not treat a
 personal laptop as the migrate/seed host.
 
-1. Follow [bring-your-own.md §4a](bring-your-own.md#4a-optional-multi-tenant-auth)
-   (seed via GHA `db-tenancy-bootstrap` or cloud agent while `AUTH_SECRET` is still
-   omitted so tenancy stays **off**).
+1. Follow [bring-your-own.md §4a](bring-your-own.md#4a-multi-tenant-auth)
+   (seed via GHA `db-tenancy-bootstrap` or a cloud agent; keep Production set in a
+   safe order so tenancy does not activate against an unprepared DB).
 2. Set the remaining triple-env var(s) on Vercel Production (typically
-   `AUTH_SECRET` last) → redeploy → tenancy on. Do **not** set `AUTH_SECRET`
-   before migrate/seed.
+   `AUTH_SECRET` last) → redeploy. Do **not** set `AUTH_SECRET` before
+   migrate/seed.
 3. Smoke: unauth `POST /api/agent` → **401**
    `{ "error": "Authentication required." }`; `/login` → harness; optional `/admin`.
 4. Origin only: mark `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`
@@ -727,9 +727,8 @@ block BYO success and must not publish inventory.
 - [x] Sandbox unit running (private notes: host, unit file, user)  
 - [x] TLS proxy; `SANDBOX_URL` reachable from off-box (simulates Vercel)  
 - [x] Vercel Production: `SANDBOX_URL` + `SANDBOX_TOKEN`  
-- [ ] Optional `AGENT_MODEL` if needed  
 - [x] Prod `/harness` agent tool smoke  
-- [x] Confirm unset/fallback path still understood for Preview/local  
+- [x] Confirm no-grant → **403** path (no chat fallback) still understood for Preview/local  
 
 Origin `SANDBOX_*` is marked **Done** in [AGENTS.md](../AGENTS.md) (2026-08-03).
 Host inventory stays offline; forks still set their own env.

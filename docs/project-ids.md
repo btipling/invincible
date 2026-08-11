@@ -17,13 +17,11 @@ Public-facing IDs and URLs. **No host IPs, droplet IDs, or cloud account GUIDs**
 | Name | Where | Notes |
 |------|--------|--------|
 | `AI_GATEWAY_API_KEY` | Vercel Production + Preview | Server-side only |
-| `DEFAULT_MODEL` | Vercel (optional) | default `xai/grok-4.1-fast-non-reasoning` |
 | `HARNESS_ARTIFACT_TOKEN` | Vercel | Actions: Read — prebuild downloads `harness-wasm` |
 | `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions secret | `build-harness` may ping after artifact upload |
 | `SANDBOX_URL` | Vercel / local server | Agent sandbox base URL — **must be Vercel-reachable in prod**; never commit real hosts |
 | `SANDBOX_TOKEN` | Vercel + sandbox process | Shared bearer; server-only |
 | `AGENT_MAX_STEPS` | Vercel (optional) | Optional tool-loop safety ceiling (1…256); unset = model-ended |
-| `AGENT_MODEL` | Vercel (optional) | Tool-capable model override |
 
 Agents on **origin**: secrets listed as **Done** in [`AGENTS.md`](../AGENTS.md)
 are already configured — do not nag unless a log proves a regression.  

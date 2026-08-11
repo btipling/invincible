@@ -15,12 +15,12 @@ Wasm canvas, client bundle, or git.
 | **Where tools run** | Vercel backend on `POST /api/agent` only — not single-shot `POST /api/chat` |
 | **Who configures** | Each user on **Settings → MCP servers** (`/settings/mcp`) |
 | **Not Admin** | MCP rows are **per-user**, not a tenant-wide catalog under `/admin` |
-| **Tenancy** | Requires tenancy **on** (identity + DEK). Tenancy off → no user MCP |
+| **Tenancy** | Every deploy is **multi-tenant-only** (identity + DEK required); user MCP needs a configured deploy |
 
 ## Prerequisites
 
 1. **Tenancy triple** on the deploy: `DATABASE_URL`, `AUTH_SECRET`,
-   `CREDENTIALS_ENCRYPTION_KEY` (see [bring-your-own.md §4a](bring-your-own.md#4a-optional-multi-tenant-auth)).
+   `CREDENTIALS_ENCRYPTION_KEY` (see [bring-your-own.md §4a](bring-your-own.md#4a-multi-tenant-auth)).
 2. **Schema** including `user_mcp_servers` (migration `0004_…`):
 
    | Step | Action |
@@ -46,7 +46,7 @@ crash loop). Run **db-migrate**, then retry.
 |---------|-----|------|
 | Overview | any signed-in member with sole membership | `/settings` |
 | MCP servers | same | `/settings/mcp` |
-| Nav | AuthNav **Settings** (all signed-in users when tenancy is on) | site chrome |
+| Nav | AuthNav **Settings** (all signed-in users) | site chrome |
 
 Admin **Inference keys** (`/admin/inference`) are **tenant BYOK** — different
 from personal MCP API keys.
@@ -112,7 +112,7 @@ Primary smoke MCP for operators (hosted Streamable HTTP + API key).
 ### Checklist
 
 1. **Schema:** Actions → **db-migrate** → `confirm=migrate` (if `user_mcp_servers` not applied yet).
-2. **Sign in** on the tenancy-on deploy.
+2. **Sign in** on the deploy.
 3. Open **Settings → MCP servers** (`/settings/mcp`).
 4. **Add server:** name e.g. `Exa`, slug `exa`, URL above, header `x-api-key`, paste API key, leave **Enabled** on.
 5. **Test connection** — expect success and a non-zero tool count (or a clear error without leaking the key).
@@ -123,7 +123,7 @@ Primary smoke MCP for operators (hosted Streamable HTTP + API key).
 8. Optional: **Disable** the server and confirm a later turn no longer loads it; re-enable as needed.
 
 If Test fails: check URL/header/key, migrate status, and `last_error` on the card.
-If harness has no tools: confirm **Enabled**, tenancy on, and agent path (not chat-only).
+If harness has no tools: confirm **Enabled**, a configured deploy, and agent path (not chat-only).
 
 ## Limits
 

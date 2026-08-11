@@ -4,10 +4,11 @@ End-to-end guide for **third-party operators**: clone this repository, attach
 **your** Vercel project and AI Gateway key, supply harness Wasm, and run the
 product without depending on the maintainer production URL.
 
-You own the GitHub repo (clone/fork), the Vercel project, the secrets, and
-(optionally) the self-hosted runner. This is **bring-your-own deploy**, not a
-hosted multi-tenant SaaS control plane — though you **may** enable optional
-**Postgres tenancy + login** (see [§4a](#4a-optional-multi-tenant-auth)).
+You own the GitHub repo (clone/fork), the Vercel project, the secrets, the
+Postgres tenancy, and (optionally) the self-hosted runner. This is
+**bring-your-own deploy**, not a hosted multi-tenant SaaS control plane.
+**Postgres tenancy + login are required** and always on — see
+[§4a](#4a-multi-tenant-auth).
 
 **Maintainer sample deployment** (demos only): see [project-ids.md](project-ids.md)
 and the **Reference deployment** section in the [README](../README.md). Success
@@ -31,10 +32,13 @@ Related: [feature-divide.md](feature-divide.md) · [sandbox.md](sandbox.md) ·
 - Secrets stay on the **server** (Vercel env). Never put `AI_GATEWAY_API_KEY` or
   `SANDBOX_TOKEN` in client code, Wasm, or the browser.
 - Do **not** build a competing React chat panel — canvas is the workspace.
-- **Sandbox MVP is shipped** as a config seam (`SANDBOX_URL` + `SANDBOX_TOKEN`).
-  Without it, harness falls back to chat. Full guide: [sandbox.md](sandbox.md).
-- **Optional multi-tenant auth** (login + DB sandbox grants) is **shipped** —
-  see [§4a](#4a-optional-multi-tenant-auth). Per-row sandbox **backend** + image
+- **Sandbox MVP is shipped**; product tool turns resolve sandbox from **DB
+  grants**, not raw env (`SANDBOX_URL` + `SANDBOX_TOKEN` are seed/local-daemon
+  only). Without a usable grant + no alternate tools → **403** — there is **no**
+  503 → chat fallback. Full guide: [sandbox.md](sandbox.md).
+- **Multi-tenant auth** (login + DB sandbox grants) is **required and always
+  on** — every deploy configures the triple. See
+  [§4a](#4a-multi-tenant-auth). Per-row sandbox **backend** + image
   admin is at `/admin/sandboxes` ([sandbox.md](sandbox.md)). **Per-user MCP** is
   shipped — [mcp.md](mcp.md). Multi-tenant process/fleet isolation (single
   workspace root per process) remains future — see [§8 Future](#8-future-not-shipped).
@@ -79,7 +83,7 @@ npm run dev
 ```
 
 Optional overrides (see `.env.example`): `HARNESS_OWNER`, `HARNESS_REPO`,
-`DEFAULT_MODEL`, wait/poll knobs for deploy races.
+wait/poll knobs for deploy races.
 
 **Local resolution note:** when not in “require” mode, owner/repo can fall back
 to `btipling/invincible` if no git env is set. Prefer explicit `HARNESS_*` or a
@@ -104,9 +108,8 @@ documented in `scripts/harnessRepo.mjs`.
 | `AI_GATEWAY_API_KEY` | **Yes** | Server-side inference — never client/Wasm |
 | `HARNESS_ARTIFACT_TOKEN` | **Yes** for prod builds that download Wasm | Fine-grained PAT: **Actions: Read** on the repo that publishes artifact `harness-wasm` (your repo for path **A**, or the upstream/build repo for path **B**) |
 | `HARNESS_OWNER` / `HARNESS_REPO` | **Yes until your repo publishes `harness-wasm`** | Point at a repo that already has artifact `harness-wasm` (typical cold-start: path **B**). Once path **A** has uploaded artifacts on **your** repo, omit these so Vercel Git env (`VERCEL_GIT_REPO_OWNER` / `VERCEL_GIT_REPO_SLUG`) is used |
-| `DEFAULT_MODEL` | No | **Tenancy off only** — gateway model id (code / `.env.example` default). Under tenancy **on**, ignored for routing; use [§4a Inference keys](#inference-keys-byok) |
-| `SANDBOX_URL` / `SANDBOX_TOKEN` | No (tenancy **off**: tools off without both) | Agent sandbox base URL + bearer when tenancy is **off** — **server only**; URL must be **reachable from Vercel** in prod ([sandbox.md](sandbox.md)). Optional tenancy: [§4a](#4a-optional-multi-tenant-auth) |
-| `AGENT_MAX_STEPS` / `AGENT_MODEL` | No | `AGENT_MAX_STEPS` optional safety ceiling (1…256); **omit** for model-ended tool loop + user Stop. `AGENT_MODEL` is **tenancy off only** (tool-capable override). Under tenancy **on**, ignored for routing — granted catalog + BYOK only |
+| `SANDBOX_URL` / `SANDBOX_TOKEN` | No | Seed / local daemon only — product tool turns resolve sandbox from **DB grants**; **server only**, URL reachable from Vercel in prod ([sandbox.md](sandbox.md)). Per-sandbox config: [§4a](#4a-multi-tenant-auth) |
+| `AGENT_MAX_STEPS` | No | Optional safety ceiling (1…256); **omit** for model-ended tool loop + user Stop |
 
 4. Optional GitHub Actions **secret** (on **your** repo): `VERCEL_DEPLOY_HOOK_URL` —
    only if you use `build-harness`’s post-artifact deploy-hook ping. Not required
@@ -126,24 +129,18 @@ Race-safe wait for the matching `harness-wasm` artifact:
 
 ## 4a. Multi-tenant auth
 
-Postgres tenancy is **required**: credentials login, login wall + fail-closed
-session gate on harness/APIs, DB-resolved sandbox credentials + R/W grants, and
-a minimal `/admin` shell. There is **no legacy open mode** — every page is
-behind a login wall and protected APIs fail closed with 401 when unauthenticated.
-
-> **Phase 1 scope note (preliminary wording):** this phase ships the **login wall
-> + fail-closed auth core** (middleware always enforces login/401; the
-> chat/agent/models route tenancy branches and SCIM/OIDC config gates remain
-> until Phase 2; the repo-wide docs sweep lands in Phase 3). Wording below is
-> being tightened — the authoritative "multi-tenant only" front door is this
-> section.
+Postgres tenancy is **required and always on** for every deploy: credentials
+login, login wall + fail-closed session gate on harness/APIs, DB-resolved
+sandbox credentials + R/W grants, and a minimal `/admin` shell. **Every page is
+behind a login wall** and protected APIs fail closed with 401 when
+unauthenticated.
 
 Cloud-native cutover (no personal hardware). GHA bootstrap workflow:
 [`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml).
 
 ### Enablement (triple env — no AUTH_ENABLED flag)
 
-Tenancy is **on** when **all three** are non-empty on the **running** deploy;
+Tenancy is enabled when **all three** are non-empty on the **running** deploy;
 any missing var is a misconfiguration (no open fallback):
 
 | Variable | Purpose |
@@ -152,7 +149,7 @@ any missing var is a misconfiguration (no open fallback):
 | `AUTH_SECRET` | Auth.js session signing (`openssl rand -base64 32`) |
 | `CREDENTIALS_ENCRYPTION_KEY` | Base64 **32-byte** AES-256-GCM **AMK** (wraps per-tenant DEKs; tokens encrypt under DEK) (`openssl rand -base64 32`) — not a fourth secret |
 
-### Behaviour when tenancy is on
+### Behaviour
 
 | Surface | Behaviour |
 |---------|-----------|
@@ -168,22 +165,22 @@ Grant failures return **403** `{ "error": "Sandbox access denied." }`
 
 ### Multi-device harness session
 
-When tenancy is **on**, each signed-in user has one durable harness transcript
-row in Postgres (`harness_sessions`), synced by the host after local first paint.
+Each signed-in user has one durable harness transcript row in Postgres
+(`harness_sessions`), synced by the host after local first paint.
 
 | Need | Action |
 |------|--------|
 | Schema | GitHub Actions → **`db-migrate`** → `confirm=migrate` (includes `harness_sessions`). Workflow: [`.github/workflows/db-migrate.yml`](../.github/workflows/db-migrate.yml). Do **not** use `db-tenancy-bootstrap` / seed solely for this table. |
 | Runtime | Tenancy triple env already on; user signs in → `/harness` |
 | Smoke | Same user, two browsers: turn on A → refresh B shows messages; Clear on A → DELETE cloud row |
-| Failures | Unauth → **401**; no row yet → **404** `NOT_FOUND`; store unavailable → **503**. There is **no** tenancy-off `CLOUD_SESSION_DISABLED` disable path on this route — auth is always required |
+| Failures | Unauth → **401**; no row yet → **404** `NOT_FOUND`; store unavailable → **503**. Auth is always required |
 
 Product detail (LWW, caps, hybrid wire): [session-model.md](session-model.md).  
 Security boundary: [SECURITY.md](../SECURITY.md) (Harness session store).
 
 ### Sandboxes (BYO daemon vs Vercel)
 
-When tenancy is on, each **sandbox row** chooses a backend — not a host env flip
+Each **sandbox row** chooses a backend — not a host env flip
 (`SANDBOX_BACKEND` is **not** a product setting).
 
 | Backend | Admin | Credentials |
@@ -213,25 +210,25 @@ Builtin HTTPS fetch (`http_get`) is unrelated to `backend=vercel` — see
 ### Inference keys (BYOK)
 
 
-When **tenancy is on**, inference uses **tenant Bring-Your-Own-Key (BYOK)** so
-**provider billing is the tenant’s**, not Invincible host system credits.
+Inference uses **tenant Bring-Your-Own-Key (BYOK)** so **provider billing is
+the tenant’s**, not Invincible host system credits.
 
 | Role | What they do |
 |------|----------------|
 | Tenant **admin** / owner | `/admin/inference` — create provider secrets (encrypted under the **tenant DEK**), attach **model ids**, grant members **`can_use`**. UI shows **masks** only — never plaintext keys. |
 | Member | Signs in → `/harness` → catalog from **`GET /api/models`** (session-gated, grants only) → cycles model with **Next** in the **canvas** header (protocol v3) → Send. Host chip **mirrors** selection (not a second picker). |
 
-**Request path (tenancy on):**
+**Request path:**
 
 1. Host reads selected model id from the Wasm bridge and POSTs `{ prompt, modelId? }` to `/api/chat` or `/api/agent`.
 2. Server re-authorizes grants and attaches **request-scoped**
-   `providerOptions.gateway.byok` + `only` (never routes via env `DEFAULT_MODEL` /
-   `AGENT_MODEL` under tenancy on).
+   `providerOptions.gateway.byok` + `only` (never routes via a host env-model
+   fallback).
 3. Missing grants / unauthorized model → **4xx** — not silent host spend.
 4. Empty catalog → host blocks Send with an in-canvas error (reload if catalog failed to load).
 
 **`AI_GATEWAY_API_KEY` is still required** on the host (Gateway routing/auth). It
-is **not** a substitute for tenant provider keys under tenancy on.
+is **not** a substitute for tenant provider keys.
 
 **Schema (provider secrets tables):** if the BYOK tables are not yet applied on
 Production Postgres, run **schema-only** migrate — **not** seed/bootstrap:
@@ -244,9 +241,6 @@ Production Postgres, run **schema-only** migrate — **not** seed/bootstrap:
 
 Do **not** use `db-tenancy-bootstrap` / seed for schema-only BYOK cutover (seed
 resets bootstrap password hash + sandbox token ciphertext).
-
-**When tenancy is off:** single-operator path unchanged — env Gateway model
-(`DEFAULT_MODEL` / code default); no provider-secret tables required.
 
 #### Operator checklist (BYOK inference)
 
@@ -265,10 +259,10 @@ Also: [SECURITY.md](../SECURITY.md) · [feature-divide.md](feature-divide.md) ·
 
 ### Per-user MCP servers
 
-When **tenancy is on**, each signed-in member with a **sole** tenant membership
-can register personal **remote HTTPS MCP** servers under **Settings → MCP servers**
-(`/settings/mcp`). API keys (optional) are encrypted under the **tenant DEK**.
-Tools load on **agent** turns only (`POST /api/agent`), merged with sandbox tools
+Each signed-in member with a **sole** tenant membership can register personal
+**remote HTTPS MCP** servers under **Settings → MCP servers** (`/settings/mcp`).
+API keys (optional) are encrypted under the **tenant DEK**. Tools load on
+**agent** turns only (`POST /api/agent`), merged with sandbox tools
 under the `mcp_*` name prefix.
 
 | Role | What they do |
@@ -287,7 +281,7 @@ Full guide + **Exa** operator smoke checklist: **[mcp.md](mcp.md)**.
 Tenancy turns **on** only when **all three** secrets are present on the running
 deploy. Seed needs `DATABASE_URL` + `CREDENTIALS_ENCRYPTION_KEY` (+ seed inputs)
 but **not** `AUTH_SECRET`. Prefer finishing migrate/seed **before** the third
-var lands on Production so open mode is not flipped against an empty DB.
+var lands on Production so tenancy does not activate against an empty DB.
 
 **Dual-store identity:** GitHub Actions secrets `DATABASE_URL` and
 `CREDENTIALS_ENCRYPTION_KEY` must be the **same values** as Vercel Production
@@ -328,9 +322,9 @@ paste secret values into issues or PR chat.
 
 1. **Postgres** — create a **pooled** Production `DATABASE_URL` in a hosted
    console (Neon / DO / etc.). Do **not** put host inventory in git.
-2. **Vercel Production (tenancy still OFF)** — set `DATABASE_URL` +
-   `CREDENTIALS_ENCRYPTION_KEY` only. **Omit** `AUTH_SECRET` so
-   `tenancyEnabled` stays false.
+2. **Vercel Production** — set `DATABASE_URL` +
+   `CREDENTIALS_ENCRYPTION_KEY` only (defer `AUTH_SECRET` so tenancy is not yet
+   enabled against an unprepared DB).
 3. **GitHub Actions secrets** (same DB + KEK as Vercel) — set via GitHub **web
    UI** or `gh secret set` from a **cloud agent**:
 
@@ -348,7 +342,7 @@ paste secret values into issues or PR chat.
    - Workflow: [`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml)  
    - Re-run **resets** bootstrap `password_hash` + sandbox token ciphertext (by design).
 
-5. **Flip tenancy ON** — set Vercel Production `AUTH_SECRET` → **Redeploy**.
+5. **Enable tenancy** — set Vercel Production `AUTH_SECRET` → **Redeploy**.
    Runtime now sees all three → login required.
 
 6. **Smoke (public, no host inventory)**
@@ -393,8 +387,8 @@ This is **not** “run on a personal laptop.” Prefer GHA for Production bootst
 
 | Environment | Recommendation |
 |-------------|----------------|
-| **Preview** | Separate `DATABASE_URL` **or** leave tenancy **off** (omit any triple-env var). Do **not** casually reuse the Production encryption key on public previews. |
-| **Lockout** | Keep a path with tenancy **off** (omit `AUTH_SECRET` and/or another triple var) until migrate+seed and `/login` work. |
+| **Preview** | Use a separate `DATABASE_URL`. Do **not** casually reuse the Production encryption key on public previews. |
+| **Lockout** | Keep the Production-grade triple in place and verify migrate+seed and `/login` work before enabling credentials login broadly. |
 | **DB firewall** | Prefer Neon/public pooled SSL so GitHub-hosted runners can reach Postgres; allowlist GHA egress if using DO firewall. |
 
 ### Local harness note
@@ -421,8 +415,7 @@ login remains available whenever tenancy is on.
 
 #### OIDC (generic Auth.js provider)
 
-Enable only when **tenancy triple-gate is on** and all three OIDC secrets are
-non-empty:
+Enable only when the three OIDC secrets are non-empty (tenancy is always on):
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
@@ -450,7 +443,7 @@ Configure the IdP to emit verified emails for SSO users.
 
 #### SCIM 2.0 Users API
 
-Enable when **tenancy triple-gate is on** and `SCIM_BEARER_TOKEN` is non-empty:
+Enable when `SCIM_BEARER_TOKEN` is non-empty (tenancy is always on):
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
@@ -459,7 +452,7 @@ Enable when **tenancy triple-gate is on** and `SCIM_BEARER_TOKEN` is non-empty:
 | Surface | Behaviour |
 |---------|-----------|
 | Base path | `/api/scim/v2` (`Users`, `ServiceProviderConfig`, `Schemas`) |
-| Feature off (tenancy off **or** token empty) | **404** (fail closed) |
+| Feature off (token empty) | **404** (fail closed) |
 | Wrong / missing `Authorization: Bearer …` | **401** + `WWW-Authenticate: Bearer` |
 | Responses | `Content-Type: application/scim+json` |
 | DELETE | **Suspend** (`status=suspended`) — not hard delete |
@@ -478,7 +471,7 @@ Never put the token in client bundles or Wasm.
 
 #### Operator checklist (OIDC / SCIM)
 
-1. Tenancy on + seed admin can `/login` with **credentials**.  
+1. Tenancy configured + seed admin can `/login` with **credentials**.  
 2. **(Optional OIDC)** Set issuer + client id + secret (+ label); register
    callback `{origin}/api/auth/callback/oidc` at the IdP; redeploy; confirm
    button on `/login` → session → `/harness`.  
@@ -486,7 +479,7 @@ Never put the token in client bundles or Wasm.
 4. **(Optional SCIM)** Set `SCIM_BEARER_TOKEN`; redeploy.  
    - `GET /api/scim/v2/ServiceProviderConfig` **with** Bearer → **200**  
    - Same request without Bearer when configured → **401**  
-   - Token unset / tenancy off → **404**  
+   - Token unset → **404**  
 5. SCIM create user → appears on `/admin` with `scim` badge; existing
    credentials user still listed (hybrid).  
 6. Preview: separate token/DB or leave OIDC/SCIM unset.
@@ -538,7 +531,7 @@ Use **your** deploy URL (local or Vercel). Do not require the maintainer prod ho
 4. Refresh restores session into Wasm; nav **Clear** resets.  
 5. DOM chrome = nav + status chips only (host shell).  
 6. ~390px width remains usable.  
-7. **Optional agent tools:** with `SANDBOX_*` set, try a write/exec prompt; without them, chat still works ([sandbox.md](sandbox.md)).
+7. **Optional agent tools:** with a usable sandbox grant, try a write/exec prompt; without a grant and no alternate tools (MCP / builtin HTTP) the turn returns **403** — no chat fallback ([sandbox.md](sandbox.md)).
 
 Feature divide: [feature-divide.md](feature-divide.md). Visitor try path / samples: [README](../README.md).
 
@@ -553,7 +546,7 @@ empty `public/harness`.
 | Capability | Status |
 |------------|--------|
 | Pluggable **sandbox** for agent build/run tools | **Shipped (MVP)** — config seam; see [sandbox.md](sandbox.md) |
-| Optional multi-tenant auth (login + DB grants) | **Shipped** — [§4a](#4a-optional-multi-tenant-auth) |
+| Multi-tenant auth (login + DB grants) | **Required & always on** — [§4a](#4a-multi-tenant-auth) |
 | Tenant BYOK inference keys + harness model cycle | **Shipped** — [§4a Inference keys](#inference-keys-byok) |
 | Multi-tenant sandbox isolation / fleet | **Not shipped** — single workspace root per process for now |
 | Optional **OIDC SSO** + **SCIM** provisioning | **Shipped (optional config)** — [§4b](#4b-optional-sso-oidc--scim) |
@@ -589,7 +582,7 @@ listed as Done in [AGENTS.md](../AGENTS.md). Operators on **forks/clones** use
 - [ ] Send + multi-turn + refresh + Clear work in canvas
 - [ ] If using self-hosted builds: runner online + `SELF_HOSTED_BUILDS=true`
 - [ ] Optional: sandbox daemon + Vercel/local `SANDBOX_URL`/`SANDBOX_TOKEN` ([sandbox.md](sandbox.md))
-- [ ] Optional tenancy: cloud cutover [§4a](#4a-optional-multi-tenant-auth) (GHA migrate/seed, then `AUTH_SECRET`)
+- [ ] Tenancy: cloud cutover [§4a](#4a-multi-tenant-auth) (GHA migrate/seed, then `AUTH_SECRET`)
 - [ ] Optional BYOK: GHA **db-migrate** if needed + `/admin/inference` + harness model cycle ([§4a](#inference-keys-byok))
 - [ ] Optional MCP: GHA **db-migrate** if needed + `/settings/mcp` + Exa smoke ([mcp.md](mcp.md))
 - [ ] Optional OIDC / SCIM: [§4b](#4b-optional-sso-oidc--scim) (credentials break-glass still works; hybrid roster)
