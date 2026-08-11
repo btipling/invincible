@@ -1,5 +1,7 @@
-//! Pre-pass before zmd: backslash escapes + same-line GFM `~~strike~~`.
-//! zmd has neither (verified @ pin). Output may contain PUA sentinels for lowerer.
+//! Pre-pass before zmd: backslash escapes + same-line GFM `~~strike~~` + the
+//! GFM no-intra-word `_` rule (word-internal `_` in `foo_bar` / `SANDBOX_TOKEN`
+//! stays literal, #336). zmd has none of these (verified @ pin). Output may
+//! contain PUA sentinels for lowerer.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -17,6 +19,42 @@ fn appendCp(out: *std.ArrayList(u8), a: Allocator, cp: u21) !void {
     var buf: [4]u8 = undefined;
     const n = try std.unicode.utf8Encode(cp, &buf);
     try out.appendSlice(a, buf[0..n]);
+}
+
+/// True for ASCII alphanumerics — the word-forming set used to decide whether an
+/// underscore run is *intra-word* under the GFM no-intra-word `_` rule (#336).
+/// `_` itself is deliberately excluded so a run is inspected atomically and
+/// boundary `__bold__` / `_em_` still emphasize.
+fn isAsciiAlnum(c: u8) bool {
+    return (c >= '0' and c <= '9') or
+        (c >= 'a' and c <= 'z') or
+        (c >= 'A' and c <= 'Z');
+}
+
+/// Emit the underscore run that starts at `j` in `line`, returning how many
+/// bytes were consumed (the run length) so the caller advances past the whole
+/// run. When the run is **intra-word** — the char immediately before the run
+/// *and* immediately after the run are both ASCII alphanumeric — each `_` is
+/// emitted as a literal `pua_lit_under` sentinel, so zmd never parses it as an
+/// emphasis delimiter (`foo_bar`, `SANDBOX_TOKEN`, `max_tokens` stay literal).
+/// Otherwise the raw run is emitted unchanged (boundary `_em_` / `__bold__`
+/// still emphasize). The caller invokes this only at a `_` that was not
+/// consumed by a backslash escape and is not inside inline code — both of those
+/// branches run first and already advanced past their bytes.
+fn emitUnderscoreRun(a: Allocator, out: *std.ArrayList(u8), line: []const u8, j: usize) !usize {
+    var run_end = j;
+    while (run_end < line.len and line[run_end] == '_') : (run_end += 1) {}
+    const prev: u8 = if (j > 0) line[j - 1] else 0;
+    const next: u8 = if (run_end < line.len) line[run_end] else 0;
+    if (isAsciiAlnum(prev) and isAsciiAlnum(next)) {
+        var k = j;
+        while (k < run_end) : (k += 1) {
+            try appendCp(out, a, pua_lit_under);
+        }
+    } else {
+        try out.appendSlice(a, line[j..run_end]);
+    }
+    return run_end - j;
 }
 
 pub fn isFenceLine(line: []const u8) bool {
@@ -126,6 +164,13 @@ fn rewriteProseLine(a: Allocator, out: *std.ArrayList(u8), line: []const u8) !vo
                 }
             }
         }
+        // intra-word underscore run → literal (GFM no-intra-word `_`, #336).
+        // Feedback-dependent handlers above (code mask / escape / strike) have
+        // already consumed their `_`, so any `_` reaching here is untouched.
+        if (line[j] == '_') {
+            j += try emitUnderscoreRun(a, out, line, j);
+            continue;
+        }
         try out.append(a, line[j]);
         j += 1;
     }
@@ -155,6 +200,13 @@ fn rewriteProseLineNoStrike(a: Allocator, out: *std.ArrayList(u8), line: []const
                 j += 2;
                 continue;
             }
+        }
+        // intra-word underscore run → literal (GFM no-intra-word `_`, #336).
+        // Feedback-dependent handlers above (code mask / escape / strike) have
+        // already consumed their `_`, so any `_` reaching here is untouched.
+        if (line[j] == '_') {
+            j += try emitUnderscoreRun(a, out, line, j);
+            continue;
         }
         try out.append(a, line[j]);
         j += 1;
