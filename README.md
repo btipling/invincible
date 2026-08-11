@@ -71,10 +71,11 @@ cp .env.example .env.local   # set AI_GATEWAY_API_KEY
 npm run dev
 ```
 
-Configure the tenancy triple (`DATABASE_URL`, `AUTH_SECRET`,
-`CREDENTIALS_ENCRYPTION_KEY`) to use the full product path; without it the login
-wall applies and APIs fail closed. Optional `SANDBOX_*` enables agent tools
-([docs/sandbox.md](docs/sandbox.md) · [Builtin HTTP](docs/builtin-http.md)).
+Everything is multi-tenant-only: configure the tenancy triple (`DATABASE_URL`,
+`AUTH_SECRET`, `CREDENTIALS_ENCRYPTION_KEY`), migrate + seed, and sign in with a
+user that has an **inference grant** and (for tool turns) a **sandbox grant** —
+otherwise requests fail closed (401/403) and `/harness` redirects to `/login`.
+Tool paths: [docs/sandbox.md](docs/sandbox.md) · [Builtin HTTP](docs/builtin-http.md).
 
 ```bash
 npm test && npm run typecheck
@@ -152,5 +153,7 @@ Set what you need via [`.env.example`](.env.example) locally and your Vercel
 project env in production. Full cutover tables and order-of-operations:
 [docs/bring-your-own.md](docs/bring-your-own.md). Policy: [SECURITY.md](SECURITY.md).
 
-Minimum to chat: `AI_GATEWAY_API_KEY`. Optional: harness artifact token, sandbox
-pair, tenancy triple, OIDC/SCIM tokens — see `.env.example` for names only.
+Minimum to chat: a signed-in user with an **inference grant** (BYOK), plus the
+host `AI_GATEWAY_API_KEY`. Tool turns additionally need a **sandbox grant**.
+Optional: harness artifact token, tenancy triple, OIDC/SCIM tokens — see
+`.env.example` for names only.

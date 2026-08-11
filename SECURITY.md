@@ -121,7 +121,7 @@ runner.
 | Path jail | Workspace root + symlink-safe resolve; argv-only `exec` with timeouts |
 | Public inventory | Host IPs / droplet IDs stay offline ([docs/sandbox.md](docs/sandbox.md)) |
 | No PR trigger surface | Sandbox is not executed by untrusted PR workflows |
-| Daemon version gate | BYO daemons behind the expected `daemonVersion` return **426** out-of-date (exact string + `code`); never mapped to the 503 chat fallback. Client probes `/health` once per instance; missing daemonVersion = 0 |
+| Daemon version gate | BYO daemons behind the expected `daemonVersion` return **426** out-of-date (exact string + `code`); never mapped to `Sandbox access denied.` **403**. Client probes `/health` once per instance; missing daemonVersion = 0 |
 | Auto-update trust | Opt-in `SANDBOX_AUTO_UPDATE` runs `git fetch` + **ff-only** merge on `SANDBOX_GIT_DIR`, then exits for supervisor restart. Fails closed on divergent/dirty checkouts (stays up, keeps serving 426). Uses a **local** repo checkout / optional **read-only** deploy key — never Actions or GitHub write credentials in the sandbox unit env |
 
 ## Production app
@@ -155,7 +155,7 @@ provider/MCP secrets, or raw DEK material in stream payloads. See
 | Seed vs backfill | Seed = greenfield / bootstrap via GHA `db-tenancy-bootstrap` (resets password hash + token ciphertext; **keeps** existing DEK). Existing Production data = GHA **`db-tenancy-backfill-deks`** only — **not** seed |
 | Bootstrap / backfill / schema surface | Prefer GitHub Actions: **`db-tenancy-bootstrap`** (seed), **`db-tenancy-backfill-deks`** (AMK→DEK data), **`db-migrate`** (schema-only, e.g. provider secrets / `user_mcp_servers`) — or cloud agent workspace. Not personal-laptop primary ops |
 | OIDC (optional) | `AUTH_OIDC_ISSUER` + `AUTH_OIDC_CLIENT_ID` + `AUTH_OIDC_CLIENT_SECRET` (+ optional `AUTH_OIDC_LABEL`); provider id `oidc`; callback `/api/auth/callback/oidc`; email auto-link requires verified `email_verified` claim |
-| SCIM (optional) | `SCIM_BEARER_TOKEN` + tenancy triple; base `/api/scim/v2`; off → **404**; bad Bearer → **401**; DELETE = suspend |
+| SCIM (optional) | `SCIM_BEARER_TOKEN` (feature-env only, no tenancy-gate); base `/api/scim/v2`; off → **404**; bad Bearer → **401**; DELETE = suspend |
 | Hybrid roster | SCIM is **additive** — non-SCIM users remain; `/admin` lists all provision sources; SCIM list = SCIM-managed only |
 | Break-glass | Credentials login always remains; SCIM must not suspend break-glass credentials owner |
 

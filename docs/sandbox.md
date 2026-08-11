@@ -20,7 +20,7 @@ Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-d
 | **Is not** | The Zig **GHA build runner** (`invincible-do-1` / `self-hosted` + `zig` labels) |
 | **Is not** | A host-wide product env like `SANDBOX_BACKEND` — backend is **never** a deploy-global switch |
 | **Is not** | A multi-sandbox picker **inside the harness canvas**. Prefer sandbox under **Settings → Sandbox** when you have multiple usable grants |
-| **Is not** | Required for basic chat — without tools, harness falls back to `POST /api/chat` when the 503 contract applies |
+| **Is not** | Required for basic chat — chat-only turns run on `POST /api/agent` without FS tools. No usable grant + no alternate tools (MCP / builtin HTTP) → **403** `Sandbox access denied.`, not a 503→chat fallback |
 | **Is not** | Builtin HTTPS fetch (`http_get`) — that is a separate **Vercel Sandbox hop B** path; see [builtin-http.md](builtin-http.md) |
 
 Never put GHA Actions credentials in a BYO sandbox process env. Prefer a dedicated
@@ -200,12 +200,11 @@ User types in Wasm composer
   → runHarnessTurn
        → formatPromptWithHistory(session user/assistant only)
        → POST /api/agent { prompt }
-            if HTTP 503 + exact not-configured string
-              → POST /api/chat   (today’s single-shot path)
-            else
-              generateText + tools → sandbox (env SANDBOX_* / DB grants + backend)
-                                   + enabled per-user MCP tools (server-side; soft-fail)
-              (sandbox Bearer + MCP header secrets; server-only)
+            generateText + tools → sandbox (DB grants + backend; attach-only Workspace)
+                                 + enabled per-user MCP tools (server-side; soft-fail)
+            no usable grant + no alternate tools → 403 Sandbox access denied
+              (no host 503 → chat fallback; the agent route never emits it)
+            (sandbox Bearer + MCP header secrets; server-only)
   → host pushes ≤6 system toolTrace lines (≤240 chars) + assistant/error into Wasm
   → user reads in canvas
 ```
@@ -215,21 +214,23 @@ User types in Wasm composer
 - Per-user MCP config lives under Settings (`/settings/mcp`) — not this sandbox daemon guide; see [mcp.md](mcp.md).
 - Detection is **server-side only** — no `NEXT_PUBLIC_SANDBOX_*`.
 
-### Exact 503 contract (host fallback to chat)
+### No 503 chat fallback (multi-tenant product path)
 
-When the session user has no usable sandbox grant and builtin HTTP is off, the
-agent route returns the not-configured 503 and the host falls back to chat:
+There is **no** 503 `SANDBOX_NOT_CONFIGURED` → chat fallback in the current
+product: the agent route never emits that status/string, and basic chat runs on
+`POST /api/agent` too. When the session user has no usable sandbox grant and no
+alternate tools (per-user MCP / builtin HTTP), the route returns **403**:
 
 ```http
-HTTP/1.1 503
+HTTP/1.1 403
 Content-Type: application/json
 
-{ "error": "Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN." }
+{ "error": "Sandbox access denied." }
 ```
 
-The host falls back to chat **only** for status **503** and this **exact**
-`error` string (`SANDBOX_NOT_CONFIGURED_ERROR` in `lib/sandbox/config.ts`).
 Other 4xx/5xx/network errors are shown as error lines — **no** chat fallback.
+A host-side legacy code path that would fall back to `/api/chat` on the exact
+old not-configured 503 string is **dead** — it is not the operator contract.
 
 ### Sandbox resolve (DB grants)
 
@@ -251,14 +252,13 @@ Content-Type: application/json
 Unauthenticated API calls → **401**
 `{ "error": "Authentication required." }` (not a sandbox config issue).
 
-### 503 only when no sandbox is configured
+### No 503 for a missing local sandbox
 
-Missing env `SANDBOX_*` does **not** by itself produce the 503 contract below:
-tools use DB grants + backend; a valid **vercel** grant works without env
-`SANDBOX_*`. The 503 fallback exists only for the chat path where a session
-user has no usable sandbox grant and builtin HTTP is off (server returns the
-exact `SANDBOX_NOT_CONFIGURED_FORMATTED` string). Failures are **403**
-`Sandbox access denied.` (or **401** if unauthenticated) — see above.
+Missing env `SANDBOX_*` does **not** produce any 503 contract: product tool
+turns resolve sandbox from **DB grants + row backend** (a valid `vercel` grant
+works without env `SANDBOX_*`). A session user with no usable grant and no
+alternate tools (MCP / builtin HTTP) gets **403** `Sandbox access denied.` (or
+**401** if unauthenticated) — see above. No 503 chat-fallback path exists.
 
 ---
 
@@ -304,7 +304,7 @@ Out-of-date behavior:
 
 - Tools soft-fail as `ERROR <tool>: Sandbox daemon out of date (…)`, and the
   agent preflight fails the turn before the first tool call. It is NOT mapped to
-  the `Sandbox not configured` 503 chat fallback (different status + string).
+  `Sandbox access denied.` 403 (different status + string).
 - Health-unreachable stays a normal network error (502/504) — it is **not** an
   out-of-date signal.
 - Missing **protocol** version is a hard 502 (`restart the daemon`); missing or
@@ -434,7 +434,10 @@ Harness smoke with tools (example prompt):
 
 Expect muted **system** tool lines in the canvas, then an assistant reply.
 
-Without `SANDBOX_*` on Next: normal chat still works via 503 → chat.
+Without a usable sandbox grant on Next: agent turns return **403** `Sandbox
+access denied.` (there is no 503 → chat fallback). With a **vercel** grant you
+do **not** need env `SANDBOX_*`; `SANDBOX_URL`/`SANDBOX_TOKEN` here are for
+seed/local daemon only.
 
 ---
 
@@ -607,8 +610,8 @@ See also [SECURITY.md](../SECURITY.md).
 | # | Check | Expect |
 |---|--------|--------|
 | 1 | `GET /health` (local or off-box prod) | `{ ok: true, version: 2, daemonVersion: N }` |
-| 2 | Harness with `SANDBOX_*` set | tool system lines + assistant for a write/exec prompt |
-| 3 | Harness with `SANDBOX_*` **unset** | chat still works (agent 503 → chat) |
+| 2 | Harness with a usable sandbox grant | tool system lines + assistant for a write/exec prompt |
+| 3 | No usable sandbox grant + no alternate tools (MCP / builtin HTTP) | **403** `Sandbox access denied.` (no 503 → chat fallback) |
 | 4 | Wrong/missing Bearer on `/v1/*` | `401` without echoing the token |
 | 5 | Review git diff | no secrets, no private inventory |
 
@@ -689,8 +692,9 @@ server warning — it does not fail process boot. Set it in the **Vercel project
 env** UI for Production/Preview (e.g. `invincible` for a nested checkout). Verify
 with the `pwd` tool after a harness turn.
 
-Host updates stored session cwd **only on agent success**; failure, abort, and
-chat-fallback leave the prior value. Clear session omits cwd.
+Host updates stored session cwd **only on agent success**; failure or abort
+leave the prior value. Clear session omits cwd. (There is no 503 chat-fallback
+path in the current product.)
 
 See also [session-model.md](session-model.md) and [agent-stream.md](agent-stream.md).
 
@@ -724,7 +728,7 @@ block BYO success and must not publish inventory.
 - [x] TLS proxy; `SANDBOX_URL` reachable from off-box (simulates Vercel)  
 - [x] Vercel Production: `SANDBOX_URL` + `SANDBOX_TOKEN`  
 - [x] Prod `/harness` agent tool smoke  
-- [x] Confirm unset/fallback path still understood for Preview/local  
+- [x] Confirm no-grant → **403** path (no chat fallback) still understood for Preview/local  
 
 Origin `SANDBOX_*` is marked **Done** in [AGENTS.md](../AGENTS.md) (2026-08-03).
 Host inventory stays offline; forks still set their own env.

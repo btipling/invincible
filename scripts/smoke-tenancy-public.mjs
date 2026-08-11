@@ -50,7 +50,8 @@ console.error(
     `  error:  ${errorField === null ? '(missing/non-json)' : JSON.stringify(errorField)}`,
     `  body:   ${bodyText.slice(0, 200)}`,
     '',
-    'If status is 200, Production still has tenancy off (AUTH_SECRET omitted or triple incomplete).',
+    'If status is 200, the agent route did NOT enforce multi-tenant auth',
+    '(session gate missing AUTH_SECRET or it is not signing sessions).',
     'See docs/bring-your-own.md §4a and issue #70.',
   ].join('\n'),
 );

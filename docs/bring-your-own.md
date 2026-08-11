@@ -32,8 +32,10 @@ Related: [feature-divide.md](feature-divide.md) · [sandbox.md](sandbox.md) ·
 - Secrets stay on the **server** (Vercel env). Never put `AI_GATEWAY_API_KEY` or
   `SANDBOX_TOKEN` in client code, Wasm, or the browser.
 - Do **not** build a competing React chat panel — canvas is the workspace.
-- **Sandbox MVP is shipped** as a config seam (`SANDBOX_URL` + `SANDBOX_TOKEN`).
-  Without it, harness falls back to chat. Full guide: [sandbox.md](sandbox.md).
+- **Sandbox MVP is shipped**; product tool turns resolve sandbox from **DB
+  grants**, not raw env (`SANDBOX_URL` + `SANDBOX_TOKEN` are seed/local-daemon
+  only). Without a usable grant + no alternate tools → **403** — there is **no**
+  503 → chat fallback. Full guide: [sandbox.md](sandbox.md).
 - **Multi-tenant auth** (login + DB sandbox grants) is **required and always
   on** — every deploy configures the triple. See
   [§4a](#4a-multi-tenant-auth). Per-row sandbox **backend** + image
@@ -106,7 +108,7 @@ documented in `scripts/harnessRepo.mjs`.
 | `AI_GATEWAY_API_KEY` | **Yes** | Server-side inference — never client/Wasm |
 | `HARNESS_ARTIFACT_TOKEN` | **Yes** for prod builds that download Wasm | Fine-grained PAT: **Actions: Read** on the repo that publishes artifact `harness-wasm` (your repo for path **A**, or the upstream/build repo for path **B**) |
 | `HARNESS_OWNER` / `HARNESS_REPO` | **Yes until your repo publishes `harness-wasm`** | Point at a repo that already has artifact `harness-wasm` (typical cold-start: path **B**). Once path **A** has uploaded artifacts on **your** repo, omit these so Vercel Git env (`VERCEL_GIT_REPO_OWNER` / `VERCEL_GIT_REPO_SLUG`) is used |
-| `SANDBOX_URL` / `SANDBOX_TOKEN` | No | Agent sandbox base URL + bearer when using a BYO daemon backend — **server only**; URL must be **reachable from Vercel** in prod ([sandbox.md](sandbox.md)). Per-sandbox config: [§4a](#4a-multi-tenant-auth) |
+| `SANDBOX_URL` / `SANDBOX_TOKEN` | No | Seed / local daemon only — product tool turns resolve sandbox from **DB grants**; **server only**, URL reachable from Vercel in prod ([sandbox.md](sandbox.md)). Per-sandbox config: [§4a](#4a-multi-tenant-auth) |
 | `AGENT_MAX_STEPS` | No | Optional safety ceiling (1…256); **omit** for model-ended tool loop + user Stop |
 
 4. Optional GitHub Actions **secret** (on **your** repo): `VERCEL_DEPLOY_HOOK_URL` —
@@ -529,7 +531,7 @@ Use **your** deploy URL (local or Vercel). Do not require the maintainer prod ho
 4. Refresh restores session into Wasm; nav **Clear** resets.  
 5. DOM chrome = nav + status chips only (host shell).  
 6. ~390px width remains usable.  
-7. **Optional agent tools:** with `SANDBOX_*` set, try a write/exec prompt; without them, chat still works ([sandbox.md](sandbox.md)).
+7. **Optional agent tools:** with a usable sandbox grant, try a write/exec prompt; without a grant and no alternate tools (MCP / builtin HTTP) the turn returns **403** — no chat fallback ([sandbox.md](sandbox.md)).
 
 Feature divide: [feature-divide.md](feature-divide.md). Visitor try path / samples: [README](../README.md).
 

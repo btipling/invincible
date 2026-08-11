@@ -86,10 +86,11 @@ Cloud agents may use `vercel link` + `vercel env pull` in the **agent workspace*
 | grant OK + Workspace running | on + HTTP missing/stopped | FS ± MCP; **http tools omitted** |
 | grant deny | on + HTTP running | **http ± MCP** only |
 | grant deny | on + HTTP missing | **403** grant (no tools assembled) |
-| no Workspace grant, builtin **off** | off | Agent route 503 `SANDBOX_NOT_CONFIGURED` → host falls back to chat |
+| no Workspace grant, builtin **off** | off | **403** `Sandbox access denied.` (no chat fallback) |
 
-The 503 chat fallback triggers only on the exact `SANDBOX_NOT_CONFIGURED_ERROR`
-string when builtin is off and the session user has no sandbox grant.
+There is no 503 `SANDBOX_NOT_CONFIGURED` → chat fallback in the current product:
+with builtin off and no usable sandbox grant + no alternate tools, the route
+returns **403** `Sandbox access denied.` and the turn fails closed.
 
 ---
 
