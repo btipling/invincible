@@ -1,8 +1,8 @@
 /**
  * Env config for builtin HTTPS fetch via Vercel Sandbox (hop-B).
  * Server-only — never NEXT_PUBLIC_*.
- * Attach-only when enabled: tenancy on uses Settings HTTP instance;
- * tenancy off requires BUILTIN_HTTP_INSTANCE_NAME (never create on hot path).
+ * Attach-only when enabled: uses the user's Settings HTTP instance
+ * (never create on hot path).
  */
 
 export const BUILTIN_HTTP_FETCH_OFF = 'off' as const;
@@ -33,11 +33,6 @@ export type BuiltinHttpConfig = {
   maxBytes: number;
   /** Legacy VM-lifetime env clamp (not used for attach create). */
   sandboxTimeoutMs: number;
-  /**
-   * Tenancy-off host attach name (`BUILTIN_HTTP_INSTANCE_NAME`).
-   * Empty when unset — route fail-closed when builtin enabled and tenancy off.
-   */
-  instanceNameTenancyOff: string;
 };
 
 function clampInt(
@@ -89,14 +84,11 @@ export function resolveBuiltinHttpConfig(
     MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS,
   );
 
-  const instanceNameTenancyOff = (env.BUILTIN_HTTP_INSTANCE_NAME ?? '').trim();
-
   return {
     enabled: mode === BUILTIN_HTTP_FETCH_SANDBOX,
     mode,
     timeoutMs,
     maxBytes,
     sandboxTimeoutMs,
-    instanceNameTenancyOff,
   };
 }

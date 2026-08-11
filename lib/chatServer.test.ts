@@ -6,7 +6,6 @@ import {
   missingGatewayKeyError,
   parseChatBody,
 } from './chatServer';
-import { resolveModelId, DEFAULT_MODEL } from './model';
 import { SandboxHttpError } from './sandbox/types';
 import { sandboxDaemonOutOfDateError } from './sandbox/daemonVersion';
 import {
@@ -135,16 +134,5 @@ describe('mapInferenceError', () => {
     const r = mapInferenceError(new SandboxHttpError('anything', 426, 'SANDBOX_HTTP'));
     expect(r.status).toBe(502); // non-out-of-date statuses keep inference mapping
     expect(r.code).toBeUndefined();
-  });
-});
-
-describe('resolveModelId', () => {
-  it('defaults', () => {
-    expect(resolveModelId({})).toBe(DEFAULT_MODEL);
-  });
-  it('uses DEFAULT_MODEL env', () => {
-    expect(resolveModelId({ DEFAULT_MODEL: 'xai/grok-4.1-fast-reasoning' })).toBe(
-      'xai/grok-4.1-fast-reasoning',
-    );
   });
 });

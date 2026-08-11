@@ -312,6 +312,7 @@ describe('runAgent', () => {
     }));
     const { text, toolTrace } = await runAgent({
       prompt: 'search',
+      modelId: 'test-model',
       sandboxClient: { request: vi.fn() } as never,
       generateTextImpl: generateTextImpl as never,
     });
@@ -329,6 +330,7 @@ describe('runAgent', () => {
     }));
     const { text } = await runAgent({
       prompt: 'search',
+      modelId: 'test-model',
       sandboxClient: { request: vi.fn() } as never,
       generateTextImpl: generateTextImpl as never,
     });

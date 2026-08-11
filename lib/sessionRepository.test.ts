@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  CLOUD_SESSION_DISABLED_CODE,
   HARNESS_SESSION_MAX_BODY_BYTES,
   HARNESS_SESSION_MAX_MSG_BYTES,
 } from './sessionCloudCaps';
@@ -278,18 +277,7 @@ describe('createHttpSessionRepository', () => {
     expect(repo.enabled).toBe(false);
   });
 
-  it('404 CLOUD_SESSION_DISABLED disables; NOT_FOUND is noop', async () => {
-    const disabled = createHttpSessionRepository({
-      fetchImpl: vi.fn(async () =>
-        Response.json(
-          { error: 'off', code: CLOUD_SESSION_DISABLED_CODE },
-          { status: 404 },
-        ),
-      ),
-    });
-    expect((await disabled.pull(snap({}))).action).toBe('disabled');
-    expect(disabled.enabled).toBe(false);
-
+  it('404 NOT_FOUND is noop (multi-tenant only)', async () => {
     const empty = createHttpSessionRepository({
       fetchImpl: vi.fn(async () =>
         Response.json({ error: 'missing', code: 'NOT_FOUND' }, { status: 404 }),

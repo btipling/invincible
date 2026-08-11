@@ -1,11 +1,7 @@
 import { generateText, streamText, stepCountIs, isLoopFinished } from 'ai';
 import { mapFullStreamPart, summarizeToolLine } from './agentStream';
 import { resolveAgentReasoning } from './reasoningConfig';
-import {
-  resolveAgentMaxSteps,
-  resolveAgentModelId,
-  getSandboxConfig,
-} from '../sandbox/config';
+import { resolveAgentMaxSteps, getSandboxConfig } from '../sandbox/config';
 import { createSandboxClient, type SandboxClient } from '../sandbox/client';
 import { createAgentTools, type CwdState } from './tools';
 import {
@@ -38,9 +34,13 @@ export type RunAgentParams = {
    * When omitted, uses `resolveAgentMaxSteps()` — `null` means model-ended loop.
    */
   maxSteps?: number | null;
-  modelId?: string;
+  /**
+   * Required server-resolved model id (request-scoped BYOK). No env fallback —
+   * the route always resolves and supplies it.
+   */
+  modelId: string;
   system?: string;
-  /** Request-scoped Gateway BYOK (tenancy on). */
+  /** Request-scoped Gateway BYOK. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   providerOptions?: any;
   /** Inject for tests — same shape as `generateText` from `ai`. */
@@ -148,7 +148,7 @@ function makeCwdState(initialCwd?: string): CwdState {
 export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> {
   const maxSteps =
     params.maxSteps !== undefined ? params.maxSteps : resolveAgentMaxSteps();
-  const modelId = params.modelId ?? resolveAgentModelId();
+  const modelId = params.modelId;
   const generate = params.generateTextImpl ?? generateText;
 
   // Always scrub known server secrets from model-facing and client-facing strings.
@@ -252,7 +252,7 @@ export async function runAgentStream(
 ): Promise<RunAgentResult> {
   const maxSteps =
     params.maxSteps !== undefined ? params.maxSteps : resolveAgentMaxSteps();
-  const modelId = params.modelId ?? resolveAgentModelId();
+  const modelId = params.modelId;
   const stream = params.streamTextImpl ?? streamText;
 
   let secrets: Array<string | undefined | null> = [

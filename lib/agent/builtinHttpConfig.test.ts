@@ -15,7 +15,6 @@ describe('resolveBuiltinHttpConfig', () => {
     expect(c.mode).toBe('off');
     expect(c.timeoutMs).toBe(DEFAULT_BUILTIN_HTTP_TIMEOUT_MS);
     expect(c.maxBytes).toBe(DEFAULT_BUILTIN_HTTP_MAX_BYTES);
-    expect(c.instanceNameTenancyOff).toBe('');
   });
 
   it('enables sandbox mode', () => {
@@ -40,13 +39,5 @@ describe('resolveBuiltinHttpConfig', () => {
     expect(resolveBuiltinHttpConfig({ BUILTIN_HTTP_FETCH: 'yes' }).enabled).toBe(
       false,
     );
-  });
-
-  it('trims BUILTIN_HTTP_INSTANCE_NAME for tenancy-off attach', () => {
-    const c = resolveBuiltinHttpConfig({
-      BUILTIN_HTTP_FETCH: 'sandbox',
-      BUILTIN_HTTP_INSTANCE_NAME: '  inv-http-abc  ',
-    });
-    expect(c.instanceNameTenancyOff).toBe('inv-http-abc');
   });
 });

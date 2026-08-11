@@ -4,7 +4,6 @@ import {
   SANDBOX_NOT_CONFIGURED_ERROR,
   getSandboxConfig,
   resolveAgentMaxSteps,
-  resolveAgentModelId,
   resolveSandboxDefaultCwd,
   resetSandboxDefaultCwdLogForTests,
   sandboxConfigured,
@@ -46,15 +45,6 @@ describe('sandbox config', () => {
     expect(
       resolveAgentMaxSteps({ AGENT_MAX_STEPS: String(MAX_AGENT_MAX_STEPS + 1) }),
     ).toBe(MAX_AGENT_MAX_STEPS);
-  });
-
-  it('resolveAgentModelId prefers AGENT_MODEL', () => {
-    expect(resolveAgentModelId({ AGENT_MODEL: 'xai/tool-model' })).toBe(
-      'xai/tool-model',
-    );
-    expect(resolveAgentModelId({ DEFAULT_MODEL: 'xai/fallback' })).toBe(
-      'xai/fallback',
-    );
   });
 
   it('503 error string is stable for host matching', () => {
