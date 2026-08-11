@@ -52,6 +52,12 @@ const StoredMsg = struct {
     kind: u8 = 0,
     len: u32 = 0,
     data: [MAX_MSG_LEN]u8 = undefined,
+    /// Per-slot monotonic write-revision (#404). Bumped on every write to this
+    /// ring slot (push / update_last / user-send). The painter's slot-keyed
+    /// parse + tool-run caches compare against it as O(1) dirty detection —
+    /// an unchanged revision costs zero re-parse / re-decode / body scan.
+    /// Internal only (read in-Wasm, never exported): no build.zig whitelist change.
+    revision: u32 = 0,
 };
 
 var lifecycle: Lifecycle = .boot;
@@ -107,6 +113,21 @@ pub fn messageAt(i: usize) ?struct { kind: u8, text: []const u8 } {
     return .{ .kind = m.kind, .text = m.data[0..m.len] };
 }
 
+/// Physical ring slot backing visible index `i` (0..msg_count), or null.
+/// #404: the slot-keyed caches key on this (not the visible index) so ring wrap
+/// / truncate can never alias a stale cache entry onto a different message.
+pub fn messageSlotAt(i: usize) ?usize {
+    if (i >= msg_count) return null;
+    return (msg_head + MAX_MSG - msg_count + i) % MAX_MSG;
+}
+
+/// Per-slot write-revision for visible index `i`, or 0 when out of range.
+/// #404: O(1) dirty detection — painter compares to its cached revision.
+pub fn messageRevisionAt(i: usize) u32 {
+    const s = messageSlotAt(i) orelse return 0;
+    return messages[s].revision;
+}
+
 pub fn lastEcho() []const u8 {
     return echo_buf[0..echo_len];
 }
@@ -127,6 +148,7 @@ pub fn queueSubmitFromUi(text: []const u8) void {
         const slot = &messages[msg_head];
         slot.kind = 1; // user
         slot.len = copySlice(&slot.data, pending_submit[0..pending_submit_len]);
+        slot.revision +%= 1; // #404 dirty bump
         msg_head = (msg_head + 1) % MAX_MSG;
         if (msg_count < MAX_MSG) msg_count += 1;
     }
@@ -252,6 +274,7 @@ export fn inv_push_message(kind: u8, ptr: [*]const u8, len: usize) void {
     const slot = &messages[msg_head];
     slot.kind = kind;
     slot.len = copySlice(&slot.data, src);
+    slot.revision +%= 1; // #404 dirty bump
     msg_head = (msg_head + 1) % MAX_MSG;
     if (msg_count < MAX_MSG) msg_count += 1;
     refresh();
@@ -266,6 +289,7 @@ export fn inv_update_last_message(kind: u8, ptr: [*]const u8, len: usize) u8 {
     if (slot.kind != kind) return 0;
     const src = ptr[0..len];
     slot.len = copySlice(&slot.data, src);
+    slot.revision +%= 1; // #404 dirty bump (stream growth → re-parse the live row)
     refresh();
     return 1;
 }

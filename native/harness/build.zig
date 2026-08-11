@@ -304,6 +304,17 @@ pub fn build(b: *std.Build) void {
     });
     test_rich.dependOn(&b.addRunArtifact(toolrun_tests).step);
 
+    // #404: per-slot tool-run decode cache (slot + revision), pure, no dvui.
+    const toolrun_cache_tests = b.addTest(.{
+        .name = "rich-toolrun-cache",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/rich/toolrun_cache.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+    test_rich.dependOn(&b.addRunArtifact(toolrun_cache_tests).step);
+
     // Rich-glue invariants: #387 host/whitespace pins plus current-behavior
     // drift-guards. #336's emph-split is fixed (guard pins the corrected
     // literal-underscore behavior); #343's link-tail `>` is fixed (guard pins

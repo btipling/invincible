@@ -65,6 +65,9 @@ export fn dvui_init(platform_ptr: [*]const u8, platform_len: usize) i32 {
     rich.setAllocator(WebBackend.gpa);
     image_cache.setAllocator(WebBackend.gpa);
     math_cache.setAllocator(WebBackend.gpa);
+    // #404: tool-run decode cache summaries outlive the per-frame arena, so
+    // they use the long-lived GPA (deinit'd on overwrite / clear).
+    rich.toolrunCacheSetAllocator(WebBackend.gpa);
     ui.onInit();
     // Force-link zmd parse into wasm (size truth + smoke).
     if (!rich_parse.smokeOnce()) {

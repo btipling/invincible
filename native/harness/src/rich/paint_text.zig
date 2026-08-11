@@ -18,6 +18,10 @@ pub const PaintCtx = struct {
     run_seq: *usize,
     /// Set after drawing the bar before the first footnote_def in a message.
     footnote_section_started: bool = false,
+    /// #404 DVUI `cache_layout` for this row's body text. True for committed
+    /// (immutable) message rows so unchanged text stops re-shaping every frame;
+    /// false for the live `update_last` newest row (dirty every stream frame).
+    cache_layout: bool = true,
 };
 
 fn nextId(ctx: *PaintCtx) usize {
@@ -196,6 +200,9 @@ const TextLayoutOpts = struct {
     expand: dvui.Options.Expand = .horizontal,
     padding: dvui.Rect = .{ .x = 0, .y = 1, .w = 0, .h = 2 },
     color_text: ?dvui.Color = null,
+    /// #404 DVUI cache_layout — committed rows cache byte heights so unchanged
+    /// text does not re-shape every frame (see PaintCtx.cache_layout).
+    cache_layout: bool = true,
 };
 
 /// Paint inlines with optional images via segmented vertical flow (locked plan).
@@ -208,7 +215,7 @@ pub fn paintInlineFlow(
 ) void {
     const default_color = layout.color_text orelse ctx.style.body_text;
     if (!hasSegmentedInline(inlines)) {
-        var tl = dvui.textLayout(src, .{}, .{
+        var tl = dvui.textLayout(src, .{ .cache_layout = layout.cache_layout }, .{
             .expand = layout.expand,
             .id_extra = nextId(ctx),
             .color_text = default_color,
@@ -246,7 +253,7 @@ pub fn paintInlineFlow(
         const start = i;
         while (i < inlines.len and inlines[i].kind != .image and inlines[i].kind != .math) : (i += 1) {}
         const slice = inlines[start..i];
-        var tl = dvui.textLayout(@src(), .{}, .{
+        var tl = dvui.textLayout(@src(), .{ .cache_layout = layout.cache_layout }, .{
             .expand = layout.expand,
             .id_extra = nextId(ctx),
             .color_text = default_color,
@@ -401,11 +408,14 @@ pub fn paintHeading(src: std.builtin.SourceLocation, block: parse.Block, ctx: *P
         .style = heading_style,
         .id_base = ctx.id_base,
         .run_seq = ctx.run_seq,
+        .footnote_section_started = ctx.footnote_section_started,
+        .cache_layout = ctx.cache_layout,
     };
     // Segmented flow so ![alt](url) in headings paints (paintInlines skips .image).
     paintInlineFlow(src, block.inlines, &heading_ctx, font, .{
         .padding = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
         .color_text = color,
+        .cache_layout = ctx.cache_layout,
     });
 }
 
@@ -415,6 +425,7 @@ pub fn paintParagraph(src: std.builtin.SourceLocation, block: parse.Block, ctx: 
     paintInlineFlow(src, block.inlines, ctx, body, .{
         .padding = .{ .x = 0, .y = 1, .w = 0, .h = 2 },
         .color_text = ctx.style.body_text,
+        .cache_layout = ctx.cache_layout,
     });
 }
 
@@ -550,11 +561,14 @@ pub fn paintListItem(src: std.builtin.SourceLocation, block: parse.Block, ctx: *
         .style = body_style,
         .id_base = ctx.id_base,
         .run_seq = ctx.run_seq,
+        .footnote_section_started = ctx.footnote_section_started,
+        .cache_layout = ctx.cache_layout,
     };
     const body_color = if (in_quote) ctx.style.quote_text else ctx.style.body_text;
     paintInlineFlow(@src(), block.inlines, &body_ctx, body, .{
         .padding = zero_pad,
         .color_text = body_color,
+        .cache_layout = body_ctx.cache_layout,
     });
 }
 
@@ -572,6 +586,8 @@ pub fn paintBlockquote(src: std.builtin.SourceLocation, block: parse.Block, ctx:
         .style = quote_style,
         .id_base = ctx.id_base,
         .run_seq = ctx.run_seq,
+        .footnote_section_started = ctx.footnote_section_started,
+        .cache_layout = ctx.cache_layout,
     };
     // textLayout defaults pad 6px — zero it so the bar top matches text top.
     const zero_pad = dvui.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
@@ -599,6 +615,7 @@ pub fn paintBlockquote(src: std.builtin.SourceLocation, block: parse.Block, ctx:
     paintInlineFlow(@src(), block.inlines, &quote_ctx, body, .{
         .padding = zero_pad,
         .color_text = ctx.style.quote_text,
+        .cache_layout = quote_ctx.cache_layout,
     });
 }
 
@@ -652,6 +669,7 @@ pub fn paintFootnoteDef(src: std.builtin.SourceLocation, block: parse.Block, ctx
     paintInlineFlow(@src(), block.inlines, ctx, body, .{
         .padding = .{ .x = 0, .y = 0, .w = 0, .h = 2 },
         .color_text = ctx.style.muted_text,
+        .cache_layout = ctx.cache_layout,
     });
 }
 
@@ -662,6 +680,7 @@ pub fn paintDefTerm(src: std.builtin.SourceLocation, block: parse.Block, ctx: *P
     paintInlineFlow(src, block.inlines, ctx, body, .{
         .padding = .{ .x = 0, .y = 2, .w = 0, .h = 0 },
         .color_text = ctx.style.body_text,
+        .cache_layout = ctx.cache_layout,
     });
 }
 
@@ -674,6 +693,8 @@ pub fn paintDefDesc(src: std.builtin.SourceLocation, block: parse.Block, ctx: *P
         .style = desc_style,
         .id_base = ctx.id_base,
         .run_seq = ctx.run_seq,
+        .footnote_section_started = ctx.footnote_section_started,
+        .cache_layout = ctx.cache_layout,
     };
     var row = dvui.box(src, .{ .dir = .horizontal }, .{
         .expand = .horizontal,
@@ -685,5 +706,6 @@ pub fn paintDefDesc(src: std.builtin.SourceLocation, block: parse.Block, ctx: *P
     paintInlineFlow(@src(), block.inlines, &desc_ctx, body, .{
         .padding = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
         .color_text = ctx.style.muted_text,
+        .cache_layout = desc_ctx.cache_layout,
     });
 }

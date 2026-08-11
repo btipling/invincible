@@ -19,6 +19,73 @@ var clock: u32 = 1;
 var used: usize = 0;
 var parent_allocator: ?Allocator = null;
 
+// ── #404 slot-keyed markdown parse cache ────────────────────────────────────
+// The frame loop paints every in-ring message each frame. The flat 48-entry
+// fingerprint cache re-parses ~N−48 messages per frame once the ring grows past
+// 48. This growable cache is keyed on (physical ring slot, write-revision):
+// an unchanged revision returns the stored `ParsedDoc` with zero body access
+// and zero re-scan, so steady-state per-frame parse work is O(dirty) instead of
+// O(N). Starts near zero (no static floor; composes with #350). Grows to the
+// max physical slot actually painted and holds only real parsed content.
+
+const SlotEntry = struct {
+    revision: u32 = 0,
+    /// Owned; deinit on overwrite/clear.
+    doc: ?parse.ParsedDoc = null,
+};
+
+var slot_entries: std.ArrayList(SlotEntry) = .empty;
+
+pub const SlotResult = struct {
+    /// True when the returned doc came from the cache (unchanged revision) —
+    /// the painter uses this to enable DVUI `cache_layout` on committed rows.
+    hit: bool = false,
+    /// The parsed doc (null on alloc failure / null allocator → paint plain).
+    doc: ?*const parse.ParsedDoc = null,
+};
+
+/// Parse `src` for slot (physical ring index) with current `revision`, returning
+/// the cached doc on an unchanged revision (no re-parse) or a freshly parsed doc.
+/// `hit` distinguishes a cache hit (committed, immutable, safe to `cache_layout`)
+/// from a fresh parse (dirty/live row that just changed). Never touches the flat
+/// 48-entry fingerprint cache (kept for non-ring paints). Fail-open: null doc on
+/// alloc failure / null allocator — caller paints plain.
+pub fn parseSlot(slot: usize, revision: u32, src: []const u8) SlotResult {
+    const a = parent_allocator orelse return .{};
+    while (slot_entries.items.len <= slot) {
+        slot_entries.append(a, .{}) catch return .{};
+    }
+    const e = &slot_entries.items[slot];
+    if (e.doc != null and e.revision == revision) {
+        return .{ .hit = true, .doc = &e.doc.? };
+    }
+    const doc = parse.parse(a, src) catch return .{};
+    if (e.doc) |*d| d.deinit();
+    e.doc = null;
+    e.revision = revision;
+    e.doc = doc;
+    return .{ .doc = &e.doc.? };
+}
+
+/// Test helper: count live slot docs (revision matches nothing required).
+pub fn slotLiveCount() usize {
+    var n: usize = 0;
+    for (slot_entries.items) |*e| {
+        if (e.doc != null) n += 1;
+    }
+    return n;
+}
+
+/// Test helper: clear AND free the slot ArrayList backing buffer under the
+/// allocator that owns it (host tests only — production uses a long-lived gpa
+/// and never needs this; clear() intentionally retains capacity).
+pub fn releaseForTest() void {
+    clear();
+    if (parent_allocator) |a| slot_entries.deinit(a);
+    slot_entries = .empty;
+    parent_allocator = null;
+}
+
 /// Set allocator used for parse arenas (call once from init, e.g. WebBackend.gpa).
 pub fn setAllocator(a: Allocator) void {
     parent_allocator = a;
@@ -33,6 +100,12 @@ pub fn clear() void {
         }
         entries[i] = .{};
     }
+    // #404 slot cache: deinit every cached doc and drop capacity references.
+    for (slot_entries.items) |*e| {
+        if (e.doc) |*d| d.deinit();
+        e.doc = null;
+    }
+    slot_entries.clearRetainingCapacity();
     used = 0;
     generation +%= 1;
     if (generation == 0) generation = 1;
@@ -162,4 +235,53 @@ test "parseCached null allocator returns null" {
     parent_allocator = null;
     clear();
     try std.testing.expect(parseCached("hello") == null);
+}
+
+// ── #404 slot-keyed cache tests ─────────────────────────────────────────────
+
+test "parseSlot hit/reparse on revision, clear drops storage" {
+    setAllocator(std.testing.allocator);
+    defer releaseForTest();
+    clear();
+    try std.testing.expectEqual(@as(usize, 0), slotLiveCount());
+
+    const src = "# Slot **doc**";
+    // Revision 1 → fresh parse (miss), doc present, not a cache hit.
+    const r1 = parseSlot(0, 1, src);
+    try std.testing.expect(r1.doc != null);
+    try std.testing.expect(!r1.hit);
+    try std.testing.expectEqual(@as(usize, 1), slotLiveCount());
+
+    // Unchanged revision 1 → cache hit, identical storage (deterministic: the
+    // cached entry is returned directly, no re-parse), still one live.
+    const r2 = parseSlot(0, 1, src);
+    try std.testing.expect(r2.doc != null);
+    try std.testing.expect(r2.hit);
+    try std.testing.expect(r2.doc == r1.doc);
+    try std.testing.expectEqual(@as(usize, 1), slotLiveCount());
+
+    // Bumped revision 2 (same slot, e.g. stream growth) → re-parse, miss.
+    const src2 = "# Slot **grew** doc";
+    const r3 = parseSlot(0, 2, src2);
+    try std.testing.expect(r3.doc != null);
+    try std.testing.expect(!r3.hit);
+    try std.testing.expectEqual(@as(usize, 1), slotLiveCount());
+
+    // Distinct physical slots are isolated (ring wrap can't alias).
+    const r4 = parseSlot(5, 1, src);
+    try std.testing.expect(r4.doc != null);
+    try std.testing.expect(!r4.hit);
+    try std.testing.expectEqual(@as(usize, 2), slotLiveCount());
+
+    // clear() deinits every cached doc and drops references.
+    clear();
+    try std.testing.expectEqual(@as(usize, 0), slotLiveCount());
+}
+
+test "parseSlot null allocator returns empty (fail-open)" {
+    parent_allocator = null;
+    clear();
+    const r = parseSlot(0, 1, "# hi");
+    try std.testing.expect(r.doc == null);
+    try std.testing.expect(!r.hit);
 }

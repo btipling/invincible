@@ -269,13 +269,35 @@ fn detailUsesMono(name: []const u8, detail: []const u8) bool {
 /// target. Level 1: one one-liner per tool (colored status glyph). Level 2:
 /// that tool's inline detail. Returns true when the payload decoded and painted;
 /// false means fail-open → caller renders the raw body as plain text.
-fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const u8) bool {
-    var decoded = toolrun.decode(dvui.currentWindow().arena(), text) orelse return false;
-    defer decoded.deinit();
-    const run = decoded.run;
+fn paintToolRun(
+    src: std.builtin.SourceLocation,
+    msg_index: usize,
+    text: []const u8,
+    slot: ?usize,
+    revision: u32,
+) bool {
+    // #404: slot-keyed decode cache keyed on (physical ring slot, write-revision).
+    // An unchanged revision reuses the previously decoded summary with zero
+    // re-decode (O(dirty), not O(N) every frame). The cached summary lives in
+    // the long-lived gpa and is owned by the cache — never deinit'd here. The
+    // frame loop always passes a slot, so the fresh per-frame arena decode below
+    // is only a safety net for hypothetical non-ring callers.
+    var owned: ?toolrun.Decoded = null;
+    defer if (owned) |*d| d.deinit();
+    const arena = dvui.currentWindow().arena();
+    const run: ?*const toolrun.ToolRun = if (slot) |s|
+        rich.toolrunCacheSlot(s, revision, text)
+    else
+        blk: {
+            const dec = toolrun.decode(arena, text) orelse break :blk null;
+            owned = dec;
+            break :blk &owned.?.run;
+        };
+    if (run == null) return false;
+    const runv = run.?;
     // Decoders recount ok/fail/pending from the kept (capped) items, so the
     // header count can never disagree with what actually paints (review).
-    const total = run.ok + run.fail + run.pending;
+    const total = runv.ok + runv.fail + runv.pending;
 
     // IMGUI identity: every widget in this control is keyed off `src` (the
     // single paintToolRun call site), so two tool-run rows must NOT share
@@ -353,9 +375,9 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
 
             // Status marks must not tofu: ✓/✗ come from DejaVu Sans Symbols,
             // `…` from the Noto heading face (see paintStatusChip).
-            if (run.ok > 0) paintStatusChip(src, id_base + 20, id_base + 21, id_base + 22, palette.teal_accent, "✓", run.ok, palette.fontSymbols());
-            if (run.fail > 0) paintStatusChip(src, id_base + 23, id_base + 24, id_base + 25, palette.ember_accent, "✗", run.fail, palette.fontSymbols());
-            if (run.pending > 0) paintStatusChip(src, id_base + 26, id_base + 27, id_base + 28, palette.warm_accent, "…", run.pending, .theme(.heading));
+            if (runv.ok > 0) paintStatusChip(src, id_base + 20, id_base + 21, id_base + 22, palette.teal_accent, "✓", runv.ok, palette.fontSymbols());
+            if (runv.fail > 0) paintStatusChip(src, id_base + 23, id_base + 24, id_base + 25, palette.ember_accent, "✗", runv.fail, palette.fontSymbols());
+            if (runv.pending > 0) paintStatusChip(src, id_base + 26, id_base + 27, id_base + 28, palette.warm_accent, "…", runv.pending, .theme(.heading));
         }
     }
 
@@ -368,7 +390,7 @@ fn paintToolRun(src: std.builtin.SourceLocation, msg_index: usize, text: []const
         });
         defer list.deinit();
 
-        for (run.items) |it| {
+        for (runv.items) |it| {
             const l2_key: dvui.Id = @enumFromInt(l1_raw *% 31 + it.id);
             // `it.id` is 1-based per group with up to MAX_ITEMS items. Each item
             // owns a 1024-wide namespace (`it_id *% 1024`) under this message's
@@ -745,10 +767,18 @@ pub fn frame() !void {
                         }
                     }
                     {
+                        // #404: pass the physical ring slot + write-revision so the
+                        // painter goes through the slot-keyed markdown parse cache —
+                        // an unchanged revision is a cache hit (→ dvui cache_layout,
+                        // zero re-parse/shaft), only the dirty row re-parses.
                         if (rich.shouldPaintMarkdown(m.kind)) {
-                            rich.paintMessageBody(@src(), m.kind, m.text, .{ .msg_index = i });
+                            rich.paintMessageBody(@src(), m.kind, m.text, .{
+                                .msg_index = i,
+                                .slot = bridge.messageSlotAt(i),
+                                .revision = bridge.messageRevisionAt(i),
+                            });
                         } else if (m.kind == rich.KIND_TOOL) {
-                            if (!paintToolRun(@src(), i, m.text)) {
+                            if (!paintToolRun(@src(), i, m.text, bridge.messageSlotAt(i), bridge.messageRevisionAt(i))) {
                                 // Fail-open (plan #345): unknown/old tool-run
                                 // payload decodes to nothing → render raw text.
                                 var tl = dvui.textLayout(@src(), .{}, .{
