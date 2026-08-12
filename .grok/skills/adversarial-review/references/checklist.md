@@ -69,8 +69,8 @@ rubber-stamp “N/A” on everything.
 - Bridge protocol tests for new exports?  
 - chatServer parse/validation cases?  
 - “Tests pass” only because assertions are vacuous?  
-- **Test performance in changed DB tests** (`lib/tenancy/*`, `app/api`, `lib/di/*`):
-  - **Cold-boot automatic fail:** added `new PGlite(` / second engine in one file / file-local boot+`applyMigrations`? Shared helper is the only allowed constructor (`#431`). Changed file still boots itself after the helper exists? → **Major, CONCERNS, not a nit.** Untouched legacy boots on `main` are `#431`, not this PR.
+- **Test cost + DI in changed tests** (`lib/tenancy/*`, `lib/di/*`, `app/api`):
+  - **Automatic fail:** changed/new tests construct a real expensive dep (PGlite, `createDbConnection`, bcrypt in setup, live Redis/HTTP) **or repeat that cost per test/file** instead of injecting via the module’s `db`/`connect`/factory seam, sharing one helper (`#431`), or fully mocking. `new PGlite()` outside the one shared helper is the named case — same rule for any slow dep DI already replaced.
   - Migrations re-applied per test / one chunk at a time? (apply once per file, batched)
   - `beforeEach` deleting N tables + re-seeding a DEK baseline every test? (one-time baseline + rollback if the surface allows — note PGlite’s single-connection mutex breaks raw SAVEPOINT / `db.transaction` straddling the shared `db`)
   - Do `dekVersion`/`kekVersion` counters rise across tests (isolation leaked)?
