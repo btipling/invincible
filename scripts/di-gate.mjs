@@ -36,7 +36,14 @@
  *   - `scripts/sandbox-orphan-cleanup.mjs`   — orphan GHA attach helper (`Sandbox.get(`)
  *   - `lib/mcp/client.ts`              — MCP client owner (deferred to MCP phase)
  *   - `scripts/di-gate.mjs`            — the gate defines the rule strings itself
- *   - `*.test.*` / `*.spec.*`          — test factories (inject / construct freely)
+ *   - `*.test.*` / `*.spec.*`          — test files may inject/stub the phase-2
+ *                                        sandbox/Redis symbols (test doubles), but the
+ *                                        DB seam is still enforced (see below).
+ *
+ * Test files (`*.test.*` / `*.spec.*`) are scanned like production code for the **DB
+ * seam** (`createDbConnection(` / `new PGlite(`) — they are NOT exempt, so the phase-3
+ * guard is never silently dropped by dropping the DB pattern. Only the phase-2 sandbox /
+ * HTTP / Redis symbols may appear in tests (injected/stubbed doubles).
  *
  * This is a pure static grep (no vitest wrapper). It exits 0 when the scan is
  * clean and 1 (with offenders) otherwise.
@@ -68,10 +75,13 @@ const ALLOWLIST = new Set([
 ]);
 
 const PATTERNS = [
-  // DB seam (phase 3).
+  // DB seam (phase 3) — ALWAYS enforced, including in test files. The only owner
+  // for `new PGlite(` is `lib/tenancy/test/shared.ts` (allowlisted above); tests
+  // must not gain a blanket "construct freely" carve-out for the DB seam
+  // (adversarial L6 — phase 3's automatic cold-boot DB guard is kept intact).
   { symbol: 'createDbConnection(', regex: /createDbConnection\s*\(/g },
   { symbol: 'new PGlite(', regex: /new\s+PGlite\s*\(/g },
-  // Sandbox / HTTP / Redis seam (phase 2, #439).
+  // Sandbox / HTTP / Redis seam (phase 2, #439) — enforced in non-test code.
   // eslint-disable-next-line no-useless-escape
   { symbol: 'Sandbox.get(', regex: /Sandbox\s*\.\s*get\s*\(/g },
   { symbol: 'createClient(', regex: /createClient\s*\(/g },
@@ -80,6 +90,18 @@ const PATTERNS = [
   { symbol: 'createVercelSandboxClient(', regex: /createVercelSandboxClient\s*\(/g },
   { symbol: 'createVercelSandboxHttpRunner(', regex: /createVercelSandboxHttpRunner\s*\(/g },
 ];
+
+// Phase-2 (#439) sandbox/HTTP/Redis symbols that MAY appear in test files as
+// injected/stubbed test doubles, but must never appear in app/ non-test code.
+// The DB seam symbols are intentionally NOT listed here: they stay gated in tests.
+const TEST_EXEMPT_SYMBOLS = new Set([
+  'Sandbox.get(',
+  'createClient(',
+  'new RedisSessionStore(',
+  'createSandboxClient(',
+  'createVercelSandboxClient(',
+  'createVercelSandboxHttpRunner(',
+]);
 
 function isSourceFile(name) {
   return EXTS.has(name.slice(name.lastIndexOf('.')));
@@ -137,11 +159,14 @@ function main() {
     }
     for (const file of files) {
       const rel = file.split(sep).join('/');
-      // Test factories construct / inject freely (phase-2 scoped allowlist).
-      if (TEST_RE.test(rel)) continue;
       if (ALLOWLIST.has(rel)) continue;
+      const isTest = TEST_RE.test(rel);
       const src = stripComments(readFileSync(file, 'utf8'));
       for (const { symbol, regex } of PATTERNS) {
+        // Phase-2 sandbox/Redis symbols are allowed in test files (test doubles
+        // inject/stub them), but the DB seam (`new PGlite(` / `createDbConnection(`)
+        // stays enforced in tests too — only `lib/tenancy/test/shared.ts` owns it.
+        if (isTest && TEST_EXEMPT_SYMBOLS.has(symbol)) continue;
         if (regex.test(src)) {
           regex.lastIndex = 0;
           let lineNo = 1;

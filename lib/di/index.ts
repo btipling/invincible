@@ -144,8 +144,12 @@ export function createProdServices(overrides: {
     createVercelSandboxClient(opts);
 
   // Server session-store paths construct the Redis store at the root (the
-  // harnessSessionsRedis seam consumes the registered factory).
-  registerSessionStoreFactoryForServer(() => new RedisSessionStore());
+  // harnessSessionsRedis seam consumes the registered factory). The registered
+  // factory is the same root `createSessionStore` exposed below (NOT a bare
+  // `new RedisSessionStore()`), so the live prod path receives the env-resolved
+  // `url`/`ttlMs` from the root instead of re-reading `process.env` in the store
+  // body (adversarial L1 — the store's env reads stay a non-prod fallback).
+  registerSessionStoreFactoryForServer(createSessionStore);
 
   return {
     tenantKeys: createTenantKeys({ connect }),
@@ -184,16 +188,27 @@ export function createProdServices(overrides: {
       createVercelSandboxHttpRunner(opts),
     createByoSandboxClient: byoSandboxClientFactory,
     createVercelFsSandboxClient: vercelFsClientFactory,
-    createSessionStore: (
-      opts: Omit<RedisSessionStoreOptions, 'url' | 'ttlMs'> & {
-        url?: string;
-        ttlMs?: number;
-      } = {},
-    ) =>
-      new RedisSessionStore({
-        client: opts.client,
-        url: opts.url ?? resolveRedisUrl(),
-        ttlMs: opts.ttlMs ?? resolveRedisTtlMs(),
-      }),
+    /** Root factory for the Redis session store, also registered as the server seam. */
+    createSessionStore,
   };
+}
+
+/**
+ * Root factory for the Redis session store. Resolves `url`/`ttlMs` from the env
+ * once at the root (`REDIS_URL` / `SESSION_REDIS_TTL_MS`) and passes them to
+ * `RedisSessionStore` explicitly, so the live prod path never re-reads
+ * `process.env` inside the store body (those reads remain a non-prod fallback for
+ * direct/legacy callers). `client` is the injectable test seam.
+ */
+function createSessionStore(
+  opts: Omit<RedisSessionStoreOptions, 'url' | 'ttlMs'> & {
+    url?: string;
+    ttlMs?: number;
+  } = {},
+): RedisSessionStore {
+  return new RedisSessionStore({
+    client: opts.client,
+    url: opts.url ?? resolveRedisUrl(),
+    ttlMs: opts.ttlMs ?? resolveRedisTtlMs(),
+  });
 }
