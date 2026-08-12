@@ -329,6 +329,18 @@ pub fn build(b: *std.Build) void {
     });
     test_rich.dependOn(&b.addRunArtifact(ring_slot_tests).step);
 
+    // #424: thinking collapse policy (busy turn boundary -> full vs collapsed).
+    // Pure, no dvui/wasm frame.
+    const thinking_collapse_tests = b.addTest(.{
+        .name = "thinking-collapse",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/thinking_collapse.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+    test_rich.dependOn(&b.addRunArtifact(thinking_collapse_tests).step);
+
     // Rich-glue invariants: #387 host/whitespace pins plus current-behavior
     // drift-guards. #336's emph-split is fixed (guard pins the corrected
     // literal-underscore behavior); #343's link-tail `>` is fixed (guard pins

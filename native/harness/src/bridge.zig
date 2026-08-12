@@ -39,6 +39,11 @@ pub const MessageKind = enum(u8) {
 /// Transcript ring slots. Host `HARNESS_RING_MAX` must match.
 /// Sized for long multi-tool agent turns — not a toy ring.
 const MAX_MSG = 2048;
+/// Ring capacity exposed to the thinking-collapse policy
+/// (`thinking_collapse.zig`) — the physical-slot namespace for busy-turn
+/// membership math. Internal (read in-Wasm, never exported): no build.zig
+/// whitelist change, no protocol bump.
+pub const RING_CAP: usize = MAX_MSG;
 /// Cap per transcript line (UTF-8 bytes). Host truncates to this before push/update.
 /// 256 KiB — long thinking / assistant monologues (caution-theater 4–64 KiB removed).
 /// Single source of truth: `ring_slot.MAX_MSG_LEN` (host-unit-tested seam, #404).
@@ -102,6 +107,15 @@ pub fn getLifecycle() Lifecycle {
 
 pub fn messageCount() usize {
     return msg_count;
+}
+
+/// Current ring head: the physical slot the *next* message write will use
+/// (0..RING_CAP). #424 — the collapse policy keys busy-turn membership on this
+/// (ring-forward slot range from the busy-start slot), so it stays correct even
+/// when the ring is saturated or has wrapped. Internal (read in-Wasm, never
+/// exported): no build.zig whitelist change.
+pub fn messageHead() usize {
+    return msg_head;
 }
 
 pub fn messageAt(i: usize) ?struct { kind: u8, text: []const u8 } {

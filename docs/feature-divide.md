@@ -80,7 +80,7 @@ User types in Wasm composer
        SSE: tool_start / tool_result / reasoning_delta / text_delta / done (see docs/agent-stream.md)
        JSON fallback when Accept is not event-stream (tests / simple clients)
   → Host aggregates each uninterrupted tool streak into ONE display-only `tool_run` message (kind 6, protocol v10) + Thinking monologue + growing Assistant (protocol v8 update-last); the `tool_run` row is **commit-once** — pushed to the bridge only at a true boundary (assistant text, turn end, or group-full roll), never live under Busy; on reload consecutive `tool_run` rows coalesce into scannable groups (plan #365)
-  → Thinking rows **collapse** when tools/text supersede them (short ring residue; not SessionStore)
+  → Thinking rows **collapse at turn end** into a compact expandable control (in-memory; ephemeral; not SessionStore); the active Busy turn stays fully expanded
   → Tool-run rows paint as a default-collapsed `N tools called` expandable control (counts + two-level detail); see [harness-limits.md](harness-limits.md)
   → User reads thinking + reply in the Wasm transcript while Busy; the `N tools called` card commits on the first boundary (reply start or turn end), one group per streak
 ```
