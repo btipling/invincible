@@ -9,7 +9,7 @@ description: >
   the fast changed-only gate. Also requires gh. Never GitHub MCP.
 metadata:
   short-description: "Merge a reviewed, fully-tested PR with required full vitest gate"
-  version: "1.0"
+  version: "1.1"
   project: invincible
 ---
 
@@ -131,6 +131,24 @@ node_modules/vitest/vitest.mjs run                  # FULL suite, must be failed
    outstanding ones as unrequired/infrastructure.
 6. **Vercel deploy (if it's the merged branch's deploy)**: if a deployment for
    the head is failing, call it out; don't silently merge into a red deploy.
+7. **Test cold-boot gate (automatic refuse):** a test-side **cold boot** is
+   `new PGlite()`, a second in-process WASM/Postgres engine in the same file,
+   or a file-local migration boot that constructs its own engine. **One** shared
+   helper may construct (issue `#431`; typically `lib/tenancy/test/*`). Grep the
+   PR:
+   ```bash
+   # Added constructors (diff): any new `new PGlite(` outside the shared helper → refuse
+   gh pr diff <N> --repo btipling/invincible | rg -n '^\+.*new PGlite\(' || true
+   # Changed test files that still own a boot after the helper exists on HEAD
+   gh pr diff <N> --name-only
+   # then: rg 'new PGlite\(' on those *.test.ts — fail if not the single helper
+   ```
+   **Refuse** if the PR **adds** a cold boot, has **two+** `new PGlite()` in one
+   file, or a **changed** test file still calls `new PGlite()` after the shared
+   helper exists. Do **not** refuse an unrelated PR solely because untouched
+   legacy `lib/tenancy/*.test.ts` files on `main` still boot (that is `#431`).
+   This gate is **not** operator-waivable. Adversarial-review must already have
+   failed the same class as Major / CONCERNS.
 
 ---
 
@@ -181,6 +199,9 @@ Stop and ask before merging when any of the following hold:
   used). Do not merge on `--changed` alone.
 - `typecheck` failed.
 - A BLOCK/CONCERNS adversarial review is outstanding on the current head.
+- **Test cold-boot gate failed** (PR adds `new PGlite(` / extra engine, or a
+  changed test file still constructs PGlite after the shared helper exists).
+  Not waivable. See §3.7.
 - There is uncommitted tracked work in the local checkout that isn't ours.
 - The merge target isn't `main` (a PR into a feature branch is out of scope for
   this skill unless the operator names that branch explicitly).
@@ -195,6 +216,7 @@ Stop and ask before merging when any of the following hold:
 | A code-quality/review gate | `adversarial-review` (run it first) |
 | Squash/linearize merging | This repo convention = merge commit (`--merge`); no squash |
 | Merging without a full test run | Skill failure — the full `vitest run` is mandatory |
+| Merging a PR that adds a test cold boot (`new PGlite()`) | Skill failure — §3.7 automatic refuse; `#431` |
 | Fast-gate (`--changed`) merge | The correctness gate is the full suite |
 | Authoring/fixing code | separate implement turn; merging doesn't edit the PR |
 | Post-merge hygiene of the whole sandbox | `cleanup-sandbox` (after this) |
@@ -209,6 +231,9 @@ Stop and ask before merging when any of the following hold:
 [ ] PR <N> is OPEN, base=main, MERGEABLE (not CONFLICTING)
 [ ] Working tree clean (only deliberate untracked scratch is untouched)
 [ ] Adversarial review satisfied (PASS/PASS WITH NOTES or CONCERNS resolved)
+[ ] Test cold-boot gate: no added `new PGlite(` outside the one shared helper;
+    no second engine in one file; changed tests use the helper if it exists
+    (automatic refuse — not waivable; #431)
 [ ] `npm run typecheck` exit 0
 [ ] FULL `node_modules/vitest/vitest.mjs run` exit 0 / failed=0
     (direct vitest, no wrapper; --changed is NOT sufficient)

@@ -39,5 +39,6 @@ gh pr diff <N> --repo btipling/invincible
 1. Attack with lenses (checklist)  
 2. Self-refute every candidate finding  
 3. Report with verdict  
-4. Default: post to PR via `gh pr review` / `gh pr comment`  
-5. Do not implement fixes unless asked  
+4. Default: post to PR via `gh pr review` / `gh pr comment`
+5. Do not implement fixes unless asked
+6. **Cold-boot gate:** added/`new PGlite()` outside the one shared test helper (`#431`) is an **automatic Major / CONCERNS** — not a nit, not user-acceptable. merge-pr will refuse.  
