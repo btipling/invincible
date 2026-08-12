@@ -141,7 +141,12 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
   });
 
   it('accepts only reserved keys; rejects unknown keys', () => {
-    expect(RESERVED_META_KEYS).toEqual(['activeSandboxId', 'logicalCwd', 'legacySnapshotId']);
+    expect(RESERVED_META_KEYS).toEqual([
+      'activeSandboxId',
+      'logicalCwd',
+      'legacySnapshotId',
+      'title',
+    ]);
     for (const k of RESERVED_META_KEYS) {
       const rawMeta: unknown = { [k]: 'x' };
       const res = validateSessionRecord(

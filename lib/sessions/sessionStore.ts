@@ -35,8 +35,18 @@ import { validateSessionSnapshot } from '../tenancy/harnessSessions';
 import type { HarnessSessionErrorCode } from '../tenancy/harnessSessions';
 import type { SessionMessage } from '../sessionStore';
 
-/** Reserved `meta` keys — the ONLY keys a session record may carry (parent #411). */
-export const RESERVED_META_KEYS = ['activeSandboxId', 'logicalCwd', 'legacySnapshotId'] as const;
+/**
+ * Reserved `meta` keys — the ONLY keys a session record may carry (parent #411).
+ * `activeSandboxId` / `logicalCwd` are P1 (GAP-1); `legacySnapshotId` is the
+ * Phase 4 backfill trace key; `title` is the optional display title stored by the
+ * Phase 2 mint (list summary).
+ */
+export const RESERVED_META_KEYS = [
+  'activeSandboxId',
+  'logicalCwd',
+  'legacySnapshotId',
+  'title',
+] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
 /** Opaque values under reserved `meta` keys (scalars only; no nested structures). */
