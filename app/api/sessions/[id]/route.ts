@@ -12,6 +12,7 @@ import {
   validateSessionRecord,
 } from '../../../../lib/sessions/sessionStore';
 import {
+  guardStore,
   resolveSessionStore,
   resolveTenantIdForUser,
   sessionKeyFor,
@@ -89,11 +90,13 @@ export async function GET(_req: Request, ctx: Ctx): Promise<Response> {
   if (!scope.ok) return scope.response;
 
   const key: SessionRecordKey = sessionKeyFor(scope.tenantId, gate.userId, id);
-  const record = await scope.store.get(key);
-  if (!record) {
+  // Guard store I/O: dead/unreachable Redis → 503 SESSION_STORE_UNAVAILABLE, not 500.
+  const got = await guardStore(() => scope.store.get(key));
+  if (!got.ok) return got.response;
+  if (!got.value) {
     return Response.json({ error: 'Session not found.', code: 'NOT_FOUND' }, { status: 404 });
   }
-  return Response.json(record);
+  return Response.json(got.value);
 }
 
 /**
@@ -165,11 +168,12 @@ export async function PUT(req: Request, ctx: Ctx): Promise<Response> {
   }
 
   const key: SessionRecordKey = sessionKeyFor(scope.tenantId, gate.userId, id);
-  const result = await scope.store.put(key, validated.value);
-  if (result.status === 'conflict') {
-    return Response.json(result.server, { status: 409 });
+  const result = await guardStore(() => scope.store.put(key, validated.value));
+  if (!result.ok) return result.response;
+  if (result.value.status === 'conflict') {
+    return Response.json(result.value.server, { status: 409 });
   }
-  return Response.json(result.record);
+  return Response.json(result.value.record);
 }
 
 /** DELETE /api/sessions/:id — delete ONE, idempotent 204 (others untouched). */
@@ -183,6 +187,9 @@ export async function DELETE(_req: Request, ctx: Ctx): Promise<Response> {
   const scope = await requireScopeFor(gate.userId);
   if (!scope.ok) return scope.response;
 
-  await scope.store.remove(sessionKeyFor(scope.tenantId, gate.userId, id));
+  const removed = await guardStore(() =>
+    scope.store.remove(sessionKeyFor(scope.tenantId, gate.userId, id)),
+  );
+  if (!removed.ok) return removed.response;
   return new Response(null, { status: 204 });
 }

@@ -1,6 +1,7 @@
 /**
  * Phase 1 (#412) — ServerSessionStore seam for the multi-session cloud harness
- * model (parent #411). Server-only; backed by @upstash/redis REST.
+ * model (parent #411). Server-only; backed by Redis over the RESP protocol
+ * (`REDIS_URL`), via `lib/sessions/redisSessionStore.ts`.
  *
  * **Server-only.** Never import this module (or siblings in `lib/sessions`) from
  * client/Wasm code — the Redis client and DB-coupled validation must stay on the

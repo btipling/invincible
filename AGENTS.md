@@ -122,8 +122,8 @@ Load from **this repo** via `gh` (not generic template skills). Zero-search:
 | **create-plan** | `.grok/skills/create-plan/SKILL.md` | “use create-plan”, feature plans as **GitHub issues**, parent + phase issues; locks **cloud ops (GHA)** + **living docs** |
 | **plan-review** | `.grok/skills/plan-review/SKILL.md` (+ `LOAD.md`, `references/*`) | Review a plan **issue**; default edit issue body via `gh`; scores cloud ops + living docs |
 | **adversarial-review** | `.grok/skills/adversarial-review/SKILL.md` (+ `LOAD.md`, `references/*`) | Hostile **PR** review; break scenarios; post comment via `gh` |
-| **cleanup-sandbox** | `.grok/skills/cleanup-sandbox/SKILL.md` (+ `LOAD.md`) | Post-session hygiene: checkout + pull latest `main`, delete leftover local branches / agent scratch; **refuses** to discard current uncommitted work without explicit operator consent |
-| **implement-plan** | `.grok/skills/implement-plan/SKILL.md` (+ `LOAD.md`) | Code a reviewed plan into a **non-merged PR** + tests; canonical test/build workflow (`npm run typecheck`, `node run-tests.mjs`), in-sandbox exec rules, layer ownership, code standards |
+| **cleanup-sandbox** | `.grok/skills/cleanup-sandbox/SKILL.md` (+ `LOAD.md`) | Post-session hygiene: checkout + pull latest `main`, delete leftover local branches / agent scratch; auto-deletes **nested self-clones** (same-origin `ivc-*` / `.grok` copies) without asking; **refuses** to discard current uncommitted work without explicit operator consent |
+| **implement-plan** | `.grok/skills/implement-plan/SKILL.md` (+ `LOAD.md`) | Code a reviewed plan into a **non-merged PR** + tests; canonical test/build workflow (`npm run typecheck`, `vitest run`, `vitest run --changed`), in-sandbox exec rules, layer ownership, code standards |
 
 Index: [`.grok/skills/README.md`](.grok/skills/README.md).
 
@@ -358,12 +358,17 @@ See create-plan / plan-review **layer** rules when planning features.
 - Inference stays server-side (`POST /api/chat` / `POST /api/agent`). No Gateway or sandbox secrets in client or Wasm.
 - Agent sandbox is a **separate process** from the Zig GHA runner — see [`docs/sandbox.md`](docs/sandbox.md).
 - Prefer extending `native/harness` + `HarnessHost` over new infra.
-- Run `npm test` / `npm run typecheck` / `npm run build` before claiming ready
-  (**agent workspace or CI**; build needs token or existing `public/harness`).
-  In a cloud agent workspace where a full `npm test` stream drops over the exec
-  transport, prefer `npm run test:full` (= `node run-tests.mjs`) for the full
-  suite — it writes a one-line summary and **exits non-zero on any failure**
-  (see `run-tests.mjs` / the implement-plan skill).
+- **Tests are run directly with vitest — no script wrappers allowed.** Never
+  introduce or use a wrapper script around vitest, and do not re-add one if it was
+  removed. Run the suite with `npm test` (= `vitest run`) or invoke vitest through
+  the **local** binary directly (`node_modules/vitest/vitest.mjs run`, never `npx`)
+  with an explicit exec timeout (`timeoutMs ≈ 600000`) — a long run can drop over
+  the transport but still complete. For a fast mechanical gate that only tests files
+  changed since `HEAD`, use `npm run test:changed` (= `vitest run --changed`).
+  `vitest run` **exits non-zero on any failure**; trust the exit code and the
+  per-file output, never a summarized/hidden log. Run `npm run typecheck` /
+  `npm run build` before claiming ready (**agent workspace or CI**; build needs
+  token or existing `public/harness`).
 - No secrets in repo; Vercel / GitHub secrets only.
 - Ops instructions for humans: **Vercel / browser / cloud agent** only — never
   “install Node on your laptop” or “clone this path on your machine.”

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   type HarnessSessionRecord,
   RESERVED_META_KEYS,
@@ -10,7 +10,13 @@ import {
   sessionPrefix,
 } from './sessionStore';
 import { MemorySessionStore } from './memorySessionStore';
-import { RedisSessionStore, type RedisClientLike } from './redisSessionStore';
+import {
+  RedisSessionStore,
+  setRedisClientFactoryForTests,
+  resetRedisClientCacheForTests,
+  type RedisClientLike,
+} from './redisSessionStore';
+import type { RedisClientType } from 'redis';
 
 function makeRecord(overrides: Partial<HarnessSessionRecord> = {}): HarnessSessionRecord {
   return {
@@ -262,40 +268,31 @@ describe('MemorySessionStore', () => {
 });
 
 describe('RedisSessionStore', () => {
-  it('resolves SESSION_REDIS_* first, then UPSTASH_REDIS_* fallback', () => {
+  it('reads REDIS_URL (RESP wire format) as the store URL; opts.url overrides', () => {
     const prev = { ...process.env };
     try {
-      delete process.env.SESSION_REDIS_URL;
-      delete process.env.SESSION_REDIS_TOKEN;
-      delete process.env.UPSTASH_REDIS_REST_URL;
-      delete process.env.UPSTASH_REDIS_REST_TOKEN;
+      delete process.env.REDIS_URL;
+      process.env.REDIS_URL = 'redis://default:secret@dragons.example:6379';
+      const store = new RedisSessionStore({ client: fakeClient().client });
+      expect(store.url()).toBe('redis://default:secret@dragons.example:6379');
 
-      process.env.SESSION_REDIS_URL = 'https://session.example';
-      process.env.SESSION_REDIS_TOKEN = 'a';
-      let store = new RedisSessionStore({ client: fakeClient().client });
-      expect(store.url()).toBe('https://session.example');
-      expect(store.token()).toBe('a');
-
-      delete process.env.SESSION_REDIS_URL;
-      delete process.env.SESSION_REDIS_TOKEN;
-      process.env.UPSTASH_REDIS_REST_URL = 'https://fallback.example';
-      process.env.UPSTASH_REDIS_REST_TOKEN = 'b';
-      store = new RedisSessionStore({ client: fakeClient().client });
-      expect(store.url()).toBe('https://fallback.example');
-      expect(store.token()).toBe('b');
+      // Explicit `url` option overrides the env var. Named-credential / TLS variants parse too.
+      delete process.env.REDIS_URL;
+      const overridden = new RedisSessionStore({
+        client: fakeClient().client,
+        url: 'rediss://default:pw@host:6380',
+      });
+      expect(overridden.url()).toBe('rediss://default:pw@host:6380');
     } finally {
       process.env = prev;
     }
   });
 
-  it('throws when no client and no URL/token are available', () => {
+  it('throws when no client and no REDIS_URL are available', () => {
     const prev = { ...process.env };
     try {
-      delete process.env.SESSION_REDIS_URL;
-      delete process.env.SESSION_REDIS_TOKEN;
-      delete process.env.UPSTASH_REDIS_REST_URL;
-      delete process.env.UPSTASH_REDIS_REST_TOKEN;
-      expect(() => new RedisSessionStore()).toThrow(/SESSION_REDIS_URL/);
+      delete process.env.REDIS_URL;
+      expect(() => new RedisSessionStore()).toThrow(/REDIS_URL/);
     } finally {
       process.env = prev;
     }
@@ -446,5 +443,128 @@ describe('RedisSessionStore', () => {
     map.set('harness:session:tenant-1:user-1:corrupt', { meta: { smuggled: 1 } });
     const ids = (await store.list({ tenantId: 'tenant-1', userId: 'user-1' })).map((r) => r.id).sort();
     expect(ids).toEqual(['id', 'other']);
+  });
+});
+
+describe('RedisSessionStore — RESP connect lifecycle (adversarial L1/L6)', () => {
+  const URL = 'redis://default:secret@connect-lifecycle.test:6379';
+  const originalEnv = { ...process.env };
+
+  /** A minimal node-redis-shaped fake whose `connect()` rejects the first time. */
+  function buildConnectSimulator(rejectFirst: boolean) {
+    let connectCalls = 0;
+    const builds = [] as string[];
+    const make = (url: string): RedisClientType => {
+      builds.push(url);
+      const isOpen = { value: false };
+      const client = {
+        isOpen: false,
+        on() {
+          return client;
+        },
+        async connect() {
+          connectCalls++;
+          if (rejectFirst && connectCalls === 1) {
+            throw new Error('CONNECT_FAILED');
+          }
+          isOpen.value = true;
+          client.isOpen = true;
+          return client;
+        },
+        async disconnect() {
+          client.isOpen = false;
+        },
+        async get() {
+          return null;
+        },
+        async set() {
+          return 'OK';
+        },
+        async del() {
+          return 0;
+        },
+        async keys() {
+          return [];
+        },
+      };
+      return client as unknown as RedisClientType;
+    };
+    return { make, builds, connectCount: () => connectCalls };
+  }
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+    resetRedisClientCacheForTests();
+    setRedisClientFactoryForTests(null);
+  });
+
+  it('a failed connect is NOT retained in the per-URL cache; the next call rebuilds and retries', async () => {
+    const sim = buildConnectSimulator(true /* reject first connect */);
+    setRedisClientFactoryForTests(sim.make);
+    resetRedisClientCacheForTests();
+    process.env.REDIS_URL = URL;
+
+    const store = new RedisSessionStore(); // no injected client → real adapter path through redisFor
+    const key = { tenantId: 't1', userId: 'u1', sessionId: 's1' };
+
+    // First command: connect() rejects → store.get rejects (surfaced as 503 by the seam).
+    await expect(store.get(key)).rejects.toThrow(/CONNECT_FAILED/);
+    expect(sim.builds.length).toBe(1);
+    expect(sim.connectCount()).toBe(1);
+
+    // Second command: the cache entry was dropped on that rejection, so a fresh client
+    // is built and connect() retried (now succeeds) → no sticky poison on a warm isolate.
+    await expect(store.get(key)).resolves.toBeNull();
+    expect(sim.builds.length).toBe(2);
+    expect(sim.connectCount()).toBe(2);
+  });
+
+  it('concurrent first-calls for the same URL share ONE in-flight connect (single socket)', async () => {
+    let connectResolvers = [] as ((v: unknown) => void)[];
+    const builds = [] as string[];
+    const factory = (url: string): RedisClientType => {
+      builds.push(url);
+      const client = {
+        isOpen: false,
+        on() {
+          return client;
+        },
+        async connect() {
+          await new Promise((resolve) => connectResolvers.push(resolve));
+          client.isOpen = true;
+          return client;
+        },
+        async disconnect() {
+          client.isOpen = false;
+        },
+        async get() {
+          return null;
+        },
+        async set() {
+          return 'OK';
+        },
+        async del() {
+          return 0;
+        },
+        async keys() {
+          return [];
+        },
+      };
+      return client as unknown as RedisClientType;
+    };
+    setRedisClientFactoryForTests(factory);
+    resetRedisClientCacheForTests();
+    process.env.REDIS_URL = URL;
+
+    const store = new RedisSessionStore();
+    const key = { tenantId: 't1', userId: 'u1', sessionId: 'a' };
+    const p1 = store.get(key);
+    const p2 = store.get(key);
+    // Both requests resolve the SAME cached in-flight promise → exactly one factory build.
+    expect(builds.length).toBe(1);
+    for (const r of connectResolvers.splice(0)) r(undefined);
+    await p1;
+    await p2;
+    expect(builds.length).toBe(1);
   });
 });

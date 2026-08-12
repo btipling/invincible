@@ -94,6 +94,42 @@ describe('/api/sessions/:id', () => {
     expect(body.code).toBe('SESSION_STORE_UNAVAILABLE');
   });
 
+  it('store I/O rejection (e.g. dead Redis) → 503 SESSION_STORE_UNAVAILABLE on GET/PUT/DELETE (adv. L1/L6)', async () => {
+    const throwingStore: import('../../../../lib/sessions/sessionStore').ServerSessionStore = {
+      async get() {
+        throw new Error('redis connection refused');
+      },
+      async put() {
+        throw new Error('redis connection refused');
+      },
+      async list() {
+        throw new Error('redis connection refused');
+      },
+      async remove() {
+        throw new Error('redis connection refused');
+      },
+    };
+    setSessionStoreForTests(throwingStore);
+    const { GET, PUT, DELETE } = await mockAuthed();
+
+    const resGet = await GET(new Request('http://localhost/api/sessions/abc'), {
+      params: Promise.resolve({ id: 'abc' }),
+    });
+    const resPut = await PUT(putRequest('abc', record('abc')), {
+      params: Promise.resolve({ id: 'abc' }),
+    });
+    const resDel = await DELETE(new Request('http://localhost/api/sessions/abc'), {
+      params: Promise.resolve({ id: 'abc' }),
+    });
+    expect(resGet.status).toBe(503);
+    expect(resPut.status).toBe(503);
+    expect(resDel.status).toBe(503);
+    const body = (await resGet.json()) as { code: string; error: string };
+    expect(body.code).toBe('SESSION_STORE_UNAVAILABLE');
+    // No leak of host/port/URI/error text to the client.
+    expect(JSON.stringify(body)).not.toMatch(/redis|connection|refused|localhost/);
+  });
+
   it('GET existing record; GET missing/other-user id → 404', async () => {
     const store = new MemorySessionStore();
     setSessionStoreForTests(store);

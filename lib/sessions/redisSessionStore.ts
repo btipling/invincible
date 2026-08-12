@@ -1,15 +1,38 @@
 /**
- * Phase 1 (#412) — Redis `ServerSessionStore` via `@upstash/redis` REST.
- * Serverless-safe (no persistent sockets). BYO-configured via `SESSION_REDIS_URL`
- * / `SESSION_REDIS_TOKEN` (also honours `UPSTASH_REDIS_REST_URL`/`_TOKEN`).
+ * Phase 1 (#412) — Redis `ServerSessionStore` via the node-redis RESP client.
+ *
+ * Config: a single `REDIS_URL` in `redis://` (or `rediss://` for TLS) wire format,
+ * e.g. the Vercel/Upstash Redis integration's `REDIS_URL`
+ * `redis://default:<secret>@<host>:<port>`. The connection is created lazily and
+ * shared per-process (warm instance) so serverless calls reuse one socket instead of
+ * leaking a connection per request; node-redis reconnects automatically after a live
+ * socket drops (bounded reconnect — see `reconnectStrategy` below).
+ *
+ * **Fail-closed contract (adversarial L1/L6):** the RESP client is built with the
+ * offline command queue disabled and a bounded `connectTimeout` + `reconnectStrategy`.
+ * When Redis is unreachable / auth fails, `connect()` rejects instead of hanging, and
+ * every command rejects instead of queueing on a not-ready client. The seam
+ * (`harnessSessionsRedis.guardStore`) then maps that rejection to
+ * `503 SESSION_STORE_UNAVAILABLE`. No 500s and no infinite serverless hangs.
+ *
+ * **Connect-cache hygiene (adversarial L1/P1):** the per-URL cache stores the
+ * *connection promise*, not a bare client, and removes its entry when that promise
+ * rejects. A failed `connect()` therefore can never leave a dead client cached as
+ * `isOpen === true`; the next request builds a fresh client and retries. Concurrent
+ * first-calls for the same URL share one in-flight attempt.
  *
  * TTL (`SESSION_REDIS_TTL_MS`), default `0` = no expiry, is refreshed on **write only**
  * (`put` sets `EX`); it is NOT advanced by `get`/`list`, so treat it as "TTL-since-last-
  * write", not "idle since last read" (adversarial nit L8).
  *
  * Server-only — never imported from client/Wasm (wired server-side in #414).
+ *
+ * This replaces the earlier `@upstash/redis` REST client: that client speaks HTTPS REST
+ * and needs a separate pair of `{url, token}` env vars, which cannot drive RESP-style
+ * `REDIS_URL` credentials. The store still keeps a protocol-agnostic `RedisClientLike`
+ * seam so unit tests inject a fake and never need a real Redis.
  */
-import { Redis } from '@upstash/redis';
+import { createClient, type RedisClientType, type RedisClientOptions } from 'redis';
 import {
   type HarnessSessionRecord,
   type PutResult,
@@ -29,8 +52,9 @@ import {
 
 /**
  * The small Redis surface this store depends on, so tests can inject a fake
- * (no real Redis needed). The real `@upstash/redis` `Redis` instance satisfies
- * it structurally.
+ * (no real Redis needed). The interface carries **JSON** values in/out (the store
+ * never deals with raw wire bytes): the injected fake and the real node-redis
+ * adapter both present/store objects, never strings.
  */
 export interface RedisClientLike {
   get(key: string): Promise<unknown>;
@@ -40,20 +64,93 @@ export interface RedisClientLike {
 }
 
 export interface RedisSessionStoreOptions {
-  /** Inject a fake client (tests). When omitted, build from env (or `url`/`token`). */
+  /** Inject a fake client (tests). When omitted, build from `REDIS_URL` (or `url`). */
   client?: RedisClientLike;
+  /** Explicit URL override (defaults to `process.env.REDIS_URL`). RESP wire format. */
   url?: string;
-  token?: string;
   /** TTL in ms refreshed on each write (`put`). 0 (default) = no expiry. Not admin-read-refreshing. */
   ttlMs?: number;
 }
 
-function envUrl(opts: RedisSessionStoreOptions): string | undefined {
-  return opts.url ?? process.env.SESSION_REDIS_URL ?? process.env.UPSTASH_REDIS_REST_URL;
+/**
+ * Bounded/fail-closed socket policy (adversarial L1/L8). `connectTimeout` caps the TCP
+ * handshake; `reconnectStrategy` gives up (rejects `connect()`) instead of retrying
+ * forever in a serverless function; `disableOfflineQueue` makes commands reject
+ * immediately when the client isn't ready instead of silently queueing (the hang the
+ * review called out).
+ */
+const CONNECT_TIMEOUT_MS = 5000;
+const MAX_RECONNECTS = 5;
+const RECONNECT_BASE_DELAY_MS = 100;
+
+function socketPolicy(): RedisClientOptions['socket'] {
+  return {
+    connectTimeout: CONNECT_TIMEOUT_MS,
+    reconnectStrategy: (retries: number) => {
+      if (retries >= MAX_RECONNECTS) {
+        // Returning an Error makes `connect()` reject → the seam maps it to
+        // `503 SESSION_STORE_UNAVAILABLE` instead of hanging for `maxDuration`.
+        return new Error(`redis: giving up after ${retries} reconnect attempts`);
+      }
+      return Math.min((retries + 1) * RECONNECT_BASE_DELAY_MS, RECONNECT_BASE_DELAY_MS * 5);
+    },
+  };
 }
 
-function envToken(opts: RedisSessionStoreOptions): string | undefined {
-  return opts.token ?? process.env.SESSION_REDIS_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+function defaultClientFactory(url: string): RedisClientType {
+  return createClient({
+    url,
+    socket: socketPolicy(),
+    disableOfflineQueue: true,
+  });
+}
+
+/** Test seam — override the node-redis client constructor (e.g. a fake that rejects connect). */
+type RedisClientFactory = (url: string) => RedisClientType;
+let clientFactory: RedisClientFactory = defaultClientFactory;
+export function setRedisClientFactoryForTests(factory: RedisClientFactory | null): void {
+  clientFactory = factory ?? defaultClientFactory;
+}
+
+/**
+ * Test seam — clear the module-global connection cache. Must precede setting a new
+ * factory in tests so a previously-cached connection can't short-circuit a scenario
+ * (e.g. a "failed connect is not retained and retries" assertion).
+ */
+export function resetRedisClientCacheForTests(): void {
+  clientsByUrl.clear();
+}
+
+function envUrl(opts: RedisSessionStoreOptions): string | undefined {
+  if (opts.url) return opts.url.trim();
+  const direct = process.env.REDIS_URL?.trim();
+  if (direct) return direct;
+  return undefined;
+}
+
+/**
+ * One-time deprecation hint for the pre-switch env names. The legacy REST credentials
+ * (`SESSION_REDIS_URL/TOKEN`, `UPSTASH_REDIS_REST_URL/_TOKEN`) cannot drive the RESP
+ * client, so we do NOT fall back to them functionally (a `https://` REST URL is
+ * protocol-incompatible and would hang/fail): we just flag the rename so an operator
+ * whose deploy suddenly 503s doesn't mis-diagnose it as "Redis broken".
+ */
+let legacyEnvWarned = false;
+function warnLegacyEnvVars(): void {
+  const legacy = [
+    process.env.SESSION_REDIS_URL,
+    process.env.SESSION_REDIS_TOKEN,
+    process.env.UPSTASH_REDIS_REST_URL,
+    process.env.UPSTASH_REDIS_REST_TOKEN,
+  ].some((v) => typeof v === 'string' && v.length > 0);
+  if (!legacy || legacyEnvWarned) return;
+  legacyEnvWarned = true;
+  // Never log the values — they may embed credentials.
+  console.warn(
+    '[redis-session-store] Detected legacy SESSION_REDIS_* / UPSTASH_REDIS_REST_* env vars. ' +
+      "These were replaced by a single REDIS_URL (RESP wire URL, e.g. redis://default:<secret>@host:port or rediss://). " +
+      'Multi-session will 503 SESSION_STORE_UNAVAILABLE until you set REDIS_URL.',
+  );
 }
 
 function envTtlMs(opts: RedisSessionStoreOptions): number {
@@ -68,41 +165,133 @@ function secondsFromMs(ms: number): number {
   return Math.max(1, Math.ceil(ms / 1000));
 }
 
+const ATTACHED_ERROR_HANDLER = Symbol.for('invincible.redis.errorHandlerAttached');
+
+function buildClient(url: string): RedisClientType {
+  const client = clientFactory(url);
+  if (!(client as unknown as Record<symbol, boolean>)[ATTACHED_ERROR_HANDLER]) {
+    (client as unknown as Record<symbol, boolean>)[ATTACHED_ERROR_HANDLER] = true;
+    client.on('error', () => {
+      // Swallow background 'error' events (reconnect failures); command promises reject
+      // individually and are mapped to 503 at the seam.
+    });
+  }
+  return client;
+}
+
+/**
+ * Per-process cache of node-redis **connection promises** keyed by URL, so every store
+ * instance in a warm serverless function reuses ONE socket rather than opening (and
+ * leaking) one per request. Connections are established lazily on first command.
+ *
+ * Fail-closed hygiene: a rejected promise removes its own cache entry, so a failed
+ * `connect()` never leaves a cronically `isOpen === true` dead client behind (one of the
+ * review's P1 blockers). Concurrent first-calls for the same URL share one in-flight
+ * attempt. The cache is intentionally module-global (not per-store) so multiple
+ * RedisSessionStore instances share the socket within a warm isolate.
+ */
+const clientsByUrl = new Map<string, Promise<RedisClientType>>();
+
+function redisFor(url: string): Promise<RedisClientType> {
+  let pending = clientsByUrl.get(url);
+  if (pending) return pending;
+
+  const client = buildClient(url);
+  pending = (async () => {
+    try {
+      if (!client.isOpen) {
+        await client.connect();
+      }
+      return client;
+    } catch (err) {
+      // Never cache a client whose connect() failed. `node-redis` marks `isOpen = true`
+      // synchronously on connect, so a plain `isOpen` check can't distinguish a dead
+      // client from a healthy one — we must refuse to retain it.
+      try {
+        void client.disconnect();
+      } catch {
+        /* ignore */
+      }
+      throw err;
+    }
+  })();
+
+  clientsByUrl.set(url, pending);
+  // On rejection, drop the cache entry so the next call builds a fresh client + retries.
+  void pending.catch(() => {
+    if (clientsByUrl.get(url) === pending) clientsByUrl.delete(url);
+  });
+  return pending;
+}
+
+/**
+ * Real Redis adapter (node-redis) implementing the JSON `RedisClientLike` seam: strings
+ * the value + parses reads, maps `{ex}` → node-redis `{ EX: seconds }`. Uses the shared
+ * per-URL connection from `redisFor`. Only constructed when no fake client is injected.
+ * All command/connect failures reject → mapped to `503 SESSION_STORE_UNAVAILABLE` by the
+ * seam's `guardStore`.
+ */
+class NodeRedisAdapter implements RedisClientLike {
+  private readonly url: string;
+
+  constructor(url: string) {
+    this.url = url;
+  }
+
+  async get(key: string): Promise<unknown> {
+    const raw = await (await redisFor(this.url)).get(key);
+    if (raw == null) return null;
+    try {
+      return JSON.parse(raw as string) as unknown;
+    } catch {
+      // Corrupt / non-JSON blob → fail closed (null) like the store's trust-but-verify read.
+      return null;
+    }
+  }
+
+  async set(key: string, value: unknown, opts?: { ex?: number }): Promise<unknown> {
+    const payload = JSON.stringify(value);
+    const client = await redisFor(this.url);
+    return opts && typeof opts.ex === 'number'
+      ? client.set(key, payload, { EX: opts.ex })
+      : client.set(key, payload);
+  }
+
+  async del(...keys: string[]): Promise<unknown> {
+    return (await redisFor(this.url)).del(keys);
+  }
+
+  async keys(pattern: string): Promise<string[]> {
+    return (await redisFor(this.url)).keys(pattern);
+  }
+}
+
 export class RedisSessionStore implements ServerSessionStore {
   private readonly client: RedisClientLike;
   private readonly ttlMs: number;
   private readonly resolvedUrl: string | undefined;
-  private readonly resolvedToken: string | undefined;
 
   constructor(opts: RedisSessionStoreOptions = {}) {
     this.ttlMs = envTtlMs(opts);
     this.resolvedUrl = envUrl(opts);
-    this.resolvedToken = envToken(opts);
     if (opts.client) {
       this.client = opts.client;
     } else {
-      if (!this.resolvedUrl || !this.resolvedToken) {
+      if (!this.resolvedUrl) {
+        warnLegacyEnvVars();
         throw new Error(
-          'RedisSessionStore requires SESSION_REDIS_URL / SESSION_REDIS_TOKEN ' +
-            '(or UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN), or an injected client.',
+          'RedisSessionStore requires REDIS_URL (redis:// or rediss://), or an injected client.',
         );
       }
-      // Default @upstash REST client: JSON-serialized values on write, JSON-deserialized reads.
-      this.client = new Redis({ url: this.resolvedUrl, token: this.resolvedToken });
+      // node-redis RESP client: parses REDIS_URL incl. embedded username/password; supports
+      // redis:// (insecure) and rediss:// (TLS). A missing/wrong URL throws → 503 at the seam.
+      this.client = new NodeRedisAdapter(this.resolvedUrl);
     }
   }
 
-  /** Resolved URL (for tests / diagnostics). */
+  /** Resolved URL (for tests / diagnostics). NB: contains the embedded credential — never log. */
   url(): string | undefined {
     return this.resolvedUrl;
-  }
-
-  /**
-   * Resolved token (for tests / diagnostics only). **Never log or expose this.** Redis
-   * access is ops-side; the token only ever lives in Vercel project env / injected client.
-   */
-  token(): string | undefined {
-    return this.resolvedToken;
   }
 
   async get(key: SessionRecordKey): Promise<HarnessSessionRecord | null> {

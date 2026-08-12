@@ -39,6 +39,28 @@ export function unavailableResponse(code: string, error: string): Response {
   return Response.json({ error, code }, { status: 503 });
 }
 
+export type GuardedStoreOp<T> =
+  | { ok: true; value: T }
+  | { ok: false; response: Response };
+
+/**
+ * Run a store I/O operation, mapping ANY command/connect rejection to the stable
+ * `503 SESSION_STORE_UNAVAILABLE` surface (adversarial L1/L6). The RESP client rejects
+ * instead of hung/queueing (offline queue disabled, bounded connect), so unreachable/
+ * auth-failed Redis becomes a clean 503 — never an uncaught 500. Response text is fixed
+ * (no host/port or `REDIS_URL` credential ever leaks into the body).
+ */
+export async function guardStore<T>(op: () => Promise<T>): Promise<GuardedStoreOp<T>> {
+  try {
+    return { ok: true, value: await op() };
+  } catch {
+    return {
+      ok: false,
+      response: unavailableResponse(SESSION_STORE_UNAVAILABLE, 'session store unavailable'),
+    };
+  }
+}
+
 /**
  * Test seam — inject a store to use for `resolveSessionStore()` calls.
  *
@@ -59,8 +81,8 @@ function constructStore(): ServerSessionStore {
   const g = globalThis as unknown as Record<symbol, ServerSessionStore | null>;
   const override = g[STORE_OVERRIDE];
   if (override) return override;
-  // Reads SESSION_REDIS_URL / SESSION_REDIS_TOKEN (or UPSTASH_* / injected) and
-  // throws when Redis is not configured — resolved to a 503 by the caller.
+  // Reads REDIS_URL (RESP wire format) and throws when Redis is not configured —
+  // resolved to a 503 by the caller.
   return new RedisSessionStore();
 }
 

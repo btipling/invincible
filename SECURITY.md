@@ -13,7 +13,7 @@ If you find a vulnerability in Invincible, please open a **private** security ad
 | `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions secrets |
 | `SANDBOX_TOKEN` | Vercel project env **and** sandbox process env (same secret) |
 | `DATABASE_URL` | Vercel / local only (prefer **pooled** Neon/PgBouncer URL) |
-| `SESSION_REDIS_TOKEN` | Vercel project env only (optional BYO multi-session Redis; `@upstash/redis` REST). **Never** log it; never `NEXT_PUBLIC_*` |
+| `REDIS_URL` | Vercel project env only (optional BYO multi-session Redis; node-redis RESP — the URL **embeds** the credential `redis://default:<secret>@<host>:<port>`). **Never** log it; never `NEXT_PUBLIC_*`. Old `SESSION_REDIS_*` / `UPSTASH_REDIS_REST_*` names are **removed** — if present, the store logs a one-time (value-free) deprecation hint then 503s until `REDIS_URL` is set |
 | `CREDENTIALS_ENCRYPTION_KEY` | Vercel / local only — base64 32-byte AES-256-GCM **AMK** (wraps per-tenant DEKs; tokens encrypt under DEK) |
 | `SEED_ADMIN_PASSWORD` / `SEED_SANDBOX_TOKEN` | Bootstrap only (prefer GHA `db-tenancy-bootstrap`; cloud-agent `npm run db:seed` alternate); never commit; re-seed resets bootstrap password + token ciphertext |
 | `AUTH_SECRET` | Auth.js session secret — set on Vercel **after** migrate/seed (seed does not need it) |

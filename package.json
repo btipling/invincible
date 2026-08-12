@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "test": "vitest run",
-    "test:full": "node run-tests.mjs",
+    "test:changed": "vitest run --changed",
     "typecheck": "tsc --noEmit",
     "fetch-harness": "node scripts/fetch-harness-artifact.mjs",
     "prebuild": "node scripts/fetch-harness-artifact.mjs",
@@ -21,7 +21,6 @@
   },
   "dependencies": {
     "@ai-sdk/mcp": "^2.0.25",
-    "@upstash/redis": "^1.38.2",
     "@vercel/sandbox": "^3.0.0",
     "ai": "^7.0.52",
     "bcryptjs": "^3.0.3",
@@ -32,6 +31,7 @@
     "postgres": "^3.4.9",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "redis": "^4.7.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

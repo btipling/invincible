@@ -101,37 +101,33 @@ The repo's canonical entrypoints (from `package.json`) are **three**:
 | Sandbox daemon tests only | `npm run test:sandbox` | `vitest run sandbox` |
 | Build | `npm run build` | `next build` (runs `prebuild` = fetch harness artifact) |
 
-### The `run-tests.mjs` full-suite helper
+### Running the suite (no wrapper — tests run directly with vitest)
 
-`npm test` streams a large per-file report. In **this agent workspace's exec
-transport**, a full run (~173 files / ~2000 tests, ~5+ min) reliably drops the
-connection ("fetch failed") even though the process completes fine — and the
-dropped tool call can leave an **orphaned** vitest process that keeps running and
-races a later run. To avoid both problems, run the suite through
-**`node run-tests.mjs`** (committed in the repo root). It:
+**Tests must be run directly with vitest; no script wrappers are allowed.**
+There is no wrapper script around vitest (a former `run-tests.mjs` wrapper has
+been removed and must **not** be re-added). Do **not** create a wrapper that
+swallows vitest output and prints only a summarized pass/fail line — the verdict
+must always come from vitest itself (`npm test` = `vitest run`). Run vitest
+through the **local** binary and an explicit exec timeout so the transport cannot
+drop a long run and leave you guessing about the result:
 
-- invokes the **local** vitest binary directly (`node_modules/vitest/vitest.mjs`),
-  skipping the `npx` network fetch that also flakes in a bare sandbox;
-- redirects **all** vitest stdout/stderr to /dev/null;
-- uses `--reporter=json --outputFile=/tmp/vitest-full.json` so the report never
-  crosses the transport;
-- prints **one** summary line and writes it to `/tmp/vitest-summary.txt`
-  (numbers below are an **example snapshot**, not a fixed baseline — report the
-  actual `files=` / `passed=` / `failed=` from the summary and always state the
-  delta vs the previous run):
-
-  ```text
-  vitest exit 0
-  files=173 testCases passed=1997 failed=0 skipped=0   # example only — values drift per merge
-  ```
-
-- **Exits with a real status code.** `node run-tests.mjs` returns non-zero (and
-  prints `vitest FAILED` / does not claim green) when vitest fails **or** any
-  test `failed>0` **or** the JSON report is missing/unreadable. Shell `&&`
-  chains and CI wrappers can trust the exit code as the green gate — never claim
-  green from a readable report when `failed>0`.
-
-Read `/tmp/vitest-full.json` via a normal `read_file` if you need per-test detail.
+- **Full suite:** `node_modules/vitest/vitest.mjs run` with `timeoutMs ≈ 600000`.
+  In a bare agent workspace a full run (~173 files / ~2000 tests, several
+  minutes) can drop the connection over the transport even though the process
+  completes fine. Use the `timeoutMs` ≥ 2× the expected wall-clock (never the
+  default 5 min) so a slow run isn't killed mid-flight.
+- **Mechanical "test only what changed":**
+  `node_modules/vitest/vitest.mjs run --changed` (or `npm run test:changed`).
+  `--changed` uses git to run **only** the test files that changed since `HEAD`
+  (plus any tests that import those files, via static dependency tracking) — this
+  is the fast opt-in-only gate for a quick green check without the full sweep.
+- **Verdict is the exit code.** `vitest run` returns non-zero (and does not
+  claim green) when vitest fails **or** any test `failed>0`. Shell `&&` chains
+  and CI wrappers can trust it — never claim green from interleaved output when
+  the exit code is non-zero.
+- **Counts.** Read the live per-file output; report the actual numbers and always
+  state the delta vs the previous run. Expected drift is real: if the PR **adds**
+  tests, the pass count should be `baseline + (number of new test cases)`.
 
 ### In-sandbox exec rules (learned the hard way)
 
@@ -144,13 +140,12 @@ Read `/tmp/vitest-full.json` via a normal `read_file` if you need per-test detai
    is a **daemon transport** problem, not a test failure and not a timeout.
 3. **Avoid orphaning background runs.** If you background a test run and the
    tool call errors, the process keeps running and races the next run. Before a
-   definitive run, clear stale vitest/run-tests processes
-   (`pkill -f vitest` / `pkill -f run-tests.mjs`) so you read a **fresh** report.
-   `run-tests.mjs` does not daemonize, so prefer it in the foreground with a
-   10-min timeout.
+   definitive run, clear stale vitest processes (`pkill -f vitest`) so you read
+   a **fresh** report. Run vitest in the foreground with a 10-min timeout.
 4. **Prefer the local binary over `npx`.** `npx vitest …` can hit a transient
-   network fetch error in a bare agent sandbox. `node run-tests.mjs` already
-   avoids this; for a single file use `node_modules/vitest/vitest.mjs run <path>`.
+   network fetch error in a bare agent sandbox. Always use the local binary:
+   `node_modules/vitest/vitest.mjs run <path>` (or `vitest run <path>` when on a
+   network-connected machine).
 5. **`next build` needs the harness artifact token** (`HARNESS_ARTIFACT_TOKEN`)
    or an existing `public/harness`, because `prebuild` runs
    `scripts/fetch-harness-artifact.mjs`. In a bare sandbox without that token,
@@ -174,7 +169,8 @@ Do **not** claim ready until all of these hold (agent workspace or CI, per
 
 ```bash
 npm run typecheck          # tsc --noEmit, exit 0
-node run-tests.mjs         # vitest exit 0, failed=0
+node_modules/vitest/vitest.mjs run   # full suite, failed=0 (10-min timeout)
+node_modules/vitest/vitest.mjs run --changed   # fast gate: only changed files (+ dependents)
 # when the diff touches lib/* worth testing: node_modules/vitest/vitest.mjs run lib/<dir>
 # when Wasm changes: the self-hosted build-harness job, not a local zig build
 # when cloud ops ships: the new workflow validated (dry_run/dispatch), not just "npm run"
@@ -288,6 +284,9 @@ convention).
 - Implementing before reading the plan / AGENTS.md
 - Inventing symbols or APIs not on the branch ("Unverified" not marked)
 - Claiming green `npm run build` in a bare sandbox without `HARNESS_ARTIFACT_TOKEN`
+- **Introducing (or re-adding) a script wrapper around vitest** and trusting its
+  summarized pass/fail line instead of vitest's own output and exit code — tests
+  must run directly with vitest, never through a wrapper that hides output
 - Running `npm test` directly in a bare agent workspace and trusting a dropped
   transport result, or reporting a stale/orphaned report as fresh
 - No tests for new `lib/*` logic
@@ -309,7 +308,7 @@ convention).
 [ ] Implementation in the plan's locked layers, grounded in live code
 [ ] Tests for new logic; counts recorded in PR body (baseline → new)
 [ ] npm run typecheck green
-[ ] node run-tests.mjs green (failed=0) with 10-min timeout
+[ ] full `vitest run` green (failed=0) with 10-min timeout
 [ ] Build gate correct: wasm → self-hosted runner; backend-only → typecheck+tests; never fake `next build` w/o token
 [ ] Cloud ops + living docs in the SAME PR when the plan locked them
 [ ] PR created (base main, `Fixes #N`/`Closes #N` plan issue / `Refs` parents), not merged

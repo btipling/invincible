@@ -31,7 +31,10 @@ but it may still hold **current, unpushed work**. That work belongs to the
 operator, so the skill **refuses by default** and only deletes uncommitted
 changes on an **explicit, unambiguous instruction to discard**. Agent artifacts
 that are obviously ours (`*.<tmp>`, plan-body stubs, build scratch) are cleaned
-without asking.
+without asking. So are **nested self-clones of this repo** (harness scratch like
+`.grok/skills/ivc-main/`): they silently double the vitest suite's runtime (the
+glob `**/*.test.ts` walks into them and re-runs every test), so they are deleted
+without asking — see §1 bucket 3 and §4 Stage B step 3.
 
 Inspired by common repo-hygiene practice (fresh clone discipline, no branch
 accumulation, no phantom untracked files) — specialized for this project’s
@@ -62,12 +65,42 @@ Three buckets, three rules:
 |--------|-------------|---------|
 | **Good left-overs** (keep) | Committed local branches *with* unpushed commits; tags; remote branches | Never delete. Only inform the operator. |
 | **Current uncommitted work** | Modified/deleted-tracked files, staged changes, untracked **source** files (e.g. `src/*.zig`, `AGENTS.md`) | **REFUSE to delete** unless the operator says "discard / delete my current work / wipe uncommitted changes" — an unambiguous instruction. A generic "clean the sandbox" is **not** that instruction. |
-| **Agent artifacts** (safe to delete) | Untracked files that are obviously session/scratch junk: `*.tmp`, `.tmp-plan-*`, `*.log`, editor swaps, build scratch under `/tmp` or a defined scratch dir, temp plan/body stubs written by us. | **Delete without asking.** |
+| **Agent artifacts** (safe to delete) | Untracked files that are obviously session/scratch junk: `*.tmp`, `.tmp-plan-*`, `*.log`, editor swaps, build scratch under `/tmp` or a defined scratch dir, temp plan/body stubs written by us. **Also: nested self-clones of this repo** (see below). | **Delete without asking.** |
 
 **Rule of thumb:** if you can't confidently tell whether an untracked file is a
 real source file or agent scratch → **ask the operator** rather than guess.
 Deleting someone's unpushed work is the worst failure this skill can make; an
 extra question is the cheapest fix.
+
+### Nested self-clones — the one unambiguous auto-delete
+
+A **nested self-clone** is any directory under the checkout that is itself a
+git clone of **this same repo** (its own `.git` whose `remote.origin.url`
+matches the sandbox's `remote.origin.url`), e.g. harness scratch such as
+`.grok/skills/ivc-main/` or any `ivc-*` reference clone. These reliably:
+
+- duplicate the whole source tree somewhere vitest globs (`include:
+  ['**/*.{test,spec}…']` has **no** `.grok` exclude), so every `*.test.ts` runs a
+  **second time** and the suite wall-time doubles — the classic "why did tests
+  get 4 min slower overnight" cause;
+- are **never** committed (`git check-ignore` finds nothing, `git status` shows
+  them as one `??` nested repo) and are **not** source the operator is editing;
+
+so they are deleted **without asking**. Detection (matches the sandbox origin so
+a nested clone of a *different* repo, which might be intentional vendor code, is
+left alone):
+
+```bash
+ORIGIN_URL="$(git config --get remote.origin.url)"
+for gitdir in $(find . -type d -name .git -not -path './.git' 2>/dev/null); do
+  d="${gitdir%/.git}"
+  [ "$(git -C "$d" config --get remote.origin.url 2>/dev/null)" = "$ORIGIN_URL" ] \
+    && echo "$d"
+done
+```
+
+Only lines printed (same-origin nested clones) are deleted. Anything else that
+looks like repo junk is handled by the usual ask-first rule.
 
 ```text
 clean-no-uncommitted   → hygiene + clean up, no consent needed
@@ -143,10 +176,16 @@ saved on this checkout.
      `git clean -fdx`. A `git clean -fdx` is only allowed under explicit
      "discard" consent.
 
-3. **Untracked agent scratch in repo** (e.g. `.tmp-plan-*`, `*.log`,
+3. **Delete nested self-clones** (see §1 "Nested self-clones") — run the origin
+   matching loop and `rm -rf` every same-origin nested clone **without asking**.
+   These are ours by construction (harness reference clones), are never
+   committed, and silently double the vitest suite; leaving them is worse than
+   deleting them.
+
+4. **Untracked agent scratch in repo** (e.g. `.tmp-plan-*`, `*.log`,
    editor swap files) → delete; these are ours by construction.
 
-4. **Final verify:** `git status --porcelain` empty; on `main`, up to date.
+5. **Final verify:** `git status --porcelain` empty; on `main`, up to date.
 
 ---
 
@@ -191,6 +230,8 @@ behavior and it is the whole point of the skill.
 [ ] No current uncommitted work destroyed without explicit "discard" consent
 [ ] No unpushed local branch deleted without explicit consent
 [ ] Agent-scratch artifacts (`.tmp-plan-*`, logs, swaps) removed
+[ ] Nested self-clones of this repo (same-origin `ivc-*` / `.grok` clones) deleted
+    without asking
 [ ] Final `git status --porcelain` is clean; on up-to-date main
 [ ] Operator asked (default ask-mode) for anything ambiguous
 ```
