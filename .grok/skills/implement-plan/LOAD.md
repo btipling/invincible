@@ -1,7 +1,7 @@
 # implement-plan — load card (zero search)
 
 When the user says “implement” / “implement issue #N” / “implement the plan” /
-“code the plan” after a plan-review go:
+“code the plan”:
 
 ## Hard gate
 
@@ -10,6 +10,17 @@ command -v gh >/dev/null && gh auth status
 ```
 
 If that fails → **refuse**. Do not use GitHub MCP.
+
+**Status must be HANDOFF-READY. Otherwise this skill cannot run.**
+
+```bash
+gh issue view <N> --repo btipling/invincible --json title,body,state
+```
+
+If the plan header Status is not **`HANDOFF-READY`** (DRAFT, NEEDS REVISION,
+BLOCKED, IN PROGRESS, COMPLETE, missing, or a stale header vs a NEEDS REVISION
+review) → **stop**. Do not branch. Do not code. Do not open a PR. Tell them to
+run `plan-review` until the issue is HANDOFF-READY. Not waivable.
 
 ## FIRST — `AGENTS.md` (mandatory)
 
@@ -49,7 +60,8 @@ gh issue view <N> --repo btipling/invincible --json number,title,body,url,state
    from a prior session (stray branch, unpushed commits, untracked scratch).
    Do **not** implement on top of a dirty tree.
 1. Confirm `AGENTS.md` was read this session.
-2. Read the plan fully (headers: Status, Layers, Cloud ops path, Living docs, DoD).
+2. Read the plan fully. **If Status ≠ HANDOFF-READY, STOP** (see hard gate).
+   Do not implement DRAFT / NEEDS REVISION / BLOCKED plans via this skill.
 3. Ground claims in **live code** on the branch you code against (usually `main`).
    Do not invent APIs; mark unverified symbols.
 4. Implement in the plan's locked layers; add tests for every non-trivial piece.

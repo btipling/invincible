@@ -2,23 +2,28 @@
 name: implement-plan
 description: >
   Turn a HANDOFF-READY plan issue into shippable code + tests for Invincible.
-  Use when the user says "implement this plan", "implement issue #N", "code the
-  plan", or after plan-review gives the go. Covers reading the plan, grounding in
-  live code, the project's test/build workflow (how to run tests correctly in an
-  agent workspace or CI), layer ownership (DOM / harness / Vercel backend), and
-  the tested, reproducible way to verify before opening a PR. Requires gh.
+  REFUSE unless the plan header Status is HANDOFF-READY — DRAFT / NEEDS REVISION
+  / BLOCKED / missing Status cannot be implemented via this skill (run
+  plan-review first). Use when the user says "implement this plan", "implement
+  issue #N", "code the plan", or after plan-review gives the go.
   Does NOT merge: stops at PR open + merge-ready. READ-ONLY of skill is via gh.
 metadata:
-  short-description: "Code a reviewed plan: tests + build workflow + PR, no merge"
-  version: "1.0"
+  short-description: "Code a HANDOFF-READY plan only: tests + PR, no merge"
+  version: "1.1"
   project: invincible
 ---
 
 # implement-plan — code a reviewed plan (Invincible)
 
-Turn a **plan issue** (created by `create-plan`, reviewed by `plan-review`) into
-a **non-merged PR** with tests. This skill is the bridge between a reviewed plan
-and the code that ships it.
+Turn a **HANDOFF-READY** plan issue (created by `create-plan`, reviewed by
+`plan-review`) into a **non-merged PR** with tests.
+
+**A plan that is not HANDOFF-READY cannot be implemented via this skill.**
+DRAFT, NEEDS REVISION, BLOCKED, IN PROGRESS, COMPLETE, missing Status, or a
+plan-review verdict that is not `HANDOFF-READY` → **stop**. Do not branch, do
+not code, do not open a PR. Tell the operator to run `plan-review` (or finish
+that review) until the issue header **Status** is `HANDOFF-READY`. This is not
+waivable by “just implement it.”
 
 **Default repo:** `btipling/invincible`
 **Related:** `create-plan` (plans as issues) → `plan-review` (review/edit issue)
@@ -43,6 +48,24 @@ gh auth status || { echo "gh not auth — refuse"; exit 1; }
 
 If `gh` fails → **stop**. Never GitHub MCP (`github___*`).
 
+### Plan must be HANDOFF-READY (automatic refuse)
+
+Read the plan issue **before any code**:
+
+```bash
+gh issue view <N> --repo btipling/invincible --json title,body,state
+```
+
+Parse the header **Status** (table cell or `Status: …` stamp).
+
+- **Required:** `HANDOFF-READY` (plan-review go).
+- **Refuse** if Status is `DRAFT`, `NEEDS REVISION`, `BLOCKED`, `IN PROGRESS`,
+  `COMPLETE`, absent, or anything else. Also refuse if the latest plan-review
+  notes still say NEEDS REVISION / BLOCKED even when the header was left stale.
+- **Do not** start a branch, edit files, or “implement the draft anyway.”
+- Reply with the issue number, the Status you read, and that `plan-review` must
+  land `HANDOFF-READY` first.
+
 Set the commit author (hard constraint in `AGENTS.md`):
 
 ```bash
@@ -58,7 +81,8 @@ git config user.email "btipling@users.noreply.github.com"
    older session. See "start clean" note in the Related line above.
 1. Read root **`AGENTS.md`** (`main` or the branch the user named).
 2. Read **`docs/feature-divide.md`** if the change touches UI, bridge, or agent loop.
-3. Read the **plan issue** you are implementing (`gh issue view N`).
+3. Read the **plan issue** (`gh issue view N`). **If Status ≠ HANDOFF-READY, stop
+   here** (see hard gate above). Do not continue the list.
 4. Ground every claim in **live code** on the branch you code against (usually
    `main`). Do **not** invent APIs — if a symbol doesn't exist, mark it
    **Unverified** and either find it or narrow scope.
@@ -72,7 +96,7 @@ git config user.email "btipling@users.noreply.github.com"
 
 ```text
 1. gh gate + read AGENTS.md (+ feature-divide when UI/bridge/agent)
-2. Read the plan issue body fully (headers: Status, Layers, Cloud ops, Living docs, DoD)
+2. Read the plan issue. **STOP unless Status is HANDOFF-READY.**
 3. Create a feature branch:  git checkout -b plan/<slug>  (match the plan header if set)
 4. Implement in the layer(s) the plan locked (DOM / harness / Vercel backend)
 5. Add tests for every non-trivial piece of logic (lib/*.test.ts)
@@ -300,6 +324,8 @@ convention).
 
 ## 7. Anti-patterns
 
+- **Implementing a plan that is not HANDOFF-READY** (DRAFT / NEEDS REVISION /
+  BLOCKED / missing Status) — skill failure; run `plan-review` first
 - Implementing before reading the plan / AGENTS.md
 - Inventing symbols or APIs not on the branch ("Unverified" not marked)
 - Claiming green `npm run build` in a bare sandbox without `HARNESS_ARTIFACT_TOKEN`
@@ -323,6 +349,7 @@ convention).
 ## 8. Minimal checklist
 
 ```text
+[ ] Plan issue Status is **HANDOFF-READY** (else STOP — do not implement)
 [ ] gh auth OK; commit author = btipling
 [ ] Workspace started clean (cleanup-sandbox run if prior-session leftovers)
 [ ] AGENTS.md + plan issue read; feature-divide when UI/bridge/agent
