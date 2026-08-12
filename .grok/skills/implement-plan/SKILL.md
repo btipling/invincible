@@ -77,7 +77,9 @@ git config user.email "btipling@users.noreply.github.com"
 4. Implement in the layer(s) the plan locked (DOM / harness / Vercel backend)
 5. Add tests for every non-trivial piece of logic (lib/*.test.ts)
 6. Verify: typecheck → targeted tests → full suite → build gate when applicable
-7. Commit (one unit of work per commit), push, `gh pr create` with `Fixes/Refs #N`
+7. Commit (one unit of work per commit), push, `gh pr create` with
+   `Fixes #N` / `Closes #N` for the plan issue being implemented; `Refs #N` for
+   parent/prerequisite issues
 8. Do NOT merge. Report PR URL + checklist, ask if they want adversarial-review
 ```
 
@@ -113,12 +115,21 @@ races a later run. To avoid both problems, run the suite through
 - redirects **all** vitest stdout/stderr to /dev/null;
 - uses `--reporter=json --outputFile=/tmp/vitest-full.json` so the report never
   crosses the transport;
-- prints **one** summary line and writes it to `/tmp/vitest-summary.txt`:
+- prints **one** summary line and writes it to `/tmp/vitest-summary.txt`
+  (numbers below are an **example snapshot**, not a fixed baseline — report the
+  actual `files=` / `passed=` / `failed=` from the summary and always state the
+  delta vs the previous run):
 
   ```text
   vitest exit 0
-  files=173 testCases passed=1997 failed=0 skipped=0
+  files=173 testCases passed=1997 failed=0 skipped=0   # example only — values drift per merge
   ```
+
+- **Exits with a real status code.** `node run-tests.mjs` returns non-zero (and
+  prints `vitest FAILED` / does not claim green) when vitest fails **or** any
+  test `failed>0` **or** the JSON report is missing/unreadable. Shell `&&`
+  chains and CI wrappers can trust the exit code as the green gate — never claim
+  green from a readable report when `failed>0`.
 
 Read `/tmp/vitest-full.json` via a normal `read_file` if you need per-test detail.
 
@@ -300,6 +311,6 @@ convention).
 [ ] node run-tests.mjs green (failed=0) with 10-min timeout
 [ ] Build gate correct: wasm → self-hosted runner; backend-only → typecheck+tests; never fake `next build` w/o token
 [ ] Cloud ops + living docs in the SAME PR when the plan locked them
-[ ] PR created (base main, Fixes/Refs #N), not merged
+[ ] PR created (base main, `Fixes #N`/`Closes #N` plan issue / `Refs` parents), not merged
 [ ] Required CI reported pending/failed honestly
 ```

@@ -360,6 +360,10 @@ See create-plan / plan-review **layer** rules when planning features.
 - Prefer extending `native/harness` + `HarnessHost` over new infra.
 - Run `npm test` / `npm run typecheck` / `npm run build` before claiming ready
   (**agent workspace or CI**; build needs token or existing `public/harness`).
+  In a cloud agent workspace where a full `npm test` stream drops over the exec
+  transport, prefer `npm run test:full` (= `node run-tests.mjs`) for the full
+  suite — it writes a one-line summary and **exits non-zero on any failure**
+  (see `run-tests.mjs` / the implement-plan skill).
 - No secrets in repo; Vercel / GitHub secrets only.
 - Ops instructions for humans: **Vercel / browser / cloud agent** only — never
   “install Node on your laptop” or “clone this path on your machine.”

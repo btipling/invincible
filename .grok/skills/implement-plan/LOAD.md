@@ -55,5 +55,6 @@ gh issue view <N> --repo btipling/invincible --json number,title,body,url,state
 4. Implement in the plan's locked layers; add tests for every non-trivial piece.
 5. Verify: `npm run typecheck` → `node run-tests.mjs` (10-min timeout) → build
    gate when applicable. See SKILL.md §2 for the in-sandbox rules.
-6. Commit (author `btipling`), push, `gh pr create` (base `main`, `Closes/Refs #N`).
+6. Commit (author `btipling`), push, `gh pr create` (base `main`; `Fixes #N` /
+   `Closes #N` for the plan issue, `Refs #N` for parents).
 7. **Do NOT merge.** Stop at merge-ready; suggest `adversarial-review` next.
