@@ -111,16 +111,28 @@ must always come from vitest itself (`npm test` = `vitest run`). Run vitest
 through the **local** binary and an explicit exec timeout so the transport cannot
 drop a long run and leave you guessing about the result:
 
-- **Full suite:** `node_modules/vitest/vitest.mjs run` with `timeoutMs ≈ 600000`.
-  In a bare agent workspace a full run (~173 files / ~2000 tests, several
-  minutes) can drop the connection over the transport even though the process
-  completes fine. Use the `timeoutMs` ≥ 2× the expected wall-clock (never the
-  default 5 min) so a slow run isn't killed mid-flight.
-- **Mechanical "test only what changed":**
-  `node_modules/vitest/vitest.mjs run --changed` (or `npm run test:changed`).
-  `--changed` uses git to run **only** the test files that changed since `HEAD`
-  (plus any tests that import those files, via static dependency tracking) — this
-  is the fast opt-in-only gate for a quick green check without the full sweep.
+**Test strategy — `--changed` is the default; the full suite is a merge-only gate.**
+
+Do **not** run the full `vitest run` (several minutes) on every iteration or PR
+feedback round. Use `vitest run --changed` as the standard green check while
+implementing and while iterating on review feedback; run the **full** suite once
+as the pre-merge gate only (`merge-pr` skill requires it). A `--changed` run is
+seconds, not minutes — that is what prevents "5 minutes of tests on every PR
+feedback round".
+
+- **Mechanical "test only what changed" (default, use constantly):**
+  `node_modules/vitest/vitest.mjs run --changed` (or `npm run test:changed`), or
+  `… run lib/<dir>` / `… run <file.test.ts>` for a targeted file. `--changed`
+  uses git to run **only** the test files that changed since `HEAD` (plus any
+  tests that import those files, via static dependency tracking). This is the
+  fast opt-in-only gate for a quick green check without the full sweep — use it
+  after every edit and every review-feedback fix.
+- **Full suite (merge gate only):** `node_modules/vitest/vitest.mjs run` with
+  `timeoutMs ≈ 600000`. In a bare agent workspace a full run (~173 files /
+  ~2000 tests, several minutes) can drop the connection over the transport even
+  though the process completes fine. Use the `timeoutMs` ≥ 2× the expected
+  wall-clock (never the default 5 min) so a slow run isn't killed mid-flight.
+  Run it **once**, at the end, right before merge — not after every commit.
 - **Verdict is the exit code.** `vitest run` returns non-zero (and does not
   claim green) when vitest fails **or** any test `failed>0`. Shell `&&` chains
   and CI wrappers can trust it — never claim green from interleaved output when
@@ -169,12 +181,16 @@ Do **not** claim ready until all of these hold (agent workspace or CI, per
 
 ```bash
 npm run typecheck          # tsc --noEmit, exit 0
-node_modules/vitest/vitest.mjs run   # full suite, failed=0 (10-min timeout)
-node_modules/vitest/vitest.mjs run --changed   # fast gate: only changed files (+ dependents)
-# when the diff touches lib/* worth testing: node_modules/vitest/vitest.mjs run lib/<dir>
+node_modules/vitest/vitest.mjs run --changed   # fast gate during iteration: only changed files (+ dependents)
+node_modules/vitest/vitest.mjs run lib/<dir>   # targeted when the diff touches lib/* worth testing
+node_modules/vitest/vitest.mjs run             # FULL suite, failed=0 (10-min timeout) — pre-MERGE only
 # when Wasm changes: the self-hosted build-harness job, not a local zig build
 # when cloud ops ships: the new workflow validated (dry_run/dispatch), not just "npm run"
 ```
+
+The **full suite is the final, merge-only gate** (enforced by `merge-pr`). During
+implementation and PR-feedback iteration, rely on `--changed` / targeted runs —
+several-minutes full runs are reserved for right before merge, not every round.
 
 Expected count drift is real: if the PR **adds tests**, the full-suite
 `pass` count should be **baseline + (number of new test cases)**. Report that
@@ -273,9 +289,12 @@ convention).
    PR (not deferred).
 3. If the user runs the full suite on their side, reconcile their counts against
    the PR body before calling it done.
-4. On review feedback: read it, fix the findings, run `typecheck` + targeted +
-   full suite again, commit as a **new** unit, push. Re-review as needed until
-   the reviewer verdict is PASS/PASS WITH NOTES.
+4. On review feedback: read it, fix the findings, run `typecheck` + `vitest
+   run --changed` (or a targeted file) again, commit as a **new** unit, push.
+   **Do not run the full suite on every feedback round** — `--changed` is the
+   feedback-loop green check (seconds, not minutes). The full suite runs once at
+   the end, as the pre-merge gate. Re-review as needed until the reviewer verdict
+   is PASS/PASS WITH NOTES.
 
 ---
 
@@ -290,7 +309,10 @@ convention).
 - Running `npm test` directly in a bare agent workspace and trusting a dropped
   transport result, or reporting a stale/orphaned report as fresh
 - No tests for new `lib/*` logic
-- No full-suite run before PR
+- **Running the full `vitest run` after every edit / every feedback round**
+  instead of `--changed` — the full suite is a merge-only gate, not an
+  iteration tool (keeps feedback rounds to seconds, not ~5 minutes)
+- No full-suite run before PR / before merge
 - Merging when the user only asked to implement
 - Merging while required checks are pending/failed
 - Deferring living docs / cloud ops that the plan locked into this PR
@@ -308,7 +330,8 @@ convention).
 [ ] Implementation in the plan's locked layers, grounded in live code
 [ ] Tests for new logic; counts recorded in PR body (baseline → new)
 [ ] npm run typecheck green
-[ ] full `vitest run` green (failed=0) with 10-min timeout
+[ ] `vitest run --changed` green during iteration (not full suite every round)
+[ ] full `vitest run` green (failed=0) with 10-min timeout — pre-merge gate
 [ ] Build gate correct: wasm → self-hosted runner; backend-only → typecheck+tests; never fake `next build` w/o token
 [ ] Cloud ops + living docs in the SAME PR when the plan locked them
 [ ] PR created (base main, `Fixes #N`/`Closes #N` plan issue / `Refs` parents), not merged
