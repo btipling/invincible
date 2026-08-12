@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   type HarnessSessionRecord,
   RESERVED_META_KEYS,
+  isRedisSafeOpaqueId,
   validateMeta,
   validateSessionRecord,
+  validateSessionRecordKey,
   sessionKeyString,
   sessionPrefix,
 } from './sessionStore';
@@ -94,6 +96,31 @@ describe('validateSessionRecord', () => {
     expect(validateSessionRecord(makeRecord({ userId: 7 as never })).ok).toBe(false);
     expect(validateSessionRecord(makeRecord({ createdAt: -5 })).ok).toBe(false);
   });
+
+  it('enforces the Redis-safe opaque charset on id/tenant/user (adv. L2 glob bleed)', () => {
+    const globs = ['*', '?', '[', ']', 'a:b', 'a*b', 'a?b', 'a/b', 'a b', 'a.b'];
+    for (const bad of globs) {
+      expect(validateSessionRecord(makeRecord({ id: bad })).ok).toBe(false);
+      expect(validateSessionRecord(makeRecord({ tenantId: bad })).ok).toBe(false);
+      expect(validateSessionRecord(makeRecord({ userId: bad })).ok).toBe(false);
+    }
+    // allowed charset still passes
+    for (const ok of ['sess_abc-1', 'user-1', 'tenant_1', 'UUID0123456789abcdEF', 'a']) {
+      expect(validateSessionRecord(makeRecord({ id: ok })).ok).toBe(true);
+      expect(validateSessionRecord(makeRecord({ tenantId: ok })).ok).toBe(true);
+      expect(validateSessionRecord(makeRecord({ userId: ok })).ok).toBe(true);
+    }
+    expect(isRedisSafeOpaqueId('*')).toBe(false);
+    expect(isRedisSafeOpaqueId('a:b')).toBe(false);
+    expect(isRedisSafeOpaqueId('sess_abc-1')).toBe(true);
+  });
+
+  it('rejects keys/scopes with non-safe ids (would break the KEYS list prefix)', () => {
+    expect(validateSessionRecordKey({ tenantId: 't', userId: 'u', sessionId: '*' }).ok).toBe(false);
+    expect(validateSessionRecordKey({ tenantId: 't', userId: '*', sessionId: 's' }).ok).toBe(false);
+    expect(validateSessionRecordKey({ tenantId: '*', userId: 'u', sessionId: 's' }).ok).toBe(false);
+    expect(validateSessionRecordKey({ tenantId: 't', userId: 'u', sessionId: 's' }).ok).toBe(true);
+  });
 });
 
 describe('meta — schema-typed reserved (parent #411 lock)', () => {
@@ -137,14 +164,14 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
 });
 
 describe('MemorySessionStore', () => {
-  const key = { tenantId: 't1', userId: 'u1', sessionId: 's1' };
+  const key = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 's1' };
 
   it('round-trips get/put/list/remove', async () => {
     const s = new MemorySessionStore();
     await expect(s.get(key)).resolves.toBeNull();
     await s.put(key, makeRecord({ id: 's1' }));
     expect((await s.get(key))?.id).toBe('s1');
-    expect((await s.list({ tenantId: 't1', userId: 'u1' })).map((r) => r.id)).toEqual(['s1']);
+    expect((await s.list({ tenantId: 'tenant-1', userId: 'user-1' })).map((r) => r.id)).toEqual(['s1']);
     await expect(s.remove(key)).resolves.toBe(true);
     await expect(s.remove(key)).resolves.toBe(false);
     await expect(s.get(key)).resolves.toBeNull();
@@ -170,6 +197,39 @@ describe('MemorySessionStore', () => {
     const rr = await s.put(key, makeRecord({ id: 's1', createdAt: 1000, updatedAt: 1500 }));
     expect(rr.status).toBe('conflict');
     if (rr.status === 'conflict') expect(rr.server.updatedAt).toBe(2000);
+  });
+
+  it('upsert preserves STORED createdAt even when the caller supplies a different one (adv. L1/L6 non-vacuous)', async () => {
+    const s = new MemorySessionStore();
+    await s.put(key, makeRecord({ id: 's1', createdAt: 1000, updatedAt: 0 }));
+    // Caller wrongfully bumps createdAt; the store must keep the original.
+    await s.put(key, makeRecord({ id: 's1', createdAt: 9999, updatedAt: 2000 }));
+    const r = await s.get(key);
+    expect(r?.createdAt).toBe(1000);
+    expect(r?.updatedAt).toBe(2000);
+  });
+
+  it('rejects a key/record identity mismatch (confused-deputy guard, adv. L2)', async () => {
+    const s = new MemorySessionStore();
+    const mismatch = { ...key, userId: 'attacker' };
+    await expect(
+      s.put(mismatch, makeRecord({ id: 's1', tenantId: 'tenant-1', userId: 'u1' })),
+    ).rejects.toThrow(/must match the session key/);
+    await expect(
+      s.put(key, makeRecord({ id: 'other-session' })),
+    ).rejects.toThrow(/must match the session key/);
+    await expect(
+      s.put(key, makeRecord({ id: 's1', tenantId: 'other-tenant' })),
+    ).rejects.toThrow(/must match the session key/);
+  });
+
+  it('rejects unsafe ids at the store boundary (get/put/list/remove)', async () => {
+    const s = new MemorySessionStore();
+    const badKey = { tenantId: 't1', userId: '*', sessionId: 's1' };
+    await expect(s.get(badKey)).rejects.toThrow(/Invalid session key/);
+    await expect(s.put(badKey, makeRecord({ id: 's1' }))).rejects.toThrow(/Invalid session key/);
+    await expect(s.remove(badKey)).rejects.toThrow(/Invalid session key/);
+    await expect(s.list({ tenantId: 't1', userId: '*' })).rejects.toThrow(/Invalid session list scope/);
   });
 
   it('list is scoped to the {tenant,user} prefix only', async () => {
@@ -238,15 +298,15 @@ describe('RedisSessionStore', () => {
 
   it('issues harness:session:{tenant}:{user}:{id} keys, lists per-user prefix, applies TTL ex', async () => {
     const { client, calls } = fakeClient();
-    const key = { tenantId: 't', userId: 'u', sessionId: 'id' };
+    const key = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 'id' };
 
     const noTtl = new RedisSessionStore({ client, ttlMs: 0 });
     await noTtl.put(key, makeRecord({ id: 'id' }));
-    expect(calls.at(-1)?.key).toBe('harness:session:t:u:id');
+    expect(calls.at(-1)?.key).toBe('harness:session:tenant-1:user-1:id');
     expect(calls.at(-1)?.opts).toBeUndefined(); // no `ex` when TTL 0
 
     expect((await noTtl.get(key))?.id).toBe('id');
-    expect((await noTtl.list({ tenantId: 't', userId: 'u' })).map((r) => r.id)).toEqual(['id']);
+    expect((await noTtl.list({ tenantId: 'tenant-1', userId: 'user-1' })).map((r) => r.id)).toEqual(['id']);
     await expect(noTtl.remove(key)).resolves.toBe(true);
     await expect(noTtl.get(key)).resolves.toBeNull();
 
@@ -258,7 +318,7 @@ describe('RedisSessionStore', () => {
   it('enforces LWW on put via the injected client', async () => {
     const { client } = fakeClient();
     const store = new RedisSessionStore({ client });
-    const key = { tenantId: 't', userId: 'u', sessionId: 'id' };
+    const key = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 'id' };
     await store.put(key, makeRecord({ id: 'id', updatedAt: 5000 }));
     const rr = await store.put(key, makeRecord({ id: 'id', updatedAt: 4000 }));
     expect(rr.status).toBe('conflict');
@@ -268,9 +328,65 @@ describe('RedisSessionStore', () => {
   it('rejects an invalid record at the store boundary', async () => {
     const { client } = fakeClient();
     const store = new RedisSessionStore({ client });
-    const key = { tenantId: 't', userId: 'u', sessionId: 'id' };
+    const key = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 'id' };
     await expect(
       store.put(key, { ...makeRecord(), meta: { unknownMeta: 1 } as HarnessSessionRecord['meta'] }),
     ).rejects.toThrow(/not a reserved key/);
+  });
+
+  it('upsert preserves STORED createdAt (caller-bumped createdAt is overwritten back)', async () => {
+    const { client } = fakeClient();
+    const store = new RedisSessionStore({ client });
+    const key = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 'id' };
+    await store.put(key, makeRecord({ id: 'id', createdAt: 1000, updatedAt: 0 }));
+    await store.put(key, makeRecord({ id: 'id', createdAt: 9999, updatedAt: 2000 }));
+    expect((await store.get(key))?.createdAt).toBe(1000);
+    expect((await store.get(key))?.updatedAt).toBe(2000);
+  });
+
+  it('rejects a key/record identity mismatch and unsafe ids at the Redis boundary', async () => {
+    const { client } = fakeClient();
+    const store = new RedisSessionStore({ client });
+    const key = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 'id' };
+    await expect(
+      store.put({ ...key, userId: 'attacker' }, makeRecord({ id: 'id', userId: 'u' })),
+    ).rejects.toThrow(/must match the session key/);
+    await expect(
+      store.put(
+        { tenantId: 'tenant-1', userId: 'user-1', sessionId: '*' },
+        makeRecord({ id: 'ok', tenantId: 'tenant-1', userId: 'user-1' }),
+      ),
+    ).rejects.toThrow(/Invalid session key/);
+    await expect(store.get({ tenantId: 'tenant-1', userId: 'user-1', sessionId: '*' })).rejects.toThrow(/Invalid session key/);
+    await expect(store.list({ tenantId: 'tenant-1', userId: '*' })).rejects.toThrow(/Invalid session list scope/);
+  });
+
+  it('trust-but-verifies reads from Redis: corrupt blobs yield null / are skipped (adv. minor L1)', async () => {
+    const map = new Map<string, unknown>();
+    const { client } = fakeClient(map);
+    const store = new RedisSessionStore({ client });
+    const key = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 'id' };
+
+    // Hand-edited / corrupt value (unknown meta key) under a well-formed key.
+    map.set('harness:session:tenant-1:user-1:id', {
+      id: 'id',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      createdAt: 1,
+      updatedAt: 1,
+      messages: [],
+      meta: { smuggled: 1 },
+    });
+    await expect(store.get(key)).resolves.toBeNull();
+
+    // A valid sibling plus a corrupt one: list skips the corrupt blob.
+    await store.put(key, makeRecord({ id: 'id', updatedAt: 5 }));
+    await store.put(
+      { tenantId: 'tenant-1', userId: 'user-1', sessionId: 'other' },
+      makeRecord({ id: 'other', updatedAt: 5 }),
+    );
+    map.set('harness:session:tenant-1:user-1:corrupt', { meta: { smuggled: 1 } });
+    const ids = (await store.list({ tenantId: 'tenant-1', userId: 'user-1' })).map((r) => r.id).sort();
+    expect(ids).toEqual(['id', 'other']);
   });
 });

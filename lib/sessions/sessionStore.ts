@@ -13,11 +13,22 @@
  *  - `put` **create** preserves a supplied `updatedAt` untouched (a sealed `0`
  *    stays `0`); **upsert** keeps stored `createdAt` and advances `updatedAt` LWW.
  *    The `updatedAt: 0` mint seed is applied by the Phase 2 mint / Phase 4 backfill.
+ *
+ * Adversarial-review (btipling) fixes folded in this phase:
+ *  - **key ↔ record binding** — `put` throws if `key.tenantId/userId/sessionId`
+ *    differ from `record.tenantId/userId/id`, closing the confused-deputy footgun.
+ *  - **Redis-safe opaque charset** — `tenantId`/`userId`/`id` are restricted to
+ *    `[A-Za-z0-9_-]{1,128}` so `KEYS`/prefix globs (`* : ? [ ]`) can never be
+ *    smuggled through an id; the `{tenant}:{user}:` list prefix stays unambiguous.
+ *  - **upsert enforces stored `createdAt`** at the store, not just by caller discipline.
+ *  - **trust-but-verify on read** — `get`/`list` re-validate JSON read from Redis.
+ *  - **Atomic-CAS residual (deferred to #414):** LWW here is check-then-set (read +
+ *    conditional write) and is **not** a single atomic op. Phase 1 has no route yet, so
+ *    this is a documented seam limitation; the Phase 2 route must fail closed (return the
+ *    server copy on conflict) and may upgrade to a Lua / versioned CAS before shipping
+ *    multi-device concurrency. Do not treat this store as an atomic compare-and-set.
  */
-import {
-  HARNESS_SESSION_MAX_META_BYTES,
-  HARNESS_SESSION_SNAPSHOT_ID_MAX,
-} from '../sessionCloudCaps';
+import { HARNESS_SESSION_MAX_META_BYTES } from '../sessionCloudCaps';
 import { validateSessionSnapshot } from '../tenancy/harnessSessions';
 import type { HarnessSessionErrorCode } from '../tenancy/harnessSessions';
 import type { SessionMessage } from '../sessionStore';
@@ -59,6 +70,7 @@ export type SessionStoreCode =
   | 'invalid_created_at'
   | 'invalid_tenant'
   | 'invalid_user'
+  | 'invalid_key'
   | 'invalid_meta';
 
 export type SessionStoreResult<T> =
@@ -77,6 +89,19 @@ export interface ServerSessionStore {
   remove(key: SessionRecordKey): Promise<boolean>;
 }
 
+/**
+ * Redis-safe opaque id charset. Tenant/user/session ids live inside `:`-delimited Keyspace
+ * segments and a `KEYS` prefix glob, so we reject Redis glob/metacharacters
+ * (`*`, `?`, `[`, `]`) and `:` themselves. Server mints ids so this is always satisfied;
+ * rejecting non-safe ids at the seam closes the prefix-glob / cross-user-list footgun
+ * (adversarial review L2).
+ */
+const REDIS_SAFE_OPAQUE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function isRedisSafeOpaqueId(s: unknown): s is string {
+  return typeof s === 'string' && REDIS_SAFE_OPAQUE_ID_RE.test(s);
+}
+
 /** Redis key for a single record (also the canonical key string for the memory double). */
 export function sessionKeyString(key: SessionRecordKey): string {
   return `harness:session:${key.tenantId}:${key.userId}:${key.sessionId}`;
@@ -84,11 +109,101 @@ export function sessionKeyString(key: SessionRecordKey): string {
 
 /**
  * Redis list pattern for one user's sessions within a tenant.
- * NOTE: ids (tenant/user/session) are server-minted UUID-shaped (no `:`, no `*`),
- * so the `{tenant}:{user}:` prefix is unambiguous.
+ * Safe because every id segment is validated to `[A-Za-z0-9_-]` (never `:` or a glob),
+ * so the `{tenant}:{user}:*` prefix can never bleed into another tenant/user/key.
  */
 export function sessionPrefix(scope: SessionListScope): string {
   return `harness:session:${scope.tenantId}:${scope.userId}:*`;
+}
+
+/** Validate a store key (tenant/user/session ids, all Redis-safe opaque). */
+export function validateSessionRecordKey(
+  input: unknown,
+): SessionStoreResult<SessionRecordKey> {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    return { ok: false, code: 'invalid_key', error: 'Session key must be an object.' };
+  }
+  const o = input as Record<string, unknown>;
+  if (!isRedisSafeOpaqueId(o.tenantId)) {
+    return {
+      ok: false,
+      code: 'invalid_tenant',
+      error: 'tenantId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    };
+  }
+  if (!isRedisSafeOpaqueId(o.userId)) {
+    return {
+      ok: false,
+      code: 'invalid_user',
+      error: 'userId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    };
+  }
+  if (!isRedisSafeOpaqueId(o.sessionId)) {
+    return {
+      ok: false,
+      code: 'invalid_id',
+      error: 'sessionId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    };
+  }
+  return {
+    ok: true,
+    value: { tenantId: o.tenantId, userId: o.userId, sessionId: o.sessionId },
+  };
+}
+
+export function assertValidSessionRecordKey(key: SessionRecordKey): void {
+  const result = validateSessionRecordKey(key);
+  if (!result.ok) throw new Error(`Invalid session key: ${result.error}`);
+}
+
+/** Validate a list scope (tenant/user only). */
+export function validateSessionListScope(
+  input: unknown,
+): SessionStoreResult<SessionListScope> {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    return { ok: false, code: 'invalid_key', error: 'Session list scope must be an object.' };
+  }
+  const o = input as Record<string, unknown>;
+  if (!isRedisSafeOpaqueId(o.tenantId)) {
+    return {
+      ok: false,
+      code: 'invalid_tenant',
+      error: 'tenantId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    };
+  }
+  if (!isRedisSafeOpaqueId(o.userId)) {
+    return {
+      ok: false,
+      code: 'invalid_user',
+      error: 'userId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    };
+  }
+  return { ok: true, value: { tenantId: o.tenantId, userId: o.userId } };
+}
+
+export function assertValidSessionListScope(scope: SessionListScope): void {
+  const result = validateSessionListScope(scope);
+  if (!result.ok) throw new Error(`Invalid session list scope: ${result.error}`);
+}
+
+/**
+ * Bind the caller-supplied key to the record identity. Ownership is always the
+ * authenticated user within a tenant; this prevents a confused-deputy or buggy caller
+ * from storing an attacker-owned record under a victim prefix (adversarial review L2).
+ */
+export function assertKeyMatchesRecord(
+  key: SessionRecordKey,
+  record: HarnessSessionRecord,
+): void {
+  if (
+    key.tenantId !== record.tenantId ||
+    key.userId !== record.userId ||
+    key.sessionId !== record.id
+  ) {
+    throw new Error(
+      'Session record identity must match the session key (tenantId/userId/id).',
+    );
+  }
 }
 
 function utf8ByteLength(s: string): number {
@@ -132,10 +247,6 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
   return { ok: true, value: meta };
 }
 
-function isNonEmptyId(s: unknown, max: number): s is string {
-  return typeof s === 'string' && s.length > 0 && s.length <= max;
-}
-
 /**
  * Validate a full server record, **reusing** the existing snapshot validator for the
  * id / `updatedAt` / messages caps and adding tenant/user/createdAt/meta checks.
@@ -147,11 +258,21 @@ export function validateSessionRecord(input: unknown): SessionStoreResult<Harnes
   }
   const o = input as Record<string, unknown>;
 
-  if (!isNonEmptyId(o.tenantId, HARNESS_SESSION_SNAPSHOT_ID_MAX)) {
-    return { ok: false, code: 'invalid_tenant', error: 'tenantId must be a non-empty string (max 128).' };
+  // tenantId / userId live in Redis Keyspace segments + a KEYS glob prefix, so they must
+  // use the Redis-safe opaque charset (adversarial review L2) — not just "non-empty ≤128".
+  if (!isRedisSafeOpaqueId(o.tenantId)) {
+    return {
+      ok: false,
+      code: 'invalid_tenant',
+      error: 'tenantId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    };
   }
-  if (!isNonEmptyId(o.userId, HARNESS_SESSION_SNAPSHOT_ID_MAX)) {
-    return { ok: false, code: 'invalid_user', error: 'userId must be a non-empty string (max 128).' };
+  if (!isRedisSafeOpaqueId(o.userId)) {
+    return {
+      ok: false,
+      code: 'invalid_user',
+      error: 'userId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    };
   }
   if (typeof o.createdAt !== 'number' || !Number.isSafeInteger(o.createdAt) || o.createdAt < 0) {
     return {
@@ -169,6 +290,16 @@ export function validateSessionRecord(input: unknown): SessionStoreResult<Harnes
   });
   if (!core.ok) {
     return { ok: false, code: core.code, error: core.error };
+  }
+
+  // `id` also lives inside the key (`...:user:${id}`), so it gets the Redis-safe charset on
+  // top of the snapshot's opaque-no-control check — no glob/user-key bleed (adversarial L2).
+  if (!isRedisSafeOpaqueId(core.value.id)) {
+    return {
+      ok: false,
+      code: 'invalid_id',
+      error: 'id must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    };
   }
 
   const metaResult = validateMeta(o.meta);

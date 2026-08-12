@@ -2,7 +2,10 @@
  * Phase 1 (#412) — Redis `ServerSessionStore` via `@upstash/redis` REST.
  * Serverless-safe (no persistent sockets). BYO-configured via `SESSION_REDIS_URL`
  * / `SESSION_REDIS_TOKEN` (also honours `UPSTASH_REDIS_REST_URL`/`_TOKEN`).
- * Idle TTL optional (`SESSION_REDIS_TTL_MS`), default `0` = no expiry.
+ *
+ * TTL (`SESSION_REDIS_TTL_MS`), default `0` = no expiry, is refreshed on **write only**
+ * (`put` sets `EX`); it is NOT advanced by `get`/`list`, so treat it as "TTL-since-last-
+ * write", not "idle since last read" (adversarial nit L8).
  *
  * Server-only — never imported from client/Wasm (wired server-side in #414).
  */
@@ -13,9 +16,13 @@ import {
   type ServerSessionStore,
   type SessionListScope,
   type SessionRecordKey,
+  assertKeyMatchesRecord,
+  assertValidSessionListScope,
   assertValidSessionRecord,
+  assertValidSessionRecordKey,
   sessionKeyString,
   sessionPrefix,
+  validateSessionRecord,
 } from './sessionStore';
 
 /**
@@ -35,7 +42,7 @@ export interface RedisSessionStoreOptions {
   client?: RedisClientLike;
   url?: string;
   token?: string;
-  /** Idle TTL in ms. 0 (default) = no expiry. */
+  /** TTL in ms refreshed on each write (`put`). 0 (default) = no expiry. Not admin-read-refreshing. */
   ttlMs?: number;
 }
 
@@ -88,43 +95,62 @@ export class RedisSessionStore implements ServerSessionStore {
     return this.resolvedUrl;
   }
 
-  /** Resolved token (never logged; for tests / diagnostics only). */
+  /**
+   * Resolved token (for tests / diagnostics only). **Never log or expose this.** Redis
+   * access is ops-side; the token only ever lives in Vercel project env / injected client.
+   */
   token(): string | undefined {
     return this.resolvedToken;
   }
 
   async get(key: SessionRecordKey): Promise<HarnessSessionRecord | null> {
+    assertValidSessionRecordKey(key);
     const raw = await this.client.get(sessionKeyString(key));
-    return raw == null ? null : (raw as HarnessSessionRecord);
+    if (raw == null) return null;
+    // Trust-but-verify on read: corrupt/foreign values must not flow as typed records.
+    const parsed = validateSessionRecord(raw);
+    return parsed.ok ? parsed.value : null;
   }
 
   async put(key: SessionRecordKey, record: HarnessSessionRecord): Promise<PutResult> {
     assertValidSessionRecord(record);
+    assertValidSessionRecordKey(key);
+    assertKeyMatchesRecord(key, record);
     const existing = await this.get(key);
     if (existing && record.updatedAt < existing.updatedAt) {
       return { status: 'conflict', server: existing };
     }
+    // Upsert keeps stored `createdAt` (plan #412 lock, enforced at the store — adv. L1/L6).
+    const normalized = existing ? { ...record, createdAt: existing.createdAt } : record;
     const k = sessionKeyString(key);
     if (this.ttlMs > 0) {
-      await this.client.set(k, record, { ex: secondsFromMs(this.ttlMs) });
+      await this.client.set(k, normalized, { ex: secondsFromMs(this.ttlMs) });
     } else {
-      await this.client.set(k, record);
+      await this.client.set(k, normalized);
     }
-    return { status: 'stored', record };
+    return { status: 'stored', record: normalized };
   }
 
+  /**
+   * Note: implemented as `KEYS {tenant}:{user}:*` + N×`GET` (adversarial minor L5). The
+   * parent #411 accepted the prefix scan for P0; a pagination / CURSOR pass is deferred to
+   * a later phase. Each key is re-validated on read so corrupt blobs are skipped.
+   */
   async list(scope: SessionListScope): Promise<HarnessSessionRecord[]> {
+    assertValidSessionListScope(scope);
     const matches = await this.client.keys(sessionPrefix(scope));
     const records: HarnessSessionRecord[] = [];
     for (const k of matches) {
       const raw = await this.client.get(k);
       if (raw == null) continue;
-      records.push(raw as HarnessSessionRecord);
+      const parsed = validateSessionRecord(raw);
+      if (parsed.ok) records.push(parsed.value);
     }
     return records;
   }
 
   async remove(key: SessionRecordKey): Promise<boolean> {
+    assertValidSessionRecordKey(key);
     const k = sessionKeyString(key);
     const existing = await this.client.get(k);
     if (existing == null) return false;
