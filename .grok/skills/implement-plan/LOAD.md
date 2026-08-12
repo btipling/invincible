@@ -53,8 +53,9 @@ gh issue view <N> --repo btipling/invincible --json number,title,body,url,state
 3. Ground claims in **live code** on the branch you code against (usually `main`).
    Do not invent APIs; mark unverified symbols.
 4. Implement in the plan's locked layers; add tests for every non-trivial piece.
-5. Verify: `npm run typecheck` → `node run-tests.mjs` (10-min timeout) → build
-   gate when applicable. See SKILL.md §2 for the in-sandbox rules.
+5. Verify: `npm run typecheck` → full `vitest run` (10-min timeout, or
+   `vitest run --changed` for a fast changed-only gate) → build gate when
+   applicable. See SKILL.md §2 for the in-sandbox rules.
 6. Commit (author `btipling`), push, `gh pr create` (base `main`; `Fixes #N` /
    `Closes #N` for the plan issue, `Refs #N` for parents).
 7. **Do NOT merge.** Stop at merge-ready; suggest `adversarial-review` next.

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "test": "vitest run",
-    "test:full": "node run-tests.mjs",
+    "test:changed": "vitest run --changed",
     "typecheck": "tsc --noEmit",
     "fetch-harness": "node scripts/fetch-harness-artifact.mjs",
     "prebuild": "node scripts/fetch-harness-artifact.mjs",

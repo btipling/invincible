@@ -32,7 +32,7 @@ gh api "repos/btipling/invincible/contents/.grok/skills/<name>/SKILL.md?ref=main
 | **plan-review** | `plan-review/` | Review plan issues: correctness, perf, architecture, tests, layers, **cloud ops**, **living docs**, parent; default **edit issue body** via `gh` |
 | **adversarial-review** | `adversarial-review/` | Hostile **PR** review (break scenarios, security, feature-divide, runner/CI); default **comment on PR** via `gh` |
 | **cleanup-sandbox** | `cleanup-sandbox/` | Post-session hygiene: checkout + pull latest `main`, delete leftover local branches / agent scratch; **refuses** to discard current uncommitted work without explicit operator consent |
-| **implement-plan** | `implement-plan/` | Code a reviewed plan into a **non-merged PR** + tests: canonical test/build workflow (`npm run typecheck`, `node run-tests.mjs`), in-sandbox exec rules (10-min timeout, transport drops, no orphaned runs), layer ownership, code standards that survive review |
+| **implement-plan** | `implement-plan/` | Code a reviewed plan into a **non-merged PR** + tests: canonical test/build workflow (`npm run typecheck`, `vitest run`, `vitest run --changed`), in-sandbox exec rules (10-min timeout, transport drops, no orphaned runs), layer ownership, code standards that survive review |
 
 ## Cloud-native ops (create-plan + plan-review)
 
@@ -79,7 +79,7 @@ See [`implement-plan/LOAD.md`](implement-plan/LOAD.md):
 1. `gh` gate + read `AGENTS.md`
 2. Read the plan issue fully; ground in live code on the branch
 3. Implement in the plan's locked layers; add tests for non-trivial logic
-4. Verify: `npm run typecheck` → `node run-tests.mjs` (10-min timeout) → build gate
+4. Verify: `npm run typecheck` → `vitest run` (10-min timeout, or `vitest run --changed` for changed-only) → build gate
 5. Commit (author `btipling`), push, `gh pr create` (base `main`, `Closes/Refs #N`)
 6. **Do NOT merge** — stop at merge-ready; suggest `adversarial-review` next
 
