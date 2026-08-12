@@ -30,6 +30,12 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, '../../db/migrations');
 
+/**
+ * Apply each migration file as a single multi-statement exec (still in file
+ * order) rather than one round-trip per `--> statement-breakpoint` chunk.
+ * PGlite `exec` runs several semicolon-separated statements; the breakpoint
+ * markers are a drizzle artifact and safe to drop.
+ */
 async function applyMigrations(client: PGlite) {
   for (const name of [
     '0000_tenancy_phase1.sql',
@@ -41,16 +47,34 @@ async function applyMigrations(client: PGlite) {
     '0006_user_github_tokens.sql',
     '0007_user_preferred_sandbox.sql',
   ]) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8');
-    const statements = sql
+    const sql = readFileSync(join(migrationsDir, name), 'utf8')
       .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    for (const stmt of statements) {
-      await client.exec(stmt);
+      .join('')
+      .trim();
+    if (sql) {
+      await client.exec(sql);
     }
   }
 }
+
+/**
+ * One in-memory PGlite for the whole file, booted once (previously one per
+ * describe). Both describes share it and isolate via their own delete-and-reseed
+ * beforeEach — PGlite's single-connection mutex deadlocks when a raw
+ * SAVEPOINT/transaction straddles drizzle calls against the shared `db`.
+ */
+let client!: PGlite;
+let db!: ReturnType<typeof drizzle<typeof schema>>;
+
+beforeAll(async () => {
+  client = new PGlite();
+  await applyMigrations(client);
+  db = drizzle(client, { schema });
+});
+
+afterAll(async () => {
+  await client?.close();
+});
 
 function testAmk(fill = 7): Buffer {
   return Buffer.alloc(32, fill);
@@ -87,19 +111,7 @@ describe('wrapTenantDek / unwrapTenantDek', () => {
 });
 
 describe('tenantKeys (pglite)', () => {
-  let client: PGlite;
-  let db: ReturnType<typeof drizzle<typeof schema>>;
   const amk = testAmk(5);
-
-  beforeAll(async () => {
-    client = new PGlite();
-    await applyMigrations(client);
-    db = drizzle(client, { schema });
-  });
-
-  afterAll(async () => {
-    await client.close();
-  });
 
   beforeEach(async () => {
     await client.exec('DELETE FROM sandboxes');
@@ -301,19 +313,7 @@ describe('tenantKeys (pglite)', () => {
 });
 
 describe('decryptSandboxTokenCutover / mode', () => {
-  let client: PGlite;
-  let db: ReturnType<typeof drizzle<typeof schema>>;
   const amk = testAmk(11);
-
-  beforeAll(async () => {
-    client = new PGlite();
-    await applyMigrations(client);
-    db = drizzle(client, { schema });
-  });
-
-  afterAll(async () => {
-    await client.close();
-  });
 
   beforeEach(async () => {
     await client.exec('DELETE FROM sandboxes');
