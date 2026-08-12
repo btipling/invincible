@@ -3,13 +3,29 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 describe('settings MCP actions', () => {
   const originalEnv = { ...process.env };
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const servicesState: Record<string, any> = {};
+
+  function mockDi() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (servicesState as any).soleMembership = servicesState.soleMembership ?? {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (servicesState as any).userMcpServers =
+      servicesState.userMcpServers ?? {};
+    vi.doMock('../../../lib/di', () => ({
+      createProdServices: () => servicesState,
+      createScriptConnection: vi.fn(),
+    }));
+  }
+
   afterEach(() => {
     process.env = { ...originalEnv };
     vi.resetModules();
+    delete servicesState.soleMembership;
+    delete servicesState.userMcpServers;
     vi.doUnmock('../../../auth');
-    vi.doUnmock('../../../lib/tenancy/soleMembership');
-    vi.doUnmock('../../../lib/tenancy/userMcpServers');
     vi.doUnmock('../../../lib/mcp/client');
+    vi.doUnmock('../../../lib/di');
     vi.doUnmock('next/cache');
   });
 
@@ -21,25 +37,49 @@ describe('settings MCP actions', () => {
     );
   }
 
+  function mockAuth(user: { id: string } | null) {
+    vi.doMock('../../../auth', () => ({
+      auth: vi.fn(async () => (user ? { user } : null)),
+    }));
+  }
+
+  function mockMembership(value: unknown) {
+    servicesState.soleMembership = {
+      loadSoleMembership: vi.fn(async () => value),
+    };
+  }
+
+  const fakeSecret = {
+    id: 's1',
+    tenantId: 't1',
+    userId: 'u1',
+    name: 'Exa',
+    slug: 'exa',
+    url: 'https://mcp.exa.ai/mcp',
+    transport: 'http',
+    authHeaderName: 'x-api-key',
+    authMode: 'api_key',
+    apiKey: 'k',
+    enabled: true,
+    lastError: 'old',
+  };
+
   it('createMcpServerAction rejects when unauthenticated', async () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../auth', () => ({
-      auth: vi.fn(async () => null),
-    }));
-    vi.doMock('../../../lib/tenancy/soleMembership', () => ({
-      loadSoleMembership: vi.fn(),
-    }));
+    mockDi();
+    mockAuth(null);
+
     const createUserMcpServer = vi.fn();
-    vi.doMock('../../../lib/tenancy/userMcpServers', () => ({
+    servicesState.userMcpServers = {
       createUserMcpServer,
       deleteUserMcpServer: vi.fn(),
       loadUserMcpSecretById: vi.fn(),
       setUserMcpServerEnabled: vi.fn(),
       setUserMcpServerLastError: vi.fn(),
       updateUserMcpServer: vi.fn(),
-    }));
+    };
     vi.doMock('../../../lib/mcp/client', () => ({
       probeUserMcpServer: vi.fn(),
     }));
@@ -58,45 +98,26 @@ describe('settings MCP actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../auth', () => ({
-      auth: vi.fn(async () => ({ user: { id: 'u1' } })),
-    }));
-    vi.doMock('../../../lib/tenancy/soleMembership', () => ({
-      loadSoleMembership: vi.fn(async () => ({
-        ok: true,
-        tenantId: 't1',
-        role: 'member',
-      })),
-    }));
+    mockDi();
+    mockAuth({ id: 'u1' });
+    mockMembership({ ok: true, tenantId: 't1', role: 'member' });
+
     const loadUserMcpSecretById = vi.fn(async () => ({
       ok: true as const,
-      value: {
-        id: 's1',
-        tenantId: 't1',
-        userId: 'u1',
-        name: 'Exa',
-        slug: 'exa',
-        url: 'https://mcp.exa.ai/mcp',
-        transport: 'http',
-        authHeaderName: 'x-api-key',
-        authMode: 'api_key',
-        apiKey: 'k',
-        enabled: true,
-        lastError: 'old',
-      },
+      value: fakeSecret,
     }));
     const setUserMcpServerLastError = vi.fn(async () => ({
       ok: true as const,
       value: { id: 's1' },
     }));
-    vi.doMock('../../../lib/tenancy/userMcpServers', () => ({
+    servicesState.userMcpServers = {
       createUserMcpServer: vi.fn(),
       deleteUserMcpServer: vi.fn(),
       loadUserMcpSecretById,
       setUserMcpServerEnabled: vi.fn(),
       setUserMcpServerLastError,
       updateUserMcpServer: vi.fn(),
-    }));
+    };
     const probeUserMcpServer = vi.fn(async () => ({
       ok: true as const,
       toolNames: ['web_search', 'other'],
@@ -124,18 +145,12 @@ describe('settings MCP actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../auth', () => ({
-      auth: vi.fn(async () => ({ user: { id: 'u1' } })),
-    }));
-    vi.doMock('../../../lib/tenancy/soleMembership', () => ({
-      loadSoleMembership: vi.fn(async () => ({
-        ok: true,
-        tenantId: 't1',
-        role: 'member',
-      })),
-    }));
+    mockDi();
+    mockAuth({ id: 'u1' });
+    mockMembership({ ok: true, tenantId: 't1', role: 'member' });
+
     const probeUserMcpServer = vi.fn();
-    vi.doMock('../../../lib/tenancy/userMcpServers', () => ({
+    servicesState.userMcpServers = {
       createUserMcpServer: vi.fn(),
       deleteUserMcpServer: vi.fn(),
       loadUserMcpSecretById: vi.fn(async () => ({
@@ -146,7 +161,7 @@ describe('settings MCP actions', () => {
       setUserMcpServerEnabled: vi.fn(),
       setUserMcpServerLastError: vi.fn(),
       updateUserMcpServer: vi.fn(),
-    }));
+    };
     vi.doMock('../../../lib/mcp/client', () => ({
       probeUserMcpServer,
     }));
@@ -163,29 +178,23 @@ describe('settings MCP actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../auth', () => ({
-      auth: vi.fn(async () => ({ user: { id: 'u1' } })),
-    }));
-    vi.doMock('../../../lib/tenancy/soleMembership', () => ({
-      loadSoleMembership: vi.fn(async () => ({
-        ok: true,
-        tenantId: 't1',
-        role: 'member',
-      })),
-    }));
+    mockDi();
+    mockAuth({ id: 'u1' });
+    mockMembership({ ok: true, tenantId: 't1', role: 'member' });
+
     const createUserMcpServer = vi.fn(async () => ({
       ok: true as const,
       value: { id: 's-new' },
     }));
     const setUserMcpServerEnabled = vi.fn();
-    vi.doMock('../../../lib/tenancy/userMcpServers', () => ({
+    servicesState.userMcpServers = {
       createUserMcpServer,
       deleteUserMcpServer: vi.fn(),
       loadUserMcpSecretById: vi.fn(),
       setUserMcpServerEnabled,
       setUserMcpServerLastError: vi.fn(),
       updateUserMcpServer: vi.fn(),
-    }));
+    };
     vi.doMock('../../../lib/mcp/client', () => ({
       probeUserMcpServer: vi.fn(),
     }));
@@ -208,24 +217,19 @@ describe('settings MCP actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../auth', () => ({
-      auth: vi.fn(async () => ({ user: { id: 'u1' } })),
-    }));
-    vi.doMock('../../../lib/tenancy/soleMembership', () => ({
-      loadSoleMembership: vi.fn(async () => ({
-        ok: false,
-        reason: 'ambiguous',
-      })),
-    }));
+    mockDi();
+    mockAuth({ id: 'u1' });
+    mockMembership({ ok: false, reason: 'ambiguous' });
+
     const createUserMcpServer = vi.fn();
-    vi.doMock('../../../lib/tenancy/userMcpServers', () => ({
+    servicesState.userMcpServers = {
       createUserMcpServer,
       deleteUserMcpServer: vi.fn(),
       loadUserMcpSecretById: vi.fn(),
       setUserMcpServerEnabled: vi.fn(),
       setUserMcpServerLastError: vi.fn(),
       updateUserMcpServer: vi.fn(),
-    }));
+    };
     vi.doMock('../../../lib/mcp/client', () => ({
       probeUserMcpServer: vi.fn(),
     }));
@@ -244,24 +248,19 @@ describe('settings MCP actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../auth', () => ({
-      auth: vi.fn(async () => ({ user: { id: 'u1' } })),
-    }));
-    vi.doMock('../../../lib/tenancy/soleMembership', () => ({
-      loadSoleMembership: vi.fn(async () => ({
-        ok: false,
-        reason: 'db',
-      })),
-    }));
+    mockDi();
+    mockAuth({ id: 'u1' });
+    mockMembership({ ok: false, reason: 'db' });
+
     const createUserMcpServer = vi.fn();
-    vi.doMock('../../../lib/tenancy/userMcpServers', () => ({
+    servicesState.userMcpServers = {
       createUserMcpServer,
       deleteUserMcpServer: vi.fn(),
       loadUserMcpSecretById: vi.fn(),
       setUserMcpServerEnabled: vi.fn(),
       setUserMcpServerLastError: vi.fn(),
       updateUserMcpServer: vi.fn(),
-    }));
+    };
     vi.doMock('../../../lib/mcp/client', () => ({
       probeUserMcpServer: vi.fn(),
     }));

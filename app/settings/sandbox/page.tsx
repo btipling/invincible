@@ -1,10 +1,6 @@
 import { teal } from '../../../lib/palette';
-import { listUserSandboxChoices } from '../../../lib/tenancy/userPreferredSandbox';
-import {
-  loadInstance,
-  reconcileStatus,
-  type UserSandboxPurpose,
-} from '../../../lib/tenancy/userSandboxInstance';
+import { createProdServices } from '../../../lib/di';
+import type { UserSandboxPurpose } from '../../../lib/tenancy/userSandboxInstance';
 import type { UserSandboxInstance } from '../../../db';
 import { gateSettingsPage } from '../load';
 import { SettingsPageShell } from '../SettingsPageShell';
@@ -13,6 +9,9 @@ import {
   type InstanceView,
 } from './SandboxInstanceCards';
 import { SandboxPickerForm } from './SandboxPickerForm';
+
+/** Phase-1 DI: server component wires through the composition root. */
+const services = createProdServices();
 
 export const dynamic = 'force-dynamic';
 
@@ -53,7 +52,10 @@ async function loadInstanceView(
   userId: string,
   purpose: UserSandboxPurpose,
 ): Promise<InstanceView> {
-  const loaded = await loadInstance(userId, purpose);
+  const loaded = await services.userSandboxInstance.loadInstance(
+    userId,
+    purpose,
+  );
   if (!loaded.ok) {
     return {
       exists: false,
@@ -70,7 +72,10 @@ async function loadInstanceView(
     return toView(purpose, null);
   }
 
-  const reconciled = await reconcileStatus(userId, purpose);
+  const reconciled = await services.userSandboxInstance.reconcileStatus(
+    userId,
+    purpose,
+  );
   if (reconciled.ok) {
     return toView(purpose, reconciled.value);
   }
@@ -93,7 +98,9 @@ export default async function SettingsSandboxPage() {
 }
 
 async function SandboxPageBody({ userId }: { userId: string }) {
-  const listed = await listUserSandboxChoices(userId);
+  const listed = await services.userPreferredSandbox.listUserSandboxChoices(
+    userId,
+  );
   const [workspace, http] = await Promise.all([
     loadInstanceView(userId, 'workspace'),
     loadInstanceView(userId, 'http'),

@@ -3,8 +3,11 @@ import Link from 'next/link';
 import { auth } from '../../auth';
 import { teal } from '../../lib/palette';
 import { canAccessAdmin } from '../../lib/tenancy/roles';
-import { loadSoleMembership } from '../../lib/tenancy/soleMembership';
+import { createProdServices } from '../../lib/di';
 import { LogoutButton } from '../logout/LogoutButton';
+
+/** Phase-1 DI: server component wires through the composition root. */
+const services = createProdServices();
 
 const linkStyle: CSSProperties = {
   fontSize: '0.8rem',
@@ -33,7 +36,7 @@ export async function AuthNavLinks() {
     );
   }
 
-  const membership = await loadSoleMembership(userId);
+  const membership = await services.soleMembership.loadSoleMembership(userId);
   const showAdmin = membership.ok && canAccessAdmin(membership.role);
 
   return (

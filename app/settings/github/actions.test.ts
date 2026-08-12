@@ -3,13 +3,29 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 describe('settings GitHub token actions', () => {
   const originalEnv = { ...process.env };
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const servicesState: Record<string, any> = {};
+
+  function mockDi() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (servicesState as any).soleMembership = servicesState.soleMembership ?? {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (servicesState as any).userGithubToken =
+      servicesState.userGithubToken ?? {};
+    vi.doMock('../../../lib/di', () => ({
+      createProdServices: () => servicesState,
+      createScriptConnection: vi.fn(),
+    }));
+  }
+
   afterEach(() => {
     process.env = { ...originalEnv };
     vi.resetModules();
+    delete servicesState.soleMembership;
+    delete servicesState.userGithubToken;
     vi.doUnmock('../../../auth');
-    vi.doUnmock('../../../lib/tenancy/soleMembership');
-    vi.doUnmock('../../../lib/tenancy/userGithubToken');
     vi.doUnmock('next/cache');
+    vi.doUnmock('../../../lib/di');
   });
 
   function tenancyOn() {
@@ -20,21 +36,24 @@ describe('settings GitHub token actions', () => {
     );
   }
 
+  function mockAuth(user: { id: string } | null) {
+    vi.doMock('../../../auth', () => ({
+      auth: vi.fn(async () => (user ? { user } : null)),
+    }));
+  }
+
   it('setGithubTokenAction rejects when unauthenticated', async () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../auth', () => ({
-      auth: vi.fn(async () => null),
-    }));
-    vi.doMock('../../../lib/tenancy/soleMembership', () => ({
-      loadSoleMembership: vi.fn(),
-    }));
+    mockDi();
+    mockAuth(null);
+
     const setUserGithubToken = vi.fn();
-    vi.doMock('../../../lib/tenancy/userGithubToken', () => ({
+    servicesState.userGithubToken = {
       setUserGithubToken,
       clearUserGithubToken: vi.fn(),
-    }));
+    };
 
     const { setGithubTokenAction } = await import('./actions');
     const fd = new FormData();
@@ -48,24 +67,23 @@ describe('settings GitHub token actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../auth', () => ({
-      auth: vi.fn(async () => ({ user: { id: 'session-user' } })),
-    }));
-    vi.doMock('../../../lib/tenancy/soleMembership', () => ({
+    mockDi();
+    mockAuth({ id: 'session-user' });
+    servicesState.soleMembership = {
       loadSoleMembership: vi.fn(async () => ({
         ok: true,
         tenantId: 't1',
         role: 'member',
       })),
-    }));
+    };
     const setUserGithubToken = vi.fn(async () => ({
       ok: true as const,
       value: { updatedAt: new Date() },
     }));
-    vi.doMock('../../../lib/tenancy/userGithubToken', () => ({
+    servicesState.userGithubToken = {
       setUserGithubToken,
       clearUserGithubToken: vi.fn(),
-    }));
+    };
 
     const { setGithubTokenAction } = await import('./actions');
     const fd = new FormData();
@@ -83,24 +101,23 @@ describe('settings GitHub token actions', () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    vi.doMock('../../../auth', () => ({
-      auth: vi.fn(async () => ({ user: { id: 'session-user' } })),
-    }));
-    vi.doMock('../../../lib/tenancy/soleMembership', () => ({
+    mockDi();
+    mockAuth({ id: 'session-user' });
+    servicesState.soleMembership = {
       loadSoleMembership: vi.fn(async () => ({
         ok: true,
         tenantId: 't1',
         role: 'member',
       })),
-    }));
+    };
     const clearUserGithubToken = vi.fn(async () => ({
       ok: true as const,
       value: { cleared: true as const },
     }));
-    vi.doMock('../../../lib/tenancy/userGithubToken', () => ({
+    servicesState.userGithubToken = {
       setUserGithubToken: vi.fn(),
       clearUserGithubToken,
-    }));
+    };
 
     const { clearGithubTokenAction } = await import('./actions');
     const fd = new FormData();
@@ -109,5 +126,4 @@ describe('settings GitHub token actions', () => {
     expect(r.ok).toBe(true);
     expect(clearUserGithubToken).toHaveBeenCalledWith('session-user');
   });
-
 });

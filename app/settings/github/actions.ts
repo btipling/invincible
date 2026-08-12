@@ -2,12 +2,11 @@
 
 import { revalidatePath } from 'next/cache';
 import { auth } from '../../../auth';
-import { loadSoleMembership } from '../../../lib/tenancy/soleMembership';
-import {
-  clearUserGithubToken,
-  setUserGithubToken,
-  type UserGithubTokenErrorCode,
-} from '../../../lib/tenancy/userGithubToken';
+import { createProdServices } from '../../../lib/di';
+import type { UserGithubTokenErrorCode } from '../../../lib/tenancy/userGithubToken';
+
+/** Phase-1 DI: server actions wire through the composition root. */
+const services = createProdServices();
 
 function revalidateSettings() {
   revalidatePath('/settings');
@@ -22,7 +21,7 @@ async function requireSettingsSession(): Promise<
   if (!userId) {
     return { ok: false, error: 'Authentication required.' };
   }
-  const membership = await loadSoleMembership(userId);
+  const membership = await services.soleMembership.loadSoleMembership(userId);
   if (!membership.ok) {
     if (membership.reason === 'ambiguous') {
       return {
@@ -71,7 +70,10 @@ export async function setGithubTokenAction(
   if (!session.ok) return { error: session.error };
 
   const token = String(formData.get('token') ?? '');
-  const result = await setUserGithubToken(session.userId, token);
+  const result = await services.userGithubToken.setUserGithubToken(
+    session.userId,
+    token,
+  );
   if (!result.ok) {
     return { error: mapError(result.code, result.error) };
   }
@@ -90,7 +92,9 @@ export async function clearGithubTokenAction(
   // formData unused for identity — session user only (authz lock).
   void formData;
 
-  const result = await clearUserGithubToken(session.userId);
+  const result = await services.userGithubToken.clearUserGithubToken(
+    session.userId,
+  );
   if (!result.ok) {
     return { error: mapError(result.code, result.error) };
   }

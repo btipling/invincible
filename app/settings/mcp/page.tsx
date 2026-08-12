@@ -1,8 +1,11 @@
 import { teal } from '../../../lib/palette';
-import { listUserMcpServers } from '../../../lib/tenancy/userMcpServers';
+import { createProdServices } from '../../../lib/di';
 import { gateSettingsPage } from '../load';
 import { SettingsPageShell } from '../SettingsPageShell';
 import { McpForms, type McpListItem } from './McpForms';
+
+/** Phase-1 DI: server component wires through the composition root. */
+const services = createProdServices();
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +23,7 @@ export default async function SettingsMcpPage() {
 }
 
 async function McpPageBody({ userId }: { userId: string }) {
-  const listed = await listUserMcpServers(userId);
+  const listed = await services.userMcpServers.listUserMcpServers(userId);
   if (!listed.ok) {
     return (
       <p role="alert" style={{ color: teal.muted, fontSize: 14 }}>

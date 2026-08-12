@@ -73,3 +73,11 @@ export async function resolveByokForRequest(
     secretsToRedact: resolved.secretsToRedact,
   };
 }
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createResolveInferenceForRequest(deps: ResolveInferenceDeps = {}) {
+  return {
+    resolveByokForRequest: (userId: string, modelId: string | undefined) =>
+      resolveByokForRequest(userId, modelId, deps),
+  };
+}

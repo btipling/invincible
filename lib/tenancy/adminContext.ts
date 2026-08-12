@@ -6,7 +6,6 @@
  */
 import { and, eq } from 'drizzle-orm';
 import {
-  createDbConnection,
   sandboxGrants,
   sandboxes,
   tenantMembers,
@@ -14,6 +13,7 @@ import {
   users,
   type Db,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { maskSecret } from './maskSecret';
 import { canAccessAdmin, canRotateSandboxToken, type TenantRole } from './roles';
 import { formatSandboxImageLabel } from './sandboxBackend';
@@ -49,6 +49,8 @@ export type LoadAdminContextResult =
 
 export type LoadAdminContextDeps = {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
   /**
    * Override sandbox-token decrypt for tests.
    * Product default: mode-aware tenant DEK (dual / dek-only).
@@ -71,19 +73,10 @@ export async function loadAdminContext(
     return { ok: false, reason: 'forbidden' };
   }
 
-  if (deps.db) {
-    return loadWithDb(deps.db, id, deps);
-  }
-
-  if (!process.env.DATABASE_URL?.trim()) {
-    return { ok: false, reason: 'db' };
-  }
-
-  const { db, client } = createDbConnection();
   try {
-    return await loadWithDb(db, id, deps);
-  } finally {
-    await client.end({ timeout: 5 });
+    return await withConnection(deps, (db) => loadWithDb(db, id, deps));
+  } catch {
+    return { ok: false, reason: 'db' };
   }
 }
 
@@ -206,4 +199,12 @@ async function loadWithDb(
   } catch {
     return { ok: false, reason: 'db' };
   }
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createAdminContext(deps: LoadAdminContextDeps = {}) {
+  return {
+    loadAdminContext: (userId: string, o?: LoadAdminContextDeps) =>
+      loadAdminContext(userId, { ...deps, ...o }),
+  };
 }

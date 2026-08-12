@@ -1,14 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AUTH_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
 
+/**
+ * Phase-1 DI re-point (#440): the route builds services from the composition
+ * root (`lib/di`). Route tests mock the **factory shape** (`createProdServices`)
+ * rather than the bare module exports, so the mocked methods intercept the
+ * call sites as they do in production.
+ */
 describe('/api/session', () => {
   const originalEnv = { ...process.env };
 
   afterEach(() => {
     process.env = { ...originalEnv };
     vi.resetModules();
+    vi.doUnmock('../../../lib/di');
     vi.doUnmock('../../../lib/tenancy/session');
-    vi.doUnmock('../../../lib/tenancy/harnessSessions');
   });
 
   function mockTenancyOn() {
@@ -17,15 +23,65 @@ describe('/api/session', () => {
     process.env.CREDENTIALS_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64');
   }
 
+  function mockHarnessSessions(overrides: Record<string, unknown> = {}) {
+    const getHarnessSession =
+      (overrides.getHarnessSession as typeof vi.fn) ??
+      vi.fn(async () => ({
+        ok: false as const,
+        code: 'not_found' as const,
+        error: 'Session not found.',
+      }));
+    const putHarnessSession =
+      (overrides.putHarnessSession as typeof vi.fn) ??
+      vi.fn(async () => ({
+        ok: false as const,
+        code: 'not_found' as const,
+        error: 'Session not found.',
+      }));
+    const deleteHarnessSession =
+      (overrides.deleteHarnessSession as typeof vi.fn) ??
+      vi.fn(async () => ({ ok: true as const, value: { deleted: false } }));
+    vi.doMock('../../../lib/di', () => ({
+      createProdServices: () => ({
+        harnessSessions: {
+          getHarnessSession,
+          putHarnessSession,
+          deleteHarnessSession,
+        },
+      }),
+      createScriptConnection: vi.fn(),
+    }));
+    return { getHarnessSession, putHarnessSession, deleteHarnessSession };
+  }
+
+  function mockSessionUser(
+    result:
+      | { ok: true; user: { id: string; email?: string } }
+      | { ok: false; response: Response },
+  ) {
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () =>
+        result.ok
+          ? result
+          : {
+              ok: false,
+              response: Response.json(
+                { error: AUTH_REQUIRED_ERROR },
+                { status: 401 },
+              ),
+            },
+      ),
+    }));
+  }
+
   it('unauthenticated → 401', async () => {
     vi.resetModules();
     mockTenancyOn();
-    vi.doMock('../../../lib/tenancy/session', () => ({
-      requireSessionUser: vi.fn(async () => ({
-        ok: false,
-        response: Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 }),
-      })),
-    }));
+    mockSessionUser({
+      ok: false,
+      response: Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 }),
+    });
+    mockHarnessSessions();
     const { GET, PUT, DELETE } = await import('./route');
     for (const res of [
       await GET(),
@@ -51,24 +107,15 @@ describe('/api/session', () => {
       updatedAt: 1_700_000_000_100,
       messages: [{ id: 'm_1', role: 'user', text: 'hi', at: 1_700_000_000_000 }],
     };
-    vi.doMock('../../../lib/tenancy/session', () => ({
-      requireSessionUser: vi.fn(async () => ({
-        ok: true,
-        user: { id: 'u1', email: 'a@t.com' },
-      })),
-    }));
-    vi.doMock('../../../lib/tenancy/harnessSessions', async () => {
-      const actual = await vi.importActual<typeof import('../../../lib/tenancy/harnessSessions')>(
-        '../../../lib/tenancy/harnessSessions',
-      );
-      return {
-        ...actual,
-        putHarnessSession: vi.fn(async (_uid: string, s: typeof snap) => ({
-          ok: true as const,
-          value: s,
-        })),
-      };
+    mockSessionUser({
+      ok: true,
+      user: { id: 'u1', email: 'a@t.com' },
     });
+    const putHarnessSession = vi.fn(async (_uid: string, s: typeof snap) => ({
+      ok: true as const,
+      value: s,
+    }));
+    mockHarnessSessions({ putHarnessSession });
     const { PUT } = await import('./route');
     const res = await PUT(
       new Request('http://localhost/api/session', {
@@ -85,12 +132,8 @@ describe('/api/session', () => {
   it('PUT Content-Length over body cap → 413 without full parse', async () => {
     vi.resetModules();
     mockTenancyOn();
-    vi.doMock('../../../lib/tenancy/session', () => ({
-      requireSessionUser: vi.fn(async () => ({
-        ok: true,
-        user: { id: 'u1' },
-      })),
-    }));
+    mockSessionUser({ ok: true, user: { id: 'u1' } });
+    mockHarnessSessions();
     const { PUT } = await import('./route');
     const { HARNESS_SESSION_MAX_BODY_BYTES } = await import(
       '../../../lib/tenancy/harnessSessions'
@@ -110,26 +153,13 @@ describe('/api/session', () => {
   it('PUT oversize message bytes → 400', async () => {
     vi.resetModules();
     mockTenancyOn();
-    vi.doMock('../../../lib/tenancy/session', () => ({
-      requireSessionUser: vi.fn(async () => ({
-        ok: true,
-        user: { id: 'u1' },
-      })),
-    }));
-    vi.doMock('../../../lib/tenancy/harnessSessions', async () => {
-      const actual = await vi.importActual<typeof import('../../../lib/tenancy/harnessSessions')>(
-        '../../../lib/tenancy/harnessSessions',
-      );
-      return {
-        ...actual,
-        putHarnessSession: vi.fn(),
-      };
-    });
+    mockSessionUser({ ok: true, user: { id: 'u1' } });
+    mockHarnessSessions({ putHarnessSession: vi.fn() });
+    const { PUT } = await import('./route');
     const { HARNESS_SESSION_MAX_MSG_BYTES } = await import(
       '../../../lib/tenancy/harnessSessions'
     );
     const text = 'x'.repeat(HARNESS_SESSION_MAX_MSG_BYTES + 1);
-    const { PUT } = await import('./route');
     const res = await PUT(
       new Request('http://localhost/api/session', {
         method: 'PUT',
@@ -153,12 +183,7 @@ describe('/api/session', () => {
       updatedAt: 200,
       messages: [{ id: 'm_s', role: 'user', text: 'server', at: 100 }],
     };
-    vi.doMock('../../../lib/tenancy/session', () => ({
-      requireSessionUser: vi.fn(async () => ({
-        ok: true,
-        user: { id: 'u1' },
-      })),
-    }));
+    mockSessionUser({ ok: true, user: { id: 'u1' } });
     const putHarnessSession = vi
       .fn()
       .mockResolvedValueOnce({
@@ -175,15 +200,7 @@ describe('/api/session', () => {
           messages: [{ id: 'm_e', role: 'user', text: 'eq', at: 100 }],
         },
       });
-    vi.doMock('../../../lib/tenancy/harnessSessions', async () => {
-      const actual = await vi.importActual<typeof import('../../../lib/tenancy/harnessSessions')>(
-        '../../../lib/tenancy/harnessSessions',
-      );
-      return {
-        ...actual,
-        putHarnessSession,
-      };
-    });
+    mockHarnessSessions({ putHarnessSession });
     const { PUT } = await import('./route');
     const conflict = await PUT(
       new Request('http://localhost/api/session', {
@@ -225,22 +242,8 @@ describe('/api/session', () => {
       ok: true as const,
       value: { id: 'sess_x', updatedAt: 1, messages: [] },
     }));
-    vi.doMock('../../../lib/tenancy/session', () => ({
-      requireSessionUser: vi.fn(async () => ({
-        ok: true,
-        user: { id: 'user-a' },
-      })),
-    }));
-    vi.doMock('../../../lib/tenancy/harnessSessions', async () => {
-      const actual = await vi.importActual<typeof import('../../../lib/tenancy/harnessSessions')>(
-        '../../../lib/tenancy/harnessSessions',
-      );
-      return {
-        ...actual,
-        getHarnessSession,
-        putHarnessSession,
-      };
-    });
+    mockSessionUser({ ok: true, user: { id: 'user-a' } });
+    mockHarnessSessions({ getHarnessSession, putHarnessSession });
     const { GET, PUT } = await import('./route');
     await GET();
     expect(getHarnessSession).toHaveBeenCalledWith('user-a');
@@ -270,21 +273,8 @@ describe('/api/session', () => {
       .fn()
       .mockResolvedValueOnce({ ok: true as const, value: { deleted: true } })
       .mockResolvedValueOnce({ ok: true as const, value: { deleted: false } });
-    vi.doMock('../../../lib/tenancy/session', () => ({
-      requireSessionUser: vi.fn(async () => ({
-        ok: true,
-        user: { id: 'u1' },
-      })),
-    }));
-    vi.doMock('../../../lib/tenancy/harnessSessions', async () => {
-      const actual = await vi.importActual<typeof import('../../../lib/tenancy/harnessSessions')>(
-        '../../../lib/tenancy/harnessSessions',
-      );
-      return {
-        ...actual,
-        deleteHarnessSession,
-      };
-    });
+    mockSessionUser({ ok: true, user: { id: 'u1' } });
+    mockHarnessSessions({ deleteHarnessSession });
     const { DELETE } = await import('./route');
     const r1 = await DELETE();
     const r2 = await DELETE();

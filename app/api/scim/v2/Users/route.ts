@@ -1,19 +1,18 @@
 import { assertScimRequest } from '../../../../../lib/tenancy/scimAuth';
-import {
-  handleScimCreateUser,
-  handleScimListUsers,
-} from '../../../../../lib/tenancy/scimHandlers';
+import { createProdServices } from '../../../../../lib/di';
 
 export const runtime = 'nodejs';
+
+const { scim } = createProdServices();
 
 export async function GET(req: Request): Promise<Response> {
   const gate = assertScimRequest(req);
   if (!gate.ok) return gate.response;
-  return handleScimListUsers(req);
+  return scim.handleScimListUsers(req);
 }
 
 export async function POST(req: Request): Promise<Response> {
   const gate = assertScimRequest(req);
   if (!gate.ok) return gate.response;
-  return handleScimCreateUser(req);
+  return scim.handleScimCreateUser(req);
 }

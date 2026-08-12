@@ -1,14 +1,23 @@
 /**
  * SCIM route orchestration — uses identity helpers (parent #64 / phase 3 #77).
+ *
+ * Phase-1 DI (#440): each handler resolves its I/O through an injectable
+ * `identity` service. The module-level handlers default to the shared module
+ * functions (kept for callers/tests that bind them directly); the composition
+ * root binds a services-wired `identity` via `createScimHandlers`.
  */
 import {
-  getScimUserById,
-  IdentityError,
-  listScimUsers,
-  scimCreateUser,
-  scimSuspendUser,
-  scimUpdateUser,
+  getScimUserById as defaultGetScimUserById,
+  IdentityError as DefaultIdentityError,
+  listScimUsers as defaultListScimUsers,
+  scimCreateUser as defaultScimCreateUser,
+  scimSuspendUser as defaultScimSuspendUser,
+  scimUpdateUser as defaultScimUpdateUser,
+  type IdentityDeps,
+  type ListScimUsersInput,
+  type ScimCreateInput,
   type ScimListFilter,
+  type ScimUpdatePatch,
 } from './identity';
 import {
   applyScimPatchOperations,
@@ -23,7 +32,29 @@ import {
   validateScimStringFields,
 } from './scimProtocol';
 
-function fromIdentityError(err: unknown): Response {
+export type ScimIdentity = {
+  getScimUserById: (userId: string, o?: IdentityDeps) => Promise<import('../../db').User | null>;
+  listScimUsers: (
+    input: ListScimUsersInput,
+    o?: IdentityDeps,
+  ) => Promise<{ users: import('../../db').User[]; totalResults: number }>;
+  scimCreateUser: (input: ScimCreateInput, o?: IdentityDeps) => Promise<import('../../db').User>;
+  scimSuspendUser: (userId: string, o?: IdentityDeps) => Promise<import('../../db').User>;
+  scimUpdateUser: (userId: string, patch: ScimUpdatePatch, o?: IdentityDeps) => Promise<import('../../db').User>;
+  IdentityError: typeof DefaultIdentityError;
+};
+
+const shared: ScimIdentity = {
+  getScimUserById: (userId: string, o?) => defaultGetScimUserById(userId, o),
+  listScimUsers: (input, o?) => defaultListScimUsers(input, o),
+  scimCreateUser: (input, o?) => defaultScimCreateUser(input, o),
+  scimSuspendUser: (userId: string, o?) => defaultScimSuspendUser(userId, o),
+  scimUpdateUser: (userId: string, patch, o?) =>
+    defaultScimUpdateUser(userId, patch, o),
+  IdentityError: DefaultIdentityError,
+};
+
+function fromIdentityError(IdentityError: ScimIdentity['IdentityError'], err: unknown): Response {
   if (err instanceof IdentityError) {
     return scimErrorResponse(identityErrorStatus(err.code), err.message);
   }
@@ -31,7 +62,10 @@ function fromIdentityError(err: unknown): Response {
   return scimErrorResponse(500, 'Internal Server Error');
 }
 
-export async function handleScimListUsers(req: Request): Promise<Response> {
+export async function handleScimListUsers(
+  req: Request,
+  idn: ScimIdentity = shared,
+): Promise<Response> {
   const url = new URL(req.url);
   const filterRes = parseScimFilter(url.searchParams.get('filter'));
   if (!filterRes.ok) {
@@ -47,7 +81,7 @@ export async function handleScimListUsers(req: Request): Promise<Response> {
 
   const filter: ScimListFilter | null = filterRes.filter;
   try {
-    const { users, totalResults } = await listScimUsers({
+    const { users, totalResults } = await idn.listScimUsers({
       filter,
       startIndex: pageRes.startIndex,
       count: pageRes.count,
@@ -59,11 +93,14 @@ export async function handleScimListUsers(req: Request): Promise<Response> {
       listResponse(resources, totalResults, pageRes.startIndex, pageRes.count),
     );
   } catch (err) {
-    return fromIdentityError(err);
+    return fromIdentityError(idn.IdentityError, err);
   }
 }
 
-export async function handleScimCreateUser(req: Request): Promise<Response> {
+export async function handleScimCreateUser(
+  req: Request,
+  idn: ScimIdentity = shared,
+): Promise<Response> {
   let body: unknown;
   try {
     body = await req.json();
@@ -96,7 +133,7 @@ export async function handleScimCreateUser(req: Request): Promise<Response> {
   }
 
   try {
-    const user = await scimCreateUser({
+    const user = await idn.scimCreateUser({
       email,
       displayName,
       externalId,
@@ -106,24 +143,32 @@ export async function handleScimCreateUser(req: Request): Promise<Response> {
     const resource = userToScimResource(user, base);
     return scimJsonResponse(201, resource, { Location: resource.meta.location });
   } catch (err) {
-    return fromIdentityError(err);
+    return fromIdentityError(idn.IdentityError, err);
   }
 }
 
-export async function handleScimGetUser(req: Request, id: string): Promise<Response> {
+export async function handleScimGetUser(
+  req: Request,
+  id: string,
+  idn: ScimIdentity = shared,
+): Promise<Response> {
   try {
-    const user = await getScimUserById(id);
+    const user = await idn.getScimUserById(id);
     if (!user) {
       return scimErrorResponse(404, 'User not found');
     }
     const base = scimBaseUrlFromRequest(req);
     return scimJsonResponse(200, userToScimResource(user, base));
   } catch (err) {
-    return fromIdentityError(err);
+    return fromIdentityError(idn.IdentityError, err);
   }
 }
 
-export async function handleScimPutUser(req: Request, id: string): Promise<Response> {
+export async function handleScimPutUser(
+  req: Request,
+  id: string,
+  idn: ScimIdentity = shared,
+): Promise<Response> {
   let body: unknown;
   try {
     body = await req.json();
@@ -166,11 +211,11 @@ export async function handleScimPutUser(req: Request, id: string): Promise<Respo
   }
 
   try {
-    const existing = await getScimUserById(id);
+    const existing = await idn.getScimUserById(id);
     if (!existing) {
       return scimErrorResponse(404, 'User not found');
     }
-    const user = await scimUpdateUser(id, {
+    const user = await idn.scimUpdateUser(id, {
       email,
       displayName: displayName === undefined ? undefined : displayName,
       externalId,
@@ -179,11 +224,15 @@ export async function handleScimPutUser(req: Request, id: string): Promise<Respo
     const base = scimBaseUrlFromRequest(req);
     return scimJsonResponse(200, userToScimResource(user, base));
   } catch (err) {
-    return fromIdentityError(err);
+    return fromIdentityError(idn.IdentityError, err);
   }
 }
 
-export async function handleScimPatchUser(req: Request, id: string): Promise<Response> {
+export async function handleScimPatchUser(
+  req: Request,
+  id: string,
+  idn: ScimIdentity = shared,
+): Promise<Response> {
   let body: unknown;
   try {
     body = await req.json();
@@ -203,27 +252,48 @@ export async function handleScimPatchUser(req: Request, id: string): Promise<Res
     return scimErrorResponse(400, lenCheck.detail);
   }
   try {
-    const existing = await getScimUserById(id);
+    const existing = await idn.getScimUserById(id);
     if (!existing) {
       return scimErrorResponse(404, 'User not found');
     }
-    const user = await scimUpdateUser(id, applied.patch);
+    const user = await idn.scimUpdateUser(id, applied.patch);
     const base = scimBaseUrlFromRequest(req);
     return scimJsonResponse(200, userToScimResource(user, base));
   } catch (err) {
-    return fromIdentityError(err);
+    return fromIdentityError(idn.IdentityError, err);
   }
 }
 
-export async function handleScimDeleteUser(id: string): Promise<Response> {
+export async function handleScimDeleteUser(
+  id: string,
+  idn: ScimIdentity = shared,
+): Promise<Response> {
   try {
-    const existing = await getScimUserById(id);
+    const existing = await idn.getScimUserById(id);
     if (!existing) {
       return scimErrorResponse(404, 'User not found');
     }
-    await scimSuspendUser(id);
+    await idn.scimSuspendUser(id);
     return new Response(null, { status: 204 });
   } catch (err) {
-    return fromIdentityError(err);
+    return fromIdentityError(idn.IdentityError, err);
   }
+}
+
+/**
+ * Factory (DI): binds SCIM orchestration to an injected identity service so
+ * routes resolve through the composition root instead of the bare functions.
+ */
+export function createScimHandlers(identity: ScimIdentity) {
+  return {
+    handleScimListUsers: (req: Request) => handleScimListUsers(req, identity),
+    handleScimCreateUser: (req: Request) => handleScimCreateUser(req, identity),
+    handleScimGetUser: (req: Request, id: string) =>
+      handleScimGetUser(req, id, identity),
+    handleScimPutUser: (req: Request, id: string) =>
+      handleScimPutUser(req, id, identity),
+    handleScimPatchUser: (req: Request, id: string) =>
+      handleScimPatchUser(req, id, identity),
+    handleScimDeleteUser: (id: string) => handleScimDeleteUser(id, identity),
+  };
 }

@@ -2,9 +2,8 @@ import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import type { NextAuthConfig } from 'next-auth';
 import type { OIDCConfig } from 'next-auth/providers';
-import { authenticateCredentials } from './lib/tenancy/authenticate';
+import { createProdServices } from './lib/di';
 import {
-  findOrCreateOidcUser,
   IdentityError,
   normalizeIdpSubject,
 } from './lib/tenancy/identity';
@@ -20,6 +19,9 @@ import {
   applyJwtToSessionUser,
   applyUserToJwtToken,
 } from './lib/tenancy/sessionToken';
+
+/** Phase-1 DI: auth wires through the composition root. */
+const services = createProdServices();
 
 type OidcProfile = {
   sub?: string;
@@ -73,7 +75,10 @@ function buildProviders() {
         typeof credentials?.email === 'string' ? credentials.email : '';
       const password =
         typeof credentials?.password === 'string' ? credentials.password : '';
-      const user = await authenticateCredentials(emailRaw, password);
+      const user = await services.authenticate.authenticateCredentials(
+        emailRaw,
+        password,
+      );
       return user;
     },
   });
@@ -122,7 +127,7 @@ const authConfig = {
             : undefined,
         );
 
-        const { user: dbUser } = await findOrCreateOidcUser({
+        const { user: dbUser } = await services.identity.findOrCreateOidcUser({
           subject: normalizeIdpSubject(issuer, String(sub)),
           email,
           name:

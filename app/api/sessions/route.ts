@@ -8,15 +8,17 @@ import {
   type HarnessSessionRecord,
   validateSessionRecord,
 } from '../../../lib/sessions/sessionStore';
+import { createProdServices } from '../../../lib/di';
 import {
   guardStore,
   resolveSessionStore,
-  resolveTenantIdForUser,
   sessionKeyFor,
   sessionScopeFor,
   toSessionSummary,
   unavailableResponse,
 } from '../../../lib/tenancy/harnessSessionsRedis';
+
+const { harnessSessionsRedis } = createProdServices();
 
 export const runtime = 'nodejs';
 
@@ -43,7 +45,7 @@ async function resolveScopeFor(
     }
   | { ok: false; response: Response }
 > {
-  const tenant = await resolveTenantIdForUser(userId);
+  const tenant = await harnessSessionsRedis.resolveTenantIdForUser(userId);
   if (!tenant.ok) {
     return { ok: false, response: unavailableResponse(tenant.code, tenant.error) };
   }

@@ -5,10 +5,10 @@
  */
 import { and, eq } from 'drizzle-orm';
 import {
-  createDbConnection,
   userMcpServers,
   type Db,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import {
   MAX_MCP_SERVERS_PER_USER,
   MCP_HEADER_NAME_MAX,
@@ -30,6 +30,8 @@ import {
 
 export type UserMcpServersDeps = TenantKeyDeps & {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
 };
 
 export type UserMcpServerErrorCode =
@@ -88,18 +90,7 @@ async function withDb<T>(
   deps: UserMcpServersDeps,
   fn: (db: Db) => Promise<T>,
 ): Promise<T> {
-  if (deps.db) {
-    return fn(deps.db);
-  }
-  if (!process.env.DATABASE_URL?.trim()) {
-    throw new Error('DATABASE_URL is required');
-  }
-  const { db, client } = createDbConnection();
-  try {
-    return await fn(db);
-  } finally {
-    await client.end({ timeout: 5 });
-  }
+  return withConnection(deps, fn);
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -157,7 +148,7 @@ async function resolveTenantId(
   userId: string,
   deps: UserMcpServersDeps,
 ): Promise<UserMcpServerResult<string>> {
-  const membership = await loadSoleMembership(userId, { db: deps.db });
+  const membership = await loadSoleMembership(userId, deps);
   if (!membership.ok) {
     if (membership.reason === 'db') {
       return { ok: false, code: 'unavailable', error: 'membership lookup failed' };
@@ -852,4 +843,26 @@ export async function loadUserMcpSecretById(
       error: 'could not load MCP secret',
     };
   }
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createUserMcpServers(deps: UserMcpServersDeps = {}) {
+  return {
+    createUserMcpServer: (input: CreateUserMcpServerInput, o?: UserMcpServersDeps) =>
+      createUserMcpServer(input, { ...deps, ...o }),
+    updateUserMcpServer: (input: UpdateUserMcpServerInput, o?: UserMcpServersDeps) =>
+      updateUserMcpServer(input, { ...deps, ...o }),
+    deleteUserMcpServer: (userId: string, id: string, o?: UserMcpServersDeps) =>
+      deleteUserMcpServer(userId, id, { ...deps, ...o }),
+    setUserMcpServerEnabled: (userId: string, id: string, enabled: boolean, o?: UserMcpServersDeps) =>
+      setUserMcpServerEnabled(userId, id, enabled, { ...deps, ...o }),
+    setUserMcpServerLastError: (userId: string, id: string, lastError: string | null, o?: UserMcpServersDeps) =>
+      setUserMcpServerLastError(userId, id, lastError, { ...deps, ...o }),
+    listUserMcpServers: (userId: string, o?: UserMcpServersDeps) =>
+      listUserMcpServers(userId, { ...deps, ...o }),
+    loadEnabledUserMcpSecrets: (userId: string, o?: UserMcpServersDeps) =>
+      loadEnabledUserMcpSecrets(userId, { ...deps, ...o }),
+    loadUserMcpSecretById: (userId: string, id: string, o?: UserMcpServersDeps) =>
+      loadUserMcpSecretById(userId, id, { ...deps, ...o }),
+  };
 }

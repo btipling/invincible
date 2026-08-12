@@ -20,7 +20,6 @@
 
 import { and, eq, sql } from 'drizzle-orm';
 import {
-  createDbConnection,
   type Db,
   sandboxes,
   sandboxGrants,
@@ -28,6 +27,7 @@ import {
   tenants,
   users,
 } from '../db';
+import { createScriptConnection } from '../lib/di';
 import {
   encryptSecret,
   resolveCredentialsKey,
@@ -142,7 +142,10 @@ export async function seedTenancy(
   const passwordHash = await hashPassword(password);
 
   const owned = !options.db;
-  const conn = options.db ? null : createDbConnection(env.DATABASE_URL);
+  // Prod connection: route through the composition root's closeable slice so
+  // the seed script teardowns at its wiring site without calling
+  // createDbConnection() directly.
+  const conn = options.db ? null : createScriptConnection();
   const db = options.db ?? conn!.db;
 
   try {
@@ -290,7 +293,7 @@ export async function seedTenancy(
     });
   } finally {
     if (owned && conn) {
-      await conn.client.end({ timeout: 5 });
+      await conn.close();
     }
   }
 }

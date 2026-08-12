@@ -8,12 +8,12 @@
  */
 import { and, eq } from 'drizzle-orm';
 import {
-  createDbConnection,
   sandboxGrants,
   sandboxes,
   tenantMembers,
   type Db,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { createSandboxClient, type SandboxClient } from '../sandbox/client';
 import { normalizeBaseUrl } from '../sandbox/config';
 import {
@@ -67,6 +67,8 @@ export type ResolveAgentSandboxResult =
 
 export type ResolveAgentSandboxDeps = {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
   /**
    * Override sandbox-token decrypt for tests.
    * Product default: mode-aware tenant DEK (dual / dek-only).
@@ -121,19 +123,10 @@ export async function resolveAgentSandbox(
     return forbidden();
   }
 
-  if (deps.db) {
-    return resolveWithDb(deps.db, id, deps);
-  }
-
-  if (!process.env.DATABASE_URL?.trim()) {
-    return forbidden();
-  }
-
-  const { db, client } = createDbConnection();
   try {
-    return await resolveWithDb(db, id, deps);
-  } finally {
-    await client.end({ timeout: 5 });
+    return await withConnection(deps, (db) => resolveWithDb(db, id, deps));
+  } catch {
+    return forbidden();
   }
 }
 
@@ -326,4 +319,12 @@ async function resolveWithDb(
     // DB errors → fail closed as 403 (no internal detail to host/Wasm)
     return forbidden();
   }
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createResolveSandbox(deps: ResolveAgentSandboxDeps = {}) {
+  return {
+    resolveAgentSandbox: (userId: string, o?: ResolveAgentSandboxDeps) =>
+      resolveAgentSandbox(userId, { ...deps, ...o }),
+  };
 }

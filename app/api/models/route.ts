@@ -1,7 +1,9 @@
-import { listModelsForUser } from '../../../lib/tenancy/resolveInference';
+import { createProdServices } from '../../../lib/di';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 
 export const runtime = 'nodejs';
+
+const { resolveInference } = createProdServices();
 
 export type ModelCatalogEntry = {
   id: string;
@@ -33,7 +35,7 @@ export async function GET(): Promise<Response> {
   }
 
   try {
-    const ids = await listModelsForUser(userId);
+    const ids = await resolveInference.listModelsForUser(userId);
     const models: ModelCatalogEntry[] = ids.map((id) => ({
       id,
       label: shortLabel(id),

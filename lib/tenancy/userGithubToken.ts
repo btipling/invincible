@@ -5,10 +5,10 @@
  */
 import { eq } from 'drizzle-orm';
 import {
-  createDbConnection,
   userGithubTokens,
   type Db,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { loadSoleMembership } from './soleMembership';
 import {
   decryptTenantSecret,
@@ -22,6 +22,8 @@ export const USER_GITHUB_TOKEN_MAX_LEN = 8192;
 
 export type UserGithubTokenDeps = TenantKeyDeps & {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
 };
 
 export type UserGithubTokenErrorCode =
@@ -42,18 +44,7 @@ async function withDb<T>(
   deps: UserGithubTokenDeps,
   fn: (db: Db) => Promise<T>,
 ): Promise<T> {
-  if (deps.db) {
-    return fn(deps.db);
-  }
-  if (!process.env.DATABASE_URL?.trim()) {
-    throw new Error('DATABASE_URL is required');
-  }
-  const { db, client } = createDbConnection();
-  try {
-    return await fn(db);
-  } finally {
-    await client.end({ timeout: 5 });
-  }
+  return withConnection(deps, fn);
 }
 
 function isUndefinedTable(err: unknown): boolean {
@@ -96,7 +87,7 @@ async function resolveTenantId(
   userId: string,
   deps: UserGithubTokenDeps,
 ): Promise<UserGithubTokenResult<string>> {
-  const membership = await loadSoleMembership(userId, { db: deps.db });
+  const membership = await loadSoleMembership(userId, deps);
   if (!membership.ok) {
     if (membership.reason === 'db') {
       return { ok: false, code: 'unavailable', error: 'membership lookup failed' };
@@ -359,4 +350,18 @@ export async function decryptUserGithubTokenForServer(
     }
     return { ok: false, code: 'unavailable', error: 'failed to decrypt token' };
   }
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createUserGithubToken(deps: UserGithubTokenDeps = {}) {
+  return {
+    setUserGithubToken: (userId: string, raw: string, o?: UserGithubTokenDeps) =>
+      setUserGithubToken(userId, raw, { ...deps, ...o }),
+    clearUserGithubToken: (userId: string, o?: UserGithubTokenDeps) =>
+      clearUserGithubToken(userId, { ...deps, ...o }),
+    getUserGithubTokenStatus: (userId: string, o?: UserGithubTokenDeps) =>
+      getUserGithubTokenStatus(userId, { ...deps, ...o }),
+    decryptUserGithubTokenForServer: (userId: string, o?: UserGithubTokenDeps) =>
+      decryptUserGithubTokenForServer(userId, { ...deps, ...o }),
+  };
 }

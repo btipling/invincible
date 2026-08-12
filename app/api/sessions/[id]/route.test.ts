@@ -34,20 +34,44 @@ describe('/api/sessions/:id', () => {
     vi.resetModules();
     vi.doUnmock('../../../../lib/tenancy/session');
     vi.doUnmock('../../../../lib/tenancy/soleMembership');
+    vi.doUnmock('../../../../lib/di');
   });
 
+  /**
+   * Seed the DI harnessSessionsRedis resolver. Accepts the loadSoleMembership
+   * shape and translates it to the ServiceResult the route reads from
+   * `harnessSessionsRedis.resolveTenantIdForUser`.
+   */
+  function mockTenant(
+    input:
+      | { ok: true; tenantId: string; role?: string }
+      | { ok: false; reason: 'db' | 'ambiguous' | 'none' },
+  ) {
+    const result = input.ok
+      ? { ok: true as const, value: input.tenantId }
+      : input.reason === 'db' || input.reason === 'ambiguous'
+        ? {
+            ok: false as const,
+            code: 'SESSION_STORE_UNAVAILABLE',
+            error: 'tenant membership lookup failed',
+          }
+        : { ok: false as const, code: 'NO_TENANT', error: 'no sole tenant membership' };
+    vi.doMock('../../../../lib/di', () => ({
+      createProdServices: () => ({
+        harnessSessionsRedis: {
+          resolveTenantIdForUser: vi.fn(async () => result),
+        },
+      }),
+      createScriptConnection: vi.fn(),
+    }));
+  }
+
   async function mockAuthed(userId = USER, tenantId = TENANT) {
+    mockTenant({ ok: true as const, tenantId });
     vi.doMock('../../../../lib/tenancy/session', () => ({
       requireSessionUser: vi.fn(async () => ({
         ok: true as const,
         user: { id: userId, email: 'a@t.com' },
-      })),
-    }));
-    vi.doMock('../../../../lib/tenancy/soleMembership', () => ({
-      loadSoleMembership: vi.fn(async () => ({
-        ok: true as const,
-        tenantId,
-        role: 'member',
       })),
     }));
     return import('./route');
@@ -68,9 +92,7 @@ describe('/api/sessions/:id', () => {
         response: Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 }),
       })),
     }));
-    vi.doMock('../../../../lib/tenancy/soleMembership', () => ({
-      loadSoleMembership: vi.fn(async () => ({ ok: false as const, reason: 'db' as const })),
-    }));
+    mockTenant({ ok: false as const, reason: 'db' as const });
     const { GET, PUT, DELETE } = await import('./route');
     expect((await GET(new Request('http://localhost/api/sessions/x'), { params: Promise.resolve({ id: 'x' }) })).status).toBe(401);
     expect((await PUT(putRequest('x', record('x')), { params: Promise.resolve({ id: 'x' }) })).status).toBe(401);
@@ -84,9 +106,7 @@ describe('/api/sessions/:id', () => {
         user: { id: USER },
       })),
     }));
-    vi.doMock('../../../../lib/tenancy/soleMembership', () => ({
-      loadSoleMembership: vi.fn(async () => ({ ok: false as const, reason: 'db' as const })),
-    }));
+    mockTenant({ ok: false as const, reason: 'db' as const });
     const { GET } = await import('./route');
     const res = await GET(new Request('http://localhost/api/sessions/x'), { params: Promise.resolve({ id: 'x' }) });
     expect(res.status).toBe(503);
@@ -227,13 +247,7 @@ describe('/api/sessions/:id', () => {
     vi.doMock('../../../../lib/tenancy/session', () => ({
       requireSessionUser: vi.fn(async () => ({ ok: true as const, user: { email: 'a@t.com' } })),
     }));
-    vi.doMock('../../../../lib/tenancy/soleMembership', () => ({
-      loadSoleMembership: vi.fn(async () => ({
-        ok: true as const,
-        tenantId: TENANT,
-        role: 'member',
-      })),
-    }));
+    mockTenant({ ok: true as const, tenantId: TENANT, role: 'member' });
     const { GET } = await import('./route');
     const res = await GET(new Request('http://localhost/api/sessions/x'), {
       params: Promise.resolve({ id: 'x' }),

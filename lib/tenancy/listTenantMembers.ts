@@ -4,11 +4,11 @@
  */
 import { asc, eq } from 'drizzle-orm';
 import {
-  createDbConnection,
   tenantMembers,
   users,
   type Db,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import type { TenantRole } from './roles';
 
 export type TenantMemberRow = {
@@ -21,24 +21,15 @@ export type TenantMemberRow = {
 
 export type ListTenantMembersDeps = {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
 };
 
 async function withDb<T>(
   deps: ListTenantMembersDeps,
   fn: (db: Db) => Promise<T>,
 ): Promise<T> {
-  if (deps.db) {
-    return fn(deps.db);
-  }
-  if (!process.env.DATABASE_URL?.trim()) {
-    throw new Error('DATABASE_URL is required');
-  }
-  const { db, client } = createDbConnection();
-  try {
-    return await fn(db);
-  } finally {
-    await client.end({ timeout: 5 });
-  }
+  return withConnection(deps, fn);
 }
 
 /**
@@ -74,4 +65,12 @@ export async function listTenantMembersForAdmin(
       status: r.status,
     }));
   });
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createListTenantMembers(deps: ListTenantMembersDeps = {}) {
+  return {
+    listTenantMembersForAdmin: (tenantId: string, overrides?: ListTenantMembersDeps) =>
+      listTenantMembersForAdmin(tenantId, { ...deps, ...overrides }),
+  };
 }

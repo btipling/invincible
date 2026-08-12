@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm';
-import { createDbConnection, users, type Db } from '../../db';
+import { users, type Db } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { verifyPassword } from './password';
 
 export type AuthenticatedUser = {
@@ -9,8 +10,10 @@ export type AuthenticatedUser = {
 };
 
 export type AuthenticateDeps = {
-  /** Injected DB (tests). When omitted, opens/closes a short-lived connection. */
+  /** Injected DB (tests). */
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
 };
 
 /**
@@ -27,20 +30,35 @@ export async function authenticateCredentials(
     return null;
   }
 
-  if (deps.db) {
-    return lookupActiveUser(deps.db, email, password);
-  }
-
-  if (!process.env.DATABASE_URL?.trim()) {
-    return null;
-  }
-
-  const { db, client } = createDbConnection();
   try {
-    return await lookupActiveUser(db, email, password);
-  } finally {
-    await client.end({ timeout: 5 });
+    return await withConnection(deps, (db) =>
+      lookupActiveUser(db, email, password),
+    );
+  } catch (err) {
+    // Fail closed (null → bad password) only for a genuine wiring gap where no
+    // connection source is configured at all. DB query / lookup outages must
+    // propagate so NextAuth surfaces a real error (500) instead of mislabelling
+    // an infrastructure failure as a bad password — mirrors pre-DI behavior.
+    if (isMissingDependency(err)) {
+      return null;
+    }
+    throw err;
   }
+}
+
+function isMissingDependency(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    /missing dependency: provide db or connect/.test(err.message)
+  );
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createAuthenticate(deps: AuthenticateDeps = {}) {
+  return {
+    authenticateCredentials: (email: string, password: string) =>
+      authenticateCredentials(email, password, deps),
+  };
 }
 
 async function lookupActiveUser(

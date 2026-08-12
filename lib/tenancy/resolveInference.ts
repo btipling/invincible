@@ -4,13 +4,13 @@
  */
 import { and, asc, eq } from 'drizzle-orm';
 import {
-  createDbConnection,
   providerSecretGrants,
   providerSecretModels,
   providerSecrets,
   tenantMembers,
   type Db,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import {
   byokGatewayKey,
   collectRedactableSecrets,
@@ -22,6 +22,8 @@ import { decryptTenantSecret, type TenantKeyDeps } from './tenantKeys';
 
 export type ResolveInferenceDeps = TenantKeyDeps & {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
 };
 
 export type ResolveByokSuccess = {
@@ -46,18 +48,7 @@ async function withDb<T>(
   deps: ResolveInferenceDeps,
   fn: (db: Db) => Promise<T>,
 ): Promise<T> {
-  if (deps.db) {
-    return fn(deps.db);
-  }
-  if (!process.env.DATABASE_URL?.trim()) {
-    throw new Error('DATABASE_URL is required');
-  }
-  const { db, client } = createDbConnection();
-  try {
-    return await fn(db);
-  } finally {
-    await client.end({ timeout: 5 });
-  }
+  return withConnection(deps, fn);
 }
 
 /**
@@ -233,4 +224,14 @@ export async function resolveByokForModel(
   } catch {
     return { ok: false, reason: 'unavailable' };
   }
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createResolveInference(deps: ResolveInferenceDeps = {}) {
+  return {
+    listModelsForUser: (userId: string, o?: ResolveInferenceDeps) =>
+      listModelsForUser(userId, { ...deps, ...o }),
+    resolveByokForModel: (userId: string, modelId: string, o?: ResolveInferenceDeps) =>
+      resolveByokForModel(userId, modelId, { ...deps, ...o }),
+  };
 }

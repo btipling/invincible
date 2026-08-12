@@ -146,4 +146,41 @@ describe('authenticateCredentials', () => {
       await authenticateCredentials('active@example.com', '', { db: db as never }),
     ).toBeNull();
   });
+
+  it('fails closed to null when no connection source is configured', async () => {
+    // Neither `db` nor `connect` supplied → missing-dependency wiring error.
+    // Mirrors pre-DI "no DATABASE_URL" behavior: treated as an auth failure,
+    // not a thrown 500.
+    await expect(
+      authenticateCredentials('active@example.com', 'anything', {}),
+    ).resolves.toBeNull();
+  });
+
+  it('propagates DB query / lookup errors instead of masking them as bad password', async () => {
+    // A live `db` whose query fails (e.g. an outage / missing table) must NOT be
+    // swallowed into a `null` "bad password" — it should surface to NextAuth as
+    // a real infra error, preserving pre-DI public behavior.
+    const brokenDb = {
+      select: () => {
+        throw new Error('connection reset');
+      },
+    } as never;
+
+    await expect(
+      authenticateCredentials('active@example.com', 'anything', { db: brokenDb }),
+    ).rejects.toThrow('connection reset');
+  });
+
+  it('propagates lookup errors surfaced through an injected connect provider', async () => {
+    const boomDb = {
+      select: () => {
+        throw new Error('query timeout');
+      },
+    };
+    await expect(
+      authenticateCredentials('active@example.com', 'anything', {
+        connect: async () => ({ db: boomDb as never, close: async () => {} }),
+      }),
+    ).rejects.toThrow('query timeout');
+  });
 });
