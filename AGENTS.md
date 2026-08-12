@@ -285,7 +285,8 @@ invincible/
 | Tenancy schema / migrations | `db/schema.ts`, `db/migrations/` |
 | Tenancy crypto / seed helpers | `lib/tenancy/*`, `scripts/seed-tenancy.ts` |
 | Tenancy DB wiring (inject `db`/`connect`, never open your own) | `lib/di/index.ts` (composition root), `lib/di/withConnection.ts` (resolver), `lib/db` / `db/index.ts`; tests inject via `lib/tenancy/test/shared.ts` |
-| Repo-wide I/O-construction gate | `scripts/di-gate.mjs`, `package.json` `test:di-gate` — bans in-body `createDbConnection(`/`new PGlite(` outside allowlisted roots |
+| Repo-wide I/O-construction gate | `scripts/di-gate.mjs`, `package.json` `test:di-gate` — bans in-body I/O construction (`createDbConnection(`/`new PGlite(` **and** the phase-2 sandbox/http/redis surface `Sandbox.get(`/`createClient(`/`new RedisSessionStore(`/`createSandboxClient(`/`createVercelSandboxClient(`/`createVercelSandboxHttpRunner(`) outside allowlisted roots (composition root + factory owners + grant-boundary lifecycle + test factories) |
+| Sandbox / HTTP / Redis DI (phase 2) | `lib/di/index.ts` (composition root: `serverSecrets`, `createHttpRunner`, `createByoSandboxClient`, `createVercelFsSandboxClient`, `createSessionStore`); factory owners `lib/sandbox/client.ts`, `lib/sandbox/vercelClient.ts`, `lib/agent/vercelSandboxHttpRunner.ts`, `lib/sessions/redisSessionStore.ts`; grant-boundary attach `lib/tenancy/userSandboxInstance.ts` |
 | Tenant BYOK / inference grants | `app/admin/inference/*`, `lib/tenancy/providerSecrets*`, `lib/tenancy/resolveInference*`, `lib/gateway/byokProviders.ts`, `app/api/models/*` |
 | Tenant sandboxes (backend + image) | `app/admin/sandboxes/*`, `lib/tenancy/manageSandbox.ts`, `lib/tenancy/sandboxBackend.ts`, `lib/tenancy/resolveSandbox.ts`, `lib/sandbox/vercelClient.ts`, [docs/sandbox.md](docs/sandbox.md) |
 | Vercel attach resilience (transient classify + bounded retry, both FS + hop-B) | `lib/sandbox/resilience.ts`, `lib/sandbox/vercelClient.ts`, `lib/agent/vercelSandboxHttpRunner.ts` — shared seam; BYO daemon (`lib/sandbox/client.ts`) is **untouched** |
@@ -364,8 +365,8 @@ See create-plan / plan-review **layer** rules when planning features.
 - **Tests are run directly with vitest — no script wrappers allowed.** Never
   introduce or use a wrapper script around vitest, and do not re-add one if it was
   removed. Run the suite with `npm test` (= `node scripts/di-gate.mjs && vitest run` —
-  the di-gate runs first so in-body `createDbConnection(`/`new PGlite(` fail before
-  vitest) or invoke vitest through the **local** binary directly
+  the di-gate runs first so in-body `createDbConnection(`/`new PGlite(`/sandbox/http/
+  redis I/O construction all fail before vitest) or invoke vitest through the **local** binary directly
   (`node_modules/vitest/vitest.mjs run`, never `npx`)
   with an explicit exec timeout (`timeoutMs ≈ 600000`) — a long run can drop over
   the transport but still complete. For a fast mechanical gate that only tests files
@@ -374,15 +375,19 @@ See create-plan / plan-review **layer** rules when planning features.
   per-file output, never a summarized/hidden log. Run `npm run typecheck` /
   `npm run build` before claiming ready (**agent workspace or CI**; build needs
   token or existing `public/harness`).
-- **Module bodies never construct I/O directly.** DB-backed modules receive a
-  live `db` or a `connect` provider through an injection seam; they never call
-  `createDbConnection()` (the real Postgres opener lives in `db/index.ts`) or
-  `new PGlite(` in their own body. Production wiring is the sole job of the
-  composition root `lib/di/index.ts`. Enforced by `npm run test:di-gate`
-  (`scripts/di-gate.mjs`), which fails any in-body `createDbConnection(` /
-  `new PGlite(` outside the allowlisted roots (`db/index.ts`, `lib/di/index.ts`,
-  `lib/tenancy/test/shared.ts`). This phase's gate covers the **DB seam**;
-  `Sandbox.get(` / `createClient(` rules land with Phase 2 (#439).
+- **Module bodies never construct I/O directly.** Server modules receive live
+  handles or factory providers (DB: `db`/`connect`; sandbox: BYO/Vercel client
+  factories; HTTP: runner factory; sessions: store factory) through an injection
+  seam; they never call `createDbConnection()`, `new PGlite()`, `Sandbox.get()`,
+  `createClient()`, `new RedisSessionStore()`, `createSandboxClient()`,
+  `createVercelSandboxClient()`, `createVercelSandboxHttpRunner()`, or a backend
+  `fetch` in their own body. Production wiring is the sole job of the composition
+  root `lib/di/index.ts` (plus the factory-owner modules and the durable-instance
+  grant-boundary `lib/tenancy/userSandboxInstance.ts`). Enforced by
+  `npm run test:di-gate` (`scripts/di-gate.mjs`), which fails any in-body I/O
+  constructor outside the allowlisted roots (composition root + factory owners +
+  `lib/tenancy/userSandboxInstance.ts` + `scripts/sandbox-orphan-cleanup.mjs` +
+  `lib/mcp/client.ts` (MCP-deferred) + `lib/tenancy/test/shared.ts` + test files).
 - **Tenancy tests share one engine.** `lib/tenancy/**` runs via a tenancy-scoped
   vitest `projects` entry in `vitest.config.ts` (`forks.singleFork` +
   `isolate:false`), so the single PGlite booted in `lib/tenancy/test/shared.ts`

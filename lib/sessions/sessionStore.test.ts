@@ -268,30 +268,30 @@ describe('MemorySessionStore', () => {
 });
 
 describe('RedisSessionStore', () => {
-  it('reads REDIS_URL (RESP wire format) as the store URL; opts.url overrides', () => {
+  it('uses opts.url verbatim; ignores REDIS_URL (env resolution moved to the root, nit L8)', () => {
     const prev = { ...process.env };
     try {
-      delete process.env.REDIS_URL;
+      // The store body no longer reads `process.env`: even with REDIS_URL set, a
+      // client-injected store reports only the explicit `url` (or undefined).
       process.env.REDIS_URL = 'redis://default:secret@dragons.example:6379';
-      const store = new RedisSessionStore({ client: fakeClient().client });
-      expect(store.url()).toBe('redis://default:secret@dragons.example:6379');
-
-      // Explicit `url` option overrides the env var. Named-credential / TLS variants parse too.
-      delete process.env.REDIS_URL;
-      const overridden = new RedisSessionStore({
+      const store = new RedisSessionStore({
         client: fakeClient().client,
         url: 'rediss://default:pw@host:6380',
       });
-      expect(overridden.url()).toBe('rediss://default:pw@host:6380');
+      expect(store.url()).toBe('rediss://default:pw@host:6380');
+
+      // No url given → url() is undefined (env is NOT consulted).
+      const noUrl = new RedisSessionStore({ client: fakeClient().client });
+      expect(noUrl.url()).toBeUndefined();
     } finally {
       process.env = prev;
     }
   });
 
-  it('throws when no client and no REDIS_URL are available', () => {
+  it('throws when no client and no url are provided (env not consulted)', () => {
     const prev = { ...process.env };
     try {
-      delete process.env.REDIS_URL;
+      process.env.REDIS_URL = 'redis://default:secret@ignored.example:6379';
       expect(() => new RedisSessionStore()).toThrow(/REDIS_URL/);
     } finally {
       process.env = prev;
@@ -502,9 +502,8 @@ describe('RedisSessionStore — RESP connect lifecycle (adversarial L1/L6)', () 
     const sim = buildConnectSimulator(true /* reject first connect */);
     setRedisClientFactoryForTests(sim.make);
     resetRedisClientCacheForTests();
-    process.env.REDIS_URL = URL;
 
-    const store = new RedisSessionStore(); // no injected client → real adapter path through redisFor
+    const store = new RedisSessionStore({ url: URL }); // no client → real adapter path through redisFor
     const key = { tenantId: 't1', userId: 'u1', sessionId: 's1' };
 
     // First command: connect() rejects → store.get rejects (surfaced as 503 by the seam).
@@ -554,9 +553,8 @@ describe('RedisSessionStore — RESP connect lifecycle (adversarial L1/L6)', () 
     };
     setRedisClientFactoryForTests(factory);
     resetRedisClientCacheForTests();
-    process.env.REDIS_URL = URL;
 
-    const store = new RedisSessionStore();
+    const store = new RedisSessionStore({ url: URL });
     const key = { tenantId: 't1', userId: 'u1', sessionId: 'a' };
     const p1 = store.get(key);
     const p2 = store.get(key);

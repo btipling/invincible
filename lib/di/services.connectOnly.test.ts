@@ -19,9 +19,10 @@
  * PGlite suites (soleMembership / userPreferredSandbox / userGithubToken …).
  * The shared test engine for those real-DB suites is owned by `#431`/`#441`.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createProdServices } from './index';
 import { wrapTenantDek } from '../tenancy/tenantKeys';
+import type { RedisClientLike } from '../sessions/redisSessionStore';
 
 const AMK = Buffer.alloc(32, 42);
 const DEK = Buffer.alloc(32, 7);
@@ -215,5 +216,62 @@ describe('createProdServices connect-only (no real DB, injected connect)', () =>
     expect(res.value.status).toBe('running');
     expect(created).toHaveLength(1);
     expect(connectCalls).toBeGreaterThan(0);
+  });
+});
+
+describe('createSessionStore (root env resolution, nit L8)', () => {
+  const originalEnv = { ...process.env };
+
+  /** Minimal fake Redis-backed client that records `ex` on set. */
+  function fakeClient() {
+    const calls: { key: string; opts?: { ex?: number } }[] = [];
+    const map = new Map<string, unknown>();
+    const client: RedisClientLike = {
+      async get(k) {
+        return map.has(k) ? structuredClone(map.get(k)) : null;
+      },
+      async set(k, v, opts) {
+        map.set(k, structuredClone(v));
+        calls.push({ key: k, opts });
+        return 'OK';
+      },
+      async del(...ks) {
+        for (const k of ks) map.delete(k);
+        return ks.length;
+      },
+      async keys(pattern) {
+        const base = pattern.slice(0, -1);
+        return [...map.keys()].filter((k) => k.startsWith(base));
+      },
+    };
+    return { client, calls };
+  }
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('resolves REDIS_URL + SESSION_REDIS_TTL_MS once at the root and passes them to the store', async () => {
+    process.env.REDIS_URL = 'redis://default:secret@root.resolve.example:6379';
+    process.env.SESSION_REDIS_TTL_MS = '2500';
+    const { client, calls } = fakeClient();
+    const store = createProdServices().createSessionStore({ client });
+
+    expect(store.url()).toBe('redis://default:secret@root.resolve.example:6379');
+
+    // Resolved ttlMs flows into write TTL (ex = ceil(2500/1000) = 3).
+    await store.put(
+      { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+      {
+        id: 's1',
+        userId: 'u1',
+        tenantId: 't1',
+        createdAt: 1,
+        updatedAt: 1,
+        messages: [],
+        meta: {},
+      },
+    );
+    expect(calls.at(-1)?.opts).toEqual({ ex: 3 });
   });
 });

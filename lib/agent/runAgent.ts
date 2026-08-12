@@ -1,8 +1,9 @@
 import { generateText, streamText, stepCountIs, isLoopFinished } from 'ai';
 import { mapFullStreamPart, summarizeToolLine } from './agentStream';
 import { resolveAgentReasoning } from './reasoningConfig';
-import { resolveAgentMaxSteps, getSandboxConfig } from '../sandbox/config';
-import { createSandboxClient, type SandboxClient } from '../sandbox/client';
+import { resolveAgentMaxSteps } from '../sandbox/config';
+import { type SandboxClient } from '../sandbox/client';
+import type { ServerSecrets } from '../di';
 import { createAgentTools, type CwdState } from './tools';
 import {
   createRunFileFreshness,
@@ -50,13 +51,21 @@ export type RunAgentParams = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   streamTextImpl?: (args: any) => any;
   /**
-   * Optional. When omitted and sandbox env is missing, FS tools are skipped
-   * (http-only / MCP-only paths). Throws only when no tools at all would remain
-   * *and* no extraTools were provided *and* no sandbox can be resolved —
-   * callers that need a hard error should check config at the route layer.
+   * Optional FS sandbox client. Per phase-2 DI, the caller resolves + constructs
+   * it through the composition root (`createProdServices` service slicing) and
+   * injects it here — runAgent never constructs a sandbox client itself. When
+   * omitted and sandbox env is missing, FS tools are skipped (http-only / MCP-only
+   * paths). Throws only when no tools at all would remain *and* no extraTools were
+   * provided — callers that need a hard error should check config at the route layer.
    */
   sandboxClient?: SandboxClient;
   secrets?: Array<string | undefined | null>;
+  /**
+   * Server secrets resolved once at the composition root (phase 2 — #439); never
+   * read from `process.env` in this module. Merged into the redaction list for
+   * model-facing / client-facing strings.
+   */
+  serverSecrets?: ServerSecrets;
   /** Effective grant permissions; default full access when omitted. */
   permissions?: { canRead: boolean; canWrite: boolean };
   /**
@@ -66,8 +75,8 @@ export type RunAgentParams = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   extraTools?: Record<string, any>;
   /**
-   * When true, do not auto-create sandbox client from env (route already decided
-   * FS tools are unavailable). Default false.
+   * When true, do not add FS tools even if a `sandboxClient` was injected (route
+   * already decided FS tools are unavailable). Default false.
    */
   skipSandboxTools?: boolean;
   /**
@@ -141,6 +150,17 @@ function makeCwdState(initialCwd?: string): CwdState {
   }
 }
 
+/** Redaction list = params.secrets + root-resolved server secrets (phase 2 DI). */
+function resolveRunSecrets(
+  params: RunAgentParams,
+): Array<string | undefined | null> {
+  return [
+    ...(params.secrets ?? []),
+    params.serverSecrets?.gatewayKey,
+    params.serverSecrets?.sandboxToken,
+  ];
+}
+
 /**
  * Multi-step generateText + optional sandbox / extra tools.
  * Sandbox client is optional when extraTools (http / MCP) supply the tool surface.
@@ -152,23 +172,13 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
   const generate = params.generateTextImpl ?? generateText;
 
   // Always scrub known server secrets from model-facing and client-facing strings.
-  let secrets: Array<string | undefined | null> = [
-    ...(params.secrets ?? []),
-    process.env.AI_GATEWAY_API_KEY,
-    process.env.SANDBOX_TOKEN,
-  ];
+  // Secrets come injected (params.secrets + root serverSecrets) — no process.env.
+  const secrets = resolveRunSecrets(params);
 
   let client = params.sandboxClient;
   let hasFsTools = false;
 
   if (!params.skipSandboxTools) {
-    if (!client) {
-      const cfg = getSandboxConfig();
-      if (cfg) {
-        client = createSandboxClient(cfg);
-        secrets = [...secrets, cfg.token];
-      }
-    }
     if (client) {
       hasFsTools = true;
     }
@@ -255,23 +265,13 @@ export async function runAgentStream(
   const modelId = params.modelId;
   const stream = params.streamTextImpl ?? streamText;
 
-  let secrets: Array<string | undefined | null> = [
-    ...(params.secrets ?? []),
-    process.env.AI_GATEWAY_API_KEY,
-    process.env.SANDBOX_TOKEN,
-  ];
+  // Secrets injected via params + root serverSecrets (no process.env in body).
+  const secrets = resolveRunSecrets(params);
 
   let client = params.sandboxClient;
   let hasFsTools = false;
 
   if (!params.skipSandboxTools) {
-    if (!client) {
-      const cfg = getSandboxConfig();
-      if (cfg) {
-        client = createSandboxClient(cfg);
-        secrets = [...secrets, cfg.token];
-      }
-    }
     if (client) {
       hasFsTools = true;
     }

@@ -553,10 +553,12 @@ describe('resolveAgentSandbox', () => {
   });
 
   it('BYO without workspace instance still succeeds', async () => {
-    // default beforeEach is byo with token — no instance row
+    // default beforeEach is byo with token — no instance row.
+    // Phase-2 DI (#439): the BYO client factory is injected (the root binds it in prod).
     const result = await resolveAgentSandbox(userId, {
       db: db as never,
       decryptSandboxToken: decrypt,
+      createByoClient: ({ baseUrl, token }) => stubClient({ baseUrl, token }),
     });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('expected ok');

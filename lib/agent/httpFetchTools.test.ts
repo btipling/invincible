@@ -398,28 +398,22 @@ describe('createHttpFetchTools', () => {
     expect(out).toMatch(/^ERROR http_get:/);
   });
 
-  it('redacts AI_GATEWAY_API_KEY from soft-fail errors even without opts.secrets', async () => {
-    const prev = process.env.AI_GATEWAY_API_KEY;
-    process.env.AI_GATEWAY_API_KEY = 'gateway-secret-should-not-leak';
-    try {
-      const get = vi.fn(async () => {
-        throw new Error('upstream failed gateway-secret-should-not-leak');
-      });
-      const tools = createHttpFetchTools({
-        runner: fakeRunner(get),
-        maxBytes: 1024,
-        timeoutMs: 5000,
-      });
-      const out = (await tools.http_get.execute!(
-        { url: 'https://example.com/' },
-        execOpts,
-      )) as string;
-      expect(out).toMatch(/^ERROR http_get:/);
-      expect(out).not.toContain('gateway-secret-should-not-leak');
-      expect(out).toContain('[redacted]');
-    } finally {
-      if (prev == null) delete process.env.AI_GATEWAY_API_KEY;
-      else process.env.AI_GATEWAY_API_KEY = prev;
-    }
+  it('redacts root-resolved AI_GATEWAY_API_KEY from soft-fail errors via serverSecrets', async () => {
+    const get = vi.fn(async () => {
+      throw new Error('upstream failed gateway-secret-should-not-leak');
+    });
+    const tools = createHttpFetchTools({
+      runner: fakeRunner(get),
+      maxBytes: 1024,
+      timeoutMs: 5000,
+      serverSecrets: { gatewayKey: 'gateway-secret-should-not-leak' },
+    });
+    const out = (await tools.http_get.execute!(
+      { url: 'https://example.com/' },
+      execOpts,
+    )) as string;
+    expect(out).toMatch(/^ERROR http_get:/);
+    expect(out).not.toContain('gateway-secret-should-not-leak');
+    expect(out).toContain('[redacted]');
   });
 });
