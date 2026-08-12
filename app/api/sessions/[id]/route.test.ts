@@ -187,6 +187,48 @@ describe('/api/sessions/:id', () => {
     expect(body.code).toBe('MESSAGE_TOO_LARGE');
   });
 
+  it('gate ok but authed user has no id → 401 AUTH_REQUIRED_ERROR (not 503)', async () => {
+    vi.doMock('../../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({ ok: true as const, user: { email: 'a@t.com' } })),
+    }));
+    vi.doMock('../../../../lib/tenancy/soleMembership', () => ({
+      loadSoleMembership: vi.fn(async () => ({
+        ok: true as const,
+        tenantId: TENANT,
+        role: 'member',
+      })),
+    }));
+    const { GET } = await import('./route');
+    const res = await GET(new Request('http://localhost/api/sessions/x'), {
+      params: Promise.resolve({ id: 'x' }),
+    });
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as { error: string }).error).toBe(AUTH_REQUIRED_ERROR);
+  });
+
+  it('unsafe path id (non Redis-safe charset, e.g. `*`, `a:b`) → 400 INVALID_ID on GET/PUT/DELETE', async () => {
+    const { GET, PUT, DELETE } = await mockAuthed();
+    for (const badId of ['*', 'a:b', 'sp ace', 'a?b']) {
+      const g = await GET(new Request(`http://localhost/api/sessions/${badId}`), {
+        params: Promise.resolve({ id: badId }),
+      });
+      expect(g.status).toBe(400);
+      expect(((await g.json()) as { code: string }).code).toBe('INVALID_ID');
+
+      const p = await PUT(
+        putRequest(badId, { id: badId, updatedAt: 10, messages: [] }),
+        { params: Promise.resolve({ id: badId }) },
+      );
+      expect(p.status).toBe(400);
+
+      const d = await DELETE(new Request(`http://localhost/api/sessions/${badId}`), {
+        params: Promise.resolve({ id: badId }),
+      });
+      expect(d.status).toBe(400);
+      expect(((await d.json()) as { code: string }).code).toBe('INVALID_ID');
+    }
+  });
+
   it('DELETE leaves other sessions; idempotent 204', async () => {
     const store = new MemorySessionStore();
     setSessionStoreForTests(store);

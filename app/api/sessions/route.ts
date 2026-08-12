@@ -3,7 +3,11 @@
  * Auth required; tenant + ownership always server-derived from the session user.
  */
 import { requireSessionUser } from '../../../lib/tenancy/session';
-import type { HarnessSessionRecord } from '../../../lib/sessions/sessionStore';
+import { AUTH_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
+import {
+  type HarnessSessionRecord,
+  validateSessionRecord,
+} from '../../../lib/sessions/sessionStore';
 import {
   resolveSessionStore,
   resolveTenantIdForUser,
@@ -21,10 +25,9 @@ async function requireAuthedUserId(): Promise<
   const gate = await requireSessionUser();
   if (!gate.ok) return { ok: false, response: gate.response };
   if (!gate.user?.id) {
-    return {
-      ok: false,
-      response: unavailableResponse('AUTH_REQUIRED', 'Signed-in user has no id.'),
-    };
+    // Tenant gate succeeded but no user id — mirror the legacy /api/session 401 so
+    // clients re-auth, not a 503 "store down".
+    return { ok: false, response: Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 }) };
   }
   return { ok: true, userId: gate.user.id };
 }
@@ -121,9 +124,20 @@ export async function POST(req: Request): Promise<Response> {
     meta,
   };
 
+  // Validate the minted record before persisting (same Phase 1 validator PUT uses), so
+  // an oversize / invalid `meta` (e.g. a huge title) returns 400 INVALID_META instead of
+  // the store's throwing `assertValidSessionRecord` surfacing as a 500 (adversarial L1).
+  const validated = validateSessionRecord(record);
+  if (!validated.ok) {
+    return Response.json(
+      { error: validated.error, code: validated.code.toUpperCase() },
+      { status: 400 },
+    );
+  }
+
   const put = await scopeRes.store.put(
     sessionKeyFor(scopeRes.tenantId, gate.userId, id),
-    record,
+    validated.value,
   );
   const stored = put.status === 'stored' ? put.record : put.server;
   return Response.json(stored);

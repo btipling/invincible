@@ -137,6 +137,31 @@ describe('/api/sessions', () => {
     expect(list.some((r) => r.title === null)).toBe(true);
   });
 
+  it('POST oversize meta.title → 400 INVALID_META (not 500 store throw)', async () => {
+    const { POST } = await loadAuthedRoute();
+    const { HARNESS_SESSION_MAX_META_BYTES } = await import('../../../lib/sessionCloudCaps');
+    const res = await POST(
+      new Request('http://localhost/api/sessions', {
+        method: 'POST',
+        body: JSON.stringify({ title: 'x'.repeat(HARNESS_SESSION_MAX_META_BYTES + 1) }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { code: string }).code).toBe('INVALID_META');
+  });
+
+  it('POST invalid title type → 400 INVALID_TITLE', async () => {
+    const { POST } = await loadAuthedRoute();
+    const res = await POST(
+      new Request('http://localhost/api/sessions', {
+        method: 'POST',
+        body: JSON.stringify({ title: { not: 'a string' } }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { code: string }).code).toBe('INVALID_TITLE');
+  });
+
   it('cross-user isolation: POST derives tenant from server membership, never client input', async () => {
     const { POST } = await loadAuthedRoute('user-a');
     const res = await POST(

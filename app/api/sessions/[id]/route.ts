@@ -4,9 +4,11 @@
  * tenant. Body `id` must equal the path `:id` (else 400); never trust body ownership.
  */
 import { requireSessionUser } from '../../../../lib/tenancy/session';
+import { AUTH_REQUIRED_ERROR } from '../../../../lib/tenancy/errors';
 import { HARNESS_SESSION_MAX_BODY_BYTES } from '../../../../lib/sessionCloudCaps';
 import {
   type SessionRecordKey,
+  isRedisSafeOpaqueId,
   validateSessionRecord,
 } from '../../../../lib/sessions/sessionStore';
 import {
@@ -47,12 +49,32 @@ async function authedUserGate(): Promise<GuardResult> {
   const gate = await requireSessionUser();
   if (!gate.ok) return { ok: false, response: gate.response };
   if (!gate.user?.id) {
-    return {
-      ok: false,
-      response: unavailableResponse('AUTH_REQUIRED', 'Signed-in user has no id.'),
-    };
+    // The tenant gate succeeded but the authed user carried no id — treat exactly like
+    // the legacy /api/session 401 (not a 503 "store down"), so clients re-auth.
+    return { ok: false, response: Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 }) };
   }
   return { ok: true, userId: gate.user.id };
+}
+
+/**
+ * Validate the path `:id` before any store I/O. ids live in Redis Keyspace segments
+ * and a `KEYS` prefix glob, so a non-empty id outside `^[A-Za-z0-9_-]{1,128}$` (e.g.
+ * `*`, `a:b`, spaces) would throw inside the store and surface as a 500. We reject it
+ * → 400 INVALID_ID instead (adversarial review L1/L2).
+ */
+function invalidIdResponse(id: string | undefined): Response | null {
+  // Absent/empty →
+  if (!id?.trim()) {
+    return Response.json({ error: 'id required.', code: 'INVALID_ID' }, { status: 400 });
+  }
+  // Present but not Redis-safe opaque → same 400, distinct message.
+  if (!isRedisSafeOpaqueId(id)) {
+    return Response.json(
+      { error: 'id must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).', code: 'INVALID_ID' },
+      { status: 400 },
+    );
+  }
+  return null;
 }
 
 /** GET /api/sessions/:id — full record, or 404 (other/nonexistent id → 404, no existence leak). */
@@ -60,9 +82,8 @@ export async function GET(_req: Request, ctx: Ctx): Promise<Response> {
   const gate = await authedUserGate();
   if (!gate.ok) return gate.response;
   const { id } = await ctx.params;
-  if (!id?.trim()) {
-    return Response.json({ error: 'id required.', code: 'INVALID_ID' }, { status: 400 });
-  }
+  const badId = invalidIdResponse(id);
+  if (badId) return badId;
 
   const scope = await requireScopeFor(gate.userId);
   if (!scope.ok) return scope.response;
@@ -84,9 +105,8 @@ export async function PUT(req: Request, ctx: Ctx): Promise<Response> {
   const gate = await authedUserGate();
   if (!gate.ok) return gate.response;
   const { id } = await ctx.params;
-  if (!id?.trim()) {
-    return Response.json({ error: 'id required.', code: 'INVALID_ID' }, { status: 400 });
-  }
+  const badId = invalidIdResponse(id);
+  if (badId) return badId;
 
   // Reuse the legacy route's body-size guard (content-length + raw bytes).
   const contentLength = req.headers.get('content-length');
@@ -157,9 +177,8 @@ export async function DELETE(_req: Request, ctx: Ctx): Promise<Response> {
   const gate = await authedUserGate();
   if (!gate.ok) return gate.response;
   const { id } = await ctx.params;
-  if (!id?.trim()) {
-    return Response.json({ error: 'id required.', code: 'INVALID_ID' }, { status: 400 });
-  }
+  const badId = invalidIdResponse(id);
+  if (badId) return badId;
 
   const scope = await requireScopeFor(gate.userId);
   if (!scope.ok) return scope.response;
