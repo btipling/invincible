@@ -4,13 +4,13 @@
  */
 import { and, eq, inArray } from 'drizzle-orm';
 import {
-  createDbConnection,
   providerSecretGrants,
   providerSecretModels,
   providerSecrets,
   tenantMembers,
   type Db,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import {
   isByokProvider,
   isValidModelId,
@@ -24,6 +24,8 @@ import { encryptTenantSecret, type TenantKeyDeps } from './tenantKeys';
 
 export type ProviderSecretsDeps = TenantKeyDeps & {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
 };
 
 export type ProviderSecretErrorCode =
@@ -64,18 +66,7 @@ async function withDb<T>(
   deps: ProviderSecretsDeps,
   fn: (db: Db) => Promise<T>,
 ): Promise<T> {
-  if (deps.db) {
-    return fn(deps.db);
-  }
-  if (!process.env.DATABASE_URL?.trim()) {
-    throw new Error('DATABASE_URL is required');
-  }
-  const { db, client } = createDbConnection();
-  try {
-    return await fn(db);
-  } finally {
-    await client.end({ timeout: 5 });
-  }
+  return withConnection(deps, fn);
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -534,4 +525,22 @@ export async function listProviderSecretsForAdmin(
   } catch {
     return { ok: false, code: 'unavailable', error: 'could not list secrets' };
   }
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createProviderSecrets(deps: ProviderSecretsDeps = {}) {
+  return {
+    createProviderSecret: (input: CreateProviderSecretInput, o?: ProviderSecretsDeps) =>
+      createProviderSecret(input, { ...deps, ...o }),
+    updateProviderSecret: (input: UpdateProviderSecretInput, o?: ProviderSecretsDeps) =>
+      updateProviderSecret(input, { ...deps, ...o }),
+    disableProviderSecret: (secretId: string, tenantId: string, o?: ProviderSecretsDeps) =>
+      disableProviderSecret(secretId, tenantId, { ...deps, ...o }),
+    setProviderSecretModels: (secretId: string, modelIds: string[], tenantId: string, o?: ProviderSecretsDeps) =>
+      setProviderSecretModels(secretId, modelIds, tenantId, { ...deps, ...o }),
+    setProviderSecretGrants: (secretId: string, grants: GrantInput[], tenantId: string, o?: ProviderSecretsDeps) =>
+      setProviderSecretGrants(secretId, grants, tenantId, { ...deps, ...o }),
+    listProviderSecretsForAdmin: (tenantId: string, o?: ProviderSecretsDeps) =>
+      listProviderSecretsForAdmin(tenantId, { ...deps, ...o }),
+  };
 }

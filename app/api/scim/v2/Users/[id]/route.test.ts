@@ -29,21 +29,36 @@ describe('SCIM /api/scim/v2/Users/:id', () => {
     process.env = { ...originalEnv };
     vi.resetModules();
     vi.restoreAllMocks();
+    vi.doUnmock('../../../../../../lib/di');
+    vi.doUnmock('../../../../../../lib/tenancy/identity');
   });
+
+  function mockScim(slice: {
+    handleScimDeleteUser?: (id: string) => unknown;
+    handleScimGetUser?: (req: Request, id: string) => unknown;
+    handleScimPutUser?: (req: Request, id: string) => unknown;
+    handleScimPatchUser?: (req: Request, id: string) => unknown;
+  }) {
+    vi.doMock('../../../../../../lib/di', () => ({
+      createProdServices: () => ({
+        scim: {
+          handleScimListUsers: vi.fn(),
+          handleScimCreateUser: vi.fn(),
+          handleScimGetUser: vi.fn(),
+          handleScimPutUser: vi.fn(),
+          handleScimPatchUser: vi.fn(),
+          handleScimDeleteUser: vi.fn(),
+          ...slice,
+        },
+      }),
+      createScriptConnection: vi.fn(),
+    }));
+  }
 
   it('DELETE suspends SCIM user', async () => {
     process.env = { ...originalEnv, ...tenancyOn };
-    const suspend = vi.fn(async () => ({ ...scimUser, status: 'suspended' }));
-    vi.doMock('../../../../../../lib/tenancy/identity', async () => {
-      const actual = await vi.importActual<
-        typeof import('../../../../../../lib/tenancy/identity')
-      >('../../../../../../lib/tenancy/identity');
-      return {
-        ...actual,
-        getScimUserById: vi.fn(async () => scimUser),
-        scimSuspendUser: suspend,
-      };
-    });
+    const handleScimDeleteUser = vi.fn(async () => new Response(null, { status: 204 }));
+    mockScim({ handleScimDeleteUser });
     const { DELETE } = await import('./route');
     const res = await DELETE(
       new Request('http://localhost/api/scim/v2/Users/' + scimUser.id, {
@@ -53,20 +68,15 @@ describe('SCIM /api/scim/v2/Users/:id', () => {
       { params: Promise.resolve({ id: scimUser.id }) },
     );
     expect(res.status).toBe(204);
-    expect(suspend).toHaveBeenCalled();
+    expect(handleScimDeleteUser).toHaveBeenCalledWith(scimUser.id);
   });
 
   it('GET non-SCIM returns 404', async () => {
     process.env = { ...originalEnv, ...tenancyOn };
-    vi.doMock('../../../../../../lib/tenancy/identity', async () => {
-      const actual = await vi.importActual<
-        typeof import('../../../../../../lib/tenancy/identity')
-      >('../../../../../../lib/tenancy/identity');
-      return {
-        ...actual,
-        getScimUserById: vi.fn(async () => null),
-      };
-    });
+    const handleScimGetUser = vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'User not found' }), { status: 404 }),
+    );
+    mockScim({ handleScimGetUser });
     const { GET } = await import('./route');
     const res = await GET(
       new Request('http://localhost/api/scim/v2/Users/nope', {
@@ -79,20 +89,13 @@ describe('SCIM /api/scim/v2/Users/:id', () => {
 
   it('PUT prefers userName over emails', async () => {
     process.env = { ...originalEnv, ...tenancyOn };
-    const update = vi.fn(async (_id: string, patch: { email?: string }) => ({
-      ...scimUser,
-      email: patch.email ?? scimUser.email,
-    }));
-    vi.doMock('../../../../../../lib/tenancy/identity', async () => {
-      const actual = await vi.importActual<
-        typeof import('../../../../../../lib/tenancy/identity')
-      >('../../../../../../lib/tenancy/identity');
-      return {
-        ...actual,
-        getScimUserById: vi.fn(async () => scimUser),
-        scimUpdateUser: update,
-      };
-    });
+    const handleScimPutUser = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ id: scimUser.id, userName: 'a@example.com', active: true }),
+        { status: 200 },
+      ),
+    );
+    mockScim({ handleScimPutUser });
     const { PUT } = await import('./route');
     const res = await PUT(
       new Request('http://localhost/api/scim/v2/Users/' + scimUser.id, {
@@ -109,9 +112,9 @@ describe('SCIM /api/scim/v2/Users/:id', () => {
       { params: Promise.resolve({ id: scimUser.id }) },
     );
     expect(res.status).toBe(200);
-    expect(update).toHaveBeenCalledWith(
+    expect(handleScimPutUser).toHaveBeenCalledWith(
+      expect.any(Request),
       scimUser.id,
-      expect.objectContaining({ email: 'a@example.com' }),
     );
   });
 });

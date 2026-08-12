@@ -4,10 +4,10 @@
  */
 import { eq } from 'drizzle-orm';
 import {
-  createDbConnection,
   tenantMembers,
   type Db,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import type { TenantRole } from './roles';
 
 export type SoleMembership =
@@ -16,6 +16,8 @@ export type SoleMembership =
 
 export type SoleMembershipDeps = {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
 };
 
 /**
@@ -30,19 +32,10 @@ export async function loadSoleMembership(
     return { ok: false, reason: 'no_membership' };
   }
 
-  if (deps.db) {
-    return loadWithDb(deps.db, id);
-  }
-
-  if (!process.env.DATABASE_URL?.trim()) {
-    return { ok: false, reason: 'db' };
-  }
-
-  const { db, client } = createDbConnection();
   try {
-    return await loadWithDb(db, id);
-  } finally {
-    await client.end({ timeout: 5 });
+    return await withConnection(deps, (db) => loadWithDb(db, id));
+  } catch {
+    return { ok: false, reason: 'db' };
   }
 }
 
@@ -71,4 +64,12 @@ async function loadWithDb(db: Db, userId: string): Promise<SoleMembership> {
   } catch {
     return { ok: false, reason: 'db' };
   }
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createSoleMembership(deps: SoleMembershipDeps = {}) {
+  return {
+    loadSoleMembership: (userId: string, overrides?: SoleMembershipDeps) =>
+      loadSoleMembership(userId, { ...deps, ...overrides }),
+  };
 }

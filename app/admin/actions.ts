@@ -2,26 +2,16 @@
 
 import { revalidatePath } from 'next/cache';
 import { auth } from '../../auth';
-import { rotateSandboxToken } from '../../lib/tenancy/rotateSandboxToken';
-import { rotateTenantDek } from '../../lib/tenancy/rotateTenantDek';
-import { loadAdminContext } from '../../lib/tenancy/adminContext';
-import {
-  createSandboxForAdmin,
-  updateSandboxForAdmin,
-} from '../../lib/tenancy/manageSandbox';
-import {
-  createProviderSecret,
-  disableProviderSecret,
-  setProviderSecretGrants,
-  setProviderSecretModels,
-  updateProviderSecret,
-} from '../../lib/tenancy/providerSecrets';
+import { createProdServices } from '../../lib/di';
 import {
   byokCredentialShape,
   isByokProvider,
   isValidModelId,
   normalizeModelIds,
 } from '../../lib/gateway/byokProviders';
+
+/** Phase-1 DI: server actions wire through the composition root. */
+const services = createProdServices();
 
 function revalidateAdmin() {
   revalidatePath('/admin');
@@ -40,7 +30,7 @@ async function requireAdminSession(): Promise<
   if (!userId) {
     return { ok: false, error: 'Authentication required.' };
   }
-  const ctx = await loadAdminContext(userId);
+  const ctx = await services.adminContext.loadAdminContext(userId);
   if (!ctx.ok) {
     return { ok: false, error: 'Admin access required.' };
   }
@@ -73,7 +63,11 @@ export async function rotateTokenAction(
     return { error: 'New token is required.', sandboxId };
   }
 
-  const result = await rotateSandboxToken(userId, sandboxId, newToken);
+  const result = await services.rotateSandboxToken.rotateSandboxToken(
+    userId,
+    sandboxId,
+    newToken,
+  );
   if (!result.ok) {
     if (result.reason === 'forbidden') {
       return { error: 'Only the tenant owner can rotate the token.', sandboxId };
@@ -118,7 +112,7 @@ export async function rotateTenantDekAction(
     return { error: 'Missing tenant.' };
   }
 
-  const result = await rotateTenantDek(userId, tenantId);
+  const result = await services.rotateTenantDek.rotateTenantDek(userId, tenantId);
   if (!result.ok) {
     if (result.reason === 'forbidden') {
       return {
@@ -166,7 +160,7 @@ export async function createSandboxAction(
   const token = String(formData.get('token') ?? '');
   const image = imageFromForm(formData);
 
-  const result = await createSandboxForAdmin(gate.userId, {
+  const result = await services.manageSandbox.createSandboxForAdmin(gate.userId, {
     name,
     slug,
     backend,
@@ -207,7 +201,7 @@ export async function updateSandboxAction(
   const token = String(formData.get('token') ?? '');
   const image = imageFromForm(formData);
 
-  const result = await updateSandboxForAdmin(gate.userId, {
+  const result = await services.manageSandbox.updateSandboxForAdmin(gate.userId, {
     sandboxId,
     name,
     backend,
@@ -312,7 +306,7 @@ export async function createProviderSecretAction(
   }
   const grantIds = parseGrantUserIds(formData);
 
-  const created = await createProviderSecret(
+  const created = await services.providerSecrets.createProviderSecret(
     {
       tenantId: gate.tenantId,
       name,
@@ -326,14 +320,14 @@ export async function createProviderSecretAction(
   const secretId = created.value.id;
 
   if (models.length > 0) {
-    const m = await setProviderSecretModels(secretId, models, gate.tenantId);
+    const m = await services.providerSecrets.setProviderSecretModels(secretId, models, gate.tenantId);
     if (!m.ok) {
       return { error: m.error, secretId };
     }
   }
 
   if (grantIds.length > 0) {
-    const g = await setProviderSecretGrants(
+    const g = await services.providerSecrets.setProviderSecretGrants(
       secretId,
       grantIds.map((userId) => ({ userId, canUse: true })),
       gate.tenantId,
@@ -373,7 +367,7 @@ export async function updateProviderSecretAction(
     patch.credentials = credentialsFromForm(provider, formData);
   }
 
-  const updated = await updateProviderSecret(patch);
+  const updated = await services.providerSecrets.updateProviderSecret(patch);
   if (!updated.ok) {
     return { error: updated.error, secretId };
   }
@@ -392,7 +386,7 @@ export async function disableProviderSecretAction(
   const secretId = String(formData.get('secretId') ?? '').trim();
   if (!secretId) return { error: 'Missing secret.' };
 
-  const result = await disableProviderSecret(secretId, gate.tenantId);
+  const result = await services.providerSecrets.disableProviderSecret(secretId, gate.tenantId);
   if (!result.ok) {
     return { error: result.error, secretId };
   }
@@ -411,7 +405,7 @@ export async function enableProviderSecretAction(
   const secretId = String(formData.get('secretId') ?? '').trim();
   if (!secretId) return { error: 'Missing secret.' };
 
-  const result = await updateProviderSecret({
+  const result = await services.providerSecrets.updateProviderSecret({
     secretId,
     tenantId: gate.tenantId,
     status: 'active',
@@ -437,7 +431,7 @@ export async function setProviderSecretModelsAction(
   // Bare model names are prefixed with the secret's provider inside setProviderSecretModels.
   const models = parseModels(String(formData.get('modelIds') ?? ''));
 
-  const result = await setProviderSecretModels(secretId, models, gate.tenantId);
+  const result = await services.providerSecrets.setProviderSecretModels(secretId, models, gate.tenantId);
   if (!result.ok) {
     return { error: result.error, secretId };
   }
@@ -457,7 +451,7 @@ export async function setProviderSecretGrantsAction(
   if (!secretId) return { error: 'Missing secret.' };
 
   const grantIds = parseGrantUserIds(formData);
-  const result = await setProviderSecretGrants(
+  const result = await services.providerSecrets.setProviderSecretGrants(
     secretId,
     grantIds.map((userId) => ({ userId, canUse: true })),
     gate.tenantId,

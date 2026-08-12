@@ -2,17 +2,12 @@
 
 import { revalidatePath } from 'next/cache';
 import { auth } from '../../../auth';
-import { loadSoleMembership } from '../../../lib/tenancy/soleMembership';
-import {
-  createUserMcpServer,
-  deleteUserMcpServer,
-  loadUserMcpSecretById,
-  setUserMcpServerEnabled,
-  setUserMcpServerLastError,
-  updateUserMcpServer,
-  type UserMcpServerErrorCode,
-} from '../../../lib/tenancy/userMcpServers';
+import { createProdServices } from '../../../lib/di';
+import type { UserMcpServerErrorCode } from '../../../lib/tenancy/userMcpServers';
 import { probeUserMcpServer } from '../../../lib/mcp/client';
+
+/** Phase-1 DI: server actions wire through the composition root. */
+const services = createProdServices();
 
 function revalidateSettings() {
   revalidatePath('/settings');
@@ -27,7 +22,7 @@ async function requireSettingsSession(): Promise<
   if (!userId) {
     return { ok: false, error: 'Authentication required.' };
   }
-  const membership = await loadSoleMembership(userId);
+  const membership = await services.soleMembership.loadSoleMembership(userId);
   if (!membership.ok) {
     if (membership.reason === 'ambiguous') {
       return {
@@ -95,7 +90,7 @@ export async function createMcpServerAction(
   const apiKey = String(formData.get('apiKey') ?? '');
   const enabled = formData.get('enabled') === 'on' || formData.get('enabled') === 'true';
 
-  const result = await createUserMcpServer({
+  const result = await services.userMcpServers.createUserMcpServer({
     userId: session.userId,
     name,
     slug,
@@ -133,7 +128,7 @@ export async function updateMcpServerAction(
       ? undefined
       : String(apiKeyRaw);
 
-  const result = await updateUserMcpServer({
+  const result = await services.userMcpServers.updateUserMcpServer({
     userId: session.userId,
     id,
     name,
@@ -162,7 +157,10 @@ export async function deleteMcpServerAction(
   const id = String(formData.get('id') ?? '').trim();
   if (!id) return { error: 'Missing server id.' };
 
-  const result = await deleteUserMcpServer(session.userId, id);
+  const result = await services.userMcpServers.deleteUserMcpServer(
+    session.userId,
+    id,
+  );
   if (!result.ok) {
     return { error: mapError(result.code, result.error), id };
   }
@@ -182,7 +180,11 @@ export async function toggleMcpServerAction(
   if (!id) return { error: 'Missing server id.' };
   const enabled = formData.get('enabled') === 'true' || formData.get('enabled') === 'on';
 
-  const result = await setUserMcpServerEnabled(session.userId, id, enabled);
+  const result = await services.userMcpServers.setUserMcpServerEnabled(
+    session.userId,
+    id,
+    enabled,
+  );
   if (!result.ok) {
     return { error: mapError(result.code, result.error), id };
   }
@@ -205,7 +207,10 @@ export async function testMcpServerAction(
   const id = String(formData.get('id') ?? '').trim();
   if (!id) return { error: 'Missing server id.' };
 
-  const loaded = await loadUserMcpSecretById(session.userId, id);
+  const loaded = await services.userMcpServers.loadUserMcpSecretById(
+    session.userId,
+    id,
+  );
   if (!loaded.ok) {
     return { error: mapError(loaded.code, loaded.error), id };
   }
@@ -218,12 +223,12 @@ export async function testMcpServerAction(
   });
 
   if (!probe.ok) {
-    await setUserMcpServerLastError(session.userId, id, probe.error);
+    await services.userMcpServers.setUserMcpServerLastError(session.userId, id, probe.error);
     revalidateSettings();
     return { error: probe.error, id };
   }
 
-  await setUserMcpServerLastError(session.userId, id, null);
+  await services.userMcpServers.setUserMcpServerLastError(session.userId, id, null);
   revalidateSettings();
   return {
     ok: true,

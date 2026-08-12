@@ -14,21 +14,21 @@ import {
   wantsAgentStream,
   type AgentStreamEvent,
 } from '../../../lib/agent/agentStream';
+import { createProdServices } from '../../../lib/di';
 import { requireSessionUser } from '../../../lib/tenancy/session';
-import { resolveAgentSandbox } from '../../../lib/tenancy/resolveSandbox';
-import { decryptUserGithubTokenForServer } from '../../../lib/tenancy/userGithubToken';
-import { resolveByokForRequest } from '../../../lib/tenancy/resolveInferenceForRequest';
 import { redactSecrets } from '../../../lib/agent/redact';
 import { buildUserMcpTools } from '../../../lib/mcp/client';
 import { resolveBuiltinHttpConfig } from '../../../lib/agent/builtinHttpConfig';
 import { createHttpFetchTools } from '../../../lib/agent/httpFetchTools';
 import { createVercelSandboxHttpRunner } from '../../../lib/agent/vercelSandboxHttpRunner';
 import type { HttpFetchRunner } from '../../../lib/agent/httpFetchTypes';
-import { loadInstance } from '../../../lib/tenancy/userSandboxInstance';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
 export const maxDuration = 1800;
+
+/** Phase-1 DI: services wired at the composition root (module never constructs). */
+const services = createProdServices();
 
 function isAbortError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
@@ -140,7 +140,10 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
     }
 
-    const byok = await resolveByokForRequest(userId, parsed.modelId);
+    const byok = await services.resolveInferenceForRequest.resolveByokForRequest(
+      userId,
+      parsed.modelId,
+    );
     if (!byok.ok) {
       const { status, error } = mapByokResolveFailure(byok.reason);
       return Response.json({ error }, { status });
@@ -148,7 +151,9 @@ export async function POST(req: Request): Promise<Response> {
     redactList = byok.secretsToRedact;
 
     // Per-user GitHub PAT → sandbox exec env (client options only; never tool schema).
-    const gh = await decryptUserGithubTokenForServer(userId);
+    const gh = await services.userGithubToken.decryptUserGithubTokenForServer(
+      userId,
+    );
     const ghSecrets: string[] = [];
     let execEnv: Record<string, string> | undefined;
     if (gh.ok && gh.value) {
@@ -157,7 +162,7 @@ export async function POST(req: Request): Promise<Response> {
     }
     redactList = [...redactList, ...ghSecrets];
 
-    const resolved = await resolveAgentSandbox(userId, {
+    const resolved = await services.resolveSandbox.resolveAgentSandbox(userId, {
       ...(execEnv ? { execEnv } : {}),
     });
 
@@ -191,7 +196,11 @@ export async function POST(req: Request): Promise<Response> {
       };
     }
 
-    const mcp = await buildUserMcpTools(userId, { signal: req.signal });
+    const mcp = await buildUserMcpTools(userId, {
+      signal: req.signal,
+      loadSecrets: services.userMcpServers.loadEnabledUserMcpSecrets,
+      setLastError: services.userMcpServers.setUserMcpServerLastError,
+    });
     mcpClose = mcp.close;
     redactList = [...redactList, ...mcp.secretsToRedact];
     extraTools = { ...extraTools, ...mcp.tools };
@@ -215,7 +224,10 @@ export async function POST(req: Request): Promise<Response> {
       let httpAttachName: string | undefined;
 
       // Settings HTTP/curl instance — omit tools when missing/stopped/error.
-      const loaded = await loadInstance(userId, 'http');
+      const loaded = await services.userSandboxInstance.loadInstance(
+        userId,
+        'http',
+      );
       if (
         loaded.ok &&
         loaded.value &&

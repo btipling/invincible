@@ -10,7 +10,6 @@
  */
 import { and, eq, sql } from 'drizzle-orm';
 import {
-  createDbConnection,
   providerSecrets,
   sandboxes,
   tenantMembers,
@@ -19,6 +18,7 @@ import {
   userGithubTokens,
   type Db,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import {
   decryptSecret,
   encryptSecret,
@@ -39,6 +39,8 @@ export type RotateTenantDekResult =
 
 export type RotateTenantDekDeps = {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
   /** Explicit AMK for tests / inject. */
   amk?: Buffer;
   /** Decrypt mode for leftover AMK ciphertext; defaults to resolveTokenDecryptMode(). */
@@ -62,19 +64,10 @@ export async function rotateTenantDek(
     return { ok: false, reason: 'forbidden' };
   }
 
-  if (deps.db) {
-    return rotateWithDb(deps.db, uid, tid, deps);
-  }
-
-  if (!process.env.DATABASE_URL?.trim()) {
-    return { ok: false, reason: 'db' };
-  }
-
-  const { db, client } = createDbConnection();
   try {
-    return await rotateWithDb(db, uid, tid, deps);
-  } finally {
-    await client.end({ timeout: 5 });
+    return await withConnection(deps, (db) => rotateWithDb(db, uid, tid, deps));
+  } catch {
+    return { ok: false, reason: 'db' };
   }
 }
 
@@ -308,4 +301,12 @@ async function rotateWithDb(
   } catch {
     return { ok: false, reason: 'db' };
   }
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createRotateTenantDek(deps: RotateTenantDekDeps = {}) {
+  return {
+    rotateTenantDek: (userId: string, tenantId: string, o?: RotateTenantDekDeps) =>
+      rotateTenantDek(userId, tenantId, { ...deps, ...o }),
+  };
 }

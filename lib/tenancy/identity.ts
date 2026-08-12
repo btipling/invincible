@@ -4,13 +4,13 @@
  */
 import { and, asc, count, eq, isNotNull, isNull, or } from 'drizzle-orm';
 import {
-  createDbConnection,
   tenantMembers,
   tenants,
   users,
   type Db,
   type User,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 
 export type UserStatus = 'active' | 'suspended';
 export type ProvisionSource = 'credentials' | 'oidc' | 'scim' | 'manual';
@@ -20,6 +20,8 @@ export const DEFAULT_TENANT_SLUG = 'default';
 export type IdentityDeps = {
   /** Injected DB (tests). When omitted, opens/closes a short-lived connection. */
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
 };
 
 export class IdentityError extends Error {
@@ -93,18 +95,7 @@ async function withDb<T>(
   deps: IdentityDeps,
   fn: (db: Db) => Promise<T>,
 ): Promise<T> {
-  if (deps.db) {
-    return fn(deps.db);
-  }
-  if (!process.env.DATABASE_URL?.trim()) {
-    throw new IdentityError('DATABASE_URL is required', 'db');
-  }
-  const { db, client } = createDbConnection();
-  try {
-    return await fn(db);
-  } finally {
-    await client.end({ timeout: 5 });
-  }
+  return withConnection(deps, fn);
 }
 
 /**
@@ -658,4 +649,34 @@ export async function getScimUserById(
   const row = await getUserById(userId, deps);
   if (!row || !isScimManaged(row)) return null;
   return row;
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createIdentity(deps: IdentityDeps = {}) {
+  return {
+    ensureDefaultTenantMembership: (userId: string, role?: string, o?: IdentityDeps) =>
+      ensureDefaultTenantMembership(userId, role, { ...deps, ...o }),
+    isBreakGlassUser: (userId: string, o?: IdentityDeps) =>
+      isBreakGlassUser(userId, { ...deps, ...o }),
+    assertNotBreakGlass: (userId: string, o?: IdentityDeps) =>
+      assertNotBreakGlass(userId, { ...deps, ...o }),
+    setUserStatus: (userId: string, status: UserStatus, o?: IdentityDeps) =>
+      setUserStatus(userId, status, { ...deps, ...o }),
+    findOrCreateOidcUser: (input: FindOrCreateOidcInput, o?: IdentityDeps) =>
+      findOrCreateOidcUser(input, { ...deps, ...o }),
+    scimCreateUser: (input: ScimCreateInput, o?: IdentityDeps) =>
+      scimCreateUser(input, { ...deps, ...o }),
+    scimUpdateUser: (userId: string, patch: ScimUpdatePatch, o?: IdentityDeps) =>
+      scimUpdateUser(userId, patch, { ...deps, ...o }),
+    scimSuspendUser: (userId: string, o?: IdentityDeps) =>
+      scimSuspendUser(userId, { ...deps, ...o }),
+    listScimUsers: (input: ListScimUsersInput, o?: IdentityDeps) =>
+      listScimUsers(input, { ...deps, ...o }),
+    listUsersForAdmin: (o?: IdentityDeps) =>
+      listUsersForAdmin({ ...deps, ...o }),
+    getUserById: (userId: string, o?: IdentityDeps) =>
+      getUserById(userId, { ...deps, ...o }),
+    getScimUserById: (userId: string, o?: IdentityDeps) =>
+      getScimUserById(userId, { ...deps, ...o }),
+  };
 }

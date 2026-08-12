@@ -6,18 +6,20 @@
  */
 import { and, eq } from 'drizzle-orm';
 import {
-  createDbConnection,
   sandboxGrants,
   sandboxes,
   userPreferredSandbox,
   type Db,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { canAccessAdmin } from './roles';
 import { isUsableGrant } from './grants';
 import { loadSoleMembership } from './soleMembership';
 
 export type UserPreferredSandboxDeps = {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
 };
 
 export type UserPreferredSandboxErrorCode =
@@ -55,16 +57,7 @@ async function withDb<T>(
   deps: UserPreferredSandboxDeps,
   fn: (db: Db) => Promise<T>,
 ): Promise<T> {
-  if (deps.db) return fn(deps.db);
-  if (!process.env.DATABASE_URL?.trim()) {
-    throw new Error('DATABASE_URL is required');
-  }
-  const { db, client } = createDbConnection();
-  try {
-    return await fn(db);
-  } finally {
-    await client.end({ timeout: 5 });
-  }
+  return withConnection(deps, fn);
 }
 
 function isUndefinedTable(err: unknown): boolean {
@@ -352,4 +345,16 @@ export async function getUserPreferredSandboxId(
   } catch {
     return null;
   }
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createUserPreferredSandbox(deps: UserPreferredSandboxDeps = {}) {
+  return {
+    listUserSandboxChoices: (userId: string, o?: UserPreferredSandboxDeps) =>
+      listUserSandboxChoices(userId, { ...deps, ...o }),
+    setUserPreferredSandbox: (userId: string, sandboxId: string, o?: UserPreferredSandboxDeps) =>
+      setUserPreferredSandbox(userId, sandboxId, { ...deps, ...o }),
+    getUserPreferredSandboxId: (userId: string, tenantId: string, o?: UserPreferredSandboxDeps) =>
+      getUserPreferredSandboxId(userId, tenantId, { ...deps, ...o }),
+  };
 }

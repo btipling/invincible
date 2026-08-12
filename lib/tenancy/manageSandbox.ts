@@ -5,13 +5,13 @@
  */
 import { and, eq } from 'drizzle-orm';
 import {
-  createDbConnection,
   sandboxGrants,
   sandboxes,
   tenantMembers,
   tenants,
   type Db,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { encryptSecret } from './credentials';
 import { canAccessAdmin } from './roles';
 import {
@@ -39,6 +39,8 @@ export type ManageSandboxResult =
 
 export type ManageSandboxDeps = {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
   amk?: Buffer;
   encrypt?: (plaintext: string, dek: Buffer) => string;
 };
@@ -259,13 +261,10 @@ export async function createSandboxForAdmin(
     }
   };
 
-  if (deps.db) return run(deps.db);
-  if (!process.env.DATABASE_URL?.trim()) return { ok: false, reason: 'db' };
-  const { db, client } = createDbConnection();
   try {
-    return await run(db);
-  } finally {
-    await client.end({ timeout: 5 });
+    return await withConnection(deps, run);
+  } catch {
+    return { ok: false, reason: 'db' };
   }
 }
 
@@ -436,12 +435,19 @@ export async function updateSandboxForAdmin(
     }
   };
 
-  if (deps.db) return run(deps.db);
-  if (!process.env.DATABASE_URL?.trim()) return { ok: false, reason: 'db' };
-  const { db, client } = createDbConnection();
   try {
-    return await run(db);
-  } finally {
-    await client.end({ timeout: 5 });
+    return await withConnection(deps, run);
+  } catch {
+    return { ok: false, reason: 'db' };
   }
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createManageSandbox(deps: ManageSandboxDeps = {}) {
+  return {
+    createSandboxForAdmin: (userId: string, input: CreateSandboxInput, o?: ManageSandboxDeps) =>
+      createSandboxForAdmin(userId, input, { ...deps, ...o }),
+    updateSandboxForAdmin: (userId: string, input: UpdateSandboxInput, o?: ManageSandboxDeps) =>
+      updateSandboxForAdmin(userId, input, { ...deps, ...o }),
+  };
 }

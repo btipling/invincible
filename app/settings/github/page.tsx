@@ -1,8 +1,11 @@
 import { teal } from '../../../lib/palette';
-import { getUserGithubTokenStatus } from '../../../lib/tenancy/userGithubToken';
+import { createProdServices } from '../../../lib/di';
 import { gateSettingsPage } from '../load';
 import { SettingsPageShell } from '../SettingsPageShell';
 import { GithubTokenForm } from './GithubTokenForm';
+
+/** Phase-1 DI: server component wires through the composition root. */
+const services = createProdServices();
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +23,9 @@ export default async function SettingsGithubPage() {
 }
 
 async function GithubPageBody({ userId }: { userId: string }) {
-  const status = await getUserGithubTokenStatus(userId);
+  const status = await services.userGithubToken.getUserGithubTokenStatus(
+    userId,
+  );
   if (!status.ok) {
     return (
       <p role="alert" style={{ color: teal.muted, fontSize: 14 }}>

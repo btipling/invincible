@@ -3,13 +3,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 describe('settings sandbox actions', () => {
   const originalEnv = { ...process.env };
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const servicesState: Record<string, any> = {};
+
   afterEach(() => {
     process.env = { ...originalEnv };
     vi.resetModules();
+    delete servicesState.soleMembership;
+    delete servicesState.userPreferredSandbox;
+    delete servicesState.userSandboxInstance;
     vi.doUnmock('../../../auth');
-    vi.doUnmock('../../../lib/tenancy/soleMembership');
-    vi.doUnmock('../../../lib/tenancy/userPreferredSandbox');
-    vi.doUnmock('../../../lib/tenancy/userSandboxInstance');
+    vi.doUnmock('../../../lib/di');
     vi.doUnmock('next/cache');
   });
 
@@ -34,7 +38,11 @@ describe('settings sandbox actions', () => {
         mocks.auth ??
         vi.fn(async () => ({ user: { id: 'session-user' } })),
     }));
-    vi.doMock('../../../lib/tenancy/soleMembership', () => ({
+    vi.doMock('../../../lib/di', () => ({
+      createProdServices: () => servicesState,
+      createScriptConnection: vi.fn(),
+    }));
+    servicesState.soleMembership = {
       loadSoleMembership:
         mocks.membership ??
         vi.fn(async () => ({
@@ -42,10 +50,10 @@ describe('settings sandbox actions', () => {
           tenantId: 't1',
           role: 'member',
         })),
-    }));
-    vi.doMock('../../../lib/tenancy/userPreferredSandbox', () => ({
+    };
+    servicesState.userPreferredSandbox = {
       setUserPreferredSandbox: vi.fn(),
-    }));
+    };
     const domain = {
       createWorkspace: vi.fn(),
       createHttp: vi.fn(),
@@ -54,7 +62,7 @@ describe('settings sandbox actions', () => {
       destroyInstance: vi.fn(),
       ...mocks.domain,
     };
-    vi.doMock('../../../lib/tenancy/userSandboxInstance', () => domain);
+    servicesState.userSandboxInstance = domain;
     const actions = await import('./actions');
     return { actions, domain };
   }

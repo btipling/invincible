@@ -7,7 +7,6 @@
 import { createHash } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import {
-  createDbConnection,
   sandboxGrants,
   sandboxes,
   userPreferredSandbox,
@@ -15,6 +14,7 @@ import {
   type Db,
   type UserSandboxInstance,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { isUsableGrant } from './grants';
 import {
   DEFAULT_VERCEL_SANDBOX_IMAGE,
@@ -83,6 +83,8 @@ export type UserSandboxPlatformApi = {
 
 export type UserSandboxInstanceDeps = {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
   sandboxApi?: UserSandboxPlatformApi;
   /** Override idle timeout (tests). */
   idleTimeoutMs?: number;
@@ -154,16 +156,7 @@ async function withDb<T>(
   deps: UserSandboxInstanceDeps,
   fn: (db: Db) => Promise<T>,
 ): Promise<T> {
-  if (deps.db) return fn(deps.db);
-  if (!process.env.DATABASE_URL?.trim()) {
-    throw new Error('DATABASE_URL is required');
-  }
-  const { db, client } = createDbConnection();
-  try {
-    return await fn(db);
-  } finally {
-    await client.end({ timeout: 5 });
-  }
+  return withConnection(deps, fn);
 }
 
 async function defaultPlatformApi(): Promise<UserSandboxPlatformApi> {
@@ -820,4 +813,24 @@ export async function reconcileStatus(
     const msg = err instanceof Error ? err.message : 'reconcileStatus failed';
     return { ok: false, code: 'unavailable', error: msg.slice(0, 500) };
   }
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createUserSandboxInstance(deps: UserSandboxInstanceDeps = {}) {
+  return {
+    createWorkspace: (userId: string, o?: UserSandboxInstanceDeps) =>
+      createWorkspace(userId, { ...deps, ...o }),
+    createHttp: (userId: string, o?: UserSandboxInstanceDeps) =>
+      createHttp(userId, { ...deps, ...o }),
+    startInstance: (userId: string, purpose: UserSandboxPurpose, o?: UserSandboxInstanceDeps) =>
+      startInstance(userId, purpose, { ...deps, ...o }),
+    stopInstance: (userId: string, purpose: UserSandboxPurpose, o?: UserSandboxInstanceDeps) =>
+      stopInstance(userId, purpose, { ...deps, ...o }),
+    destroyInstance: (userId: string, purpose: UserSandboxPurpose, o?: UserSandboxInstanceDeps) =>
+      destroyInstance(userId, purpose, { ...deps, ...o }),
+    loadInstance: (userId: string, purpose: UserSandboxPurpose, o?: UserSandboxInstanceDeps) =>
+      loadInstance(userId, purpose, { ...deps, ...o }),
+    reconcileStatus: (userId: string, purpose: UserSandboxPurpose, o?: UserSandboxInstanceDeps) =>
+      reconcileStatus(userId, purpose, { ...deps, ...o }),
+  };
 }

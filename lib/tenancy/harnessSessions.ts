@@ -5,10 +5,10 @@
  */
 import { eq, sql } from 'drizzle-orm';
 import {
-  createDbConnection,
   harnessSessions,
   type Db,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import type { SessionMessage, SessionRole, SessionSnapshot } from '../sessionStore';
 import {
   HARNESS_SESSION_MAX_BODY_BYTES,
@@ -26,6 +26,8 @@ const SESSION_ROLES = new Set<SessionRole>(['user', 'assistant', 'system', 'erro
 
 export type HarnessSessionsDeps = {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
 };
 
 export type HarnessSessionErrorCode =
@@ -47,18 +49,7 @@ async function withDb<T>(
   deps: HarnessSessionsDeps,
   fn: (db: Db) => Promise<T>,
 ): Promise<T> {
-  if (deps.db) {
-    return fn(deps.db);
-  }
-  if (!process.env.DATABASE_URL?.trim()) {
-    throw new Error('DATABASE_URL is required');
-  }
-  const { db, client } = createDbConnection();
-  try {
-    return await fn(db);
-  } finally {
-    await client.end({ timeout: 5 });
-  }
+  return withConnection(deps, fn);
 }
 
 function utf8ByteLength(s: string): number {
@@ -331,4 +322,16 @@ export async function deleteHarnessSession(
       error: 'Session store temporarily unavailable.',
     };
   }
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createHarnessSessions(deps: HarnessSessionsDeps = {}) {
+  return {
+    getHarnessSession: (userId: string, o?: HarnessSessionsDeps) =>
+      getHarnessSession(userId, { ...deps, ...o }),
+    putHarnessSession: (userId: string, snapshot: SessionSnapshot, o?: HarnessSessionsDeps) =>
+      putHarnessSession(userId, snapshot, { ...deps, ...o }),
+    deleteHarnessSession: (userId: string, o?: HarnessSessionsDeps) =>
+      deleteHarnessSession(userId, { ...deps, ...o }),
+  };
 }

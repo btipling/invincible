@@ -6,13 +6,15 @@ import {
   missingGatewayKeyError,
   parseChatBody,
 } from '../../../lib/chatServer';
-import { resolveByokForRequest } from '../../../lib/tenancy/resolveInferenceForRequest';
+import { createProdServices } from '../../../lib/di';
 import { redactSecrets } from '../../../lib/agent/redact';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
 export const maxDuration = 1800;
+
+const { resolveInferenceForRequest } = createProdServices();
 
 /**
  * Non-streaming chat via Vercel AI Gateway.
@@ -57,7 +59,10 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
     }
 
-    const byok = await resolveByokForRequest(userId, parsed.modelId);
+    const byok = await resolveInferenceForRequest.resolveByokForRequest(
+      userId,
+      parsed.modelId,
+    );
     if (!byok.ok) {
       const { status, error } = mapByokResolveFailure(byok.reason);
       return Response.json({ error }, { status });

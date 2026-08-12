@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm';
-import { createDbConnection, users, type Db } from '../../db';
+import { users, type Db } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { verifyPassword } from './password';
 
 export type AuthenticatedUser = {
@@ -9,8 +10,10 @@ export type AuthenticatedUser = {
 };
 
 export type AuthenticateDeps = {
-  /** Injected DB (tests). When omitted, opens/closes a short-lived connection. */
+  /** Injected DB (tests). */
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
 };
 
 /**
@@ -27,20 +30,21 @@ export async function authenticateCredentials(
     return null;
   }
 
-  if (deps.db) {
-    return lookupActiveUser(deps.db, email, password);
-  }
-
-  if (!process.env.DATABASE_URL?.trim()) {
+  try {
+    return await withConnection(deps, (db) =>
+      lookupActiveUser(db, email, password),
+    );
+  } catch {
     return null;
   }
+}
 
-  const { db, client } = createDbConnection();
-  try {
-    return await lookupActiveUser(db, email, password);
-  } finally {
-    await client.end({ timeout: 5 });
-  }
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createAuthenticate(deps: AuthenticateDeps = {}) {
+  return {
+    authenticateCredentials: (email: string, password: string) =>
+      authenticateCredentials(email, password, deps),
+  };
 }
 
 async function lookupActiveUser(

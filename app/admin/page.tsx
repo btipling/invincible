@@ -1,11 +1,13 @@
 import Link from 'next/link';
 import { teal, warm } from '../../lib/palette';
-import { listProviderSecretsForAdmin } from '../../lib/tenancy/providerSecrets';
-import { listUsersForAdmin } from '../../lib/tenancy/identity';
+import { createProdServices } from '../../lib/di';
 import type { AdminContext } from '../../lib/tenancy/adminContext';
 import { gateAdminPage } from './load';
 import { AdminPageShell } from './AdminPageShell';
 import { panelStyle } from './ui';
+
+/** Phase-1 DI: server component wires through the composition root. */
+const services = createProdServices();
 
 export const dynamic = 'force-dynamic';
 
@@ -27,12 +29,14 @@ async function OverviewBody({ ctx }: { ctx: AdminContext }) {
   let secretCount: number | null = null;
   let secretsError: string | null = null;
   try {
-    const roster = await listUsersForAdmin();
+    const roster = await services.identity.listUsersForAdmin();
     userCount = roster.length;
   } catch {
     userCount = 0;
   }
-  const secrets = await listProviderSecretsForAdmin(ctx.tenant.id);
+  const secrets = await services.providerSecrets.listProviderSecretsForAdmin(
+    ctx.tenant.id,
+  );
   if (secrets.ok) {
     secretCount = secrets.value.length;
   } else {

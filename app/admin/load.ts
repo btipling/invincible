@@ -1,9 +1,9 @@
 import { redirect } from 'next/navigation';
 import { auth } from '../../auth';
-import {
-  loadAdminContext,
-  type AdminContext,
-} from '../../lib/tenancy/adminContext';
+import { createProdServices } from '../../lib/di';
+import type { AdminContext } from '../../lib/tenancy/adminContext';
+
+const { adminContext } = createProdServices();
 
 export type AdminGateResult =
   | { ok: true; value: AdminContext }
@@ -21,7 +21,7 @@ export async function gateAdminPage(
     redirect(`/login?callbackUrl=${encodeURIComponent(cb)}`);
   }
 
-  const result = await loadAdminContext(session.user.id);
+  const result = await adminContext.loadAdminContext(session.user.id);
   if (!result.ok) {
     const message =
       result.reason === 'forbidden'

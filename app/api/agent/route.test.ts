@@ -12,19 +12,51 @@ import {
 describe('POST /api/agent', () => {
   const originalEnv = { ...process.env };
 
+  /**
+   * Phase-1 DI (#440): the route builds services from the composition root
+   * (`createProdServices`). Tests mock the service slices via `lib/di` and the
+   * active `servicesState`, so mocked methods intercept as they do in prod.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const servicesState: Record<string, any> = {};
+
+  function mockDi() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (servicesState as any).soleMembership = servicesState.soleMembership ?? {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (servicesState as any).resolveInferenceForRequest =
+      servicesState.resolveInferenceForRequest ?? {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (servicesState as any).userGithubToken = servicesState.userGithubToken ?? {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (servicesState as any).resolveSandbox = servicesState.resolveSandbox ?? {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (servicesState as any).userMcpServers = servicesState.userMcpServers ?? {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (servicesState as any).userSandboxInstance =
+      servicesState.userSandboxInstance ?? {};
+    vi.doMock('../../../lib/di', () => ({
+      createProdServices: () => servicesState,
+      createScriptConnection: vi.fn(),
+    }));
+  }
+
   afterEach(() => {
     process.env = { ...originalEnv };
     vi.resetModules();
+    delete servicesState.resolveInferenceForRequest;
+    delete servicesState.userGithubToken;
+    delete servicesState.resolveSandbox;
+    delete servicesState.userMcpServers;
+    delete servicesState.userSandboxInstance;
+    delete servicesState.soleMembership;
+    vi.doUnmock('../../../lib/di');
     vi.doUnmock('../../../lib/agent/runAgent');
     vi.doUnmock('../../../lib/tenancy/session');
-    vi.doUnmock('../../../lib/tenancy/resolveSandbox');
-    vi.doUnmock('../../../lib/tenancy/userGithubToken');
-    vi.doUnmock('../../../lib/tenancy/resolveInferenceForRequest');
     vi.doUnmock('../../../lib/mcp/client');
     vi.doUnmock('../../../lib/agent/vercelSandboxHttpRunner');
     vi.doUnmock('../../../lib/agent/httpFetchTools');
     vi.doUnmock('../../../lib/agent/builtinHttpConfig');
-    vi.doUnmock('../../../lib/tenancy/userSandboxInstance');
   });
 
   async function loadRoute() {
@@ -32,6 +64,7 @@ describe('POST /api/agent', () => {
   }
 
   function mockAuthedSession(userId = 'user-1') {
+    mockDi();
     vi.doMock('../../../lib/tenancy/session', () => ({
       requireSessionUser: vi.fn(async () => ({
         ok: true as const,
@@ -41,6 +74,7 @@ describe('POST /api/agent', () => {
   }
 
   function mockUnauthed() {
+    mockDi();
     vi.doMock('../../../lib/tenancy/session', () => ({
       requireSessionUser: vi.fn(async () => ({
         ok: false as const,
@@ -53,7 +87,7 @@ describe('POST /api/agent', () => {
   }
 
   function mockByokOk(overrides: Record<string, unknown> = {}) {
-    vi.doMock('../../../lib/tenancy/resolveInferenceForRequest', () => ({
+    servicesState.resolveInferenceForRequest = {
       resolveByokForRequest: vi.fn(async () => ({
         ok: true as const,
         modelId: 'anthropic/claude-a',
@@ -65,18 +99,18 @@ describe('POST /api/agent', () => {
         secretsToRedact: ['sk-byok-test'],
         ...overrides,
       })),
-    }));
+    };
   }
 
   function mockByokFail(
     reason: 'forbidden' | 'unavailable' | 'model_invalid' = 'forbidden',
   ) {
-    vi.doMock('../../../lib/tenancy/resolveInferenceForRequest', () => ({
+    servicesState.resolveInferenceForRequest = {
       resolveByokForRequest: vi.fn(async () => ({
         ok: false as const,
         reason,
       })),
-    }));
+    };
   }
 
   function mockMcpEmpty() {
@@ -120,9 +154,7 @@ describe('POST /api/agent', () => {
             },
           },
     );
-    vi.doMock('../../../lib/tenancy/userSandboxInstance', () => ({
-      loadInstance,
-    }));
+    servicesState.userSandboxInstance = { loadInstance };
     return { loadInstance };
   }
 
@@ -132,13 +164,11 @@ describe('POST /api/agent', () => {
         ? { ok: true as const, value }
         : { ok: true as const, value: null },
     );
-    vi.doMock('../../../lib/tenancy/userGithubToken', () => ({
-      decryptUserGithubTokenForServer,
-    }));
+    servicesState.userGithubToken = { decryptUserGithubTokenForServer };
     return { decryptUserGithubTokenForServer };
   }
 
-  function mockResolveSandboxOk(valueOverrides: Record<string, unknown> = {}) {
+  function mockResolveSandbox(valueOverrides: Record<string, unknown> = {}) {
     const fakeClient = {
       listDir: vi.fn(),
       readFile: vi.fn(),
@@ -147,21 +177,36 @@ describe('POST /api/agent', () => {
       close: vi.fn(async () => {}),
     };
     const resolveAgentSandbox = vi.fn(async () => ({
-      ok: true as const,
+      ok: true,
       value: {
         client: fakeClient,
         permissions: { canRead: true, canWrite: true },
         secrets: [] as string[],
         sandboxId: 'sbx-1',
         tenantId: 'ten-1',
-        backend: 'vercel' as const,
+        backend: 'vercel',
         resolvedImage: 'vercel/sandbox/universal:latest',
         baseUrl: 'http://sandbox.example',
         ...valueOverrides,
       },
     }));
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({ resolveAgentSandbox }));
+    servicesState.resolveSandbox = { resolveAgentSandbox };
     return { fakeClient, resolveAgentSandbox };
+  }
+
+  function mockResolveSandboxOk(valueOverrides: Record<string, unknown> = {}) {
+    return mockResolveSandbox(valueOverrides);
+  }
+
+  /** Set resolveAgentSandbox to a custom mock (per-test). */
+  function mockResolveSandboxWith(
+    resolver: (userId: string, deps: Record<string, unknown>) => unknown,
+  ) {
+    const resolveAgentSandbox = vi.fn(async (uid: string, ds: Record<string, unknown>) =>
+      resolver(uid, ds),
+    );
+    servicesState.resolveSandbox = { resolveAgentSandbox };
+    return { resolveAgentSandbox };
   }
 
   it('returns 500 when gateway key missing', async () => {
@@ -274,14 +319,9 @@ describe('POST /api/agent', () => {
     mockGithubToken();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
     const runAgent = vi.fn(async () => ({ text: 'nope', toolTrace: [] }));
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
-      resolveAgentSandbox: vi.fn(async () => ({
-        ok: false as const,
-        response: Response.json(
-          { error: SANDBOX_FORBIDDEN_ERROR },
-          { status: 403 },
-        ),
-      })),
+    mockResolveSandboxWith(() => ({
+      ok: false as const,
+      response: Response.json({ error: SANDBOX_FORBIDDEN_ERROR }, { status: 403 }),
     }));
     vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
 
@@ -310,7 +350,7 @@ describe('POST /api/agent', () => {
       text: 'should-not-run',
       toolTrace: [],
     }));
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+    servicesState.resolveSandbox = {
       resolveAgentSandbox: vi.fn(async () => ({
         ok: false as const,
         softContinue: true as const,
@@ -319,7 +359,7 @@ describe('POST /api/agent', () => {
           { status: 403 },
         ),
       })),
-    }));
+    };
     vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
 
     const { POST } = await import('./route');
@@ -371,7 +411,7 @@ describe('POST /api/agent', () => {
     vi.doMock('../../../lib/mcp/client', () => ({ buildUserMcpTools }));
     mockByokOk();
     mockGithubToken();
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+    servicesState.resolveSandbox = {
       resolveAgentSandbox: vi.fn(async () => ({
         ok: false as const,
         softContinue: true as const,
@@ -380,7 +420,7 @@ describe('POST /api/agent', () => {
           { status: 403 },
         ),
       })),
-    }));
+    };
     vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
 
     const { POST } = await import('./route');
@@ -432,7 +472,7 @@ describe('POST /api/agent', () => {
       text: 'from-db-sandbox',
       toolTrace: [],
     }));
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+    servicesState.resolveSandbox = {
       resolveAgentSandbox: vi.fn(async () => ({
         ok: true as const,
         value: {
@@ -444,7 +484,7 @@ describe('POST /api/agent', () => {
           baseUrl: 'http://sandbox.example',
         },
       })),
-    }));
+    };
     vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
 
     const { POST } = await import('./route');
@@ -555,9 +595,9 @@ describe('POST /api/agent', () => {
         baseUrl: 'http://sandbox.example',
       },
     }));
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+    servicesState.resolveSandbox = {
       resolveAgentSandbox,
-    }));
+    };
     vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
 
     const { POST } = await import('./route');
@@ -622,7 +662,7 @@ describe('POST /api/agent', () => {
       text: 'web only',
       toolTrace: [],
     }));
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+    servicesState.resolveSandbox = {
       resolveAgentSandbox: vi.fn(async () => ({
         ok: false as const,
         response: Response.json(
@@ -630,7 +670,7 @@ describe('POST /api/agent', () => {
           { status: 403 },
         ),
       })),
-    }));
+    };
     const createRunner = vi.fn(() => ({
       get: vi.fn(),
       close: closeHttp,
@@ -672,7 +712,7 @@ describe('POST /api/agent', () => {
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
     process.env.BUILTIN_HTTP_FETCH = 'sandbox';
     const runAgent = vi.fn(async () => ({ text: 'nope', toolTrace: [] }));
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+    servicesState.resolveSandbox = {
       resolveAgentSandbox: vi.fn(async () => ({
         ok: false as const,
         response: Response.json(
@@ -680,7 +720,7 @@ describe('POST /api/agent', () => {
           { status: 403 },
         ),
       })),
-    }));
+    };
     const createRunner = vi.fn(() => ({ get: vi.fn(), close: vi.fn() }));
     vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
       createVercelSandboxHttpRunner: createRunner,
@@ -720,7 +760,7 @@ describe('POST /api/agent', () => {
       text: 'fs only',
       toolTrace: [],
     }));
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+    servicesState.resolveSandbox = {
       resolveAgentSandbox: vi.fn(async () => ({
         ok: true as const,
         value: {
@@ -732,7 +772,7 @@ describe('POST /api/agent', () => {
           baseUrl: 'http://sandbox.example',
         },
       })),
-    }));
+    };
     const createRunner = vi.fn(() => ({
       get: vi.fn(),
       close: vi.fn(async () => {}),
@@ -777,7 +817,7 @@ describe('POST /api/agent', () => {
       toolTrace: [],
     }));
     const sandboxClient = { close: vi.fn(async () => {}) };
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+    servicesState.resolveSandbox = {
       resolveAgentSandbox: vi.fn(async () => ({
         ok: true as const,
         value: {
@@ -789,7 +829,7 @@ describe('POST /api/agent', () => {
           baseUrl: 'http://sandbox.example',
         },
       })),
-    }));
+    };
     const createRunner = vi.fn(() => ({ get: vi.fn(), close: vi.fn() }));
     vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
       createVercelSandboxHttpRunner: createRunner,
@@ -830,7 +870,7 @@ describe('POST /api/agent', () => {
       toolTrace: [],
     }));
     const sandboxClient = { close: vi.fn(async () => {}) };
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+    servicesState.resolveSandbox = {
       resolveAgentSandbox: vi.fn(async () => ({
         ok: true as const,
         value: {
@@ -842,7 +882,7 @@ describe('POST /api/agent', () => {
           baseUrl: 'http://sandbox.example',
         },
       })),
-    }));
+    };
     const createRunner = vi.fn(() => ({
       get: vi.fn(),
       close: closeHttp,
@@ -929,7 +969,7 @@ describe('POST /api/agent', () => {
       close: closeSandbox,
     };
     const runAgent = vi.fn(async () => ({ text: 'ok', toolTrace: [] }));
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+    servicesState.resolveSandbox = {
       resolveAgentSandbox: vi.fn(async () => ({
         ok: true as const,
         value: {
@@ -942,7 +982,7 @@ describe('POST /api/agent', () => {
           resolvedImage: 'vercel/sandbox/universal:latest',
         },
       })),
-    }));
+    };
     vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
 
     const { POST } = await import('./route');
@@ -973,7 +1013,7 @@ describe('POST /api/agent', () => {
       exec: vi.fn(),
       close: closeSandbox,
     };
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+    servicesState.resolveSandbox = {
       resolveAgentSandbox: vi.fn(async () => ({
         ok: true as const,
         value: {
@@ -986,7 +1026,7 @@ describe('POST /api/agent', () => {
           resolvedImage: 'vercel/sandbox/universal:latest',
         },
       })),
-    }));
+    };
     vi.doMock('../../../lib/agent/runAgent', () => ({
       runAgent: vi.fn(),
       runAgentStream: vi.fn(async (_p, handlers: { onEvent: (e: unknown) => Promise<void> }) => {
@@ -1033,7 +1073,7 @@ describe('POST /api/agent', () => {
       releaseStream = r;
     });
 
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({
+    servicesState.resolveSandbox = {
       resolveAgentSandbox: vi.fn(async () => ({
         ok: true as const,
         value: {
@@ -1046,7 +1086,7 @@ describe('POST /api/agent', () => {
           resolvedImage: 'vercel/sandbox/universal:latest',
         },
       })),
-    }));
+    };
     vi.doMock('../../../lib/agent/runAgent', () => ({
       runAgent: vi.fn(),
       runAgentStream: vi.fn(async () => {
@@ -1096,7 +1136,7 @@ describe('POST /api/agent', () => {
         resolvedImage: null,
       },
     }));
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({ resolveAgentSandbox }));
+    servicesState.resolveSandbox = { resolveAgentSandbox };
     vi.doMock('../../../lib/agent/runAgent', () => ({
       runAgent: vi.fn(async (arg: { secrets?: string[] }) => ({
         text: 'ok',
@@ -1150,7 +1190,7 @@ describe('POST /api/agent', () => {
         resolvedImage: 'img',
       },
     }));
-    vi.doMock('../../../lib/tenancy/resolveSandbox', () => ({ resolveAgentSandbox }));
+    servicesState.resolveSandbox = { resolveAgentSandbox };
     vi.doMock('../../../lib/agent/runAgent', () => ({
       runAgent: vi.fn(async () => ({ text: 'ok', toolTrace: [] })),
       runAgentStream: vi.fn(),

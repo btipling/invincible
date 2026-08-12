@@ -5,14 +5,14 @@
 import { AUTH_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
 import {
   HARNESS_SESSION_MAX_BODY_BYTES,
-  deleteHarnessSession,
-  getHarnessSession,
-  putHarnessSession,
   validateSessionSnapshot,
 } from '../../../lib/tenancy/harnessSessions';
+import { createProdServices } from '../../../lib/di';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 
 export const runtime = 'nodejs';
+
+const { harnessSessions } = createProdServices();
 
 async function requireAuthedUserId(): Promise<
   { ok: true; userId: string } | { ok: false; response: Response }
@@ -38,7 +38,7 @@ export async function GET(): Promise<Response> {
   const gate = await requireAuthedUserId();
   if (!gate.ok) return gate.response;
 
-  const result = await getHarnessSession(gate.userId);
+  const result = await harnessSessions.getHarnessSession(gate.userId);
   if (!result.ok) {
     if (result.code === 'not_found') {
       return Response.json({ error: result.error, code: 'NOT_FOUND' }, { status: 404 });
@@ -93,7 +93,10 @@ export async function PUT(req: Request): Promise<Response> {
     );
   }
 
-  const result = await putHarnessSession(gate.userId, validated.value);
+  const result = await harnessSessions.putHarnessSession(
+    gate.userId,
+    validated.value,
+  );
   if (!result.ok) {
     if (result.code === 'conflict' && result.value) {
       return Response.json(result.value, { status: 409 });
@@ -110,7 +113,7 @@ export async function DELETE(): Promise<Response> {
   const gate = await requireAuthedUserId();
   if (!gate.ok) return gate.response;
 
-  const result = await deleteHarnessSession(gate.userId);
+  const result = await harnessSessions.deleteHarnessSession(gate.userId);
   if (!result.ok) {
     return Response.json({ error: result.error }, { status: 503 });
   }

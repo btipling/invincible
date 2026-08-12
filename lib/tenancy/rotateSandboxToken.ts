@@ -7,12 +7,12 @@
  */
 import { and, eq } from 'drizzle-orm';
 import {
-  createDbConnection,
   sandboxes,
   tenantMembers,
   tenants,
   type Db,
 } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { encryptSecret } from './credentials';
 import { canRotateSandboxToken } from './roles';
 import { ensureTenantDek } from './tenantKeys';
@@ -26,6 +26,8 @@ export type RotateResult =
 
 export type RotateDeps = {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
   /** Explicit AMK for tests / inject. */
   amk?: Buffer;
   /** Override encrypt for tests: (plaintext, dek) => ciphertext */
@@ -52,19 +54,12 @@ export async function rotateSandboxToken(
     return { ok: false, reason: 'empty' };
   }
 
-  if (deps.db) {
-    return rotateWithDb(deps.db, uid, sid, token, deps);
-  }
-
-  if (!process.env.DATABASE_URL?.trim()) {
-    return { ok: false, reason: 'db' };
-  }
-
-  const { db, client } = createDbConnection();
   try {
-    return await rotateWithDb(db, uid, sid, token, deps);
-  } finally {
-    await client.end({ timeout: 5 });
+    return await withConnection(deps, (db) =>
+      rotateWithDb(db, uid, sid, token, deps),
+    );
+  } catch {
+    return { ok: false, reason: 'db' };
   }
 }
 
@@ -150,4 +145,12 @@ async function rotateWithDb(
   } catch {
     return { ok: false, reason: 'db' };
   }
+}
+
+/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+export function createRotateSandboxToken(deps: RotateDeps = {}) {
+  return {
+    rotateSandboxToken: (userId: string, sandboxId: string, newToken: string, o?: RotateDeps) =>
+      rotateSandboxToken(userId, sandboxId, newToken, { ...deps, ...o }),
+  };
 }

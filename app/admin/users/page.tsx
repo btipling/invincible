@@ -1,8 +1,11 @@
 import { ember, teal } from '../../../lib/palette';
-import { listUsersForAdmin } from '../../../lib/tenancy/identity';
+import { createProdServices } from '../../../lib/di';
 import { gateAdminPage } from '../load';
 import { AdminPageShell } from '../AdminPageShell';
 import { panelStyle, tdStyle, thStyle } from '../ui';
+
+/** Phase-1 DI: server component wires through the composition root. */
+const services = createProdServices();
 
 export const dynamic = 'force-dynamic';
 
@@ -13,10 +16,11 @@ export default async function AdminUsersPage() {
   return (
     <AdminPageShell title="Users" gate={gate}>
       {async () => {
-        let roster: Awaited<ReturnType<typeof listUsersForAdmin>> = [];
+        let roster: Awaited<ReturnType<typeof services.identity.listUsersForAdmin>> =
+          [];
         let rosterError: string | null = null;
         try {
-          roster = await listUsersForAdmin();
+          roster = await services.identity.listUsersForAdmin();
         } catch {
           roster = [];
           rosterError = 'Could not load users (database unavailable).';

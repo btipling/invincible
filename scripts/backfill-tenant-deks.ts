@@ -18,8 +18,8 @@
  *      ALLOW_TENANT_DEK_BACKFILL=1
  * Prints counts JSON only — never logs secrets.
  */
-import { createDbConnection } from '../db';
-import { backfillTenantDeks } from '../lib/tenancy/tenantKeys';
+import { createScriptConnection } from '../lib/di';
+import { createTenantKeys } from '../lib/tenancy/tenantKeys';
 
 async function main(): Promise<void> {
   if (!process.env.DATABASE_URL?.trim()) {
@@ -39,9 +39,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const { db, client } = createDbConnection();
+  const conn = createScriptConnection();
   try {
-    const result = await backfillTenantDeks({ db });
+    const result = await createTenantKeys({ db: conn.db }).backfillTenantDeks();
     console.log(
       JSON.stringify({
         tenantsUpdated: result.tenantsUpdated,
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
       }),
     );
   } finally {
-    await client.end({ timeout: 5 });
+    await conn.close();
   }
 }
 

@@ -2,20 +2,15 @@
 
 import { revalidatePath } from 'next/cache';
 import { auth } from '../../../auth';
-import { loadSoleMembership } from '../../../lib/tenancy/soleMembership';
-import {
-  setUserPreferredSandbox,
-  type UserPreferredSandboxErrorCode,
-} from '../../../lib/tenancy/userPreferredSandbox';
-import {
-  createHttp,
-  createWorkspace,
-  destroyInstance,
-  startInstance,
-  stopInstance,
-  type UserSandboxInstanceErrorCode,
-  type UserSandboxPurpose,
+import { createProdServices } from '../../../lib/di';
+import type { UserPreferredSandboxErrorCode } from '../../../lib/tenancy/userPreferredSandbox';
+import type {
+  UserSandboxInstanceErrorCode,
+  UserSandboxPurpose,
 } from '../../../lib/tenancy/userSandboxInstance';
+
+/** Phase-1 DI: server actions wire through the composition root. */
+const services = createProdServices();
 
 function revalidateSettings() {
   revalidatePath('/settings');
@@ -30,7 +25,7 @@ async function requireSettingsSession(): Promise<
   if (!userId) {
     return { ok: false, error: 'Authentication required.' };
   }
-  const membership = await loadSoleMembership(userId);
+  const membership = await services.soleMembership.loadSoleMembership(userId);
   if (!membership.ok) {
     if (membership.reason === 'ambiguous') {
       return {
@@ -128,7 +123,10 @@ export async function selectSandboxAction(
   if (!session.ok) return { error: session.error };
 
   const sandboxId = String(formData.get('sandboxId') ?? '');
-  const result = await setUserPreferredSandbox(session.userId, sandboxId);
+  const result = await services.userPreferredSandbox.setUserPreferredSandbox(
+    session.userId,
+    sandboxId,
+  );
   if (!result.ok) {
     return { error: mapPreferredError(result.code, result.error) };
   }
@@ -157,8 +155,8 @@ export async function createInstanceAction(
 
   const result =
     purpose === 'workspace'
-      ? await createWorkspace(session.userId)
-      : await createHttp(session.userId);
+      ? await services.userSandboxInstance.createWorkspace(session.userId)
+      : await services.userSandboxInstance.createHttp(session.userId);
 
   if (!result.ok) {
     return { error: mapInstanceError(result.code, result.error) };
@@ -187,7 +185,10 @@ export async function startInstanceAction(
   }
   void formData.get('userId');
 
-  const result = await startInstance(session.userId, purpose);
+  const result = await services.userSandboxInstance.startInstance(
+    session.userId,
+    purpose,
+  );
   if (!result.ok) {
     return { error: mapInstanceError(result.code, result.error) };
   }
@@ -209,7 +210,10 @@ export async function stopInstanceAction(
   }
   void formData.get('userId');
 
-  const result = await stopInstance(session.userId, purpose);
+  const result = await services.userSandboxInstance.stopInstance(
+    session.userId,
+    purpose,
+  );
   if (!result.ok) {
     return { error: mapInstanceError(result.code, result.error) };
   }
@@ -231,7 +235,10 @@ export async function destroyInstanceAction(
   }
   void formData.get('userId');
 
-  const result = await destroyInstance(session.userId, purpose);
+  const result = await services.userSandboxInstance.destroyInstance(
+    session.userId,
+    purpose,
+  );
   if (!result.ok) {
     return { error: mapInstanceError(result.code, result.error) };
   }

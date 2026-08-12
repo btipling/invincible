@@ -1,10 +1,12 @@
 import { ember, teal } from '../../../lib/palette';
-import { listProviderSecretsForAdmin } from '../../../lib/tenancy/providerSecrets';
-import { listTenantMembersForAdmin } from '../../../lib/tenancy/listTenantMembers';
+import { createProdServices } from '../../../lib/di';
 import { gateAdminPage } from '../load';
 import { AdminPageShell } from '../AdminPageShell';
 import { CreateSecretForm, SecretCard } from './InferenceForms';
 import { panelStyle } from '../ui';
+
+/** Phase-1 DI: server component wires through the composition root. */
+const services = createProdServices();
 
 export const dynamic = 'force-dynamic';
 
@@ -15,15 +17,21 @@ export default async function AdminInferencePage() {
   return (
     <AdminPageShell title="Inference keys" gate={gate}>
       {async (ctx) => {
-        let members: Awaited<ReturnType<typeof listTenantMembersForAdmin>> = [];
+        let members: Awaited<
+          ReturnType<typeof services.listTenantMembers.listTenantMembersForAdmin>
+        > = [];
         let membersError: string | null = null;
         try {
-          members = await listTenantMembersForAdmin(ctx.tenant.id);
+          members = await services.listTenantMembers.listTenantMembersForAdmin(
+            ctx.tenant.id,
+          );
         } catch {
           membersError = 'Could not load tenant members.';
         }
 
-        const secrets = await listProviderSecretsForAdmin(ctx.tenant.id);
+        const secrets = await services.providerSecrets.listProviderSecretsForAdmin(
+          ctx.tenant.id,
+        );
         if (!secrets.ok) {
           return (
             <section style={panelStyle()}>

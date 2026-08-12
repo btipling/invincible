@@ -1,13 +1,10 @@
 import { assertScimRequest } from '../../../../../../lib/tenancy/scimAuth';
-import {
-  handleScimDeleteUser,
-  handleScimGetUser,
-  handleScimPatchUser,
-  handleScimPutUser,
-} from '../../../../../../lib/tenancy/scimHandlers';
 import { scimErrorResponse } from '../../../../../../lib/tenancy/scimProtocol';
+import { createProdServices } from '../../../../../../lib/di';
 
 export const runtime = 'nodejs';
+
+const { scim } = createProdServices();
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -16,7 +13,7 @@ export async function GET(req: Request, ctx: Ctx): Promise<Response> {
   if (!gate.ok) return gate.response;
   const { id } = await ctx.params;
   if (!id?.trim()) return scimErrorResponse(400, 'id required');
-  return handleScimGetUser(req, id);
+  return scim.handleScimGetUser(req, id);
 }
 
 export async function PUT(req: Request, ctx: Ctx): Promise<Response> {
@@ -24,7 +21,7 @@ export async function PUT(req: Request, ctx: Ctx): Promise<Response> {
   if (!gate.ok) return gate.response;
   const { id } = await ctx.params;
   if (!id?.trim()) return scimErrorResponse(400, 'id required');
-  return handleScimPutUser(req, id);
+  return scim.handleScimPutUser(req, id);
 }
 
 export async function PATCH(req: Request, ctx: Ctx): Promise<Response> {
@@ -32,7 +29,7 @@ export async function PATCH(req: Request, ctx: Ctx): Promise<Response> {
   if (!gate.ok) return gate.response;
   const { id } = await ctx.params;
   if (!id?.trim()) return scimErrorResponse(400, 'id required');
-  return handleScimPatchUser(req, id);
+  return scim.handleScimPatchUser(req, id);
 }
 
 export async function DELETE(req: Request, ctx: Ctx): Promise<Response> {
@@ -40,5 +37,5 @@ export async function DELETE(req: Request, ctx: Ctx): Promise<Response> {
   if (!gate.ok) return gate.response;
   const { id } = await ctx.params;
   if (!id?.trim()) return scimErrorResponse(400, 'id required');
-  return handleScimDeleteUser(id);
+  return scim.handleScimDeleteUser(id);
 }

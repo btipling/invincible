@@ -24,6 +24,7 @@ import {
 } from '../sessions/sessionStore';
 import { RedisSessionStore } from '../sessions/redisSessionStore';
 import { loadSoleMembership } from './soleMembership';
+import { createSoleMembership } from './soleMembership';
 
 /** Stable error code when the session store cannot be used (unconfigured / unavailable). */
 export const SESSION_STORE_UNAVAILABLE = 'SESSION_STORE_UNAVAILABLE';
@@ -101,8 +102,11 @@ export async function resolveSessionStore(): Promise<ServiceResult<ServerSession
  */
 export async function resolveTenantIdForUser(
   userId: string,
+  loadMembership: { loadSoleMembership: typeof loadSoleMembership } = {
+    loadSoleMembership,
+  },
 ): Promise<ServiceResult<string>> {
-  const membership = await loadSoleMembership(userId);
+  const membership = await loadMembership.loadSoleMembership(userId);
   if (!membership.ok) {
     if (membership.reason === 'db' || membership.reason === 'ambiguous') {
       return {
@@ -114,6 +118,19 @@ export async function resolveTenantIdForUser(
     return { ok: false, code: NO_TENANT, error: 'no sole tenant membership' };
   }
   return { ok: true, value: membership.tenantId };
+}
+
+/**
+ * Factory (DI): binds the tenant-resolution seam to a soleMembership service so
+ * routes can resolve through the composition root instead of the bare function.
+ */
+export function createHarnessSessionsRedis(
+  soleMembership: { loadSoleMembership: typeof loadSoleMembership },
+) {
+  return {
+    resolveTenantIdForUser: (userId: string) =>
+      resolveTenantIdForUser(userId, soleMembership),
+  };
 }
 
 /** Caller-scoped list key for a user within their tenant. */

@@ -7,11 +7,22 @@ import {
 describe('POST /api/chat', () => {
   const originalEnv = { ...process.env };
 
+  function mockResolveByok(resolveByok: () => unknown) {
+    vi.doMock('../../../lib/di', () => ({
+      createProdServices: () => ({
+        resolveInferenceForRequest: {
+          resolveByokForRequest: vi.fn(async () => resolveByok()),
+        },
+      }),
+      createScriptConnection: vi.fn(),
+    }));
+  }
+
   afterEach(() => {
     process.env = { ...originalEnv };
     vi.resetModules();
+    vi.doUnmock('../../../lib/di');
     vi.doUnmock('../../../lib/tenancy/session');
-    vi.doUnmock('../../../lib/tenancy/resolveInferenceForRequest');
     vi.doUnmock('ai');
   });
 
@@ -98,17 +109,15 @@ describe('POST /api/chat', () => {
         user: { id: 'user-1', email: 'a@b.c' },
       })),
     }));
-    vi.doMock('../../../lib/tenancy/resolveInferenceForRequest', () => ({
-      resolveByokForRequest: vi.fn(async () => ({
-        ok: true as const,
-        modelId: 'anthropic/claude-a',
-        provider: 'anthropic',
-        credentials: { apiKey: 'sk-chat-byok' },
-        only: ['anthropic'] as [string],
-        byok: { anthropic: [{ apiKey: 'sk-chat-byok' }] },
-        secretId: 'sec-1',
-        secretsToRedact: ['sk-chat-byok'],
-      })),
+    mockResolveByok(() => ({
+      ok: true as const,
+      modelId: 'anthropic/claude-a',
+      provider: 'anthropic',
+      credentials: { apiKey: 'sk-chat-byok' },
+      only: ['anthropic'] as [string],
+      byok: { anthropic: [{ apiKey: 'sk-chat-byok' }] },
+      secretId: 'sec-1',
+      secretsToRedact: ['sk-chat-byok'],
     }));
     vi.doMock('ai', () => ({ generateText }));
 
@@ -152,11 +161,9 @@ describe('POST /api/chat', () => {
         user: { id: 'user-1', email: 'a@b.c' },
       })),
     }));
-    vi.doMock('../../../lib/tenancy/resolveInferenceForRequest', () => ({
-      resolveByokForRequest: vi.fn(async () => ({
-        ok: false as const,
-        reason: 'forbidden' as const,
-      })),
+    mockResolveByok(() => ({
+      ok: false as const,
+      reason: 'forbidden' as const,
     }));
     vi.doMock('ai', () => ({ generateText }));
 

@@ -7,12 +7,8 @@
  */
 import { randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
-import {
-  createDbConnection,
-  sandboxes,
-  tenants,
-  type Db,
-} from '../../db';
+import { sandboxes, tenants, type Db } from '../../db';
+import { withConnection, type TenancyConnection } from '../di/withConnection';
 import {
   CredentialsError,
   CURRENT_KEK_VERSION,
@@ -30,6 +26,8 @@ type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
 export type TenantKeyDeps = {
   db?: Db;
+  /** Injectable connect provider (module never constructs). */
+  connect?: () => Promise<TenancyConnection>;
   /**
    * Open transaction — when set, ensure helpers use it (no nested transaction).
    */
@@ -53,18 +51,7 @@ async function withDb<T>(
   deps: TenantKeyDeps,
   fn: (db: Db) => Promise<T>,
 ): Promise<T> {
-  if (deps.db) {
-    return fn(deps.db);
-  }
-  if (!process.env.DATABASE_URL?.trim()) {
-    throw new CredentialsError('DATABASE_URL is required');
-  }
-  const { db, client } = createDbConnection();
-  try {
-    return await fn(db);
-  } finally {
-    await client.end({ timeout: 5 });
-  }
+  return withConnection(deps, fn);
 }
 
 /** Generate a fresh 32-byte tenant DEK. */
@@ -390,4 +377,41 @@ export async function backfillTenantDeks(
 
     return { tenantsUpdated, sandboxesReencrypted };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Factory (DI). Returns the module's function surfaces with a fixed `deps`
+// closure, so callers wire the connection once at a composition root and never
+// construct in-body. Bare exports above are kept for back-compat / internal
+// cross-module calls; `createTenantKeys(deps)` is the composition-root surface.
+// ---------------------------------------------------------------------------
+export function createTenantKeys(deps: TenantKeyDeps = {}) {
+  return {
+    ensureTenantDek: (tenantId: string, overrides?: TenantKeyDeps) =>
+      ensureTenantDek(tenantId, { ...deps, ...overrides }),
+    loadTenantDek: (tenantId: string, overrides?: TenantKeyDeps) =>
+      loadTenantDek(tenantId, { ...deps, ...overrides }),
+    encryptTenantSecret: (
+      tenantId: string,
+      plaintext: string,
+      overrides?: TenantKeyDeps,
+    ) => encryptTenantSecret(tenantId, plaintext, { ...deps, ...overrides }),
+    decryptTenantSecret: (
+      tenantId: string,
+      ciphertext: string,
+      overrides?: TenantKeyDeps,
+    ) => decryptTenantSecret(tenantId, ciphertext, { ...deps, ...overrides }),
+    decryptSandboxTokenCutover: (
+      tenantId: string,
+      ciphertext: string,
+      overrides?: TenantKeyDeps,
+    ) => decryptSandboxTokenCutover(tenantId, ciphertext, { ...deps, ...overrides }),
+    decryptSandboxToken: (
+      tenantId: string,
+      ciphertext: string,
+      overrides?: TenantKeyDeps,
+    ) => decryptSandboxToken(tenantId, ciphertext, { ...deps, ...overrides }),
+    backfillTenantDeks: (overrides?: TenantKeyDeps) =>
+      backfillTenantDeks({ ...deps, ...overrides }),
+  };
 }

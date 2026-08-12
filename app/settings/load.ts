@@ -1,7 +1,9 @@
 import { redirect } from 'next/navigation';
 import { auth } from '../../auth';
-import { loadSoleMembership } from '../../lib/tenancy/soleMembership';
+import { createProdServices } from '../../lib/di';
 import type { TenantRole } from '../../lib/tenancy/roles';
+
+const { soleMembership } = createProdServices();
 
 export type SettingsContext = {
   userId: string;
@@ -32,7 +34,7 @@ export async function gateSettingsPage(
     redirect(`/login?callbackUrl=${encodeURIComponent(cb)}`);
   }
 
-  const membership = await loadSoleMembership(session.user.id);
+  const membership = await soleMembership.loadSoleMembership(session.user.id);
   if (!membership.ok) {
     const message =
       membership.reason === 'no_membership'

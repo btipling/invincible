@@ -6,18 +6,40 @@ describe('GET /api/models', () => {
   afterEach(() => {
     process.env = { ...originalEnv };
     vi.resetModules();
+    vi.doUnmock('../../../lib/di');
     vi.doUnmock('../../../lib/tenancy/session');
-    vi.doUnmock('../../../lib/tenancy/resolveInference');
   });
+
+  function mockResolveInference(listModelsForUser = vi.fn(async () => [])) {
+    vi.doMock('../../../lib/di', () => ({
+      createProdServices: () => ({
+        resolveInference: { listModelsForUser },
+      }),
+      createScriptConnection: vi.fn(),
+    }));
+    return listModelsForUser;
+  }
+
+  function mockSession(
+    result:
+      | { ok: true; user: { id: string; email?: string } }
+      | { ok: false; response: Response },
+  ) {
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => result),
+    }));
+  }
 
   it('unauthenticated → 401', async () => {
     vi.resetModules();
-    vi.doMock('../../../lib/tenancy/session', () => ({
-      requireSessionUser: vi.fn(async () => ({
-        ok: false,
-        response: Response.json({ error: 'Authentication required.' }, { status: 401 }),
-      })),
-    }));
+    mockSession({
+      ok: false,
+      response: Response.json(
+        { error: 'Authentication required.' },
+        { status: 401 },
+      ),
+    });
+    mockResolveInference();
     const { GET } = await import('./route');
     const res = await GET();
     expect(res.status).toBe(401);
@@ -25,12 +47,8 @@ describe('GET /api/models', () => {
 
   it('authed without user id → 401', async () => {
     vi.resetModules();
-    vi.doMock('../../../lib/tenancy/session', () => ({
-      requireSessionUser: vi.fn(async () => ({
-        ok: true,
-        user: null,
-      })),
-    }));
+    mockSession({ ok: true, user: { id: '' } });
+    mockResolveInference();
     const { GET } = await import('./route');
     const res = await GET();
     expect(res.status).toBe(401);
@@ -38,15 +56,10 @@ describe('GET /api/models', () => {
 
   it('returns grant-filtered catalog', async () => {
     vi.resetModules();
-    vi.doMock('../../../lib/tenancy/session', () => ({
-      requireSessionUser: vi.fn(async () => ({
-        ok: true,
-        user: { id: 'u1', email: 'a@t.com' },
-      })),
-    }));
-    vi.doMock('../../../lib/tenancy/resolveInference', () => ({
-      listModelsForUser: vi.fn(async () => ['anthropic/claude-z', 'anthropic/claude-a']),
-    }));
+    mockSession({ ok: true, user: { id: 'u1', email: 'a@t.com' } });
+    mockResolveInference(
+      vi.fn(async () => ['anthropic/claude-z', 'anthropic/claude-a']),
+    );
     const { GET } = await import('./route');
     const res = await GET();
     expect(res.status).toBe(200);
@@ -59,15 +72,8 @@ describe('GET /api/models', () => {
 
   it('empty grant list → empty catalog', async () => {
     vi.resetModules();
-    vi.doMock('../../../lib/tenancy/session', () => ({
-      requireSessionUser: vi.fn(async () => ({
-        ok: true,
-        user: { id: 'u1', email: 'a@t.com' },
-      })),
-    }));
-    vi.doMock('../../../lib/tenancy/resolveInference', () => ({
-      listModelsForUser: vi.fn(async () => []),
-    }));
+    mockSession({ ok: true, user: { id: 'u1', email: 'a@t.com' } });
+    mockResolveInference();
     const { GET } = await import('./route');
     const res = await GET();
     expect(res.status).toBe(200);
@@ -77,17 +83,12 @@ describe('GET /api/models', () => {
 
   it('resolve failure → 503', async () => {
     vi.resetModules();
-    vi.doMock('../../../lib/tenancy/session', () => ({
-      requireSessionUser: vi.fn(async () => ({
-        ok: true,
-        user: { id: 'u1', email: 'a@t.com' },
-      })),
-    }));
-    vi.doMock('../../../lib/tenancy/resolveInference', () => ({
-      listModelsForUser: vi.fn(async () => {
+    mockSession({ ok: true, user: { id: 'u1', email: 'a@t.com' } });
+    mockResolveInference(
+      vi.fn(async () => {
         throw new Error('db down');
       }),
-    }));
+    );
     const { GET } = await import('./route');
     const res = await GET();
     expect(res.status).toBe(503);
