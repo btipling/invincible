@@ -123,6 +123,7 @@ Load from **this repo** via `gh` (not generic template skills). Zero-search:
 | **plan-review** | `.grok/skills/plan-review/SKILL.md` (+ `LOAD.md`, `references/*`) | Review a plan **issue**; default edit issue body via `gh`; scores cloud ops + living docs |
 | **adversarial-review** | `.grok/skills/adversarial-review/SKILL.md` (+ `LOAD.md`, `references/*`) | Hostile **PR** review; break scenarios; post comment via `gh` |
 | **cleanup-sandbox** | `.grok/skills/cleanup-sandbox/SKILL.md` (+ `LOAD.md`) | Post-session hygiene: checkout + pull latest `main`, delete leftover local branches / agent scratch; **refuses** to discard current uncommitted work without explicit operator consent |
+| **implement-plan** | `.grok/skills/implement-plan/SKILL.md` (+ `LOAD.md`) | Code a reviewed plan into a **non-merged PR** + tests; canonical test/build workflow (`npm run typecheck`, `node run-tests.mjs`), in-sandbox exec rules, layer ownership, code standards |
 
 Index: [`.grok/skills/README.md`](.grok/skills/README.md).
 
