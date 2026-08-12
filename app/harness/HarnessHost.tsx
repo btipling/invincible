@@ -24,15 +24,21 @@ import {
 } from '../../lib/sessionStore';
 import {
   createHttpSessionRepository,
-  shouldAdoptServer,
-  type SessionRepository,
+  type IdSessionRepository,
+  type SessionSummary,
 } from '../../lib/sessionRepository';
+import {
+  bootCloudSession,
+  readUrlSessionId,
+  shouldAdoptBootServer,
+} from '../../lib/sessionBoot';
 import {
   canLoadEarlier as sessionCanLoadEarlier,
   earlierRingStart,
   latestRingStart,
 } from '../../lib/sessionWindow';
 import AppNav from '../components/AppNav';
+import SessionPicker from '../components/SessionPicker';
 import HarnessLoading from './HarnessLoading';
 
 type Phase = 'loading' | 'ready' | 'error';
@@ -145,11 +151,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bridgeRef = useRef<HarnessBridge | null>(null);
   const storeRef = useRef<SessionStore | null>(null);
-  /** Cloud multi-device session repo (phase #244); disabled on 401. */
-  const repoRef = useRef<SessionRepository | null>(null);
+  /** Cloud multi-session repo (phase 3, #415); disabled on 401 / Redis-off. */
+  const repoRef = useRef<IdSessionRepository | null>(null);
   const pollRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const inflightRef = useRef(false);
+  /** Server id to bind once the in-flight turn finishes (boot mint mid-turn), #430. */
+  const pendingMintBindRef = useRef<string | null>(null);
   const sessionRef = useRef<SessionSnapshot>(createEmptySession());
   /** Oldest session.messages index currently hydrated into the Wasm ring. */
   const ringWindowStartRef = useRef(0);
@@ -167,6 +175,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const [modelChip, setModelChip] = useState<string>('…');
   /** Wasm build id from public/harness/build-id.txt — stale-cache detector. */
   const [harnessBuildId, setHarnessBuildId] = useState<string>('');
+  /** Cloud session summaries for the picker (no transcripts). */
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  /** Canonical active session id (= `SessionSnapshot.id`, server-minted when cloud). */
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  /** False once the cloud repo reports disabled (401 / Redis-off) → picker hides. */
+  const [cloudEnabled, setCloudEnabled] = useState(true);
 
   const hydrateRingWindow = useCallback(
     (bridge: HarnessBridge, session: SessionSnapshot, windowStart: number) => {
@@ -205,11 +219,42 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     [writeLocalSession, hydrateRingWindow],
   );
 
+  /** Persist the active session id into the URL `?s=` (no new history entry). */
+  const setUrlSessionId = useCallback((id: string | null) => {
+    try {
+      const url = new URL(window.location.href);
+      if (id && id.length > 0) url.searchParams.set('s', id);
+      else url.searchParams.delete('s');
+      window.history.replaceState(null, '', url.toString());
+    } catch {
+      /* SSR/tests may lack full URL support — ignore */
+    }
+  }, []);
+
+  /** Refresh the picker's session summary list from the cloud repo. */
+  const refreshSessions = useCallback(async () => {
+    const repo = repoRef.current;
+    if (!repo) return;
+    const res = await repo.list();
+    if (res.action === 'ok') setSessions(res.sessions);
+    else if (res.action === 'disabled') setCloudEnabled(false);
+  }, []);
+
+  /** Activate a session (canonical id) on local state + Wasm ring + URL + picker. */
+  const activateSession = useCallback(
+    (next: SessionSnapshot) => {
+      adoptCloudSession(next);
+      setActiveSessionId(next.id);
+      void refreshSessions();
+    },
+    [adoptCloudSession, refreshSessions],
+  );
+
   const persist = useCallback(
     (next: SessionSnapshot) => {
       writeLocalSession(next);
-      // Hybrid cloud push — never blocks the turn; coalesced in repository.
-      repoRef.current?.schedulePush(next);
+      // Hybrid cloud push — never blocks the turn; coalesced per session in repo.
+      repoRef.current?.put(next.id, next);
     },
     [writeLocalSession],
   );
@@ -267,9 +312,27 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       } finally {
         inflightRef.current = false;
         setBusy(false);
+        // Boot mint landed mid-turn (#430): the bridge was streaming so we did NOT
+        // re-hydrate the ring. Restore the transcript the turn just persisted, rebind
+        // the server UUID and URL/active id only now that the turn is done, then push
+        // the carried-over history to the real resource.
+        const pendingId = pendingMintBindRef.current;
+        if (pendingId) {
+          pendingMintBindRef.current = null;
+          const bound = { ...sessionRef.current, id: pendingId };
+          // Persist the transcript under the real server-minted id NOW — not only as a
+          // fire-and-forget PUT. A reload here must restore under the id the URL advertises
+          // (#430 re-review): otherwise localStorage would still say sess_X while `?s=` says
+          // the fresh uuid, and boot's get(uuid) (the empty minted row) would adopt/wipe the
+          // first-turn dialogue instead of keeping it.
+          writeLocalSession(bound);
+          setActiveSessionId(pendingId);
+          setUrlSessionId(pendingId);
+          repoRef.current?.put(pendingId, bound);
+        }
       }
     },
-    [persist],
+    [persist, setUrlSessionId, writeLocalSession],
   );
 
   useEffect(() => {
@@ -289,8 +352,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             if (cancelled) return;
             // Never clobber an in-flight turn's session/ring mid-stream.
             if (inflightRef.current) return;
-            // Defense in depth: repository already re-checks getLocal.
-            if (!shouldAdoptServer(sessionRef.current, snap)) return;
+            // Identity guard (#430): a put-409 body is the server snapshot of the session
+            // that PUT targeted; if the user switched to a different active session while
+            // the network round-trip was in flight, do NOT adopt it into the UI. The repo
+            // re-checks getLocal, but this host guard is authoritative for the active id.
+            if (snap.id !== sessionRef.current.id) return;
             adoptCloudSession(snap);
           },
         });
@@ -365,8 +431,64 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           bridge.pushMessage(MessageKind.System, systemLine);
         }
 
-        // Cloud pull must not gate first paint — fire-and-forget after local hydrate.
-        void repo.pull(sessionRef.current);
+        // Cloud multi-session boot (phase 3, #415): mint the first session / pin
+        // `?s=` / adopt a bound local id — async AFTER local first paint so nothing
+        // blocks. A gone `?s=` falls back to local/empty first paint, never blank.
+        // Repo disabled (401 / Redis-off / tenancy-off) → local-only.
+        void (async () => {
+          const r = repoRef.current;
+          if (!r) return;
+          const result = await bootCloudSession({
+            repo: r,
+            urlId: readUrlSessionId(window.location.href),
+            localId: sessionRef.current.id,
+            onAdopt: (serverSnap, id) => {
+              if (cancelled) return;
+              if (inflightRef.current) return;
+              // LWW guard for the boot-pin path (re-review #430 pass 3): the server row
+              // can be the EMPTY mint (`updatedAt: 0`) while local holds dialogue under
+              // the SAME id that a still-in-flight put() hasn't flushed yet. If the server
+              // doesn't win LWW, keep the local transcript (it's already in the ring) and
+              // push it to the cloud so a reload stops re-serving the empty mint over it.
+              // bootCloudSession pins ?s=id either way.
+              const local = sessionRef.current;
+              if (!shouldAdoptBootServer(local, serverSnap)) {
+                setActiveSessionId(id);
+                repoRef.current?.put(id, local);
+                return;
+              }
+              activateSession({ ...serverSnap, id });
+            },
+            onMint: (createdSnap, id) => {
+              if (cancelled) return;
+              const existing = sessionRef.current;
+              const hasDialogue = existing.messages.some(
+                (m) => m.role === 'user' || m.role === 'assistant',
+              );
+              // First paint won: preserve any local transcript on this initial bind;
+              // otherwise the empty minted session. Always bind the server UUID.
+              const merged = hasDialogue ? { ...existing, id } : { ...createdSnap, id };
+              if (inflightRef.current) {
+                // Mid-turn (#430): do NOT hydrate the Wasm ring now — that would wipe
+                // partial assistant/thinking that only lives on the bridge. Defer the id
+                // bind until the turn finishes; runPrompt applies it in finally. Return
+                // 'deferred' so bootCloudSession skips the `?s=` pin too: never advertise
+                // the empty minted row as canonical before it's actually bound.
+                pendingMintBindRef.current = id;
+                return 'deferred';
+              }
+              activateSession(merged);
+              r.put(id, merged); // persist any carried-over local history
+              return 'bound';
+            },
+            onUrlUpdate: (id) => setUrlSessionId(id),
+          });
+          // Only hide the picker when the repo is actually disabled (401 / Redis-off);
+          // a transient 5xx/network error during boot keeps the cloud UI live so a reload
+          // or refresh can recover — don't permanently strand local-only this page load.
+          if (result.kind === 'local') setCloudEnabled(r.enabled);
+          void refreshSessions();
+        })();
 
         setLoadMs(Math.round(performance.now() - loadStarted.current));
         setLifecycle(lifecycleName(Lifecycle.Ready));
@@ -431,31 +553,98 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       bridgeRef.current = null;
       repoRef.current = null;
     };
-  }, [runPrompt, hydrateRingWindow, adoptCloudSession]);
+  }, [
+    runPrompt,
+    hydrateRingWindow,
+    adoptCloudSession,
+    activateSession,
+    refreshSessions,
+    setUrlSessionId,
+  ]);
 
   const onClear = useCallback(() => {
     if (inflightRef.current) return;
     abortRef.current?.abort();
-    const empty = createEmptySession();
-    // Local only — never schedulePush empty. Cloud clear is DELETE.
-    writeLocalSession(empty);
-    storeRef.current?.clear();
-    storeRef.current?.save(empty);
-    void repoRef.current?.remove();
+    const repo = repoRef.current;
     const bridge = bridgeRef.current;
-    if (bridge) {
-      resetHarnessImageSession();
-      resetHarnessMathSession();
-      ringWindowStartRef.current = 0;
-      bridge.setCanLoadEarlier(false);
-      bridge.clearMessages();
-      bridge.pushMessage(MessageKind.System, 'Session cleared.');
-      bridge.setLifecycle(Lifecycle.Ready);
+    const clearedId = sessionRef.current.id;
+
+    const resetBridge = (id: string) => {
+      // Local only — never PUT empty. Cloud clear = DELETE this session + mint new.
+      const empty = createEmptySession(id);
+      writeLocalSession(empty);
+      setActiveSessionId(id);
+      storeRef.current?.clear();
+      storeRef.current?.save(empty);
+      if (bridge) {
+        resetHarnessImageSession();
+        resetHarnessMathSession();
+        ringWindowStartRef.current = 0;
+        bridge.setCanLoadEarlier(false);
+        bridge.clearMessages();
+        bridge.pushMessage(MessageKind.System, 'Session cleared.');
+        bridge.setLifecycle(Lifecycle.Ready);
+      }
+      setHostNote(null);
+      setLifecycle(lifecycleName(Lifecycle.Ready));
+      canvasRef.current?.focus();
+    };
+
+    if (!repo || !repo.enabled) {
+      // Disable-safe: plain local Clear (today's behavior), no cloud DELETE.
+      resetBridge(createEmptySession().id);
+      setUrlSessionId(null);
+      return;
     }
-    setHostNote(null);
-    setLifecycle(lifecycleName(Lifecycle.Ready));
-    canvasRef.current?.focus();
-  }, [writeLocalSession]);
+
+    void (async () => {
+      // Clear = clear THIS session only (DELETE one); other sessions survive.
+      await repo.remove(clearedId);
+      // Post-Clear active session is server-minted (parent #415 lock): the next
+      // turn PUTs against a real resource, never a throwaway local sess_ id.
+      const created = await repo.create();
+      if (created.action === 'ok') {
+        resetBridge(created.snapshot.id);
+        setUrlSessionId(created.snapshot.id);
+      } else {
+        resetBridge(createEmptySession().id);
+        setUrlSessionId(null);
+      }
+      void refreshSessions();
+    })();
+  }, [writeLocalSession, refreshSessions, setUrlSessionId]);
+
+  const onNewSession = useCallback(() => {
+    const repo = repoRef.current;
+    if (!repo || !repo.enabled || inflightRef.current) return;
+    abortRef.current?.abort();
+    void (async () => {
+      const created = await repo.create();
+      if (created.action !== 'ok') return; // stay on the current session
+      const empty = createEmptySession(created.snapshot.id);
+      activateSession(empty);
+      setUrlSessionId(created.snapshot.id);
+      repo.put(created.snapshot.id, empty);
+    })();
+  }, [activateSession, setUrlSessionId]);
+
+  const onSwitchSession = useCallback(
+    (id: string) => {
+      const repo = repoRef.current;
+      const bridge = bridgeRef.current;
+      if (!repo || !repo.enabled || !bridge || inflightRef.current) return;
+      if (id === sessionRef.current.id) return;
+      abortRef.current?.abort();
+      void (async () => {
+        const got = await repo.get(id);
+        if (got.action !== 'ok') return; // 404/gone stays on current local session (never blank)
+        // Adopt the server transcript; canonical id = fetched id.
+        activateSession(got.snapshot);
+        setUrlSessionId(id);
+      })();
+    },
+    [activateSession, setUrlSessionId],
+  );
 
   // Single always-mounted canvas — never unmount across phase changes.
   const canvasNode = (
@@ -569,6 +758,16 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                 {phase === 'ready' && (busy ? 'thinking…' : `ready · ${lifecycle}`)}
                 {phase === 'error' && 'error'}
               </span>
+              {phase === 'ready' && (
+                <SessionPicker
+                  sessions={sessions}
+                  currentId={activeSessionId}
+                  hidden={!cloudEnabled}
+                  disabled={busy}
+                  onNew={onNewSession}
+                  onSwitch={onSwitchSession}
+                />
+              )}
               {phase === 'ready' && (
                 <button
                   type="button"

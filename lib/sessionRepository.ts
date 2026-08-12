@@ -1,6 +1,16 @@
 /**
- * Async cloud session repository.
+ * Async cloud session repository — id-shaped multi-session (phase 3, #415).
  * Client-safe — no Node/db imports. Host uses hybrid local SessionStore + this.
+ *
+ * #415 parent locks absorbed here:
+ *  - **Canonical identity**: the persisted `SessionSnapshot.id` IS the server-minted
+ *    session UUID; the repository key, the URL `?s=`, and the resource `:id` are all
+ *    the same id. `put(id, snap)` fails closed when `snap.id !== id`.
+ *  - **Per-session** coalesced single-in-flight PUT + epoch guard so Clear
+ *    (remove) can never resurrect a cleared row.
+ *  - 401 disables the whole repo (re-auth); missing Redis / tenancy-off → disabled.
+ *  - `get` 404 → `notfound` so the host falls back to local/empty first paint,
+ *    never blank.
  */
 import {
   HARNESS_SESSION_MAX_BODY_BYTES,
@@ -10,45 +20,72 @@ import type { SessionMessage, SessionRole, SessionSnapshot } from './sessionStor
 
 const SESSION_ROLES = new Set<SessionRole>(['user', 'assistant', 'system', 'error', 'tool_run']);
 
-const DEFAULT_PATH = '/api/session';
+const DEFAULT_PATH = '/api/sessions';
 
 export type SessionFetchFn = (
   input: RequestInfo | URL,
   init?: RequestInit,
 ) => Promise<Response>;
 
-export type CloudPullResult =
-  | { action: 'noop' }
+/** Light summary from `GET /api/sessions` — **no transcripts** (parent #411). */
+export type SessionSummary = {
+  id: string;
+  createdAt?: number;
+  updatedAt?: number;
+  title?: string;
+};
+
+export type CloudListResult =
+  | { action: 'ok'; sessions: SessionSummary[] }
   | { action: 'disabled' }
-  | { action: 'adopt'; snapshot: SessionSnapshot }
   | { action: 'error'; status: number; message: string };
 
-export type CloudPushResult =
+export type CloudGetResult =
+  | { action: 'ok'; snapshot: SessionSnapshot }
+  | { action: 'disabled' }
+  | { action: 'notfound' }
+  | { action: 'error'; status: number; message: string };
+
+export type CloudCreateResult =
+  | { action: 'ok'; snapshot: SessionSnapshot }
+  | { action: 'disabled' }
+  | { action: 'error'; status: number; message: string };
+
+/** Result of a coalesced PUT for a specific session id. */
+export type CloudPutResult =
   | { action: 'ok'; snapshot: SessionSnapshot }
   | { action: 'adopt'; snapshot: SessionSnapshot }
   | { action: 'disabled' }
   | { action: 'error'; status: number; message: string };
 
-export type SessionRepository = {
+export type IdSessionRepository = {
   /** False after 401 for this page load. */
   readonly enabled: boolean;
-  pull(local: SessionSnapshot): Promise<CloudPullResult>;
-  /** Coalesced fire-and-forget PUT of latest snapshot. */
-  schedulePush(snapshot: SessionSnapshot): void;
-  /** DELETE only — never PUT empty. Invalidates in-flight PUTs. */
-  remove(): Promise<void>;
+  /** Fetch one full session record (404 → `notfound`). */
+  get(id: string): Promise<CloudGetResult>;
+  /** Fire-and-forget coalesced PUT (per session id; one in-flight PUT per id). */
+  put(id: string, snapshot: SessionSnapshot): void;
+  /** List the caller's sessions as light summaries. */
+  list(): Promise<CloudListResult>;
+  /** Mint a new server-side UUID session (POST /api/sessions). */
+  create(opts?: { title?: string }): Promise<CloudCreateResult>;
+  /** Mint the very first server session on mount; alias of create(). */
+  createFirst(): Promise<CloudCreateResult>;
+  /** DELETE one session; invalidates any in-flight PUT for that id. */
+  remove(id: string): Promise<void>;
 };
 
 export type HttpSessionRepositoryOptions = {
   fetchImpl?: SessionFetchFn;
   path?: string;
-  /** Called when server body should replace local (pull adopt or 409). */
+  /** Called when a server body should replace local (put adopt). */
   onAdopt?: (snapshot: SessionSnapshot) => void;
   /**
-   * Live local snapshot for adopt decisions after network returns.
-   * Without this, pull/409 can clobber turns that landed during the round-trip.
+   * Live local snapshot (for the active session) for adopt decisions after the
+   * network returns. Without this, a 409/put-adopt can clobber turns that landed
+   * during the round-trip.
    */
-  getLocal?: () => SessionSnapshot;
+  getLocal?: () => SessionSnapshot | null;
 };
 
 const textEncoder = new TextEncoder();
@@ -94,13 +131,18 @@ export function shouldAdoptServer(
 }
 
 /**
- * Parse GET/PUT/409 JSON into a cloud SessionSnapshot (no cwd).
- * Returns null if shape invalid.
+ * Parse a server GET/PUT/409 record body into a cloud `SessionSnapshot` (no cwd,
+ * no tenant/user/createdAt/meta). Returns null if shape invalid, or if the record's
+ * `id` does not match the resource id it was requested under (confused-deputy guard).
  */
-export function parseCloudSessionSnapshot(body: unknown): SessionSnapshot | null {
+export function parseCloudSessionSnapshot(
+  body: unknown,
+  expectedId?: string,
+): SessionSnapshot | null {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) return null;
   const o = body as Record<string, unknown>;
   if (typeof o.id !== 'string' || !o.id) return null;
+  if (expectedId !== undefined && o.id !== expectedId) return null;
   if (typeof o.updatedAt !== 'number' || !Number.isFinite(o.updatedAt)) return null;
   if (!Array.isArray(o.messages)) return null;
   const messages: SessionMessage[] = [];
@@ -125,6 +167,30 @@ export function parseCloudSessionSnapshot(body: unknown): SessionSnapshot | null
     updatedAt: o.updatedAt,
     messages,
   };
+}
+
+/** Parse one `GET /api/sessions` summary row; null if invalid. */
+export function parseSessionSummary(body: unknown): SessionSummary | null {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return null;
+  const o = body as Record<string, unknown>;
+  if (typeof o.id !== 'string' || !o.id) return null;
+  const s: SessionSummary = { id: o.id };
+  if (typeof o.createdAt === 'number' && Number.isFinite(o.createdAt)) s.createdAt = o.createdAt;
+  if (typeof o.updatedAt === 'number' && Number.isFinite(o.updatedAt)) s.updatedAt = o.updatedAt;
+  if (typeof o.title === 'string' && o.title.length > 0) s.title = o.title;
+  return s;
+}
+
+/** Parse the `GET /api/sessions` list body; null if any row is invalid. */
+export function parseSessionSummaryList(body: unknown): SessionSummary[] | null {
+  if (!Array.isArray(body)) return null;
+  const out: SessionSummary[] = [];
+  for (const item of body) {
+    const s = parseSessionSummary(item);
+    if (!s) return null;
+    out.push(s);
+  }
+  return out;
 }
 
 function cloudBodyBytes(snapshot: SessionSnapshot): number {
@@ -199,33 +265,35 @@ export function trimForCloudPut(snapshot: SessionSnapshot): SessionSnapshot {
 
 export function createHttpSessionRepository(
   opts: HttpSessionRepositoryOptions = {},
-): SessionRepository {
+): IdSessionRepository {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const path = opts.path ?? DEFAULT_PATH;
   let enabled = true;
-  let inflight = false;
-  let pending: SessionSnapshot | null = null;
-  /** Bumped on remove() so in-flight PUTs cannot resurrect a cleared row. */
-  let epoch = 0;
+
+  /** Per-session put channel: coalesced pending + in-flight + epoch guard. */
+  type Channel = { pending: SessionSnapshot | null; inflight: boolean; epoch: number };
+  const channels = new Map<string, Channel>();
+  function channel(id: string): Channel {
+    let c = channels.get(id);
+    if (!c) {
+      c = { pending: null, inflight: false, epoch: 0 };
+      channels.set(id, c);
+    }
+    return c;
+  }
 
   function disable() {
     enabled = false;
-    pending = null;
+    channels.clear();
   }
 
-  function liveLocal(fallback: SessionSnapshot): SessionSnapshot {
+  function liveLocal(fallback: SessionSnapshot | null): SessionSnapshot | null {
     return opts.getLocal?.() ?? fallback;
   }
 
-  function maybeAdopt(server: SessionSnapshot, fallbackLocal: SessionSnapshot): boolean {
-    if (!shouldAdoptServer(liveLocal(fallbackLocal), server)) return false;
-    opts.onAdopt?.(server);
-    return true;
-  }
-
-  async function deleteOnce(): Promise<void> {
+  async function deleteOne(id: string): Promise<void> {
     try {
-      const res = await fetchImpl(path, {
+      const res = await fetchImpl(`${path}/${encodeURIComponent(id)}`, {
         method: 'DELETE',
         credentials: 'same-origin',
       });
@@ -239,7 +307,38 @@ export function createHttpSessionRepository(
     }
   }
 
-  async function pull(local: SessionSnapshot): Promise<CloudPullResult> {
+  async function get(id: string): Promise<CloudGetResult> {
+    if (!enabled) return { action: 'disabled' };
+    try {
+      const res = await fetchImpl(`${path}/${encodeURIComponent(id)}`, {
+        method: 'GET',
+        credentials: 'same-origin',
+      });
+      if (res.status === 401) {
+        disable();
+        return { action: 'disabled' };
+      }
+      if (res.status === 404) {
+        return { action: 'notfound' };
+      }
+      if (!res.ok) {
+        return {
+          action: 'error',
+          status: res.status,
+          message: `Session pull failed (${res.status}).`,
+        };
+      }
+      const parsed = parseCloudSessionSnapshot(await res.json(), id);
+      if (!parsed) {
+        return { action: 'error', status: res.status, message: 'Invalid session body.' };
+      }
+      return { action: 'ok', snapshot: parsed };
+    } catch {
+      return { action: 'error', status: 0, message: 'Network error pulling session.' };
+    }
+  }
+
+  async function list(): Promise<CloudListResult> {
     if (!enabled) return { action: 'disabled' };
     try {
       const res = await fetchImpl(path, {
@@ -250,39 +349,68 @@ export function createHttpSessionRepository(
         disable();
         return { action: 'disabled' };
       }
-      if (res.status === 404) {
-        // NOT_FOUND — empty cloud
-        return { action: 'noop' };
+      if (!res.ok) {
+        return {
+          action: 'error',
+          status: res.status,
+          message: `Session list failed (${res.status}).`,
+        };
+      }
+      const parsed = parseSessionSummaryList(await res.json());
+      if (!parsed) {
+        return { action: 'error', status: res.status, message: 'Invalid session list body.' };
+      }
+      return { action: 'ok', sessions: parsed };
+    } catch {
+      return { action: 'error', status: 0, message: 'Network error listing sessions.' };
+    }
+  }
+
+  async function create(opts?: { title?: string }): Promise<CloudCreateResult> {
+    if (!enabled) return { action: 'disabled' };
+    try {
+      const payload = opts?.title ? JSON.stringify({ title: opts.title }) : null;
+      const res = await fetchImpl(path, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: payload ? { 'content-type': 'application/json' } : undefined,
+        body: payload ?? undefined,
+      });
+      if (res.status === 401) {
+        disable();
+        return { action: 'disabled' };
       }
       if (!res.ok) {
         return {
           action: 'error',
           status: res.status,
-          message: `Session pull failed (${res.status}).`,
+          message: `Session create failed (${res.status}).`,
         };
       }
       const parsed = parseCloudSessionSnapshot(await res.json());
       if (!parsed) {
         return { action: 'error', status: res.status, message: 'Invalid session body.' };
       }
-      // Re-check live local after the round-trip so a concurrent turn is not wiped.
-      if (maybeAdopt(parsed, local)) {
-        return { action: 'adopt', snapshot: parsed };
-      }
-      return { action: 'noop' };
+      return { action: 'ok', snapshot: parsed };
     } catch {
-      return { action: 'error', status: 0, message: 'Network error pulling session.' };
+      return { action: 'error', status: 0, message: 'Network error creating session.' };
     }
   }
 
+  async function createFirst(): Promise<CloudCreateResult> {
+    return create();
+  }
+
   async function putOnce(
+    id: string,
     snapshot: SessionSnapshot,
-    putEpoch: number,
-  ): Promise<CloudPushResult> {
-    if (!enabled || putEpoch !== epoch) return { action: 'disabled' };
+    scheduledEpoch: number,
+    c: Channel,
+  ): Promise<CloudPutResult> {
+    if (!enabled || snapshot.id !== id) return { action: 'disabled' };
     const body = trimForCloudPut(snapshot);
     try {
-      const res = await fetchImpl(path, {
+      const res = await fetchImpl(`${path}/${encodeURIComponent(id)}`, {
         method: 'PUT',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
@@ -293,8 +421,8 @@ export function createHttpSessionRepository(
         }),
       });
       // Clear raced this PUT — server may have re-upserted; DELETE again.
-      if (putEpoch !== epoch) {
-        await deleteOnce();
+      if (c.epoch !== scheduledEpoch) {
+        await deleteOne(id);
         return { action: 'disabled' };
       }
       if (res.status === 401) {
@@ -309,9 +437,9 @@ export function createHttpSessionRepository(
         };
       }
       if (res.status === 409) {
-        const parsed = parseCloudSessionSnapshot(await res.json());
-        if (putEpoch !== epoch) {
-          await deleteOnce();
+        const parsed = parseCloudSessionSnapshot(await res.json(), id);
+        if (c.epoch !== scheduledEpoch) {
+          await deleteOne(id);
           return { action: 'disabled' };
         }
         if (parsed && maybeAdopt(parsed, snapshot)) {
@@ -332,9 +460,9 @@ export function createHttpSessionRepository(
           message: `Session push failed (${res.status}).`,
         };
       }
-      const parsed = parseCloudSessionSnapshot(await res.json());
-      if (putEpoch !== epoch) {
-        await deleteOnce();
+      const parsed = parseCloudSessionSnapshot(await res.json(), id);
+      if (c.epoch !== scheduledEpoch) {
+        await deleteOne(id);
         return { action: 'disabled' };
       }
       return {
@@ -342,53 +470,75 @@ export function createHttpSessionRepository(
         snapshot: parsed ?? body,
       };
     } catch {
-      if (putEpoch !== epoch) {
+      if (c.epoch !== scheduledEpoch) {
         // Best-effort: PUT may have landed after clear.
-        await deleteOnce();
+        await deleteOne(id);
       }
       return { action: 'error', status: 0, message: 'Network error pushing session.' };
     }
   }
 
-  async function drainPush() {
-    if (inflight) return;
-    inflight = true;
+  function maybeAdopt(server: SessionSnapshot, fallbackLocal: SessionSnapshot): boolean {
+    const live = liveLocal(fallbackLocal);
+    if (!live) return false;
+    // Identity guard (adversarial review #430): this 409 body is a server snapshot of
+    // the SESSION THIS PUT TARGETED (== fallbackLocal.id). The live active session may
+    // be a *different* one if the user switched during the network round-trip. Never
+    // adopt a server body for one session into the active UI slot — the live session's
+    // id must exactly match the server session's id (and the put resource id).
+    if (live.id !== server.id) return false;
+    if (!shouldAdoptServer(live, server)) return false;
+    opts.onAdopt?.(server);
+    return true;
+  }
+
+  async function drain(id: string, c: Channel): Promise<void> {
+    if (c.inflight) return;
+    c.inflight = true;
     try {
-      while (enabled && pending) {
-        const next = pending;
-        pending = null;
-        const putEpoch = epoch;
-        await putOnce(next, putEpoch);
+      while (enabled && c.pending) {
+        const next = c.pending;
+        c.pending = null;
+        const scheduledEpoch = c.epoch;
+        await putOnce(id, next, scheduledEpoch, c);
       }
     } finally {
-      inflight = false;
-      if (enabled && pending) {
-        void drainPush();
+      c.inflight = false;
+      if (enabled && c.pending) {
+        void drain(id, c);
       }
     }
   }
 
-  function schedulePush(snapshot: SessionSnapshot) {
+  function put(id: string, snapshot: SessionSnapshot): void {
     if (!enabled) return;
-    pending = snapshot;
-    void drainPush();
+    // Canonical identity (parent #415): a snapshot never stores under a different
+    // resource id than its own persisted id.
+    if (snapshot.id !== id) return;
+    const c = channel(id);
+    c.pending = snapshot;
+    void drain(id, c);
   }
 
-  async function remove(): Promise<void> {
+  async function remove(id: string): Promise<void> {
     if (!enabled) return;
+    const c = channel(id);
     // Invalidate any in-flight PUT (epoch) and drop queued push so clear never
     // leaves a resurrected cloud row after DELETE.
-    epoch += 1;
-    pending = null;
-    await deleteOnce();
+    c.epoch += 1;
+    c.pending = null;
+    await deleteOne(id);
   }
 
   return {
     get enabled() {
       return enabled;
     },
-    pull,
-    schedulePush,
+    get,
+    put,
+    list,
+    create,
+    createFirst,
     remove,
   };
 }

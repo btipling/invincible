@@ -7,10 +7,12 @@ import {
   createHttpSessionRepository,
   isEmptyOfDialogue,
   parseCloudSessionSnapshot,
+  parseSessionSummaryList,
   shouldAdoptServer,
   trimForCloudPut,
   truncateUtf8,
   utf8ByteLength,
+  type SessionSummary,
 } from './sessionRepository';
 import type { SessionSnapshot } from './sessionStore';
 
@@ -67,7 +69,6 @@ describe('trimForCloudPut', () => {
   });
 
   it('drops oldest until body under ~2 MiB', () => {
-    // ~100 KiB per message ASCII → need many to exceed 2 MiB
     const chunk = 'x'.repeat(100_000);
     const messages = Array.from({ length: 30 }, (_, i) => ({
       id: `m_${i}`,
@@ -166,311 +167,257 @@ describe('parseCloudSessionSnapshot', () => {
     expect(parseCloudSessionSnapshot(null)).toBeNull();
     expect(parseCloudSessionSnapshot({ id: 'x', updatedAt: 1, messages: 'nope' })).toBeNull();
   });
+
+  it('rejects a record whose id differs from the resource id (confused-deputy)', () => {
+    const body = {
+      id: 'other-id',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+    };
+    expect(parseCloudSessionSnapshot(body, 'expected-id')).toBeNull();
+  });
 });
 
-describe('createHttpSessionRepository', () => {
+describe('parseSessionSummaryList', () => {
+  it('parses summaries with optional title', () => {
+    const out = parseSessionSummaryList([
+      { id: 'a', createdAt: 1, updatedAt: 2, title: 'title' },
+      { id: 'b' },
+    ]);
+    expect(out).toEqual([
+      { id: 'a', createdAt: 1, updatedAt: 2, title: 'title' },
+      { id: 'b' },
+    ] satisfies SessionSummary[]);
+  });
+
+  it('rejects list with a malformed row', () => {
+    expect(parseSessionSummaryList([{ id: 'a' }, { updatedAt: 3 }])).toBeNull();
+    expect(parseSessionSummaryList('nope')).toBeNull();
+  });
+});
+
+describe('createHttpSessionRepository (id-shaped)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('pull adopts newer server via onAdopt', async () => {
-    const server = {
-      id: 'sess_s',
-      updatedAt: 200,
-      messages: [{ id: 'm', role: 'user', text: 'server', at: 1 }],
-    };
-    const fetchImpl = vi.fn(async () =>
-      Response.json(server, { status: 200 }),
-    );
-    const onAdopt = vi.fn();
-    const repo = createHttpSessionRepository({ fetchImpl, onAdopt });
-    const result = await repo.pull(
-      snap({
-        updatedAt: 100,
-        messages: [{ id: 'm', role: 'user', text: 'local', at: 1 }],
-      }),
-    );
-    expect(result.action).toBe('adopt');
-    expect(onAdopt).toHaveBeenCalledWith(server);
-  });
+  const idA = '11111111-1111-4111-8111-111111111111';
+  const idB = '22222222-2222-4222-8222-222222222222';
 
-  it('pull does not adopt when server older and local has dialogue', async () => {
-    const fetchImpl = vi.fn(async () =>
-      Response.json({
-        id: 'sess_s',
-        updatedAt: 50,
-        messages: [{ id: 'm', role: 'user', text: 'server', at: 1 }],
-      }),
-    );
-    const onAdopt = vi.fn();
-    const repo = createHttpSessionRepository({ fetchImpl, onAdopt });
-    const result = await repo.pull(
-      snap({
-        updatedAt: 100,
-        messages: [{ id: 'm', role: 'user', text: 'local', at: 1 }],
-      }),
-    );
-    expect(result.action).toBe('noop');
-    expect(onAdopt).not.toHaveBeenCalled();
-  });
+  function record(id: string, upto: number, messages = [{ id: 'm1', role: 'user' as const, text: 'hi', at: 1 }]) {
+    return { id, updatedAt: upto, messages };
+  }
 
-  it('pull adopts when local empty-of-dialogue', async () => {
-    const server = {
-      id: 'sess_s',
-      updatedAt: 10,
-      messages: [{ id: 'm', role: 'user', text: 'server', at: 1 }],
-    };
-    const fetchImpl = vi.fn(async () => Response.json(server));
+  it('create() mints distinct server ids (createFirst mints the first)', async () => {
+    const created: SessionSnapshot[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'POST') {
+        const id = crypto.randomUUID();
+        const s = { id, updatedAt: 0, messages: [] };
+        created.push(s);
+        return Response.json(s);
+      }
+      return Response.json(record(idA, 1), { status: 200 });
+    });
     const repo = createHttpSessionRepository({ fetchImpl });
-    const result = await repo.pull(
-      snap({
-        updatedAt: 999,
-        messages: [{ id: 's', role: 'system', text: 'welcome', at: 1 }],
-      }),
-    );
-    expect(result.action).toBe('adopt');
+    const first = await repo.createFirst();
+    const second = await repo.create();
+    expect(first.action).toBe('ok');
+    expect(second.action).toBe('ok');
+    expect(first.action === 'ok' && second.action === 'ok').toBe(true);
+    if (first.action === 'ok' && second.action === 'ok') {
+      expect(first.snapshot.id).not.toBe(second.snapshot.id);
+      expect(first.snapshot.messages).toHaveLength(0);
+    }
   });
 
-  it('pull re-checks getLocal after round-trip (no clobber of newer turn)', async () => {
-    let live = snap({
-      updatedAt: 100,
-      messages: [{ id: 'm', role: 'user', text: 'local', at: 1 }],
+  it('put() coalesces per session and writes body id == path id == snapshot.id', async () => {
+    const calls: { url: string; body: unknown }[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'PUT') {
+        calls.push({ url: String(_url), body: JSON.parse(String(init?.body)) });
+        return Response.json(record(idA, 10, [{ id: 'm', role: 'user', text: 'x', at: 1 }]), {
+          status: 200,
+        });
+      }
+      return new Response(null, { status: 204 });
     });
-    let resolveGet!: (r: Response) => void;
-    const getGate = new Promise<Response>((r) => {
-      resolveGet = r;
-    });
-    const server = {
-      id: 'sess_s',
-      updatedAt: 150,
-      messages: [{ id: 'm', role: 'user', text: 'server', at: 1 }],
-    };
-    const fetchImpl = vi.fn(async () => getGate);
-    const onAdopt = vi.fn();
-    const repo = createHttpSessionRepository({
-      fetchImpl,
-      onAdopt,
-      getLocal: () => live,
-    });
-    const pullPromise = repo.pull(live);
-    // Local advanced while GET in flight.
-    live = snap({
-      updatedAt: 200,
-      messages: [
-        { id: 'm', role: 'user', text: 'local', at: 1 },
-        { id: 'm2', role: 'user', text: 'newer', at: 2 },
-      ],
-    });
-    resolveGet(Response.json(server, { status: 200 }));
-    const result = await pullPromise;
-    expect(result.action).toBe('noop');
-    expect(onAdopt).not.toHaveBeenCalled();
-  });
-
-  it('401 disables repository', async () => {
-    const fetchImpl = vi.fn(async () =>
-      Response.json({ error: 'auth' }, { status: 401 }),
-    );
     const repo = createHttpSessionRepository({ fetchImpl });
-    const result = await repo.pull(snap({}));
-    expect(result.action).toBe('disabled');
-    expect(repo.enabled).toBe(false);
+    let local = snap({ id: idA, updatedAt: 10, messages: [{ id: 'm', role: 'user', text: 'x', at: 1 }] });
+    repo.put(idA, local);
+    local = { ...local, updatedAt: 20, messages: [{ id: 'm', role: 'user', text: 'y', at: 2 }] };
+    repo.put(idA, local);
+    local = { ...local, updatedAt: 30, messages: [{ id: 'm', role: 'user', text: 'z', at: 3 }] };
+    repo.put(idA, local);
+    await vi.waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(2));
+    // Every PUT resolved to the canonical resource + body.id == idA.
+    for (const c of calls) {
+      expect(c.url).toBe(`/api/sessions/${idA}`);
+      expect((c.body as { id: string }).id).toBe(idA);
+    }
+    // Last (pending) is the newest snapshot.
+    expect((calls.at(-1)!.body as { messages: { text: string }[] }).messages.at(-1)!.text).toBe(
+      'z',
+    );
   });
 
-  it('404 NOT_FOUND is noop (multi-tenant only)', async () => {
-    const empty = createHttpSessionRepository({
-      fetchImpl: vi.fn(async () =>
-        Response.json({ error: 'missing', code: 'NOT_FOUND' }, { status: 404 }),
-      ),
+  it('put() fails closed when snapshot.id != resource id (no network call)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 204 }));
+    const repo = createHttpSessionRepository({ fetchImpl });
+    repo.put(idB, snap({ id: idA }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('remove() issues DELETE for that id only and not others', async () => {
+    const dels: string[] = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'DELETE') dels.push(String(url));
+      return Response.json(record(idA, 1), { status: 200 });
     });
-    expect((await empty.pull(snap({}))).action).toBe('noop');
-    expect(empty.enabled).toBe(true);
+    const repo = createHttpSessionRepository({ fetchImpl });
+    await repo.remove(idA);
+    expect(dels).toEqual([`/api/sessions/${idA}`]);
   });
 
-  it('409 on push adopts server body', async () => {
-    const server = {
-      id: 'sess_s',
-      updatedAt: 300,
-      messages: [{ id: 'm', role: 'user', text: 'winner', at: 1 }],
-    };
-    const fetchImpl = vi.fn(async () => Response.json(server, { status: 409 }));
+  it('remove() during in-flight PUT issues a compensatory DELETE after PUT lands', async () => {
+    let resolvePut!: (r: Response) => void;
+    const putGate = new Promise<Response>((r) => {
+      resolvePut = r;
+    });
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      calls.push(`${method} ${url}`);
+      if (method === 'PUT') return putGate;
+      return new Response(null, { status: 204 });
+    });
+    const repo = createHttpSessionRepository({ fetchImpl });
+    repo.put(idA, snap({ id: idA, updatedAt: 1 }));
+    await Promise.resolve();
+    expect(calls.some((c) => c.startsWith('PUT'))).toBe(true);
+    await repo.remove(idA);
+    expect(calls.filter((c) => c.startsWith('DELETE')).length).toBe(1);
+    resolvePut(Response.json(record(idA, 1, []), { status: 200 }));
+    await vi.waitFor(() =>
+      expect(calls.filter((c) => c.startsWith('DELETE')).length).toBeGreaterThanOrEqual(2),
+    );
+  });
+
+  it('epoch guard prevents Clear (remove) from resurrecting', async () => {
+    let resolvePut!: (r: Response) => void;
+    const putGate = new Promise<Response>((r) => {
+      resolvePut = r;
+    });
+    const puts: string[] = [];
+    const dels: string[] = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'PUT') {
+        puts.push(String(url));
+        return putGate;
+      }
+      if (method === 'DELETE') dels.push(String(url));
+      return Response.json(record(idA, 1), { status: 200 });
+    });
+    const repo = createHttpSessionRepository({ fetchImpl });
+    repo.put(idA, snap({ id: idA, updatedAt: 1 }));
+    await Promise.resolve();
+    await repo.remove(idA);
+    // Pending cleared → no further PUT fires after remove (only the original in-flight).
+    resolvePut(Response.json(record(idA, 1, []), { status: 200 }));
+    await vi.waitFor(() => expect(dels.length).toBeGreaterThanOrEqual(2));
+    expect(puts).toHaveLength(1);
+  });
+
+  it('409 on put adopts server body via onAdopt', async () => {
+    const server = { id: idA, updatedAt: 300, messages: [{ id: 'm', role: 'user', text: 'win', at: 1 }] };
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT') return Response.json(server, { status: 409 });
+      return new Response(null, { status: 204 });
+    });
     const onAdopt = vi.fn();
     const repo = createHttpSessionRepository({ fetchImpl, onAdopt });
-    repo.schedulePush(
-      snap({
-        updatedAt: 100,
-        messages: [{ id: 'm', role: 'user', text: 'stale', at: 1 }],
-      }),
-    );
-    // allow microtasks
+    repo.put(idA, snap({ id: idA, updatedAt: 100, messages: [] }));
     await vi.waitFor(() => expect(onAdopt).toHaveBeenCalledWith(server));
   });
 
-  it('409 does not adopt when getLocal is already newer', async () => {
-    let live = snap({
-      updatedAt: 100,
-      messages: [{ id: 'm', role: 'user', text: 'stale', at: 1 }],
-    });
+  it('409 adopt is refused when live active session is a different id (switch mid-put)', async () => {
     const server = {
-      id: 'sess_s',
-      updatedAt: 150,
-      messages: [{ id: 'm', role: 'user', text: 'server', at: 1 }],
+      id: idA,
+      updatedAt: 300,
+      messages: [{ id: 'm', role: 'user', text: 'win', at: 1 }],
     };
-    let resolvePut!: (r: Response) => void;
-    const putGate = new Promise<Response>((r) => {
-      resolvePut = r;
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT') return Response.json(server, { status: 409 });
+      return new Response(null, { status: 204 });
     });
-    const fetchImpl = vi.fn(async () => putGate);
     const onAdopt = vi.fn();
     const repo = createHttpSessionRepository({
       fetchImpl,
       onAdopt,
-      getLocal: () => live,
+      // Simulates the active session being a *different* one while PUT(A) is in flight.
+      getLocal: () => snap({ id: idB, updatedAt: 50, messages: [] }),
     });
-    repo.schedulePush(live);
-    await Promise.resolve();
-    live = snap({
-      updatedAt: 200,
-      messages: [{ id: 'm2', role: 'user', text: 'newer', at: 2 }],
-    });
-    resolvePut(Response.json(server, { status: 409 }));
-    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalled());
-    // give putOnce time to finish 409 path
-    await Promise.resolve();
-    await Promise.resolve();
+    repo.put(idA, snap({ id: idA, updatedAt: 100, messages: [] }));
+    await new Promise((r) => setTimeout(r, 10));
     expect(onAdopt).not.toHaveBeenCalled();
   });
 
-  it('remove issues DELETE only (no PUT)', async () => {
-    const fetchImpl = vi.fn(async () => new Response(null, { status: 204 }));
-    const repo = createHttpSessionRepository({ fetchImpl });
-    await repo.remove();
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const firstCall = fetchImpl.mock.calls[0] as unknown as [
-      RequestInfo | URL,
-      RequestInit | undefined,
-    ];
-    expect(firstCall[1]?.method).toBe('DELETE');
-  });
-
-  it('remove cancels pending push so clear never PUTs empty', async () => {
-    let resolvePut!: (r: Response) => void;
-    const putGate = new Promise<Response>((r) => {
-      resolvePut = r;
-    });
-    const calls: string[] = [];
+  it('409 adopt still fires when the live active session matches the put target id', async () => {
+    const server = {
+      id: idA,
+      updatedAt: 300,
+      messages: [{ id: 'm', role: 'user', text: 'win', at: 1 }],
+    };
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
-      const method = init?.method ?? 'GET';
-      calls.push(method);
-      if (method === 'PUT') {
-        return putGate;
-      }
+      if (init?.method === 'PUT') return Response.json(server, { status: 409 });
       return new Response(null, { status: 204 });
     });
-    const repo = createHttpSessionRepository({ fetchImpl });
-    repo.schedulePush(
-      snap({
-        updatedAt: 1,
-        messages: [{ id: 'm', role: 'user', text: 'a', at: 1 }],
-      }),
-    );
-    await Promise.resolve();
-    expect(calls).toEqual(['PUT']);
-    // Queue a second push then remove — pending cleared; in-flight PUT may finish
-    repo.schedulePush(
-      snap({
-        id: 'sess_empty',
-        updatedAt: 2,
-        messages: [],
-      }),
-    );
-    await repo.remove();
-    resolvePut(Response.json(snap({ updatedAt: 1, messages: [] })));
-    await vi.waitFor(() => expect(calls.filter((m) => m === 'DELETE').length).toBeGreaterThanOrEqual(1));
-    // No second PUT after remove drained pending
-    expect(calls.filter((m) => m === 'PUT')).toHaveLength(1);
-    // Initial DELETE + compensatory DELETE after in-flight PUT completes
-    expect(calls.filter((m) => m === 'DELETE').length).toBeGreaterThanOrEqual(1);
+    const onAdopt = vi.fn();
+    const repo = createHttpSessionRepository({
+      fetchImpl,
+      onAdopt,
+      getLocal: () => snap({ id: idA, updatedAt: 100, messages: [] }),
+    });
+    repo.put(idA, snap({ id: idA, updatedAt: 100, messages: [] }));
+    await vi.waitFor(() => expect(onAdopt).toHaveBeenCalledWith(server));
   });
 
-  it('remove during in-flight PUT issues compensatory DELETE after PUT lands', async () => {
-    let resolvePut!: (r: Response) => void;
-    const putGate = new Promise<Response>((r) => {
-      resolvePut = r;
-    });
-    const calls: string[] = [];
-    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
-      const method = init?.method ?? 'GET';
-      calls.push(method);
-      if (method === 'PUT') {
-        return putGate;
-      }
-      return new Response(null, { status: 204 });
-    });
+  it('401 disables the repository', async () => {
+    const fetchImpl = vi.fn(async () => Response.json({ error: 'auth' }, { status: 401 }));
     const repo = createHttpSessionRepository({ fetchImpl });
-    repo.schedulePush(
-      snap({
-        updatedAt: 1,
-        messages: [{ id: 'm', role: 'user', text: 'a', at: 1 }],
-      }),
-    );
-    await Promise.resolve();
-    expect(calls).toEqual(['PUT']);
-    // Clear while PUT in flight — epoch bump + immediate DELETE
-    await repo.remove();
-    expect(calls.filter((m) => m === 'DELETE')).toHaveLength(1);
-    // PUT completes after clear (would resurrect row without compensatory DELETE)
-    resolvePut(
-      Response.json(
-        snap({
-          updatedAt: 1,
-          messages: [{ id: 'm', role: 'user', text: 'a', at: 1 }],
-        }),
-      ),
-    );
-    await vi.waitFor(() => expect(calls.filter((m) => m === 'DELETE')).toHaveLength(2));
-    expect(calls.filter((m) => m === 'PUT')).toHaveLength(1);
+    const res = await repo.get(idA);
+    expect(res.action).toBe('disabled');
+    expect(repo.enabled).toBe(false);
   });
 
-  it('coalesce: rapid pushes serialize and last pending is sent', async () => {
-    const bodies: string[] = [];
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
-    });
-    let puts = 0;
-    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.method === 'PUT') {
-        puts += 1;
-        bodies.push(String(init.body));
-        if (puts === 1) await gate;
-        return Response.json(JSON.parse(String(init.body)));
-      }
-      return new Response(null, { status: 204 });
-    });
+  it('get() returns notfound on 404 (and leaves the repo enabled)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({ error: 'missing', code: 'NOT_FOUND' }, { status: 404 }),
+    );
     const repo = createHttpSessionRepository({ fetchImpl });
-    repo.schedulePush(
-      snap({
-        updatedAt: 1,
-        messages: [{ id: 'm1', role: 'user', text: 'one', at: 1 }],
-      }),
+    expect((await repo.get(idA)).action).toBe('notfound');
+    expect(repo.enabled).toBe(true);
+  });
+
+  it('get() fails closed when the fetched id does not match the requested id', async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json(record(idB, 1, [{ id: 'm', role: 'user', text: 'x', at: 1 }]), { status: 200 }),
     );
-    await Promise.resolve();
-    repo.schedulePush(
-      snap({
-        updatedAt: 2,
-        messages: [{ id: 'm2', role: 'user', text: 'two', at: 2 }],
-      }),
-    );
-    repo.schedulePush(
-      snap({
-        updatedAt: 3,
-        messages: [{ id: 'm3', role: 'user', text: 'three', at: 3 }],
-      }),
-    );
-    release();
-    await vi.waitFor(() => expect(puts).toBeGreaterThanOrEqual(2));
-    expect(puts).toBeLessThanOrEqual(3);
-    expect(bodies.at(-1)).toContain('three');
+    const repo = createHttpSessionRepository({ fetchImpl });
+    const res = await repo.get(idA);
+    expect(res.action).toBe('error');
+  });
+
+  it('list() returns summaries', async () => {
+    const summary: SessionSummary[] = [{ id: idA, updatedAt: 1, title: 't' }];
+    const fetchImpl = vi.fn(async () => Response.json(summary, { status: 200 }));
+    const repo = createHttpSessionRepository({ fetchImpl });
+    const res = await repo.list();
+    expect(res.action).toBe('ok');
+    if (res.action === 'ok') expect(res.sessions).toEqual(summary);
   });
 });
