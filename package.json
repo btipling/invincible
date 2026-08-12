@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@ai-sdk/mcp": "^2.0.25",
+    "@upstash/redis": "^1.38.2",
     "@vercel/sandbox": "^3.0.0",
     "ai": "^7.0.52",
     "bcryptjs": "^3.0.3",

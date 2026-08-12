@@ -1,0 +1,52 @@
+/**
+ * Phase 1 (#412) — In-memory `ServerSessionStore` test double.
+ * Mirrors the Redis implementation's create/upsert + LWW semantics so unit tests
+ * never need a real Redis. **Test/scratch only — not persisted, not production.**
+ */
+import {
+  type HarnessSessionRecord,
+  type PutResult,
+  type ServerSessionStore,
+  type SessionListScope,
+  type SessionRecordKey,
+  assertValidSessionRecord,
+  sessionKeyString,
+  sessionPrefix,
+} from './sessionStore';
+
+export class MemorySessionStore implements ServerSessionStore {
+  private readonly store = new Map<string, HarnessSessionRecord>();
+
+  async get(key: SessionRecordKey): Promise<HarnessSessionRecord | null> {
+    const r = this.store.get(sessionKeyString(key));
+    return r ? structuredClone(r) : null;
+  }
+
+  async put(key: SessionRecordKey, record: HarnessSessionRecord): Promise<PutResult> {
+    assertValidSessionRecord(record);
+    const k = sessionKeyString(key);
+    const existing = this.store.get(k);
+    if (existing && record.updatedAt < existing.updatedAt) {
+      return { status: 'conflict', server: structuredClone(existing) };
+    }
+    // Create preserves the supplied record (incl. `updatedAt: 0`); upsert replaces.
+    this.store.set(k, structuredClone(record));
+    return { status: 'stored', record: structuredClone(record) };
+  }
+
+  async list(scope: SessionListScope): Promise<HarnessSessionRecord[]> {
+    const base = sessionPrefix(scope).slice(0, -1); // drop trailing '*'
+    const records: HarnessSessionRecord[] = [];
+    for (const [k, r] of this.store) {
+      if (k.startsWith(base)) records.push(structuredClone(r));
+    }
+    return records;
+  }
+
+  async remove(key: SessionRecordKey): Promise<boolean> {
+    const k = sessionKeyString(key);
+    if (!this.store.has(k)) return false;
+    this.store.delete(k);
+    return true;
+  }
+}
