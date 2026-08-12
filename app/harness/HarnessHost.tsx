@@ -27,7 +27,11 @@ import {
   type IdSessionRepository,
   type SessionSummary,
 } from '../../lib/sessionRepository';
-import { bootCloudSession, readUrlSessionId } from '../../lib/sessionBoot';
+import {
+  bootCloudSession,
+  readUrlSessionId,
+  shouldAdoptBootServer,
+} from '../../lib/sessionBoot';
 import {
   canLoadEarlier as sessionCanLoadEarlier,
   earlierRingStart,
@@ -441,6 +445,18 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             onAdopt: (serverSnap, id) => {
               if (cancelled) return;
               if (inflightRef.current) return;
+              // LWW guard for the boot-pin path (re-review #430 pass 3): the server row
+              // can be the EMPTY mint (`updatedAt: 0`) while local holds dialogue under
+              // the SAME id that a still-in-flight put() hasn't flushed yet. If the server
+              // doesn't win LWW, keep the local transcript (it's already in the ring) and
+              // push it to the cloud so a reload stops re-serving the empty mint over it.
+              // bootCloudSession pins ?s=id either way.
+              const local = sessionRef.current;
+              if (!shouldAdoptBootServer(local, serverSnap)) {
+                setActiveSessionId(id);
+                repoRef.current?.put(id, local);
+                return;
+              }
               activateSession({ ...serverSnap, id });
             },
             onMint: (createdSnap, id) => {

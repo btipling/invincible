@@ -7,7 +7,7 @@
  * server-minted session UUID; the URL `?s=`, repository key, and resource `:id` are
  * all the same id.
  */
-import type { IdSessionRepository } from './sessionRepository';
+import { shouldAdoptServer, type IdSessionRepository } from './sessionRepository';
 import type { SessionSnapshot } from './sessionStore';
 
 /** Local placeholder ids minted by `createEmptySession` when never cloud-bound. */
@@ -70,6 +70,26 @@ export function fallbackAfterGone(
   }
   if (opts.repoEnabled) return { kind: 'mint' };
   return { kind: 'local' };
+}
+
+/**
+ * Decide whether a boot `get(id)` server snapshot should be adopted over the live
+ * local session — the LWW guard for the boot-pin path (adversarial re-review #430,
+ * pass 3). A server-minted row can be the **empty** mint (`updatedAt: 0`) while the
+ * local store holds dialogue under the **same id** (a deferred-mint bind wrote it,
+ * but a still-in-flight `put` hasn't flushed it to the cloud yet). Adopting that
+ * empty body would wipe the first-turn transcript on reload. So when `local.id ===
+ * server.id`, only adopt if the server actually wins LWW; when the ids differ this is
+ * a genuine pin/adopt of a *different* session, so we adopt (server owns content).
+ */
+export function shouldAdoptBootServer(
+  local: SessionSnapshot,
+  server: SessionSnapshot,
+): boolean {
+  if (local.id === server.id) {
+    return shouldAdoptServer(local, server);
+  }
+  return true;
 }
 
 export type SessionBootCallbacks = {

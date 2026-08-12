@@ -5,6 +5,7 @@ import {
   fallbackAfterGone,
   isServerMintedSessionId,
   readUrlSessionId,
+  shouldAdoptBootServer,
   withUrlSessionId,
 } from './sessionBoot';
 import type {
@@ -18,6 +19,7 @@ import type { SessionSnapshot } from './sessionStore';
 
 const idA = '11111111-1111-4111-8111-111111111111';
 const idB = '22222222-2222-4222-8222-222222222222';
+const idY = '33333333-3333-4333-8333-333333333333';
 
 function empty(id: string): SessionSnapshot {
   return { id, updatedAt: 0, messages: [] };
@@ -120,6 +122,35 @@ describe('fallbackAfterGone (never blank)', () => {
     expect(fallbackAfterGone(idA, { localId: 'sess_x', repoEnabled: false })).toEqual({
       kind: 'local',
     });
+  });
+});
+
+describe('shouldAdoptBootServer (boot-pin LWW guard)', () => {
+  const localWithDialogue = (id: string): SessionSnapshot => ({
+    id,
+    updatedAt: 10,
+    messages: [
+      { id: 'm1', role: 'user' as const, text: 'hi', at: 1 },
+      { id: 'm2', role: 'assistant' as const, text: 'yo', at: 2 },
+    ],
+  });
+
+  it('rejects the empty mint (updatedAt 0) over newer same-id local dialogue', () => {
+    const local = localWithDialogue(idY);
+    const serverEmpty = empty(idY); // the still-in-cloud create() blank row
+    expect(shouldAdoptBootServer(local, serverEmpty)).toBe(false);
+  });
+
+  it('adopts when the server is genuinely newer (same id)', () => {
+    const local = localWithDialogue(idY);
+    const serverNewer = { ...local, updatedAt: 99, messages: [...local.messages] };
+    expect(shouldAdoptBootServer(local, serverNewer)).toBe(true);
+  });
+
+  it('always adopts a different id (genuine pin/adopt of another session)', () => {
+    const local = localWithDialogue(idY);
+    const other = empty(idA);
+    expect(shouldAdoptBootServer(local, other)).toBe(true);
   });
 });
 
