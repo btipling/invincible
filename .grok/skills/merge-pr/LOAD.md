@@ -50,10 +50,11 @@ git status --porcelain                        # clean tree? staged/untracked?
    signal only and is **NEVER** sufficient to authorize a merge.
 3. Confirm PR is OPEN on `main`, MERGEABLE, adversarial review satisfied,
    required CI green.
-   **Cold-boot gate (automatic refuse):** `gh pr diff` must not add `new PGlite(`
-   outside the one shared test helper (`#431`). Two+ engines in one file, or a
-   changed test still constructing PGlite after the helper exists → stop. Not
-   waivable. Untouched legacy boots on `main` are `#431`, not this merge.
+   **DI/cost gate (automatic refuse):** tests must use injectable seams.
+   Slow work (PGlite, bcrypt setup, live network) **once or fully mocked**.
+   `gh pr diff` adding `new PGlite(` / `createDbConnection(` outside the one
+   helper, or a changed test repeating that cost per `it` when DI exists → stop.
+   Not waivable. Untouched legacy boots on `main` are `#431`, not this merge.
 4. Merge with the repo's merge-commit convention:
    ```bash
    gh pr merge <N> --repo btipling/invincible --merge --delete-branch

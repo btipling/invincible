@@ -41,4 +41,4 @@ gh pr diff <N> --repo btipling/invincible
 3. Report with verdict  
 4. Default: post to PR via `gh pr review` / `gh pr comment`
 5. Do not implement fixes unless asked
-6. **Cold-boot gate:** added/`new PGlite()` outside the one shared test helper (`#431`) is an **automatic Major / CONCERNS** — not a nit, not user-acceptable. merge-pr will refuse.  
+6. **DI/cost gate:** tests must use injectable seams. Slow work (PGlite boot, bcrypt setup, real network) once or fully mocked — never per-test / extra `new PGlite()` when a helper or `connect`/`db` exists. Automatic Major / CONCERNS. merge-pr refuses. Untouched legacy boots are `#431`.  

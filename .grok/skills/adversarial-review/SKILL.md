@@ -9,7 +9,7 @@ description: >
   Never GitHub MCP. Does not implement fixes unless asked.
 metadata:
   short-description: "Hostile PR review: break-scenario findings, invincible attack surface"
-  version: "1.1"
+  version: "1.2"
   project: invincible
 ---
 
@@ -166,12 +166,15 @@ the answer “no,” that is a finding.
 - Tests that only assert mocks, not behavior  
 - Missing operator path for UI  
 - CI can’t prove harness protocol TS↔Zig version parity  
-- **Test performance** — the suite runs mostly in one vitest process, so a single slow test file stalls everyone. For changed `lib/*`/DB tests, check for wall-time anti-patterns:
-  - **Cold-boot gate (automatic failure — not a nit, not user-acceptable).** A test-side **cold boot** is `new PGlite()`, a second in-process WASM/Postgres engine in the same file, or a file-local migration boot that constructs its own engine. **One** shared helper (issue `#431`; typically `lib/tenancy/test/*` / the DI test seam) may call `new PGlite()`. Everywhere else is a fail.
-    - PR **adds** a `new PGlite(` / extra engine / copy-pasted `applyMigrations` + boot → **Major**, verdict **CONCERNS**. Cannot PASS / PASS WITH NOTES.
-    - **Two or more** `new PGlite()` in one file → same.
-    - Shared helper **exists** on the PR head and a **changed** test file still constructs `new PGlite()` itself → same.
-    - Pre-existing untouched `new PGlite()` files on `main` are `#431` work, not a finding against an unrelated PR.
+- **Test cost + DI (automatic failure — not a nit, not user-acceptable).** Production modules take injected deps (`db`, `connect`, factories via `lib/di`). **Tests must use those seams.** Slow work happens **once** (shared fixture / `beforeAll` / one helper) **or is fully mocked**. Repeating it test-after-test or file-after-file when a DI seam exists is a fail.
+    - **What “slow” means:** in-process WASM/Postgres (`new PGlite()` is the named case), `createDbConnection()`, real bcrypt `hashPassword` in setup, real network / Gateway / Redis / sandbox HTTP, or any other constructor the module already accepts as a dep.
+    - **Must:** inject `db` / `connect` / a fake client; share one engine via the helper (`#431`, typically `lib/tenancy/test/*` or the DI test seam); fixture hashes instead of hashing in `beforeAll`; mock I/O the unit is not proving.
+    - **Automatic Major / CONCERNS** (cannot PASS / PASS WITH NOTES) when a PR **adds** or a **changed** test:
+      - constructs a real expensive dep instead of injecting (`new PGlite(` outside the one shared helper, `createDbConnection(` in a test, live Redis/HTTP where a seam exists);
+      - runs that cost **per `it` / per `beforeEach` / per file** when once-per-process or a mock would do;
+      - ignores an existing factory/`createProdServices({ connect })` / injected-`db` seam and goes around it.
+    - **Allowed:** the **one** shared helper that boots PGlite; a test whose *subject* is the hasher (`password.test.ts`) calling `hashPassword` once; untouched legacy boots on `main` (`#431` — not a finding on an unrelated PR).
+    - Two+ `new PGlite()` in one file is always this gate.
   - **Per-test migrations** applied one `--> statement-breakpoint` chunk at a time (or re-applied every test) — apply each migration file once, in a single multi-statement `exec`.
   - **Heavy per-`beforeEach` DB reseed** (delete N tables + re-insert a baseline under a fresh DEK for every test) — flag when a `lib/tenancy/*.test.ts` boots PGlite and rebuckets whole stores per test; prefer one-time baseline + rollback where the mock/socket surface allows. Be aware PGlite’s single-connection mutex deadlocks raw SAVEPOINT / `db.transaction` straddling the shared `db`.
   - **State-leak symptom:** per-test `dekVersion`/`kekVersion` monotonically rising across tests — the intended isolation (rollback/reseed) isn’t running and tests now depend on prior tests’ writes.
@@ -217,7 +220,7 @@ traced code; mark medium/low when baseline was incomplete.
 | Sev | Meaning | Merge impact |
 |-----|---------|--------------|
 | **Blocker** | Exploit, secret leak, runner abuse, dual-chat product regression, data loss, sure production break | Must fix before merge |
-| **Major** | Likely bug, missing tests on risky surface, protocol skew risk, deploy race, serious reusability bind, **test cold-boot gate** (`new PGlite()` outside the one shared helper — automatic, not user-acceptable) | Fix before merge (cold-boot: no “explicit accept”) |
+| **Major** | Likely bug, missing tests on risky surface, protocol skew risk, deploy race, serious reusability bind, **test DI/cost gate** (slow work repeated or real deps constructed when a seam exists — automatic, not user-acceptable) | Fix before merge (DI/cost: no “explicit accept”) |
 | **Minor** | Real improvement; bounded risk | Should fix soon |
 | **Nit** | Clarity only | Optional |
 
@@ -226,7 +229,7 @@ traced code; mark medium/low when baseline was incomplete.
 | Verdict | When |
 |---------|------|
 | **BLOCK** | ≥1 Blocker |
-| **CONCERNS** | No Blockers; ≥1 Major (or many Minors on risky surfaces). **Cold-boot Major cannot be waived.** |
+| **CONCERNS** | No Blockers; ≥1 Major (or many Minors on risky surfaces). **DI/cost Major cannot be waived.** |
 | **PASS WITH NOTES** | Only Minor/Nit after self-refutation |
 | **INCOMPLETE** | Could not fetch PR/diff/baseline; do not rubber-stamp |
 
