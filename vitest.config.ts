@@ -20,7 +20,19 @@ export default defineConfig({
         test: {
           name: 'default',
           include: ['**/*.{test,spec}.?(c|m)[jt]s?(x)'],
-          exclude: ['lib/tenancy/**'],
+          // Restore Vitest's default excludes (notably `**/node_modules/**`)
+          // in addition to excluding the tenancy project's files. A project's
+          // `exclude` replaces the defaults rather than merging with them, and
+          // the phase-1 repo-wide migration ships test files inside
+          // node_modules (next/zod/@vercel/oidc) that must not be collected.
+          exclude: [
+            '**/node_modules/**',
+            '**/dist/**',
+            '**/cypress/**',
+            '**/.{idea,git,cache,output,temp}/**',
+            '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*',
+            'lib/tenancy/**',
+          ],
         },
       },
       {
