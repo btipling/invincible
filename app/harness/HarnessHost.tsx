@@ -152,6 +152,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const pollRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const inflightRef = useRef(false);
+  /** Server id to bind once the in-flight turn finishes (boot mint mid-turn), #430. */
+  const pendingMintBindRef = useRef<string | null>(null);
   const sessionRef = useRef<SessionSnapshot>(createEmptySession());
   /** Oldest session.messages index currently hydrated into the Wasm ring. */
   const ringWindowStartRef = useRef(0);
@@ -306,9 +308,22 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       } finally {
         inflightRef.current = false;
         setBusy(false);
+        // Boot mint landed mid-turn (#430): the bridge was streaming so we did NOT
+        // re-hydrate the ring. Restore the transcript the turn just persisted, rebind
+        // the server UUID and URL/active id only now that the turn is done, then push
+        // the carried-over history to the real resource.
+        const pendingId = pendingMintBindRef.current;
+        if (pendingId) {
+          pendingMintBindRef.current = null;
+          const bound = { ...sessionRef.current, id: pendingId };
+          sessionRef.current = bound;
+          setActiveSessionId(pendingId);
+          setUrlSessionId(pendingId);
+          repoRef.current?.put(pendingId, bound);
+        }
       }
     },
-    [persist],
+    [persist, setUrlSessionId],
   );
 
   useEffect(() => {
@@ -328,7 +343,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             if (cancelled) return;
             // Never clobber an in-flight turn's session/ring mid-stream.
             if (inflightRef.current) return;
-            // Repository already re-checks getLocal before a put-adopt.
+            // Identity guard (#430): a put-409 body is the server snapshot of the session
+            // that PUT targeted; if the user switched to a different active session while
+            // the network round-trip was in flight, do NOT adopt it into the UI. The repo
+            // re-checks getLocal, but this host guard is authoritative for the active id.
+            if (snap.id !== sessionRef.current.id) return;
             adoptCloudSession(snap);
           },
         });
@@ -428,12 +447,22 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               // First paint won: preserve any local transcript on this initial bind;
               // otherwise the empty minted session. Always bind the server UUID.
               const merged = hasDialogue ? { ...existing, id } : { ...createdSnap, id };
+              if (inflightRef.current) {
+                // Mid-turn (#430): do NOT hydrate the Wasm ring now — that would wipe
+                // partial assistant/thinking that only lives on the bridge. Defer the id
+                // bind until the turn finishes; runPrompt applies it in finally.
+                pendingMintBindRef.current = id;
+                return;
+              }
               activateSession(merged);
               r.put(id, merged); // persist any carried-over local history
             },
             onUrlUpdate: (id) => setUrlSessionId(id),
           });
-          if (result.kind === 'local') setCloudEnabled(false);
+          // Only hide the picker when the repo is actually disabled (401 / Redis-off);
+          // a transient 5xx/network error during boot keeps the cloud UI live so a reload
+          // or refresh can recover — don't permanently strand local-only this page load.
+          if (result.kind === 'local') setCloudEnabled(r.enabled);
           void refreshSessions();
         })();
 

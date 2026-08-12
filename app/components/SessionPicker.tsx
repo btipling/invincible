@@ -11,7 +11,12 @@ import { teal, warm } from '../../lib/palette';
 import type { SessionSummary } from '../../lib/sessionRepository';
 
 function labelFor(session: SessionSummary): string {
-  return session.title && session.title.trim() ? session.title.trim() : 'Untitled session';
+  if (session.title && session.title.trim()) return session.title.trim();
+  // Summaries carry no transcript (by design), so a title-less session can't show a
+  // first-message snippet here — but it MUST still be distinguishable from its peers,
+  // else a list of untitled sessions is unusable. Show a short server-id suffix.
+  const short = session.id.length > 8 ? `…${session.id.slice(-7)}` : session.id;
+  return `Untitled · ${short}`;
 }
 
 export default function SessionPicker({

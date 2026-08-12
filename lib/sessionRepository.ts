@@ -481,6 +481,12 @@ export function createHttpSessionRepository(
   function maybeAdopt(server: SessionSnapshot, fallbackLocal: SessionSnapshot): boolean {
     const live = liveLocal(fallbackLocal);
     if (!live) return false;
+    // Identity guard (adversarial review #430): this 409 body is a server snapshot of
+    // the SESSION THIS PUT TARGETED (== fallbackLocal.id). The live active session may
+    // be a *different* one if the user switched during the network round-trip. Never
+    // adopt a server body for one session into the active UI slot — the live session's
+    // id must exactly match the server session's id (and the put resource id).
+    if (live.id !== server.id) return false;
     if (!shouldAdoptServer(live, server)) return false;
     opts.onAdopt?.(server);
     return true;

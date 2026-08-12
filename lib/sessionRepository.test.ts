@@ -344,6 +344,48 @@ describe('createHttpSessionRepository (id-shaped)', () => {
     await vi.waitFor(() => expect(onAdopt).toHaveBeenCalledWith(server));
   });
 
+  it('409 adopt is refused when live active session is a different id (switch mid-put)', async () => {
+    const server = {
+      id: idA,
+      updatedAt: 300,
+      messages: [{ id: 'm', role: 'user', text: 'win', at: 1 }],
+    };
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT') return Response.json(server, { status: 409 });
+      return new Response(null, { status: 204 });
+    });
+    const onAdopt = vi.fn();
+    const repo = createHttpSessionRepository({
+      fetchImpl,
+      onAdopt,
+      // Simulates the active session being a *different* one while PUT(A) is in flight.
+      getLocal: () => snap({ id: idB, updatedAt: 50, messages: [] }),
+    });
+    repo.put(idA, snap({ id: idA, updatedAt: 100, messages: [] }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(onAdopt).not.toHaveBeenCalled();
+  });
+
+  it('409 adopt still fires when the live active session matches the put target id', async () => {
+    const server = {
+      id: idA,
+      updatedAt: 300,
+      messages: [{ id: 'm', role: 'user', text: 'win', at: 1 }],
+    };
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT') return Response.json(server, { status: 409 });
+      return new Response(null, { status: 204 });
+    });
+    const onAdopt = vi.fn();
+    const repo = createHttpSessionRepository({
+      fetchImpl,
+      onAdopt,
+      getLocal: () => snap({ id: idA, updatedAt: 100, messages: [] }),
+    });
+    repo.put(idA, snap({ id: idA, updatedAt: 100, messages: [] }));
+    await vi.waitFor(() => expect(onAdopt).toHaveBeenCalledWith(server));
+  });
+
   it('401 disables the repository', async () => {
     const fetchImpl = vi.fn(async () => Response.json({ error: 'auth' }, { status: 401 }));
     const repo = createHttpSessionRepository({ fetchImpl });
