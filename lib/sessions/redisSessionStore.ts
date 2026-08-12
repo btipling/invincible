@@ -3,7 +3,9 @@
  *
  * Config: a single `REDIS_URL` in `redis://` (or `rediss://` for TLS) wire format,
  * e.g. the Vercel/Upstash Redis integration's `REDIS_URL`
- * `redis://default:<secret>@<host>:<port>`. The connection is created lazily and
+ * `redis://default:<secret>@<host>:<port>`. The URL is resolved **once at the
+ * composition root** (`lib/di/index.ts`), which passes it explicitly — this store
+ * never reads `process.env` itself. The connection is created lazily and
  * shared per-process (warm instance) so serverless calls reuse one socket instead of
  * leaking a connection per request; node-redis reconnects automatically after a live
  * socket drops (bounded reconnect — see `reconnectStrategy` below).
@@ -64,9 +66,14 @@ export interface RedisClientLike {
 }
 
 export interface RedisSessionStoreOptions {
-  /** Inject a fake client (tests). When omitted, build from `REDIS_URL` (or `url`). */
+  /** Inject a fake client (tests). When omitted, build from `url`. */
   client?: RedisClientLike;
-  /** Explicit URL override (defaults to `process.env.REDIS_URL`). RESP wire format. */
+  /**
+   * RESP wire-format URL (`redis://` or `rediss://`). Resolved once at the
+   * composition root (`lib/di/index.ts` from `REDIS_URL`) and passed explicitly —
+   * the store itself never reads `process.env` (adversarial nit L8 follow-up).
+   * Required to build the real adapter when no `client` is injected.
+   */
   url?: string;
   /** TTL in ms refreshed on each write (`put`). 0 (default) = no expiry. Not admin-read-refreshing. */
   ttlMs?: number;
@@ -119,46 +126,6 @@ export function setRedisClientFactoryForTests(factory: RedisClientFactory | null
  */
 export function resetRedisClientCacheForTests(): void {
   clientsByUrl.clear();
-}
-
-function envUrl(opts: RedisSessionStoreOptions): string | undefined {
-  if (opts.url) return opts.url.trim();
-  const direct = process.env.REDIS_URL?.trim();
-  if (direct) return direct;
-  return undefined;
-}
-
-/**
- * One-time deprecation hint for the pre-switch env names. The legacy REST credentials
- * (`SESSION_REDIS_URL/TOKEN`, `UPSTASH_REDIS_REST_URL/_TOKEN`) cannot drive the RESP
- * client, so we do NOT fall back to them functionally (a `https://` REST URL is
- * protocol-incompatible and would hang/fail): we just flag the rename so an operator
- * whose deploy suddenly 503s doesn't mis-diagnose it as "Redis broken".
- */
-let legacyEnvWarned = false;
-function warnLegacyEnvVars(): void {
-  const legacy = [
-    process.env.SESSION_REDIS_URL,
-    process.env.SESSION_REDIS_TOKEN,
-    process.env.UPSTASH_REDIS_REST_URL,
-    process.env.UPSTASH_REDIS_REST_TOKEN,
-  ].some((v) => typeof v === 'string' && v.length > 0);
-  if (!legacy || legacyEnvWarned) return;
-  legacyEnvWarned = true;
-  // Never log the values — they may embed credentials.
-  console.warn(
-    '[redis-session-store] Detected legacy SESSION_REDIS_* / UPSTASH_REDIS_REST_* env vars. ' +
-      "These were replaced by a single REDIS_URL (RESP wire URL, e.g. redis://default:<secret>@host:port or rediss://). " +
-      'Multi-session will 503 SESSION_STORE_UNAVAILABLE until you set REDIS_URL.',
-  );
-}
-
-function envTtlMs(opts: RedisSessionStoreOptions): number {
-  if (opts.ttlMs !== undefined) return Number.isFinite(opts.ttlMs) && opts.ttlMs > 0 ? Math.floor(opts.ttlMs) : 0;
-  const raw = process.env.SESSION_REDIS_TTL_MS;
-  if (!raw) return 0;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
 function secondsFromMs(ms: number): number {
@@ -272,18 +239,25 @@ export class RedisSessionStore implements ServerSessionStore {
   private readonly resolvedUrl: string | undefined;
 
   constructor(opts: RedisSessionStoreOptions = {}) {
-    this.ttlMs = envTtlMs(opts);
-    this.resolvedUrl = envUrl(opts);
+    // `url`/`ttlMs` are resolved at the composition root and passed explicitly — the
+    // store no longer reads `process.env` (adversarial nit L8 follow-up). `client` and
+    // `url` may both be absent only in the direct/legacy test path (`url()` → undefined);
+    // building the real adapter without a URL throws → 503 at the seam.
+    this.ttlMs =
+      opts.ttlMs !== undefined && Number.isFinite(opts.ttlMs) && opts.ttlMs > 0
+        ? Math.floor(opts.ttlMs)
+        : 0;
+    this.resolvedUrl = opts.url?.trim() || undefined;
     if (opts.client) {
       this.client = opts.client;
     } else {
       if (!this.resolvedUrl) {
-        warnLegacyEnvVars();
         throw new Error(
-          'RedisSessionStore requires REDIS_URL (redis:// or rediss://), or an injected client.',
+          'RedisSessionStore requires url (RESP redis:// or rediss:// wire format), or an injected client. ' +
+            'URL is resolved once at the composition root (set REDIS_URL); the store itself never reads process.env.',
         );
       }
-      // node-redis RESP client: parses REDIS_URL incl. embedded username/password; supports
+      // node-redis RESP client: parses the URL incl. embedded username/password; supports
       // redis:// (insecure) and rediss:// (TLS). A missing/wrong URL throws → 503 at the seam.
       this.client = new NodeRedisAdapter(this.resolvedUrl);
     }

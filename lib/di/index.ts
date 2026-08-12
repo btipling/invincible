@@ -80,10 +80,38 @@ export function resolveServerSecrets(
   };
 }
 
+/**
+ * One-time deprecation hint for the pre-switch env names, emitted here (the single
+ * place the Redis env is read). The legacy REST credentials (`SESSION_REDIS_URL/TOKEN`,
+ * `UPSTASH_REDIS_REST_URL/_TOKEN`) cannot drive the RESP client, so we do NOT fall back
+ * to them functionally (a `https://` REST URL is protocol-incompatible and would
+ * hang/fail): we just flag the rename so an operator whose deploy suddenly 503s doesn't
+ * mis-diagnose it as "Redis broken".
+ */
+let legacyRedisEnvWarned = false;
+function warnLegacyRedisEnv(env: Record<string, string | undefined>): void {
+  const legacy = [
+    env.SESSION_REDIS_URL,
+    env.SESSION_REDIS_TOKEN,
+    env.UPSTASH_REDIS_REST_URL,
+    env.UPSTASH_REDIS_REST_TOKEN,
+  ].some((v) => typeof v === 'string' && v.length > 0);
+  if (!legacy || legacyRedisEnvWarned) return;
+  legacyRedisEnvWarned = true;
+  // Never log the values — they may embed credentials.
+  console.warn(
+    '[redis-session-store] Detected legacy SESSION_REDIS_* / UPSTASH_REDIS_REST_* env vars. ' +
+      "These were replaced by a single REDIS_URL (RESP wire URL, e.g. redis://default:<secret>@host:port or rediss://). " +
+      'Multi-session will 503 SESSION_STORE_UNAVAILABLE until you set REDIS_URL.',
+  );
+}
+
 function resolveRedisUrl(
   env: Record<string, string | undefined> = process.env,
 ): string | undefined {
-  return env.REDIS_URL?.trim() || undefined;
+  const url = env.REDIS_URL?.trim() || undefined;
+  if (!url) warnLegacyRedisEnv(env);
+  return url;
 }
 
 function resolveRedisTtlMs(
@@ -147,8 +175,8 @@ export function createProdServices(overrides: {
   // harnessSessionsRedis seam consumes the registered factory). The registered
   // factory is the same root `createSessionStore` exposed below (NOT a bare
   // `new RedisSessionStore()`), so the live prod path receives the env-resolved
-  // `url`/`ttlMs` from the root instead of re-reading `process.env` in the store
-  // body (adversarial L1 — the store's env reads stay a non-prod fallback).
+  // `url`/`ttlMs` from the root; the store body never reads `process.env`
+  // (adversarial L1 + nit L8 follow-up).
   registerSessionStoreFactoryForServer(createSessionStore);
 
   return {
@@ -196,9 +224,9 @@ export function createProdServices(overrides: {
 /**
  * Root factory for the Redis session store. Resolves `url`/`ttlMs` from the env
  * once at the root (`REDIS_URL` / `SESSION_REDIS_TTL_MS`) and passes them to
- * `RedisSessionStore` explicitly, so the live prod path never re-reads
- * `process.env` inside the store body (those reads remain a non-prod fallback for
- * direct/legacy callers). `client` is the injectable test seam.
+ * `RedisSessionStore` explicitly. The store itself no longer reads `process.env`
+ * (adversarial nit L8 follow-up) — the root is the single owner of the Redis env
+ * reads and the legacy-env deprecation warning. `client` is the injectable test seam.
  */
 function createSessionStore(
   opts: Omit<RedisSessionStoreOptions, 'url' | 'ttlMs'> & {
