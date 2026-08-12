@@ -20,6 +20,8 @@ import {
   assertValidSessionListScope,
   assertValidSessionRecord,
   assertValidSessionRecordKey,
+  keyMatchesRecord,
+  parseSessionKeyString,
   sessionKeyString,
   sessionPrefix,
   validateSessionRecord,
@@ -107,9 +109,13 @@ export class RedisSessionStore implements ServerSessionStore {
     assertValidSessionRecordKey(key);
     const raw = await this.client.get(sessionKeyString(key));
     if (raw == null) return null;
-    // Trust-but-verify on read: corrupt/foreign values must not flow as typed records.
+    // Trust-but-verify on read: corrupt/foreign values must not flow as typed records. We
+    // also require the blob's OWN identity to match the key it lives under, so a
+    // schema-valid but mis-ownered (e.g. hand-edited / bad-migration) blob fails closed
+    // instead of being returned to a caller that trusts the record field for authz
+    // (adversarial re-run, Minor L2).
     const parsed = validateSessionRecord(raw);
-    return parsed.ok ? parsed.value : null;
+    return parsed.ok && keyMatchesRecord(key, parsed.value) ? parsed.value : null;
   }
 
   async put(key: SessionRecordKey, record: HarnessSessionRecord): Promise<PutResult> {
@@ -134,17 +140,21 @@ export class RedisSessionStore implements ServerSessionStore {
   /**
    * Note: implemented as `KEYS {tenant}:{user}:*` + N×`GET` (adversarial minor L5). The
    * parent #411 accepted the prefix scan for P0; a pagination / CURSOR pass is deferred to
-   * a later phase. Each key is re-validated on read so corrupt blobs are skipped.
+   * a later phase. Each key is re-validated on read, and the blob is only included when its
+   * own identity re-binds to the key it lives under (corrupt / mis-ownered blobs skipped,
+   * adversarial re-run Minor L2).
    */
   async list(scope: SessionListScope): Promise<HarnessSessionRecord[]> {
     assertValidSessionListScope(scope);
     const matches = await this.client.keys(sessionPrefix(scope));
     const records: HarnessSessionRecord[] = [];
     for (const k of matches) {
+      const recordKey = parseSessionKeyString(k);
+      if (!recordKey) continue;
       const raw = await this.client.get(k);
       if (raw == null) continue;
       const parsed = validateSessionRecord(raw);
-      if (parsed.ok) records.push(parsed.value);
+      if (parsed.ok && keyMatchesRecord(recordKey, parsed.value)) records.push(parsed.value);
     }
     return records;
   }

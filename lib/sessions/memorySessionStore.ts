@@ -13,6 +13,8 @@ import {
   assertValidSessionListScope,
   assertValidSessionRecord,
   assertValidSessionRecordKey,
+  keyMatchesRecord,
+  parseSessionKeyString,
   sessionKeyString,
   sessionPrefix,
 } from './sessionStore';
@@ -23,7 +25,9 @@ export class MemorySessionStore implements ServerSessionStore {
   async get(key: SessionRecordKey): Promise<HarnessSessionRecord | null> {
     assertValidSessionRecordKey(key);
     const r = this.store.get(sessionKeyString(key));
-    return r ? structuredClone(r) : null;
+    // Mirrors the Redis fail-closed read: only return when the blob's own identity
+    // re-binds to the key it lives under (adversarial re-run, Minor L2).
+    return r && keyMatchesRecord(key, r) ? structuredClone(r) : null;
   }
 
   async put(key: SessionRecordKey, record: HarnessSessionRecord): Promise<PutResult> {
@@ -48,7 +52,9 @@ export class MemorySessionStore implements ServerSessionStore {
     const base = sessionPrefix(scope).slice(0, -1); // drop trailing '*'
     const records: HarnessSessionRecord[] = [];
     for (const [k, r] of this.store) {
-      if (k.startsWith(base)) records.push(structuredClone(r));
+      if (!k.startsWith(base)) continue;
+      const recordKey = parseSessionKeyString(k);
+      if (recordKey && keyMatchesRecord(recordKey, r)) records.push(structuredClone(r));
     }
     return records;
   }

@@ -21,7 +21,9 @@
  *    `[A-Za-z0-9_-]{1,128}` so `KEYS`/prefix globs (`* : ? [ ]`) can never be
  *    smuggled through an id; the `{tenant}:{user}:` list prefix stays unambiguous.
  *  - **upsert enforces stored `createdAt`** at the store, not just by caller discipline.
- *  - **trust-but-verify on read** — `get`/`list` re-validate JSON read from Redis.
+ *  - **trust-but-verify on read** — `get`/`list` re-validate JSON read from Redis AND
+ *    require the blob's own `tenantId`/`userId`/`id` to re-bind to the key it lives
+ *    under, so corrupt / mis-ownered blobs fail closed (adversarial re-run Minor L2).
  *  - **Atomic-CAS residual (deferred to #414):** LWW here is check-then-set (read +
  *    conditional write) and is **not** a single atomic op. Phase 1 has no route yet, so
  *    this is a documented seam limitation; the Phase 2 route must fail closed (return the
@@ -108,6 +110,24 @@ export function sessionKeyString(key: SessionRecordKey): string {
 }
 
 /**
+ * Reverse of `sessionKeyString`: parse a stored key string back into a
+ * `SessionRecordKey`. Returns `null` when the shape is wrong or any segment is not a
+ * Redis-safe opaque id (so a malformed / hand-crafted key can never address anything).
+ * Used by read paths to re-bind a blob to the key it actually lives under.
+ */
+export function parseSessionKeyString(key: string): SessionRecordKey | null {
+  const parts = key.split(':');
+  if (parts.length !== 5) return null;
+  if (parts[0] !== 'harness' || parts[1] !== 'session') return null;
+  const result = validateSessionRecordKey({
+    tenantId: parts[2],
+    userId: parts[3],
+    sessionId: parts[4],
+  });
+  return result.ok ? result.value : null;
+}
+
+/**
  * Redis list pattern for one user's sessions within a tenant.
  * Safe because every id segment is validated to `[A-Za-z0-9_-]` (never `:` or a glob),
  * so the `{tenant}:{user}:*` prefix can never bleed into another tenant/user/key.
@@ -187,19 +207,28 @@ export function assertValidSessionListScope(scope: SessionListScope): void {
 }
 
 /**
- * Bind the caller-supplied key to the record identity. Ownership is always the
+ * Does the caller-supplied key match the record identity? Ownership is always the
  * authenticated user within a tenant; this prevents a confused-deputy or buggy caller
  * from storing an attacker-owned record under a victim prefix (adversarial review L2).
+ * Used (in throw form) on write and (in boolean form) on read to fail closed.
  */
+export function keyMatchesRecord(
+  key: SessionRecordKey,
+  record: HarnessSessionRecord,
+): boolean {
+  return (
+    key.tenantId === record.tenantId &&
+    key.userId === record.userId &&
+    key.sessionId === record.id
+  );
+}
+
+/** Throwing wrapper used on the write boundary (`put`). */
 export function assertKeyMatchesRecord(
   key: SessionRecordKey,
   record: HarnessSessionRecord,
 ): void {
-  if (
-    key.tenantId !== record.tenantId ||
-    key.userId !== record.userId ||
-    key.sessionId !== record.id
-  ) {
+  if (!keyMatchesRecord(key, record)) {
     throw new Error(
       'Session record identity must match the session key (tenantId/userId/id).',
     );

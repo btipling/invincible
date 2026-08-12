@@ -361,6 +361,59 @@ describe('RedisSessionStore', () => {
     await expect(store.list({ tenantId: 'tenant-1', userId: '*' })).rejects.toThrow(/Invalid session list scope/);
   });
 
+  it('drops schema-valid but identity-mismatched blobs on read (read-path re-bind, adv. re-run Minor L2)', async () => {
+    const map = new Map<string, unknown>();
+    const { client } = fakeClient(map);
+    const store = new RedisSessionStore({ client });
+    const key = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 'id' };
+
+    // A schema-valid blob whose OWN identity does NOT match the key it lives under
+    // (e.g. hand-edited Redis / bad migration): schema passes, bind fails → null.
+    map.set('harness:session:tenant-1:user-1:id', {
+      id: 'id',
+      tenantId: 'tenant-1',
+      userId: 'other-user', // identity mismatch
+      createdAt: 1,
+      updatedAt: 1,
+      messages: [],
+      meta: {},
+    });
+    await expect(store.get(key)).resolves.toBeNull();
+    expect(await store.list({ tenantId: 'tenant-1', userId: 'user-1' })).toEqual([]);
+
+    // Same for tenant off-by-one and session-id mismatch.
+    map.clear();
+    map.set('harness:session:tenant-1:user-1:id', makeRecord({ id: 'id', tenantId: 'tenant-9', updatedAt: 1 }));
+    await expect(store.get(key)).resolves.toBeNull();
+    map.set('harness:session:tenant-1:user-1:id', makeRecord({ id: 'different', updatedAt: 1 }));
+    await expect(store.get(key)).resolves.toBeNull();
+  });
+
+  it('memory double mirrors the read-path identity re-bind (fail closed)', async () => {
+    const s = new MemorySessionStore();
+    const key = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 'id' };
+    await s.put(key, makeRecord({ id: 'id' }));
+    // A valid record under its own key still round-trips.
+    expect((await s.get(key))?.id).toBe('id');
+    // Corrupt the double's map directly so it no longer matches its key → get fails closed.
+    (s as unknown as { store: Map<string, unknown> }).store.set(
+      'harness:session:tenant-1:user-1:other',
+      makeRecord({ id: 'other', tenantId: 'tenant-1', userId: 'user-1', updatedAt: 1 }),
+    );
+    expect((await s.get({ tenantId: 'tenant-1', userId: 'user-1', sessionId: 'other' }))?.id).toBe('other');
+    // A record bound to a DIFFERENT sessionId than its key is dropped from list/get.
+    (s as unknown as { store: Map<string, unknown> }).store.set(
+      'harness:session:tenant-1:user-1:stray',
+      makeRecord({ id: 'not_the_key', updatedAt: 1 }),
+    );
+    expect(
+      (await s.list({ tenantId: 'tenant-1', userId: 'user-1' })).map((r) => r.id),
+    ).toEqual(['id', 'other']);
+    await expect(
+      s.get({ tenantId: 'tenant-1', userId: 'user-1', sessionId: 'stray' }),
+    ).resolves.toBeNull();
+  });
+
   it('trust-but-verifies reads from Redis: corrupt blobs yield null / are skipped (adv. minor L1)', async () => {
     const map = new Map<string, unknown>();
     const { client } = fakeClient(map);
