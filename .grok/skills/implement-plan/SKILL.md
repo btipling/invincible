@@ -23,6 +23,10 @@ and the code that ships it.
 **Default repo:** `btipling/invincible`
 **Related:** `create-plan` (plans as issues) → `plan-review` (review/edit issue)
 → **this skill** (implement) → `adversarial-review` (hostile PR review).
+**Also related — start clean:** run **`cleanup-sandbox`** *before* starting a new
+implementation if the workspace is left over from a prior session (stray branch,
+unpushed commits, untracked agent scratch that isn't yours to keep). A fresh
+`main` checkout avoids implementing on top of stale state or racing an old run.
 
 **By default this skill does NOT merge.** It opens / updates a PR, verifies it,
 and stops at merge-ready. Merging happens only on an explicit, separate request
@@ -48,6 +52,10 @@ git config user.email "btipling@users.noreply.github.com"
 
 **Before coding:**
 
+0. **Start from a clean workspace.** If the sandbox is left over from a prior
+   session, run `cleanup-sandbox` first (reset to clean `main`) — do not
+   implement on top of a dirty tree or race an orphaned run left over by an
+   older session. See "start clean" note in the Related line above.
 1. Read root **`AGENTS.md`** (`main` or the branch the user named).
 2. Read **`docs/feature-divide.md`** if the change touches UI, bridge, or agent loop.
 3. Read the **plan issue** you are implementing (`gh issue view N`).
@@ -283,6 +291,7 @@ convention).
 
 ```text
 [ ] gh auth OK; commit author = btipling
+[ ] Workspace started clean (cleanup-sandbox run if prior-session leftovers)
 [ ] AGENTS.md + plan issue read; feature-divide when UI/bridge/agent
 [ ] Branch plan/<slug> off up-to-date main
 [ ] Implementation in the plan's locked layers, grounded in live code

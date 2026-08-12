@@ -45,6 +45,9 @@ gh issue view <N> --repo btipling/invincible --json number,title,body,url,state
 
 ## Then
 
+0. **Start clean: run `cleanup-sandbox` first** if the workspace is left over
+   from a prior session (stray branch, unpushed commits, untracked scratch).
+   Do **not** implement on top of a dirty tree.
 1. Confirm `AGENTS.md` was read this session.
 2. Read the plan fully (headers: Status, Layers, Cloud ops path, Living docs, DoD).
 3. Ground claims in **live code** on the branch you code against (usually `main`).
