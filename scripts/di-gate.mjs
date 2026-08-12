@@ -2,28 +2,41 @@
 /**
  * di-gate — static enforcement that module bodies never construct I/O directly.
  *
- * Phase 3 (parent #438 / #441). Scans the app/lib/scripts source trees (plus
- * `auth.ts` / `middleware.ts`) for the **DB seam** constructors Phase 3 can
- * guarantee:
+ * Phase 3 (parent #438 / #441) + Phase 2 (#439). Scans the app/lib/scripts
+ * source trees (plus `auth.ts` / `middleware.ts`) for **external-I/O constructors**
+ * that belong only in the composition root / factory-owner modules / grant-boundary
+ * lifecycle modules / test factories:
  *
- *   - `createDbConnection(`   — the real Postgres opener (defined in `db/index.ts`)
- *   - `new PGlite(`           — the in-memory test engine (self-hosted in
+ *   DB seam (phase 3):
+ *     - `createDbConnection(` — the real Postgres opener (defined in `db/index.ts`)
+ *     - `new PGlite(`         — the in-memory test engine (owned by
  *                               `lib/tenancy/test/shared.ts` only)
+ *   Sandbox / HTTP / Redis seam (phase 2, #439):
+ *     - `Sandbox.get(`            — `@vercel/sandbox` attach (factory owners +
+ *                                   userSandboxInstance lifecycle + orphan GHA)
+ *     - `createClient(`           — node-redis RESP client (redisSessionStore) —
+ *                                   MCP's own client is a separate, deferred owner
+ *     - `new RedisSessionStore(`  — the session store (root binds the factory)
+ *     - `createSandboxClient(`    — BYO sandbox client (factory owner + root)
+ *     - `createVercelSandboxClient(`  — Vercel-FS sandbox client (factory owner + root)
+ *     - `createVercelSandboxHttpRunner(` — hop-B HTTP runner (factory owner + root)
  *
- * Any occurrence of those symbols in a module body (i.e. NOT in a comment, NOT
- * in an allowlisted root/helper) is a phase failure.
- *
- * Scope decision (locked in the phase-3 plan): this phase's gate bans only the
- * **DB seam**. The Phase-2 surface (`Sandbox.get(`, `createClient(` in
- * sandbox/http/redis/mcp) is still legitimate until Phase 2 (#439) lands, so
- * those rules are deferred. See `AGENTS.md` "where to change" + the di-gate
- * entry in `package.json`.
+ * Any occurrence of those symbols in a module body (i.e. NOT in a comment, NOT in
+ * an allowlisted root/owner/helper, NOT in a test file) is a phase failure.
  *
  * Allowlisted roots/helpers:
- *   - `db/index.ts`            — owns `createDbConnection(` (the real opener)
- *   - `lib/di/index.ts`        — composition root: the only call site of
- *                                 `createDbConnection(` in production code
- *   - `lib/tenancy/test/shared.ts` — owns the single `new PGlite(` test engine
+ *   - `db/index.ts`                    — owns `createDbConnection(`
+ *   - `lib/di/index.ts`                — composition root (constructs everything)
+ *   - `lib/tenancy/test/shared.ts`     — owns the single `new PGlite(` test engine
+ *   - `lib/sandbox/client.ts`          — owns `createSandboxClient(`
+ *   - `lib/sandbox/vercelClient.ts`    — owns `createVercelSandboxClient(` + `Sandbox.get(`
+ *   - `lib/agent/vercelSandboxHttpRunner.ts` — owns `createVercelSandboxHttpRunner(` + `Sandbox.get(`
+ *   - `lib/sessions/redisSessionStore.ts`    — owns the RESP `createClient(` adapter
+ *   - `lib/tenancy/userSandboxInstance.ts`   — durable-instance attach boundary (`Sandbox.get(`)
+ *   - `scripts/sandbox-orphan-cleanup.mjs`   — orphan GHA attach helper (`Sandbox.get(`)
+ *   - `lib/mcp/client.ts`              — MCP client owner (deferred to MCP phase)
+ *   - `scripts/di-gate.mjs`            — the gate defines the rule strings itself
+ *   - `*.test.*` / `*.spec.*`          — test factories (inject / construct freely)
  *
  * This is a pure static grep (no vitest wrapper). It exits 0 when the scan is
  * clean and 1 (with offenders) otherwise.
@@ -33,20 +46,39 @@ import { dirname, join, resolve, sep } from 'node:path';
 
 const ROOTS = ['app', 'lib', 'scripts', 'auth.ts', 'middleware.ts'];
 const EXTS = new Set(['.ts', '.mts', '.js', '.mjs', '.cjs']);
+const TEST_RE = /\.(test|spec)\.(ts|mts|js|mjs|cjs)$/;
 
 /** Paths (forward-slash, repo-relative) that are allowed to contain the symbols. */
 const ALLOWLIST = new Set([
   'db/index.ts',
   'lib/di/index.ts',
   'lib/tenancy/test/shared.ts',
+  // Sandbox / HTTP / Redis factory owners + lifecycle boundaries (phase 2).
+  'lib/sandbox/client.ts',
+  'lib/sandbox/vercelClient.ts',
+  'lib/agent/vercelSandboxHttpRunner.ts',
+  'lib/sessions/redisSessionStore.ts',
+  'lib/tenancy/userSandboxInstance.ts',
+  'scripts/sandbox-orphan-cleanup.mjs',
+  // MCP client construction is deferred to the MCP-owner phase (separate owner).
+  'lib/mcp/client.ts',
   // The gate itself defines the rule strings (symbol + regex), so it must not
   // flag its own definitions.
   'scripts/di-gate.mjs',
 ]);
 
 const PATTERNS = [
+  // DB seam (phase 3).
   { symbol: 'createDbConnection(', regex: /createDbConnection\s*\(/g },
   { symbol: 'new PGlite(', regex: /new\s+PGlite\s*\(/g },
+  // Sandbox / HTTP / Redis seam (phase 2, #439).
+  // eslint-disable-next-line no-useless-escape
+  { symbol: 'Sandbox.get(', regex: /Sandbox\s*\.\s*get\s*\(/g },
+  { symbol: 'createClient(', regex: /createClient\s*\(/g },
+  { symbol: 'new RedisSessionStore(', regex: /new\s+RedisSessionStore\s*\(/g },
+  { symbol: 'createSandboxClient(', regex: /createSandboxClient\s*\(/g },
+  { symbol: 'createVercelSandboxClient(', regex: /createVercelSandboxClient\s*\(/g },
+  { symbol: 'createVercelSandboxHttpRunner(', regex: /createVercelSandboxHttpRunner\s*\(/g },
 ];
 
 function isSourceFile(name) {
@@ -105,6 +137,8 @@ function main() {
     }
     for (const file of files) {
       const rel = file.split(sep).join('/');
+      // Test factories construct / inject freely (phase-2 scoped allowlist).
+      if (TEST_RE.test(rel)) continue;
       if (ALLOWLIST.has(rel)) continue;
       const src = stripComments(readFileSync(file, 'utf8'));
       for (const { symbol, regex } of PATTERNS) {
@@ -129,12 +163,14 @@ function main() {
     console.error('di-gate FAILED — direct I/O construction found in module bodies:');
     for (const o of unique) console.error(`  ${o}`);
     console.error(
-      '\nAllowed only in: db/index.ts, lib/di/index.ts, lib/tenancy/test/shared.ts.',
+      '\nAllowed only in: db/index.ts, lib/di/index.ts, factory-owner modules, ' +
+        'lib/tenancy/userSandboxInstance.ts, scripts/sandbox-orphan-cleanup.mjs, ' +
+        'lib/mcp/client.ts, lib/tenancy/test/shared.ts, and test files (*.test.* / *.spec.*).',
     );
     process.exit(1);
   }
   console.log(
-    'di-gate OK — no in-body createDbConnection(/new PGlite( outside allowlisted roots.',
+    'di-gate OK — no in-body I/O construction (DB / sandbox / HTTP / Redis) outside allowlisted roots.',
   );
 }
 

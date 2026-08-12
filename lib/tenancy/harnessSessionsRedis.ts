@@ -22,7 +22,6 @@ import {
   type SessionListScope,
   type SessionRecordKey,
 } from '../sessions/sessionStore';
-import { RedisSessionStore } from '../sessions/redisSessionStore';
 import { loadSoleMembership } from './soleMembership';
 import { createSoleMembership } from './soleMembership';
 
@@ -78,13 +77,30 @@ export function setSessionStoreForTests(store: ServerSessionStore | null): void 
   else delete g[STORE_OVERRIDE];
 }
 
+/**
+ * Root-registered server session-store factory (phase 2 — #439). The composition
+ * root (`lib/di/index.ts`) registers the real `RedisSessionStore` constructor so
+ * this wiring module never constructs I/O itself; the test seam
+ * (`setSessionStoreForTests`) still takes precedence so route tests inject an
+ * in-memory store. When neither a test override nor a server factory is present,
+ * constructing a store is a wiring error surfaced as `SESSION_STORE_UNAVAILABLE`.
+ */
+let serverStoreFactory: (() => ServerSessionStore) | null = null;
+
+export function registerSessionStoreFactoryForServer(
+  factory: (() => ServerSessionStore) | null,
+): void {
+  serverStoreFactory = factory;
+}
+
 function constructStore(): ServerSessionStore {
   const g = globalThis as unknown as Record<symbol, ServerSessionStore | null>;
   const override = g[STORE_OVERRIDE];
   if (override) return override;
-  // Reads REDIS_URL (RESP wire format) and throws when Redis is not configured —
-  // resolved to a 503 by the caller.
-  return new RedisSessionStore();
+  if (serverStoreFactory) return serverStoreFactory();
+  throw new Error(
+    'session store factory not registered (call registerSessionStoreFactoryForServer)',
+  );
 }
 
 export async function resolveSessionStore(): Promise<ServiceResult<ServerSessionStore>> {

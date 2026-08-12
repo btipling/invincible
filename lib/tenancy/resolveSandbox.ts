@@ -14,12 +14,9 @@ import {
   type Db,
 } from '../../db';
 import { withConnection, type TenancyConnection } from '../di/withConnection';
-import { createSandboxClient, type SandboxClient } from '../sandbox/client';
+import { type SandboxClient } from '../sandbox/client';
 import { normalizeBaseUrl } from '../sandbox/config';
-import {
-  createVercelSandboxClient,
-  type CreateVercelSandboxClientOptions,
-} from '../sandbox/vercelClient';
+import { type CreateVercelSandboxClientOptions } from '../sandbox/vercelClient';
 import {
   SANDBOX_FORBIDDEN_ERROR,
   SANDBOX_SELECTION_REQUIRED_ERROR,
@@ -238,14 +235,12 @@ async function resolveWithDb(
 
       let client: SandboxClient;
       try {
-        const createVercel =
-          deps.createVercelClient ??
-          ((
-            opts: Pick<
-              CreateVercelSandboxClientOptions,
-              'name' | 'image' | 'execEnv'
-            >,
-          ) => createVercelSandboxClient(opts));
+        // The composition root binds the real Vercel-FS factory; per-row/attach
+        // construction stays data-driven here (module never constructs itself).
+        const createVercel = deps.createVercelClient;
+        if (!createVercel) {
+          return forbidden();
+        }
         client = createVercel({
           name: instance.vercelName,
           image: instance.image,
@@ -291,11 +286,12 @@ async function resolveWithDb(
     }
 
     const baseUrl = normalizeBaseUrl(baseUrlRaw);
-    const createByo =
-      deps.createByoClient ??
-      deps.createClient ??
-      ((opts: { baseUrl: string; token: string; execEnv?: Record<string, string> }) =>
-        createSandboxClient(opts));
+    // The composition root binds the real BYO factory; construction is injectable
+    // (tests) never in-body (module never constructs I/O directly).
+    const createByo = deps.createByoClient ?? deps.createClient;
+    if (!createByo) {
+      return forbidden();
+    }
     const client = createByo({
       baseUrl,
       token,

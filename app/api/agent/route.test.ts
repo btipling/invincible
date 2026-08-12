@@ -35,6 +35,12 @@ describe('POST /api/agent', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (servicesState as any).userSandboxInstance =
       servicesState.userSandboxInstance ?? {};
+    // Phase-2 DI (#439): the route reads `serverSecrets` and builds the hop-B HTTP
+    // runner via `createHttpRunner` from the root. Default serverSecrets to empty
+    // (no gateway/sandbox-token redaction) unless a test overrides them.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (servicesState as any).serverSecrets =
+      servicesState.serverSecrets ?? { gatewayKey: undefined, sandboxToken: undefined };
     vi.doMock('../../../lib/di', () => ({
       createProdServices: () => servicesState,
       createScriptConnection: vi.fn(),
@@ -50,6 +56,8 @@ describe('POST /api/agent', () => {
     delete servicesState.userMcpServers;
     delete servicesState.userSandboxInstance;
     delete servicesState.soleMembership;
+    delete servicesState.serverSecrets;
+    delete servicesState.createHttpRunner;
     vi.doUnmock('../../../lib/di');
     vi.doUnmock('../../../lib/agent/runAgent');
     vi.doUnmock('../../../lib/tenancy/session');
@@ -675,9 +683,7 @@ describe('POST /api/agent', () => {
       get: vi.fn(),
       close: closeHttp,
     }));
-    vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
-      createVercelSandboxHttpRunner: createRunner,
-    }));
+    servicesState.createHttpRunner = createRunner;
     vi.doMock('../../../lib/agent/httpFetchTools', () => ({
       createHttpFetchTools: vi.fn(() => ({
         http_get: { description: 'get', execute: async () => 'ok' },
@@ -722,9 +728,7 @@ describe('POST /api/agent', () => {
       })),
     };
     const createRunner = vi.fn(() => ({ get: vi.fn(), close: vi.fn() }));
-    vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
-      createVercelSandboxHttpRunner: createRunner,
-    }));
+    servicesState.createHttpRunner = createRunner;
     vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
 
     const { POST } = await import('./route');
@@ -777,9 +781,7 @@ describe('POST /api/agent', () => {
       get: vi.fn(),
       close: vi.fn(async () => {}),
     }));
-    vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
-      createVercelSandboxHttpRunner: createRunner,
-    }));
+    servicesState.createHttpRunner = createRunner;
     vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
 
     const { POST } = await import('./route');
@@ -831,9 +833,7 @@ describe('POST /api/agent', () => {
       })),
     };
     const createRunner = vi.fn(() => ({ get: vi.fn(), close: vi.fn() }));
-    vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
-      createVercelSandboxHttpRunner: createRunner,
-    }));
+    servicesState.createHttpRunner = createRunner;
     vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
 
     const { POST } = await import('./route');
@@ -887,9 +887,7 @@ describe('POST /api/agent', () => {
       get: vi.fn(),
       close: closeHttp,
     }));
-    vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
-      createVercelSandboxHttpRunner: createRunner,
-    }));
+    servicesState.createHttpRunner = createRunner;
     vi.doMock('../../../lib/agent/httpFetchTools', () => ({
       createHttpFetchTools: vi.fn(() => ({
         http_get: { description: 'get', execute: async () => 'ok' },
@@ -925,11 +923,9 @@ describe('POST /api/agent', () => {
     process.env.BUILTIN_HTTP_FETCH = 'sandbox';
 
     const closeHttp = vi.fn(async () => {});
-    vi.doMock('../../../lib/agent/vercelSandboxHttpRunner', () => ({
-      createVercelSandboxHttpRunner: vi.fn(() => ({
-        get: vi.fn(),
-        close: closeHttp,
-      })),
+    servicesState.createHttpRunner = vi.fn(() => ({
+      get: vi.fn(),
+      close: closeHttp,
     }));
     vi.doMock('../../../lib/agent/httpFetchTools', () => ({
       createHttpFetchTools: vi.fn(() => ({

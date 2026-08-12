@@ -42,6 +42,8 @@ export function isHttpRedirectStatus(status: number): boolean {
 export type CreateHttpFetchToolsOptions = {
   runner: HttpFetchRunner;
   secrets?: Array<string | undefined | null>;
+  /** Root-resolved server secrets (phase 2 — #439); merged for redaction. */
+  serverSecrets?: import('../di').ServerSecrets;
   signal?: AbortSignal;
   /** Default max bytes for body read (clamped by caller / runner). */
   maxBytes: number;
@@ -170,12 +172,12 @@ export async function fetchFollowingRedirects(opts: {
  * Soft-fail: never throw from execute.
  */
 export function createHttpFetchTools(opts: CreateHttpFetchToolsOptions) {
-  // Match runAgent baseline: always scrub Gateway / DO sandbox token from
-  // model-facing tool strings (route secrets are additive).
+  // Scrub Gateway / DO sandbox token from model-facing tool strings. Secrets are
+  // injected (route-resolved serverSecrets) — no process.env reads in this body.
   const secrets: Array<string | undefined | null> = [
     ...(opts.secrets ?? []),
-    process.env.AI_GATEWAY_API_KEY,
-    process.env.SANDBOX_TOKEN,
+    opts.serverSecrets?.gatewayKey,
+    opts.serverSecrets?.sandboxToken,
   ];
   const includeHead = opts.includeHead !== false;
   const defaultMaxBytes = opts.maxBytes;

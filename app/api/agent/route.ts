@@ -20,7 +20,6 @@ import { redactSecrets } from '../../../lib/agent/redact';
 import { buildUserMcpTools } from '../../../lib/mcp/client';
 import { resolveBuiltinHttpConfig } from '../../../lib/agent/builtinHttpConfig';
 import { createHttpFetchTools } from '../../../lib/agent/httpFetchTools';
-import { createVercelSandboxHttpRunner } from '../../../lib/agent/vercelSandboxHttpRunner';
 import type { HttpFetchRunner } from '../../../lib/agent/httpFetchTypes';
 
 export const runtime = 'nodejs';
@@ -109,6 +108,10 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: parsed.error }, { status: parsed.status });
   }
 
+  // Server secrets resolved once at the root (phase-2 DI) — scrubbed from
+  // model-facing and client-facing strings like the BYOK / PAT / MCP secrets.
+  const serverSecrets = services.serverSecrets;
+
   let redactList: string[] = [];
   let mcpClose: (() => Promise<void>) | undefined;
   let httpRunner: HttpFetchRunner | undefined;
@@ -127,6 +130,7 @@ export async function POST(req: Request): Promise<Response> {
       prompt: parsed.prompt,
       signal: req.signal,
       initialCwd: parsed.cwd,
+      serverSecrets,
     };
     /**
      * When resolve fails but we soft-path (softContinue or builtin HTTP),
@@ -148,7 +152,11 @@ export async function POST(req: Request): Promise<Response> {
       const { status, error } = mapByokResolveFailure(byok.reason);
       return Response.json({ error }, { status });
     }
-    redactList = byok.secretsToRedact;
+    redactList = [
+      ...byok.secretsToRedact,
+      serverSecrets.gatewayKey,
+      serverSecrets.sandboxToken,
+    ].filter(Boolean) as string[];
 
     // Per-user GitHub PAT → sandbox exec env (client options only; never tool schema).
     const gh = await services.userGithubToken.decryptUserGithubTokenForServer(
@@ -238,12 +246,12 @@ export async function POST(req: Request): Promise<Response> {
       }
 
       if (httpAttachName) {
-        httpRunner = createVercelSandboxHttpRunner({
-          name: httpAttachName,
-        });
+        // Constructed via the composition root (phase-2 DI), request-scoped.
+        httpRunner = services.createHttpRunner({ name: httpAttachName });
         const httpTools = createHttpFetchTools({
           runner: httpRunner,
           secrets: runParams.secrets,
+          serverSecrets,
           signal: req.signal,
           maxBytes: builtinHttp.maxBytes,
           timeoutMs: builtinHttp.timeoutMs,
