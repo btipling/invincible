@@ -316,14 +316,19 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         if (pendingId) {
           pendingMintBindRef.current = null;
           const bound = { ...sessionRef.current, id: pendingId };
-          sessionRef.current = bound;
+          // Persist the transcript under the real server-minted id NOW — not only as a
+          // fire-and-forget PUT. A reload here must restore under the id the URL advertises
+          // (#430 re-review): otherwise localStorage would still say sess_X while `?s=` says
+          // the fresh uuid, and boot's get(uuid) (the empty minted row) would adopt/wipe the
+          // first-turn dialogue instead of keeping it.
+          writeLocalSession(bound);
           setActiveSessionId(pendingId);
           setUrlSessionId(pendingId);
           repoRef.current?.put(pendingId, bound);
         }
       }
     },
-    [persist, setUrlSessionId],
+    [persist, setUrlSessionId, writeLocalSession],
   );
 
   useEffect(() => {
@@ -450,12 +455,15 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               if (inflightRef.current) {
                 // Mid-turn (#430): do NOT hydrate the Wasm ring now — that would wipe
                 // partial assistant/thinking that only lives on the bridge. Defer the id
-                // bind until the turn finishes; runPrompt applies it in finally.
+                // bind until the turn finishes; runPrompt applies it in finally. Return
+                // 'deferred' so bootCloudSession skips the `?s=` pin too: never advertise
+                // the empty minted row as canonical before it's actually bound.
                 pendingMintBindRef.current = id;
-                return;
+                return 'deferred';
               }
               activateSession(merged);
               r.put(id, merged); // persist any carried-over local history
+              return 'bound';
             },
             onUrlUpdate: (id) => setUrlSessionId(id),
           });

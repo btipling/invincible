@@ -174,6 +174,55 @@ describe('bootCloudSession', () => {
     expect(onMint).toHaveBeenCalled();
   });
 
+  it('mid-turn (deferred) mint does NOT pin ?s= to the empty row yet', async () => {
+    const { repo } = makeRepo();
+    const onMint = vi.fn(() => 'deferred' as const);
+    const onUrl = vi.fn();
+    const result = await bootCloudSession({
+      repo,
+      urlId: null,
+      localId: 'sess_fresh',
+      onMint,
+      onUrlUpdate: onUrl,
+    });
+    expect(result).toEqual({ kind: 'minted', id: idB });
+    expect(onMint).toHaveBeenCalledWith(empty(idB), idB);
+    // Adversarial re-review #430: a deferred mint must NOT replaceState(?s=Y) before the
+    // host has bound the id — otherwise a reload would pin the empty minted row and wipe
+    // the local first-turn transcript on boot.
+    expect(onUrl).not.toHaveBeenCalled();
+  });
+
+  it('?s= gone (404) → mint is also deferred (never pins the fresh row)', async () => {
+    const { repo } = makeRepo({
+      onGet: async () => ({ action: 'notfound' }),
+    });
+    const onMint = vi.fn(() => 'deferred' as const);
+    const onUrl = vi.fn();
+    const result = await bootCloudSession({
+      repo,
+      urlId: idA,
+      localId: null,
+      onMint,
+      onUrlUpdate: onUrl,
+    });
+    expect(result).toEqual({ kind: 'minted', id: idB });
+    expect(onUrl).not.toHaveBeenCalled();
+  });
+
+  it('bound mint DOES update the URL by default', async () => {
+    const { repo } = makeRepo();
+    const onUrl = vi.fn();
+    const result = await bootCloudSession({
+      repo,
+      urlId: null,
+      localId: 'sess_fresh',
+      onUrlUpdate: onUrl,
+    });
+    expect(result).toEqual({ kind: 'minted', id: idB });
+    expect(onUrl).toHaveBeenCalledWith(idB);
+  });
+
   it('?s= gone (404) falls back to a bound local id when present', async () => {
     const { repo } = makeRepo({
       onGet: async (id) => {

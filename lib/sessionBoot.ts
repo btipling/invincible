@@ -75,8 +75,15 @@ export function fallbackAfterGone(
 export type SessionBootCallbacks = {
   /** Adopt a server session (local write + Wasm hydrate). Server snapshot owns content. */
   onAdopt: (snapshot: SessionSnapshot, id: string) => void;
-  /** Bind a freshly minted server id (host preserves local transcript, hydrates). */
-  onMint: (snapshot: SessionSnapshot, id: string) => void;
+  /**
+   * Bind a freshly minted server id (host preserves local transcript, hydrates).
+   * Return `'deferred'` when the id cannot be fully bound yet — e.g. a prompt is
+   * streaming and re-hydrating the ring would wipe bridge-only partial output.
+   * bootCloudSession then SKIPS the `?s=` URL pin: never advertise a server row
+   * as the canonical active id before the host has actually bound it (adversarial
+   * re-review #430). `undefined` / `'bound'` → URL updated.
+   */
+  onMint: (snapshot: SessionSnapshot, id: string) => 'bound' | 'deferred' | void;
   /** Update the URL `?s=` param. */
   onUrlUpdate?: (id: string | null) => void;
 };
@@ -112,8 +119,11 @@ export async function bootCloudSession(options: {
   if (target.kind === 'mint') {
     const created = await repo.create();
     if (created.action !== 'ok') return { kind: 'local', id: localId };
-    onMint?.(created.snapshot, created.snapshot.id);
-    onUrlUpdate?.(created.snapshot.id);
+    // A deferred mint (mid-stream) must NOT pin `?s=` to the empty server row yet —
+    // the host will rebind once the turn finishes. See onMint doc.
+    if (onMint?.(created.snapshot, created.snapshot.id) !== 'deferred') {
+      onUrlUpdate?.(created.snapshot.id);
+    }
     return { kind: 'minted', id: created.snapshot.id };
   }
 
@@ -131,8 +141,9 @@ export async function bootCloudSession(options: {
       if (fallback.kind === 'mint') {
         const created = await repo.create();
         if (created.action === 'ok') {
-          onMint?.(created.snapshot, created.snapshot.id);
-          onUrlUpdate?.(created.snapshot.id);
+          if (onMint?.(created.snapshot, created.snapshot.id) !== 'deferred') {
+            onUrlUpdate?.(created.snapshot.id);
+          }
           return { kind: 'minted', id: created.snapshot.id };
         }
       } else if (fallback.kind === 'adopt') {
