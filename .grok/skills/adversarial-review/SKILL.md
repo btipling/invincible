@@ -9,7 +9,7 @@ description: >
   Never GitHub MCP. Does not implement fixes unless asked.
 metadata:
   short-description: "Hostile PR review: break-scenario findings, invincible attack surface"
-  version: "1.0"
+  version: "1.1"
   project: invincible
 ---
 
@@ -167,7 +167,11 @@ the answer “no,” that is a finding.
 - Missing operator path for UI  
 - CI can’t prove harness protocol TS↔Zig version parity  
 - **Test performance** — the suite runs mostly in one vitest process, so a single slow test file stalls everyone. For changed `lib/*`/DB tests, check for wall-time anti-patterns:
-  - **Multiple cold PGlite/WASM Postgres boots** in one file (one per `describe`) — reuse a single boot; simulate a pre-migration schema by dropping the table instead of booting a second engine.
+  - **Cold-boot gate (automatic failure — not a nit, not user-acceptable).** A test-side **cold boot** is `new PGlite()`, a second in-process WASM/Postgres engine in the same file, or a file-local migration boot that constructs its own engine. **One** shared helper (issue `#431`; typically `lib/tenancy/test/*` / the DI test seam) may call `new PGlite()`. Everywhere else is a fail.
+    - PR **adds** a `new PGlite(` / extra engine / copy-pasted `applyMigrations` + boot → **Major**, verdict **CONCERNS**. Cannot PASS / PASS WITH NOTES.
+    - **Two or more** `new PGlite()` in one file → same.
+    - Shared helper **exists** on the PR head and a **changed** test file still constructs `new PGlite()` itself → same.
+    - Pre-existing untouched `new PGlite()` files on `main` are `#431` work, not a finding against an unrelated PR.
   - **Per-test migrations** applied one `--> statement-breakpoint` chunk at a time (or re-applied every test) — apply each migration file once, in a single multi-statement `exec`.
   - **Heavy per-`beforeEach` DB reseed** (delete N tables + re-insert a baseline under a fresh DEK for every test) — flag when a `lib/tenancy/*.test.ts` boots PGlite and rebuckets whole stores per test; prefer one-time baseline + rollback where the mock/socket surface allows. Be aware PGlite’s single-connection mutex deadlocks raw SAVEPOINT / `db.transaction` straddling the shared `db`.
   - **State-leak symptom:** per-test `dekVersion`/`kekVersion` monotonically rising across tests — the intended isolation (rollback/reseed) isn’t running and tests now depend on prior tests’ writes.
@@ -213,7 +217,7 @@ traced code; mark medium/low when baseline was incomplete.
 | Sev | Meaning | Merge impact |
 |-----|---------|--------------|
 | **Blocker** | Exploit, secret leak, runner abuse, dual-chat product regression, data loss, sure production break | Must fix before merge |
-| **Major** | Likely bug, missing tests on risky surface, protocol skew risk, deploy race, serious reusability bind | Fix or explicit user accept |
+| **Major** | Likely bug, missing tests on risky surface, protocol skew risk, deploy race, serious reusability bind, **test cold-boot gate** (`new PGlite()` outside the one shared helper — automatic, not user-acceptable) | Fix before merge (cold-boot: no “explicit accept”) |
 | **Minor** | Real improvement; bounded risk | Should fix soon |
 | **Nit** | Clarity only | Optional |
 
@@ -222,7 +226,7 @@ traced code; mark medium/low when baseline was incomplete.
 | Verdict | When |
 |---------|------|
 | **BLOCK** | ≥1 Blocker |
-| **CONCERNS** | No Blockers; ≥1 Major (or many Minors on risky surfaces) |
+| **CONCERNS** | No Blockers; ≥1 Major (or many Minors on risky surfaces). **Cold-boot Major cannot be waived.** |
 | **PASS WITH NOTES** | Only Minor/Nit after self-refutation |
 | **INCOMPLETE** | Could not fetch PR/diff/baseline; do not rubber-stamp |
 
