@@ -278,7 +278,11 @@ pub fn buildTable(
     const overflow = if (body.len > body_n) body.len - body_n else 0;
 
     const total_rows = 1 + body_n; // header + body
-    const total_cells = total_rows * cols;
+    // Zig 0.16 bounds-propagates `@min(.., MAX_ROWS/MAX_COLS)` here, narrowing
+    // total_rows to u6 and cols to u4; their product then overflows u6 for any
+    // table with >63 cells even though total_cells <= MAX_CELLS (480). Force the
+    // geometry math wide in usize so a full MAX_ROWS x MAX_COLS grid is safe.
+    const total_cells: usize = @as(usize, total_rows) * @as(usize, cols);
     var cells = try allocator.alloc([]const u8, total_cells);
     errdefer allocator.free(cells);
 
@@ -756,6 +760,42 @@ test "parsePaintMeta wide-cell run invariant no truncation" {
     // header run stays 1-run; the wide body Result cell keeps all 5 runs.
     try std.testing.expectEqual(@as(usize, 1), cellRunCount(&m, 0));
     try std.testing.expectEqual(@as(usize, 5), cellRunCount(&m, m.num_cells - 1));
+}
+
+// Row-cap regression for the smoke stress table: a 2-col table with more than
+// MAX_ROWS rows must cap the body to MAX_ROWS - 1 (header + body), keep complete
+// rows, and report the exact "N more rows" footer overflow (the number of data
+// rows deliberately dropped by the MAX_ROWS cap).
+test "buildTable caps rows and counts overflow footer" {
+    // A 2-col table with more than MAX_ROWS rows, driven through the real
+    // partition runtime path. This is the "… N more rows" stress smoke: the body
+    // must cap to MAX_ROWS - 1 (header + body = MAX_ROWS), rows stay complete,
+    // and overflow_rows = the data rows dropped by the MAX_ROWS cap. It also
+    // guards the geometry math: with 40 rows x 2 cols = 80 cells > u6's 63, the
+    // old `total_rows * cols` overflowed (Zig 0.16 narrows operands to u6/u4).
+    var src: std.ArrayList(u8) = .empty;
+    const a = std.testing.allocator;
+    defer src.deinit(a);
+    try src.appendSlice(a, "| N | N |\n|---|---|\n");
+    const nrows: usize = 42; // 42 data rows → 3 dropped by the MAX_ROWS body cap
+    var line_buf: [24]u8 = undefined;
+    var i: usize = 0;
+    while (i < nrows) : (i += 1) {
+        const line = try std.fmt.bufPrint(&line_buf, "| {d} | {d} |\n", .{ i + 1, i + 1 });
+        try src.appendSlice(a, line);
+    }
+
+    const segs = try partition(std.testing.allocator, src.items);
+    defer {
+        for (segs) |s| freeSegment(std.testing.allocator, s);
+        std.testing.allocator.free(segs);
+    }
+    try std.testing.expectEqual(@as(usize, 1), segs.len);
+    try std.testing.expect(segs[0].is_table);
+    const td = segs[0].table.?;
+    try std.testing.expectEqual(@as(usize, 2), td.cols);
+    try std.testing.expectEqual(@as(usize, MAX_ROWS), td.rowCount());
+    try std.testing.expectEqual(@as(usize, nrows - (MAX_ROWS - 1)), td.overflow_rows);
 }
 
 // #421: short 2×2 / short-label tables stay compact at the partition level — every

@@ -99,15 +99,27 @@ pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
         .scroll_opts = .{
             // #421 policy: NO horizontal scroll anywhere in the UI. With
             // .horizontal = .none, dvui grid.init enters its proportional-shrink
-            // branch (col_expand can go negative, weighted by content width), so a
-            // table whose natural columns exceed the viewport shrinks each column
-            // and cells wrap to fit — instead of exposing a horizontal scrollbar
-            // (which is what .auto forces by never shrinking).
+            // branch (col_expand is allowed to go negative, weighted by content
+            // width), so a table whose natural columns exceed the viewport shrinks
+            // each column and cells wrap to fit — instead of exposing a horizontal
+            // scrollbar (which is what .auto forces by never shrinking).
             .horizontal = .none,
             .vertical = .none,
         },
     }, .{
-        .expand = .horizontal,
+        // Expand is intentionally NOT horizontal here. In dvui GridWidget.init,
+        // col_expand = (viewport.w - total) / weight is:
+        //   * @max(0, …)   when scroll.horizontal != .none  (spread only, never shrink)
+        //   * @min(0, …)   when expand is NOT horizontal    (shrink only, never spread)
+        // With expand = .horizontal AND scroll .none (no clamp runs), a small table
+        // whose natural width < viewport gets a large positive col_expand and its
+        // columns stretch across the whole transcript (the "2×2 takes the full
+        // width" regression). Using non-horizontal expand keeps small tables
+        // compact (col_expand = 0) while wide tables still shrink + wrap (negative
+        // col_expand) — no horizontal scroll in either case. The box auto-sizes to
+        // min(natural, max_width = content_w), so a table broader than the
+        // transcript still fills it.
+        .expand = .vertical,
         .id_extra = paint_text.nextIdPublic(ctx),
         .background = true,
         .color_fill = ctx.style.code_fill,
@@ -116,7 +128,6 @@ pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
         .padding = .{},
         .margin = .{},
     });
-    defer grid.deinit();
 
     // Force autosize every paint so col widths track content (small tables).
     // min_width stays a readable floor (no char-level quantization now that cells
@@ -205,6 +216,14 @@ pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
             paintCellInlines(slice, ctx, body_font, ax);
         }
     }
+
+    // Close the grid BEFORE drawing the overflow footer. GridWidget.cell() leaves
+    // the current dvui parent as the grid's body scroll, so if the footer were
+    // created while the grid is still open it would be misplaced on top of / inside
+    // the table (the row-cap footer smears into a garbled "single row"). Deinit-ing
+    // first resets the parent to the outer frame box, making the footer a true
+    // sibling stacked below the table.
+    grid.deinit();
 
     if (overflow > 0) {
         var buf: [48]u8 = undefined;
