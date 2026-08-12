@@ -1,10 +1,8 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { createTenancyTestDb } from './test/pglite';
 import { PGlite } from '@electric-sql/pglite';
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as schema from '../../db/schema';
 import { encryptSecret } from './credentials';
 import {
@@ -18,33 +16,7 @@ import {
   encryptTenantSecret,
 } from './tenantKeys';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(__dirname, '../../db/migrations');
-
-async function applyMigrations(client: PGlite) {
-  for (const name of [
-    '0000_tenancy_phase1.sql',
-    '0001_sso_scim_identity.sql',
-    '0002_tenant_deks.sql',
-    '0003_provider_secrets.sql',
-    '0004_user_mcp_servers.sql',
-    '0005_sandbox_backend.sql',
-    '0006_user_github_tokens.sql',
-    '0007_user_preferred_sandbox.sql',
-    '0008_user_sandbox_instances.sql',
-  ]) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8');
-    for (const stmt of sql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean)) {
-      await client.exec(stmt);
-    }
-  }
-}
-
 const AMK = Buffer.alloc(32, 9);
-
 
 async function insertRunningWorkspace(
   db: ReturnType<typeof drizzle<typeof schema>>,
@@ -81,14 +53,10 @@ describe('resolveAgentSandbox', () => {
   let sandboxId: string;
 
   beforeAll(async () => {
-    client = new PGlite();
-    await applyMigrations(client);
-    db = drizzle(client, { schema });
+
+    ({ client, db } = await createTenancyTestDb());
   });
 
-  afterAll(async () => {
-    await client.close();
-  });
 
   beforeEach(async () => {
     await db.delete(schema.userSandboxInstances);
@@ -602,7 +570,6 @@ describe('resolveAgentSandbox', () => {
     if (!result.ok) throw new Error('expected ok');
     expect(result.value.backend).toBe('byo');
   });
-
 
   it('multiple usable without preference → selection required error', async () => {
     const [sb2] = await db

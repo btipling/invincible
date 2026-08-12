@@ -284,6 +284,7 @@ invincible/
 | Builtin HTTPS fetch (`http_get`) | `lib/agent/httpFetch*.ts`, `lib/agent/vercelSandboxHttpRunner.ts`, `lib/net/publicUrlPolicy.ts`, `docs/builtin-http.md` — env `BUILTIN_HTTP_FETCH`; user-created HTTP instance attach-only (Settings → Sandbox) |
 | Tenancy schema / migrations | `db/schema.ts`, `db/migrations/` |
 | Tenancy crypto / seed helpers | `lib/tenancy/*`, `scripts/seed-tenancy.ts` |
+| Tenancy test DB boot (shared PGlite) | `lib/tenancy/test/pglite.ts` (one engine per test file; batched dynamic migrations), `lib/tenancy/test/fixtures.ts` (precomputed cost-12 bcrypt fixture) |
 | Tenant BYOK / inference grants | `app/admin/inference/*`, `lib/tenancy/providerSecrets*`, `lib/tenancy/resolveInference*`, `lib/gateway/byokProviders.ts`, `app/api/models/*` |
 | Tenant sandboxes (backend + image) | `app/admin/sandboxes/*`, `lib/tenancy/manageSandbox.ts`, `lib/tenancy/sandboxBackend.ts`, `lib/tenancy/resolveSandbox.ts`, `lib/sandbox/vercelClient.ts`, [docs/sandbox.md](docs/sandbox.md) |
 | Vercel attach resilience (transient classify + bounded retry, both FS + hop-B) | `lib/sandbox/resilience.ts`, `lib/sandbox/vercelClient.ts`, `lib/agent/vercelSandboxHttpRunner.ts` — shared seam; BYO daemon (`lib/sandbox/client.ts`) is **untouched** |

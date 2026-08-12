@@ -1,70 +1,41 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { createTenancyTestDb } from './test/pglite';
 import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
-import { hashPassword } from './password';
 import { authenticateCredentials } from './authenticate';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(__dirname, '../../db/migrations');
-
-async function applyMigrations(client: PGlite) {
-  for (const name of [
-    '0000_tenancy_phase1.sql',
-    '0001_sso_scim_identity.sql',
-    '0002_tenant_deks.sql',
-    '0003_provider_secrets.sql',
-    '0004_user_mcp_servers.sql',
-    '0005_sandbox_backend.sql',
-    '0006_user_github_tokens.sql',
-    '0007_user_preferred_sandbox.sql',
-  ]) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8');
-    const statements = sql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    for (const stmt of statements) {
-      await client.exec(stmt);
-    }
-  }
-}
+import { FIXTURE_LOGIN, FIXTURE_PASSWORD_HASH } from './test/fixtures';
 
 describe('authenticateCredentials', () => {
   let client: PGlite;
   let db: ReturnType<typeof drizzle<typeof schema>>;
 
   beforeAll(async () => {
-    client = new PGlite();
-    await applyMigrations(client);
-    db = drizzle(client, { schema });
+    ({ client, db } = await createTenancyTestDb());
 
-    const activeHash = await hashPassword('correct-horse-battery');
-    const inactiveHash = await hashPassword('inactive-pass');
-    const suspendedHash = await hashPassword('suspended-pass');
+    // Precomputed cost-12 fixture hash (setup runs zero real bcrypt hashes);
+    // `authenticateCredentials` still exercises the real bcrypt.compare against
+    // `FIXTURE_PASSWORD_HASH` of `FIXTURE_LOGIN`.
     await db.insert(schema.users).values([
       {
         email: 'active@example.com',
         name: 'Active',
         status: 'active',
-        passwordHash: activeHash,
+        passwordHash: FIXTURE_PASSWORD_HASH,
         provisionSource: 'credentials',
       },
       {
         email: 'inactive@example.com',
         name: 'Inactive',
         status: 'inactive',
-        passwordHash: inactiveHash,
+        passwordHash: FIXTURE_PASSWORD_HASH,
         provisionSource: 'credentials',
       },
       {
         email: 'suspended@example.com',
         name: 'Suspended',
         status: 'suspended',
-        passwordHash: suspendedHash,
+        passwordHash: FIXTURE_PASSWORD_HASH,
         provisionSource: 'credentials',
       },
       {
@@ -77,14 +48,11 @@ describe('authenticateCredentials', () => {
     ]);
   });
 
-  afterAll(async () => {
-    await client.close();
-  });
 
   it('returns user for correct password', async () => {
     const user = await authenticateCredentials(
       'Active@Example.com',
-      'correct-horse-battery',
+      FIXTURE_LOGIN,
       { db: db as never },
     );
     expect(user).not.toBeNull();
@@ -107,7 +75,7 @@ describe('authenticateCredentials', () => {
   it('rejects inactive user even with correct password', async () => {
     const user = await authenticateCredentials(
       'inactive@example.com',
-      'inactive-pass',
+      FIXTURE_LOGIN,
       { db: db as never },
     );
     expect(user).toBeNull();
@@ -116,7 +84,7 @@ describe('authenticateCredentials', () => {
   it('rejects suspended user even with correct password', async () => {
     const user = await authenticateCredentials(
       'suspended@example.com',
-      'suspended-pass',
+      FIXTURE_LOGIN,
       { db: db as never },
     );
     expect(user).toBeNull();
@@ -134,7 +102,7 @@ describe('authenticateCredentials', () => {
   it('rejects unknown email', async () => {
     const user = await authenticateCredentials(
       'missing@example.com',
-      'correct-horse-battery',
+      FIXTURE_LOGIN,
       { db: db as never },
     );
     expect(user).toBeNull();

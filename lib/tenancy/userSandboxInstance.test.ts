@@ -1,11 +1,9 @@
+import { createTenancyTestDb } from './test/pglite';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
 import { and, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
 import {
   buildUserSandboxVercelName,
@@ -23,9 +21,6 @@ import {
   type UserSandboxPlatformApi,
 } from './userSandboxInstance';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(__dirname, '../../db/migrations');
-
 const MIGRATIONS = [
   '0000_tenancy_phase1.sql',
   '0001_sso_scim_identity.sql',
@@ -37,18 +32,6 @@ const MIGRATIONS = [
   '0007_user_preferred_sandbox.sql',
   '0008_user_sandbox_instances.sql',
 ];
-
-async function applyMigrations(client: PGlite) {
-  for (const name of MIGRATIONS) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8');
-    for (const stmt of sql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean)) {
-      await client.exec(stmt);
-    }
-  }
-}
 
 function makeFakeApi(opts?: {
   getImpl?: (name: string) => Promise<PlatformSandboxHandle>;
@@ -135,14 +118,10 @@ describe('userSandboxInstance', () => {
   const depsDb = () => db as never;
 
   beforeAll(async () => {
-    client = new PGlite();
-    await applyMigrations(client);
-    db = drizzle(client, { schema });
+
+    ({ client, db } = await createTenancyTestDb());
   });
 
-  afterAll(async () => {
-    await client.close();
-  });
 
   beforeEach(async () => {
     await db.delete(schema.userSandboxInstances);

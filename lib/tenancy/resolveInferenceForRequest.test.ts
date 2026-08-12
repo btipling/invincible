@@ -1,10 +1,8 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { createTenancyTestDb } from './test/pglite';
 import { PGlite } from '@electric-sql/pglite';
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
 import {
   createProviderSecret,
@@ -12,30 +10,6 @@ import {
   setProviderSecretModels,
 } from './providerSecrets';
 import { resolveByokForRequest } from './resolveInferenceForRequest';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(__dirname, '../../db/migrations');
-
-async function applyMigrations(client: PGlite) {
-  for (const name of [
-    '0000_tenancy_phase1.sql',
-    '0001_sso_scim_identity.sql',
-    '0002_tenant_deks.sql',
-    '0003_provider_secrets.sql',
-    '0004_user_mcp_servers.sql',
-    '0005_sandbox_backend.sql',
-    '0006_user_github_tokens.sql',
-    '0007_user_preferred_sandbox.sql',
-  ]) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8');
-    for (const stmt of sql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean)) {
-      await client.exec(stmt);
-    }
-  }
-}
 
 const AMK = Buffer.alloc(32, 9);
 
@@ -46,14 +20,10 @@ describe('resolveByokForRequest', () => {
   let memberId: string;
 
   beforeAll(async () => {
-    client = new PGlite();
-    await applyMigrations(client);
-    db = drizzle(client, { schema });
+
+    ({ client, db } = await createTenancyTestDb());
   });
 
-  afterAll(async () => {
-    await client.close();
-  });
 
   beforeEach(async () => {
     await db.delete(schema.providerSecretGrants);

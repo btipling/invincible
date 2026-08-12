@@ -1,12 +1,10 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { createTenancyTestDb } from './test/pglite';
 import { PGlite } from '@electric-sql/pglite';
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
-import { hashPassword } from './password';
+import { FIXTURE_PASSWORD_HASH } from './test/fixtures';
 import {
   assertNotBreakGlass,
   ensureDefaultTenantMembership,
@@ -21,36 +19,6 @@ import {
   listUsersForAdmin,
   getScimUserById,
 } from './identity';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(__dirname, '../../db/migrations');
-
-/**
- * Apply each migration file as a single multi-statement exec (still in file
- * order) rather than one round-trip per `--> statement-breakpoint` chunk.
- * PGlite `exec` runs several semicolon-separated statements; the breakpoint
- * markers are a drizzle artifact and safe to drop.
- */
-async function applyMigrations(client: PGlite) {
-  for (const name of [
-    '0000_tenancy_phase1.sql',
-    '0001_sso_scim_identity.sql',
-    '0002_tenant_deks.sql',
-    '0003_provider_secrets.sql',
-    '0004_user_mcp_servers.sql',
-    '0005_sandbox_backend.sql',
-    '0006_user_github_tokens.sql',
-    '0007_user_preferred_sandbox.sql',
-  ]) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8')
-      .split('--> statement-breakpoint')
-      .join('')
-      .trim();
-    if (sql) {
-      await client.exec(sql);
-    }
-  }
-}
 
 describe('normalizeIdpSubject', () => {
   it('joins trimmed issuer and sub', () => {
@@ -72,9 +40,7 @@ describe('identity helpers (pglite)', () => {
   let tenantId: string;
 
   beforeAll(async () => {
-    client = new PGlite();
-    await applyMigrations(client);
-    db = drizzle(client, { schema });
+    ({ client, db } = await createTenancyTestDb());
 
     const [tenant] = await db
       .insert(schema.tenants)
@@ -82,14 +48,13 @@ describe('identity helpers (pglite)', () => {
       .returning();
     tenantId = tenant.id;
 
-    const hash = await hashPassword('owner-pass');
     const [owner] = await db
       .insert(schema.users)
       .values({
         email: 'owner@example.com',
         name: 'Owner',
         status: 'active',
-        passwordHash: hash,
+        passwordHash: FIXTURE_PASSWORD_HASH,
         provisionSource: 'credentials',
       })
       .returning();
@@ -102,18 +67,14 @@ describe('identity helpers (pglite)', () => {
     });
   });
 
-  afterAll(async () => {
-    await client.close();
-  });
 
   it('ensureDefaultTenantMembership is idempotent and refuses owner', async () => {
-    const hash = await hashPassword('m');
     const [u] = await db
       .insert(schema.users)
       .values({
         email: 'member1@example.com',
         status: 'active',
-        passwordHash: hash,
+        passwordHash: FIXTURE_PASSWORD_HASH,
         provisionSource: 'manual',
       })
       .returning();
@@ -188,14 +149,13 @@ describe('identity helpers (pglite)', () => {
   });
 
   it('findOrCreateOidcUser links null idp_subject by email; conflicts on different subject', async () => {
-    const hash = await hashPassword('link-pass');
     const [cred] = await db
       .insert(schema.users)
       .values({
         email: 'linkme@example.com',
         name: 'Link Me',
         status: 'active',
-        passwordHash: hash,
+        passwordHash: FIXTURE_PASSWORD_HASH,
         provisionSource: 'credentials',
       })
       .returning();
@@ -242,11 +202,10 @@ describe('identity helpers (pglite)', () => {
   });
 
   it('findOrCreateOidcUser refuses email-link without emailVerified', async () => {
-    const hash = await hashPassword('u');
     await db.insert(schema.users).values({
       email: 'unverified-link@example.com',
       status: 'active',
-      passwordHash: hash,
+      passwordHash: FIXTURE_PASSWORD_HASH,
       provisionSource: 'credentials',
     });
 
@@ -335,11 +294,10 @@ describe('identity helpers (pglite)', () => {
   });
 
   it('listScimUsers only SCIM-managed; listUsersForAdmin shows all', async () => {
-    const hash = await hashPassword('p');
     await db.insert(schema.users).values({
       email: 'cred@example.com',
       status: 'active',
-      passwordHash: hash,
+      passwordHash: FIXTURE_PASSWORD_HASH,
       provisionSource: 'credentials',
     });
     const scim = await scimCreateUser(
