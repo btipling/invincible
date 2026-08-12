@@ -262,40 +262,31 @@ describe('MemorySessionStore', () => {
 });
 
 describe('RedisSessionStore', () => {
-  it('resolves SESSION_REDIS_* first, then UPSTASH_REDIS_* fallback', () => {
+  it('reads REDIS_URL (RESP wire format) as the store URL; opts.url overrides', () => {
     const prev = { ...process.env };
     try {
-      delete process.env.SESSION_REDIS_URL;
-      delete process.env.SESSION_REDIS_TOKEN;
-      delete process.env.UPSTASH_REDIS_REST_URL;
-      delete process.env.UPSTASH_REDIS_REST_TOKEN;
+      delete process.env.REDIS_URL;
+      process.env.REDIS_URL = 'redis://default:secret@dragons.example:6379';
+      const store = new RedisSessionStore({ client: fakeClient().client });
+      expect(store.url()).toBe('redis://default:secret@dragons.example:6379');
 
-      process.env.SESSION_REDIS_URL = 'https://session.example';
-      process.env.SESSION_REDIS_TOKEN = 'a';
-      let store = new RedisSessionStore({ client: fakeClient().client });
-      expect(store.url()).toBe('https://session.example');
-      expect(store.token()).toBe('a');
-
-      delete process.env.SESSION_REDIS_URL;
-      delete process.env.SESSION_REDIS_TOKEN;
-      process.env.UPSTASH_REDIS_REST_URL = 'https://fallback.example';
-      process.env.UPSTASH_REDIS_REST_TOKEN = 'b';
-      store = new RedisSessionStore({ client: fakeClient().client });
-      expect(store.url()).toBe('https://fallback.example');
-      expect(store.token()).toBe('b');
+      // Explicit `url` option overrides the env var. Named-credential / TLS variants parse too.
+      delete process.env.REDIS_URL;
+      const overridden = new RedisSessionStore({
+        client: fakeClient().client,
+        url: 'rediss://default:pw@host:6380',
+      });
+      expect(overridden.url()).toBe('rediss://default:pw@host:6380');
     } finally {
       process.env = prev;
     }
   });
 
-  it('throws when no client and no URL/token are available', () => {
+  it('throws when no client and no REDIS_URL are available', () => {
     const prev = { ...process.env };
     try {
-      delete process.env.SESSION_REDIS_URL;
-      delete process.env.SESSION_REDIS_TOKEN;
-      delete process.env.UPSTASH_REDIS_REST_URL;
-      delete process.env.UPSTASH_REDIS_REST_TOKEN;
-      expect(() => new RedisSessionStore()).toThrow(/SESSION_REDIS_URL/);
+      delete process.env.REDIS_URL;
+      expect(() => new RedisSessionStore()).toThrow(/REDIS_URL/);
     } finally {
       process.env = prev;
     }

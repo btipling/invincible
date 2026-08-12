@@ -59,8 +59,8 @@ function constructStore(): ServerSessionStore {
   const g = globalThis as unknown as Record<symbol, ServerSessionStore | null>;
   const override = g[STORE_OVERRIDE];
   if (override) return override;
-  // Reads SESSION_REDIS_URL / SESSION_REDIS_TOKEN (or UPSTASH_* / injected) and
-  // throws when Redis is not configured — resolved to a 503 by the caller.
+  // Reads REDIS_URL (RESP wire format) and throws when Redis is not configured —
+  // resolved to a 503 by the caller.
   return new RedisSessionStore();
 }
 
