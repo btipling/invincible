@@ -4,6 +4,10 @@ import { getToken } from 'next-auth/jwt';
 import { AUTH_REQUIRED_ERROR } from './lib/tenancy/errors';
 
 function isApiProtected(pathname: string): boolean {
+  // id-shaped multi-session surface (#414): exact collection + any `:id` child.
+  if (pathname === '/api/sessions' || pathname.startsWith('/api/sessions/')) {
+    return true;
+  }
   return (
     pathname === '/api/chat' ||
     pathname === '/api/agent' ||
@@ -96,5 +100,7 @@ export const config = {
     '/api/agent',
     '/api/models',
     '/api/session',
+    '/api/sessions',
+    '/api/sessions/:path*',
   ],
 };
