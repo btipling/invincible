@@ -349,7 +349,7 @@ export async function createWorkspace(
   }
 
   try {
-    const membership = await loadSoleMembership(uid, { db: deps.db });
+    const membership = await loadSoleMembership(uid, deps);
     if (!membership.ok) {
       if (membership.reason === 'db') {
         return { ok: false, code: 'unavailable', error: 'membership lookup failed' };
@@ -439,7 +439,7 @@ export async function createHttp(
   }
 
   try {
-    const membership = await loadSoleMembership(uid, { db: deps.db });
+    const membership = await loadSoleMembership(uid, deps);
     if (!membership.ok) {
       if (membership.reason === 'db') {
         return { ok: false, code: 'unavailable', error: 'membership lookup failed' };

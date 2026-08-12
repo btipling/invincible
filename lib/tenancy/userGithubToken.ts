@@ -87,7 +87,7 @@ async function resolveTenantId(
   userId: string,
   deps: UserGithubTokenDeps,
 ): Promise<UserGithubTokenResult<string>> {
-  const membership = await loadSoleMembership(userId, { db: deps.db });
+  const membership = await loadSoleMembership(userId, deps);
   if (!membership.ok) {
     if (membership.reason === 'db') {
       return { ok: false, code: 'unavailable', error: 'membership lookup failed' };

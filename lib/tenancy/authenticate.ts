@@ -34,9 +34,23 @@ export async function authenticateCredentials(
     return await withConnection(deps, (db) =>
       lookupActiveUser(db, email, password),
     );
-  } catch {
-    return null;
+  } catch (err) {
+    // Fail closed (null → bad password) only for a genuine wiring gap where no
+    // connection source is configured at all. DB query / lookup outages must
+    // propagate so NextAuth surfaces a real error (500) instead of mislabelling
+    // an infrastructure failure as a bad password — mirrors pre-DI behavior.
+    if (isMissingDependency(err)) {
+      return null;
+    }
+    throw err;
   }
+}
+
+function isMissingDependency(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    /missing dependency: provide db or connect/.test(err.message)
+  );
 }
 
 /** Factory (DI): binds a fixed deps closure for composition-root wiring. */

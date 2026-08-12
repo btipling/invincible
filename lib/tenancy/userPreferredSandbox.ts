@@ -87,7 +87,7 @@ export async function listUserSandboxChoices(
   }
 
   try {
-    const membership = await loadSoleMembership(uid, { db: deps.db });
+    const membership = await loadSoleMembership(uid, deps);
     if (!membership.ok) {
       if (membership.reason === 'db') {
         return { ok: false, code: 'unavailable', error: 'membership lookup failed' };
@@ -212,7 +212,7 @@ export async function setUserPreferredSandbox(
   }
 
   try {
-    const membership = await loadSoleMembership(uid, { db: deps.db });
+    const membership = await loadSoleMembership(uid, deps);
     if (!membership.ok) {
       if (membership.reason === 'db') {
         return { ok: false, code: 'unavailable', error: 'membership lookup failed' };

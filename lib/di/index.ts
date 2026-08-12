@@ -52,9 +52,14 @@ export function createScriptConnection(): TenancyConnection {
  * The production wiring: every tenancy factory bound to a per-call `connect`
  * provider. Callers import from here instead of reaching into a low-level
  * factory with an implicit connection.
+ *
+ * `overrides.connect` is a test seam only: tests inject a fast in-memory
+ * connection. Production callers never pass it (defaults to a real DB open).
  */
-export function createProdServices() {
-  const connect = async () => createScriptConnection();
+export function createProdServices(overrides: {
+  connect?: () => Promise<TenancyConnection>;
+} = {}) {
+  const connect = overrides.connect ?? (async () => createScriptConnection());
   const identity = createIdentity({ connect });
   const soleMembership = createSoleMembership({ connect });
   return {
