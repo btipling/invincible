@@ -25,6 +25,12 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(__dirname, '../../db/migrations');
 
+/**
+ * Apply each migration file as a single multi-statement exec (still in file
+ * order) rather than one round-trip per `--> statement-breakpoint` chunk.
+ * PGlite `exec` runs several semicolon-separated statements; the breakpoint
+ * markers are a drizzle artifact and safe to drop.
+ */
 async function applyMigrations(client: PGlite) {
   for (const name of [
     '0000_tenancy_phase1.sql',
@@ -36,13 +42,12 @@ async function applyMigrations(client: PGlite) {
     '0006_user_github_tokens.sql',
     '0007_user_preferred_sandbox.sql',
   ]) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8');
-    const statements = sql
+    const sql = readFileSync(join(migrationsDir, name), 'utf8')
       .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    for (const stmt of statements) {
-      await client.exec(stmt);
+      .join('')
+      .trim();
+    if (sql) {
+      await client.exec(sql);
     }
   }
 }
