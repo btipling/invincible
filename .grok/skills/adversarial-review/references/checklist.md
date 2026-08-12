@@ -69,6 +69,12 @@ rubber-stamp “N/A” on everything.
 - Bridge protocol tests for new exports?  
 - chatServer parse/validation cases?  
 - “Tests pass” only because assertions are vacuous?  
+- **Test performance in changed DB tests** (`lib/tenancy/*`, `app/api`):
+  - Multiple cold PGlite boots in one file? (reuse one boot + `DROP TABLE` for a pre-migration describe)  
+  - Migrations re-applied per test / one chunk at a time? (apply once per file, batched)  
+  - `beforeEach` deleting N tables + re-seeding a DEK baseline every test? (one-time baseline + rollback if the surface allows — note PGlite’s single-connection mutex breaks raw SAVEPOINT / `db.transaction` straddling the shared `db`)  
+  - Do `dekVersion`/`kekVersion` counters rise across tests (isolation leaked)?  
+  - Vitest full-run change responsible for >+X% wall time — is `npm test`/`npm run test:changed` green and wrapper-free?  
 
 ## L7 Reusability — prompts
 

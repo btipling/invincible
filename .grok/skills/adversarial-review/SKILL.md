@@ -166,6 +166,12 @@ the answer “no,” that is a finding.
 - Tests that only assert mocks, not behavior  
 - Missing operator path for UI  
 - CI can’t prove harness protocol TS↔Zig version parity  
+- **Test performance** — the suite runs mostly in one vitest process, so a single slow test file stalls everyone. For changed `lib/*`/DB tests, check for wall-time anti-patterns:
+  - **Multiple cold PGlite/WASM Postgres boots** in one file (one per `describe`) — reuse a single boot; simulate a pre-migration schema by dropping the table instead of booting a second engine.
+  - **Per-test migrations** applied one `--> statement-breakpoint` chunk at a time (or re-applied every test) — apply each migration file once, in a single multi-statement `exec`.
+  - **Heavy per-`beforeEach` DB reseed** (delete N tables + re-insert a baseline under a fresh DEK for every test) — flag when a `lib/tenancy/*.test.ts` boots PGlite and rebuckets whole stores per test; prefer one-time baseline + rollback where the mock/socket surface allows. Be aware PGlite’s single-connection mutex deadlocks raw SAVEPOINT / `db.transaction` straddling the shared `db`.
+  - **State-leak symptom:** per-test `dekVersion`/`kekVersion` monotonically rising across tests — the intended isolation (rollback/reseed) isn’t running and tests now depend on prior tests’ writes.
+- **CI** must not hide failures: wrapper scripts that swallow vitest output are banned (see AGENTS.md); green = vitest’s own exit 0 + per-file output. Confirm the glob isn’t double-counting a nested `.grok/**` self-clone of the repo.
 
 ### L7 — Reusability (clone + own Vercel)
 
