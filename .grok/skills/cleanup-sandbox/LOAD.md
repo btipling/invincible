@@ -35,6 +35,10 @@ git log --oneline -1 main   # where HEAD is vs origin/main
 
 ## Then
 
+> **A merged PR does NOT update your local `main`.** If you merged (or saw a PR
+> get merged) and your checkout lacks the new commit, you're on a stale local
+> `main` — fetch first, always, before reading the repo.
+
 1. Stage A hygiene: `fetch --prune`, checkout main, `pull --ff-only`, `gc --auto`
 2. Inventory leftovers (branches, unpushed commits, uncommitted/untracked files)
 3. Delete obvious agent artifacts (`.tmp-plan-*`, logs, swaps)

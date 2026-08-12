@@ -1,11 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { PGlite } from '@electric-sql/pglite';
 import { and, eq } from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/pglite';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
 import {
   buildUserSandboxVercelName,
@@ -22,33 +17,15 @@ import {
   type PlatformSandboxHandle,
   type UserSandboxPlatformApi,
 } from './userSandboxInstance';
+import { getSharedEngine, resetTenantTables } from './test/shared';
+import type { SharedEngine } from './test/shared';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(__dirname, '../../db/migrations');
-
-const MIGRATIONS = [
-  '0000_tenancy_phase1.sql',
-  '0001_sso_scim_identity.sql',
-  '0002_tenant_deks.sql',
-  '0003_provider_secrets.sql',
-  '0004_user_mcp_servers.sql',
-  '0005_sandbox_backend.sql',
-  '0006_user_github_tokens.sql',
-  '0007_user_preferred_sandbox.sql',
-  '0008_user_sandbox_instances.sql',
-];
-
-async function applyMigrations(client: PGlite) {
-  for (const name of MIGRATIONS) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8');
-    for (const stmt of sql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean)) {
-      await client.exec(stmt);
-    }
-  }
-}
+let db!: SharedEngine['db'];
+let client!: SharedEngine['client'];
+let userId: string;
+let tenantId: string;
+let catalogVercelId: string;
+let catalogByoId: string;
 
 function makeFakeApi(opts?: {
   getImpl?: (name: string) => Promise<PlatformSandboxHandle>;
@@ -125,33 +102,17 @@ function makeFakeApi(opts?: {
 }
 
 describe('userSandboxInstance', () => {
-  let client: PGlite;
-  let db: ReturnType<typeof drizzle<typeof schema>>;
-  let userId: string;
-  let tenantId: string;
-  let catalogVercelId: string;
-  let catalogByoId: string;
   /** PGlite drizzle is not assignable to postgres Db; cast like other tenancy tests. */
   const depsDb = () => db as never;
 
   beforeAll(async () => {
-    client = new PGlite();
-    await applyMigrations(client);
-    db = drizzle(client, { schema });
-  });
-
-  afterAll(async () => {
-    await client.close();
+    const engine = await getSharedEngine();
+    db = engine.db;
+    client = engine.client;
   });
 
   beforeEach(async () => {
-    await db.delete(schema.userSandboxInstances);
-    await db.delete(schema.userPreferredSandbox);
-    await db.delete(schema.sandboxGrants);
-    await db.delete(schema.sandboxes);
-    await db.delete(schema.tenantMembers);
-    await db.delete(schema.users);
-    await db.delete(schema.tenants);
+    await resetTenantTables();
 
     const [tenant] = await db
       .insert(schema.tenants)

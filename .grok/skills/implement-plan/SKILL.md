@@ -75,6 +75,24 @@ git config user.email "btipling@users.noreply.github.com"
 
 **Before coding:**
 
+0. **Update local `main` before checking anything; a merged GitHub PR does NOT
+   update your local `main`.** GitHub shows the merge on the PR that was merged,
+   but your checkout's `main` still points at your stale local copy until you
+   fetch the remote. If you just checked that PR is merged and then wonder why
+   its changes "aren't in main", you're looking at your stale local `main` — not
+   the repo. Fix it before reading any code:
+
+   ```bash
+   git fetch origin            # get the new remote refs first
+   git checkout main
+   git pull --ff-only origin main
+   git log --oneline -1 main   # confirm HEAD is now the merged SHA, not your old one
+   ```
+
+   Then (re-read) root **`AGENTS.md`** and the plan against the **updated**
+   `main`. Do **not** reason about "does main have X?" from a stale local ref —
+   fetch first, then read `origin/main` / your now-updated `main`.
+
 0. **Start from a clean workspace.** If the sandbox is left over from a prior
    session, run `cleanup-sandbox` first (reset to clean `main`) — do not
    implement on top of a dirty tree or race an orphaned run left over by an

@@ -1,10 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { PGlite } from '@electric-sql/pglite';
 import { eq } from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/pglite';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../db/schema';
 import { decryptSecret, resolveCredentialsKey } from '../lib/tenancy/credentials';
 import { verifyPassword } from '../lib/tenancy/password';
@@ -12,6 +7,8 @@ import {
   loadTenantDek,
   unwrapTenantDek,
 } from '../lib/tenancy/tenantKeys';
+import { getSharedDb, resetTenantTables } from '../lib/tenancy/test/shared';
+import type { SharedEngine } from '../lib/tenancy/test/shared';
 import {
   countSeedRows,
   resolveSandboxEnv,
@@ -20,30 +17,7 @@ import {
   TENANT_SLUG,
 } from './seed-tenancy';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(__dirname, '../db/migrations');
-
-/** Apply all SQL migrations through sandbox backend (#281). */
-async function applyMigrations(client: PGlite) {
-  for (const name of [
-    '0000_tenancy_phase1.sql',
-    '0001_sso_scim_identity.sql',
-    '0002_tenant_deks.sql',
-    '0003_provider_secrets.sql',
-    '0004_user_mcp_servers.sql',
-    '0005_sandbox_backend.sql',
-    '0006_user_github_tokens.sql',
-  ]) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8');
-    const statements = sql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    for (const stmt of statements) {
-      await client.exec(stmt);
-    }
-  }
-}
+let db!: SharedEngine['db'];
 
 function seedEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   const key = Buffer.alloc(32, 5).toString('base64');
@@ -115,18 +89,14 @@ describe('resolveSandboxEnv', () => {
 });
 
 describe('seedTenancy (pglite)', () => {
-  let client: PGlite;
-  // drizzle pglite db is structurally compatible with our Db for seed ops
-  let db: ReturnType<typeof drizzle<typeof schema>>;
-
   beforeAll(async () => {
-    client = new PGlite();
-    await applyMigrations(client);
-    db = drizzle(client, { schema });
+    db = await getSharedDb();
   });
 
-  afterAll(async () => {
-    await client.close();
+  beforeEach(async () => {
+    // This file now shares the tenancy project's engine, so clear rows between
+    // `it`s to keep each case self-contained (no bleed into lib/tenancy files).
+    await resetTenantTables();
   });
 
   it('fails closed without seed credentials', async () => {
@@ -241,7 +211,10 @@ describe('seedTenancy (pglite)', () => {
   });
 
   it('re-seed does not overwrite provision_source on conflict', async () => {
-    // Simulate hybrid: change seed user to scim, re-seed same email
+    // Self-contained (each `it` now resets the shared tenancy DB): seed once to
+    // create the admin user, flip it to SCIM, then re-seed the same email.
+    await seedTenancy(seedEnv(), { db: db as never });
+
     await db
       .update(schema.users)
       .set({ provisionSource: 'scim', scimExternalId: 'seed-collide' })
