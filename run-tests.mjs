@@ -24,7 +24,10 @@ try {
 } catch {
   writeFileSync('/tmp/vitest-summary.txt', summary + 'REPORT MISSING/UNREADABLE — cannot confirm green\n');
   console.log(summary + 'REPORT MISSING/UNREADABLE — cannot confirm green');
-  process.exit(exitStatus ?? 1);
+  // Fail closed: we cannot prove green, so always exit non-zero. Do not reuse
+  // exitStatus here — under stdio:'ignore' its success value can be a Buffer/null,
+  // and it does not represent "vitest ran cleanly" on this path regardless.
+  process.exit(1);
 }
 
 const files = data.testResults ?? [];

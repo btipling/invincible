@@ -250,7 +250,8 @@ gh pr create --repo btipling/invincible \
   --base main --head plan/<slug> \
   --title "<scope>: <summary>" \
   --body-file /tmp/pr-body.md --assignee @me
-# body MUST include: Closes #N  (for a plan issue, usually "Closes #N", else "Refs #N")
+# body MUST include a plan-issue keyword, matching §1: `Fixes #N` / `Closes #N`
+# for the plan issue being implemented, `Refs #N` for parent/prerequisite issues
 ```
 
 PR body facts must be **true at push time** (e.g. "17 tests added" — update the
