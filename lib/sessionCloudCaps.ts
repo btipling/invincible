@@ -12,3 +12,11 @@ export const HARNESS_SESSION_SNAPSHOT_ID_MAX = 128;
 
 /** Reject raw PUT bodies larger than this (~2 MiB). */
 export const HARNESS_SESSION_MAX_BODY_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Max serialized size of the reserved `meta` object on a session record.
+ * `meta` is schema-typed reserved (#411/#412): only the reserved P1 keys are
+ * allowed, and their combined JSON size is capped so a record can never balloon
+ * or smuggle large payloads under `meta`.
+ */
+export const HARNESS_SESSION_MAX_META_BYTES = 4096;
