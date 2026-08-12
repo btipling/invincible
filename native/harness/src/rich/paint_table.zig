@@ -20,9 +20,16 @@ fn paintCellInlines(
     base_font: dvui.Font,
     ax: f32,
 ) void {
-    // Outer box carries column gravity; paintInlineFlow has no gravity_x.
+    // #421 content-driven columns: wrap is vertical-only (no horizontal expand).
+    // An all-horizontal expand makes the GridWidget read each cell's min width as
+    // ~its allotted cell (already wrapped at the flat cap), so grid.autoSize()
+    // converges every column to the flat min and 3+ col tables collapse to near-char
+    // stumps. With horizontal expand dropped, the cell reports its unwrapped natural
+    // width and columns become content-driven. gravity_x still aligns header/body
+    // text per column (colPaintX). Scoped to table cells only — the shared
+    // paintInlineFlow defaults used by paragraphs/lists/defs are untouched.
     var wrap = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .expand = .horizontal,
+        .expand = .vertical,
         .gravity_x = ax,
         .id_extra = paint_text.nextIdPublic(ctx),
         .background = false,
@@ -30,8 +37,13 @@ fn paintCellInlines(
         .margin = .{},
     });
     defer wrap.deinit();
+    // Note: paintInlineFlow's segmented branch (image/math in a cell) still forces
+    // .expand=.horizontal internally — a documented residual confined to that one
+    // cell (capped by the #421 no-horizontal-scroll policy; it can push the cell's
+    // content past its column edge but never produces a scrollbar). Covered by
+    // operator smoke (plan row #10), not by this width path.
     paint_text.paintInlineFlow(@src(), slice, ctx, base_font, .{
-        .expand = .horizontal,
+        .expand = .vertical,
         .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
         .color_text = ctx.style.body_text,
     });
@@ -74,12 +86,24 @@ pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
     });
     defer outer.deinit();
 
+    // #421 content-derived column ceiling: measure the transcript content width
+    // while the parent is still the outer frame (grid.init reparents to itself),
+    // so a long / no-space cell can grow its column up to the viewport instead of
+    // being capped flat at 280 (the root-cause cap that quantized columns).
+    const content_w = @max(280.0, dvui.parentGet().data().contentRect().w);
+
     // layout_only: bordered grid without spreadsheet edit/select chrome
     var grid = dvui.grid(@src(), .{
         .layout_only = true,
         .rows = body_rows,
         .scroll_opts = .{
-            .horizontal = .auto,
+            // #421 policy: NO horizontal scroll anywhere in the UI. With
+            // .horizontal = .none, dvui grid.init enters its proportional-shrink
+            // branch (col_expand can go negative, weighted by content width), so a
+            // table whose natural columns exceed the viewport shrinks each column
+            // and cells wrap to fit — instead of exposing a horizontal scrollbar
+            // (which is what .auto forces by never shrinking).
+            .horizontal = .none,
             .vertical = .none,
         },
     }, .{
@@ -94,12 +118,20 @@ pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
     });
     defer grid.deinit();
 
-    // Force autosize every paint so col widths track content (small tables)
+    // Force autosize every paint so col widths track content (small tables).
+    // min_width stays a readable floor (no char-level quantization now that cells
+    // report natural width); max_width becomes content-derived (= transcript width)
+    // so a single long / no-space cell wraps inside a column capped at the viewport
+    // instead of fragmenting at a flat 280 cap. Horizontal scroll is NONE, so when a
+    // table's sum of natural column widths exceeds the viewport, dvui grid shrinks
+    // each column proportionally (weighted by its own content width) and long cells
+    // wrap — the table always fits; no horizontal scrollbar is ever produced.
+    // max_height keeps the row cap that bounds pathological tall cells.
     grid.autoSize(.{
         .auto = .both,
         .min_width = 48,
         .min_height = 20,
-        .max_width = 280,
+        .max_width = content_w,
         .max_height = 120,
     });
 
