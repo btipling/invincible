@@ -7,159 +7,213 @@
  * preferred-sandbox / sandbox-instance). Those nested lookups used to forward
  * only `{ db: deps.db }`, which is undefined on the connect-only prod path —
  * dropping `connect` and turning every membership lookup into a firm
- * `unavailable`. These tests exercise that path end-to-end (real PGlite under
- * the injected `connect`, no bare `db` handle at any call site) and would fail
- * on the pre-fix `{ db: deps.db }` forwarding.
+ * `unavailable`. If `connect` were dropped entirely, `withConnection` would
+ * throw "missing dependency" and the flow would fall over to `unavailable`.
+ *
+ * This suite drives the real composition root *without any real database*:
+ * the injected `connect` returns a lightweight in-memory fake `db` that only
+ * answers the exact query shapes the tested flows issue. It proves the DI
+ * wiring (that nested `connect` is forwarded and actually used) without
+ * cold-booting PGlite, replaying migrations, or reseeding tables. Real SQL
+ * semantics for each flow are already covered by the dedicated tenancy
+ * PGlite suites (soleMembership / userPreferredSandbox / userGithubToken …).
+ * The shared test engine for those real-DB suites is owned by `#431`/`#441`.
  */
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { PGlite } from '@electric-sql/pglite';
-import { drizzle } from 'drizzle-orm/pglite';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { createProdServices } from './index';
-import * as schema from '../../db/schema';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(__dirname, '../../db/migrations');
-
-async function applyMigrations(client: PGlite) {
-  for (const name of [
-    '0000_tenancy_phase1.sql',
-    '0001_sso_scim_identity.sql',
-    '0002_tenant_deks.sql',
-    '0003_provider_secrets.sql',
-    '0004_user_mcp_servers.sql',
-    '0005_sandbox_backend.sql',
-    '0006_user_github_tokens.sql',
-    '0007_user_preferred_sandbox.sql',
-    '0008_user_sandbox_instances.sql',
-  ]) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8');
-    for (const stmt of sql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean)) {
-      await client.exec(stmt);
-    }
-  }
-}
+import { wrapTenantDek } from '../tenancy/tenantKeys';
 
 const AMK = Buffer.alloc(32, 42);
+const DEK = Buffer.alloc(32, 7);
 
-describe('createProdServices connect-only (no injected db)', () => {
-  let client: PGlite;
-  let db: ReturnType<typeof drizzle<typeof schema>>;
-  let tenantId: string;
-  let adminUserId: string;
-  let memberUserId: string;
-  let sandboxId: string;
+const TENANT = 'tenant-0001';
+const ADMIN_USER = 'admin-0001';
+const MEMBER_USER = 'member-0001';
+const SANDBOX = 'sandbox-0001';
 
-  beforeAll(async () => {
-    client = new PGlite();
-    await applyMigrations(client);
-    db = drizzle(client, { schema });
-  });
+type Row = Record<string, unknown>;
+type RowState = Record<string, Row[]>;
 
-  afterAll(async () => {
-    await client.close();
-  });
+/** Extract a drizzle pgTable's storage name (stored on a global symbol). */
+function tableName(table: unknown): string {
+  const t = table as { [key: symbol]: unknown };
+  const viaSymbol = t[Symbol.for('drizzle:Name')];
+  if (typeof viaSymbol === 'string') return viaSymbol;
+  const tName = (table as { name?: unknown }).name;
+  if (typeof tName === 'string') return tName;
+  throw new Error('unrecognised drizzle table in connect-only fake db');
+}
 
-  beforeEach(async () => {
-    await db.delete(schema.userPreferredSandbox);
-    await db.delete(schema.userGithubTokens);
-    await db.delete(schema.sandboxGrants);
-    await db.delete(schema.sandboxes);
-    await db.delete(schema.userSandboxInstances);
-    await db.delete(schema.tenantMembers);
-    await db.delete(schema.users);
-    await db.delete(schema.tenants);
-
-    const [tenant] = await db
-      .insert(schema.tenants)
-      .values({ slug: 'acme', name: 'Acme' })
-      .returning({ id: schema.tenants.id });
-    tenantId = tenant.id;
-
-    const [admin] = await db
-      .insert(schema.users)
-      .values({ email: 'admin@example.com', status: 'active' })
-      .returning({ id: schema.users.id });
-    adminUserId = admin.id;
-
-    const [member] = await db
-      .insert(schema.users)
-      .values({ email: 'member@example.com', status: 'active' })
-      .returning({ id: schema.users.id });
-    memberUserId = member.id;
-
-    await db.insert(schema.tenantMembers).values([
-      { tenantId, userId: adminUserId, role: 'owner' },
-      { tenantId, userId: memberUserId, role: 'member' },
-    ]);
-
-    const [sb] = await db
-      .insert(schema.sandboxes)
-      .values({
-        tenantId,
+/**
+ * In-memory row store keyed by drizzle table pipe name (e.g. `tenant_members`).
+ * `membership` is the sole-membership row expected for the flow under test —
+ * the fake does not apply WHERE predicates, so the store holds exactly the
+ * (single) membership the flow should resolve. Real filter/join semantics are
+ * covered by the tenancy PGlite suites; this suite only proves connect wiring.
+ */
+function seedState(membership: Row[]): RowState {
+  return {
+    tenants: [
+      { id: TENANT, dekCiphertext: wrapTenantDek(DEK, AMK), dekVersion: 1 },
+    ],
+    tenant_members: membership,
+    user_preferred_sandbox: [],
+    sandbox_grants: [
+      {
+        sandboxId: SANDBOX,
         name: 'Workspace',
         slug: 'workspace',
         backend: 'vercel',
         status: 'active',
-      })
-      .returning({ id: schema.sandboxes.id });
-    sandboxId = sb.id;
+        image: null,
+        canRead: true,
+        canWrite: true,
+      },
+    ],
+    user_github_tokens: [],
+    user_mcp_servers: [],
+    user_sandbox_instances: [],
+  };
+}
 
-    await db.insert(schema.sandboxGrants).values({
-      sandboxId,
-      userId: memberUserId,
-      canRead: true,
-      canWrite: true,
-    });
+/**
+ * A tiny in-memory `db` double serving the select/transaction/insert surface
+ * the connect-only flows use. Queries are routed by the table pipe name passed
+ * to `.from(...)`; selection columns are ignored because the modules only read
+ * known fields off the returned rows. `.where/.limit/.for/.innerJoin` are
+ * passthroughs resolving to the same row set — enough to prove wiring, not SQL.
+ */
+function buildFakeDb(state: RowState) {
+  const rowsFor = (table: unknown) => state[tableName(table)] ?? [];
+
+  const query = (table: unknown) => {
+    const pending = Promise.resolve(rowsFor(table));
+    return {
+      then: pending.then.bind(pending),
+      catch: pending.catch.bind(pending),
+      finally: pending.finally.bind(pending),
+      where: () => query(table),
+      limit: () => query(table),
+      for: () => query(table),
+      innerJoin: () => query(table),
+    };
+  };
+
+  const makeDb = {
+    select: () => ({ from: (table: unknown) => query(table) }),
+    insert: (table: unknown) => ({
+      values: (rows: Row | Row[]) => {
+        const list = Array.isArray(rows) ? rows : [rows];
+        const t = tableName(table);
+        return {
+          onConflictDoUpdate: () => {
+            // No-op upsert: persist rows for later reads (github-token round-trip).
+            if (t === 'user_github_tokens' && list[0]) {
+              const existing = state[t].find((r) => r.userId === list[0]?.userId);
+              if (existing) Object.assign(existing, list[0]);
+              else state[t].push(list[0]);
+            }
+            return Promise.resolve();
+          },
+          returning: () => Promise.resolve(list),
+        };
+      },
+    }),
+    transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(makeDb),
+  };
+
+  return makeDb;
+}
+
+describe('createProdServices connect-only (no real DB, injected connect)', () => {
+  let state: RowState;
+  let connectCalls: number;
+
+  beforeEach(() => {
+    state = seedState([{ userId: MEMBER_USER, tenantId: TENANT, role: 'member' }]);
+    connectCalls = 0;
   });
 
-  /**
-   * Wire the whole production root to a per-call `connect` provider. No `db`
-   * handle is ever forwarded at a call site; every DB access (including nested
-   * `loadSoleMembership` exclusive to this path) must resolve through `connect`.
-   */
+  /** Wire the whole production root to the fake connect; no bare `db` anywhere. */
   const services = () =>
     createProdServices({
-      connect: async () => ({ db: db as never, close: async () => {} }),
+      connect: async () => {
+        connectCalls += 1;
+        return {
+          db: buildFakeDb(state) as never,
+          close: async () => {},
+        };
+      },
     });
 
   it('soleMembership resolves through connect alone', async () => {
-    const res = await services().soleMembership.loadSoleMembership(memberUserId);
-    expect(res).toEqual({ ok: true, tenantId, role: 'member' });
+    const res = await services().soleMembership.loadSoleMembership(MEMBER_USER);
+    expect(res).toEqual({ ok: true, tenantId: TENANT, role: 'member' });
+    expect(connectCalls).toBeGreaterThan(0);
   });
 
   it('listUserSandboxChoices completes nested membership via connect', async () => {
     const res = await services().userPreferredSandbox.listUserSandboxChoices(
-      memberUserId,
+      MEMBER_USER,
     );
+    // member is not admin → grants-only path (no admin "all sandboxes" select).
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error(res.error);
-    // membership resolved (not 'unavailable') and the grant surfaced as usable.
-    expect(res.value.options.map((o) => o.sandboxId)).toContain(sandboxId);
-    expect(res.value.options.find((o) => o.sandboxId === sandboxId)?.usable).toBe(
+    expect(res.value.options.map((o) => o.sandboxId)).toContain(SANDBOX);
+    expect(res.value.options.find((o) => o.sandboxId === SANDBOX)?.usable).toBe(
       true,
     );
+    expect(connectCalls).toBeGreaterThan(0);
   });
 
   it('setUserGithubToken completes nested membership + DEK via connect', async () => {
-    const res = await services().userGithubToken.setUserGithubToken(
-      adminUserId,
+    state = seedState([{ userId: ADMIN_USER, tenantId: TENANT, role: 'owner' }]);
+    const instances = services();
+    const set = await instances.userGithubToken.setUserGithubToken(
+      ADMIN_USER,
       'ghp_connect_only_proof',
       { amk: AMK },
     );
-    expect(res.ok).toBe(true);
-    if (!res.ok) throw new Error(res.error);
-    const status = await services().userGithubToken.getUserGithubTokenStatus(
-      adminUserId,
+    expect(set.ok).toBe(true);
+    if (!set.ok) throw new Error(set.error);
+
+    const status = await instances.userGithubToken.getUserGithubTokenStatus(
+      ADMIN_USER,
       { amk: AMK },
     );
     expect(status.ok).toBe(true);
     if (!status.ok) throw new Error(status.error);
     expect(status.value.configured).toBe(true);
+    expect(connectCalls).toBeGreaterThan(0);
+  });
+
+  it('listUserMcpServers completes nested membership via connect', async () => {
+    const res = await services().userMcpServers.listUserMcpServers(MEMBER_USER);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error(res.error);
+    expect(res.value).toEqual([]);
+    expect(connectCalls).toBeGreaterThan(0);
+  });
+
+  it('createWorkspace completes nested membership + platform via connect', async () => {
+    const created: string[] = [];
+    const instances = services();
+    const res = await instances.userSandboxInstance.createWorkspace(MEMBER_USER, {
+      sandboxApi: {
+        create: async (p: { name: string }) => {
+          created.push(p.name);
+          return { name: p.name, stop: async () => {}, delete: async () => {}, extendTimeout: async () => {} };
+        },
+        get: async () => {
+          throw new Error('unexpected get');
+        },
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error(res.error);
+    expect(res.value.purpose).toBe('workspace');
+    expect(res.value.status).toBe('running');
+    expect(created).toHaveLength(1);
+    expect(connectCalls).toBeGreaterThan(0);
   });
 });
