@@ -23,6 +23,16 @@ let db!: ReturnType<typeof drizzle<typeof schema>>;
 let ownerId: string;
 let tenantId: string;
 
+// bcrypt cost-12 hashes computed ONCE at module load (DI/cost gate #444 flags
+// repeated `hashPassword` in setup). The stored plains are only compared by
+// the hasher's own specs — none of these cases assert the plain — so the
+// fixtures never change value.
+const OWNER_HASH = await hashPassword('owner-pass');
+const MEMBER_HASH = await hashPassword('m');
+const LINK_HASH = await hashPassword('link-pass');
+const UNVERIFIED_HASH = await hashPassword('u');
+const LISTED_HASH = await hashPassword('p');
+
 describe('normalizeIdpSubject', () => {
   it('joins trimmed issuer and sub', () => {
     expect(normalizeIdpSubject(' https://idp.example ', ' abc ')).toBe(
@@ -50,14 +60,13 @@ describe('identity helpers (pglite)', () => {
       .returning();
     tenantId = tenant.id;
 
-    const hash = await hashPassword('owner-pass');
     const [owner] = await db
       .insert(schema.users)
       .values({
         email: 'owner@example.com',
         name: 'Owner',
         status: 'active',
-        passwordHash: hash,
+        passwordHash: OWNER_HASH,
         provisionSource: 'credentials',
       })
       .returning();
@@ -71,13 +80,12 @@ describe('identity helpers (pglite)', () => {
   });
 
   it('ensureDefaultTenantMembership is idempotent and refuses owner', async () => {
-    const hash = await hashPassword('m');
     const [u] = await db
       .insert(schema.users)
       .values({
         email: 'member1@example.com',
         status: 'active',
-        passwordHash: hash,
+        passwordHash: MEMBER_HASH,
         provisionSource: 'manual',
       })
       .returning();
@@ -152,14 +160,13 @@ describe('identity helpers (pglite)', () => {
   });
 
   it('findOrCreateOidcUser links null idp_subject by email; conflicts on different subject', async () => {
-    const hash = await hashPassword('link-pass');
     const [cred] = await db
       .insert(schema.users)
       .values({
         email: 'linkme@example.com',
         name: 'Link Me',
         status: 'active',
-        passwordHash: hash,
+        passwordHash: LINK_HASH,
         provisionSource: 'credentials',
       })
       .returning();
@@ -206,11 +213,10 @@ describe('identity helpers (pglite)', () => {
   });
 
   it('findOrCreateOidcUser refuses email-link without emailVerified', async () => {
-    const hash = await hashPassword('u');
     await db.insert(schema.users).values({
       email: 'unverified-link@example.com',
       status: 'active',
-      passwordHash: hash,
+      passwordHash: UNVERIFIED_HASH,
       provisionSource: 'credentials',
     });
 
@@ -299,11 +305,10 @@ describe('identity helpers (pglite)', () => {
   });
 
   it('listScimUsers only SCIM-managed; listUsersForAdmin shows all', async () => {
-    const hash = await hashPassword('p');
     await db.insert(schema.users).values({
       email: 'cred@example.com',
       status: 'active',
-      passwordHash: hash,
+      passwordHash: LISTED_HASH,
       provisionSource: 'credentials',
     });
     const scim = await scimCreateUser(

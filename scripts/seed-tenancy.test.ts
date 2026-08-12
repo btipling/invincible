@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../db/schema';
 import { decryptSecret, resolveCredentialsKey } from '../lib/tenancy/credentials';
 import { verifyPassword } from '../lib/tenancy/password';
@@ -7,7 +7,7 @@ import {
   loadTenantDek,
   unwrapTenantDek,
 } from '../lib/tenancy/tenantKeys';
-import { getSharedDb } from '../lib/tenancy/test/shared';
+import { getSharedDb, resetTenantTables } from '../lib/tenancy/test/shared';
 import type { SharedEngine } from '../lib/tenancy/test/shared';
 import {
   countSeedRows,
@@ -91,6 +91,12 @@ describe('resolveSandboxEnv', () => {
 describe('seedTenancy (pglite)', () => {
   beforeAll(async () => {
     db = await getSharedDb();
+  });
+
+  beforeEach(async () => {
+    // This file now shares the tenancy project's engine, so clear rows between
+    // `it`s to keep each case self-contained (no bleed into lib/tenancy files).
+    await resetTenantTables();
   });
 
   it('fails closed without seed credentials', async () => {
@@ -205,7 +211,10 @@ describe('seedTenancy (pglite)', () => {
   });
 
   it('re-seed does not overwrite provision_source on conflict', async () => {
-    // Simulate hybrid: change seed user to scim, re-seed same email
+    // Self-contained (each `it` now resets the shared tenancy DB): seed once to
+    // create the admin user, flip it to SCIM, then re-seed the same email.
+    await seedTenancy(seedEnv(), { db: db as never });
+
     await db
       .update(schema.users)
       .set({ provisionSource: 'scim', scimExternalId: 'seed-collide' })

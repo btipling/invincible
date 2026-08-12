@@ -363,8 +363,10 @@ See create-plan / plan-review **layer** rules when planning features.
 - Prefer extending `native/harness` + `HarnessHost` over new infra.
 - **Tests are run directly with vitest — no script wrappers allowed.** Never
   introduce or use a wrapper script around vitest, and do not re-add one if it was
-  removed. Run the suite with `npm test` (= `vitest run`) or invoke vitest through
-  the **local** binary directly (`node_modules/vitest/vitest.mjs run`, never `npx`)
+  removed. Run the suite with `npm test` (= `node scripts/di-gate.mjs && vitest run` —
+  the di-gate runs first so in-body `createDbConnection(`/`new PGlite(` fail before
+  vitest) or invoke vitest through the **local** binary directly
+  (`node_modules/vitest/vitest.mjs run`, never `npx`)
   with an explicit exec timeout (`timeoutMs ≈ 600000`) — a long run can drop over
   the transport but still complete. For a fast mechanical gate that only tests files
   changed since `HEAD`, use `npm run test:changed` (= `vitest run --changed`).

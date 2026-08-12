@@ -32,6 +32,8 @@ export default defineConfig({
             '**/.{idea,git,cache,output,temp}/**',
             '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*',
             'lib/tenancy/**',
+            // Runs in the tenancy project so it shares the one WASM boot.
+            'scripts/seed-tenancy.test.ts',
           ],
         },
       },
@@ -39,7 +41,12 @@ export default defineConfig({
         test: {
           name: 'tenancy',
           environment: 'node',
-          include: ['lib/tenancy/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
+          include: [
+            'lib/tenancy/**/*.{test,spec}.?(c|m)[jt]s?(x)',
+            // seed-tenancy boots the same schema/engine, so it shares the
+            // tenancy project's single WASM boot (one boot, not two).
+            'scripts/seed-tenancy.test.ts',
+          ],
           pool: 'forks',
           poolOptions: {
             forks: { singleFork: true },

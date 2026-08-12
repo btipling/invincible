@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "vitest run",
+    "test": "node scripts/di-gate.mjs && vitest run",
     "test:changed": "vitest run --changed",
     "test:di-gate": "node scripts/di-gate.mjs",
     "typecheck": "tsc --noEmit",

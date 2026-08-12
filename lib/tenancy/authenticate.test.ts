@@ -7,30 +7,36 @@ import { getSharedDb, resetTenantTables } from './test/shared';
 
 let db!: ReturnType<typeof drizzle<typeof schema>>;
 
+// bcrypt cost-12 hashes are computed ONCE at module load, not per-test
+// (DI/cost gate #444 flags repeated `hashPassword` in setup/teardown). The
+// known plains are stable, so module-level fixture hashes never change.
+const [ACTIVE_HASH, INACTIVE_HASH, SUSPENDED_HASH] = await Promise.all([
+  hashPassword('correct-horse-battery'),
+  hashPassword('inactive-pass'),
+  hashPassword('suspended-pass'),
+]);
+
 async function seedUsers() {
-  const activeHash = await hashPassword('correct-horse-battery');
-  const inactiveHash = await hashPassword('inactive-pass');
-  const suspendedHash = await hashPassword('suspended-pass');
   await db.insert(schema.users).values([
     {
       email: 'active@example.com',
       name: 'Active',
       status: 'active',
-      passwordHash: activeHash,
+      passwordHash: ACTIVE_HASH,
       provisionSource: 'credentials',
     },
     {
       email: 'inactive@example.com',
       name: 'Inactive',
       status: 'inactive',
-      passwordHash: inactiveHash,
+      passwordHash: INACTIVE_HASH,
       provisionSource: 'credentials',
     },
     {
       email: 'suspended@example.com',
       name: 'Suspended',
       status: 'suspended',
-      passwordHash: suspendedHash,
+      passwordHash: SUSPENDED_HASH,
       provisionSource: 'credentials',
     },
     {
