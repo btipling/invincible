@@ -736,3 +736,42 @@ test "tryParseRuns overflow sum rejects" {
     defer std.testing.allocator.free(half);
     try std.testing.expect(!tryParseRuns(half, 1, 0, &result));
 }
+
+// #421: wide-cell partition == run-count invariant. A realistic 3-col table where
+// the wide "Result" cell holds a full sentence + inline code + bold (multiple rich
+// runs in one cell) must keep its run list whole: num_cells % cols == 0 and the sum
+// of per-cell run counts == inline_n (no truncation / out-of-range index).
+test "parsePaintMeta wide-cell run invariant no truncation" {
+    const cols: usize = 3;
+    const inline_n: usize = 10; // header 1+1+1, body row 1+1+5
+    const m = parsePaintMeta("3,0,lll,1.1.1.1.1.5", inline_n);
+    try std.testing.expect(m.runs_valid);
+    try std.testing.expectEqual(@as(usize, cols), m.cols);
+    try std.testing.expectEqual(@as(usize, 6), m.num_cells);
+    try std.testing.expect(m.num_cells % cols == 0);
+    var sum: usize = 0;
+    var i: usize = 0;
+    while (i < m.num_cells) : (i += 1) sum += cellRunCount(&m, i);
+    try std.testing.expectEqual(inline_n, sum);
+    // header run stays 1-run; the wide body Result cell keeps all 5 runs.
+    try std.testing.expectEqual(@as(usize, 1), cellRunCount(&m, 0));
+    try std.testing.expectEqual(@as(usize, 5), cellRunCount(&m, m.num_cells - 1));
+}
+
+// #421: short 2×2 / short-label tables stay compact at the partition level — every
+// cell a single run, num_cells % cols == 0, sum == inline_n (no over-expand artifact).
+test "parsePaintMeta short 2x2 all single-run" {
+    const cols: usize = 2;
+    const inline_n: usize = 4;
+    const m = parsePaintMeta("2,0,ll,1.1.1.1", inline_n);
+    try std.testing.expect(m.runs_valid);
+    try std.testing.expectEqual(@as(usize, 4), m.num_cells);
+    try std.testing.expect(m.num_cells % cols == 0);
+    var sum: usize = 0;
+    var k: usize = 0;
+    while (k < m.num_cells) : (k += 1) {
+        try std.testing.expectEqual(@as(usize, 1), cellRunCount(&m, k));
+        sum += 1;
+    }
+    try std.testing.expectEqual(inline_n, sum);
+}
