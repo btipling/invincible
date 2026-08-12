@@ -9,6 +9,7 @@ import {
   validateSessionRecord,
 } from '../../../lib/sessions/sessionStore';
 import {
+  guardStore,
   resolveSessionStore,
   resolveTenantIdForUser,
   sessionKeyFor,
@@ -92,8 +93,13 @@ export async function GET(): Promise<Response> {
   if (!scopeRes.ok) return scopeRes.response;
 
   const store = scopeRes.store;
-  const records = await store.list(sessionScopeFor(scopeRes.tenantId, gate.userId));
-  return Response.json(records.map(toSessionSummary));
+  // Guard store I/O: an unreachable/poisoned Redis rejects here and becomes a clean
+  // 503 SESSION_STORE_UNAVAILABLE, never an uncaught 500 (adversarial L1/L6).
+  const listing = await guardStore(() =>
+    store.list(sessionScopeFor(scopeRes.tenantId, gate.userId)),
+  );
+  if (!listing.ok) return listing.response;
+  return Response.json(listing.value.map(toSessionSummary));
 }
 
 /**
@@ -135,10 +141,13 @@ export async function POST(req: Request): Promise<Response> {
     );
   }
 
-  const put = await scopeRes.store.put(
-    sessionKeyFor(scopeRes.tenantId, gate.userId, id),
-    validated.value,
+  const put = await guardStore(() =>
+    scopeRes.store.put(
+      sessionKeyFor(scopeRes.tenantId, gate.userId, id),
+      validated.value,
+    ),
   );
-  const stored = put.status === 'stored' ? put.record : put.server;
+  if (!put.ok) return put.response;
+  const stored = put.value.status === 'stored' ? put.value.record : put.value.server;
   return Response.json(stored);
 }

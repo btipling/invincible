@@ -75,6 +75,38 @@ describe('/api/sessions', () => {
     expect(body.code).toBe('SESSION_STORE_UNAVAILABLE');
   });
 
+  it('store I/O rejection (e.g. dead Redis) → 503 SESSION_STORE_UNAVAILABLE, not 500 (adversarial L1/L6)', async () => {
+    const throwingStore: import('../../../lib/sessions/sessionStore').ServerSessionStore = {
+      async get() {
+        throw new Error('redis connection refused');
+      },
+      async put() {
+        throw new Error('redis connection refused');
+      },
+      async list() {
+        throw new Error('redis connection refused');
+      },
+      async remove() {
+        throw new Error('redis connection refused');
+      },
+    };
+    setSessionStoreForTests(throwingStore);
+    const { GET, POST } = await loadAuthedRoute('user-a');
+
+    const resGet = await GET();
+    expect(resGet.status).toBe(503);
+    const getBody = (await resGet.json()) as { code: string; error: string };
+    expect(getBody.code).toBe('SESSION_STORE_UNAVAILABLE');
+
+    const resPost = await POST(new Request('http://localhost/api/sessions', { method: 'POST' }));
+    expect(resPost.status).toBe(503);
+    const postBody = (await resPost.json()) as { code: string; error: string };
+    expect(postBody.code).toBe('SESSION_STORE_UNAVAILABLE');
+    // No leak of host/port/URI/credential from the underlying error.
+    expect(JSON.stringify(getBody)).not.toMatch(/redis|connection|refused|localhost/);
+    expect(JSON.stringify(postBody)).not.toMatch(/redis|connection|refused|localhost/);
+  });
+
   it('POST mints distinct server-minted UUID ids with updatedAt:0 and real createdAt', async () => {
     const { POST } = await loadAuthedRoute();
     const r1 = await POST(new Request('http://localhost/api/sessions', { method: 'POST' }));
