@@ -524,9 +524,17 @@ fn paintToolRun(
     return true;
 }
 
+/// True when `b` is a UTF-8 continuation byte (0b10xxxxxx).
+fn isUtf8Continuation(b: u8) bool {
+    return (b & 0xC0) == 0x80;
+}
+
 /// One-line muted preview of a thinking monologue for the collapsed header
 /// (text-only, bounded — no markdown parse, no full-body read). Returns a slice
-/// into `buf`. Stops at the first newline and caps at ~80 bytes.
+/// into `buf`. Stops at the first newline and caps at ~80 bytes. Review: the
+/// byte cap must never cut a multi-byte UTF-8 sequence mid-codepoint (CJK,
+/// emoji, combining marks) — that would hand `textLayout` an invalid trailing
+/// run, so we back off any truncated multibyte char to a codepoint boundary.
 fn thinkingPreview(buf: *[96]u8, text: []const u8) []const u8 {
     var out: usize = 0;
     for (text) |c| {
@@ -537,6 +545,11 @@ fn thinkingPreview(buf: *[96]u8, text: []const u8) []const u8 {
     }
     // Trailing whitespace isn't part of the preview.
     while (out > 0 and (buf[out - 1] == ' ' or buf[out - 1] == '\t')) out -= 1;
+    // Drop a multi-byte char truncated by the byte cap: first any trailing
+    // continuation bytes, then a truncated leading byte (0xC0..0xFF). What's
+    // left ends on a valid single-byte (ASCII) boundary — never mojibake.
+    while (out > 0 and isUtf8Continuation(buf[out - 1])) out -= 1;
+    if (out > 0 and (buf[out - 1] & 0xC0) == 0xC0) out -= 1;
     return buf[0..out];
 }
 
@@ -565,14 +578,22 @@ fn paintThinking(
 
     // Active-turn rows are pinned FULL while Busy (policy) — not togglable.
     // Committed rows are operator-toggled: `thinking_open_l1` is the only input.
-    // ring-full guard: when the ring is saturated the index threshold saturates
-    // at msg_count, so additionally pin the live-newest thinking (the row being
-    // grown by `update_last` this busy turn) so streaming never collapses.
-    const busy_now = bridge.getLifecycle() == .busy;
-    const is_live_newest = busy_now and msg_index == bridge.messageCount() - 1;
-    const is_active = thinking_collapse_state.isActiveTurnFull(msg_index) or is_live_newest;
+    // Membership is the policy's job (pure, host-tested) — the live streaming
+    // newest row is part of the active turn's ring-forward slot range, so it
+    // stays full automatically (no ui-side `is_live_newest` escape hatch). The
+    // policy took over the saturated-ring guard the old index-threshold used.
+    const slotp = slot orelse {
+        // A thinking row always maps to a ring slot; bail defensively rather
+        // than derive membership from a bare visible index.
+        return;
+    };
+    const ring_head = bridge.messageHead();
+    const ring_cap = bridge.RING_CAP;
+    const is_active = thinking_collapse_state.isActiveTurnFull(slotp, ring_head, ring_cap);
     const open_by_operator = thinking_open_l1.contains(key);
-    const full = is_active or open_by_operator;
+    // Single policy entry point — both the active-turn pin and the operator
+    // override live inside `shouldRenderFull`.
+    const full = thinking_collapse_state.shouldRenderFull(slotp, ring_head, ring_cap, open_by_operator);
 
     // Layout mutates `expanded` across the head + body blocks below. Starts at
     // the policy/output state; for a pinned active-turn row we re-assert `full`
@@ -797,10 +818,12 @@ pub fn frame() !void {
 
     // #424 — track lifecycle transitions so committed (completed-turn) thinking
     // collapses at turn end (busy -> ready/err) and the active Busy turn stays
-    // fully expanded. Lifecycle enum values mirror bridge.Lifecycle 1:1.
+    // fully expanded. Lifecycle enum values mirror bridge.Lifecycle 1:1. The busy
+    // start is captured as the *physical ring head* (the slot the turn begins
+    // appending at), not a message count, so membership survives saturation/wrap.
     {
         const cur_lc: thinking_collapse.Lifecycle = @enumFromInt(@intFromEnum(life));
-        thinking_collapse_state.onLifecycleTransition(prev_lifecycle, cur_lc, n);
+        thinking_collapse_state.onLifecycleTransition(prev_lifecycle, cur_lc, bridge.messageHead());
         prev_lifecycle = cur_lc;
     }
     var user_scroll: dvui.Point = .{};
