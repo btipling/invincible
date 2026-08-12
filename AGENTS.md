@@ -124,6 +124,7 @@ Load from **this repo** via `gh` (not generic template skills). Zero-search:
 | **adversarial-review** | `.grok/skills/adversarial-review/SKILL.md` (+ `LOAD.md`, `references/*`) | Hostile **PR** review; break scenarios; post comment via `gh` |
 | **cleanup-sandbox** | `.grok/skills/cleanup-sandbox/SKILL.md` (+ `LOAD.md`) | Post-session hygiene: checkout + pull latest `main`, delete leftover local branches / agent scratch; auto-deletes **nested self-clones** (same-origin `ivc-*` / `.grok` copies) without asking; **refuses** to discard current uncommitted work without explicit operator consent |
 | **implement-plan** | `.grok/skills/implement-plan/SKILL.md` (+ `LOAD.md`) | Code a reviewed plan into a **non-merged PR** + tests; canonical test/build workflow (`npm run typecheck`, `vitest run`, `vitest run --changed`), in-sandbox exec rules, layer ownership, code standards |
+| **merge-pr** | `.grok/skills/merge-pr/SKILL.md` (+ `LOAD.md`) | Merge a reviewed PR into `main` with a **mandatory full vitest run** gate — tests run directly with vitest, no wrapper; merge commit (no squash); verifies issue close-out + post-merge cleanup. `vitest run --changed` is the fast PR-iteration signal, never a merge gate |
 
 Index: [`.grok/skills/README.md`](.grok/skills/README.md).
 

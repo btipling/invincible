@@ -33,6 +33,7 @@ gh api "repos/btipling/invincible/contents/.grok/skills/<name>/SKILL.md?ref=main
 | **adversarial-review** | `adversarial-review/` | Hostile **PR** review (break scenarios, security, feature-divide, runner/CI); default **comment on PR** via `gh` |
 | **cleanup-sandbox** | `cleanup-sandbox/` | Post-session hygiene: checkout + pull latest `main`, delete leftover local branches / agent scratch; auto-deletes **nested self-clones** (same-origin `ivc-*` / `.grok` copies) without asking; **refuses** to discard current uncommitted work without explicit operator consent |
 | **implement-plan** | `implement-plan/` | Code a reviewed plan into a **non-merged PR** + tests: canonical test/build workflow (`npm run typecheck`, `vitest run`, `vitest run --changed`), in-sandbox exec rules (10-min timeout, transport drops, no orphaned runs), layer ownership, code standards that survive review |
+| **merge-pr** | `merge-pr/` | Merge a reviewed PR into `main` with a **mandatory full vitest run** gate (direct vitest, no wrapper; merge commit, no squash); verifies issue close-out + post-merge cleanup. `vitest run --changed` is the fast PR-iteration signal only, never a merge gate |
 
 ## Cloud-native ops (create-plan + plan-review)
 
@@ -95,6 +96,21 @@ See [`adversarial-review/LOAD.md`](adversarial-review/LOAD.md):
 4. Self-refute findings; verdict BLOCK / CONCERNS / PASS WITH NOTES  
 5. Default `mode=comment` → `gh pr review` / `gh pr comment`  
 6. Does **not** implement fixes unless asked  
+
+## merge-pr
+
+User: “merge the PR” / “merge PR #N” / “merge and close what it resolves”
+
+See [`merge-pr/LOAD.md`](merge-pr/LOAD.md):
+
+1. `gh` gate + read `AGENTS.md` (PR **merge convention**: merge commit, CI-before-merge, issue close-out)
+2. Confirm PR is OPEN, base `main`, **MERGEABLE**, adversarial review satisfied
+3. **Mandatory full gate** — tests run **directly with vitest**, no wrapper:
+   `npm run typecheck` (exit 0) → full `vitest run` (`node_modules/vitest/vitest.mjs run`, `failed=0`).
+   `vitest run --changed` / `npm run test:changed` is the **fast PR-iteration** signal and is **never** a merge gate.
+4. Merge: `gh pr merge <N> --merge --delete-branch` (merge commit, no squash)
+5. Verify `Closes/Fixes` issue close-out; leave `Refs` parents open
+6. Post-merge: `checkout main && pull --ff-only`, `remote prune origin`; confirm head branch gone
 
 ## cleanup-sandbox
 
