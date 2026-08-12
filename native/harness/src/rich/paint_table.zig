@@ -38,8 +38,10 @@ fn paintCellInlines(
     });
     defer wrap.deinit();
     // Note: paintInlineFlow's segmented branch (image/math in a cell) still forces
-    // .expand=.horizontal internally — a documented residual, covered by operator
-    // smoke (plan row #10), not by this width path.
+    // .expand=.horizontal internally — a documented residual confined to that one
+    // cell (capped by the #421 no-horizontal-scroll policy; it can push the cell's
+    // content past its column edge but never produces a scrollbar). Covered by
+    // operator smoke (plan row #10), not by this width path.
     paint_text.paintInlineFlow(@src(), slice, ctx, base_font, .{
         .expand = .vertical,
         .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
@@ -95,7 +97,13 @@ pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
         .layout_only = true,
         .rows = body_rows,
         .scroll_opts = .{
-            .horizontal = .auto,
+            // #421 policy: NO horizontal scroll anywhere in the UI. With
+            // .horizontal = .none, dvui grid.init enters its proportional-shrink
+            // branch (col_expand can go negative, weighted by content width), so a
+            // table whose natural columns exceed the viewport shrinks each column
+            // and cells wrap to fit — instead of exposing a horizontal scrollbar
+            // (which is what .auto forces by never shrinking).
+            .horizontal = .none,
             .vertical = .none,
         },
     }, .{
@@ -113,9 +121,12 @@ pub fn paintTable(src: std.builtin.SourceLocation, block: parse.Block, ctx: *pai
     // Force autosize every paint so col widths track content (small tables).
     // min_width stays a readable floor (no char-level quantization now that cells
     // report natural width); max_width becomes content-derived (= transcript width)
-    // so a long / no-space cell grows its column (pushing an honest horizontal
-    // scroll) instead of wrapping to a fragment at a flat 280 cap. max_height keeps
-    // the row cap that bounds pathological tall cells.
+    // so a single long / no-space cell wraps inside a column capped at the viewport
+    // instead of fragmenting at a flat 280 cap. Horizontal scroll is NONE, so when a
+    // table's sum of natural column widths exceeds the viewport, dvui grid shrinks
+    // each column proportionally (weighted by its own content width) and long cells
+    // wrap — the table always fits; no horizontal scrollbar is ever produced.
+    // max_height keeps the row cap that bounds pathological tall cells.
     grid.autoSize(.{
         .auto = .both,
         .min_width = 48,
