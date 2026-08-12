@@ -1,77 +1,19 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { PGlite } from '@electric-sql/pglite';
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-} from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
 import { decryptSecret, encryptSecret } from './credentials';
 import { rotateTenantDek } from './rotateTenantDek';
 import { ensureTenantDek, loadTenantDek } from './tenantKeys';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(__dirname, '../../db/migrations');
-
-const FULL_MIGRATIONS = [
-  '0000_tenancy_phase1.sql',
-  '0001_sso_scim_identity.sql',
-  '0002_tenant_deks.sql',
-  '0003_provider_secrets.sql',
-  '0004_user_mcp_servers.sql',
-  '0005_sandbox_backend.sql',
-  '0006_user_github_tokens.sql',
-  '0007_user_preferred_sandbox.sql',
-];
-
-/**
- * Apply each migration file as a single multi-statement exec (still in file
- * order) rather than one round-trip per `--> statement-breakpoint` chunk.
- * PGlite `exec` runs several semicolon-separated statements; the breakpoint
- * markers are a drizzle artifact and safe to drop.
- */
-async function applyMigrations(client: PGlite, names: string[]) {
-  for (const name of names) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8')
-      .split('--> statement-breakpoint')
-      .join('')
-      .trim();
-    if (sql) {
-      await client.exec(sql);
-    }
-  }
-}
+import {
+  createIsolatedTestDb,
+  getSharedDb,
+  resetTenantTables,
+} from './test/shared';
 
 const AMK = Buffer.alloc(32, 5);
 
-/**
- * One in-memory PGlite for the whole file, booted once. This cuts the second
- * cold WASM Postgres start (previously one per describe) and reduces the
- * migration cost to a single round-trip per file instead of one per
- * `--> statement-breakpoint` chunk. Note: test transactions must be isolated
- * via the delete-and-reseed beforeEach below — PGlite's single-connection
- * mutex deadlocks when a raw SAVEPOINT/transaction straddles drizzle calls
- * against the shared `db`.
- */
-let client!: PGlite;
 let db!: ReturnType<typeof drizzle<typeof schema>>;
-
-beforeAll(async () => {
-  client = new PGlite();
-  await applyMigrations(client, FULL_MIGRATIONS);
-  db = drizzle(client, { schema });
-});
-
-afterAll(async () => {
-  await client?.close();
-});
 
 describe('rotateTenantDek', () => {
   let ownerId: string;
@@ -83,17 +25,12 @@ describe('rotateTenantDek', () => {
   let sandboxA2: string;
   let sandboxB: string;
 
+  beforeAll(async () => {
+    db = await getSharedDb();
+  });
+
   beforeEach(async () => {
-    await db.delete(schema.userGithubTokens);
-    await db.delete(schema.userMcpServers);
-    await db.delete(schema.providerSecretGrants);
-    await db.delete(schema.providerSecretModels);
-    await db.delete(schema.providerSecrets);
-    await db.delete(schema.sandboxGrants);
-    await db.delete(schema.sandboxes);
-    await db.delete(schema.tenantMembers);
-    await db.delete(schema.users);
-    await db.delete(schema.tenants);
+    await resetTenantTables();
 
     const [owner] = await db
       .insert(schema.users)
@@ -571,14 +508,28 @@ describe('rotateTenantDek', () => {
 });
 
 describe('rotateTenantDek without user_github_tokens table', () => {
+  // Carve-out (documented in the phase-3 plan + `shared.ts`): this describe
+  // DROPs `user_github_tokens` from its engine to simulate deploy-before-migrate
+  // for 0006. That schema mutation cannot run on the shared engine (it would
+  // break every later tenancy file that uses the table), so it uses an
+  // **isolated** engine via `createIsolatedTestDb()`.
+  let db: ReturnType<typeof drizzle<typeof schema>>;
+  let client: Awaited<ReturnType<typeof createIsolatedTestDb>>['client'];
   let ownerId: string;
   let tenantId: string;
 
   beforeAll(async () => {
     // Simulate deploy-before-migrate for 0006: drop the github table from the
-    // shared engine (PGlite has no schema-migration-version bookkeeping that
+    // isolated engine (PGlite has no schema-migration-version bookkeeping that
     // must be kept in sync here, and no other table references it).
+    const isolated = await createIsolatedTestDb();
+    db = isolated.db;
+    client = isolated.client;
     await client.exec('DROP TABLE IF EXISTS "user_github_tokens"');
+  });
+
+  afterAll(async () => {
+    await client.close();
   });
 
   it('owner rotate succeeds (deploy-before-migrate soft-skip)', async () => {

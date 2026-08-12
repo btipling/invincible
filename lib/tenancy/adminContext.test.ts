@@ -1,9 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as schema from '../../db/schema';
 import { loadAdminContext } from './adminContext';
@@ -11,58 +7,24 @@ import {
   decryptSandboxToken,
   encryptTenantSecret,
 } from './tenantKeys';
+import { getSharedDb, resetTenantTables } from './test/shared';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(__dirname, '../../db/migrations');
-
-async function applyMigrations(client: PGlite) {
-  for (const name of [
-    '0000_tenancy_phase1.sql',
-    '0001_sso_scim_identity.sql',
-    '0002_tenant_deks.sql',
-    '0003_provider_secrets.sql',
-    '0004_user_mcp_servers.sql',
-    '0005_sandbox_backend.sql',
-    '0006_user_github_tokens.sql',
-    '0007_user_preferred_sandbox.sql',
-  ]) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8');
-    for (const stmt of sql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean)) {
-      await client.exec(stmt);
-    }
-  }
-}
+let db!: ReturnType<typeof drizzle<typeof schema>>;
+let tenantId: string;
+let ownerId: string;
+let memberId: string;
+let adminId: string;
+let sandboxId: string;
 
 const AMK = Buffer.alloc(32, 7);
 
 describe('loadAdminContext', () => {
-  let client: PGlite;
-  let db: ReturnType<typeof drizzle<typeof schema>>;
-  let tenantId: string;
-  let ownerId: string;
-  let memberId: string;
-  let adminId: string;
-  let sandboxId: string;
-
   beforeAll(async () => {
-    client = new PGlite();
-    await applyMigrations(client);
-    db = drizzle(client, { schema });
-  });
-
-  afterAll(async () => {
-    await client.close();
+    db = await getSharedDb();
   });
 
   beforeEach(async () => {
-    await db.delete(schema.sandboxGrants);
-    await db.delete(schema.sandboxes);
-    await db.delete(schema.tenantMembers);
-    await db.delete(schema.users);
-    await db.delete(schema.tenants);
+    await resetTenantTables();
 
     const [tenant] = await db
       .insert(schema.tenants)

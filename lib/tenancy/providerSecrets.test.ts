@@ -1,10 +1,6 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { PGlite } from '@electric-sql/pglite';
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
 import {
   createProviderSecret,
@@ -15,58 +11,23 @@ import {
   updateProviderSecret,
 } from './providerSecrets';
 import { decryptTenantSecret } from './tenantKeys';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(__dirname, '../../db/migrations');
-
-async function applyMigrations(client: PGlite) {
-  for (const name of [
-    '0000_tenancy_phase1.sql',
-    '0001_sso_scim_identity.sql',
-    '0002_tenant_deks.sql',
-    '0003_provider_secrets.sql',
-    '0004_user_mcp_servers.sql',
-    '0005_sandbox_backend.sql',
-    '0006_user_github_tokens.sql',
-    '0007_user_preferred_sandbox.sql',
-  ]) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8');
-    for (const stmt of sql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean)) {
-      await client.exec(stmt);
-    }
-  }
-}
+import { getSharedDb, resetTenantTables } from './test/shared';
 
 const AMK = Buffer.alloc(32, 7);
 
+let db!: ReturnType<typeof drizzle<typeof schema>>;
+let tenantId: string;
+let userId: string;
+let otherUserId: string;
+let foreignUserId: string;
+
 describe('providerSecrets', () => {
-  let client: PGlite;
-  let db: ReturnType<typeof drizzle<typeof schema>>;
-  let tenantId: string;
-  let userId: string;
-  let otherUserId: string;
-  let foreignUserId: string;
-
   beforeAll(async () => {
-    client = new PGlite();
-    await applyMigrations(client);
-    db = drizzle(client, { schema });
-  });
-
-  afterAll(async () => {
-    await client.close();
+    db = await getSharedDb();
   });
 
   beforeEach(async () => {
-    await db.delete(schema.providerSecretGrants);
-    await db.delete(schema.providerSecretModels);
-    await db.delete(schema.providerSecrets);
-    await db.delete(schema.tenantMembers);
-    await db.delete(schema.users);
-    await db.delete(schema.tenants);
+    await resetTenantTables();
 
     const [tenant] = await db
       .insert(schema.tenants)
@@ -407,5 +368,4 @@ describe('providerSecrets', () => {
     expect(still[0].name).toBe('foreign-secret');
     expect(still[0].status).toBe('active');
   });
-
 });

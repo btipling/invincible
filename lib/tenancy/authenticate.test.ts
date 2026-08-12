@@ -1,84 +1,56 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
 import { hashPassword } from './password';
 import { authenticateCredentials } from './authenticate';
+import { getSharedDb, resetTenantTables } from './test/shared';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(__dirname, '../../db/migrations');
+let db!: ReturnType<typeof drizzle<typeof schema>>;
 
-async function applyMigrations(client: PGlite) {
-  for (const name of [
-    '0000_tenancy_phase1.sql',
-    '0001_sso_scim_identity.sql',
-    '0002_tenant_deks.sql',
-    '0003_provider_secrets.sql',
-    '0004_user_mcp_servers.sql',
-    '0005_sandbox_backend.sql',
-    '0006_user_github_tokens.sql',
-    '0007_user_preferred_sandbox.sql',
-  ]) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8');
-    const statements = sql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    for (const stmt of statements) {
-      await client.exec(stmt);
-    }
-  }
+async function seedUsers() {
+  const activeHash = await hashPassword('correct-horse-battery');
+  const inactiveHash = await hashPassword('inactive-pass');
+  const suspendedHash = await hashPassword('suspended-pass');
+  await db.insert(schema.users).values([
+    {
+      email: 'active@example.com',
+      name: 'Active',
+      status: 'active',
+      passwordHash: activeHash,
+      provisionSource: 'credentials',
+    },
+    {
+      email: 'inactive@example.com',
+      name: 'Inactive',
+      status: 'inactive',
+      passwordHash: inactiveHash,
+      provisionSource: 'credentials',
+    },
+    {
+      email: 'suspended@example.com',
+      name: 'Suspended',
+      status: 'suspended',
+      passwordHash: suspendedHash,
+      provisionSource: 'credentials',
+    },
+    {
+      email: 'nohash@example.com',
+      name: 'NoHash',
+      status: 'active',
+      passwordHash: null,
+      provisionSource: 'oidc',
+    },
+  ]);
 }
 
 describe('authenticateCredentials', () => {
-  let client: PGlite;
-  let db: ReturnType<typeof drizzle<typeof schema>>;
-
   beforeAll(async () => {
-    client = new PGlite();
-    await applyMigrations(client);
-    db = drizzle(client, { schema });
-
-    const activeHash = await hashPassword('correct-horse-battery');
-    const inactiveHash = await hashPassword('inactive-pass');
-    const suspendedHash = await hashPassword('suspended-pass');
-    await db.insert(schema.users).values([
-      {
-        email: 'active@example.com',
-        name: 'Active',
-        status: 'active',
-        passwordHash: activeHash,
-        provisionSource: 'credentials',
-      },
-      {
-        email: 'inactive@example.com',
-        name: 'Inactive',
-        status: 'inactive',
-        passwordHash: inactiveHash,
-        provisionSource: 'credentials',
-      },
-      {
-        email: 'suspended@example.com',
-        name: 'Suspended',
-        status: 'suspended',
-        passwordHash: suspendedHash,
-        provisionSource: 'credentials',
-      },
-      {
-        email: 'nohash@example.com',
-        name: 'NoHash',
-        status: 'active',
-        passwordHash: null,
-        provisionSource: 'oidc',
-      },
-    ]);
+    db = await getSharedDb();
   });
 
-  afterAll(async () => {
-    await client.close();
+  beforeEach(async () => {
+    await resetTenantTables();
+    await seedUsers();
   });
 
   it('returns user for correct password', async () => {

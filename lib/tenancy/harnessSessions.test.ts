@@ -1,10 +1,6 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { PGlite } from '@electric-sql/pglite';
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
 import {
   HARNESS_SESSION_MAX_MSG_BYTES,
@@ -13,52 +9,19 @@ import {
   putHarnessSession,
   validateSessionSnapshot,
 } from './harnessSessions';
+import { getSharedDb, resetTenantTables } from './test/shared';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(__dirname, '../../db/migrations');
-
-async function applyMigrations(client: PGlite) {
-  for (const name of [
-    '0000_tenancy_phase1.sql',
-    '0001_sso_scim_identity.sql',
-    '0002_tenant_deks.sql',
-    '0003_provider_secrets.sql',
-    '0004_user_mcp_servers.sql',
-    '0005_sandbox_backend.sql',
-    '0006_user_github_tokens.sql',
-    '0007_user_preferred_sandbox.sql',
-    '0008_user_sandbox_instances.sql',
-    '0009_harness_sessions.sql',
-  ]) {
-    const sql = readFileSync(join(migrationsDir, name), 'utf8');
-    for (const stmt of sql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter(Boolean)) {
-      await client.exec(stmt);
-    }
-  }
-}
+let db!: ReturnType<typeof drizzle<typeof schema>>;
+let userId: string;
+let otherUserId: string;
 
 describe('harnessSessions', () => {
-  let client: PGlite;
-  let db: ReturnType<typeof drizzle<typeof schema>>;
-  let userId: string;
-  let otherUserId: string;
-
   beforeAll(async () => {
-    client = new PGlite();
-    await applyMigrations(client);
-    db = drizzle(client, { schema });
-  });
-
-  afterAll(async () => {
-    await client.close();
+    db = await getSharedDb();
   });
 
   beforeEach(async () => {
-    await db.delete(schema.harnessSessions);
-    await db.delete(schema.users);
+    await resetTenantTables();
 
     const [user] = await db
       .insert(schema.users)
