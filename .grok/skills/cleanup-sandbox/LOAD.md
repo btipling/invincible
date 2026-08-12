@@ -37,6 +37,9 @@ git log --oneline -1 main   # where HEAD is vs origin/main
 
 1. Stage A hygiene: `fetch --prune`, checkout main, `pull --ff-only`, `gc --auto`
 2. Inventory leftovers (branches, unpushed commits, uncommitted/untracked files)
-3. Delete only obvious agent artifacts (`.tmp-plan-*`, logs, swaps)
-4. For anything else (current uncommitted work / unpushed branch) → **stop and ask**
-5. Never push; never delete remote branches; never force-reset without "discard" consent
+3. Delete obvious agent artifacts (`.tmp-plan-*`, logs, swaps)
+4. **Delete nested self-clones of this repo** (same-origin `ivc-*` / `.grok`
+   reference clones with their own `.git` whose `origin` == sandbox origin)
+   **without asking** — these double the vitest suite; see `SKILL.md` §1
+5. For anything else (current uncommitted work / unpushed branch) → **stop and ask**
+6. Never push; never delete remote branches; never force-reset without "discard" consent
