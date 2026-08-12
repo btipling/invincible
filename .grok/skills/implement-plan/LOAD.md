@@ -56,9 +56,13 @@ gh issue view <N> --repo btipling/invincible --json number,title,body,url,state
 
 ## Then
 
-0. **Start clean: run `cleanup-sandbox` first** if the workspace is left over
-   from a prior session (stray branch, unpushed commits, untracked scratch).
-   Do **not** implement on top of a dirty tree.
+0. **Update main + start clean.** First, a merged GitHub PR does **not** update
+   your local `main` — run `git fetch origin`, `git checkout main`,
+   `git pull --ff-only origin main`, and check `git log --oneline -1 main`
+   against the merged SHA before reading any code. Then, if the workspace is
+   left over from a prior session (stray branch, unpushed commits, untracked
+   scratch), also run `cleanup-sandbox`. Do **not** implement on top of a dirty
+   or stale tree.
 1. Confirm `AGENTS.md` was read this session.
 2. Read the plan fully. **If Status ≠ HANDOFF-READY, STOP** (see hard gate).
    Do not implement DRAFT / NEEDS REVISION / BLOCKED plans via this skill.

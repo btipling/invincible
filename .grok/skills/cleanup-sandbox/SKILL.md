@@ -140,6 +140,12 @@ before any step touching current uncommitted work or unpushed refs.
 
 ### Stage A — Hygiene (always safe, run first)
 
+> **Merged a PR? That does NOT update your local `main`.** GitHub updates the
+> remote `main`; your checkout stays on its stale local copy until you
+> `git fetch`/`pull`. So "the PR is merged" and "the changes aren't in my main"
+> are not contradictions — you're on a stale local `main`. Always fetch before
+> reading the repo, not after you're confused.
+
 ```bash
 cd <sandbox>                  # a bare agent/CI checkout, not a laptop
 git fetch --prune origin      # drop stale remote-tracking refs; prune deleted-upstream
