@@ -4,6 +4,7 @@ import {
   collapseThinkingDisplay,
   classifyTurnFailure,
   describeTurnEnd,
+  getSessionCwd,
   isTurnEndLine,
   pushSessionToBridge,
   runHarnessChat,
@@ -1243,13 +1244,12 @@ describe('runHarnessTurn session cwd', () => {
     expect(next.cwd).toBe('prior');
   });
 
-
-  it('does not send cwd when session has none', async () => {
+  it('sends the authoritative `cwd` on every turn (default `.` when none known)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const sendAgent = vi.fn(async (_p: string, init?: { cwd?: string }) => {
-      expect(init?.cwd).toBeUndefined();
-      return { ok: true as const, text: 'ok', cwd: '.' };
+      expect(init?.cwd).toBe('.');
+      return { ok: true as const, text: 'ok' };
     });
     const { session: next } = await runHarnessTurn(
       bridge,
@@ -1257,7 +1257,39 @@ describe('runHarnessTurn session cwd', () => {
       'hi',
       { sendAgent, pushUser: false, streamAgent: false },
     );
-    expect(next.cwd).toBe('.');
+    expect(sendAgent).toHaveBeenCalled();
+    // `.` is the request-time default; a fresh session with no `agentResult.cwd`
+    // (and no prior known cwd) stays unset — nothing new to persist.
+    expect(next.cwd).toBeUndefined();
+  });
+
+  it('a single authoritative getter drives the request cwd', () => {
+    expect(getSessionCwd({ ...createEmptySession('s'), cwd: '  invincible/sub  ' })).toBe(
+      'invincible/sub',
+    );
+    expect(getSessionCwd(createEmptySession('s'))).toBe('.');
+    expect(getSessionCwd({ ...createEmptySession('s'), cwd: '   ' })).toBe('.');
+  });
+
+  it('chat-fallback keeps the prior known cwd on success', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      status: 503,
+      error: SANDBOX_NOT_CONFIGURED_ERROR,
+      sandboxNotConfigured: true,
+    }));
+    const send = vi.fn(async (): Promise<ChatResult> => ({ ok: true, text: 'chat ok' }));
+    const session = { ...createEmptySession('s'), cwd: 'invincible/src' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      send,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(result.ok).toBe(true);
+    expect(next.cwd).toBe('invincible/src');
   });
 });
 

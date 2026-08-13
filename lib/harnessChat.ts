@@ -504,6 +504,18 @@ export function restoreLastUiKind(
 }
 
 /**
+ * Single authoritative session-cwd getter (P1/GAP-1, #452). Every agent turn reads
+ * the workspace-relative logical cwd from here for the request (`sessionCwd`); the
+ * success path applies `agentResult.cwd`, while abort/timeout/chat-fallback keep the
+ * prior known value (spread retention through `appendMessage`). `.` when none known —
+ * default workspace-root semantics.
+ */
+export function getSessionCwd(snapshot: SessionSnapshot): string {
+  const c = snapshot.cwd?.trim();
+  return c || '.';
+}
+
+/**
  * Full agent turn: try /api/agent (tools) then optional chat fallback + session.
  */
 export async function runHarnessTurn(
@@ -836,16 +848,14 @@ export async function runHarnessTurn(
       scheduleImagesFromMarkdown(bridge, text);
     };
 
-    const sessionCwd =
-      typeof session.cwd === 'string' && session.cwd.trim()
-        ? session.cwd.trim()
-        : undefined;
+    // Authoritative per-turn cwd (P1/GAP-1, #452): one getter → one request value.
+    const sessionCwd = getSessionCwd(session);
 
     if (streamAgent) {
       agentResult = await sendAgentStreamFn(apiPrompt, {
         signal: opts?.signal,
         modelId: opts?.modelId,
-        ...(sessionCwd != null ? { cwd: sessionCwd } : {}),
+        cwd: sessionCwd,
         onEvent: async (ev: AgentStreamEvent) => {
           if (ev.type === 'tool_start' || ev.type === 'tool_result') {
             handleToolEvent(ev);
@@ -876,7 +886,7 @@ export async function runHarnessTurn(
       agentResult = await sendAgentFn(apiPrompt, {
         signal: opts?.signal,
         modelId: opts?.modelId,
-        ...(sessionCwd != null ? { cwd: sessionCwd } : {}),
+        cwd: sessionCwd,
       });
     }
 

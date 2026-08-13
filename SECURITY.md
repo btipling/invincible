@@ -71,9 +71,9 @@ Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
  so no glob/key bleed |
 | Minting | Server mints **UUID** session ids; a brand-new session seeds `updatedAt: 0` |
 | Conflict | LWW on `updatedAt` (epoch ms); stale PUT → **409** + server record |
-| Caps (abuse / size) | No message-count cap; ≤**262 144** UTF-8 bytes per message text; ≤**~2 MiB** raw body; record id ≤128; `meta` is schema-typed reserved (title/legacySnapshotId/cwd/activeSandboxId…) + serialized size cap |
+| Caps (abuse / size) | No message-count cap; ≤**262 144** UTF-8 bytes per message text; ≤**~2 MiB** raw body; record id ≤128; `meta` is schema-typed reserved (title/legacySnapshotId/logicalCwd/activeSandboxId…) + serialized size cap |
 | Blob contents | Message roles/text/ids/timestamps + reserved `meta` scalars only — **never** Gateway keys, sandbox tokens, MCP secrets, PATs, or host absolute paths |
-| `cwd` | Optional **local-only** workspace-relative field; **not** stored in the cloud record |
+| `cwd` | **Session-owned** workspace-relative field (P1/GAP-1, #452) — stored on the cloud record as `meta.logicalCwd`; the host-absolute path is never stored (shared predicate re-sanitizes on parse) |
 | `REDIS_URL` | Single RESP wire URL (`redis://`/`rediss://`) embeds the credential — **never** log/echo it or `NEXT_PUBLIC_*`; dual-store `REDIS_URL` == Vercel Production env == GHA secret |
 | Backfill | One-shot Postgres `harness_sessions` → Redis via GHA **`sessions-redis-backfill`** (per-`{tenant,user}` marker, idempotent); Postgres becomes a **read-only archive**; legacy `/api/session` write route removed |
 | Client bundle | Session repository is client-safe (`lib/sessionRepository.ts`); must **not** import server `db` / Drizzle modules |
