@@ -8,7 +8,7 @@ import {
   sandboxDaemonOutOfDateError,
   MAX_JSON_BODY_BYTES,
 } from './constants.mjs';
-import { JailError } from './paths.mjs';
+import { JailError, resolveWorkspaceRoot } from './paths.mjs';
 import {
   ToolError,
   execCmd,
@@ -122,14 +122,19 @@ export function createSandboxServer(opts) {
       const method = (req.method ?? 'GET').toUpperCase();
 
       if (method === 'GET' && url.pathname === '/health') {
+        // Publish the REAL jail root the daemon actually enforces — not the raw
+        // SANDBOX_WORKSPACE env string (which may be a relative path or a
+        // symlink; the jail/exec paths resolve it via realpath). Disclosed unauth
+        // (like version/daemonVersion, on the token-private daemon port); FS
+        // mutation stays /v1/* token-gated. A missing/invalid root throws
+        // JailError here → the client's fail-closed parse sees null (all FS ops
+        // against a broken root would fail anyway).
+        const workspaceRoot = resolveWorkspaceRoot(workspace);
         sendJson(res, 200, {
           ok: true,
           version: INVINCIBLE_SANDBOX_PROTOCOL,
           daemonVersion: INVINCIBLE_SANDBOX_DAEMON_VERSION,
-          // Per-binding jail root so the host can canonicalize absolute↔rel
-          // paths. Disclosed unauth (like version/daemonVersion, on the
-          // token-private daemon port); FS mutation stays /v1/* token-gated.
-          workspaceRoot: workspace,
+          workspaceRoot,
         });
         return;
       }

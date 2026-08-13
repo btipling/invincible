@@ -170,9 +170,14 @@ export async function POST(req: Request): Promise<Response> {
     }
     redactList = [...redactList, ...ghSecrets];
 
-    const resolved = await services.resolveSandbox.resolveAgentSandbox(userId, {
-      ...(execEnv ? { execEnv } : {}),
-    });
+    const resolved = await services.resolveSandbox.resolveAgentSandbox(
+      userId,
+      { ...(execEnv ? { execEnv } : {}) },
+      // Pass the request abort signal so the health probe that discovers the
+      // per-binding workspace root (run AFTER the DB connection is released)
+      // cancels when the request is aborted — never a zombie probe.
+      { signal: req.signal },
+    );
 
     // When resolve soft-continues (e.g. Workspace not running), keep the 403
     // body and only proceed if MCP and/or builtin HTTP supply tools later.

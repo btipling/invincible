@@ -1,3 +1,4 @@
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
@@ -63,7 +64,9 @@ describe('sandbox HTTP server', () => {
       ok: true,
       version: INVINCIBLE_SANDBOX_PROTOCOL,
       daemonVersion: INVINCIBLE_SANDBOX_DAEMON_VERSION,
-      workspaceRoot: workspace,
+      // /health publishes the realpath'd jail root (resolveWorkspaceRoot), equal
+      // to the temp dir when tmpfs is not symlinked.
+      workspaceRoot: fsSync.realpathSync(workspace),
     });
   });
 
@@ -76,7 +79,7 @@ describe('sandbox HTTP server', () => {
       ok: true,
       version: INVINCIBLE_SANDBOX_PROTOCOL,
       daemonVersion: INVINCIBLE_SANDBOX_DAEMON_VERSION,
-      workspaceRoot: workspace,
+      workspaceRoot: fsSync.realpathSync(workspace),
     });
     void token;
   });

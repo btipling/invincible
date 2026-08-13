@@ -291,18 +291,27 @@ deployed Next would send tools (e.g. `str_replace`) a long-lived unit does not
 serve yet.
 
 **Per-binding workspace root (`R`) on `/health`:** since daemon **2**, `GET
-/health` includes `workspaceRoot` — the BYO jail root. It is returned
-**unauth** (like `version`/`daemonVersion`, on the token-private daemon port);
-all FS mutation stays `/v1/*` token-gated. `R` is a per-binding property of the
-resolved sandbox (`ResolvedAgentSandbox.workspaceRoot`, both BYO and Vercel via
-one `SandboxClient.workspaceRoot()` accessor in `lib/sandbox/client.ts`), and
-host path canonicalization is workspace-relative-keyed via
+/health` includes `workspaceRoot` — the **resolved** BYO jail root
+(`resolveWorkspaceRoot(SANDBOX_WORKSPACE)`: `realpath`, so even a relative or
+symlinked env string yields the absolute root the daemon actually enforces). It
+is returned **unauth** (like `version`/`daemonVersion`, on the token-private
+daemon port); all FS mutation stays `/v1/*` token-gated. The client parses it
+**fail-closed** — only an absolute, control-char-free path (not bare `/`, no
+`..` segment) is accepted; relative / drive / fake / stale bodies degrade
+`workspaceRoot` to `null`. `R` is a per-binding property of the resolved sandbox
+(`ResolvedAgentSandbox.workspaceRoot`, both BYO and Vercel via one
+`SandboxClient.workspaceRoot()` accessor in `lib/sandbox/client.ts`), and host
+path canonicalization is workspace-relative-keyed via
 `lib/agent/workPath.ts` (`canonicalizePath(R, p)` / `workspaceAbsToRel`), so a
 model passing `<R>/src/foo.ts` maps to the same ledger key as `src/foo.ts`
+(extra separators after `R`, e.g. `<R>//src/foo.ts`, collapse to the same key)
 while any host-absolute **outside** that binding's root is rejected. `R` is
 **not** a global/session constant — never reuse one binding's root for another.
 A down/pre-v2 BYO daemon degrades `workspaceRoot` to `null` (it never 403s a
-turn); FS turns still gate 426/502 at `runAgent` preflight.
+turn); FS turns still gate 426/502 at `runAgent` preflight. Resolve probes
+`workspaceRoot` **after** the DB connection is released and honors the request
+abort signal + a bounded health timeout (10s), so a blackholed daemon never pins
+a pooler slot while discovering `R`.
 
 Out-of-date behavior:
 

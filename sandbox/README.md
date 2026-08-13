@@ -95,7 +95,7 @@ Missing or wrong token → `401` `{ "error": "Unauthorized" }` (token never refl
 
 ## Path jail
 
-`resolveJailPath` rejects `..` / absolute escapes **and** resolves symlinks: a link whose real target leaves `SANDBOX_WORKSPACE` is rejected. Workspace root must exist on disk.
+`resolveJailPath` rejects `..` / absolute escapes **and** resolves symlinks: a link whose real target leaves `SANDBOX_WORKSPACE` is rejected. Workspace root must exist on disk. `GET /health` publishes **`resolveWorkspaceRoot(SANDBOX_WORKSPACE)`** (the realpath jail root the daemon actually enforces — a relative/symlinked env string still yields the absolute root); the app client parses it **fail-closed** (only an absolute, control-char-free path, not bare `/` and with no `..`, is accepted; anything else degrades `workspaceRoot` to `null`).
 
 ## Budgets (locked with parent #45)
 

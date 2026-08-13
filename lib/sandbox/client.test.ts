@@ -528,8 +528,22 @@ describe('sandbox client', () => {
       await expect(client.workspaceRoot?.()).resolves.toBeNull();
     });
 
-    it('malformed/empty/whitespace root → null (never a bogus value)', async () => {
-      for (const bad of [undefined, '', '   ', 42, null]) {
+    it('malformed / non-absolute / control-char / fake root → null (never a bogus value)', async () => {
+      for (const bad of [
+        undefined,
+        '',
+        '   ',
+        42,
+        null,
+        'relative-root',
+        './sandbox',
+        'C:\\work',
+        '/',
+        '//',
+        '/has/../dotdot',
+        '/ok\npath',
+        '/vercel/wo\x00rk',
+      ]) {
         const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
           const path = String(input);
           if (path.endsWith('/health')) {

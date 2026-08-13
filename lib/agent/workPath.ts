@@ -100,7 +100,10 @@ export function workspaceAbsToRel(R: string, absPath: string): string {
   if (abs === root) return '.';
   if (abs.startsWith(`${root}/`)) {
     // Rel path under R — normalize the tail (collapses . / .., blocks escapes).
-    return normalizeWorkspaceRel(abs.slice(root.length + 1));
+    // Strip any extra leading slashes left by a join like `R + '/' + '/src'`
+    // (still a legal in-jail POSIX path) so `<R>//src/foo.ts` shares the same
+    // ledger key as `src/foo.ts`.
+    return normalizeWorkspaceRel(abs.slice(root.length + 1).replace(/^\/+/, ''));
   }
   // Absolute path not under this binding's root — never map silently.
   throw new WorkPathError('Path escapes workspace root');

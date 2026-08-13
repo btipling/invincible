@@ -141,6 +141,13 @@ describe('workspaceAbsToRel', () => {
     expect(workspaceAbsToRel(ROOT, '/vercel/workspace/a/../b')).toBe('b');
   });
 
+  it('collapses extra separators immediately after R (join of R + / + /src)', () => {
+    expect(workspaceAbsToRel(ROOT, '/vercel/workspace//src/foo.ts')).toBe(
+      'src/foo.ts',
+    );
+    expect(workspaceAbsToRel(ROOT, '/vercel/workspace///a/b')).toBe('a/b');
+  });
+
   it('rejects absolutes outside R, other roots, and non-absolute input', () => {
     expect(() => workspaceAbsToRel(ROOT, '/etc/passwd')).toThrow(WorkPathError);
     expect(() => workspaceAbsToRel(ROOT, '/other/src/foo.ts')).toThrow(WorkPathError);

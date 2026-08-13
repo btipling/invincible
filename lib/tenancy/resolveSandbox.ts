@@ -113,9 +113,12 @@ export type ResolveAgentSandboxDeps = {
  * into `forbidden()` (which would 403 an operational daemon outage as a grant
  * failure). Root consumers land in #408 P3, so a null is safe to carry.
  */
-async function nonThrowingWorkspaceRoot(client: SandboxClient): Promise<string | null> {
+async function nonThrowingWorkspaceRoot(
+  client: SandboxClient,
+  signal?: AbortSignal,
+): Promise<string | null> {
   try {
-    return (await client.workspaceRoot?.()) ?? null;
+    return (await client.workspaceRoot?.({ signal })) ?? null;
   } catch {
     return null;
   }
@@ -135,6 +138,7 @@ function forbidden(): ResolveAgentSandboxResult {
 export async function resolveAgentSandbox(
   userId: string,
   deps: ResolveAgentSandboxDeps = {},
+  init?: { signal?: AbortSignal },
 ): Promise<ResolveAgentSandboxResult> {
   const id = userId?.trim();
   if (!id) {
@@ -142,7 +146,24 @@ export async function resolveAgentSandbox(
   }
 
   try {
-    return await withConnection(deps, (db) => resolveWithDb(db, id, deps));
+    const result = await withConnection(deps, (db) =>
+      resolveWithDb(db, id, deps),
+    );
+    // Probe the per-binding workspace root only AFTER `withConnection` has
+    // closed (its own `finally` ran on return). Probing inside the DB callback
+    // held a Neon/PgBouncer client checked out across a foreign BYO /health
+    // round-trip (bounded by the health probe timeout), pinning pooler slots
+    // on a blackholed daemon. A faulting probe still degrades to `null` —
+    // never a mislabeled 403. Passing `init?.signal` lets an aborted request
+    // cancel the probe immediately.
+    if (!result.ok) {
+      return result;
+    }
+    const workspaceRoot = await nonThrowingWorkspaceRoot(
+      result.value.client,
+      init?.signal,
+    );
+    return { ok: true, value: { ...result.value, workspaceRoot } };
   } catch {
     return forbidden();
   }
@@ -272,12 +293,13 @@ async function resolveWithDb(
         return forbidden();
       }
 
-      const workspaceRoot = await nonThrowingWorkspaceRoot(client);
+      // `workspaceRoot` is probed at the `resolveAgentSandbox` top level AFTER
+      // the DB connection is closed (see the comment there).
       return {
         ok: true,
         value: {
           client,
-          workspaceRoot,
+          workspaceRoot: null,
           permissions,
           secrets: [],
           sandboxId: row.sandboxId,
@@ -321,15 +343,14 @@ async function resolveWithDb(
       ...(deps.execEnv ? { execEnv: deps.execEnv } : {}),
     });
 
-    // Non-throwing: a BYO daemon down/pre-v2/partial degrades workspaceRoot to
-    // null (never a throw → never a mislabeled 403). runAgent preflight still
-    // gates FS turns 426/502; consumers land in #408 P3.
-    const workspaceRoot = await nonThrowingWorkspaceRoot(client);
+    // `workspaceRoot` is probed at the `resolveAgentSandbox` top level AFTER
+    // the DB connection is closed (see the comment there). runAgent preflight
+    // still gates FS turns 426/502; consumers land in #408 P3.
     return {
       ok: true,
       value: {
         client,
-        workspaceRoot,
+        workspaceRoot: null,
         permissions,
         secrets: [token],
         sandboxId: row.sandboxId,
@@ -348,7 +369,10 @@ async function resolveWithDb(
 /** Factory (DI): binds a fixed deps closure for composition-root wiring. */
 export function createResolveSandbox(deps: ResolveAgentSandboxDeps = {}) {
   return {
-    resolveAgentSandbox: (userId: string, o?: ResolveAgentSandboxDeps) =>
-      resolveAgentSandbox(userId, { ...deps, ...o }),
+    resolveAgentSandbox: (
+      userId: string,
+      o?: ResolveAgentSandboxDeps,
+      init?: { signal?: AbortSignal },
+    ) => resolveAgentSandbox(userId, { ...deps, ...o }, init),
   };
 }
