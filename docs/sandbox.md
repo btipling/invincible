@@ -726,12 +726,21 @@ Paths resolve with **prefix-aware** join (not naive always-join):
 
 | Argument path | Behavior |
 |---------------|----------|
+| **`.`** (workspace root, default) | The default session/cwd start from `SANDBOX_DEFAULT_CWD`. Argument `.` resolves to the **current** logical cwd (stay); the `.` *value* is the workspace-root default when no other cwd is set |
+| **`..` (walk up)** | Collapses within the workspace root — `change_dir ..` from `cwd=invincible/docs` → `invincible`. It errors ("Path escapes workspace root") only when it would climb **above** the jail root |
 | Equals current cwd, or starts with `cwd/` | Treated as already workspace-root-relative — **not** re-joined under cwd |
-| Relative (`sandbox/x`, `./x`, `..`) | Joined under current logical cwd |
+| **Exact ancestor of cwd** | Re-roots to the workspace root instead of blind-joining: `change_dir invincible` from `cwd=invincible/docs` → `invincible`, **not** the phantom `invincible/docs/invincible`. A sibling that only shares a name prefix (`foo` from `cwd=foobar/x`) stays relative — no false re-root |
+| Relative (`sandbox/x`, `./x`) | Joined under current logical cwd |
 | **In-jail absolute** (`<R>/src/foo.ts`) | **Accepted** on all FS tools + `change_dir` + `exec` cwd — canonicalized to the **same workspace-relative key** as its relative form (`src/foo.ts`); identical freshness ledger, BYO + Vercel parity. `R` is the **active binding's** jail root (BYO daemon root or Vercel `/vercel/workspace`), resolved per turn — never a fixed host string |
 | Host-absolute outside R / `..` escape (`/etc/…`, another binding's root) | **Fail closed** — “Path escapes workspace root” |
 | Host-absolute when R is unresolvable (BYO daemon down/pre-v2) | **Fail closed** — “Sandbox workspace root unavailable — use a workspace-relative path”; relative + cwd still work |
 | Windows drive `C:\…` | Rejected (fail closed) |
+
+**Re-rooting:** the model can re-root toward the workspace root **either** by walking
+up with `..` **or** by naming an exact ancestor of the current cwd (`change_dir
+invincible` from `cwd=invincible/docs`). An **exact ancestor** re-roots cleanly
+instead of producing a phantom nested path; a sibling that merely shares a name
+prefix is never mistakenly re-rooted (guarded by tests).
 
 Tool success lines always show **workspace-root-relative** paths (and `cwd=…` when
 not at root) so models can copy paths without double-prefix mistakes. `exec`
