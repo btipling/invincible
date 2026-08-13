@@ -18,7 +18,7 @@ import {
   type DiskFingerprint,
   type RunFileFreshness,
 } from './fileFreshness';
-import { defaultPathLock } from './pathLock';
+import { defaultPathLock, lockKey } from './pathLock';
 
 export type ToolPermissions = {
   canRead: boolean;
@@ -373,8 +373,10 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         // Per-path serialize + re-validate on latest bytes (bug #479): the whole
         // stat → gate → write → recordWrite critical section runs under the path
         // lock so overlapping same-path applies never interleave a stale snapshot.
+        // Key is namespaced by the per-binding jail root so the process-global
+        // lock does not head-of-line block unrelated sandboxes (review L7 #481).
         return await defaultPathLock.withPathLock(
-          path,
+          lockKey(workspaceRoot, path),
           async () => {
             let exists = true;
             let live: DiskFingerprint = {};
@@ -479,9 +481,10 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         // Per-path serialize + re-validate on latest bytes (bug #479): the whole
         // stat → gate → replace → recordWrite critical section runs under the
         // path lock so two overlapping same-path applies never both pass the
-        // gate on a shared snapshot and silently drop one edit.
+        // gate on a shared snapshot and silently drop one edit. Key is
+        // namespaced by the per-binding jail root (review L7 #481).
         return await defaultPathLock.withPathLock(
-          path,
+          lockKey(workspaceRoot, path),
           async () => {
             let live: DiskFingerprint = {};
             try {

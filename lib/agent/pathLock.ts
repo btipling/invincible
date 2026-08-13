@@ -33,6 +33,11 @@ export class PathLock {
    * waiter proceeds. Once `fn` has started, abort is the caller's job (it
    * passes `signal` through to the client calls inside `fn`); the slot is held
    * until `fn` settles.
+   *
+   * Abort-in-hole is safe against a *new* arriver racing into the still-running
+   * holder: when the **tail** (last) waiter aborts before starting, the previous
+   * chain (`prev`) is restored in the map rather than deleted, so any later
+   * arriver still queues behind the holder that is actually running `fn`.
    */
   withPathLock<T>(
     path: string,
@@ -50,8 +55,17 @@ export class PathLock {
     const tail = prev.then(() => gate);
     this.tails.set(path, tail);
 
+    // Normal completion: after `fn` settled and our gate is released, re-arm
+    // the chain if we are the tail. A later arriver may then start immediately.
     const releaseSlot = () => {
       if (this.tails.get(path) === tail) this.tails.delete(path);
+    };
+    // Aborted while still queued: if we were the tail, the holder before us may
+    // still be inside `fn`. Point the map back at `prev` (the holder's chain)
+    // instead of deleting, so a new arriver still waits for the holder rather
+    // than entering `fn` concurrently with it.
+    const restoreSlot = () => {
+      if (this.tails.get(path) === tail) this.tails.set(path, prev);
     };
 
     return new Promise<T>((resolve, reject) => {
@@ -62,8 +76,14 @@ export class PathLock {
         if (settled) return;
         settled = true;
         signal?.removeEventListener('abort', onAbort);
+        // Resolve our gate regardless so an existing later waiter (whose chain
+        // references our `tail`) does not deadlock behind an aborted queue node.
         release();
-        releaseSlot();
+        if (started) {
+          releaseSlot();
+        } else {
+          restoreSlot();
+        }
         if (err) reject(err);
         else resolve(val as T);
       };
@@ -100,6 +120,19 @@ export class PathLock {
       })();
     });
   }
+}
+
+/**
+ * Build a serialization lock key for a per-binding jail root + workspace-relative
+ * path. Namespacing by the root keeps the process-global `defaultPathLock` from
+ * head-of-line-blocking *unrelated* sandboxes that happen to edit the same
+ * relative path (adversarial review L7 on #481). Two sandboxes that share a root
+ * edit the same physical bytes, so serializing them is correct; all that is
+ * avoided is false contention between genuinely distinct workspaces.
+ */
+export function lockKey(root: string | null | undefined, path: string): string {
+  const domain = root && root.trim() !== '' ? root : '<no-root>';
+  return `${domain}::${path}`;
 }
 
 /** Shared unit instance used by the host FS tools (module singleton). */
