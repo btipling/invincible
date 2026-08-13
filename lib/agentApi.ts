@@ -14,6 +14,8 @@ export type ToolTraceEntry = {
   name: string;
   ok: boolean;
   summary: string;
+  /** Confirmed `change_dir` cwd (typed field from the server; no summary parsing). */
+  cwd?: string;
 };
 
 export type AgentSuccess = {
@@ -68,7 +70,8 @@ function parseToolTrace(raw: unknown): ToolTraceEntry[] | undefined {
     const summary = typeof rec.summary === 'string' ? rec.summary : '';
     const name = typeof rec.name === 'string' ? rec.name : 'tool';
     const ok = typeof rec.ok === 'boolean' ? rec.ok : false;
-    out.push({ name, ok, summary });
+    const cwd = typeof rec.cwd === 'string' ? rec.cwd : undefined;
+    out.push({ name, ok, summary, ...(cwd !== undefined ? { cwd } : {}) });
   }
   return out.length > 0 ? out : undefined;
 }

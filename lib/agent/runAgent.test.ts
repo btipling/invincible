@@ -227,6 +227,41 @@ describe('runAgent', () => {
     expect(trace[1].summary).toContain('[redacted]');
   });
 
+  it('collectToolTrace carries the TYPED cwd on confirmed change_dir and omits it on failure (adversarial review #470)', () => {
+    const LONG_PATH =
+      'packages/frontend/src/components/settings/panels/advanced/billing/extra';
+    const trace = collectToolTrace({
+      steps: [
+        {
+          toolCalls: [
+            { toolName: 'change_dir', toolCallId: 'c1' },
+            { toolName: 'change_dir', toolCallId: 'c2' },
+          ],
+          toolResults: [
+            {
+              toolName: 'change_dir',
+              toolCallId: 'c1',
+              output: `change_dir ${LONG_PATH}: ok cwd=${LONG_PATH}`,
+            },
+            {
+              toolName: 'change_dir',
+              toolCallId: 'c2',
+              output: 'ERROR change_dir: no such dir',
+            },
+          ],
+        },
+      ],
+    });
+    expect(trace).toHaveLength(2);
+    expect(trace[0].name).toBe('change_dir');
+    expect(trace[0].ok).toBe(true);
+    // The typed `cwd` is the full path (even though the summary is truncated).
+    expect(trace[0].cwd).toBe(LONG_PATH);
+    expect(trace[0].summary.length).toBeLessThanOrEqual(TOOL_TRACE_SUMMARY_MAX_CHARS);
+    expect(trace[1].ok).toBe(false);
+    expect(trace[1].cwd).toBeUndefined();
+  });
+
   it('collectToolTrace marks missing results as not ok', () => {
     const trace = collectToolTrace({
       steps: [
