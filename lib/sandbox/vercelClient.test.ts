@@ -710,4 +710,48 @@ describe('createVercelSandboxClient', () => {
     expect(srcText).not.toMatch(/await sb\?\.stop\(/);
   });
 
+  it('serializes concurrent same-path str_replace (per-path lock, no lost update)', async () => {
+    const sb = mockSandbox();
+    const createSandbox = vi.fn<GetVercelFsSandboxFn>(async () => sb);
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox: createSandbox,
+    });
+    await client.writeFile('a.ts', 'foo bar', true);
+
+    const [ra, rb] = await Promise.all([
+      client.strReplace('a.ts', 'foo', 'X'),
+      client.strReplace('a.ts', 'bar', 'Y'),
+    ]);
+    expect(ra).toMatchObject({ ok: true, replacements: 1 });
+    expect(rb).toMatchObject({ ok: true, replacements: 1 });
+    // Both edits present — never a silent last-writer-win dropping one hunk.
+    await expect(client.readFile('a.ts')).resolves.toEqual({ content: 'X Y' });
+    await client.close?.();
+  });
+
+  it('concurrent same-hunk str_replace → exactly one ok, loser fail-closes', async () => {
+    const sb = mockSandbox();
+    const createSandbox = vi.fn<GetVercelFsSandboxFn>(async () => sb);
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox: createSandbox,
+    });
+    await client.writeFile('a.ts', 'foo', true);
+
+    const settled = await Promise.allSettled([
+      client.strReplace('a.ts', 'foo', 'X'),
+      client.strReplace('a.ts', 'foo', 'Y'),
+    ]);
+    const ok = settled.filter((s) => s.status === 'fulfilled').length;
+    const err = settled.filter(
+      (s) => s.status === 'rejected' && /not found|matched \d+ times/i.test(String(s.reason)),
+    ).length;
+    expect(ok).toBe(1);
+    expect(err).toBeGreaterThanOrEqual(1);
+    const content = (await client.readFile('a.ts')).content;
+    expect(['X', 'Y']).toContain(content);
+    await client.close?.();
+  });
+
 });

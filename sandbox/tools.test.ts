@@ -342,6 +342,72 @@ describe('sandbox tools', () => {
       }),
     ).rejects.toThrow(JailError);
   });
+
+  it('serializes concurrent same-path str_replace (no lost update)', async () => {
+    const ws = await mkWorkspace();
+    await writeFileTool(ws, { path: 'f.txt', content: 'foo bar' });
+    const [ra, rb] = await Promise.all([
+      strReplaceTool(ws, { path: 'f.txt', old_string: 'foo', new_string: 'X' }),
+      strReplaceTool(ws, { path: 'f.txt', old_string: 'bar', new_string: 'Y' }),
+    ]);
+    expect(ra.ok).toBe(true);
+    expect(rb.ok).toBe(true);
+    const r = await readFileTool(ws, { path: 'f.txt' });
+    // Both replacements present (defined order, latest bytes) — not a torn/lost one.
+    expect(r.content).toBe('X Y');
+  });
+
+  it('fail-closes a concurrent same-hunk replace the winner consumed', async () => {
+    const ws = await mkWorkspace();
+    await writeFileTool(ws, { path: 'g.txt', content: 'foo bar' });
+    let okCount = 0;
+    let errCount = 0;
+    await Promise.all([
+      strReplaceTool(ws, {
+        path: 'g.txt',
+        old_string: 'foo',
+        new_string: 'X',
+      }).then(
+        () => {
+          okCount += 1;
+        },
+        () => {
+          errCount += 1;
+        },
+      ),
+      strReplaceTool(ws, {
+        path: 'g.txt',
+        old_string: 'foo',
+        new_string: 'Y',
+      }).then(
+        () => {
+          okCount += 1;
+        },
+        () => {
+          errCount += 1;
+        },
+      ),
+    ]);
+    // Exactly one wins; the loser re-reads the winner's bytes and fail-closes.
+    expect(okCount).toBe(1);
+    expect(errCount).toBe(1);
+    const r = await readFileTool(ws, { path: 'g.txt' });
+    expect(['X bar', 'Y bar']).toContain(r.content);
+  });
+
+  it('serializes concurrent same-path write_file', async () => {
+    const ws = await mkWorkspace();
+    await Promise.all([
+      writeFileTool(ws, { path: 'h.txt', content: 'first', mkdir: false }).catch(
+        () => ({ ok: false as const }),
+      ),
+      writeFileTool(ws, { path: 'h.txt', content: 'second' }).catch(() => ({
+        ok: false as const,
+      })),
+    ]);
+    const r = await readFileTool(ws, { path: 'h.txt' });
+    expect(['first', 'second']).toContain(r.content);
+  });
 });
 
 describe('sandbox tools fingerprints + stat', () => {

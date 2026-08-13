@@ -5,6 +5,7 @@
  */
 
 import path from 'node:path';
+import { PathLock } from '../agent/pathLock';
 import { normalizeWorkspaceRel, WorkPathError } from '../agent/workPath';
 import { commandOutput } from '../agent/vercelSandboxHttpRunner';
 import {
@@ -291,6 +292,11 @@ export function createVercelSandboxClient(
     opts.extendThrottleMs == null
       ? EXTEND_THROTTLE_MS
       : Math.max(0, Math.floor(opts.extendThrottleMs));
+  // Instance-scoped per-path lock over this client's own read→write windows
+  // (bug #479). Scoped to one client instance / request; the host's own
+  // `defaultPathLock` in `lib/agent/tools.ts` is what closes same-turn
+  // parallel tools routed through the host.
+  const pathLock = new PathLock();
 
   let attachPromise: Promise<VercelFsSandboxLike> | null = null;
   let sandbox: VercelFsSandboxLike | null = null;
@@ -526,19 +532,26 @@ export function createVercelSandboxClient(
         const abs = resolveVercelFsPath(workspaceRoot, userPath);
         const sb = await ensureSandbox(init?.signal);
         await maybeExtend(sb);
-        return await runRs(async () => {
-          if (mkdir) {
-            const parent = path.posix.dirname(abs);
-            if (parent !== abs) {
-              await sb.fs.mkdir(parent, {
-                recursive: true,
-                signal: init?.signal,
-              });
-            }
-          }
-          await sb.fs.writeFile(abs, content, { signal: init?.signal });
-          return { ok: true, bytes: buf.byteLength };
-        }, init?.signal);
+        // Per-path serialize (bug #479): this client's own read→write window.
+        return await pathLock.withPathLock(
+          abs,
+          async () => {
+            return await runRs(async () => {
+              if (mkdir) {
+                const parent = path.posix.dirname(abs);
+                if (parent !== abs) {
+                  await sb.fs.mkdir(parent, {
+                    recursive: true,
+                    signal: init?.signal,
+                  });
+                }
+              }
+              await sb.fs.writeFile(abs, content, { signal: init?.signal });
+              return { ok: true, bytes: buf.byteLength };
+            }, init?.signal);
+          },
+          init?.signal,
+        );
       } catch (err) {
         mapFsError(err);
       }
@@ -568,58 +581,68 @@ export function createVercelSandboxClient(
         const abs = resolveVercelFsPath(workspaceRoot, userPath);
         const sb = await ensureSandbox(init?.signal);
         await maybeExtend(sb);
-        return await runRs(async () => {
-          const raw = await sb.fs.readFile(abs, {
-            encoding: 'utf8',
-            signal: init?.signal,
-          });
-          const content =
-            typeof raw === 'string' ? raw : raw.toString('utf8');
-          if (
-            Buffer.byteLength(content, 'utf8') > VERCEL_FS_MAX_READ_WRITE_BYTES
-          ) {
-            throw new SandboxHttpError(
-              `content exceeds maxBytes limit (${VERCEL_FS_MAX_READ_WRITE_BYTES})`,
-              413,
-            );
-          }
+        // Per-path serialize (bug #479): this client's own read→apply→write
+        // window, so a second apply re-reads the winner's bytes and either
+        // applies in order or fail-closes (never a silent dropped hunk).
+        return await pathLock.withPathLock(
+          abs,
+          async () => {
+            return await runRs(async () => {
+              const raw = await sb.fs.readFile(abs, {
+                encoding: 'utf8',
+                signal: init?.signal,
+              });
+              const content =
+                typeof raw === 'string' ? raw : raw.toString('utf8');
+              if (
+                Buffer.byteLength(content, 'utf8') >
+                VERCEL_FS_MAX_READ_WRITE_BYTES
+              ) {
+                throw new SandboxHttpError(
+                  `content exceeds maxBytes limit (${VERCEL_FS_MAX_READ_WRITE_BYTES})`,
+                  413,
+                );
+              }
 
-          let count = 0;
-          let from = 0;
-          while (from <= content.length) {
-            const idx = content.indexOf(oldString, from);
-            if (idx === -1) break;
-            count += 1;
-            from = idx + oldString.length;
-          }
-          if (count === 0) {
-            throw new SandboxHttpError('old_string not found in file', 400);
-          }
-          if (count > 1 && !replaceAll) {
-            throw new SandboxHttpError(
-              `old_string matched ${count} times; pass replace_all: true or provide a unique snippet`,
-              409,
-            );
-          }
+              let count = 0;
+              let from = 0;
+              while (from <= content.length) {
+                const idx = content.indexOf(oldString, from);
+                if (idx === -1) break;
+                count += 1;
+                from = idx + oldString.length;
+              }
+              if (count === 0) {
+                throw new SandboxHttpError('old_string not found in file', 400);
+              }
+              if (count > 1 && !replaceAll) {
+                throw new SandboxHttpError(
+                  `old_string matched ${count} times; pass replace_all: true or provide a unique snippet`,
+                  409,
+                );
+              }
 
-          const next = replaceAll
-            ? content.split(oldString).join(newString)
-            : content.replace(oldString, newString);
-          const outBuf = Buffer.from(next, 'utf8');
-          if (outBuf.byteLength > VERCEL_FS_MAX_READ_WRITE_BYTES) {
-            throw new SandboxHttpError(
-              `content exceeds maxBytes limit (${VERCEL_FS_MAX_READ_WRITE_BYTES})`,
-              413,
-            );
-          }
-          await sb.fs.writeFile(abs, next, { signal: init?.signal });
-          return {
-            ok: true,
-            path: userPath,
-            replacements: replaceAll ? count : 1,
-            bytes: outBuf.byteLength,
-          };
-        }, init?.signal);
+              const next = replaceAll
+                ? content.split(oldString).join(newString)
+                : content.replace(oldString, newString);
+              const outBuf = Buffer.from(next, 'utf8');
+              if (outBuf.byteLength > VERCEL_FS_MAX_READ_WRITE_BYTES) {
+                throw new SandboxHttpError(
+                  `content exceeds maxBytes limit (${VERCEL_FS_MAX_READ_WRITE_BYTES})`,
+                  413,
+                );
+              }
+              await sb.fs.writeFile(abs, next, { signal: init?.signal });
+              return {
+                ok: true,
+                path: userPath,
+                replacements: replaceAll ? count : 1,
+                bytes: outBuf.byteLength,
+              };
+            }, init?.signal);
+          },
+          init?.signal,
+        );
       } catch (err) {
         mapFsError(err);
       }

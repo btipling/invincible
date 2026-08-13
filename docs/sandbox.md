@@ -674,6 +674,20 @@ Agent filesystem tools enforce **read-before-edit** on the shared sandbox jail:
 
 **Fingerprints:** BYO daemon responses include additive `mtimeMs` + `size` on read/write/str_replace and **`POST /v1/stat`**. When a backend omits mtime, tools still require a prior read (gate 1) but cannot detect same-size silent rewrites (gate 2 degrades). Prefer a daemon that ships fingerprints. Restart/upgrade a long-lived BYO unit if `stat` is missing so create-vs-edit stays accurate.
 
+**Concurrency contract:** same-path `str_replace` / `write_file` applies
+**serialize per path**. The whole read→apply→write critical section runs under
+a per-path lock (`lib/agent/pathLock.ts` on the host; a JS twin in the BYO
+daemon), so two overlapping applies to one file never interleave a stale
+snapshot. The loser re-reads the **latest** bytes and either applies in order
+or fail-closes (`ERROR str_replace:` / `ERROR write_file:` `old_string not found`
+/ `matched N times` / the stale message) — **never** a silent last-writer-win where one hunk
+reports `ok` but is not on disk. A single BYO daemon serializes across
+**sessions/devices** on one workspace. The Vercel (shared-microVM) path
+serializes within one request/client instance and still fail-closes sequential
+same-path changes via the re-stat gate; a cross-request exact-overlap on a
+shared VM has no server-side lock (documented residual — BYO is the primary
+long-lived multi-session workspace and is fully serialized at the daemon).
+
 ## Logical workspace cwd
 
 The sandbox **jail root** (`SANDBOX_WORKSPACE` on the daemon) does not change per turn.
