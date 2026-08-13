@@ -106,7 +106,7 @@ hardcoding required.
   bridge poll/submit, thin nav/status chips (not a second chat).
 - **Vercel backend** — `POST /api/chat` and `POST /api/agent`; Gateway key and
   sandbox tokens never enter the client or Wasm.
-- **Session** — local-first `SessionStore` (memory + localStorage) restored into Wasm; optional **cloud multi-device** sync via `/api/session` when the user is signed in.
+- **Session** — local-first `SessionStore` (memory + localStorage) restored into Wasm; optional **cloud multi-device** sync (id-shaped `/api/sessions*`, Redis-backed, server-minted ids) when the user is signed in.
 
 Full ownership table: [`docs/feature-divide.md`](docs/feature-divide.md).
 

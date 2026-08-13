@@ -3,7 +3,7 @@
  * Server-only. One row per user; ownership always from session user id.
  * Never log full message bodies at info; never store secrets in messages.
  */
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import {
   harnessSessions,
   type Db,
@@ -221,117 +221,17 @@ export async function getHarnessSession(
 }
 
 /**
- * LWW upsert: body.updatedAt < serverMs → conflict + server snapshot;
- * body.updatedAt >= serverMs → accept (equal = idempotent overwrite).
+ * Archive (Phase 4): the Postgres `harness_sessions` table is now a **read-only
+ * durable archive** after `scripts/backfill-sessions.ts` migrated each row to
+ * Redis multi-session. The legacy `/api/session` write route (PUT/DELETE) was
+ * removed; only this read path + the shared `validateSessionSnapshot` / caps
+ * exports (reused by `lib/sessions/sessionStore.ts`) remain.
  */
-export async function putHarnessSession(
-  userId: string,
-  snapshot: SessionSnapshot,
-  deps: HarnessSessionsDeps = {},
-): Promise<HarnessSessionResult<SessionSnapshot>> {
-  const id = userId?.trim();
-  if (!id) {
-    return { ok: false, code: 'not_found', error: 'Session not found.' };
-  }
-  try {
-    return await withDb(deps, async (db) => {
-      const updatedAt = new Date(snapshot.updatedAt);
-      // Atomic LWW: only overwrite when incoming updatedAt >= stored (equal = idempotent).
-      // Avoids TOCTOU where concurrent older writers can clobber a newer row after a soft check.
-      const written = await db
-        .insert(harnessSessions)
-        .values({
-          userId: id,
-          snapshotId: snapshot.id,
-          updatedAt,
-          messages: snapshot.messages,
-        })
-        .onConflictDoUpdate({
-          target: harnessSessions.userId,
-          set: {
-            snapshotId: snapshot.id,
-            updatedAt,
-            messages: snapshot.messages,
-          },
-          setWhere: sql`${harnessSessions.updatedAt} <= ${updatedAt}`,
-        })
-        .returning({
-          snapshotId: harnessSessions.snapshotId,
-          updatedAt: harnessSessions.updatedAt,
-          messages: harnessSessions.messages,
-        });
 
-      if (written.length > 0) {
-        return { ok: true, value: rowToSnapshot(written[0]) };
-      }
-
-      const existing = await db
-        .select({
-          snapshotId: harnessSessions.snapshotId,
-          updatedAt: harnessSessions.updatedAt,
-          messages: harnessSessions.messages,
-        })
-        .from(harnessSessions)
-        .where(eq(harnessSessions.userId, id))
-        .limit(1);
-      if (existing.length === 0) {
-        // Should not happen after a no-op conflict update; treat as unavailable.
-        return {
-          ok: false,
-          code: 'unavailable',
-          error: 'Session store temporarily unavailable.',
-        };
-      }
-      return {
-        ok: false,
-        code: 'conflict',
-        error: 'Server has a newer session.',
-        value: rowToSnapshot(existing[0]),
-      };
-    });
-  } catch {
-    return {
-      ok: false,
-      code: 'unavailable',
-      error: 'Session store temporarily unavailable.',
-    };
-  }
-}
-
-/** Idempotent delete of the user's harness session row. */
-export async function deleteHarnessSession(
-  userId: string,
-  deps: HarnessSessionsDeps = {},
-): Promise<HarnessSessionResult<{ deleted: boolean }>> {
-  const id = userId?.trim();
-  if (!id) {
-    return { ok: true, value: { deleted: false } };
-  }
-  try {
-    return await withDb(deps, async (db) => {
-      const removed = await db
-        .delete(harnessSessions)
-        .where(eq(harnessSessions.userId, id))
-        .returning({ userId: harnessSessions.userId });
-      return { ok: true, value: { deleted: removed.length > 0 } };
-    });
-  } catch {
-    return {
-      ok: false,
-      code: 'unavailable',
-      error: 'Session store temporarily unavailable.',
-    };
-  }
-}
-
-/** Factory (DI): binds a fixed deps closure for composition-root wiring. */
+/** Factory (DI): binds a fixed deps closure for composition-root wiring (archive read only). */
 export function createHarnessSessions(deps: HarnessSessionsDeps = {}) {
   return {
     getHarnessSession: (userId: string, o?: HarnessSessionsDeps) =>
       getHarnessSession(userId, { ...deps, ...o }),
-    putHarnessSession: (userId: string, snapshot: SessionSnapshot, o?: HarnessSessionsDeps) =>
-      putHarnessSession(userId, snapshot, { ...deps, ...o }),
-    deleteHarnessSession: (userId: string, o?: HarnessSessionsDeps) =>
-      deleteHarnessSession(userId, { ...deps, ...o }),
   };
 }

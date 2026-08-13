@@ -36,6 +36,7 @@
  */
 import { createClient, type RedisClientType, type RedisClientOptions } from 'redis';
 import {
+  type BackfillMarkerStore,
   type HarnessSessionRecord,
   type PutResult,
   type ServerSessionStore,
@@ -45,6 +46,7 @@ import {
   assertValidSessionListScope,
   assertValidSessionRecord,
   assertValidSessionRecordKey,
+  backfillMarkerKey,
   keyMatchesRecord,
   parseSessionKeyString,
   sessionKeyString,
@@ -233,7 +235,7 @@ class NodeRedisAdapter implements RedisClientLike {
   }
 }
 
-export class RedisSessionStore implements ServerSessionStore {
+export class RedisSessionStore implements ServerSessionStore, BackfillMarkerStore {
   private readonly client: RedisClientLike;
   private readonly ttlMs: number;
   private readonly resolvedUrl: string | undefined;
@@ -329,5 +331,15 @@ export class RedisSessionStore implements ServerSessionStore {
     if (existing == null) return false;
     await this.client.del(k);
     return true;
+  }
+
+  async hasBackfillMarker(scope: SessionListScope): Promise<boolean> {
+    assertValidSessionListScope(scope);
+    return (await this.client.get(backfillMarkerKey(scope))) != null;
+  }
+
+  async setBackfillMarker(scope: SessionListScope): Promise<void> {
+    assertValidSessionListScope(scope);
+    await this.client.set(backfillMarkerKey(scope), { v: 1 });
   }
 }

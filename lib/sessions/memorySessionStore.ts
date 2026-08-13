@@ -4,6 +4,7 @@
  * never need a real Redis. **Test/scratch only — not persisted, not production.**
  */
 import {
+  type BackfillMarkerStore,
   type HarnessSessionRecord,
   type PutResult,
   type ServerSessionStore,
@@ -13,18 +14,20 @@ import {
   assertValidSessionListScope,
   assertValidSessionRecord,
   assertValidSessionRecordKey,
+  backfillMarkerKey,
   keyMatchesRecord,
   parseSessionKeyString,
   sessionKeyString,
   sessionPrefix,
 } from './sessionStore';
 
-export class MemorySessionStore implements ServerSessionStore {
-  private readonly store = new Map<string, HarnessSessionRecord>();
+export class MemorySessionStore implements ServerSessionStore, BackfillMarkerStore {
+  /** Mapped by key string; holds session records plus `{v:1}` backfill markers. */
+  private readonly store = new Map<string, HarnessSessionRecord | { v: number }>();
 
   async get(key: SessionRecordKey): Promise<HarnessSessionRecord | null> {
     assertValidSessionRecordKey(key);
-    const r = this.store.get(sessionKeyString(key));
+    const r = this.store.get(sessionKeyString(key)) as HarnessSessionRecord | undefined;
     // Mirrors the Redis fail-closed read: only return when the blob's own identity
     // re-binds to the key it lives under (adversarial re-run, Minor L2).
     return r && keyMatchesRecord(key, r) ? structuredClone(r) : null;
@@ -35,7 +38,7 @@ export class MemorySessionStore implements ServerSessionStore {
     assertValidSessionRecordKey(key);
     assertKeyMatchesRecord(key, record);
     const k = sessionKeyString(key);
-    const existing = this.store.get(k);
+    const existing = this.store.get(k) as HarnessSessionRecord | undefined;
     if (existing && record.updatedAt < existing.updatedAt) {
       return { status: 'conflict', server: structuredClone(existing) };
     }
@@ -51,10 +54,11 @@ export class MemorySessionStore implements ServerSessionStore {
     assertValidSessionListScope(scope);
     const base = sessionPrefix(scope).slice(0, -1); // drop trailing '*'
     const records: HarnessSessionRecord[] = [];
-    for (const [k, r] of this.store) {
+    for (const [k, value] of this.store) {
       if (!k.startsWith(base)) continue;
       const recordKey = parseSessionKeyString(k);
-      if (recordKey && keyMatchesRecord(recordKey, r)) records.push(structuredClone(r));
+      const rec = value as HarnessSessionRecord;
+      if (recordKey && keyMatchesRecord(recordKey, rec)) records.push(structuredClone(rec));
     }
     return records;
   }
@@ -65,5 +69,15 @@ export class MemorySessionStore implements ServerSessionStore {
     if (!this.store.has(k)) return false;
     this.store.delete(k);
     return true;
+  }
+
+  async hasBackfillMarker(scope: SessionListScope): Promise<boolean> {
+    assertValidSessionListScope(scope);
+    return this.store.has(backfillMarkerKey(scope));
+  }
+
+  async setBackfillMarker(scope: SessionListScope): Promise<void> {
+    assertValidSessionListScope(scope);
+    this.store.set(backfillMarkerKey(scope), { v: 1 });
   }
 }

@@ -24,7 +24,7 @@ optional login chrome).
 | `POST /api/agent` | **Vercel backend** | Multi-step tools (sandbox + per-user MCP when configured); server-only secrets |
 | Fold multi-turn history into prompt | **DOM** | `lib/harnessChat.ts` (user/assistant only; system tool lines display-only) |
 | `SessionStore` load/save/clear | **DOM** | memory / localStorage (first paint) |
-| Cloud session pull/push/DELETE (`/api/session`) | **DOM** host + **Vercel backend** | Hybrid async; never blocks first paint; no dual chat |
+| Cloud session list/mint/pull/push/DELETE (`/api/sessions*`) | **DOM** host + **Vercel backend** | Redis multi-session, server-minted ids; hybrid async; never blocks first paint; no dual chat |
 | Session ring window + Load earlier poll | **DOM** host + **Wasm** control | Host slices ≤**2048** (`HARNESS_RING_MAX`); **Load earlier** steps by **`HISTORY_PAGE` = 512**; Wasm pending (protocol v6); no React transcript |
 | Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status; model chip is a **mirror** of Wasm selection, not a second picker |
 | Model catalog fetch (`GET /api/models`) | **DOM** | Session-gated; host pushes ids into Wasm catalog |

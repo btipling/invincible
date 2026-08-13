@@ -1,0 +1,164 @@
+# Cloud-native one-shot backfill: legacy Postgres harness_sessions → Redis multi-session.
+#
+# Operator: Actions → sessions-redis-backfill → Run workflow
+#   inputs:
+#     confirm=backfill   (required misclick guard)
+#     dry_run=true       optional — validate required secrets only, no mutate
+#
+# Repository secrets (names only — set via GitHub web UI or `gh secret set`
+# from a cloud agent; never commit values):
+#   DATABASE_URL   (== Vercel Production)
+#   REDIS_URL      (== the single RESP wire URL set in Vercel Production env; redis:// or rediss://)
+#
+# Dual-store identity: DATABASE_URL and REDIS_URL must be the SAME values as
+# Vercel Production (runtime) so the backfilled Redis rows are the ones the app
+# reads. REDIS_URL embeds the Redis credential — never echo/log it.
+#
+# Re-run contract: idempotent — the script keys off a per-{tenant,user} marker in
+# the `harness:sessions-backfill:` namespace (separate from `harness:session:*`),
+# so a re-run stores nothing new for already-migrated rows.
+#
+# Explicit non-paths:
+#   - NOT db-migrate / db-tenancy-bootstrap / seed (that is not a backfill)
+#   - NOT a personal-laptop npm as the official cutover path
+#   - NOT self-hosted runner
+#
+# Safety: workflow_dispatch only; ubuntu-latest only; never self-hosted;
+# never echo secret values; job summary success/fail + counts only.
+# Docs: docs/session-model.md (Redis multi-session) · SECURITY.md · AGENTS.md
+
+name: sessions-redis-backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Must equal "backfill" to run the session backfill (misclick guard)'
+        required: true
+        type: string
+      dry_run:
+        description: 'If true, validate required secrets are present and exit without mutate'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sessions-redis-backfill-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    name: sessions-redis backfill
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Guard confirm input
+        if: ${{ inputs.confirm != 'backfill' }}
+        run: |
+          set -euo pipefail
+          echo "::error::confirm input must equal 'backfill'. Aborting with no mutate."
+          exit 1
+
+      # Fail closed before checkout/install so missing secrets never pay npm ci.
+      - name: Fail closed — required secrets present
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+        run: |
+          set -euo pipefail
+          # Never print secret values. Only names in error messages.
+          trim() {
+            # shellcheck disable=SC2039
+            local s="$1"
+            s="${s#"${s%%[![:space:]]*}"}"
+            s="${s%"${s##*[![:space:]]}"}"
+            printf '%s' "$s"
+          }
+          missing=0
+          for name in DATABASE_URL REDIS_URL; do
+            val="$(trim "${!name:-}")"
+            if [ -z "${val}" ]; then
+              echo "::error::${name} is missing or empty (set repository secret; dual-store with Vercel Production)"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+          echo "All required secret names present (values not printed)."
+
+      - name: Dry run — skip mutate
+        if: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          echo "dry_run=true — secrets validated; skipping checkout, install, and backfill."
+          {
+            echo "### sessions-redis-backfill"
+            echo "- result: dry_run (secrets OK, no mutate)"
+            echo "- confirm: ok"
+            echo "- note: REDIS_URL / DATABASE_URL present; run with dry_run=false to backfill"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Checkout
+        if: ${{ !inputs.dry_run }}
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        if: ${{ !inputs.dry_run }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      # Do not set NODE_ENV=production — need devDependency tsx for the CLI.
+      - name: Install app dependencies
+        if: ${{ !inputs.dry_run }}
+        run: npm ci
+
+      # Guard the mandatory DI gate before running the backfill (no in-body I/O).
+      - name: DI gate
+        if: ${{ !inputs.dry_run }}
+        run: npm run test:di-gate
+
+      - name: Backfill sessions → Redis
+        id: backfill
+        if: ${{ !inputs.dry_run }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+        run: |
+          set -euo pipefail
+          # Direct tsx so stdout is a single JSON line (counts only). REDIS_URL is
+          # never echoed.
+          out="$(npx tsx scripts/backfill-sessions.ts)"
+          echo "${out}"
+          rows="$(printf '%s' "${out}" | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{const j=JSON.parse(s.trim());if(typeof j.rows!=='number')process.exit(2);process.stdout.write(String(j.rows))}catch{process.exit(2)}})" )"
+          stored="$(printf '%s' "${out}" | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{const j=JSON.parse(s.trim());process.stdout.write(String(j.stored))}catch{process.exit(2)}})" )"
+          marker_skipped="$(printf '%s' "${out}" | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{const j=JSON.parse(s.trim());process.stdout.write(String(j.markerSkipped))}catch{process.exit(2)}})" )"
+          skipped_no_tenant="$(printf '%s' "${out}" | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{const j=JSON.parse(s.trim());process.stdout.write(String(j.skippedNoTenant))}catch{process.exit(2)}})" )"
+          skipped_invalid="$(printf '%s' "${out}" | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{const j=JSON.parse(s.trim());process.stdout.write(String(j.skippedInvalid))}catch{process.exit(2)}})" )"
+          echo "rows=${rows}" >> "${GITHUB_OUTPUT}"
+          echo "stored=${stored}" >> "${GITHUB_OUTPUT}"
+          echo "markerSkipped=${marker_skipped}" >> "${GITHUB_OUTPUT}"
+          echo "skippedNoTenant=${skipped_no_tenant}" >> "${GITHUB_OUTPUT}"
+          echo "skippedInvalid=${skipped_invalid}" >> "${GITHUB_OUTPUT}"
+
+      - name: Job summary
+        if: ${{ always() && inputs.confirm == 'backfill' && !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### sessions-redis-backfill"
+            echo "- result: ${{ job.status }}"
+            echo "- dry_run: false"
+            echo "- rows: ${{ steps.backfill.outputs.rows }}"
+            echo "- stored: ${{ steps.backfill.outputs.stored }}"
+            echo "- markerSkipped (idempotent re-runs): ${{ steps.backfill.outputs.markerSkipped }}"
+            echo "- skippedNoTenant: ${{ steps.backfill.outputs.skippedNoTenant }}"
+            echo "- skippedInvalid: ${{ steps.backfill.outputs.skippedInvalid }}"
+            echo "- note: Postgres harness_sessions is now a read-only archive; legacy /api/session is removed."
+            echo "- next: verify counts; smoke signed-in list/create/switch/clear-single"
+          } >> "${GITHUB_STEP_SUMMARY}"
