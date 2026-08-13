@@ -448,9 +448,10 @@ function pushTurnEnd(
  * The single tool-run boundary kind. Tracks the last kind pushed to the bridge
  * (the row the user last saw) so grouping of the next `tool_start`/`tool_result`
  * is one predicate instead of scattered flush call sites (plan #364 / residual
- * #357). `'tool_run'` marks an open/committed tool streak; `'thinking'` and
- * `'none'` also keep a streak open. `'assistant'`/`'user'`/`'error'` are true
- * boundaries that split the streak. `'system'` is a turn-end terminal row.
+ * #357). Under the #433 lock only `'tool_run'` continues the open card;
+ * `'thinking'`, `'none'`, `'assistant'`, `'user'`, `'error'`, and `'system'` are
+ * physical separators — the next tool opens a NEW card at `1`. `'system'` is a
+ * turn-end terminal row.
  */
 export type LastUiKind =
   | 'none'
@@ -462,14 +463,18 @@ export type LastUiKind =
   | 'error';
 
 /**
- * Single grouping predicate: whether an incoming `tool_start`/`tool_result`
- * continues the open tool-run streak (aggregate into the current group) or
- * must open a new group. Thinking between tools keeps a streak; a real painted
- * assistant / user / error splits. `none` (fresh turn start / empty session)
- * continues. `system` is a turn-end terminal — never a live continue.
+ * Single grouping predicate (#433 locked rule): whether an incoming
+ * `tool_start`/`tool_result` continues the open tool-run card (aggregate into
+ * the current live card) or must open a NEW card at `1`. The live path uses
+ * `lastRingRowIsToolRun` (the only ring writer) as its runtime flag; this pure
+ * helper states the same rule from a `LastUiKind`. Under the #433 lock a
+ * tool-run row last continues; every other row (thinking / assistant / user /
+ * error / system) is a physical separator, so a Thinking row that lands last
+ * forces a fresh card. `none` (fresh turn start) is checked by the live flag
+ * and opens a card at 1. `system` is a turn-end terminal — never a live continue.
  */
 export function shouldContinueStreak(last: LastUiKind): boolean {
-  return last === 'thinking' || last === 'tool_run' || last === 'none';
+  return last === 'tool_run';
 }
 
 /**
@@ -579,48 +584,92 @@ export async function runHarnessTurn(
     let thinkingSegmentOpen = false;
     let sawStreamTerminal = false;
 
-    // Tool-run aggregation (protocol v10 / plan #345). The host owns the SSE and
+    // Tool-run aggregation (protocol v11 / #433). The host owns the SSE and
     // knows the structured `tool_result.ok`, so it aggregates each uninterrupted
-    // tool streak into ONE display-only `tool_run` message (bridge kind 6, session
-    // role `tool_run`). Commit-once: the host aggregates the full streak and
-    // pushes ONE complete `tool_run` row to the bridge + session on flush at a
-    // true boundary (assistant text, turn end, or group-full roll). We never
-    // live-push/`update_last` a growing ToolRun row during the streak — the
-    // bridge shows tool chrome only when the streak commits.
+    // tool-run into ONE display-only `tool_run` message (bridge kind 6, session
+    // role `tool_run`) that paints LIVE: a tool event opens (or grows) exactly
+    // ONE kind-6 card immediately — `1 tool called` → `2 tools called` → … — via
+    // `inv_update_last_message` while the last ring row is a tool-run, else it
+    // opens a fresh card at `1`. This replaces commit-once (#355 / #352 C):
+    // tools are never withheld until assistant text / turn end.
     let toolRunGroup: ToolRunGroup = createToolRunGroup();
 
     /**
-     * Commit-once (plan #355 / parent #352 decision C). The group lives only in
-     * host memory while a streak is open and is written to the bridge + session
-     * as a SINGLE complete `tool_run` row at a true boundary (assistant text,
-     * turn end, or group-full roll). We never live-push/`update_last` a ToolRun
-     * row during the streak — for interleaved or contiguous streaks alike —
-     * because `updateLastMessage` only rewrites the LAST ring row: once a
-     * Thinking bubble opens above a ToolRun slot that slot can never grow, so a
-     * live partial row would end stale (parent locked: live per-tool paint is
-     * removed for EVERY streak).
+     * Live-paint grouping flag (#433 locked rule): whether the last ring row
+     * this host wrote is its OWN open kind-6 tool card. True → grow that card
+     * (`update_last`); false → push a fresh card at `1`. Set false by any
+     * non-tool ring write (thinking / assistant / user / error / system) and by
+     * a group-full roll (the just-pushed full card must never be grown). The
+     * host is the sole ring writer, so this single boolean is the only predicate
+     * needed; `updateLastMessage`'s return stays as insurance, never a decision.
      */
-    const flushToolRun = () => {
-      const payload = encodeToolRun(toolRunGroup);
+    let lastRingRowIsToolRun = false;
+    /** Session id of the current open live tool card (patched in place on growth). */
+    let openToolRunId: string | null = null;
+
+    const resetLiveToolStreak = () => {
+      lastRingRowIsToolRun = false;
+      openToolRunId = null;
       toolRunGroup = createToolRunGroup();
+    };
+
+    /**
+     * Paint the current in-memory group as the live kind-6 card: grow the open
+     * card in place when `lastRingRowIsToolRun` is true, else push a fresh one
+     * at `1`. Mirrors the ring into the session (patch the open card / append a
+     * new one) so a mid-turn cancel or reload never loses the live card.
+     */
+    const livePaintToolRun = () => {
+      const payload = encodeToolRun(toolRunGroup);
       if (!payload) return;
-      bridge.pushMessage(MessageKind.ToolRun, payload);
-      next = appendMessage(next, 'tool_run', payload);
-      lastUiKind = 'tool_run';
+      if (lastRingRowIsToolRun) {
+        // Grow the open card. Guard the rare impossible case where the last row
+        // is not our tool card (a raced ring write): never a stale silent bag —
+        // open a fresh card instead of duplicating state.
+        if (!bridge.updateLastMessage(MessageKind.ToolRun, payload)) {
+          bridge.pushMessage(MessageKind.ToolRun, payload);
+          next = appendMessage(next, 'tool_run', payload);
+          openToolRunId = next.messages[next.messages.length - 1]?.id ?? null;
+        } else if (openToolRunId != null) {
+          // Patch the open card's session row in place (same id anchor) so
+          // session == ring at every instant.
+          next = {
+            ...next,
+            messages: next.messages.map((m) =>
+              m.id === openToolRunId ? { ...m, text: payload } : m,
+            ),
+            updatedAt: Date.now(),
+          };
+        } else {
+          // No anchor yet (shouldn't happen) — append a fresh row and track it.
+          next = appendMessage(next, 'tool_run', payload);
+          openToolRunId = next.messages[next.messages.length - 1]?.id ?? null;
+        }
+      } else {
+        // Open a fresh card at 1.
+        bridge.pushMessage(MessageKind.ToolRun, payload);
+        next = appendMessage(next, 'tool_run', payload);
+        openToolRunId = next.messages[next.messages.length - 1]?.id ?? null;
+        lastRingRowIsToolRun = true;
+      }
     };
 
     const handleToolEvent = (ev: AgentStreamEvent) => {
       if (ev.type !== 'tool_start' && ev.type !== 'tool_result') return;
-      // Single boundary predicate (plan #364): a split kind (assistant / user /
-      // error) opens a new group for this tool. The open group is normally
-      // already empty here (the boundary committed it); the flush is a
-      // defense-in-depth no-op that keeps one commit path.
-      if (!shouldContinueStreak(lastUiKind)) flushToolRun();
+      // Live grouping predicate (#433): only continue the open card when the
+      // last ring row is a tool-run; any non-tool row (assistant / user / error
+      // / a thinking row that is last) opens a fresh group for this tool.
+      if (!lastRingRowIsToolRun) resetLiveToolStreak();
       closeAssistantSegment();
       closeThinkingSegment();
       const grows =
         ev.type === 'tool_start' || !hasRunningTool(toolRunGroup, ev.name);
-      if (grows && toolRunIsFull(toolRunGroup)) flushToolRun();
+      if (grows && toolRunIsFull(toolRunGroup)) {
+        // Group-full roll: the open card already holds TOOL_RUN_ITEMS_MAX. The
+        // next tool opens a FRESH card at 1 — never grows the just-pushed full
+        // card (that card is already the painted live row + its session row).
+        resetLiveToolStreak();
+      }
       if (ev.type === 'tool_start') {
         addToolStart(toolRunGroup, ev.name);
       } else {
@@ -632,10 +681,8 @@ export async function runHarnessTurn(
           ev.preview,
         );
       }
-      // Mark the streak open so a subsequent tool continues the same group. Not
-      // a live push — the complete N-item row is still committed once by
-      // flushToolRun at a true boundary (exactly one card per streak, never a
-      // growing/cloning row).
+      // Paint now — the operator sees `N tools called` on THIS event.
+      livePaintToolRun();
       lastUiKind = 'tool_run';
     };
 
@@ -661,18 +708,18 @@ export async function runHarnessTurn(
 
     const growThinking = (chunk: string) => {
       if (!chunk) return;
-      // Thinking continues a tool streak (never a boundary), per plan #364.
+      // A Thinking row is a NON-tool ring row. Once it lands last it becomes a
+      // physical separator (#433 locked rule): the next tool opens a NEW card at
+      // `1` rather than growing an open tool card below it. The last painted
+      // tool card is already committed live (painted on its event), so we only
+      // clear the live-paint flag here — never buffer the tool group in host
+      // memory until thinking closes (commit-once is removed).
       lastUiKind = 'thinking';
+      lastRingRowIsToolRun = false;
       // Thinking is ephemeral UI — do not append to SessionStore.
       // Close assistant so a later text_delta cannot updateLast-fail and
       // re-push a full duplicated assistant segment (text→reason→text).
       closeAssistantSegment();
-
-      // Commit-once (plan #355 / parent #352 C): thinking is NOT a group
-      // boundary. Keep the in-host group open across the think↔tool interleave
-      // (the complete row is pushed once at a true boundary by flushToolRun);
-      // the incoming Thinking opens above an open (host-held) group — never
-      // fragmenting or cloning on the bridge.
 
       if (thinkingSegmentOpen) {
         thinkingSegment = truncateThinkingDisplay(thinkingSegment + chunk);
@@ -717,9 +764,11 @@ export async function runHarnessTurn(
       closeThinkingSegment();
       assistantAcc += chunk;
       if (!assistantSegmentOpen) {
-        // Real assistant text begins — close the open tool-run group so it is a
-        // distinct group boundary (won't merge with tools after the reply).
-        flushToolRun();
+        // Real assistant text begins. The open tool card is already painted live
+        // on its events (not buffered), so this is a boundary reset only — cl
+        // the live-paint flag so a later tool opens a NEW card; never re-push
+        // the already-committed tool row.
+        resetLiveToolStreak();
         // Reattach any boundary whitespace buffered after the previous segment
         // closed (tool boundary) so the completed canvas equals authoritative.
         const leading = pendingAssistantWs;
@@ -744,10 +793,9 @@ export async function runHarnessTurn(
       const text = finalText.trim();
       if (!text) return;
       if (!assistantStarted) {
-        // Open the reply only after committing any open tool-run group, so the
-        // single N-item row lands directly before the assistant bubble (bridge
-        // order tool_run → assistant matches session order).
-        flushToolRun();
+        // The open tool card is already painted live on its events; reset the
+        // flag so the assistant reply (and any later tool) is a fresh boundary.
+        resetLiveToolStreak();
         bridge.pushMessage(MessageKind.Assistant, text);
         assistantStarted = true;
         assistantSegmentOpen = true;
@@ -838,8 +886,10 @@ export async function runHarnessTurn(
     closeThinkingSegment();
 
     if (agentResult.ok) {
-      // Persist any live tool-run group (stream path). No-op when empty.
-      flushToolRun();
+      // Live tool cards are already painted + session-mirrored on each event;
+      // this clears the live state so the JSON/toolTrace fallback below (when
+      // present) is the only writer. No re-push of an already-committed card.
+      resetLiveToolStreak();
       if (!streamAgent || !sawStreamTerminal) {
         // JSON path (or stream that returned JSON): aggregate end-of-turn
         // toolTrace into display-only tool_run group(s) instead of System lines;
@@ -896,7 +946,10 @@ export async function runHarnessTurn(
       // "continue / finish that" prompt after a mid-tool cancel is the one path
       // most likely to trigger a re-run. We still persist the group so the
       // transcript + Copy show exactly what ran.
-      flushToolRun();
+      // Live tool cards are already painted + session-mirrored on each event, so
+      // the partial live tools persist before abort. Clear live state only — no
+      // re-push of already-committed cards.
+      resetLiveToolStreak();
       let failedSession = next;
       const partial = (assistantAcc || '').trim();
       if (partial) {

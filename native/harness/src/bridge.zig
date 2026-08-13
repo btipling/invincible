@@ -15,7 +15,8 @@ const ring_slot = @import("ring_slot.zig");
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
 /// v9: pending cancel (user Stop) — additive exports.
 /// v10: tool-run aggregation message kind (kind 6, `tool_run`) — no new export.
-pub const PROTOCOL_VERSION: u32 = 10;
+/// v11: additive ring-readback exports for tests (`inv_message_*_at`) — see below.
+pub const PROTOCOL_VERSION: u32 = 11;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -267,6 +268,27 @@ export fn inv_get_lifecycle() u8 {
 /// Transcript length (ring count).
 export fn inv_message_count() u32 {
     return @intCast(msg_count);
+}
+
+// ── Protocol v11 — additive ring-readback exports (tests only) ─────────────
+// Host-tests / real-Wasm integration read the ring via these to observe kind-6
+// rows and their bodies exactly as painted. They are additive read-only windows:
+// they never mutate the ring, never count toward `inv_message_count`, and never
+// affect paint. Zero → out of range / mismatch, mirroring `messageAt(i)`.
+
+export fn inv_message_kind_at(i: u32) u8 {
+    const m = messageAt(i) orelse return 0;
+    return m.kind;
+}
+
+export fn inv_message_text_len_at(i: u32) u32 {
+    const m = messageAt(i) orelse return 0;
+    return @intCast(m.text.len);
+}
+
+export fn inv_message_text_copy_at(i: u32, out: [*]u8, max_len: usize) u32 {
+    const m = messageAt(i) orelse return 0;
+    return copySlice(out[0..@min(max_len, m.text.len)], m.text);
 }
 
 /// Batch host→Wasm updates (hydrate) without per-message wasm_refresh.

@@ -80,6 +80,16 @@ function makeMockExports(): HarnessBridgeExports & {
     },
     inv_get_lifecycle: () => lifecycle,
     inv_message_count: () => messages.length,
+    inv_message_kind_at: (i: number) => (messages[i]?.kind ?? 0),
+    inv_message_text_len_at: (i: number) =>
+      new TextEncoder().encode(messages[i]?.text ?? '').length,
+    inv_message_text_copy_at: (i: number, outPtr: number, maxLen: number) => {
+      const text = messages[i]?.text ?? '';
+      const bytes = new TextEncoder().encode(text);
+      const n = Math.min(maxLen, bytes.length);
+      if (n > 0) new Uint8Array(buf, outPtr, n).set(bytes.slice(0, n));
+      return n;
+    },
     inv_begin_batch: () => {},
     inv_end_batch: () => {},
     inv_push_message: (kind: number, ptr: number, len: number) => {
@@ -797,7 +807,7 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     ).toBe(false);
   });
 
-  it('reasoning interleaved with tools does not clone the tool-run streak', async () => {
+  it('interleaved reasoning splits tools into separate live cards, each painted on its event (#433)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const session = createEmptySession();
@@ -808,6 +818,8 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
       sendAgentStream: async (_prompt, init) => {
         for (let i = 0; i < n; i++) {
           await init?.onEvent?.({ type: 'reasoning_delta', text: `seg${i}` });
+          // A thinking row lands last → this tool opens a NEW card at 1 (not a
+          // clone, not a grow of a committed thought-separated card).
           await init?.onEvent?.({ type: 'tool_start', name: `t${i}` });
           await init?.onEvent?.({
             type: 'tool_result',
@@ -815,52 +827,49 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
             ok: true,
             summary: `t${i} · ✓ ok`,
           });
-          // Commit-once timing: no ToolRun row may exist on the bridge while the
-          // streak is open — it commits only at the assistant/turn-end boundary.
-          expect(
-            exp.__messages.filter((m) => m.kind === MessageKind.ToolRun),
-          ).toHaveLength(0);
+          // Live paint: a kind-6 row EXISTS during the turn (never withheld to a
+          // boundary), and with a thinking row between tools each tool is its own
+          // size-1 card — but never a "1, 1+2, 1+2+3" progressive clone of the same
+          // streak, because the last painted row at each tool is a fresh thinking row.
+          const runs = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
+          expect(runs).toHaveLength(i + 1);
+          for (let k = 0; k < runs.length; k++) {
+            const d = decodeToolRun(runs[k]!.text);
+            expect(d).not.toBeNull();
+            expect(d!.items).toHaveLength(1); // thinking split → each card is size 1
+            expect(d!.ok).toBe(1);
+          }
         }
+        await init?.onEvent?.({ type: 'text_delta', text: 'done' });
         await init?.onEvent?.({ type: 'done', text: 'done' });
         return { ok: true, text: 'done' };
       },
     });
     expect(result.result.ok).toBe(true);
-    // Commit-once (plan #355 / parent #352 C): a reason→tool→…→reason→tool→
-    // assistant turn commits exactly ONE complete tool_run row of N items on the
-    // bridge AND in session — never N size-1 groups (the old flush-on-think) or
-    // the progressive "1, 1+2, 1+2+3, …" growing clones.
+    // #433 lock: thinking (a non-tool row) last opens a NEW card at 1 per tool —
+    // N separate size-1 cards on the bridge, never a single size-N row (commit-once
+    // held tools in host memory across thinking and is removed).
     const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
-    expect(toolRuns).toHaveLength(1);
-    const decoded = decodeToolRun(toolRuns[0]!.text);
-    expect(decoded).not.toBeNull();
-    expect(decoded!.items).toHaveLength(n);
-    expect(decoded!.ok).toBe(n);
-    // The committed row lands directly before the assistant bubble so bridge
-    // order (tool_run → assistant) matches session order.
-    const kinds = exp.__messages.map((m) => m.kind);
-    const trIdx = kinds.indexOf(MessageKind.ToolRun);
-    expect(trIdx).toBeGreaterThanOrEqual(0);
-    expect(kinds[trIdx + 1]).toBe(MessageKind.Assistant);
-    // Session persists exactly one display-only tool_run per streak.
+    expect(toolRuns).toHaveLength(n);
+    const totalOk = toolRuns.reduce((acc, tr) => acc + (decodeToolRun(tr.text)?.ok ?? 0), 0);
+    expect(totalOk).toBe(n);
+    // Session mirrors: one display-only tool_run per live card.
     const sessionRuns = result.session.messages.filter((m) => m.role === 'tool_run');
-    expect(sessionRuns).toHaveLength(1);
-    const sessDecoded = decodeToolRun(sessionRuns[0]!.text);
-    expect(sessDecoded).not.toBeNull();
-    expect(sessDecoded!.items).toHaveLength(n);
+    expect(sessionRuns).toHaveLength(n);
     expect(
       result.session.messages.some(
         (m) => m.role === 'assistant' && m.text === 'done',
       ),
     ).toBe(true);
-    // Thinking is ephemeral — one bubble per reasoning block, none persisted.
+    // Thinking is ephemeral — one bubble per reasoning block, none persisted, and
+    // it never suppressed the live tool cards.
     expect(exp.__messages.filter((m) => m.kind === MessageKind.Thinking)).toHaveLength(n);
     expect(result.session.messages.some((m) => m.text.includes('seg'))).toBe(false);
     const folded = formatPromptWithHistory(result.session.messages, 'continue');
     expect(folded).not.toContain('Tool:');
   });
 
-  it('contiguous no-reasoning streak commits one complete tool_run at assistant text (commit-once)', async () => {
+  it('contiguous no-reasoning streak paints ONE live card that increments to N tools called (#433)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const session = createEmptySession();
@@ -877,11 +886,14 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
             ok: true,
             summary: `t${i} · ✓ ok`,
           });
-          // Commit-once: contiguous (no-reasoning) streaks also paint no ToolRun
-          // until a real boundary — here real assistant text via text_delta.
-          expect(
-            exp.__messages.filter((m) => m.kind === MessageKind.ToolRun),
-          ).toHaveLength(0);
+          // Live paint: ONE kind-6 row exists during the turn, grown in place.
+          // Its total is i+1 — NOT withheld until assistant text (commit-once dropped).
+          const runs = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
+          expect(runs).toHaveLength(1);
+          const d = decodeToolRun(runs[0]!.text);
+          expect(d).not.toBeNull();
+          expect(d!.items).toHaveLength(i + 1);
+          expect(d!.ok).toBe(i + 1);
         }
         await init?.onEvent?.({ type: 'text_delta', text: 'done' });
         await init?.onEvent?.({ type: 'done', text: 'done' });
@@ -889,9 +901,9 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
       },
     });
     expect(result.result.ok).toBe(true);
-    // Commit-once holds even for contiguous (no-reasoning) streaks: exactly one
-    // complete N-item row on the bridge, committed when real assistant text
-    // begins — no live `update_last` growing totals during the turn.
+    // Contiguous (no-reasoning) streak: still exactly one complete N-item card on
+    // the bridge — but it was painted LIVE (growing 1→2→3→4 during the turn), not
+    // committed at assistant text. No N×1 stack, no "nothing, then all tools".
     const toolRuns = exp.__messages.filter((m) => m.kind === MessageKind.ToolRun);
     expect(toolRuns).toHaveLength(1);
     const decoded = decodeToolRun(toolRuns[0]!.text);
@@ -1251,10 +1263,13 @@ describe('runHarnessTurn session cwd', () => {
 
 
 describe('lastUiKind boundary predicate helpers (plan #364)', () => {
-  it('continues a streak for thinking/tool_run/none; splits on assistant/user/error', () => {
-    expect(shouldContinueStreak('thinking')).toBe(true);
+  it('continues only for a tool_run last row — thinking/assistant/user/error split (#433)', () => {
+    // #433 locked rule: only a tool-run last row continues the open card. Every
+    // other row (incl. thinking, which was commit-once's streak-continue) is a
+    // physical separator that forces a NEW card at 1.
     expect(shouldContinueStreak('tool_run')).toBe(true);
-    expect(shouldContinueStreak('none')).toBe(true);
+    expect(shouldContinueStreak('thinking')).toBe(false);
+    expect(shouldContinueStreak('none')).toBe(false);
     expect(shouldContinueStreak('assistant')).toBe(false);
     expect(shouldContinueStreak('user')).toBe(false);
     expect(shouldContinueStreak('error')).toBe(false);

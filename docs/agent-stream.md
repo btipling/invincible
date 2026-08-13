@@ -33,8 +33,8 @@ Each SSE block is one `data: <json>\n\n` line:
 
 | `type` | Fields | Host use |
 |--------|--------|----------|
-| `tool_start` | `name`, optional `id` | Aggregate into one display-only `tool_run` message (protocol v10 / kind 6) |
-| `tool_result` | `name`, `ok`, `summary`, optional `preview` | Aggregate into the same `tool_run` group; paints an interactive N-tools card. `preview` is a bounded, redacted level-2 detail body (`TOOL_RUN_PREVIEW_MAX_CHARS` = 100k, head+tail `… (N more lines)`) built from flattened+redacted tool output — **not** raw MCP envelopes |
+| `tool_start` | `name`, optional `id` | **Live-paint** one display-only `tool_run` card (protocol v11 / kind 6) on this event |
+| `tool_result` | `name`, `ok`, `summary`, optional `preview` | **Grow the open `tool_run` card in place** (total increments) while the last ring row is a tool-run; else open a NEW card at `1`. `preview` is a bounded, redacted level-2 detail body (`TOOL_RUN_PREVIEW_MAX_CHARS` = 100k, head+tail `… (N more lines)`) built from flattened+redacted tool output — **not** raw MCP envelopes |
 | `reasoning_delta` | `text` (chunk) | Grow a **Thinking** bubble (protocol v8) |
 | `text_delta` | `text` (chunk) | Grow Assistant bubble(s) |
 | `done` | `text`, optional `toolTrace`, optional `cwd` | Collapse open thinking; finalize session; apply `cwd` on success only; Ready |
@@ -63,7 +63,7 @@ path, not silently diverging from the stream.
 
 ## Wasm bridge
 
-Assistant and thinking growth use **protocol v8** `inv_update_last_message` so streaming does not create one ring message per token. Each **uninterrupted** tool streak is aggregated by the host into ONE `tool_run` message (protocol v10 / bridge **kind 6**) that the Wasm paints as a default-collapsed expandable control — **not** System lines. Reasoning between tools flushes the open streak to its own group (see [harness-limits.md](harness-limits.md)). Thinking uses `MessageKind.Thinking` (muted warm chrome + **same GFM paint** as assistant). No dual DOM transcript. In-place stream growth relies on harness stick-to-bottom (content height) so the viewport follows when the user is near the bottom — not on new SSE event types.
+Assistant and thinking growth use **protocol v8** `inv_update_last_message` so streaming does not create one ring message per token. Each **uninterrupted** tool streak is aggregated by the host into ONE `tool_run` message (protocol **v11** / bridge **kind 6**) that the Wasm paints as a default-collapsed expandable control — **not** System lines. The tool card is **painted live**: each `tool_start`/`tool_result` opens (or grows) that ONE kind-6 row immediately — `1 tool called` → `2…` — via `update_last`, growing iff the last ring row is a tool-run; otherwise a **new** card at `1`. A **thinking row that lands last** (and any assistant/user/error row) is a physical separator and opens a fresh card (see [harness-limits.md](harness-limits.md) — commit-once is removed). Thinking uses `MessageKind.Thinking` (muted warm chrome + **same GFM paint** as assistant). No dual DOM transcript. In-place stream growth relies on harness stick-to-bottom (content height) so the viewport follows when the user is near the bottom — not on new SSE event types.
 
 ### Thinking collapse
 
@@ -82,7 +82,7 @@ submit so no ghost request is sent.
 | Kind | SessionStore | History fold |
 |------|--------------|--------------|
 | User / Assistant | **Yes** | Included |
-| `tool_run` (live tools, protocol v10) | **Yes** (live path) | **Not folded** (display-only, plan #345) — continue may re-run tools |
+| `tool_run` (live tools, protocol v11) | **Yes** (live-paint path: open card appended / grown in place) | **Not folded** (display-only, plan #345) — continue may re-run tools |
 | Error | **Yes** | Included as `Error:` (stall/cancel context) |
 | Thinking | **No** (display-only) | Never |
 
@@ -114,7 +114,7 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 
 | Cap | Value | Behavior |
 |-----|------:|----------|
-| Live `tool_run` groups | **one per uninterrupted streak** | Reasoning or assistant text flushes the open streak to its own group |
+| Live `tool_run` groups | **one per uninterrupted streak** (painted live, grows per event) | Consecutive tools paint ONE growing card; a thinking/assistant/user/error row that lands last opens a NEW card |
 | Thinking **segments** | **none** | Every reasoning segment paints |
 | Thinking / line chars | **256 KiB** | Wasm `MAX_MSG_LEN` only (bridge hard edge) |
 | Ring slots | **2048** | Wasm `MAX_MSG`; older drop when full; Load earlier for SessionStore |

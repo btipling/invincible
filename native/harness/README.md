@@ -98,6 +98,7 @@ Host is dvui’s `web.js`. Required exports (app + backend):
 | `inv_ping` | Scalar round-trip |
 | `inv_set_lifecycle` / `inv_get_lifecycle` | boot / ready / busy / error |
 | `inv_message_count` | ring length |
+| `inv_message_kind_at` / `inv_message_text_len_at` / `inv_message_text_copy_at` | **v11** additive ring-readback (tests/assertions on real Wasm; read-only, never counts toward `inv_message_count`) |
 | `inv_begin_batch` / `inv_end_batch` | session hydrate without per-msg refresh |
 | `inv_push_message` / `inv_update_last_message` / `inv_clear_messages` / … | Transcript ring buffer (v8 update-last; Thinking kind=5) |
 | `inv_echo*` | UTF-8 round-trip stub |
@@ -116,7 +117,7 @@ Inference stays on the host: `POST /api/chat` and `POST /api/agent` hold
 
 | | |
 |--|--|
-| **Protocol version** | `10` |
+| **Protocol version** | `11` |
 | **TS** | `lib/harnessBridge.ts` |
 | **Zig** | `src/bridge.zig` |
 | **Host** | `app/harness/HarnessHost.tsx` (shell: load + bridge + APIs) |
@@ -132,7 +133,7 @@ Inference stays on the host: `POST /api/chat` and `POST /api/agent` hold
 | system | 3 | Status / turn-end lines |
 | error | 4 | Errors (EMBER) |
 | thinking | 5 | Model reasoning (v8, display-only) |
-| tool_run | 6 | Host-aggregated tool-run group (v10, display-only; `rich/toolrun.zig` decode) |
+| tool_run | 6 | Host-aggregated, **live-painted** tool-run group (v11, display-only; `rich/toolrun.zig` decode) |
 
 Host **polls** pending submit (~150 ms); no custom Wasm imports beyond stock dvui `web.js`.
 

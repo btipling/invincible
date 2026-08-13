@@ -73,6 +73,16 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     },
     inv_get_lifecycle: () => lifecycle,
     inv_message_count: () => messages.length,
+    inv_message_kind_at: (i: number) => (messages[i]?.kind ?? 0),
+    inv_message_text_len_at: (i: number) =>
+      new TextEncoder().encode(messages[i]?.text ?? '').length,
+    inv_message_text_copy_at: (i: number, outPtr: number, maxLen: number) => {
+      const text = messages[i]?.text ?? '';
+      const bytes = new TextEncoder().encode(text);
+      const n = Math.min(maxLen, bytes.length);
+      if (n > 0) write(outPtr, text.slice(0, n));
+      return n;
+    },
     inv_begin_batch: () => {},
     inv_end_batch: () => {},
     inv_push_message: (kind: number, ptr: number, len: number) => {
@@ -470,5 +480,32 @@ describe('pending cancel (protocol v9)', () => {
     exp.__setCancelPending(true);
     expect(bridge.takePendingCancel()).toBe(true);
     expect(bridge.takePendingCancel()).toBe(false);
+  });
+});
+
+describe('ring readback exports (protocol v11)', () => {
+  it('messageAt round-trips kind + text for a mixed stream', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hi');
+    bridge.pushMessage(MessageKind.ToolRun, 'toolrun\t1\t1/0/0\n1\tok\tread_file\tbrief\t');
+    bridge.pushMessage(MessageKind.Assistant, 'done');
+    expect(bridge.messageCount()).toBe(3);
+    expect(bridge.messageAt(0)).toEqual({ kind: MessageKind.User, text: 'hi' });
+    const tr = bridge.messageAt(1)!;
+    expect(tr.kind).toBe(MessageKind.ToolRun);
+    expect(tr.text).toContain('toolrun');
+    expect(bridge.messageAt(2)).toEqual({ kind: MessageKind.Assistant, text: 'done' });
+    // Out of range → null.
+    expect(bridge.messageAt(3)).toBeNull();
+  });
+
+  it('messageTextAt handles multi-byte UTF-8 length exactly', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const body = 'héllo → ✓';
+    bridge.pushMessage(MessageKind.Assistant, body);
+    expect(bridge.messageTextLenAt(0)).toBe(new TextEncoder().encode(body).length);
+    expect(bridge.messageTextAt(0)).toBe(body);
   });
 });
