@@ -56,5 +56,6 @@ export const SETTINGS_NAV = [
   { href: '/settings', label: 'Overview', exact: true },
   { href: '/settings/mcp', label: 'MCP servers', exact: false },
   { href: '/settings/github', label: 'GitHub token', exact: false },
+  { href: '/settings/personas', label: 'Personas', exact: false },
   { href: '/settings/sandbox', label: 'Sandbox', exact: false },
 ] as const;
