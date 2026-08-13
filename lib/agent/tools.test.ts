@@ -1047,4 +1047,27 @@ describe('createAgentTools in-jail absolute paths', () => {
     expect(out).toMatch(/^str_replace a\.txt/);
     expect(client.strReplace).toHaveBeenCalledWith('a.txt', 'hello', 'HELLO', undefined, expect.anything());
   });
+
+  it('#403 cross-feed: read_file via the exec pwd host-absolute (realpath BYO root) is re-entrant', async () => {
+    // Same realpath jail-root shape as workPath.test.ts — the model passes the
+    // exact <R>/invincible/... string `exec pwd` / find / a stack printed.
+    const R = '/var/lib/invincible-sandbox/workspace';
+    const readFile = vi.fn(async () => ({ content: 'x' }));
+    const client = mockClient({ readFile });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+      workspaceRoot: R,
+    });
+    const out = (await tools.read_file.execute!(
+      { path: `${R}/invincible/docs/sandbox.md` },
+      ectx,
+    )) as string;
+    expect(out).toMatch(/^read_file invincible\/docs\/sandbox\.md/);
+    expect(readFile).toHaveBeenCalledWith(
+      'invincible/docs/sandbox.md',
+      undefined,
+      expect.anything(),
+    );
+  });
 });

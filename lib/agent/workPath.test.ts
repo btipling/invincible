@@ -277,6 +277,26 @@ describe('resolvePathForTool', () => {
       );
     }
   });
+
+  it('#403 cross-feed: realpath BYO jail root from exec pwd folds to the workspace-relative key', () => {
+    // The repo is nested under a realpath'd BYO jail root, as `exec pwd` /
+    // `find` / stack traces would show it. The host-absolute string is the SAME
+    // file as the workspace-relative form the tools output, so either is
+    // re-entrant on every FS tool — not just the underlying seam.
+    const R = '/var/lib/invincible-sandbox/workspace';
+    const hostAbs = `${R}/invincible/docs/sandbox.md`;
+    expect(resolvePathForTool(R, '.', hostAbs)).toBe(
+      'invincible/docs/sandbox.md',
+    );
+    expect(resolvePathForTool(R, '.', hostAbs)).toBe(
+      resolvePathForTool(R, '.', 'invincible/docs/sandbox.md'),
+    );
+    expect(resolvePathForTool(R, '.', `${R}/invincible`)).toBe('invincible');
+    // An absolute under a DIFFERENT realpath root still fails closed.
+    expect(() =>
+      resolvePathForTool(R, '.', '/other/workspace/invincible/docs'),
+    ).toThrow(/escapes workspace root/);
+  });
 });
 
 describe('resolveExecCwdForTool', () => {

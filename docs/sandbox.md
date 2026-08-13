@@ -710,6 +710,13 @@ short relative paths.
 | `pwd` | Print current logical cwd (workspace-root-relative) |
 | path tools (`list_dir`, `read_file`, `write_file`, `str_replace`, `exec`) | Resolve paths against logical cwd |
 
+Every path-accepting tool (`list_dir`, `read_file`, `write_file`, `str_replace`,
+`change_dir`, and `exec cwd`) accepts **relative**, **workspace-root-relative**,
+and **slash-rooted in-jail absolute** (`<R>/…`) arguments — the in-jail absolute
+form resolves to the same file and freshness ledger key as its relative form.
+Host-absolute paths **outside** the active binding's root `R` still fail closed.
+See the Prefix-aware resolve table.
+
 ### Prefix-aware resolve
 
 Paths resolve with **prefix-aware** join (not naive always-join):

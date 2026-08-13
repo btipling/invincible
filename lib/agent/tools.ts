@@ -198,7 +198,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const change_dir = tool({
     description:
-      'Change the logical workspace directory for subsequent tools this turn (and session when the host persists cwd). Path is relative to the current logical cwd unless already workspace-root-relative under that cwd. Prefer as its own step before a burst of path tools. Does not run process.chdir on the sandbox daemon.',
+      'Change the logical workspace directory for subsequent tools this turn (and session when the host persists cwd). Path is relative to the current logical cwd unless already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Prefer as its own step before a burst of path tools. Does not run process.chdir on the sandbox daemon.',
     inputSchema: jsonSchema<{ path: string }>({
       type: 'object',
       properties: {
@@ -239,7 +239,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const list_dir = tool({
     description:
-      'List files and directories under the sandbox workspace. Paths are relative to the logical cwd (or workspace-root-relative when already rooted under cwd).',
+      'List files and directories under the sandbox workspace. Paths are relative to the logical cwd (or workspace-root-relative when already rooted under cwd), or an in-jail absolute path under the sandbox root (same file as the relative form).',
     inputSchema: jsonSchema<{ path?: string }>({
       type: 'object',
       properties: {
@@ -278,13 +278,14 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const read_file = tool({
     description:
-      'Read a text file from the sandbox workspace (max 16 MiB). A successful full (non-truncated) read authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. Path is relative to logical cwd unless already workspace-root-relative under cwd.',
+      'Read a text file from the sandbox workspace (max 16 MiB). A successful full (non-truncated) read authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. Path is relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form).',
     inputSchema: jsonSchema<{ path: string; maxBytes?: number }>({
       type: 'object',
       properties: {
         path: {
           type: 'string',
-          description: 'File path relative to logical cwd or workspace-root-relative under cwd',
+          description:
+            'File path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form)',
         },
         maxBytes: {
           type: 'number',
@@ -333,13 +334,14 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const write_file = tool({
     description:
-      'Write a text file in the sandbox workspace (max 16 MiB). Creating a new path does not require a prior read. Overwriting an existing file requires a successful full read_file of that path earlier in this agent run (re-read if the file changed on disk). Path relative to logical cwd unless already rooted under cwd.',
+      'Write a text file in the sandbox workspace (max 16 MiB). Creating a new path does not require a prior read. Overwriting an existing file requires a successful full read_file of that path earlier in this agent run (re-read if the file changed on disk). Path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form).',
     inputSchema: jsonSchema<{ path: string; content: string; mkdir?: boolean }>({
       type: 'object',
       properties: {
         path: {
           type: 'string',
-          description: 'File path relative to logical cwd or workspace-root-relative under cwd',
+          description:
+            'File path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form)',
         },
         content: { type: 'string' },
         mkdir: {
@@ -411,7 +413,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const str_replace = tool({
     description:
-      'Exact string replace in a workspace file (coding-agent search_replace). Requires a successful full read_file of the path earlier in this agent run; re-read if the file changed on disk (other session, device, tool, or exec). old_string must match uniquely unless replace_all is true. Prefer this over write_file for small edits; use write_file to create or fully rewrite files. Path relative to logical cwd unless already rooted under cwd.',
+      'Exact string replace in a workspace file (coding-agent search_replace). Requires a successful full read_file of the path earlier in this agent run; re-read if the file changed on disk (other session, device, tool, or exec). old_string must match uniquely unless replace_all is true. Prefer this over write_file for small edits; use write_file to create or fully rewrite files. Path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form).',
     inputSchema: jsonSchema<{
       path: string;
       old_string: string;
@@ -422,7 +424,8 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
       properties: {
         path: {
           type: 'string',
-          description: 'File path relative to logical cwd or workspace-root-relative under cwd',
+          description:
+            'File path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form)',
         },
         old_string: {
           type: 'string',
