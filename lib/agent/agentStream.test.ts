@@ -7,6 +7,7 @@ import {
   summarizeToolLine,
   salientToolBits,
   buildToolPreview,
+  changeDirSuccessCwd,
   TOOL_LINE_SALIENT_MAX,
   TOOL_RUN_PREVIEW_HEAD_LINES,
   TOOL_RUN_PREVIEW_TAIL_LINES,
@@ -120,6 +121,72 @@ describe('mapFullStreamPart', () => {
     expect(mapFullStreamPart({ type: 'error', error: new Error('boom') })).toEqual([
       { type: 'error', error: 'boom' },
     ]);
+  });
+
+  it('attaches the TYPED changeDirCwd on a successful change_dir, even when the summary is truncated (adversarial review #470)', () => {
+    // A workspace-relative target long enough that its summarized one-liner
+    // (`change_dir · ✓ ok · <path> · cwd=<path>`) exceeds TOOL_LINE_SALIENT_MAX
+    // and ends in `…` — with a 320-char budget that needs a path > ~146 chars.
+    const LONG_PATH =
+      'packages/frontend/src/components/settings/panels/advanced/billing/extra' +
+      '/very/deeply/nested/subdirectory/further/still/deeper/beyond/any/budget' +
+      '/and/still/yet/even/further/deeper/for/margin';
+    expect(LONG_PATH.length).toBeGreaterThan(146);
+    const evs = mapFullStreamPart({
+      type: 'tool-result',
+      toolName: 'change_dir',
+      toolCallId: 'c1',
+      output: `change_dir ${LONG_PATH}: ok cwd=${LONG_PATH}`,
+    });
+    const ev = evs[0];
+    expect(ev && ev.type).toBe('tool_result');
+    if (ev && ev.type === 'tool_result') {
+      expect(ev.ok).toBe(true);
+      // The typed field carries the FULL raw path (never truncated).
+      expect(ev.changeDirCwd).toBe(LONG_PATH);
+      // The display summary is clamped and ends in `…` — persistence must NOT use it.
+      expect(ev.summary.length).toBeLessThanOrEqual(TOOL_LINE_SALIENT_MAX);
+      expect(ev.summary.endsWith('…')).toBe(true);
+      expect(ev.summary).not.toContain(`cwd=${LONG_PATH}`);
+    }
+  });
+
+  it('does NOT attach changeDirCwd to a normal tool or a failed change_dir', () => {
+    const errEv = mapFullStreamPart({
+      type: 'tool-result',
+      toolName: 'change_dir',
+      toolCallId: 'c1',
+      output: 'ERROR change_dir: no such directory',
+    })[0];
+    if (errEv && errEv.type === 'tool_result') {
+      expect(errEv.ok).toBe(false);
+      expect(errEv.changeDirCwd).toBeUndefined();
+    }
+    const listEv = mapFullStreamPart({
+      type: 'tool-result',
+      toolName: 'list_dir',
+      toolCallId: 'c1',
+      output: 'list_dir .: 1 entry',
+    })[0];
+    if (listEv && listEv.type === 'tool_result') {
+      expect(listEv.ok).toBe(true);
+      expect(listEv.changeDirCwd).toBeUndefined();
+    }
+  });
+});
+
+describe('changeDirSuccessCwd (adversarial review #470 Major carrier)', () => {
+  it('parses the strict raw success line only', () => {
+    expect(changeDirSuccessCwd('change_dir invincible/sub: ok cwd=invincible/sub')).toBe(
+      'invincible/sub',
+    );
+  });
+
+  it('returns undefined for errors / non-change_dir / empty', () => {
+    expect(changeDirSuccessCwd('ERROR change_dir: boom')).toBeUndefined();
+    expect(changeDirSuccessCwd('list_dir .: 2 entries')).toBeUndefined();
+    expect(changeDirSuccessCwd('')).toBeUndefined();
+    expect(changeDirSuccessCwd(undefined)).toBeUndefined();
   });
 });
 

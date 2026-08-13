@@ -517,12 +517,75 @@ function toSessionCwd(value: unknown): string | undefined {
 }
 
 /**
+ * Defensive `change_dir` marker parser. The PRIMARY persistence carrier is now a
+ * TYPED field — `tool_result.changeDirCwd` (stream) / `ToolTraceEntry.cwd`
+ * (JSON) — populated from the raw, untruncated tool result, never from the
+ * display summary, which is hard-truncated at `TOOL_LINE_SALIENT_MAX` and would
+ * corrupt or erase long targets (adversarial review #470 Major). This helper
+ * retains the raw/summarized marker parsing as defense-in-depth for legacy
+ * carriers and enforces a strict success shape (`ok cwd=` present, no `ERROR`).
+ * It also REJECTS any capture containing `…` — the exact slice artifact a
+ * 160-char-clipped summary produces on a ≥67-char target — so a long path is
+ * never persisted as `aaa…` (adversarial review #470 Major).
+ */
+export function parseChangeDirCwd(text: string | undefined): string | undefined {
+  const t = (text ?? '').trim();
+  if (!t) return undefined;
+  if (/^ERROR\b/i.test(t)) return undefined;
+  let value: string | undefined;
+  // Raw success line: `change_dir <path>: ok cwd=<path>`.
+  const direct = t.match(/^change_dir\s+\S+:\s*ok\s+cwd=(\S+)\s*$/i);
+  if (direct) {
+    value = direct[1];
+  } else {
+    // Summarized form: `change_dir · ✓ ok · <path> · cwd=<path>`.
+    const summarized = t.match(/change_dir[^]*?\bcwd=(\S+)\s*$/i);
+    if (summarized) value = summarized[1];
+  }
+  if (value === undefined) return undefined;
+  // Truncation guard: a value produced by a clipped summary ends in `…`; that is
+  // not a real directory name, so it is never returned or persisted.
+  if (value.includes('…')) return undefined;
+  return value;
+}
+
+/**
+ * Turn-scoped confirmation that at least one `change_dir` succeeded, carrying the
+ * last successfully-resolved workspace-relative cwd. Null (no `value`) until
+ * proven by a tool result; multiple `change_dir` in one turn keep the model's
+ * final position. Kept separate from the applied session `cwd` so a non-success
+ * terminal can apply it only when the model actually moved (plan #465).
+ */
+export type LiveCwdSource = {
+  value: string | undefined;
+  source: string | undefined;
+};
+
+/**
+ * Record a confirmed-`change_dir` cwd carried as a TYPED field (stream
+ * `tool_result.changeDirCwd` / JSON `ToolTraceEntry.cwd`). The caller has already
+ * gated on `name === 'change_dir'` + `ok === true`; an `undefined`/empty value or
+ * a truncated `…` capture is ignored so the last confirmed value wins and a
+ * failed/truncated marker never overwrites it within the turn.
+ */
+export function recordLiveCwd(
+  state: LiveCwdSource,
+  confirmedCwd: string | undefined,
+): LiveCwdSource {
+  if (confirmedCwd === undefined || confirmedCwd === '') return state;
+  // Truncation guard — never persist a clipped capture.
+  if (confirmedCwd.includes('…')) return state;
+  return { value: confirmedCwd, source: 'confirmed' };
+}
+
+/**
  * Single authoritative session-cwd getter (P1/GAP-1, #452). Every agent turn reads
- * the workspace-relative logical cwd from here for the request (`sessionCwd`); the
- * success path applies `agentResult.cwd`, while abort/timeout/chat-fallback keep the
- * prior known value (spread retention through `appendMessage`). `.` when none known
- * or when the stored cwd cannot be safely sent to `/api/agent` (escapes the root) —
- * default workspace-root semantics.
+ * the workspace-relative logical cwd from here for the request (`sessionCwd`).
+ * Per phase 2 (#465), the success path applies `agentResult.cwd` and a confirmed
+ * `change_dir` also persists on cancel/timeout/hard-error (and as a success
+ * fallback); chat-fallback keeps the prior known value (spread retention through
+ * `appendMessage`). `.` when none known or when the stored cwd cannot be safely
+ * sent to `/api/agent` (escapes the root) — default workspace-root semantics.
  */
 export function getSessionCwd(snapshot: SessionSnapshot): string {
   return toSessionCwd(snapshot.cwd) ?? '.';
@@ -608,6 +671,11 @@ export async function runHarnessTurn(
     let thinkingSegment = '';
     let thinkingSegmentOpen = false;
     let sawStreamTerminal = false;
+    // Last confirmed-successful `change_dir` cwd this turn (phase 2 of #464 /
+    // plan #465): recorded from live tool events (stream) or the JSON toolTrace,
+    // applied on non-success terminals and as a success fallback so an aborted
+    // turn where the model moved still boots the next turn where it worked.
+    let liveCwd: LiveCwdSource = { value: undefined, source: undefined };
 
     // Tool-run aggregation (protocol v11 / #433). The host owns the SSE and
     // knows the structured `tool_result.ok`, so it aggregates each uninterrupted
@@ -705,6 +773,14 @@ export async function runHarnessTurn(
           truncateToolTraceSummary(ev.summary),
           ev.preview,
         );
+        // Phase 2 (#465): a successful `change_dir` is the durable-live-cwd
+        // signal. Only a confirmed success records it; anything else leaves the
+        // prior value untouched. The cwd is read from the TYPED
+        // `ev.changeDirCwd` field (from the raw, untruncated tool result) — NOT
+        // from the truncated display `summary` (adversarial review #470 Major).
+        if (ev.name === 'change_dir' && ev.ok) {
+          liveCwd = recordLiveCwd(liveCwd, ev.changeDirCwd);
+        }
       }
       // Paint now — the operator sees `N tools called` on THIS event.
       livePaintToolRun();
@@ -945,11 +1021,30 @@ export async function runHarnessTurn(
       );
       next = pushTurnEnd(bridge, next, 'model');
       lastUiKind = 'system';
-      // Success-only cwd apply (parent #270 / phase 2): never on failure/abort.
-      // Sanitize + renormalize exactly like the send path (GAP-1 review #453):
-      // an unsanitary `agentResult.cwd` (host-absolute / escaping `..`) is dropped
-      // rather than persisted as a sticky value that would 400 every future turn.
-      const appliedCwd = toSessionCwd(agentResult.cwd);
+      // Success-path cwd apply (parent #270 / phase 2): prefers the authoritative
+      // `agentResult.cwd`. Sanitize + renormalize exactly like the send path
+      // (GAP-1 review #453): an unsanitary `agentResult.cwd` (host-absolute /
+      // escaping `..`) is dropped rather than persisted as a sticky value that
+      // would 400 every future turn. Plan #465: when the authoritative value is
+      // absent but a `change_dir` was confirmed this turn, fall back to the live
+      // cwd so a success that omits `cwd` never silently re-retains the stale one.
+      // Stream turns already captured `liveCwd` from live events; a JSON success
+      // (no live events) derives it from the end-of-turn toolTrace `cwd` TYPED
+      // field (last confirmed `change_dir` wins) before the fallback. Never
+      // re-derive from the truncated toolTrace `summary` (#470 Major).
+      let successCwd = liveCwd;
+      if (!streamAgent) {
+        let fromTrace: LiveCwdSource = { value: undefined, source: undefined };
+        for (const entry of agentResult.toolTrace ?? []) {
+          if (entry.name === 'change_dir' && entry.ok) {
+            fromTrace = recordLiveCwd(fromTrace, entry.cwd);
+          }
+        }
+        successCwd = fromTrace.value !== undefined ? fromTrace : successCwd;
+      }
+      const appliedCwd =
+        toSessionCwd(agentResult.cwd) ??
+        (successCwd.value !== undefined ? toSessionCwd(successCwd.value) : undefined);
       if (appliedCwd !== undefined) {
         next = { ...next, cwd: appliedCwd };
       }
@@ -985,6 +1080,21 @@ export async function runHarnessTurn(
         opts?.signal,
       );
       failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail);
+      // Phase 2 (#465): a cancel/timeout/hard-error turn still persists the last
+      // confirmed `change_dir` cwd (before the abort) so the next turn boots where
+      // the model actually worked. When no `change_dir` was confirmed, `liveCwd`
+      // is undefined and the prior value is retained (today's behavior).
+      // Adversarial-review #470 note (accepted residual): `liveCwd` is populated
+      // only by live stream events, so a non-stream (JSON) turn that confirms a
+      // `change_dir` then fails keeps the prior cwd — `AgentFailure` carries no
+      // toolTrace to recover it from. Production harness always streams; a
+      // JSON-failure turn is test-only / hyper-edge.
+      if (liveCwd.value !== undefined) {
+        const failedLiveCwd = toSessionCwd(liveCwd.value);
+        if (failedLiveCwd !== undefined) {
+          failedSession = { ...failedSession, cwd: failedLiveCwd };
+        }
+      }
       lastUiKind =
         fail.kind === 'error' || fail.kind === 'timeout' ||
         fail.kind === 'empty' || fail.kind === 'validation'

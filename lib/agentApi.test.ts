@@ -25,6 +25,34 @@ describe('sendAgent', () => {
     });
   });
 
+  it('parses success preserving the TYPED change_dir cwd in toolTrace (adversarial review #470)', async () => {
+    const LONG_PATH =
+      'packages/frontend/src/components/settings/panels/advanced/billing/extra';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          text: 'moved',
+          toolTrace: [
+            {
+              name: 'change_dir',
+              ok: true,
+              summary: `change_dir · ✓ ok · ${LONG_PATH.slice(0, 60)} · cwd=…`,
+              cwd: LONG_PATH,
+            },
+          ],
+        }),
+      ),
+    );
+    const result = await sendAgent('hi');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.toolTrace?.[0]?.cwd).toBe(LONG_PATH);
+      // The display summary is truncated, the typed field is not.
+      expect(result.toolTrace?.[0]?.summary).toContain('…');
+    }
+  });
+
   it('marks sandboxNotConfigured only on 503 + exact string', async () => {
     vi.stubGlobal(
       'fetch',

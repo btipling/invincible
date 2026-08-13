@@ -9,7 +9,20 @@ import { redactSecrets, truncateSummary } from './redact';
 
 export type AgentStreamEvent =
   | { type: 'tool_start'; name: string; id?: string }
-  | { type: 'tool_result'; name: string; ok: boolean; summary: string; preview?: string }
+  | {
+      type: 'tool_result';
+      name: string;
+      ok: boolean;
+      summary: string;
+      preview?: string;
+      /**
+       * Confirmed `change_dir` cwd carried as a TYPED field, populated from the
+       * raw (untruncated) tool result. Persistence must never re-derive this from
+       * `summary`, which is hard-truncated at `TOOL_LINE_SALIENT_MAX` and would
+       * corrupt long targets (adversarial review #470 Major).
+       */
+      changeDirCwd?: string;
+    }
   | { type: 'reasoning_delta'; text: string }
   | { type: 'text_delta'; text: string }
   | { type: 'done'; text: string; toolTrace?: ToolTraceEntry[]; cwd?: string }
@@ -37,7 +50,7 @@ export function encodeSseData(event: AgentStreamEvent): string {
  * Host canvas tool lines only — never dump full tool payloads (read_file bodies,
  * exec stdout, http bodies). Model still receives full results via the tool path.
  */
-export const TOOL_LINE_SALIENT_MAX = 160;
+export const TOOL_LINE_SALIENT_MAX = 320;
 
 /**
  * Per-tool cap for the bounded, redacted L2 `preview` fed into the `toolrun` v1
@@ -247,6 +260,23 @@ export function salientToolBits(name: string, resultText: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * Extract the confirmed workspace-relative cwd from the RAW `change_dir` tool
+ * result, only from a strict success marker. The tool emits
+ * `change_dir <path>: ok cwd=<path>` on success and `ERROR change_dir: …` on
+ * failure; any other shape → `undefined`. This is the structured carrier used to
+ * attach the typed `tool_result.changeDirCwd` (stream) and `ToolTraceEntry.cwd`
+ * (JSON) so host persistence never depends on the truncated display summary
+ * (adversarial review #470 Major).
+ */
+export function changeDirSuccessCwd(raw: string | undefined): string | undefined {
+  const t = (raw ?? '').trim();
+  if (!t || /^ERROR\b/i.test(t)) return undefined;
+  const m = t.match(/^change_dir\s+(\S+):\s*ok\s+cwd=(\S+)\s*$/i);
+  if (!m) return undefined;
+  return m[2];
+}
+
 export function summarizeToolLine(
   name: string,
   resultText: string,
@@ -307,12 +337,15 @@ export function mapFullStreamPart(
     const redacted = redactSecrets(asText, secrets);
     const ok = !/^\s*ERROR\b/i.test(redacted) && !/\bTIMED_OUT\b/.test(redacted);
     const preview = buildToolPreview(redacted || '');
+    const changeDirCwd =
+      name === 'change_dir' && ok ? changeDirSuccessCwd(redacted) : undefined;
     return [
       {
         type: 'tool_result',
         name: redactSecrets(name, secrets),
         ok,
         summary: summarizeToolLine(name, redacted || '', ok, secrets),
+        ...(changeDirCwd !== undefined ? { changeDirCwd } : {}),
         ...(preview ? { preview } : {}),
       },
     ];

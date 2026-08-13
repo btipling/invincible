@@ -1,5 +1,9 @@
 import { generateText, streamText, stepCountIs, isLoopFinished } from 'ai';
-import { mapFullStreamPart, summarizeToolLine } from './agentStream';
+import {
+  changeDirSuccessCwd,
+  mapFullStreamPart,
+  summarizeToolLine,
+} from './agentStream';
 import { resolveAgentReasoning } from './reasoningConfig';
 import { resolveAgentMaxSteps } from '../sandbox/config';
 import { type SandboxClient } from '../sandbox/client';
@@ -25,6 +29,12 @@ export type ToolTraceEntry = {
   name: string;
   ok: boolean;
   summary: string;
+  /**
+   * Confirmed `change_dir` cwd carried as a TYPED field from the raw tool result
+   * (not re-derived from the truncated `summary`). Host persistence relies on
+   * this, never on the display summary (adversarial review #470 Major).
+   */
+  cwd?: string;
 };
 
 export type RunAgentParams = {
@@ -453,7 +463,14 @@ export function collectToolTrace(
         ok,
         secrets,
       );
-      entries.push({ name, ok, summary });
+      const changeDirCwd =
+        name === 'change_dir' && ok ? changeDirSuccessCwd(redacted) : undefined;
+      entries.push({
+        name,
+        ok,
+        summary,
+        ...(changeDirCwd !== undefined ? { cwd: changeDirCwd } : {}),
+      });
     }
   }
   return entries;

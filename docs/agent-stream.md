@@ -118,7 +118,7 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Thinking **segments** | **none** | Every reasoning segment paints |
 | Thinking / line chars | **256 KiB** | Wasm `MAX_MSG_LEN` only (bridge hard edge) |
 | Ring slots | **2048** | Wasm `MAX_MSG`; older drop when full; Load earlier for SessionStore |
-| Tool summary length | **salient ≤160** | `salientToolBits` — path/counts/status only; **not** full read_file/exec/http bodies |
+| Tool summary length | **salient ≤320** | `salientToolBits` — path/counts/status only; **not** full read_file/exec/http bodies |
 | Tool level-2 `preview` | **≤ 100k per tool** (`TOOL_RUN_PREVIEW_MAX_CHARS`), real head 40 / tail 10 lines + `… (M more lines)` | Bounded + redacted server-side; short single-line results omit it (static label). Whole-group encoded-detail budget + hard clamp keep any multi-preview `tool_run` row ≤ 262 144 B/msg |
 | `tool_run` group payload | **≤ 262 144 B** (`TOOL_RUN_MSG_HARD_MAX`) | Host clips/omits memorized previews (explicit `…` or static label) rather than overflowing the ring/cloud per-msg cap |
 | JSON end-of-turn toolTrace lines | **none** | All entries shown; level-2 detail stays the one-line `summary` (parity) |

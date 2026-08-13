@@ -6,13 +6,16 @@ import {
   describeTurnEnd,
   getSessionCwd,
   isTurnEndLine,
+  parseChangeDirCwd,
   pushSessionToBridge,
+  recordLiveCwd,
   runHarnessChat,
   restoreLastUiKind,
   runHarnessTurn,
   selectToolTraceLines,
   shouldContinueStreak,
   truncateToolTraceSummary,
+  type LiveCwdSource,
 } from './harnessChat';
 import { HARNESS_RING_MAX } from './sessionWindow';
 import {
@@ -1339,6 +1342,281 @@ describe('runHarnessTurn session cwd', () => {
     });
     expect(result.ok).toBe(true);
     expect(next.cwd).toBe('invincible/src');
+  });
+
+  it('JSON success omitting agentResult.cwd persists a confirmed change_dir from toolTrace (plan #465)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'moved',
+      toolTrace: [
+        {
+          name: 'change_dir',
+          ok: true,
+          // Prod shape: the confirmed cwd arrives as a TYPED `cwd` field, not
+          // parsed from the truncated display summary (adversarial review #470).
+          summary: 'change_dir · ✓ ok · invincible/sub · cwd=invincible/sub',
+          cwd: 'invincible/sub',
+        },
+      ],
+    }));
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(result.ok).toBe(true);
+    // JSON success has no live events; the confirmed change_dir in toolTrace
+    // closes the #403 drift when the authoritative `cwd` is absent.
+    expect(next.cwd).toBe('invincible/sub');
+  });
+
+  it('JSON success with only an errored change_dir (no authoritative cwd) keeps prior (plan #465)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'nope',
+      toolTrace: [
+        { name: 'change_dir', ok: false, summary: 'change_dir · ✗ failed · ERROR change_dir: no such dir' },
+      ],
+    }));
+    const session = { ...createEmptySession('s'), cwd: 'keep-me' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(result.ok).toBe(true);
+    // A failed change_dir never records a live cwd, so the prior value is kept.
+    expect(next.cwd).toBe('keep-me');
+  });
+
+  it('stream cancel after a successful change_dir persists the live cwd (plan #465)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: true,
+          summary: 'change_dir · ✓ ok · invincible/sub · cwd=invincible/sub',
+          // The confirmed cwd rides as a typed field (adversarial review #470).
+          changeDirCwd: 'invincible/sub',
+        });
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(result.ok).toBe(false);
+    // The model moved before the cancel — the next turn boots there, not stale.
+    expect(next.cwd).toBe('invincible/sub');
+  });
+
+  it('stream hard-error/timeout after a successful change_dir persists the live cwd (plan #465)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: true,
+          summary: 'change_dir · ✓ ok · invincible/sub · cwd=invincible/sub',
+          // The confirmed cwd rides as a typed field (adversarial review #470).
+          changeDirCwd: 'invincible/sub',
+        });
+        await init?.onEvent?.({ type: 'error', error: 'Gateway timeout' });
+        return { ok: false, error: 'Gateway timeout', status: 504 };
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(next.cwd).toBe('invincible/sub');
+  });
+
+  it('stream failure with only an errored change_dir keeps the prior cwd (plan #465)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), cwd: 'keep-me' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: false,
+          summary: 'change_dir · ✗ failed · ERROR change_dir: no such dir',
+        });
+        return { ok: false, error: 'boom' };
+      },
+    });
+    expect(result.ok).toBe(false);
+    // A failed change_dir never records a live cwd — prior value retained.
+    expect(next.cwd).toBe('keep-me');
+  });
+
+  it('stream success that omits agentResult.cwd still persists a confirmed live cwd (plan #465)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: true,
+          summary: 'change_dir · ✓ ok · invincible/deep · cwd=invincible/deep',
+          // The confirmed cwd rides as a typed field (adversarial review #470).
+          changeDirCwd: 'invincible/deep',
+        });
+        await init?.onEvent?.({ type: 'done', text: 'ok' });
+        return { ok: true, text: 'ok' };
+      },
+    });
+    expect(result.ok).toBe(true);
+    // Success prefers the authoritative `agentResult.cwd`, but when it is absent
+    // the confirmed live cwd closes the #403 drift instead of re-retaining stale.
+    expect(next.cwd).toBe('invincible/deep');
+  });
+
+  it('stream cancel with a ≥67-char change_dir target persists the FULL path — no `…` corruption (adversarial review #470 Major)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // A workspace-relative target long enough (≥67 chars) that its summarized
+    // one-liner would be clipped at TOOL_LINE_SALIENT_MAX and end in `…`.
+    const LONG_PATH =
+      'packages/frontend/src/components/settings/panels/advanced/billing/extra';
+    expect(LONG_PATH.length).toBeGreaterThanOrEqual(67);
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        // The typed `changeDirCwd` carries the full raw path; the display summary
+        // is already hard-truncated to `…` and must NOT be the persistence source.
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: true,
+          summary: `change_dir · ✓ ok · ${LONG_PATH.slice(0, 60)} · cwd=${LONG_PATH.slice(0, 60)}…`,
+          changeDirCwd: LONG_PATH,
+        });
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(result.ok).toBe(false);
+    // The full long path persists (not a `…#` slice), so the next turn's tools
+    // resolve under the real directory.
+    expect(next.cwd).toBe(LONG_PATH);
+    expect(next.cwd).not.toContain('…');
+  });
+
+  it('stream cancel whose summary is truncated but whose typed changeDirCwd carries the full path persists exactly (adversarial review #470 Major)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const LONG_PATH =
+      'apps/web/src/features/billing/tenants/settings/panels/advanced/archive-main-2026';
+    expect(LONG_PATH.length).toBeGreaterThanOrEqual(80);
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: true,
+          summary: 'change_dir · ✓ ok · apps/web/… · cwd=…',
+          changeDirCwd: LONG_PATH,
+        });
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(result.ok).toBe(false);
+    // The typed field wins over the truncated summary — no `…` persisted.
+    expect(next.cwd).toBe(LONG_PATH);
+  });
+});
+
+describe('parseChangeDirCwd / recordLiveCwd (plan #465)', () => {
+  it('parses the raw success line and the summarized host form', () => {
+    expect(parseChangeDirCwd('change_dir invincible/sub: ok cwd=invincible/sub')).toBe(
+      'invincible/sub',
+    );
+    expect(
+      parseChangeDirCwd('change_dir · ✓ ok · invincible/sub · cwd=invincible/sub'),
+    ).toBe('invincible/sub');
+  });
+
+  it('never parses an errored change_dir', () => {
+    expect(parseChangeDirCwd('ERROR change_dir: no such directory')).toBeUndefined();
+    expect(parseChangeDirCwd('ERROR change_dir: boom')).toBeUndefined();
+    expect(parseChangeDirCwd('change_dir · ✗ failed · ERROR change_dir: boom')).toBeUndefined();
+  });
+
+  it('never parses empty / non-change_dir text', () => {
+    expect(parseChangeDirCwd(undefined)).toBeUndefined();
+    expect(parseChangeDirCwd('')).toBeUndefined();
+    expect(parseChangeDirCwd('list_dir .: 2 entries')).toBeUndefined();
+    expect(parseChangeDirCwd('pwd: invincible')).toBeUndefined();
+  });
+
+  it('rejects a truncated capture (… artifact of the 160-char summary cap)', () => {
+    // A ≥67-char target pushes the summarized `change_dir · ✓ ok · <path> ·
+    // cwd=<path>` past TOOL_LINE_SALIENT_MAX and the clipped tail ends in `…`.
+    // That is not a real directory — never return it (adversarial review #470 Major).
+    const LONG_PATH =
+      'packages/frontend/src/components/settings/panels/advanced/billing/extra';
+    expect(LONG_PATH.length).toBeGreaterThanOrEqual(67);
+    expect(parseChangeDirCwd(`change_dir ${LONG_PATH}: ok cwd=${LONG_PATH}`)).toBe(
+      LONG_PATH,
+    );
+    // Summarized form truncated to `…` must be rejected, never returned.
+    expect(
+      parseChangeDirCwd(
+        `change_dir · ✓ ok · ${LONG_PATH.slice(0, 60)} · cwd=${LONG_PATH.slice(0, 60)}…`,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('recordLiveCwd keeps the last confirmed value and never regresses on a later undefined', () => {
+    let state: LiveCwdSource = { value: undefined, source: undefined };
+    state = recordLiveCwd(state, 'invincible/a');
+    expect(state.value).toBe('invincible/a');
+    // A later, deeper successful change_dir wins.
+    state = recordLiveCwd(state, 'invincible/a/b');
+    expect(state.value).toBe('invincible/a/b');
+    // A failed change_dir (caller gates on ok → passes undefined) must NOT erase
+    // the confirmed live cwd.
+    state = recordLiveCwd(state, undefined);
+    expect(state.value).toBe('invincible/a/b');
+  });
+
+  it('recordLiveCwd never persists a truncated (… ) capture', () => {
+    let state: LiveCwdSource = { value: undefined, source: undefined };
+    state = recordLiveCwd(state, `val…`);
+    expect(state.value).toBeUndefined();
+    const LONG_PATH =
+      'apps/web/src/features/billing/components/settings/panels/advanced/archive';
+    state = recordLiveCwd(state, LONG_PATH);
+    expect(state.value).toBe(LONG_PATH);
   });
 });
 
