@@ -1,7 +1,7 @@
 'use client';
 
 import { useActionState } from 'react';
-import { ember, teal, warm } from '../../lib/palette';
+import { ember, teal } from '../../lib/palette';
 import {
   loginAction,
   oidcSignInAction,
@@ -183,14 +183,11 @@ export function LoginForm({
         ) : null}
       </div>
 
-      <p style={{ margin: 0, fontSize: 12, color: teal.muted }}>
-        Seeded operator uses{' '}
-        <code style={{ color: warm.accent }}>SEED_ADMIN_*</code> credentials
-        after <code style={{ color: warm.accent }}>npm run db:seed</code>.
-        {oidc.configured
-          ? ' SSO uses your organization IdP when configured.'
-          : null}
-      </p>
+      {oidc.configured ? (
+        <p style={{ margin: 0, fontSize: 12, color: teal.muted }}>
+          SSO uses your organization IdP when configured.
+        </p>
+      ) : null}
     </div>
   );
 }

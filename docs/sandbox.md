@@ -16,7 +16,7 @@ Related: [bring-your-own.md](bring-your-own.md) · [feature-divide.md](feature-d
 |--|--|
 | **Is** | A **workspace for agent tools** — either a BYO HTTP daemon (protocol v2) or a **durable Vercel Sandbox Workspace instance** (user-created in Settings; agent **attach-only**) |
 | **Is** | **Per sandbox row under a tenant**: each row chooses `backend` (`byo` \| `vercel`) and, for vercel, an optional **image** |
-| **Is** | **BYO** path: any operator points URL + token at **their** daemon (seed / admin) |
+| **Is** | **BYO** path: any operator points URL + token at **their** daemon (local daemon / admin) |
 | **Is not** | The Zig **GHA build runner** (`invincible-do-1` / `self-hosted` + `zig` labels) |
 | **Is not** | A host-wide product env like `SANDBOX_BACKEND` — backend is **never** a deploy-global switch |
 | **Is not** | A multi-sandbox picker **inside the harness canvas**. Prefer sandbox under **Settings → Sandbox** when you have multiple usable grants |
@@ -106,7 +106,6 @@ Forks/BYO: copy `dev/` + the workflow; use **your** team/project prefix and toke
 | Schema migrate | GitHub Actions **`db-migrate`** (`confirm=migrate`) — not laptop-primary |
 | First-run sign-up | On a tenant-less DB, `/login` shows a sign-up form that creates the first tenant + owner. **First hours after signup:** the owner creates a sandbox at `/admin/sandboxes`; agent turns fail closed (403) until one exists |
 | Create / edit / image | Browser **/admin/sandboxes** |
-| Seed bootstrap (optional) | GHA **`db-tenancy-bootstrap`** / seed with `SEED_SANDBOX_BACKEND` + optional `SEED_SANDBOX_IMAGE` |
 | Smoke | Harness agent tools with a usable grant (or preferred when several) |
 
 ### Preferred sandbox (Settings)
@@ -238,7 +237,7 @@ old not-configured 503 string is **dead** — it is not the operator contract.
 Sandbox credentials are always **DB-resolved** for the signed-in user
 (`resolveAgentSandbox`): branch on row `backend`; **byo** decrypts
 `token_ciphertext`; **vercel** uses the host Sandbox control plane + row
-`image`. Env `SANDBOX_*` is still used for **seed** / local daemon only —
+`image`. Env `SANDBOX_*` is still used for the **local daemon** only —
 never as the product-path credential source.
 
 When the user has no usable grant / multiple usable grants without a Settings preference / ambiguous membership / invalid backend:
@@ -401,8 +400,8 @@ Full contract, jail rules, and exec shape: [`sandbox/README.md`](../sandbox/READ
 
 | Name | Required | Purpose |
 |------|----------|---------|
-| `SANDBOX_URL` | seed / local daemon | Base URL of the sandbox (no trailing slash required) |
-| `SANDBOX_TOKEN` | seed / local daemon | Shared bearer secret (must match daemon); also used by seed to encrypt into DB |
+| `SANDBOX_URL` | local daemon | Base URL of the sandbox (no trailing slash required) |
+| `SANDBOX_TOKEN` | local daemon | Shared bearer secret (must match daemon); daemon-process-only |
 | `AGENT_MAX_STEPS` | no | Optional safety ceiling (1…256). **Unset** = model-ended tool loop (no default step cap) |
 
 Also requires existing `AI_GATEWAY_API_KEY` for inference.
@@ -467,8 +466,8 @@ Expect muted **system** tool lines in the canvas, then an assistant reply.
 
 Without a usable sandbox grant on Next: agent turns return **403** `Sandbox
 access denied.` (there is no 503 → chat fallback). With a **vercel** grant you
-do **not** need env `SANDBOX_*`; `SANDBOX_URL`/`SANDBOX_TOKEN` here are for
-seed/local daemon only.
+do **not** need env `SANDBOX_*`; `SANDBOX_URL`/`SANDBOX_TOKEN` here are for the
+local daemon only.
 
 ---
 
@@ -793,20 +792,20 @@ See also [session-model.md](session-model.md) and [agent-stream.md](agent-stream
 
 Agent tools resolve to **DB grants** for the signed-in user (never raw process
 env for product turns). **Primary path is cloud-native** — do not treat a
-personal laptop as the migrate/seed host.
+personal laptop as the migrate/bootstrap host.
 
-1. Follow [bring-your-own.md §4a](bring-your-own.md#4a-multi-tenant-auth)
-   (seed via GHA `db-tenancy-bootstrap` or a cloud agent; keep Production set in a
-   safe order so tenancy does not activate against an unprepared DB).
+1. Follow [bring-your-own.md §4a](bring-your-own.md#4a-multi-tenant-auth):
+   run GHA **db-migrate** (`confirm=migrate`), then open `/login` — a tenant-less
+   DB shows the **first-run sign-up** form that creates the first tenant + owner
+   (no seed env, no laptop). Keep Production env in a safe order so tenancy does
+   not activate against an unprepared DB.
 2. Set the remaining triple-env var(s) on Vercel Production (typically
-   `AUTH_SECRET` last) → redeploy. Do **not** set `AUTH_SECRET` before
-   migrate/seed.
+   `AUTH_SECRET`) → redeploy.
 3. Smoke: unauth `POST /api/agent` → **401**
-   `{ "error": "Authentication required." }`; `/login` → harness; optional `/admin`.
+   `{ "error": "Authentication required." }`; `/login` (sign-up owner) → harness;
+   owner creates a sandbox at `/admin/sandboxes`; optional `/admin`.
 4. Origin only: mark `DATABASE_URL` / `AUTH_SECRET` / `CREDENTIALS_ENCRYPTION_KEY`
    **Done** in [AGENTS.md](../AGENTS.md) after smoke.
-
-GHA workflow: [`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml).
 
 ---
 

@@ -2,35 +2,20 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   MAX_AGENT_MAX_STEPS,
   SANDBOX_NOT_CONFIGURED_ERROR,
-  getSandboxConfig,
   resolveAgentMaxSteps,
   resolveSandboxDefaultCwd,
   resetSandboxDefaultCwdLogForTests,
-  sandboxConfigured,
+  normalizeBaseUrl,
 } from './config';
 
 describe('sandbox config', () => {
-  it('sandboxConfigured requires both URL and token', () => {
-    expect(sandboxConfigured({})).toBe(false);
-    expect(sandboxConfigured({ SANDBOX_URL: 'http://x' })).toBe(false);
-    expect(sandboxConfigured({ SANDBOX_TOKEN: 't' })).toBe(false);
-    expect(
-      sandboxConfigured({ SANDBOX_URL: 'http://x', SANDBOX_TOKEN: 't' }),
-    ).toBe(true);
-    expect(
-      sandboxConfigured({ SANDBOX_URL: '  ', SANDBOX_TOKEN: 't' }),
-    ).toBe(false);
-  });
-
-  it('getSandboxConfig normalizes trailing slash', () => {
-    const cfg = getSandboxConfig({
-      SANDBOX_URL: 'http://127.0.0.1:8787/',
-      SANDBOX_TOKEN: 'secret',
-    });
-    expect(cfg).toEqual({
-      baseUrl: 'http://127.0.0.1:8787',
-      token: 'secret',
-    });
+  it('normalizeBaseUrl strips trailing slashes', () => {
+    expect(normalizeBaseUrl('http://127.0.0.1:8787/')).toBe(
+      'http://127.0.0.1:8787',
+    );
+    expect(normalizeBaseUrl('http://127.0.0.1:8787///')).toBe(
+      'http://127.0.0.1:8787',
+    );
   });
 
   it('resolveAgentMaxSteps is null when unset; clamps only absurd extremes', () => {

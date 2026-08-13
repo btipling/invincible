@@ -21,7 +21,7 @@
 #     Vercel TENANT_TOKEN_DECRYPT_MODE=dek-only + redeploy.
 #
 # Explicit non-paths:
-#   - NOT db-tenancy-bootstrap / seed (resets password + token ciphertext)
+#   - NOT app first-run sign-up / `db-migrate` (this is not a bootstrap)
 #   - NOT personal-laptop npm as the official path
 #   - NOT self-hosted runner
 #

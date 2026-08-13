@@ -33,9 +33,9 @@ Related: [feature-divide.md](feature-divide.md) · [sandbox.md](sandbox.md) ·
   `SANDBOX_TOKEN` in client code, Wasm, or the browser.
 - Do **not** build a competing React chat panel — canvas is the workspace.
 - **Sandbox MVP is shipped**; product tool turns resolve sandbox from **DB
-  grants**, not raw env (`SANDBOX_URL` + `SANDBOX_TOKEN` are seed/local-daemon
-  only). Without a usable grant + no alternate tools → **403** — there is **no**
-  503 → chat fallback. Full guide: [sandbox.md](sandbox.md).
+  grants**, not raw env (`SANDBOX_URL` + `SANDBOX_TOKEN` are local-daemon /
+  build-bootstrap only). Without a usable grant + no alternate tools → **403** —
+  there is **no** 503 → chat fallback. Full guide: [sandbox.md](sandbox.md).
 - **Multi-tenant auth** (login + DB sandbox grants) is **required and always
   on** — every deploy configures the triple. See
   [§4a](#4a-multi-tenant-auth). Per-row sandbox **backend** + image
@@ -108,7 +108,7 @@ documented in `scripts/harnessRepo.mjs`.
 | `AI_GATEWAY_API_KEY` | **Yes** | Server-side inference — never client/Wasm |
 | `HARNESS_ARTIFACT_TOKEN` | **Yes** for prod builds that download Wasm | Fine-grained PAT: **Actions: Read** on the repo that publishes artifact `harness-wasm` (your repo for path **A**, or the upstream/build repo for path **B**) |
 | `HARNESS_OWNER` / `HARNESS_REPO` | **Yes until your repo publishes `harness-wasm`** | Point at a repo that already has artifact `harness-wasm` (typical cold-start: path **B**). Once path **A** has uploaded artifacts on **your** repo, omit these so Vercel Git env (`VERCEL_GIT_REPO_OWNER` / `VERCEL_GIT_REPO_SLUG`) is used |
-| `SANDBOX_URL` / `SANDBOX_TOKEN` | No | Seed / local daemon only — product tool turns resolve sandbox from **DB grants**; **server only**, URL reachable from Vercel in prod ([sandbox.md](sandbox.md)). Per-sandbox config: [§4a](#4a-multi-tenant-auth) |
+| `SANDBOX_URL` / `SANDBOX_TOKEN` | No | Local daemon / build-bootstrap only — product tool turns resolve sandbox from **DB grants**; **server only**, URL reachable from Vercel in prod ([sandbox.md](sandbox.md)). Per-sandbox config: [§4a](#4a-multi-tenant-auth) |
 | `AGENT_MAX_STEPS` | No | Optional safety ceiling (1…256); **omit** for model-ended tool loop + user Stop |
 
 4. Optional GitHub Actions **secret** (on **your** repo): `VERCEL_DEPLOY_HOOK_URL` —
@@ -135,14 +135,11 @@ sandbox credentials + R/W grants, and a minimal `/admin` shell. **Every page is
 behind a login wall** and protected APIs fail closed with 401 when
 unauthenticated.
 
-Cloud-native cutover (no personal hardware). GHA bootstrap workflow:
-[`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml).
-
-**First-run self-bootstrap:** after **`db-migrate`**, open `/login` — if the DB
-has no tenant, a **sign-up form** creates the first tenant + owner in one
-transaction and signs the owner in (no `SEED_*` env, no laptop). After sign-up,
-create a sandbox at **`/admin/sandboxes`**; agent turns fail closed until one
-exists. Seed remains available until removed.
+**First-run self-bootstrap (no seed, no GHA):** after **`db-migrate`**, open
+`/login` — if the DB has no tenant, a **sign-up form** creates the first tenant
++ owner in one transaction and signs the owner in (no seed env, no laptop).
+After sign-up, create a sandbox at **`/admin/sandboxes`**; agent turns fail
+closed until one exists. Existing tenanted DBs never show the sign-up form.
 
 ### Enablement (triple env — no AUTH_ENABLED flag)
 
@@ -176,7 +173,7 @@ Each signed-in user has one durable harness transcript row in Postgres
 
 | Need | Action |
 |------|--------|
-| Schema | GitHub Actions → **`db-migrate`** → `confirm=migrate` (includes `harness_sessions`). Workflow: [`.github/workflows/db-migrate.yml`](../.github/workflows/db-migrate.yml). Do **not** use `db-tenancy-bootstrap` / seed solely for this table. |
+| Schema | GitHub Actions → **`db-migrate`** → `confirm=migrate` (includes `harness_sessions`). Workflow: [`.github/workflows/db-migrate.yml`](../.github/workflows/db-migrate.yml). This is the schema-only path (the tenancy bootstrap is the app's first-run sign-up). |
 | Runtime | Tenancy triple env already on; user signs in → `/harness` |
 | Smoke | Same user, two browsers: turn on A → refresh B shows messages; Clear on A → DELETE cloud row |
 | Failures | Unauth → **401**; no row yet → **404** `NOT_FOUND`; store unavailable → **503**. Auth is always required |
@@ -195,8 +192,8 @@ Each **sandbox row** chooses a backend — not a host env flip
 | **vercel** | Image preset or custom VCR/VMI ref (null = universal default) | Host Vercel project OIDC/quota; no BYO URL/token on the row |
 
 Create and edit at **`/admin/sandboxes`**. Schema for `backend`/`image` ships via
-GHA **`db-migrate`**. Seed bootstrap may set `SEED_SANDBOX_BACKEND=vercel` and
-optional `SEED_SANDBOX_IMAGE` (seed-only env names).
+GHA **`db-migrate`**. Sandboxes are tenant-owned and provisioned by the owner;
+there is no seeded default sandbox.
 
 **Dogfood / custom toolchain images:** the app runtime does **not** build images.
 Origin (and forks) may push a first-party image with Docker + VCR auth. Origin
@@ -245,8 +242,8 @@ Production Postgres, run **schema-only** migrate — **not** seed/bootstrap:
 4. Workflow: [`.github/workflows/db-migrate.yml`](../.github/workflows/db-migrate.yml)  
 5. Repository secret **`DATABASE_URL`** must equal Vercel Production (dual-store)
 
-Do **not** use `db-tenancy-bootstrap` / seed for schema-only BYOK cutover (seed
-resets bootstrap password hash + sandbox token ciphertext).
+This is the schema-only mutate path (the tenancy bootstrap is the app's
+first-run sign-up). Do **not** use this workflow for data/backfill.
 
 #### Operator checklist (BYOK inference)
 
@@ -277,7 +274,8 @@ under the `mcp_*` name prefix.
 | Owner | DEK rotate on `/admin` also re-encrypts MCP header ciphertexts. |
 
 **Schema (`user_mcp_servers`):** same schema-only path as BYOK tables — Actions →
-**db-migrate** → `confirm=migrate` (not seed). Dual-store `DATABASE_URL` ≡ Vercel
+**db-migrate** → `confirm=migrate` (this is the schema-only path; the bootstrap
+is the app's first-run sign-up). Dual-store `DATABASE_URL` ≡ Vercel
 Production.
 
 Full guide + **Exa** operator smoke checklist: **[mcp.md](mcp.md)**.
@@ -285,9 +283,10 @@ Full guide + **Exa** operator smoke checklist: **[mcp.md](mcp.md)**.
 ### Cloud cutover checklist (primary path)
 
 Tenancy turns **on** only when **all three** secrets are present on the running
-deploy. Seed needs `DATABASE_URL` + `CREDENTIALS_ENCRYPTION_KEY` (+ seed inputs)
-but **not** `AUTH_SECRET`. Prefer finishing migrate/seed **before** the third
-var lands on Production so tenancy does not activate against an empty DB.
+deploy. Bootstrap a fresh DB via the app's **first-run sign-up**: run
+**`db-migrate`**, then open `/login` to create the first tenant + owner. Prefer
+completing `AUTH_SECRET` + sign-up before calling the deploy ready so the login
+wall is active against a real tenant.
 
 **Dual-store identity:** GitHub Actions secrets `DATABASE_URL` and
 `CREDENTIALS_ENCRYPTION_KEY` must be the **same values** as Vercel Production
@@ -300,11 +299,11 @@ runtime. Wrong AMK → unwrap of tenant DEKs fails (agent/tools 403).
 - Product paths encrypt sandbox tokens under the **tenant DEK**. Runtime default
   is **dual-read** (`TENANT_TOKEN_DECRYPT_MODE` unset or `dual`: try DEK, then
   AMK) so legacy AMK ciphertext still works until backfill completes.
-- **Greenfield:** GHA **db-tenancy-bootstrap** (migrate + seed) — seed **ensures**
-  a DEK and encrypts the bootstrap sandbox token under it.
+- **Greenfield:** the **app's first-run sign-up** on `/login` bootstraps the DB
+  (no seed); a tenant DEK is ensured lazily on the first sandbox token write.
 - **Existing Production data (legacy AMK tokens):** one-time **backfill only**.
-  **Do not** re-run seed/bootstrap for this (seed resets bootstrap password hash
-  + token ciphertext).
+  **Do not** re-run `db-migrate` or the bootstrap for this (migrations are
+  schema-only; the bootstrap is for a fresh DB).
   - **Primary path:** GitHub Actions → **db-tenancy-backfill-deks** → Run workflow  
     - `confirm` = `backfill` (required)  
     - optional `dry_run=true` (secrets only, no mutate)  
@@ -331,25 +330,18 @@ paste secret values into issues or PR chat.
 2. **Vercel Production** — set `DATABASE_URL` +
    `CREDENTIALS_ENCRYPTION_KEY` only (defer `AUTH_SECRET` so tenancy is not yet
    enabled against an unprepared DB).
-3. **GitHub Actions secrets** (same DB + KEK as Vercel) — set via GitHub **web
-   UI** or `gh secret set` from a **cloud agent**:
+3. **GitHub Actions secret** (same DB + KEK as Vercel) for schema/backfill
+   cutovers — set via GitHub **web UI** or `gh secret set` from a **cloud
+   agent**: `DATABASE_URL` (=== Vercel Production) and
+   `CREDENTIALS_ENCRYPTION_KEY` (=== Vercel Production).
 
-   | Secret | Required |
-   |--------|----------|
-   | `DATABASE_URL` | yes (=== Vercel Production) |
-   | `CREDENTIALS_ENCRYPTION_KEY` | yes (=== Vercel Production) |
-   | `SEED_ADMIN_EMAIL` | yes |
-   | `SEED_ADMIN_PASSWORD` | yes (re-seed **resets** password hash) |
-   | `SANDBOX_URL` + `SANDBOX_TOKEN` | yes* (*or* `SEED_SANDBOX_URL` + `SEED_SANDBOX_TOKEN`) |
+4. **Schema** (once) — Actions → **db-migrate** → `confirm=migrate`.
+   Workflow: [`.github/workflows/db-migrate.yml`](../.github/workflows/db-migrate.yml).
 
-4. **Migrate + seed (GHA)** — Actions → **db-tenancy-bootstrap** → Run workflow  
-   - `confirm` = `seed` (required misclick guard)  
-   - optional `dry_run` = true validates secret **presence** only (no mutate)  
-   - Workflow: [`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml)  
-   - Re-run **resets** bootstrap `password_hash` + sandbox token ciphertext (by design).
-
-5. **Enable tenancy** — set Vercel Production `AUTH_SECRET` → **Redeploy**.
-   Runtime now sees all three → login required.
+5. **Bootstrap (first-run sign-up)** — set Vercel Production `AUTH_SECRET`, open
+   `https://<your-host>/login`; if the DB has no tenant, the sign-up form creates
+   the first tenant + owner. Then the owner creates a sandbox at
+   `/admin/sandboxes`.
 
 6. **Smoke (public, no host inventory)**
 
@@ -362,7 +354,7 @@ paste secret values into issues or PR chat.
    # expect: 401 and {"error":"Authentication required."}
    ```
 
-   Then: `/login` with seed admin → `/harness`; `/admin` shows base URL +
+   Then: `/login` as the sign-up owner → `/harness`; `/admin` shows base URL +
    **masked** token (owner can rotate).
 
 7. **Origin only** — after smoke, mark `DATABASE_URL` / `AUTH_SECRET` /
@@ -378,30 +370,26 @@ Also: [sandbox.md](sandbox.md) · [SECURITY.md](../SECURITY.md) ·
 When GHA secrets are awkward (e.g. one-shot throwaway DB), a **cloud agent
 workspace** (Grok Build / similar) may check out the repo and inject secrets
 into **process env for the session only** (from Vercel/GHA — never commit,
-never leave in issue comments):
+never leave in issue comments). There is **no seed script** — schema comes from
+GHA **db-migrate**, and the tenancy bootstrap is the app's **first-run sign-up**
+(open `/login` on an empty tenant DB).
 
-```bash
-npm ci
-npm install --no-save --no-audit --no-fund drizzle-kit@0.31.10
-npx drizzle-kit migrate
-npm run db:seed
-```
-
-This is **not** “run on a personal laptop.” Prefer GHA for Production bootstrap.
+This is **not** “run on a personal laptop.” Prefer GHA + the browser for
+Production bootstrap.
 
 ### Preview / Production tips
 
 | Environment | Recommendation |
 |-------------|----------------|
 | **Preview** | Use a separate `DATABASE_URL`. Do **not** casually reuse the Production encryption key on public previews. |
-| **Lockout** | Keep the Production-grade triple in place and verify migrate+seed and `/login` work before enabling credentials login broadly. |
+| **Lockout** | Keep the Production-grade triple in place and verify `db-migrate` + the first-run sign-up and `/login` work before enabling credentials login broadly. |
 | **DB firewall** | Prefer Neon/public pooled SSL so GitHub-hosted runners can reach Postgres; allowlist GHA egress if using DO firewall. |
 
 ### Local harness note
 
 [§3 Quick path](#3-quick-path-local-app--keys) is for **local Wasm/host smoke**
 (Gateway key + harness files). It is **not** the tenancy cutover path — use the
-cloud checklist above for migrate/seed/login flip.
+cloud checklist above for migrate + first-run sign-up + login flip.
 
 ### 4b. Optional SSO (OIDC) + SCIM
 
@@ -477,7 +465,7 @@ Never put the token in client bundles or Wasm.
 
 #### Operator checklist (OIDC / SCIM)
 
-1. Tenancy configured + seed admin can `/login` with **credentials**.  
+1. Tenancy configured; the sign-up **owner** can `/login` with **credentials**.  
 2. **(Optional OIDC)** Set issuer + client id + secret (+ label); register
    callback `{origin}/api/auth/callback/oidc` at the IdP; redeploy; confirm
    button on `/login` → session → `/harness`.  
@@ -588,7 +576,7 @@ listed as Done in [AGENTS.md](../AGENTS.md). Operators on **forks/clones** use
 - [ ] Send + multi-turn + refresh + Clear work in canvas
 - [ ] If using self-hosted builds: runner online + `SELF_HOSTED_BUILDS=true`
 - [ ] Optional: sandbox daemon + Vercel/local `SANDBOX_URL`/`SANDBOX_TOKEN` ([sandbox.md](sandbox.md))
-- [ ] Tenancy: cloud cutover [§4a](#4a-multi-tenant-auth) (GHA migrate/seed, then `AUTH_SECRET`)
+- [ ] Tenancy: cloud cutover [§4a](#4a-multi-tenant-auth) (GHA `db-migrate`, then first-run sign-up + `AUTH_SECRET`)
 - [ ] Optional BYOK: GHA **db-migrate** if needed + `/admin/inference` + harness model cycle ([§4a](#inference-keys-byok))
 - [ ] Optional MCP: GHA **db-migrate** if needed + `/settings/mcp` + Exa smoke ([mcp.md](mcp.md))
 - [ ] Optional OIDC / SCIM: [§4b](#4b-optional-sso-oidc--scim) (credentials break-glass still works; hybrid roster)

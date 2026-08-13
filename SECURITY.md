@@ -15,8 +15,7 @@ If you find a vulnerability in Invincible, please open a **private** security ad
 | `DATABASE_URL` | Vercel / local only (prefer **pooled** Neon/PgBouncer URL) |
 | `REDIS_URL` | Vercel project env only (optional BYO multi-session Redis; node-redis RESP — the URL **embeds** the credential `redis://default:<secret>@<host>:<port>`). **Never** log it; never `NEXT_PUBLIC_*`. Old `SESSION_REDIS_*` / `UPSTASH_REDIS_REST_*` names are **removed** — if present, the store logs a one-time (value-free) deprecation hint then 503s until `REDIS_URL` is set |
 | `CREDENTIALS_ENCRYPTION_KEY` | Vercel / local only — base64 32-byte AES-256-GCM **AMK** (wraps per-tenant DEKs; tokens encrypt under DEK) |
-| `SEED_ADMIN_PASSWORD` / `SEED_SANDBOX_TOKEN` | Bootstrap only (prefer GHA `db-tenancy-bootstrap`; cloud-agent `npm run db:seed` alternate); never commit; re-seed resets bootstrap password + token ciphertext |
-| `AUTH_SECRET` | Auth.js session secret — set on Vercel **after** migrate/seed (seed does not need it) |
+| `AUTH_SECRET` | Auth.js session secret — set on Vercel **after** migrate + the first-run sign-up bootstrap |
 | `AUTH_OIDC_CLIENT_SECRET` | Optional OIDC client secret — Vercel/server only; never `NEXT_PUBLIC_*` |
 | `SCIM_BEARER_TOKEN` | Optional SCIM shared bearer — Vercel/server only; IdP → `/api/scim/v2`; never client/Wasm |
 | Runner registration tokens, DO API tokens | Operator machines only |
@@ -53,8 +52,7 @@ If you find a vulnerability in Invincible, please open a **private** security ad
 | `DATABASE_URL` | Vercel / local only (prefer **pooled** Neon/PgBouncer URL) |
 | `REDIS_URL` | Vercel project env only (optional BYO multi-session Redis; node-redis RESP — the URL **embeds** the credential `redis://default:<secret>@<host>:<port>`). **Never** log it; never `NEXT_PUBLIC_*`. Old `SESSION_REDIS_*` / `UPSTASH_REDIS_REST_*` names are **removed** — if present, the store logs a one-time (value-free) deprecation hint then 503s until `REDIS_URL` is set |
 | `CREDENTIALS_ENCRYPTION_KEY` | Vercel / local only — base64 32-byte AES-256-GCM **AMK** (wraps per-tenant DEKs; tokens encrypt under DEK) |
-| `SEED_ADMIN_PASSWORD` / `SEED_SANDBOX_TOKEN` | Bootstrap only (prefer GHA `db-tenancy-bootstrap`; cloud-agent `npm run db:seed` alternate); never commit; re-seed resets bootstrap password + token ciphertext |
-| `AUTH_SECRET` | Auth.js session secret — set on Vercel **after** migrate/seed (seed does not need it) |
+| `AUTH_SECRET` | Auth.js session secret — set on Vercel **after** migrate + the first-run sign-up bootstrap |
 | `AUTH_OIDC_CLIENT_SECRET` | Optional OIDC client secret — Vercel/server only; never `NEXT_PUBLIC_*` |
 | `SCIM_BEARER_TOKEN` | Optional SCIM shared bearer — Vercel/server only; IdP → `/api/scim/v2`; never client/Wasm |
 | Runner registration tokens, DO API tokens | Operator machines only |
@@ -190,8 +188,8 @@ provider/MCP secrets, or raw DEK material in stream payloads. See
 | AMK rotate | **Not automated.** Changing Production AMK without a re-wrap tool breaks all DEK unwraps. Keep GHA `CREDENTIALS_ENCRYPTION_KEY` **===** Vercel Production AMK (dual-store). Re-wrap is a future sequel |
 | Never client | No `NEXT_PUBLIC_*` for DB, Auth.js secret, AMK/DEK, sandbox token, provider API keys, MCP API keys, user GitHub PATs, OIDC client secret, or SCIM bearer |
 | Preview isolation | Use a separate DB on public previews; avoid reusing Production AMK, OIDC client secret, or `SCIM_BEARER_TOKEN` casually |
-| Seed vs backfill | Seed = greenfield / bootstrap via GHA `db-tenancy-bootstrap` (resets password hash + token ciphertext; **keeps** existing DEK). Existing Production data = GHA **`db-tenancy-backfill-deks`** only — **not** seed |
-| Bootstrap / backfill / schema surface | Prefer GitHub Actions: **`db-tenancy-bootstrap`** (seed), **`db-tenancy-backfill-deks`** (AMK→DEK data), **`db-migrate`** (schema-only, e.g. provider secrets / `user_mcp_servers`) — or cloud agent workspace. Not personal-laptop primary ops |
+| Bootstrap vs backfill vs schema | Bootstrap = the app's **first-run sign-up** on `/login` (no env, no seed script). Existing Production data / AMK→DEK cutover = GHA **`db-tenancy-backfill-deks`** only. Schema-only = GHA **`db-migrate`**. **Never** re-seed a bootstrapped DB — it would add a second tenant and break the sole-tenant join |
+| Ops surface | Schema/backfill via GitHub Actions: **`db-migrate`** (schema), **`db-tenancy-backfill-deks`** (AMK→DEK data), **`sessions-redis-backfill`** — or a cloud agent workspace. Not personal-laptop primary ops |
 | OIDC (optional) | `AUTH_OIDC_ISSUER` + `AUTH_OIDC_CLIENT_ID` + `AUTH_OIDC_CLIENT_SECRET` (+ optional `AUTH_OIDC_LABEL`); provider id `oidc`; callback `/api/auth/callback/oidc`; email auto-link requires verified `email_verified` claim |
 | SCIM (optional) | `SCIM_BEARER_TOKEN` (feature-env only, no tenancy-gate); base `/api/scim/v2`; off → **404**; bad Bearer → **401**; DELETE = suspend |
 | Hybrid roster | SCIM is **additive** — non-SCIM users remain; `/admin` lists all provision sources; SCIM list = SCIM-managed only |

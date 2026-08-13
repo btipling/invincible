@@ -7,7 +7,7 @@ import {
 
 describe('hashPassword / verifyPassword', () => {
   it('hashes with bcrypt and verifies', async () => {
-    const plain = 'SEED_ADMIN_PASSWORD_example!';
+    const plain = 'P8ss_min8_example!';
     const hash = await hashPassword(plain);
     expect(hash).toMatch(/^\$2[aby]?\$/);
     expect(await verifyPassword(plain, hash)).toBe(true);
