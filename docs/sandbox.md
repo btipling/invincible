@@ -766,11 +766,15 @@ with the `pwd` tool after a harness turn.
 Host updates the stored session cwd from the turn's **logical cwd**: success
 prefers the authoritative `agentResult.cwd`, and a **confirmed successful
 `change_dir`** is persisted even when the turn later cancels / times out /
-hard-errors — so the next turn boots where the model actually worked. Only a
-confirmed `change_dir` (tool result `ok` with a `cwd=` marker) is persisted on a
-failed/aborted turn; a `change_dir` that errored, or a turn with no `change_dir`,
-keeps the prior value. Clear session omits cwd. (There is no 503 chat-fallback
-path in the current product.)
+hard-errors — so the next turn boots where the model actually worked. Persistence
+never re-parses the display `summary`: the confirmed target travels as the **typed
+`changeDirCwd`** on the stream `tool_result` event (or `ToolTraceEntry.cwd` on the
+JSON path) — the **raw** value parsed from the `change_dir <rel>: ok cwd=<rel>`
+success line, so long/deep targets survive the summary char budget without `…`
+corruption. Only a confirmed `change_dir` (tool result `ok`, typed value present)
+is persisted on a failed/aborted turn; a `change_dir` that errored, or a turn with
+no `change_dir`, keeps the prior value. Clear session omits cwd. (There is no 503
+chat-fallback path in the current product.)
 
 See also [session-model.md](session-model.md) and [agent-stream.md](agent-stream.md).
 
