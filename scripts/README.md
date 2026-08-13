@@ -62,10 +62,9 @@ sign-up (below). Do **not** use this workflow for data/backfill cutovers.
 
 Full BYOK operator notes: [docs/bring-your-own.md §4a Inference keys](../docs/bring-your-own.md#inference-keys-byok).
 
-## Tenancy bootstrap — first-run sign-up (no seed, no laptop)
+## Tenancy bootstrap — first-run sign-up (no laptop)
 
-There is **no seed script** (and no `npm` seed command). A fresh database
-bootstraps itself through the app:
+A fresh database bootstraps itself through the app:
 
 1. Ensure the tenancy triple is set and migrate schema via GHA **db-migrate**
    (`DATABASE_URL`, `CREDENTIALS_ENCRYPTION_KEY`, and the Auth.js secret in
@@ -75,8 +74,8 @@ bootstraps itself through the app:
 3. After sign-up, the owner provisions a sandbox at **`/admin/sandboxes`**;
    agent turns fail closed until one exists.
 
-This is the config-free bootstrap: no `SEED_*` env, no workflow, no personal
-hardware — just `db-migrate` then open the app. See
+This is the config-free bootstrap: just `db-migrate` then open the app — no
+workflow, no personal hardware. See
 [docs/bring-your-own.md §4a](../docs/bring-your-own.md#4a-optional-multi-tenant-auth).
 
 Schema: `db/schema.ts`. Crypto: `lib/tenancy/credentials.ts`. Auth.js: JWT + Credentials only (no adapter `accounts`/`sessions` tables).

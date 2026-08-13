@@ -4,8 +4,8 @@
  * A tenant-less DB self-bootstraps in the browser: `/login` renders a sign-up
  * form that creates the first tenant + owner user + owner membership in one
  * transaction, then signs the owner in. This replaces the legacy fixed-tenant
- * seed bootstrap (a hard-coded `default` tenant), so a fresh fork with just
- * `db-migrate` needs no seed env and no laptop.
+ * bootstrap (a hard-coded `default` tenant), so a fresh fork with just
+ * `db-migrate` needs no extra env and no laptop.
  *
  * Concurrency: first-run creation is serialized with a **transaction-scoped
  * advisory lock** (`pg_advisory_xact_lock`). A plain `SELECT … FOR UPDATE` on
