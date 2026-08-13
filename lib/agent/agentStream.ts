@@ -50,7 +50,7 @@ export function encodeSseData(event: AgentStreamEvent): string {
  * Host canvas tool lines only — never dump full tool payloads (read_file bodies,
  * exec stdout, http bodies). Model still receives full results via the tool path.
  */
-export const TOOL_LINE_SALIENT_MAX = 160;
+export const TOOL_LINE_SALIENT_MAX = 320;
 
 /**
  * Per-tool cap for the bounded, redacted L2 `preview` fed into the `toolrun` v1

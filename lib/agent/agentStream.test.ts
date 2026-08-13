@@ -124,11 +124,14 @@ describe('mapFullStreamPart', () => {
   });
 
   it('attaches the TYPED changeDirCwd on a successful change_dir, even when the summary is truncated (adversarial review #470)', () => {
-    // A workspace-relative target long enough (≥67 chars) that its summarized
-    // one-liner would be hard-truncated at TOOL_LINE_SALIENT_MAX and end in `…`.
+    // A workspace-relative target long enough that its summarized one-liner
+    // (`change_dir · ✓ ok · <path> · cwd=<path>`) exceeds TOOL_LINE_SALIENT_MAX
+    // and ends in `…` — with a 320-char budget that needs a path > ~146 chars.
     const LONG_PATH =
-      'packages/frontend/src/components/settings/panels/advanced/billing/extra';
-    expect(LONG_PATH.length).toBeGreaterThanOrEqual(67);
+      'packages/frontend/src/components/settings/panels/advanced/billing/extra' +
+      '/very/deeply/nested/subdirectory/further/still/deeper/beyond/any/budget' +
+      '/and/still/yet/even/further/deeper/for/margin';
+    expect(LONG_PATH.length).toBeGreaterThan(146);
     const evs = mapFullStreamPart({
       type: 'tool-result',
       toolName: 'change_dir',
