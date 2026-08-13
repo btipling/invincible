@@ -167,6 +167,38 @@ describe('resolvePersonaPreamble', () => {
     expect(out).toBe('Offline safe.');
   });
 
+  it('sessionId set + body personaId but NO store/key → inject this turn, no put (offline/Redis-off)', async () => {
+    const rd = readerOf({ pers_1: { body: 'Redis-off safe.' } });
+    const out = await resolvePersonaPreamble({
+      userId: KEY.userId,
+      personaId: 'pers_1',
+      sessionId: KEY.sessionId,
+      userPersonas: rd,
+    });
+    expect(out).toBe('Redis-off safe.');
+  });
+
+  it('sessionId set + body personaId but store get THROWS → inject this turn, no put (fail open)', async () => {
+    const throwingStore = {
+      async get() {
+        throw new Error('redis down');
+      },
+      async put() {
+        throw new Error('should not be called');
+      },
+    };
+    const rd = readerOf({ pers_1: { body: 'Blip safe.' } });
+    const out = await resolvePersonaPreamble({
+      userId: KEY.userId,
+      personaId: 'pers_1',
+      sessionId: KEY.sessionId,
+      sessionStore: throwingStore,
+      sessionKey: KEY,
+      userPersonas: rd,
+    });
+    expect(out).toBe('Blip safe.');
+  });
+
   it('unknown/other-user personaId → undefined (no inject, no leak)', async () => {
     const rd = readerOf({ pers_1: null });
     const out = await resolvePersonaPreamble({

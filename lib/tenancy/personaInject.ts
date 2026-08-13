@@ -6,14 +6,18 @@
  * `meta.personaSnapshot` so later turns / Continue / device-switch replay the
  * SAME text and a mid-session persona edit NEVER rewrites an in-flight session.
  *
- * Lookup order (fail-closed, no existence leak):
- *   1. `sessionId` present → the scoped session store MUST have the record; read
- *      `meta.personaSnapshot`. Present → use it (later turns / Continue).
+ * Lookup order (fail-closed only on a *queried* miss; no existence leak):
+ *   1. `sessionId` present AND a session store/key are available → query the scoped
+ *      session and read `meta.personaSnapshot`. Present → use it (later turns /
+ *      Continue).
  *   2. Else a bound persona id (body `personaId`, else `meta.personaId`) →
  *      `userPersonas.getPersonaById` (scoped) → use the body; best-effort persist
  *      `meta.{personaId,personaSnapshot}` once when a matching session exists.
- *   3. `sessionId` present but NO matching scoped session → **no inject** (never
- *      resolve against an ambiguous session; foreign/absent ids fail closed).
+ *   3. `sessionId` present AND the store WAS queried and returned **null** (a
+ *      genuine absent/foreign scoped session) → **no inject** (never resolve
+ *      against an ambiguous session; fail closed). If the store/key were absent
+ *      (Redis off / resolve not ok) or `get` THREW, we do NOT fail closed — the
+ *      turn falls through to the body/`meta.personaId` inject (offline-safe).
  *   4. No sessionId and no personaId → `undefined` (behaviour identical to today).
  *
  * The snapshot cap is enforced by the server record validator
@@ -90,12 +94,18 @@ export async function resolvePersonaPreamble(
   let boundPersonaId = personaId?.trim() || undefined;
 
   let record: HarnessSessionRecord | null = null;
+  // Whether the store/key were present and `get()` actually ran to completion.
+  // Fail-closed applies ONLY when the store was queried and returned null.
+  let storeQueried = false;
   if (sessionId && sessionStore && sessionKey) {
     try {
       record = await sessionStore.get(sessionKey);
+      storeQueried = true;
     } catch {
-      // Session store unavailable → fail open (still may inject from a body id).
+      // Session store query THREW (blip/Redis down) → fail OPEN: do not drop a
+      // valid body id; fall through to the body/`meta.personaId` inject.
       record = null;
+      storeQueried = false;
     }
   }
 
@@ -110,9 +120,10 @@ export async function resolvePersonaPreamble(
     if (!boundPersonaId && typeof record.meta?.personaId === 'string') {
       boundPersonaId = record.meta.personaId;
     }
-  } else if (sessionId) {
-    // sessionId present but NO matching scoped session → fail closed: never
-    // resolve against an ambiguous/foreign session (no existence leak).
+  } else if (storeQueried) {
+    // sessionId present, store queried, and it returned **null** → a genuine
+    // absent/foreign scoped session → fail closed (no existence leak, never
+    // resolve against an ambiguous session).
     return undefined;
   }
 

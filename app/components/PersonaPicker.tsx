@@ -1,18 +1,21 @@
 'use client';
 
 /**
- * Phase-2 (#487) — PersonaPicker: THIN DOM host chrome (like SessionPicker),
- * never a second chat panel / product surface.
+ * Phase-2 (#487) / Phase-3 (#488) — PersonaPicker: THIN DOM host chrome (like
+ * SessionPicker), never a second chat panel / product surface.
  *
- * The picker SOURCE for Phase 3: it fetches `GET /api/personas` summaries,
- * projects them through the client-safe `lib/personas.ts` helper (owned
- * personas + single defaultId), and renders a compact select with an explicit
- * "None" option so a session can start with no persona. It never receives a
- * persona body (summaries only).
+ * It fetches `GET /api/personas` summaries, projects them through the
+ * client-safe `lib/personas.ts` helper (owned personas + single defaultId), and
+ * renders a compact select with an explicit "None" option so a session can
+ * start with no persona. It never receives a persona body (summaries only).
  *
- * Phase 3 (HarnessHost + New-session lifecycle) wires this into the session
- * picker. Per plan DoD, HarnessHost is NOT touched this phase — the component
- * ships standalone here.
+ * Phase 3 (#488): wired into HarnessHost's New-session lifecycle. The controlled
+ * `value` is:
+ *   - `undefined` → "not explicitly chosen": preselect the default persona (or
+ *     None when there is none) so New binds the default unless changed.
+ *   - `string`   → an explicitly chosen persona id.
+ *   - `null`     → explicitly chosen **None** (no persona, even if a default
+ *     exists). This honors plan goal 2 ("explicit None").
  */
 import { useEffect, useState } from 'react';
 import { teal } from '../../lib/palette';
@@ -25,8 +28,8 @@ export default function PersonaPicker({
   onChange,
   disabled,
 }: {
-  /** Currently selected persona id (null = "None"). */
-  value: string | null;
+  /** undefined = unbound (preselect default); string = chosen; null = explicit None. */
+  value: string | null | undefined;
   onChange: (id: string | null) => void;
   disabled?: boolean;
 }) {
@@ -53,7 +56,9 @@ export default function PersonaPicker({
   }, []);
 
   const state = personaPickerState(options);
-  const selectValue = value ?? '';
+  // undefined → preselect the default (or None when no default exists) so the
+  // control reflects what New will actually bind until the user changes it.
+  const selectValue = value === undefined ? state.defaultId ?? '' : (value ?? '');
 
   if (status === 'error') {
     return (

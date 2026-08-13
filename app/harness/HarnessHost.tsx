@@ -39,6 +39,7 @@ import {
 } from '../../lib/sessionWindow';
 import AppNav from '../components/AppNav';
 import SessionPicker from '../components/SessionPicker';
+import PersonaPicker from '../components/PersonaPicker';
 import HarnessLoading from './HarnessLoading';
 
 type Phase = 'loading' | 'ready' | 'error';
@@ -149,9 +150,10 @@ async function fetchModelCatalog(
 
 /**
  * Phase 3 (#488): resolve the user's default persona id (summary list carries
- * `isDefault`) for binding at New session. Fail-open — returns undefined when
- * unauthenticated / unavailable / no default, so New still works (None).
- * Body never reaches the client; only the summary + id.
+ * `isDefault`) for binding at New session when no persona was explicitly chosen
+ * in the picker. Fail-open — returns undefined when unauthenticated /
+ * unavailable / no default, so New still works (None). Body never reaches the
+ * client; only the summary + id.
  */
 async function fetchDefaultPersonaId(): Promise<string | undefined> {
   try {
@@ -202,6 +204,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   /** False once the cloud repo reports disabled (401 / Redis-off) → picker hides. */
   const [cloudEnabled, setCloudEnabled] = useState(true);
+  /**
+   * Phase 3 (#488): persona to bind at New session.
+   *   - `undefined` → not yet chosen → bind the default persona (or None).
+   *   - `string`   → explicitly chosen persona id (selected in PersonaPicker).
+   *   - `null`     → explicitly chosen **None** (no persona even if a default exists).
+   */
+  const [personaPick, setPersonaPick] = useState<string | null | undefined>(undefined);
 
   const hydrateRingWindow = useCallback(
     (bridge: HarnessBridge, session: SessionSnapshot, windowStart: number) => {
@@ -583,6 +592,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     setUrlSessionId,
   ]);
 
+  /**
+   * Phase 3 (#488): persona to bind at New session, honoring the picker.
+   *   - explicit string → that chosen persona
+   *   - explicit null   → None (no bind even if a default exists)
+   *   - unset (undefined) → the user's default persona, or None when none.
+   */
+  const resolveNewPersona = useCallback(async (): Promise<string | undefined> => {
+    if (personaPick !== undefined) return personaPick ?? undefined;
+    return fetchDefaultPersonaId();
+  }, [personaPick]);
+
   const onClear = useCallback(() => {
     if (inflightRef.current) return;
     abortRef.current?.abort();
@@ -618,7 +638,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     if (!repo || !repo.enabled) {
       // Disable-safe: New session (Clear alias) — local only, no cloud DELETE.
       void (async () => {
-        const pid = await fetchDefaultPersonaId();
+        const pid = await resolveNewPersona();
         resetBridge(createEmptySession().id, pid);
         setUrlSessionId(null);
       })();
@@ -632,7 +652,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       // Post-Clear active session is server-minted: the next turn PUTs against a
       // real resource, never a throwaway local sess_ id.
       const created = await repo.create();
-      const pid = await fetchDefaultPersonaId();
+      const pid = await resolveNewPersona();
       if (created.action === 'ok') {
         resetBridge(created.snapshot.id, pid);
         setUrlSessionId(created.snapshot.id);
@@ -642,7 +662,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       }
       void refreshSessions();
     })();
-  }, [writeLocalSession, refreshSessions, setUrlSessionId]);
+  }, [writeLocalSession, refreshSessions, setUrlSessionId, resolveNewPersona]);
 
   const onNewSession = useCallback(() => {
     const repo = repoRef.current;
@@ -651,16 +671,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     void (async () => {
       const created = await repo.create();
       if (created.action !== 'ok') return; // stay on the current session
-      const pid = await fetchDefaultPersonaId();
+      const pid = await resolveNewPersona();
       const base = createEmptySession(created.snapshot.id);
-      // Phase 3 (#488): New session binds the default persona (or None). Fresh
-      // id + empty transcript; createEmptySession already resets cwd/sandbox.
+      // Phase 3 (#488): New session binds the chosen persona, the default, or
+      // explicit None. Fresh id + empty transcript; createEmptySession already
+      // resets cwd/sandbox.
       const empty = pid ? { ...base, personaId: pid } : base;
       activateSession(empty);
       setUrlSessionId(created.snapshot.id);
       repo.put(created.snapshot.id, empty);
     })();
-  }, [activateSession, setUrlSessionId]);
+  }, [activateSession, setUrlSessionId, resolveNewPersona]);
 
   const onSwitchSession = useCallback(
     (id: string) => {
@@ -800,6 +821,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                   disabled={busy}
                   onNew={onNewSession}
                   onSwitch={onSwitchSession}
+                />
+              )}
+              {phase === 'ready' && (
+                <PersonaPicker
+                  value={personaPick}
+                  onChange={setPersonaPick}
+                  disabled={busy}
                 />
               )}
               {phase === 'ready' && (
