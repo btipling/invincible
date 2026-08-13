@@ -178,7 +178,7 @@ canRead, canWrite, usable, granted }` and, when `?sandboxId=` (the session-owned
 active id, Redis-safe) is supplied, an `active` bind with its permission-aware
 tool-surface descriptor (`lib/tenancy/sandboxTools.ts`). **Always** omits
 `base_url` / `token_ciphertext` / host inventory. A provided-but-unusable active
-id is **403** (mirrors resolve) — never a stubbed `active`. The session binding
+id is **403** (mirrors resolve) — never a stubbed `active`; a present-but-non-Redis-safe `?sandboxId=` is **400** (matches `parseAgentBody`, not silently `active: null`). The session binding
 itself is server-authoritative: switching routes tools via
 `resolveAgentSandbox`'s `init.requestedSandboxId`, never via a client-chosen
 secret.

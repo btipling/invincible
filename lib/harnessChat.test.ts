@@ -37,7 +37,12 @@ import {
   decodeToolRun,
   encodeToolRun,
 } from './toolRun';
-import { AUTH_REQUIRED_ERROR, SANDBOX_FORBIDDEN_ERROR } from './tenancy/errors';
+import {
+  AUTH_REQUIRED_ERROR,
+  SANDBOX_FORBIDDEN_ERROR,
+  SANDBOX_SELECTION_REQUIRED_ERROR,
+  WORKSPACE_INSTANCE_REQUIRED_ERROR,
+} from './tenancy/errors';
 import { createEmptySession, formatPromptWithHistory, appendMessage, makeMessage } from './sessionStore';
 import { TOOL_TRACE_SUMMARY_MAX_CHARS } from './sandbox/config';
 
@@ -2136,11 +2141,48 @@ describe('runHarnessTurn session activeSandboxId bind', () => {
       sendAgent: async () => ({
         ok: false,
         status: 403,
-        error: 'Sandbox access denied.',
+        error: SANDBOX_FORBIDDEN_ERROR,
       }),
     });
     expect(result.result.ok).toBe(false);
     expect(result.session.activeSandboxId).toBeUndefined();
+  });
+
+  it('403 selection-required clears the stale activeSandboxId (grant-honesty class)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_stale' };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async () => ({
+        ok: false,
+        status: 403,
+        error: SANDBOX_SELECTION_REQUIRED_ERROR,
+      }),
+    });
+    expect(result.result.ok).toBe(false);
+    expect(result.session.activeSandboxId).toBeUndefined();
+  });
+
+  it('403 WORKSPACE_INSTANCE_REQUIRED keeps the activeSandboxId bind (softContinue, not a poison grant) (review #484 Major)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_vercel' };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async () => ({
+        ok: false,
+        status: 403,
+        error: WORKSPACE_INSTANCE_REQUIRED_ERROR,
+      }),
+    });
+    expect(result.result.ok).toBe(false);
+    // An instance-down bind is a usable GRANT — clearing it here would silently
+    // re-resolve to the preferred/single grant on the next turn. The host keeps
+    // the session bind so the operator just starts the instance (review #484).
+    expect(result.session.activeSandboxId).toBe('sbx_vercel');
   });
 
   it('non-403 failure keeps the activeSandboxId binding', async () => {

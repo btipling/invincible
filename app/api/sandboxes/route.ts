@@ -28,10 +28,34 @@ function projectOption(c: SandboxChoice) {
   };
 }
 
-/** Redis-safe opaque id guard for the `?sandboxId=` query param (session-carry). */
-function parseQuerySandboxId(raw: string | null): string | undefined {
-  if (raw == null || raw === '') return undefined;
-  return isRedisSafeOpaqueId(raw) ? raw : undefined;
+/**
+ * Redis-safe opaque id guard for the `?sandboxId=` query param (session-carry).
+ * Omitted/empty → undefined (no override). A PRESENT but non-Redis-safe value →
+ * 400, matching `parseAgentBody`'s `sandboxId` rule (the two parsers must never
+ * disagree — silently treating garbage as "no active" would mask a corrupt
+ * session id). Adversarial review #484 Minor.
+ */
+function parseQuerySandboxId(
+  raw: string | null,
+):
+  | { ok: true; value: string | undefined }
+  | { ok: false; response: Response } {
+  if (raw == null || raw === '') {
+    return { ok: true, value: undefined };
+  }
+  if (isRedisSafeOpaqueId(raw)) {
+    return { ok: true, value: raw };
+  }
+  return {
+    ok: false,
+    response: Response.json(
+      {
+        error:
+          'sandboxId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      },
+      { status: 400 },
+    ),
+  };
 }
 
 /**
@@ -60,7 +84,11 @@ export async function GET(
   }
 
   const url = new URL(req.url);
-  const requested = parseQuerySandboxId(url.searchParams.get('sandboxId'));
+  const parsedRequested = parseQuerySandboxId(url.searchParams.get('sandboxId'));
+  if (!parsedRequested.ok) {
+    return parsedRequested.response;
+  }
+  const requested = parsedRequested.value;
 
   try {
     const result = await services.userPreferredSandbox.listUserSandboxChoices(

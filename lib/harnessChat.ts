@@ -23,6 +23,10 @@ import {
 } from './sandbox/config';
 import { isRedisSafeOpaqueId, normalizeSessionCwd } from './sessionCloudCaps';
 import {
+  SANDBOX_FORBIDDEN_ERROR,
+  SANDBOX_SELECTION_REQUIRED_ERROR,
+} from './tenancy/errors';
+import {
   HarnessBridge,
   Lifecycle,
   MessageKind,
@@ -1109,14 +1113,22 @@ export async function runHarnessTurn(
           failedSession = { ...failedSession, cwd: failedLiveCwd };
         }
       }
-      // Hard 403 with a set-but-unusable active sandbox → clear the stale
-      // session binding so the next turn honestly re-resolves from preference /
-      // selection instead of re-sending a poison id (which would 403-loop).
-      // The host keeps local session as the source of truth; Settings → Sandbox
-      // guidance surfaces the re-select.
+      // Hard 403 of the grant-honesty class with a set-but-unusable active
+      // sandbox → clear the stale session binding so the next turn honestly
+      // re-resolves from preference / selection instead of re-sending a poison
+      // id (which would 403-loop). The host keeps local session as the source of
+      // truth; Settings → Sandbox guidance surfaces the re-select.
+      //
+      // Scoped to the selection-required / forbidden class ONLY (adversarial
+      // review #484 Major): a 403 WORKSPACE_INSTANCE_REQUIRED is a softContinue
+      // operational bind (usable grant whose Workspace instance is down/stopped),
+      // NOT an unusable grant. Wiping the bind there would silently re-resolve to
+      // the preferred/single grant on the next turn — a silent sandbox switch.
       if (
         agentResult.status === 403 &&
-        failedSession.activeSandboxId !== undefined
+        failedSession.activeSandboxId !== undefined &&
+        (agentResult.error === SANDBOX_SELECTION_REQUIRED_ERROR ||
+          agentResult.error === SANDBOX_FORBIDDEN_ERROR)
       ) {
         failedSession = { ...failedSession, activeSandboxId: undefined };
       }

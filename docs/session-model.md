@@ -51,7 +51,7 @@ The **local** blob uses the opaque client snapshot shape:
 | `updatedAt` | Epoch **ms** (safe integer) — LWW clock for cloud |
 | `messages` | Full transcript for history fold + ring hydrate |
 | `cwd` | **Optional** logical workspace directory (workspace-root-relative). **Session-owned** (P1/GAP-1, #452) — synced to the cloud record as `meta.logicalCwd`, so it survives a device switch. A **confirmed successful `change_dir`** is persisted even when the turn later cancels / times out / hard-errors, so `cwd` survives across turn outcomes — not just a successful turn |
-| `activeSandboxId` | **Optional** server/origin sandbox id (Redis-safe opaque). **Session-owned, server-resolved** (P1/GAP-1, #452 + #330): synced as `meta.activeSandboxId` and sent on every `/api/agent` POST as the resolve **override**. The host folds it into the turn and applies the server's resolved `sandboxId` back on success (authoritative bind); a hard 403 (set-but-unusable) clears the stale value so the next turn honestly re-resolves from preference / selection |
+| `activeSandboxId` | **Optional** server/origin sandbox id (Redis-safe opaque). **Session-owned, server-resolved** (P1/GAP-1, #452 + #330): synced as `meta.activeSandboxId` and sent on every `/api/agent` POST as the resolve **override**. The host folds it into the turn and applies the server's resolved `sandboxId` back on success (authoritative bind); a hard 403 of the **grant-honesty class** (set-but-unusable: `Sandbox access denied.` / selection-required) clears the stale value so the next turn honestly re-resolves from preference / selection. A 403 `Workspace instance is not running.` (a usable grant whose instance is down / softContinue) is **kept** — never silently re-resolved to another grant |
 
 Storage key: `invincible.harness.session.v1`.
 
@@ -219,7 +219,11 @@ from a prior bind fails closed).
 Resolve precedence (server-side): **active id → preferred → single → selection-required**.
 A set-but-unusable active id fails closed with the same 403 class as today
 (`Sandbox access denied.` / selection-required) — never a silent fallback and
-never a 503 chat-fallback. The inventory + tool-surface contract is `GET
+never a 503 chat-fallback. The host clears the stale id **only on that
+grant-honesty class**; a 403 `Workspace instance is not running.` is a usable
+grant whose instance is simply down, so the session binding is **kept** (the
+operator starts the instance) rather than being silently re-wired to another
+grant. The inventory + tool-surface contract is `GET
 /api/sandboxes` (see [sandbox.md](sandbox.md)); the host owns the session field
 and #328 status chrome renders it.
 

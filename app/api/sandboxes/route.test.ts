@@ -159,15 +159,17 @@ describe('GET /api/sandboxes', () => {
     expect(res.status).toBe(403);
   });
 
-  it('non-Redis-safe sandboxId query → treated as absent (active null)', async () => {
+  it('non-Redis-safe sandboxId query → 400 (matches parseAgentBody, not silent absent) (review #484 Minor)', async () => {
     vi.resetModules();
     mockSession({ ok: true, user: { id: 'u1' } });
-    mockListOptions();
+    const listUserSandboxChoices = mockListOptions();
     const { GET } = await import('./route');
     const res = await GET(req('?sandboxId=bad:value'));
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.active).toBeNull();
+    expect(body.error).toMatch(/Redis-safe opaque id/);
+    // The inventory list mock must not even be consulted for a malformed param.
+    expect(listUserSandboxChoices).not.toHaveBeenCalled();
   });
 
   it('list failure unavailable → 503', async () => {

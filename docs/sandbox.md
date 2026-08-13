@@ -138,7 +138,7 @@ Resolve precedence (server-side `resolveAgentSandbox`):
 | Case | Behavior |
 |------|----------|
 | Session `activeSandboxId` set + a row-usable grant | That row wins (preference ignored) |
-| Session `activeSandboxId` set but unusable / ungranted / wrong tenant | **403** fail-closed (selection-required when alternatives exist, else forbidden) — host clears the stale id so the next turn re-resolves |
+| Session `activeSandboxId` set but unusable / ungranted / wrong tenant | **403** fail-closed (selection-required when alternatives exist, else forbidden) — host clears the stale id **only on the grant-honesty class** (`Sandbox access denied.` / selection-required) so the next turn re-resolves. A 403 `Workspace instance is not running.` is a **softContinue** bind (a usable grant whose instance is down) — the host **keeps** the session id so the operator just starts the instance; clearing there would silently re-resolve to another grant |
 | Session `activeSandboxId` unset | Today's logic: preferred → single → 403 selection-required |
 
 Switching changes **where tools run**, not the message history. Because the
@@ -150,7 +150,7 @@ workspace-relative — a stale absolute `<oldR>/…` from a prior bind fails clo
 
 | Endpoint | Purpose | Contract |
 |----------|---------|----------|
-| `GET /api/sandboxes` | Inventory of the user's allowed sandboxes + active-bind tool surface | `{ options, active }`; `options[]` entries `{ id, name, slug, backend, status, image, canRead, canWrite, usable, granted }` (`id` projected from `SandboxChoice.sandboxId`); optional `?sandboxId=` (session-carry, Redis-safe) → `active: { sandboxId, tools }` (fail-closed **403** if provided-but-unusable); `active: null` when omitted. **Never** returns `base_url` / `token_ciphertext` / host inventory. Auth: middleware + in-route `requireSessionUser` (401 unauth) |
+| `GET /api/sandboxes` | Inventory of the user's allowed sandboxes + active-bind tool surface | `{ options, active }`; `options[]` entries `{ id, name, slug, backend, status, image, canRead, canWrite, usable, granted }` (`id` projected from `SandboxChoice.sandboxId`); optional `?sandboxId=` (session-carry, Redis-safe) → `active: { sandboxId, tools }` (fail-closed **403** if provided-but-unusable; a present-but-non-Redis-safe value → **400**, matching `parseAgentBody`); `active: null` when omitted. **Never** returns `base_url` / `token_ciphertext` / host inventory. Auth: middleware + in-route `requireSessionUser` (401 unauth) |
 
 The tool-surface descriptor (`lib/tenancy/sandboxTools.ts` `describeSandboxTools`)
 is permission-aware (read tools on `canRead`; `write_file`/`str_replace`/`exec` on
