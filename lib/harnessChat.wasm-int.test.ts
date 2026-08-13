@@ -184,18 +184,42 @@ describe('real-Wasm live tool increment (implements #433)', () => {
     const bridge = await loadBridge();
     const session = createEmptySession();
     const names = ['pwd', 'list_dir', 'exec'];
+    // Per-event progress (`#433` / review #449 Minor): the suite must observe the
+    // live increment DURING the turn, not only at `done`. Assert after each pair
+    // that there is exactly ONE growing card and its index does not move — under
+    // the old commit-once bug there is NO kind-6 row until the flush, so the
+    // mid-turn `toHaveLength(1)` (plus `total`/`header` growth) fails immediately.
+    const seen: number[] = [];
 
     await runHarnessTurn(bridge, session, 'many', {
       streamAgent: true,
       sendAgentStream: async (_prompt, init) => {
-        for (const ev of toolEvents(names)) {
-          if (ev.type === 'tool_start') await init?.onEvent?.({ type: 'tool_start', name: String(ev.name) });
-          else await init?.onEvent?.({
+        // Each distinct tool adds ONE item to the group (start adds it running;
+        // result completes it in place), so the visible total equals the number of
+        // distinct tools started so far — tracked via `seen.length` below.
+        for (let i = 0; i < names.length; i++) {
+          const name = names[i]!;
+          await init?.onEvent?.({ type: 'tool_start', name });
+          await init?.onEvent?.({
             type: 'tool_result',
-            name: String(ev.name),
+            name,
             ok: true,
-            summary: `${String(ev.name)} · ok`,
+            summary: `${name} · ok`,
           });
+          // AFTER EACH tool pair: exactly one kind-6 row on a FIXED index — never
+          // an N×1 stack and never "nothing until done".
+          const runs = ringToolRunTotals(bridge);
+          expect(runs).toHaveLength(1);
+          if (runs[0]) {
+            const total = i + 1;
+            expect(runs[0].total).toBe(total);
+            // Same pluralization formula `paintToolRun` (and this file's
+            // `ringToolRunTotals`) uses: singular at 1, plural after.
+            expect(runs[0].header).toBe(
+              total === 1 ? '1 tool called' : `${total} tools called`,
+            );
+            seen.push(runs[0].index);
+          }
         }
         await init?.onEvent?.({ type: 'done', text: 'done' });
         return { ok: true, text: 'done' };
@@ -207,9 +231,10 @@ describe('real-Wasm live tool increment (implements #433)', () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]!.total).toBe(names.length);
     expect(runs[0]!.header).toBe('3 tools called');
-    // A theoretical N×1 stack would be N kind-6 rows each total 1 — assert the
-    // ring is a single card instead (this is the old bug; a green suite that
-    // painted 1/1/1 would fail the count assertion below).
+    // All mid-turn increments were observed on the SAME physical/visible ring
+    // index (one growing card), never 1/1/1 on three indices.
+    expect(seen).toHaveLength(names.length);
+    expect(new Set(seen).size).toBe(1);
   });
 
   it('case 4 — reasoning_delta first does not withhold tools; card exists on the event', async () => {
