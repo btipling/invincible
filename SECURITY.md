@@ -152,7 +152,7 @@ runner.
 | Rule | Detail |
 |------|--------|
 | Separate process | Dedicated OS user/unit; do **not** share Actions credentials with the sandbox env |
-| Server-only calls | Only Vercel/Node server calls `SANDBOX_URL` with Bearer `SANDBOX_TOKEN` |
+| Server-only calls | Only the BYO daemon holds `SANDBOX_TOKEN` (its bearer-gated `/v1/*`); product tool turns call the daemon via DB-grant credentials, not env `SANDBOX_TOKEN` |
 | Path jail | Workspace root + symlink-safe resolve; argv-only `exec` with timeouts |
 | Public inventory | Host IPs / droplet IDs stay offline ([docs/sandbox.md](docs/sandbox.md)) |
 | No PR trigger surface | Sandbox is not executed by untrusted PR workflows |
