@@ -15,6 +15,8 @@
 import {
   HARNESS_SESSION_MAX_BODY_BYTES,
   HARNESS_SESSION_MAX_MSG_BYTES,
+  isRedisSafeOpaqueId,
+  normalizeSessionCwd,
 } from './sessionCloudCaps';
 import type { SessionMessage, SessionRole, SessionSnapshot } from './sessionStore';
 
@@ -162,11 +164,28 @@ export function parseCloudSessionSnapshot(
       at: msg.at,
     });
   }
-  return {
+  // P1/GAP-1 (#452): restore the session-carrier fields from the stored record's
+  // reserved `meta`. Normalized via the shared client-safe predicates so a poisoned
+  // / side-channel value (host-absolute, escaping `..`, control chars) drops to
+  // unset (fail-open) instead of becoming a sticky 400.
+  let cwd: string | undefined;
+  let activeSandboxId: string | undefined;
+  if (o.meta !== null && typeof o.meta === 'object' && !Array.isArray(o.meta)) {
+    const meta = o.meta as Record<string, unknown>;
+    cwd = normalizeSessionCwd(meta.logicalCwd);
+    const sandbox = meta.activeSandboxId;
+    if (typeof sandbox === 'string' && sandbox && isRedisSafeOpaqueId(sandbox)) {
+      activeSandboxId = sandbox;
+    }
+  }
+  const snapshot: SessionSnapshot = {
     id: o.id,
     updatedAt: o.updatedAt,
     messages,
   };
+  if (cwd !== undefined) snapshot.cwd = cwd;
+  if (activeSandboxId !== undefined) snapshot.activeSandboxId = activeSandboxId;
+  return snapshot;
 }
 
 /** Parse one `GET /api/sessions` summary row; null if invalid. */
@@ -193,22 +212,53 @@ export function parseSessionSummaryList(body: unknown): SessionSummary[] | null 
   return out;
 }
 
-function cloudBodyBytes(snapshot: SessionSnapshot): number {
-  return utf8ByteLength(
-    JSON.stringify({
-      id: snapshot.id,
-      updatedAt: snapshot.updatedAt,
-      messages: snapshot.messages,
-    }),
-  );
+/** The PUT wire body: `{ id, updatedAt, messages, meta? }` (P1/GAP-1 folds the session-carrier fields into `meta`). */
+export type CloudPutBody = {
+  id: string;
+  updatedAt: number;
+  messages: SessionMessage[];
+  meta?: { activeSandboxId?: string; logicalCwd?: string };
+};
+
+/**
+ * Fold the session-carrier fields into the reserved `meta` for the cloud PUT
+ * (P1/GAP-1, #452): `logicalCwd` from `snapshot.cwd`, `activeSandboxId` from
+ * `snapshot.activeSandboxId`. The cwd is run through `normalizeSessionCwd` (the
+ * same form sent to `/api/agent`) so the persisted `meta.logicalCwd` is ALWAYS a
+ * form the request path accepts on any device — a P1-legal-but-escaping `..`
+ * cannot round-trip into Redis (review #453 residual). Empty / unset fields are
+ * omitted. Returns `undefined` when nothing to carry.
+ */
+export function cloudMetaFor(
+  snapshot: SessionSnapshot,
+): CloudPutBody['meta'] | undefined {
+  const meta: CloudPutBody['meta'] = {};
+  const cwd = normalizeSessionCwd(snapshot.cwd);
+  if (cwd !== undefined) meta.logicalCwd = cwd;
+  const sandbox =
+    typeof snapshot.activeSandboxId === 'string' &&
+    snapshot.activeSandboxId &&
+    isRedisSafeOpaqueId(snapshot.activeSandboxId)
+      ? snapshot.activeSandboxId
+      : undefined;
+  if (sandbox !== undefined) meta.activeSandboxId = sandbox;
+  return meta.logicalCwd === undefined && meta.activeSandboxId === undefined
+    ? undefined
+    : meta;
+}
+
+function cloudBodyBytes(body: CloudPutBody): number {
+  return utf8ByteLength(JSON.stringify(body));
 }
 
 /**
- * Prepare local snapshot for PUT: omit cwd; enforce per-message + body byte caps.
- * No message-count ceiling — body size is the storage/wire guard.
+ * Prepare local snapshot for PUT: fold the session-carrier fields (cwd /
+ * `activeSandboxId`) into the reserved `meta` and enforce per-message + body byte
+ * caps (byte accounting includes `meta`). No message-count ceiling — body size is the
+ * storage/wire guard.
  */
-export function trimForCloudPut(snapshot: SessionSnapshot): SessionSnapshot {
-  let messages = snapshot.messages.map((m) => ({
+export function trimForCloudPut(snapshot: SessionSnapshot): CloudPutBody {
+  const messages = snapshot.messages.map((m) => ({
     id: m.id,
     role: m.role,
     text:
@@ -217,17 +267,17 @@ export function trimForCloudPut(snapshot: SessionSnapshot): SessionSnapshot {
         : m.text,
     at: m.at,
   }));
-
-  let out: SessionSnapshot = {
+  const meta = cloudMetaFor(snapshot);
+  const fresh = (ms: CloudPutBody['messages']): CloudPutBody => ({
     id: snapshot.id,
     updatedAt: snapshot.updatedAt,
-    messages,
-  };
+    messages: ms,
+    ...(meta !== undefined ? { meta } : {}),
+  });
 
-  while (
-    out.messages.length > 0 &&
-    cloudBodyBytes(out) > HARNESS_SESSION_MAX_BODY_BYTES
-  ) {
+  let out = fresh(messages);
+
+  while (out.messages.length > 0 && cloudBodyBytes(out) > HARNESS_SESSION_MAX_BODY_BYTES) {
     if (out.messages.length === 1) {
       // Single message still too large — shrink text until under body cap.
       const only = out.messages[0];
@@ -235,29 +285,16 @@ export function trimForCloudPut(snapshot: SessionSnapshot): SessionSnapshot {
       let best = '';
       while (budget > 0) {
         const candidate = truncateUtf8(only.text, budget);
-        const trial: SessionSnapshot = {
-          id: out.id,
-          updatedAt: out.updatedAt,
-          messages: [{ ...only, text: candidate }],
-        };
-        if (cloudBodyBytes(trial) <= HARNESS_SESSION_MAX_BODY_BYTES) {
+        if (cloudBodyBytes(fresh([{ ...only, text: candidate }])) <= HARNESS_SESSION_MAX_BODY_BYTES) {
           best = candidate;
           break;
         }
         budget = Math.floor(budget / 2);
       }
-      out = {
-        id: out.id,
-        updatedAt: out.updatedAt,
-        messages: [{ ...only, text: best }],
-      };
+      out = fresh([{ ...only, text: best }]);
       break;
     }
-    out = {
-      id: out.id,
-      updatedAt: out.updatedAt,
-      messages: out.messages.slice(1),
-    };
+    out = fresh(out.messages.slice(1));
   }
 
   return out;
@@ -414,11 +451,7 @@ export function createHttpSessionRepository(
         method: 'PUT',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          id: body.id,
-          updatedAt: body.updatedAt,
-          messages: body.messages,
-        }),
+        body: JSON.stringify(body),
       });
       // Clear raced this PUT — server may have re-upserted; DELETE again.
       if (c.epoch !== scheduledEpoch) {

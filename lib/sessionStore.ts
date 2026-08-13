@@ -23,28 +23,19 @@ export type SessionSnapshot = {
   /**
    * Logical workspace cwd (workspace-root-relative), set by successful agent turns.
    * Omitted = no remembered cwd (host omits request field; server defaults).
+   * P1/GAP-1 (#452): this now rides the cloud session record as `meta.logicalCwd`.
    */
   cwd?: string;
+  /**
+   * P1/GAP-1 (#452): server/origin sandbox id, carried-but-not-resolved on the session.
+   * Omitted or empty = unset (agent resolves from the user's preferred sandbox).
+   * Stored on the cloud record as `meta.activeSandboxId`; not yet used for execution.
+   */
+  activeSandboxId?: string;
 };
 
-
-/**
- * Host-side cwd hygiene for session blobs (localStorage).
- * Keeps only non-empty workspace-relative strings; drops host-absolute,
- * drive/UNC, control characters, and non-strings. Server still re-validates.
- */
-export function sanitizeSessionCwd(cwd: unknown): string | undefined {
-  if (typeof cwd !== 'string') return undefined;
-  const trimmed = cwd.trim();
-  if (!trimmed) return undefined;
-  // Host-absolute / UNC / Windows drive — would 400 every agent turn if sticky.
-  if (trimmed.startsWith('/') || trimmed.startsWith('\\') || /^[a-zA-Z]:/.test(trimmed)) {
-    return undefined;
-  }
-  // C0 controls + DEL (break annotations / SSE if ever reflected).
-  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return undefined;
-  return trimmed;
-}
+import { isRedisSafeOpaqueId, sanitizeSessionCwd } from './sessionCloudCaps';
+export { isRedisSafeOpaqueId, sanitizeSessionCwd } from './sessionCloudCaps';
 
 export interface SessionStore {
   readonly kind: 'memory' | 'localStorage' | string;
@@ -114,12 +105,20 @@ export class LocalStorageSessionStore implements SessionStore {
     try {
       const raw = localStorage.getItem(this.key);
       if (!raw) return null;
-      const data = JSON.parse(raw) as SessionSnapshot;
+      const data = JSON.parse(raw) as SessionSnapshot & { cwd?: unknown; activeSandboxId?: unknown };
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) return null;
-      // Tolerant: only keep safe workspace-relative cwd strings (parent #270 / phase 2).
-      const { cwd: _rawCwd, ...rest } = data as SessionSnapshot & { cwd?: unknown };
-      const cwd = sanitizeSessionCwd(_rawCwd);
-      return cwd !== undefined ? { ...rest, cwd } : (rest as SessionSnapshot);
+      // Tolerant: keep only safe workspace-relative cwd strings (parent #270 / phase 2)
+      // and a Redis-safe `activeSandboxId` (P1/GAP-1, #452); a bad local value can't pin.
+      const { cwd: rawCwd, activeSandboxId: rawSandbox, ...rest } = data;
+      const cwd = sanitizeSessionCwd(rawCwd);
+      const activeSandboxId =
+        typeof rawSandbox === 'string' && rawSandbox && isRedisSafeOpaqueId(rawSandbox)
+          ? rawSandbox
+          : undefined;
+      const out: SessionSnapshot = { ...rest } as SessionSnapshot;
+      if (cwd !== undefined) out.cwd = cwd;
+      if (activeSandboxId !== undefined) out.activeSandboxId = activeSandboxId;
+      return out;
     } catch {
       return null;
     }

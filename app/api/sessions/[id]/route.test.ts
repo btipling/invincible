@@ -226,6 +226,52 @@ describe('/api/sessions/:id', () => {
     expect(bad.status).toBe(400);
   });
 
+  it('PUT/GET round-trips meta.{logicalCwd,activeSandboxId}; invalid carrier meta → 400 INVALID_META', async () => {
+    const { PUT, GET } = await mockAuthed();
+
+    const ok = await PUT(
+      putRequest('abc', {
+        id: 'abc',
+        updatedAt: 10,
+        messages: [{ id: 'm1', role: 'user', text: 'hi', at: 1 }],
+        meta: { logicalCwd: 'invincible/src', activeSandboxId: 'sbx_abc123' },
+      }),
+      { params: Promise.resolve({ id: 'abc' }) },
+    );
+    expect(ok.status).toBe(200);
+    const stored = (await ok.json()) as {
+      meta: { logicalCwd?: string; activeSandboxId?: string };
+    };
+    expect(stored.meta.logicalCwd).toBe('invincible/src');
+    expect(stored.meta.activeSandboxId).toBe('sbx_abc123');
+
+    // GET returns them back
+    const got = await GET(new Request('http://localhost/api/sessions/abc'), {
+      params: Promise.resolve({ id: 'abc' }),
+    });
+    const gotBody = (await got.json()) as {
+      meta: { logicalCwd?: string; activeSandboxId?: string };
+    };
+    expect(gotBody.meta.logicalCwd).toBe('invincible/src');
+    expect(gotBody.meta.activeSandboxId).toBe('sbx_abc123');
+
+    // host-absolute cwd → 400 INVALID_META
+    const badCwd = await PUT(
+      putRequest('abc', { id: 'abc', updatedAt: 10, messages: [], meta: { logicalCwd: '/etc' } }),
+      { params: Promise.resolve({ id: 'abc' }) },
+    );
+    expect(badCwd.status).toBe(400);
+    expect(((await badCwd.json()) as { code: string }).code).toBe('INVALID_META');
+
+    // non-Redis-safe sandbox id → 400 INVALID_META
+    const badSandbox = await PUT(
+      putRequest('abc', { id: 'abc', updatedAt: 10, messages: [], meta: { activeSandboxId: 'a:b' } }),
+      { params: Promise.resolve({ id: 'abc' }) },
+    );
+    expect(badSandbox.status).toBe(400);
+    expect(((await badSandbox.json()) as { code: string }).code).toBe('INVALID_META');
+  });
+
   it('PUT oversize message bytes → 400 (caps reuse)', async () => {
     const { PUT } = await mockAuthed();
     const { HARNESS_SESSION_MAX_MSG_BYTES } = await import('../../../../lib/sessionCloudCaps');

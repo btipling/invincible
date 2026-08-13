@@ -4,6 +4,7 @@ import {
   RESERVED_META_KEYS,
   isRedisSafeOpaqueId,
   validateMeta,
+  validateMetaFields,
   validateSessionRecord,
   validateSessionRecordKey,
   sessionKeyString,
@@ -170,6 +171,46 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
     // reserved key set + cap is the contract, not free-form "secret-looking" sniffing.
     expect(
       validateSessionRecord(makeRecord({ meta: { legacySnapshotId: 'sess_tok_0123456789abcdef', activeSandboxId: 'sbx-1' } })).ok,
+    ).toBe(true);
+  });
+});
+
+describe('validateMetaFields — P1 session-carrier semantic checks (#452)', () => {
+  it('accepts / normalizes workspace-relative logicalCwd; rejects host-absolute / control / non-string', () => {
+    expect(validateMetaFields({}).ok).toBe(true);
+    expect(validateMetaFields({ logicalCwd: 'a/b' }).ok).toBe(true);
+    expect(validateMetaFields({ logicalCwd: '.' }).ok).toBe(true);
+    expect(validateMetaFields({ logicalCwd: 'src' }).ok).toBe(true);
+    // normalized (trimmed)
+    const ok = validateMetaFields({ logicalCwd: '  invincible/src  ' });
+    expect(ok.ok && ok.value.logicalCwd).toBe('invincible/src');
+    // rejected: empty / host-absolute / drive / UNC / controls
+    for (const bad of ['', '/etc', 'C:\\Windows', '\\\\host', 'foo\u0000bar']) {
+      expect(validateMetaFields({ logicalCwd: bad }).ok).toBe(false);
+    }
+    expect(validateMetaFields({ logicalCwd: 42 as never }).ok).toBe(false);
+  });
+
+  it('accepts Redis-safe activeSandboxId or empty/absent; rejects non-Redis-safe / oversize', () => {
+    expect(validateMetaFields({ activeSandboxId: 'sbx_abc123' }).ok).toBe(true);
+    expect(validateMetaFields({ activeSandboxId: '' }).ok).toBe(true);
+    expect(validateMetaFields({}).ok).toBe(true);
+    for (const bad of ['a:b', '*', 'a?b', 'a|b', 'x'.repeat(129), 42 as never]) {
+      expect(validateMetaFields({ activeSandboxId: bad as never }).ok).toBe(false);
+    }
+  });
+
+  it('validateSessionRecord (reused by PUT + mint) rejects invalid carrier meta', () => {
+    expect(
+      validateSessionRecord(makeRecord({ meta: { logicalCwd: '/etc' } as HarnessSessionRecord['meta'] })).ok,
+    ).toBe(false);
+    expect(
+      validateSessionRecord(makeRecord({ meta: { activeSandboxId: '*' } as HarnessSessionRecord['meta'] })).ok,
+    ).toBe(false);
+    expect(
+      validateSessionRecord(
+        makeRecord({ meta: { logicalCwd: 'src', activeSandboxId: 'sbx_a' } as HarnessSessionRecord['meta'] }),
+      ).ok,
     ).toBe(true);
   });
 });

@@ -4,6 +4,7 @@ import {
   collapseThinkingDisplay,
   classifyTurnFailure,
   describeTurnEnd,
+  getSessionCwd,
   isTurnEndLine,
   pushSessionToBridge,
   runHarnessChat,
@@ -1243,13 +1244,12 @@ describe('runHarnessTurn session cwd', () => {
     expect(next.cwd).toBe('prior');
   });
 
-
-  it('does not send cwd when session has none', async () => {
+  it('sends the authoritative `cwd` on every turn (default `.` when none known)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const sendAgent = vi.fn(async (_p: string, init?: { cwd?: string }) => {
-      expect(init?.cwd).toBeUndefined();
-      return { ok: true as const, text: 'ok', cwd: '.' };
+      expect(init?.cwd).toBe('.');
+      return { ok: true as const, text: 'ok' };
     });
     const { session: next } = await runHarnessTurn(
       bridge,
@@ -1257,7 +1257,88 @@ describe('runHarnessTurn session cwd', () => {
       'hi',
       { sendAgent, pushUser: false, streamAgent: false },
     );
-    expect(next.cwd).toBe('.');
+    expect(sendAgent).toHaveBeenCalled();
+    // `.` is the request-time default; a fresh session with no `agentResult.cwd`
+    // (and no prior known cwd) stays unset — nothing new to persist.
+    expect(next.cwd).toBeUndefined();
+  });
+
+  it('a single authoritative getter drives the request cwd', () => {
+    expect(getSessionCwd({ ...createEmptySession('s'), cwd: '  invincible/sub  ' })).toBe(
+      'invincible/sub',
+    );
+    expect(getSessionCwd(createEmptySession('s'))).toBe('.');
+    expect(getSessionCwd({ ...createEmptySession('s'), cwd: '   ' })).toBe('.');
+  });
+
+  it('maps escaping / unsanitary cwd to `.` so a legal P1 record cannot brick a turn (review #453)', () => {
+    // `..` / `a/../../b` are LEGAL on the record at P1 (validateMetaFields accepts
+    // them), but parseInitialCwd → normalizeWorkspaceRel throws ("escapes root") →
+    // /api/agent would 400 every turn. The getter must normalize to `.`.
+    expect(getSessionCwd({ ...createEmptySession('s'), cwd: '..' })).toBe('.');
+    expect(getSessionCwd({ ...createEmptySession('s'), cwd: 'a/../../b' })).toBe('.');
+    // host-absolute / drive / control chars are also never fed to /api/agent.
+    expect(getSessionCwd({ ...createEmptySession('s'), cwd: '/etc/passwd' })).toBe('.');
+    expect(getSessionCwd({ ...createEmptySession('s'), cwd: 'C:\\Windows' })).toBe('.');
+    expect(getSessionCwd({ ...createEmptySession('s'), cwd: 'a\nb' })).toBe('.');
+  });
+
+  it('nested in-bounds `..` still normalizes instead of being rejected', () => {
+    expect(getSessionCwd({ ...createEmptySession('s'), cwd: 'a/b/../c' })).toBe('a/c');
+  });
+
+  it('agent request cwd is `.` (not `..`) when the record persisted an escaping cwd', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (_p: string, init?: { cwd?: string }) => {
+      expect(init?.cwd).toBe('.');
+      return { ok: true as const, text: 'ok' };
+    });
+    const session = { ...createEmptySession('s'), cwd: '..' };
+    await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(sendAgent).toHaveBeenCalled();
+  });
+
+  it('does not persist an unsanitary agentResult.cwd (keeps prior)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async () => ({
+      ok: true as const,
+      text: 'ok',
+      cwd: '/etc/passwd',
+    }));
+    const session = { ...createEmptySession('s'), cwd: 'prior' };
+    const { session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(next.cwd).toBe('prior');
+  });
+
+  it('chat-fallback keeps the prior known cwd on success', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      status: 503,
+      error: SANDBOX_NOT_CONFIGURED_ERROR,
+      sandboxNotConfigured: true,
+    }));
+    const send = vi.fn(async (): Promise<ChatResult> => ({ ok: true, text: 'chat ok' }));
+    const session = { ...createEmptySession('s'), cwd: 'invincible/src' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      send,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(result.ok).toBe(true);
+    expect(next.cwd).toBe('invincible/src');
   });
 });
 

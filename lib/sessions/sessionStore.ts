@@ -31,7 +31,12 @@
  *    server copy on conflict) and may upgrade to a Lua / versioned CAS before shipping
  *    multi-device concurrency. Do not treat this store as an atomic compare-and-set.
  */
-import { HARNESS_SESSION_MAX_META_BYTES } from '../sessionCloudCaps';
+import {
+  HARNESS_SESSION_MAX_META_BYTES,
+  isRedisSafeOpaqueId,
+  sanitizeSessionCwd,
+} from '../sessionCloudCaps';
+export { isRedisSafeOpaqueId } from '../sessionCloudCaps';
 import { validateSessionSnapshot } from '../tenancy/harnessSessions';
 import type { HarnessSessionErrorCode } from '../tenancy/harnessSessions';
 import type { SessionMessage } from '../sessionStore';
@@ -103,17 +108,11 @@ export interface ServerSessionStore {
 }
 
 /**
- * Redis-safe opaque id charset. Tenant/user/session ids live inside `:`-delimited Keyspace
- * segments and a `KEYS` prefix glob, so we reject Redis glob/metacharacters
- * (`*`, `?`, `[`, `]`) and `:` themselves. Server mints ids so this is always satisfied;
- * rejecting non-safe ids at the seam closes the prefix-glob / cross-user-list footgun
- * (adversarial review L2).
+ * Redis-safe opaque id predicate lives in the shared client-safe seam
+ * (`lib/sessionCloudCaps.ts`) so the same charset rule drives server validation AND
+ * host/repository sanitizing without drift. Re-exported here for the server boundary.
+ * @see isRedisSafeOpaqueId
  */
-const REDIS_SAFE_OPAQUE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
-
-export function isRedisSafeOpaqueId(s: unknown): s is string {
-  return typeof s === 'string' && REDIS_SAFE_OPAQUE_ID_RE.test(s);
-}
 
 /** Redis key for a single record (also the canonical key string for the memory double). */
 export function sessionKeyString(key: SessionRecordKey): string {
@@ -310,6 +309,57 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
 }
 
 /**
+ * P1 (GAP-1, #452) semantic checks for the session-carrier fields stored under the
+ * reserved `meta` keys. Pure + testable; the route maps a failure to the existing
+ * 400 `INVALID_META`. `..`-style traversal is deliberately NOT rejected at P1 (no
+ * known workspace root yet; deferred to GAP-2/#410 + P3/#403).
+ *
+ * - `logicalCwd`, when present, must be a valid **workspace-relative** string via the
+ *   shared `sanitizeSessionCwd` (rejects host-absolute `/`, UNC `\\`, drive `C:`, and
+ *   C0/DEL controls); stored normalized (trimmed).
+ * - `activeSandboxId`, when present and non-empty, must be Redis-safe opaque
+ *   (`^[A-Za-z0-9_-]{1,128}$`); empty/absent = unset.
+ */
+export function validateMetaFields(
+  meta: HarnessSessionMeta,
+): SessionStoreResult<HarnessSessionMeta> {
+  const out: HarnessSessionMeta = { ...meta };
+  if (out.logicalCwd !== undefined) {
+    if (typeof out.logicalCwd !== 'string') {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error: 'meta.logicalCwd must be a string.',
+      };
+    }
+    const cwd = sanitizeSessionCwd(out.logicalCwd);
+    if (cwd === undefined) {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error:
+          'meta.logicalCwd must be workspace-relative (not host-absolute / UNC / drive / control chars).',
+      };
+    }
+    out.logicalCwd = cwd;
+  }
+  if (out.activeSandboxId !== undefined && out.activeSandboxId !== '') {
+    if (
+      typeof out.activeSandboxId !== 'string' ||
+      !isRedisSafeOpaqueId(out.activeSandboxId)
+    ) {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error:
+          'meta.activeSandboxId must be empty or a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      };
+    }
+  }
+  return { ok: true, value: out };
+}
+
+/**
  * Validate a full server record, **reusing** the existing snapshot validator for the
  * id / `updatedAt` / messages caps and adding tenant/user/createdAt/meta checks.
  * Call this before persisting a record (the store seams call `assertValidSessionRecord`).
@@ -367,6 +417,11 @@ export function validateSessionRecord(input: unknown): SessionStoreResult<Harnes
   const metaResult = validateMeta(o.meta);
   if (!metaResult.ok) return metaResult;
 
+  // P1 (GAP-1, #452): semantic checks + normalization for the session-carrier fields
+  // (`logicalCwd`, `activeSandboxId`) under the reserved `meta`.
+  const metaFieldsResult = validateMetaFields(metaResult.value);
+  if (!metaFieldsResult.ok) return metaFieldsResult;
+
   return {
     ok: true,
     value: {
@@ -376,7 +431,7 @@ export function validateSessionRecord(input: unknown): SessionStoreResult<Harnes
       createdAt: o.createdAt,
       updatedAt: core.value.updatedAt,
       messages: core.value.messages,
-      meta: metaResult.value,
+      meta: metaFieldsResult.value,
     },
   };
 }

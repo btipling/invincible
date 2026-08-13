@@ -50,7 +50,8 @@ The **local** blob uses the opaque client snapshot shape:
 | `id` | Opaque local snapshot id (`sess_…`) |
 | `updatedAt` | Epoch **ms** (safe integer) — LWW clock for cloud |
 | `messages` | Full transcript for history fold + ring hydrate |
-| `cwd` | **Optional** logical workspace directory (workspace-root-relative). **Local only** — not synced to the cloud record |
+| `cwd` | **Optional** logical workspace directory (workspace-root-relative). **Session-owned** (P1/GAP-1, #452) — synced to the cloud record as `meta.logicalCwd`, so it survives a device switch |
+| `activeSandboxId` | **Optional** server/origin sandbox id (Redis-safe opaque). **Carried-but-not-resolved** (P1/GAP-1, #452) — synced as `meta.activeSandboxId`; the agent still resolves from the user's preferred sandbox until P2/#330 |
 
 Storage key: `invincible.harness.session.v1`.
 
@@ -93,6 +94,7 @@ create (picker "New"):
 after each turn persist:
   local save (sync)
   schedulePush(trimForCloudPut(snapshot))   # coalesce; at most one in-flight PUT to /api/sessions/:id
+                                            # cwd + activeSandboxId ride the PUT as meta.{logicalCwd,activeSandboxId}
 
 Clear (Clear-this):
   local empty + bridge clear
@@ -138,13 +140,16 @@ for the open tab).
 | Raw PUT body | **~2 MiB** | Reject oversize; host trims before PUT |
 | Record id / tenant / user | max **128**, Redis-safe `^[A-Za-z0-9_-]{1,128}$` | so `KEYS`/prefix globs can never bleed |
 
-Host `trimForCloudPut` omits `cwd`, enforces count/byte/body caps, then PUT.
+Host `trimForCloudPut` folds `cwd` + `activeSandboxId` into `meta.{logicalCwd,activeSandboxId}`
+(shared client-safe predicates; a host-absolute cwd / non-Redis-safe id is dropped to unset),
+enforces count/byte/body caps (byte accounting includes `meta`), then PUT.
+`parseCloudSessionSnapshot` restores both from `meta` on pull/adopt (fail-open: a poisoned
+value drops to unset, never a sticky 400).
 
 ### What is not in a cloud record
 
 - Gateway / BYOK / sandbox / MCP / PAT secrets
-- Host absolute paths
-- `cwd` (local-only)
+- Host absolute paths (`logicalCwd` is always workspace-relative — validated + re-sanitized)
 - Workspace file contents (object storage is a separate future design)
 - `REDIS_URL` (embeds the Redis credential — never logged)
 

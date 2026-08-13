@@ -27,19 +27,67 @@ function snap(
 }
 
 describe('trimForCloudPut', () => {
-  it('omits cwd and keeps id/updatedAt', () => {
+  it('folds cwd + activeSandboxId into meta; drops host-absolute cwd / non-Redis-safe sandbox', () => {
     const out = trimForCloudPut({
       id: 'sess_a',
       updatedAt: 42,
       messages: [{ id: 'm1', role: 'user', text: 'hi', at: 1 }],
       cwd: 'workspace',
+      activeSandboxId: 'sbx_abc123',
     });
     expect(out).toEqual({
       id: 'sess_a',
       updatedAt: 42,
       messages: [{ id: 'm1', role: 'user', text: 'hi', at: 1 }],
+      meta: { logicalCwd: 'workspace', activeSandboxId: 'sbx_abc123' },
     });
+    // no local-only carrier fields leak onto the wire body
     expect('cwd' in out).toBe(false);
+    expect('activeSandboxId' in out).toBe(false);
+
+    // host-absolute cwd + non-Redis-safe sandbox are dropped (fail-open to unset)
+    const bad = trimForCloudPut({
+      id: 'sess_b',
+      updatedAt: 1,
+      messages: [{ id: 'm1', role: 'user', text: 'hi', at: 1 }],
+      cwd: '/etc',
+      activeSandboxId: 'a:b',
+    });
+    expect(bad.meta).toBeUndefined();
+
+    // no meta at all when neither carrier is set
+    const bare = trimForCloudPut({ id: 'sess_c', updatedAt: 1, messages: [] });
+    expect(bare.meta).toBeUndefined();
+  });
+
+  it('normalizes escaping `..` out of meta so a record can never diverge from the request cwd (review #453 residual)', () => {
+    // A P1-legal-on-record `..` is normalized before it is persisted: it drops out
+    // instead of round-tripping `..` into Redis (request sends `.` on any device).
+    const escaping = trimForCloudPut({
+      id: 'sess_d',
+      updatedAt: 1,
+      messages: [{ id: 'm1', role: 'user', text: 'hi', at: 1 }],
+      cwd: '..',
+    });
+    expect(escaping.meta).toBeUndefined();
+
+    const double = trimForCloudPut({
+      id: 'sess_e',
+      updatedAt: 1,
+      messages: [{ id: 'm1', role: 'user', text: 'hi', at: 1 }],
+      cwd: 'a/../../b',
+    });
+    expect(double.meta).toBeUndefined();
+
+    // In-bounds `..` is collapsed to its normalized workspace-relative form (same
+    // value the request path sends) — never persisted raw.
+    const inBounds = trimForCloudPut({
+      id: 'sess_f',
+      updatedAt: 1,
+      messages: [{ id: 'm1', role: 'user', text: 'hi', at: 1 }],
+      cwd: 'a/b/../c',
+    });
+    expect(inBounds.meta).toEqual({ logicalCwd: 'a/c' });
   });
 
   it('keeps message count; body trim drops oldest only when over ~2 MiB', () => {
@@ -175,6 +223,52 @@ describe('parseCloudSessionSnapshot', () => {
       messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
     };
     expect(parseCloudSessionSnapshot(body, 'expected-id')).toBeNull();
+  });
+
+  it('restores cwd + activeSandboxId from stored meta (sanitized, fail-open on poison)', () => {
+    const body = {
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { logicalCwd: 'invincible/src', activeSandboxId: 'sbx_abc123' },
+    };
+    const out = parseCloudSessionSnapshot(body);
+    expect(out?.cwd).toBe('invincible/src');
+    expect(out?.activeSandboxId).toBe('sbx_abc123');
+
+    // host-absolute cwd + non-Redis-safe sandbox drop to unset (never a sticky 400)
+    const bad = parseCloudSessionSnapshot({
+      ...body,
+      meta: { logicalCwd: '/etc', activeSandboxId: 'a:b' },
+    });
+    expect(bad?.cwd).toBeUndefined();
+    expect(bad?.activeSandboxId).toBeUndefined();
+
+    // no meta → carrier fields unset
+    const bare = parseCloudSessionSnapshot({ id: 's', updatedAt: 1, messages: [] });
+    expect(bare?.cwd).toBeUndefined();
+    expect(bare?.activeSandboxId).toBeUndefined();
+  });
+
+  it('normalizes an already-persisted escaping cwd on adopt/parse (review #453 residual)', () => {
+    // A pre-fix record may still hold `..` in meta.logicalCwd; parsing must adopt
+    // it with the same normalization the trim/request paths apply so the in-memory
+    // snapshot never carries a value the agent cannot accept.
+    const escaping = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { logicalCwd: '..' },
+    });
+    expect(escaping?.cwd).toBeUndefined();
+
+    const inBounds = parseCloudSessionSnapshot({
+      id: 'sess_y',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { logicalCwd: 'a/b/../c' },
+    });
+    expect(inBounds?.cwd).toBe('a/c');
   });
 });
 
