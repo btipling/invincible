@@ -145,6 +145,24 @@ describe('resolveVercelFsPath', () => {
 });
 
 describe('createVercelSandboxClient', () => {
+  it('workspaceRoot exposes the configured root (default + opts.workspaceRoot)', async () => {
+    const getSandbox = vi.fn<GetVercelFsSandboxFn>(async () => mockSandbox());
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox,
+    });
+    await expect(client.workspaceRoot?.()).resolves.toBe(VERCEL_FS_WORKSPACE_ROOT);
+
+    const custom = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox,
+      workspaceRoot: '/custom/root/',
+    });
+    await expect(custom.workspaceRoot?.()).resolves.toBe('/custom/root');
+    await client.close?.();
+    await custom.close?.();
+  });
+
   it('tools happy path: list/read/write/exec', async () => {
     const sb = mockSandbox();
     const createSandbox: GetVercelFsSandboxFn = vi.fn(async () => sb);

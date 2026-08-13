@@ -49,24 +49,26 @@ describe('sandbox HTTP server', () => {
     return { base: h.base, token, workspace: tmp };
   }
 
-  it('GET /health returns version without auth', async () => {
-    const { base } = await start();
+  it('GET /health returns version + workspaceRoot without auth', async () => {
+    const { base, workspace } = await start();
     const res = await fetch(`${base}/health`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       ok: boolean;
       version: number;
       daemonVersion: number;
+      workspaceRoot: string;
     };
     expect(body).toEqual({
       ok: true,
       version: INVINCIBLE_SANDBOX_PROTOCOL,
       daemonVersion: INVINCIBLE_SANDBOX_DAEMON_VERSION,
+      workspaceRoot: workspace,
     });
   });
 
-  it('GET /health works without auth and exposes daemonVersion', async () => {
-    const { base, token } = await start();
+  it('GET /health works without auth and exposes daemonVersion + workspaceRoot', async () => {
+    const { base, token, workspace } = await start();
     const res = await fetch(`${base}/health`);
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -74,6 +76,7 @@ describe('sandbox HTTP server', () => {
       ok: true,
       version: INVINCIBLE_SANDBOX_PROTOCOL,
       daemonVersion: INVINCIBLE_SANDBOX_DAEMON_VERSION,
+      workspaceRoot: workspace,
     });
     void token;
   });

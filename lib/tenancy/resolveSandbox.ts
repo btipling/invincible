@@ -48,6 +48,12 @@ export type ResolvedAgentSandbox = {
   baseUrl?: string;
   /** Resolved Vercel image ref; null for byo. */
   resolvedImage: string | null;
+  /**
+   * Jail workspace root R, resolved per binding (both backends). `null` when a
+   * BYO daemon is down/pre-v2/partial so an operational probe failure never
+   * 403s the resolve (consumers land in #408 P3; never silently map on null).
+   */
+  workspaceRoot: string | null;
 };
 
 export type ResolveAgentSandboxResult =
@@ -99,6 +105,21 @@ export type ResolveAgentSandboxDeps = {
     opts: Pick<CreateVercelSandboxClientOptions, 'name' | 'image' | 'execEnv'>,
   ) => SandboxClient;
 };
+
+/**
+ * Belt-and-suspenders: never let a workspaceRoot probe throw out of resolve.
+ * The BYO/Vercel clients' own `workspaceRoot()` are already non-throwing, but a
+ * faulting client must still degrade to null rather than push `resolveAgentSandbox`
+ * into `forbidden()` (which would 403 an operational daemon outage as a grant
+ * failure). Root consumers land in #408 P3, so a null is safe to carry.
+ */
+async function nonThrowingWorkspaceRoot(client: SandboxClient): Promise<string | null> {
+  try {
+    return (await client.workspaceRoot?.()) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function forbidden(): ResolveAgentSandboxResult {
   return {
@@ -251,10 +272,12 @@ async function resolveWithDb(
         return forbidden();
       }
 
+      const workspaceRoot = await nonThrowingWorkspaceRoot(client);
       return {
         ok: true,
         value: {
           client,
+          workspaceRoot,
           permissions,
           secrets: [],
           sandboxId: row.sandboxId,
@@ -298,10 +321,15 @@ async function resolveWithDb(
       ...(deps.execEnv ? { execEnv: deps.execEnv } : {}),
     });
 
+    // Non-throwing: a BYO daemon down/pre-v2/partial degrades workspaceRoot to
+    // null (never a throw → never a mislabeled 403). runAgent preflight still
+    // gates FS turns 426/502; consumers land in #408 P3.
+    const workspaceRoot = await nonThrowingWorkspaceRoot(client);
     return {
       ok: true,
       value: {
         client,
+        workspaceRoot,
         permissions,
         secrets: [token],
         sandboxId: row.sandboxId,

@@ -5,7 +5,7 @@
  * in a way the deployed Next backend relies on. `version` (protocol) is a
  * separate, independent integer.
  */
-export const EXPECTED_SANDBOX_DAEMON_VERSION = 1;
+export const EXPECTED_SANDBOX_DAEMON_VERSION = 2;
 
 /** Header the client sends on every `/v1/*` request. Mirrors constants.mjs. */
 export const EXPECTED_DAEMON_VERSION_HEADER = 'x-invincible-expected-daemon-version';

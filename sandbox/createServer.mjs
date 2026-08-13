@@ -126,6 +126,10 @@ export function createSandboxServer(opts) {
           ok: true,
           version: INVINCIBLE_SANDBOX_PROTOCOL,
           daemonVersion: INVINCIBLE_SANDBOX_DAEMON_VERSION,
+          // Per-binding jail root so the host can canonicalize absolute↔rel
+          // paths. Disclosed unauth (like version/daemonVersion, on the
+          // token-private daemon port); FS mutation stays /v1/* token-gated.
+          workspaceRoot: workspace,
         });
         return;
       }

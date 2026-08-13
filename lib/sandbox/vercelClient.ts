@@ -419,6 +419,9 @@ export function createVercelSandboxClient(
   }
 
   const client: SandboxClient = {
+    // Per-binding jail root (Vercel microVM). Static, non-throwing, shared
+    // accessor used by `resolveAgentSandbox` for both backends.
+    workspaceRoot: async () => workspaceRoot,
     async listDir(userPath = '.', init): Promise<ListDirResult> {
       try {
         const abs = resolveVercelFsPath(workspaceRoot, userPath);

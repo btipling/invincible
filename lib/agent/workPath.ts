@@ -58,6 +58,74 @@ export function normalizeWorkspaceRel(userPath: string): string {
 }
 
 /**
+ * Normalize a workspace root `R` (the per-binding jail root).
+ * Requires a non-empty absolute POSIX path; trailing slashes are stripped.
+ * Used only as a prefix for lexical abs↔rel canonicalization (never realpath).
+ */
+function normalizeWorkspaceRoot(R: string): string {
+  if (typeof R !== 'string') {
+    throw new WorkPathError('Workspace root must be a path string');
+  }
+  if (CONTROL_CHARS.test(R)) {
+    throw new WorkPathError('Workspace root contains control characters');
+  }
+  let root = R.replace(/\\/g, '/').trim();
+  if (!root.startsWith('/')) {
+    throw new WorkPathError('Workspace root must be an absolute path');
+  }
+  return root.replace(/\/+$/, '') || '/';
+}
+
+/**
+ * Convert a host-absolute path `abs` given workspace root `R` to a
+ * **workspace-relative** path. Fail closed: non-absolute input, control
+ * characters, and any absolute path **not** under `R` (a different binding's
+ * root, `/etc/…`, escapes) throw `WorkPathError`. Lexical only — the daemon
+ * still enforces the real jail (symlink escapes are the daemon's job).
+ */
+export function workspaceAbsToRel(R: string, absPath: string): string {
+  const root = normalizeWorkspaceRoot(R);
+  if (typeof absPath !== 'string') {
+    throw new WorkPathError('Path must be a string');
+  }
+  if (CONTROL_CHARS.test(absPath)) {
+    throw new WorkPathError('Path contains control characters');
+  }
+  let abs = absPath.replace(/\\/g, '/').trim();
+  if (!abs.startsWith('/')) {
+    throw new WorkPathError('Host-absolute paths are not allowed');
+  }
+  abs = abs.replace(/\/+$/, '') || '/';
+
+  if (abs === root) return '.';
+  if (abs.startsWith(`${root}/`)) {
+    // Rel path under R — normalize the tail (collapses . / .., blocks escapes).
+    return normalizeWorkspaceRel(abs.slice(root.length + 1));
+  }
+  // Absolute path not under this binding's root — never map silently.
+  throw new WorkPathError('Path escapes workspace root');
+}
+
+/**
+ * Canonicalize a user path to a workspace-relative ledger key given workspace
+ * root `R`. An absolute path **under** `R` maps to its workspace-relative form
+ * (so `src/foo.ts` ≡ `<R>/src/foo.ts` hash to the same freshness key); a
+ * relative path falls through `normalizeWorkspaceRel` unchanged; a host-absolute
+ * path **outside** `R` (or an escape) is rejected — fail closed, per binding.
+ */
+export function canonicalizePath(R: string, userPath: string): string {
+  const root = normalizeWorkspaceRoot(R);
+  const p = userPath == null || userPath === '' ? '.' : String(userPath);
+  let raw = p.replace(/\\/g, '/').trim();
+  if (raw === '') raw = '.';
+  if (raw.startsWith('/') || raw.startsWith('//') || /^[a-zA-Z]:/.test(raw)) {
+    // Host-absolute: only the same binding's root maps; everything else rejects.
+    return workspaceAbsToRel(root, raw);
+  }
+  return normalizeWorkspaceRel(raw);
+}
+
+/**
  * Prefix-aware resolve: join `path` under logical `cwd`, unless `path` is
  * already workspace-root-relative under/equal to cwd (model copied tool results).
  *

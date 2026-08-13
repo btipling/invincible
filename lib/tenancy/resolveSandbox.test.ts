@@ -731,4 +731,95 @@ describe('resolveAgentSandbox', () => {
     expect(body.error).toBe(SANDBOX_FORBIDDEN_ERROR);
     expect(JSON.stringify(body)).not.toContain('secret-detail');
   });
+
+  it('byo resolve carries workspaceRoot from the client accessor', async () => {
+    const client = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      exec: vi.fn(),
+      workspaceRoot: async () => '/w',
+      __meta: { baseUrl: 'http://127.0.0.1:8787', token: 'x' },
+    };
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      decryptSandboxToken: decrypt,
+      createByoClient: () => client as never,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value.backend).toBe('byo');
+    expect(result.value.workspaceRoot).toBe('/w');
+  });
+
+  it('vercel resolve carries workspaceRoot from the client accessor', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({ backend: 'vercel', baseUrl: null, tokenCiphertext: null, image: null })
+      .where(eq(schema.sandboxes.id, sandboxId));
+    await insertRunningWorkspace(db, {
+      userId,
+      tenantId,
+      catalogSandboxId: sandboxId,
+    });
+    const vercelClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      exec: vi.fn(),
+      workspaceRoot: async () => '/vercel/workspace',
+      __kind: 'vercel',
+    };
+    const createVercelClient = vi.fn(() => vercelClient as never);
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      createVercelClient,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value.backend).toBe('vercel');
+    expect(result.value.workspaceRoot).toBe('/vercel/workspace');
+  });
+
+  it('byo down-daemon resolve: workspaceRoot() throws → resolve still ok with null (never a mislabeled 403)', async () => {
+    const client = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      exec: vi.fn(),
+      workspaceRoot: async () => {
+        throw new Error('daemon unreachable');
+      },
+      __meta: { baseUrl: 'http://127.0.0.1:8787', token: 'x' },
+    };
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      decryptSandboxToken: decrypt,
+      createByoClient: () => client as never,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value.backend).toBe('byo');
+    expect(result.value.workspaceRoot).toBeNull();
+  });
+
+  it('vercel resolve without a workspaceRoot method → null, not a hard 403', async () => {
+    await db
+      .update(schema.sandboxes)
+      .set({ backend: 'vercel', baseUrl: null, tokenCiphertext: null, image: null })
+      .where(eq(schema.sandboxes.id, sandboxId));
+    await insertRunningWorkspace(db, {
+      userId,
+      tenantId,
+      catalogSandboxId: sandboxId,
+    });
+    const createVercelClient = vi.fn(() => stubClient() as never);
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      createVercelClient,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value.workspaceRoot).toBeNull();
+  });
 });

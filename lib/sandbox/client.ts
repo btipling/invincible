@@ -24,7 +24,7 @@ import {
 const DEFAULT_TIMEOUT_MS = 45_000;
 
 /** Parsed `GET /health` body of interest to the client. */
-type HealthInfo = { version: number; daemonVersion: number };
+type HealthInfo = { version: number; daemonVersion: number; workspaceRoot: string | null };
 
 /** Per-client-instance health cache (null = not yet probed). */
 type HealthCache = { health: HealthInfo | null; inflight: Promise<HealthInfo> | null };
@@ -73,6 +73,13 @@ export type SandboxClient = {
    * (Vercel Sandbox SDK), which have no daemon `daemonVersion` to compare.
    */
   checkDaemonCurrent?: () => Promise<void>;
+  /**
+   * The per-binding jail workspace root `R`. Returned by both backends so path
+   * code has one accessor. **Non-throwing:** a health-probe failure, an
+   * out-of-date daemon, or a stale/partial health body yields `null` — never a
+   * throw (so `resolveAgentSandbox` never 403s on an operational daemon outage).
+   */
+  workspaceRoot?: () => Promise<string | null>;
   /**
    * Optional lifecycle hook for ephemeral backends (Vercel Sandbox).
    * BYO HTTP client omits this. Idempotent when present.
@@ -173,7 +180,11 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
             res.status >= 400 && res.status < 600 ? res.status : 502,
           );
         }
-        const rec = (data ?? {}) as { version?: unknown; daemonVersion?: unknown };
+        const rec = (data ?? {}) as {
+          version?: unknown;
+          daemonVersion?: unknown;
+          workspaceRoot?: unknown;
+        };
         const version =
           typeof rec.version === 'number' && Number.isFinite(rec.version)
             ? rec.version
@@ -188,7 +199,16 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
           typeof rec.daemonVersion === 'number' && Number.isFinite(rec.daemonVersion)
             ? Math.floor(rec.daemonVersion)
             : 0;
-        const health: HealthInfo = { version, daemonVersion };
+        // Gated parse: only a current daemon (>= 2) whose health carries a real
+        // non-empty string root is trusted. A stale/partial/extraneous body (or a
+        // v1 daemon) parses to null — never a bogus workspace root.
+        const workspaceRoot =
+          daemonVersion >= 2 &&
+          typeof rec.workspaceRoot === 'string' &&
+          rec.workspaceRoot.trim().length > 0
+            ? rec.workspaceRoot.trim()
+            : null;
+        const health: HealthInfo = { version, daemonVersion, workspaceRoot };
         healthCache.health = health;
         return health;
       } catch (err) {
@@ -315,6 +335,18 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
 
   return {
     checkDaemonCurrent: () => ensureDaemonCurrent(),
+    /**
+     * Non-throwing per-binding root accessor. A down/unreachable daemon, a
+     * pre-v2 daemon, or a partial health body all degrade to `null` so resolve
+     * never 403s on an operational outage (FS tool turns still gate 502/426).
+     */
+    workspaceRoot: async (): Promise<string | null> => {
+      try {
+        return (await fetchHealth()).workspaceRoot;
+      } catch {
+        return null;
+      }
+    },
     listDir: (path = '.', init) => postJson<ListDirResult>('/v1/list_dir', { path }, init),
     readFile: (path, maxBytes, init) =>
       postJson<ReadFileResult>(

@@ -4,7 +4,7 @@ Standalone HTTP service that exposes a **path-jailed workspace** with agent tool
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/health` | `{ ok: true, version: 2, daemonVersion: N }` (no auth) |
+| `GET` | `/health` | `{ ok: true, version: 2, daemonVersion: N, workspaceRoot: "/…" }` (no auth) — `workspaceRoot` is the per-binding jail root on daemon ≥ **2** |
 | `POST` | `/v1/list_dir` | List directory entries |
 | `POST` | `/v1/read_file` | Read file (max 16 MiB); response includes additive `mtimeMs` + `size` |
 | `POST` | `/v1/write_file` | Write file (max 16 MiB); response includes post-write `mtimeMs` + `size` |
@@ -75,7 +75,7 @@ Smoke:
 
 ```bash
 curl -s http://127.0.0.1:8787/health
-# {"ok":true,"version":2,"daemonVersion":1}
+# {"ok":true,"version":2,"daemonVersion":2,"workspaceRoot":"/path/to/.sandbox-workspace"}
 
 curl -s -X POST http://127.0.0.1:8787/v1/list_dir \
   -H "Authorization: Bearer $SANDBOX_TOKEN" \

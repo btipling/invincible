@@ -12,8 +12,11 @@ export const INVINCIBLE_SANDBOX_PROTOCOL = 2;
  * deployed Next relies on. Clients treat a missing `daemonVersion` as 0 (older
  * daemons). Keep the TS mirror `EXPECTED_SANDBOX_DAEMON_VERSION` in
  * `lib/sandbox/daemonVersion.ts` in sync (enforced by a parity test).
+ *
+ * v2 (this bump): `GET /health` adds the per-binding jail `workspaceRoot`,
+ * which deployed Next relies on for abs↔rel path canonicalization.
  */
-export const INVINCIBLE_SANDBOX_DAEMON_VERSION = 1;
+export const INVINCIBLE_SANDBOX_DAEMON_VERSION = 2;
 
 /** Header the Next backend sends on every `/v1/*` request (string int). */
 export const SANDBOX_EXPECTED_DAEMON_VERSION_HEADER = 'x-invincible-expected-daemon-version';

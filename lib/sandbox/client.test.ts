@@ -22,7 +22,7 @@ describe('sandbox client', () => {
       calls.push({ url: String(url), init: init ?? {} });
       const path = String(url);
       if (path.endsWith('/health')) {
-        return healthJson({ version: 2, daemonVersion: 1 });
+        return healthJson({ version: 2, daemonVersion: EXPECTED_SANDBOX_DAEMON_VERSION });
       }
       if (path.endsWith('/v1/list_dir')) {
         return Response.json({ entries: [{ name: 'a', type: 'file' }] });
@@ -119,7 +119,7 @@ describe('sandbox client', () => {
       const url = String(input);
       const path = url.replace(/^https?:\/\/[^/]+/, '');
       if (path === '/health') {
-        return healthJson({ version: 2, daemonVersion: 1 });
+        return healthJson({ version: 2, daemonVersion: EXPECTED_SANDBOX_DAEMON_VERSION });
       }
       const body = init?.body ? JSON.parse(String(init.body)) : {};
       calls.push({ path, body });
@@ -150,7 +150,7 @@ describe('sandbox client', () => {
       const url = String(input);
       const path = url.replace(/^https?:\/\/[^/]+/, '');
       if (path === '/health') {
-        return healthJson({ version: 2, daemonVersion: 1 });
+        return healthJson({ version: 2, daemonVersion: EXPECTED_SANDBOX_DAEMON_VERSION });
       }
       const body = init?.body ? JSON.parse(String(init.body)) : {};
       calls.push({ body });
@@ -177,7 +177,7 @@ describe('sandbox client', () => {
       const method = (init?.method ?? 'GET').toUpperCase();
       if (path === '/health') {
         calls.push({ method, path });
-        return healthJson({ version: 2, daemonVersion: 1 });
+        return healthJson({ version: 2, daemonVersion: EXPECTED_SANDBOX_DAEMON_VERSION });
       }
       const body = init?.body ? JSON.parse(String(init.body)) : {};
       calls.push({ method, path, body });
@@ -299,7 +299,7 @@ describe('sandbox client', () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
       if (path.endsWith('/health')) {
-        return healthJson({ version: 2, daemonVersion: 1 });
+        return healthJson({ version: 2, daemonVersion: EXPECTED_SANDBOX_DAEMON_VERSION });
       }
       if (path.endsWith('/v1/list_dir')) {
         return Response.json(
@@ -340,7 +340,7 @@ describe('sandbox client', () => {
           const path = String(input);
           if (path.endsWith('/health')) {
             return Promise.resolve(
-              healthJson({ version: 2, daemonVersion: 1 }),
+              healthJson({ version: 2, daemonVersion: EXPECTED_SANDBOX_DAEMON_VERSION }),
             );
           }
           return new Promise<Response>((_resolve, reject) => {
@@ -403,7 +403,7 @@ describe('sandbox client', () => {
       (input: RequestInfo | URL, init?: RequestInit) => {
         const path = String(input);
         if (path.endsWith('/health')) {
-          return Promise.resolve(healthJson({ version: 2, daemonVersion: 1 }));
+          return Promise.resolve(healthJson({ version: 2, daemonVersion: EXPECTED_SANDBOX_DAEMON_VERSION }));
         }
         return new Promise<Response>((_resolve, reject) => {
           const sig = init?.signal as AbortSignal | undefined;
@@ -448,7 +448,7 @@ describe('sandbox client', () => {
       const p = String(input).replace(/^https?:\/\/[^/]+/, '');
       if (p === '/health') {
         paths.push(p);
-        return healthJson({ version: 2, daemonVersion: 1 });
+        return healthJson({ version: 2, daemonVersion: EXPECTED_SANDBOX_DAEMON_VERSION });
       }
       paths.push(p);
       return Response.json({ exitCode: 0, stdout: '', stderr: '' });
@@ -466,7 +466,7 @@ describe('sandbox client', () => {
     const fetchImpl = vi.fn(async (url: string | URL) => {
       const path = String(url);
       if (path.endsWith('/health')) {
-        return healthJson({ version: 2, daemonVersion: 1 });
+        return healthJson({ version: 2, daemonVersion: EXPECTED_SANDBOX_DAEMON_VERSION });
       }
       if (path.endsWith('/v1/read_file')) {
         return Response.json({ content: 'legacy' });
@@ -488,6 +488,117 @@ describe('sandbox client', () => {
     });
     await expect(client.readFile('x')).resolves.toEqual({ content: 'legacy' });
     await expect(client.stat('x')).resolves.toMatchObject({ type: 'file', size: 0 });
+  });
+
+  describe('workspaceRoot (per-binding R)', () => {
+    it('returns the field from cached /health when daemon >= 2', async () => {
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        if (path.endsWith('/health')) {
+          return Response.json({
+            ok: true,
+            version: 2,
+            daemonVersion: 2,
+            workspaceRoot: '/vercel/workspace',
+          });
+        }
+        return Response.json({ ok: true });
+      });
+      const client = createSandboxClient({
+        baseUrl: 'http://sandbox.test',
+        token,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await expect(client.workspaceRoot?.()).resolves.toBe('/vercel/workspace');
+    });
+
+    it('v1 daemon (no field) → null', async () => {
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        if (path.endsWith('/health')) {
+          return healthJson({ version: 2, daemonVersion: 1 });
+        }
+        return Response.json({ ok: true });
+      });
+      const client = createSandboxClient({
+        baseUrl: 'http://sandbox.test',
+        token,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await expect(client.workspaceRoot?.()).resolves.toBeNull();
+    });
+
+    it('malformed/empty/whitespace root → null (never a bogus value)', async () => {
+      for (const bad of [undefined, '', '   ', 42, null]) {
+        const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+          const path = String(input);
+          if (path.endsWith('/health')) {
+            return Response.json({
+              ok: true,
+              version: 2,
+              daemonVersion: 2,
+              ...(bad !== undefined && bad !== null
+                ? { workspaceRoot: bad }
+                : {}),
+            });
+          }
+          return Response.json({ ok: true });
+        });
+        const client = createSandboxClient({
+          baseUrl: 'http://sandbox.test',
+          token,
+          fetchImpl: fetchImpl as unknown as typeof fetch,
+        });
+        await expect(client.workspaceRoot?.()).resolves.toBeNull();
+      }
+    });
+
+    it('non-throwing: a throwing /health probe → null (never propagates)', async () => {
+      const fetchImpl = vi.fn(async () => {
+        throw new Error('daemon unreachable');
+      });
+      const client = createSandboxClient({
+        baseUrl: 'http://sandbox.test',
+        token,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await expect(client.workspaceRoot?.()).resolves.toBeNull();
+    });
+
+    it('non-throwing: a 5xx /health probe → null', async () => {
+      const fetchImpl = vi.fn(async () => new Response('down', { status: 503 }));
+      const client = createSandboxClient({
+        baseUrl: 'http://sandbox.test',
+        token,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await expect(client.workspaceRoot?.()).resolves.toBeNull();
+    });
+
+    it('workspaceRoot probe warms the cache for a later FS gate (single /health)', async () => {
+      const healthCalls: string[] = [];
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        if (path.endsWith('/health')) {
+          healthCalls.push(path);
+          return Response.json({
+            ok: true,
+            version: 2,
+            daemonVersion: 2,
+            workspaceRoot: '/rw',
+          });
+        }
+        return Response.json({ entries: [] });
+      });
+      const client = createSandboxClient({
+        baseUrl: 'http://sandbox.test',
+        token,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await expect(client.workspaceRoot?.()).resolves.toBe('/rw');
+      await expect(client.listDir('.')).resolves.toEqual({ entries: [] });
+      expect(healthCalls).toHaveLength(1); // reused, not re-probed
+    });
   });
 
   it('checkDaemonCurrent rejects when daemon out of date, passes when current', async () => {

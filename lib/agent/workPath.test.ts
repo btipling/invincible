@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   WorkPathError,
+  canonicalizePath,
   formatCwdAnnotation,
   normalizeWorkspaceRel,
   parseInitialCwd,
   resolveAgainstCwd,
   resolveExecCwd,
+  workspaceAbsToRel,
 } from './workPath';
 
 describe('normalizeWorkspaceRel', () => {
@@ -117,5 +119,84 @@ describe('parseInitialCwd', () => {
       ok: true,
       cwd: 'invincible',
     });
+  });
+});
+
+const ROOT = '/vercel/workspace';
+
+describe('workspaceAbsToRel', () => {
+  it('maps root and under-root absolutes to workspace-relative', () => {
+    expect(workspaceAbsToRel(ROOT, '/vercel/workspace')).toBe('.');
+    expect(workspaceAbsToRel(ROOT, '/vercel/workspace/')).toBe('.');
+    expect(workspaceAbsToRel(ROOT, '/vercel/workspace/src/foo.ts')).toBe(
+      'src/foo.ts',
+    );
+    expect(workspaceAbsToRel(ROOT, '/vercel/workspace/src/foo.ts/')).toBe(
+      'src/foo.ts',
+    );
+  });
+
+  it('normalizes . .. inside the tail', () => {
+    expect(workspaceAbsToRel(ROOT, '/vercel/workspace/a/./b')).toBe('a/b');
+    expect(workspaceAbsToRel(ROOT, '/vercel/workspace/a/../b')).toBe('b');
+  });
+
+  it('rejects absolutes outside R, other roots, and non-absolute input', () => {
+    expect(() => workspaceAbsToRel(ROOT, '/etc/passwd')).toThrow(WorkPathError);
+    expect(() => workspaceAbsToRel(ROOT, '/other/src/foo.ts')).toThrow(WorkPathError);
+    expect(() => workspaceAbsToRel(ROOT, '/vercel/workspace.txt')).toThrow(
+      WorkPathError,
+    );
+    expect(() => workspaceAbsToRel(ROOT, 'src/foo.ts')).toThrow(/absolute/i);
+    expect(() => workspaceAbsToRel(ROOT, 'C:\\foo')).toThrow(/absolute/i);
+  });
+
+  it('rejects an escaping tail (.. above root)', () => {
+    expect(() => workspaceAbsToRel(ROOT, '/vercel/workspace/../etc')).toThrow(
+      WorkPathError,
+    );
+  });
+
+  it('rejects control chars in R or abs', () => {
+    expect(() => workspaceAbsToRel('/vercel/wo\nrkspace', '/vercel/w')).toThrow(
+      /control/i,
+    );
+    expect(() => workspaceAbsToRel(ROOT, '/vercel/workspace/a\nb')).toThrow(
+      /control/i,
+    );
+  });
+
+  it('normalizes the root itself (trailing slash tolerance)', () => {
+    expect(workspaceAbsToRel(`${ROOT}/`, `${ROOT}/src/a.ts`)).toBe('src/a.ts');
+  });
+});
+
+describe('canonicalizePath', () => {
+  it('relative stays relative (unchanged ledger key)', () => {
+    expect(canonicalizePath(ROOT, 'src/foo.ts')).toBe('src/foo.ts');
+    expect(canonicalizePath(ROOT, '.')).toBe('.');
+    expect(canonicalizePath(ROOT, '')).toBe('.');
+  });
+
+  it('absolute under R maps to the same workspace-relative key', () => {
+    expect(canonicalizePath(ROOT, `${ROOT}/src/foo.ts`)).toBe('src/foo.ts');
+    expect(canonicalizePath(ROOT, `${ROOT}/src/foo.ts`)).toBe(
+      canonicalizePath(ROOT, 'src/foo.ts'),
+    );
+    expect(canonicalizePath(ROOT, `${ROOT}/`)).toBe('.');
+  });
+
+  it('rejects host-absolute outside R / escapes — fail closed', () => {
+    expect(() => canonicalizePath(ROOT, '/etc/passwd')).toThrow(WorkPathError);
+    expect(() => canonicalizePath(ROOT, `${ROOT}/../escape`)).toThrow(WorkPathError);
+    expect(() => canonicalizePath(ROOT, `${ROOT}_other/src`)).toThrow(WorkPathError);
+    expect(() => canonicalizePath(ROOT, 'C:\\Windows')).toThrow(WorkPathError);
+  });
+
+  it('a different binding root (R2) never matches this binding', () => {
+    const R2 = '/other/workspace';
+    expect(() => canonicalizePath(ROOT, `${R2}/src/foo.ts`)).toThrow(WorkPathError);
+    // But under its own binding it is valid and canonical.
+    expect(canonicalizePath(R2, `${R2}/src/foo.ts`)).toBe('src/foo.ts');
   });
 });
