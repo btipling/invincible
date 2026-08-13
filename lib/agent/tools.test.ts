@@ -1197,3 +1197,170 @@ describe('createAgentTools in-jail absolute paths', () => {
     );
   });
 });
+
+describe('str_replace write serialization (bug #479)', () => {
+  const ectx = { toolCallId: '1', messages: [] } as never;
+
+  /** Daemon-shaped in-memory client whose stat reflects real disk state
+   * (fp bumps only on writes), with a delay window so a non-serialized pair
+   * can both read the same snapshot before either writes. */
+  function fakeFsClient(initial: Record<string, string>): {
+    client: SandboxClient;
+    read(path: string): string;
+  } {
+    const store = new Map<string, string>(Object.entries(initial));
+    const seq = new Map<string, number>();
+    const fpOf = (p: string) => ({
+      mtimeMs: seq.get(p) ?? 0,
+      size: Buffer.byteLength(store.get(p) ?? '', 'utf8'),
+    });
+    const client = mockClient({
+      readFile: vi.fn(async (p: string) => ({ content: store.get(p) ?? '', ...fpOf(p) })),
+      stat: vi.fn(async (p: string) => ({
+        path: p,
+        type: 'file' as const,
+        ...fpOf(p),
+      })),
+      writeFile: vi.fn(async (p: string, c: string) => {
+        await new Promise((r) => setTimeout(r, 3));
+        store.set(p, c);
+        seq.set(p, (seq.get(p) ?? 0) + 1);
+        return {
+          ok: true as const,
+          path: p,
+          bytes: Buffer.byteLength(c, 'utf8'),
+          ...fpOf(p),
+        };
+      }),
+      strReplace: vi.fn(
+        async (
+          p: string,
+          oldS: string,
+          newS: string,
+          replaceAll?: boolean,
+        ) => {
+          await new Promise((r) => setTimeout(r, 5));
+          const content = store.get(p) ?? '';
+          let count = 0;
+          let from = 0;
+          while (from <= content.length) {
+            const idx = content.indexOf(oldS, from);
+            if (idx === -1) break;
+            count += 1;
+            from = idx + oldS.length;
+          }
+          if (count === 0) {
+            throw new SandboxHttpError('old_string not found in file', 400);
+          }
+          if (count > 1 && !replaceAll) {
+            throw new SandboxHttpError(
+              `old_string matched ${count} times; pass replace_all: true or provide a unique snippet`,
+              409,
+            );
+          }
+          const next = replaceAll
+            ? content.split(oldS).join(newS)
+            : content.replace(oldS, newS);
+          store.set(p, next);
+          seq.set(p, (seq.get(p) ?? 0) + 1);
+          return {
+            ok: true as const,
+            path: p,
+            replacements: replaceAll ? count : 1,
+            bytes: Buffer.byteLength(next, 'utf8'),
+            ...fpOf(p),
+          };
+        },
+      ),
+    });
+    return { client, read: (p: string) => store.get(p) ?? '' };
+  }
+
+  // Lost-update repro: disjoint concurrent same-path applies must both land on
+  // disk (serialized order on latest bytes) — never two `ok` with one dropped.
+  it('two disjoint concurrent same-path str_replace both land (no lost update)', async () => {
+    const fs = fakeFsClient({ 'a.ts': 'foo bar' });
+    const tools = createAgentTools({
+      client: fs.client,
+      freshness: createRunFileFreshness(),
+    });
+    await tools.read_file.execute!({ path: 'a.ts' }, ectx);
+
+    const [ra, rb] = await Promise.all([
+      tools.str_replace.execute!(
+        { path: 'a.ts', old_string: 'foo', new_string: 'X' },
+        ectx,
+      ),
+      tools.str_replace.execute!(
+        { path: 'a.ts', old_string: 'bar', new_string: 'Y' },
+        ectx,
+      ),
+    ]);
+    const results = [ra as string, rb as string];
+    // Both edits are present in the final bytes (a silent last-writer-win would
+    // leave only one — this assertion fails on the un-locked baseline).
+    expect(fs.read('a.ts')).toBe('X Y');
+    // And no hunk was reported ok while missing from disk.
+    const oks = results.filter((s) => s.startsWith('str_replace '));
+    const errs = results.filter((s) => s.startsWith('ERROR str_replace'));
+    expect(oks.length).toBeGreaterThanOrEqual(1);
+    expect(oks.length + errs.length).toBe(2);
+  });
+
+  // Overlap → loser re-validates on the winner's bytes: same old_string cannot
+  // both apply; exactly one wins, the loser fail-closes.
+  it('concurrent same-hunk replace → exactly one ok, loser fail-closes', async () => {
+    const fs = fakeFsClient({ 'a.ts': 'foo' });
+    const tools = createAgentTools({
+      client: fs.client,
+      freshness: createRunFileFreshness(),
+    });
+    await tools.read_file.execute!({ path: 'a.ts' }, ectx);
+
+    const [ra, rb] = await Promise.all([
+      tools.str_replace.execute!(
+        { path: 'a.ts', old_string: 'foo', new_string: 'X' },
+        ectx,
+      ),
+      tools.str_replace.execute!(
+        { path: 'a.ts', old_string: 'foo', new_string: 'Y' },
+        ectx,
+      ),
+    ]);
+    const results = [ra as string, rb as string];
+    const ok = results.filter((s) => s.startsWith('str_replace ')).length;
+    const err = results.filter((s) => s.startsWith('ERROR str_replace')).length;
+    expect(ok).toBe(1);
+    expect(err).toBeGreaterThanOrEqual(1);
+    expect(['X', 'Y']).toContain(fs.read('a.ts'));
+  });
+
+  // replace_all + unique replace on the same path → defined concatenation,
+  // counts evaluated on the bytes actually written.
+  it('replace_all + unique concurrent replace → defined concatenation on latest bytes', async () => {
+    const fs = fakeFsClient({ 'a.ts': 'aa aa bb' });
+    const tools = createAgentTools({
+      client: fs.client,
+      freshness: createRunFileFreshness(),
+    });
+    await tools.read_file.execute!({ path: 'a.ts' }, ectx);
+
+    const [ra, rb] = await Promise.all([
+      tools.str_replace.execute!(
+        {
+          path: 'a.ts',
+          old_string: 'aa',
+          new_string: 'XX',
+          replace_all: true,
+        },
+        ectx,
+      ),
+      tools.str_replace.execute!(
+        { path: 'a.ts', old_string: 'bb', new_string: 'YY' },
+        ectx,
+      ),
+    ]);
+    void [ra, rb];
+    expect(fs.read('a.ts')).toBe('XX XX YY');
+  });
+});

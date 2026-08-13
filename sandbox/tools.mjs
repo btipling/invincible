@@ -120,6 +120,40 @@ function fingerprintFromStat(stat) {
 }
 
 /**
+ * Per-path async mutex (single-flight FIFO per key) for same-path FS applies.
+ * Two requests — even from different sessions/devices — hitting one daemon for
+ * the same path never overlap the `read → apply → write` window (bug #479).
+ * The loser re-reads and re-counts on the latest content (defined-order or
+ * fail-close). Mirrors the host `lib/agent/pathLock.ts` contract.
+ * @template T
+ * @param {string} key
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+function withPathLock(key, fn) {
+  const prev = toolLocks.get(key) ?? Promise.resolve();
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const tail = prev.then(() => gate);
+  toolLocks.set(key, tail);
+  const run = (async () => {
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (toolLocks.get(key) === tail) toolLocks.delete(key);
+    }
+  })();
+  return run;
+}
+
+/** @type {Map<string, Promise<void>>} module-level per-path lock tails. */
+const toolLocks = new Map();
+
+/**
  * @param {string} workspace
  * @param {{ path?: string }} body
  */
@@ -196,25 +230,30 @@ export async function writeFileTool(workspace, body) {
     );
   }
   const target = resolveJailPath(workspace, body.path);
-  const parent = path.dirname(target);
 
-  if (body.mkdir) {
-    await fs.mkdir(parent, { recursive: true });
-  } else {
-    try {
-      await fs.stat(parent);
-    } catch {
-      throw new ToolError('Parent directory does not exist (set mkdir: true)', 400);
+  // Per-path lock so concurrent same-path writes serialize (bug #479) — the
+  // mkdir/write/stat window is otherwise a same-shaped last-writer-wins race.
+  return withPathLock(target, async () => {
+    const parent = path.dirname(target);
+
+    if (body.mkdir) {
+      await fs.mkdir(parent, { recursive: true });
+    } else {
+      try {
+        await fs.stat(parent);
+      } catch {
+        throw new ToolError('Parent directory does not exist (set mkdir: true)', 400);
+      }
     }
-  }
 
-  await fs.writeFile(target, contentBuf);
-  const st = await fs.stat(target);
-  return {
-    ok: true,
-    bytes: contentBuf.byteLength,
-    ...fingerprintFromStat(st),
-  };
+    await fs.writeFile(target, contentBuf);
+    const st = await fs.stat(target);
+    return {
+      ok: true,
+      bytes: contentBuf.byteLength,
+      ...fingerprintFromStat(st),
+    };
+  });
 }
 
 /**
@@ -240,68 +279,72 @@ export async function strReplaceTool(workspace, body) {
   const replaceAll = Boolean(body.replace_all);
   const target = resolveJailPath(workspace, body.path);
 
-  let stat;
-  try {
-    stat = await fs.stat(target);
-  } catch {
-    throw new ToolError('File not found', 404);
-  }
-  if (!stat.isFile()) {
-    throw new ToolError('Not a file', 400);
-  }
-  if (stat.size > MAX_READ_WRITE_BYTES) {
-    throw new ToolError(
-      `content exceeds maxBytes limit (${MAX_READ_WRITE_BYTES})`,
-      413,
-    );
-  }
+  // Per-path lock so two concurrent same-path applies never read a shared
+  // snapshot and clobber each other (the loser re-reads the winner's bytes).
+  return withPathLock(target, async () => {
+    let stat;
+    try {
+      stat = await fs.stat(target);
+    } catch {
+      throw new ToolError('File not found', 404);
+    }
+    if (!stat.isFile()) {
+      throw new ToolError('Not a file', 400);
+    }
+    if (stat.size > MAX_READ_WRITE_BYTES) {
+      throw new ToolError(
+        `content exceeds maxBytes limit (${MAX_READ_WRITE_BYTES})`,
+        413,
+      );
+    }
 
-  const content = await fs.readFile(target, 'utf8');
-  const oldStr = body.old_string;
-  const newStr = body.new_string;
+    const content = await fs.readFile(target, 'utf8');
+    const oldStr = body.old_string;
+    const newStr = body.new_string;
 
-  // Non-overlapping left-to-right count
-  let count = 0;
-  let from = 0;
-  while (from <= content.length) {
-    const idx = content.indexOf(oldStr, from);
-    if (idx === -1) break;
-    count += 1;
-    from = idx + oldStr.length;
-    if (oldStr.length === 0) break; // defensive; empty already rejected
-  }
+    // Non-overlapping left-to-right count
+    let count = 0;
+    let from = 0;
+    while (from <= content.length) {
+      const idx = content.indexOf(oldStr, from);
+      if (idx === -1) break;
+      count += 1;
+      from = idx + oldStr.length;
+      if (oldStr.length === 0) break; // defensive; empty already rejected
+    }
 
-  if (count === 0) {
-    throw new ToolError('old_string not found in file', 400);
-  }
-  if (count > 1 && !replaceAll) {
-    throw new ToolError(
-      `old_string matched ${count} times; pass replace_all: true or provide a unique snippet`,
-      409,
-    );
-  }
+    if (count === 0) {
+      throw new ToolError('old_string not found in file', 400);
+    }
+    if (count > 1 && !replaceAll) {
+      throw new ToolError(
+        `old_string matched ${count} times; pass replace_all: true or provide a unique snippet`,
+        409,
+      );
+    }
 
-  const next = replaceAll
-    ? content.split(oldStr).join(newStr)
-    : content.replace(oldStr, newStr);
+    const next = replaceAll
+      ? content.split(oldStr).join(newStr)
+      : content.replace(oldStr, newStr);
 
-  const outBuf = Buffer.from(next, 'utf8');
-  if (outBuf.byteLength > MAX_READ_WRITE_BYTES) {
-    throw new ToolError(
-      `content exceeds maxBytes limit (${MAX_READ_WRITE_BYTES})`,
-      413,
-    );
-  }
+    const outBuf = Buffer.from(next, 'utf8');
+    if (outBuf.byteLength > MAX_READ_WRITE_BYTES) {
+      throw new ToolError(
+        `content exceeds maxBytes limit (${MAX_READ_WRITE_BYTES})`,
+        413,
+      );
+    }
 
-  await fs.writeFile(target, outBuf);
-  const stAfter = await fs.stat(target);
-  return {
-    ok: true,
-    path: String(body.path),
-    replacements: replaceAll ? count : 1,
-    bytes: outBuf.byteLength,
-    ...fingerprintFromStat(stAfter),
-  };
+    await fs.writeFile(target, outBuf);
+    const stAfter = await fs.stat(target);
+    return {
+      ok: true,
+      path: String(body.path),
+      replacements: replaceAll ? count : 1,
+      bytes: outBuf.byteLength,
+      ...fingerprintFromStat(stAfter),
+    };
+  });
 }
 
 /**

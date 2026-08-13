@@ -18,6 +18,7 @@ import {
   type DiskFingerprint,
   type RunFileFreshness,
 } from './fileFreshness';
+import { defaultPathLock, lockKey } from './pathLock';
 
 export type ToolPermissions = {
   canRead: boolean;
@@ -369,41 +370,55 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         }
         const path = resolved.path;
 
-        let exists = true;
-        let live: DiskFingerprint = {};
-        try {
-          const st = await client.stat(path, { signal });
-          live = finiteFp({ mtimeMs: st.mtimeMs, size: st.size });
-        } catch (err) {
-          if (isPathMissingError(err)) {
-            exists = false;
-          } else {
-            const msg = err instanceof Error ? err.message : String(err);
-            return finalize(`ERROR write_file: ${msg}`, secrets);
-          }
-        }
+        // Per-path serialize + re-validate on latest bytes (bug #479): the whole
+        // stat → gate → write → recordWrite critical section runs under the path
+        // lock so overlapping same-path applies never interleave a stale snapshot.
+        // Key is namespaced by the per-binding jail root so the process-global
+        // lock does not head-of-line block unrelated sandboxes (review L7 #481).
+        return await defaultPathLock.withPathLock(
+          lockKey(workspaceRoot, path),
+          async () => {
+            let exists = true;
+            let live: DiskFingerprint = {};
+            try {
+              const st = await client.stat(path, { signal });
+              live = finiteFp({ mtimeMs: st.mtimeMs, size: st.size });
+            } catch (err) {
+              if (isPathMissingError(err)) {
+                exists = false;
+              } else {
+                const msg = err instanceof Error ? err.message : String(err);
+                return finalize(`ERROR write_file: ${msg}`, secrets);
+              }
+            }
 
-        if (exists) {
-          const gate = freshness.assertCanEdit(path, live);
-          if (!gate.ok) {
-            return finalize(editGateError('write_file', gate.code), secrets);
-          }
-        }
+            if (exists) {
+              const gate = freshness.assertCanEdit(path, live);
+              if (!gate.ok) {
+                return finalize(editGateError('write_file', gate.code), secrets);
+              }
+            }
 
-        const result = await client.writeFile(path, input.content, input.mkdir, {
+            const result = await client.writeFile(
+              path,
+              input.content,
+              input.mkdir,
+              { signal },
+            );
+            const fp = await resolveFingerprint(
+              client,
+              path,
+              { mtimeMs: result.mtimeMs, size: result.size },
+              signal,
+            );
+            freshness.recordWrite(path, fp);
+            const ann = formatCwdAnnotation(cwdSnap);
+            return finalize(
+              `write_file ${path}${ann}: ok bytes=${result.bytes}`,
+              secrets,
+            );
+          },
           signal,
-        });
-        const fp = await resolveFingerprint(
-          client,
-          path,
-          { mtimeMs: result.mtimeMs, size: result.size },
-          signal,
-        );
-        freshness.recordWrite(path, fp);
-        const ann = formatCwdAnnotation(cwdSnap);
-        return finalize(
-          `write_file ${path}${ann}: ok bytes=${result.bytes}`,
-          secrets,
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -463,41 +478,52 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         }
         const path = resolved.path;
 
-        let live: DiskFingerprint = {};
-        try {
-          const st = await client.stat(path, { signal });
-          live = finiteFp({ mtimeMs: st.mtimeMs, size: st.size });
-        } catch (err) {
-          if (isPathMissingError(err)) {
-            return finalize('ERROR str_replace: File not found', secrets);
-          }
-          const msg = err instanceof Error ? err.message : String(err);
-          return finalize(`ERROR str_replace: ${msg}`, secrets);
-        }
+        // Per-path serialize + re-validate on latest bytes (bug #479): the whole
+        // stat → gate → replace → recordWrite critical section runs under the
+        // path lock so two overlapping same-path applies never both pass the
+        // gate on a shared snapshot and silently drop one edit. Key is
+        // namespaced by the per-binding jail root (review L7 #481).
+        return await defaultPathLock.withPathLock(
+          lockKey(workspaceRoot, path),
+          async () => {
+            let live: DiskFingerprint = {};
+            try {
+              const st = await client.stat(path, { signal });
+              live = finiteFp({ mtimeMs: st.mtimeMs, size: st.size });
+            } catch (err) {
+              if (isPathMissingError(err)) {
+                return finalize('ERROR str_replace: File not found', secrets);
+              }
+              const msg = err instanceof Error ? err.message : String(err);
+              return finalize(`ERROR str_replace: ${msg}`, secrets);
+            }
 
-        const gate = freshness.assertCanEdit(path, live);
-        if (!gate.ok) {
-          return finalize(editGateError('str_replace', gate.code), secrets);
-        }
+            const gate = freshness.assertCanEdit(path, live);
+            if (!gate.ok) {
+              return finalize(editGateError('str_replace', gate.code), secrets);
+            }
 
-        const result = await client.strReplace(
-          path,
-          input.old_string,
-          input.new_string,
-          input.replace_all,
-          { signal },
-        );
-        const fp = await resolveFingerprint(
-          client,
-          path,
-          { mtimeMs: result.mtimeMs, size: result.size },
+            const result = await client.strReplace(
+              path,
+              input.old_string,
+              input.new_string,
+              input.replace_all,
+              { signal },
+            );
+            const fp = await resolveFingerprint(
+              client,
+              path,
+              { mtimeMs: result.mtimeMs, size: result.size },
+              signal,
+            );
+            freshness.recordWrite(path, fp);
+            const ann = formatCwdAnnotation(cwdSnap);
+            return finalize(
+              `str_replace ${path}${ann}: ok replacements=${result.replacements} bytes=${result.bytes}`,
+              secrets,
+            );
+          },
           signal,
-        );
-        freshness.recordWrite(path, fp);
-        const ann = formatCwdAnnotation(cwdSnap);
-        return finalize(
-          `str_replace ${path}${ann}: ok replacements=${result.replacements} bytes=${result.bytes}`,
-          secrets,
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
