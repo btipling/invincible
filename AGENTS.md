@@ -233,6 +233,10 @@ ops inventory).
   `db-tenancy-bootstrap` for re-seed (resets bootstrap password + token
   ciphertext by design) or GHA `db-tenancy-backfill-deks` for legacy AMK→DEK
   data cutover (never seed for that). Public smoke: `npm run smoke:tenancy`.
+  **First-run bootstrap:** a tenant-less DB self-bootstraps via sign-up at
+  `/login` (no `SEED_*` env, no laptop) — the owner provisions sandboxes at
+  `/admin/sandboxes`; seed + `db-tenancy-bootstrap` stay legacy until seed
+  removal lands (phase 2).
 - Per-user **MCP** code is on `main` (Settings + agent merge). Schema on Production still needs GHA **`db-migrate`** when `user_mcp_servers` is missing. Operator smoke: [docs/mcp.md](docs/mcp.md) (Exa). Never put MCP API keys or user GitHub PATs in client/Wasm/git.
 - Optional **OIDC / SCIM** on origin are **Not Done** until an operator sets env
   and smokes. Do **not** claim they are configured, invent IdP URLs, or nag to
