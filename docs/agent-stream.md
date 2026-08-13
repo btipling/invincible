@@ -23,7 +23,7 @@ Response hints: `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`
 | `modelId` | no | Gateway model id |
 | `cwd` | no | Logical **workspace-root-relative** directory for this turn |
 
-**Omitted / null `cwd`:** server uses `SANDBOX_DEFAULT_CWD` when set and valid, else `"."`.  
+**Omitted / null `cwd`:** server uses `"."` (workspace-root default); there is no `SANDBOX_DEFAULT_CWD` env knob.  
 **Present but invalid** (host-absolute, control chars, non-string): **400** JSON error — not a stream.  
 **Response `cwd`:** included on JSON success and SSE `done` only when FS tools ran this turn; always a normalized workspace-relative path. Host session should update stored cwd **only on success** (never on abort/error).
 
@@ -104,7 +104,7 @@ Every harness turn paints a final line:
 | Model finished | `Turn ended · model finished` (System) |
 | User Stop | `Turn ended · you stopped` (System) |
 | Error / timeout / empty | `Turn ended · error · …` / timed out / empty (Error) |
-| Chat fallback | `Turn ended · chat finished` (System) |
+| Standalone chat (`/api/chat`) | `Turn ended · chat finished` (System) — kept helper only; a failed agent turn does **not** fall back here |
 
 These markers are **not** folded as tools into the next prompt.
 
@@ -135,7 +135,7 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Event map / tool summary | `lib/agent/agentStream.ts` |
 | streamText + reasoning option | `lib/agent/runAgent.ts`, `lib/agent/reasoningConfig.ts` |
 | Route SSE vs JSON | `app/api/agent/route.ts` |
-| Logical cwd parse / default env | `lib/agent/agentBody.ts`, `lib/sandbox/config.ts` (`SANDBOX_DEFAULT_CWD`), `lib/agent/workPath.ts` |
+| Logical cwd parse / default | `lib/agent/agentBody.ts`, `lib/sandbox/config.ts`, `lib/agent/workPath.ts` |
 | Host consumer + collapse/caps | `lib/harnessChat.ts`, `lib/agentApi.ts` |
 | Thinking paint | `native/harness/src/ui.zig` (protocol v8 kind) |
 | Feature divide | [feature-divide.md](feature-divide.md) |

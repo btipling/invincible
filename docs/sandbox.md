@@ -708,9 +708,9 @@ canonicalized to the same workspace-relative form by `rewriteExecRootToRel`
 ledger key as `src/foo.ts`; both BYO and Vercel share this one host seam. When `R`
 is unavailable (BYO daemon down/pre-v2/probe fault → `workspaceRoot === null`),
 absolute args **fail closed** with “Sandbox workspace root unavailable — use a
-workspace-relative path” while relative + logical cwd keep working.
-`SANDBOX_DEFAULT_CWD` remains a per-deploy *default logical cwd*
-(workspace-relative), distinct from the jail root.
+workspace-relative path” while relative + logical cwd keep working. The jail
+root `R` is distinct from the **logical cwd**; there is no `SANDBOX_DEFAULT_CWD`
+env knob — an unset session/`cwd` boots at `"."` (workspace root).
 
 ### Why it exists
 
@@ -741,7 +741,7 @@ Paths resolve with **prefix-aware** join (not naive always-join):
 | Argument path | Behavior |
 |---------------|----------|
 | Argument **`.`** (stay) | Resolves to the **current** logical cwd — `change_dir .` stays where you are and does **not** jump to the workspace root |
-| Stored **`.`** (workspace-root default) | The `.` *value* is the workspace-root **default** when no other cwd is set; the default session/cwd starts from `SANDBOX_DEFAULT_CWD` |
+| Stored **`.`** (workspace-root default) | The `.` *value* is the workspace-root **default** (session start) when no other cwd is set; there is no env cwd default |
 | **`..` (walk up)** | Collapses within the workspace root — `change_dir ..` from `cwd=invincible/docs` → `invincible`. It errors ("Path escapes workspace root") only when it would climb **above** the jail root |
 | Equals current cwd, or starts with `cwd/` | Treated as already workspace-root-relative — **not** re-joined under cwd |
 | **Exact ancestor of cwd** | Re-roots to the workspace root instead of blind-joining: `change_dir invincible` from `cwd=invincible/docs` → `invincible`, **not** the phantom `invincible/docs/invincible`. A sibling that only shares a name prefix (`foo` from `cwd=foobar/x`) stays relative — no false re-root |
@@ -779,13 +779,11 @@ structured data; that tradeoff is locked by a `workPath` regression test.
 |--------|-----------|
 | Host session `cwd` | Sent on each agent POST when the browser session remembers a cwd |
 | Request body `cwd` | Present (non-null) → validated; invalid → **400** |
-| `SANDBOX_DEFAULT_CWD` | Body **omits** `cwd` (or null) → server default (workspace-relative only) |
-| `"."` | Env unset or invalid |
+| `"."` | Body **omits** `cwd` (or null) → server default; there is no `SANDBOX_DEFAULT_CWD` env knob |
 
-Invalid `SANDBOX_DEFAULT_CWD` is ignored (falls back to `"."`) with a one-time
-server warning — it does not fail process boot. Set it in the **Vercel project
-env** UI for Production/Preview (e.g. `invincible` for a nested checkout). Verify
-with the `pwd` tool after a harness turn.
+Omitted/null/empty `cwd` always resolves to `"."` (workspace-root default) —
+there is no host-wide `SANDBOX_DEFAULT_CWD` to set or ignore. Verify with the
+`pwd` tool after a harness turn.
 
 Host updates the stored session cwd from the turn's **logical cwd**: success
 prefers the authoritative `agentResult.cwd`, and a **confirmed successful

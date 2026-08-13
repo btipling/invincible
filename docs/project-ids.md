@@ -19,8 +19,8 @@ Public-facing IDs and URLs. **No host IPs, droplet IDs, or cloud account GUIDs**
 | `AI_GATEWAY_API_KEY` | Vercel Production + Preview | Server-side only |
 | `HARNESS_ARTIFACT_TOKEN` | Vercel | Actions: Read — prebuild downloads `harness-wasm` |
 | `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions secret | `build-harness` may ping after artifact upload |
-| `SANDBOX_URL` | Vercel / local server | Agent sandbox base URL — **must be Vercel-reachable in prod**; never commit real hosts |
-| `SANDBOX_TOKEN` | Vercel + sandbox process | Shared bearer; server-only |
+| `SANDBOX_URL` | Local / BYO daemon only | Local BYO daemon base URL (bootstrap) — **not** a Vercel product-routing secret; product tool turns resolve from DB grants; never commit real hosts |
+| `SANDBOX_TOKEN` | Sandbox daemon process | Shared bearer for the local/byo daemon bootstrap only — **not** a Vercel product-routing secret; never client/Wasm |
 | `AGENT_MAX_STEPS` | Vercel (optional) | Optional tool-loop safety ceiling (1…256); unset = model-ended |
 
 Agents on **origin**: secrets listed as **Done** in [`AGENTS.md`](../AGENTS.md)

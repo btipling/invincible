@@ -10,17 +10,17 @@ describe('parseAgentBody', () => {
     });
   });
 
-  it('omitted cwd uses SANDBOX_DEFAULT_CWD when set', () => {
+  it('omitted cwd ignores env SANDBOX_DEFAULT_CWD → always .', () => {
     expect(
       parseAgentBody({ prompt: 'hi' }, { SANDBOX_DEFAULT_CWD: 'invincible' }),
     ).toEqual({
       ok: true,
       prompt: 'hi',
-      cwd: 'invincible',
+      cwd: '.',
     });
   });
 
-  it('null cwd uses SANDBOX_DEFAULT_CWD (same as omit)', () => {
+  it('null cwd always resolves to . (env ignored)', () => {
     expect(
       parseAgentBody(
         { prompt: 'hi', cwd: null },
@@ -29,34 +29,32 @@ describe('parseAgentBody', () => {
     ).toEqual({
       ok: true,
       prompt: 'hi',
-      cwd: 'invincible',
+      cwd: '.',
     });
   });
 
-  it('omitted cwd ignores invalid SANDBOX_DEFAULT_CWD', () => {
-    expect(
-      parseAgentBody({ prompt: 'hi' }, { SANDBOX_DEFAULT_CWD: '/etc' }),
-    ).toEqual({
+  it('empty/whitespace cwd always resolves to .', () => {
+    expect(parseAgentBody({ prompt: 'hi', cwd: '' }, {})).toEqual({
+      ok: true,
+      prompt: 'hi',
+      cwd: '.',
+    });
+    expect(parseAgentBody({ prompt: 'hi', cwd: '   ' }, {})).toEqual({
       ok: true,
       prompt: 'hi',
       cwd: '.',
     });
   });
 
-  it('body cwd wins over SANDBOX_DEFAULT_CWD', () => {
-    expect(
-      parseAgentBody(
-        { prompt: 'hi', cwd: 'proj' },
-        { SANDBOX_DEFAULT_CWD: 'invincible' },
-      ),
-    ).toEqual({
+  it('body cwd wins (valid workspace-relative)', () => {
+    expect(parseAgentBody({ prompt: 'hi', cwd: 'proj' }, {})).toEqual({
       ok: true,
       prompt: 'hi',
       cwd: 'proj',
     });
   });
 
-  it('accepts valid cwd', () => {
+  it('valid cwd passes through', () => {
     expect(parseAgentBody({ prompt: 'hi', cwd: 'invincible' }, {})).toEqual({
       ok: true,
       prompt: 'hi',

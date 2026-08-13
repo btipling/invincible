@@ -72,7 +72,7 @@ async function closeRunners(
  *
  * POST { prompt: string, modelId?: string, cwd?: string }
  * → JSON { text, toolTrace?, cwd? } | { error }
- * Omitted cwd → SANDBOX_DEFAULT_CWD if valid, else ".".
+ * Omitted/null cwd → ".".
  * → or SSE (Accept: text/event-stream) agent events (docs/agent-stream.md)
  *
  * Always multi-tenant on: session user required, DB-resolved sandbox + grants +
@@ -155,7 +155,6 @@ export async function POST(req: Request): Promise<Response> {
     redactList = [
       ...byok.secretsToRedact,
       serverSecrets.gatewayKey,
-      serverSecrets.sandboxToken,
     ].filter(Boolean) as string[];
 
     // Per-user GitHub PAT → sandbox exec env (client options only; never tool schema).

@@ -1,10 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   MAX_AGENT_MAX_STEPS,
-  SANDBOX_NOT_CONFIGURED_ERROR,
   resolveAgentMaxSteps,
-  resolveSandboxDefaultCwd,
-  resetSandboxDefaultCwdLogForTests,
   normalizeBaseUrl,
 } from './config';
 
@@ -32,37 +29,15 @@ describe('sandbox config', () => {
     ).toBe(MAX_AGENT_MAX_STEPS);
   });
 
-  it('503 error string is stable for host matching', () => {
-    expect(SANDBOX_NOT_CONFIGURED_ERROR).toBe(
-      'Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.',
-    );
-  });
-});
-
-describe('resolveSandboxDefaultCwd', () => {
-  afterEach(() => {
-    resetSandboxDefaultCwdLogForTests();
-  });
-
-  it('returns . when unset or blank', () => {
-    expect(resolveSandboxDefaultCwd({})).toBe('.');
-    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: '' })).toBe('.');
-    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: '   ' })).toBe('.');
-  });
-
-  it('returns normalized workspace-relative path', () => {
-    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: 'invincible' })).toBe(
-      'invincible',
-    );
-    expect(
-      resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: '  invincible/sub  ' }),
-    ).toBe('invincible/sub');
-  });
-
-  it('invalid env falls back to . without throw', () => {
-    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: '/etc' })).toBe('.');
-    expect(resolveSandboxDefaultCwd({ SANDBOX_DEFAULT_CWD: 'C:\\Windows' })).toBe(
-      '.',
-    );
+  it('does not export legacy 503 / default-cwd bootstrap symbols', async () => {
+    // Phase 3 (#476): SANDBOX_DEFAULT_CWD / resolveSandboxDefaultCwd /
+    // SANDBOX_NOT_CONFIGURED_ERROR are removed; normalizeBaseUrl stays.
+    // Cast through any: absent named exports are read as undefined on the
+    // module namespace without tripping the static type check.
+    const mod = (await import('./config')) as Record<string, unknown>;
+    expect(mod.normalizeBaseUrl).toBeTypeOf('function');
+    expect(mod.SANDBOX_NOT_CONFIGURED_ERROR).toBeUndefined();
+    expect(mod.resolveSandboxDefaultCwd).toBeUndefined();
+    expect(mod.resetSandboxDefaultCwdLogForTests).toBeUndefined();
   });
 });

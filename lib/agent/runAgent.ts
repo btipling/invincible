@@ -176,7 +176,6 @@ function resolveRunSecrets(
   return [
     ...(params.secrets ?? []),
     params.serverSecrets?.gatewayKey,
-    params.serverSecrets?.sandboxToken,
   ];
 }
 

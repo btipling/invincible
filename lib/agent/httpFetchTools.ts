@@ -172,12 +172,11 @@ export async function fetchFollowingRedirects(opts: {
  * Soft-fail: never throw from execute.
  */
 export function createHttpFetchTools(opts: CreateHttpFetchToolsOptions) {
-  // Scrub Gateway / DO sandbox token from model-facing tool strings. Secrets are
-  // injected (route-resolved serverSecrets) — no process.env reads in this body.
+  // Scrub the Gateway key from model-facing tool strings. Secrets are injected
+  // (route-resolved serverSecrets) — no process.env reads in this body.
   const secrets: Array<string | undefined | null> = [
     ...(opts.secrets ?? []),
     opts.serverSecrets?.gatewayKey,
-    opts.serverSecrets?.sandboxToken,
   ];
   const includeHead = opts.includeHead !== false;
   const defaultMaxBytes = opts.maxBytes;

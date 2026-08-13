@@ -11,7 +11,7 @@ If you find a vulnerability in Invincible, please open a **private** security ad
 | `AI_GATEWAY_API_KEY` | Vercel project env only |
 | `HARNESS_ARTIFACT_TOKEN` | Vercel (Actions: Read PAT for artifact download) |
 | `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions secrets |
-| `SANDBOX_TOKEN` | Vercel project env **and** sandbox process env (same secret) |
+| `SANDBOX_TOKEN` | **BYO daemon / local bootstrap only** — not a Vercel product-routing secret (product tool turns resolve credentials from DB grants); sandbox process env; never client/Wasm |
 | `DATABASE_URL` | Vercel / local only (prefer **pooled** Neon/PgBouncer URL) |
 | `REDIS_URL` | Vercel project env only (optional BYO multi-session Redis; node-redis RESP — the URL **embeds** the credential `redis://default:<secret>@<host>:<port>`). **Never** log it; never `NEXT_PUBLIC_*`. Old `SESSION_REDIS_*` / `UPSTASH_REDIS_REST_*` names are **removed** — if present, the store logs a one-time (value-free) deprecation hint then 503s until `REDIS_URL` is set |
 | `CREDENTIALS_ENCRYPTION_KEY` | Vercel / local only — base64 32-byte AES-256-GCM **AMK** (wraps per-tenant DEKs; tokens encrypt under DEK) |
@@ -48,7 +48,7 @@ If you find a vulnerability in Invincible, please open a **private** security ad
 | `AI_GATEWAY_API_KEY` | Vercel project env only |
 | `HARNESS_ARTIFACT_TOKEN` | Vercel (Actions: Read PAT for artifact download) |
 | `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions secrets |
-| `SANDBOX_TOKEN` | Vercel project env **and** sandbox process env (same secret) |
+| `SANDBOX_TOKEN` | **BYO daemon / local bootstrap only** — not a Vercel product-routing secret (product tool turns resolve credentials from DB grants); sandbox process env; never client/Wasm |
 | `DATABASE_URL` | Vercel / local only (prefer **pooled** Neon/PgBouncer URL) |
 | `REDIS_URL` | Vercel project env only (optional BYO multi-session Redis; node-redis RESP — the URL **embeds** the credential `redis://default:<secret>@<host>:<port>`). **Never** log it; never `NEXT_PUBLIC_*`. Old `SESSION_REDIS_*` / `UPSTASH_REDIS_REST_*` names are **removed** — if present, the store logs a one-time (value-free) deprecation hint then 503s until `REDIS_URL` is set |
 | `CREDENTIALS_ENCRYPTION_KEY` | Vercel / local only — base64 32-byte AES-256-GCM **AMK** (wraps per-tenant DEKs; tokens encrypt under DEK) |
