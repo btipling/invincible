@@ -10,7 +10,7 @@
  */
 
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
-export const HARNESS_PROTOCOL_VERSION = 10 as const;
+export const HARNESS_PROTOCOL_VERSION = 11 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -72,6 +72,11 @@ export type HarnessBridgeExports = {
   inv_set_lifecycle: (status: number) => void;
   inv_get_lifecycle: () => number;
   inv_message_count: () => number;
+  // Protocol v11 — additive test-facing ring readback (mirrors `messageAt(i)`).
+  // Never counts toward the product ring length (`inv_message_count` is unchanged).
+  inv_message_kind_at: (i: number) => number;
+  inv_message_text_len_at: (i: number) => number;
+  inv_message_text_copy_at: (i: number, outPtr: number, maxLen: number) => number;
   inv_begin_batch: () => void;
   inv_end_batch: () => void;
   inv_push_message: (kind: number, ptr: number, len: number) => void;
@@ -122,6 +127,9 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_set_lifecycle',
   'inv_get_lifecycle',
   'inv_message_count',
+  'inv_message_kind_at',
+  'inv_message_text_len_at',
+  'inv_message_text_copy_at',
   'inv_begin_batch',
   'inv_end_batch',
   'inv_push_message',
@@ -233,6 +241,47 @@ export class HarnessBridge {
 
   messageCount(): number {
     return this.exports.inv_message_count() >>> 0;
+  }
+
+  /**
+   * Protocol v11 — read the message kind of ring index `i` (tests / readback).
+   * Returns a `MessageKind` for a valid index, or 0 (out of range). Additive:
+   * never alters `inv_message_count` or paint.
+   */
+  messageKindAt(i: number): MessageKind {
+    return this.exports.inv_message_kind_at(i | 0) as MessageKind;
+  }
+
+  /**
+   * Protocol v11 — read the body length (UTF-8 bytes) of ring index `i`.
+   * Useful for tests to size a copy without guessing.
+   */
+  messageTextLenAt(i: number): number {
+    return this.exports.inv_message_text_len_at(i | 0) >>> 0;
+  }
+
+  /**
+   * Protocol v11 — read the UTF-8 body of ring index `i`. Returns `''` when out
+   * of range or empty. Test-facing readback of the exact bytes the Wasm ring
+   * holds.
+   */
+  messageTextAt(i: number): string {
+    const len = this.messageTextLenAt(i);
+    if (len === 0) return '';
+    const ptr = this.exports.gpa_u8(len);
+    if (!ptr) throw new Error('gpa_u8 failed for message readback');
+    try {
+      const copied = this.exports.inv_message_text_copy_at(i | 0, ptr, len);
+      return this.readUtf8(ptr, copied);
+    } finally {
+      this.exports.gpa_free(ptr, len);
+    }
+  }
+
+  /** Protocol v11 — read the full message at ring index `i`, or null when OOR. */
+  messageAt(i: number): BridgeMessage | null {
+    if (i < 0 || i >= this.messageCount()) return null;
+    return { kind: this.messageKindAt(i), text: this.messageTextAt(i) };
   }
 
   beginBatch(): void {

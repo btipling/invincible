@@ -28,7 +28,7 @@ optional login chrome).
 | Session ring window + Load earlier poll | **DOM** host + **Wasm** control | Host slices ≤**2048** (`HARNESS_RING_MAX`); **Load earlier** steps by **`HISTORY_PAGE` = 512**; Wasm pending (protocol v6); no React transcript |
 | Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status; model chip is a **mirror** of Wasm selection, not a second picker |
 | Model catalog fetch (`GET /api/models`) | **DOM** | Session-gated; host pushes ids into Wasm catalog |
-| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v10**) |
+| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v11**) |
 | Selected `modelId` on inference | **DOM host** → **Vercel backend** | Host reads bridge; POST body; server re-authorizes grants + BYOK |
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
 | Per-user MCP config UI | **DOM** | `/settings`, `/settings/mcp` — not dual chat; not Admin |
@@ -79,29 +79,37 @@ User types in Wasm composer
               + enabled per-user MCP tools (server-side only; soft-fail dead servers)
        SSE: tool_start / tool_result / reasoning_delta / text_delta / done (see docs/agent-stream.md)
        JSON fallback when Accept is not event-stream (tests / simple clients)
-  → Host aggregates each uninterrupted tool streak into ONE display-only `tool_run` message (kind 6, protocol v10) + Thinking monologue + growing Assistant (protocol v8 update-last); the `tool_run` row is **commit-once** — pushed to the bridge only at a true boundary (assistant text, turn end, or group-full roll), never live under Busy; on reload consecutive `tool_run` rows coalesce into scannable groups (plan #365)
+  → Host aggregates each uninterrupted tool streak into a display-only `tool_run` message (kind 6, protocol v11) + Thinking monologue + growing Assistant (protocol v8 update-last). The `tool_run` card is **painted live**: each tool event opens (or grows) exactly ONE kind-6 card immediately — `1 tool called` → `2 tools called` → … — via `update_last` while the last ring row is a tool-run, else a NEW card at `1`. A thinking/assistant/user/error row that lands last is a physical separator (forces a new card); on reload consecutive `tool_run` rows coalesce into scannable groups (plan #365)
   → Thinking rows **collapse at turn end** into a compact expandable control (in-memory; ephemeral; not SessionStore); the active Busy turn stays fully expanded
   → Tool-run rows paint as a default-collapsed `N tools called` expandable control (counts + two-level detail); see [harness-limits.md](harness-limits.md)
-  → User reads thinking + reply in the Wasm transcript while Busy; the `N tools called` card commits on the first boundary (reply start or turn end), one group per streak
+  → User reads the live `N tools called` increment in the Wasm transcript while Busy — the count grows per tool event on the canvas, never withheld until a boundary
 ```
 
 **toolTrace display (host → Wasm tool_run):** the host aggregates each
 uninterrupted tool streak into **one** display-only `tool_run` message (bridge
-kind 6, protocol v10, session role `tool_run`; `lib/toolRun.ts` payload,
+kind 6, protocol v11, session role `tool_run`; `lib/toolRun.ts` payload,
 `native/harness/src/rich/toolrun.zig` decoder). Short human one-liners only —
 ``{toolName} · ✓ ok|✗ failed · {preview}``, never raw MCP/server JSON envelopes
 such as `{"content":[{"type":"text",…}]}`. Tool execute results are flattened
 server-side before the model and before summaries. **DOM owns aggregation** (it
 sees the structured `tool_result.ok`); **Wasm owns presentation** (expandable
 paint; default collapsed). `tool_run` is persisted + repainted but **not**
-folded into the model prompt (display-only). Grouping is driven by the single `lastUiKind` predicate in `lib/harnessChat.ts` (thinking keeps a streak; real assistant/user/error split; empty/whitespace-only assistant is not a boundary). On reload/hydrate (`pushSessionToBridge`) consecutive `tool_run` rows are coalesced via `mergeToolRunPayloads` into scannable groups (rolling at `TOOL_RUN_ITEMS_MAX`), never across an assistant/user/error boundary.
+folded into the model prompt (display-only). Under the **#433 live-increment
+lock**, the live-path grouping predicate in `lib/harnessChat.ts` is a single
+`lastRingRowIsToolRun` flag (the host is the only ring writer): a tool event
+grows the open card iff the last ring row is a tool-run, else it opens a NEW
+card at `1` — so a thinking/assistant/user/error row that lands last (incl. a
+Thinking separator) starts a fresh card; empty/whitespace-only assistant is not
+a boundary. On reload/hydrate (`pushSessionToBridge`) consecutive `tool_run`
+rows are coalesced via `mergeToolRunPayloads` into scannable groups (rolling at
+`TOOL_RUN_ITEMS_MAX`), never across an assistant/user/error boundary.
 
 ## Key source paths
 
 | Concern | Path |
 |---------|------|
 | Host shell | `app/harness/HarnessHost.tsx` |
-| Bridge TS (protocol **v10**) | `lib/harnessBridge.ts` |
+| Bridge TS (protocol **v11**) | `lib/harnessBridge.ts` |
 | Image fetch/decode | `lib/harnessImages.ts` |
 | Model catalog API | `app/api/models/route.ts` |
 | Admin inference keys | `app/admin/inference/*` |
@@ -114,7 +122,7 @@ folded into the model prompt (display-only). Grouping is driven by the single `l
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
 | Export whitelist | `native/harness/build.zig` |
 
-Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **9**).
+Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **11**).
 Mismatch → load error; rebuild both sides. Image **bytes** enter only via bridge put; never dual DOM `<img>` product surface.
 
 ## Related

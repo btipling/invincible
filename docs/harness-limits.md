@@ -89,9 +89,12 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 ### Tool-run (collapsed tool traces)
 
 The host aggregates each uninterrupted tool streak into **one** display-only
-`tool_run` message (bridge kind **6**, protocol **v10**, session role
+`tool_run` message (bridge kind **6**, protocol **v11**, session role
 `tool_run`) instead of one System row per tool. The Wasm paints it as an
-expandable control.
+expandable control. The card is **painted live**: a tool event opens (or grows)
+a single kind-6 row immediately on the canvas — `1 tool called` → `2…` — via
+`update_last`, never withheld until a boundary (the commit-once lock is removed;
+see Group boundaries).
 
 | Topic | Behavior |
 |-------|----------|
@@ -100,7 +103,7 @@ expandable control.
 | Detail vs scroll | Level-2 detail paints **inline** inside the one outer transcript scroller — there is **no** nested `scrollArea`. Command/output previews use the embedded **Vera Sans Mono** face (`exec`/filesystem/`http_*`, and any **multi-line** detail so MCP/custom-tool output also reads as a block); prose/single-line detail stays the body face. Long detail is bounded per-tool by the server preview cap (`TOOL_RUN_PREVIEW_MAX_CHARS` = 100k) with the **real** head **40** / tail **10** lines + `… (M more lines)`, and the whole group is bounded by the encode budget + hard clamp below, so the transcript wheel is not trapped |
 | Painter | `native/harness/src/ui.zig` → `paintToolRun`; payload decode in `native/harness/src/rich/toolrun.zig` (fail-open → raw body text) |
 | Open state | Two module-level `std.AutoHashMap(dvui.Id, void)` open-branch maps (per message id / per item id) survive repaint / `update_last`; cleared on reload / Clear / truncate → collapsed-by-default |
-| Group boundaries | Grouping keys off the last committed/pushed row state (`lastUiKind`): thinking between tools continues a streak; a real (non-empty trimmed) assistant segment, a user send, or an error/turn-end opens a new group; empty **and whitespace-only** assistant (or a blank `text_delta`) is **not** a boundary. A group's counts are written **once** at the boundary (commit-once), not streamed live via `update_last` |
+| Group boundaries | Grouping keys off the **last painted ring row** via the host's `lastRingRowIsToolRun` flag (the host is the only ring writer): a tool event grows the open card **iff** the last ring row is a tool-run; a **thinking row last**, a real (non-empty trimmed) assistant segment, a user send, or an error/turn-end opens a NEW card at `1`; empty **and whitespace-only** assistant (or a blank `text_delta`) is **not** a boundary. Counts **paint live** — each tool event opens/grows the kind-6 card immediately (`1 tool called` → `2…`) via `update_last`, never withheld until a boundary (removed commit-once). A group still rolls to a new card at `TOOL_RUN_ITEMS_MAX`, and the rolled (full) card is never grown |
 | Group bound | A group stores at most **200** items (`TOOL_RUN_ITEMS_MAX`); a longer streak rolls a new `tool_run` group (counts stay exact across groups). The whole group encodes into **one** message, so the host enforces a group **encode budget** (`TOOL_RUN_GROUP_DETAIL_ENC_MAX` ≈ 229 KiB of encoded `detail`) that clips/omits previews plus an encode-time hard clamp to `TOOL_RUN_MSG_HARD_MAX` (`262 144`) — a multi-item streak of large previews can **never** overflow the ring/cloud per-msg cap (it clips an explicit `…` or falls back to the L1 static label, never a silent mid-payload truncation) |
 | Session | One `tool_run` message per group round-trips local + cloud and repaints collapsed on restore; **not** folded into the model prompt (display-only). Caveat: prior tool summaries no longer reach the model on a **continue after a mid-tool cancel** — the model sees only persisted assistant prose and may re-run or infer tools. That is the documented product rule (kept for the cancel/Copy-fed transcript). |
 | Reload | Thinking is ephemeral and **never survives refresh**; `tool_run` + assistant are the durable transcript. On hydrate the host coalesces **consecutive** `tool_run` rows into scannable groups (`mergeToolRunPayloads`, rolling at `TOOL_RUN_ITEMS_MAX` + re-clamping the detail budget) so a long session doesn't read as a wall of `N×1` collapsed cards; rows separated by an assistant/user/error/turn-end line stay distinct. Counts stay exact after coalescing (recounted). **Coalescing is bridge/display-only** — `SessionStore` and the cloud row still hold the original N×1 `tool_run` messages (cloud PUT size, future non-bridge UIs, and debug dumps keep the uncoalesced wall; the merged groups exist only in the Wasm ring). |
