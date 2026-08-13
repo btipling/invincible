@@ -4,7 +4,7 @@
 #   inputs:
 #     confirm=backfill   (required misclick guard)
 #     dry_run=true       optional — validate secrets only, no mutate
-#     run_migrate=true   optional — drizzle migrate only (no seed) if DEK columns missing
+#     run_migrate=true   optional — drizzle migrate only if DEK columns missing
 #
 # Repository secrets (names only — set via GitHub web UI or `gh secret set`
 # from a cloud agent; never commit values or paste into issues/PR chat):
@@ -21,7 +21,7 @@
 #     Vercel TENANT_TOKEN_DECRYPT_MODE=dek-only + redeploy.
 #
 # Explicit non-paths:
-#   - NOT db-tenancy-bootstrap / seed (resets password + token ciphertext)
+#   - NOT app first-run sign-up / `db-migrate` (this is not a bootstrap)
 #   - NOT personal-laptop npm as the official path
 #   - NOT self-hosted runner
 #
@@ -47,7 +47,7 @@ on:
         type: boolean
         default: false
       run_migrate:
-        description: 'If true, run drizzle migrate before backfill (no seed). Use when DEK columns missing.'
+        description: 'If true, run drizzle migrate before backfill. Use when DEK columns missing.'
         required: false
         type: boolean
         default: false
@@ -73,7 +73,7 @@ jobs:
           exit 1
 
       # Fail closed before checkout/install so missing secrets and dry_run
-      # never pay npm ci, and install never sees unrelated seed secrets.
+      # never pay npm ci, and install never sees unrelated secrets.
       - name: Fail closed — required secrets present
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -168,6 +168,6 @@ jobs:
             echo "- run_migrate: ${{ inputs.run_migrate }}"
             echo "- tenantsUpdated: ${{ steps.backfill.outputs.tenantsUpdated }}"
             echo "- sandboxesReencrypted: ${{ steps.backfill.outputs.sandboxesReencrypted }}"
-            echo "- note: idempotent; re-run safe. Never seed for this cutover."
+            echo "- note: idempotent; re-run safe. Migrate/backfill only."
             echo "- next: smoke login/tools; optional Vercel TENANT_TOKEN_DECRYPT_MODE=dek-only"
           } >> "${GITHUB_STEP_SUMMARY}"

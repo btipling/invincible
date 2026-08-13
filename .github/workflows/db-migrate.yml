@@ -8,8 +8,9 @@
 #   DATABASE_URL  — must === Vercel Production (dual-store)
 #
 # Use this for additive schema (e.g. provider_secrets 0003) on existing
-# Production. Do NOT use db-tenancy-bootstrap/seed for schema-only cutover
-# (seed resets bootstrap password + token ciphertext).
+# Production. This is the schema-only mutating path; the app's first-run
+# sign-up is the tenancy bootstrap (there is no seed script). Do NOT use this
+# for data/backfill cutovers.
 #
 # Safety: workflow_dispatch only; ubuntu-latest only; never self-hosted;
 # never echo secret values; job summary success/fail only.

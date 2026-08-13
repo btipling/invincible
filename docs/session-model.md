@@ -195,7 +195,8 @@ Cloud sync stores **messages** (trimmed), not the current ring window index.
 3. One-shot Postgres→Redis backfill: GitHub Actions →
    **`sessions-redis-backfill`** → `confirm=backfill` (optional `dry_run` first).
    Idempotent per-`{tenant,user}` marker; then `harness_sessions` is a read-only
-   archive. **Never** use `db-migrate`/`db-tenancy-bootstrap`/seed for this.
+   archive. **Never** use `db-migrate` or the app's first-run sign-up for this
+   (that is not a backfill).
 4. Redeploy the app if env just changed.
 5. **Smoke (product UI):** same signed-in user in two browsers — turn on A,
    refresh B sees it; `New` creates a second session; picker switches; Clear on A

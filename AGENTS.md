@@ -49,14 +49,14 @@ self-hosted **runner** are also cloud.
 |----|--------|
 | Assume the “shell” is a **cloud agent workspace** or **GitHub Actions** job | Assume the human has a laptop clone of the repo |
 | Tell operators to set secrets in **Vercel** / GitHub / managed Postgres UI | Tell them to `cd ~/…`, install Node on their machine, or “run locally” |
-| Run `npm test` / migrate / seed / backfill **in the agent workspace or GHA** when needed | Treat “local” as the human’s personal computer |
+| Run `npm test` / migrate / backfill **in the agent workspace or GHA** when needed | Treat “local” as the human’s personal computer |
 | Prefer **cloud-native cutover** paths (**Actions `workflow_dispatch` primary**, then agent-run scripts, hosted DB) | Document laptop-only ops **or script-only npm** as the primary Production path |
 
 “Local” in this file means **the agent’s or CI’s checkout**, not a developer’s
 home directory. Product copy and plans must not require personal hardware.
 
 **Plans are not enough if they only say “run npm.”** A sentence here is not an
-operator surface. Any Production **data/secret mutate** (migrate, seed, backfill,
+operator surface. Any Production **data/secret mutate** (migrate, backfill,
 re-encrypt, coordinated cutover) must ship a **GitHub Actions** entrypoint
 (usually `workflow_dispatch` with confirm/dry_run guards on `ubuntu-latest`) as
 the **primary** path. `package.json` scripts are what the job runs — not a
@@ -85,7 +85,7 @@ Do **not** write product/ops guides as phase narratives or issue archaeology
   laptop/script-only Production cutover as a **Blocker**.
 - Config seams for BYO Vercel/keys/runner (#38), **sandbox MVP** (#45),
   **optional multi-tenant auth** (#54 phases 1–5 + cloud cutover #67), and
-  GHA `db-tenancy-bootstrap` + [docs/bring-your-own.md](docs/bring-your-own.md) §4a
+  the **first-run sign-up bootstrap** ([docs/bring-your-own.md](docs/bring-your-own.md) §4a)
   are **landed** on origin Production (unauth API 401 + login verified).
   **SSO/SCIM** code ([#64](https://github.com/btipling/invincible/issues/64)
   phases 1–3) is on `main`; **origin** OIDC/SCIM env remains **Not Done** until
@@ -103,14 +103,15 @@ Do **not** write product/ops guides as phase narratives or issue archaeology
   **code** is on `main` (envelope + dual-read + owner DEK rotate). Origin **data**
   cutover (legacy AMK tokens → DEK, then optional `dek-only`): primary path is
   GHA **`db-tenancy-backfill-deks`** (`confirm=backfill`; dual-store secrets);
-  do **not** use seed/bootstrap for that (seed resets password + token). Dual-read
-  keeps Production working until the operator dispatches backfill + optional
-  `TENANT_TOKEN_DECRYPT_MODE=dek-only`. Never laptop npm as the official cutover.
-- **Tenant BYOK inference** is on `main`: admin **`/admin/inference`**, `GET /api/models`, harness protocol v3 model cycle, chat/agent request-scoped BYOK. **Never** route via a host env-model fallback. Additive schema for provider tables: GHA **`db-migrate`** (not seed). Docs: [docs/bring-your-own.md](docs/bring-your-own.md) §4a Inference keys.
+  do **not** use `db-migrate`/the bootstrap for that (migrations are schema-only).
+  Dual-read keeps Production working until the operator dispatches backfill +
+  optional `TENANT_TOKEN_DECRYPT_MODE=dek-only`. Never laptop npm as the
+  official cutover.
+- **Tenant BYOK inference** is on `main`: admin **`/admin/inference`**, `GET /api/models`, harness protocol v3 model cycle, chat/agent request-scoped BYOK. **Never** route via a host env-model fallback. Additive schema for provider tables: GHA **`db-migrate`** (schema-only; the bootstrap is the app's first-run sign-up). Docs: [docs/bring-your-own.md](docs/bring-your-own.md) §4a Inference keys.
 
-- Do **not** instruct humans to clone the repo on a laptop to re-seed; use a
-  cloud agent workspace, GitHub Actions `db-tenancy-bootstrap`, or
-  [docs/bring-your-own.md](docs/bring-your-own.md) §4a.
+- Do **not** instruct humans to clone the repo on a laptop to bootstrap tenancy;
+  the app's **first-run sign-up** (after GHA **`db-migrate`**) is the no-laptop,
+  no-seed path — see [docs/bring-your-own.md](docs/bring-your-own.md) §4a.
 
 
 ## Project agent skills
@@ -228,15 +229,12 @@ ops inventory).
   no open shell (no login-free deploy mode). Do **not** nag the origin
   maintainer to “set `DATABASE_URL`” as if forgotten. If unauth `/api/agent` no
   longer returns 401 or login fails, treat as **regression** (env/redeploy),
-  not a greenfield cutover. Prefer cloud cutover docs
-  ([docs/bring-your-own.md](docs/bring-your-own.md) §4a) and GHA
-  `db-tenancy-bootstrap` for re-seed (resets bootstrap password + token
-  ciphertext by design) or GHA `db-tenancy-backfill-deks` for legacy AMK→DEK
-  data cutover (never seed for that). Public smoke: `npm run smoke:tenancy`.
-  **First-run bootstrap:** a tenant-less DB self-bootstraps via sign-up at
-  `/login` (no `SEED_*` env, no laptop) — the owner provisions sandboxes at
-  `/admin/sandboxes`; seed + `db-tenancy-bootstrap` stay legacy until seed
-  removal lands (phase 2).
+  not a greenfield cutover. The **bootstrap is the app's first-run sign-up** —
+  after GHA **`db-migrate`**, open `/login` on a tenant-less DB to create the
+  first tenant + owner (no seed env, no laptop); the owner provisions sandboxes
+  at `/admin/sandboxes`. Legacy AMK→DEK data cutover stays GHA
+  **`db-tenancy-backfill-deks`** only (never `db-migrate` for data). Public
+  smoke: `npm run smoke:tenancy`.
 - Per-user **MCP** code is on `main` (Settings + agent merge). Schema on Production still needs GHA **`db-migrate`** when `user_mcp_servers` is missing. Operator smoke: [docs/mcp.md](docs/mcp.md) (Exa). Never put MCP API keys or user GitHub PATs in client/Wasm/git.
 - Optional **OIDC / SCIM** on origin are **Not Done** until an operator sets env
   and smokes. Do **not** claim they are configured, invent IdP URLs, or nag to
@@ -268,7 +266,7 @@ invincible/
 ├── lib/                 # palette, chat, agent, bridge, session, sandbox, tenancy
 ├── sandbox/             # protocol v2 daemon (BYO tools workspace)
 ├── native/harness/      # Zig + dvui Wasm (CI on self-hosted runner)
-├── scripts/             # fetch-harness, seed-tenancy, runner scripts
+├── scripts/             # fetch-harness, backfill, runner scripts
 ├── docs/                # BYO, sandbox, mcp, builtin-http, feature-divide, limits, deploy race
 ├── public/harness/      # wasm/js gitignored; README only committed
 ├── AGENTS.md
@@ -287,7 +285,7 @@ invincible/
 | Tool-run aggregation + expandable transcript control (#325) | `lib/agent/agentStream.ts` (backend `tool_result.preview` — bounded/redacted L2 detail), `lib/toolRun.ts` (encode/decode, host aggregation, `meaningfulDetail` preview→`detail`, `mergeToolRunPayloads`/`encodeToolRunPayload` hydrate coalesce), `lib/harnessChat.ts` (stream/JSON aggregation → kind 6 `tool_run`, **live-painted**: a tool event opens/grows ONE card immediately via `update_last` — grouping keys off the host's `lastRingRowIsToolRun` flag, the only ring writer: grow iff the last ring row is a tool-run, else a NEW card at `1`; a thinking/assistant/user/error row last is a separator; commit-once is removed; reload coalescing of consecutive `tool_run` rows via `coalesceToolRunMessages` in `pushSessionToBridge`), `lib/sessionStore.ts` role `tool_run`, `native/harness/src/rich/toolrun.zig` (decode), `native/harness/src/ui.zig` (`paintToolRun` — **headerless**: no `tools` kind band; 📋 copy on the header row; status glyphs as the single channel from embedded faces, `✓`/`✗` DejaVu symbols + `…` Noto; L2 preview in Vera Sans Mono for command/output tools **or any multi-line detail**, body otherwise; short single-line results → static label, no blank expander), `native/harness/src/bridge.zig` + `lib/harnessBridge.ts` (protocol **v11**; additive test-only ring readback `inv_message_*_at`), protocol **v11**; expand state + stick-to-bottom reuse dvui `reorder_tree.zig` / `scrolling.zig` idioms |
 | Builtin HTTPS fetch (`http_get`) | `lib/agent/httpFetch*.ts`, `lib/agent/vercelSandboxHttpRunner.ts`, `lib/net/publicUrlPolicy.ts`, `docs/builtin-http.md` — env `BUILTIN_HTTP_FETCH`; user-created HTTP instance attach-only (Settings → Sandbox) |
 | Tenancy schema / migrations | `db/schema.ts`, `db/migrations/` |
-| Tenancy crypto / seed helpers | `lib/tenancy/*`, `scripts/seed-tenancy.ts` |
+| Tenancy crypto / first-run bootstrap | `lib/tenancy/*` |
 | Tenancy DB wiring (inject `db`/`connect`, never open your own) | `lib/di/index.ts` (composition root), `lib/di/withConnection.ts` (resolver), `lib/db` / `db/index.ts`; tests inject via `lib/tenancy/test/shared.ts` |
 | Repo-wide I/O-construction gate | `scripts/di-gate.mjs`, `package.json` `test:di-gate` — bans in-body I/O construction (`createDbConnection(`/`new PGlite(` **and** the phase-2 sandbox/http/redis surface `Sandbox.get(`/`createClient(`/`new RedisSessionStore(`/`createSandboxClient(`/`createVercelSandboxClient(`/`createVercelSandboxHttpRunner(`) outside allowlisted roots (composition root + factory owners + grant-boundary lifecycle + test factories) |
 | Sandbox / HTTP / Redis DI (phase 2) | `lib/di/index.ts` (composition root: `serverSecrets`, `createHttpRunner`, `createByoSandboxClient`, `createVercelFsSandboxClient`, `createSessionStore`); factory owners `lib/sandbox/client.ts`, `lib/sandbox/vercelClient.ts`, `lib/agent/vercelSandboxHttpRunner.ts`, `lib/sessions/redisSessionStore.ts`; grant-boundary attach `lib/tenancy/userSandboxInstance.ts` |
@@ -415,4 +413,4 @@ See create-plan / plan-review **layer** rules when planning features.
 - Use pure blue/cyan or coral one-offs
 - Grow a second unrelated color module
 - Ask the **origin** maintainer to configure deploy hooks / tokens that are already listed as **Done** above (forks: use [`docs/bring-your-own.md`](docs/bring-your-own.md))
-- Tell humans to use a **personal laptop/desktop** for product ops (clone, migrate, seed, npm). Use cloud agent workspaces, GitHub Actions, or Vercel instead.
+- Tell humans to use a **personal laptop/desktop** for product ops (clone, migrate, npm). Use cloud agent workspaces, GitHub Actions, or Vercel instead.

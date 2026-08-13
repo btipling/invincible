@@ -36,30 +36,6 @@ export const EXEC_TIMEOUT_BUFFER_MS = 5_000;
  */
 export const MIN_SANDBOX_PROTOCOL_STDIN = 2;
 
-/**
- * Both URL and token required (trimmed non-empty).
- * Server-only — never NEXT_PUBLIC_*.
- */
-export function sandboxConfigured(
-  env: Record<string, string | undefined> = process.env,
-): boolean {
-  return Boolean(env.SANDBOX_URL?.trim() && env.SANDBOX_TOKEN?.trim());
-}
-
-export type SandboxConfig = {
-  baseUrl: string;
-  token: string;
-};
-
-export function getSandboxConfig(
-  env: Record<string, string | undefined> = process.env,
-): SandboxConfig | null {
-  const baseUrl = env.SANDBOX_URL?.trim();
-  const token = env.SANDBOX_TOKEN?.trim();
-  if (!baseUrl || !token) return null;
-  return { baseUrl: normalizeBaseUrl(baseUrl), token };
-}
-
 export function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, '');
 }

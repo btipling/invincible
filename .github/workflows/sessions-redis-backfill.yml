@@ -19,7 +19,7 @@
 # so a re-run stores nothing new for already-migrated rows.
 #
 # Explicit non-paths:
-#   - NOT db-migrate / db-tenancy-bootstrap / seed (that is not a backfill)
+#   - NOT db-migrate / app first-run sign-up (that is not a backfill)
 #   - NOT a personal-laptop npm as the official cutover path
 #   - NOT self-hosted runner
 #

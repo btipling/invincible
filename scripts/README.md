@@ -45,12 +45,11 @@ gh_raw scripts/phase-2.3-zig.sh | bash
 | `harden-runner-host.sh` | SSH/UFW baseline (run with care) |
 | `create-invincible-droplet.sh` | DO create (needs write token on laptop) |
 | `fetch-harness-artifact.mjs` | Vercel/local: download `harness-wasm` artifact |
-| `seed-tenancy.ts` | Idempotent tenancy seed (`npm run db:seed`) — prefer GHA bootstrap |
 
 ## Schema-only migrate (GHA) — db-migrate
 
 Primary path for **additive schema** on existing Production (e.g. provider secrets /
-BYOK tables) **without** seed:
+BYOK tables):
 
 1. Repository secret **`DATABASE_URL`** === Vercel Production (dual-store).
 2. Actions → **db-migrate** → Run workflow with `confirm` = `migrate`.
@@ -58,75 +57,29 @@ BYOK tables) **without** seed:
 
 Workflow: [`.github/workflows/db-migrate.yml`](../.github/workflows/db-migrate.yml)
 
-Do **not** use `db-tenancy-bootstrap` / seed for schema-only cutover (seed resets
-bootstrap password hash + sandbox token ciphertext).
+This is the schema-only path; the tenancy bootstrap is the app's first-run
+sign-up (below). Do **not** use this workflow for data/backfill cutovers.
 
 Full BYOK operator notes: [docs/bring-your-own.md §4a Inference keys](../docs/bring-your-own.md#inference-keys-byok).
 
-## Cloud-native bootstrap (GHA) — migrate + seed
+## Tenancy bootstrap — first-run sign-up (no laptop)
 
-Primary path for migrate+seed **without personal hardware**:
+A fresh database bootstraps itself through the app:
 
-1. Set repository secrets (GitHub **web UI** or `gh secret set` from a cloud agent).
-2. Actions → **db-tenancy-bootstrap** → Run workflow with `confirm` = `seed`.
-3. Optional: `dry_run` = true validates secrets only (no mutate).
+1. Ensure the tenancy triple is set and migrate schema via GHA **db-migrate**
+   (`DATABASE_URL`, `CREDENTIALS_ENCRYPTION_KEY`, and the Auth.js secret in
+   Vercel Production).
+2. Open `/login` — if the DB has **no tenant**, a sign-up form creates the
+   **first tenant + owner** in one step. Existing tenanted DBs never show it.
+3. After sign-up, the owner provisions a sandbox at **`/admin/sandboxes`**;
+   agent turns fail closed until one exists.
 
-Workflow: [`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml)
-
-### Secret names (values never in git / issues / logs)
-
-| Secret | Required | Notes |
-|--------|----------|--------|
-| `DATABASE_URL` | yes | Same value as Vercel Production |
-| `CREDENTIALS_ENCRYPTION_KEY` | yes | Same value as Vercel Production (base64 32-byte KEK) |
-| `SEED_ADMIN_EMAIL` | yes | Bootstrap admin |
-| `SEED_ADMIN_PASSWORD` | yes | Re-seed **resets** password hash from this secret |
-| `SANDBOX_URL` + `SANDBOX_TOKEN` | yes* | *or* `SEED_SANDBOX_*`; each field prefers `SEED_*` then `SANDBOX_*` (same as `seed-tenancy.ts`) |
-
-**Dual-store identity:** GHA `DATABASE_URL` + `CREDENTIALS_ENCRYPTION_KEY` must
-match Vercel Production or tokens will not decrypt after login flip.
-
-**Cutover order:** keep `AUTH_SECRET` unset on Vercel until after seed so
-tenancy stays OFF; then set `AUTH_SECRET` and redeploy.
-
-Full cutover prose: [docs/bring-your-own.md §4a](../docs/bring-your-own.md#4a-optional-multi-tenant-auth).
-
-### Cloud agent / throwaway workspace alternate
-
-Same scripts as GHA, for a **cloud agent checkout** (or other non-laptop
-session) when you inject secrets into **process env for that session only**
-(never commit; never paste into issues):
-
-```bash
-# Inject the SAME DATABASE_URL + CREDENTIALS_ENCRYPTION_KEY as the target
-# Vercel env (dual-store identity). Do **not** openssl-rand a new KEK if
-# Production/Preview already has one — wrong KEK → undecryptable tokens.
-# Values never committed; session env only.
-export DATABASE_URL='…'                      # === Vercel (pooled)
-export CREDENTIALS_ENCRYPTION_KEY='…'        # === Vercel (base64 32-byte KEK)
-export SEED_ADMIN_EMAIL=admin@example.com
-export SEED_ADMIN_PASSWORD='…'
-export SANDBOX_URL=http://127.0.0.1:8787     # or SEED_SANDBOX_*
-export SANDBOX_TOKEN='…'
-
-npm ci
-npm install --no-save --no-audit --no-fund drizzle-kit@0.31.10
-npx drizzle-kit migrate
-npm run db:seed
-# → logs tenantId / userId / sandboxId only (no secrets)
-# Re-seed is idempotent on uniques but **resets** bootstrap password_hash
-# and sandbox token ciphertext from env (intentional bootstrap contract).
-```
-
-Greenfield throwaway DB only: generate a fresh KEK with
-`openssl rand -base64 32` and set that **same** value on the matching Vercel
-env before seed — never mint a second key after ciphertext exists.
-
-**Production bootstrap still prefers GHA** (`confirm=seed`). This block is not
-a personal-laptop primary path.
+This is the config-free bootstrap: just `db-migrate` then open the app — no
+workflow, no personal hardware. See
+[docs/bring-your-own.md §4a](../docs/bring-your-own.md#4a-optional-multi-tenant-auth).
 
 Schema: `db/schema.ts`. Crypto: `lib/tenancy/credentials.ts`. Auth.js: JWT + Credentials only (no adapter `accounts`/`sessions` tables).
-When tenancy is on: `/login` with seed admin email/password.
+When tenancy is on: `/login` with the owner email/password created at sign-up.
 
 ## Tenancy public smoke (origin / BYO)
 

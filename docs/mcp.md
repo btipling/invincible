@@ -30,8 +30,9 @@ Wasm canvas, client bundle, or git.
    | 3 | Optional `dry_run` = true first (validates secret presence only) |
    | 4 | Repository secret `DATABASE_URL` must equal Vercel Production (dual-store) |
 
-   Do **not** use seed / `db-tenancy-bootstrap` for schema-only cutover (seed
-   resets bootstrap password + sandbox token ciphertext).
+   This is the schema-only mutate path (the tenancy bootstrap is the app's
+   first-run sign-up; there is no seed script). Do **not** use it for
+   data/backfill.
 
    Workflow: [`.github/workflows/db-migrate.yml`](../.github/workflows/db-migrate.yml).
 
