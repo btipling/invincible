@@ -606,6 +606,42 @@ export async function setDefaultPersona(
   }
 }
 
+/**
+ * Clear the default flag for a user's personas (tenancy-scoped transaction).
+ * No current default → no-op (still {ok}). Backs the Settings "Clear default"
+ * control (phase 2 #487); distinct from delete, which also clears by removing
+ * the (possibly default) row.
+ */
+export async function clearDefaultPersona(
+  userId: string,
+  deps: UserPersonasDeps = {},
+): Promise<UserPersonasResult<{ cleared: boolean }>> {
+  const uid = userId?.trim();
+  if (!uid) return { ok: true, value: { cleared: false } };
+  try {
+    const tid = await resolveTenantId(uid, deps);
+    if (!tid.ok) return tid;
+
+    return await withDb(deps, async (db) => {
+      await db
+        .update(userPersonas)
+        .set({ isDefault: false, updatedAt: new Date() })
+        .where(
+          and(
+            eq(userPersonas.userId, uid),
+            eq(userPersonas.tenantId, tid.value),
+          ),
+        );
+      return { ok: true as const, value: { cleared: true } };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'user_personas unavailable' };
+    }
+    return { ok: false, code: 'unavailable', error: 'could not clear default persona' };
+  }
+}
+
 /** Factory (DI): binds a fixed deps closure for composition-root wiring. */
 export function createUserPersonas(deps: UserPersonasDeps = {}) {
   return {
@@ -625,5 +661,7 @@ export function createUserPersonas(deps: UserPersonasDeps = {}) {
       resolveDefaultPersona(userId, { ...deps, ...o }),
     setDefaultPersona: (userId: string, id: string, o?: UserPersonasDeps) =>
       setDefaultPersona(userId, id, { ...deps, ...o }),
+    clearDefaultPersona: (userId: string, o?: UserPersonasDeps) =>
+      clearDefaultPersona(userId, { ...deps, ...o }),
   };
 }

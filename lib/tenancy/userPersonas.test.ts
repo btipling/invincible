@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
 import {
+  clearDefaultPersona,
   createUserPersona,
   deleteUserPersona,
   getPersonaById,
@@ -312,5 +313,76 @@ describe('userPersonas', () => {
     expect(def.ok).toBe(true);
     if (!def.ok) throw new Error('expected ok');
     expect(def.value).toBeNull();
+  });
+
+  it('clearDefaultPersona clears the default; resolveDefault → null afterward', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const a = await createUserPersona(
+      { userId, name: 'A', slug: 'a', body: 'one', isDefault: true },
+      { db: db as never },
+    );
+    const b = await createUserPersona(
+      { userId, name: 'B', slug: 'b', body: 'two' },
+      { db: db as never },
+    );
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+
+    const cleared = await clearDefaultPersona(userId, { db: db as never });
+    expect(cleared.ok).toBe(true);
+
+    const def = await resolveDefaultPersona(userId, { db: db as never });
+    expect(def.ok).toBe(true);
+    if (!def.ok) throw new Error('expected ok');
+    expect(def.value).toBeNull();
+
+    // Rows remain (default flag only cleared, nothing deleted).
+    const listed = await listUserPersonas(userId, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect(listed.value.map((x) => x.isDefault)).toEqual([false, false]);
+  });
+
+  it('clearDefaultPersona with no current default is a no-op {ok}', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    await createUserPersona(
+      { userId, name: 'A', slug: 'a', body: 'one' },
+      { db: db as never },
+    );
+    const cleared = await clearDefaultPersona(userId, { db: db as never });
+    expect(cleared.ok).toBe(true);
+    if (!cleared.ok) throw new Error('expected ok');
+    expect(cleared.value.cleared).toBe(true);
+  });
+
+  it('clearDefaultPersona is user-scoped: it never clears another user default', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const a = await createUserPersona(
+      { userId, name: 'A', slug: 'a', body: 'one', isDefault: true },
+      { db: db as never },
+    );
+    const aId = a.ok ? a.value.id : '';
+
+    const { userId: otherUserId } = await seedUser('t2', 'other@example.com');
+    await createUserPersona(
+      { userId: otherUserId, name: 'B', slug: 'b', body: 'two', isDefault: true },
+      { db: db as never },
+    );
+
+    // Clearing user A's default must not touch user B's.
+    await clearDefaultPersona(userId, { db: db as never });
+
+    const otherDef = await resolveDefaultPersona(otherUserId, {
+      db: db as never,
+    });
+    expect(otherDef.ok).toBe(true);
+    if (!otherDef.ok) throw new Error('expected ok');
+    expect(otherDef.value?.id).toBeTruthy();
+
+    const ownDef = await resolveDefaultPersona(userId, { db: db as never });
+    expect(ownDef.ok).toBe(true);
+    if (!ownDef.ok) throw new Error('expected ok');
+    expect(ownDef.value).toBeNull();
+    void aId;
   });
 });
