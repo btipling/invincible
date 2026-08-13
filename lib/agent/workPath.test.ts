@@ -9,6 +9,7 @@ import {
   resolveExecCwd,
   resolveExecCwdForTool,
   resolvePathForTool,
+  rewriteExecRootToRel,
   workspaceAbsToRel,
 } from './workPath';
 
@@ -330,5 +331,111 @@ describe('resolveExecCwdForTool', () => {
         resolveExecCwdForTool(R, 'invincible', `${ROOT}/sandbox`),
       ).toThrow(/root unavailable — use a workspace-relative path/);
     }
+  });
+});
+
+describe('rewriteExecRootToRel', () => {
+  it('rewrites under-R absolutes to workspace-relative; bare R maps to .', () => {
+    const text = `pwd: ${ROOT}\nexec pwd`;
+    expect(rewriteExecRootToRel(ROOT, `${ROOT}\n`)).toBe('.\n');
+    expect(rewriteExecRootToRel(ROOT, `cwd ${ROOT}/src/foo.ts ok\n`)).toBe(
+      'cwd src/foo.ts ok\n',
+    );
+    expect(
+      rewriteExecRootToRel(ROOT, `${ROOT}/invincible/docs/sandbox.md\n`),
+    ).toBe('invincible/docs/sandbox.md\n');
+  });
+
+  it('leaves out-of-jail / other-root / non-POSIX absolutes unchanged', () => {
+    const text = '/etc/passwd and /var/log/syslog line\nC:\\Windows\\x\n';
+    expect(rewriteExecRootToRel(ROOT, text)).toBe(text);
+    const R2 = '/other/workspace';
+    expect(rewriteExecRootToRel(ROOT, `${R2}/src/foo.ts\n`)).toBe(
+      `${R2}/src/foo.ts\n`,
+    );
+  });
+
+  it('byte-identical pass-through when R is null / undefined / empty', () => {
+    const text = `${ROOT}/src/foo.ts\n`;
+    expect(rewriteExecRootToRel(null, text)).toBe(text);
+    expect(rewriteExecRootToRel(undefined, text)).toBe(text);
+    expect(rewriteExecRootToRel('', text)).toBe(text);
+    // non-string R also passes through; doesn't throw
+    expect(rewriteExecRootToRel(ROOT, null as unknown as string)).toBe('');
+  });
+
+  it('does not treat a prefix-sharing token without a / boundary as in-jail', () => {
+    // R=/vercel/workspace
+    expect(rewriteExecRootToRel(ROOT, '/vercel/workspacebackup/setup.cfg\n')).toBe(
+      '/vercel/workspacebackup/setup.cfg\n',
+    );
+    expect(rewriteExecRootToRel(ROOT, `${ROOT}.txt\n`)).toBe(`${ROOT}.txt\n`);
+  });
+
+  it('R=/a does not rewrite /ab/c (prefix boundary lock)', () => {
+    expect(rewriteExecRootToRel('/a', '/ab/c\n')).toBe('/ab/c\n');
+    // but a real token under /a rewrites
+    expect(rewriteExecRootToRel('/a', '/a/b/c\n')).toBe('b/c\n');
+  });
+
+  it('leaves interior dots intact (single token) and handles path punctuation boundaries', () => {
+    // `.git`, extensions, `.bin` are path chars — not token boundaries.
+    expect(
+      rewriteExecRootToRel(ROOT, `${ROOT}/invincible/.git/HEAD\n`),
+    ).toBe('invincible/.git/HEAD\n');
+    const inJson = `{"path": "${ROOT}/src/foo.ts", "n": 1}`;
+    expect(rewriteExecRootToRel(ROOT, inJson)).toBe(
+      '{"path": "src/foo.ts", "n": 1}',
+    );
+    const grep = `${ROOT}/src/foo.ts:5: content`;
+    expect(rewriteExecRootToRel(ROOT, grep)).toBe('src/foo.ts:5: content');
+  });
+
+  it('colon-terminated under-R absolutes in structured data rewrite (PATH case)', () => {
+    // `:` is a token boundary (kept for `file:line` grep), so a
+    // colon-separated value whose absolute path is under R is rewritten too.
+    // Not a jail escape, but it mutates non-path structured data — locked so it
+    // can't silently bit-rot.
+    expect(
+      rewriteExecRootToRel(ROOT, 'PATH=/usr/bin:/vercel/workspace/node_modules/.bin\n'),
+    ).toBe('PATH=/usr/bin:node_modules/.bin\n');
+  });
+
+  it('leaves relative-only output byte-identical (no leading / tokens)', () => {
+    const text = 'src/a.ts\nlib/agent/tools.ts\n';
+    expect(rewriteExecRootToRel(ROOT, text)).toBe(text);
+  });
+
+  it('leaves // runs and mid-word slashes alone', () => {
+    expect(rewriteExecRootToRel(ROOT, `//${ROOT}/x\n`)).toBe(`//${ROOT}/x\n`);
+    expect(rewriteExecRootToRel(ROOT, `/etc/${ROOT}\n`)).toBe(`/etc/${ROOT}\n`);
+  });
+
+  it('collapses escape/`..` tokens to pass-through (never throws)', () => {
+    const text = `${ROOT}/../etc/passwd peek\n`;
+    expect(rewriteExecRootToRel(ROOT, text)).toBe(`${ROOT}/../etc/passwd peek\n`);
+  });
+
+  it('never throws on pathological input and passes past-cap tokens through', () => {
+    const many = Array.from({ length: 5000 }, () => `${ROOT}/f.ts`).join(' ');
+    let out = '';
+    expect(() => {
+      out = rewriteExecRootToRel(ROOT, many);
+    }).not.toThrow();
+    // nothing is dropped — every token is still present (rewritten or passed through)
+    expect((out as string).split('f.ts').length - 1).toBe(5000);
+    // ...but the cap means not all were rewritten to the relative form
+    const absRemaining = (out as string).split('/f.ts').length - 1;
+    expect(absRemaining).toBeGreaterThan(0);
+    expect(absRemaining).toBeLessThan(5000);
+  });
+
+  it('does not introduce control characters (pure text replacement; existing newlines preserved)', () => {
+    const clean = `path is ${ROOT}/a/b.txt ok`;
+    expect(rewriteExecRootToRel(ROOT, clean)).toBe('path is a/b.txt ok');
+    expect(rewriteExecRootToRel(ROOT, clean)).not.toMatch(/[\u0000-\u001f\u007f]/);
+    // existing newlines are preserved (not stripped / not doubled)
+    const nl = `line1\n${ROOT}/a/b.txt\nline3\n`;
+    expect(rewriteExecRootToRel(ROOT, nl)).toBe('line1\na/b.txt\nline3\n');
   });
 });

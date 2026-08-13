@@ -11,6 +11,7 @@ import {
   normalizeWorkspaceRel,
   resolveExecCwdForTool,
   resolvePathForTool,
+  rewriteExecRootToRel,
 } from './workPath';
 import {
   editGateError,
@@ -507,7 +508,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const exec = tool({
     description:
-      'Run a command in the sandbox (argv only, no shell). Optional cwd is resolved against the logical workspace cwd (default = logical cwd). Optional stdin/heredoc feeds multi-line input on the process stdin without a shell. Default timeout 5 min, max 30 min.',
+      'Run a command in the sandbox (argv only, no shell). Optional cwd is resolved against the logical workspace cwd (default = logical cwd). Optional stdin/heredoc feeds multi-line input on the process stdin without a shell. Default timeout 5 min, max 30 min. Absolute workspace paths in stdout/stderr are printed workspace-relative.',
     inputSchema: jsonSchema<{
       cmd: string;
       args?: string[];
@@ -590,12 +591,14 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           stdin !== undefined
             ? `exec ${input.cmd} stdin=${Buffer.byteLength(stdin, 'utf8')}B`
             : `exec ${input.cmd}`;
+        const stdout = rewriteExecRootToRel(workspaceRoot, result.stdout);
+        const stderr = rewriteExecRootToRel(workspaceRoot, result.stderr);
         const parts = [
           head,
           result.timedOut ? 'TIMED_OUT' : `exit=${result.exitCode}`,
         ];
-        if (result.stdout) parts.push(`stdout:\n${result.stdout}`);
-        if (result.stderr) parts.push(`stderr:\n${result.stderr}`);
+        if (stdout) parts.push(`stdout:\n${stdout}`);
+        if (stderr) parts.push(`stderr:\n${stderr}`);
         if (result.stdoutTruncated) parts.push('(stdout truncated)');
         if (result.stderrTruncated) parts.push('(stderr truncated)');
         return finalize(parts.join('\n'), secrets);

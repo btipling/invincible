@@ -687,6 +687,9 @@ outside that binding's `R` is rejected. Tool arguments accept **in-jail absolute
 paths** on every FS tool + `change_dir` + `exec` cwd (via `resolvePathForTool` /
 `resolveExecCwdForTool` in `lib/agent/workPath.ts`, plumbed from the route →
 `RunAgentParams.workspaceRoot` → `createAgentTools`), so a model that copies
+`exec pwd`/stack/find output back requires **no conversion**: `exec` output is
+canonicalized to the same workspace-relative form by `rewriteExecRootToRel`
+(again in `lib/agent/workPath.ts`). A model that copies
 `pwd`/stack/find output can pass `<R>/src/foo.ts` and land on the same file and
 ledger key as `src/foo.ts`; both BYO and Vercel share this one host seam. When `R`
 is unavailable (BYO daemon down/pre-v2/probe fault → `workspaceRoot === null`),
@@ -731,7 +734,20 @@ Paths resolve with **prefix-aware** join (not naive always-join):
 | Windows drive `C:\…` | Rejected (fail closed) |
 
 Tool success lines always show **workspace-root-relative** paths (and `cwd=…` when
-not at root) so models can copy paths without double-prefix mistakes.
+not at root) so models can copy paths without double-prefix mistakes. `exec`
+stdout/stderr are **also** canonicalized: any absolute path under the active jail
+root `R` is printed **workspace-relative** (`rewriteExecRootToRel` in
+`lib/agent/workPath.ts`, applied to `result.stdout` and `result.stderr`
+separately), so `exec pwd` ≡ `pwd` and `find` / `realpath` / `git rev-parse
+--show-toplevel` / absolute error traces all surface in the one coordinate
+system. Out-of-jail absolute text (`/etc/…`, another binding's root) is left
+untouched, and when `R` is unresolvable the exec output passes through
+byte-for-byte (fail-open — a degraded BYO turn looks unchanged). Rewrites are
+capped and never throw. Because `:` is a token boundary (kept for `file:line`
+grep), a colon-separated value that opens an under-`R` absolute is rewritten
+too — e.g. `PATH=…:/vercel/workspace/node_modules/.bin` surfaces as
+`PATH=…:node_modules/.bin`. Not a jail escape, but it mutates non-path
+structured data; that tradeoff is locked by a `workPath` regression test.
 
 ### Defaults and session
 
