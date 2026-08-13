@@ -19,8 +19,23 @@ export const HARNESS_SESSION_MAX_BODY_BYTES = 2 * 1024 * 1024;
  * `meta` is schema-typed reserved (#411/#412): only the reserved P1 keys are
  * allowed, and their combined JSON size is capped so a record can never balloon
  * or smuggle large payloads under `meta`.
+ *
+ * Raised 4096 → 20480 (parent #485 lock, phase 1 #486): a persona snapshot
+ * (`meta.personaSnapshot`, up to `PERSONA_SNAPSHOT_MAX_BYTES` = 16 KiB) must fit
+ * alongside the other reserved keys in the single validated `meta` JSON, so the
+ * whole-meta budget carries a 16 KiB snapshot + 4 KiB other-reserved headroom.
+ * The lift is additive for all session records (no schema/Redis change).
  */
-export const HARNESS_SESSION_MAX_META_BYTES = 4096;
+export const HARNESS_SESSION_MAX_META_BYTES = 20_480;
+
+/**
+ * Max byte size of a `meta.personaSnapshot` value (parent #485 lock, phase 1 #486).
+ * The snapshot is the AGENTS-style persona text locked into a session at first
+ * use so a mid-session persona edit never rewrites an in-flight session. It rides
+ * in session `meta` (device-switch replay) and counts toward
+ * `HARNESS_SESSION_MAX_META_BYTES`. 16 KiB allows a personable AGENTS-style doc.
+ */
+export const PERSONA_SNAPSHOT_MAX_BYTES = 16_384;
 
 /** Max length (chars) of a Redis-safe opaque id / `activeSandboxId`. */
 export const REDIS_SAFE_OPAQUE_ID_MAX = 128;

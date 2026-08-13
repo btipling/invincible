@@ -128,4 +128,55 @@ describe('parseAgentBody', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.status).toBe(400);
   });
+
+  it('accepts valid Redis-safe personaId', () => {
+    expect(parseAgentBody({ prompt: 'hi', personaId: 'pers_abc123' }, {})).toEqual({
+      ok: true,
+      prompt: 'hi',
+      cwd: '.',
+      personaId: 'pers_abc123',
+    });
+  });
+
+  it('omitted / null personaId → no override (undefined)', () => {
+    const r = parseAgentBody({ prompt: 'hi' }, {});
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.personaId).toBeUndefined();
+
+    const r2 = parseAgentBody({ prompt: 'hi', personaId: null }, {});
+    expect(r2.ok).toBe(true);
+    if (r2.ok) expect(r2.personaId).toBeUndefined();
+  });
+
+  it('keeps cwd + sandboxId + personaId together', () => {
+    expect(
+      parseAgentBody(
+        { prompt: 'hi', cwd: 'proj', sandboxId: 'sbx_1', personaId: 'pers_1' },
+        {},
+      ),
+    ).toEqual({
+      ok: true,
+      prompt: 'hi',
+      cwd: 'proj',
+      sandboxId: 'sbx_1',
+      personaId: 'pers_1',
+    });
+  });
+
+  it('rejects non-Redis-safe personaId with 400 (fail closed)', () => {
+    for (const bad of ['a:b', 'has space', 'foo*bar', 'x'.repeat(200)]) {
+      const r = parseAgentBody({ prompt: 'hi', personaId: bad }, {});
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.status).toBe(400);
+        expect(r.error).toMatch(/personaId/i);
+      }
+    }
+  });
+
+  it('rejects non-string personaId with 400', () => {
+    const r = parseAgentBody({ prompt: 'hi', personaId: 9 as never }, {});
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.status).toBe(400);
+  });
 });

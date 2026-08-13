@@ -45,6 +45,7 @@ import { createRotateTenantDek } from '../tenancy/rotateTenantDek';
 import { createSoleMembership } from '../tenancy/soleMembership';
 import { createUserGithubToken } from '../tenancy/userGithubToken';
 import { createUserMcpServers } from '../tenancy/userMcpServers';
+import { createUserPersonas } from '../tenancy/userPersonas';
 import { createUserPreferredSandbox } from '../tenancy/userPreferredSandbox';
 import { createUserSandboxInstance } from '../tenancy/userSandboxInstance';
 import { createHarnessSessionsRedis } from '../tenancy/harnessSessionsRedis';
@@ -203,6 +204,7 @@ export function createProdServices(overrides: {
     soleMembership,
     userGithubToken: createUserGithubToken({ connect }),
     userMcpServers: createUserMcpServers({ connect }),
+    userPersonas: createUserPersonas({ connect }),
     userPreferredSandbox: createUserPreferredSandbox({ connect }),
     userSandboxInstance: createUserSandboxInstance({ connect }),
     harnessSessionsRedis: createHarnessSessionsRedis({

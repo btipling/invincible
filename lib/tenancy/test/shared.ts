@@ -37,6 +37,7 @@ const MIGRATIONS = [
   '0007_user_preferred_sandbox.sql',
   '0008_user_sandbox_instances.sql',
   '0009_harness_sessions.sql',
+  '0010_user_personas.sql',
 ];
 
 /**
@@ -101,6 +102,7 @@ export async function getSharedClient(): Promise<PGlite> {
  */
 export const RESET_TABLES = [
   schema.harnessSessions,
+  schema.userPersonas,
   schema.userSandboxInstances,
   schema.userPreferredSandbox,
   schema.userGithubTokens,
