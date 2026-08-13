@@ -726,7 +726,8 @@ Paths resolve with **prefix-aware** join (not naive always-join):
 
 | Argument path | Behavior |
 |---------------|----------|
-| **`.`** (workspace root, default) | The default session/cwd start from `SANDBOX_DEFAULT_CWD`. Argument `.` resolves to the **current** logical cwd (stay); the `.` *value* is the workspace-root default when no other cwd is set |
+| Argument **`.`** (stay) | Resolves to the **current** logical cwd — `change_dir .` stays where you are and does **not** jump to the workspace root |
+| Stored **`.`** (workspace-root default) | The `.` *value* is the workspace-root **default** when no other cwd is set; the default session/cwd starts from `SANDBOX_DEFAULT_CWD` |
 | **`..` (walk up)** | Collapses within the workspace root — `change_dir ..` from `cwd=invincible/docs` → `invincible`. It errors ("Path escapes workspace root") only when it would climb **above** the jail root |
 | Equals current cwd, or starts with `cwd/` | Treated as already workspace-root-relative — **not** re-joined under cwd |
 | **Exact ancestor of cwd** | Re-roots to the workspace root instead of blind-joining: `change_dir invincible` from `cwd=invincible/docs` → `invincible`, **not** the phantom `invincible/docs/invincible`. A sibling that only shares a name prefix (`foo` from `cwd=foobar/x`) stays relative — no false re-root |
