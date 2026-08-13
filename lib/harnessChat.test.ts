@@ -2202,3 +2202,62 @@ describe('runHarnessTurn session activeSandboxId bind', () => {
     expect(result.session.activeSandboxId).toBe('sbx_keep');
   });
 });
+
+describe('runHarnessTurn session persona carrier (phase 3 #488)', () => {
+  it('folds sessionId + personaId into the agent POST (stream path)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      ...createEmptySession('sess_abc123'),
+      personaId: 'pers_1',
+    };
+    let sent: { sessionId?: string; personaId?: string } = {};
+    await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        sent = init ?? {};
+        await init?.onEvent?.({ type: 'done', text: 'pong' });
+        return { ok: true, text: 'pong' };
+      },
+    });
+    expect(sent.sessionId).toBe('sess_abc123');
+    expect(sent.personaId).toBe('pers_1');
+  });
+
+  it('folds sessionId + personaId into the agent POST (JSON path)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      ...createEmptySession('sess_abc123'),
+      personaId: 'pers_1',
+    };
+    let sent: { sessionId?: string; personaId?: string } = {};
+    await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async (_prompt, init) => {
+        sent = init ?? {};
+        return { ok: true, text: 'pong' };
+      },
+    });
+    expect(sent.sessionId).toBe('sess_abc123');
+    expect(sent.personaId).toBe('pers_1');
+  });
+
+  it('omits personaId when unset and drops a non-Redis-safe personaId (fail-closed)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      ...createEmptySession('sess_1'),
+      personaId: 'bad persona id with :, and *',
+    };
+    let sent: { personaId?: string } = {};
+    await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async (_prompt, init) => {
+        sent = init ?? {};
+        return { ok: true, text: 'pong' };
+      },
+    });
+    expect(sent.personaId).toBeUndefined();
+  });
+});

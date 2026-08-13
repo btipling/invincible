@@ -183,6 +183,15 @@ itself is server-authoritative: switching routes tools via
 `resolveAgentSandbox`'s `init.requestedSandboxId`, never via a client-chosen
 secret.
 
+**Agent personas (`GET /api/personas` + server injection):** persona bodies are
+**non-secret user content** (plaintext in `user_personas`, **no DEK**). Operator
+rule: never store API keys, tokens, or credentials inside a persona — put them in
+the real secrets surface (per-user MCP, GitHub PAT, sandbox env). The picker only
+receives summaries (`id/name/slug/isDefault/updatedAt`); the body is resolved
+**server-side by id** and injected as a system-preamble snapshot
+(`meta.personaSnapshot`, ≤ 16 KiB). Nothing secret is added to the client bundle
+or the harness Wasm. See [docs/personas.md](docs/personas.md).
+
 ## Multi-tenant auth
 
 | Rule | Detail |

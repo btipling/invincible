@@ -4,6 +4,7 @@
  */
 import { requireSessionUser } from '../../../lib/tenancy/session';
 import { AUTH_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
+import { isRedisSafeOpaqueId } from '../../../lib/sessionCloudCaps';
 import {
   type HarnessSessionRecord,
   validateSessionRecord,
@@ -56,7 +57,9 @@ async function resolveScopeFor(
   return { ok: true, tenantId: tenant.value, store: store.value };
 }
 
-function parseOptionalTitleBody(raw: string): { title?: string; error?: Response } {
+function parseOptionalMintBody(
+  raw: string,
+): { title?: string; personaId?: string; error?: Response } {
   if (raw.length === 0) return {};
   let parsed: unknown;
   try {
@@ -72,15 +75,32 @@ function parseOptionalTitleBody(raw: string): { title?: string; error?: Response
     };
   }
   const o = parsed as Record<string, unknown>;
+  const out: { title?: string; personaId?: string } = {};
   if ('title' in o) {
     if (typeof o.title !== 'string') {
       return {
         error: Response.json({ error: 'title must be a string.', code: 'INVALID_TITLE' }, { status: 400 }),
       };
     }
-    return { title: o.title };
+    out.title = o.title;
   }
-  return {};
+  if ('personaId' in o) {
+    // Optional persona binding (phase 3 #488): Redis-safe opaque, mirrors the
+    // agent-body + session-meta `personaId` rule. Stored as `meta.personaId`;
+    // the snapshot is resolved lazily on the first `/api/agent` turn.
+    if (o.personaId !== undefined && o.personaId !== null) {
+      if (!isRedisSafeOpaqueId(o.personaId)) {
+        return {
+          error: Response.json(
+            { error: 'personaId must be a Redis-safe opaque id.', code: 'INVALID_PERSONA_ID' },
+            { status: 400 },
+          ),
+        };
+      }
+      out.personaId = o.personaId;
+    }
+  }
+  return out;
 }
 
 /**
@@ -116,11 +136,15 @@ export async function POST(req: Request): Promise<Response> {
   const scopeRes = await resolveScopeFor(gate.userId);
   if (!scopeRes.ok) return scopeRes.response;
 
-  const title = parseOptionalTitleBody(await req.text());
-  if (title.error) return title.error;
+  const mint = parseOptionalMintBody(await req.text());
+  if (mint.error) return mint.error;
 
   const id = crypto.randomUUID();
-  const meta = title.title !== undefined ? { title: title.title } : {};
+  const meta: import('../../../lib/sessions/sessionStore').HarnessSessionMeta = {};
+  if (mint.title !== undefined) meta.title = mint.title;
+  // Optional persona binding (phase 3 #488): stored as `meta.personaId`; the
+  // snapshot is resolved lazily on the first `/api/agent` turn.
+  if (mint.personaId !== undefined) meta.personaId = mint.personaId;
   const now = Date.now();
   const record: HarnessSessionRecord = {
     id,

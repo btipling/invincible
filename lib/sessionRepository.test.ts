@@ -60,6 +60,25 @@ describe('trimForCloudPut', () => {
     expect(bare.meta).toBeUndefined();
   });
 
+  it('folds personaId into meta and drops non-Redis-safe personaId (phase 3 #488)', () => {
+    const out = trimForCloudPut({
+      id: 'sess_a',
+      updatedAt: 2,
+      messages: [],
+      personaId: 'pers_abc123',
+    });
+    expect(out.meta).toEqual({ personaId: 'pers_abc123' });
+    expect('personaId' in out).toBe(false); // carrier carries in meta, not top-level
+
+    const bad = trimForCloudPut({
+      id: 'sess_b',
+      updatedAt: 2,
+      messages: [],
+      personaId: 'bad persona id',
+    });
+    expect(bad.meta).toBeUndefined();
+  });
+
   it('normalizes escaping `..` out of meta so a record can never diverge from the request cwd (review #453 residual)', () => {
     // A P1-legal-on-record `..` is normalized before it is persisted: it drops out
     // instead of round-tripping `..` into Redis (request sends `.` on any device).
@@ -248,6 +267,24 @@ describe('parseCloudSessionSnapshot', () => {
     const bare = parseCloudSessionSnapshot({ id: 's', updatedAt: 1, messages: [] });
     expect(bare?.cwd).toBeUndefined();
     expect(bare?.activeSandboxId).toBeUndefined();
+  });
+
+  it('restores personaId from stored meta.personaId; drops non-Redis-safe (phase 3 #488)', () => {
+    const out = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { personaId: 'pers_1' },
+    });
+    expect(out?.personaId).toBe('pers_1');
+
+    const bad = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { personaId: 'bad persona id' },
+    });
+    expect(bad?.personaId).toBeUndefined();
   });
 
   it('normalizes an already-persisted escaping cwd on adopt/parse (review #453 residual)', () => {

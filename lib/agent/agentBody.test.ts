@@ -179,4 +179,62 @@ describe('parseAgentBody', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.status).toBe(400);
   });
+
+  it('accepts valid Redis-safe sessionId (parent #485 phase-3 seam)', () => {
+    expect(parseAgentBody({ prompt: 'hi', sessionId: 'sess_abc123' }, {})).toEqual({
+      ok: true,
+      prompt: 'hi',
+      cwd: '.',
+      sessionId: 'sess_abc123',
+    });
+  });
+
+  it('omitted / null sessionId → no override (undefined)', () => {
+    const r = parseAgentBody({ prompt: 'hi' }, {});
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.sessionId).toBeUndefined();
+
+    const r2 = parseAgentBody({ prompt: 'hi', sessionId: null }, {});
+    expect(r2.ok).toBe(true);
+    if (r2.ok) expect(r2.sessionId).toBeUndefined();
+  });
+
+  it('rejects non-Redis-safe sessionId with 400 (fail closed)', () => {
+    for (const bad of ['a:b', 'has space', 'foo*bar', 'x'.repeat(200)]) {
+      const r = parseAgentBody({ prompt: 'hi', sessionId: bad }, {});
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.status).toBe(400);
+        expect(r.error).toMatch(/sessionId/i);
+      }
+    }
+  });
+
+  it('rejects non-string sessionId with 400', () => {
+    const r = parseAgentBody({ prompt: 'hi', sessionId: 7 as never }, {});
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.status).toBe(400);
+  });
+
+  it('keeps cwd + sandboxId + personaId + sessionId together', () => {
+    expect(
+      parseAgentBody(
+        {
+          prompt: 'hi',
+          cwd: 'proj',
+          sandboxId: 'sbx_1',
+          personaId: 'pers_1',
+          sessionId: 'sess_1',
+        },
+        {},
+      ),
+    ).toEqual({
+      ok: true,
+      prompt: 'hi',
+      cwd: 'proj',
+      sandboxId: 'sbx_1',
+      personaId: 'pers_1',
+      sessionId: 'sess_1',
+    });
+  });
 });

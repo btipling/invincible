@@ -17,7 +17,7 @@ How harness continuity works: **local-first** browser restore plus
 | `SessionStore` | `lib/sessionStore.ts` | sync `load` / `save` / `clear` |
 | `MemorySessionStore` | same | tests / SSR fallback |
 | `LocalStorageSessionStore` | same | default in browser via `createDefaultSessionStore()` |
-| Host wire | `app/harness/HarnessHost.tsx` | first paint from local store; Clear resets local + bridge |
+| Host wire | `app/harness/HarnessHost.tsx` | first paint from local store; **New session** (Clear alias) resets local + bridge + mints a fresh id |
 | Agent loop | `lib/harnessChat.ts` `runHarnessTurn` | multi-turn via folded history |
 
 Multi-turn continuity: history is folded into a single `POST /api/chat` (or
@@ -63,8 +63,8 @@ When the user has a valid Auth.js session, the host also uses an async
 is **Redis** (`lib/sessions/redisSessionStore.ts`, RESP over a single
 `REDIS_URL`); each session is a server-minted UUID record owned by
 `{tenant, userId, sessionId}`. The host can hold **many** cloud sessions
-(`app/components/SessionPicker.tsx`) and switch between them; `Clear` deletes
-just the active one.
+(`app/components/SessionPicker.tsx`) and switch between them; starting a **New session** (the **Clear** control is now its alias) deletes
+just the active one and mints a fresh one.
 
 | Piece | Location | Notes |
 |-------|----------|--------|
@@ -96,9 +96,10 @@ after each turn persist:
   schedulePush(trimForCloudPut(snapshot))   # coalesce; at most one in-flight PUT to /api/sessions/:id
                                             # cwd + activeSandboxId ride the PUT as meta.{logicalCwd,activeSandboxId}
 
-Clear (Clear-this):
-  local empty + bridge clear
-  DELETE /api/sessions/:id   # removes that ONE session; others untouched
+New session (Clear-this):
+  fresh id + empty transcript (cwd/activeSandboxId reset) + optional default persona bound
+  DELETE /api/sessions/:id     # removes that ONE session; others untouched
+  POST /api/sessions → new server-minted UUID  # or a fresh local sess_… id when offline
 ```
 
 | HTTP | Meaning | Client |
@@ -129,7 +130,7 @@ for the open tab).
 | `createdAt` | Epoch ms at mint/backfill — immutable after create |
 | `updatedAt` | Epoch ms of last accepted write. **New sessions are seeded `0`** (first host PUT with epoch-now ≥ 0 is idempotent-accept, never a spurious 409) |
 | Cross-user | Other-user id / nonexistent id → **404** (no existence leak) |
-| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 16 KiB) and counts toward the raised whole-`meta` budget (**20 KiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection behavior ships in a later phase) |
+| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 16 KiB) and counts toward the raised whole-`meta` budget (**20 KiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection is active — see [docs/personas.md](personas.md)) |
 
 ### Caps (server + host pre-PUT trim)
 
@@ -157,7 +158,7 @@ How harness continuity works: **local-first** browser restore plus
 | `SessionStore` | `lib/sessionStore.ts` | sync `load` / `save` / `clear` |
 | `MemorySessionStore` | same | tests / SSR fallback |
 | `LocalStorageSessionStore` | same | default in browser via `createDefaultSessionStore()` |
-| Host wire | `app/harness/HarnessHost.tsx` | first paint from local store; Clear resets local + bridge |
+| Host wire | `app/harness/HarnessHost.tsx` | first paint from local store; **New session** (Clear alias) resets local + bridge + mints a fresh id |
 | Agent loop | `lib/harnessChat.ts` `runHarnessTurn` | multi-turn via folded history |
 
 Multi-turn continuity: history is folded into a single `POST /api/chat` (or
@@ -203,8 +204,8 @@ When the user has a valid Auth.js session, the host also uses an async
 is **Redis** (`lib/sessions/redisSessionStore.ts`, RESP over a single
 `REDIS_URL`); each session is a server-minted UUID record owned by
 `{tenant, userId, sessionId}`. The host can hold **many** cloud sessions
-(`app/components/SessionPicker.tsx`) and switch between them; `Clear` deletes
-just the active one.
+(`app/components/SessionPicker.tsx`) and switch between them; starting a **New session** (the **Clear** control is now its alias) deletes
+just the active one and mints a fresh one.
 
 | Piece | Location | Notes |
 |-------|----------|--------|
@@ -236,9 +237,10 @@ after each turn persist:
   schedulePush(trimForCloudPut(snapshot))   # coalesce; at most one in-flight PUT to /api/sessions/:id
                                             # cwd + activeSandboxId ride the PUT as meta.{logicalCwd,activeSandboxId}
 
-Clear (Clear-this):
-  local empty + bridge clear
-  DELETE /api/sessions/:id   # removes that ONE session; others untouched
+New session (Clear-this):
+  fresh id + empty transcript (cwd/activeSandboxId reset) + optional default persona bound
+  DELETE /api/sessions/:id     # removes that ONE session; others untouched
+  POST /api/sessions → new server-minted UUID  # or a fresh local sess_… id when offline
 ```
 
 | HTTP | Meaning | Client |
@@ -269,7 +271,7 @@ for the open tab).
 | `createdAt` | Epoch ms at mint/backfill — immutable after create |
 | `updatedAt` | Epoch ms of last accepted write. **New sessions are seeded `0`** (first host PUT with epoch-now ≥ 0 is idempotent-accept, never a spurious 409) |
 | Cross-user | Other-user id / nonexistent id → **404** (no existence leak) |
-| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 16 KiB) and counts toward the raised whole-`meta` budget (**20 KiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection behavior ships in a later phase) |
+| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 16 KiB) and counts toward the raised whole-`meta` budget (**20 KiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection is active — see [docs/personas.md](personas.md)) |
 
 ### Caps (server + host pre-PUT trim)
 
@@ -374,3 +376,23 @@ If a feature needs “files on disk,” implement it as **workspace objects in c
 storage**, never as `fs` in the browser or on the Next server as a multi-tenant
 store. Session records hold **message transcripts** (and opaque ids / reserved
 meta), not file bytes.
+
+## New session / Continue / persona binding
+
+Product copy uses **New session** and **Continue**, not “Clear.”
+
+- **New session** mints a **fresh** session identity (a new local `sess_…` id and,
+  when signed in, a new server-minted UUID), an **empty transcript**, resets
+  `cwd` and `activeSandboxId`, and binds the chosen persona — the **default**
+  from `GET /api/personas`, or **None** when there is no default. The old **Clear**
+  control is an alias for “New session” (it removes the current session and starts
+  a fresh one).
+- **Continue** keeps the **same** session id, transcript, and persona binding
+  (no re-injection). It reads the existing `meta.personaSnapshot`.
+
+A persona is bound by id (`meta.personaId`, Redis-safe opaque) and its body is
+resolved **server-side** on the first agent turn, then locked into
+`meta.personaSnapshot` (≤ 16 KiB, within the 20 KiB whole-`meta` cap). Later turns
+/ reload / device-switch replay that snapshot; editing a persona never rewrites an
+in-flight session. The picker only ever receives persona summaries. See
+[docs/personas.md](personas.md).

@@ -95,7 +95,7 @@ export default function SessionPicker({
           opacity: disabled ? 0.5 : 1,
         }}
       >
-        New
+        New session
       </button>
     </span>
   );

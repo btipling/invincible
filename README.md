@@ -28,6 +28,7 @@ project and keys, and run the same harness on **your** work.
 | **Optional** | User GitHub PAT | Settings → GitHub token; sandbox **exec** injects `GH_TOKEN`/`GITHUB_TOKEN` ([docs/sandbox.md](docs/sandbox.md)) |
 | **Optional** | Preferred sandbox + instances | Settings → Sandbox (catalog preference + Workspace/HTTP instance lifecycle) ([docs/sandbox.md](docs/sandbox.md)) |
 | **Optional** | OIDC SSO + SCIM | Code on `main`; enable with env ([docs/bring-your-own.md §4b](docs/bring-your-own.md#4b-optional-sso-oidc--scim)) |
+| **Optional** | Agent personas | Per-user `AGENTS.md`-style standing orders bound to a session and injected server-side ([docs/personas.md](docs/personas.md)) |
 
 ## Try it
 
@@ -139,6 +140,7 @@ Living guides only (process / phase history lives in closed GitHub issues).
 | [agent-stream.md](docs/agent-stream.md) | Product — agent SSE events, thinking collapse, caps |
 | [runner.md](docs/runner.md) | Operator — self-hosted Zig runner + workflows |
 | [session-model.md](docs/session-model.md) | Product — session restore behavior |
+| [personas.md](docs/personas.md) | Product — agent personas + how New session binds/injects |
 | [harness-limits.md](docs/harness-limits.md) | Product — browser / mobile / density limits |
 | [harness-deploy-race.md](docs/harness-deploy-race.md) | Operator — artifact vs Vercel race |
 | [project-ids.md](docs/project-ids.md) | Maintainer sample IDs / URLs |
