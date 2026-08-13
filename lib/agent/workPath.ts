@@ -109,6 +109,101 @@ export function workspaceAbsToRel(R: string, absPath: string): string {
   throw new WorkPathError('Path escapes workspace root');
 }
 
+/** Maximum number of jail-root → workspace-relative rewrites per output stream. */
+export const EXEC_ROOT_REWRITE_CAP = 4096;
+
+/**
+ * True for a character that may appear *inside* a `/`-rooted path token in
+ * `exec` output. `.` is a path character (not a boundary) so interior dots in
+ * real paths (`.git`, extensions, `.bin`) never split a token; only a
+ * structural punctuation / whitespace / control character ends a token.
+ */
+function isPathChar(ch: string): boolean {
+  if (ch === '/') return true;
+  const code = ch.charCodeAt(0);
+  if (code <= 0x20 || code === 0x7f) return false; // whitespace / control
+  switch (ch) {
+    case ',':
+    case ':':
+    case ';':
+    case '(':
+    case ')':
+    case '[':
+    case ']':
+    case '{':
+    case '}':
+    case '"':
+    case "'":
+    case '`':
+      return false;
+    default:
+      return true; // letters, digits, `.` `-` `_` `+` `~` `@` `=` …
+  }
+}
+
+/**
+ * Canonicalize every absolute path under the per-binding jail root `R` that
+ * appears in `exec` stdout/stderr to its workspace-relative form, so the model
+ * sees one base coordinate system (`exec pwd` ≡ `pwd`). Pure host-side; the
+ * daemon is not touched.
+ *
+ * Fail-open: when `R` is `null` / `undefined` / `''` (BYO daemon down/pre-v2,
+ * probe fault, option absent) the text is returned byte-for-byte unchanged, so
+ * the tool result is identical to today. A malformed/`CONTROL_CHARS` `R` also
+ * passes through — this helper never throws and never introduces control
+ * characters. Out-of-jail absolute tokens (a different root, `/etc/…`, `C:\…`)
+ * and `..` / escape tokens fail closed inside `workspaceAbsToRel` and stream
+ * through unchanged. A `//` run is not a POSIX root and is left as-is; a `/`
+ * whose preceding character is a path character is interior to another token
+ * and is not treated as a root start. Rewrites are capped at
+ * `EXEC_ROOT_REWRITE_CAP`; past the cap the remaining text is passed through.
+ */
+export function rewriteExecRootToRel(
+  R: string | null | undefined,
+  text: string,
+): string {
+  const src = text == null ? '' : String(text);
+  if (typeof R !== 'string' || R === '') return src;
+  let root: string;
+  try {
+    root = normalizeWorkspaceRoot(R);
+  } catch {
+    return src;
+  }
+  if (root === '/') return src; // filesystem root — rewriting is meaningless
+
+  let out = '';
+  let rewrites = 0;
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const ch = src[i];
+    if (ch !== '/' || rewrites >= EXEC_ROOT_REWRITE_CAP) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    // Not a root start when part of `//` or when the preceding char is a path
+    // character (the `/` is interior to a token already being passed through).
+    if (src[i + 1] === '/' || (i > 0 && isPathChar(src[i - 1]))) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    let j = i;
+    while (j < n && isPathChar(src[j])) j += 1;
+    const token = src.slice(i, j);
+    try {
+      out += workspaceAbsToRel(root, token);
+      rewrites += 1;
+    } catch {
+      out += token; // out-of-jail / escape / malformed → pass through, never throw
+    }
+    i = j;
+  }
+  return out;
+}
+
 /**
  * Canonicalize a user path to a workspace-relative ledger key given workspace
  * root `R`. An absolute path **under** `R` maps to its workspace-relative form

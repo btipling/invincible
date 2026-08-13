@@ -204,6 +204,45 @@ describe('createAgentTools', () => {
     );
     expect(out).toContain('exec grep');
   });
+
+  it('rewrites exec stdout/stderr under the jail root to workspace-relative (exec pwd ≡ pwd)', async () => {
+    const R = '/var/lib/invincible-sandbox/workspace';
+    const client = mockClient({
+      exec: vi.fn(async () => ({
+        exitCode: 0,
+        stdout: `${R}/invincible/docs\n`,
+        stderr: `${R}/invincible/error.txt\n`,
+      })),
+    });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+      workspaceRoot: R,
+    });
+    const out = (await tools.exec.execute!(
+      { cmd: 'pwd' },
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(out).toContain('stdout:\ninvincible/docs');
+    expect(out).toContain('stderr:\ninvincible/error.txt');
+    expect(out).not.toContain(R);
+  });
+
+  it('exec output is byte-identical when workspaceRoot is absent (fail-open parity)', async () => {
+    const R = '/var/lib/invincible-sandbox/workspace';
+    const client = mockClient({
+      exec: vi.fn(async () => ({ exitCode: 0, stdout: `${R}/x\n`, stderr: '' })),
+    });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+    });
+    const out = (await tools.exec.execute!(
+      { cmd: 'pwd' },
+      { toolCallId: 'r', messages: [] } as never,
+    )) as string;
+    expect(out).toContain(`${R}/x`);
+  });
 });
 
 describe('createAgentTools permissions', () => {
