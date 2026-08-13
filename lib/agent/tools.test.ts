@@ -404,7 +404,7 @@ describe('createAgentTools cwd', () => {
     expect(out).toBe('pwd: invincible');
   });
 
-  it('host-absolute path soft-fails mid-turn', async () => {
+  it('host-absolute path soft-fails mid-turn when R is unavailable', async () => {
     const readFile = vi.fn(async () => ({ content: 'x' }));
     const client = mockClient({ readFile });
     const tools = createAgentTools({
@@ -414,7 +414,7 @@ describe('createAgentTools cwd', () => {
       { toolCallId: '1', messages: [] } as never,
     )) as string;
     expect(out).toMatch(/^ERROR read_file:/);
-    expect(out).toMatch(/absolute|not allowed/i);
+    expect(out).toMatch(/root unavailable — use a workspace-relative path/);
     expect(readFile).not.toHaveBeenCalled();
   });
 
@@ -887,5 +887,164 @@ describe('read-before-edit gates', () => {
     )) as string;
     expect(out).toMatch(/^write_file new\.txt/);
     expect(writeFile).toHaveBeenCalled();
+  });
+});
+
+describe('createAgentTools in-jail absolute paths', () => {
+  const ROOT = '/vercel/workspace';
+  const ectx = { toolCallId: '1', messages: [] } as never;
+
+  it('read_file in-jail absolute resolves to the same relative path for the client', async () => {
+    const readFile = vi.fn(async () => ({ content: 'x' }));
+    const client = mockClient({ readFile });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+      workspaceRoot: ROOT,
+    });
+    const out = (await tools.read_file.execute!(
+      { path: `${ROOT}/src/foo.ts` },
+      ectx,
+    )) as string;
+    expect(out).toMatch(/^read_file src\/foo\.ts/);
+    expect(readFile).toHaveBeenCalledWith('src/foo.ts', undefined, expect.anything());
+  });
+
+  it('list_dir / change_dir / exec cwd accept the in-jail absolute form', async () => {
+    const listDir = vi.fn(async (path?: string) =>
+      path === 'src' ? { entries: [{ name: 'foo.ts', type: 'file' as const }] } : { entries: [] },
+    );
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const client = mockClient({ listDir, exec });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+      workspaceRoot: ROOT,
+    });
+
+    const l = (await tools.list_dir.execute!({ path: `${ROOT}/src` }, ectx)) as string;
+    expect(l).toContain('1 entries');
+    expect(listDir).toHaveBeenCalledWith('src', expect.anything());
+
+    const cd = (await tools.change_dir.execute!({ path: `${ROOT}/src` }, ectx)) as string;
+    expect(cd).toMatch(/change_dir src: ok cwd=src/);
+
+    const cd2 = (await tools.change_dir.execute!({ path: `${ROOT}/` }, ectx)) as string;
+    expect(cd2).toMatch(/change_dir \.: ok cwd=\./);
+
+    await tools.exec.execute!({ cmd: 'true', cwd: `${ROOT}/src` }, ectx);
+    expect(exec).toHaveBeenCalledWith(
+      expect.objectContaining({ cmd: 'true', cwd: 'src' }),
+      expect.anything(),
+    );
+  });
+
+  it('out-of-jail absolute with R present fails closed with a clear escape error', async () => {
+    const readFile = vi.fn(async () => ({ content: 'x' }));
+    const client = mockClient({ readFile });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+      workspaceRoot: ROOT,
+    });
+    const out = (await tools.read_file.execute!(
+      { path: '/etc/passwd' },
+      ectx,
+    )) as string;
+    expect(out).toMatch(/^ERROR read_file:/);
+    expect(out).toMatch(/escapes workspace root/);
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it('write_file in-jail absolute then str_replace relative share the freshness key', async () => {
+    let created = false;
+    let mtime = 1000;
+    let size = 11;
+    let content = 'hello world';
+    const client = mockClient({
+      stat: vi.fn(async (path: string) => {
+        if (path !== 'a.txt' || !created) {
+          throw new SandboxHttpError('Path not found', 404);
+        }
+        return { path: 'a.txt', type: 'file' as const, mtimeMs: mtime, size };
+      }),
+      writeFile: vi.fn(async (_p: string, c: string) => {
+        created = true;
+        content = c;
+        size = Buffer.byteLength(c, 'utf8');
+        mtime += 1;
+        return { ok: true as const, bytes: size, mtimeMs: mtime, size };
+      }),
+      strReplace: vi.fn(async () => {
+        content = content.replace('hello', 'HELLO');
+        size = Buffer.byteLength(content, 'utf8');
+        mtime += 1;
+        return { ok: true as const, path: 'a.txt', replacements: 1, bytes: size, mtimeMs: mtime, size };
+      }),
+    });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+      workspaceRoot: ROOT,
+    });
+
+    const w = (await tools.write_file.execute!(
+      { path: `${ROOT}/a.txt`, content: 'hello world' },
+      ectx,
+    )) as string;
+    expect(w).toMatch(/^write_file a\.txt/);
+    expect(client.writeFile).toHaveBeenCalledWith(
+      'a.txt',
+      'hello world',
+      undefined,
+      expect.anything(),
+    );
+
+    const s = (await tools.str_replace.execute!(
+      { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
+      ectx,
+    )) as string;
+    expect(s).toMatch(/^str_replace a\.txt/);
+    expect(client.strReplace).toHaveBeenCalledWith(
+      'a.txt',
+      'hello',
+      'HELLO',
+      undefined,
+      expect.anything(),
+    );
+  });
+
+  it('str_replace absolute after a relative read shares the freshness key', async () => {
+    let mtime = 1000;
+    const size = 11;
+    const client = mockClient({
+      readFile: vi.fn(async () => ({ content: 'hello world', mtimeMs: mtime, size })),
+      stat: vi.fn(async () => ({
+        path: 'a.txt',
+        type: 'file' as const,
+        mtimeMs: mtime,
+        size,
+      })),
+      strReplace: vi.fn(async () => ({
+        ok: true as const,
+        path: 'a.txt',
+        replacements: 1,
+        bytes: size,
+        mtimeMs: mtime,
+        size,
+      })),
+    });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+      workspaceRoot: ROOT,
+    });
+    await tools.read_file.execute!({ path: 'a.txt' }, ectx);
+    const out = (await tools.str_replace.execute!(
+      { path: `${ROOT}/a.txt`, old_string: 'hello', new_string: 'HELLO' },
+      ectx,
+    )) as string;
+    expect(out).toMatch(/^str_replace a\.txt/);
+    expect(client.strReplace).toHaveBeenCalledWith('a.txt', 'hello', 'HELLO', undefined, expect.anything());
   });
 });

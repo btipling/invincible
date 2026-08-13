@@ -683,8 +683,17 @@ Agents also have a **logical cwd** owned by the agent tool layer + host session 
 The host now learns the jail root `R` per binding (`ResolvedAgentSandbox.workspaceRoot`)
 and canonicalizes ledger paths with `lib/agent/workPath.ts` — an absolute `<R>/file`
 and the relative `file` are the **same** freshness key, while any host-absolute
-outside that binding's `R` is rejected. `SANDBOX_DEFAULT_CWD` remains a per-deploy
-*default logical cwd* (workspace-relative), distinct from the jail root.
+outside that binding's `R` is rejected. Tool arguments accept **in-jail absolute
+paths** on every FS tool + `change_dir` + `exec` cwd (via `resolvePathForTool` /
+`resolveExecCwdForTool` in `lib/agent/workPath.ts`, plumbed from the route →
+`RunAgentParams.workspaceRoot` → `createAgentTools`), so a model that copies
+`pwd`/stack/find output can pass `<R>/src/foo.ts` and land on the same file and
+ledger key as `src/foo.ts`; both BYO and Vercel share this one host seam. When `R`
+is unavailable (BYO daemon down/pre-v2/probe fault → `workspaceRoot === null`),
+absolute args **fail closed** with “Sandbox workspace root unavailable — use a
+workspace-relative path” while relative + logical cwd keep working.
+`SANDBOX_DEFAULT_CWD` remains a per-deploy *default logical cwd*
+(workspace-relative), distinct from the jail root.
 
 ### Why it exists
 
@@ -709,7 +718,10 @@ Paths resolve with **prefix-aware** join (not naive always-join):
 |---------------|----------|
 | Equals current cwd, or starts with `cwd/` | Treated as already workspace-root-relative — **not** re-joined under cwd |
 | Relative (`sandbox/x`, `./x`, `..`) | Joined under current logical cwd |
-| Host-absolute (`/…`, drive letters) | Rejected |
+| **In-jail absolute** (`<R>/src/foo.ts`) | **Accepted** on all FS tools + `change_dir` + `exec` cwd — canonicalized to the **same workspace-relative key** as its relative form (`src/foo.ts`); identical freshness ledger, BYO + Vercel parity. `R` is the **active binding's** jail root (BYO daemon root or Vercel `/vercel/workspace`), resolved per turn — never a fixed host string |
+| Host-absolute outside R / `..` escape (`/etc/…`, another binding's root) | **Fail closed** — “Path escapes workspace root” |
+| Host-absolute when R is unresolvable (BYO daemon down/pre-v2) | **Fail closed** — “Sandbox workspace root unavailable — use a workspace-relative path”; relative + cwd still work |
+| Windows drive `C:\…` | Rejected (fail closed) |
 
 Tool success lines always show **workspace-root-relative** paths (and `cwd=…` when
 not at root) so models can copy paths without double-prefix mistakes.

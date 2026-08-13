@@ -201,6 +201,11 @@ export async function POST(req: Request): Promise<Response> {
         ...runParams,
         sandboxClient: resolved.value.client,
         permissions: resolved.value.permissions,
+        // Per-binding jail workspace root (BYO daemon root or Vercel
+        // workspace). Forwarded into createAgentTools so in-jail absolute tool
+        // paths canonicalize to workspace-relative freshness keys (BYO+Vercel
+        // parity). null on a faulting BYO probe — absolute then fails closed.
+        workspaceRoot: resolved.value.workspaceRoot,
         secrets: [
           ...resolved.value.secrets,
           ...byok.secretsToRedact,

@@ -85,6 +85,15 @@ export type RunAgentParams = {
    */
   initialCwd?: string;
   /**
+   * Per-binding jail workspace root R for this turn (the route forwards
+   * `resolved.value.workspaceRoot`). Forwarded to createAgentTools so in-jail
+   * absolute tool paths canonicalize to the same workspace-relative freshness
+   * key as their relative form (BYO + Vercel parity). Null on a faulting BYO
+   * probe / pre-v2 daemon — absolute then fails closed while relative + cwd keep
+   * working.
+   */
+  workspaceRoot?: string | null;
+  /**
    * Optional inject of the run-scoped file freshness ledger (tests / advanced).
    * When omitted, a new ledger is created for this runAgent / runAgentStream call.
    */
@@ -103,7 +112,7 @@ export const DEFAULT_AGENT_SYSTEM = [
   'The workspace is a remote sandbox root. Prefer tools (list_dir, read_file, write_file, str_replace, exec, change_dir, pwd) for filesystem and command work. Use str_replace for surgical edits (unique old_string unless replace_all); write_file to create or fully rewrite. For multi-line process input prefer exec stdin (heredoc alias ok) on BYO sandboxes; if exec rejects stdin (Vercel backend), write_file the input and pass the path via args instead — never claim stdin was fed when the tool errors.',
   'Logical cwd starts at the workspace root (or the session cwd). Prefer change_dir into the project once, then short relative paths under that cwd. Prefer change_dir as its own step before a burst of path tools. Use pwd to inspect cwd.',
   'Must read_file a path in this agent run before str_replace or overwriting an existing file with write_file. Creating a new file with write_file does not require a prior read. If tools report the file changed since your last read (another edit, command, concurrent session, or device on the same sandbox), read_file again before editing.',
-  'Tool results always show workspace-root-relative paths (and cwd= when not at root). Paths that already include the cwd prefix also work. Do not invent host absolute paths outside the sandbox.',
+  'Tool results always show workspace-root-relative paths (and cwd= when not at root). Paths that already include the cwd prefix also work. Absolute paths are accepted when they resolve inside the sandbox root and are canonicalized to the same file as their relative form — but never invent host absolute paths outside the sandbox.',
   'Be concise in final answers; cite workspace-relative paths when useful.',
   'If the user message includes Previous conversation with Tool: lines, those tools already ran — reuse that work; do not redo identical tool calls unless asked or the files may have changed.',
 ].join(' ');
@@ -206,6 +215,7 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
         signal: params.signal,
         permissions: params.permissions,
         cwdState,
+        workspaceRoot: params.workspaceRoot,
       })
     : {};
 
@@ -299,6 +309,7 @@ export async function runAgentStream(
         signal: params.signal,
         permissions: params.permissions,
         cwdState,
+        workspaceRoot: params.workspaceRoot,
       })
     : {};
 
