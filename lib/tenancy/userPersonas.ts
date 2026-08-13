@@ -8,7 +8,7 @@
  * Every query filters tenantId + userId so a persona can never leak to another
  * user/tenant, and getById returns null for another-user rows (no existence leak).
  */
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import {
   userPersonas,
   type Db,
@@ -21,8 +21,13 @@ export const PERSONA_NAME_MIN = 1;
 export const PERSONA_NAME_MAX = 80;
 /** Pretty slug for picker/keys — lowercase start, stable-key friendly. */
 export const PERSONA_SLUG_RE = /^[a-z][a-z0-9_]{0,63}$/;
-/** Persona body cap (plaintext text; bounded so a single row can't balloon). */
-export const PERSONA_BODY_MAX_BYTES = 64 * 1024;
+/**
+ * Persona body cap (plaintext text; bounded so a single row can't balloon).
+ * Locked to `PERSONA_SNAPSHOT_MAX_BYTES` (16 KiB, lib/sessionCloudCaps.ts) so any
+ * persistable persona fits the Phase-3 `meta.personaSnapshot` budget (adversarial
+ * review #489 minor): a legal body must be snapshot-able on first use.
+ */
+export const PERSONA_BODY_MAX_BYTES = 16 * 1024;
 
 export type UserPersonasDeps = {
   db?: Db;
@@ -188,17 +193,50 @@ export async function createUserPersona(
 
     return await withDb(deps, async (db) => {
       try {
-        const [row] = await db
-          .insert(userPersonas)
-          .values({
-            tenantId: tid.value,
-            userId,
-            name,
-            slug,
-            body,
-            isDefault: input.isDefault === true,
-          })
-          .returning({ id: userPersonas.id });
+        let row: { id: string };
+        if (input.isDefault === true) {
+          // Create-as-default goes through the same clear-then-set transaction as
+          // setDefaultPersona (adversarial review #489 major): clear every sibling
+          // (tenant+user scoped) inside the same tx, so exactly one default row can
+          // ever exist for the user. A persistent partial unique index
+          // (user_personas_single_default_unique) enforces this at the DB too.
+          row = await db.transaction(async (tx) => {
+            await tx
+              .update(userPersonas)
+              .set({ isDefault: false, updatedAt: new Date() })
+              .where(
+                and(
+                  eq(userPersonas.userId, userId),
+                  eq(userPersonas.tenantId, tid.value),
+                ),
+              );
+            const [r] = await tx
+              .insert(userPersonas)
+              .values({
+                tenantId: tid.value,
+                userId,
+                name,
+                slug,
+                body,
+                isDefault: true,
+              })
+              .returning({ id: userPersonas.id });
+            return r;
+          });
+        } else {
+          const [r] = await db
+            .insert(userPersonas)
+            .values({
+              tenantId: tid.value,
+              userId,
+              name,
+              slug,
+              body,
+              isDefault: false,
+            })
+            .returning({ id: userPersonas.id });
+          row = r;
+        }
         return { ok: true as const, value: { id: row.id } };
       } catch (err) {
         if (isUniqueViolation(err)) {
@@ -243,13 +281,21 @@ export async function renameUserPersona(
       error: `name must be ${PERSONA_NAME_MIN}–${PERSONA_NAME_MAX} chars`,
     };
   }
+  const tid = await resolveTenantId(uid, deps);
+  if (!tid.ok) return tid;
 
   try {
     return await withDb(deps, async (db) => {
       const updated = await db
         .update(userPersonas)
         .set({ name: clean, updatedAt: new Date() })
-        .where(and(eq(userPersonas.id, pid), eq(userPersonas.userId, uid)))
+        .where(
+          and(
+            eq(userPersonas.id, pid),
+            eq(userPersonas.userId, uid),
+            eq(userPersonas.tenantId, tid.value),
+          ),
+        )
         .returning({ id: userPersonas.id });
       if (!updated[0]) {
         return { ok: false as const, code: 'not_found' as const, error: 'persona not found' };
@@ -284,13 +330,21 @@ export async function updateUserPersonaBody(
       error: `body is required and must be ≤ ${PERSONA_BODY_MAX_BYTES} bytes`,
     };
   }
+  const tid = await resolveTenantId(uid, deps);
+  if (!tid.ok) return tid;
 
   try {
     return await withDb(deps, async (db) => {
       const updated = await db
         .update(userPersonas)
         .set({ body: clean, updatedAt: new Date() })
-        .where(and(eq(userPersonas.id, pid), eq(userPersonas.userId, uid)))
+        .where(
+          and(
+            eq(userPersonas.id, pid),
+            eq(userPersonas.userId, uid),
+            eq(userPersonas.tenantId, tid.value),
+          ),
+        )
         .returning({ id: userPersonas.id });
       if (!updated[0]) {
         return { ok: false as const, code: 'not_found' as const, error: 'persona not found' };
@@ -315,11 +369,20 @@ export async function deleteUserPersona(
   if (!uid || !pid) {
     return { ok: false, code: 'not_found', error: 'persona not found' };
   }
+  const tid = await resolveTenantId(uid, deps);
+  if (!tid.ok) return tid;
+
   try {
     return await withDb(deps, async (db) => {
       const deleted = await db
         .delete(userPersonas)
-        .where(and(eq(userPersonas.id, pid), eq(userPersonas.userId, uid)))
+        .where(
+          and(
+            eq(userPersonas.id, pid),
+            eq(userPersonas.userId, uid),
+            eq(userPersonas.tenantId, tid.value),
+          ),
+        )
         .returning({ id: userPersonas.id });
       if (!deleted[0]) {
         return { ok: false, code: 'not_found', error: 'persona not found' };
@@ -458,6 +521,10 @@ export async function resolveDefaultPersona(
             eq(userPersonas.isDefault, true),
           ),
         )
+        // Deterministic pick (adversarial review #489): even though the write path
+        // + partial unique index guarantee a single default, an ORDER BY removes any
+        // arbitrary-row dependence if read side (or a legacy row) ever diverges.
+        .orderBy(desc(userPersonas.updatedAt))
         .limit(1);
       const row = rows[0];
       if (!row) return { ok: true as const, value: null };
@@ -485,13 +552,22 @@ export async function setDefaultPersona(
   if (!uid || !pid) {
     return { ok: false, code: 'not_found', error: 'persona not found' };
   }
+  const tid = await resolveTenantId(uid, deps);
+  if (!tid.ok) return tid;
+
   try {
     return await withDb(deps, async (db) => {
       return await db.transaction(async (tx) => {
         const target = await tx
           .select({ id: userPersonas.id })
           .from(userPersonas)
-          .where(and(eq(userPersonas.id, pid), eq(userPersonas.userId, uid)))
+          .where(
+            and(
+              eq(userPersonas.id, pid),
+              eq(userPersonas.userId, uid),
+              eq(userPersonas.tenantId, tid.value),
+            ),
+          )
           .limit(1);
         if (!target[0]) {
           return {
@@ -503,11 +579,22 @@ export async function setDefaultPersona(
         await tx
           .update(userPersonas)
           .set({ isDefault: false, updatedAt: new Date() })
-          .where(eq(userPersonas.userId, uid));
+          .where(
+            and(
+              eq(userPersonas.userId, uid),
+              eq(userPersonas.tenantId, tid.value),
+            ),
+          );
         await tx
           .update(userPersonas)
           .set({ isDefault: true, updatedAt: new Date() })
-          .where(eq(userPersonas.id, pid));
+          .where(
+            and(
+              eq(userPersonas.id, pid),
+              eq(userPersonas.userId, uid),
+              eq(userPersonas.tenantId, tid.value),
+            ),
+          );
         return { ok: true as const, value: { id: pid } };
       });
     });

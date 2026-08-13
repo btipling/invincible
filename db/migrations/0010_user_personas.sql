@@ -18,6 +18,11 @@ ALTER TABLE "user_personas" ADD CONSTRAINT "user_personas_user_id_users_id_fk" F
 --> statement-breakpoint
 CREATE UNIQUE INDEX "user_personas_tenant_user_slug_unique" ON "user_personas" USING btree ("tenant_id","user_id","slug");
 --> statement-breakpoint
+-- DB-level single-default enforcement (adversarial review #489): only one
+-- (tenant_id,user_id) row may flip to true, so concurrent is_default=true writes
+-- can never leave two defaults even outside the store's clear-then-set txs.
+CREATE UNIQUE INDEX "user_personas_single_default_unique" ON "user_personas" USING btree ("tenant_id","user_id") WHERE "is_default";
+--> statement-breakpoint
 CREATE INDEX "user_personas_user_id_idx" ON "user_personas" USING btree ("user_id");
 --> statement-breakpoint
 CREATE INDEX "user_personas_tenant_id_idx" ON "user_personas" USING btree ("tenant_id");

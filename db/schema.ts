@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   boolean,
   index,
@@ -8,6 +9,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 
@@ -363,6 +365,13 @@ export const userPersonas = pgTable(
       t.userId,
       t.slug,
     ),
+    // DB-level single-default enforcement (adversarial review #489): a partial
+    // unique index over (tenant_id, user_id) WHERE is_default makes two
+    // concurrent `is_default=true` rows impossible even outside the store's
+    // clear-then-set transactions.
+    uniqueIndex('user_personas_single_default_unique')
+      .on(t.tenantId, t.userId)
+      .where(sql`${t.isDefault}`),
     index('user_personas_user_id_idx').on(t.userId),
     index('user_personas_tenant_id_idx').on(t.tenantId),
   ],

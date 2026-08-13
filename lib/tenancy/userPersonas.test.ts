@@ -217,6 +217,67 @@ describe('userPersonas', () => {
     expect(defaults[0].id).toBe(bId);
   });
 
+  it('create-as-default goes through clear-then-set: two isDefault:true creates → exactly one default', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const a = await createUserPersona(
+      { userId, name: 'A', slug: 'a', body: 'one', isDefault: true },
+      { db: db as never },
+    );
+    const b = await createUserPersona(
+      { userId, name: 'B', slug: 'b', body: 'two', isDefault: true },
+      { db: db as never },
+    );
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+
+    // resolveDefault picks the newest create-as-default, deterministically.
+    const def = await resolveDefaultPersona(userId, { db: db as never });
+    expect(def.ok).toBe(true);
+    if (!def.ok) throw new Error('expected ok');
+    expect(def.value?.id).toBe(b.ok ? b.value.id : '');
+
+    const rows = await db
+      .select()
+      .from(schema.userPersonas)
+      .where(eq(schema.userPersonas.userId, userId));
+    const defaults = rows.filter((r) => r.isDefault);
+    expect(defaults).toHaveLength(1);
+    expect(defaults[0].id).toBe(b.ok ? b.value.id : '');
+  });
+
+  it('DB partial unique index is enforced: a second isDefault=true insert is rejected', async () => {
+    const { userId, tenantId } = await seedUser('t1', 'u@example.com');
+    // Bypass the store to prove the schema/migration constraint itself holds:
+    // the first default is legal, the second (same tenant+user) must violate the
+    // partial unique index `user_personas_single_default_unique`.
+    await db.insert(schema.userPersonas).values({
+      tenantId,
+      userId,
+      name: 'A',
+      slug: 'a',
+      body: 'one',
+      isDefault: true,
+    });
+    await expect(
+      db.insert(schema.userPersonas).values({
+        tenantId,
+        userId,
+        name: 'B',
+        slug: 'b',
+        body: 'two',
+        isDefault: true,
+      }),
+    ).rejects.toThrow();
+
+    const rows = await db
+      .select()
+      .from(schema.userPersonas)
+      .where(eq(schema.userPersonas.userId, userId));
+    expect(rows).toHaveLength(1);
+    expect(rows.filter((r) => r.isDefault)).toHaveLength(1);
+    expect(rows[0].slug).toBe('a');
+  });
+
   it('setDefault is scoped: another user setting default does not clear this user default', async () => {
     const { userId } = await seedUser('t1', 'u@example.com');
     const a = await createUserPersona(
