@@ -37,7 +37,6 @@ import {
   decodeToolRun,
   encodeToolRun,
 } from './toolRun';
-import { SANDBOX_NOT_CONFIGURED_ERROR } from './agentApi';
 import { AUTH_REQUIRED_ERROR, SANDBOX_FORBIDDEN_ERROR } from './tenancy/errors';
 import { createEmptySession, formatPromptWithHistory, appendMessage, makeMessage } from './sessionStore';
 import { TOOL_TRACE_SUMMARY_MAX_CHARS } from './sandbox/config';
@@ -312,14 +311,13 @@ describe('runHarnessTurn', () => {
     ]);
   });
 
-  it('503 exact sandbox-not-configured falls back to chat once', async () => {
+  it('503 agent failure does NOT fall back to chat (hard-fail, phase 3 #476)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
       ok: false,
       status: 503,
-      error: SANDBOX_NOT_CONFIGURED_ERROR,
-      sandboxNotConfigured: true,
+      error: 'Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.',
     }));
     const send = vi.fn(async (): Promise<ChatResult> => ({ ok: true, text: 'PONG' }));
 
@@ -331,11 +329,10 @@ describe('runHarnessTurn', () => {
     );
 
     expect(sendAgent).toHaveBeenCalledTimes(1);
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ ok: true, text: 'PONG' });
-    expect(next.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'system']);
-    expect(next.messages.at(-1)!.text).toBe(describeTurnEnd('chat'));
-    expect(exp.__messages.some((m) => m.kind === MessageKind.Assistant)).toBe(true);
+    expect(send).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    expect(next.messages.map((m) => m.role)).toEqual(['user', 'error']);
+    expect(exp.__messages.some((m) => m.kind === MessageKind.Error)).toBe(true);
   });
 
   it('agent 500 does not call chat', async () => {
@@ -364,8 +361,8 @@ describe('runHarnessTurn', () => {
   it('503 with non-exact body does not call chat', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
-    // status 503 alone is not enough — sandboxNotConfigured must be set by sendAgent
-    // only on the exact SANDBOX_NOT_CONFIGURED_ERROR string.
+    // Any failed agent turn hard-fails (phase 3 #476) — no 503 → /api/chat
+    // fallback, regardless of the 503 body shape.
     const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
       ok: false,
       status: 503,
@@ -1323,14 +1320,13 @@ describe('runHarnessTurn session cwd', () => {
     expect(next.cwd).toBe('prior');
   });
 
-  it('chat-fallback keeps the prior known cwd on success', async () => {
+  it('hard-failed agent turn (503) still keeps the prior known cwd', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
       ok: false,
       status: 503,
-      error: SANDBOX_NOT_CONFIGURED_ERROR,
-      sandboxNotConfigured: true,
+      error: 'Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.',
     }));
     const send = vi.fn(async (): Promise<ChatResult> => ({ ok: true, text: 'chat ok' }));
     const session = { ...createEmptySession('s'), cwd: 'invincible/src' };
@@ -1340,7 +1336,7 @@ describe('runHarnessTurn session cwd', () => {
       pushUser: false,
       streamAgent: false,
     });
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
     expect(next.cwd).toBe('invincible/src');
   });
 

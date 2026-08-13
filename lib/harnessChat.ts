@@ -1,6 +1,6 @@
 /**
  * Phase 3.7–3.9 — host-side inference for the harness.
- * Phase 3 (#48): try POST /api/agent first; 503 sandbox-not-configured → /api/chat.
+ * Agent-tools first; a failed agent turn hard-fails (no 503 → /api/chat fallback).
  * Wasm never sees Gateway keys; results push through HarnessBridge + SessionStore.
  */
 import {
@@ -104,8 +104,9 @@ export type RunHarnessChatOptions = {
 
 export type RunHarnessTurnOptions = Omit<RunHarnessChatOptions, 'history'> & {
   /**
-   * When true (default), try POST /api/agent first; fall back to chat only on
-   * exact sandbox-not-configured 503.
+   * When true (default), run the agent (tools) path; for `preferAgent:false`
+   * the harness uses `runHarnessChat` directly (standalone chat). A failed
+   * agent turn always hard-fails — there is no 503 → /api/chat fallback.
    */
   preferAgent?: boolean;
   /** Inject for tests; defaults to sendAgent (JSON). */
@@ -350,10 +351,6 @@ export async function runHarnessChat(
   );
   bridge.setLifecycle(Lifecycle.Ready);
   return result;
-}
-
-function isCancelledAgent(result: AgentResult): boolean {
-  return !result.ok && result.error === 'Request cancelled.';
 }
 
 /** Prefix for end-of-turn canvas lines (excluded from Tool: history fold). */
@@ -1055,8 +1052,8 @@ export async function runHarnessTurn(
       };
     }
 
-    // Cancel or hard agent failure — never fall back to chat.
-    if (!agentResult.sandboxNotConfigured || isCancelledAgent(agentResult)) {
+    // Any failed agent turn hard-fails — never fall back to chat.
+    {
       // Persist any live tool-run group (display-only, plan #345). Caveat: the
       // aggregated `tool_run` is NOT folded back into the model prompt, so a
       // continue-after-stall turn no longer re-sends tool summaries — the model
@@ -1110,9 +1107,9 @@ export async function runHarnessTurn(
         session: failedSession,
       };
     }
-    // sandboxNotConfigured → fall through to chat once
   }
 
+  // preferAgent:false → standalone chat helper (no agent turn here).
   const result = await runHarnessChat(bridge, prompt, {
     signal: opts?.signal,
     send: opts?.send,
@@ -1123,7 +1120,6 @@ export async function runHarnessTurn(
   });
 
   if (result.ok) {
-    // runHarnessChat already painted Turn ended · chat finished on the bridge.
     let sess = appendMessage(withUser, 'assistant', result.text);
     sess = appendMessage(sess, 'system', describeTurnEnd('chat'));
     return { result, session: sess };

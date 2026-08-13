@@ -37,10 +37,11 @@ describe('POST /api/agent', () => {
       servicesState.userSandboxInstance ?? {};
     // Phase-2 DI (#439): the route reads `serverSecrets` and builds the hop-B HTTP
     // runner via `createHttpRunner` from the root. Default serverSecrets to empty
-    // (no gateway/sandbox-token redaction) unless a test overrides them.
+    // (no gateway-token redaction) unless a test overrides them. Phase 3 (#476):
+    // `ServerSecrets` has no env `sandboxToken` anymore.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (servicesState as any).serverSecrets =
-      servicesState.serverSecrets ?? { gatewayKey: undefined, sandboxToken: undefined };
+      servicesState.serverSecrets ?? { gatewayKey: undefined };
     vi.doMock('../../../lib/di', () => ({
       createProdServices: () => servicesState,
       createScriptConnection: vi.fn(),

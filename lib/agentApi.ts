@@ -1,10 +1,10 @@
 /**
  * Host client for POST /api/agent.
- * Browser-safe — no sandbox tokens; matches server 503 contract for chat fallback.
+ * Browser-safe — no sandbox tokens. A failed agent turn hard-fails; the host no
+ * longer special-cases a sandbox 503 to fall back to /api/chat (#476/phase 3).
  * Stream path: Accept text/event-stream (docs/agent-stream.md).
  */
 import { normalizePrompt } from './chatApi';
-import { SANDBOX_NOT_CONFIGURED_ERROR } from './sandbox/config';
 import {
   AGENT_STREAM_ACCEPT,
   type AgentStreamEvent,
@@ -30,11 +30,6 @@ export type AgentFailure = {
   ok: false;
   error: string;
   status?: number;
-  /**
-   * True only when status is 503 and error is the exact sandbox-not-configured
-   * string. Host must fall back to /api/chat only in this case.
-   */
-  sandboxNotConfigured?: boolean;
 };
 
 export type AgentResult = AgentSuccess | AgentFailure;
@@ -86,13 +81,10 @@ function failureFromJson(
     (res.status === 404
       ? 'Agent API not available.'
       : `Request failed (${res.status}).`);
-  const sandboxNotConfigured =
-    res.status === 503 && error === SANDBOX_NOT_CONFIGURED_ERROR;
   return {
     ok: false,
     status: res.status,
     error,
-    ...(sandboxNotConfigured ? { sandboxNotConfigured: true } : {}),
   };
 }
 
@@ -387,5 +379,3 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
     ...(streamCwd !== undefined ? { cwd: streamCwd } : {}),
   };
 };
-
-export { SANDBOX_NOT_CONFIGURED_ERROR };

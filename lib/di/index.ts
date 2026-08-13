@@ -64,12 +64,13 @@ import {
 
 /**
  * Server-only secrets resolved once at the root (never read from `process.env`
- * inside module bodies). Gateway key + DO sandbox token are scrubbed from
- * model-facing and client-facing strings by the agent route.
+ * inside module bodies). The Gateway key is scrubbed from model-facing and
+ * client-facing strings by the agent route. There is no env sandbox token: a
+ * product tool turn resolves sandbox tokens only from DB grants via
+ * `resolveSandbox` (per-grant secrets are redacted separately).
  */
 export type ServerSecrets = {
   gatewayKey?: string;
-  sandboxToken?: string;
 };
 
 export function resolveServerSecrets(
@@ -77,7 +78,6 @@ export function resolveServerSecrets(
 ): ServerSecrets {
   return {
     gatewayKey: env.AI_GATEWAY_API_KEY?.trim() || undefined,
-    sandboxToken: env.SANDBOX_TOKEN?.trim() || undefined,
   };
 }
 

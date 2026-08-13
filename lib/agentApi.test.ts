@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SANDBOX_NOT_CONFIGURED_ERROR, sendAgent, sendAgentStream } from './agentApi';
+import { sendAgent, sendAgentStream } from './agentApi';
 import { AUTH_REQUIRED_ERROR, SANDBOX_FORBIDDEN_ERROR } from './tenancy/errors';
 
 describe('sendAgent', () => {
@@ -53,12 +53,12 @@ describe('sendAgent', () => {
     }
   });
 
-  it('marks sandboxNotConfigured only on 503 + exact string', async () => {
+  it('returns 503 failure as a plain error (no sandboxNotConfigured special case)', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
         Response.json(
-          { error: SANDBOX_NOT_CONFIGURED_ERROR },
+          { error: 'Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.' },
           { status: 503 },
         ),
       ),
@@ -66,24 +66,8 @@ describe('sendAgent', () => {
     const result = await sendAgent('hi');
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.sandboxNotConfigured).toBe(true);
       expect(result.status).toBe(503);
-      expect(result.error).toBe(SANDBOX_NOT_CONFIGURED_ERROR);
-    }
-  });
-
-  it('does not mark sandboxNotConfigured on 503 with other body', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        Response.json({ error: 'Upstream overloaded' }, { status: 503 }),
-      ),
-    );
-    const result = await sendAgent('hi');
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.sandboxNotConfigured).toBeUndefined();
-      expect(result.error).toBe('Upstream overloaded');
+      expect(result.error).toMatch(/Sandbox not configured/);
     }
   });
 
@@ -99,7 +83,7 @@ describe('sendAgent', () => {
     expect(result).toEqual({ ok: false, error: 'Request cancelled.' });
   });
 
-  it('does not mark sandboxNotConfigured on 401 auth required', async () => {
+  it('returns 401 auth required as a plain error', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -111,12 +95,10 @@ describe('sendAgent', () => {
     if (!result.ok) {
       expect(result.status).toBe(401);
       expect(result.error).toBe(AUTH_REQUIRED_ERROR);
-      expect(result.sandboxNotConfigured).toBeUndefined();
     }
   });
 
-
-  it('does not mark sandboxNotConfigured on 403 sandbox forbidden', async () => {
+  it('returns 403 sandbox forbidden as a plain error', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -128,11 +110,8 @@ describe('sendAgent', () => {
     if (!result.ok) {
       expect(result.status).toBe(403);
       expect(result.error).toBe(SANDBOX_FORBIDDEN_ERROR);
-      expect(result.sandboxNotConfigured).toBeUndefined();
     }
   });
-
-
 });
 
 
@@ -244,12 +223,12 @@ describe('sendAgentStream', () => {
     }
   });
 
-  it('parses early JSON 503 sandbox-not-configured', async () => {
+  it('parses early JSON 503 as a plain failure', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
         Response.json(
-          { error: SANDBOX_NOT_CONFIGURED_ERROR },
+          { error: 'Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.' },
           { status: 503, headers: { 'Content-Type': 'application/json' } },
         ),
       ),
@@ -257,8 +236,8 @@ describe('sendAgentStream', () => {
     const result = await sendAgentStream('x');
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.sandboxNotConfigured).toBe(true);
       expect(result.status).toBe(503);
+      expect(result.error).toMatch(/Sandbox not configured/);
     }
   });
 });
