@@ -304,6 +304,48 @@ describe('POST /api/agent', () => {
     expect(arg.initialCwd).toBe('invincible');
   });
 
+  it('forwards the per-binding workspaceRoot into runAgent when resolve ok', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    type RunArg = { workspaceRoot?: string | null; sandboxClient?: unknown };
+    const runAgent = vi.fn(async (_arg: RunArg) => ({
+      text: 'ok',
+      toolTrace: [],
+    }));
+    servicesState.resolveSandbox = {
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          client: { listDir: vi.fn(), close: vi.fn(async () => {}) },
+          permissions: { canRead: true, canWrite: true },
+          secrets: [] as string[],
+          sandboxId: 'sbx-1',
+          tenantId: 'ten-1',
+          backend: 'vercel' as const,
+          resolvedImage: 'img',
+          workspaceRoot: '/vercel/workspace',
+        },
+      })),
+    };
+    vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const arg = runAgent.mock.calls[0]?.[0] as RunArg;
+    expect(arg).toBeDefined();
+    expect(arg!.workspaceRoot).toBe('/vercel/workspace');
+  });
+
   it('returns 401 with AUTH_REQUIRED_ERROR when unauthenticated', async () => {
     mockUnauthed();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
@@ -397,6 +439,7 @@ describe('POST /api/agent', () => {
       secrets: string[];
       prompt: string;
       extraTools?: Record<string, unknown>;
+      workspaceRoot?: string | null;
     };
     const runAgent = vi.fn(async (_arg: RunArg) => ({
       text: 'soft-ok',
@@ -446,6 +489,7 @@ describe('POST /api/agent', () => {
     const arg = runAgent.mock.calls[0]![0] as RunArg;
     expect(arg.skipSandboxTools).toBe(true);
     expect(arg.sandboxClient).toBeUndefined();
+    expect(arg.workspaceRoot).toBeUndefined();
     expect(arg.extraTools).toMatchObject({ mcp_demo_ping: expect.anything() });
     expect(buildUserMcpTools).toHaveBeenCalled();
   });

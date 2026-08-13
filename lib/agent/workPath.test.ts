@@ -7,6 +7,8 @@ import {
   parseInitialCwd,
   resolveAgainstCwd,
   resolveExecCwd,
+  resolveExecCwdForTool,
+  resolvePathForTool,
   workspaceAbsToRel,
 } from './workPath';
 
@@ -205,5 +207,128 @@ describe('canonicalizePath', () => {
     expect(() => canonicalizePath(ROOT, `${R2}/src/foo.ts`)).toThrow(WorkPathError);
     // But under its own binding it is valid and canonical.
     expect(canonicalizePath(R2, `${R2}/src/foo.ts`)).toBe('src/foo.ts');
+  });
+});
+
+describe('resolvePathForTool', () => {
+  it('in-jail absolute maps to the same workspace-relative key as relative', () => {
+    expect(resolvePathForTool(ROOT, '.', `${ROOT}/src/foo.ts`)).toBe(
+      'src/foo.ts',
+    );
+    expect(resolvePathForTool(ROOT, '.', `${ROOT}/src/foo.ts`)).toBe(
+      resolvePathForTool(ROOT, '.', 'src/foo.ts'),
+    );
+    // same key as the underlying seam
+    expect(resolvePathForTool(ROOT, '.', `${ROOT}/src/foo.ts`)).toBe(
+      canonicalizePath(ROOT, `${ROOT}/src/foo.ts`),
+    );
+  });
+
+  it('collapses trailing slash and extra separators (shared key)', () => {
+    expect(resolvePathForTool(ROOT, '.', `${ROOT}/src/foo.ts/`)).toBe(
+      'src/foo.ts',
+    );
+    expect(resolvePathForTool(ROOT, '.', `${ROOT}//src/foo.ts`)).toBe(
+      'src/foo.ts',
+    );
+  });
+
+  it('out-of-jail absolute and escapes fail closed', () => {
+    expect(() => resolvePathForTool(ROOT, '.', '/etc/passwd')).toThrow(
+      /escapes workspace root/,
+    );
+    expect(() =>
+      resolvePathForTool(ROOT, '.', `${ROOT}/../escape`),
+    ).toThrow(/escapes workspace root/);
+    const R2 = '/other/workspace';
+    expect(() =>
+      resolvePathForTool(ROOT, '.', `${R2}/src/foo.ts`),
+    ).toThrow(/escapes workspace root/);
+  });
+
+  it('rejects control characters in either R or path', () => {
+    expect(() =>
+      resolvePathForTool(`${ROOT}\n`, '.', `${ROOT}/a/b`),
+    ).toThrow(/control/i);
+    expect(() =>
+      resolvePathForTool(ROOT, '.', `${ROOT}/a\nb.ts`),
+    ).toThrow(/control/i);
+  });
+
+  it('relative input resolves against logical cwd (R present or absent)', () => {
+    expect(resolvePathForTool(ROOT, 'invincible', 'sandbox/x.ts')).toBe(
+      'invincible/sandbox/x.ts',
+    );
+    expect(resolvePathForTool(null, 'invincible', 'sandbox/x.ts')).toBe(
+      'invincible/sandbox/x.ts',
+    );
+  });
+
+  it('R unavailable (null / undefined / empty) fails closed on absolute, keeps relative', () => {
+    const msg = /root unavailable — use a workspace-relative path/;
+    for (const R of [null, undefined, '']) {
+      expect(() => resolvePathForTool(R, '.', `${ROOT}/src/foo.ts`)).toThrow(
+        msg,
+      );
+      expect(() => resolvePathForTool(R, '.', '/etc/passwd')).toThrow(msg);
+      // relative unaffected
+      expect(resolvePathForTool(R, 'invincible', 'sandbox/x.ts')).toBe(
+        'invincible/sandbox/x.ts',
+      );
+    }
+  });
+
+  it('#403 cross-feed: realpath BYO jail root from exec pwd folds to the workspace-relative key', () => {
+    // The repo is nested under a realpath'd BYO jail root, as `exec pwd` /
+    // `find` / stack traces would show it. The host-absolute string is the SAME
+    // file as the workspace-relative form the tools output, so either is
+    // re-entrant on every FS tool — not just the underlying seam.
+    const R = '/var/lib/invincible-sandbox/workspace';
+    const hostAbs = `${R}/invincible/docs/sandbox.md`;
+    expect(resolvePathForTool(R, '.', hostAbs)).toBe(
+      'invincible/docs/sandbox.md',
+    );
+    expect(resolvePathForTool(R, '.', hostAbs)).toBe(
+      resolvePathForTool(R, '.', 'invincible/docs/sandbox.md'),
+    );
+    expect(resolvePathForTool(R, '.', `${R}/invincible`)).toBe('invincible');
+    // An absolute under a DIFFERENT realpath root still fails closed.
+    expect(() =>
+      resolvePathForTool(R, '.', '/other/workspace/invincible/docs'),
+    ).toThrow(/escapes workspace root/);
+  });
+});
+
+describe('resolveExecCwdForTool', () => {
+  it('empty/missing resolves to logical cwd', () => {
+    expect(resolveExecCwdForTool(ROOT, 'invincible')).toBe('invincible');
+    expect(resolveExecCwdForTool(ROOT, 'invincible', null)).toBe('invincible');
+    expect(resolveExecCwdForTool(ROOT, 'invincible', '  ')).toBe('invincible');
+  });
+
+  it('relative exec cwd resolves against logical cwd', () => {
+    expect(resolveExecCwdForTool(ROOT, 'invincible', 'sandbox')).toBe(
+      'invincible/sandbox',
+    );
+  });
+
+  it('in-jail absolute exec cwd canonicalizes to workspace-relative', () => {
+    expect(resolveExecCwdForTool(ROOT, 'invincible', `${ROOT}/sandbox`)).toBe(
+      'sandbox',
+    );
+  });
+
+  it('out-of-jail absolute exec cwd fails closed', () => {
+    expect(() =>
+      resolveExecCwdForTool(ROOT, 'invincible', '/etc'),
+    ).toThrow(/escapes workspace root/);
+  });
+
+  it('R unavailable fails exec cwd absolute with the same root-unavailable message', () => {
+    for (const R of [null, undefined, '']) {
+      expect(() =>
+        resolveExecCwdForTool(R, 'invincible', `${ROOT}/sandbox`),
+      ).toThrow(/root unavailable — use a workspace-relative path/);
+    }
   });
 });

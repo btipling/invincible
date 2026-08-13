@@ -183,6 +183,66 @@ export function resolveExecCwd(
   return resolveAgainstCwd(logicalCwd, execCwd);
 }
 
+/**
+ * R-aware tool path resolver (single seam for FS tools + change_dir).
+ * An absolute input **under** the per-binding jail root `R` canonicalizes to the
+ * same workspace-relative freshness key as its relative form (in-jail absolute
+ * ≡ relative); an absolute outside `R` / an escape fails closed ("Path escapes
+ * workspace root"). When `R` is unavailable (`null` / `undefined` / `''` — BYO
+ * daemon down/pre-v2, probe fault, or the option absent) any absolute is
+ * rejected with a "root unavailable" message while relative + logical cwd
+ * (#270) still resolve. Relative input is resolved against `cwd` unchanged.
+ */
+export function resolvePathForTool(
+  R: string | null | undefined,
+  cwd: string,
+  userPath: string,
+): string {
+  const raw = String(userPath ?? '').replace(/\\/g, '/').trim();
+  const effective = raw === '' ? '.' : raw;
+  const isAbs =
+    effective.startsWith('/') || effective.startsWith('//') ||
+    /^[a-zA-Z]:/.test(effective);
+  if (isAbs) {
+    if (typeof R === 'string' && R !== '') {
+      return canonicalizePath(R, effective);
+    }
+    throw new WorkPathError(
+      'Sandbox workspace root unavailable — use a workspace-relative path',
+    );
+  }
+  return resolveAgainstCwd(cwd, effective);
+}
+
+/**
+ * R-aware executor: resolve the `exec` tool's `cwd` field. Empty/missing ->
+ * current logical cwd (relative). Absolute -> `canonicalizePath` when `R` is
+ * present (in-jail), else the same "root unavailable" error as path args for a
+ * uniform message contract. Relative -> `resolveAgainstCwd` (unchanged #270).
+ */
+export function resolveExecCwdForTool(
+  R: string | null | undefined,
+  logicalCwd: string,
+  execCwd?: string | null,
+): string {
+  const raw =
+    execCwd == null ? '' : String(execCwd).replace(/\\/g, '/').trim();
+  if (raw === '') {
+    return normalizeWorkspaceRel(logicalCwd || '.');
+  }
+  const isAbs =
+    raw.startsWith('/') || raw.startsWith('//') || /^[a-zA-Z]:/.test(raw);
+  if (isAbs) {
+    if (typeof R === 'string' && R !== '') {
+      return canonicalizePath(R, raw);
+    }
+    throw new WorkPathError(
+      'Sandbox workspace root unavailable — use a workspace-relative path',
+    );
+  }
+  return resolveAgainstCwd(logicalCwd, raw);
+}
+
 /** ` cwd=invincible` or empty when cwd is `.`. */
 export function formatCwdAnnotation(cwd: string): string {
   try {
