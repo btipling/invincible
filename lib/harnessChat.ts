@@ -21,6 +21,8 @@ import { type AgentStreamEvent } from './agent/agentStream';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
 } from './sandbox/config';
+import { parseInitialCwd } from './agent/workPath';
+import { sanitizeSessionCwd } from './sessionCloudCaps';
 import {
   HarnessBridge,
   Lifecycle,
@@ -504,15 +506,31 @@ export function restoreLastUiKind(
 }
 
 /**
+ * Map any candidate cwd to a value `/api/agent` will accept, or `undefined` when it
+ * cannot be safely sent (host-absolute, drive/UNC, control chars, or `..` that
+ * escapes the workspace root). `..`/`a/../../b` are LEGAL on the session record at
+ * P1 (validateMetaFields accepts them), but `normalizeWorkspaceRel` throws on an
+ * escaping `..` — so feeding it straight to `/api/agent` would 400 every turn. The
+ * getter / success-apply must therefore sanitize then renormalize, else `.`.
+ */
+function toSessionCwd(value: unknown): string | undefined {
+  const clean = sanitizeSessionCwd(value);
+  if (clean === undefined) return undefined;
+  const parsed = parseInitialCwd(clean);
+  if (!parsed.ok) return undefined;
+  return parsed.cwd;
+}
+
+/**
  * Single authoritative session-cwd getter (P1/GAP-1, #452). Every agent turn reads
  * the workspace-relative logical cwd from here for the request (`sessionCwd`); the
  * success path applies `agentResult.cwd`, while abort/timeout/chat-fallback keep the
- * prior known value (spread retention through `appendMessage`). `.` when none known —
+ * prior known value (spread retention through `appendMessage`). `.` when none known
+ * or when the stored cwd cannot be safely sent to `/api/agent` (escapes the root) —
  * default workspace-root semantics.
  */
 export function getSessionCwd(snapshot: SessionSnapshot): string {
-  const c = snapshot.cwd?.trim();
-  return c || '.';
+  return toSessionCwd(snapshot.cwd) ?? '.';
 }
 
 /**
@@ -933,10 +951,11 @@ export async function runHarnessTurn(
       next = pushTurnEnd(bridge, next, 'model');
       lastUiKind = 'system';
       // Success-only cwd apply (parent #270 / phase 2): never on failure/abort.
-      // Non-empty trim only — match send path; avoid sticky whitespace cwd.
-      const appliedCwd =
-        typeof agentResult.cwd === 'string' ? agentResult.cwd.trim() : '';
-      if (appliedCwd) {
+      // Sanitize + renormalize exactly like the send path (GAP-1 review #453):
+      // an unsanitary `agentResult.cwd` (host-absolute / escaping `..`) is dropped
+      // rather than persisted as a sticky value that would 400 every future turn.
+      const appliedCwd = toSessionCwd(agentResult.cwd);
+      if (appliedCwd !== undefined) {
         next = { ...next, cwd: appliedCwd };
       }
       bridge.setLifecycle(Lifecycle.Ready);
