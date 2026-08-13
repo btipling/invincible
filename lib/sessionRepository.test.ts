@@ -60,6 +60,36 @@ describe('trimForCloudPut', () => {
     expect(bare.meta).toBeUndefined();
   });
 
+  it('normalizes escaping `..` out of meta so a record can never diverge from the request cwd (review #453 residual)', () => {
+    // A P1-legal-on-record `..` is normalized before it is persisted: it drops out
+    // instead of round-tripping `..` into Redis (request sends `.` on any device).
+    const escaping = trimForCloudPut({
+      id: 'sess_d',
+      updatedAt: 1,
+      messages: [{ id: 'm1', role: 'user', text: 'hi', at: 1 }],
+      cwd: '..',
+    });
+    expect(escaping.meta).toBeUndefined();
+
+    const double = trimForCloudPut({
+      id: 'sess_e',
+      updatedAt: 1,
+      messages: [{ id: 'm1', role: 'user', text: 'hi', at: 1 }],
+      cwd: 'a/../../b',
+    });
+    expect(double.meta).toBeUndefined();
+
+    // In-bounds `..` is collapsed to its normalized workspace-relative form (same
+    // value the request path sends) — never persisted raw.
+    const inBounds = trimForCloudPut({
+      id: 'sess_f',
+      updatedAt: 1,
+      messages: [{ id: 'm1', role: 'user', text: 'hi', at: 1 }],
+      cwd: 'a/b/../c',
+    });
+    expect(inBounds.meta).toEqual({ logicalCwd: 'a/c' });
+  });
+
   it('keeps message count; body trim drops oldest only when over ~2 MiB', () => {
     const messages = Array.from({ length: 50 }, (_, i) => ({
       id: `m_${i}`,
@@ -218,6 +248,27 @@ describe('parseCloudSessionSnapshot', () => {
     const bare = parseCloudSessionSnapshot({ id: 's', updatedAt: 1, messages: [] });
     expect(bare?.cwd).toBeUndefined();
     expect(bare?.activeSandboxId).toBeUndefined();
+  });
+
+  it('normalizes an already-persisted escaping cwd on adopt/parse (review #453 residual)', () => {
+    // A pre-fix record may still hold `..` in meta.logicalCwd; parsing must adopt
+    // it with the same normalization the trim/request paths apply so the in-memory
+    // snapshot never carries a value the agent cannot accept.
+    const escaping = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { logicalCwd: '..' },
+    });
+    expect(escaping?.cwd).toBeUndefined();
+
+    const inBounds = parseCloudSessionSnapshot({
+      id: 'sess_y',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { logicalCwd: 'a/b/../c' },
+    });
+    expect(inBounds?.cwd).toBe('a/c');
   });
 });
 

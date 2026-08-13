@@ -21,8 +21,7 @@ import { type AgentStreamEvent } from './agent/agentStream';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
 } from './sandbox/config';
-import { parseInitialCwd } from './agent/workPath';
-import { sanitizeSessionCwd } from './sessionCloudCaps';
+import { normalizeSessionCwd } from './sessionCloudCaps';
 import {
   HarnessBridge,
   Lifecycle,
@@ -514,11 +513,7 @@ export function restoreLastUiKind(
  * getter / success-apply must therefore sanitize then renormalize, else `.`.
  */
 function toSessionCwd(value: unknown): string | undefined {
-  const clean = sanitizeSessionCwd(value);
-  if (clean === undefined) return undefined;
-  const parsed = parseInitialCwd(clean);
-  if (!parsed.ok) return undefined;
-  return parsed.cwd;
+  return normalizeSessionCwd(value);
 }
 
 /**

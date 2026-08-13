@@ -3,6 +3,7 @@
  * Shared by server validation and host pre-PUT trim.
  * Do not import server/db modules from here.
  */
+import { parseInitialCwd } from './agent/workPath';
 
 /** Align with bridge MAX_MSG_LEN (UTF-8 bytes) — native/harness/src/bridge.zig. */
 export const HARNESS_SESSION_MAX_MSG_BYTES = 262_144;
@@ -56,3 +57,24 @@ export function sanitizeSessionCwd(cwd: unknown): string | undefined {
   if (/[\u0000-\u001f\u007f]/.test(trimmed)) return undefined;
   return trimmed;
 }
+
+/**
+ * The exact workspace-relative cwd value that is SAFE to send to `/api/agent`
+ * AND to persist (P1/GAP-1, review #453 residual). After `sanitizeSessionCwd`,
+ * the value is renormalized via `parseInitialCwd` so a P1-legal-but-escaping
+ * segment (`..`, `a/../../b`, `.`-collapsible paths) is collapsed to the same
+ * normalized workspace-relative form the request path would send — or dropped
+ * (`undefined`) when it cannot be sent safely (host-absolute, drive/UNC, control
+ * chars, or `..` that escapes the workspace root). Using this BOTH for the
+ * request cwd and for the value persisted to `meta.logicalCwd` (trim/apply) means
+ * a record can never keep an escaping `..` that diverges from what the agent
+ * actually receives across devices.
+ */
+export function normalizeSessionCwd(cwd: unknown): string | undefined {
+  const clean = sanitizeSessionCwd(cwd);
+  if (clean === undefined) return undefined;
+  const parsed = parseInitialCwd(clean);
+  if (!parsed.ok) return undefined;
+  return parsed.cwd;
+}
+

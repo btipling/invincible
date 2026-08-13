@@ -16,7 +16,7 @@ import {
   HARNESS_SESSION_MAX_BODY_BYTES,
   HARNESS_SESSION_MAX_MSG_BYTES,
   isRedisSafeOpaqueId,
-  sanitizeSessionCwd,
+  normalizeSessionCwd,
 } from './sessionCloudCaps';
 import type { SessionMessage, SessionRole, SessionSnapshot } from './sessionStore';
 
@@ -165,13 +165,14 @@ export function parseCloudSessionSnapshot(
     });
   }
   // P1/GAP-1 (#452): restore the session-carrier fields from the stored record's
-  // reserved `meta`. Sanitized via the shared client-safe predicates so a poisoned
-  // / side-channel value drops to unset (fail-open) instead of becoming a sticky 400.
+  // reserved `meta`. Normalized via the shared client-safe predicates so a poisoned
+  // / side-channel value (host-absolute, escaping `..`, control chars) drops to
+  // unset (fail-open) instead of becoming a sticky 400.
   let cwd: string | undefined;
   let activeSandboxId: string | undefined;
   if (o.meta !== null && typeof o.meta === 'object' && !Array.isArray(o.meta)) {
     const meta = o.meta as Record<string, unknown>;
-    cwd = sanitizeSessionCwd(meta.logicalCwd);
+    cwd = normalizeSessionCwd(meta.logicalCwd);
     const sandbox = meta.activeSandboxId;
     if (typeof sandbox === 'string' && sandbox && isRedisSafeOpaqueId(sandbox)) {
       activeSandboxId = sandbox;
@@ -222,15 +223,17 @@ export type CloudPutBody = {
 /**
  * Fold the session-carrier fields into the reserved `meta` for the cloud PUT
  * (P1/GAP-1, #452): `logicalCwd` from `snapshot.cwd`, `activeSandboxId` from
- * `snapshot.activeSandboxId`. Values are sanitized via the shared client-safe
- * predicates (never a host-absolute cwd / non-Redis-safe id on the wire); empty /
- * unset fields are omitted. Returns `undefined` when nothing to carry.
+ * `snapshot.activeSandboxId`. The cwd is run through `normalizeSessionCwd` (the
+ * same form sent to `/api/agent`) so the persisted `meta.logicalCwd` is ALWAYS a
+ * form the request path accepts on any device — a P1-legal-but-escaping `..`
+ * cannot round-trip into Redis (review #453 residual). Empty / unset fields are
+ * omitted. Returns `undefined` when nothing to carry.
  */
 export function cloudMetaFor(
   snapshot: SessionSnapshot,
 ): CloudPutBody['meta'] | undefined {
   const meta: CloudPutBody['meta'] = {};
-  const cwd = sanitizeSessionCwd(snapshot.cwd);
+  const cwd = normalizeSessionCwd(snapshot.cwd);
   if (cwd !== undefined) meta.logicalCwd = cwd;
   const sandbox =
     typeof snapshot.activeSandboxId === 'string' &&
