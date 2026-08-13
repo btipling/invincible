@@ -74,6 +74,42 @@ describe('resolveAgainstCwd (prefix-aware)', () => {
     expect(resolveAgainstCwd('foo', 'foobar/x')).toBe('foo/foobar/x');
   });
 
+  it('#466 re-roots to an exact ancestor under cwd', () => {
+    expect(resolveAgainstCwd('invincible/docs', 'invincible')).toBe('invincible');
+    expect(resolveAgainstCwd('invincible/docs', './invincible')).toBe(
+      'invincible',
+    );
+  });
+
+  it('#466 deep ancestor chain re-roots (a/b/c + a, a/b)', () => {
+    expect(resolveAgainstCwd('a/b/c', 'a')).toBe('a');
+    expect(resolveAgainstCwd('a/b/c', 'a/b')).toBe('a/b');
+    // A non-ancestor sibling of an ancestor segment is NOT re-rooted.
+    expect(resolveAgainstCwd('a/b/c', 'b')).toBe('a/b/c/b');
+  });
+
+  it('#466 no false prefix on the ancestor side (foobar/x + foo stays relative)', () => {
+    // `foo` shares a name prefix with `foobar` but is NOT an ancestor of
+    // `foobar/x` (`cwd` does not start with `foo/`), so it is joined, not
+    // re-rooted.
+    expect(resolveAgainstCwd('foobar/x', 'foo')).toBe('foobar/x/foo');
+  });
+
+  it('#466 equal path still resolves as rooted (no re-root of equal)', () => {
+    expect(resolveAgainstCwd('invincible', 'invincible')).toBe('invincible');
+    expect(resolveAgainstCwd('invincible/docs', 'invincible/docs')).toBe(
+      'invincible/docs',
+    );
+  });
+
+  it('#466 `..` under cwd and at-root escape are unchanged', () => {
+    // From depth, `..` climbs toward the workspace root (not re-rooted).
+    expect(resolveAgainstCwd('invincible/docs', '..')).toBe('invincible');
+    expect(resolveAgainstCwd('invincible/docs', '../x')).toBe('invincible/x');
+    // At root, `..` still escapes (unchanged).
+    expect(() => resolveAgainstCwd('.', '..')).toThrow(/escapes/);
+  });
+
   it('rejects control characters on path arg', () => {
     expect(() => resolveAgainstCwd('invincible', 'a\nb')).toThrow(/control/i);
   });

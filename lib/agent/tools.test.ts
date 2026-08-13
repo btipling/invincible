@@ -533,6 +533,93 @@ describe('createAgentTools cwd', () => {
       expect.anything(),
     );
   });
+
+  it('#466 change_dir to an exact ancestor re-roots instead of a phantom nested path', async () => {
+    const listDir = vi.fn(async (path?: string) => {
+      if (path === 'invincible') {
+        return { entries: [{ name: 'docs', type: 'dir' as const }] };
+      }
+      return { entries: [] };
+    });
+    const client = mockClient({ listDir });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+      initialCwd: 'invincible/docs',
+    });
+
+    const cd = (await tools.change_dir.execute!(
+      { path: 'invincible' },
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(cd).toMatch(/change_dir invincible: ok cwd=invincible/);
+
+    const pwd = (await tools.pwd.execute!(
+      {},
+      { toolCallId: '2', messages: [] } as never,
+    )) as string;
+    expect(pwd).toBe('pwd: invincible');
+  });
+
+  it('#466 change_dir to a sibling sharing a name prefix does NOT re-root', async () => {
+    const listDir = vi.fn(async () => ({ entries: [] }));
+    const client = mockClient({ listDir });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+      initialCwd: 'foobar/x',
+    });
+    const cd = (await tools.change_dir.execute!(
+      { path: 'foo' },
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(cd).toMatch(/change_dir foobar\/x\/foo: ok cwd=foobar\/x\/foo/);
+  });
+
+  it('#466 change_dir `..` still walks up; at root still escapes', async () => {
+    const listDir = vi.fn(async () => ({ entries: [] }));
+    const client = mockClient({ listDir });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+      initialCwd: 'invincible/docs',
+    });
+    const up = (await tools.change_dir.execute!(
+      { path: '..' },
+      { toolCallId: '1', messages: [] } as never,
+    )) as string;
+    expect(up).toMatch(/change_dir invincible: ok cwd=invincible/);
+
+    const tools2 = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client: mockClient({ listDir }),
+      initialCwd: '.',
+    });
+    const esc = (await tools2.change_dir.execute!(
+      { path: '..' },
+      { toolCallId: '2', messages: [] } as never,
+    )) as string;
+    expect(esc).toMatch(/^ERROR change_dir:/);
+    expect(esc).toMatch(/escapes/);
+  });
+
+  it('#466 exec cwd shares the ancestor re-root seam (uniform resolve)', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+      initialCwd: 'invincible/docs',
+    });
+    await tools.exec.execute!(
+      { cmd: 'pwd', cwd: 'invincible' },
+      { toolCallId: '1', messages: [] } as never,
+    );
+    expect(exec).toHaveBeenCalledWith(
+      expect.objectContaining({ cmd: 'pwd', cwd: 'invincible' }),
+      expect.anything(),
+    );
+  });
 });
 
 describe('exec stdin / heredoc', () => {

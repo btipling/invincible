@@ -225,9 +225,13 @@ export function canonicalizePath(R: string, userPath: string): string {
 
 /**
  * Prefix-aware resolve: join `path` under logical `cwd`, unless `path` is
- * already workspace-root-relative under/equal to cwd (model copied tool results).
+ * already workspace-root-relative under/equal to cwd (model copied tool results)
+ * OR is an **exact ancestor** of cwd (predictable re-root navigation — phase 3
+ * of #464, `change_dir invincible` from `cwd=invincible/docs` → `invincible`,
+ * not the phantom `invincible/docs/invincible`).
  *
- * Paths with leading `..` are joined under cwd first (so `change_dir ..` works).
+ * Paths with leading `..` are joined under cwd first (so `change_dir ..` works)
+ * and still error once past the workspace root (unchanged).
  */
 export function resolveAgainstCwd(cwd: string, path: string): string {
   const c = normalizeWorkspaceRel(cwd || '.');
@@ -253,7 +257,11 @@ export function resolveAgainstCwd(cwd: string, path: string): string {
   if (
     nAlone != null &&
     c !== '.' &&
-    (nAlone === c || nAlone.startsWith(`${c}/`))
+    (nAlone === c ||
+      nAlone.startsWith(`${c}/`) ||
+      // Exact-ancestor re-root: `nAlone` is a strict ancestor of `cwd`
+      // (`cwd` starts with `nAlone + '/'`), mirroring the inverted prefix rule.
+      c.startsWith(`${nAlone}/`))
   ) {
     return nAlone;
   }
