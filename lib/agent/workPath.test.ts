@@ -391,6 +391,16 @@ describe('rewriteExecRootToRel', () => {
     expect(rewriteExecRootToRel(ROOT, grep)).toBe('src/foo.ts:5: content');
   });
 
+  it('colon-terminated under-R absolutes in structured data rewrite (PATH case)', () => {
+    // `:` is a token boundary (kept for `file:line` grep), so a
+    // colon-separated value whose absolute path is under R is rewritten too.
+    // Not a jail escape, but it mutates non-path structured data — locked so it
+    // can't silently bit-rot.
+    expect(
+      rewriteExecRootToRel(ROOT, 'PATH=/usr/bin:/vercel/workspace/node_modules/.bin\n'),
+    ).toBe('PATH=/usr/bin:node_modules/.bin\n');
+  });
+
   it('leaves relative-only output byte-identical (no leading / tokens)', () => {
     const text = 'src/a.ts\nlib/agent/tools.ts\n';
     expect(rewriteExecRootToRel(ROOT, text)).toBe(text);

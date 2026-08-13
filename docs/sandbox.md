@@ -743,7 +743,11 @@ separately), so `exec pwd` ≡ `pwd` and `find` / `realpath` / `git rev-parse
 system. Out-of-jail absolute text (`/etc/…`, another binding's root) is left
 untouched, and when `R` is unresolvable the exec output passes through
 byte-for-byte (fail-open — a degraded BYO turn looks unchanged). Rewrites are
-capped and never throw.
+capped and never throw. Because `:` is a token boundary (kept for `file:line`
+grep), a colon-separated value that opens an under-`R` absolute is rewritten
+too — e.g. `PATH=…:/vercel/workspace/node_modules/.bin` surfaces as
+`PATH=…:node_modules/.bin`. Not a jail escape, but it mutates non-path
+structured data; that tradeoff is locked by a `workPath` regression test.
 
 ### Defaults and session
 
