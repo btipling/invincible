@@ -84,6 +84,58 @@ describe('sandbox HTTP server', () => {
     void token;
   });
 
+  it('GET /health stays 200 + version/daemonVersion when jail root is missing; workspaceRoot omitted', async () => {
+    // Liveness/version discovery must NOT be coupled to `realpath`: a missing /
+    // not-yet-mounted SANDBOX_WORKSPACE must not blank version/daemonVersion
+    // (which would 400 the client's ensureDaemonCurrent gate and kill
+    // chat/MCP-only turns). Only workspaceRoot is omitted; the first FS tool
+    // against the broken root still fails 400.
+    const server = createSandboxServer({
+      token: 't',
+      workspace: '/no/such/invincible-ws-xyz',
+    });
+    const h = await listen(server);
+    close = h.close;
+    const res = await fetch(`${h.base}/health`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      ok: true,
+      version: INVINCIBLE_SANDBOX_PROTOCOL,
+      daemonVersion: INVINCIBLE_SANDBOX_DAEMON_VERSION,
+    });
+    expect('workspaceRoot' in body).toBe(false);
+    // Non-health endpoints against a broken root still fail 400 (jail).
+    const tool = await fetch(`${h.base}/v1/list_dir`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer t',
+      },
+      body: JSON.stringify({ path: '.' }),
+    });
+    expect(tool.status).toBe(400);
+  });
+
+  it('GET /health publishes the realpath jail root, not a symlinked SANDBOX_WORKSPACE env value', async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'sandbox-sym-'));
+    const real = path.join(tmp, 'real');
+    await fs.mkdir(real);
+    const link = path.join(tmp, 'link');
+    await fs.symlink(real, link, 'dir');
+    const server = createSandboxServer({ token: 't', workspace: link });
+    const h = await listen(server);
+    close = h.close;
+    const res = await fetch(`${h.base}/health`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { workspaceRoot?: string };
+    // The env value (symlink) differs from the realpath'd jail root the daemon
+    // actually enforces; unpublished root there yields the real target.
+    expect(body.workspaceRoot).toBe(fsSync.realpathSync(real));
+    expect(body.workspaceRoot).toBe(fsSync.realpathSync(link));
+    expect(body.workspaceRoot).not.toBe(link);
+  });
+
   it('daemon gate: header expected > running → 426, tool not executed, body drained', async () => {
     const { base, token } = await start();
     const headers = {

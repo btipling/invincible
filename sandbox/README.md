@@ -4,7 +4,7 @@ Standalone HTTP service that exposes a **path-jailed workspace** with agent tool
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/health` | `{ ok: true, version: 2, daemonVersion: N, workspaceRoot: "/…" }` (no auth) — `workspaceRoot` is the per-binding jail root on daemon ≥ **2** |
+| `GET` | `/health` | `{ ok: true, version: 2, daemonVersion: N, workspaceRoot?: "/…" }` (no auth) — `workspaceRoot` is the per-binding jail root on daemon ≥ **2**; it is **omitted** when the jail root cannot yet be resolved (liveness/version always stay 200) |
 | `POST` | `/v1/list_dir` | List directory entries |
 | `POST` | `/v1/read_file` | Read file (max 16 MiB); response includes additive `mtimeMs` + `size` |
 | `POST` | `/v1/write_file` | Write file (max 16 MiB); response includes post-write `mtimeMs` + `size` |
@@ -95,7 +95,7 @@ Missing or wrong token → `401` `{ "error": "Unauthorized" }` (token never refl
 
 ## Path jail
 
-`resolveJailPath` rejects `..` / absolute escapes **and** resolves symlinks: a link whose real target leaves `SANDBOX_WORKSPACE` is rejected. Workspace root must exist on disk. `GET /health` publishes **`resolveWorkspaceRoot(SANDBOX_WORKSPACE)`** (the realpath jail root the daemon actually enforces — a relative/symlinked env string still yields the absolute root); the app client parses it **fail-closed** (only an absolute, control-char-free path, not bare `/` and with no `..`, is accepted; anything else degrades `workspaceRoot` to `null`).
+`resolveJailPath` rejects `..` / absolute escapes **and** resolves symlinks: a link whose real target leaves `SANDBOX_WORKSPACE` is rejected. Workspace root must exist on disk. `GET /health` publishes **`resolveWorkspaceRoot(SANDBOX_WORKSPACE)`** (the realpath jail root the daemon actually enforces — a relative/symlinked env string still yields the absolute root); the app client parses it **fail-closed** (only an absolute, control-char-free **canonical** path — not bare `/`, no `..`, no `//` / trailing slash — is accepted; anything else degrades `workspaceRoot` to `null`). Liveness/version discovery is **not** coupled to `realpath`: if the jail root cannot be resolved (missing / not-yet-mounted workspace), `/health` still returns **200 + `version`/`daemonVersion`** with `workspaceRoot` **omitted** — only the first FS tool against the broken root fails, never the version gate.
 
 ## Budgets (locked with parent #45)
 

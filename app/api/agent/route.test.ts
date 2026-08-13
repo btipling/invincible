@@ -1146,14 +1146,17 @@ describe('POST /api/agent', () => {
 
     const { POST } = await loadRoute();
     const { runAgent } = await import('../../../lib/agent/runAgent');
-    const res = await POST(
-      new Request('http://localhost/api/agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'hi' }),
-      }),
-    );
+    const req = new Request('http://localhost/api/agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'hi' }),
+    });
+    const reqSignal = req.signal;
+    const res = await POST(req);
     expect(res.status).toBe(200);
+    // The 3rd arg is the request abort signal the route forwards to the health
+    // probe (run AFTER the DB connection is closed), so an aborted request
+    // cancels the probe immediately.
     expect(resolveAgentSandbox).toHaveBeenCalledWith(
       'user-1',
       expect.objectContaining({
@@ -1162,6 +1165,7 @@ describe('POST /api/agent', () => {
           GITHUB_TOKEN: 'ghp_pat_secret_value',
         },
       }),
+      expect.objectContaining({ signal: reqSignal }),
     );
     const arg = vi.mocked(runAgent).mock.calls[0]?.[0] as { secrets?: string[] };
     expect(arg.secrets).toContain('ghp_pat_secret_value');
@@ -1196,14 +1200,19 @@ describe('POST /api/agent', () => {
     }));
 
     const { POST } = await loadRoute();
-    await POST(
-      new Request('http://localhost/api/agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'hi' }),
-      }),
+    const req = new Request('http://localhost/api/agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'hi' }),
+    });
+    const reqSignal = req.signal;
+    await POST(req);
+    // Full 3-arg call: deps + the forwarded request abort signal.
+    expect(resolveAgentSandbox).toHaveBeenCalledWith(
+      'user-1',
+      {},
+      expect.objectContaining({ signal: reqSignal }),
     );
-    expect(resolveAgentSandbox).toHaveBeenCalledWith('user-1', {});
   });
 
 });

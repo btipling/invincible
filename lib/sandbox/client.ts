@@ -54,8 +54,13 @@ function parseWorkspaceRoot(raw: unknown, daemonVersion: number): string | null 
   if (root.length === 0) return null;
   if (CONTROL_CHARS.test(root)) return null;
   if (!root.startsWith('/')) return null;
-  if (root === '/' || root === '//') return null;
+  if (root === '/') return null;
   if (root.split('/').includes('..')) return null;
+  // Canonical realpath jail root: no repeated slashes, no `..` handled above,
+  // and no trailing slash. A realpath never emits `//` (a manual join/crafting
+  // can, and `//ws`/`/ws/` would not share keys with `normalizeWorkspaceRoot`),
+  // so reject instead of silently smuggling a non-canonical root.
+  if (root.includes('//') || root.endsWith('/')) return null;
   return root;
 }
 

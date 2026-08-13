@@ -266,7 +266,7 @@ alternate tools (MCP / builtin HTTP) gets **403** `Sandbox access denied.` (or
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| `GET` | `/health` | none | `{ ok: true, version: 2, daemonVersion: N, workspaceRoot: "/…" }` — the per-binding jail root `R` (daemon ≥ **2**) |
+| `GET` | `/health` | none | `{ ok: true, version: 2, daemonVersion: N, workspaceRoot?: "/…" }` — the per-binding jail root `R` (daemon ≥ **2**); `workspaceRoot` is **omitted** when the jail root cannot yet be resolved (liveness/version always stay 200) |
 | `POST` | `/v1/list_dir` | Bearer | List directory entries |
 | `POST` | `/v1/read_file` | Bearer | Read file (max 16 MiB); additive `mtimeMs` + `size` when daemon supports |
 | `POST` | `/v1/write_file` | Bearer | Write file (max 16 MiB); post-write fingerprint when supported |
@@ -296,9 +296,15 @@ serve yet.
 symlinked env string yields the absolute root the daemon actually enforces). It
 is returned **unauth** (like `version`/`daemonVersion`, on the token-private
 daemon port); all FS mutation stays `/v1/*` token-gated. The client parses it
-**fail-closed** — only an absolute, control-char-free path (not bare `/`, no
-`..` segment) is accepted; relative / drive / fake / stale bodies degrade
-`workspaceRoot` to `null`. `R` is a per-binding property of the resolved sandbox
+**fail-closed** — only an absolute, control-char-free **canonical** path (not bare
+`/`, no `..` segment, no `//` or trailing slash) is accepted; relative / drive /
+fake / stale bodies degrade `workspaceRoot` to `null`. Liveness/version
+discovery is **not** coupled to `realpath`: if the jail root cannot be resolved
+(missing / not-yet-mounted `SANDBOX_WORKSPACE`, boot race) `/health` **still**
+returns **200 + `version`/`daemonVersion`** with `workspaceRoot` **omitted** —
+the client parse sees `null` and a chat/MCP-only turn (which only needs the
+version gate) is not killed; only the first FS tool against the broken root
+fails. `R` is a per-binding property of the resolved sandbox
 (`ResolvedAgentSandbox.workspaceRoot`, both BYO and Vercel via one
 `SandboxClient.workspaceRoot()` accessor in `lib/sandbox/client.ts`), and host
 path canonicalization is workspace-relative-keyed via
