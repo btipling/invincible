@@ -266,7 +266,7 @@ alternate tools (MCP / builtin HTTP) gets **403** `Sandbox access denied.` (or
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| `GET` | `/health` | none | `{ ok: true, version: 2, daemonVersion: N }` |
+| `GET` | `/health` | none | `{ ok: true, version: 2, daemonVersion: N, workspaceRoot?: "/…" }` — the per-binding jail root `R` (daemon ≥ **2**); `workspaceRoot` is **omitted** when the jail root cannot yet be resolved (liveness/version always stay 200) |
 | `POST` | `/v1/list_dir` | Bearer | List directory entries |
 | `POST` | `/v1/read_file` | Bearer | Read file (max 16 MiB); additive `mtimeMs` + `size` when daemon supports |
 | `POST` | `/v1/write_file` | Bearer | Write file (max 16 MiB); post-write fingerprint when supported |
@@ -282,12 +282,42 @@ to old code — upgrade/restart it per [§7 Upgrade a live daemon deployment](#7
 ### Daemon version → out-of-date gate
 
 `health.version` is the **protocol**; `health.daemonVersion` is a separate
-**monotonic daemon revision** (starts at **1**; older daemons without the field
-report running `0`). The Next backend ships a matching expected revision
+**monotonic daemon revision** (starts at **1** → **2** adds `workspaceRoot`;
+older daemons without the field report running `0`). The Next backend ships a
+matching expected revision
 (`lib/sandbox/daemonVersion.ts` `EXPECTED_SANDBOX_DAEMON_VERSION`) and refuses
 **any** FS tool call on a long-lived BYO daemon that is behind it — otherwise
 deployed Next would send tools (e.g. `str_replace`) a long-lived unit does not
 serve yet.
+
+**Per-binding workspace root (`R`) on `/health`:** since daemon **2**, `GET
+/health` includes `workspaceRoot` — the **resolved** BYO jail root
+(`resolveWorkspaceRoot(SANDBOX_WORKSPACE)`: `realpath`, so even a relative or
+symlinked env string yields the absolute root the daemon actually enforces). It
+is returned **unauth** (like `version`/`daemonVersion`, on the token-private
+daemon port); all FS mutation stays `/v1/*` token-gated. The client parses it
+**fail-closed** — only an absolute, control-char-free **canonical** path (not bare
+`/`, no `..` segment, no `//` or trailing slash) is accepted; relative / drive /
+fake / stale bodies degrade `workspaceRoot` to `null`. Liveness/version
+discovery is **not** coupled to `realpath`: if the jail root cannot be resolved
+(missing / not-yet-mounted `SANDBOX_WORKSPACE`, boot race) `/health` **still**
+returns **200 + `version`/`daemonVersion`** with `workspaceRoot` **omitted** —
+the client parse sees `null` and a chat/MCP-only turn (which only needs the
+version gate) is not killed; only the first FS tool against the broken root
+fails. `R` is a per-binding property of the resolved sandbox
+(`ResolvedAgentSandbox.workspaceRoot`, both BYO and Vercel via one
+`SandboxClient.workspaceRoot()` accessor in `lib/sandbox/client.ts`), and host
+path canonicalization is workspace-relative-keyed via
+`lib/agent/workPath.ts` (`canonicalizePath(R, p)` / `workspaceAbsToRel`), so a
+model passing `<R>/src/foo.ts` maps to the same ledger key as `src/foo.ts`
+(extra separators after `R`, e.g. `<R>//src/foo.ts`, collapse to the same key)
+while any host-absolute **outside** that binding's root is rejected. `R` is
+**not** a global/session constant — never reuse one binding's root for another.
+A down/pre-v2 BYO daemon degrades `workspaceRoot` to `null` (it never 403s a
+turn); FS turns still gate 426/502 at `runAgent` preflight. Resolve probes
+`workspaceRoot` **after** the DB connection is released and honors the request
+abort signal + a bounded health timeout (10s), so a blackholed daemon never pins
+a pooler slot while discovering `R`.
 
 Out-of-date behavior:
 
@@ -409,7 +439,7 @@ Smoke:
 
 ```bash
 curl -s http://127.0.0.1:8787/health
-# {"ok":true,"version":2,"daemonVersion":1}
+# {"ok":true,"version":2,"daemonVersion":2,"workspaceRoot":"/path/to/.sandbox-workspace"}
 ```
 
 Terminal B — Next (`.env.local`):
@@ -506,7 +536,7 @@ what makes `exec` stdin/heredoc available through the BYO client):
 
 ```bash
 curl -s http://127.0.0.1:8787/health
-# expect: {"ok":true,"version":2,"daemonVersion":1}
+# expect: {"ok":true,"version":2,"daemonVersion":2,"workspaceRoot":"/…"}
 ```
 
 **Version gate after upgrade:** once deployed Next sends an expected
@@ -609,7 +639,7 @@ See also [SECURITY.md](../SECURITY.md).
 
 | # | Check | Expect |
 |---|--------|--------|
-| 1 | `GET /health` (local or off-box prod) | `{ ok: true, version: 2, daemonVersion: N }` |
+| 1 | `GET /health` (local or off-box prod) | `{ ok: true, version: 2, daemonVersion: 2, workspaceRoot: "/…" }` |
 | 2 | Harness with a usable sandbox grant | tool system lines + assistant for a write/exec prompt |
 | 3 | No usable sandbox grant + no alternate tools (MCP / builtin HTTP) | **403** `Sandbox access denied.` (no 503 → chat fallback) |
 | 4 | Wrong/missing Bearer on `/v1/*` | `401` without echoing the token |
@@ -649,6 +679,12 @@ Agent filesystem tools enforce **read-before-edit** on the shared sandbox jail:
 The sandbox **jail root** (`SANDBOX_WORKSPACE` on the daemon) does not change per turn.
 Agents also have a **logical cwd** owned by the agent tool layer + host session — not
 `process.chdir` on the daemon.
+
+The host now learns the jail root `R` per binding (`ResolvedAgentSandbox.workspaceRoot`)
+and canonicalizes ledger paths with `lib/agent/workPath.ts` — an absolute `<R>/file`
+and the relative `file` are the **same** freshness key, while any host-absolute
+outside that binding's `R` is rejected. `SANDBOX_DEFAULT_CWD` remains a per-deploy
+*default logical cwd* (workspace-relative), distinct from the jail root.
 
 ### Why it exists
 

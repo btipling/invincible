@@ -23,11 +23,46 @@ import {
 
 const DEFAULT_TIMEOUT_MS = 45_000;
 
+/** C0 controls + DEL — reject roots that could break tool-result framing / joins. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
+/**
+ * Bounded health probe (backs `checkDaemonCurrent` / `workspaceRoot`). A
+ * blackholed BYO daemon must not pin a request (or a resolve path) for the full
+ * 45s tool timeout; 10s is ample for a reachable daemon.
+ */
+const HEALTH_PROBE_TIMEOUT_MS = 10_000;
+
 /** Parsed `GET /health` body of interest to the client. */
-type HealthInfo = { version: number; daemonVersion: number };
+type HealthInfo = { version: number; daemonVersion: number; workspaceRoot: string | null };
 
 /** Per-client-instance health cache (null = not yet probed). */
 type HealthCache = { health: HealthInfo | null; inflight: Promise<HealthInfo> | null };
+
+/**
+ * Gated, fail-closed parse of `GET /health` workspaceRoot. Only a current daemon
+ * (>= 2) whose body carries an **absolute** POSIX path with no control
+ * characters — and not the bare root `"/"` (which would make every absolute
+ * path "escape" on reading) nor any `..` segment — is trusted. Everything else
+ * (relative, drive-aware, `..`, bare `/`, fake/partial bodies) parses to `null`,
+ * so a bogus root never surfaces from `workspaceRoot()`.
+ */
+function parseWorkspaceRoot(raw: unknown, daemonVersion: number): string | null {
+  if (daemonVersion < 2) return null;
+  if (typeof raw !== 'string') return null;
+  const root = raw.trim();
+  if (root.length === 0) return null;
+  if (CONTROL_CHARS.test(root)) return null;
+  if (!root.startsWith('/')) return null;
+  if (root === '/') return null;
+  if (root.split('/').includes('..')) return null;
+  // Canonical realpath jail root: no repeated slashes, no `..` handled above,
+  // and no trailing slash. A realpath never emits `//` (a manual join/crafting
+  // can, and `//ws`/`/ws/` would not share keys with `normalizeWorkspaceRoot`),
+  // so reject instead of silently smuggling a non-canonical root.
+  if (root.includes('//') || root.endsWith('/')) return null;
+  return root;
+}
 
 export type SandboxClient = {
   listDir: (path?: string, init?: { signal?: AbortSignal }) => Promise<ListDirResult>;
@@ -73,6 +108,13 @@ export type SandboxClient = {
    * (Vercel Sandbox SDK), which have no daemon `daemonVersion` to compare.
    */
   checkDaemonCurrent?: () => Promise<void>;
+  /**
+   * The per-binding jail workspace root `R`. Returned by both backends so path
+   * code has one accessor. **Non-throwing:** a health-probe failure, an
+   * out-of-date daemon, or a stale/partial health body yields `null` — never a
+   * throw (so `resolveAgentSandbox` never 403s on an operational daemon outage).
+   */
+  workspaceRoot?: (init?: { signal?: AbortSignal }) => Promise<string | null>;
   /**
    * Optional lifecycle hook for ephemeral backends (Vercel Sandbox).
    * BYO HTTP client omits this. Idempotent when present.
@@ -152,10 +194,14 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
 
     healthCache.inflight = (async () => {
       try {
-        const res = await withTimeoutFetch(`${baseUrl}/health`, {
-          method: 'GET',
-          signal: init?.signal,
-        });
+        const res = await withTimeoutFetch(
+          `${baseUrl}/health`,
+          {
+            method: 'GET',
+            signal: init?.signal,
+          },
+          HEALTH_PROBE_TIMEOUT_MS,
+        );
         let data: unknown = null;
         const ct = res.headers.get('content-type') ?? '';
         if (ct.includes('application/json')) {
@@ -173,7 +219,11 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
             res.status >= 400 && res.status < 600 ? res.status : 502,
           );
         }
-        const rec = (data ?? {}) as { version?: unknown; daemonVersion?: unknown };
+        const rec = (data ?? {}) as {
+          version?: unknown;
+          daemonVersion?: unknown;
+          workspaceRoot?: unknown;
+        };
         const version =
           typeof rec.version === 'number' && Number.isFinite(rec.version)
             ? rec.version
@@ -188,7 +238,14 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
           typeof rec.daemonVersion === 'number' && Number.isFinite(rec.daemonVersion)
             ? Math.floor(rec.daemonVersion)
             : 0;
-        const health: HealthInfo = { version, daemonVersion };
+        // Gated, fail-closed parse: only a current daemon (>= 2) whose health
+        // carries an absolute, control-char-free root path is trusted. Relative /
+        // drive / `..` / bare-`/` / fake bodies parse to null.
+        const workspaceRoot = parseWorkspaceRoot(
+          rec.workspaceRoot,
+          daemonVersion,
+        );
+        const health: HealthInfo = { version, daemonVersion, workspaceRoot };
         healthCache.health = health;
         return health;
       } catch (err) {
@@ -315,6 +372,18 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
 
   return {
     checkDaemonCurrent: () => ensureDaemonCurrent(),
+    /**
+     * Non-throwing per-binding root accessor. A down/unreachable daemon, a
+     * pre-v2 daemon, or a partial health body all degrade to `null` so resolve
+     * never 403s on an operational outage (FS tool turns still gate 502/426).
+     */
+    workspaceRoot: async (init?): Promise<string | null> => {
+      try {
+        return (await fetchHealth(init)).workspaceRoot;
+      } catch {
+        return null;
+      }
+    },
     listDir: (path = '.', init) => postJson<ListDirResult>('/v1/list_dir', { path }, init),
     readFile: (path, maxBytes, init) =>
       postJson<ReadFileResult>(
