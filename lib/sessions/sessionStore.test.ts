@@ -10,6 +10,10 @@ import {
   sessionKeyString,
   sessionPrefix,
 } from './sessionStore';
+import {
+  HARNESS_SESSION_MAX_META_BYTES,
+  PERSONA_SNAPSHOT_MAX_BYTES,
+} from '../sessionCloudCaps';
 import { MemorySessionStore } from './memorySessionStore';
 import {
   RedisSessionStore,
@@ -153,6 +157,8 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'logicalCwd',
       'legacySnapshotId',
       'title',
+      'personaId',
+      'personaSnapshot',
     ]);
     for (const k of RESERVED_META_KEYS) {
       const rawMeta: unknown = { [k]: 'x' };
@@ -166,7 +172,20 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
   });
 
   it('rejects oversized meta (size cap), accepts opaque scalar values without sniffing', () => {
-    expect(validateSessionRecord(makeRecord({ meta: { logicalCwd: 'x'.repeat(4096) } })).ok).toBe(false);
+    // Whole-meta cap raised 4096 → 20480 (parent #485 lock): a single <= cap string is fine,
+    // an over-budget combined meta JSON fails closed.
+    expect(
+      validateSessionRecord(
+        makeRecord({
+          meta: { personaSnapshot: 'x'.repeat(PERSONA_SNAPSHOT_MAX_BYTES) },
+        }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      validateSessionRecord(
+        makeRecord({ meta: { personaSnapshot: 'x'.repeat(HARNESS_SESSION_MAX_META_BYTES + 1) } }),
+      ).ok,
+    ).toBe(false);
     // Opaque passthrough: a secret-looking value inside a reserved key is allowed — the
     // reserved key set + cap is the contract, not free-form "secret-looking" sniffing.
     expect(
@@ -212,6 +231,58 @@ describe('validateMetaFields — P1 session-carrier semantic checks (#452)', () 
         makeRecord({ meta: { logicalCwd: 'src', activeSandboxId: 'sbx_a' } as HarnessSessionRecord['meta'] }),
       ).ok,
     ).toBe(true);
+  });
+});
+
+describe('meta persona keys (parent #485 lock, phase 1 #486)', () => {
+  it('accepts Redis-safe personaId or absent; rejects non-Redis-safe / oversize', () => {
+    expect(validateMetaFields({ personaId: 'pers_abc-123' }).ok).toBe(true);
+    expect(validateMetaFields({}).ok).toBe(true);
+    expect(validateMetaFields({ personaId: undefined }).ok).toBe(true);
+    for (const bad of ['a:b', '*', 'a?b', 'x'.repeat(129), 42 as never]) {
+      expect(validateMetaFields({ personaId: bad as never }).ok).toBe(false);
+    }
+  });
+
+  it('accepts personaSnapshot up to PERSONA_SNAPSHOT_MAX_BYTES; rejects over / non-string', () => {
+    expect(validateMetaFields({ personaSnapshot: 'short text' }).ok).toBe(true);
+    expect(
+      validateMetaFields({
+        personaSnapshot: 'x'.repeat(PERSONA_SNAPSHOT_MAX_BYTES),
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateMetaFields({
+        personaSnapshot: 'x'.repeat(PERSONA_SNAPSHOT_MAX_BYTES + 1),
+      }).ok,
+    ).toBe(false);
+    expect(validateMetaFields({ personaSnapshot: 7 as never }).ok).toBe(false);
+  });
+
+  it('personaSnapshot counts toward the raised whole-meta budget and replays near the cap', () => {
+    // A near-cap snapshot (16 KiB) fits the raised total (20480) alongside a personaId.
+    const near = 'x'.repeat(PERSONA_SNAPSHOT_MAX_BYTES);
+    const res = validateSessionRecord(
+      makeRecord({ meta: { personaId: 'pers_1', personaSnapshot: near } as HarnessSessionRecord['meta'] }),
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.value.meta.personaSnapshot).toBe(near);
+      expect(res.value.meta.personaId).toBe('pers_1');
+    }
+    // Snapshot alone larger than the WHOLE meta budget fails closed (never a lie).
+    expect(
+      validateSessionRecord(
+        makeRecord({ meta: { personaSnapshot: 'x'.repeat(HARNESS_SESSION_MAX_META_BYTES + 1) } as HarnessSessionRecord['meta'] }),
+      ).ok,
+    ).toBe(false);
+  });
+
+  it('constants are locked to the parent budget (16 KiB snapshot + 20 KiB total)', () => {
+    expect(PERSONA_SNAPSHOT_MAX_BYTES).toBe(16_384);
+    expect(HARNESS_SESSION_MAX_META_BYTES).toBe(20_480);
+    // Internal consistency: a full snapshot + reserved headroom must fit the total.
+    expect(PERSONA_SNAPSHOT_MAX_BYTES).toBeLessThan(HARNESS_SESSION_MAX_META_BYTES);
   });
 });
 

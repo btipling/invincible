@@ -198,6 +198,38 @@ describe('middleware auth gate', () => {
     expect(body.error).toBe(AUTH_REQUIRED_ERROR);
   });
 
+  it('401 JSON on unauth GET /api/personas when tenancy on', async () => {
+    process.env.DATABASE_URL = 'postgres://x';
+    process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = 'key-material';
+    vi.resetModules();
+    vi.doMock('next-auth/jwt', () => ({
+      getToken: vi.fn(async () => null),
+    }));
+    const { middleware } = await loadMw();
+    const res = await middleware(
+      new Request('http://localhost/api/personas', { method: 'GET' }) as never,
+    );
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe(AUTH_REQUIRED_ERROR);
+  });
+
+  it('allows GET /api/personas when JWT sub present', async () => {
+    process.env.DATABASE_URL = 'postgres://x';
+    process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = 'key-material';
+    vi.resetModules();
+    vi.doMock('next-auth/jwt', () => ({
+      getToken: vi.fn(async () => ({ sub: 'user-uuid' })),
+    }));
+    const { middleware } = await loadMw();
+    const res = await middleware(
+      new Request('http://localhost/api/personas', { method: 'GET' }) as never,
+    );
+    expect(res.status).toBe(200);
+  });
+
   it('allows GET /api/sessions when JWT sub present', async () => {
     process.env.DATABASE_URL = 'postgres://x';
     process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';

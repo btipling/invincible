@@ -332,6 +332,46 @@ export type UserSandboxInstance = typeof userSandboxInstances.$inferSelect;
 export type UserSandboxInstanceInsert = typeof userSandboxInstances.$inferInsert;
 
 /**
+ * Per-user agent personas (parent #485 / phase 1 #486).
+ * Bodies are non-secret user content (AGENTS.md-style instruction docs) —
+ * deliberately NOT DEK-encrypted (vs MCP headers / GitHub PATs which are real
+ * secrets). Server-only; never ship payload to the client in summaries.
+ */
+export const userPersonas = pgTable(
+  'user_personas',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    /** Pretty slug for picker/keys — unique per (tenantId, userId). */
+    slug: text('slug').notNull(),
+    /** Plaintext non-secret persona body. */
+    body: text('body').notNull(),
+    /** App-side single-default per user; boolean column, not a separate table. */
+    isDefault: boolean('is_default').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('user_personas_tenant_user_slug_unique').on(
+      t.tenantId,
+      t.userId,
+      t.slug,
+    ),
+    index('user_personas_user_id_idx').on(t.userId),
+    index('user_personas_tenant_id_idx').on(t.tenantId),
+  ],
+);
+
+export type UserPersona = typeof userPersonas.$inferSelect;
+export type UserPersonaInsert = typeof userPersonas.$inferInsert;
+
+/**
  * Cloud multi-device harness session (parent #242 / phase #243).
  * One row per user. snapshot_id is opaque client SessionSnapshot.id (e.g. sess_…),
  * not a UUID — never uuid-validate client ids.

@@ -33,6 +33,7 @@
  */
 import {
   HARNESS_SESSION_MAX_META_BYTES,
+  PERSONA_SNAPSHOT_MAX_BYTES,
   isRedisSafeOpaqueId,
   sanitizeSessionCwd,
 } from '../sessionCloudCaps';
@@ -52,6 +53,8 @@ export const RESERVED_META_KEYS = [
   'logicalCwd',
   'legacySnapshotId',
   'title',
+  'personaId',
+  'personaSnapshot',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -353,6 +356,32 @@ export function validateMetaFields(
         code: 'invalid_meta',
         error:
           'meta.activeSandboxId must be empty or a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      };
+    }
+  }
+  if (out.personaId !== undefined) {
+    if (typeof out.personaId !== 'string' || !isRedisSafeOpaqueId(out.personaId)) {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error:
+          'meta.personaId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      };
+    }
+  }
+  if (out.personaSnapshot !== undefined) {
+    if (typeof out.personaSnapshot !== 'string') {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error: 'meta.personaSnapshot must be a string.',
+      };
+    }
+    if (Buffer.byteLength(out.personaSnapshot, 'utf8') > PERSONA_SNAPSHOT_MAX_BYTES) {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error: `meta.personaSnapshot exceeds ${PERSONA_SNAPSHOT_MAX_BYTES} bytes.`,
       };
     }
   }
