@@ -2,10 +2,18 @@
  * Agent-only request body parse. Chat stays on parseChatBody (no cwd).
  */
 import { parseChatBody } from '../chatServer';
+import { isRedisSafeOpaqueId } from '../sessionCloudCaps';
 import { parseInitialCwd } from './workPath';
 
 export type ParsedAgentBody =
-  | { ok: true; prompt: string; modelId?: string; cwd: string }
+  | {
+      ok: true;
+      prompt: string;
+      modelId?: string;
+      cwd: string;
+      /** Optional session-owned active sandbox id (server-resolved override). */
+      sandboxId?: string;
+    }
   | { ok: false; error: string; status: number };
 
 /**
@@ -25,8 +33,13 @@ export function parseAgentBody(
 
   const obj =
     body != null && typeof body === 'object'
-      ? (body as { cwd?: unknown })
+      ? (body as { cwd?: unknown; sandboxId?: unknown })
       : {};
+
+  const sandboxId = parseSandboxId(obj.sandboxId);
+  if (!sandboxId.ok) {
+    return sandboxId;
+  }
 
   // Omit / null → '.' always. Distinguish from present invalid (400) or empty (→ ".").
   if (!('cwd' in obj) || obj.cwd === undefined || obj.cwd === null) {
@@ -35,6 +48,7 @@ export function parseAgentBody(
       prompt: base.prompt,
       modelId: base.modelId,
       cwd: '.',
+      ...(sandboxId.value !== undefined ? { sandboxId: sandboxId.value } : {}),
     };
   }
 
@@ -48,5 +62,27 @@ export function parseAgentBody(
     prompt: base.prompt,
     modelId: base.modelId,
     cwd: cwdParsed.cwd,
+    ...(sandboxId.value !== undefined ? { sandboxId: sandboxId.value } : {}),
+  };
+}
+
+/**
+ * Parse the optional `sandboxId` override. Omit/null → no override (undefined);
+ * a present non-Redis-safe value → 400 (fail closed). The id is session-owned (a
+ * sandbox row id, Redis-safe, mirrored from the session-carrier validation).
+ */
+function parseSandboxId(
+  raw: unknown,
+): { ok: true; value: string | undefined } | { ok: false; error: string; status: 400 } {
+  if (raw === undefined || raw === null) {
+    return { ok: true, value: undefined };
+  }
+  if (isRedisSafeOpaqueId(raw)) {
+    return { ok: true, value: raw };
+  }
+  return {
+    ok: false,
+    error: 'sandboxId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    status: 400,
   };
 }

@@ -171,6 +171,18 @@ JSON responses before they hit the wire. Never put Gateway keys, sandbox tokens,
 provider/MCP secrets, or raw DEK material in stream payloads. See
 [docs/agent-stream.md](docs/agent-stream.md).
 
+**Sandbox inventory / tool surface (`GET /api/sandboxes`):** non-secret,
+auth-gated (middleware + in-route `requireSessionUser`; **401** unauth).
+Returns the user's allowed sandboxes `{ id, name, slug, backend, status, image,
+canRead, canWrite, usable, granted }` and, when `?sandboxId=` (the session-owned
+active id, Redis-safe) is supplied, an `active` bind with its permission-aware
+tool-surface descriptor (`lib/tenancy/sandboxTools.ts`). **Always** omits
+`base_url` / `token_ciphertext` / host inventory. A provided-but-unusable active
+id is **403** (mirrors resolve) — never a stubbed `active`. The session binding
+itself is server-authoritative: switching routes tools via
+`resolveAgentSandbox`'s `init.requestedSandboxId`, never via a client-chosen
+secret.
+
 ## Multi-tenant auth
 
 | Rule | Detail |

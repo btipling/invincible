@@ -133,12 +133,15 @@ function forbidden(): ResolveAgentSandboxResult {
 
 /**
  * Exactly one tenant membership. Usable grants: one → use it; many → preferred
- * sandbox from Settings (or 403 selection-required). Fail closed otherwise.
+ * sandbox from Settings (or 403 selection-required). A requested active id
+ * (`init.requestedSandboxId`) wins strictly when it is a row-usable grant;
+ * a requested-but-unusable id fails closed (403 selection-required when other
+ * usable grants exist, else forbidden). Fail closed otherwise.
  */
 export async function resolveAgentSandbox(
   userId: string,
   deps: ResolveAgentSandboxDeps = {},
-  init?: { signal?: AbortSignal },
+  init?: { signal?: AbortSignal; requestedSandboxId?: string },
 ): Promise<ResolveAgentSandboxResult> {
   const id = userId?.trim();
   if (!id) {
@@ -147,7 +150,7 @@ export async function resolveAgentSandbox(
 
   try {
     const result = await withConnection(deps, (db) =>
-      resolveWithDb(db, id, deps),
+      resolveWithDb(db, id, deps, init?.requestedSandboxId),
     );
     // Probe the per-binding workspace root only AFTER `withConnection` has
     // closed (its own `finally` ran on return). Probing inside the DB callback
@@ -173,6 +176,7 @@ async function resolveWithDb(
   db: Db,
   userId: string,
   deps: ResolveAgentSandboxDeps,
+  requestedSandboxId?: string,
 ): Promise<ResolveAgentSandboxResult> {
   try {
     const memberships = await db
@@ -213,8 +217,30 @@ async function resolveWithDb(
       return forbidden();
     }
 
-    let row = usable[0];
-    if (usable.length > 1) {
+    // A requested active id wins strictly (preference ignored) when it is a
+    // row-usable grant. Requested-but-unusable → fail closed: selection-required
+    // when other usable alternatives exist, else forbidden. Never a silent
+    // fallback — the honest 403 is what lets the host clear and re-select.
+    const requested = requestedSandboxId?.trim();
+    let row: (typeof usable)[number];
+    if (requested) {
+      const match = usable.find((r) => r.sandboxId === requested);
+      if (!match) {
+        return {
+          ok: false,
+          response: Response.json(
+            {
+              error:
+                usable.length > 1
+                  ? SANDBOX_SELECTION_REQUIRED_ERROR
+                  : SANDBOX_FORBIDDEN_ERROR,
+            },
+            { status: 403 },
+          ),
+        };
+      }
+      row = match;
+    } else if (usable.length > 1) {
       const preferredId = await getUserPreferredSandboxId(userId, tenantId, {
         db,
       });
@@ -231,6 +257,8 @@ async function resolveWithDb(
         };
       }
       row = match;
+    } else {
+      row = usable[0];
     }
     const permissions = effectiveGrantPermissions({
       canRead: row.canRead,

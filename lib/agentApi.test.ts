@@ -295,3 +295,76 @@ describe('sendAgent cwd', () => {
   });
 });
 
+describe('sendAgent sandboxId fold + reflect', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('includes sandboxId in JSON body when set and parses reflected sandboxId', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as {
+        sandboxId?: string;
+      };
+      expect(body.sandboxId).toBe('sbx_active');
+      return Response.json({ text: 'ok', sandboxId: 'sbx_active' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await sendAgent('hi', { sandboxId: 'sbx_active' });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.sandboxId).toBe('sbx_active');
+  });
+
+  it('omits sandboxId from body when unset', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      expect(body).not.toHaveProperty('sandboxId');
+      return Response.json({ text: 'ok' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await sendAgent('hi');
+  });
+
+  it('parses sandboxId from stream done event', async () => {
+    const sse =
+      'data: {"type":"text_delta","text":"hi"}\n\n' +
+      'data: {"type":"done","text":"hi","sandboxId":"sbx_stream"}\n\n';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(sse, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      ),
+    );
+    const result = await sendAgentStream('x', { sandboxId: 'sbx_stream' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.text).toBe('hi');
+      expect(result.sandboxId).toBe('sbx_stream');
+    }
+  });
+
+  it('sends sandboxId alongside cwd in body', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as {
+        cwd?: string;
+        sandboxId?: string;
+      };
+      expect(body.cwd).toBe('invincible');
+      expect(body.sandboxId).toBe('sbx_active');
+      return Response.json({ text: 'ok', cwd: 'invincible', sandboxId: 'sbx_active' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await sendAgent('hi', {
+      cwd: 'invincible',
+      sandboxId: 'sbx_active',
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.cwd).toBe('invincible');
+      expect(result.sandboxId).toBe('sbx_active');
+    }
+  });
+});
+

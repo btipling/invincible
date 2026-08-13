@@ -172,10 +172,16 @@ export async function POST(req: Request): Promise<Response> {
     const resolved = await services.resolveSandbox.resolveAgentSandbox(
       userId,
       { ...(execEnv ? { execEnv } : {}) },
-      // Pass the request abort signal so the health probe that discovers the
-      // per-binding workspace root (run AFTER the DB connection is released)
-      // cancels when the request is aborted — never a zombie probe.
-      { signal: req.signal },
+      {
+        // Pass the request abort signal so the health probe that discovers the
+        // per-binding workspace root (run AFTER the DB connection is released)
+        // cancels when the request is aborted — never a zombie probe.
+        signal: req.signal,
+        // Session-owned active sandbox override (Redis-safe, server-validated).
+        // Unset → today's preference/single/selection logic; set-but-unusable →
+        // same 403 class (fail closed, no silent fallback).
+        ...(parsed.sandboxId ? { requestedSandboxId: parsed.sandboxId } : {}),
+      },
     );
 
     // When resolve soft-continues (e.g. Workspace not running), keep the 403
@@ -205,6 +211,9 @@ export async function POST(req: Request): Promise<Response> {
         // paths canonicalize to workspace-relative freshness keys (BYO+Vercel
         // parity). null on a faulting BYO probe — absolute then fails closed.
         workspaceRoot: resolved.value.workspaceRoot,
+        // Reflect the authoritative resolved bind so the host can reconcile
+        // after the turn (also surfaced on the `done` stream event).
+        sandboxId: resolved.value.sandboxId,
         secrets: [
           ...resolved.value.secrets,
           ...byok.secretsToRedact,
@@ -361,7 +370,7 @@ export async function POST(req: Request): Promise<Response> {
       });
     }
 
-    const { text, toolTrace, cwd } = await runAgent(finalRunParams);
+    const { text, toolTrace, cwd, sandboxId } = await runAgent(finalRunParams);
 
     if (!text) {
       return Response.json({ error: 'Empty model response.' }, { status: 502 });
@@ -371,6 +380,7 @@ export async function POST(req: Request): Promise<Response> {
       text,
       ...(toolTrace.length > 0 ? { toolTrace } : {}),
       ...(cwd != null ? { cwd } : {}),
+      ...(sandboxId != null ? { sandboxId } : {}),
     });
   } catch (err) {
     if (isAbortError(err)) {

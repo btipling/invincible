@@ -124,6 +124,40 @@ sandbox stored per user (`user_preferred_sandbox`). Set it under **Settings → 
 Creating a sandbox still grants the actor R/W but **no longer revokes** their other grants.
 Schema: GHA **db-migrate** for `user_preferred_sandbox`.
 
+### Active sandbox (session-owned binding + mid-session switch)
+
+Alongside the **Preferred** picker, a user can bind the **current browser
+session** to a specific usable grant under **Settings → Sandbox → "Use for this
+session"**. This sets the session's `activeSandboxId` (local `SessionStore`),
+which is **server-resolved at runtime** — a higher-precedence, per-session
+override that routes tools to that bind for subsequent turns (never clearing the
+transcript or `logicalCwd`).
+
+Resolve precedence (server-side `resolveAgentSandbox`):
+
+| Case | Behavior |
+|------|----------|
+| Session `activeSandboxId` set + a row-usable grant | That row wins (preference ignored) |
+| Session `activeSandboxId` set but unusable / ungranted / wrong tenant | **403** fail-closed (selection-required when alternatives exist, else forbidden) — host clears the stale id so the next turn re-resolves |
+| Session `activeSandboxId` unset | Today's logic: preferred → single → 403 selection-required |
+
+Switching changes **where tools run**, not the message history. Because the
+binding changes the per-binding jail root `R`, keep `logicalCwd`
+workspace-relative — a stale absolute `<oldR>/…` from a prior bind fails closed
+(see Logical workspace cwd).
+
+**Server surfaces (non-secret):**
+
+| Endpoint | Purpose | Contract |
+|----------|---------|----------|
+| `GET /api/sandboxes` | Inventory of the user's allowed sandboxes + active-bind tool surface | `{ options, active }`; `options[]` entries `{ id, name, slug, backend, status, image, canRead, canWrite, usable, granted }` (`id` projected from `SandboxChoice.sandboxId`); optional `?sandboxId=` (session-carry, Redis-safe) → `active: { sandboxId, tools }` (fail-closed **403** if provided-but-unusable); `active: null` when omitted. **Never** returns `base_url` / `token_ciphertext` / host inventory. Auth: middleware + in-route `requireSessionUser` (401 unauth) |
+
+The tool-surface descriptor (`lib/tenancy/sandboxTools.ts` `describeSandboxTools`)
+is permission-aware (read tools on `canRead`; `write_file`/`str_replace`/`exec` on
+`canWrite`; `change_dir`/`pwd` always) and backend-noted (`vercel` attach-only
+durable Workspace; `byo` HTTP daemon v2). It is a display/contract view only — the
+model still sees the real tool schemas via `createAgentTools`.
+
 
 ---
 

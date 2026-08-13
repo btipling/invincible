@@ -598,6 +598,224 @@ describe('resolveAgentSandbox', () => {
     expect(body.error).toMatch(/Settings → Sandbox|Multiple sandboxes/i);
   });
 
+  it('requestedSandboxId override routes to that usable grant, ignoring preference', async () => {
+    const [sb2] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'second',
+        slug: 'second',
+        backend: 'vercel',
+        image: 'vercel/sandbox/node:24',
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+    await db.insert(schema.sandboxGrants).values({
+      sandboxId: sb2.id,
+      userId,
+      canRead: true,
+      canWrite: true,
+    });
+    // Prefer the default byo sandbox, but request the vercel one → strict win.
+    await db.insert(schema.userPreferredSandbox).values({
+      userId,
+      tenantId,
+      sandboxId,
+    });
+    await insertRunningWorkspace(db, {
+      userId,
+      tenantId,
+      catalogSandboxId: sb2.id,
+      image: 'vercel/sandbox/node:24',
+    });
+
+    const createVercelClient = vi.fn(() => stubClient() as never);
+    const result = await resolveAgentSandbox(
+      userId,
+      {
+        db: db as never,
+        decryptSandboxToken: decrypt,
+        createVercelClient,
+      },
+      { requestedSandboxId: sb2.id },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value.sandboxId).toBe(sb2.id);
+    expect(result.value.backend).toBe('vercel');
+  });
+
+  it('requestedSandboxId override picks a byo usable grant (preference ignored)', async () => {
+    const [sb2] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'byo-second',
+        slug: 'byo-second',
+        backend: 'byo',
+        baseUrl: 'http://127.0.0.1:8787/',
+        tokenCiphertext: (
+          await encryptTenantSecret(tenantId, 'sandbox-token-secret-xyz', {
+            db: db as never,
+            amk: AMK,
+          })
+        ).ciphertext,
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+    await db.insert(schema.sandboxGrants).values({
+      sandboxId: sb2.id,
+      userId,
+      canRead: true,
+      canWrite: true,
+    });
+    // Prefer the default byo sandbox, but request sb2 → strict win.
+    await db.insert(schema.userPreferredSandbox).values({
+      userId,
+      tenantId,
+      sandboxId,
+    });
+
+    const result = await resolveAgentSandbox(
+      userId,
+      {
+        db: db as never,
+        decryptSandboxToken: decrypt,
+        createByoClient: ({ baseUrl, token }) =>
+          stubClient({ baseUrl, token }),
+      },
+      { requestedSandboxId: sb2.id },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value.sandboxId).toBe(sb2.id);
+    expect(result.value.backend).toBe('byo');
+  });
+
+  it('requestedSandboxId unset → unchanged preferred/single/selection logic', async () => {
+    const [sb2] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'second',
+        slug: 'second',
+        backend: 'vercel',
+        image: 'vercel/sandbox/node:24',
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+    await db.insert(schema.sandboxGrants).values({
+      sandboxId: sb2.id,
+      userId,
+      canRead: true,
+      canWrite: true,
+    });
+    await db.insert(schema.userPreferredSandbox).values({
+      userId,
+      tenantId,
+      sandboxId: sb2.id,
+    });
+    await db
+      .update(schema.sandboxes)
+      .set({ backend: 'byo' })
+      .where(eq(schema.sandboxes.id, sandboxId));
+    const name = await insertRunningWorkspace(db, {
+      userId,
+      tenantId,
+      catalogSandboxId: sb2.id,
+      image: 'vercel/sandbox/node:24',
+    });
+    const createVercelClient = vi.fn(() => stubClient() as never);
+
+    // No requestedSandboxId → preference wins (sb2).
+    const result = await resolveAgentSandbox(userId, {
+      db: db as never,
+      decryptSandboxToken: decrypt,
+      createVercelClient,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value.sandboxId).toBe(sb2.id);
+    expect(createVercelClient).toHaveBeenCalledWith({
+      name,
+      image: 'vercel/sandbox/node:24',
+    });
+  });
+
+  it('requestedSandboxId unusable/ungranted → 403 selection-required (multiple alternatives)', async () => {
+    const [sb2] = await db
+      .insert(schema.sandboxes)
+      .values({
+        tenantId,
+        name: 'second',
+        slug: 'second',
+        backend: 'vercel',
+        image: 'vercel/sandbox/node:24',
+        status: 'active',
+      })
+      .returning({ id: schema.sandboxes.id });
+    await db.insert(schema.sandboxGrants).values({
+      sandboxId: sb2.id,
+      userId,
+      canRead: true,
+      canWrite: true,
+    });
+
+    const ghost = 'sbx_unknown_ghost';
+    const result = await resolveAgentSandbox(
+      userId,
+      {
+        db: db as never,
+        decryptSandboxToken: decrypt,
+        createVercelClient: () => stubClient() as never,
+        createByoClient: () => stubClient() as never,
+      },
+      { requestedSandboxId: ghost },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected fail');
+    expect(result.response.status).toBe(403);
+    const body = (await result.response.json()) as { error: string };
+    expect(body.error).toMatch(/Settings → Sandbox|Multiple sandboxes/i);
+  });
+
+  it('requestedSandboxId is a stopped vercel workspace → softContinue (honest, not a bind lie)', async () => {
+    // Default fixture is a single byo usable grant. Request it as the active id;
+    // it IS usable → resolves. This locks strict-win on a healthy requested bind.
+    const result = await resolveAgentSandbox(
+      userId,
+      {
+        db: db as never,
+        decryptSandboxToken: decrypt,
+        createByoClient: ({ baseUrl, token }) =>
+          stubClient({ baseUrl, token }),
+      },
+      { requestedSandboxId: sandboxId },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.value.sandboxId).toBe(sandboxId);
+  });
+
+  it('requestedSandboxId unusable with NO alternatives → forbidden (not selection)', async () => {
+    // Single byo usable grant; request a ghost id with no other usable grant.
+    const ghost = 'sbx_ghost_no_alt';
+    const result = await resolveAgentSandbox(
+      userId,
+      {
+        db: db as never,
+        decryptSandboxToken: decrypt,
+        createByoClient: () => stubClient() as never,
+      },
+      { requestedSandboxId: ghost },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected fail');
+    expect(result.response.status).toBe(403);
+    const body = (await result.response.json()) as { error: string };
+    expect(body.error).toBe(SANDBOX_FORBIDDEN_ERROR);
+  });
+
   it('multiple usable with preference → preferred row', async () => {
     const [sb2] = await db
       .insert(schema.sandboxes)
