@@ -848,7 +848,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                     opacity: busy ? 0.5 : 1,
                   }}
                 >
-                  New session
+                  Clear
                 </button>
               )}
               {authNav}
