@@ -50,7 +50,7 @@ The **local** blob uses the opaque client snapshot shape:
 | `id` | Opaque local snapshot id (`sess_…`) |
 | `updatedAt` | Epoch **ms** (safe integer) — LWW clock for cloud |
 | `messages` | Full transcript for history fold + ring hydrate |
-| `cwd` | **Optional** logical workspace directory (workspace-root-relative). **Session-owned** (P1/GAP-1, #452) — synced to the cloud record as `meta.logicalCwd`, so it survives a device switch |
+| `cwd` | **Optional** logical workspace directory (workspace-root-relative). **Session-owned** (P1/GAP-1, #452) — synced to the cloud record as `meta.logicalCwd`, so it survives a device switch. A **confirmed successful `change_dir`** is persisted even when the turn later cancels / times out / hard-errors, so `cwd` survives across turn outcomes — not just a successful turn |
 | `activeSandboxId` | **Optional** server/origin sandbox id (Redis-safe opaque). **Carried-but-not-resolved** (P1/GAP-1, #452) — synced as `meta.activeSandboxId`; the agent still resolves from the user's preferred sandbox until P2/#330 |
 
 Storage key: `invincible.harness.session.v1`.

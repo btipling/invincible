@@ -6,13 +6,16 @@ import {
   describeTurnEnd,
   getSessionCwd,
   isTurnEndLine,
+  parseChangeDirCwd,
   pushSessionToBridge,
+  recordLiveCwd,
   runHarnessChat,
   restoreLastUiKind,
   runHarnessTurn,
   selectToolTraceLines,
   shouldContinueStreak,
   truncateToolTraceSummary,
+  type LiveCwdSource,
 } from './harnessChat';
 import { HARNESS_RING_MAX } from './sessionWindow';
 import {
@@ -1339,6 +1342,179 @@ describe('runHarnessTurn session cwd', () => {
     });
     expect(result.ok).toBe(true);
     expect(next.cwd).toBe('invincible/src');
+  });
+
+  it('JSON success omitting agentResult.cwd persists a confirmed change_dir from toolTrace (plan #465)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'moved',
+      toolTrace: [
+        { name: 'change_dir', ok: true, summary: 'change_dir invincible/sub: ok cwd=invincible/sub' },
+      ],
+    }));
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(result.ok).toBe(true);
+    // JSON success has no live events; the confirmed change_dir in toolTrace
+    // closes the #403 drift when the authoritative `cwd` is absent.
+    expect(next.cwd).toBe('invincible/sub');
+  });
+
+  it('JSON success with only an errored change_dir (no authoritative cwd) keeps prior (plan #465)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'nope',
+      toolTrace: [
+        { name: 'change_dir', ok: false, summary: 'change_dir · ✗ failed · ERROR change_dir: no such dir' },
+      ],
+    }));
+    const session = { ...createEmptySession('s'), cwd: 'keep-me' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(result.ok).toBe(true);
+    // A failed change_dir never records a live cwd, so the prior value is kept.
+    expect(next.cwd).toBe('keep-me');
+  });
+
+  it('stream cancel after a successful change_dir persists the live cwd (plan #465)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: true,
+          summary: 'change_dir · ✓ ok · invincible/sub · cwd=invincible/sub',
+        });
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(result.ok).toBe(false);
+    // The model moved before the cancel — the next turn boots there, not stale.
+    expect(next.cwd).toBe('invincible/sub');
+  });
+
+  it('stream hard-error/timeout after a successful change_dir persists the live cwd (plan #465)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: true,
+          summary: 'change_dir · ✓ ok · invincible/sub · cwd=invincible/sub',
+        });
+        await init?.onEvent?.({ type: 'error', error: 'Gateway timeout' });
+        return { ok: false, error: 'Gateway timeout', status: 504 };
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(next.cwd).toBe('invincible/sub');
+  });
+
+  it('stream failure with only an errored change_dir keeps the prior cwd (plan #465)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), cwd: 'keep-me' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: false,
+          summary: 'change_dir · ✗ failed · ERROR change_dir: no such dir',
+        });
+        return { ok: false, error: 'boom' };
+      },
+    });
+    expect(result.ok).toBe(false);
+    // A failed change_dir never records a live cwd — prior value retained.
+    expect(next.cwd).toBe('keep-me');
+  });
+
+  it('stream success that omits agentResult.cwd still persists a confirmed live cwd (plan #465)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: true,
+          summary: 'change_dir · ✓ ok · invincible/deep · cwd=invincible/deep',
+        });
+        await init?.onEvent?.({ type: 'done', text: 'ok' });
+        return { ok: true, text: 'ok' };
+      },
+    });
+    expect(result.ok).toBe(true);
+    // Success prefers the authoritative `agentResult.cwd`, but when it is absent
+    // the confirmed live cwd closes the #403 drift instead of re-retaining stale.
+    expect(next.cwd).toBe('invincible/deep');
+  });
+});
+
+describe('parseChangeDirCwd / recordLiveCwd (plan #465)', () => {
+  it('parses the raw success line and the summarized host form', () => {
+    expect(parseChangeDirCwd('change_dir invincible/sub: ok cwd=invincible/sub')).toBe(
+      'invincible/sub',
+    );
+    expect(
+      parseChangeDirCwd('change_dir · ✓ ok · invincible/sub · cwd=invincible/sub'),
+    ).toBe('invincible/sub');
+  });
+
+  it('never parses an errored change_dir', () => {
+    expect(parseChangeDirCwd('ERROR change_dir: no such directory')).toBeUndefined();
+    expect(parseChangeDirCwd('ERROR change_dir: boom')).toBeUndefined();
+    expect(parseChangeDirCwd('change_dir · ✗ failed · ERROR change_dir: boom')).toBeUndefined();
+  });
+
+  it('never parses empty / non-change_dir text', () => {
+    expect(parseChangeDirCwd(undefined)).toBeUndefined();
+    expect(parseChangeDirCwd('')).toBeUndefined();
+    expect(parseChangeDirCwd('list_dir .: 2 entries')).toBeUndefined();
+    expect(parseChangeDirCwd('pwd: invincible')).toBeUndefined();
+  });
+
+  it('recordLiveCwd keeps the last successful value and never regresses on a later failure', () => {
+    let state: LiveCwdSource = { value: undefined, source: undefined };
+    state = recordLiveCwd(state, 'change_dir · ✓ ok · invincible/a · cwd=invincible/a');
+    expect(state.value).toBe('invincible/a');
+    // A later, deeper successful change_dir wins.
+    state = recordLiveCwd(state, 'change_dir invincible/a/b: ok cwd=invincible/a/b');
+    expect(state.value).toBe('invincible/a/b');
+    // A failed change_dir after a success must NOT erase the confirmed live cwd.
+    state = recordLiveCwd(state, 'ERROR change_dir: boom');
+    expect(state.value).toBe('invincible/a/b');
   });
 });
 

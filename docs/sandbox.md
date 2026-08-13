@@ -709,7 +709,7 @@ short relative paths.
 
 | Tool | Role |
 |------|------|
-| `change_dir` | Set logical cwd for subsequent tools this turn (host may persist on success) |
+| `change_dir` | Set logical cwd for subsequent tools this turn (host persists a confirmed `change_dir` even if the turn later cancels / times out / hard-errors) |
 | `pwd` | Print current logical cwd (workspace-root-relative) |
 | path tools (`list_dir`, `read_file`, `write_file`, `str_replace`, `exec`) | Resolve paths against logical cwd |
 
@@ -763,8 +763,13 @@ server warning — it does not fail process boot. Set it in the **Vercel project
 env** UI for Production/Preview (e.g. `invincible` for a nested checkout). Verify
 with the `pwd` tool after a harness turn.
 
-Host updates stored session cwd **only on agent success**; failure or abort
-leave the prior value. Clear session omits cwd. (There is no 503 chat-fallback
+Host updates the stored session cwd from the turn's **logical cwd**: success
+prefers the authoritative `agentResult.cwd`, and a **confirmed successful
+`change_dir`** is persisted even when the turn later cancels / times out /
+hard-errors — so the next turn boots where the model actually worked. Only a
+confirmed `change_dir` (tool result `ok` with a `cwd=` marker) is persisted on a
+failed/aborted turn; a `change_dir` that errored, or a turn with no `change_dir`,
+keeps the prior value. Clear session omits cwd. (There is no 503 chat-fallback
 path in the current product.)
 
 See also [session-model.md](session-model.md) and [agent-stream.md](agent-stream.md).

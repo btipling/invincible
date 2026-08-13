@@ -517,6 +517,55 @@ function toSessionCwd(value: unknown): string | undefined {
 }
 
 /**
+ * Confirm-success `change_dir` marker. The tool emits `change_dir <path>: ok
+ * cwd=<path>` (`lib/agent/tools.ts#change_dir`), and both host-facing summaries
+ * keep a trailing `cwd=<path>` (`salientToolBits` change_dir branch →
+ * summarizeToolLine; `collectToolTrace` for the JSON toolTrace). Only a success
+ * (`ok`, `cwd=` present, no `ERROR`) yields the already-workspace-relative
+ * target; anything else → `undefined` so a failed `change_dir` is never
+ * persisted (phase 2 of #464, plan #465).
+ */
+export function parseChangeDirCwd(text: string | undefined): string | undefined {
+  const t = (text ?? '').trim();
+  if (!t) return undefined;
+  if (/^ERROR\b/i.test(t)) return undefined;
+  // Raw success line: `change_dir <path>: ok cwd=<path>`.
+  const direct = t.match(/^change_dir\s+\S+:\s*ok\s+cwd=(\S+)\s*$/i);
+  if (direct) return direct[1];
+  // Summarized form: `change_dir · ✓ ok · <path> · cwd=<path>`.
+  const summarized = t.match(/change_dir[^]*?\bcwd=(\S+)\s*$/i);
+  if (summarized) return summarized[1];
+  return undefined;
+}
+
+/**
+ * Turn-scoped confirmation that at least one `change_dir` succeeded, carrying the
+ * last successfully-resolved workspace-relative cwd. Null (no `value`) until
+ * proven by a tool result; multiple `change_dir` in one turn keep the model's
+ * final position. Kept separate from the applied session `cwd` so a non-success
+ * terminal can apply it only when the model actually moved (plan #465).
+ */
+export type LiveCwdSource = {
+  value: string | undefined;
+  source: string | undefined;
+};
+
+/**
+ * Record a confirmed-`change_dir` cwd from any source (stream tool-result summary
+ * or JSON toolTrace summary). The caller has already gated on
+ * `name === 'change_dir'` + `ok === true`; this parses the success marker text
+ * and keeps the last successful value within the turn.
+ */
+export function recordLiveCwd(
+  state: LiveCwdSource,
+  summary: string | undefined,
+): LiveCwdSource {
+  const value = parseChangeDirCwd(summary);
+  if (value === undefined) return state;
+  return { value, source: summary };
+}
+
+/**
  * Single authoritative session-cwd getter (P1/GAP-1, #452). Every agent turn reads
  * the workspace-relative logical cwd from here for the request (`sessionCwd`); the
  * success path applies `agentResult.cwd`, while abort/timeout/chat-fallback keep the
@@ -608,6 +657,11 @@ export async function runHarnessTurn(
     let thinkingSegment = '';
     let thinkingSegmentOpen = false;
     let sawStreamTerminal = false;
+    // Last confirmed-successful `change_dir` cwd this turn (phase 2 of #464 /
+    // plan #465): recorded from live tool events (stream) or the JSON toolTrace,
+    // applied on non-success terminals and as a success fallback so an aborted
+    // turn where the model moved still boots the next turn where it worked.
+    let liveCwd: LiveCwdSource = { value: undefined, source: undefined };
 
     // Tool-run aggregation (protocol v11 / #433). The host owns the SSE and
     // knows the structured `tool_result.ok`, so it aggregates each uninterrupted
@@ -705,6 +759,12 @@ export async function runHarnessTurn(
           truncateToolTraceSummary(ev.summary),
           ev.preview,
         );
+        // Phase 2 (#465): a successful `change_dir` is the durable-live-cwd
+        // signal. Only a confirmed success (marker `cwd=` present, no `ERROR`)
+        // records it; anything else leaves the prior value untouched.
+        if (ev.name === 'change_dir' && ev.ok) {
+          liveCwd = recordLiveCwd(liveCwd, ev.summary);
+        }
       }
       // Paint now — the operator sees `N tools called` on THIS event.
       livePaintToolRun();
@@ -945,11 +1005,29 @@ export async function runHarnessTurn(
       );
       next = pushTurnEnd(bridge, next, 'model');
       lastUiKind = 'system';
-      // Success-only cwd apply (parent #270 / phase 2): never on failure/abort.
-      // Sanitize + renormalize exactly like the send path (GAP-1 review #453):
-      // an unsanitary `agentResult.cwd` (host-absolute / escaping `..`) is dropped
-      // rather than persisted as a sticky value that would 400 every future turn.
-      const appliedCwd = toSessionCwd(agentResult.cwd);
+      // Success-path cwd apply (parent #270 / phase 2): prefers the authoritative
+      // `agentResult.cwd`. Sanitize + renormalize exactly like the send path
+      // (GAP-1 review #453): an unsanitary `agentResult.cwd` (host-absolute /
+      // escaping `..`) is dropped rather than persisted as a sticky value that
+      // would 400 every future turn. Plan #465: when the authoritative value is
+      // absent but a `change_dir` was confirmed this turn, fall back to the live
+      // cwd so a success that omits `cwd` never silently re-retains the stale one.
+      // Stream turns already captured `liveCwd` from live events; a JSON success
+      // (no live events) derives it from the end-of-turn toolTrace (last
+      // confirmed `change_dir` wins) before the fallback.
+      let successCwd = liveCwd;
+      if (!streamAgent) {
+        let fromTrace: LiveCwdSource = { value: undefined, source: undefined };
+        for (const entry of agentResult.toolTrace ?? []) {
+          if (entry.name === 'change_dir' && entry.ok) {
+            fromTrace = recordLiveCwd(fromTrace, entry.summary);
+          }
+        }
+        successCwd = fromTrace.value !== undefined ? fromTrace : successCwd;
+      }
+      const appliedCwd =
+        toSessionCwd(agentResult.cwd) ??
+        (successCwd.value !== undefined ? toSessionCwd(successCwd.value) : undefined);
       if (appliedCwd !== undefined) {
         next = { ...next, cwd: appliedCwd };
       }
@@ -985,6 +1063,16 @@ export async function runHarnessTurn(
         opts?.signal,
       );
       failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail);
+      // Phase 2 (#465): a cancel/timeout/hard-error turn still persists the last
+      // confirmed `change_dir` cwd (before the abort) so the next turn boots where
+      // the model actually worked. When no `change_dir` was confirmed, `liveCwd`
+      // is undefined and the prior value is retained (today's behavior).
+      if (liveCwd.value !== undefined) {
+        const failedLiveCwd = toSessionCwd(liveCwd.value);
+        if (failedLiveCwd !== undefined) {
+          failedSession = { ...failedSession, cwd: failedLiveCwd };
+        }
+      }
       lastUiKind =
         fail.kind === 'error' || fail.kind === 'timeout' ||
         fail.kind === 'empty' || fail.kind === 'validation'
