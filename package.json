@@ -18,7 +18,8 @@
     "db:migrate": "npx --yes drizzle-kit@0.31.10 migrate",
     "db:seed": "tsx scripts/seed-tenancy.ts",
     "smoke:tenancy": "node scripts/smoke-tenancy-public.mjs",
-    "db:backfill-deks": "tsx scripts/backfill-tenant-deks.ts"
+    "db:backfill-deks": "tsx scripts/backfill-tenant-deks.ts",
+    "backfill:sessions": "tsx scripts/backfill-sessions.ts"
   },
   "dependencies": {
     "@ai-sdk/mcp": "^2.0.25",

@@ -147,6 +147,28 @@ export function sessionPrefix(scope: SessionListScope): string {
   return `harness:session:${scope.tenantId}:${scope.userId}:*`;
 }
 
+/**
+ * Idempotent-backfill marker key (parent #411 phase-4 lock). Lives in a **separate
+ * namespace** from `harness:session:*`, so a marker is never returned by a
+ * `harness:session:{tenant}:{user}:*` list glob nor parsed back into a session key.
+ * Marks "this legacy row is migrated" per `{tenant,user}` — distinct from "has any
+ * session" (users may legitimately have many/new sessions).
+ */
+export function backfillMarkerKey(scope: SessionListScope): string {
+  return `harness:sessions-backfill:${scope.tenantId}:${scope.userId}:v1`;
+}
+
+/**
+ * Marker seam for the one-shot Phase-4 backfill (`scripts/backfill-sessions.ts`).
+ * Both store implementations implement it so the backfill stays testable with
+ * `MemorySessionStore` and runs idempotently against `RedisSessionStore` without
+ * constructing I/O in the script body (mandatory DI gate).
+ */
+export interface BackfillMarkerStore {
+  hasBackfillMarker(scope: SessionListScope): Promise<boolean>;
+  setBackfillMarker(scope: SessionListScope): Promise<void>;
+}
+
 /** Validate a store key (tenant/user/session ids, all Redis-safe opaque). */
 export function validateSessionRecordKey(
   input: unknown,

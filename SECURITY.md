@@ -31,18 +31,54 @@ Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
 | Surface | Trust rule |
 |---------|------------|
 | Browser `localStorage` / memory | UX convenience only; same-origin; **not** multi-tenant isolation |
-| Cloud row (`harness_sessions`) | **One row per Auth.js `user_id`**; ownership always from session — never client-supplied user id |
-| API | `GET` / `PUT` / `DELETE` `/api/session` — signed in + middleware-protected |
+| Cloud store (Redis multi-session) | id-shaped **`/api/sessions*`**; one **record** per `{tenant,user,sessionId}` in the `harness:session:{tenant}:{user}:{id}` keyspace; ownership always server-derived from the authenticated user — never client-supplied tenant/user |
+| API | `GET`/`POST` `/api/sessions` + `GET`/`PUT`/`DELETE` `/api/sessions/:id` — signed in + middleware-protected; **write key = the path `:id`**, body `id` must equal the path id |
 | Unauthenticated | **401** — client disables cloud sync for the page load |
-| No row yet | **404** `NOT_FOUND` — local continues; first PUT creates |
-| Store unavailable | **503** — local continues |
-| Conflict | LWW on `updatedAt` (epoch ms); stale PUT → **409** + server body |
-| Caps (abuse / size) | No message-count cap; ≤**262 144** UTF-8 bytes per message text; ≤**~2 MiB** raw body; opaque snapshot id ≤128 |
-| Blob contents | Message roles/text/ids/timestamps only — **never** Gateway keys, sandbox tokens, MCP secrets, PATs, or host absolute paths |
-| `cwd` | Optional **local-only** workspace-relative field; **not** stored in the cloud row |
+| No such session / other user | **404** `NOT_FOUND` (no existence leak — never 403) |
+| Store unavailable | **503** `SESSION_STORE_UNAVAILABLE` — local continues; response never includes host/port/`REDIS_URL` |
+| Cross-user isolation | Tenant via `loadSoleMembership` (server); other-user id → **404**; ids/fn restricted to Redis-safe `^[A-Za-z0-9_-]{1,128}# Security
+
+## Reporting
+
+If you find a vulnerability in Invincible, please open a **private** security advisory on GitHub (or email the maintainer) rather than a public issue with exploit details.
+
+## Secrets
+
+| Never commit | Where it lives |
+|--------------|----------------|
+| `AI_GATEWAY_API_KEY` | Vercel project env only |
+| `HARNESS_ARTIFACT_TOKEN` | Vercel (Actions: Read PAT for artifact download) |
+| `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions secrets |
+| `SANDBOX_TOKEN` | Vercel project env **and** sandbox process env (same secret) |
+| `DATABASE_URL` | Vercel / local only (prefer **pooled** Neon/PgBouncer URL) |
+| `REDIS_URL` | Vercel project env only (optional BYO multi-session Redis; node-redis RESP — the URL **embeds** the credential `redis://default:<secret>@<host>:<port>`). **Never** log it; never `NEXT_PUBLIC_*`. Old `SESSION_REDIS_*` / `UPSTASH_REDIS_REST_*` names are **removed** — if present, the store logs a one-time (value-free) deprecation hint then 503s until `REDIS_URL` is set |
+| `CREDENTIALS_ENCRYPTION_KEY` | Vercel / local only — base64 32-byte AES-256-GCM **AMK** (wraps per-tenant DEKs; tokens encrypt under DEK) |
+| `SEED_ADMIN_PASSWORD` / `SEED_SANDBOX_TOKEN` | Bootstrap only (prefer GHA `db-tenancy-bootstrap`; cloud-agent `npm run db:seed` alternate); never commit; re-seed resets bootstrap password + token ciphertext |
+| `AUTH_SECRET` | Auth.js session secret — set on Vercel **after** migrate/seed (seed does not need it) |
+| `AUTH_OIDC_CLIENT_SECRET` | Optional OIDC client secret — Vercel/server only; never `NEXT_PUBLIC_*` |
+| `SCIM_BEARER_TOKEN` | Optional SCIM shared bearer — Vercel/server only; IdP → `/api/scim/v2`; never client/Wasm |
+| Runner registration tokens, DO API tokens | Operator machines only |
+| `VERCEL_TOKEN` (GHA secret for **dev-image-build** VCR push) | GitHub Actions only — docker login password to `vcr.vercel.com`; never commit; never echo in logs/summaries |
+| `VERCEL_TEAM_ID` / `VCR_IMAGE_PREFIX` (GHA vars for dogfood image) | Identifiers for VCR push; not app runtime env; never put production DB/Gateway secrets in the dogfood image |
+
+Session blobs and Wasm must never contain API keys or sandbox tokens.  
+Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
+
+### Harness session store (local + cloud)
+
+| Surface | Trust rule |
+|---------|------------|
+ so no glob/key bleed |
+| Minting | Server mints **UUID** session ids; a brand-new session seeds `updatedAt: 0` |
+| Conflict | LWW on `updatedAt` (epoch ms); stale PUT → **409** + server record |
+| Caps (abuse / size) | No message-count cap; ≤**262 144** UTF-8 bytes per message text; ≤**~2 MiB** raw body; record id ≤128; `meta` is schema-typed reserved (title/legacySnapshotId/cwd/activeSandboxId…) + serialized size cap |
+| Blob contents | Message roles/text/ids/timestamps + reserved `meta` scalars only — **never** Gateway keys, sandbox tokens, MCP secrets, PATs, or host absolute paths |
+| `cwd` | Optional **local-only** workspace-relative field; **not** stored in the cloud record |
+| `REDIS_URL` | Single RESP wire URL (`redis://`/`rediss://`) embeds the credential — **never** log/echo it or `NEXT_PUBLIC_*`; dual-store `REDIS_URL` == Vercel Production env == GHA secret |
+| Backfill | One-shot Postgres `harness_sessions` → Redis via GHA **`sessions-redis-backfill`** (per-`{tenant,user}` marker, idempotent); Postgres becomes a **read-only archive**; legacy `/api/session` write route removed |
 | Client bundle | Session repository is client-safe (`lib/sessionRepository.ts`); must **not** import server `db` / Drizzle modules |
 
-Ops: schema for `harness_sessions` via GHA **`db-migrate`**. Product behavior: [docs/session-model.md](docs/session-model.md).
+Product behavior: [docs/session-model.md](docs/session-model.md).
 
 ## Builtin HTTPS fetch (Vercel Sandbox)
 
