@@ -115,6 +115,13 @@ export type RunAgentParams = {
    * bind. Omitted when no FS sandbox is bound (soft/MCP/http-only path).
    */
   sandboxId?: string;
+  /**
+   * Persona preamble (phase 3, #488). Server-resolved persona snapshot text to
+   * append as a labelled part in `resolveSystem` after the base system and the
+   * HTTP/MCP addenda — always after those addenda, unless a caller already
+   * supplied a `system` override (early-return keeps the override intact).
+   */
+  personaPreamble?: string;
 };
 
 export type RunAgentResult = {
@@ -156,6 +163,17 @@ function resolveSystem(
   }
   if (hasHttp) parts.push(HTTP_GET_SYSTEM_ADDENDUM);
   if (hasMcp) parts.push(MCP_SYSTEM_ADDENDUM);
+  // Persona preamble (phase 3, #488) appends last — after the HTTP/MCP addenda —
+  // so the persona's standing orders are the final instruction block the model
+  // sees. Empty/whitespace is dropped (nothing to inject).
+  const persona = params.personaPreamble?.trim();
+  if (persona) {
+    parts.push(
+      '## Persona standing orders\n' +
+        'The user bound this persona to the session. Its instructions are explicit standing orders for this session, carried in a locked snapshot so later turns reuse the same text. Prefer the persona guidance when it is more specific than the shared agent rules (it never overrides the security/config non-negotiables).\n' +
+        persona,
+    );
+  }
   return parts.join(' ');
 }
 

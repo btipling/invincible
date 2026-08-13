@@ -32,6 +32,13 @@ export type SessionSnapshot = {
    * Stored on the cloud record as `meta.activeSandboxId`; not yet used for execution.
    */
   activeSandboxId?: string;
+  /**
+   * Phase 3 (#488): the persona bound to this session (Redis-safe opaque).
+   * Chosen at New session (explicit, default from `GET /api/personas`, or None).
+   * Folded into the agent body / mint so the server snapshots it on first use.
+   * Omitted = no persona (behaviour identical to a persona-less session).
+   */
+  personaId?: string;
 };
 
 import { isRedisSafeOpaqueId, sanitizeSessionCwd } from './sessionCloudCaps';
@@ -105,19 +112,29 @@ export class LocalStorageSessionStore implements SessionStore {
     try {
       const raw = localStorage.getItem(this.key);
       if (!raw) return null;
-      const data = JSON.parse(raw) as SessionSnapshot & { cwd?: unknown; activeSandboxId?: unknown };
+      const data = JSON.parse(raw) as SessionSnapshot & {
+        cwd?: unknown;
+        activeSandboxId?: unknown;
+        personaId?: unknown;
+      };
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) return null;
-      // Tolerant: keep only safe workspace-relative cwd strings (parent #270 / phase 2)
-      // and a Redis-safe `activeSandboxId` (P1/GAP-1, #452); a bad local value can't pin.
-      const { cwd: rawCwd, activeSandboxId: rawSandbox, ...rest } = data;
+      // Tolerant: keep only safe workspace-relative cwd strings (parent #270 / phase 2),
+      // a Redis-safe `activeSandboxId` (P1/GAP-1, #452), and a Redis-safe `personaId`
+      // (phase 3 #488); a bad local value can't pin.
+      const { cwd: rawCwd, activeSandboxId: rawSandbox, personaId: rawPersona, ...rest } = data;
       const cwd = sanitizeSessionCwd(rawCwd);
       const activeSandboxId =
         typeof rawSandbox === 'string' && rawSandbox && isRedisSafeOpaqueId(rawSandbox)
           ? rawSandbox
           : undefined;
+      const personaId =
+        typeof rawPersona === 'string' && rawPersona && isRedisSafeOpaqueId(rawPersona)
+          ? rawPersona
+          : undefined;
       const out: SessionSnapshot = { ...rest } as SessionSnapshot;
       if (cwd !== undefined) out.cwd = cwd;
       if (activeSandboxId !== undefined) out.activeSandboxId = activeSandboxId;
+      if (personaId !== undefined) out.personaId = personaId;
       return out;
     } catch {
       return null;

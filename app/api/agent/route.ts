@@ -21,6 +21,11 @@ import { buildUserMcpTools } from '../../../lib/mcp/client';
 import { resolveBuiltinHttpConfig } from '../../../lib/agent/builtinHttpConfig';
 import { createHttpFetchTools } from '../../../lib/agent/httpFetchTools';
 import type { HttpFetchRunner } from '../../../lib/agent/httpFetchTypes';
+import {
+  resolveSessionStore,
+  sessionKeyFor,
+} from '../../../lib/tenancy/harnessSessionsRedis';
+import { resolvePersonaPreamble } from '../../../lib/tenancy/personaInject';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
@@ -142,6 +147,42 @@ export async function POST(req: Request): Promise<Response> {
     if (!userId) {
       const { AUTH_REQUIRED_ERROR } = await import('../../../lib/tenancy/errors');
       return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
+    }
+
+    // Persona injection (phase 3, #488): resolve the persona preamble for the
+    // first agent turn from a locked `meta.personaSnapshot` (via the optional
+    // Redis-safe `sessionId` seam) or a bound `personaId` (body or `meta.personaId`),
+    // persisting the snapshot once. Fail-open: any resolution/store error → no
+    // preamble (turn proceeds exactly as today), never a 4xx/5xx on the hot path.
+    let personaPreamble: string | undefined;
+    if (parsed.sessionId || parsed.personaId) {
+      try {
+        const tenantRes = await services.harnessSessionsRedis.resolveTenantIdForUser(
+          userId,
+        );
+        if (tenantRes.ok) {
+          const storeRes = await resolveSessionStore();
+          const sessionStore = storeRes.ok ? storeRes.value : undefined;
+          personaPreamble = await resolvePersonaPreamble({
+            userId,
+            sessionId: parsed.sessionId,
+            personaId: parsed.personaId,
+            ...(sessionStore && parsed.sessionId
+              ? {
+                  sessionStore,
+                  sessionKey: sessionKeyFor(
+                    tenantRes.value,
+                    userId,
+                    parsed.sessionId,
+                  ),
+                }
+              : {}),
+            userPersonas: services.userPersonas,
+          });
+        }
+      } catch {
+        personaPreamble = undefined;
+      }
     }
 
     const byok = await services.resolveInferenceForRequest.resolveByokForRequest(
@@ -293,6 +334,7 @@ export async function POST(req: Request): Promise<Response> {
     const finalRunParams: Parameters<typeof runAgent>[0] = {
       ...runParams,
       modelId: runParams.modelId,
+      ...(personaPreamble ? { personaPreamble } : {}),
     };
 
     // Soft path only when non-FS tools exist; else return resolve 403 body.

@@ -140,6 +140,63 @@ describe('runAgent', () => {
     });
   });
 
+  it('appends a labelled persona preamble after the MCP addendum (phase 3 #488)', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      const system = String(args.system);
+      expect(system).toContain(MCP_SYSTEM_ADDENDUM);
+      expect(system).toContain('## Persona standing orders');
+      expect(system).toContain('Always use tabs.');
+      // Preamble is appended AFTER the base/addenda (last part).
+      expect(system.endsWith('Always use tabs.')).toBe(true);
+      return { text: 'ok', steps: [] };
+    });
+    const client: SandboxClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      strReplace: vi.fn(),
+      exec: vi.fn(),
+      stat: vi.fn(),
+    };
+    await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: client,
+      extraTools: {
+        mcp_exa__t: { execute: async () => 'x' },
+      },
+      personaPreamble: 'Always use tabs.',
+    });
+  });
+
+  it('drops an empty/whitespace persona preamble', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      const system = String(args.system);
+      expect(system).toContain(MCP_SYSTEM_ADDENDUM);
+      expect(system).not.toContain('## Persona standing orders');
+      return { text: 'ok', steps: [] };
+    });
+    const client: SandboxClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      strReplace: vi.fn(),
+      exec: vi.fn(),
+      stat: vi.fn(),
+    };
+    await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: client,
+      extraTools: {
+        mcp_exa__t: { execute: async () => 'x' },
+      },
+      personaPreamble: '   ',
+    });
+  });
+
   it('does not append MCP addendum when system override provided', async () => {
     const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
       expect(args.system).toBe('custom');

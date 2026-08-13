@@ -59,6 +59,8 @@ describe('POST /api/agent', () => {
     delete servicesState.soleMembership;
     delete servicesState.serverSecrets;
     delete servicesState.createHttpRunner;
+    delete servicesState.userPersonas;
+    delete servicesState.harnessSessionsRedis;
     vi.doUnmock('../../../lib/di');
     vi.doUnmock('../../../lib/agent/runAgent');
     vi.doUnmock('../../../lib/tenancy/session');
@@ -1258,6 +1260,79 @@ describe('POST /api/agent', () => {
       {},
       expect.objectContaining({ signal: reqSignal }),
     );
+  });
+
+  it('injects a persona preamble when a personaId is bound (phase 3 #488)', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    mockResolveSandboxOk();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    servicesState.userPersonas = {
+      getPersonaById: vi.fn(async () => ({
+        ok: true,
+        value: { id: 'pers_1', body: 'Always use tabs.' },
+      })),
+    };
+    servicesState.harnessSessionsRedis = {
+      resolveTenantIdForUser: vi.fn(async () => ({ ok: true, value: 'tenant1' })),
+    };
+    type RunArg = { personaPreamble?: string; prompt?: string };
+    const runAgent = vi.fn(async (_arg: RunArg) => ({ text: 'ok', toolTrace: [] }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent,
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi', personaId: 'pers_1' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    const arg = runAgent.mock.calls[0]?.[0] as RunArg;
+    // The route passes the resolved snapshot text as `personaPreamble`; the
+    // labelled "## Persona standing orders" header is added by runAgent's
+    // resolveSystem (covered in lib/agent/runAgent.test.ts).
+    expect(arg.personaPreamble).toBe('Always use tabs.');
+  });
+
+  it('no persona preamble when no sessionId/personaId (behaviour identical to today)', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    mockResolveSandboxOk();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    const userPersonas = vi.fn();
+    servicesState.userPersonas = { getPersonaById: userPersonas };
+    servicesState.harnessSessionsRedis = {
+      resolveTenantIdForUser: vi.fn(),
+    };
+    type RunArg = { personaPreamble?: string };
+    const runAgent = vi.fn(async (_arg: RunArg) => ({ text: 'ok', toolTrace: [] }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent,
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const arg = runAgent.mock.calls[0]?.[0] as RunArg;
+    expect(arg.personaPreamble).toBeUndefined();
+    expect(userPersonas).not.toHaveBeenCalled();
   });
 
 });

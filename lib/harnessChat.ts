@@ -944,12 +944,25 @@ export async function runHarnessTurn(
     // Session-owned active sandbox override (Redis-safe; server-validated).
     // Omitted when unset → server preference/single/selection logic.
     const sessionSandboxId = session.activeSandboxId;
+    // Phase 3 (#488) session-carrier: the session id (Redis-safe) lets the agent
+    // route find this session's `meta.personaSnapshot` on later turns, and the
+    // bound persona id lets it resolve + snapshot the body on the first use.
+    // Guarded Redis-safe so a hostile/local id can never be smuggled into the
+    // body (same fail-closed rule as the server's `parseSessionId`).
+    const sessionId = isRedisSafeOpaqueId(session.id) ? session.id : undefined;
+    const boundPersonaId =
+      typeof session.personaId === 'string' &&
+      isRedisSafeOpaqueId(session.personaId)
+        ? session.personaId
+        : undefined;
 
     if (streamAgent) {
       agentResult = await sendAgentStreamFn(apiPrompt, {
         signal: opts?.signal,
         modelId: opts?.modelId,
         cwd: sessionCwd,
+        ...(sessionId ? { sessionId } : {}),
+        ...(boundPersonaId ? { personaId: boundPersonaId } : {}),
         ...(sessionSandboxId ? { sandboxId: sessionSandboxId } : {}),
         onEvent: async (ev: AgentStreamEvent) => {
           if (ev.type === 'tool_start' || ev.type === 'tool_result') {
@@ -982,6 +995,8 @@ export async function runHarnessTurn(
         signal: opts?.signal,
         modelId: opts?.modelId,
         cwd: sessionCwd,
+        ...(sessionId ? { sessionId } : {}),
+        ...(boundPersonaId ? { personaId: boundPersonaId } : {}),
         ...(sessionSandboxId ? { sandboxId: sessionSandboxId } : {}),
       });
     }

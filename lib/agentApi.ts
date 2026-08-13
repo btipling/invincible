@@ -45,6 +45,17 @@ export type SendAgentFn = (
     cwd?: string;
     /** Session-owned active sandbox id (Redis-safe) → resolve override. */
     sandboxId?: string;
+    /**
+     * Session id (Redis-safe). Parent #485 lock: lets the agent route find the
+     * session's `meta.personaSnapshot` on later turns / Continue.
+     */
+    sessionId?: string;
+    /**
+     * Persona id (Redis-safe) chosen/bound for this session. Folded on the first
+     * turn so the route can resolve + snapshot the body once (offline/local path
+     * has no session store; the cloud path also binds personaId at mint).
+     */
+    personaId?: string;
   },
 ) => Promise<AgentResult>;
 
@@ -62,6 +73,10 @@ export type SendAgentStreamFn = (
     cwd?: string;
     /** Session-owned active sandbox id (Redis-safe) → resolve override. */
     sandboxId?: string;
+    /** Session id (Redis-safe) → agent route finds `meta.personaSnapshot`. */
+    sessionId?: string;
+    /** Persona id (Redis-safe) bound for this session (first-turn resolve). */
+    personaId?: string;
     onEvent?: (event: AgentStreamEvent) => void | Promise<void>;
   },
 ) => Promise<AgentResult>;
@@ -133,17 +148,39 @@ function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
  */
 function agentRequestBody(
   prompt: string,
-  init?: { modelId?: string; cwd?: string; sandboxId?: string },
-): { prompt: string; modelId?: string; cwd?: string; sandboxId?: string } {
-  const body: { prompt: string; modelId?: string; cwd?: string; sandboxId?: string } = {
-    prompt: normalizePrompt(prompt),
-  };
+  init?: {
+    modelId?: string;
+    cwd?: string;
+    sandboxId?: string;
+    sessionId?: string;
+    personaId?: string;
+  },
+): {
+  prompt: string;
+  modelId?: string;
+  cwd?: string;
+  sandboxId?: string;
+  sessionId?: string;
+  personaId?: string;
+} {
+  const body: {
+    prompt: string;
+    modelId?: string;
+    cwd?: string;
+    sandboxId?: string;
+    sessionId?: string;
+    personaId?: string;
+  } = { prompt: normalizePrompt(prompt) };
   const mid = init?.modelId?.trim();
   if (mid) body.modelId = mid;
   const cwd = init?.cwd?.trim();
   if (cwd) body.cwd = cwd;
   const sandboxId = init?.sandboxId?.trim();
   if (sandboxId) body.sandboxId = sandboxId;
+  const sessionId = init?.sessionId?.trim();
+  if (sessionId) body.sessionId = sessionId;
+  const personaId = init?.personaId?.trim();
+  if (personaId) body.personaId = personaId;
   return body;
 }
 

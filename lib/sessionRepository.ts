@@ -170,12 +170,20 @@ export function parseCloudSessionSnapshot(
   // unset (fail-open) instead of becoming a sticky 400.
   let cwd: string | undefined;
   let activeSandboxId: string | undefined;
+  let personaId: string | undefined;
   if (o.meta !== null && typeof o.meta === 'object' && !Array.isArray(o.meta)) {
     const meta = o.meta as Record<string, unknown>;
     cwd = normalizeSessionCwd(meta.logicalCwd);
     const sandbox = meta.activeSandboxId;
     if (typeof sandbox === 'string' && sandbox && isRedisSafeOpaqueId(sandbox)) {
       activeSandboxId = sandbox;
+    }
+    // Phase 3 (#488): restore the bound persona from the reserved meta key so a
+    // device-switch/reload rebuilds the local session's chosen persona before the
+    // snapshot (meta.personaSnapshot) is used by the route.
+    const pid = meta.personaId;
+    if (typeof pid === 'string' && pid && isRedisSafeOpaqueId(pid)) {
+      personaId = pid;
     }
   }
   const snapshot: SessionSnapshot = {
@@ -185,6 +193,7 @@ export function parseCloudSessionSnapshot(
   };
   if (cwd !== undefined) snapshot.cwd = cwd;
   if (activeSandboxId !== undefined) snapshot.activeSandboxId = activeSandboxId;
+  if (personaId !== undefined) snapshot.personaId = personaId;
   return snapshot;
 }
 
@@ -217,7 +226,7 @@ export type CloudPutBody = {
   id: string;
   updatedAt: number;
   messages: SessionMessage[];
-  meta?: { activeSandboxId?: string; logicalCwd?: string };
+  meta?: { activeSandboxId?: string; logicalCwd?: string; personaId?: string };
 };
 
 /**
@@ -242,7 +251,19 @@ export function cloudMetaFor(
       ? snapshot.activeSandboxId
       : undefined;
   if (sandbox !== undefined) meta.activeSandboxId = sandbox;
-  return meta.logicalCwd === undefined && meta.activeSandboxId === undefined
+  // Phase 3 (#488): the bound persona rides the PUT meta (reserved key) so the
+  // cloud record retains `meta.personaId` alongside the server-set snapshot —
+  // reload/device-switch rebuild the local binding. Never the body text.
+  const pid =
+    typeof snapshot.personaId === 'string' &&
+    snapshot.personaId &&
+    isRedisSafeOpaqueId(snapshot.personaId)
+      ? snapshot.personaId
+      : undefined;
+  if (pid !== undefined) meta.personaId = pid;
+  return meta.logicalCwd === undefined &&
+    meta.activeSandboxId === undefined &&
+    meta.personaId === undefined
     ? undefined
     : meta;
 }

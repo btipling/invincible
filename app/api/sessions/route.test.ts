@@ -215,6 +215,33 @@ describe('/api/sessions', () => {
     expect(((await res.json()) as { code: string }).code).toBe('INVALID_TITLE');
   });
 
+  it('POST optional personaId stored under meta.personaId (phase 3 #488)', async () => {
+    const { POST } = await loadAuthedRoute();
+    const res = await POST(
+      new Request('http://localhost/api/sessions', {
+        method: 'POST',
+        body: JSON.stringify({ personaId: 'pers_abc123' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { meta: { personaId?: string } };
+    expect(body.meta.personaId).toBe('pers_abc123');
+  });
+
+  it('POST non-Redis-safe personaId → 400 INVALID_PERSONA_ID', async () => {
+    const { POST } = await loadAuthedRoute();
+    for (const bad of ['a:b', 'has space', 'x'.repeat(200)]) {
+      const res = await POST(
+        new Request('http://localhost/api/sessions', {
+          method: 'POST',
+          body: JSON.stringify({ personaId: bad }),
+        }),
+      );
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { code: string }).code).toBe('INVALID_PERSONA_ID');
+    }
+  });
+
   it('cross-user isolation: POST derives tenant from server membership, never client input', async () => {
     const { POST } = await loadAuthedRoute('user-a');
     const res = await POST(
