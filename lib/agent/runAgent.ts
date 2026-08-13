@@ -108,6 +108,13 @@ export type RunAgentParams = {
    * When omitted, a new ledger is created for this runAgent / runAgentStream call.
    */
   freshness?: RunFileFreshness;
+  /**
+   * The resolved active sandbox bind for this turn (route supplies
+   * `resolved.value.sandboxId` after a successful resolve). Reflected back on
+   * the result / `done` stream event so the host can reconcile the authoritative
+   * bind. Omitted when no FS sandbox is bound (soft/MCP/http-only path).
+   */
+  sandboxId?: string;
 };
 
 export type RunAgentResult = {
@@ -115,6 +122,8 @@ export type RunAgentResult = {
   toolTrace: ToolTraceEntry[];
   /** Present when FS sandbox tools were active for the turn. */
   cwd?: string;
+  /** Resolved active sandbox bind (present when FS sandbox tools were bound). */
+  sandboxId?: string;
 };
 
 export const DEFAULT_AGENT_SYSTEM = [
@@ -264,6 +273,7 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
     text,
     toolTrace,
     ...(hasFsTools ? { cwd: cwdState.current } : {}),
+    ...(hasFsTools && params.sandboxId ? { sandboxId: params.sandboxId } : {}),
   };
 }
 
@@ -366,16 +376,19 @@ export async function runAgentStream(
     const steps = result.steps != null ? await result.steps : undefined;
     const toolTrace = collectToolTrace({ steps }, secrets);
     const cwdOut = hasFsTools ? cwdState.current : undefined;
+    const sandboxOut = hasFsTools ? params.sandboxId : undefined;
     await handlers.onEvent({
       type: 'done',
       text,
       ...(toolTrace.length > 0 ? { toolTrace } : {}),
       ...(cwdOut != null ? { cwd: cwdOut } : {}),
+      ...(sandboxOut != null ? { sandboxId: sandboxOut } : {}),
     });
     return {
       text,
       toolTrace,
       ...(cwdOut != null ? { cwd: cwdOut } : {}),
+      ...(sandboxOut != null ? { sandboxId: sandboxOut } : {}),
     };
   } catch (err) {
     if (err instanceof Error && (err.name === 'AbortError' || err.name === 'ResponseAborted')) {

@@ -115,6 +115,14 @@ export type SandboxInstanceActionState = {
   message?: string;
 };
 
+export type SessionSandboxActionState = {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+  /** The session-owned active sandbox the operator chose (client persists it). */
+  sandboxId?: string;
+};
+
 export async function selectSandboxAction(
   _prev: SandboxSelectActionState,
   formData: FormData,
@@ -135,6 +143,59 @@ export async function selectSandboxAction(
   return {
     ok: true,
     message: 'Preferred sandbox saved. Agent turns will use this workspace.',
+  };
+}
+
+/**
+ * Set the session-owned active sandbox (mid-session switch). Distinct from
+ * `selectSandboxAction` (Preferred): this binds the *active browser session*
+ * routing to a specific usable grant — strictly higher-precedence than the
+ * preference — and does NOT write the Preferred row.
+ *
+ * On success returns `sandboxId`; the caller (Settings page client) persists it
+ * to the local `SessionStore.activeSandboxId`, which the host folds into the
+ * next agent POST and the cloud session PUT carries for cross-device restore.
+ * Canvas is never touched (feature-divide).
+ */
+export async function setActiveSandboxAction(
+  _prev: SessionSandboxActionState,
+  formData: FormData,
+): Promise<SessionSandboxActionState> {
+  const session = await requireSettingsSession();
+  if (!session.ok) return { error: session.error };
+
+  const sandboxId = String(formData.get('sandboxId') ?? '').trim();
+  if (!sandboxId) {
+    return { error: 'sandboxId is required.' };
+  }
+
+  const listed = await services.userPreferredSandbox.listUserSandboxChoices(
+    session.userId,
+  );
+  if (!listed.ok) {
+    return {
+      error: mapPreferredError(
+        listed.code === 'no_membership' ? 'no_membership' : 'unavailable',
+        listed.error,
+      ),
+    };
+  }
+
+  const match = listed.value.options.find(
+    (o) => o.sandboxId === sandboxId && o.usable && o.granted,
+  );
+  if (!match) {
+    return {
+      error:
+        'That sandbox is not a usable grant for this account. Select under Admin → Sandboxes or pick a usable row.',
+    };
+  }
+
+  // Do NOT write user_preferred_sandbox — this is a session binding only.
+  return {
+    ok: true,
+    sandboxId: match.sandboxId,
+    message: `Agent tools will run in "${match.name}" for this browser session.`,
   };
 }
 

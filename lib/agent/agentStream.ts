@@ -25,7 +25,14 @@ export type AgentStreamEvent =
     }
   | { type: 'reasoning_delta'; text: string }
   | { type: 'text_delta'; text: string }
-  | { type: 'done'; text: string; toolTrace?: ToolTraceEntry[]; cwd?: string }
+  | {
+      type: 'done';
+      text: string;
+      toolTrace?: ToolTraceEntry[];
+      cwd?: string;
+      /** Resolved active sandbox bind the turn ran against (FS tools bound). */
+      sandboxId?: string;
+    }
   | { type: 'error'; error: string; status?: number };
 
 export const AGENT_STREAM_ACCEPT = 'text/event-stream';

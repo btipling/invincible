@@ -37,7 +37,12 @@ import {
   decodeToolRun,
   encodeToolRun,
 } from './toolRun';
-import { AUTH_REQUIRED_ERROR, SANDBOX_FORBIDDEN_ERROR } from './tenancy/errors';
+import {
+  AUTH_REQUIRED_ERROR,
+  SANDBOX_FORBIDDEN_ERROR,
+  SANDBOX_SELECTION_REQUIRED_ERROR,
+  WORKSPACE_INSTANCE_REQUIRED_ERROR,
+} from './tenancy/errors';
 import { createEmptySession, formatPromptWithHistory, appendMessage, makeMessage } from './sessionStore';
 import { TOOL_TRACE_SUMMARY_MAX_CHARS } from './sandbox/config';
 
@@ -2057,5 +2062,143 @@ describe('PONG smoke removal regression lock (#367)', () => {
     // must fail this suite, not silently ship.
     expect(mod.HARNESS_SMOKE_PROMPT).toBeUndefined();
     expect(mod.SMOKE_PROMPT).toBeUndefined();
+  });
+});
+
+describe('runHarnessTurn session activeSandboxId bind', () => {
+  it('folds session.activeSandboxId into the agent POST (stream) and reconciles on success', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_active' };
+    const { runHarnessTurn } = await import('./harnessChat');
+    let sentSandboxId: string | undefined;
+    const result = await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        sentSandboxId = init?.sandboxId;
+        await init?.onEvent?.({ type: 'done', text: 'pong', sandboxId: 'sbx_active' });
+        return { ok: true, text: 'pong', sandboxId: 'sbx_active' };
+      },
+    });
+    expect(sentSandboxId).toBe('sbx_active');
+    expect(result.result.ok).toBe(true);
+    expect(result.session.activeSandboxId).toBe('sbx_active');
+  });
+
+  it('folds session.activeSandboxId into the agent POST (JSON) and reconciles on success', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_active' };
+    const { runHarnessTurn } = await import('./harnessChat');
+    let sentSandboxId: string | undefined;
+    const result = await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async (_prompt, init) => {
+        sentSandboxId = init?.sandboxId;
+        return { ok: true, text: 'pong', sandboxId: 'sbx_active' };
+      },
+    });
+    expect(sentSandboxId).toBe('sbx_active');
+    expect(result.result.ok).toBe(true);
+    expect(result.session.activeSandboxId).toBe('sbx_active');
+  });
+
+  it('does not send sandboxId when session activeSandboxId unset', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession('s');
+    const { runHarnessTurn } = await import('./harnessChat');
+    let sentSandboxId: string | undefined = 'sentinel';
+    await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async (_prompt, init) => {
+        sentSandboxId = init?.sandboxId;
+        return { ok: true, text: 'pong' };
+      },
+    });
+    expect(sentSandboxId).toBeUndefined();
+  });
+
+  it('keeps prior activeSandboxId when the agent success omitted a resolved sandboxId (soft/MCP/http path)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_active' };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async () => ({ ok: true, text: 'no-fs' }),
+    });
+    expect(result.session.activeSandboxId).toBe('sbx_active');
+  });
+
+  it('hard 403 failure clears the stale activeSandboxId (unusable requested bind)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_dead' };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async () => ({
+        ok: false,
+        status: 403,
+        error: SANDBOX_FORBIDDEN_ERROR,
+      }),
+    });
+    expect(result.result.ok).toBe(false);
+    expect(result.session.activeSandboxId).toBeUndefined();
+  });
+
+  it('403 selection-required clears the stale activeSandboxId (grant-honesty class)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_stale' };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async () => ({
+        ok: false,
+        status: 403,
+        error: SANDBOX_SELECTION_REQUIRED_ERROR,
+      }),
+    });
+    expect(result.result.ok).toBe(false);
+    expect(result.session.activeSandboxId).toBeUndefined();
+  });
+
+  it('403 WORKSPACE_INSTANCE_REQUIRED keeps the activeSandboxId bind (softContinue, not a poison grant) (review #484 Major)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_vercel' };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async () => ({
+        ok: false,
+        status: 403,
+        error: WORKSPACE_INSTANCE_REQUIRED_ERROR,
+      }),
+    });
+    expect(result.result.ok).toBe(false);
+    // An instance-down bind is a usable GRANT — clearing it here would silently
+    // re-resolve to the preferred/single grant on the next turn. The host keeps
+    // the session bind so the operator just starts the instance (review #484).
+    expect(result.session.activeSandboxId).toBe('sbx_vercel');
+  });
+
+  it('non-403 failure keeps the activeSandboxId binding', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_keep' };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const result = await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async () => ({
+        ok: false,
+        status: 500,
+        error: 'inference down',
+      }),
+    });
+    expect(result.result.ok).toBe(false);
+    expect(result.session.activeSandboxId).toBe('sbx_keep');
   });
 });

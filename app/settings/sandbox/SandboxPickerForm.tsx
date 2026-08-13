@@ -1,14 +1,19 @@
 'use client';
 
-import { useActionState, type ReactNode } from 'react';
+import { useActionState, useEffect, type ReactNode } from 'react';
 import { ember, teal } from '../../../lib/palette';
 import {
+  buttonGhostStyle,
   buttonPrimaryStyle,
   panelStyle,
 } from '../ui';
+import { createDefaultSessionStore, createEmptySession } from '../../../lib/sessionStore';
+import { isRedisSafeOpaqueId } from '../../../lib/sessionCloudCaps';
 import {
   selectSandboxAction,
+  setActiveSandboxAction,
   type SandboxSelectActionState,
+  type SessionSandboxActionState,
 } from './actions';
 
 const initial: SandboxSelectActionState = {};
@@ -68,11 +73,34 @@ function Badge({ children, tone }: { children: ReactNode; tone: 'ok' | 'muted' |
   );
 }
 
+const initialSession: SessionSandboxActionState = {};
+
 export function SandboxPickerForm({
   preferredSandboxId,
   options,
 }: SandboxPickerFormProps) {
   const [state, action, pending] = useActionState(selectSandboxAction, initial);
+  const [sessionState, setActiveAction, sessionPending] = useActionState(
+    setActiveSandboxAction,
+    initialSession,
+  );
+
+  // On a successful session switch, persist the chosen active sandbox into the
+  // local browser SessionStore (the same store the harness host reads to fold
+  // `activeSandboxId` into the next agent POST). The cloud session PUT carry then
+  // persists it across devices. Never writes the Preferred row.
+  useEffect(() => {
+    const sandboxId = sessionState.ok ? sessionState.sandboxId : undefined;
+    if (!sandboxId || !isRedisSafeOpaqueId(sandboxId)) return;
+    const store = createDefaultSessionStore();
+    const current = store.load();
+    const base = current ?? createEmptySession();
+    store.save({
+      ...base,
+      activeSandboxId: sandboxId,
+    });
+  }, [sessionState.ok, sessionState.sandboxId]);
+
 
   if (options.length === 0) {
     return (
@@ -132,26 +160,61 @@ export function SandboxPickerForm({
                   </code>
                 </p>
               ) : null}
-              <form action={action}>
-                <input type="hidden" name="sandboxId" value={opt.sandboxId} />
-                <button
-                  type="submit"
-                  disabled={disabled || selected}
-                  style={{
-                    ...buttonPrimaryStyle(),
-                    opacity: disabled || selected ? 0.55 : 1,
-                    cursor: disabled || selected ? 'default' : 'pointer',
-                  }}
-                >
-                  {selected
-                    ? 'Selected'
-                    : pending
-                      ? 'Saving…'
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                <form action={action}>
+                  <input type="hidden" name="sandboxId" value={opt.sandboxId} />
+                  <button
+                    type="submit"
+                    disabled={disabled || selected}
+                    style={{
+                      ...buttonPrimaryStyle(),
+                      opacity: disabled || selected ? 0.55 : 1,
+                      cursor: disabled || selected ? 'default' : 'pointer',
+                    }}
+                  >
+                    {selected
+                      ? 'Preferred'
+                      : pending
+                        ? 'Saving…'
+                        : !opt.granted
+                          ? 'Make preferred (grants access)'
+                          : 'Make preferred'}
+                  </button>
+                </form>
+                <form action={setActiveAction}>
+                  <input type="hidden" name="sandboxId" value={opt.sandboxId} />
+                  <button
+                    type="submit"
+                    disabled={sessionPending || !opt.granted || !opt.usable}
+                    style={{
+                      ...buttonGhostStyle(),
+                      opacity: sessionPending || !opt.granted || !opt.usable ? 0.55 : 1,
+                      cursor:
+                        sessionPending || !opt.granted || !opt.usable
+                          ? 'default'
+                          : 'pointer',
+                    }}
+                  >
+                    {sessionPending
+                      ? 'Switching…'
                       : !opt.granted
-                        ? 'Select & grant me access'
-                        : 'Use this sandbox'}
-                </button>
-              </form>
+                        ? 'Use for this session (no grant)'
+                        : !opt.usable
+                          ? 'Use for this session (not usable)'
+                          : 'Use for this session'}
+                  </button>
+                </form>
+              </div>
+              {sessionState.ok && sessionState.sandboxId === opt.sandboxId ? (
+                <p style={{ margin: '10px 0 0', color: teal.accent, fontSize: 13 }}>
+                  {sessionState.message ?? 'Agent tools use this sandbox this session.'}
+                </p>
+              ) : null}
+              {sessionState.error ? (
+                <p role="alert" style={{ margin: '10px 0 0', color: ember.accent, fontSize: 13 }}>
+                  {sessionState.error}
+                </p>
+              ) : null}
             </li>
           );
         })}

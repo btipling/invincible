@@ -29,6 +29,8 @@ describe('settings sandbox actions', () => {
     auth?: unknown;
     membership?: unknown;
     domain?: Record<string, unknown>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    listUserSandboxChoices?: any;
   }) {
     tenancyOn();
     vi.resetModules();
@@ -53,6 +55,28 @@ describe('settings sandbox actions', () => {
     };
     servicesState.userPreferredSandbox = {
       setUserPreferredSandbox: vi.fn(),
+      listUserSandboxChoices:
+        mocks.listUserSandboxChoices ??
+        vi.fn(async () => ({
+          ok: true as const,
+          value: {
+            preferredSandboxId: null,
+            options: [
+              {
+                sandboxId: 'sbx_a',
+                name: 'Alpha',
+                slug: 'alpha',
+                backend: 'byo',
+                status: 'active',
+                image: null,
+                usable: true,
+                granted: true,
+                canRead: true,
+                canWrite: true,
+              },
+            ],
+          },
+        })),
     };
     const domain = {
       createWorkspace: vi.fn(),
@@ -161,6 +185,85 @@ describe('settings sandbox actions', () => {
     const r = await actions.stopInstanceAction({}, fd);
     expect(r.ok).toBe(true);
     expect(stopInstance).toHaveBeenCalledWith('session-user', 'http');
+  });
+
+  it('setActiveSandboxAction rejects when unauthenticated', async () => {
+    const { actions } = await loadActions({
+      auth: vi.fn(async () => null),
+    });
+    const fd = new FormData();
+    fd.set('sandboxId', 'sbx_a');
+    const r = await actions.setActiveSandboxAction({}, fd);
+    expect(r.error).toMatch(/Authentication required/);
+  });
+
+  it('setActiveSandboxAction returns the chosen usable grant sandboxId', async () => {
+    const { actions } = await loadActions({});
+    const fd = new FormData();
+    fd.set('sandboxId', 'sbx_a');
+    const r = await actions.setActiveSandboxAction({}, fd);
+    expect(r.ok).toBe(true);
+    expect(r.sandboxId).toBe('sbx_a');
+    expect(r.message).toMatch(/Alpha/);
+  });
+
+  it('setActiveSandboxAction rejects a non-granted / non-usable row', async () => {
+    const { actions } = await loadActions({
+      listUserSandboxChoices: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          preferredSandboxId: null,
+          options: [
+            {
+              sandboxId: 'sbx_x',
+              name: 'Ungranted',
+              slug: 'ungr',
+              backend: 'vercel',
+              status: 'active',
+              image: null,
+              usable: false,
+              granted: false,
+              canRead: false,
+              canWrite: false,
+            },
+          ],
+        },
+      })),
+    });
+    const fd = new FormData();
+    fd.set('sandboxId', 'sbx_x');
+    const r = await actions.setActiveSandboxAction({}, fd);
+    expect(r.ok).toBeUndefined();
+    expect(r.error).toMatch(/not a usable grant/i);
+  });
+
+  it('setActiveSandboxAction rejects hostile unknown id', async () => {
+    const { actions } = await loadActions({});
+    const fd = new FormData();
+    fd.set('sandboxId', 'sbx_nope');
+    const r = await actions.setActiveSandboxAction({}, fd);
+    expect(r.ok).toBeUndefined();
+    expect(r.error).toMatch(/not a usable grant/i);
+  });
+
+  it('setActiveSandboxAction rejects missing sandboxId', async () => {
+    const { actions } = await loadActions({});
+    const fd = new FormData();
+    fd.set('sandboxId', '');
+    const r = await actions.setActiveSandboxAction({}, fd);
+    expect(r.ok).toBeUndefined();
+    expect(r.error).toMatch(/sandboxId is required/i);
+  });
+
+  it('setActiveSandboxAction does NOT write the preferred row', async () => {
+    const { actions } = await loadActions({});
+    const fd = new FormData();
+    fd.set('sandboxId', 'sbx_a');
+    const r = await actions.setActiveSandboxAction({}, fd);
+    expect(r.ok).toBe(true);
+    expect(
+      servicesState.userPreferredSandbox.setUserPreferredSandbox,
+    ).not.toHaveBeenCalled();
   });
 
   it('settings sandbox modules do not import @vercel/sandbox', async () => {

@@ -21,7 +21,11 @@ import { type AgentStreamEvent } from './agent/agentStream';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
 } from './sandbox/config';
-import { normalizeSessionCwd } from './sessionCloudCaps';
+import { isRedisSafeOpaqueId, normalizeSessionCwd } from './sessionCloudCaps';
+import {
+  SANDBOX_FORBIDDEN_ERROR,
+  SANDBOX_SELECTION_REQUIRED_ERROR,
+} from './tenancy/errors';
 import {
   HarnessBridge,
   Lifecycle,
@@ -937,11 +941,16 @@ export async function runHarnessTurn(
     // Authoritative per-turn cwd (P1/GAP-1, #452): one getter → one request value.
     const sessionCwd = getSessionCwd(session);
 
+    // Session-owned active sandbox override (Redis-safe; server-validated).
+    // Omitted when unset → server preference/single/selection logic.
+    const sessionSandboxId = session.activeSandboxId;
+
     if (streamAgent) {
       agentResult = await sendAgentStreamFn(apiPrompt, {
         signal: opts?.signal,
         modelId: opts?.modelId,
         cwd: sessionCwd,
+        ...(sessionSandboxId ? { sandboxId: sessionSandboxId } : {}),
         onEvent: async (ev: AgentStreamEvent) => {
           if (ev.type === 'tool_start' || ev.type === 'tool_result') {
             handleToolEvent(ev);
@@ -973,6 +982,7 @@ export async function runHarnessTurn(
         signal: opts?.signal,
         modelId: opts?.modelId,
         cwd: sessionCwd,
+        ...(sessionSandboxId ? { sandboxId: sessionSandboxId } : {}),
       });
     }
 
@@ -1045,6 +1055,17 @@ export async function runHarnessTurn(
       if (appliedCwd !== undefined) {
         next = { ...next, cwd: appliedCwd };
       }
+      // Success-path active-bind reconcile (authoritative server resolution):
+      // the turn ran against the resolved `sandboxId` (same seam as cwd). Apply
+      // it back onto the session's `activeSandboxId` so the local session + cloud
+      // `meta` carry the authoritative bind (status chrome #328 reads this
+      // field). Only sanitized Redis-safe values persist (local SoT).
+      if (
+        agentResult.sandboxId != null &&
+        isRedisSafeOpaqueId(agentResult.sandboxId)
+      ) {
+        next = { ...next, activeSandboxId: agentResult.sandboxId };
+      }
       bridge.setLifecycle(Lifecycle.Ready);
       return {
         result: { ok: true, text: agentResult.text || assistantAcc },
@@ -1091,6 +1112,25 @@ export async function runHarnessTurn(
         if (failedLiveCwd !== undefined) {
           failedSession = { ...failedSession, cwd: failedLiveCwd };
         }
+      }
+      // Hard 403 of the grant-honesty class with a set-but-unusable active
+      // sandbox → clear the stale session binding so the next turn honestly
+      // re-resolves from preference / selection instead of re-sending a poison
+      // id (which would 403-loop). The host keeps local session as the source of
+      // truth; Settings → Sandbox guidance surfaces the re-select.
+      //
+      // Scoped to the selection-required / forbidden class ONLY (adversarial
+      // review #484 Major): a 403 WORKSPACE_INSTANCE_REQUIRED is a softContinue
+      // operational bind (usable grant whose Workspace instance is down/stopped),
+      // NOT an unusable grant. Wiping the bind there would silently re-resolve to
+      // the preferred/single grant on the next turn — a silent sandbox switch.
+      if (
+        agentResult.status === 403 &&
+        failedSession.activeSandboxId !== undefined &&
+        (agentResult.error === SANDBOX_SELECTION_REQUIRED_ERROR ||
+          agentResult.error === SANDBOX_FORBIDDEN_ERROR)
+      ) {
+        failedSession = { ...failedSession, activeSandboxId: undefined };
       }
       lastUiKind =
         fail.kind === 'error' || fail.kind === 'timeout' ||

@@ -81,4 +81,51 @@ describe('parseAgentBody', () => {
     const r = parseAgentBody({ prompt: '' }, {});
     expect(r.ok).toBe(false);
   });
+
+  it('accepts valid Redis-safe sandboxId override', () => {
+    expect(parseAgentBody({ prompt: 'hi', sandboxId: 'sbx_abc123' }, {})).toEqual({
+      ok: true,
+      prompt: 'hi',
+      cwd: '.',
+      sandboxId: 'sbx_abc123',
+    });
+  });
+
+  it('omitted / null sandboxId → no override (undefined)', () => {
+    const r = parseAgentBody({ prompt: 'hi' }, {});
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.sandboxId).toBeUndefined();
+
+    const r2 = parseAgentBody({ prompt: 'hi', sandboxId: null }, {});
+    expect(r2.ok).toBe(true);
+    if (r2.ok) expect(r2.sandboxId).toBeUndefined();
+  });
+
+  it('keeps cwd + sandboxId together', () => {
+    expect(
+      parseAgentBody({ prompt: 'hi', cwd: 'proj', sandboxId: 'sbx_1' }, {}),
+    ).toEqual({
+      ok: true,
+      prompt: 'hi',
+      cwd: 'proj',
+      sandboxId: 'sbx_1',
+    });
+  });
+
+  it('rejects non-Redis-safe sandboxId with 400 (fail closed)', () => {
+    for (const bad of ['a:b', 'has space', 'foo*bar', 'x'.repeat(200)]) {
+      const r = parseAgentBody({ prompt: 'hi', sandboxId: bad }, {});
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.status).toBe(400);
+        expect(r.error).toMatch(/sandboxId/i);
+      }
+    }
+  });
+
+  it('rejects non-string sandboxId with 400', () => {
+    const r = parseAgentBody({ prompt: 'hi', sandboxId: 7 as never }, {});
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.status).toBe(400);
+  });
 });

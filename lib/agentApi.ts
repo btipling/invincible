@@ -24,6 +24,8 @@ export type AgentSuccess = {
   toolTrace?: ToolTraceEntry[];
   /** Final logical cwd when the server included it (FS tools active). */
   cwd?: string;
+  /** Resolved active sandbox bind the turn ran against (FS tools bound). */
+  sandboxId?: string;
 };
 
 export type AgentFailure = {
@@ -36,7 +38,14 @@ export type AgentResult = AgentSuccess | AgentFailure;
 
 export type SendAgentFn = (
   prompt: string,
-  init?: { signal?: AbortSignal; path?: string; modelId?: string; cwd?: string },
+  init?: {
+    signal?: AbortSignal;
+    path?: string;
+    modelId?: string;
+    cwd?: string;
+    /** Session-owned active sandbox id (Redis-safe) → resolve override. */
+    sandboxId?: string;
+  },
 ) => Promise<AgentResult>;
 
 export type SendAgentStreamHandlers = {
@@ -51,6 +60,8 @@ export type SendAgentStreamFn = (
     modelId?: string;
     /** Session logical cwd (workspace-relative); omit when unset. */
     cwd?: string;
+    /** Session-owned active sandbox id (Redis-safe) → resolve override. */
+    sandboxId?: string;
     onEvent?: (event: AgentStreamEvent) => void | Promise<void>;
   },
 ) => Promise<AgentResult>;
@@ -105,11 +116,14 @@ function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
   const toolTrace = parseToolTrace(record?.toolTrace);
   const cwdField =
     record && typeof record.cwd === 'string' ? record.cwd : undefined;
+  const sandboxField =
+    record && typeof record.sandboxId === 'string' ? record.sandboxId : undefined;
   return {
     ok: true,
     text: textField,
     ...(toolTrace ? { toolTrace } : {}),
     ...(cwdField !== undefined ? { cwd: cwdField } : {}),
+    ...(sandboxField !== undefined ? { sandboxId: sandboxField } : {}),
   };
 }
 
@@ -119,15 +133,17 @@ function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
  */
 function agentRequestBody(
   prompt: string,
-  init?: { modelId?: string; cwd?: string },
-): { prompt: string; modelId?: string; cwd?: string } {
-  const body: { prompt: string; modelId?: string; cwd?: string } = {
+  init?: { modelId?: string; cwd?: string; sandboxId?: string },
+): { prompt: string; modelId?: string; cwd?: string; sandboxId?: string } {
+  const body: { prompt: string; modelId?: string; cwd?: string; sandboxId?: string } = {
     prompt: normalizePrompt(prompt),
   };
   const mid = init?.modelId?.trim();
   if (mid) body.modelId = mid;
   const cwd = init?.cwd?.trim();
   if (cwd) body.cwd = cwd;
+  const sandboxId = init?.sandboxId?.trim();
+  if (sandboxId) body.sandboxId = sandboxId;
   return body;
 }
 
@@ -288,6 +304,7 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
   let finalText = '';
   let toolTrace: ToolTraceEntry[] | undefined;
   let streamCwd: string | undefined;
+  let streamSandboxId: string | undefined;
   let streamError: AgentFailure | null = null;
 
   try {
@@ -311,6 +328,9 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
           toolTrace = parseToolTrace(ev.toolTrace) ?? toolTrace;
           if (typeof ev.cwd === 'string') {
             streamCwd = ev.cwd;
+          }
+          if (typeof ev.sandboxId === 'string') {
+            streamSandboxId = ev.sandboxId;
           }
         } else if (ev.type === 'error') {
           streamError = {
@@ -339,6 +359,9 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
           toolTrace = parseToolTrace(ev.toolTrace) ?? toolTrace;
           if (typeof ev.cwd === 'string') {
             streamCwd = ev.cwd;
+          }
+          if (typeof ev.sandboxId === 'string') {
+            streamSandboxId = ev.sandboxId;
           }
         } else if (ev.type === 'error') {
           streamError = {
@@ -377,5 +400,6 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
     text: finalText.trim(),
     ...(toolTrace ? { toolTrace } : {}),
     ...(streamCwd !== undefined ? { cwd: streamCwd } : {}),
+    ...(streamSandboxId !== undefined ? { sandboxId: streamSandboxId } : {}),
   };
 };
