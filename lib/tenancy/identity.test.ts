@@ -107,6 +107,43 @@ describe('identity helpers (pglite)', () => {
     ).rejects.toMatchObject({ code: 'forbidden' });
   });
 
+  it('ensureDefaultTenantMembership: zero tenants fails closed (forbidden)', async () => {
+    // Delete the sole tenant created in beforeEach (cascades membership).
+    await db.delete(schema.tenants);
+    await expect(
+      ensureDefaultTenantMembership(ownerId, 'member', { db: db as never }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  it('ensureDefaultTenantMembership: multiple tenants fails closed (forbidden)', async () => {
+    const [second] = await db
+      .insert(schema.tenants)
+      .values({ slug: 'second', name: 'Second', settings: {} })
+      .returning({ id: schema.tenants.id });
+    expect(second.id).toBeTruthy();
+
+    const [u] = await db
+      .insert(schema.users)
+      .values({
+        email: 'member-multi@example.com',
+        status: 'active',
+        passwordHash: MEMBER_HASH,
+        provisionSource: 'manual',
+      })
+      .returning();
+
+    // Two tenants now → the join cannot be unambiguous → forbid, join nothing.
+    await expect(
+      ensureDefaultTenantMembership(u.id, 'member', { db: db as never }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+
+    const joined = await db
+      .select()
+      .from(schema.tenantMembers)
+      .where(eq(schema.tenantMembers.userId, u.id));
+    expect(joined).toHaveLength(0);
+  });
+
   it('isBreakGlassUser true for credentials owner; false for scim member', async () => {
     expect(await isBreakGlassUser(ownerId, { db: db as never })).toBe(true);
 

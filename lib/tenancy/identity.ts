@@ -15,8 +15,6 @@ import { withConnection, type TenancyConnection } from '../di/withConnection';
 export type UserStatus = 'active' | 'suspended';
 export type ProvisionSource = 'credentials' | 'oidc' | 'scim' | 'manual';
 
-export const DEFAULT_TENANT_SLUG = 'default';
-
 export type IdentityDeps = {
   /** Injected DB (tests). When omitted, opens/closes a short-lived connection. */
   db?: Db;
@@ -99,9 +97,13 @@ async function withDb<T>(
 }
 
 /**
- * Attach user to tenant slug `default` as member (default).
- * Refuses owner/admin via this helper — seed/admin promote only.
- * Idempotent when membership already exists.
+ * Attach a user to the **sole** tenant as member (parent #473 phase 1).
+ * The first tenant's slug is derived from the sign-up tenant name (no fixed
+ * `default`), so this helper stops hardcoding a tenant slug: it enumerates
+ * tenants, requires **exactly one**, and joins that one; zero or >1 tenants
+ * is fail-closed `forbidden` (a wrong guess is never better than failing).
+ * Refuses owner/admin via this helper — owner is created only by first-run
+ * sign-up; seed/admin promote only. Idempotent when membership already exists.
  */
 export async function ensureDefaultTenantMembership(
   userId: string,
@@ -121,18 +123,19 @@ export async function ensureDefaultTenantMembership(
   }
 
   return withDb(deps, async (db) => {
+    // Sole-tenant join: enumerate and require exactly one; 0 or >1 is a
+    // fail-closed signal that member-join cannot be determined safely.
     const tenantRows = await db
       .select({ id: tenants.id })
       .from(tenants)
-      .where(eq(tenants.slug, DEFAULT_TENANT_SLUG))
-      .limit(1);
-    const tenantId = tenantRows[0]?.id;
-    if (!tenantId) {
+      .limit(2);
+    if (tenantRows.length !== 1) {
       throw new IdentityError(
-        `default tenant (${DEFAULT_TENANT_SLUG}) not found`,
-        'not_found',
+        'membership join requires exactly one tenant (tenant not bootstrapped or multi-tenant)',
+        'forbidden',
       );
     }
+    const tenantId = tenantRows[0].id;
 
     const existing = await db
       .select({ role: tenantMembers.role })

@@ -33,6 +33,7 @@ import { createAuthenticate } from '../tenancy/authenticate';
 import { createAdminContext } from '../tenancy/adminContext';
 import { createHarnessSessions } from '../tenancy/harnessSessions';
 import { createIdentity, IdentityError } from '../tenancy/identity';
+import { createFirstRun } from '../tenancy/firstRun';
 import { createListTenantMembers } from '../tenancy/listTenantMembers';
 import { createManageSandbox } from '../tenancy/manageSandbox';
 import { createProviderSecrets } from '../tenancy/providerSecrets';
@@ -163,6 +164,7 @@ export function createProdServices(overrides: {
 } = {}) {
   const connect = overrides.connect ?? (async () => createScriptConnection());
   const identity = createIdentity({ connect });
+  const firstRun = createFirstRun({ connect });
   const soleMembership = createSoleMembership({ connect });
   const serverSecrets = resolveServerSecrets();
 
@@ -185,6 +187,7 @@ export function createProdServices(overrides: {
     adminContext: createAdminContext({ connect }),
     harnessSessions: createHarnessSessions({ connect }),
     identity,
+    firstRun,
     listTenantMembers: createListTenantMembers({ connect }),
     manageSandbox: createManageSandbox({ connect }),
     providerSecrets: createProviderSecrets({ connect }),

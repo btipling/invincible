@@ -104,6 +104,7 @@ Forks/BYO: copy `dev/` + the workflow; use **your** team/project prefix and toke
 | Step | Surface |
 |------|---------|
 | Schema migrate | GitHub Actions **`db-migrate`** (`confirm=migrate`) — not laptop-primary |
+| First-run sign-up | On a tenant-less DB, `/login` shows a sign-up form that creates the first tenant + owner. **First hours after signup:** the owner creates a sandbox at `/admin/sandboxes`; agent turns fail closed (403) until one exists |
 | Create / edit / image | Browser **/admin/sandboxes** |
 | Seed bootstrap (optional) | GHA **`db-tenancy-bootstrap`** / seed with `SEED_SANDBOX_BACKEND` + optional `SEED_SANDBOX_IMAGE` |
 | Smoke | Harness agent tools with a usable grant (or preferred when several) |

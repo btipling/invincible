@@ -138,6 +138,12 @@ unauthenticated.
 Cloud-native cutover (no personal hardware). GHA bootstrap workflow:
 [`.github/workflows/db-tenancy-bootstrap.yml`](../.github/workflows/db-tenancy-bootstrap.yml).
 
+**First-run self-bootstrap:** after **`db-migrate`**, open `/login` — if the DB
+has no tenant, a **sign-up form** creates the first tenant + owner in one
+transaction and signs the owner in (no `SEED_*` env, no laptop). After sign-up,
+create a sandbox at **`/admin/sandboxes`**; agent turns fail closed until one
+exists. Seed remains available until removed.
+
 ### Enablement (triple env — no AUTH_ENABLED flag)
 
 Tenancy is enabled when **all three** are non-empty on the **running** deploy;
