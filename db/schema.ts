@@ -381,6 +381,53 @@ export type UserPersona = typeof userPersonas.$inferSelect;
 export type UserPersonaInsert = typeof userPersonas.$inferInsert;
 
 /**
+ * Per-user agent skills (parent #331 / phase 1 #498).
+ * Bodies are non-secret user content (playbooks / AGENTS-style instruction
+ * docs) — deliberately NOT DEK-encrypted (same policy as personas). Attached
+ * per-turn via slash command (phase 3) and re-resolved from the store each turn;
+ * never snapshot into `meta`. Server-only; never ship a body to the client in
+ * summaries.
+ */
+export const userSkills = pgTable(
+  'user_skills',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    /** Short summary used by /api/skills + find_skill; may be empty. */
+    description: text('description').notNull().default(''),
+    /**
+     * parent-locked charset: ^[a-z][a-z0-9_-]{0,63}$ — lowercase start; digits,
+     * underscore AND hyphen allowed — so kebab-case skills like `create-plan`
+     * store and match the phase-3 slash parser's identical RE. Do NOT copy
+     * personas' underscore-only RE.
+     */
+    slug: text('slug').notNull(),
+    /** Plaintext non-secret skill body. */
+    body: text('body').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('user_skills_tenant_user_slug_unique').on(
+      t.tenantId,
+      t.userId,
+      t.slug,
+    ),
+    index('user_skills_user_id_idx').on(t.userId),
+    index('user_skills_tenant_id_idx').on(t.tenantId),
+  ],
+);
+
+export type UserSkill = typeof userSkills.$inferSelect;
+export type UserSkillInsert = typeof userSkills.$inferInsert;
+
+/**
  * Cloud multi-device harness session (parent #242 / phase #243).
  * One row per user. snapshot_id is opaque client SessionSnapshot.id (e.g. sess_…),
  * not a UUID — never uuid-validate client ids.

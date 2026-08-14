@@ -38,6 +38,7 @@ const MIGRATIONS = [
   '0008_user_sandbox_instances.sql',
   '0009_harness_sessions.sql',
   '0010_user_personas.sql',
+  '0011_user_skills.sql',
 ];
 
 /**
@@ -98,11 +99,12 @@ export async function getSharedClient(): Promise<PGlite> {
 /**
  * Clear every tenancy table in FK order (children before parents) so no
  * cross-file bleed is possible on the single shared engine. The order covers
- * all 13 tables from migrations 0000–0009.
+ * all tables from migrations 0000–0011.
  */
 export const RESET_TABLES = [
   schema.harnessSessions,
   schema.userPersonas,
+  schema.userSkills,
   schema.userSandboxInstances,
   schema.userPreferredSandbox,
   schema.userGithubTokens,
