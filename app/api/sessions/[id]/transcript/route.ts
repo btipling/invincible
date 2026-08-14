@@ -17,9 +17,18 @@
 import { requireSessionUser } from '../../../../../lib/tenancy/session';
 import { AUTH_REQUIRED_ERROR } from '../../../../../lib/tenancy/errors';
 import { isRedisSafeOpaqueId } from '../../../../../lib/sessionCloudCaps';
+import {
+  type SessionRecordKey,
+  isEnvelopeStore,
+} from '../../../../../lib/sessions/sessionStore';
 import { createProdServices } from '../../../../../lib/di';
 import { resolveBlobStore } from '../../../../../lib/tenancy/harnessSessionsRedis';
-import { unavailableResponse } from '../../../../../lib/tenancy/harnessSessionsRedis';
+import {
+  guardStore,
+  resolveSessionStore,
+  sessionKeyFor,
+  unavailableResponse,
+} from '../../../../../lib/tenancy/harnessSessionsRedis';
 
 const { harnessSessionsRedis } = createProdServices();
 
@@ -46,6 +55,49 @@ async function resolveTenantFor(
     return { ok: false, response: unavailableResponse(tenant.code, tenant.error) };
   }
   return { ok: true, tenantId: tenant.value };
+}
+
+/**
+ * Load the envelope so a signed read is **authorization-bound** to this session
+ * (reader's Major L2): `GET /transcript?objectId=` may only sign the object the
+ * requesting session's envelope actually points to. An arbitrary (even Redis-safe)
+ * `objectId` belonging to some other session/user must 404 — never a leaked/guessed
+ * id signed under the caller's auth. Returns a 404 response wrapped from the store.
+ */
+async function resolveOwnedTranscriptPointer(
+  userId: string,
+  tenantId: string,
+  id: string,
+): Promise<{ ok: true; pointer: string } | { ok: false; response: Response }> {
+  const resolved = await resolveSessionStore();
+  if (!resolved.ok) {
+    return { ok: false, response: unavailableResponse(resolved.code, resolved.error) };
+  }
+  const store = resolved.value;
+  if (!isEnvelopeStore(store)) {
+    // No envelope seam → no bound pointer → nothing to sign.
+    return {
+      ok: false,
+      response: Response.json({ error: 'Transcript object not found.', code: 'NOT_FOUND' }, { status: 404 }),
+    };
+  }
+  const key: SessionRecordKey = sessionKeyFor(tenantId, userId, id);
+  const got = await guardStore(() => store.readEnvelope(key));
+  if (!got.ok) return { ok: false, response: got.response };
+  if (!got.value) {
+    return {
+      ok: false,
+      response: Response.json({ error: 'Session not found.', code: 'NOT_FOUND' }, { status: 404 }),
+    };
+  }
+  const pointer = got.value.meta.transcriptPointer;
+  if (typeof pointer !== 'string' || !pointer) {
+    return {
+      ok: false,
+      response: Response.json({ error: 'Transcript object not found.', code: 'NOT_FOUND' }, { status: 404 }),
+    };
+  }
+  return { ok: true, pointer };
 }
 
 function invalidIdResponse(id: string | undefined): Response | null {
@@ -132,6 +184,18 @@ export async function GET(req: Request, ctx: Ctx): Promise<Response> {
     return Response.json(
       { error: 'objectId must be a Redis-safe opaque id.', code: 'INVALID_OBJECT_ID' },
       { status: 400 },
+    );
+  }
+
+  // Authorization: only this session's own envelope pointer may be read. Without
+  // this gate, an authed user could ask for another user's leaked/guessed objectId
+  // and get a signed GET of their transcript (reader's Major L2 IDOR).
+  const owned = await resolveOwnedTranscriptPointer(gate.userId, tenant.tenantId, id);
+  if (!owned.ok) return owned.response;
+  if (owned.pointer !== objectId) {
+    return Response.json(
+      { error: 'Transcript object not found.', code: 'NOT_FOUND' },
+      { status: 404 },
     );
   }
 

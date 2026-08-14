@@ -1,17 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryBlobTranscriptStore } from '../../../../../lib/sessions/blobStores';
-import { setBlobStoreForTests } from '../../../../../lib/tenancy/harnessSessionsRedis';
+import { MemorySessionStore } from '../../../../../lib/sessions/memorySessionStore';
+import {
+  setBlobStoreForTests,
+  setSessionStoreForTests,
+} from '../../../../../lib/tenancy/harnessSessionsRedis';
 import { AUTH_REQUIRED_ERROR } from '../../../../../lib/tenancy/errors';
 
 /**
  * Phase 0 (#515) — POST/GET /api/sessions/:id/transcript (Blob transcript object seam).
- * Uses an in-memory Blob store double; no real Vercel Blob.
+ * Uses in-memory Blob + envelope store doubles; no real Vercel Blob / Redis.
  */
 describe('/api/sessions/:id/transcript', () => {
+  const TENANT = 'tenant-a';
+  const USER = 'user-a';
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
     setBlobStoreForTests(new MemoryBlobTranscriptStore());
+    // GET is authorization-bound to the requesting session's envelope pointer, so it
+    // needs the session store seam (reader's Major L2).
+    setSessionStoreForTests(new MemorySessionStore());
   });
 
   afterEach(() => {
@@ -124,12 +133,21 @@ describe('/api/sessions/:id/transcript', () => {
     expect(((await badJson.json()) as { code: string }).code).toBe('INVALID_JSON');
   });
 
-  it('GET returns a server-signed read URL for an object; missing object → 404; bad objectId → 400', async () => {
+  it('GET signs ONLY the session envelope pointer (authorization-bound); missing → 404; bad objectId → 400', async () => {
+    // Setup: mint an object AND bind that objectId as this session's envelope pointer.
+    const store = new MemorySessionStore();
+    setSessionStoreForTests(store);
     const blob = new MemoryBlobTranscriptStore();
     setBlobStoreForTests(blob);
+
     const mint = await blob.mintUpload({ keyPrefix: 'harness/tenant-a/user-a/abc' });
+    await store.upsertEnvelope(
+      { tenantId: TENANT, userId: USER, sessionId: 'abc' },
+      { id: 'abc', userId: USER, tenantId: TENANT, updatedAt: 10, meta: { transcriptPointer: mint.objectId } },
+    );
     const { GET } = await mockAuthed();
 
+    // Bound pointer → signed read URL (the only object this session may read).
     const ok = await GET(
       new Request(`http://localhost/api/sessions/abc/transcript?objectId=${mint.objectId}`),
       ctx('abc'),
@@ -139,12 +157,45 @@ describe('/api/sessions/:id/transcript', () => {
     expect(body.readUrl).toContain('memory://transcript/');
     expect(body.objectId).toBe(mint.objectId);
 
-    const missing = await GET(
-      new Request('http://localhost/api/sessions/abc/transcript?objectId=tx_missing'),
+    // IDOR: an arbitrary (even Redis-safe) objectId NOT on this session's envelope → 404,
+    // never signed under the caller's auth (reader's Major L2).
+    const foreign = await blob.mintUpload();
+    const idor = await GET(
+      new Request(`http://localhost/api/sessions/abc/transcript?objectId=${foreign.objectId}`),
       ctx('abc'),
+    );
+    expect(idor.status).toBe(404);
+
+    // A different session's row (same user) must NOT serve another session's pointer.
+    await store.upsertEnvelope(
+      { tenantId: TENANT, userId: USER, sessionId: 'other' },
+      { id: 'other', userId: USER, tenantId: TENANT, updatedAt: 10, meta: { transcriptPointer: foreign.objectId } },
+    );
+    const crossSession = await GET(
+      new Request(`http://localhost/api/sessions/abc/transcript?objectId=${foreign.objectId}`),
+      ctx('abc'),
+    );
+    expect(crossSession.status).toBe(404);
+
+    // Envelope present but no pointer → 404.
+    await store.upsertEnvelope(
+      { tenantId: TENANT, userId: USER, sessionId: 'noptr' },
+      { id: 'noptr', userId: USER, tenantId: TENANT, updatedAt: 10, meta: {} },
+    );
+    const noPtr = await GET(
+      new Request(`http://localhost/api/sessions/noptr/transcript?objectId=${mint.objectId}`),
+      ctx('noptr'),
+    );
+    expect(noPtr.status).toBe(404);
+
+    // No session at all → 404.
+    const missing = await GET(
+      new Request('http://localhost/api/sessions/ghost/transcript?objectId=tx_missing'),
+      ctx('ghost'),
     );
     expect(missing.status).toBe(404);
 
+    // Malformed objectId → 400 INVALID_OBJECT_ID.
     const badObj = await GET(
       new Request('http://localhost/api/sessions/abc/transcript?objectId=a:b'),
       ctx('abc'),

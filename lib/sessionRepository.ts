@@ -89,8 +89,8 @@ export type IdSessionRepository = {
     | { action: 'disabled' }
     | { action: 'error'; status: number; message: string }
   >;
-  /** PUT a transcript body directly to the minted Blob URL (client→Blob, no Function). */
-  putTranscriptObject(uploadUrl: string, body: unknown): Promise<void>;
+  /** PUT a transcript body directly to the minted Blob URL (client→Blob, no Function). Resolves true on 2xx, false on failure/network error. */
+  putTranscriptObject(uploadUrl: string, body: unknown): Promise<boolean>;
   /** Upsert the small envelope (meta/pointer + `updatedAt` LWW) for a session. */
   pushEnvelope(
     id: string,
@@ -114,6 +114,13 @@ export type HttpSessionRepositoryOptions = {
    * during the round-trip.
    */
   getLocal?: () => SessionSnapshot | null;
+  /**
+   * Explicitly select the phase-0 carrier. When omitted, the public
+   * `NEXT_PUBLIC_HARNESS_CARRIER_ENVELOPE=1` flag opts the envelope+Blob carrier
+   * in; otherwise it rolls forward to the one-shot full-record PUT/GET (today's
+   * default). Exposed so tests can exercise the envelope path deterministically.
+   */
+  carrier?: 'envelope' | 'rollforward';
 };
 
 const textEncoder = new TextEncoder();
@@ -391,8 +398,68 @@ export function createHttpSessionRepository(
     }
   }
 
+  /**
+   * Phase 0 (#515) envelope read: `GET /envelope` then page the transcript object
+   * (client→Blob) instead of a whole-record Function GET. Used when the envelope
+   * carrier is active; the transcript object stores the same `{ id, updatedAt,
+   * messages, meta? }` shape the full-record GET returns so `parseCloudSessionSnapshot`
+   * reconstructs the same `SessionSnapshot`.
+   */
+  async function getEnvelope(id: string): Promise<CloudGetResult> {
+    try {
+      const res = await fetchImpl(`${path}/${encodeURIComponent(id)}/envelope`, {
+        method: 'GET',
+        credentials: 'same-origin',
+      });
+      if (res.status === 401) {
+        disable();
+        return { action: 'disabled' };
+      }
+      if (res.status === 404) {
+        return { action: 'notfound' };
+      }
+      if (!res.ok) {
+        return {
+          action: 'error',
+          status: res.status,
+          message: `Session pull failed (${res.status}).`,
+        };
+      }
+      const env = (await res.json()) as { transcriptReadUrl?: unknown; meta?: Record<string, unknown> };
+      const readUrl = typeof env.transcriptReadUrl === 'string' ? env.transcriptReadUrl : undefined;
+      const pointer =
+        env.meta && typeof env.meta.transcriptPointer === 'string'
+          ? env.meta.transcriptPointer
+          : undefined;
+      if (!readUrl || !pointer) {
+        // Envelope present but no transcript object yet (fresh/empty session).
+        return { action: 'notfound' };
+      }
+      const t = await fetchImpl(readUrl, { method: 'GET', credentials: 'omit' });
+      if (t.status === 401) {
+        disable();
+        return { action: 'disabled' };
+      }
+      if (!t.ok) {
+        return {
+          action: 'error',
+          status: t.status,
+          message: `Transcript fetch failed (${t.status}).`,
+        };
+      }
+      const parsed = parseCloudSessionSnapshot(await t.json(), id);
+      if (!parsed) {
+        return { action: 'error', status: 0, message: 'Invalid transcript body.' };
+      }
+      return { action: 'ok', snapshot: parsed };
+    } catch {
+      return { action: 'error', status: 0, message: 'Network error pulling session.' };
+    }
+  }
+
   async function get(id: string): Promise<CloudGetResult> {
     if (!enabled) return { action: 'disabled' };
+    if (carrier === 'envelope') return getEnvelope(id);
     try {
       const res = await fetchImpl(`${path}/${encodeURIComponent(id)}`, {
         method: 'GET',
@@ -558,6 +625,64 @@ export function createHttpSessionRepository(
     }
   }
 
+  /**
+   * Phase 0 (#515) envelope carrier writer: mint → client→Blob PUT of the transcript
+   * object (no full-document JSON PUT through a Function) → push the small envelope
+   * with the object's `transcriptPointer`. **Fail-closed:** if the object upload
+   * fails (non-2xx / network), the envelope pointer is NOT advanced — a later restore
+   * can never land on a missing/empty object hole (reader's Minor L1). The transcript
+   * object stores the same `{ id, updatedAt, messages, meta? }` shape the full-record
+   * PUT sends, so the envelope read (`getEnvelope`) reconstructs the identical
+   * `SessionSnapshot`.
+   */
+  async function putEnvelopeOnce(
+    id: string,
+    snapshot: SessionSnapshot,
+    scheduledEpoch: number,
+    c: Channel,
+  ): Promise<CloudPutResult> {
+    if (!enabled || snapshot.id !== id) return { action: 'disabled' };
+    const body = trimForCloudPut(snapshot);
+
+    const mint = await mintUpload(id);
+    if (c.epoch !== scheduledEpoch) {
+      await deleteOne(id);
+      return { action: 'disabled' };
+    }
+    if (mint.action === 'disabled') return { action: 'disabled' };
+    if (mint.action !== 'ok') {
+      return { action: 'error', status: mint.status, message: mint.message };
+    }
+
+    const uploaded = await putTranscriptObject(mint.uploadUrl, body);
+    if (c.epoch !== scheduledEpoch) {
+      await deleteOne(id);
+      return { action: 'disabled' };
+    }
+    if (!uploaded) {
+      return {
+        action: 'error',
+        status: 0,
+        message: 'Transcript upload failed; envelope pointer not advanced.',
+      };
+    }
+
+    const pushed = await pushEnvelope(id, {
+      updatedAt: snapshot.updatedAt,
+      pointer: mint.objectId,
+      meta: body.meta,
+    });
+    if (c.epoch !== scheduledEpoch) {
+      await deleteOne(id);
+      return { action: 'disabled' };
+    }
+    if (pushed.action === 'disabled') return { action: 'disabled' };
+    if (pushed.action !== 'ok' && pushed.action !== 'adopt') {
+      return { action: 'error', status: pushed.status, message: pushed.message };
+    }
+    return { action: 'ok', snapshot };
+  }
+
   function maybeAdopt(server: SessionSnapshot, fallbackLocal: SessionSnapshot): boolean {
     const live = liveLocal(fallbackLocal);
     if (!live) return false;
@@ -580,7 +705,14 @@ export function createHttpSessionRepository(
         const next = c.pending;
         c.pending = null;
         const scheduledEpoch = c.epoch;
-        await putOnce(id, next, scheduledEpoch, c);
+        // The carrier flag actually switches the write path (reader's Major L1):
+        // 'envelope' → mint → client→Blob → pushEnvelope; 'rollforward' → the
+        // one-shot full-record PUT (today's default, behavior-identical).
+        if (carrier === 'envelope') {
+          await putEnvelopeOnce(id, next, scheduledEpoch, c);
+        } else {
+          await putOnce(id, next, scheduledEpoch, c);
+        }
       }
     } finally {
       c.inflight = false;
@@ -614,11 +746,14 @@ export function createHttpSessionRepository(
   // host toggles the carrier via a PUBLIC `NEXT_PUBLIC_HARNESS_CARRIER_ENVELOPE` flag.
   // The server's `BLOB_READ_WRITE_TOKEN` is never read client-side. Default roll-forward
   // keeps the existing one-shot full-record PUT until a deploy opts the envelope carrier in.
+  // The flag only takes effect when it actually swaps the write/read path (put/get
+  // dispatch on `carrier` below) — a no-op getter alone was reader's Major L1.
   const carrier: 'envelope' | 'rollforward' =
-    typeof process !== 'undefined' &&
+    opts.carrier ??
+    (typeof process !== 'undefined' &&
     process.env.NEXT_PUBLIC_HARNESS_CARRIER_ENVELOPE === '1'
       ? 'envelope'
-      : 'rollforward';
+      : 'rollforward');
 
   async function mintUpload(id: string) {
     if (!enabled) return { action: 'disabled' as const };
@@ -653,16 +788,24 @@ export function createHttpSessionRepository(
     }
   }
 
-  async function putTranscriptObject(uploadUrl: string, body: unknown): Promise<void> {
+  /**
+   * PUT a transcript body directly to a minted Blob URL (client→Blob, no Function).
+   * Returns **true only on a successful (2xx) upload**. On failure it returns false
+   * so the envelope carrier does NOT advance `transcriptPointer` to a missing/empty
+   * object — fail-closed on the one write that matters (host adopt would otherwise
+   * restore a hole; reader's Minor L1).
+   */
+  async function putTranscriptObject(uploadUrl: string, body: unknown): Promise<boolean> {
     try {
-      await fetchImpl(uploadUrl, {
+      const res = await fetchImpl(uploadUrl, {
         method: 'PUT',
         credentials: 'omit',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
+      return res.ok;
     } catch {
-      /* best-effort: the envelope upsert still runs; a missing object is a restore miss */
+      return false;
     }
   }
 

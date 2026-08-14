@@ -70,7 +70,9 @@ function makeRepo(overrides: {
     async mintUpload() {
       return { action: 'error' as const, status: 0, message: 'unconfigured in tests' };
     },
-    async putTranscriptObject() {},
+    async putTranscriptObject() {
+      return false;
+    },
     async pushEnvelope() {
       return { action: 'error' as const, status: 0, message: 'unconfigured in tests' };
     },

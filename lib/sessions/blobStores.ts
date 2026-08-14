@@ -20,7 +20,7 @@ import type {
   MintedUpload,
   TranscriptObjectId,
 } from './blobStore';
-import { isTranscriptObjectId } from './blobStore';
+import { isTranscriptObjectId, newBlobObjectId } from './blobStore';
 
 /** In-memory double: same seam, no real object store. Tests + dev fallback only. */
 export class MemoryBlobTranscriptStore implements BlobTranscriptStore {
@@ -28,7 +28,9 @@ export class MemoryBlobTranscriptStore implements BlobTranscriptStore {
   private readonly objects = new Map<string, string>();
 
   async mintUpload(options?: { keyPrefix?: string; contentType?: string }): Promise<MintedUpload> {
-    const id = `tx_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    // Same compact Redis-safe id shape as the Vercel store, so a test-injected
+    // memory double never mints an id that would fail `isTranscriptObjectId`.
+    const id = newBlobObjectId();
     const readUrl = `memory://transcript/${id}`;
     // Keep a placeholder body so a server-side readUrl resolves to empty until uploaded.
     this.objects.set(id, JSON.stringify({ empty: true }));
@@ -64,8 +66,14 @@ export class VercelBlobTranscriptStore implements BlobTranscriptStore {
   constructor(private readonly opts: { token: string; keyPrefix?: string }) {}
 
   async mintUpload(options?: { keyPrefix?: string; contentType?: string }): Promise<MintedUpload> {
-    const prefix = options?.keyPrefix ?? this.opts.keyPrefix ?? 'harness/transcript';
-    const objectId = `${prefix}/${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
+    // The object id IS the Blob pathname AND the Redis envelope pointer (see
+    // `newBlobObjectId`): a compact, unguessable, Redis-safe opaque string, never
+    // a slashy hierarchical path — so the stored `meta.transcriptPointer` always
+    // equals the object the server signs reads for, and `presignUrl`'s pathname
+    // match holds. (A slashy `harness/{tenant}/{user}/{session}/{ts}_{uuid}`
+    // pathname would fail `isTranscriptObjectId` and 400 every envelope upsert /
+    // read — reader's Blocker.)
+    const objectId = newBlobObjectId();
     const validUntil = Date.now() + 60 * 60 * 1000; // 1h
     const signed = await issueSignedToken({
       token: this.opts.token,

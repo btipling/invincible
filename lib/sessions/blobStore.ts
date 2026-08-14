@@ -36,6 +36,22 @@ export function isTranscriptObjectId(s: unknown): s is TranscriptObjectId {
 }
 
 /**
+ * Generate a compact, unguessable, **Redis-safe opaque** transcript object id.
+ *
+ * This is the single source of the envelope pointer AND the Blob pathname — they
+ * must be the same string so `meta.transcriptPointer` (which rides in the Redis
+ * envelope and must be `^[A-Za-z0-9_-]{1,128}$`) always equals the object the
+ * server signs reads for. The charset is `[A-Za-z0-9_]` (no `/`, no glob chars),
+ * so it is safe as a Redis `meta` value AND as a Blob pathname (Blob pathnames do
+ * not need to be hierarchical). Length is bounded well under 128.
+ */
+export function newBlobObjectId(): string {
+  const ts = Date.now().toString(36);
+  const rand = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+  return `t_${ts}_${rand}`;
+}
+
+/**
  * Provider-neutral transcript object store. Production default is Vercel Blob;
  * BYO S3/R2 buckets implement the same seam (config swap, no single-owner bind).
  */
