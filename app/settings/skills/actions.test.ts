@@ -246,9 +246,9 @@ describe('settings skills actions', () => {
     const fd = new FormData();
     fd.set('id', 's1');
     fd.set('name', 'Alpha');
-    fd.set('description', 'x'.repeat(501));
+    fd.set('description', 'x'.repeat(20_001));
     const r = await updateSkillDetailsAction({}, fd);
-    expect(r.error).toBe('Description must be at most 500 characters.');
+    expect(r.error).toBe('Description must be at most 20,000 characters.');
 
     skillStore({
       updateUserSkillSummary: vi.fn(async () => ({

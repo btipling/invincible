@@ -83,8 +83,9 @@ function rowToSnapshot(row: {
 
 /**
  * Validate a client SessionSnapshot for PUT.
- * Caps: 262144 UTF-8 bytes per text (bridge MAX_MSG_LEN), opaque id ≤128.
- * No message-count ceiling — raw body ~2 MiB is enforced on the route.
+ * Caps: 262144 UTF-8 bytes per text (bridge MAX_MSG_LEN), opaque id ≤512.
+ * No message-count ceiling — raw body up to `HARNESS_SESSION_MAX_BODY_BYTES`
+ * (8 MiB) is enforced on the route.
  */
 export function validateSessionSnapshot(
   body: unknown,
@@ -98,7 +99,7 @@ export function validateSessionSnapshot(
     return {
       ok: false,
       code: 'invalid_id',
-      error: 'id must be a non-empty opaque string (max 128, no control characters).',
+      error: 'id must be a non-empty opaque string (max 512, no control characters).',
     };
   }
 

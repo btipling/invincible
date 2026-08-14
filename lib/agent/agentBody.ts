@@ -108,7 +108,7 @@ function parseSandboxId(
   }
   return {
     ok: false,
-    error: 'sandboxId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    error: 'sandboxId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     status: 400,
   };
 }
@@ -131,7 +131,7 @@ function parseSessionId(
   }
   return {
     ok: false,
-    error: 'sessionId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    error: 'sessionId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     status: 400,
   };
 }
@@ -153,7 +153,7 @@ function parsePersonaId(
   }
   return {
     ok: false,
-    error: 'personaId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    error: 'personaId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     status: 400,
   };
 }

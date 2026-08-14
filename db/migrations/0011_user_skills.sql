@@ -1,7 +1,8 @@
 -- Per-user agent skills (parent #331 / phase 1 #498).
 -- Body is plaintext non-secret user content (playbook/AGENTS-style doc); no DEK.
--- Slug charset enforced app-side: ^[a-z][a-z0-9_-]{0,63}$ (hyphen allowed so
--- kebab-case skills like `create-plan` store and match the phase-3 slash parser).
+-- Slug charset is CURRENTLY enforced app-side by userSkills.SKILL_SLUG_RE
+-- (hyphen allowed so kebab-case skills like `create-plan` store and match the
+-- phase-3 slash parser; the RE was relaxed to ≤128 chars in #507). No DB CHECK.
 CREATE TABLE "user_skills" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,

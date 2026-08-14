@@ -123,23 +123,23 @@ for the open tab).
 
 | Concept | Value |
 |---------|--------|
-| Session id | **Server-minted** UUID (`crypto.randomUUID()`); Redis-safe `^[A-Za-z0-9_-]{1,128}$`. Never reuse an opaque client `sess_…` as a cloud record id |
+| Session id | **Server-minted** UUID (`crypto.randomUUID()`); Redis-safe `^[A-Za-z0-9_-]{1,512}$`. Never reuse an opaque client `sess_…` as a cloud record id |
 | Record key | `harness:session:{tenantId}:{userId}:{sessionId}` (keyspace) |
 | Tenant + user | **Server-derived** via `loadSoleMembership` — never from client body/headers |
 | Write key | The **path** `:id`; body `id` must equal the path id, else **400** |
 | `createdAt` | Epoch ms at mint/backfill — immutable after create |
 | `updatedAt` | Epoch ms of last accepted write. **New sessions are seeded `0`** (first host PUT with epoch-now ≥ 0 is idempotent-accept, never a spurious 409) |
 | Cross-user | Other-user id / nonexistent id → **404** (no existence leak) |
-| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 16 KiB) and counts toward the raised whole-`meta` budget (**20 KiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection is active — see [docs/personas.md](personas.md)) |
+| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 256 KiB) and counts toward the raised whole-`meta` budget (**1 MiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection is active — see [docs/personas.md](personas.md)) |
 
 ### Caps (server + host pre-PUT trim)
 
 | Cap | Value | Notes |
 |-----|-------|--------|
-| Messages per record | **no count cap** | Body ~2 MiB may drop oldest if needed |
+| Messages per record | **no count cap** | Body 8 MiB may drop oldest if needed |
 | Per-message text | **262 144** UTF-8 bytes | Aligns with bridge `MAX_MSG_LEN` |
-| Raw PUT body | **~2 MiB** | Reject oversize; host trims before PUT |
-| Record id / tenant / user | max **128**, Redis-safe `^[A-Za-z0-9_-]{1,128}# Session model
+| Raw PUT body | **8 MiB** | Reject oversize; host trims before PUT |
+| Record id / tenant / user | max **512**, Redis-safe `^[A-Za-z0-9_-]{1,512}# Session model
 
 How harness continuity works: **local-first** browser restore plus
 **cloud multi-session** sync when the user is signed in (auth always required).
@@ -264,22 +264,22 @@ for the open tab).
 
 | Concept | Value |
 |---------|--------|
-| Session id | **Server-minted** UUID (`crypto.randomUUID()`); Redis-safe `^[A-Za-z0-9_-]{1,128}$`. Never reuse an opaque client `sess_…` as a cloud record id |
+| Session id | **Server-minted** UUID (`crypto.randomUUID()`); Redis-safe `^[A-Za-z0-9_-]{1,512}$`. Never reuse an opaque client `sess_…` as a cloud record id |
 | Record key | `harness:session:{tenantId}:{userId}:{sessionId}` (keyspace) |
 | Tenant + user | **Server-derived** via `loadSoleMembership` — never from client body/headers |
 | Write key | The **path** `:id`; body `id` must equal the path id, else **400** |
 | `createdAt` | Epoch ms at mint/backfill — immutable after create |
 | `updatedAt` | Epoch ms of last accepted write. **New sessions are seeded `0`** (first host PUT with epoch-now ≥ 0 is idempotent-accept, never a spurious 409) |
 | Cross-user | Other-user id / nonexistent id → **404** (no existence leak) |
-| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 16 KiB) and counts toward the raised whole-`meta` budget (**20 KiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection is active — see [docs/personas.md](personas.md)) |
+| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 256 KiB) and counts toward the raised whole-`meta` budget (**1 MiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection is active — see [docs/personas.md](personas.md)) |
 
 ### Caps (server + host pre-PUT trim)
 
 | Cap | Value | Notes |
 |-----|-------|--------|
-| Messages per record | **no count cap** | Body ~2 MiB may drop oldest if needed |
+| Messages per record | **no count cap** | Body 8 MiB may drop oldest if needed |
 | Per-message text | **262 144** UTF-8 bytes | Aligns with bridge `MAX_MSG_LEN` |
-| Raw PUT body | **~2 MiB** | Reject oversize; host trims before PUT |
+| Raw PUT body | **8 MiB** | Reject oversize; host trims before PUT |
  | so `KEYS`/prefix globs can never bleed |
 | `meta` total | **20 480** UTF-8 bytes (`HARNESS_SESSION_MAX_META_BYTES`) | whole-reserved-meta JSON cap; `personaSnapshot` ≤ **16 384** |
 
@@ -392,7 +392,7 @@ Product copy uses **New session** and **Continue**, not “Clear.”
 
 A persona is bound by id (`meta.personaId`, Redis-safe opaque) and its body is
 resolved **server-side** on the first agent turn, then locked into
-`meta.personaSnapshot` (≤ 16 KiB, within the 20 KiB whole-`meta` cap). Later turns
+`meta.personaSnapshot` (≤ 256 KiB, within the 1 MiB whole-`meta` cap). Later turns
 / reload / device-switch replay that snapshot; editing a persona never rewrites an
 in-flight session. The picker only ever receives persona summaries. See
 [docs/personas.md](personas.md).

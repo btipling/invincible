@@ -280,7 +280,7 @@ Lessons from the plan → implement → adversarial-review loop (PR #416):
   lives under a separate key, re-validate the record's own identity matches the
   key it was read from (confused-deputy guard).
 - **Respect charset/contract.** Where a boundary already restricts a charset
-  (e.g. a Redis-safe `^[A-Za-z0-9_-]{1,128}$`) or seeds a field (e.g.
+  (e.g. a Redis-safe `^[A-Za-z0-9_-]{1,512}$`) or seeds a field (e.g.
   `updatedAt:0` on create), carry it forward; do not loosen it for convenience.
 - **Preserve stored fields on upsert** (e.g. don't overwrite `createdAt`).
 - **Document env in living docs.** New env vars go in `.env.example` (names only)

@@ -11,6 +11,37 @@ Documented browser / dvui / product constraints for `/harness` (Wasm-primary).
 
 See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 
+## Session & skill caps
+
+**Generous-default / real-ceiling rule:** session / meta / persona-snapshot /
+skill caps default to **generous** so the harness can carry real session state.
+A number is kept small only when it is a genuine **transport ceiling** (the Wasm
+ring message slot) — and even then it is raised only together with the owning
+change. A plan that introduces a cap MUST show it in its own table; plan-review
+never imposes or shrinks caps.
+
+| Cap | Value | Where |
+|-----|-------|-------|
+| `HARNESS_SESSION_MAX_META_BYTES` | 1 MiB (whole reserved `meta`) | `lib/sessionCloudCaps.ts` |
+| `PERSONA_SNAPSHOT_MAX_BYTES` | 256 KiB (locked persona snapshot) | `lib/sessionCloudCaps.ts` |
+| `HARNESS_SESSION_MAX_MSG_BYTES` | 262 144 (kept — **real** Wasm ring ceiling) | `lib/sessionCloudCaps.ts` + `native/harness/src/ring_slot.zig` |
+| `HARNESS_SESSION_MAX_BODY_BYTES` | 8 MiB (raw PUT body) | `lib/sessionCloudCaps.ts` |
+| `HARNESS_SESSION_SNAPSHOT_ID_MAX` | 512 | `lib/sessionCloudCaps.ts` |
+| `REDIS_SAFE_OPAQUE_ID_MAX` (+ RE `{1,512}`) | 512 | `lib/sessionCloudCaps.ts` |
+| `SKILL_NAME_MAX` | 256 | `lib/tenancy/userSkills.ts` |
+| `SKILL_DESCRIPTION_MAX_CHARS` | 20 000 | `lib/tenancy/userSkills.ts` |
+| `SKILL_SLUG_RE` | `^[a-z][a-z0-9_-]{0,127}$` (≤128) | `lib/tenancy/userSkills.ts` |
+| `SKILL_BODY_MAX_BYTES` | 4 MiB (plaintext `text` column) | `lib/tenancy/userSkills.ts` |
+
+The message cap is the **only** transport-bound number: `ring_slot.MAX_MSG_LEN =
+262144` is a fixed `[MAX_MSG_LEN]u8` Wasm buffer, so a larger message needs the
+owning change (`ring_slot.zig` + `bridge.zig` + the zig test) shipped together.
+`meta` is the schema-typed reserved per-session carrier — validated at write
+(`lib/sessions/sessionStore.ts`) and held to the 1 MiB whole-meta cap. Raising
+`REDIS_SAFE_OPAQUE_ID_MAX` (used for tenant/user/session ids and
+`meta.{activeSandboxId,personaId}`) must bump the companion
+`REDIS_SAFE_OPAQUE_ID_RE` quantifier in the same file.
+
 ## Load & performance
 
 | Topic | Behavior |
@@ -83,8 +114,9 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 | Row height | Message rows have **no reserved min-height band**; height tracks content + normal padding (`padding .y=6`, `margin .y=4`). The only enforced touch target is the `≈40px` **📋** (copy) control on the kind row, which shows only for non-empty bodies. Omitting the empty card removes the large blank band without adding a new height contract |
 | Line size | **262 144** UTF-8 bytes max per message (`MAX_MSG_LEN`) |
 | Host history fold | `formatPromptWithHistory` default **maxMessages=400**, **maxChars≈3.5M** (model token limit is the real cap); prefer Clear for a fresh workspace |
-| Session longer than ring | Host `SessionStore` and cloud row may hold more than the ring (cloud still subject to ~2 MiB body). Ring shows a **window** of ≤2048. **Load earlier** steps back by **`HISTORY_PAGE` = 512**; new send snaps to latest window |
-| Cloud record caps | Redis multi-session record: **no message-count cap** · **262 144** UTF-8 bytes/msg · **~2 MiB** body · Redis-safe opaque id (`^[A-Za-z0-9_-]{1,128}# Harness known limits
+| Session longer than ring | Host `SessionStore` and cloud row may hold more than the ring (cloud still subject to 8 MiB body). Ring shows a **window** of ≤2048. **Load earlier** steps back by **`HISTORY_PAGE` = 512**; new send snaps to latest window |
+| Cloud record caps | Redis multi-session record: **no message-count cap** · **262144** UTF-8 bytes/msg (**real Wasm ring ceiling** — see Session & skill caps) · **8 MiB** body · Redis-safe opaque id (`^[A-Za-z0-9_-]{1,512}$`) · reserved `meta` + size cap (`lib/sessionCloudCaps.ts`, `lib/sessions/sessionStore.ts`) — see [session-model.md](session-model.md) |
+# Harness known limits
 
 Documented browser / dvui / product constraints for `/harness` (Wasm-primary).
 
@@ -169,8 +201,8 @@ Not a dual-chat surface: scrolling and typing stay inside the harness canvas.
 | Row height | Message rows have **no reserved min-height band**; height tracks content + normal padding (`padding .y=6`, `margin .y=4`). The only enforced touch target is the `≈40px` **📋** (copy) control on the kind row, which shows only for non-empty bodies. Omitting the empty card removes the large blank band without adding a new height contract |
 | Line size | **262 144** UTF-8 bytes max per message (`MAX_MSG_LEN`) |
 | Host history fold | `formatPromptWithHistory` default **maxMessages=400**, **maxChars≈3.5M** (model token limit is the real cap); prefer Clear for a fresh workspace |
-| Session longer than ring | Host `SessionStore` and cloud row may hold more than the ring (cloud still subject to ~2 MiB body). Ring shows a **window** of ≤2048. **Load earlier** steps back by **`HISTORY_PAGE` = 512**; new send snaps to latest window |
-) · reserved `meta` + size cap (`lib/sessionCloudCaps.ts`, `lib/sessions/sessionStore.ts`) — see [session-model.md](session-model.md) |
+| Session longer than ring | Host `SessionStore` and cloud row may hold more than the ring (cloud still subject to 8 MiB body). Ring shows a **window** of ≤2048. **Load earlier** steps back by **`HISTORY_PAGE` = 512**; new send snaps to latest window |
+| Cloud record caps | Redis multi-session record: **no message-count cap** · **262144** UTF-8 bytes/msg (**real Wasm ring ceiling** — see Session & skill caps) · **8 MiB** body · Redis-safe opaque id (`^[A-Za-z0-9_-]{1,512}$`) · reserved `meta` + size cap (`lib/sessionCloudCaps.ts`, `lib/sessions/sessionStore.ts`) — see [session-model.md](session-model.md) |
 
 ### Tool-run (collapsed tool traces)
 

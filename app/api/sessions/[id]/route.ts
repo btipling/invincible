@@ -61,7 +61,7 @@ async function authedUserGate(): Promise<GuardResult> {
 
 /**
  * Validate the path `:id` before any store I/O. ids live in Redis Keyspace segments
- * and a `KEYS` prefix glob, so a non-empty id outside `^[A-Za-z0-9_-]{1,128}$` (e.g.
+ * and a `KEYS` prefix glob, so a non-empty id outside `^[A-Za-z0-9_-]{1,512}$` (e.g.
  * `*`, `a:b`, spaces) would throw inside the store and surface as a 500. We reject it
  * → 400 INVALID_ID instead (adversarial review L1/L2).
  */
@@ -73,7 +73,7 @@ function invalidIdResponse(id: string | undefined): Response | null {
   // Present but not Redis-safe opaque → same 400, distinct message.
   if (!isRedisSafeOpaqueId(id)) {
     return Response.json(
-      { error: 'id must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).', code: 'INVALID_ID' },
+      { error: 'id must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).', code: 'INVALID_ID' },
       { status: 400 },
     );
   }

@@ -109,7 +109,7 @@ describe('trimForCloudPut', () => {
     expect(inBounds.meta).toEqual({ logicalCwd: 'a/c' });
   });
 
-  it('keeps message count; body trim drops oldest only when over ~2 MiB', () => {
+  it('keeps message count; body trim drops oldest only when over the 8 MiB body cap', () => {
     const messages = Array.from({ length: 50 }, (_, i) => ({
       id: `m_${i}`,
       role: 'user' as const,
@@ -135,9 +135,9 @@ describe('trimForCloudPut', () => {
     );
   });
 
-  it('drops oldest until body under ~2 MiB', () => {
+  it('drops oldest until body under the 8 MiB body cap', () => {
     const chunk = 'x'.repeat(100_000);
-    const messages = Array.from({ length: 30 }, (_, i) => ({
+    const messages = Array.from({ length: 100 }, (_, i) => ({
       id: `m_${i}`,
       role: 'user' as const,
       text: chunk,
@@ -150,8 +150,8 @@ describe('trimForCloudPut', () => {
       messages: out.messages,
     });
     expect(utf8ByteLength(body)).toBeLessThanOrEqual(HARNESS_SESSION_MAX_BODY_BYTES);
-    expect(out.messages.length).toBeLessThan(30);
-    expect(out.messages.at(-1)?.id).toBe('m_29');
+    expect(out.messages.length).toBeLessThan(100);
+    expect(out.messages.at(-1)?.id).toBe('m_99');
   });
 });
 

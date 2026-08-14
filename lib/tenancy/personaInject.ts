@@ -21,8 +21,8 @@
  *   4. No sessionId and no personaId → `undefined` (behaviour identical to today).
  *
  * The snapshot cap is enforced by the server record validator
- * (`validateMetaFields`: `personaSnapshot` ≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 16 KiB,
- * whole `meta` ≤ `HARNESS_SESSION_MAX_META_BYTES` = 20 KiB); an oversized record
+ * (`validateMetaFields`: `personaSnapshot` ≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 256 KiB,
+ * whole `meta` ≤ `HARNESS_SESSION_MAX_META_BYTES` = 1 MiB); an oversized record
  * simply never persists (fail-open — still injected this turn), never a sticky 400.
  *
  * The session store seam is injected so this module never constructs I/O (di-gate).

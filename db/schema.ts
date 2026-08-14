@@ -402,10 +402,11 @@ export const userSkills = pgTable(
     /** Short summary used by /api/skills + find_skill; may be empty. */
     description: text('description').notNull().default(''),
     /**
-     * parent-locked charset: ^[a-z][a-z0-9_-]{0,63}$ — lowercase start; digits,
+     * parent-locked charset: ^[a-z][a-z0-9_-]{0,127}$ — lowercase start; digits,
      * underscore AND hyphen allowed — so kebab-case skills like `create-plan`
-     * store and match the phase-3 slash parser's identical RE. Do NOT copy
-     * personas' underscore-only RE.
+     * store and match the phase-3 slash parser's identical RE (up to 128 chars,
+     * generous-cap #507). Do NOT copy personas' underscore-only RE (persona slugs
+     * stay ≤ 64).
      */
     slug: text('slug').notNull(),
     /** Plaintext non-secret skill body. */

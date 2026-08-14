@@ -106,7 +106,7 @@ function CreateForm() {
       </Field>
       <Field
         label="Description"
-        hint="One-line summary shown in discovery lookups (≤ 500 chars)."
+        hint="One-line summary shown in discovery lookups (≤ 20,000 chars)."
       >
         <input
           name="description"
@@ -119,7 +119,7 @@ function CreateForm() {
       </Field>
       <Field
         label="Body"
-        hint="The playbook injected when the skill is attached (≤ 16 KiB). Saved server-side."
+        hint="The playbook injected when the skill is attached (≤ 4 MiB). Saved server-side."
       >
         <textarea
           name="body"

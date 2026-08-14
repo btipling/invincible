@@ -172,8 +172,8 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
   });
 
   it('rejects oversized meta (size cap), accepts opaque scalar values without sniffing', () => {
-    // Whole-meta cap raised 4096 → 20480 (parent #485 lock): a single <= cap string is fine,
-    // an over-budget combined meta JSON fails closed.
+    // Generous-cap rework #507 (20480 → 1 MiB total, 16 KiB → 256 KiB snapshot): a single
+    // <= cap string is fine, an over-budget combined meta JSON fails closed.
     expect(
       validateSessionRecord(
         makeRecord({
@@ -214,7 +214,7 @@ describe('validateMetaFields — P1 session-carrier semantic checks (#452)', () 
     expect(validateMetaFields({ activeSandboxId: 'sbx_abc123' }).ok).toBe(true);
     expect(validateMetaFields({ activeSandboxId: '' }).ok).toBe(true);
     expect(validateMetaFields({}).ok).toBe(true);
-    for (const bad of ['a:b', '*', 'a?b', 'a|b', 'x'.repeat(129), 42 as never]) {
+    for (const bad of ['a:b', '*', 'a?b', 'a|b', 'x'.repeat(513), 42 as never]) {
       expect(validateMetaFields({ activeSandboxId: bad as never }).ok).toBe(false);
     }
   });
@@ -239,7 +239,7 @@ describe('meta persona keys (parent #485 lock, phase 1 #486)', () => {
     expect(validateMetaFields({ personaId: 'pers_abc-123' }).ok).toBe(true);
     expect(validateMetaFields({}).ok).toBe(true);
     expect(validateMetaFields({ personaId: undefined }).ok).toBe(true);
-    for (const bad of ['a:b', '*', 'a?b', 'x'.repeat(129), 42 as never]) {
+    for (const bad of ['a:b', '*', 'a?b', 'x'.repeat(513), 42 as never]) {
       expect(validateMetaFields({ personaId: bad as never }).ok).toBe(false);
     }
   });
@@ -260,7 +260,7 @@ describe('meta persona keys (parent #485 lock, phase 1 #486)', () => {
   });
 
   it('personaSnapshot counts toward the raised whole-meta budget and replays near the cap', () => {
-    // A near-cap snapshot (16 KiB) fits the raised total (20480) alongside a personaId.
+    // A near-cap snapshot (256 KiB) fits the raised total (1 MiB) alongside a personaId.
     const near = 'x'.repeat(PERSONA_SNAPSHOT_MAX_BYTES);
     const res = validateSessionRecord(
       makeRecord({ meta: { personaId: 'pers_1', personaSnapshot: near } as HarnessSessionRecord['meta'] }),
@@ -278,9 +278,9 @@ describe('meta persona keys (parent #485 lock, phase 1 #486)', () => {
     ).toBe(false);
   });
 
-  it('constants are locked to the parent budget (16 KiB snapshot + 20 KiB total)', () => {
-    expect(PERSONA_SNAPSHOT_MAX_BYTES).toBe(16_384);
-    expect(HARNESS_SESSION_MAX_META_BYTES).toBe(20_480);
+  it('constants are locked to the generous budget (256 KiB snapshot + 1 MiB total)', () => {
+    expect(PERSONA_SNAPSHOT_MAX_BYTES).toBe(262_144);
+    expect(HARNESS_SESSION_MAX_META_BYTES).toBe(1_048_576);
     // Internal consistency: a full snapshot + reserved headroom must fit the total.
     expect(PERSONA_SNAPSHOT_MAX_BYTES).toBeLessThan(HARNESS_SESSION_MAX_META_BYTES);
   });
