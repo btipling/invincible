@@ -13,7 +13,8 @@ function isApiProtected(pathname: string): boolean {
     pathname === '/api/agent' ||
     pathname === '/api/models' ||
     pathname === '/api/sandboxes' ||
-    pathname === '/api/personas'
+    pathname === '/api/personas' ||
+    pathname === '/api/skills'
   );
 }
 
@@ -102,6 +103,7 @@ export const config = {
     '/api/models',
     '/api/sandboxes',
     '/api/personas',
+    '/api/skills',
     '/api/sessions',
     '/api/sessions/:path*',
   ],
