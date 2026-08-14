@@ -63,8 +63,32 @@ export type SessionSnapshot = {
   attachedSlugs?: string[];
 };
 
-import { isRedisSafeOpaqueId, sanitizeSessionCwd } from './sessionCloudCaps';
+import {
+  SKILL_SLUG_RE,
+  isRedisSafeOpaqueId,
+  sanitizeSessionCwd,
+} from './sessionCloudCaps';
 export { isRedisSafeOpaqueId, sanitizeSessionCwd } from './sessionCloudCaps';
+
+/**
+ * Sanitize a locally-persisted `attachedSlugs` array. LocalStorage is a plain
+ * JSON mirror of the snapshot (no server meta wire form), so unlike the cloud
+ * parse (which reads the JSON-array-string `meta.attachedSkills`), this must
+ * validate an already-array value directly: keep only slugs matching
+ * `SKILL_SLUG_RE`, de-duplicate (insertion order preserved), drop poison.
+ * Returns `undefined` for a non-array / invalid array so the host never mirrors
+ * a poisoned local set (`review #526 re-run 3` local-parse residual).
+ */
+export function sanitizeAttachedSlugs(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: string[] = [];
+  for (const s of value) {
+    if (typeof s === 'string' && SKILL_SLUG_RE.test(s) && !out.includes(s)) {
+      out.push(s);
+    }
+  }
+  return out;
+}
 
 export interface SessionStore {
   readonly kind: 'memory' | 'localStorage' | string;
@@ -138,12 +162,21 @@ export class LocalStorageSessionStore implements SessionStore {
         cwd?: unknown;
         activeSandboxId?: unknown;
         personaId?: unknown;
+        attachedSlugs?: unknown;
       };
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) return null;
       // Tolerant: keep only safe workspace-relative cwd strings (parent #270 / phase 2),
-      // a Redis-safe `activeSandboxId` (P1/GAP-1, #452), and a Redis-safe `personaId`
-      // (phase 3 #488); a bad local value can't pin.
-      const { cwd: rawCwd, activeSandboxId: rawSandbox, personaId: rawPersona, ...rest } = data;
+      // a Redis-safe `activeSandboxId` (P1/GAP-1, #452), a Redis-safe `personaId`
+      // (phase 3 #488), and a slug-set-valid `attachedSlugs` (phase 2 #517); a bad
+      // local value can't pin. `attachedSlugs` is sanitized so a poisoned local
+      // array is dropped rather than spread raw (review #526 re-run 3 residual).
+      const {
+        cwd: rawCwd,
+        activeSandboxId: rawSandbox,
+        personaId: rawPersona,
+        attachedSlugs: rawAttachedSlugs,
+        ...rest
+      } = data;
       const cwd = sanitizeSessionCwd(rawCwd);
       const activeSandboxId =
         typeof rawSandbox === 'string' && rawSandbox && isRedisSafeOpaqueId(rawSandbox)
@@ -153,10 +186,13 @@ export class LocalStorageSessionStore implements SessionStore {
         typeof rawPersona === 'string' && rawPersona && isRedisSafeOpaqueId(rawPersona)
           ? rawPersona
           : undefined;
+      const attachedSlugs = sanitizeAttachedSlugs(rawAttachedSlugs);
       const out: SessionSnapshot = { ...rest } as SessionSnapshot;
       if (cwd !== undefined) out.cwd = cwd;
       if (activeSandboxId !== undefined) out.activeSandboxId = activeSandboxId;
       if (personaId !== undefined) out.personaId = personaId;
+      if (attachedSlugs !== undefined) out.attachedSlugs = attachedSlugs;
+      else delete out.attachedSlugs;
       return out;
     } catch {
       return null;

@@ -321,7 +321,17 @@ export async function POST(req: Request): Promise<Response> {
     );
     if (!byok.ok) {
       const { status, error } = mapByokResolveFailure(byok.reason);
-      return Response.json({ error }, { status });
+      // Phase 2 (#517 / review residual): a BYOK 4xx AFTER skill resolution must
+      // still carry the current sticky set, so the host folds it before persisting
+      // — otherwise a host PUT without slugs can wipe the blob copy of a skill that
+      // was attached this turn (the envelope mirror still has it, but GET may not).
+      return Response.json(
+        {
+          error,
+          ...(skills?.attachedSkills ? { attachedSkills: skills.attachedSkills } : {}),
+        },
+        { status },
+      );
     }
     redactList = [
       ...byok.secretsToRedact,
@@ -552,7 +562,15 @@ export async function POST(req: Request): Promise<Response> {
     const { text, toolTrace, cwd, sandboxId } = await runAgent(finalRunParams);
 
     if (!text) {
-      return Response.json({ error: 'Empty model response.' }, { status: 502 });
+      return Response.json(
+        {
+          error: 'Empty model response.',
+          // Fold-before-persist (fail/cancel): the 502 after resolve still carries
+          // the sticky set so the host never wipes a skill attached this turn.
+          ...(skills?.attachedSkills ? { attachedSkills: skills.attachedSkills } : {}),
+        },
+        { status: 502 },
+      );
     }
 
     return Response.json({
@@ -565,7 +583,18 @@ export async function POST(req: Request): Promise<Response> {
     });
   } catch (err) {
     if (isAbortError(err)) {
-      return Response.json({ error: 'Request cancelled.' }, { status: 499 });
+      return Response.json(
+        {
+          error: 'Request cancelled.',
+          // Phase 2 (#517 / review residual): a 499 abort after resolve must still
+          // carry the sticky set so the host folds it before persisting — never a
+          // host PUT that wipes a skill attached this turn (fold-before-persist
+          // incl. fail/cancel). For the stream path the `skill_attached` events
+          // already folded it; this guards the JSON (non-stream) abort path.
+          ...(skills?.attachedSkills ? { attachedSkills: skills.attachedSkills } : {}),
+        },
+        { status: 499 },
+      );
     }
     const { status, error, code } = mapInferenceError(err);
     const safe =

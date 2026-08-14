@@ -300,6 +300,25 @@ describe('parseCloudSessionSnapshot', () => {
     expect(parseCloudSessionSnapshot({ id: 'x', updatedAt: 1, messages: 'nope' })).toBeNull();
   });
 
+  it('accepts and keeps a kind-7 skill_attached row (review #526 re-run 3 Blocker)', () => {
+    // After `/foo`, the host PUTs the display-only `skill_attached` kind-7 row.
+    // The rollforward GET / envelope transcript GET / 409-adopt parser MUST accept
+    // it (and keep the row) or the whole record parses to null → `notfound`/`error`,
+    // and the session looks gone on reload / device-switch / adopt.
+    const body = {
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [
+        { id: 'm1', role: 'user', text: 'prompt', at: 1 },
+        { id: 'm2', role: 'skill_attached', text: 'Skill attached: create-plan', at: 2 },
+      ],
+    };
+    const out = parseCloudSessionSnapshot(body);
+    expect(out).not.toBeNull();
+    expect(out?.messages.map((m) => m.role)).toEqual(['user', 'skill_attached']);
+    expect(out?.messages[1]?.text).toBe('Skill attached: create-plan');
+  });
+
   it('rejects a record whose id differs from the resource id (confused-deputy)', () => {
     const body = {
       id: 'other-id',

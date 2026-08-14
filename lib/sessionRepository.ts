@@ -23,7 +23,19 @@ import {
 } from './sessionCloudCaps';
 import type { SessionMessage, SessionRole, SessionSnapshot } from './sessionStore';
 
-const SESSION_ROLES = new Set<SessionRole>(['user', 'assistant', 'system', 'error', 'tool_run']);
+// Must stay in sync with the server-side role allowlist (`harnessSessions.ts`):
+// a kind-7 `skill_attached` row rides the transcript the host PUTs after `/foo`,
+// so the rollforward/envelope GET + 409-adopt parser must accept it or the whole
+// record parses to `null` (session looks gone). Server + local already allow the
+// role (`SessionRole`); this is the host-side contact surface (review #526 re-run 3).
+const SESSION_ROLES = new Set<SessionRole>([
+  'user',
+  'assistant',
+  'system',
+  'error',
+  'tool_run',
+  'skill_attached',
+]);
 
 const DEFAULT_PATH = '/api/sessions';
 
