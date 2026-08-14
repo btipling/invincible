@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   isObjectIdBoundTo,
   isTranscriptObjectId,
@@ -7,6 +7,21 @@ import {
   type ObjectScope,
 } from './blobStore';
 import { MemoryBlobTranscriptStore, VercelBlobTranscriptStore } from './blobStores';
+
+// Stub the Vercel Blob SDK so the Vercel store can be exercised without credentials
+// or network. `issueSignedToken` / `presignUrl` are spied on so a test can assert the
+// `maximumSizeInBytes` ceiling is forwarded to BOTH (the object-host enforcement path).
+vi.mock('@vercel/blob', () => ({
+  issueSignedToken: vi.fn(async () => ({
+    clientSigningToken: 'client-signing-token',
+    delegationToken: 'delegation-token',
+    validUntil: Date.now() + 60 * 60 * 1000,
+  })),
+  presignUrl: vi.fn(async () => ({ presignedUrl: 'https://blob.example/upload' })),
+}));
+import { issueSignedToken, presignUrl } from '@vercel/blob';
+
+const EIGHT_MIB = 8 * 1024 * 1024;
 
 const SCOPE_A: ObjectScope = { tenantId: 'tenant-a', userId: 'user-a', sessionId: 'abc' };
 const SCOPE_B: ObjectScope = { tenantId: 'tenant-a', userId: 'user-b', sessionId: 'xyz' };
@@ -17,7 +32,7 @@ const SCOPE_B: ObjectScope = { tenantId: 'tenant-a', userId: 'user-b', sessionId
 describe('blobStore — transcript object seam', () => {
   it('isTranscriptObjectId is Redis-safe opaque (charset for meta.transcriptPointer)', () => {
     expect(isTranscriptObjectId('tx_abc123-9')).toBe(true);
-    for (const bad of ['*', 'a:b', 'has space', 'a/b', 'x'.repeat(129), 7, null, undefined]) {
+    for (const bad of ['*', 'a:b', 'has space', 'a/b', 'x'.repeat(513), 7, null, undefined]) {
       expect(isTranscriptObjectId(bad)).toBe(false);
     }
   });
@@ -53,7 +68,7 @@ describe('blobStore — transcript object seam', () => {
   it('MemoryBlobTranscriptStore mints a scoped upload URL + session-bound objectId and pages a read URL', async () => {
     const s = new MemoryBlobTranscriptStore();
     expect(s.kind).toBe('memory');
-    const minted = await s.mintUpload({ scope: SCOPE_A });
+    const minted = await s.mintUpload({ scope: SCOPE_A, maxBytes: 8 * 1024 * 1024 });
     expect(typeof minted.uploadUrl).toBe('string');
     expect(minted.uploadUrl).toContain('memory://upload/');
     expect(isTranscriptObjectId(minted.objectId)).toBe(true);
@@ -86,5 +101,45 @@ describe('blobStore — transcript object seam', () => {
     await expect(vercel.mintUpload({} as never)).rejects.toThrow(
       /requires an ownership scope/,
     );
+  });
+
+  it('mintUpload REQUIRES a positive integer maxBytes ceiling — omitting/invalid throws (review #525 Blob residual)', async () => {
+    // `maxBytes` is never defaulted: an object without a byte ceiling reintroduces the
+    // client-honor residual this seam exists to retire. Both impls throw on omission
+    // / non-positive input.
+    const memory = new MemoryBlobTranscriptStore();
+    await expect(
+      memory.mintUpload({ scope: SCOPE_A, maxBytes: undefined } as never),
+    ).rejects.toThrow(/requires a positive integer maxBytes ceiling/);
+    await expect(
+      memory.mintUpload({ scope: SCOPE_A, maxBytes: 0 }),
+    ).rejects.toThrow(/requires a positive integer maxBytes ceiling/);
+
+    const vercel = new VercelBlobTranscriptStore({ token: 'rw-token' });
+    await expect(
+      vercel.mintUpload({ scope: SCOPE_A, maxBytes: undefined } as never),
+    ).rejects.toThrow(/requires a positive integer maxBytes ceiling/);
+    expect(issueSignedToken).not.toHaveBeenCalled();
+  });
+
+  it('VercelBlobTranscriptStore forwards maximumSizeInBytes to issueSignedToken AND presignUrl (object-host server-side ceiling)', async () => {
+    vi.mocked(issueSignedToken).mockClear();
+    vi.mocked(presignUrl).mockClear();
+
+    const vercel = new VercelBlobTranscriptStore({ token: 'rw-token' });
+    const minted = await vercel.mintUpload({ scope: SCOPE_A, maxBytes: EIGHT_MIB });
+
+    expect(minted.uploadUrl).toBeTruthy();
+    // issueSignedToken encodes the ceiling in the delegation (object-host enforced).
+    expect(issueSignedToken).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(issueSignedToken).mock.calls[0]![0]).toMatchObject({
+      maximumSizeInBytes: EIGHT_MIB,
+    });
+    // presignUrl mirrors it on the signed URL (vercel-blob-maximum-size-in-bytes), so
+    // the CDN enforces the same ceiling on the client→Blob PUT.
+    expect(presignUrl).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(presignUrl).mock.calls[0]![1]).toMatchObject({
+      maximumSizeInBytes: EIGHT_MIB,
+    });
   });
 });

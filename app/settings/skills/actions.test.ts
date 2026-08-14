@@ -3,9 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 /**
  * Node-env server-action unit tests (no RTL/jsdom — the repo runs vitest in
  * `environment: 'node'`; sibling Settings pages test actions the same way with
- * mocked DI + auth). These exercise the skills actions end to end against
- * mocked store calls: authz, tenancy, slug dedupe, description-edit mapping,
- * and error handling.
+ * mocked DI + auth). These exercise the small-CRUD skills server actions against
+ * mocked store calls.
+ *
+ * Review #525 skill-wire plan: only the small CRUD (name/description edit via
+ * `updateSkillDetailsAction`, delete via `deleteSkillAction`) stays on server
+ * actions. The 4 MiB body travels measured route handlers (`POST /api/settings/skills`
+ * create-with-body, `PUT /api/settings/skills/:id/body` replace-body) — tested in
+ * `app/api/settings/skills/route.test.ts`, not here.
  */
 describe('settings skills actions', () => {
   const originalEnv = { ...process.env };
@@ -56,15 +61,13 @@ describe('settings skills actions', () => {
 
   function skillStore(overrides: Record<string, unknown> = {}) {
     servicesState.userSkills = {
-      createUserSkill: vi.fn(),
       updateUserSkillSummary: vi.fn(),
-      updateUserSkillBody: vi.fn(),
       deleteUserSkill: vi.fn(),
       ...overrides,
     };
   }
 
-  it('create rejects unauthenticated and never calls the store', async () => {
+  it('details edit rejects unauthenticated and never calls the store', async () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
@@ -72,96 +75,13 @@ describe('settings skills actions', () => {
     mockAuth(null);
     skillStore();
 
-    const { createSkillAction } = await import('./actions');
+    const { updateSkillDetailsAction } = await import('./actions');
     const fd = new FormData();
-    fd.set('name', 'Create PR');
-    fd.set('body', 'You create pull requests.');
-    const r = await createSkillAction({}, fd);
+    fd.set('id', 's1');
+    fd.set('name', 'Alpha');
+    const r = await updateSkillDetailsAction({}, fd);
     expect(r.error).toBe('Authentication required.');
-    expect(servicesState.userSkills.createUserSkill).not.toHaveBeenCalled();
-  });
-
-  it('create derives a unique slug and creates (base slug used)', async () => {
-    tenancyOn();
-    vi.resetModules();
-    vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    mockDi();
-    mockAuth({ id: 'u1' });
-    mockMembership({ ok: true, tenantId: 't1', role: 'owner' });
-    skillStore({
-      createUserSkill: vi.fn(
-        async (input: { name: string; slug: string; body: string }) =>
-          input.slug === 'create_pr'
-            ? { ok: true as const, value: { id: 's1' } }
-            : { ok: false as const, code: 'duplicate_slug', error: 'dup' },
-      ),
-    });
-
-    const { createSkillAction } = await import('./actions');
-    const fd = new FormData();
-    fd.set('name', 'Create PR');
-    fd.set('body', 'You create pull requests.');
-    fd.set('description', 'PR helper');
-    const r = await createSkillAction({}, fd);
-    expect(r.ok).toBe(true);
-    expect(r.id).toBe('s1');
-    expect(servicesState.userSkills.createUserSkill).toHaveBeenCalledWith({
-      userId: 'u1',
-      name: 'Create PR',
-      slug: 'create_pr',
-      body: 'You create pull requests.',
-      description: 'PR helper',
-    });
-  });
-
-  it('create dedupes slug on collision (base taken → _2)', async () => {
-    tenancyOn();
-    vi.resetModules();
-    vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    mockDi();
-    mockAuth({ id: 'u1' });
-    mockMembership({ ok: true, tenantId: 't1', role: 'owner' });
-    const calls: string[] = [];
-    skillStore({
-      createUserSkill: vi.fn(async (input: { slug: string }) => {
-        calls.push(input.slug);
-        return input.slug === 'review'
-          ? { ok: false as const, code: 'duplicate_slug', error: 'dup' }
-          : { ok: true as const, value: { id: 's2' } };
-      }),
-    });
-
-    const { createSkillAction } = await import('./actions');
-    const fd = new FormData();
-    fd.set('name', 'Review');
-    fd.set('body', 'body');
-    const r = await createSkillAction({}, fd);
-    expect(r.ok).toBe(true);
-    expect(r.id).toBe('s2');
-    expect(calls).toEqual(['review', 'review_2']);
-  });
-
-  it('create maps store errors to a friendly message', async () => {
-    tenancyOn();
-    vi.resetModules();
-    vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
-    mockDi();
-    mockAuth({ id: 'u1' });
-    mockMembership({ ok: true, tenantId: 't1', role: 'owner' });
-    skillStore({
-      createUserSkill: vi.fn(async () => ({
-        ok: false as const,
-        code: 'invalid_body',
-        error: 'bad body',
-      })),
-    });
-
-    const { createSkillAction } = await import('./actions');
-    const fd = new FormData();
-    fd.set('name', 'Frontend');
-    fd.set('body', '');
-    const r = await createSkillAction({}, fd);
-    expect(r.error).toMatch(/Body is required/);
+    expect(servicesState.userSkills.updateUserSkillSummary).not.toHaveBeenCalled();
   });
 
   it('update details maps rename + description together via updateUserSkillSummary', async () => {
@@ -192,7 +112,7 @@ describe('settings skills actions', () => {
     );
   });
 
-  it('update body + delete route through the store', async () => {
+  it('delete routes through the store', async () => {
     tenancyOn();
     vi.resetModules();
     vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
@@ -200,31 +120,18 @@ describe('settings skills actions', () => {
     mockAuth({ id: 'u1' });
     mockMembership({ ok: true, tenantId: 't1', role: 'owner' });
     skillStore({
-      updateUserSkillBody: vi.fn(async () => ({
-        ok: true as const,
-        value: { id: 's1' },
-      })),
       deleteUserSkill: vi.fn(async () => ({
         ok: true as const,
         value: { id: 's1' },
       })),
     });
 
-    const actions = await import('./actions');
-    const store = servicesState.userSkills;
-
-    const fdBody = new FormData();
-    fdBody.set('id', 's1');
-    fdBody.set('body', 'new-body');
-    const body = await actions.updateSkillBodyAction({}, fdBody);
-    expect(body.ok).toBe(true);
-    expect(store.updateUserSkillBody).toHaveBeenCalledWith('u1', 's1', 'new-body');
-
+    const { deleteSkillAction } = await import('./actions');
     const fdDel = new FormData();
     fdDel.set('id', 's1');
-    const del = await actions.deleteSkillAction({}, fdDel);
+    const del = await deleteSkillAction({}, fdDel);
     expect(del.ok).toBe(true);
-    expect(store.deleteUserSkill).toHaveBeenCalledWith('u1', 's1');
+    expect(servicesState.userSkills.deleteUserSkill).toHaveBeenCalledWith('u1', 's1');
   });
 
   it('update details maps invalid_description and not_found without leaking', async () => {
@@ -248,7 +155,7 @@ describe('settings skills actions', () => {
     fd.set('name', 'Alpha');
     fd.set('description', 'x'.repeat(501));
     const r = await updateSkillDetailsAction({}, fd);
-    expect(r.error).toBe('Description must be at most 500 characters.');
+    expect(r.error).toBe('Description must be at most 2000 characters.');
 
     skillStore({
       updateUserSkillSummary: vi.fn(async () => ({

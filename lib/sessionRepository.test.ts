@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   HARNESS_SESSION_MAX_BODY_BYTES,
+  HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES,
   HARNESS_SESSION_MAX_MSG_BYTES,
 } from './sessionCloudCaps';
 import {
@@ -109,7 +110,7 @@ describe('trimForCloudPut', () => {
     expect(inBounds.meta).toEqual({ logicalCwd: 'a/c' });
   });
 
-  it('keeps message count; body trim drops oldest only when over ~2 MiB', () => {
+  it('keeps message count; body trim drops oldest when over the body cap', () => {
     const messages = Array.from({ length: 50 }, (_, i) => ({
       id: `m_${i}`,
       role: 'user' as const,
@@ -135,23 +136,53 @@ describe('trimForCloudPut', () => {
     );
   });
 
-  it('drops oldest until body under ~2 MiB', () => {
-    const chunk = 'x'.repeat(100_000);
-    const messages = Array.from({ length: 30 }, (_, i) => ({
+  it('default trim targets the Function-safe body cap (rollforward stay ≤ wire-safe, review #525 Blocker)', () => {
+    // Each msg text truncates to HARNESS_SESSION_MAX_MSG_BYTES; 40 msgs ≈ 10.5 MiB,
+    // far over the default rollforward Function-safe cap (2 MiB).
+    const chunk = 'x'.repeat(1_000_000);
+    const messages = Array.from({ length: 40 }, (_, i) => ({
       id: `m_${i}`,
       role: 'user' as const,
       text: chunk,
       at: i,
     }));
+    // Default (rollforward) trim must land under HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES
+    // so a one-shot full-record PUT to `/api/sessions/:id` can never exceed the
+    // 4.5 MB Vercel Function payload ceiling (parent #512/#514 lock).
     const out = trimForCloudPut(snap({ messages }));
     const body = JSON.stringify({
       id: out.id,
       updatedAt: out.updatedAt,
       messages: out.messages,
     });
+    expect(utf8ByteLength(body)).toBeLessThanOrEqual(HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES);
+    expect(out.messages.length).toBeLessThan(40);
+    expect(out.messages.at(-1)?.id).toBe('m_39');
+  });
+
+  it('explicit object cap lets the larger Blob-object ceiling through (envelope path, review #525 Blocker)', () => {
+    // The envelope carrier ferries the transcript object client→Blob (never through a
+    // Function), so its trim target is the generous 8 MiB OBJECT ceiling — legal because
+    // it is not a Function body.
+    const chunk = 'x'.repeat(1_000_000);
+    const messages = Array.from({ length: 40 }, (_, i) => ({
+      id: `m_${i}`,
+      role: 'user' as const,
+      text: chunk,
+      at: i,
+    }));
+    const out = trimForCloudPut(snap({ messages }), HARNESS_SESSION_MAX_BODY_BYTES);
+    const body = JSON.stringify({
+      id: out.id,
+      updatedAt: out.updatedAt,
+      messages: out.messages,
+    });
+    // Under the 8 MiB object ceiling but OVER the 2 MiB Function-safe cap — proving the
+    // split is real: a large body is only legal as a Blob object, never a Function body.
     expect(utf8ByteLength(body)).toBeLessThanOrEqual(HARNESS_SESSION_MAX_BODY_BYTES);
-    expect(out.messages.length).toBeLessThan(30);
-    expect(out.messages.at(-1)?.id).toBe('m_29');
+    expect(utf8ByteLength(body)).toBeGreaterThan(HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES);
+    expect(out.messages.length).toBeLessThan(40);
+    expect(out.messages.at(-1)?.id).toBe('m_39');
   });
 });
 

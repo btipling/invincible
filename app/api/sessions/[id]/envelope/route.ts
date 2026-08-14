@@ -53,7 +53,7 @@ function invalidIdResponse(id: string | undefined): Response | null {
   }
   if (!isRedisSafeOpaqueId(id)) {
     return Response.json(
-      { error: 'id must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).', code: 'INVALID_ID' },
+      { error: 'id must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).', code: 'INVALID_ID' },
       { status: 400 },
     );
   }

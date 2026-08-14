@@ -19,7 +19,7 @@
  *  - **key ↔ record binding** — `put` throws if `key.tenantId/userId/sessionId`
  *    differ from `record.tenantId/userId/id`, closing the confused-deputy footgun.
  *  - **Redis-safe opaque charset** — `tenantId`/`userId`/`id` are restricted to
- *    `[A-Za-z0-9_-]{1,128}` so `KEYS`/prefix globs (`* : ? [ ]`) can never be
+ *    `[A-Za-z0-9_-]{1,512}` so `KEYS`/prefix globs (`* : ? [ ]`) can never be
  *    smuggled through an id; the `{tenant}:{user}:` list prefix stays unambiguous.
  *  - **upsert enforces stored `createdAt`** at the store, not just by caller discipline.
  *  - **trust-but-verify on read** — `get`/`list` re-validate JSON read from Redis AND
@@ -32,8 +32,10 @@
  *    multi-device concurrency. Do not treat this store as an atomic compare-and-set.
  */
 import {
+  HARNESS_SESSION_MAX_ATTACHED_SKILLS,
   HARNESS_SESSION_MAX_META_BYTES,
   PERSONA_SNAPSHOT_MAX_BYTES,
+  SKILL_SLUG_RE,
   isRedisSafeOpaqueId,
   sanitizeSessionCwd,
 } from '../sessionCloudCaps';
@@ -56,6 +58,7 @@ export const RESERVED_META_KEYS = [
   'personaId',
   'personaSnapshot',
   'transcriptPointer',
+  'attachedSkills',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -272,21 +275,21 @@ export function validateSessionRecordKey(
     return {
       ok: false,
       code: 'invalid_tenant',
-      error: 'tenantId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      error: 'tenantId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     };
   }
   if (!isRedisSafeOpaqueId(o.userId)) {
     return {
       ok: false,
       code: 'invalid_user',
-      error: 'userId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      error: 'userId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     };
   }
   if (!isRedisSafeOpaqueId(o.sessionId)) {
     return {
       ok: false,
       code: 'invalid_id',
-      error: 'sessionId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      error: 'sessionId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     };
   }
   return {
@@ -312,14 +315,14 @@ export function validateSessionListScope(
     return {
       ok: false,
       code: 'invalid_tenant',
-      error: 'tenantId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      error: 'tenantId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     };
   }
   if (!isRedisSafeOpaqueId(o.userId)) {
     return {
       ok: false,
       code: 'invalid_user',
-      error: 'userId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      error: 'userId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     };
   }
   return { ok: true, value: { tenantId: o.tenantId, userId: o.userId } };
@@ -410,7 +413,7 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
  *   shared `sanitizeSessionCwd` (rejects host-absolute `/`, UNC `\\`, drive `C:`, and
  *   C0/DEL controls); stored normalized (trimmed).
  * - `activeSandboxId`, when present and non-empty, must be Redis-safe opaque
- *   (`^[A-Za-z0-9_-]{1,128}$`); empty/absent = unset.
+ *   (`^[A-Za-z0-9_-]{1,512}$`); empty/absent = unset.
  */
 export function validateMetaFields(
   meta: HarnessSessionMeta,
@@ -444,7 +447,7 @@ export function validateMetaFields(
         ok: false,
         code: 'invalid_meta',
         error:
-          'meta.activeSandboxId must be empty or a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+          'meta.activeSandboxId must be empty or a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
       };
     }
   }
@@ -454,7 +457,7 @@ export function validateMetaFields(
         ok: false,
         code: 'invalid_meta',
         error:
-          'meta.personaId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+          'meta.personaId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
       };
     }
   }
@@ -487,8 +490,59 @@ export function validateMetaFields(
         ok: false,
         code: 'invalid_meta',
         error:
-          'meta.transcriptPointer must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+          'meta.transcriptPointer must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
       };
+    }
+  }
+  // Phase 1 (#514): `meta.attachedSkills` is a JSON-encoded string of skill slugs
+  // (session-sticky attach). The envelope stays scalar-only, so a raw array is
+  // REJECTED here (fail closed) — a client must send the serialized string, and
+  // the decoded value must be a JSON array of strings, each a VALID skill slug
+  // (matches `SKILL_SLUG_RE`, the client-safe single source re-used by
+  // `lib/tenancy/userSkills.ts` — layering: sessionStore ↛ userSkills), with a
+  // hard count cap (`HARNESS_SESSION_MAX_ATTACHED_SKILLS`). A malformed/foreign
+  // slug or an over-long list fails closed. Skills are re-resolved server-side
+  // per turn; the body is never snapshotted into `meta`.
+  if (out.attachedSkills !== undefined) {
+    if (typeof out.attachedSkills !== 'string') {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error: 'meta.attachedSkills must be a JSON-encoded string of slugs.',
+      };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(out.attachedSkills);
+    } catch {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error: 'meta.attachedSkills must be a JSON-encoded string of slugs.',
+      };
+    }
+    if (!Array.isArray(parsed)) {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error: 'meta.attachedSkills must decode to a JSON array of slugs.',
+      };
+    }
+    if (parsed.length > HARNESS_SESSION_MAX_ATTACHED_SKILLS) {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error: `meta.attachedSkills must contain at most ${HARNESS_SESSION_MAX_ATTACHED_SKILLS} slugs.`,
+      };
+    }
+    for (const slug of parsed) {
+      if (typeof slug !== 'string' || !SKILL_SLUG_RE.test(slug)) {
+        return {
+          ok: false,
+          code: 'invalid_meta',
+          error: 'meta.attachedSkills must decode to a JSON array of valid skill slugs.',
+        };
+      }
     }
   }
   return { ok: true, value: out };
@@ -511,14 +565,14 @@ export function validateSessionRecord(input: unknown): SessionStoreResult<Harnes
     return {
       ok: false,
       code: 'invalid_tenant',
-      error: 'tenantId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      error: 'tenantId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     };
   }
   if (!isRedisSafeOpaqueId(o.userId)) {
     return {
       ok: false,
       code: 'invalid_user',
-      error: 'userId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      error: 'userId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     };
   }
   if (typeof o.createdAt !== 'number' || !Number.isSafeInteger(o.createdAt) || o.createdAt < 0) {
@@ -545,7 +599,7 @@ export function validateSessionRecord(input: unknown): SessionStoreResult<Harnes
     return {
       ok: false,
       code: 'invalid_id',
-      error: 'id must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      error: 'id must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     };
   }
 
@@ -595,21 +649,21 @@ export function validateSessionEnvelope(
     return {
       ok: false,
       code: 'invalid_id',
-      error: 'id must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      error: 'id must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     };
   }
   if (!isRedisSafeOpaqueId(o.tenantId)) {
     return {
       ok: false,
       code: 'invalid_tenant',
-      error: 'tenantId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      error: 'tenantId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     };
   }
   if (!isRedisSafeOpaqueId(o.userId)) {
     return {
       ok: false,
       code: 'invalid_user',
-      error: 'userId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      error: 'userId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
     };
   }
   if (

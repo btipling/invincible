@@ -230,7 +230,7 @@ describe('/api/sessions', () => {
 
   it('POST non-Redis-safe personaId → 400 INVALID_PERSONA_ID', async () => {
     const { POST } = await loadAuthedRoute();
-    for (const bad of ['a:b', 'has space', 'x'.repeat(200)]) {
+    for (const bad of ['a:b', 'has space', 'x'.repeat(513)]) {
       const res = await POST(
         new Request('http://localhost/api/sessions', {
           method: 'POST',

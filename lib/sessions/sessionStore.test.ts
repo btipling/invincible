@@ -14,8 +14,14 @@ import {
   sessionPrefix,
 } from './sessionStore';
 import {
+  HARNESS_SESSION_MAX_ATTACHED_SKILLS,
+  HARNESS_SESSION_MAX_BODY_BYTES,
+  HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES,
   HARNESS_SESSION_MAX_META_BYTES,
+  HARNESS_SESSION_MAX_MSG_BYTES,
   PERSONA_SNAPSHOT_MAX_BYTES,
+  REDIS_SAFE_OPAQUE_ID_MAX,
+  REDIS_SAFE_OPAQUE_ID_RE,
 } from '../sessionCloudCaps';
 import { MemorySessionStore } from './memorySessionStore';
 import {
@@ -163,9 +169,12 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'personaId',
       'personaSnapshot',
       'transcriptPointer',
+      'attachedSkills',
     ]);
     for (const k of RESERVED_META_KEYS) {
-      const rawMeta: unknown = { [k]: 'x' };
+      // `attachedSkills` is a JSON-encoded string; use a valid value so the
+      // reserved-key acceptance loop passes for every key.
+      const rawMeta: unknown = { [k]: k === 'attachedSkills' ? '[]' : 'x' };
       const res = validateSessionRecord(
         makeRecord({ meta: rawMeta as HarnessSessionRecord['meta'] }),
       );
@@ -218,7 +227,7 @@ describe('validateMetaFields — P1 session-carrier semantic checks (#452)', () 
     expect(validateMetaFields({ activeSandboxId: 'sbx_abc123' }).ok).toBe(true);
     expect(validateMetaFields({ activeSandboxId: '' }).ok).toBe(true);
     expect(validateMetaFields({}).ok).toBe(true);
-    for (const bad of ['a:b', '*', 'a?b', 'a|b', 'x'.repeat(129), 42 as never]) {
+    for (const bad of ['a:b', '*', 'a?b', 'a|b', 'x'.repeat(513), 42 as never]) {
       expect(validateMetaFields({ activeSandboxId: bad as never }).ok).toBe(false);
     }
   });
@@ -243,7 +252,7 @@ describe('meta persona keys (parent #485 lock, phase 1 #486)', () => {
     expect(validateMetaFields({ personaId: 'pers_abc-123' }).ok).toBe(true);
     expect(validateMetaFields({}).ok).toBe(true);
     expect(validateMetaFields({ personaId: undefined }).ok).toBe(true);
-    for (const bad of ['a:b', '*', 'a?b', 'x'.repeat(129), 42 as never]) {
+    for (const bad of ['a:b', '*', 'a?b', 'x'.repeat(513), 42 as never]) {
       expect(validateMetaFields({ personaId: bad as never }).ok).toBe(false);
     }
   });
@@ -264,7 +273,7 @@ describe('meta persona keys (parent #485 lock, phase 1 #486)', () => {
   });
 
   it('personaSnapshot counts toward the raised whole-meta budget and replays near the cap', () => {
-    // A near-cap snapshot (16 KiB) fits the raised total (20480) alongside a personaId.
+    // A near-cap snapshot fits the raised 1 MiB total alongside a personaId.
     const near = 'x'.repeat(PERSONA_SNAPSHOT_MAX_BYTES);
     const res = validateSessionRecord(
       makeRecord({ meta: { personaId: 'pers_1', personaSnapshot: near } as HarnessSessionRecord['meta'] }),
@@ -282,11 +291,26 @@ describe('meta persona keys (parent #485 lock, phase 1 #486)', () => {
     ).toBe(false);
   });
 
-  it('constants are locked to the parent budget (16 KiB snapshot + 20 KiB total)', () => {
-    expect(PERSONA_SNAPSHOT_MAX_BYTES).toBe(16_384);
-    expect(HARNESS_SESSION_MAX_META_BYTES).toBe(20_480);
+  it('constants are locked to the generous #514 budget (512 KiB snapshot + 1 MiB total)', () => {
+    expect(PERSONA_SNAPSHOT_MAX_BYTES).toBe(512 * 1024);
+    expect(HARNESS_SESSION_MAX_META_BYTES).toBe(1024 * 1024);
     // Internal consistency: a full snapshot + reserved headroom must fit the total.
     expect(PERSONA_SNAPSHOT_MAX_BYTES).toBeLessThan(HARNESS_SESSION_MAX_META_BYTES);
+  });
+
+  it('caps are locked to the generous #514 budget (8 MiB object, 2 MiB Function body, 262144 msg, opaque-id 512/RE)', () => {
+    // 8 MiB body cap = Blob transcript-object ceiling (client→Blob), parent #512 lock.
+    expect(HARNESS_SESSION_MAX_BODY_BYTES).toBe(8 * 1024 * 1024);
+    // Function-carried full-record body is a SEPARATE wire-safe cap (≤ 4.5 MB ceiling)
+    // so a generous object cap can never re-enable a one-shot Function >4.5 MB body.
+    expect(HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES).toBe(2 * 1024 * 1024);
+    expect(HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES).toBeLessThan(4.5 * 1024 * 1024);
+    expect(HARNESS_SESSION_MAX_MSG_BYTES).toBe(262_144); // ring msg cap unchanged
+    expect(REDIS_SAFE_OPAQUE_ID_MAX).toBe(512);
+    expect(REDIS_SAFE_OPAQUE_ID_RE.source).toContain('{1,512}');
+    // a 512-char opaque id is accepted; 513 rejected
+    expect(isRedisSafeOpaqueId('a'.repeat(512))).toBe(true);
+    expect(isRedisSafeOpaqueId('a'.repeat(513))).toBe(false);
   });
 });
 
@@ -568,13 +592,46 @@ describe('envelope carrier (phase 0 #515)', () => {
   it('meta accepts the reserved transcriptPointer key; rejects non-Redis-safe pointers', () => {
     expect(validateMeta({ transcriptPointer: 'tx_abc123' }).ok).toBe(true);
     expect(validateMetaFields({ transcriptPointer: 'tx_abc123' }).ok).toBe(true);
-    for (const bad of ['a:b', '*', 'has space', 'x'.repeat(129), 7 as never]) {
+    for (const bad of ['a:b', '*', 'has space', 'x'.repeat(513), 7 as never]) {
       expect(validateMetaFields({ transcriptPointer: bad as never }).ok).toBe(false);
     }
     const rec = makeRecord({ meta: { transcriptPointer: 'tx_abc123' } });
     const res = validateSessionRecord(rec);
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.value.meta.transcriptPointer).toBe('tx_abc123');
+  });
+
+  it('meta.accepts attachedSkills as a JSON-encoded string of slugs (#514)', () => {
+    expect(validateMeta({ attachedSkills: ["create-plan"] }).ok).toBe(false);
+    expect(validateMeta({ attachedSkills: '["create-plan","v11"]' }).ok).toBe(true);
+    expect(validateMetaFields({ attachedSkills: '["create-plan","v11"]' }).ok).toBe(true);
+    // raw array (scalar-only envelope) fails closed
+    expect(validateMetaFields({ attachedSkills: ['"create-plan"' ] as never }).ok).toBe(false);
+    // non-array / malformed / empty-slug JSON fails closed
+    for (const bad of ['not-json', '{}', '"just-a-string"', '[1]', '[""]', '   ']) {
+      expect(validateMetaFields({ attachedSkills: bad }).ok).toBe(false);
+    }
+    const rec = makeRecord({ meta: { attachedSkills: '["create-plan"]' } });
+    const res = validateSessionRecord(rec);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.value.meta.attachedSkills).toBe('["create-plan"]');
+  });
+
+  it('meta.attachedSkills rejects non-slug strings and over-count (review #525 Minor L1)', () => {
+    // Each entry must be a valid skill slug (`SKILL_SLUG_RE`, single source in caps).
+    expect(validateMetaFields({ attachedSkills: '["../x"]' }).ok).toBe(false);
+    expect(validateMetaFields({ attachedSkills: '["HAS SPACE"]' }).ok).toBe(false);
+    expect(validateMetaFields({ attachedSkills: '["Upper/Case"]' }).ok).toBe(false);
+    expect(validateMetaFields({ attachedSkills: '["has:colon"]' }).ok).toBe(false);
+    expect(validateMetaFields({ attachedSkills: '["-noleadingletter"]' }).ok).toBe(false);
+    expect(validateMetaFields({ attachedSkills: '["A"]' }).ok).toBe(false); // uppercase start illegal
+    // Valid slugs pass (single lowercase letter is a legal slug).
+    expect(validateMetaFields({ attachedSkills: '["a","create-plan","review_2","x9"]' }).ok).toBe(true);
+    // A hard count cap prevents an unbounded slug list from being stuffed into meta.
+    const many = Array.from({ length: HARNESS_SESSION_MAX_ATTACHED_SKILLS + 1 }, (_, i) => `skill_${i}`);
+    expect(validateMetaFields({ attachedSkills: JSON.stringify(many) }).ok).toBe(false);
+    const atCap = Array.from({ length: HARNESS_SESSION_MAX_ATTACHED_SKILLS }, (_, i) => `skill_${i}`);
+    expect(validateMetaFields({ attachedSkills: JSON.stringify(atCap) }).ok).toBe(true);
   });
 
   it('validateSessionEnvelope validates ownership + LWW updatedAt + reserved meta (never messages)', () => {

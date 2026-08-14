@@ -4,19 +4,26 @@ import { revalidatePath } from 'next/cache';
 import { auth } from '../../../auth';
 import { createProdServices } from '../../../lib/di';
 import type { UserSkillsErrorCode } from '../../../lib/tenancy/userSkills';
-import { slugFromName } from '../mcp/slugFromName';
 
 /**
  * Phase-2 (#496) server actions for /settings/skills. Clone the Personas
  * Settings slice minus the default-flag concept: a sole-membership
  * requireSettingsSession() guard, tenancy handled inside the Phase 1 store
  * (lib/tenancy/userSkills.ts), and bodies never leak to the client — the edit
- * forms read the owner's own body via a server-component store read
- * (getSkillBySlug), never via the action return.
+ * forms read the owner's own body via a measured route
+ * (`GET /api/settings/skills/:id/body`), never via an action return.
  *
- * Slug is auto-derived and immutable (slugFromName + `_N` dedupe); renaming
- * edits name + description only (updateUserSkillSummary) and never changes the
- * slug/`/slug` attach command. Body is edited separately (updateUserSkillBody).
+ * Review #525 skill-wire plan: the generous #514 skill body cap (4 MiB) is OUT of
+ * scope for server actions — Next 15's 1 MB default `bodySizeLimit` would reject it,
+ * and a global raise would endorse an above-ceiling Function body. Body-bearing
+ * writes travel measured route handlers (`POST /api/settings/skills` create-with-body,
+ * `PUT /api/settings/skills/:id/body` replace-body) with a content-length fast-path +
+ * authoritative byte check against `SKILL_BODY_MAX_BYTES` and a raw wire. Only the
+ * small CRUD (name/description edit + delete) stays here on the default action limit.
+ *
+ * Slug is auto-derived and immutable (derived in the create route from
+ * slugFromName + `_N` dedupe); renaming edits name + description only
+ * (updateUserSkillSummary) and never changes the slug/`/slug` attach command.
  */
 const services = createProdServices();
 
@@ -55,13 +62,13 @@ async function requireSettingsSession(): Promise<
 function mapError(code: UserSkillsErrorCode, fallback: string): string {
   switch (code) {
     case 'invalid_name':
-      return 'Name must be 1–80 characters.';
+      return 'Name must be 1–200 characters.';
     case 'invalid_slug':
-      return 'Slug must be a–z, digits, underscore or hyphen (max 64), starting with a letter.';
+      return 'Slug must be a–z, digits, underscore or hyphen (max 128), starting with a letter.';
     case 'invalid_body':
-      return 'Body is required and must be at most 16 KiB.';
+      return 'Body is required and must be at most 4 MiB.';
     case 'invalid_description':
-      return 'Description must be at most 500 characters.';
+      return 'Description must be at most 2000 characters.';
     case 'duplicate_slug':
       return 'A skill with that name already exists.';
     case 'not_found':
@@ -75,53 +82,12 @@ function mapError(code: UserSkillsErrorCode, fallback: string): string {
   }
 }
 
-// Bound the auto-slug dedupe chain (name-derived base + `_2`, `_3`, …) so a
-// display name cannot produce an unbounded collision loop. Body/description
-// caps are enforced in the store.
-const MAX_SLUG_ATTEMPTS = 50;
-
 export type SkillActionState = {
   ok?: boolean;
   error?: string;
   message?: string;
   id?: string;
 };
-
-/** Create a skill from a display name + body (+ optional description); slug derived + deduped. */
-export async function createSkillAction(
-  _prev: SkillActionState,
-  formData: FormData,
-): Promise<SkillActionState> {
-  const session = await requireSettingsSession();
-  if (!session.ok) return { error: session.error };
-
-  const name = String(formData.get('name') ?? '');
-  const description = String(formData.get('description') ?? '');
-  const body = String(formData.get('body') ?? '');
-
-  const baseSlug = slugFromName(name || 'Skill');
-  let lastCode: UserSkillsErrorCode | null = null;
-  for (let i = 0; i < MAX_SLUG_ATTEMPTS; i += 1) {
-    const slug = i === 0 ? baseSlug : `${baseSlug}_${i + 1}`;
-    const result = await services.userSkills.createUserSkill({
-      userId: session.userId,
-      name,
-      slug,
-      body,
-      description,
-    });
-    if (result.ok) {
-      revalidateSettings();
-      return { ok: true, message: 'Skill created.', id: result.value.id };
-    }
-    if (result.code !== 'duplicate_slug') {
-      return { error: mapError(result.code, result.error) };
-    }
-    lastCode = result.code;
-  }
-  void lastCode;
-  return { error: 'Could not derive a unique slug for that name.' };
-}
 
 /** Edit name + description together (keeps slug + body; slug is immutable). */
 export async function updateSkillDetailsAction(
@@ -146,30 +112,6 @@ export async function updateSkillDetailsAction(
   }
   revalidateSettings();
   return { ok: true, message: 'Skill details saved.', id };
-}
-
-/** Replace the body — keeps name, slug, description. */
-export async function updateSkillBodyAction(
-  _prev: SkillActionState,
-  formData: FormData,
-): Promise<SkillActionState> {
-  const session = await requireSettingsSession();
-  if (!session.ok) return { error: session.error };
-
-  const id = String(formData.get('id') ?? '').trim();
-  if (!id) return { error: 'Missing skill id.' };
-  const body = String(formData.get('body') ?? '');
-
-  const result = await services.userSkills.updateUserSkillBody(
-    session.userId,
-    id,
-    body,
-  );
-  if (!result.ok) {
-    return { error: mapError(result.code, result.error), id };
-  }
-  revalidateSettings();
-  return { ok: true, message: 'Skill body saved.', id };
 }
 
 /** Delete a skill. */
