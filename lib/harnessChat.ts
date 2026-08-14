@@ -45,6 +45,7 @@ import {
   appendMessage,
   formatPromptWithHistory,
   type SessionMessage,
+  type SessionRole,
   type SessionSnapshot,
 } from './sessionStore';
 import {
@@ -130,7 +131,7 @@ export type HarnessTurnResult = {
   session: SessionSnapshot;
 };
 
-function roleToKind(role: 'user' | 'assistant' | 'system' | 'error' | 'tool_run'): MessageKind {
+function roleToKind(role: SessionRole): MessageKind {
   switch (role) {
     case 'user':
       return MessageKind.User;
@@ -142,7 +143,39 @@ function roleToKind(role: 'user' | 'assistant' | 'system' | 'error' | 'tool_run'
       return MessageKind.Error;
     case 'tool_run':
       return MessageKind.ToolRun;
+    case 'skill_attached':
+      return MessageKind.SkillAttached;
   }
+}
+
+/**
+ * Display-only text for a skill attach/detach outcome (phase 3 #497). Carries
+ * ONLY the slug + status — never a skill body.
+ */
+export function skillRowText(ev: {
+  action: 'attach' | 'detach';
+  slug: string;
+  ok: boolean;
+}): string {
+  if (ev.action === 'detach') {
+    return ev.ok ? `Skill detached: ${ev.slug}` : `Skill not attached: ${ev.slug}`;
+  }
+  return ev.ok ? `Skill attached: ${ev.slug}` : `Skill not attached: ${ev.slug}`;
+}
+
+/**
+ * Push one display-only skill row to the bridge (kind 7 `skill_attached`) and
+ * mirror it into the session (role `skill_attached`). Display-only: never folded
+ * into the model prompt (staff-of-work bodies are server-side only).
+ */
+function pushSkillRow(
+  bridge: HarnessBridge,
+  session: SessionSnapshot,
+  ev: { action: 'attach' | 'detach'; slug: string; ok: boolean },
+): SessionSnapshot {
+  const text = skillRowText(ev);
+  bridge.pushMessage(MessageKind.SkillAttached, text);
+  return appendMessage(session, 'skill_attached', text);
 }
 
 /** Soft-truncate for bridge only when past Wasm MAX_MSG_LEN-scale limits. */
@@ -502,6 +535,9 @@ export function restoreLastUiKind(
       return 'system';
     case 'tool_run':
       return 'tool_run';
+    case 'skill_attached':
+      // A skill row is a non-tool separator — the next tool opens a fresh card.
+      return 'assistant';
   }
 }
 
@@ -977,6 +1013,15 @@ export async function runHarnessTurn(
             growAssistant(ev.text);
             return;
           }
+          if (ev.type === 'skill_attached') {
+            // Server sends skill_attached events at the START of the turn (before
+            // the model). Push the display-only row live; it is a non-tool
+            // separator for the tool-run predicate.
+            lastRingRowIsToolRun = false;
+            lastUiKind = 'assistant';
+            next = pushSkillRow(bridge, next, ev);
+            return;
+          }
           if (ev.type === 'done') {
             sawStreamTerminal = true;
             closeThinkingSegment();
@@ -1033,6 +1078,14 @@ export async function runHarnessTurn(
         lastUiKind = 'assistant';
         scheduleImagesFromMarkdown(bridge, agentResult.text);
         assistantAcc = agentResult.text;
+        // JSON (non-stream) path: skill outcomes ride `skillEvents` on the
+        // result (SSE surfaces them as live events instead). Push the display-only
+        // rows so the transcript shows the skill name, exactly like the stream path.
+        if (agentResult.skillEvents) {
+          for (const ev of agentResult.skillEvents) {
+            next = pushSkillRow(bridge, next, ev);
+          }
+        }
       }
       next = appendMessage(next, 'assistant', agentResult.text || assistantAcc);
       scheduleMathFromTexts(

@@ -729,3 +729,94 @@ describe('runAgent daemon-version preflight', () => {
   });
 });
 
+describe('runAgent skillsPreamble (phase 3 #497)', () => {
+  function fsClient(): SandboxClient {
+    return {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      strReplace: vi.fn(),
+      exec: vi.fn(),
+      stat: vi.fn(),
+    };
+  }
+
+  it('appends the skills preamble AFTER the persona standing orders', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      const system = String(args.system);
+      // Persona block first.
+      const personaIdx = system.indexOf('## Persona standing orders');
+      expect(personaIdx).toBeGreaterThan(-1);
+      expect(system).toContain('Always use tabs.');
+      // Skills block appears after the persona block, labelled + with the body.
+      const skillsIdx = system.indexOf('## Attached skills');
+      expect(skillsIdx).toBeGreaterThan(personaIdx);
+      expect(system).toContain('### Skill attached: create-plan');
+      expect(system).toContain('Plan in YAML sections.');
+      // The attached-skill body is the FINAL standing-order block the model sees.
+      expect(system.endsWith('Plan in YAML sections.')).toBe(true);
+      return { text: 'ok', steps: [] };
+    });
+    await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: fsClient(),
+      personaPreamble: 'Always use tabs.',
+      skillsPreamble: '### Skill attached: create-plan\nPlan in YAML sections.',
+    });
+    expect(generateTextImpl).toHaveBeenCalled();
+  });
+
+  it('appends skills even without a persona (after the base system + addenda)', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      const system = String(args.system);
+      expect(system).toContain('## Attached skills');
+      expect(system).toContain('### Skill attached: review');
+      expect(system).not.toContain('## Persona standing orders');
+      return { text: 'ok', steps: [] };
+    });
+    await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: fsClient(),
+      skillsPreamble: '### Skill attached: review\nBe adversarial.',
+    });
+    expect(generateTextImpl).toHaveBeenCalled();
+  });
+
+  it('drops empty/whitespace skillsPreamble', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      const system = String(args.system);
+      expect(system).not.toContain('## Attached skills');
+      return { text: 'ok', steps: [] };
+    });
+    await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: fsClient(),
+      skillsPreamble: '   ',
+    });
+    expect(generateTextImpl).toHaveBeenCalled();
+  });
+
+  it('a system override keeps the override intact (no skills/persona fold)', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      expect(args.system).toBe('custom');
+      return { text: 'ok', steps: [] };
+    });
+    await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      system: 'custom',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: fsClient(),
+      personaPreamble: 'Always use tabs.',
+      skillsPreamble: '### Skill attached: x\nbody',
+    });
+    expect(generateTextImpl).toHaveBeenCalled();
+  });
+});
+

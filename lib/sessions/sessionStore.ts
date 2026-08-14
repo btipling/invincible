@@ -41,6 +41,7 @@ export { isRedisSafeOpaqueId } from '../sessionCloudCaps';
 import { validateSessionSnapshot } from '../tenancy/harnessSessions';
 import type { HarnessSessionErrorCode } from '../tenancy/harnessSessions';
 import type { SessionMessage } from '../sessionStore';
+import { SKILL_SLUG_RE } from '../tenancy/userSkills';
 
 /**
  * Reserved `meta` keys — the ONLY keys a session record may carry (parent #411).
@@ -55,6 +56,7 @@ export const RESERVED_META_KEYS = [
   'title',
   'personaId',
   'personaSnapshot',
+  'attachedSkills',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -383,6 +385,49 @@ export function validateMetaFields(
         code: 'invalid_meta',
         error: `meta.personaSnapshot exceeds ${PERSONA_SNAPSHOT_MAX_BYTES} bytes.`,
       };
+    }
+  }
+  // Parent #495 — attached skills ride `meta.attachedSkills` as a **JSON array
+  // string** of slugs (scalar-safe; the HarnessSessionMeta type allows string).
+  // This branch is the same single slug charset as the store CRUD validator
+  // (`SKILL_SLUG_RE`) and the phase-3 slash parser, so a dashed slug like
+  // `create-plan` resolves consistently. Malformed / non-array / any invalid
+  // element → **fail closed**: the record validator rejects the write rather
+  // than ever sticky-persisting a half-validated attachment list. (The full
+  // `meta` byte cap is applied in `validateMeta`.)
+  if (out.attachedSkills !== undefined) {
+    if (typeof out.attachedSkills !== 'string') {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error: 'meta.attachedSkills must be a string (JSON array of slugs).',
+      };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(out.attachedSkills);
+    } catch {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error: 'meta.attachedSkills is not valid JSON.',
+      };
+    }
+    if (!Array.isArray(parsed)) {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error: 'meta.attachedSkills must be a JSON array of slugs.',
+      };
+    }
+    for (const slug of parsed) {
+      if (typeof slug !== 'string' || !SKILL_SLUG_RE.test(slug)) {
+        return {
+          ok: false,
+          code: 'invalid_meta',
+          error: 'meta.attachedSkills contains an invalid slug.',
+        };
+      }
     }
   }
   return { ok: true, value: out };

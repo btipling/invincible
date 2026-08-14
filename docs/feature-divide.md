@@ -28,7 +28,8 @@ optional login chrome).
 | Session ring window + Load earlier poll | **DOM** host + **Wasm** control | Host slices ≤**2048** (`HARNESS_RING_MAX`); **Load earlier** steps by **`HISTORY_PAGE` = 512**; Wasm pending (protocol v6); no React transcript |
 | Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status; model chip is a **mirror** of Wasm selection, not a second picker |
 | Model catalog fetch (`GET /api/models`) | **DOM** | Session-gated; host pushes ids into Wasm catalog |
-| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v11**) |
+| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v12**) |
+| Skill attach display (`Skill attached: <slug>`) | **Wasm** (display-only kind 7) + **Vercel** (resolve/inject) | Server resolves `/slug` + injects the body into system context; the Wasm canvas shows only the skill NAME row (message kind 7, display-only) — never the body |
 | Selected `modelId` on inference | **DOM host** → **Vercel backend** | Host reads bridge; POST body; server re-authorizes grants + BYOK |
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
 | Per-user MCP config UI | **DOM** | `/settings`, `/settings/mcp` — not dual chat; not Admin |
@@ -83,6 +84,7 @@ User types in Wasm composer
   → Thinking rows **collapse at turn end** into a compact expandable control (in-memory; ephemeral; not SessionStore); the active Busy turn stays fully expanded
   → Tool-run rows paint as a default-collapsed `N tools called` expandable control (counts + two-level detail); see [harness-limits.md](harness-limits.md)
   → User reads the live `N tools called` increment in the Wasm transcript while Busy — the count grows per tool event on the canvas, never withheld until a boundary
+  → Server parses a leading `/skill-name` (/`unskill slug`) into an attach/detach, injects attached-skill bodies into system context (`skillsPreamble`, after the persona), emits a `skill_attached` SSE event, and the host pushes a display-only `Skill attached: <slug>` row (protocol v12, message kind 7) — never the body
 ```
 
 **toolTrace display (host → Wasm tool_run):** the host aggregates each
@@ -104,12 +106,25 @@ a boundary. On reload/hydrate (`pushSessionToBridge`) consecutive `tool_run`
 rows are coalesced via `mergeToolRunPayloads` into scannable groups (rolling at
 `TOOL_RUN_ITEMS_MAX`), never across an assistant/user/error boundary.
 
+**skill_attached display (server → host → Wasm):** the server parses leading
+`/skill-name` and `/unskill slug`, resolves attached skill slugs via
+`lib/tenancy/skillInject.ts`, and injects their bodies into system context as a
+`skillsPreamble` appended after the persona (bodies stay **server-only**). On
+the wire it emits a `skill_attached {slug, action, ok}` SSE event (or
+`skillEvents` on the JSON path); the host pushes a display-only bridge message
+kind **7** (`MessageKind.SkillAttached`, session role `skill_attached`) whose
+text is just `Skill attached: <slug>` (or detached / not-attached). **Wasm owns
+the row paint** (`paintSkillAttached`, protocol v12); it shows only the skill
+NAME. The body is never shipped to the client and never folded into the model
+prompt — attachment is session-sticky via `meta.attachedSkills` (slugs only),
+re-resolved each turn.
+
 ## Key source paths
 
 | Concern | Path |
 |---------|------|
 | Host shell | `app/harness/HarnessHost.tsx` |
-| Bridge TS (protocol **v11**) | `lib/harnessBridge.ts` |
+| Bridge TS (protocol **v12**) | `lib/harnessBridge.ts` |
 | Image fetch/decode | `lib/harnessImages.ts` |
 | Model catalog API | `app/api/models/route.ts` |
 | Admin inference keys | `app/admin/inference/*` |
@@ -122,7 +137,7 @@ rows are coalesced via `mergeToolRunPayloads` into scannable groups (rolling at
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
 | Export whitelist | `native/harness/build.zig` |
 
-Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **11**).
+Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **12**).
 Mismatch → load error; rebuild both sides. Image **bytes** enter only via bridge put; never dual DOM `<img>` product surface.
 
 ## Related

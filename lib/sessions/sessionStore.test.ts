@@ -159,9 +159,13 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'title',
       'personaId',
       'personaSnapshot',
+      'attachedSkills',
     ]);
     for (const k of RESERVED_META_KEYS) {
-      const rawMeta: unknown = { [k]: 'x' };
+      // `attachedSkills` is a JSON-array-of-slugs scalar (phase 3 #497), so a
+      // bare 'x' is invalid there; give it a well-formed value.
+      const rawMeta: unknown =
+        k === 'attachedSkills' ? { attachedSkills: '["a"]' } : { [k]: 'x' };
       const res = validateSessionRecord(
         makeRecord({ meta: rawMeta as HarnessSessionRecord['meta'] }),
       );
@@ -283,6 +287,49 @@ describe('meta persona keys (parent #485 lock, phase 1 #486)', () => {
     expect(HARNESS_SESSION_MAX_META_BYTES).toBe(20_480);
     // Internal consistency: a full snapshot + reserved headroom must fit the total.
     expect(PERSONA_SNAPSHOT_MAX_BYTES).toBeLessThan(HARNESS_SESSION_MAX_META_BYTES);
+  });
+});
+
+describe('meta attachedSkills (parent #495 phase 3 #497 lock)', () => {
+  it('accepts a well-formed JSON-array-of-slugs string; rejects non-string / invalid / non-array', () => {
+    expect(validateMetaFields({ attachedSkills: '["a","create-plan"]' }).ok).toBe(true);
+    // non-string
+    expect(validateMetaFields({ attachedSkills: 7 as never }).ok).toBe(false);
+    // malformed JSON
+    expect(validateMetaFields({ attachedSkills: 'not-json' }).ok).toBe(false);
+    // valid JSON but not an array
+    expect(validateMetaFields({ attachedSkills: '{"a":1}' }).ok).toBe(false);
+    // array with a non-slug or non-string element → fail closed
+    expect(validateMetaFields({ attachedSkills: '["ok", "Bad Slug"]' }).ok).toBe(false);
+    expect(validateMetaFields({ attachedSkills: '["ok", 7]' }).ok).toBe(false);
+    expect(validateMetaFields({ attachedSkills: '["ok", null]' }).ok).toBe(false);
+    // dashed slug passes (charset shared with the slash parser)
+    expect(validateMetaFields({ attachedSkills: '["create-plan"]' }).ok).toBe(true);
+    // absent/undefined → ok
+    expect(validateMetaFields({}).ok).toBe(true);
+    expect(validateMetaFields({ attachedSkills: undefined }).ok).toBe(true);
+  });
+
+  it('validateSessionRecord (PUT/mint boundary) rejects a malformed attachedSkills}', () => {
+    expect(
+      validateSessionRecord(
+        makeRecord({ meta: { attachedSkills: 'garbage' } as HarnessSessionRecord['meta'] }),
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateSessionRecord(
+        makeRecord({ meta: { attachedSkills: '["a","b"]' } as HarnessSessionRecord['meta'] }),
+      ).ok,
+    ).toBe(true);
+  });
+
+  it('attachedSkills counts toward the whole-meta budget', () => {
+    // A giant (but still slug-shaped-count-wise valid) string can trip the total.
+    expect(
+      validateSessionRecord(
+        makeRecord({ meta: { attachedSkills: 'x'.repeat(HARNESS_SESSION_MAX_META_BYTES + 1) } as HarnessSessionRecord['meta'] }),
+      ).ok,
+    ).toBe(false);
   });
 });
 

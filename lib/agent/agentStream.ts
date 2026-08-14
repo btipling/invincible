@@ -26,6 +26,13 @@ export type AgentStreamEvent =
   | { type: 'reasoning_delta'; text: string }
   | { type: 'text_delta'; text: string }
   | {
+      type: 'skill_attached';
+      slug: string;
+      action: 'attach' | 'detach';
+      ok: boolean;
+      reason?: string;
+    }
+  | {
       type: 'done';
       text: string;
       toolTrace?: ToolTraceEntry[];

@@ -14,6 +14,7 @@ import {
   runHarnessTurn,
   selectToolTraceLines,
   shouldContinueStreak,
+  skillRowText,
   truncateToolTraceSummary,
   type LiveCwdSource,
 } from './harnessChat';
@@ -2259,5 +2260,122 @@ describe('runHarnessTurn session persona carrier (phase 3 #488)', () => {
       },
     });
     expect(sent.personaId).toBeUndefined();
+  });
+});
+
+describe('skill attach display (phase 3 #497)', () => {
+  it('builds display-only row text for attach/detach outcomes', () => {
+    expect(skillRowText({ action: 'attach', slug: 'create-plan', ok: true })).toBe(
+      'Skill attached: create-plan',
+    );
+    expect(skillRowText({ action: 'attach', slug: 'x', ok: false })).toBe(
+      'Skill not attached: x',
+    );
+    expect(skillRowText({ action: 'detach', slug: 'x', ok: true })).toBe(
+      'Skill detached: x',
+    );
+    expect(skillRowText({ action: 'detach', slug: 'x', ok: false })).toBe(
+      'Skill not attached: x',
+    );
+  });
+
+  it('JSON (non-stream) path pushes a display-only skill_attached row from skillEvents', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'will scaffold',
+      skillEvents: [{ action: 'attach', slug: 'create-plan', ok: true }],
+    }));
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'go', {
+      sendAgent,
+      pushUser: false,
+    });
+    // Session carries the display-only skill_attached role.
+    const skillRows = next.messages.filter((m) => m.role === 'skill_attached');
+    expect(skillRows).toHaveLength(1);
+    expect(skillRows[0]!.text).toBe('Skill attached: create-plan');
+    // Bridge got a kind-7 skill row (display-only), never the body.
+    expect(exp.__messages.some((m) => m.kind === MessageKind.SkillAttached)).toBe(true);
+    expect(
+      exp.__messages.find((m) => m.kind === MessageKind.SkillAttached)?.text,
+    ).toBe('Skill attached: create-plan');
+  });
+
+  it('JSON path pushes detach + failure rows too', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'ok',
+      skillEvents: [
+        { action: 'detach', slug: 'a', ok: true },
+        { action: 'attach', slug: 'missing', ok: false, reason: 'unknown skill' },
+      ],
+    }));
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'go', {
+      sendAgent,
+      pushUser: false,
+    });
+    const skillRows = next.messages.filter((m) => m.role === 'skill_attached');
+    expect(skillRows.map((m) => m.text)).toEqual([
+      'Skill detached: a',
+      'Skill not attached: missing',
+    ]);
+    const bridgeSkill = exp.__messages.filter((m) => m.kind === MessageKind.SkillAttached);
+    expect(bridgeSkill.map((m) => m.text)).toEqual([
+      'Skill detached: a',
+      'Skill not attached: missing',
+    ]);
+  });
+
+  it('SSE (stream) path pushes skill_attached rows live from onEvent events', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'list', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_prompt, init) => {
+        // Server sends skill_attached at the START, before the model.
+        await init?.onEvent?.({
+          type: 'skill_attached',
+          slug: 'create-plan',
+          action: 'attach',
+          ok: true,
+        });
+        await init?.onEvent?.({ type: 'text_delta', text: 'done' });
+        await init?.onEvent?.({ type: 'done', text: 'done' });
+        return { ok: true, text: 'done' };
+      },
+    });
+    expect(
+      next.messages.some(
+        (m) => m.role === 'skill_attached' && m.text === 'Skill attached: create-plan',
+      ),
+    ).toBe(true);
+    expect(exp.__messages.some((m) => m.kind === MessageKind.SkillAttached)).toBe(true);
+  });
+
+  it('hydrate maps the persisted skill_attached role to kind 7', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      messages: [
+        { id: 'u', role: 'user' as const, text: 'hi', at: 1 },
+        {
+          id: 'sk',
+          role: 'skill_attached' as const,
+          text: 'Skill attached: create-plan',
+          at: 2,
+        },
+        { id: 'a', role: 'assistant' as const, text: 'done', at: 3 },
+      ],
+    };
+    pushSessionToBridge(bridge, session, { clear: false });
+    const skillRow = exp.__messages.find((m) => m.kind === MessageKind.SkillAttached);
+    expect(skillRow).toBeDefined();
+    expect(skillRow!.text).toBe('Skill attached: create-plan');
   });
 });

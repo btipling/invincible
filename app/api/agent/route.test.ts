@@ -61,6 +61,7 @@ describe('POST /api/agent', () => {
     delete servicesState.createHttpRunner;
     delete servicesState.userPersonas;
     delete servicesState.harnessSessionsRedis;
+    delete servicesState.userSkills;
     vi.doUnmock('../../../lib/di');
     vi.doUnmock('../../../lib/agent/runAgent');
     vi.doUnmock('../../../lib/tenancy/session');
@@ -68,6 +69,7 @@ describe('POST /api/agent', () => {
     vi.doUnmock('../../../lib/agent/vercelSandboxHttpRunner');
     vi.doUnmock('../../../lib/agent/httpFetchTools');
     vi.doUnmock('../../../lib/agent/builtinHttpConfig');
+    vi.doUnmock('../../../lib/tenancy/harnessSessionsRedis');
   });
 
   async function loadRoute() {
@@ -1333,6 +1335,103 @@ describe('POST /api/agent', () => {
     const arg = runAgent.mock.calls[0]?.[0] as RunArg;
     expect(arg.personaPreamble).toBeUndefined();
     expect(userPersonas).not.toHaveBeenCalled();
+  });
+
+  it('folds skillsPreamble + strips /slug for an attach-with-prose prompt (phase 3 #497)', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    mockResolveSandboxOk();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    const fakeSessionStore = {
+      get: vi.fn(async () => null),
+      put: vi.fn(async () => ({ status: 'stored' as const })),
+    };
+    vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: async () => ({ ok: true as const, value: fakeSessionStore }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({
+        tenantId: t,
+        userId: u,
+        sessionId: s,
+      }),
+    }));
+    servicesState.harnessSessionsRedis = {
+      resolveTenantIdForUser: vi.fn(async () => ({ ok: true as const, value: 'tenant-1' })),
+    };
+    servicesState.userSkills = {
+      getSkillBySlug: vi.fn(async () => ({
+        ok: true as const,
+        value: { body: 'PLAN BODY: create sections' },
+      })),
+    };
+    type RunArg = { skillsPreamble?: string; prompt?: string };
+    const runAgent = vi.fn(async (_arg: RunArg) => ({ text: 'ok', toolTrace: [] }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent,
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: '/create-plan please scaffold a plan' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const arg = runAgent.mock.calls[0]?.[0] as RunArg;
+    // /slug stripped from the model prompt; remaining prose preserved.
+    expect(arg.prompt).toBe('please scaffold a plan');
+    // Body folded as the skills preamble (server-side only).
+    expect(arg.skillsPreamble).toContain('### Skill attached: create-plan');
+    expect(arg.skillsPreamble).toContain('PLAN BODY');
+    // JSON path surfaces the skill outcome as slug-only.
+    const body = (await res.json()) as { skillEvents?: unknown[] };
+    expect(body.skillEvents).toHaveLength(1);
+  });
+
+  it('pure /unskill detach is a NO-MODEL turn (early response, no runAgent)', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    const fakeSessionStore = {
+      get: vi.fn(async () => null),
+      put: vi.fn(async () => ({ status: 'stored' as const })),
+    };
+    vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: async () => ({ ok: true as const, value: fakeSessionStore }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({
+        tenantId: t,
+        userId: u,
+        sessionId: s,
+      }),
+    }));
+    servicesState.harnessSessionsRedis = {
+      resolveTenantIdForUser: vi.fn(async () => ({ ok: true as const, value: 'tenant-1' })),
+    };
+    servicesState.userSkills = { getSkillBySlug: vi.fn() };
+    const runAgent = vi.fn();
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent,
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: '/unskill create-plan' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    // No model turn for a pure detach; the confirmation echoes the outcome.
+    expect(runAgent).not.toHaveBeenCalled();
+    const body = (await res.json()) as { text?: string; skillEvents?: unknown[] };
+    expect(body.skillEvents).toHaveLength(1);
+    expect(body.text).toMatch(/detach/);
   });
 
 });

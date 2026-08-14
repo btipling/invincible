@@ -7,7 +7,13 @@
  * Design note: docs/session-model.md
  */
 
-export type SessionRole = 'user' | 'assistant' | 'system' | 'error' | 'tool_run';
+export type SessionRole =
+  | 'user'
+  | 'assistant'
+  | 'system'
+  | 'error'
+  | 'tool_run'
+  | 'skill_attached';
 
 export type SessionMessage = {
   id: string;
