@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
  * JSON string escaping) so a 4 MiB body keeps genuine headroom under the 4.5 MB
  * Function ceiling.
  */
+import { SKILL_BODY_MAX_BYTES } from '../../../../lib/tenancy/userSkills';
 
 const FOUR_MIB = 4 * 1024 * 1024;
 
@@ -231,5 +232,31 @@ describe('GET/PUT /api/settings/skills/:id/body (raw body carry)', () => {
     const res = await PUT(req, ctx('sk1'));
     expect(res.status).toBe(413);
     expect(updateUserSkillBody).not.toHaveBeenCalled();
+  });
+});
+
+describe('skill-body wire-math lock (review #525 plan)', () => {
+  // Function ceiling: Vercel rejects a >4.5 MB request/response (413
+  // FUNCTION_PAYLOAD_TOO_LARGE / FUNCTION_RESPONSE_PAYLOAD_TOO_LARGE).
+  const FUNCTION_CEILING_BYTES = 4.5 * 1024 * 1024;
+
+  it('locks the body cap at 4 MiB (generous #514 budget, not lowered)', () => {
+    expect(SKILL_BODY_MAX_BYTES).toBe(FOUR_MIB);
+  });
+
+  it('body + max multipart/boundary overhead stays under the 4.5 MB Function ceiling', async () => {
+    // The wire module imports lib/tenancy/session (→ next-auth), so load it
+    // dynamically AFTER registering the session mock, like the route tests above.
+    mockAuthed();
+    const { SKILL_BODY_WIRE_OVERHEAD_BYTES } = await import('./wire');
+    expect(SKILL_BODY_WIRE_OVERHEAD_BYTES).toBe(64 * 1024);
+    // The measured routes enforce SKILL_BODY_MAX_BYTES on the decoded body and
+    // the content-length fast-path allows up to +SKILL_BODY_WIRE_OVERHEAD_BYTES
+    // for multipart boundary/part headers. Even at the absolute wire maximum the
+    // request must stay < 4.5 MB so Vercel never rejects below what we advertise.
+    expect(SKILL_BODY_MAX_BYTES).toBeLessThan(FUNCTION_CEILING_BYTES);
+    expect(SKILL_BODY_MAX_BYTES + SKILL_BODY_WIRE_OVERHEAD_BYTES).toBeLessThan(
+      FUNCTION_CEILING_BYTES,
+    );
   });
 });
