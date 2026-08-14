@@ -55,6 +55,7 @@ export const RESERVED_META_KEYS = [
   'title',
   'personaId',
   'personaSnapshot',
+  'transcriptPointer',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -111,6 +112,54 @@ export interface ServerSessionStore {
 }
 
 /**
+ * Phase 0 (#515) — the small, always-fetchable **envelope** (ownership, `updatedAt`
+ * LWW, `createdAt`, reserved `meta` incl. the `transcriptPointer`). The transcript
+ * (the only large surface) lives in Blob objects pointed to by `meta.transcriptPointer`;
+ * the envelope never carries messages. `get`/`put`/`list` remain the **legacy roll-forward**
+ * full-record surface (whole-blob records stay readable while they stay small).
+ */
+export type SessionEnvelope = {
+  id: string;
+  userId: string;
+  tenantId: string;
+  createdAt: number;
+  updatedAt: number;
+  meta: HarnessSessionMeta;
+};
+
+/** Envelope upsert input (ownership is always the authed user within a tenant). */
+export type SessionEnvelopeInput = {
+  id: string;
+  userId: string;
+  tenantId: string;
+  updatedAt: number;
+  meta?: HarnessSessionMeta;
+};
+
+export type EnvelopeUpsertResult =
+  | { status: 'stored'; envelope: SessionEnvelope }
+  | { status: 'conflict'; server: SessionEnvelope };
+
+/** Additive phase-0 envelope seam. See `SessionEnvelopeStore`. */
+export interface SessionEnvelopeStore extends ServerSessionStore {
+  /** Read only the envelope (never the transcript). `null` when absent/roll-forward-only. */
+  readEnvelope(key: SessionRecordKey): Promise<SessionEnvelope | null>;
+  /** Upsert the envelope (LWW on `updatedAt`, `createdAt` preserved). Never touches transcript. */
+  upsertEnvelope(
+    key: SessionRecordKey,
+    input: SessionEnvelopeInput,
+  ): Promise<EnvelopeUpsertResult>;
+}
+
+/** Type guard — a store implementing the phase-0 envelope seam. */
+export function isEnvelopeStore(store: ServerSessionStore): store is SessionEnvelopeStore {
+  return (
+    typeof (store as SessionEnvelopeStore).readEnvelope === 'function' &&
+    typeof (store as SessionEnvelopeStore).upsertEnvelope === 'function'
+  );
+}
+
+/**
  * Redis-safe opaque id predicate lives in the shared client-safe seam
  * (`lib/sessionCloudCaps.ts`) so the same charset rule drives server validation AND
  * host/repository sanitizing without drift. Re-exported here for the server boundary.
@@ -147,6 +196,46 @@ export function parseSessionKeyString(key: string): SessionRecordKey | null {
  */
 export function sessionPrefix(scope: SessionListScope): string {
   return `harness:session:${scope.tenantId}:${scope.userId}:*`;
+}
+
+/**
+ * Phase 0 (#515) — Redis key for the **small envelope** of a session
+ * (`harness:envelope:{tenant}:{user}:{session}`), a separate namespace from the
+ * legacy `harness:session:*` whole-blob keys so legacy roll-forward `get`/`list`/
+ * backfill never collide with the envelope carrier. Every segment is Redis-safe
+ * opaque, so the prefix glob stays unambiguous (same charset rule as `sessionKeyString`).
+ */
+export function envelopeKeyString(key: SessionRecordKey): string {
+  return `harness:envelope:${key.tenantId}:${key.userId}:${key.sessionId}`;
+}
+
+/**
+ * Reverse of `envelopeKeyString`: parse a stored envelope key string back into a
+ * `SessionRecordKey`. `null` when the shape is wrong or any segment is not Redis-safe
+ * (so a malformed / hand-crafted key can never address an envelope).
+ */
+export function parseEnvelopeKeyString(key: string): SessionRecordKey | null {
+  const parts = key.split(':');
+  if (parts.length !== 5) return null;
+  if (parts[0] !== 'harness' || parts[1] !== 'envelope') return null;
+  const result = validateSessionRecordKey({
+    tenantId: parts[2],
+    userId: parts[3],
+    sessionId: parts[4],
+  });
+  return result.ok ? result.value : null;
+}
+
+/** Strip a full record (legacy whole-blob) to its phase-0 envelope (drops messages). */
+export function envelopeFromRecord(record: HarnessSessionRecord): SessionEnvelope {
+  return {
+    id: record.id,
+    userId: record.userId,
+    tenantId: record.tenantId,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    meta: record.meta,
+  };
 }
 
 /**
@@ -385,6 +474,23 @@ export function validateMetaFields(
       };
     }
   }
+  // Phase 0 (#515): `meta.transcriptPointer` is the Redis-safe opaque key of the
+  // latest transcript object in the Blob store (the envelope's pointer). Server-minted,
+  // never a secret; the non-empty value must stay Redis-safe opaque so it can never smuggle
+  // a glob/`:` or otherwise alias another key.
+  if (out.transcriptPointer !== undefined) {
+    if (
+      typeof out.transcriptPointer !== 'string' ||
+      !isRedisSafeOpaqueId(out.transcriptPointer)
+    ) {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error:
+          'meta.transcriptPointer must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+      };
+    }
+  }
   return { ok: true, value: out };
 }
 
@@ -470,5 +576,85 @@ export function assertValidSessionRecord(record: HarnessSessionRecord): void {
   const result = validateSessionRecord(record);
   if (!result.ok) {
     throw new Error(`Invalid session record: ${result.error}`);
+  }
+}
+
+/**
+ * Phase 0 (#515) — validate an **envelope** (never a transcript). Reuses the same
+ * reserved-`meta` validator + Redis-safe charset rules, but requires the ownership
+ * identity (id/tenantId/userId) and LWW `updatedAt`, and never carries `messages`.
+ */
+export function validateSessionEnvelope(
+  input: unknown,
+): SessionStoreResult<SessionEnvelope> {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    return { ok: false, code: 'invalid_body', error: 'Envelope must be a JSON object.' };
+  }
+  const o = input as Record<string, unknown>;
+  if (!isRedisSafeOpaqueId(o.id)) {
+    return {
+      ok: false,
+      code: 'invalid_id',
+      error: 'id must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    };
+  }
+  if (!isRedisSafeOpaqueId(o.tenantId)) {
+    return {
+      ok: false,
+      code: 'invalid_tenant',
+      error: 'tenantId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    };
+  }
+  if (!isRedisSafeOpaqueId(o.userId)) {
+    return {
+      ok: false,
+      code: 'invalid_user',
+      error: 'userId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+    };
+  }
+  if (
+    typeof o.createdAt !== 'number' ||
+    !Number.isSafeInteger(o.createdAt) ||
+    o.createdAt < 0
+  ) {
+    return {
+      ok: false,
+      code: 'invalid_created_at',
+      error: 'createdAt must be a non-negative safe integer (epoch ms).',
+    };
+  }
+  if (
+    typeof o.updatedAt !== 'number' ||
+    !Number.isSafeInteger(o.updatedAt) ||
+    o.updatedAt < 0
+  ) {
+    return {
+      ok: false,
+      code: 'invalid_updated_at',
+      error: 'updatedAt must be a non-negative safe integer (epoch ms).',
+    };
+  }
+  const metaResult = validateMeta(o.meta);
+  if (!metaResult.ok) return metaResult;
+  const metaFieldsResult = validateMetaFields(metaResult.value);
+  if (!metaFieldsResult.ok) return metaFieldsResult;
+  return {
+    ok: true,
+    value: {
+      id: o.id,
+      userId: o.userId,
+      tenantId: o.tenantId,
+      createdAt: o.createdAt,
+      updatedAt: o.updatedAt,
+      meta: metaFieldsResult.value,
+    },
+  };
+}
+
+/** Throwing wrapper for the envelope `upsertEnvelope` boundary. */
+export function assertValidSessionEnvelope(envelope: SessionEnvelope): void {
+  const result = validateSessionEnvelope(envelope);
+  if (!result.ok) {
+    throw new Error(`Invalid session envelope: ${result.error}`);
   }
 }

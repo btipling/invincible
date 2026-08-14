@@ -178,8 +178,36 @@ Each signed-in user has one durable harness transcript row in Postgres
 | Smoke | Same user, two browsers: turn on A → refresh B shows messages; Clear on A → DELETE cloud row |
 | Failures | Unauth → **401**; no row yet → **404** `NOT_FOUND`; store unavailable → **503**. Auth is always required |
 
-Product detail (LWW, caps, hybrid wire): [session-model.md](session-model.md).  
+Product detail (LWW, caps, hybrid wire, **envelope + Blob transcript carrier**):
+[session-model.md](session-model.md).  
 Security boundary: [SECURITY.md](../SECURITY.md) (Harness session store).
+
+#### Blob transcript seam (phase 0 #515)
+
+The **session transcript** (the only large surface) lives in **object storage**,
+not Redis. Default is **Vercel Blob** (S3-backed); BYO S3/R2 operators implement the
+same provider-neutral seam (`lib/sessions/blobStore.ts` / `blobStores.ts`) as a config
+swap — no single-owner bind.
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `BLOB_READ_WRITE_TOKEN` | **Yes for Production** | Vercel Blob read-write token (server-side). Server mints a **short-lived, scoped, credential-checked** upload URL; the client uploads new transcript segments **directly to Blob** (a server upload through a Function still 413s against the 4.5 MiB payload limit). When unset, the app falls back to an **in-memory** transcript store (dev/tests only). **Never** expose this token or `NEXT_PUBLIC_*` it |
+
+- **Envelope + pointer:** Redis keeps the small, always-fetchable envelope
+  (`harness:envelope:*`) — ownership, `updatedAt` LWW, `createdAt`, reserved `meta`,
+  and `meta.transcriptPointer` (the key of the latest transcript object). The transcript
+  itself never lives in Redis.
+- **Routes:** `PUT`/`GET /api/sessions/:id/envelope` (envelope upsert/read) and
+  `POST`/`GET /api/sessions/:id/transcript` (mint upload / signed read URL). The legacy
+  full-record `GET /api/sessions/:id` stays only for **roll-forward** while old whole-blob
+  records remain small (GET is also a 4.5 MiB *response* limit). **No Redis data backfill**.
+- **Wasm/feature-divide:** Wasm never talks to Blob or Redis; the DOM host drives the
+  client→Blob upload + envelope upsert through `lib/sessionRepository.ts`
+  (`mintUpload` / `putTranscriptObject` / `pushEnvelope`), opt-in via
+  `NEXT_PUBLIC_HARNESS_CARRIER_ENVELOPE` (roll-forward full-record PUT is the default
+  while host call sites migrate).
+- **Config:** documented seam only — set `BLOB_READ_WRITE_TOKEN` in Vercel/env-manager,
+  never a laptop ritual. No migrate / backfill / seed / code-secret cutover.
 
 ### Sandboxes (BYO daemon vs Vercel)
 
@@ -507,7 +535,7 @@ workflows. Jobs run only on `workflow_dispatch` or `push` to `main`.
 
 | Rule | Detail |
 |------|--------|
-| Secrets server-side | `AI_GATEWAY_API_KEY`, `SANDBOX_TOKEN`, `AUTH_OIDC_CLIENT_SECRET`, `SCIM_BEARER_TOKEN` only on Vercel (or local `.env.local`); never in Wasm or client bundles |
+| Secrets server-side | `AI_GATEWAY_API_KEY`, `SANDBOX_TOKEN`, `AUTH_OIDC_CLIENT_SECRET`, `SCIM_BEARER_TOKEN`, `BLOB_READ_WRITE_TOKEN` (phase 0 #515) only on Vercel (or local `.env.local`); never in Wasm or client bundles |
 | Variables ≠ secrets | `SELF_HOSTED_BUILDS` / `RUNNER_LABELS` are Actions **variables** (non-secret) |
 | Public-repo runners | No PR execution on self-hosted; see [SECURITY.md](../SECURITY.md) |
 | Agent sandbox ≠ Zig runner | Separate process/user; see [sandbox.md](sandbox.md) · [runner.md](runner.md) |

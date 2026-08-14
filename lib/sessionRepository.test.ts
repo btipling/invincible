@@ -552,3 +552,153 @@ describe('createHttpSessionRepository (id-shaped)', () => {
     if (res.action === 'ok') expect(res.sessions).toEqual(summary);
   });
 });
+
+describe('createHttpSessionRepository — envelope carrier (phase 0 #515)', () => {
+  const idA = '11111111-1111-4111-8111-111111111111';
+  const UPLOAD_URL = 'https://blob.example/upload';
+
+  /** Routes fetches like the live server: mint → client→Blob → envelope. */
+  function envelopeFetch(opts: { uploadStatus?: number } = {}) {
+    const calls: string[] = [];
+    const putBody: unknown[] = [];
+    const mints: string[] = [];
+    const uploadStatus = opts.uploadStatus ?? 200;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      calls.push(`${method} ${u}`);
+      if (method === 'POST' && u.endsWith('/transcript')) {
+        mints.push(u);
+        return Response.json({ uploadUrl: UPLOAD_URL, objectId: 'tx_obj1' }, { status: 200 });
+      }
+      if (u === UPLOAD_URL) {
+        putBody.push(JSON.parse(String(init?.body)));
+        return new Response(null, { status: uploadStatus });
+      }
+      if (u.startsWith('https://blob.example/') && method === 'GET') {
+        // Signed client→Blob read of the transcript object.
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 30,
+            messages: [{ id: 'm', role: 'user', text: 'hi', at: 1 }],
+            meta: {},
+          },
+          { status: 200 },
+        );
+      }
+      if (method === 'GET' && u.endsWith('/envelope')) {
+        // echo back only the object the session envelope points to
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 30,
+            meta: { transcriptPointer: 'tx_obj1' },
+            transcriptReadUrl: `${UPLOAD_URL}/read?obj=tx_obj1`,
+          },
+          { status: 200 },
+        );
+      }
+      if (method === 'PUT' && u.endsWith('/envelope')) {
+        putBody.push(JSON.parse(String(init?.body)));
+        return Response.json({ id: idA }, { status: 200 });
+      }
+      return new Response(null, { status: 204 });
+    });
+    return { fetchImpl, calls, putBody, mints };
+  }
+
+  it('carrier getter reflects opts.carrier; default is roll-forward', () => {
+    expect(createHttpSessionRepository({ carrier: 'envelope' }).carrier).toBe('envelope');
+    expect(createHttpSessionRepository().carrier).toBe('rollforward');
+    expect(createHttpSessionRepository({ carrier: 'rollforward' }).carrier).toBe('rollforward');
+  });
+
+  it('put() on the envelope carrier does mint → client→Blob → pushEnvelope; never a full-record PUT', async () => {
+    const { fetchImpl, calls, putBody, mints } = envelopeFetch();
+    const repo = createHttpSessionRepository({ fetchImpl, carrier: 'envelope' });
+    const local = snap({
+      id: idA,
+      updatedAt: 30,
+      messages: [{ id: 'm', role: 'user', text: 'hi', at: 1 }],
+      cwd: 'workspace',
+    });
+    repo.put(idA, local);
+    await vi.waitFor(() => {
+      expect(mints.length).toBeGreaterThanOrEqual(1);
+    });
+    await vi.waitFor(() => {
+      expect(putBody.length).toBeGreaterThanOrEqual(2); // Blob object + envelope
+    });
+    // No one-shot full-record PUT against `/api/sessions/:id` on the hot path.
+    expect(calls.some((c) => c.startsWith('PUT /api/sessions/') && !c.includes('/envelope'))).toBe(
+      false,
+    );
+    // The Blob object stores the full record shape; the envelope carries the pointer.
+    const [blobBody, envBody] = putBody as [Record<string, unknown>, Record<string, unknown>];
+    expect(blobBody.id).toBe(idA);
+    expect((blobBody.messages as { text: string }[])[0]).toMatchObject({ text: 'hi' });
+    expect(envBody).toMatchObject({ id: idA, updatedAt: 30 });
+    expect((envBody.meta as { transcriptPointer: string }).transcriptPointer).toBe('tx_obj1');
+  });
+
+  it('fail-closed: non-2xx client→Blob upload does NOT advance the envelope pointer (reader Minor L1)', async () => {
+    const { fetchImpl, calls, putBody, mints } = envelopeFetch({ uploadStatus: 500 });
+    const repo = createHttpSessionRepository({ fetchImpl, carrier: 'envelope' });
+    repo.put(idA, snap({ id: idA, updatedAt: 1, messages: [] }));
+    await vi.waitFor(() => expect(mints.length).toBeGreaterThanOrEqual(1));
+    await new Promise((r) => setTimeout(r, 10));
+    // Exactly one client→Blob attempt; zero envelope PUTs (pointer must not advance).
+    expect(calls.filter((c) => c === `PUT ${UPLOAD_URL}`)).toHaveLength(1);
+    expect(calls.some((c) => c.endsWith('/envelope') && c.startsWith('PUT'))).toBe(false);
+    expect(calls.some((c) => c.startsWith('PUT /api/sessions/') && !c.includes('/envelope'))).toBe(
+      false,
+    );
+    void putBody;
+  });
+
+  it('get() on the envelope carrier reads envelope → transcript object and reconstructs the snapshot', async () => {
+    const { fetchImpl } = envelopeFetch();
+    const repo = createHttpSessionRepository({ fetchImpl, carrier: 'envelope' });
+    const res = await repo.get(idA);
+    expect(res.action).toBe('ok');
+    if (res.action === 'ok') {
+      expect(res.snapshot.id).toBe(idA);
+      expect(res.snapshot.updatedAt).toBe(30);
+    }
+  });
+
+  it('a 401 from the Blob object host does NOT disable the repo (reader Minor L1)', async () => {
+    // A 401 from the Blob host (cross-origin signed URL expired / blip) is NOT an
+    // Auth.js sign-out — the repo must stay enabled and surface a transient error.
+    const blobUrl = `${UPLOAD_URL}/read?obj=tx_obj1`;
+    let envelopeReads = 0;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && u.endsWith('/envelope')) {
+        envelopeReads += 1;
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 30,
+            meta: { transcriptPointer: 'tx_obj1' },
+            transcriptReadUrl: blobUrl,
+          },
+          { status: 200 },
+        );
+      }
+      if (u === blobUrl) return new Response(null, { status: 401 });
+      return new Response(null, { status: 204 });
+    });
+    const repo = createHttpSessionRepository({ fetchImpl, carrier: 'envelope' });
+    const res = await repo.get(idA);
+    // Transient error — NOT disabled (the whole repo must not go dark on a Blob 401).
+    expect(res.action).toBe('error');
+    expect(repo.enabled).toBe(true);
+    // A subsequent pull still reaches the envelope (repo still live).
+    const again = await repo.get(idA);
+    expect(again.action).toBe('error');
+    expect(envelopeReads).toBeGreaterThanOrEqual(2);
+  });
+});

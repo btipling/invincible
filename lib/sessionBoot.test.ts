@@ -43,6 +43,9 @@ function makeRepo(overrides: {
     get enabled() {
       return overrides.enabled ?? true;
     },
+    get carrier() {
+      return 'rollforward' as const;
+    },
     async get(id) {
       return overrides.onGet ? overrides.onGet(id) : { action: 'ok', snapshot: empty(id) };
     },
@@ -63,6 +66,15 @@ function makeRepo(overrides: {
     async remove(id) {
       removed.push(id);
       overrides.onRemove?.(id);
+    },
+    async mintUpload() {
+      return { action: 'error' as const, status: 0, message: 'unconfigured in tests' };
+    },
+    async putTranscriptObject() {
+      return false;
+    },
+    async pushEnvelope() {
+      return { action: 'error' as const, status: 0, message: 'unconfigured in tests' };
     },
   };
   return { repo, puts, removed };
