@@ -4,9 +4,12 @@
  * AGENTS-md-style instruction docs) — no DEK, same policy as personas.
  * Never ship a body in a client summary.
  *
- * Skills attach per-turn via slash command (phase 3) and are re-resolved from
- * this store each turn; they are NOT snapshotted into session `meta` (unlike
- * locked personas). `getSkillBySlug` is the server injection seam.
+ * Skills attach per-turn via slash command (`/skill-name`, `/unskill`) as
+ * session **staff of work**, NOT identity: only the **slugs** are stored in
+ * session `meta.attachedSkills`; their **bodies** are re-resolved from this
+ * store every turn (a mid-session edit applies next turn, a deleted skill
+ * silently stops attaching). They are never snapshotted into `meta` the way a
+ * locked persona snapshot is. `getSkillBySlug` is the server injection seam.
  *
  * tenantId is always derived from loadSoleMembership — never client input.
  * Every query filters tenantId + userId so a skill can never leak to another
@@ -40,8 +43,8 @@ export const SKILL_SLUG_RE = SKILL_SLUG_RE_SRC;
 /**
  * Skill body cap (plaintext; bounded so a single row can't balloon). Raised to
  * 4 MiB in #514 (generous, per the #512 caps direction). Skills are
- * store-hosted and re-resolved per turn — never snapshotted into `meta` — so
- * this caps the body field, not a merged meta budget.
+ * store-hosted and re-resolved per turn; only their slugs ride `meta`, so this
+ * caps the body field, not a merged meta budget.
  */
 export const SKILL_BODY_MAX_BYTES = 4 * 1024 * 1024;
 

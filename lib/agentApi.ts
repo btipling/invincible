@@ -18,6 +18,19 @@ export type ToolTraceEntry = {
   cwd?: string;
 };
 
+/**
+ * Client-safe mirror of a server skill attach/detach outcome (phase 2 #517).
+ * Carries ONLY the slug + status — never a skill body. Pushes the display-only
+ * `Skill attached: <slug>` / `Skill detached: <slug>` rows on the JSON agent
+ * path (the SSE path surfaces the same events via `AgentStreamEvent`).
+ */
+export type SkillAttachmentEvent = {
+  action: 'attach' | 'detach';
+  slug: string;
+  ok: boolean;
+  reason?: string;
+};
+
 export type AgentSuccess = {
   ok: true;
   text: string;
@@ -26,6 +39,8 @@ export type AgentSuccess = {
   cwd?: string;
   /** Resolved active sandbox bind the turn ran against (FS tools bound). */
   sandboxId?: string;
+  /** Skill attach/detach outcomes this turn (JSON path). */
+  skillEvents?: SkillAttachmentEvent[];
 };
 
 export type AgentFailure = {
@@ -97,6 +112,23 @@ function parseToolTrace(raw: unknown): ToolTraceEntry[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+/** Wire parse for the JSON-path skill attach/detach outcomes (only slug + status). */
+function parseSkillEvents(raw: unknown): SkillAttachmentEvent[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const out: SkillAttachmentEvent[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as Record<string, unknown>;
+    if (typeof rec.slug !== 'string' || !rec.slug) continue;
+    const action = rec.action === 'detach' ? 'detach' : 'attach';
+    const ok = typeof rec.ok === 'boolean' ? rec.ok : false;
+    const ev: SkillAttachmentEvent = { action, slug: rec.slug, ok };
+    if (typeof rec.reason === 'string') ev.reason = rec.reason;
+    out.push(ev);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 function failureFromJson(
   res: Response,
   record: Record<string, unknown> | null,
@@ -133,12 +165,14 @@ function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
     record && typeof record.cwd === 'string' ? record.cwd : undefined;
   const sandboxField =
     record && typeof record.sandboxId === 'string' ? record.sandboxId : undefined;
+  const skillEvents = parseSkillEvents(record?.skillEvents);
   return {
     ok: true,
     text: textField,
     ...(toolTrace ? { toolTrace } : {}),
     ...(cwdField !== undefined ? { cwd: cwdField } : {}),
     ...(sandboxField !== undefined ? { sandboxId: sandboxField } : {}),
+    ...(skillEvents ? { skillEvents } : {}),
   };
 }
 

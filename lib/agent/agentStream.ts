@@ -26,6 +26,19 @@ export type AgentStreamEvent =
   | { type: 'reasoning_delta'; text: string }
   | { type: 'text_delta'; text: string }
   | {
+      /**
+       * Protocol v12 / phase 2 (#517): display-only skill attach/detach outcome.
+       * Carries ONLY the slug + outcome — never a skill body (bodies stay
+       * server-side in the model's system context). Emitted by the server at the
+       * START of a turn (before the model), or alone on a NO-MODEL `/unskill`.
+       */
+      type: 'skill_attached';
+      slug: string;
+      action: 'attach' | 'detach';
+      ok: boolean;
+      reason?: string;
+    }
+  | {
       type: 'done';
       text: string;
       toolTrace?: ToolTraceEntry[];

@@ -10,7 +10,7 @@
  */
 
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
-export const HARNESS_PROTOCOL_VERSION = 11 as const;
+export const HARNESS_PROTOCOL_VERSION = 12 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -38,6 +38,12 @@ export enum MessageKind {
    * `tool_run`). Payload is the versioned `lib/toolRun.ts` encoder format.
    */
   ToolRun = 6,
+  /**
+   * Protocol v12 — display-only `Skill attached: <slug>` row (session role
+   * `skill_attached`). Additive enum value 7 (next free after ToolRun=6) —
+   * NEVER confuse the message-kind value with the protocol version (12).
+   */
+  SkillAttached = 7,
 }
 
 export type LifecycleName = 'boot' | 'ready' | 'busy' | 'error';
@@ -612,6 +618,8 @@ export function messageKindLabel(kind: MessageKind): string {
       return 'thinking';
     case MessageKind.ToolRun:
       return 'tools';
+    case MessageKind.SkillAttached:
+      return 'skill';
     default:
       return 'msg';
   }

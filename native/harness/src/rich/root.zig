@@ -18,6 +18,7 @@ pub const KIND_SYSTEM = kinds.KIND_SYSTEM;
 pub const KIND_ERROR = kinds.KIND_ERROR;
 pub const KIND_THINKING = kinds.KIND_THINKING;
 pub const KIND_TOOL = kinds.KIND_TOOL;
+pub const KIND_SKILL = kinds.KIND_SKILL;
 pub const toolrun = @import("toolrun.zig");
 
 pub const setAllocator = cache.setAllocator;

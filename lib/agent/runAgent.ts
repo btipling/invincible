@@ -122,6 +122,13 @@ export type RunAgentParams = {
    * supplied a `system` override (early-return keeps the override intact).
    */
   personaPreamble?: string;
+  /**
+   * Skills preamble (phase 2, #517). Server-resolved attached-skill bodies,
+   * appended after the persona preamble so the attached skill is the final
+   * standing-order block the model sees. Skills are staff-of-work (re-resolved
+   * each turn), so this is NOT a locked snapshot. Empty/whitespace is dropped.
+   */
+  skillsPreamble?: string;
 };
 
 export type RunAgentResult = {
@@ -172,6 +179,17 @@ function resolveSystem(
       '## Persona standing orders\n' +
         'The user bound this persona to the session. Its instructions are explicit standing orders for this session, carried in a locked snapshot so later turns reuse the same text. Prefer the persona guidance when it is more specific than the shared agent rules (it never overrides the security/config non-negotiables).\n' +
         persona,
+    );
+  }
+  // Skills preamble (phase 2, #517) appends last — after even the persona — so
+  // an attached skill's body is the final explicit standing-order block. Slugs
+  // stay server-side (never shipped to client/Wasm); empty/whitespace dropped.
+  const skills = params.skillsPreamble?.trim();
+  if (skills) {
+    parts.push(
+      '## Attached skills\n' +
+        'The user attached the following skill(s) to this session via a `/skill-name` slash command. Their bodies are explicit standing orders for THIS session (skills are staff-of-work: edits to a skill apply on the next turn). Follow them unless they conflict with the security/config non-negotiables above.\n' +
+        skills,
     );
   }
   return parts.join(' ');

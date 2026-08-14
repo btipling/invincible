@@ -40,7 +40,7 @@ The **local** blob uses the opaque client snapshot shape:
 {
   "id": "sess_…",
   "updatedAt": 0,
-  "messages": [{ "id": "m_…", "role": "user|assistant|system|error|tool_run", "text": "…", "at": 0 }],
+  "messages": [{ "id": "m_…", "role": "user|assistant|system|error|tool_run|skill_attached", "text": "…", "at": 0 }],
   "cwd": "invincible"
 }
 ```
@@ -136,7 +136,7 @@ for the open tab).
 | `createdAt` | Epoch ms at mint/backfill — immutable after create |
 | `updatedAt` | Epoch ms of last accepted write. **New sessions are seeded `0`** (first host PUT with epoch-now ≥ 0 is idempotent-accept, never a spurious 409) |
 | Cross-user | Other-user id / nonexistent id → **404** (no existence leak) |
-| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot`, `transcriptPointer`, `attachedSkills` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 512 KiB) and counts toward the raised whole-`meta` budget (**1 MiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection is active — see [docs/personas.md](personas.md)). `attachedSkills` (phase 1 #514) is a **JSON-encoded string** of skill slugs (session-sticky attach; skills re-resolved server-side, body never snapshotted). `transcriptPointer` (phase 0 #515) is a Redis-safe opaque id of the latest **Blob transcript object** — the envelope's pointer; the transcript itself never lives in Redis |
+| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot`, `transcriptPointer`, `attachedSkills` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 512 KiB) and counts toward the raised whole-`meta` budget (**1 MiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection is active — see [docs/personas.md](personas.md)). `attachedSkills` (phase 1 #514) is a **JSON-encoded string** of skill slugs (≤ 32, dedupe). It is the **session-sticky attach carrier** (`/skill-name` / `/unskill` in the composer): the server stores **slugs only** and re-resolves their bodies from the store every turn (staff of work — a mid-session edit applies next turn, a deleted skill silently stops attaching; the body is never snapshotted into `meta` and never shipped to the client). **New session / Clear** mints a fresh session, so `attachedSkills` resets there. `transcriptPointer` (phase 0 #515) is a Redis-safe opaque id of the latest **Blob transcript object** — the envelope's pointer; the transcript itself never lives in Redis |
 
 ### Caps (server + host pre-PUT trim)
 

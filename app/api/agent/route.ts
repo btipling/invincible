@@ -26,6 +26,11 @@ import {
   sessionKeyFor,
 } from '../../../lib/tenancy/harnessSessionsRedis';
 import { resolvePersonaPreamble } from '../../../lib/tenancy/personaInject';
+import {
+  parseSkillCommand,
+  resolveSkillPreamble,
+  type ResolveSkillResult,
+} from '../../../lib/tenancy/skillInject';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
@@ -37,6 +42,19 @@ const services = createProdServices();
 function isAbortError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   return err.name === 'AbortError' || err.name === 'ResponseAborted';
+}
+
+/** Short confirmation text for a no-model skill turn (attach-only / detach). */
+function summarizeSkillEvents(
+  events: ResolveSkillResult['events'],
+): string {
+  const parts = events.map((e) => {
+    if (e.action === 'attach') {
+      return e.ok ? `attached ${e.slug}` : `could not attach ${e.slug}`;
+    }
+    return e.ok ? `detached ${e.slug}` : `could not detach ${e.slug}`;
+  });
+  return parts.join('; ');
 }
 
 /**
@@ -113,6 +131,28 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: parsed.error }, { status: parsed.status });
   }
 
+  // Phase 2 (#517) — leading-slash skill commands. Parse the command, strip the
+  // `/slug` prefix from the model prompt (keep remaining prose), or mark a pure
+  // detach (`/unskill slug` consumes the whole line → no model turn).
+  const skillCommand = parseSkillCommand(parsed.prompt);
+  const modelPrompt =
+    skillCommand.type === 'attach'
+      ? skillCommand.rest
+      : skillCommand.type === 'detach'
+        ? ''
+        : parsed.prompt;
+
+  // Map skill outcomes to the display-only SSE event shape (slug only — never a body).
+  const skillToEvent = (
+    e: ResolveSkillResult['events'][number],
+  ): AgentStreamEvent => ({
+    type: 'skill_attached',
+    slug: e.slug,
+    action: e.action,
+    ok: e.ok,
+    ...(e.ok ? {} : { reason: e.reason }),
+  });
+
   // Server secrets resolved once at the root (phase-2 DI) — scrubbed from
   // model-facing and client-facing strings like the BYOK / PAT / MCP secrets.
   const serverSecrets = services.serverSecrets;
@@ -132,7 +172,7 @@ export async function POST(req: Request): Promise<Response> {
       modelId?: string;
     };
     let runParams: RunParamsAcc = {
-      prompt: parsed.prompt,
+      prompt: modelPrompt,
       signal: req.signal,
       initialCwd: parsed.cwd,
       serverSecrets,
@@ -183,6 +223,81 @@ export async function POST(req: Request): Promise<Response> {
       } catch {
         personaPreamble = undefined;
       }
+    }
+
+    // Phase 2 (#517) — resolve attached skills (sticky re-read from
+    // `meta.attachedSkills` + the current `/slug` attach or `/unskill` detach).
+    // Modeled on personaInject but WITHOUT the snapshot lock: skills are
+    // staff-of-work, so bodies re-resolve from the store each turn (edits apply
+    // next turn). Fail-open: any store/resolution error → no preamble (turn
+    // proceeds), never a 4xx/5xx on the hot path. Sticky persist is best-effort;
+    // when no `sessionId`/store is available the attach still injects THIS turn
+    // (mirrors persona's offline-safe path), just without a sticky write.
+    let skills: ResolveSkillResult | undefined;
+    if (skillCommand.type !== 'none' || parsed.sessionId) {
+      try {
+        const tenantRes = await services.harnessSessionsRedis.resolveTenantIdForUser(
+          userId,
+        );
+        if (tenantRes.ok) {
+          const storeRes = await resolveSessionStore();
+          const sessionStore = storeRes.ok ? storeRes.value : undefined;
+          skills = await resolveSkillPreamble({
+            userId,
+            command: skillCommand,
+            userSkills: services.userSkills,
+            ...(sessionStore && parsed.sessionId
+              ? {
+                  sessionStore,
+                  sessionKey: sessionKeyFor(
+                    tenantRes.value,
+                    userId,
+                    parsed.sessionId,
+                  ),
+                }
+              : {}),
+          });
+        }
+      } catch {
+        skills = undefined;
+      }
+    }
+
+    // A pure `/slug` attach with no remaining prose, or a `/unskill` detach, is
+    // a NO-MODEL turn: emit the display-only `skill_attached` rows + a short
+    // confirmation, never call the model with an empty prompt.
+    if (!modelPrompt.trim()) {
+      const text =
+        summarizeSkillEvents(skills?.events ?? []) || 'No prompt to send.';
+      const sseEvents = (skills?.events ?? []).map(skillToEvent);
+      const skillEvents = skills?.events?.length ? skills.events : undefined;
+      const attachedSkills = skills?.attachedSkills;
+      if (stream) {
+        const encoder = new TextEncoder();
+        const bodyStream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            for (const ev of sseEvents) {
+              controller.enqueue(encoder.encode(encodeSseData(ev)));
+            }
+            controller.enqueue(encoder.encode(encodeSseData({ type: 'done', text })));
+            controller.close();
+          },
+        });
+        return new Response(bodyStream, {
+          status: 200,
+          headers: {
+            'Content-Type': AGENT_STREAM_CONTENT_TYPE,
+            'Cache-Control': 'no-cache, no-transform',
+            Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          },
+        });
+      }
+      return Response.json({
+        text,
+        ...(skillEvents ? { skillEvents } : {}),
+        ...(attachedSkills ? { attachedSkills } : {}),
+      });
     }
 
     const byok = await services.resolveInferenceForRequest.resolveByokForRequest(
@@ -335,6 +450,7 @@ export async function POST(req: Request): Promise<Response> {
       ...runParams,
       modelId: runParams.modelId,
       ...(personaPreamble ? { personaPreamble } : {}),
+      ...(skills?.preamble ? { skillsPreamble: skills.preamble } : {}),
     };
 
     // Soft path only when non-FS tools exist; else return resolve 403 body.
@@ -366,6 +482,12 @@ export async function POST(req: Request): Promise<Response> {
             }
           };
           try {
+            // Phase 2 (#517): emit the display-only `skill_attached` events at the
+            // START of the turn (before the model runs) so the host paints the
+            // skill-name row immediately.
+            if (skills?.events?.length) {
+              for (const ev of skills.events) enqueue(skillToEvent(ev));
+            }
             await runAgentStream(finalRunParams, {
               onEvent: async (ev) => {
                 enqueue(ev);
@@ -423,6 +545,8 @@ export async function POST(req: Request): Promise<Response> {
       ...(toolTrace.length > 0 ? { toolTrace } : {}),
       ...(cwd != null ? { cwd } : {}),
       ...(sandboxId != null ? { sandboxId } : {}),
+      ...(skills?.events?.length ? { skillEvents: skills.events } : {}),
+      ...(skills?.attachedSkills ? { attachedSkills: skills.attachedSkills } : {}),
     });
   } catch (err) {
     if (isAbortError(err)) {

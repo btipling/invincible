@@ -22,7 +22,9 @@ export {
   HARNESS_SESSION_SNAPSHOT_ID_MAX,
 };
 
-const SESSION_ROLES = new Set<SessionRole>(['user', 'assistant', 'system', 'error', 'tool_run']);
+const SESSION_ROLES = new Set<SessionRole>(
+  ['user', 'assistant', 'system', 'error', 'tool_run', 'skill_attached'],
+);
 
 export type HarnessSessionsDeps = {
   db?: Db;
@@ -145,7 +147,8 @@ export function validateSessionSnapshot(
       return {
         ok: false,
         code: 'invalid_messages',
-        error: `messages[${i}].role must be user|assistant|system|error.`,
+        error:
+          `messages[${i}].role must be user|assistant|system|error|tool_run|skill_attached.`,
       };
     }
     if (typeof msg.text !== 'string') {
