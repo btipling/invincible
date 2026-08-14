@@ -5,16 +5,17 @@ description: >
   for correctness, performance, architectural soundness, testing, layer placement
   (DOM host vs Wasm harness vs Vercel backend), cloud-native ops (GHA primary for
   Production mutates — never laptop-only), living docs (docs/ AGENTS README
-  SECURITY without phase/issue process artifacts), and parent adherence when
-  phased. DEFAULT: apply recommended fixes by editing the same issue body via gh.
+  SECURITY without phase/issue process artifacts), parent adherence when phased,
+  and numeric limits (generous; never lower — caution theater). DEFAULT: apply
+  recommended fixes by editing the same issue body via gh.
   LOAD: do not search — use gh to read .grok/skills/plan-review/* from main.
   Refuse if gh missing/unauthenticated. Never GitHub MCP.
   Triggers: "review plan", "plan review", "review the plan", "team review",
   "HANDOFF-READY", "check this plan", "load the plan-review skill", issue URL
   or number, "parent adherence".
 metadata:
-  short-description: "Review plan issues; cloud ops + living docs; edit via gh"
-  version: "1.1"
+  short-description: "Review plan issues; cloud ops + living docs; never lower limits"
+  version: "1.2"
   project: invincible
 ---
 
@@ -59,6 +60,7 @@ explicitly asks after the review. **Do** edit the **plan issue** body.
 Load [references/rubric.md](references/rubric.md) for checklists and
 [references/output-format.md](references/output-format.md) for the response
 shape. Load [LOAD.md](LOAD.md) for the zero-search fetch recipe.
+Limits policy (do not skip): [references/limits.md](references/limits.md).
 
 ---
 
@@ -90,7 +92,7 @@ If `gh` fails → **stop**. Never fall back to GitHub MCP.
 gh repo clone btipling/invincible /tmp/invincible -- --depth 1
 # skill files:
 #   /tmp/invincible/.grok/skills/plan-review/SKILL.md
-#   /tmp/invincible/.grok/skills/plan-review/references/{rubric,output-format,layers}.md
+#   /tmp/invincible/.grok/skills/plan-review/references/{rubric,output-format,layers,limits}.md
 
 # Or single-file:
 gh api "repos/btipling/invincible/contents/.grok/skills/plan-review/SKILL.md?ref=main" \
@@ -138,16 +140,17 @@ If the issue is missing, ask once for the number/URL, then stop. Do **not** inve
 ### Output (always)
 
 1. **Verdict:** `HANDOFF-READY` | `NEEDS REVISION` | `BLOCKED`
-2. **Scores** (1–5) for each required axis (§3) — include **Cloud ops** and
-   **Living docs** (or N/A with reason)
+2. **Scores** (1–5) for each required axis (§3) — include **Cloud ops**,
+   **Living docs**, and **Limits** (or N/A with reason)
 3. **Findings table** (severity · axis · issue · fix)
 4. **Parent adherence** block when applicable (§4)
 5. **Layer / UI** block when applicable (§5)
 6. **Cloud ops + living docs** block when Production mutate or docs in scope (§3.5–3.6)
-7. **Required plan edits** — what was (or will be) written into the issue
-8. **Update result** (default mode): issue number, URL, verified  
+7. **Limits** block whenever any numeric cap is in the plan (§3.7)
+8. **Required plan edits** — what was (or will be) written into the issue
+9. **Update result** (default mode): issue number, URL, verified  
    — or explicit “no plan edits” when nothing to change
-9. **Merge-gate residual risk** (one short paragraph)
+10. **Merge-gate residual risk** (one short paragraph)
 
 Severity: **Blocker** > **Major** > **Minor** > **Nit**.  
 Any **Blocker** ⇒ verdict cannot be `HANDOFF-READY`.
@@ -178,6 +181,7 @@ Leaving fixes only in the chat reply is a **skill failure** unless the user set
 | Layer mistakes | Layer placement table + forbidden wiring |
 | Laptop-only / script-only Production ops | Lock **Cloud ops path** with GHA primary |
 | Missing AGENTS/README/docs consideration | Fill **Living docs plan** table; forbid phase/issue docs |
+| Missing or incomplete **Limits** table | Add/fill the **Limits** table; **never** by shrinking a number |
 | Resolved open questions | Move into locked decisions |
 | Status after review | Header Status + **Review notes** stamp |
 
@@ -189,6 +193,12 @@ Always add/update a top **Review notes (YYYY-MM-DD)** section (see
 - Application source (`app/`, `lib/`, `native/`, tests) — implement separately  
 - Unrelated issues  
 - Closing/opening issues unless Status COMPLETE and user asked  
+- **Any numeric limit, downward.** You may **raise** a cap, **keep** a live
+  value, or **add a missing Limits table** that records existing/proposed
+  numbers. You may **not** lower a live cap, a parent lock, or a number the
+  plan already chose. That edit is **caution theater** and a **skill failure**.
+  Restore it if the draft already lowered one without an operator ask or a
+  cited production/CI break.
 
 ### When **not** to edit the issue
 
@@ -210,6 +220,7 @@ gh issue view <N> --repo btipling/invincible --json body -q .body > /tmp/plan-is
 #    - Apply every required fix coherently
 #    - Review notes table + Reviewed stamp
 #    - Status line updated
+#    - Limits table present; no row vs-live = lower
 
 # 2. ONE issue update
 gh issue edit <N> --repo btipling/invincible --body-file /tmp/plan-issue.md
@@ -233,7 +244,7 @@ gh issue view <N> --repo btipling/invincible --json body,url -q '{url,hasNotes: 
 
 If a phase review requires parent checklist/status alignment, update the
 **parent issue body** in the same review turn. Do not silently change unrelated
-parent locks.
+parent locks. Do **not** use a parent edit to sneak a lower cap into a phase.
 
 ---
 
@@ -250,8 +261,11 @@ parent locks.
    - If ops: list `.github/workflows/*` and verify claims about existing GHA  
    - Do **not** invent bridge APIs, route shapes, or ownership  
 5. **Load project constraints:** feature-divide, palette rules, infra “Done” table.  
-6. Only then score. **If a cited baseline cannot be fetched, mark Unverified.**  
-7. **Default `mode=fix`:** recommended changes → edit issue body before done.
+6. **Inventory every numeric limit** in the plan and in live code it cites
+   (bytes, chars, counts, timeouts, retries, slug/body/meta/payload/ring).
+   Compare plan vs live vs parent. Score §3.7.  
+7. Only then score. **If a cited baseline cannot be fetched, mark Unverified.**  
+8. **Default `mode=fix`:** recommended changes → edit issue body before done.
 
 ---
 
@@ -269,7 +283,8 @@ parent locks.
 | **Docs / agent rules** | SECURITY, BYO, AGENTS, README | **Living docs** (§3.6) **required** |
 | **Refactor** | move modules, no behavior change | Zero behavior drift |
 
-A plan can combine classes (e.g. phase + backend + ops + docs).
+A plan can combine classes (e.g. phase + backend + ops + docs). Any class that
+names a numeric cap also requires §3.7.
 
 ---
 
@@ -293,6 +308,10 @@ Score each 1–5. Detail: [references/rubric.md](references/rubric.md).
 - Wasm rebuild cost acknowledged when `native/harness` changes (CI path).
 - Skip work when idle / no pending submit where relevant.
 - Server route: no unbounded retries; no client key exposure.
+- **Bounds ≠ Arduino caps.** A named bound can be large (MiB, minutes, thousands).
+  Scoring “performance” by shrinking a body/meta/slug to 4–16 KiB “just in case”
+  is **caution theater**, not a performance finding. Real perf issues are
+  unbounded loops, N+1 storms, missing idle-skip — not “the AGENTS.md is 20 KiB.”
 
 ### 3.3 Architectural soundness
 
@@ -362,6 +381,53 @@ surface change — and the plan must say why each surface is N/A.
 **Blocker:** only if docs would instruct **secrets in git** or **laptop-only
 Production mutate** as the official path.
 
+### 3.7 Limits — generous; **never lower** (caution theater)
+
+Score **N/A** only when the plan sets **no** numeric cap and says so. Otherwise
+score 1–5. Full policy: [references/limits.md](references/limits.md).
+
+This product is a **cloud harness on Vercel**, not a microcontroller. The
+operator is tired of re-litigating Arduino-era numbers (4 KiB `meta`, 16 KiB
+bodies, 32-char slugs, tiny retry loops) that reviewers invent “to be safe”
+when **nothing has broken**. Those caps handicap authors, force a follow-up
+plan to undo them, and waste the same argument again. That is **caution
+theater**. Stop.
+
+**Policy the operator locked:**
+
+1. Limits ought to be **generous**. Size them for a real AGENTS.md, a real
+   playbook, a real session — not a theoretical paste-bomb on an Arduino.
+2. **We lower a limit when something actually breaks because of that limit.**
+   Not before. Not “defense in depth.” Not “to match a sibling.”
+3. **plan-review is not allowed to lower any limit.** Applying a downward
+   number as a “fix” is a **skill failure**. Do not put it in Review notes.
+   Do not put it in the issue body.
+4. If the **draft already lowered** a live cap or a parent lock without an
+   explicit operator ask **or** a cited production/CI break: that is a
+   **Blocker**. Restore the live (or more generous) value.
+5. Every numeric limit this plan sets, inherits, or copies **must** appear in
+   a dedicated **Limits** table in the issue body (same shape as create-plan).
+   Missing table when any cap exists = **Major** → add the table. Filling the
+   table by inventing smaller numbers = **Blocker**.
+
+| Must lock | Fail if |
+|-----------|---------|
+| **Limits** table in the issue (or explicit **N/A — no numeric limits**) | Caps buried only in prose / decisions / code-sketch comments |
+| Each row: Limit · Value · Live on `main` · vs live · Enforced at · Why (not “safety”) · Lower only if | “16 KiB to be safe” / “match personas” as the Why |
+| `vs live` is `raise` \| `keep` \| `new` | `lower` without operator ask or cited break |
+| Reviewer edits never shrink a number | Review notes that “tighten the cap” |
+
+**Blocker:** this review, or the plan as written, **lowers** a live or parent
+limit without the operator asking or a cited break.
+
+**Major:** numeric caps exist and there is no **Limits** table.
+
+**Not a finding:** “this body could be 16 KiB like personas.” Copying a
+**smaller** sibling cap onto a new surface is theater unless the **same
+physical budget** is shared (e.g. persona snapshot really does sit inside
+`HARNESS_SESSION_MAX_META_BYTES`). Skills bodies do **not** share that
+budget — do not pretend they do.
+
 ---
 
 ## 4. Parent-plan adherence (phase issues — mandatory)
@@ -380,11 +446,16 @@ When the issue is a phase of a parent (`Parent: #N`, or title `phase N`):
 | Depends on prior phases COMPLETE or assumed | Builds on unfinished work quietly |
 | Next-phase preview does not leak into this scope | Scope bleed |
 | Cloud ops / docs deferred incorrectly across phases | Mutate script in phase N, GHA “later” with no owner |
+| Phase does not **lower** a parent-locked limit | “Tighten the parent cap in this phase” |
 
 ### 4.2 Allowed refinements
 
 Phase plans **may** tighten parent sketches when live code forces a correction —
 document in **Corrections / refinements vs parent**. Silent drift = **Major**.
+
+**Tighten** here means correct a wrong API name or path — **not** shrink a
+numeric limit. Raising a parent cap because live code or product use needs it
+is an allowed refinement (document it). Lowering is not.
 
 ### 4.3 Parent adherence score
 
@@ -463,6 +534,7 @@ anti-reuse** and document impact in the plan header.
 11. Architectural change with **no** decisions table and no explicit N/A justification  
 12. **Production data/secret cutover with no GHA (or equivalent hosted) primary path** — script/`npm run` only, or “operator’s laptop”  
 13. **Living docs planned to teach laptop-only Production ops** as the official path  
+14. **Lowering a numeric limit** (live, parent-locked, or already chosen in this plan) without an explicit operator ask or a cited production/CI break caused **by that limit**. This includes “tighten to match sibling,” “16 KiB to be safe,” and review-notes that shrink a cap.  
 
 ---
 
@@ -475,14 +547,16 @@ anti-reuse** and document impact in the plan header.
 4. Classify (§2) — flag ops/docs classes
 5. Fetch parent issue if phase
 6. Fetch every cited baseline module (+ workflows if ops)
-7. Walk rubric axes (§3) + parent (§4) + layers/UI (§5)
-   including Cloud ops (§3.5) + Living docs (§3.6)
-8. Build findings; scores + verdict
-9. DEFAULT mode=fix — if recommended plan changes:
+7. Inventory numeric limits (plan vs live vs parent)
+8. Walk rubric axes (§3) + parent (§4) + layers/UI (§5)
+   including Cloud ops (§3.5) + Living docs (§3.6) + Limits (§3.7)
+9. Build findings; scores + verdict
+10. DEFAULT mode=fix — if recommended plan changes:
      a. Write full revised body to disk
      b. Add Review notes + Status
-     c. gh issue edit once; verify
-10. Present verdict + findings + update result to user
+     c. NEVER lower a limit in that body
+     d. gh issue edit once; verify
+11. Present verdict + findings + update result to user
 ```
 
 ---
@@ -491,12 +565,15 @@ anti-reuse** and document impact in the plan header.
 
 | Verdict | When |
 |---------|------|
-| **HANDOFF-READY** | No Blockers; Majors fixed in plan (or user-waived); scores ≥ 4 on required axes; parent ≥ 4 when phase; layers sound; cloud ops + docs sound or N/A — **after** edits if any |
+| **HANDOFF-READY** | No Blockers; Majors fixed in plan (or user-waived); scores ≥ 4 on required axes; parent ≥ 4 when phase; layers sound; cloud ops + docs + limits sound or N/A — **after** edits if any |
 | **NEEDS REVISION** | Material issues remain (user decision or incomplete baseline) |
 | **BLOCKED** | Missing issue, cannot fetch critical baseline, or unsafe contradictions |
 
 When `mode=fix` clears Blockers/Majors via issue edits, re-score and prefer
 **HANDOFF-READY**.
+
+A review that “fixed” a plan by shrinking a cap is **not** HANDOFF-READY —
+revert that edit.
 
 ---
 
@@ -512,6 +589,7 @@ High-quality plan issues include:
 - Live baseline table (workflows when ops)  
 - Architectural decisions when warranted  
 - Layer placement table  
+- **Limits** table (or N/A — no numeric limits)  
 - **Cloud ops path** section (or N/A)  
 - **Living docs plan** table (AGENTS + README always considered)  
 - Testing matrix with edges  
@@ -537,6 +615,11 @@ Missing sections that the phase needs → finding → pushed into issue under fi
 - Approving docs that are **phase/issue process dumps**  
 - Expanding scope during review  
 - Implementing app code under the guise of review  
+- **Lowering a limit “to be safe” / “to match personas” / “defense in depth”** — **skill failure**  
+- Treating Vercel / Gateway / Redis as if they were 16 KiB platforms (they are not)  
+- Inventing a 4 KiB / 16 KiB / 32-char cap because a sibling has one, when the
+  physical budget is **not** shared  
+- Scoring performance down because a playbook is allowed to be larger than 16 KiB  
 
 ---
 
@@ -552,6 +635,9 @@ Missing sections that the phase needs → finding → pushed into issue under fi
 [ ] Correctness / performance / architecture / testing scored
 [ ] Cloud ops scored (or N/A with reason)
 [ ] Living docs scored (or N/A with reason) — AGENTS + README considered
+[ ] Limits scored (or N/A — no numeric limits)
+[ ] Limits table present in the issue when any cap exists
+[ ] No limit lowered vs live / parent / this plan (unless operator asked or cited break)
 [ ] Parent adherence scored (or N/A)
 [ ] Layer placement + dual-chat check (or N/A)
 [ ] Layout stability for host chrome (or N/A)

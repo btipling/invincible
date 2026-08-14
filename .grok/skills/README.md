@@ -28,8 +28,8 @@ gh api "repos/btipling/invincible/contents/.grok/skills/<name>/SKILL.md?ref=main
 
 | Skill | Directory | Purpose |
 |-------|-----------|---------|
-| **create-plan** | `create-plan/` | Author feature plans as **GitHub issues** (parent + optional phase issues); **cloud ops + living docs** required |
-| **plan-review** | `plan-review/` | Review plan issues: correctness, perf, architecture, tests, layers, **cloud ops**, **living docs**, parent; default **edit issue body** via `gh` |
+| **create-plan** | `create-plan/` | Author feature plans as **GitHub issues** (parent + optional phase issues); **cloud ops + living docs + Limits table** required |
+| **plan-review** | `plan-review/` | Review plan issues: correctness, perf, architecture, tests, layers, **cloud ops**, **living docs**, **limits**; default **edit issue body** via `gh`; **never lower a cap** |
 | **adversarial-review** | `adversarial-review/` | Hostile **PR** review (break scenarios, security, feature-divide, runner/CI); default **comment on PR** via `gh` |
 | **cleanup-sandbox** | `cleanup-sandbox/` | Post-session hygiene: checkout + pull latest `main`, delete leftover local branches / agent scratch; auto-deletes **nested self-clones** (same-origin `ivc-*` / `.grok` copies) without asking; **refuses** to discard current uncommitted work without explicit operator consent |
 | **implement-plan** | `implement-plan/` | Code a reviewed plan into a **non-merged PR** + tests: canonical test/build workflow (`npm run typecheck`, `vitest run`, `vitest run --changed`), in-sandbox exec rules (10-min timeout, transport drops, no orphaned runs), layer ownership, code standards that survive review |
@@ -51,12 +51,25 @@ Always consider AGENTS + README. Product docs must be **timeless** for newcomers
 **not** phase numbers, GitHub issue archaeology, or plan handoff checklists
 (those stay in **issues** only).
 
+## Limits (create-plan + plan-review)
+
+This is a **cloud harness**, not a microcontroller. Tiny “safety” caps (4 KiB
+`meta`, 16 KiB bodies, 32-char slugs) are **caution theater**. The operator is
+done re-arguing them.
+
+- Every numeric cap belongs in a dedicated **Limits** table in the issue.
+- Values ought to be **generous**. Lower them when something **actually
+  breaks** because of the limit — not before.
+- **plan-review must not lower any limit.** Missing table → add it; do not
+  fill it by shrinking numbers.
+- Policy: [`plan-review/references/limits.md`](plan-review/references/limits.md).
+
 ## create-plan
 
 User: “use the create-plan skill to add feature X”
 
 1. Read `AGENTS.md` + `docs/feature-divide.md`  
-2. Draft plan in the skill format (layers, architecture, tests, **cloud ops**, **docs**)  
+2. Draft plan in the skill format (layers, architecture, tests, **cloud ops**, **docs**, **Limits** table)  
 3. `gh issue create` parent; optional phase issues with `Parent: #N`  
 4. Do not implement until plan-review / user says go  
 
@@ -69,7 +82,8 @@ See [`plan-review/LOAD.md`](plan-review/LOAD.md):
 1. Ensure `gh` works (refuse if not)  
 2. Clone or `gh api` skill files from `main`  
 3. `gh issue view N`  
-4. Review (incl. cloud ops + living docs); default `mode=fix` → full body update via `gh issue edit`  
+4. Review (incl. cloud ops + living docs + **limits**); default `mode=fix` → full body update via `gh issue edit`  
+   **Never lower a numeric cap.** Add a missing Limits table; do not shrink numbers.
 
 ## implement-plan
 

@@ -68,6 +68,19 @@ N/A — no Production mutate.
 | `SECURITY.md` | | |
 | `.env.example` | | |
 
+## Limits
+
+N/A — no numeric limits.
+
+<!-- or fill every cap this plan sets/inherits. vs live = raise | keep | new.
+     lower is forbidden unless the operator asked or that limit already broke
+     prod/CI (cite). Why must not be "to be safe" / "match personas" / "Gateway".
+     We lower limits when something actually breaks because of them — not before. -->
+
+| Limit | Value | Live on `main` | vs live | Enforced at | Why this number (not "to be safe") | Lower only if |
+|-------|-------|----------------|---------|-------------|-------------------------------------|---------------|
+| | | | | | | |
+
 ## Phase map
 
 | Phase | Issue | Deliverable | Depends on |
@@ -85,6 +98,7 @@ N/A — no Production mutate.
 - [ ] 
 - [ ] Cloud ops: GHA primary path or N/A
 - [ ] Living docs: listed surfaces updated (timeless)
+- [ ] Limits: table filled or N/A — no numeric limits; no downward vs live
 
 ## Risks & mitigations
 
@@ -118,7 +132,7 @@ N/A — no Production mutate.
 
 **In scope:** …
 **Out of scope:** …
-**Forbidden:** dual DOM chat · secrets in Wasm · laptop-only Production ops · phase/issue theater in product docs
+**Forbidden:** dual DOM chat · secrets in Wasm · laptop-only Production ops · phase/issue theater in product docs · lowering a parent/live limit without operator ask or cited break
 
 ## Current baseline (live code)
 
@@ -145,6 +159,14 @@ N/A — no Production mutate.
 | `SECURITY.md` | | |
 | `.env.example` | | |
 
+## Limits
+
+N/A — no numeric limits.
+
+| Limit | Value | Live on `main` | vs live | Enforced at | Why this number (not "to be safe") | Lower only if |
+|-------|-------|----------------|---------|-------------|-------------------------------------|---------------|
+| | | | | | | |
+
 ## Implementation order
 
 1. 
@@ -160,6 +182,7 @@ N/A — no Production mutate.
 - [ ] Maps to parent checklist item: …
 - [ ] Cloud ops: GHA primary or N/A
 - [ ] Living docs: timeless updates or N/A
+- [ ] Limits: table filled or N/A; none lowered vs parent/live
 
 ## Corrections / refinements vs parent
 

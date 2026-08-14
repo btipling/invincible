@@ -34,6 +34,7 @@ gh repo clone btipling/invincible /tmp/invincible -- --depth 1
 #   .grok/skills/plan-review/references/rubric.md
 #   .grok/skills/plan-review/references/output-format.md
 #   .grok/skills/plan-review/references/layers.md
+#   .grok/skills/plan-review/references/limits.md
 
 # Or per-file:
 gh api "repos/btipling/invincible/contents/.grok/skills/plan-review/SKILL.md?ref=main" \
@@ -52,9 +53,11 @@ gh issue view <N> --repo btipling/invincible --json number,title,body,url,state
 
 1. Confirm `AGENTS.md` was read this session.  
 2. Follow SKILL.md review axes → findings + verdict.  
-   **Always score Cloud ops + Living docs** (or explicit N/A).  
+   **Always score Cloud ops + Living docs + Limits** (or explicit N/A).  
    Block laptop/script-only Production cutovers; demand GHA primary when mutate.  
    Demand timeless docs (docs/ AGENTS README) — no phase/issue process theater.  
+   **Never lower a numeric limit.** Missing Limits table → add it; do not fill
+   it by shrinking numbers. See `references/limits.md`.  
 3. **Default (`mode=fix`):** if recommended plan changes, rewrite the **full issue
    body**, `gh issue edit <N> --body-file …`, verify. Do not leave fixes only in chat.  
 4. Do **not** implement app code unless the user asked.  

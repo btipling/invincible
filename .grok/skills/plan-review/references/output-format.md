@@ -27,6 +27,7 @@ fixes into the **GitHub issue body** before finishing.
 | Testing | | |
 | Cloud ops | | or N/A — no Production mutate |
 | Living docs | | or N/A — no user/operator/agent surface change |
+| Limits | | or N/A — no numeric limits |
 | Parent adherence | | or N/A |
 | Layer placement | | or N/A |
 | UI / harness UX | | or N/A |
@@ -47,6 +48,7 @@ fixes into the **GitHub issue body** before finishing.
 - Parent locks honored: …
 - Refinements needed/documented: …
 - Scope creep: none | list
+- Parent limits honored (none lowered): …
 
 ## Layers / UI
 
@@ -67,6 +69,13 @@ fixes into the **GitHub issue body** before finishing.
 - Timeless (no phase/issue process artifacts): yes/no
 - Gaps: …
 
+## Limits
+
+- Table in issue: yes / added this review / N/A — no numeric limits
+- Any `vs live = lower`? **no** (if yes: Blocker — restored)
+- This review lowered a number? **no** (if yes: skill failure — revert)
+- Coupled budgets raised together (e.g. snapshot + whole-meta): …
+
 ## Baseline verification
 
 | Claim in plan | Live check | Result |
@@ -80,6 +89,8 @@ fixes into the **GitHub issue body** before finishing.
 2. …
 
 (Or: “None — HANDOFF-READY as written.”)
+
+Do **not** list “tightened cap X to N” as an applied fix.
 
 ## Issue update
 
@@ -106,8 +117,8 @@ plan is followed (include missing-GHA residual if ops were soft).
 
 | Sev | Meaning | Verdict impact |
 |-----|---------|----------------|
-| **Blocker** | Would ship bugs, break feature-divide, leak secrets, dual-chat, or **laptop/script-only Production cutover** | Cannot be HANDOFF-READY until fixed **in the issue** |
-| **Major** | Likely bug, parent drift, weak tests, layer blur, missing docs plan, phase/issue theater in product docs | Must be fixed in issue under mode=fix |
+| **Blocker** | Would ship bugs, break feature-divide, leak secrets, dual-chat, **laptop/script-only Production cutover**, or **lower a numeric limit** without operator ask / cited break | Cannot be HANDOFF-READY until fixed **in the issue** |
+| **Major** | Likely bug, parent drift, weak tests, layer blur, missing docs plan, phase/issue theater in product docs, **missing Limits table** | Must be fixed in issue under mode=fix |
 | **Minor** | Real improvement | Push into issue under mode=fix |
 | **Nit** | Wording / optional | Optional lock |
 
@@ -121,7 +132,7 @@ Near the top of the issue body:
 ## Review notes (YYYY-MM-DD)
 
 Reviewed issue `#…` for correctness / performance / architecture / testing
-[/ cloud ops] [/ living docs] [/ parent adherence] [/ layers / UI].
+[/ cloud ops] [/ living docs] [/ limits] [/ parent adherence] [/ layers / UI].
 
 | Issue | Severity | Resolution |
 |-------|----------|------------|
@@ -132,8 +143,11 @@ Reviewed issue `#…` for correctness / performance / architecture / testing
 ```
 
 Keep the rest of the plan coherent with resolutions. Update the **entire** body
-on the **same issue**. Prefer adding **Cloud ops path** and **Living docs plan**
-sections when missing rather than burying fixes only in Review notes.
+on the **same issue**. Prefer adding **Cloud ops path**, **Living docs plan**,
+and **Limits** sections when missing rather than burying fixes only in Review
+notes.
+
+**Never** resolve a finding by shrinking a numeric cap.
 
 ### Update anti-patterns
 
@@ -142,3 +156,4 @@ sections when missing rather than burying fixes only in Review notes.
 - `PLACEHOLDER` / `TODO` for in-scope locks  
 - Creating a new issue instead of editing the reviewed one (unless user asks)  
 - Leaving Production mutate as npm-only after review  
+- Review notes that lower a body/meta/slug/retry cap “to be safe”  

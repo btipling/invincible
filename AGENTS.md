@@ -81,8 +81,12 @@ Do **not** write product/ops guides as phase narratives or issue archaeology
 - When a change **blocks** reusability **or forces personal-hardware ops**, call
   it out in the plan/PR and prefer a cloud-agent / **GHA** / Vercel path.
 - **create-plan** / **plan-review** must lock **Cloud ops path** + **Living docs**
-  (always consider `AGENTS.md` + `README.md` updates). plan-review treats
-  laptop/script-only Production cutover as a **Blocker**.
+  (always consider `AGENTS.md` + `README.md` updates) + a **Limits** table for
+  every numeric cap. Limits are **generous**. plan-review is **not allowed to
+  lower** a live, parent, or already-chosen cap (that is caution theater).
+  Lower a number only when that exact limit **already broke** production/CI,
+  or the operator explicitly asked. plan-review treats laptop/script-only
+  Production cutover **and** an unsolicited downward cap as **Blockers**.
 - Config seams for BYO Vercel/keys/runner (#38), **sandbox MVP** (#45),
   **optional multi-tenant auth** (#54 phases 1–5 + cloud cutover #67), and
   the **first-run sign-up bootstrap** ([docs/bring-your-own.md](docs/bring-your-own.md) §4a)
@@ -120,8 +124,8 @@ Load from **this repo** via `gh` (not generic template skills). Zero-search:
 
 | Skill | Path on `main` | Use when |
 |-------|----------------|----------|
-| **create-plan** | `.grok/skills/create-plan/SKILL.md` | “use create-plan”, feature plans as **GitHub issues**, parent + phase issues; locks **cloud ops (GHA)** + **living docs** |
-| **plan-review** | `.grok/skills/plan-review/SKILL.md` (+ `LOAD.md`, `references/*`) | Review a plan **issue**; default edit issue body via `gh`; scores cloud ops + living docs |
+| **create-plan** | `.grok/skills/create-plan/SKILL.md` | “use create-plan”, feature plans as **GitHub issues**, parent + phase issues; locks **cloud ops (GHA)** + **living docs** + **Limits** table (generous; never invent Arduino-era shrinks) |
+| **plan-review** | `.grok/skills/plan-review/SKILL.md` (+ `LOAD.md`, `references/*`) | Review a plan **issue**; default edit issue body via `gh`; scores cloud ops + living docs + **limits**; **must not lower** any cap |
 | **adversarial-review** | `.grok/skills/adversarial-review/SKILL.md` (+ `LOAD.md`, `references/*`) | Hostile **PR** review; break scenarios; post comment via `gh` |
 | **cleanup-sandbox** | `.grok/skills/cleanup-sandbox/SKILL.md` (+ `LOAD.md`) | Post-session hygiene: checkout + pull latest `main`, delete leftover local branches / agent scratch; auto-deletes **nested self-clones** (same-origin `ivc-*` / `.grok` copies) without asking; **refuses** to discard current uncommitted work without explicit operator consent |
 | **implement-plan** | `.grok/skills/implement-plan/SKILL.md` (+ `LOAD.md`) | Code a reviewed plan into a **non-merged PR** + tests; canonical test/build workflow (`npm run typecheck`, `vitest run`, `vitest run --changed`), in-sandbox exec rules, layer ownership, code standards |

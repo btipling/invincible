@@ -6,12 +6,13 @@ description: >
   create-plan skill", "plan this feature", "write a plan for", "phase plan",
   or wants a feature broken into HANDOFF-READY issues before coding.
   Requires gh. Plans live in issues, not docs/*.md. Enforces cloud-native ops
-  (GHA / cloud agent — never laptop-only Production cutovers) and living docs
-  updates (docs/, AGENTS.md, README.md) without phase/issue process artifacts.
-  Never GitHub MCP.
+  (GHA / cloud agent — never laptop-only Production cutovers), living docs
+  updates (docs/, AGENTS.md, README.md) without phase/issue process artifacts,
+  and a dedicated Limits table (generous caps; never invent Arduino-era
+  shrinks). Never GitHub MCP.
 metadata:
-  short-description: "Write feature plans as GitHub issues (cloud ops + living docs)"
-  version: "1.1"
+  short-description: "Write feature plans as GitHub issues (cloud ops + living docs + limits)"
+  version: "1.2"
   project: invincible
 ---
 
@@ -25,6 +26,10 @@ reference a **parent** issue.
 **Related:** `plan-review` (critique + edit issue bodies) after drafting.
 
 This skill **does not implement code**. It produces reviewable plans only.
+
+Limits policy (same lock as plan-review): load
+[../plan-review/references/limits.md](../plan-review/references/limits.md)
+when the plan sets or touches any numeric cap.
 
 ---
 
@@ -47,6 +52,8 @@ If `gh` fails → **stop**. Never use GitHub MCP (`github___*`).
 5. If the work mutates Production data, secrets, deploy, or env cutover: list
    existing **GHA workflows** under `.github/workflows/` and decide whether to
    **extend** one or **add** a dispatch-only job (see §1.1).
+6. Inventory every numeric cap the work will set or inherit. Those go in the
+   **Limits** table (§1.3). Do not invent a tighter number than live code.
 
 Commit author for any git work that accompanies the plan:
 
@@ -200,6 +207,35 @@ Do **not** invent “setup Vercel / deploy hook / tokens” todos. See AGENTS.md
 **Infrastructure already configured**. Plans may *use* those seams; they must
 not re-ask the user to create them unless a log proves regression.
 
+### 1.3 Limits — generous; print them; do not invent tiny caps
+
+The operator is **done** re-arguing Arduino-era numbers (4 KiB `meta`, 16 KiB
+bodies, 32-char slugs) that planners put in “to be safe.” This is a cloud
+harness on Vercel, not a microcontroller. Tiny handicapping caps are **caution
+theater**. They force a later plan to undo them. Stop writing them.
+
+**Rules:**
+
+1. Limits ought to be **generous**. Size for a real AGENTS.md / playbook /
+   session.
+2. **Lower a limit only when something actually breaks because of it.** Not
+   before. Not “defense in depth.” Not “plan-review will want it smaller”
+   (plan-review is **forbidden** from lowering limits).
+3. Every numeric cap this plan sets, inherits, or copies **must** appear in a
+   dedicated **Limits** table in the issue body. Caps only in prose = skill
+   failure.
+4. Prefer **raising** a live tiny cap when the new work will use the room.
+   If you keep a live tiny cap, the Why column says why it is **out of scope
+   this time** — not why the tiny number is virtuous.
+5. Do **not** copy a smaller sibling cap onto a new surface unless they share
+   a **named physical budget** (persona snapshot ∈ session `meta` is real;
+   skill body “same as personas 16 KiB” is not — skills store slugs only in
+   `meta`).
+6. Do **not** claim Vercel AI Gateway / functions / Redis force 16 KiB of
+   user text. They do not.
+
+Full policy + column rules: [../plan-review/references/limits.md](../plan-review/references/limits.md).
+
 ---
 
 ## 2. When to use parent + phases
@@ -313,6 +349,21 @@ narrow scope.
 | `SECURITY.md` | … / N/A | |
 | `.env.example` | … / N/A | |
 
+## Limits
+
+> **Required** whenever this plan sets, inherits, or touches a numeric cap
+> (bytes, chars, counts, timeouts, retries, slug/body/meta/payload/ring).
+> If truly none: **N/A — no numeric limits.**
+>
+> `vs live` must be `raise` | `keep` | `new`. **`lower` is forbidden** unless
+> the operator asked or that limit already broke prod/CI (cite).
+> Why must not be “to be safe” / “match personas” / “Gateway.”
+> We lower limits when something actually breaks because of them — not before.
+
+| Limit | Value | Live on `main` | vs live | Enforced at | Why this number (not "to be safe") | Lower only if |
+|-------|-------|----------------|---------|-------------|-------------------------------------|---------------|
+| … | 64 KiB | 16 KiB | **raise** | `lib/…` | real AGENTS.md / playbook length | this exact cap caused a prod/CI break (cite) |
+
 ## Implementation order
 
 1. …
@@ -346,6 +397,7 @@ Always include:
 - [ ] No dual-chat regression (if UI)
 - [ ] **Cloud ops:** GHA primary path shipped or explicit N/A
 - [ ] **Living docs:** listed surfaces updated (timeless; no phase/issue theater)
+- [ ] **Limits:** table filled (or N/A — no numeric limits); no `vs live = lower`
 - [ ] AGENTS.md / README.md considered (updated or N/A justified)
 - [ ] Parent checklist items mappable (phase plans)
 
@@ -384,6 +436,8 @@ Create a non-empty **Architectural decisions** table if any of:
 - New deploy / artifact / runner requirement  
 - **New or changed Production mutate / cutover path** (GHA vs script-only)  
 - Anything that affects **clone-and-run-for-your-own-project** reusability  
+- **New or changed numeric limit** (must also fill the **Limits** table; never
+  introduce a tighter cap than live without operator ask / cited break)
 - Public API shape for `/api/*`
 
 ---
@@ -397,6 +451,8 @@ Create a non-empty **Architectural decisions** table if any of:
 [ ] Architectural decisions present or explicit N/A
 [ ] Cloud ops path: GHA primary if Production mutate; else explicit N/A
 [ ] Living docs table filled; AGENTS + README considered
+[ ] Limits table filled (or N/A — no numeric limits); no downward vs live
+[ ] No Arduino-era “safety” caps (4 KiB / 16 KiB / 32-char) invented this plan
 [ ] No plan to put phase/issue process artifacts into docs/*
 [ ] Tests matrix has edge cases, not only happy path
 [ ] DoD checkboxes prove the goals (including ops + docs)
@@ -481,7 +537,7 @@ Report to the user:
 
 1. Parent (or single) issue URL + number  
 2. Phase issue URLs (if any)  
-3. One-line summary of scope + layers + **ops/docs** (GHA? which docs?)  
+3. One-line summary of scope + layers + **ops/docs/limits** (GHA? which docs? any caps raised?)  
 4. Suggested next step: **plan-review** on the issue(s), then implement  
 
 Do **not** start coding unless the user explicitly asks.
@@ -504,6 +560,10 @@ Do **not** start coding unless the user explicitly asks.
 - **Living docs that narrate phases / issue numbers** instead of current system  
 - Deferring “we’ll add the workflow later” while shipping the mutate script  
 - Treating an AGENTS.md sentence as a substitute for a real operator path  
+- **Inventing a tiny cap “to be safe” / “to match personas” / “Gateway limit”**  
+- **Lowering a live or parent limit** without an operator ask or a cited break  
+- **Omitting the Limits table** when any numeric cap exists  
+- Asking plan-review to “tighten” a number — that skill is forbidden from doing so  
 
 ---
 
@@ -512,7 +572,8 @@ Do **not** start coding unless the user explicitly asks.
 ```text
 [ ] gh auth OK
 [ ] AGENTS.md + feature-divide + live baseline (+ workflows if ops)
-[ ] Format §3 complete (incl. Cloud ops path + Living docs plan)
+[ ] Format §3 complete (incl. Cloud ops path + Living docs plan + Limits table)
+[ ] Limits: generous or honestly coupled; no `vs live = lower`
 [ ] Parent issue created (or single)
 [ ] Phase issues created with Parent: #N
 [ ] Parent phase map updated with numbers

@@ -49,6 +49,12 @@ Companion to `plan-review/SKILL.md`. Use these prompts while scoring.
 - Wasm rebuild + artifact race acknowledged when native changes?  
 - Server retries stormy?  
 
+### Not a performance finding
+
+Shrinking a persona/skill/meta/slug cap to 4–16 KiB “so payloads stay small”
+is **caution theater** (see [limits.md](limits.md)). Unbounded **loops** and
+N+1 storms are performance. A 64 KiB playbook is not.
+
 ---
 
 ## Architectural soundness (1–5)
@@ -142,6 +148,36 @@ Companion to `plan-review/SKILL.md`. Use these prompts while scoring.
 
 ---
 
+## Limits (when any numeric cap exists — else N/A)
+
+Full policy: [limits.md](limits.md).
+
+| Score | Meaning |
+|-------|---------|
+| 5 | Limits table complete; values generous or honestly coupled; no downward vs live/parent |
+| 4 | Table present; one soft Why-column nit |
+| 3 | Caps exist but table missing or Why is “to be safe” |
+| 2 | Plan or this review lowers a cap without operator ask / cited break |
+| 1 | Systematic Arduino-capping; review itself introduced the shrink |
+
+### Prompt questions
+
+- Is there a **Limits** table (or explicit N/A)?  
+- For each cap: Value vs live vs parent — any **lower**?  
+- Is the Why a product reason, or theater (“match personas”, “Gateway”, “safety”)?  
+- If two caps share a physical blob (persona snapshot ∈ session `meta`), are
+  both rows present and raised together?  
+- Did **this review** try to shrink a number? If yes, revert — skill failure.  
+
+### Common failure modes
+
+- Copying persona 16 KiB onto skills (skills are **not** in `meta`)  
+- Lowering `HARNESS_SESSION_MAX_META_BYTES` “back toward 4 KiB”  
+- 32-char slugs because MCP slugs are 32  
+- Review notes that “tighten the body cap” as a fix  
+
+---
+
 ## Parent adherence (phase only)
 
 - Parent locked decisions: any reopened cell?  
@@ -149,6 +185,7 @@ Companion to `plan-review/SKILL.md`. Use these prompts while scoring.
 - Prior phase COMPLETE or explicitly assumed?  
 - Refinements table present when names/constants tighten?  
 - Ops/docs split across phases without a owning phase for GHA?  
+- Phase must **not** lower a parent-locked numeric limit  
 
 ---
 
@@ -166,7 +203,8 @@ Companion to `plan-review/SKILL.md`. Use these prompts while scoring.
 
 Do **not** fail a parent roadmap for missing line-level code.  
 **Do** fail a bridge phase with no message schema.  
-**Do** fail an ops phase with no workflow.
+**Do** fail an ops phase with no workflow.  
+**Do** fail any plan that shrinks a limit without an operator ask or a cited break.
 
 ---
 
@@ -185,3 +223,4 @@ Do **not** fail a parent roadmap for missing line-level code.
 - Dual product chat unmitigated: architecture **≤ 2**, **Blocker**  
 - Primary action reflow unmitigated: UI axis **≤ 2**, **Blocker**  
 - Laptop-only Production mutate: cloud ops **≤ 2**, **Blocker**  
+- Limit lowered without operator ask / cited break: limits **≤ 2**, **Blocker**  
