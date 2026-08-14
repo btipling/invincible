@@ -8,6 +8,10 @@ function isApiProtected(pathname: string): boolean {
   if (pathname === '/api/sessions' || pathname.startsWith('/api/sessions/')) {
     return true;
   }
+  // skill body/add surface (#525): exact collection + any `:id` child (body route).
+  if (pathname === '/api/settings/skills' || pathname.startsWith('/api/settings/skills/')) {
+    return true;
+  }
   return (
     pathname === '/api/chat' ||
     pathname === '/api/agent' ||
@@ -104,6 +108,8 @@ export const config = {
     '/api/sandboxes',
     '/api/personas',
     '/api/skills',
+    '/api/settings/skills',
+    '/api/settings/skills/:path*',
     '/api/sessions',
     '/api/sessions/:path*',
   ],
