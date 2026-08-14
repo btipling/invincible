@@ -379,11 +379,15 @@ not left open.
 Any cap, limit, or budget the plan adds **or** changes (value + rationale + code
 location) MUST appear in a dedicated **Caps table**. Do not bury a new cap in
 prose. Generous default for **NEW** caps/ceilings (no cap / the real transport
-ceiling). **Raising a cap is never a blocker.** Only a **lowering** of an
-existing cap ever triggers a block + human decision (see plan-review) — and if a
-lowering is warranted, this plan itself must carry the explicit justification /
-defense (budget accounting vs transport ceiling + residual risk) for the human
-gate.
+ceiling) — a brand-new cap is not a "change" and is not itself a blocker, but
+still goes in the table. **Any change to an existing cap — a raise OR a
+lowering — is a BLOCK + human decision** (see plan-review): plan-review may
+**suggest** it, the implement-plan agent may **decide** it is warranted, but
+only a **human** **approves**, on the plan's explicit justification / defense.
+The defense must always account the budget against the **inviolable transport
+ceiling of the wire that carries it** (Function request/response, server action,
+Blob object, Redis, …) and state residual risk — even a **raise** can exceed
+that ceiling (the #511/#525 Function-body class) and must die at the human gate.
 
 ```markdown
 ## Caps table
@@ -391,7 +395,21 @@ gate.
 | Cap / ceiling | Value | Rationale | Code location |
 |---------------|-------|-----------|---------------|
 | … | … | why this value | `…` |
+
+## Caps table — worked example (good raise vs blocked lower vs blocked over-ceiling raise)
+
+| Cap / ceiling | Value | Wire & its ceiling | Defense | Verdict |
+|---------------|-------|--------------------|---------|---------|
+| NEW `HARNESS_SESSION_MAX_BODY_BYTES` | 8 MiB | Blob object — client→Blob presigned PUT, not a Function body | generous default for a NEW cap on a Blob carrier below its ceiling | **OK** — not a change; in table |
+| lower `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` 256 KiB → 128 KiB | 128 KiB | Function prompt/system payload | measured budget drop + budget-vs-transport-ceiling accounting + residual risk | **BLOCK → human decision** |
+| raise `HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES` 2 MiB → 8 MiB | 8 MiB | Function request — Vercel ceiling 4.5 MB | **above** the 4.5 MB Function ceiling; cannot safely reach | **BLOCK → human decision** (over-ceiling raise) |
 ```
+
+A **good raise** keeps the value ≤ the transport ceiling of its carrier and is
+tabled — yet **any** change to an existing cap still routes to a human. A
+**blocked lower** ships without a human decision + defense. A **blocked
+over-ceiling raise** bumps a function-carried cap above its inviolable ceiling
+(the #511/#525 class).
 
 ### Architectural decisions — when mandatory
 
@@ -412,7 +430,7 @@ Create a non-empty **Architectural decisions** table if any of:
 ```text
 [ ] AGENTS.md + feature-divide read this session
 [ ] Baseline table grounded in live files (+ workflows if ops)
-[ ] **Caps table** present for every cap/limit/budget (value + rationale + location); generous default for NEW caps; any cap lowering carries a justification for the human gate
+[ ] **Caps table** present for every cap/limit/budget (value + rationale + location); generous default for NEW caps; any **change** to an existing cap (raise or lower) carries a wire/ceiling justification for the human gate
 [ ] Layers table filled; no forbidden dual-UI
 [ ] Architectural decisions present or explicit N/A
 [ ] Cloud ops path: GHA primary if Production mutate; else explicit N/A

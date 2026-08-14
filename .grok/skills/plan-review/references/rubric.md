@@ -149,26 +149,29 @@ size, message length, count bounds, meta ceilings, skill-body caps, etc.).
 
 | Score | Meaning |
 |-------|---------|
-| 5 | Every cap in a **Caps table** (value + rationale + location); generous default for NEW caps; a lowering is a BLOCK routed to a **human** with the plan's explicit justification/defense (budget accounting vs transport ceiling + residual risk); raising a cap is never a blocker |
-| 4 | Caps table present; minor gaps in the lowering defense or one un-tabled value |
-| 3 | New cap present but value not justified vs the transport ceiling, or lowering shipped without a real justification |
-| 2 | Caps table missing / new cap buried in prose; a lowering proposed with no human-gate framing |
-| 1 | A cap is silently lowered (or new cap invented small) with no table, no human decision, and no defense |
+| 5 | Every cap in a **Caps table** (value + rationale + location); generous default for NEW caps; any change to an existing cap — raise OR lower — is a BLOCK routed to a **human** with the plan's explicit justification/defense (budget accounting vs the inviolable transport ceiling of the wire that carries the value + residual risk); a raise above that ceiling is blocked, not waived |
+| 4 | Caps table present; minor gaps in the cap-change defense or one un-tabled value |
+| 3 | New cap present but value not justified vs the transport ceiling, or a change to an existing cap ships without a real justification |
+| 2 | Caps table missing / new cap buried in prose; a change to an existing cap proposed with no human-gate framing |
+| 1 | A cap is silently changed (raised or lowered), or a new cap invented small, with no table, no human decision, and no defense |
 
 ### Prompt questions
 
 - Does every added/changed cap appear in a dedicated **Caps table**?  
 - Is the value **generous by default** for NEW caps (no cap / the real transport ceiling), and explained?  
-- Does the plan **raise or add** caps (fine) vs **lower** an existing cap (must be BLOCK + human decision)?  
-- If a lowering is present: is the plan carrying the explicit justification/defense — measured budget drop, budget-vs-transport-ceiling accounting, residual risk?  
-- Who decides? plan-review **suggests** only; a decided-or-suggested lowering ⇒ **BLOCK**; only a **human** approves a lower cap.  
+- Does the plan **add** a cap (generous default, tabled) vs **change an existing cap** (raise OR lower → must be BLOCK + human decision)?  
+- If any existing-cap change is present: is the plan carrying the explicit justification/defense — measured budget delta, budget-vs-transport-ceiling accounting incl. the ceiling of the wire that carries the value, residual risk?  
+- Does a **raise** keep the value ≤ the inviolable ceiling of its carrier, or does it push over it (the #511/#525 Function-body class → Block)?  
+- Who decides? plan-review **suggests** only; a decided-or-suggested change to an existing cap ⇒ **BLOCK**; only a **human** approves a raised or lowered cap.  
 
 ### Score cap / auto-Blocker
 
-- A plan that **lowers** an existing cap — whether suggested by plan-review or
-  decided by the implement-plan agent — without an explicit human decision +
-  justification/defense is a **Block** (constraint #14). Generous default is for
-  NEW caps only; raising is never a blocker.
+- A plan that **changes an existing cap** (raise OR lower) — whether suggested by
+  plan-review or decided by the implement-plan agent — without an explicit human
+  decision + justification/defense is a **Block** (constraint #14). Generous
+  default is for NEW caps only. **No cap change is "never a blocker":** a raise
+  above the transport ceiling of its carrier is the #511/#525 Function-body
+  class and is also a Block.
 
 ---
 
