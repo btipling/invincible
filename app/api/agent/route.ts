@@ -32,6 +32,7 @@ import {
   type ResolveSkillResult,
 } from '../../../lib/tenancy/skillInject';
 import { isEnvelopeStore } from '../../../lib/sessions/sessionStore';
+import { createSkillTools } from '../../../lib/agent/skillTools';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
@@ -198,6 +199,16 @@ export async function POST(req: Request): Promise<Response> {
       const { AUTH_REQUIRED_ERROR } = await import('../../../lib/tenancy/errors');
       return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
     }
+
+    // Phase 3 (#516): read-only agent skill tools (`find_skill` / `fetch_skill`)
+    // — always available, independent of sandbox/MCP/http state (so they work on
+    // the soft/MCP path too). Bound identity: each tool is closed over this
+    // route-resolved `userId`; any identity a model passes is ignored. Read-only
+    // — they call only listUserSkills / getSkillBySlug, never a write path.
+    extraTools = {
+      ...extraTools,
+      ...createSkillTools({ userId, userSkills: services.userSkills }),
+    };
 
     // Persona injection (phase 3, #488): resolve the persona preamble for the
     // first agent turn from a locked `meta.personaSnapshot` (via the optional
@@ -478,11 +489,18 @@ export async function POST(req: Request): Promise<Response> {
       ...(skills?.preamble ? { skillsPreamble: skills.preamble } : {}),
     };
 
-    // Soft path only when non-FS tools exist; else return resolve 403 body.
+    // Soft path only when a REAL non-FS tool surface exists (MCP / builtin http /
+    // sandbox). The always-on read-only skill tools (phase 3 #516) do NOT count as
+    // a substitute here: a soft-continue / grant-deny with no FS, MCP, or http tools
+    // must still surface the deferred 403 (workspace-required / no grant) rather
+    // than silently running a skill-only turn that hides the unavailable sandbox.
+    const nonSkillToolCount = Object.keys(extraTools).filter(
+      (k) => k !== 'find_skill' && k !== 'fetch_skill',
+    ).length;
     if (
       deferredNoFsResponse &&
       !sandboxClient &&
-      Object.keys(extraTools).length === 0
+      nonSkillToolCount === 0
     ) {
       return deferredNoFsResponse;
     }

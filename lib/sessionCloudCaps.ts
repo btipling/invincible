@@ -74,6 +74,22 @@ export const HARNESS_SESSION_MAX_ATTACHED_SKILLS = 32;
 export const HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES = 256 * 1024;
 
 /**
+ * Agent skill tools (phase 3 #516) caps. `find_skill` bounds how many matching
+ * summaries it returns to the model in one call (an unbounded listing of every
+ * skill could otherwise flood a tool result); `fetch_skill` bounds the per-call
+ * **model-return** body so a single fetch of a 4 MiB store-capable skill can
+ * never balloon the Gateway payload / model context. This mirrors the phase-2
+ * inject-budget discipline (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`): the
+ * ON-DISK skill body may be large (stored once, staff-of-work), but what crosses
+ * the model wire per tool call is capped — a longer body is returned truncated
+ * with an explicit `{ truncated: true, byteLength, slug }` marker, never
+ * silently dropped. The full body always stays server-side (editable in
+ * Settings); these tools never write a body to session/meta.
+ */
+export const SKILL_FIND_RESULT_MAX = 20;
+export const SKILL_FETCH_MAX_RETURN_BYTES = 256 * 1024;
+
+/**
  * Parse a stored `meta.attachedSkills` (a JSON-array string of skill slugs) into a
  * slug list. Client-safe single source shared by the host session repository
  * (`cloudMetaFor` / `parseCloudSessionSnapshot`), the server `skillInject`, and the

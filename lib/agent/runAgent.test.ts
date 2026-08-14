@@ -9,6 +9,10 @@ import {
 } from './runAgent';
 import { TOOL_TRACE_SUMMARY_MAX_CHARS } from '../sandbox/config';
 import { MCP_SYSTEM_ADDENDUM } from '../mcp/toolNames';
+import {
+  SKILL_TOOLS_ONLY_SYSTEM,
+  SKILL_TOOLS_SYSTEM_ADDENDUM,
+} from './skillTools';
 import { SandboxHttpError } from '../sandbox/types';
 
 describe('runAgent', () => {
@@ -136,6 +140,55 @@ describe('runAgent', () => {
       sandboxClient: client,
       extraTools: {
         mcp_exa__t: { execute: async () => 'x' },
+      },
+    });
+  });
+
+  it('appends the SKILL addendum when find_skill/fetch_skill extraTools are present (FS path)', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      const system = String(args.system);
+      expect(system).toContain(DEFAULT_AGENT_SYSTEM);
+      expect(system).toContain(SKILL_TOOLS_SYSTEM_ADDENDUM);
+      return { text: 'ok', steps: [] };
+    });
+    const client: SandboxClient = {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      strReplace: vi.fn(),
+      exec: vi.fn(),
+      stat: vi.fn(),
+    };
+    await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: client,
+      extraTools: {
+        find_skill: { execute: async () => '[]' },
+        fetch_skill: { execute: async () => 'body' },
+      },
+    });
+  });
+
+  it('uses the honest skill-only system when skills are the only non-FS tools (no phantom FS/http)', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      const system = String(args.system);
+      expect(system).toContain(SKILL_TOOLS_ONLY_SYSTEM);
+      expect(system).toContain(SKILL_TOOLS_SYSTEM_ADDENDUM);
+      // No FS-instruction block and no http mention when skills are the only tools.
+      expect(system).not.toContain('filesystem and command work');
+      expect(system).not.toMatch(/http_get/);
+      return { text: 'ok', steps: [] };
+    });
+    await runAgent({
+      prompt: 'query skills',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      skipSandboxTools: true,
+      extraTools: {
+        find_skill: { execute: async () => '[]' },
+        fetch_skill: { execute: async () => 'body' },
       },
     });
   });
