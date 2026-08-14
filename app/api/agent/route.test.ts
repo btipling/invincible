@@ -568,7 +568,9 @@ describe('POST /api/agent', () => {
     expect(arg!.providerOptions?.gateway?.byok).toEqual({
       anthropic: [{ apiKey: 'sk-byok-test' }],
     });
-    expect(arg!.extraTools).toEqual({});
+    // Phase 3 (#516): the read-only skill tools are always assembled.
+    expect(arg!.extraTools?.find_skill).toBeTruthy();
+    expect(arg!.extraTools?.fetch_skill).toBeTruthy();
     expect(mcp.buildUserMcpTools).toHaveBeenCalledWith(
       'user-1',
       expect.objectContaining({ signal: expect.anything() }),
@@ -627,7 +629,10 @@ describe('POST /api/agent', () => {
     expect(runAgent).toHaveBeenCalledTimes(1);
     const arg = runAgent.mock.calls[0]?.[0];
     expect(arg).toBeDefined();
-    expect(arg!.extraTools).toEqual(mcpTools);
+    // MCP tools merge in alongside the always-present skill tools (#516).
+    expect(arg!.extraTools).toMatchObject(mcpTools);
+    expect(arg!.extraTools?.find_skill).toBeTruthy();
+    expect(arg!.extraTools?.fetch_skill).toBeTruthy();
     expect(arg!.secrets).toContain('mcp-key-secret-value');
     expect(close).toHaveBeenCalled();
     const body = await res.json();
@@ -1412,6 +1417,71 @@ describe('POST /api/agent', () => {
       meta?: { attachedSkills?: string };
     };
     expect(upsert.meta?.attachedSkills).toBe('["create-plan"]');
+  });
+
+  it('assembles find_skill + fetch_skill into extraTools, bound to the route userId (phase 3 #516)', async () => {
+    mockAuthedSession('user-1');
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    mockResolveSandboxOk();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    servicesState.userSkills = {
+      listUserSkills: vi.fn(async () => ({
+        ok: true as const,
+        value: [
+          {
+            id: 's1',
+            name: 'Create plan',
+            slug: 'create-plan',
+            description: 'writes a plan issue',
+            updatedAt: new Date(0),
+          },
+        ],
+      })),
+      getSkillBySlug: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          id: 's1',
+          name: 'Create plan',
+          slug: 'create-plan',
+          description: '',
+          body: 'PLAN BODY',
+        },
+      })),
+    };
+    type RunArg = { prompt?: string; extraTools?: Record<string, unknown> };
+    const runAgent = vi.fn(async (arg: RunArg) => {
+      // The model can call both skill tools in a normal (FS) turn.
+      expect(arg.extraTools?.find_skill).toBeTruthy();
+      expect(arg.extraTools?.fetch_skill).toBeTruthy();
+      return { text: 'ok', toolTrace: [] };
+    });
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent,
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'list my skills' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    // Bound identity (confused-deputy guard): the tool executes through the
+    // route-resolved 'user-1'. A hostile input identity is ignored (covered in
+    // lib/agent/skillTools.test.ts); here we confirm the assembled tool resolves
+    // against the route userId.
+    const list = servicesState.userSkills.listUserSkills as ReturnType<typeof vi.fn>;
+    const findSkill = runAgent.mock.calls[0]?.[0]?.extraTools?.find_skill as {
+      execute: (i: { query?: string }) => Promise<string>;
+    };
+    await findSkill.execute({ query: 'plan' });
+    expect(list.mock.calls.every((c) => c[0] === 'user-1')).toBe(true);
   });
 
   it('pure /unskill detach is a NO-MODEL turn (early response, no runAgent)', async () => {

@@ -9,8 +9,9 @@ and are scoped to exactly one user + tenant.
 To use a skill in a session, **attach it with a slash command** — type
 `/skill-name` in the harness composer. The server resolves the skill, injects
 its body into the session's system context, and the transcript shows only a
-`Skill attached: <slug>` row. The agent's skill-search tools
-(`find_skill` / `fetch_skill`) land in a later phase.
+`Skill attached: <slug>` row. The agent can also **search / read your own
+skills directly** with the server-side `find_skill` and `fetch_skill` tools
+(see [Agent skill-search tools](#agent-skill-search-tools-find_skill--fetch_skill)).
 
 ## Creating and editing a skill
 
@@ -71,6 +72,30 @@ The transcript shows **only the skill name**: a compact `Skill attached:
 <slug>` row in the canvas. The skill **body is never displayed in the canvas
 and never sent to the client** — it exists only server-side in the model's
 system context.
+
+## Agent skill-search tools (`find_skill` / `fetch_skill`)
+
+The agent gets two read-only tools, assembled server-side on `/api/agent` in
+`lib/agent/skillTools.ts`:
+
+- **`find_skill`** — search your skills by a substring (case-insensitive) across
+  their **slug, name, and description**. Returns only summaries (no bodies), up
+  to `SKILL_FIND_RESULT_MAX` (20) results. An omitted or empty query lists your
+  skills (bounded). Use it to catch a typo or a reference before fetching a body.
+- **`fetch_skill`** — read the **full body** of one of your own skills **by
+  slug**. Unknown slugs or another user's/tenant's skill return `not_found`
+  with no partial body (skills are user-scoped — an existence leak is
+  impossible). The **model-returned body is capped** at
+  `SKILL_FETCH_MAX_RETURN_BYTES` (256 KiB): a longer body is returned truncated
+  with an explicit `{ truncated: true, byteLength, slug }` marker, never
+  silently dropped. The full body always stays server-side (editable in
+  Settings).
+
+Both tools are **bound to the caller's identity**: they operate on the
+route-resolved user only, and no identity a model passes is ever used
+(confused-deputy guard). They are pure reads — the agent never creates, edits,
+or deletes a skill, and no body ever travels to the client/Wasm (it is only
+ever served to the model on an explicit `fetch_skill`).
 
 ## Guidance
 
