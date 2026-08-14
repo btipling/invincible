@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   type HarnessSessionRecord,
   RESERVED_META_KEYS,
+  envelopeKeyString,
+  isEnvelopeStore,
   isRedisSafeOpaqueId,
   validateMeta,
   validateMetaFields,
+  validateSessionEnvelope,
   validateSessionRecord,
   validateSessionRecordKey,
   sessionKeyString,
@@ -159,6 +162,7 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'title',
       'personaId',
       'personaSnapshot',
+      'transcriptPointer',
     ]);
     for (const k of RESERVED_META_KEYS) {
       const rawMeta: unknown = { [k]: 'x' };
@@ -555,6 +559,162 @@ describe('RedisSessionStore', () => {
     map.set('harness:session:tenant-1:user-1:corrupt', { meta: { smuggled: 1 } });
     const ids = (await store.list({ tenantId: 'tenant-1', userId: 'user-1' })).map((r) => r.id).sort();
     expect(ids).toEqual(['id', 'other']);
+  });
+});
+
+describe('envelope carrier (phase 0 #515)', () => {
+  const key = { tenantId: 'tenant-1', userId: 'user-1', sessionId: 's1' };
+
+  it('meta accepts the reserved transcriptPointer key; rejects non-Redis-safe pointers', () => {
+    expect(validateMeta({ transcriptPointer: 'tx_abc123' }).ok).toBe(true);
+    expect(validateMetaFields({ transcriptPointer: 'tx_abc123' }).ok).toBe(true);
+    for (const bad of ['a:b', '*', 'has space', 'x'.repeat(129), 7 as never]) {
+      expect(validateMetaFields({ transcriptPointer: bad as never }).ok).toBe(false);
+    }
+    const rec = makeRecord({ meta: { transcriptPointer: 'tx_abc123' } });
+    const res = validateSessionRecord(rec);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.value.meta.transcriptPointer).toBe('tx_abc123');
+  });
+
+  it('validateSessionEnvelope validates ownership + LWW updatedAt + reserved meta (never messages)', () => {
+    expect(validateSessionEnvelope({ ...makeRecord(), messages: [] }).ok).toBe(true);
+    expect(
+      validateSessionEnvelope({
+        id: 'sess_abc',
+        tenantId: 'tenant-1',
+        userId: 'user-1',
+        createdAt: 1000,
+        updatedAt: 5,
+        meta: { transcriptPointer: 'tx_abc123' },
+      }).ok,
+    ).toBe(true);
+    // unknown meta key rejected
+    expect(
+      validateSessionEnvelope({ ...makeRecord(), meta: { sneaky: 1 } }).ok,
+    ).toBe(false);
+    // non-Redis-safe pointer rejected
+    expect(
+      validateSessionEnvelope({
+        ...makeRecord(),
+        meta: { transcriptPointer: 'a:b' },
+      }).ok,
+    ).toBe(false);
+    // invalid updatedAt rejected
+    expect(validateSessionEnvelope({ ...makeRecord(), updatedAt: -1 }).ok).toBe(false);
+  });
+
+  it('Memory/Redis implement the additive envelope seam (isEnvelopeStore)', async () => {
+    expect(isEnvelopeStore(new MemorySessionStore())).toBe(true);
+    expect(isEnvelopeStore(new RedisSessionStore({ client: fakeClient().client }))).toBe(true);
+  });
+
+  it('MemorySessionStore: upsertEnvelope writes only the envelope; LWW + createdAt preserved', async () => {
+    const s = new MemorySessionStore();
+    const r1 = await s.upsertEnvelope(key, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 100,
+      meta: { transcriptPointer: 'tx_a' },
+    });
+    expect(r1.status).toBe('stored');
+    if (r1.status === 'stored') expect(r1.envelope.meta.transcriptPointer).toBe('tx_a');
+
+    const read1 = await s.readEnvelope(key);
+    expect(read1?.updatedAt).toBe(100);
+    expect(read1?.meta.transcriptPointer).toBe('tx_a');
+
+    // stale upsert → conflict with server envelope
+    const stale = await s.upsertEnvelope(key, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 50,
+      meta: { transcriptPointer: 'tx_b' },
+    });
+    expect(stale.status).toBe('conflict');
+    if (stale.status === 'conflict') expect(stale.server.meta.transcriptPointer).toBe('tx_a');
+
+    // newer upsert advances pointer + keeps createdAt
+    const createdAtBefore = read1?.createdAt ?? 0;
+    const r2 = await s.upsertEnvelope(key, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 200,
+      meta: { transcriptPointer: 'tx_b' },
+    });
+    if (r2.status === 'stored') {
+      expect(r2.envelope.meta.transcriptPointer).toBe('tx_b');
+      expect(r2.envelope.createdAt).toBe(createdAtBefore);
+    }
+  });
+
+  it('MemorySessionStore: readEnvelope rolls forward from a legacy whole-blob record', async () => {
+    const s = new MemorySessionStore();
+    await s.put(key, makeRecord({ id: 's1', updatedAt: 7, meta: { title: 'legacy' } }));
+    const env = await s.readEnvelope(key);
+    expect(env?.updatedAt).toBe(7);
+    expect(env?.meta.title).toBe('legacy');
+    expect(env).not.toHaveProperty('messages');
+  });
+
+  it('MemorySessionStore: upsertEnvelope rejects identity mismatch', async () => {
+    const s = new MemorySessionStore();
+    await expect(
+      s.upsertEnvelope(key, { id: 'other', userId: 'user-1', tenantId: 'tenant-1', updatedAt: 1 }),
+    ).rejects.toThrow(/identity must match/);
+  });
+
+  it('RedisSessionStore: envelope written under harness:envelope:… and read back; TTL refresh', async () => {
+    const { client, calls, map } = fakeClient();
+    const store = new RedisSessionStore({ client, ttlMs: 1500 });
+    const key2 = { tenantId: 't', userId: 'u', sessionId: 's' };
+    const up = await store.upsertEnvelope(key2, {
+      id: 's',
+      userId: 'u',
+      tenantId: 't',
+      updatedAt: 5,
+      meta: { transcriptPointer: 'tx_x' },
+    });
+    expect(up.status).toBe('stored');
+    const keyString = envelopeKeyString(key2);
+    expect(keyString).toBe('harness:envelope:t:u:s');
+    expect(map.has(keyString)).toBe(true);
+    expect(calls.at(-1)?.opts).toEqual({ ex: 2 });
+    const env = await store.readEnvelope(key2);
+    expect(env?.meta.transcriptPointer).toBe('tx_x');
+    // legacy whole-blob untouched
+    expect(map.has(sessionKeyString(key2))).toBe(false);
+  });
+
+  it('RedisSessionStore: LWW on envelope; identity-mismatched envelope fails closed', async () => {
+    const mapA = new Map<string, unknown>();
+    const { client } = fakeClient(mapA);
+    const store = new RedisSessionStore({ client });
+    const k = { tenantId: 't', userId: 'u', sessionId: 's' };
+    await store.upsertEnvelope(k, { id: 's', userId: 'u', tenantId: 't', updatedAt: 10 });
+    const stale = await store.upsertEnvelope(k, {
+      id: 's',
+      userId: 'u',
+      tenantId: 't',
+      updatedAt: 5,
+    });
+    expect(stale.status).toBe('conflict');
+
+    // schema-valid but mis-ownered envelope → read fails closed (null)
+    const mapB = new Map<string, unknown>();
+    mapB.set('harness:envelope:t:u:s', {
+      id: 's',
+      userId: 'other',
+      tenantId: 't',
+      createdAt: 1,
+      updatedAt: 1,
+      meta: {},
+    });
+    const store2 = new RedisSessionStore({ client: fakeClient(mapB).client });
+    await expect(store2.readEnvelope(k)).resolves.toBeNull();
   });
 });
 

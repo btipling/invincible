@@ -5,25 +5,37 @@
  */
 import {
   type BackfillMarkerStore,
+  type EnvelopeUpsertResult,
   type HarnessSessionRecord,
   type PutResult,
   type ServerSessionStore,
+  type SessionEnvelope,
+  type SessionEnvelopeInput,
   type SessionListScope,
   type SessionRecordKey,
   assertKeyMatchesRecord,
+  assertValidSessionEnvelope,
   assertValidSessionListScope,
   assertValidSessionRecord,
   assertValidSessionRecordKey,
   backfillMarkerKey,
+  envelopeFromRecord,
+  envelopeKeyString,
   keyMatchesRecord,
+  parseEnvelopeKeyString,
   parseSessionKeyString,
   sessionKeyString,
   sessionPrefix,
 } from './sessionStore';
 
-export class MemorySessionStore implements ServerSessionStore, BackfillMarkerStore {
+export class MemorySessionStore
+  implements ServerSessionStore, BackfillMarkerStore
+{
   /** Mapped by key string; holds session records plus `{v:1}` backfill markers. */
-  private readonly store = new Map<string, HarnessSessionRecord | { v: number }>();
+  private readonly store = new Map<
+    string,
+    HarnessSessionRecord | { v: number } | SessionEnvelope
+  >();
 
   async get(key: SessionRecordKey): Promise<HarnessSessionRecord | null> {
     assertValidSessionRecordKey(key);
@@ -69,6 +81,57 @@ export class MemorySessionStore implements ServerSessionStore, BackfillMarkerSto
     if (!this.store.has(k)) return false;
     this.store.delete(k);
     return true;
+  }
+
+  /** Phase 0 (#515): read only the envelope (never a transcript). */
+  async readEnvelope(key: SessionRecordKey): Promise<SessionEnvelope | null> {
+    assertValidSessionRecordKey(key);
+    const k = envelopeKeyString(key);
+    const env = this.store.get(k) as SessionEnvelope | undefined;
+    if (env) {
+      return env.tenantId === key.tenantId &&
+        env.userId === key.userId &&
+        env.id === key.sessionId
+        ? structuredClone(env)
+        : null;
+    }
+    // Roll-forward: an envelope may be derived from a legacy whole-blob record.
+    const legacy = this.store.get(sessionKeyString(key)) as HarnessSessionRecord | undefined;
+    if (legacy && keyMatchesRecord(key, legacy)) return envelopeFromRecord(legacy);
+    return null;
+  }
+
+  /** Phase 0 (#515): upsert only the envelope (LWW, `createdAt` preserved). */
+  async upsertEnvelope(
+    key: SessionRecordKey,
+    input: SessionEnvelopeInput,
+  ): Promise<EnvelopeUpsertResult> {
+    assertValidSessionRecordKey(key);
+    if (
+      key.tenantId !== input.tenantId ||
+      key.userId !== input.userId ||
+      key.sessionId !== input.id
+    ) {
+      throw new Error(
+        'Session envelope identity must match the session key (tenantId/userId/id).',
+      );
+    }
+    const existing = await this.readEnvelope(key);
+    if (existing && input.updatedAt < existing.updatedAt) {
+      return { status: 'conflict', server: structuredClone(existing) };
+    }
+    const createdAt = existing?.createdAt ?? Date.now();
+    const envelope: SessionEnvelope = {
+      id: input.id,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      createdAt,
+      updatedAt: input.updatedAt,
+      meta: input.meta ?? {},
+    };
+    assertValidSessionEnvelope(envelope);
+    this.store.set(envelopeKeyString(key), structuredClone(envelope));
+    return { status: 'stored', envelope: structuredClone(envelope) };
   }
 
   async hasBackfillMarker(scope: SessionListScope): Promise<boolean> {

@@ -51,6 +51,7 @@ import { createUserPreferredSandbox } from '../tenancy/userPreferredSandbox';
 import { createUserSandboxInstance } from '../tenancy/userSandboxInstance';
 import { createHarnessSessionsRedis } from '../tenancy/harnessSessionsRedis';
 import { registerSessionStoreFactoryForServer } from '../tenancy/harnessSessionsRedis';
+import { registerBlobStoreFactoryForServer } from '../tenancy/harnessSessionsRedis';
 import { createScimHandlers } from '../tenancy/scimHandlers';
 import { createSandboxClient, type SandboxClient } from '../sandbox/client';
 import { createVercelSandboxClient } from '../sandbox/vercelClient';
@@ -63,6 +64,9 @@ import {
   RedisSessionStore,
   type RedisSessionStoreOptions,
 } from '../sessions/redisSessionStore';
+import type { BlobTranscriptStore } from '../sessions/blobStore';
+import { MemoryBlobTranscriptStore } from '../sessions/blobStores';
+import { VercelBlobTranscriptStore } from '../sessions/blobStores';
 
 /**
  * Server-only secrets resolved once at the root (never read from `process.env`
@@ -182,6 +186,10 @@ export function createProdServices(overrides: {
   // `url`/`ttlMs` from the root; the store body never reads `process.env`
   // (adversarial L1 + nit L8 follow-up).
   registerSessionStoreFactoryForServer(createSessionStore);
+  // Phase 0 (#515): the Blob transcript store seam (Vercel Blob when
+  // `BLOB_READ_WRITE_TOKEN` is set; memory double otherwise). Registered here so
+  // `/api/sessions/:id/transcript` mint/read routes resolve the DI-root store.
+  registerBlobStoreFactoryForServer(() => createBlobTranscriptStore());
 
   return {
     tenantKeys: createTenantKeys({ connect }),
@@ -225,7 +233,25 @@ export function createProdServices(overrides: {
     createVercelFsSandboxClient: vercelFsClientFactory,
     /** Root factory for the Redis session store, also registered as the server seam. */
     createSessionStore,
+    /** Root factory for the Blob transcript store (phase 0, #515). */
+    createBlobTranscriptStore,
   };
+}
+
+/**
+ * Root factory for the Blob transcript store (phase 0, #515). Resolves the
+ * `BLOB_READ_WRITE_TOKEN` once at the root; when unset the server has no Blob
+ * credential so we fall back to the in-memory double (dev/unconfigured — the
+ * routes still work for small/local transcripts; Production must set the token).
+ * BYO S3/R2 operators swap the returned store behind the same seam.
+ */
+function createBlobTranscriptStore(
+  opts: { token?: string; memory?: BlobTranscriptStore } = {},
+): BlobTranscriptStore {
+  const token =
+    opts.token ?? (process.env.BLOB_READ_WRITE_TOKEN?.trim() || undefined);
+  if (token) return new VercelBlobTranscriptStore({ token });
+  return opts.memory ?? new MemoryBlobTranscriptStore();
 }
 
 /**

@@ -14,6 +14,7 @@ If you find a vulnerability in Invincible, please open a **private** security ad
 | `SANDBOX_TOKEN` | **BYO daemon / local bootstrap only** — not a Vercel product-routing secret (product tool turns resolve credentials from DB grants); sandbox process env; never client/Wasm |
 | `DATABASE_URL` | Vercel / local only (prefer **pooled** Neon/PgBouncer URL) |
 | `REDIS_URL` | Vercel project env only (optional BYO multi-session Redis; node-redis RESP — the URL **embeds** the credential `redis://default:<secret>@<host>:<port>`). **Never** log it; never `NEXT_PUBLIC_*`. Old `SESSION_REDIS_*` / `UPSTASH_REDIS_REST_*` names are **removed** — if present, the store logs a one-time (value-free) deprecation hint then 503s until `REDIS_URL` is set |
+| `BLOB_READ_WRITE_TOKEN` | Vercel project env only (phase 0 #515 — Vercel Blob transcript store; BYO S3/R2 creds behind the same seam). Server mints short-lived scoped upload URLs; the client never holds the credential. **Never** log it; never `NEXT_PUBLIC_*` |
 | `CREDENTIALS_ENCRYPTION_KEY` | Vercel / local only — base64 32-byte AES-256-GCM **AMK** (wraps per-tenant DEKs; tokens encrypt under DEK) |
 | `AUTH_SECRET` | Auth.js session secret — set on Vercel **after** migrate + the first-run sign-up bootstrap |
 | `AUTH_OIDC_CLIENT_SECRET` | Optional OIDC client secret — Vercel/server only; never `NEXT_PUBLIC_*` |
@@ -31,7 +32,8 @@ Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
 |---------|------------|
 | Browser `localStorage` / memory | UX convenience only; same-origin; **not** multi-tenant isolation |
 | Cloud store (Redis multi-session) | id-shaped **`/api/sessions*`**; one **record** per `{tenant,user,sessionId}` in the `harness:session:{tenant}:{user}:{id}` keyspace; ownership always server-derived from the authenticated user — never client-supplied tenant/user |
-| API | `GET`/`POST` `/api/sessions` + `GET`/`PUT`/`DELETE` `/api/sessions/:id` — signed in + middleware-protected; **write key = the path `:id`**, body `id` must equal the path id |
+| Envelope + Blob transcript (phase 0 #515) | Redis keeps only the small **envelope** (`harness:envelope:{tenant}:{user}:{id}`: ownership/LWW/createdAt/reserved `meta` incl. `meta.transcriptPointer`); the **transcript** lives in Vercel Blob (or BYO S3/R2) objects. Server mints **short-lived, scoped, credential-checked** upload URLs via `POST /api/sessions/:id/transcript`; the client PUTs objects **directly to Blob** (never the server credential). Wasm never talks to Blob or Redis |
+| API | `GET`/`POST` `/api/sessions` + `GET`/`PUT`/`DELETE` `/api/sessions/:id` + `PUT`/`GET` `/api/sessions/:id/envelope` + `POST`/`GET` `/api/sessions/:id/transcript` — signed in + middleware-protected; **write key = the path `:id`**, body `id` must equal the path id |
 | Unauthenticated | **401** — client disables cloud sync for the page load |
 | No such session / other user | **404** `NOT_FOUND` (no existence leak — never 403) |
 | Store unavailable | **503** `SESSION_STORE_UNAVAILABLE` — local continues; response never includes host/port/`REDIS_URL` |
@@ -51,6 +53,7 @@ If you find a vulnerability in Invincible, please open a **private** security ad
 | `SANDBOX_TOKEN` | **BYO daemon / local bootstrap only** — not a Vercel product-routing secret (product tool turns resolve credentials from DB grants); sandbox process env; never client/Wasm |
 | `DATABASE_URL` | Vercel / local only (prefer **pooled** Neon/PgBouncer URL) |
 | `REDIS_URL` | Vercel project env only (optional BYO multi-session Redis; node-redis RESP — the URL **embeds** the credential `redis://default:<secret>@<host>:<port>`). **Never** log it; never `NEXT_PUBLIC_*`. Old `SESSION_REDIS_*` / `UPSTASH_REDIS_REST_*` names are **removed** — if present, the store logs a one-time (value-free) deprecation hint then 503s until `REDIS_URL` is set |
+| `BLOB_READ_WRITE_TOKEN` | Vercel project env only (phase 0 #515 — Vercel Blob transcript store; BYO S3/R2 creds behind the same seam). Server mints short-lived scoped upload URLs; the client never holds the credential. **Never** log it; never `NEXT_PUBLIC_*` |
 | `CREDENTIALS_ENCRYPTION_KEY` | Vercel / local only — base64 32-byte AES-256-GCM **AMK** (wraps per-tenant DEKs; tokens encrypt under DEK) |
 | `AUTH_SECRET` | Auth.js session secret — set on Vercel **after** migrate + the first-run sign-up bootstrap |
 | `AUTH_OIDC_CLIENT_SECRET` | Optional OIDC client secret — Vercel/server only; never `NEXT_PUBLIC_*` |
@@ -71,6 +74,7 @@ Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
 | Conflict | LWW on `updatedAt` (epoch ms); stale PUT → **409** + server record |
 | Caps (abuse / size) | No message-count cap; ≤**262 144** UTF-8 bytes per message text; ≤**~2 MiB** raw body; record id ≤128; `meta` is schema-typed reserved (title/legacySnapshotId/logicalCwd/activeSandboxId…) + serialized size cap |
 | Blob contents | Message roles/text/ids/timestamps + reserved `meta` scalars only — **never** Gateway keys, sandbox tokens, MCP secrets, PATs, or host absolute paths |
+| Transcript object security (phase 0 #515) | Transcript object ids are Redis-safe opaque (`meta.transcriptPointer`); envelope/object read trust-but-verifies (identity mismatch fails closed); minted upload URL is **short-lived, scoped, credential-checked** (never a static token in client/Wasm); full-record `GET` stays only for legacy roll-forward while those blobs remain small |
 | `cwd` | **Session-owned** workspace-relative field (P1/GAP-1, #452) — stored on the cloud record as `meta.logicalCwd`; the host-absolute path is never stored (shared predicate re-sanitizes on parse) |
 | `REDIS_URL` | Single RESP wire URL (`redis://`/`rediss://`) embeds the credential — **never** log/echo it or `NEXT_PUBLIC_*`; dual-store `REDIS_URL` == Vercel Production env == GHA secret |
 | Backfill | One-shot Postgres `harness_sessions` → Redis via GHA **`sessions-redis-backfill`** (per-`{tenant,user}` marker, idempotent); Postgres becomes a **read-only archive**; legacy `/api/session` write route removed |

@@ -75,6 +75,32 @@ export type IdSessionRepository = {
   createFirst(): Promise<CloudCreateResult>;
   /** DELETE one session; invalidates any in-flight PUT for that id. */
   remove(id: string): Promise<void>;
+  /**
+   * Phase 0 (#515) envelope carrier surface. When the server/Blob seam is available,
+   * the host writes the small envelope (+ client→Blob upload) instead of the one-shot
+   * full-record `put`; otherwise these roll forward to the full-record PUT/GET below.
+   */
+
+  /** Whether this host/repo is on the envelope+Blob carrier (vs full-record roll-forward). */
+  readonly carrier: 'envelope' | 'rollforward';
+  /** Mint a client→Blob upload URL for a new transcript segment. */
+  mintUpload(id: string): Promise<
+    | { action: 'ok'; uploadUrl: string; objectId: string }
+    | { action: 'disabled' }
+    | { action: 'error'; status: number; message: string }
+  >;
+  /** PUT a transcript body directly to the minted Blob URL (client→Blob, no Function). */
+  putTranscriptObject(uploadUrl: string, body: unknown): Promise<void>;
+  /** Upsert the small envelope (meta/pointer + `updatedAt` LWW) for a session. */
+  pushEnvelope(
+    id: string,
+    env: { updatedAt: number; pointer?: string; meta?: Record<string, unknown> },
+  ): Promise<
+    | { action: 'ok' }
+    | { action: 'adopt'; envelope: unknown }
+    | { action: 'disabled' }
+    | { action: 'error'; status: number; message: string }
+  >;
 };
 
 export type HttpSessionRepositoryOptions = {
@@ -584,9 +610,104 @@ export function createHttpSessionRepository(
     await deleteOne(id);
   }
 
+  // Phase 0 (#515) envelope carrier. This module is client-safe (no Node env), so the
+  // host toggles the carrier via a PUBLIC `NEXT_PUBLIC_HARNESS_CARRIER_ENVELOPE` flag.
+  // The server's `BLOB_READ_WRITE_TOKEN` is never read client-side. Default roll-forward
+  // keeps the existing one-shot full-record PUT until a deploy opts the envelope carrier in.
+  const carrier: 'envelope' | 'rollforward' =
+    typeof process !== 'undefined' &&
+    process.env.NEXT_PUBLIC_HARNESS_CARRIER_ENVELOPE === '1'
+      ? 'envelope'
+      : 'rollforward';
+
+  async function mintUpload(id: string) {
+    if (!enabled) return { action: 'disabled' as const };
+    try {
+      const res = await fetchImpl(`${path}/${encodeURIComponent(id)}/transcript`, {
+        method: 'POST',
+        credentials: 'same-origin',
+      });
+      if (res.status === 401) {
+        disable();
+        return { action: 'disabled' as const };
+      }
+      if (!res.ok) {
+        return {
+          action: 'error' as const,
+          status: res.status,
+          message: `Transcript mint failed (${res.status}).`,
+        };
+      }
+      const body = (await res.json()) as { uploadUrl?: unknown; objectId?: unknown };
+      if (
+        typeof body.uploadUrl !== 'string' ||
+        !body.uploadUrl ||
+        typeof body.objectId !== 'string' ||
+        !body.objectId
+      ) {
+        return { action: 'error' as const, status: res.status, message: 'Invalid mint body.' };
+      }
+      return { action: 'ok' as const, uploadUrl: body.uploadUrl, objectId: body.objectId };
+    } catch {
+      return { action: 'error' as const, status: 0, message: 'Network error minting transcript.' };
+    }
+  }
+
+  async function putTranscriptObject(uploadUrl: string, body: unknown): Promise<void> {
+    try {
+      await fetchImpl(uploadUrl, {
+        method: 'PUT',
+        credentials: 'omit',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      /* best-effort: the envelope upsert still runs; a missing object is a restore miss */
+    }
+  }
+
+  async function pushEnvelope(
+    id: string,
+    env: { updatedAt: number; pointer?: string; meta?: Record<string, unknown> },
+  ) {
+    if (!enabled) return { action: 'disabled' as const };
+    const meta: Record<string, unknown> = { ...env.meta };
+    if (env.pointer) meta.transcriptPointer = env.pointer;
+    const body = { id, updatedAt: env.updatedAt, meta };
+    try {
+      const res = await fetchImpl(`${path}/${encodeURIComponent(id)}/envelope`, {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 401) {
+        disable();
+        return { action: 'disabled' as const };
+      }
+      if (res.status === 409) {
+        return { action: 'adopt' as const, envelope: await res.json() };
+      }
+      if (!res.ok) {
+        return {
+          action: 'error' as const,
+          status: res.status,
+          message: `Envelope push failed (${res.status}).`,
+        };
+      }
+      await res.json();
+      return { action: 'ok' as const };
+    } catch {
+      return { action: 'error' as const, status: 0, message: 'Network error pushing envelope.' };
+    }
+  }
+
   return {
     get enabled() {
       return enabled;
+    },
+    get carrier() {
+      return carrier;
     },
     get,
     put,
@@ -594,5 +715,8 @@ export function createHttpSessionRepository(
     create,
     createFirst,
     remove,
+    mintUpload,
+    putTranscriptObject,
+    pushEnvelope,
   };
 }

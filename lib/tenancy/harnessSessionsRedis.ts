@@ -22,6 +22,8 @@ import {
   type SessionListScope,
   type SessionRecordKey,
 } from '../sessions/sessionStore';
+import type { BlobTranscriptStore } from '../sessions/blobStore';
+import { MemoryBlobTranscriptStore } from '../sessions/blobStores';
 import { loadSoleMembership } from './soleMembership';
 import { createSoleMembership } from './soleMembership';
 
@@ -75,6 +77,37 @@ export function setSessionStoreForTests(store: ServerSessionStore | null): void 
   const g = globalThis as unknown as Record<symbol, ServerSessionStore | null>;
   if (store) g[STORE_OVERRIDE] = store;
   else delete g[STORE_OVERRIDE];
+}
+
+/**
+ * Test/composition seam — the Blob transcript store (phase 0, #515). A test injects
+ * a store via `setBlobStoreForTests`; production resolves the DI-root
+ * `createBlobTranscriptStore` (Vercel Blob when `BLOB_READ_WRITE_TOKEN` is set, else
+ * the in-memory double).
+ */
+const BLOB_STORE_OVERRIDE = Symbol.for('invincible.sessions.blobStoreOverride');
+
+let serverBlobFactory: (() => BlobTranscriptStore) | null = null;
+
+export function registerBlobStoreFactoryForServer(
+  factory: (() => BlobTranscriptStore) | null,
+): void {
+  serverBlobFactory = factory;
+}
+
+export function setBlobStoreForTests(store: BlobTranscriptStore | null): void {
+  const g = globalThis as unknown as Record<symbol, BlobTranscriptStore | null>;
+  if (store) g[BLOB_STORE_OVERRIDE] = store;
+  else delete g[BLOB_STORE_OVERRIDE];
+}
+
+/** Resolve the configured Blob transcript store (test override → server factory → memory fallback). */
+export async function resolveBlobStore(): Promise<ServiceResult<BlobTranscriptStore>> {
+  const g = globalThis as unknown as Record<symbol, BlobTranscriptStore | null>;
+  const override = g[BLOB_STORE_OVERRIDE];
+  if (override) return { ok: true, value: override };
+  if (serverBlobFactory) return { ok: true, value: serverBlobFactory() };
+  return { ok: true, value: new MemoryBlobTranscriptStore() };
 }
 
 /**

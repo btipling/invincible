@@ -69,8 +69,10 @@ just the active one and mints a fresh one.
 | Piece | Location | Notes |
 |-------|----------|--------|
 | Caps (client-safe) | `lib/sessionCloudCaps.ts` | shared with server validation |
-| Store seam (server) | `lib/sessions/sessionStore.ts`, `lib/sessions/redisSessionStore.ts` | Redis (RESP) `ServerSessionStore`; fail-closed 503 |
+| Store seam (server) | `lib/sessions/sessionStore.ts`, `lib/sessions/redisSessionStore.ts` | Redis (RESP) `ServerSessionStore` (+ phase-0 `SessionEnvelopeStore` seam); fail-closed 503 |
+| Transcript object store (phase 0 #515) | `lib/sessions/blobStore.ts`, `lib/sessions/blobStores.ts` | Vercel Blob default (`BLOB_READ_WRITE_TOKEN`) / BYO S3-R2 behind the same seam; client→Blob uploads |
 | List/mint/pull/push/DELETE routes | `app/api/sessions/route.ts`, `app/api/sessions/[id]/route.ts` | `/api/sessions` + `/api/sessions/:id` |
+| Envelope + transcript routes (phase 0 #515) | `app/api/sessions/[id]/envelope/route.ts`, `[id]/transcript/route.ts` | small envelope upsert/read + mint upload/read-window |
 | Route→store seam | `lib/tenancy/harnessSessionsRedis.ts` | `loadSoleMembership` tenant derivation; test override |
 | Composition root | `lib/di/index.ts` | `createSessionStore` registers the responsive store factory; single `REDIS_URL`/`SESSION_REDIS_TTL_MS` read |
 | HTTP repository | `lib/sessionRepository.ts` | list / mint / pull / coalesce PUT / DELETE; no Node/db imports |
@@ -93,6 +95,10 @@ create (picker "New"):
 
 after each turn persist:
   local save (sync)
+  # Phase 0 (#515) carrier: on envelope deploys the host mints a client→Blob upload,
+  # PUTs the transcript segment to Blob, then upserts the small envelope
+  # (meta incl. meta.transcriptPointer) — no full-document JSON PUT on the hot path.
+  # Roll-forward deploys keep the one-shot trimForCloudPut PUT below.
   schedulePush(trimForCloudPut(snapshot))   # coalesce; at most one in-flight PUT to /api/sessions/:id
                                             # cwd + activeSandboxId ride the PUT as meta.{logicalCwd,activeSandboxId}
 
@@ -130,7 +136,7 @@ for the open tab).
 | `createdAt` | Epoch ms at mint/backfill — immutable after create |
 | `updatedAt` | Epoch ms of last accepted write. **New sessions are seeded `0`** (first host PUT with epoch-now ≥ 0 is idempotent-accept, never a spurious 409) |
 | Cross-user | Other-user id / nonexistent id → **404** (no existence leak) |
-| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 16 KiB) and counts toward the raised whole-`meta` budget (**20 KiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection is active — see [docs/personas.md](personas.md)) |
+| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot`, `transcriptPointer` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 16 KiB) and counts toward the raised whole-`meta` budget (**20 KiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection is active — see [docs/personas.md](personas.md)). `transcriptPointer` (phase 0 #515) is a Redis-safe opaque id of the latest **Blob transcript object** — the envelope's pointer; the transcript itself never lives in Redis |
 
 ### Caps (server + host pre-PUT trim)
 
@@ -210,8 +216,10 @@ just the active one and mints a fresh one.
 | Piece | Location | Notes |
 |-------|----------|--------|
 | Caps (client-safe) | `lib/sessionCloudCaps.ts` | shared with server validation |
-| Store seam (server) | `lib/sessions/sessionStore.ts`, `lib/sessions/redisSessionStore.ts` | Redis (RESP) `ServerSessionStore`; fail-closed 503 |
+| Store seam (server) | `lib/sessions/sessionStore.ts`, `lib/sessions/redisSessionStore.ts` | Redis (RESP) `ServerSessionStore` (+ phase-0 `SessionEnvelopeStore` seam); fail-closed 503 |
+| Transcript object store (phase 0 #515) | `lib/sessions/blobStore.ts`, `lib/sessions/blobStores.ts` | Vercel Blob default (`BLOB_READ_WRITE_TOKEN`) / BYO S3-R2 behind the same seam; client→Blob uploads |
 | List/mint/pull/push/DELETE routes | `app/api/sessions/route.ts`, `app/api/sessions/[id]/route.ts` | `/api/sessions` + `/api/sessions/:id` |
+| Envelope + transcript routes (phase 0 #515) | `app/api/sessions/[id]/envelope/route.ts`, `[id]/transcript/route.ts` | small envelope upsert/read + mint upload/read-window |
 | Route→store seam | `lib/tenancy/harnessSessionsRedis.ts` | `loadSoleMembership` tenant derivation; test override |
 | Composition root | `lib/di/index.ts` | `createSessionStore` registers the responsive store factory; single `REDIS_URL`/`SESSION_REDIS_TTL_MS` read |
 | HTTP repository | `lib/sessionRepository.ts` | list / mint / pull / coalesce PUT / DELETE; no Node/db imports |
@@ -234,6 +242,10 @@ create (picker "New"):
 
 after each turn persist:
   local save (sync)
+  # Phase 0 (#515) carrier: on envelope deploys the host mints a client→Blob upload,
+  # PUTs the transcript segment to Blob, then upserts the small envelope
+  # (meta incl. meta.transcriptPointer) — no full-document JSON PUT on the hot path.
+  # Roll-forward deploys keep the one-shot trimForCloudPut PUT below.
   schedulePush(trimForCloudPut(snapshot))   # coalesce; at most one in-flight PUT to /api/sessions/:id
                                             # cwd + activeSandboxId ride the PUT as meta.{logicalCwd,activeSandboxId}
 
@@ -271,7 +283,7 @@ for the open tab).
 | `createdAt` | Epoch ms at mint/backfill — immutable after create |
 | `updatedAt` | Epoch ms of last accepted write. **New sessions are seeded `0`** (first host PUT with epoch-now ≥ 0 is idempotent-accept, never a spurious 409) |
 | Cross-user | Other-user id / nonexistent id → **404** (no existence leak) |
-| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 16 KiB) and counts toward the raised whole-`meta` budget (**20 KiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection is active — see [docs/personas.md](personas.md)) |
+| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot`, `transcriptPointer` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 16 KiB) and counts toward the raised whole-`meta` budget (**20 KiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection is active — see [docs/personas.md](personas.md)). `transcriptPointer` (phase 0 #515) is a Redis-safe opaque id of the latest **Blob transcript object** — the envelope's pointer; the transcript itself never lives in Redis |
 
 ### Caps (server + host pre-PUT trim)
 
@@ -295,6 +307,35 @@ value drops to unset, never a sticky 400).
 - Host absolute paths (`logicalCwd` is always workspace-relative — validated + re-sanitized)
 - Workspace file contents (object storage is a separate future design)
 - `REDIS_URL` (embeds the Redis credential — never logged)
+
+### Envelope + Blob transcript carrier (phase 0 #515)
+
+The **only large surface** of a session — the transcript — lives in append-only
+**objects** in Vercel Blob (S3-backed; BYO S3/R2 behind the same seam), **never in
+Redis and never through a Function payload**. Redis keeps the **small, always-fetchable
+envelope** (`harness:envelope:…`): ownership, `createdAt`, `updatedAt` (LWW), reserved
+`meta`, and `meta.transcriptPointer` (the key of the latest transcript object).
+
+- **Client→Blob uploads only.** The server holds the Blob credential
+  (`BLOB_READ_WRITE_TOKEN`) and mints a **short-lived, scoped, credential-checked** upload
+  URL via `POST /api/sessions/:id/transcript`; the client PUTs a new segment object
+  **directly to Blob** (no fat body through a Function — a server upload through a
+  Function still 413s against the 4.5 MiB Vercel payload limit). `GET` with `?objectId=`
+  returns a server-signed read URL so the host pages from Blob.
+- **Envelope upsert.** `PUT /api/sessions/:id/envelope` writes the small envelope
+  (validates ownership + reserved `meta` scalar-only + pointer, enforces `updatedAt` LWW,
+  `createdAt` preserved; `409` + server envelope on conflict). The envelope is the source
+  of truth for ownership + LWW; the pointer addresses the transcript object.
+- **Roll-forward + no backfill.** Legacy whole-blob records stay readable via the
+  unchanged full-record `GET /api/sessions/:id` **while those blobs stay small** (GET is
+  also a 4.5 MiB *response* limit). `readEnvelope` derives an envelope from a legacy
+  record. **No Redis data backfill**.
+- **Feature-divide preserved.** Wasm never talks to Blob or Redis; the DOM host drives
+  the client→Blob upload + envelope upsert through `lib/sessionRepository.ts`
+  (`mintUpload` / `putTranscriptObject` / `pushEnvelope`). Read paths trust-but-verify:
+  identity-mismatched envelopes fail closed.
+- **Config seam.** `BLOB_READ_WRITE_TOKEN` (Vercel Blob) or BYO bucket creds —
+  documented-only seam, configured via the GHA/env manager, never a laptop ritual.
 
 ## Postgres → archive
 

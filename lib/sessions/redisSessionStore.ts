@@ -37,20 +37,28 @@
 import { createClient, type RedisClientType, type RedisClientOptions } from 'redis';
 import {
   type BackfillMarkerStore,
+  type EnvelopeUpsertResult,
   type HarnessSessionRecord,
   type PutResult,
   type ServerSessionStore,
+  type SessionEnvelope,
+  type SessionEnvelopeInput,
   type SessionListScope,
   type SessionRecordKey,
   assertKeyMatchesRecord,
+  assertValidSessionEnvelope,
   assertValidSessionListScope,
   assertValidSessionRecord,
   assertValidSessionRecordKey,
   backfillMarkerKey,
+  envelopeFromRecord,
+  envelopeKeyString,
   keyMatchesRecord,
+  parseEnvelopeKeyString,
   parseSessionKeyString,
   sessionKeyString,
   sessionPrefix,
+  validateSessionEnvelope,
   validateSessionRecord,
 } from './sessionStore';
 
@@ -331,6 +339,69 @@ export class RedisSessionStore implements ServerSessionStore, BackfillMarkerStor
     if (existing == null) return false;
     await this.client.del(k);
     return true;
+  }
+
+  /**
+   * Phase 0 (#515): read only the envelope (`harness:envelope:...`), never the
+   * transcript. Trust-but-verify on read, same as `get`: a schema-valid but
+   * mis-ownered envelope fails closed (null). When no envelope key exists,
+   * roll-forward derives the envelope from a legacy whole-blob record.
+   */
+  async readEnvelope(key: SessionRecordKey): Promise<SessionEnvelope | null> {
+    assertValidSessionRecordKey(key);
+    const raw = await this.client.get(envelopeKeyString(key));
+    if (raw != null) {
+      const parsed = validateSessionEnvelope(raw);
+      return parsed.ok &&
+        parsed.value.tenantId === key.tenantId &&
+        parsed.value.userId === key.userId &&
+        parsed.value.id === key.sessionId
+        ? parsed.value
+        : null;
+    }
+    const legacy = await this.get(key);
+    return legacy ? envelopeFromRecord(legacy) : null;
+  }
+
+  /**
+   * Phase 0 (#515): upsert only the envelope (LWW on `updatedAt`, `createdAt`
+   * preserved, TTL applied on write). Never touches a transcript object.
+   */
+  async upsertEnvelope(
+    key: SessionRecordKey,
+    input: SessionEnvelopeInput,
+  ): Promise<EnvelopeUpsertResult> {
+    assertValidSessionRecordKey(key);
+    if (
+      key.tenantId !== input.tenantId ||
+      key.userId !== input.userId ||
+      key.sessionId !== input.id
+    ) {
+      throw new Error(
+        'Session envelope identity must match the session key (tenantId/userId/id).',
+      );
+    }
+    const existing = await this.readEnvelope(key);
+    if (existing && input.updatedAt < existing.updatedAt) {
+      return { status: 'conflict', server: existing };
+    }
+    const createdAt = existing?.createdAt ?? Date.now();
+    const envelope: SessionEnvelope = {
+      id: input.id,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      createdAt,
+      updatedAt: input.updatedAt,
+      meta: input.meta ?? {},
+    };
+    assertValidSessionEnvelope(envelope);
+    const k = envelopeKeyString(key);
+    if (this.ttlMs > 0) {
+      await this.client.set(k, envelope, { ex: secondsFromMs(this.ttlMs) });
+    } else {
+      await this.client.set(k, envelope);
+    }
+    return { status: 'stored', envelope };
   }
 
   async hasBackfillMarker(scope: SessionListScope): Promise<boolean> {
