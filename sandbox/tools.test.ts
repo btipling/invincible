@@ -332,6 +332,46 @@ describe('sandbox tools', () => {
     ).rejects.toBeInstanceOf(ToolError);
   });
 
+  it('str_replace applies $ template forms literally (unique path)', async () => {
+    const origin = 'const x = 0;\nconst y = 1;\n';
+    const oldString = 'const x = 0;';
+    for (const newString of [
+      '$&',
+      "$'",
+      '$`',
+      '$$',
+      '^`[A-Za-z0-9_-]{1,128}$`',
+    ]) {
+      const ws = await mkWorkspace();
+      await writeFileTool(ws, { path: 't.ts', content: origin });
+      const r = await strReplaceTool(ws, {
+        path: 't.ts',
+        old_string: oldString,
+        new_string: newString,
+      });
+      expect(r.replacements).toBe(1);
+      const read = await readFileTool(ws, { path: 't.ts' });
+      // Literal splice: the hunk replaces exactly the old_string occurrence,
+      // written byte-for-byte (no $ template expansion, no duplication).
+      expect(read.content).toBe(`${newString}\nconst y = 1;\n`);
+      expect(read.content).not.toContain(origin);
+    }
+  });
+
+  it('str_replace $ templates literal under replace_all (split/join unchanged)', async () => {
+    const ws = await mkWorkspace();
+    await writeFileTool(ws, { path: 't.txt', content: 'aa bb aa\n' });
+    const r = await strReplaceTool(ws, {
+      path: 't.txt',
+      old_string: 'aa',
+      new_string: '$&',
+      replace_all: true,
+    });
+    expect(r.replacements).toBe(2);
+    const read = await readFileTool(ws, { path: 't.txt' });
+    expect(read.content).toBe('$& bb $&\n');
+  });
+
   it('str_replace rejects jail escape', async () => {
     const ws = await mkWorkspace();
     await expect(

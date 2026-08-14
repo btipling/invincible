@@ -624,7 +624,14 @@ export function createVercelSandboxClient(
 
               const next = replaceAll
                 ? content.split(oldString).join(newString)
-                : content.replace(oldString, newString);
+                : content
+                    .slice(0, content.indexOf(oldString))
+                    .concat(newString)
+                    .concat(
+                      content.slice(
+                        content.indexOf(oldString) + oldString.length,
+                      ),
+                    );
               const outBuf = Buffer.from(next, 'utf8');
               if (outBuf.byteLength > VERCEL_FS_MAX_READ_WRITE_BYTES) {
                 throw new SandboxHttpError(

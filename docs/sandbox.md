@@ -304,7 +304,7 @@ alternate tools (MCP / builtin HTTP) gets **403** `Sandbox access denied.` (or
 | `POST` | `/v1/list_dir` | Bearer | List directory entries |
 | `POST` | `/v1/read_file` | Bearer | Read file (max 16 MiB); additive `mtimeMs` + `size` when daemon supports |
 | `POST` | `/v1/write_file` | Bearer | Write file (max 16 MiB); post-write fingerprint when supported |
-| `POST` | `/v1/str_replace` | Bearer | Exact string replace (unique match or `replace_all`); post-write fingerprint when supported |
+| `POST` | `/v1/str_replace` | Bearer | Exact string replace (unique match or `replace_all`); post-write fingerprint when supported. **Unique match and `replace_all` replace literally** — `$` in `new_string` is never a `String.replace` template (`$&`/`` $` ``/`$'`/`$$` are written byte-for-byte) |
 | `POST` | `/v1/stat` | Bearer | Path metadata `{ path, type, size, mtimeMs? }` — path missing: **404** with path-missing body (e.g. `Path not found`); not bare `Not found` (that is unknown-route). No file content |
 | `POST` | `/v1/exec` | Bearer | Run argv command (no shell); optional `stdin`/`heredoc` (v2+) |
 
