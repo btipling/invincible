@@ -7,8 +7,11 @@
  *
  * Layering: this module is pure server-side tool wiring. It never constructs I/O
  * — it receives the DI-bound `userSkills` object (composition root) and the
- * route-resolved `userId` at assembly time. Bodies are non-secret plaintext; only
- * the model-requested body is fetched (never shipped to the client / Wasm).
+ * route-resolved `userId` at assembly time. The body a model requests is treated
+ * like other file/tool reads: its `tool_result` preview (bounded, same as
+ * `read_file`) is persisted as a `tool_run` and painted by the client — so the
+ * playbook can appear in the tool trace, not just the model. Bodies are
+ * non-secret plaintext and user-scoped (no IDOR; own content only).
  *
  * Model payload discipline (plan-review #516): `find_skill` caps the number of
  * summaries returned per call; `fetch_skill` caps the per-call model-returned
