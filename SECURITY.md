@@ -37,39 +37,7 @@ Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
 | Unauthenticated | **401** — client disables cloud sync for the page load |
 | No such session / other user | **404** `NOT_FOUND` (no existence leak — never 403) |
 | Store unavailable | **503** `SESSION_STORE_UNAVAILABLE` — local continues; response never includes host/port/`REDIS_URL` |
-| Cross-user isolation | Tenant via `loadSoleMembership` (server); other-user id → **404**; ids/fn restricted to Redis-safe `^[A-Za-z0-9_-]{1,128}# Security
-
-## Reporting
-
-If you find a vulnerability in Invincible, please open a **private** security advisory on GitHub (or email the maintainer) rather than a public issue with exploit details.
-
-## Secrets
-
-| Never commit | Where it lives |
-|--------------|----------------|
-| `AI_GATEWAY_API_KEY` | Vercel project env only |
-| `HARNESS_ARTIFACT_TOKEN` | Vercel (Actions: Read PAT for artifact download) |
-| `VERCEL_DEPLOY_HOOK_URL` | GitHub Actions secrets |
-| `SANDBOX_TOKEN` | **BYO daemon / local bootstrap only** — not a Vercel product-routing secret (product tool turns resolve credentials from DB grants); sandbox process env; never client/Wasm |
-| `DATABASE_URL` | Vercel / local only (prefer **pooled** Neon/PgBouncer URL) |
-| `REDIS_URL` | Vercel project env only (optional BYO multi-session Redis; node-redis RESP — the URL **embeds** the credential `redis://default:<secret>@<host>:<port>`). **Never** log it; never `NEXT_PUBLIC_*`. Old `SESSION_REDIS_*` / `UPSTASH_REDIS_REST_*` names are **removed** — if present, the store logs a one-time (value-free) deprecation hint then 503s until `REDIS_URL` is set |
-| `BLOB_READ_WRITE_TOKEN` | Vercel project env only (phase 0 #515 — Vercel Blob transcript store; BYO S3/R2 creds behind the same seam). Server mints short-lived scoped upload URLs; the client never holds the credential. **Never** log it; never `NEXT_PUBLIC_*` |
-| `CREDENTIALS_ENCRYPTION_KEY` | Vercel / local only — base64 32-byte AES-256-GCM **AMK** (wraps per-tenant DEKs; tokens encrypt under DEK) |
-| `AUTH_SECRET` | Auth.js session secret — set on Vercel **after** migrate + the first-run sign-up bootstrap |
-| `AUTH_OIDC_CLIENT_SECRET` | Optional OIDC client secret — Vercel/server only; never `NEXT_PUBLIC_*` |
-| `SCIM_BEARER_TOKEN` | Optional SCIM shared bearer — Vercel/server only; IdP → `/api/scim/v2`; never client/Wasm |
-| Runner registration tokens, DO API tokens | Operator machines only |
-| `VERCEL_TOKEN` (GHA secret for **dev-image-build** VCR push) | GitHub Actions only — docker login password to `vcr.vercel.com`; never commit; never echo in logs/summaries |
-| `VERCEL_TEAM_ID` / `VCR_IMAGE_PREFIX` (GHA vars for dogfood image) | Identifiers for VCR push; not app runtime env; never put production DB/Gateway secrets in the dogfood image |
-
-Session blobs and Wasm must never contain API keys or sandbox tokens.  
-Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
-
-### Harness session store (local + cloud)
-
-| Surface | Trust rule |
-|---------|------------|
- so no glob/key bleed |
+| Cross-user isolation | Tenant via `loadSoleMembership` (server); other-user id → **404**; ids/fn restricted to Redis-safe `^[A-Za-z0-9_-]{1,128}$` so no glob/key bleed |
 | Minting | Server mints **UUID** session ids; a brand-new session seeds `updatedAt: 0` |
 | Conflict | LWW on `updatedAt` (epoch ms); stale PUT → **409** + server record |
 | Caps (abuse / size) | No message-count cap; ≤**262 144** UTF-8 bytes per message text; ≤**~2 MiB** raw body; record id ≤128; `meta` is schema-typed reserved (title/legacySnapshotId/logicalCwd/activeSandboxId…) + serialized size cap |
