@@ -18,6 +18,7 @@ import {
 import type {
   BlobTranscriptStore,
   MintedUpload,
+  ObjectScope,
   TranscriptObjectId,
 } from './blobStore';
 import { isTranscriptObjectId, newBlobObjectId } from './blobStore';
@@ -27,10 +28,11 @@ export class MemoryBlobTranscriptStore implements BlobTranscriptStore {
   readonly kind = 'memory' as const;
   private readonly objects = new Map<string, string>();
 
-  async mintUpload(options?: { keyPrefix?: string; contentType?: string }): Promise<MintedUpload> {
-    // Same compact Redis-safe id shape as the Vercel store, so a test-injected
-    // memory double never mints an id that would fail `isTranscriptObjectId`.
-    const id = newBlobObjectId();
+  async mintUpload(options?: { scope: ObjectScope; contentType?: string }): Promise<MintedUpload> {
+    // Same compact Redis-safe, session-bound id shape as the Vercel store, so a
+    // test-injected memory double never mints an id that would fail
+    // `isTranscriptObjectId` / `isObjectIdBoundTo`.
+    const id = newBlobObjectId(options?.scope ?? { tenantId: 't', userId: 'u', sessionId: 's' });
     const readUrl = `memory://transcript/${id}`;
     // Keep a placeholder body so a server-side readUrl resolves to empty until uploaded.
     this.objects.set(id, JSON.stringify({ empty: true }));
@@ -63,17 +65,22 @@ export class MemoryBlobTranscriptStore implements BlobTranscriptStore {
 export class VercelBlobTranscriptStore implements BlobTranscriptStore {
   readonly kind = 'vercel' as const;
 
-  constructor(private readonly opts: { token: string; keyPrefix?: string }) {}
+  constructor(private readonly opts: { token: string }) {}
 
-  async mintUpload(options?: { keyPrefix?: string; contentType?: string }): Promise<MintedUpload> {
+  async mintUpload(options?: { scope: ObjectScope; contentType?: string }): Promise<MintedUpload> {
     // The object id IS the Blob pathname AND the Redis envelope pointer (see
-    // `newBlobObjectId`): a compact, unguessable, Redis-safe opaque string, never
-    // a slashy hierarchical path — so the stored `meta.transcriptPointer` always
-    // equals the object the server signs reads for, and `presignUrl`'s pathname
-    // match holds. (A slashy `harness/{tenant}/{user}/{session}/{ts}_{uuid}`
-    // pathname would fail `isTranscriptObjectId` and 400 every envelope upsert /
-    // read — reader's Blocker.)
-    const objectId = newBlobObjectId();
+    // `newBlobObjectId`): a compact, unguessable, **session-bound**, Redis-safe
+    // opaque string, never a slashy hierarchical path — so the stored
+    // `meta.transcriptPointer` always equals the object the server signs reads
+    // for and `presignUrl`'s pathname match holds. (A slashy
+    // `harness/{tenant}/{user}/{session}/{ts}_{uuid}` pathname would fail
+    // `isTranscriptObjectId` and 400 every envelope upsert / read — reader's
+    // Blocker.) The binding prefix derived from `options.scope` lets the server
+    // re-verify at envelope-write/read time that the pointer belongs to THIS
+    // session (reader's Major L2).
+    const objectId = newBlobObjectId(
+      options?.scope ?? { tenantId: 't', userId: 'u', sessionId: 's' },
+    );
     const validUntil = Date.now() + 60 * 60 * 1000; // 1h
     const signed = await issueSignedToken({
       token: this.opts.token,

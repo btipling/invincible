@@ -11,12 +11,19 @@
  *   host pages from Blob instead of a whole-record Function GET.
  *
  * Auth required (same session-case middleware as `/api/sessions/:id`). Ownership is
- * always the authed user within their tenant; the transcript object is server-minted
- * and pointer-bound to that user's envelope.
+ * always the authed user within their tenant. Each minted transcript object is
+ * **bound to the owning session** `{tenantId,userId,sessionId}` (its id carries a
+ * binding prefix the server re-derives and verifies) so a pointer minted for one
+ * session can never be planted onto another session's envelope or read/signed by a
+ * foreign caller (reader's Major L2).
  */
 import { requireSessionUser } from '../../../../../lib/tenancy/session';
 import { AUTH_REQUIRED_ERROR } from '../../../../../lib/tenancy/errors';
 import { isRedisSafeOpaqueId } from '../../../../../lib/sessionCloudCaps';
+import {
+  isObjectIdBoundTo,
+  type ObjectScope,
+} from '../../../../../lib/sessions/blobStore';
 import {
   type SessionRecordKey,
   isEnvelopeStore,
@@ -153,11 +160,20 @@ export async function POST(req: Request, ctx: Ctx): Promise<Response> {
   const store = await resolveBlobStore();
   if (!store.ok) return unavailableResponse(store.code, store.error);
 
-  // Key under the tenant/user/session resource so objects are content-addressed
-  // per session (Redis-safe opaque segments; the pointer echoes back the objectId).
-  const keyPrefix = `harness/${tenant.tenantId}/${gate.userId}/${id}`;
+  // Bind the minted object to THIS session's ownership scope. The object id IS the
+  // Blob pathname AND the Redis envelope pointer; its binding prefix is derived from
+  // `scope` so the server can re-derive and verify the pointer belongs to this exact
+  // {tenantId,userId,sessionId} at envelope-write and read time. The Blob namespace is
+  // intentionally flat (`t_…` pathname) — the security property is the derivable
+  // binding prefix + server-side verification, NOT a hierarchical
+  // `harness/{tenant}/{user}/{session}` key prefix (reader's Nit L8).
+  const scope: ObjectScope = {
+    tenantId: tenant.tenantId,
+    userId: gate.userId,
+    sessionId: id,
+  };
   try {
-    const minted = await store.value.mintUpload({ keyPrefix, contentType });
+    const minted = await store.value.mintUpload({ scope, contentType });
     return Response.json(minted, { status: 200 });
   } catch {
     return unavailableResponse('BLOB_STORE_UNAVAILABLE', 'transcript store unavailable');
@@ -193,6 +209,22 @@ export async function GET(req: Request, ctx: Ctx): Promise<Response> {
   const owned = await resolveOwnedTranscriptPointer(gate.userId, tenant.tenantId, id);
   if (!owned.ok) return owned.response;
   if (owned.pointer !== objectId) {
+    return Response.json(
+      { error: 'Transcript object not found.', code: 'NOT_FOUND' },
+      { status: 404 },
+    );
+  }
+  // Defense in depth (reader's Major L2): re-derive this session's object-binding
+  // prefix and require the id to match. The envelope pointer is PUT-gated to be
+  // session-bound today, but this guarantees a foreign/planted id is never signed
+  // even if a store double were handed an unbound pointer.
+  if (
+    !isObjectIdBoundTo(objectId, {
+      tenantId: tenant.tenantId,
+      userId: gate.userId,
+      sessionId: id,
+    })
+  ) {
     return Response.json(
       { error: 'Transcript object not found.', code: 'NOT_FOUND' },
       { status: 404 },

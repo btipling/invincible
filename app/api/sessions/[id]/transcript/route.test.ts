@@ -140,7 +140,9 @@ describe('/api/sessions/:id/transcript', () => {
     const blob = new MemoryBlobTranscriptStore();
     setBlobStoreForTests(blob);
 
-    const mint = await blob.mintUpload({ keyPrefix: 'harness/tenant-a/user-a/abc' });
+    const mint = await blob.mintUpload({
+      scope: { tenantId: TENANT, userId: USER, sessionId: 'abc' },
+    });
     await store.upsertEnvelope(
       { tenantId: TENANT, userId: USER, sessionId: 'abc' },
       { id: 'abc', userId: USER, tenantId: TENANT, updatedAt: 10, meta: { transcriptPointer: mint.objectId } },
@@ -157,9 +159,12 @@ describe('/api/sessions/:id/transcript', () => {
     expect(body.readUrl).toContain('memory://transcript/');
     expect(body.objectId).toBe(mint.objectId);
 
-    // IDOR: an arbitrary (even Redis-safe) objectId NOT on this session's envelope → 404,
-    // never signed under the caller's auth (reader's Major L2).
-    const foreign = await blob.mintUpload();
+    // IDOR: an arbitrary (even Redis-safe) objectId minted for a DIFFERENT session
+    // (same user) and NOT on this session's envelope → 404, never signed under the
+    // caller's auth (reader's Major L2).
+    const foreign = await blob.mintUpload({
+      scope: { tenantId: TENANT, userId: USER, sessionId: 'other' },
+    });
     const idor = await GET(
       new Request(`http://localhost/api/sessions/abc/transcript?objectId=${foreign.objectId}`),
       ctx('abc'),
@@ -176,6 +181,28 @@ describe('/api/sessions/:id/transcript', () => {
       ctx('abc'),
     );
     expect(crossSession.status).toBe(404);
+
+    // Planted pointer (different tenant/user) directly on this session's envelope:
+    // even though `owned.pointer === objectId`, the object-binding re-derivation must
+    // reject it (reader's Major L2 defense in depth) — never signed.
+    const crossUser = await blob.mintUpload({
+      scope: { tenantId: 'tenant-b', userId: 'user-b', sessionId: 'zzz' },
+    });
+    await store.upsertEnvelope(
+      { tenantId: TENANT, userId: USER, sessionId: 'abc' },
+      {
+        id: 'abc',
+        userId: USER,
+        tenantId: TENANT,
+        updatedAt: 11,
+        meta: { transcriptPointer: crossUser.objectId },
+      },
+    );
+    const planted = await GET(
+      new Request(`http://localhost/api/sessions/abc/transcript?objectId=${crossUser.objectId}`),
+      ctx('abc'),
+    );
+    expect(planted.status).toBe(404);
 
     // Envelope present but no pointer → 404.
     await store.upsertEnvelope(

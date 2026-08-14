@@ -667,4 +667,38 @@ describe('createHttpSessionRepository — envelope carrier (phase 0 #515)', () =
       expect(res.snapshot.updatedAt).toBe(30);
     }
   });
+
+  it('a 401 from the Blob object host does NOT disable the repo (reader Minor L1)', async () => {
+    // A 401 from the Blob host (cross-origin signed URL expired / blip) is NOT an
+    // Auth.js sign-out — the repo must stay enabled and surface a transient error.
+    const blobUrl = `${UPLOAD_URL}/read?obj=tx_obj1`;
+    let envelopeReads = 0;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && u.endsWith('/envelope')) {
+        envelopeReads += 1;
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 30,
+            meta: { transcriptPointer: 'tx_obj1' },
+            transcriptReadUrl: blobUrl,
+          },
+          { status: 200 },
+        );
+      }
+      if (u === blobUrl) return new Response(null, { status: 401 });
+      return new Response(null, { status: 204 });
+    });
+    const repo = createHttpSessionRepository({ fetchImpl, carrier: 'envelope' });
+    const res = await repo.get(idA);
+    // Transient error — NOT disabled (the whole repo must not go dark on a Blob 401).
+    expect(res.action).toBe('error');
+    expect(repo.enabled).toBe(true);
+    // A subsequent pull still reaches the envelope (repo still live).
+    const again = await repo.get(idA);
+    expect(again.action).toBe('error');
+    expect(envelopeReads).toBeGreaterThanOrEqual(2);
+  });
 });

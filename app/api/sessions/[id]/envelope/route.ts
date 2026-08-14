@@ -19,6 +19,7 @@ import {
   isEnvelopeStore,
   validateSessionEnvelope,
 } from '../../../../../lib/sessions/sessionStore';
+import { isObjectIdBoundTo } from '../../../../../lib/sessions/blobStore';
 import { isRedisSafeOpaqueId } from '../../../../../lib/sessionCloudCaps';
 import { createProdServices } from '../../../../../lib/di';
 import {
@@ -110,8 +111,17 @@ export async function GET(_req: Request, ctx: Ctx): Promise<Response> {
   let readUrl: string | null = null;
   const pointer = got.value.meta.transcriptPointer;
   if (typeof pointer === 'string' && pointer) {
+    // Defense in depth (reader's Major L2): only sign a read URL for an object whose
+    // binding prefix matches THIS session. The envelope pointer is PUT-gated to be
+    // session-bound today, but this guarantees a planted pointer never yields a signed
+    // transcript read even if a store double were handed an unbound pointer.
+    const boundToThisSession = isObjectIdBoundTo(pointer, {
+      tenantId: scope.tenantId,
+      userId: gate.userId,
+      sessionId: id,
+    });
     const blob = await resolveBlobStore();
-    if (blob.ok) {
+    if (boundToThisSession && blob.ok) {
       try {
         readUrl = await blob.value.readUrl(pointer);
       } catch {
@@ -176,6 +186,31 @@ export async function PUT(req: Request, ctx: Ctx): Promise<Response> {
   if (!validated.ok) {
     return Response.json(
       { error: validated.error, code: validated.code.toUpperCase() },
+      { status: 400 },
+    );
+  }
+
+  // Authorization binding (reader's Major L2): a `meta.transcriptPointer` may only
+  // reference an object **minted for THIS session** — the server re-derives the
+  // session's object-binding prefix and rejects a foreign/guessed id. This closes the
+  // plant-another-user's-pointer IDOR: the attacker can only PUT a pointer bound to
+  // their own {tenantId,userId,sessionId}, never a transcript minted for someone else.
+  const pointer = validated.value.meta?.transcriptPointer;
+  if (
+    typeof pointer === 'string' &&
+    pointer &&
+    !isObjectIdBoundTo(pointer, {
+      tenantId: scope.tenantId,
+      userId: gate.userId,
+      sessionId: id,
+    })
+  ) {
+    return Response.json(
+      {
+        error:
+          'meta.transcriptPointer must reference an object minted for this session.',
+        code: 'INVALID_META',
+      },
       { status: 400 },
     );
   }

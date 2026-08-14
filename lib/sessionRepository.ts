@@ -437,8 +437,16 @@ export function createHttpSessionRepository(
       }
       const t = await fetchImpl(readUrl, { method: 'GET', credentials: 'omit' });
       if (t.status === 401) {
-        disable();
-        return { action: 'disabled' };
+        // A 401 here is from the Blob object host (cross-origin, `credentials:'omit'`),
+        // e.g. a stale/expired signed URL or a Blob auth blip — NOT an Auth.js session
+        // sign-out. Disabling the whole repo on this would silently turn off every
+        // cloud read/write for the page load, so we treat it as a transient error and
+        // keep the repo enabled (reader's Minor L1).
+        return {
+          action: 'error',
+          status: t.status,
+          message: 'Transcript fetch denied (signed URL expired or object non-existent).',
+        };
       }
       if (!t.ok) {
         return {

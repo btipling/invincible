@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemorySessionStore } from '../../../../../lib/sessions/memorySessionStore';
+import { newBlobObjectId } from '../../../../../lib/sessions/blobStore';
 import { setSessionStoreForTests } from '../../../../../lib/tenancy/harnessSessionsRedis';
 import { AUTH_REQUIRED_ERROR } from '../../../../../lib/tenancy/errors';
 
@@ -104,11 +105,13 @@ describe('/api/sessions/:id/envelope', () => {
 
   it('PUT upserts envelope with meta/pointer; GET reads it back (no transcript)', async () => {
     const { PUT, GET } = await mockAuthed();
+    // A pointer must be server-minted and bound to THIS session (Major L2).
+    const boundPtr = newBlobObjectId({ tenantId: TENANT, userId: USER, sessionId: 'abc' });
     const put = await PUT(
       putRequest('abc', {
         id: 'abc',
         updatedAt: 10,
-        meta: { transcriptPointer: 'tx_obj1' },
+        meta: { transcriptPointer: boundPtr },
       }),
       ctx('abc'),
     );
@@ -116,14 +119,14 @@ describe('/api/sessions/:id/envelope', () => {
     const stored = (await put.json()) as { id: string; updatedAt: number; meta: { transcriptPointer?: string }; messages?: unknown };
     expect(stored.id).toBe('abc');
     expect(stored.updatedAt).toBe(10);
-    expect(stored.meta.transcriptPointer).toBe('tx_obj1');
+    expect(stored.meta.transcriptPointer).toBe(boundPtr);
     expect(stored.messages).toBeUndefined();
 
     const got = await GET(new Request('http://localhost/api/sessions/abc/envelope'), ctx('abc'));
     expect(got.status).toBe(200);
     const env = (await got.json()) as { id: string; meta: { transcriptPointer?: string }; messages?: unknown };
     expect(env.id).toBe('abc');
-    expect(env.meta.transcriptPointer).toBe('tx_obj1');
+    expect(env.meta.transcriptPointer).toBe(boundPtr);
     expect(env.messages).toBeUndefined();
   });
 
@@ -147,6 +150,26 @@ describe('/api/sessions/:id/envelope', () => {
     expect(badPointer.status).toBe(400);
   });
 
+  it('PUT rejects a transcriptPointer NOT minted for this session (planted foreign pointer → 400 INVALID_META)', async () => {
+    const { PUT } = await mockAuthed();
+    // A pointer bound to a DIFFERENT session/tenant cannot be planted onto 'abc'.
+    const foreignPtr = newBlobObjectId({
+      tenantId: 'tenant-b',
+      userId: 'user-b',
+      sessionId: 'zzz',
+    });
+    const planted = await PUT(
+      putRequest('abc', {
+        id: 'abc',
+        updatedAt: 5,
+        meta: { transcriptPointer: foreignPtr },
+      }),
+      ctx('abc'),
+    );
+    expect(planted.status).toBe(400);
+    expect(((await planted.json()) as { code: string }).code).toBe('INVALID_META');
+  });
+
   it('PUT LWW conflict → 409 + server envelope; equal → accepted', async () => {
     const store = new MemorySessionStore();
     setSessionStoreForTests(store);
@@ -157,7 +180,11 @@ describe('/api/sessions/:id/envelope', () => {
     const { PUT } = await mockAuthed();
 
     const stale = await PUT(
-      putRequest('abc', { id: 'abc', updatedAt: 100, meta: { transcriptPointer: 'tx_old' } }),
+      putRequest('abc', {
+        id: 'abc',
+        updatedAt: 100,
+        meta: { transcriptPointer: newBlobObjectId({ tenantId: TENANT, userId: USER, sessionId: 'abc' }) },
+      }),
       ctx('abc'),
     );
     expect(stale.status).toBe(409);
