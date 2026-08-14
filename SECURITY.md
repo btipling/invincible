@@ -37,7 +37,7 @@ Never use `NEXT_PUBLIC_SANDBOX_*` (or any client-exposed sandbox secret).
 | Unauthenticated | **401** — client disables cloud sync for the page load |
 | No such session / other user | **404** `NOT_FOUND` (no existence leak — never 403) |
 | Store unavailable | **503** `SESSION_STORE_UNAVAILABLE` — local continues; response never includes host/port/`REDIS_URL` |
-| Cross-user isolation | Tenant via `loadSoleMembership` (server); other-user id → **404**; ids/fn restricted to Redis-safe `^[A-Za-z0-9_-]{1,128}$` so no glob/key bleed |
+| Cross-user isolation | Tenant via `loadSoleMembership` (server); other-user id → **404**; ids/fn restricted to Redis-safe `^[A-Za-z0-9_-]{1,512}$` so no glob/key bleed |
 | Minting | Server mints **UUID** session ids; a brand-new session seeds `updatedAt: 0` |
 | Conflict | LWW on `updatedAt` (epoch ms); stale PUT → **409** + server record |
 | Caps (abuse / size) | No message-count cap; ≤**262 144** UTF-8 bytes per message text; ≤**~2 MiB** raw body; record id ≤128; `meta` is schema-typed reserved (title/legacySnapshotId/logicalCwd/activeSandboxId…) + serialized size cap |
@@ -161,7 +161,7 @@ rule: never store API keys, tokens, or credentials inside a persona — put them
 the real secrets surface (per-user MCP, GitHub PAT, sandbox env). The picker only
 receives summaries (`id/name/slug/isDefault/updatedAt`); the body is resolved
 **server-side by id** and injected as a system-preamble snapshot
-(`meta.personaSnapshot`, ≤ 16 KiB). Nothing secret is added to the client bundle
+(`meta.personaSnapshot`, ≤ 512 KiB). Nothing secret is added to the client bundle
 or the harness Wasm. See [docs/personas.md](docs/personas.md).
 
 ## Multi-tenant auth

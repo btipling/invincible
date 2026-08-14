@@ -23,7 +23,7 @@ export const PERSONA_NAME_MAX = 80;
 export const PERSONA_SLUG_RE = /^[a-z][a-z0-9_]{0,63}$/;
 /**
  * Persona body cap (plaintext text; bounded so a single row can't balloon).
- * Locked to `PERSONA_SNAPSHOT_MAX_BYTES` (16 KiB, lib/sessionCloudCaps.ts) so any
+ * Locked to `PERSONA_SNAPSHOT_MAX_BYTES` (512 KiB, lib/sessionCloudCaps.ts) so any
  * persistable persona fits the Phase-3 `meta.personaSnapshot` budget (adversarial
  * review #489 minor): a legal body must be snapshot-able on first use.
  */

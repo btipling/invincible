@@ -51,7 +51,7 @@ function parseQuerySandboxId(
     response: Response.json(
       {
         error:
-          'sandboxId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,128}$).',
+          'sandboxId must be a Redis-safe opaque id (^[A-Za-z0-9_-]{1,512}$).',
       },
       { status: 400 },
     ),

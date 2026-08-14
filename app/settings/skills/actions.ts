@@ -55,13 +55,13 @@ async function requireSettingsSession(): Promise<
 function mapError(code: UserSkillsErrorCode, fallback: string): string {
   switch (code) {
     case 'invalid_name':
-      return 'Name must be 1–80 characters.';
+      return 'Name must be 1–200 characters.';
     case 'invalid_slug':
-      return 'Slug must be a–z, digits, underscore or hyphen (max 64), starting with a letter.';
+      return 'Slug must be a–z, digits, underscore or hyphen (max 128), starting with a letter.';
     case 'invalid_body':
-      return 'Body is required and must be at most 16 KiB.';
+      return 'Body is required and must be at most 4 MiB.';
     case 'invalid_description':
-      return 'Description must be at most 500 characters.';
+      return 'Description must be at most 2000 characters.';
     case 'duplicate_slug':
       return 'A skill with that name already exists.';
     case 'not_found':

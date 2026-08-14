@@ -119,7 +119,7 @@ function CreateForm() {
       </Field>
       <Field
         label="Body"
-        hint="The playbook injected when the skill is attached (≤ 16 KiB). Saved server-side."
+        hint="The playbook injected when the skill is attached (≤ 4 MiB). Saved server-side."
       >
         <textarea
           name="body"

@@ -113,7 +113,7 @@ describe('parseAgentBody', () => {
   });
 
   it('rejects non-Redis-safe sandboxId with 400 (fail closed)', () => {
-    for (const bad of ['a:b', 'has space', 'foo*bar', 'x'.repeat(200)]) {
+    for (const bad of ['a:b', 'has space', 'foo*bar', 'x'.repeat(513)]) {
       const r = parseAgentBody({ prompt: 'hi', sandboxId: bad }, {});
       expect(r.ok).toBe(false);
       if (!r.ok) {
@@ -164,7 +164,7 @@ describe('parseAgentBody', () => {
   });
 
   it('rejects non-Redis-safe personaId with 400 (fail closed)', () => {
-    for (const bad of ['a:b', 'has space', 'foo*bar', 'x'.repeat(200)]) {
+    for (const bad of ['a:b', 'has space', 'foo*bar', 'x'.repeat(513)]) {
       const r = parseAgentBody({ prompt: 'hi', personaId: bad }, {});
       expect(r.ok).toBe(false);
       if (!r.ok) {
@@ -200,7 +200,7 @@ describe('parseAgentBody', () => {
   });
 
   it('rejects non-Redis-safe sessionId with 400 (fail closed)', () => {
-    for (const bad of ['a:b', 'has space', 'foo*bar', 'x'.repeat(200)]) {
+    for (const bad of ['a:b', 'has space', 'foo*bar', 'x'.repeat(513)]) {
       const r = parseAgentBody({ prompt: 'hi', sessionId: bad }, {});
       expect(r.ok).toBe(false);
       if (!r.ok) {

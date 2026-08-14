@@ -21,26 +21,26 @@ import {
 import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { loadSoleMembership } from './soleMembership';
 
-/** Display name limits (mirror personas). */
+/** Display name limits (mirror personas; generously raised in #514). */
 export const SKILL_NAME_MIN = 1;
-export const SKILL_NAME_MAX = 80;
+export const SKILL_NAME_MAX = 200;
 /** Short summary shown by /api/skills and find_skill. */
-export const SKILL_DESCRIPTION_MAX_CHARS = 500;
+export const SKILL_DESCRIPTION_MAX_CHARS = 2000;
 /**
  * Slug charset (parent #495 locked single source of truth, shared with the
  * phase-3 slash parser): lowercase start; digits, underscore AND hyphen allowed;
- * ≤ 64 chars. Hyphens are permitted so a kebab-case skill like `create-plan`
- * stores here and resolves as `/create-plan`. Do NOT copy personas'
- * underscore-only RE.
+ * ≤ 128 chars (raised from 64 in #514). Hyphens are permitted so a kebab-case
+ * skill like `create-plan` stores here and resolves as `/create-plan`. Do NOT
+ * copy personas' underscore-only RE.
  */
-export const SKILL_SLUG_RE = /^[a-z][a-z0-9_-]{0,63}$/;
+export const SKILL_SLUG_RE = /^[a-z][a-z0-9_-]{0,127}$/;
 /**
- * Skill body cap (plaintext; bounded so a single row can't balloon). Matches the
- * parent non-goal cap (`skill body ≤ 16 KiB`, same budget as personas). Skills
- * are store-hosted and re-resolved per turn — never snapshotted into `meta` — so
+ * Skill body cap (plaintext; bounded so a single row can't balloon). Raised to
+ * 4 MiB in #514 (generous, per the #512 caps direction). Skills are
+ * store-hosted and re-resolved per turn — never snapshotted into `meta` — so
  * this caps the body field, not a merged meta budget.
  */
-export const SKILL_BODY_MAX_BYTES = 16 * 1024;
+export const SKILL_BODY_MAX_BYTES = 4 * 1024 * 1024;
 
 export type UserSkillsDeps = {
   db?: Db;
@@ -194,7 +194,7 @@ export async function createUserSkill(
     return {
       ok: false,
       code: 'invalid_slug',
-      error: 'slug must match ^[a-z][a-z0-9_-]{0,63}$',
+      error: 'slug must match ^[a-z][a-z0-9_-]{0,127}$',
     };
   }
   const body = validateBody(input.body);

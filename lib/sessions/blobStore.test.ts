@@ -17,7 +17,7 @@ const SCOPE_B: ObjectScope = { tenantId: 'tenant-a', userId: 'user-b', sessionId
 describe('blobStore — transcript object seam', () => {
   it('isTranscriptObjectId is Redis-safe opaque (charset for meta.transcriptPointer)', () => {
     expect(isTranscriptObjectId('tx_abc123-9')).toBe(true);
-    for (const bad of ['*', 'a:b', 'has space', 'a/b', 'x'.repeat(129), 7, null, undefined]) {
+    for (const bad of ['*', 'a:b', 'has space', 'a/b', 'x'.repeat(513), 7, null, undefined]) {
       expect(isTranscriptObjectId(bad)).toBe(false);
     }
   });

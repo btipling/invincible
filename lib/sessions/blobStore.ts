@@ -18,7 +18,7 @@ import { isRedisSafeOpaqueId } from '../sessionCloudCaps';
 
 /**
  * A content-addressed, append-only transcript object identifier. Stored as
- * `meta.transcriptPointer` on the envelope (`^[A-Za-z0-9_-]{1,128}$`).
+ * `meta.transcriptPointer` on the envelope (`^[A-Za-z0-9_-]{1,512}$`).
  */
 export type TranscriptObjectId = string;
 
@@ -79,7 +79,7 @@ export function isObjectIdBoundTo(objectId: string, scope: ObjectScope): boolean
  *
  * This is the single source of the envelope pointer AND the Blob pathname — they
  * must be the same string so `meta.transcriptPointer` (which rides in the Redis
- * envelope and must be `^[A-Za-z0-9_-]{1,128}$`) always equals the object the
+ * envelope and must be `^[A-Za-z0-9_-]{1,512}$`) always equals the object the
  * server signs reads for. The charset is `[A-Za-z0-9_]` (no `/`, no glob chars),
  * so it is safe as a Redis `meta` value AND as a Blob pathname (Blob pathnames do
  * not need to be hierarchical). Length is bounded well under 128.
