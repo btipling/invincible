@@ -12,15 +12,50 @@ export const HARNESS_SESSION_MAX_MSG_BYTES = 262_144;
 export const HARNESS_SESSION_SNAPSHOT_ID_MAX = 512;
 
 /**
- * Reject raw PUT bodies larger than this (generous 8 MiB transcript-object
- * ceiling). Phase 0 (#515) moved the transcript to Blob objects ferried by
- * client→Blob uploads, so this caps an object, not a one-shot Function body —
- * the Vercel Function 4.5 MB request/response ceiling is the inviolable wire
- * bound and does not apply to Blob objects. A function-carried write/read must
- * only ever carry a per-wire body under that 4.5 MB limit (the envelope/meta
- * path below).
+ * Function-carried full-record / envelope body cap (wire-safe). Every write or
+ * read that crosses a Vercel Function request/response must stay under the real
+ * 4.5 MB Function payload ceiling (`413 FUNCTION_PAYLOAD_TOO_LARGE` /
+ * `FUNCTION_RESPONSE_PAYLOAD_TOO_LARGE`). This is that bound for the one-shot
+ * rollforward full-record PUT/GET (`/api/sessions/:id`) and the host's rollforward
+ * trim (`trimForCloudPut`). Kept at 2 MiB (the pre-#514 value) so a JSON record
+ * (messages + reserved `meta`) never balloons toward the 4.5 MB Function wire.
+ *
+ * The generous **8 MiB** transcript-object ceiling lives separately in
+ * `HARNESS_SESSION_MAX_BODY_BYTES` and applies ONLY to Blob **objects** ferried
+ * client→Blob (phase 0 #515) — never to a Function body (parent #512 lock: "8 MiB
+ * is a Blob object ceiling, not a Function body"; #514 review: "any cap raised
+ * must never turn a function-carried write/read into a one-shot >4.5 MB body").
+ */
+export const HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Reject raw PUT/GET bodies larger than this on the **Blob transcript-object**
+ * path (generous 8 MiB object ceiling). Phase 0 (#515) moved the transcript to
+ * Blob objects ferried by client→Blob uploads, so this caps an **object**, not a
+ * one-shot Function body — the Vercel Function 4.5 MB request/response ceiling
+ * is the inviolable wire bound and does not apply to Blob objects. A
+ * function-carried write/read must only ever carry a per-wire body under that
+ * 4.5 MB limit (`HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES`, the envelope/meta path).
  */
 export const HARNESS_SESSION_MAX_BODY_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Single-source skill-slug charset (parent #495 lock, shared with the phase-3
+ * slash parser and the phase-1 `meta.attachedSkills` validator). Lives here in
+ * the client-safe seam so `lib/sessions/sessionStore.ts` can validate attached
+ * slugs WITHOUT importing the server-only `lib/tenancy/userSkills` module
+ * (layering: sessionStore ↛ userSkills). `userSkills` re-imports/re-exports it.
+ * Lowercase start; digits, underscore AND hyphen allowed; ≤ 128 chars.
+ */
+export const SKILL_SLUG_RE = /^[a-z][a-z0-9_-]{0,127}$/;
+
+/**
+ * Hard cap on the number of slugs a single `meta.attachedSkills` JSON array may
+ * carry (phase 1 #514). Prevents an attacker from stuffing an unbounded list of
+ * slug strings (each only cheaply bounded by the slug charset) under a reserved
+ * meta key. Fail-closed above this count (400 `INVALID_META`).
+ */
+export const HARNESS_SESSION_MAX_ATTACHED_SKILLS = 32;
 
 /**
  * Max serialized size of the reserved `meta` object on a session record.

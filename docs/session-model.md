@@ -142,9 +142,10 @@ for the open tab).
 
 | Cap | Value | Notes |
 |-----|-------|--------|
-| Messages per record | **no count cap** | Body 8 MiB may drop oldest if needed |
+| Messages per record | **no count cap** | Body cap may drop oldest if needed |
 | Per-message text | **262 144** UTF-8 bytes | Aligns with bridge `MAX_MSG_LEN` |
-| Raw PUT body | **8 MiB** | Reject oversize; host trims before PUT |
+| Function-carried full-record body | **2 MiB** (`HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES`) | `/api/sessions/:id` rollforward PUT/GET gate + host rollforward trim — must stay well under the 4.5 MiB Vercel Function payload ceiling (a raised cap never re-enables a one-shot >4.5 MB Function body) |
+| Blob transcript-object body | **8 MiB** (`HARNESS_SESSION_MAX_BODY_BYTES`) | **Object** ceiling only — client→Blob upload, NOT a Function body; the envelope/Blob path passes this cap to `trimForCloudPut` |
 | Record id / tenant / user | max **512**, Redis-safe `^[A-Za-z0-9_-]{1,512}$` | so `KEYS`/prefix globs can never bleed |
 | `meta` total | **1 MiB** UTF-8 bytes (`HARNESS_SESSION_MAX_META_BYTES`) | whole-reserved-meta JSON cap (kept << the 4.5 MiB Vercel Function ceiling for the envelope read path); `personaSnapshot` ≤ **512 KiB** |
 

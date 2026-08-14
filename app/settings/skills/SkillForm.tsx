@@ -11,6 +11,7 @@ import {
 import {
   createSkillAction,
   deleteSkillAction,
+  getSkillBodyAction,
   updateSkillBodyAction,
   updateSkillDetailsAction,
   type SkillActionState,
@@ -152,6 +153,26 @@ function SkillCard({ row }: { row: SkillListItem }) {
     initial,
   );
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Skill bodies live server-side and are NOT inlined into the SSR page (review
+  // #525 Major — skills wire plan). Each card loads its own body on demand via
+  // `getSkillBodyAction` so one settings page never carries N large bodies in a
+  // single Function response. `loadedBody` is the owner-own body once fetched;
+  // `bodyError` surfaces a failed lazy load inline.
+  const [loadedBody, setLoadedBody] = useState<string | null>(null);
+  const [bodyLoading, setBodyLoading] = useState(false);
+  const [bodyError, setBodyError] = useState<string | null>(null);
+
+  async function loadBody() {
+    setBodyLoading(true);
+    setBodyError(null);
+    const r = await getSkillBodyAction(row.id);
+    setBodyLoading(false);
+    if (r.ok) {
+      setLoadedBody(r.body);
+    } else {
+      setBodyError(r.error || 'Could not load body.');
+    }
+  }
 
   return (
     <div style={panelStyle()}>
@@ -203,15 +224,40 @@ function SkillCard({ row }: { row: SkillListItem }) {
       <form action={bodyAction} style={{ marginBottom: 12 }}>
         <input type="hidden" name="id" value={row.id} />
         <Field label="Edit body">
-          <textarea
-            name="body"
-            required
-            defaultValue={row.body}
-            rows={8}
-            style={{ ...inputStyle(), resize: 'vertical', fontFamily: 'inherit' }}
-          />
+          {bodyLoading ? (
+            <div style={{ color: teal.muted, fontSize: 13, padding: '8px 0' }}>
+              Loading body…
+            </div>
+          ) : loadedBody === null ? (
+            <div style={{ padding: '8px 0' }}>
+              {bodyError ? (
+                <p role="alert" style={{ color: ember.accent, fontSize: 13, margin: '0 0 8px' }}>
+                  {bodyError}
+                </p>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => void loadBody()}
+                style={buttonGhostStyle()}
+              >
+                Load body to edit
+              </button>
+            </div>
+          ) : (
+            <textarea
+              name="body"
+              required
+              defaultValue={loadedBody}
+              rows={8}
+              style={{ ...inputStyle(), resize: 'vertical', fontFamily: 'inherit' }}
+            />
+          )}
         </Field>
-        <button type="submit" disabled={bodyPending} style={buttonGhostStyle()}>
+        <button
+          type="submit"
+          disabled={bodyPending || loadedBody === null}
+          style={bodyPending ? buttonGhostStyle() : buttonGhostStyle()}
+        >
           {bodyPending ? 'Saving…' : 'Save body'}
         </button>
         <ActionFeedback state={bodyState} />

@@ -32,7 +32,7 @@ a collision a numeric suffix is appended (`create_pull_request_2`, `_3`, …)
 until a unique slug is found.
 
 Valid slugs match `^[a-z][a-z0-9_-]{0,127}$` (lowercase start; digits, and
-underscores or hyphens allowed; ≤ 64 chars).
+underscores or hyphens allowed; ≤ 128 chars).
 
 ## Guidance
 

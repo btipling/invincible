@@ -41,17 +41,20 @@ async function SkillsPageBody({ userId }: { userId: string }) {
     );
   }
 
-  const skills: SkillListItem[] = [];
-  for (const s of listed.value) {
-    const full = await services.userSkills.getSkillBySlug(userId, s.slug);
-    skills.push({
-      id: s.id,
-      name: s.name,
-      slug: s.slug,
-      description: s.description,
-      body: full.ok && full.value ? full.value.body : '',
-    });
-  }
+  // Review #525 Major (skills wire plan): the SSR response must NOT inline every
+  // skill body into one Vercel Function response — N large bodies would blow the
+  // 4.5 MB `FUNCTION_RESPONSE_PAYLOAD_TOO_LARGE` ceiling. The page renders
+  // summaries only (name/slug/description/id); each SkillCard lazily loads its own
+  // body via `getSkillBodyAction` when the owner opens the body editor (one small
+  // response per skill). SkillListItem.body stays in the type (owner-own edit
+  // surface) but the SSR passes an empty placeholder — the real body loads on demand.
+  const skills: SkillListItem[] = listed.value.map((s) => ({
+    id: s.id,
+    name: s.name,
+    slug: s.slug,
+    description: s.description,
+    body: '',
+  }));
 
   return <SkillForms skills={skills} />;
 }

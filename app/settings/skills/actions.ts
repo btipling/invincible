@@ -172,6 +172,35 @@ export async function updateSkillBodyAction(
   return { ok: true, message: 'Skill body saved.', id };
 }
 
+/**
+ * Lazy-load a single skill's body (review #525 Major — skills wire plan). The
+ * Settings page SSR does NOT inline every body into one Function response; the
+ * owner's body textarea fetches THIS skill's body on demand via this server action,
+ * so each response is one body (never the whole page-bomb of N bodies). A body is
+ * never returned to a client summary / discovery surface.
+ */
+export async function getSkillBodyAction(skillId: string): Promise<
+  | { ok: true; body: string }
+  | { ok: false; error: string }
+> {
+  const session = await requireSettingsSession();
+  if (!session.ok) return { ok: false, error: session.error };
+
+  const id = String(skillId ?? '').trim();
+  if (!id) return { ok: false, error: 'Missing skill id.' };
+
+  const results = await services.userSkills.listUserSkills(session.userId);
+  if (!results.ok) {
+    return { ok: false, error: mapError(results.code, results.error) };
+  }
+  const summary = results.value.find((s) => s.id === id);
+  if (!summary) return { ok: false, error: 'Skill not found.' };
+  const full = await services.userSkills.getSkillBySlug(session.userId, summary.slug);
+  if (!full.ok) return { ok: false, error: mapError(full.code, full.error) };
+  if (!full.value) return { ok: false, error: 'Skill not found.' };
+  return { ok: true, body: full.value.body };
+}
+
 /** Delete a skill. */
 export async function deleteSkillAction(
   _prev: SkillActionState,

@@ -32,8 +32,10 @@
  *    multi-device concurrency. Do not treat this store as an atomic compare-and-set.
  */
 import {
+  HARNESS_SESSION_MAX_ATTACHED_SKILLS,
   HARNESS_SESSION_MAX_META_BYTES,
   PERSONA_SNAPSHOT_MAX_BYTES,
+  SKILL_SLUG_RE,
   isRedisSafeOpaqueId,
   sanitizeSessionCwd,
 } from '../sessionCloudCaps';
@@ -495,9 +497,12 @@ export function validateMetaFields(
   // Phase 1 (#514): `meta.attachedSkills` is a JSON-encoded string of skill slugs
   // (session-sticky attach). The envelope stays scalar-only, so a raw array is
   // REJECTED here (fail closed) — a client must send the serialized string, and
-  // the decoded value must be a JSON array of non-empty strings (each a valid
-  // skill slug). Skills are re-resolved server-side per turn; the body is never
-  // snapshotted into `meta`.
+  // the decoded value must be a JSON array of strings, each a VALID skill slug
+  // (matches `SKILL_SLUG_RE`, the client-safe single source re-used by
+  // `lib/tenancy/userSkills.ts` — layering: sessionStore ↛ userSkills), with a
+  // hard count cap (`HARNESS_SESSION_MAX_ATTACHED_SKILLS`). A malformed/foreign
+  // slug or an over-long list fails closed. Skills are re-resolved server-side
+  // per turn; the body is never snapshotted into `meta`.
   if (out.attachedSkills !== undefined) {
     if (typeof out.attachedSkills !== 'string') {
       return {
@@ -523,12 +528,19 @@ export function validateMetaFields(
         error: 'meta.attachedSkills must decode to a JSON array of slugs.',
       };
     }
+    if (parsed.length > HARNESS_SESSION_MAX_ATTACHED_SKILLS) {
+      return {
+        ok: false,
+        code: 'invalid_meta',
+        error: `meta.attachedSkills must contain at most ${HARNESS_SESSION_MAX_ATTACHED_SKILLS} slugs.`,
+      };
+    }
     for (const slug of parsed) {
-      if (typeof slug !== 'string' || slug.trim() === '') {
+      if (typeof slug !== 'string' || !SKILL_SLUG_RE.test(slug)) {
         return {
           ok: false,
           code: 'invalid_meta',
-          error: 'meta.attachedSkills must decode to a JSON array of slugs.',
+          error: 'meta.attachedSkills must decode to a JSON array of valid skill slugs.',
         };
       }
     }

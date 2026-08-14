@@ -14,7 +14,9 @@ import {
   sessionPrefix,
 } from './sessionStore';
 import {
+  HARNESS_SESSION_MAX_ATTACHED_SKILLS,
   HARNESS_SESSION_MAX_BODY_BYTES,
+  HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES,
   HARNESS_SESSION_MAX_META_BYTES,
   HARNESS_SESSION_MAX_MSG_BYTES,
   PERSONA_SNAPSHOT_MAX_BYTES,
@@ -296,8 +298,13 @@ describe('meta persona keys (parent #485 lock, phase 1 #486)', () => {
     expect(PERSONA_SNAPSHOT_MAX_BYTES).toBeLessThan(HARNESS_SESSION_MAX_META_BYTES);
   });
 
-  it('caps are locked to the generous #514 budget (8 MiB body, 262144 msg, opaque-id 512/RE)', () => {
+  it('caps are locked to the generous #514 budget (8 MiB object, 2 MiB Function body, 262144 msg, opaque-id 512/RE)', () => {
+    // 8 MiB body cap = Blob transcript-object ceiling (client→Blob), parent #512 lock.
     expect(HARNESS_SESSION_MAX_BODY_BYTES).toBe(8 * 1024 * 1024);
+    // Function-carried full-record body is a SEPARATE wire-safe cap (≤ 4.5 MB ceiling)
+    // so a generous object cap can never re-enable a one-shot Function >4.5 MB body.
+    expect(HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES).toBe(2 * 1024 * 1024);
+    expect(HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES).toBeLessThan(4.5 * 1024 * 1024);
     expect(HARNESS_SESSION_MAX_MSG_BYTES).toBe(262_144); // ring msg cap unchanged
     expect(REDIS_SAFE_OPAQUE_ID_MAX).toBe(512);
     expect(REDIS_SAFE_OPAQUE_ID_RE.source).toContain('{1,512}');
@@ -608,6 +615,23 @@ describe('envelope carrier (phase 0 #515)', () => {
     const res = validateSessionRecord(rec);
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.value.meta.attachedSkills).toBe('["create-plan"]');
+  });
+
+  it('meta.attachedSkills rejects non-slug strings and over-count (review #525 Minor L1)', () => {
+    // Each entry must be a valid skill slug (`SKILL_SLUG_RE`, single source in caps).
+    expect(validateMetaFields({ attachedSkills: '["../x"]' }).ok).toBe(false);
+    expect(validateMetaFields({ attachedSkills: '["HAS SPACE"]' }).ok).toBe(false);
+    expect(validateMetaFields({ attachedSkills: '["Upper/Case"]' }).ok).toBe(false);
+    expect(validateMetaFields({ attachedSkills: '["has:colon"]' }).ok).toBe(false);
+    expect(validateMetaFields({ attachedSkills: '["-noleadingletter"]' }).ok).toBe(false);
+    expect(validateMetaFields({ attachedSkills: '["A"]' }).ok).toBe(false); // uppercase start illegal
+    // Valid slugs pass (single lowercase letter is a legal slug).
+    expect(validateMetaFields({ attachedSkills: '["a","create-plan","review_2","x9"]' }).ok).toBe(true);
+    // A hard count cap prevents an unbounded slug list from being stuffed into meta.
+    const many = Array.from({ length: HARNESS_SESSION_MAX_ATTACHED_SKILLS + 1 }, (_, i) => `skill_${i}`);
+    expect(validateMetaFields({ attachedSkills: JSON.stringify(many) }).ok).toBe(false);
+    const atCap = Array.from({ length: HARNESS_SESSION_MAX_ATTACHED_SKILLS }, (_, i) => `skill_${i}`);
+    expect(validateMetaFields({ attachedSkills: JSON.stringify(atCap) }).ok).toBe(true);
   });
 
   it('validateSessionEnvelope validates ownership + LWW updatedAt + reserved meta (never messages)', () => {

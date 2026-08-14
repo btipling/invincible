@@ -14,6 +14,7 @@
  */
 import {
   HARNESS_SESSION_MAX_BODY_BYTES,
+  HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES,
   HARNESS_SESSION_MAX_MSG_BYTES,
   isRedisSafeOpaqueId,
   normalizeSessionCwd,
@@ -310,8 +311,20 @@ function cloudBodyBytes(body: CloudPutBody): number {
  * `activeSandboxId`) into the reserved `meta` and enforce per-message + body byte
  * caps (byte accounting includes `meta`). No message-count ceiling — body size is the
  * storage/wire guard.
+ *
+ * `maxBytes` selects the wire surface:
+ * - Default (`HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES`, 2 MiB) — the **rollforward**
+ *   one-shot full-record PUT to `/api/sessions/:id`, which crosses a Vercel Function
+ *   and so must stay well under the 4.5 MB payload ceiling (#512/#514 lock: a raised
+ *   cap must never re-enable one-shot Function-carried writes).
+ * - Pass `HARNESS_SESSION_MAX_BODY_BYTES` (8 MiB object ceiling) on the phase-0
+ *   #515 envelope/Blob path, where the transcript object is ferried **client→Blob**
+ *   and never through a Function body.
  */
-export function trimForCloudPut(snapshot: SessionSnapshot): CloudPutBody {
+export function trimForCloudPut(
+  snapshot: SessionSnapshot,
+  maxBytes: number = HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES,
+): CloudPutBody {
   const messages = snapshot.messages.map((m) => ({
     id: m.id,
     role: m.role,
@@ -331,7 +344,7 @@ export function trimForCloudPut(snapshot: SessionSnapshot): CloudPutBody {
 
   let out = fresh(messages);
 
-  while (out.messages.length > 0 && cloudBodyBytes(out) > HARNESS_SESSION_MAX_BODY_BYTES) {
+  while (out.messages.length > 0 && cloudBodyBytes(out) > maxBytes) {
     if (out.messages.length === 1) {
       // Single message still too large — shrink text until under body cap.
       const only = out.messages[0];
@@ -339,7 +352,7 @@ export function trimForCloudPut(snapshot: SessionSnapshot): CloudPutBody {
       let best = '';
       while (budget > 0) {
         const candidate = truncateUtf8(only.text, budget);
-        if (cloudBodyBytes(fresh([{ ...only, text: candidate }])) <= HARNESS_SESSION_MAX_BODY_BYTES) {
+        if (cloudBodyBytes(fresh([{ ...only, text: candidate }])) <= maxBytes) {
           best = candidate;
           break;
         }
@@ -650,7 +663,10 @@ export function createHttpSessionRepository(
     c: Channel,
   ): Promise<CloudPutResult> {
     if (!enabled || snapshot.id !== id) return { action: 'disabled' };
-    const body = trimForCloudPut(snapshot);
+    // The transcript object is ferried client→Blob (never through a Function), so it
+    // is trimmed to the 8 MiB **object** ceiling (`HARNESS_SESSION_MAX_BODY_BYTES`) —
+    // the generous #514 body cap is legal HERE (Blob object), not on a Function body.
+    const body = trimForCloudPut(snapshot, HARNESS_SESSION_MAX_BODY_BYTES);
 
     const mint = await mintUpload(id);
     if (c.epoch !== scheduledEpoch) {

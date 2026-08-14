@@ -5,7 +5,7 @@
  */
 import { requireSessionUser } from '../../../../lib/tenancy/session';
 import { AUTH_REQUIRED_ERROR } from '../../../../lib/tenancy/errors';
-import { HARNESS_SESSION_MAX_BODY_BYTES } from '../../../../lib/sessionCloudCaps';
+import { HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES } from '../../../../lib/sessionCloudCaps';
 import {
   type SessionRecordKey,
   isRedisSafeOpaqueId,
@@ -113,16 +113,23 @@ export async function PUT(req: Request, ctx: Ctx): Promise<Response> {
   const badId = invalidIdResponse(id);
   if (badId) return badId;
 
-  // Reuse the legacy route's body-size guard (content-length + raw bytes).
+  // Function-wire body guard (content-length + raw bytes). This is the one-shot
+  // full-record PUT on `/api/sessions/:id`, which crosses a Vercel Function, so it
+  // is bounded by the Function-safe body cap (`HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES`,
+  // ≤ 2 MiB) — NOT by the 8 MiB Blob transcript-object ceiling (that only applies to
+  // client→Blob objects, phase 0 #515). A body over the Function-safe cap would be
+  // `413 FUNCTION_PAYLOAD_TOO_LARGE` on the platform; we reject it here first
+  // (parent #512/#514 lock: a raised cap must never re-enable one-shot >4.5 MB
+  // function-carried writes).
   const contentLength = req.headers.get('content-length');
   if (contentLength !== null) {
     const n = Number(contentLength);
-    if (Number.isFinite(n) && n > HARNESS_SESSION_MAX_BODY_BYTES) {
+    if (Number.isFinite(n) && n > HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES) {
       return Response.json({ error: 'Request body too large.', code: 'BODY_TOO_LARGE' }, { status: 413 });
     }
   }
   const raw = await req.text();
-  if (Buffer.byteLength(raw, 'utf8') > HARNESS_SESSION_MAX_BODY_BYTES) {
+  if (Buffer.byteLength(raw, 'utf8') > HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES) {
     return Response.json({ error: 'Request body too large.', code: 'BODY_TOO_LARGE' }, { status: 413 });
   }
 

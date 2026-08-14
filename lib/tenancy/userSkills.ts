@@ -20,6 +20,7 @@ import {
 } from '../../db';
 import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { loadSoleMembership } from './soleMembership';
+import { SKILL_SLUG_RE as SKILL_SLUG_RE_SRC } from '../sessionCloudCaps';
 
 /** Display name limits (mirror personas; generously raised in #514). */
 export const SKILL_NAME_MIN = 1;
@@ -28,12 +29,14 @@ export const SKILL_NAME_MAX = 200;
 export const SKILL_DESCRIPTION_MAX_CHARS = 2000;
 /**
  * Slug charset (parent #495 locked single source of truth, shared with the
- * phase-3 slash parser): lowercase start; digits, underscore AND hyphen allowed;
- * ≤ 128 chars (raised from 64 in #514). Hyphens are permitted so a kebab-case
- * skill like `create-plan` stores here and resolves as `/create-plan`. Do NOT
- * copy personas' underscore-only RE.
+ * phase-3 slash parser AND the client-safe `lib/sessionCloudCaps.ts` seam so the
+ * phase-1 `meta.attachedSkills` validator can check slugs without importing this
+ * server-only module — layering: sessionStore ↛ userSkills): lowercase start;
+ * digits, underscore AND hyphen allowed; ≤ 128 chars (raised from 64 in #514).
+ * Hyphens are permitted so a kebab-case skill like `create-plan` stores here and
+ * resolves as `/create-plan`. Do NOT copy personas' underscore-only RE.
  */
-export const SKILL_SLUG_RE = /^[a-z][a-z0-9_-]{0,127}$/;
+export const SKILL_SLUG_RE = SKILL_SLUG_RE_SRC;
 /**
  * Skill body cap (plaintext; bounded so a single row can't balloon). Raised to
  * 4 MiB in #514 (generous, per the #512 caps direction). Skills are

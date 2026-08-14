@@ -23,9 +23,11 @@ export const PERSONA_NAME_MAX = 80;
 export const PERSONA_SLUG_RE = /^[a-z][a-z0-9_]{0,63}$/;
 /**
  * Persona body cap (plaintext text; bounded so a single row can't balloon).
- * Locked to `PERSONA_SNAPSHOT_MAX_BYTES` (512 KiB, lib/sessionCloudCaps.ts) so any
- * persistable persona fits the Phase-3 `meta.personaSnapshot` budget (adversarial
- * review #489 minor): a legal body must be snapshot-able on first use.
+ * Persona bodies are OUT OF SCOPE of the #514 skill-cap raise and stay at
+ * **16 KiB** — this is NOT the (raised to 512 KiB) `PERSONA_SNAPSHOT_MAX_BYTES`
+ * in `lib/sessionCloudCaps.ts`. A persistable persona (≤ 16 KiB) still fits the
+ * larger snapshot budget on first use (adversarial review #489 minor): the body
+ * is snapshot-able under `meta.personaSnapshot`.
  */
 export const PERSONA_BODY_MAX_BYTES = 16 * 1024;
 
