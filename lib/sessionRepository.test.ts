@@ -80,6 +80,40 @@ describe('trimForCloudPut', () => {
     expect(bad.meta).toBeUndefined();
   });
 
+  it('folds the sticky attachedSlugs into reserved meta.attachedSkills so a host PUT carries the set (review Blocker)', () => {
+    // A host PUT after an attach MUST carry the sticky set the server injected,
+    // or the next turn's full-record meta rewrite would wipe it (review Blocker).
+    const out = trimForCloudPut({
+      id: 'sess_a',
+      updatedAt: 3,
+      messages: [],
+      attachedSlugs: ['create-plan', 'review'],
+    });
+    expect(out.meta).toEqual({ attachedSkills: '["create-plan","review"]' });
+    expect('attachedSlugs' in out).toBe(false); // carrier carries in meta, not top-level
+  });
+
+  it('detach-all: attachedSlugs:[] persists as "[]" (omitted ≠ detach-all, review Nit L6)', () => {
+    const out = trimForCloudPut({
+      id: 'sess_a',
+      updatedAt: 4,
+      messages: [],
+      attachedSlugs: [],
+    });
+    expect(out.meta).toEqual({ attachedSkills: '[]' });
+  });
+
+  it('omitted attachedSlugs → reserved key left OFF (never clears an unknown set)', () => {
+    const out = trimForCloudPut({
+      id: 'sess_a',
+      updatedAt: 5,
+      messages: [],
+      cwd: 'w',
+    });
+    expect(out.meta).toEqual({ logicalCwd: 'w' });
+    expect(out.meta?.attachedSkills).toBeUndefined();
+  });
+
   it('normalizes escaping `..` out of meta so a record can never diverge from the request cwd (review #453 residual)', () => {
     // A P1-legal-on-record `..` is normalized before it is persisted: it drops out
     // instead of round-tripping `..` into Redis (request sends `.` on any device).
@@ -266,6 +300,25 @@ describe('parseCloudSessionSnapshot', () => {
     expect(parseCloudSessionSnapshot({ id: 'x', updatedAt: 1, messages: 'nope' })).toBeNull();
   });
 
+  it('accepts and keeps a kind-7 skill_attached row (review #526 re-run 3 Blocker)', () => {
+    // After `/foo`, the host PUTs the display-only `skill_attached` kind-7 row.
+    // The rollforward GET / envelope transcript GET / 409-adopt parser MUST accept
+    // it (and keep the row) or the whole record parses to null → `notfound`/`error`,
+    // and the session looks gone on reload / device-switch / adopt.
+    const body = {
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [
+        { id: 'm1', role: 'user', text: 'prompt', at: 1 },
+        { id: 'm2', role: 'skill_attached', text: 'Skill attached: create-plan', at: 2 },
+      ],
+    };
+    const out = parseCloudSessionSnapshot(body);
+    expect(out).not.toBeNull();
+    expect(out?.messages.map((m) => m.role)).toEqual(['user', 'skill_attached']);
+    expect(out?.messages[1]?.text).toBe('Skill attached: create-plan');
+  });
+
   it('rejects a record whose id differs from the resource id (confused-deputy)', () => {
     const body = {
       id: 'other-id',
@@ -316,6 +369,38 @@ describe('parseCloudSessionSnapshot', () => {
       meta: { personaId: 'bad persona id' },
     });
     expect(bad?.personaId).toBeUndefined();
+  });
+
+  it('restores the sticky attachedSlugs from reserved meta.attachedSkills (fail-closed on poison)', () => {
+    const out = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { attachedSkills: '["create-plan","review"]' },
+    });
+    expect(out?.attachedSlugs).toEqual(['create-plan', 'review']);
+
+    // `[]` (explicit detach-all) restores as an empty sticky set.
+    const detached = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      meta: { attachedSkills: '[]' },
+    });
+    expect(detached?.attachedSlugs).toEqual([]);
+
+    // Malformed / foreign slug → fail-closed [] (never a sticky poison).
+    const bad = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      meta: { attachedSkills: 'not-json' },
+    });
+    expect(bad?.attachedSlugs).toEqual([]);
+
+    // Omitted meta.attachedSkills → field stays undefined (not cleared).
+    const bare = parseCloudSessionSnapshot({ id: 's', updatedAt: 1, messages: [] });
+    expect(bare?.attachedSlugs).toBeUndefined();
   });
 
   it('normalizes an already-persisted escaping cwd on adopt/parse (review #453 residual)', () => {

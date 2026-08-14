@@ -45,6 +45,7 @@ import {
   appendMessage,
   formatPromptWithHistory,
   type SessionMessage,
+  type SessionRole,
   type SessionSnapshot,
 } from './sessionStore';
 import {
@@ -130,7 +131,7 @@ export type HarnessTurnResult = {
   session: SessionSnapshot;
 };
 
-function roleToKind(role: 'user' | 'assistant' | 'system' | 'error' | 'tool_run'): MessageKind {
+function roleToKind(role: SessionRole): MessageKind {
   switch (role) {
     case 'user':
       return MessageKind.User;
@@ -142,7 +143,40 @@ function roleToKind(role: 'user' | 'assistant' | 'system' | 'error' | 'tool_run'
       return MessageKind.Error;
     case 'tool_run':
       return MessageKind.ToolRun;
+    case 'skill_attached':
+      return MessageKind.SkillAttached;
   }
+}
+
+/**
+ * Display-only text for a skill attach/detach outcome (phase 2 #517). Carries
+ * ONLY the slug + status — never a skill body (bodies stay server-side in the
+ * model's system context).
+ */
+export function skillRowText(ev: {
+  action: 'attach' | 'detach';
+  slug: string;
+  ok: boolean;
+}): string {
+  if (ev.action === 'detach') {
+    return ev.ok ? `Skill detached: ${ev.slug}` : `Skill not attached: ${ev.slug}`;
+  }
+  return ev.ok ? `Skill attached: ${ev.slug}` : `Skill not attached: ${ev.slug}`;
+}
+
+/**
+ * Push one display-only skill row to the bridge (kind 7 `skill_attached`) and
+ * mirror it into the session (role `skill_attached`). Display-only: never folded
+ * into the model prompt (staff-of-work bodies are server-side only).
+ */
+function pushSkillRow(
+  bridge: HarnessBridge,
+  session: SessionSnapshot,
+  ev: { action: 'attach' | 'detach'; slug: string; ok: boolean },
+): SessionSnapshot {
+  const text = skillRowText(ev);
+  bridge.pushMessage(MessageKind.SkillAttached, text);
+  return appendMessage(session, 'skill_attached', text);
 }
 
 /** Soft-truncate for bridge only when past Wasm MAX_MSG_LEN-scale limits. */
@@ -502,6 +536,9 @@ export function restoreLastUiKind(
       return 'system';
     case 'tool_run':
       return 'tool_run';
+    case 'skill_attached':
+      // A skill row is a non-tool separator — the next tool opens a fresh card.
+      return 'assistant';
   }
 }
 
@@ -977,6 +1014,25 @@ export async function runHarnessTurn(
             growAssistant(ev.text);
             return;
           }
+          if (ev.type === 'skill_attached') {
+            // Server sends skill_attached events at the START of the turn (before
+            // the model). Push the display-only row live; it is a non-tool
+            // separator for the tool-run predicate.
+            lastRingRowIsToolRun = false;
+            lastUiKind = 'assistant';
+            next = pushSkillRow(bridge, next, ev);
+            // Phase 2 (#517 / adversarial-review Blocker + "fold-before-persist
+            // incl. fail/cancel"): every skill_attached event carries the SAME
+            // final set, so last-writes-wins here never clears across events, and
+            // it is applied BEFORE the model runs — so a success, a 502, or a
+            // user Stop/cancel still ends with the host persisting the sticky set
+            // as `meta.attachedSkills` (omitted field = leave untouched; `[]` =
+            // explicit detach-all).
+            if (Array.isArray(ev.attachedSlugs)) {
+              next = { ...next, attachedSlugs: [...ev.attachedSlugs] };
+            }
+            return;
+          }
           if (ev.type === 'done') {
             sawStreamTerminal = true;
             closeThinkingSegment();
@@ -1021,6 +1077,24 @@ export async function runHarnessTurn(
           if (!payload) continue;
           bridge.pushMessage(MessageKind.ToolRun, payload);
           next = appendMessage(next, 'tool_run', payload);
+        }
+        // Phase 2 (#517): the JSON (non-stream) path carries skill outcomes on
+        // `skillEvents` (SSE surfaces them as live events instead). Push the
+        // display-only rows so the transcript shows the skill name, matching the
+        // stream path exactly.
+        if (agentResult.skillEvents) {
+          for (const ev of agentResult.skillEvents) {
+            lastRingRowIsToolRun = false;
+            lastUiKind = 'assistant';
+            next = pushSkillRow(bridge, next, ev);
+          }
+        }
+        // Phase 2 (#517 / adversarial-review): fold the session-sticky skill set
+        // from the JSON response so the host persists it as `meta.attachedSkills`
+        // on the next PUT (stream path folds it live on each skill_attached event).
+        // Present `[]` = explicit detach-all; omitted = leave the existing set.
+        if (Array.isArray(agentResult.attachedSlugs)) {
+          next = { ...next, attachedSlugs: [...agentResult.attachedSlugs] };
         }
         if (!assistantStarted) {
           bridge.pushMessage(MessageKind.Assistant, agentResult.text);
@@ -1103,6 +1177,17 @@ export async function runHarnessTurn(
       // re-push of already-committed cards.
       resetLiveToolStreak();
       let failedSession = next;
+      // Phase 2 (#517 / "fold-before-persist incl. fail/cancel"): the server
+      // sends the session's current sticky set on error bodies too, so a FAILED
+      // turn still persists the set that was attached before the model errored.
+      // On the stream path the skill_attached events already folded it into
+      // `next`; this catches the JSON path (and is a no-op when neither exists).
+      if (Array.isArray(agentResult.attachedSlugs)) {
+        failedSession = {
+          ...failedSession,
+          attachedSlugs: [...agentResult.attachedSlugs],
+        };
+      }
       const partial = (assistantAcc || '').trim();
       if (partial) {
         failedSession = appendMessage(failedSession, 'assistant', partial);

@@ -18,10 +18,24 @@ import {
   HARNESS_SESSION_MAX_MSG_BYTES,
   isRedisSafeOpaqueId,
   normalizeSessionCwd,
+  parseAttachedSkills,
+  serializeAttachedSkills,
 } from './sessionCloudCaps';
 import type { SessionMessage, SessionRole, SessionSnapshot } from './sessionStore';
 
-const SESSION_ROLES = new Set<SessionRole>(['user', 'assistant', 'system', 'error', 'tool_run']);
+// Must stay in sync with the server-side role allowlist (`harnessSessions.ts`):
+// a kind-7 `skill_attached` row rides the transcript the host PUTs after `/foo`,
+// so the rollforward/envelope GET + 409-adopt parser must accept it or the whole
+// record parses to `null` (session looks gone). Server + local already allow the
+// role (`SessionRole`); this is the host-side contact surface (review #526 re-run 3).
+const SESSION_ROLES = new Set<SessionRole>([
+  'user',
+  'assistant',
+  'system',
+  'error',
+  'tool_run',
+  'skill_attached',
+]);
 
 const DEFAULT_PATH = '/api/sessions';
 
@@ -228,6 +242,15 @@ export function parseCloudSessionSnapshot(
   if (cwd !== undefined) snapshot.cwd = cwd;
   if (activeSandboxId !== undefined) snapshot.activeSandboxId = activeSandboxId;
   if (personaId !== undefined) snapshot.personaId = personaId;
+  // Phase 2 (#517): restore the sticky attached-skill set from the reserved
+  // `meta.attachedSkills` JSON-array string (fail-closed → [] on any malformed /
+  // foreign value; never a sticky poison). `[]` restore means detach-all.
+  if (o.meta !== null && typeof o.meta === 'object' && !Array.isArray(o.meta)) {
+    const meta = o.meta as Record<string, unknown>;
+    if (meta.attachedSkills !== undefined) {
+      snapshot.attachedSlugs = parseAttachedSkills(meta.attachedSkills);
+    }
+  }
   return snapshot;
 }
 
@@ -260,7 +283,18 @@ export type CloudPutBody = {
   id: string;
   updatedAt: number;
   messages: SessionMessage[];
-  meta?: { activeSandboxId?: string; logicalCwd?: string; personaId?: string };
+  meta?: {
+    activeSandboxId?: string;
+    logicalCwd?: string;
+    personaId?: string;
+    /**
+     * Phase 2 (#517): the session-sticky attached-skill set as a JSON-array
+     * string of slugs (the server's reserved `meta.attachedSkills` surface).
+     * `undefined` = omitted (never clears what the host doesn't know);
+     * `'[]'` = explicit detach-all. Folded from `snapshot.attachedSlugs`.
+     */
+    attachedSkills?: string;
+  };
 };
 
 /**
@@ -295,9 +329,22 @@ export function cloudMetaFor(
       ? snapshot.personaId
       : undefined;
   if (pid !== undefined) meta.personaId = pid;
+  // Phase 2 (#517 / adversarial-review Blocker): the session-sticky attached
+  // skill set. The HOST is a first-class carrier: `snapshot.attachedSlugs` rides
+  // the PUT meta as the reserved `meta.attachedSkills` JSON-array string, so a
+  // host PUT (which rewrites the whole record's `meta` every turn) can never
+  // silently delete the set the server injected. `undefined` (omitted) → the key
+  // is left OFF the meta so we never clear an unknown set; `[]` (explicit
+  // detach-all) → persisted as `'[]'` (omitted ≠ []). Never persists a malformed
+  // value — re-serialize the validated parse.
+  const attachedSkills = Array.isArray(snapshot.attachedSlugs)
+    ? serializeAttachedSkills(snapshot.attachedSlugs)
+    : undefined;
+  if (attachedSkills !== undefined) meta.attachedSkills = attachedSkills;
   return meta.logicalCwd === undefined &&
     meta.activeSandboxId === undefined &&
-    meta.personaId === undefined
+    meta.personaId === undefined &&
+    meta.attachedSkills === undefined
     ? undefined
     : meta;
 }

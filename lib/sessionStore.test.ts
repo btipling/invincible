@@ -6,6 +6,7 @@ import {
   createEmptySession,
   formatPromptWithHistory,
   makeMessage,
+  sanitizeAttachedSlugs,
   sanitizeSessionCwd,
 } from './sessionStore';
 
@@ -190,6 +191,69 @@ describe('session cwd', () => {
     store.save({ ...createEmptySession('z'), cwd: 'x' });
     store.clear();
     expect(store.load()).toBeNull();
+  });
+});
+
+describe('attachedSlugs local sanitize (review #526 re-run 3 residual)', () => {
+  function installMemoryLocalStorage() {
+    const map = new Map<string, string>();
+    const ls = {
+      getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+      setItem: (k: string, v: string) => {
+        map.set(k, String(v));
+      },
+      removeItem: (k: string) => {
+        map.delete(k);
+      },
+      clear: () => {
+        map.clear();
+      },
+    };
+    vi.stubGlobal('localStorage', ls);
+    return ls;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('sanitizeAttachedSlugs keeps valid slugs, drops poison + dupes (ordered)', () => {
+    expect(sanitizeAttachedSlugs(['create-plan', 'Bad Slug', 'create-plan', 'ok_1'])).toEqual([
+      'create-plan',
+      'ok_1',
+    ]);
+    expect(sanitizeAttachedSlugs(['ok'])).toEqual(['ok']);
+    expect(sanitizeAttachedSlugs([])).toEqual([]);
+    expect(sanitizeAttachedSlugs(undefined)).toBeUndefined();
+    expect(sanitizeAttachedSlugs('nope')).toBeUndefined();
+    expect(sanitizeAttachedSlugs([42])).toEqual([]);
+  });
+
+  it('LocalStorage load drops a poisoned attachedSlugs array (never mirrored raw)', () => {
+    installMemoryLocalStorage();
+    const key = 'test-slugs-key';
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        id: 's',
+        messages: [],
+        updatedAt: 1,
+        attachedSlugs: ['Bad Slug', 'ok', 42],
+      }),
+    );
+    const store = new LocalStorageSessionStore(key);
+    const loaded = store.load();
+    expect(loaded).not.toBeNull();
+    // Invalid entries dropped; valid slug kept (not spread raw).
+    expect(loaded?.attachedSlugs).toEqual(['ok']);
+
+    // Non-array poison → sanitized to undefined (field dropped entirely).
+    localStorage.setItem(
+      key,
+      JSON.stringify({ id: 's', messages: [], updatedAt: 1, attachedSlugs: 'Bogus Slug' }),
+    );
+    const loadedPoison = store.load();
+    expect(loadedPoison?.attachedSlugs).toBeUndefined();
   });
 });
 

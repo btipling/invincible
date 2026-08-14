@@ -16,7 +16,8 @@ const ring_slot = @import("ring_slot.zig");
 /// v9: pending cancel (user Stop) — additive exports.
 /// v10: tool-run aggregation message kind (kind 6, `tool_run`) — no new export.
 /// v11: additive ring-readback exports for tests (`inv_message_*_at`) — see below.
-pub const PROTOCOL_VERSION: u32 = 11;
+/// v12: additive message kind 7 `skill_attached` (display-only skill row) — no new export.
+pub const PROTOCOL_VERSION: u32 = 12;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -35,6 +36,10 @@ pub const MessageKind = enum(u8) {
     /// Protocol v10 — host-aggregated tool-run group (display-only, session role `tool_run`).
     /// Payload is the versioned delimiter format decoded by `rich/toolrun.zig`.
     tool_run = 6,
+    /// Protocol v12 — display-only `Skill attached: <slug>` row (session role
+    /// `skill_attached`). Enum value 7 (next after tool_run) — distinct from the
+    /// protocol version 12.
+    skill_attached = 7,
 };
 
 /// Transcript ring slots. Host `HARNESS_RING_MAX` must match.

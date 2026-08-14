@@ -26,6 +26,29 @@ export type AgentStreamEvent =
   | { type: 'reasoning_delta'; text: string }
   | { type: 'text_delta'; text: string }
   | {
+      /**
+       * Protocol v12 / phase 2 (#517): display-only skill attach/detach outcome.
+       * Carries ONLY the slug + outcome — never a skill body (bodies stay
+       * server-side in the model's system context). Emitted by the server at the
+       * START of a turn (before the model), or alone on a NO-MODEL `/unskill`.
+       */
+      type: 'skill_attached';
+      slug: string;
+      action: 'attach' | 'detach';
+      ok: boolean;
+      reason?: string;
+      /**
+       * Phase 2 (#517 / adversarial-review Nit L6): the FINAL attached-skill set
+       * for the session, carried identically on EVERY skill_attached event of a
+       * turn so the host applies it last-writes-wins (never treats a missing
+       * field on event 1 as *clear*). `[]` = explicit detach-all; OMITTED = the
+       * field is absent (host leaves its existing set untouched). The host's
+       * `SessionSnapshot.attachedSlugs` mirrors this so a host PUT persists it
+       * as the reserved `meta.attachedSkills`.
+       */
+      attachedSlugs?: string[];
+    }
+  | {
       type: 'done';
       text: string;
       toolTrace?: ToolTraceEntry[];

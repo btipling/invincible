@@ -509,3 +509,28 @@ describe('ring readback exports (protocol v11)', () => {
     expect(bridge.messageTextAt(0)).toBe(body);
   });
 });
+
+describe('skill_attached kind (protocol v12)', () => {
+  it('MessageKind.SkillAttached is the next enum value 7 (never the protocol version)', () => {
+    expect(MessageKind.SkillAttached).toBe(7);
+    // Distinct from the protocol version (12) — a hardcoded kind 12 would be an
+    // unknown kind to the Wasm painter.
+    expect(MessageKind.SkillAttached).not.toBe(HARNESS_PROTOCOL_VERSION);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(12);
+  });
+
+  it('push/readback round-trips a skill_attached row', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.SkillAttached, 'Skill attached: create-plan');
+    expect(bridge.messageAt(0)).toEqual({
+      kind: MessageKind.SkillAttached,
+      text: 'Skill attached: create-plan',
+    });
+    expect(bridge.messageKindAt(0)).toBe(7);
+  });
+
+  it('messageKindLabel maps the skill kind', () => {
+    expect(messageKindLabel(MessageKind.SkillAttached)).toBe('skill');
+  });
+});
