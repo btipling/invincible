@@ -58,6 +58,53 @@ export const SKILL_SLUG_RE = /^[a-z][a-z0-9_-]{0,127}$/;
 export const HARNESS_SESSION_MAX_ATTACHED_SKILLS = 32;
 
 /**
+ * Per-turn **inject** byte budget for attached-skill bodies folded into the model
+ * system prompt (`skillsPreamble`, phase 2 #517). Adversarial-review L5 fix: the
+ * count cap alone is NOT a size cap — 32 × a 4 MiB body would concatenate 128 MiB
+ * into `skillsPreamble` every turn (Function memory / Gateway payload / timeout).
+ * `resolveSkillPreamble` builds blocks greedily up to this budget and stops.
+ *
+ * This deliberately differs from the **store** cap (`SKILL_BODY_MAX_BYTES`, 4 MiB):
+ * the ON-DISK body may be huge (a skill is staff-of-work, stored once), but what
+ * actually becomes a standing-order injected block each turn is capped at 256 KiB.
+ * A skill whose body alone exceeds this budget FAILS at attach (`too_large`) — it
+ * is never added to the sticky set — so a 4 MiB skill can never sit "attached"
+ * while silently never being injected (adversarial-review amendment, "silent lie").
+ */
+export const HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES = 256 * 1024;
+
+/**
+ * Parse a stored `meta.attachedSkills` (a JSON-array string of skill slugs) into a
+ * slug list. Client-safe single source shared by the host session repository
+ * (`cloudMetaFor` / `parseCloudSessionSnapshot`), the server `skillInject`, and the
+ * meta validator — no shape drift across the seam. **Fail-closed → []** on any
+ * malformed/foreign value; each slug must match `SKILL_SLUG_RE`; duplicates are
+ * dropped (insertion order preserved). `undefined` → `[]` (nothing sticky).
+ */
+export function parseAttachedSkills(value: unknown): string[] {
+  if (typeof value !== 'string') return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: string[] = [];
+  for (const s of parsed) {
+    if (typeof s === 'string' && SKILL_SLUG_RE.test(s) && !out.includes(s)) {
+      out.push(s);
+    }
+  }
+  return out;
+}
+
+/** Serialize a slug set to the sticky `meta.attachedSkills` JSON-array-string form. */
+export function serializeAttachedSkills(slugs: string[]): string {
+  return JSON.stringify(slugs);
+}
+
+/**
  * Max serialized size of the reserved `meta` object on a session record.
  * `meta` is schema-typed reserved (#411/#412): only the reserved P1 keys are
  * allowed, and their combined JSON size is capped so a record can never balloon

@@ -57,6 +57,14 @@ an already-attached session picks up the edited body rather than a frozen copy.
 A skill that is deleted while attached silently stops being injected. **New
 session / Clear** mints a fresh session, so attachments reset there.
 
+The sticky set is carried on BOTH seams so nothing can wipe it: the server
+persists it via the phase-0 **envelope** (`readEnvelope` / `upsertEnvelope`,
+same `harness:envelope:*` key the host writes, `updatedAt` left untouched), and
+the host folds the same set onto its `SessionSnapshot.attachedSlugs`, so a host
+record PUT rewrites `meta.attachedSkills` verbatim instead of silently dropping
+it (an omitted reserved key is never treated as *clear*; an explicit empty set
+means detach-all — the two are distinct).
+
 ### What the UI shows
 
 The transcript shows **only the skill name**: a compact `Skill attached:
@@ -71,9 +79,14 @@ system context.
   skill focused on one job.
 - **Description:** one short line a user can scan; it is shown in discovery
   lists but never the body.
-- **Size & token budget:** each body is capped at 4 MiB. A skill body becomes
-  part of the session's context (system prompt) once attached, and each
-  additional attachment adds its body to that budget — so attach only the
-  skills you need, and keep bodies tight. Only the attached **slugs** are
-  stored in session `meta` (never bodies), so the meta cap is not the binding
-  constraint; the model token budget is.
+- **Size & token budget — store cap vs inject cap:** a body is stored up to
+  the 4 MiB `SKILL_BODY_MAX_BYTES` cap, but what is **injected into the model's
+  system context every turn** is separately capped at a far smaller budget
+  (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`, 256 KiB total across all attached
+  skills). A new attach whose body would exceed that inject budget is **rejected
+  at attach** (`too_large` when the body alone is over, `budget` when the
+  already-attached set leaves no headroom) and is **never counted as attached** —
+  so a large stored skill can never sit "attached" while silently never being
+  injected (the count cap alone is not a size cap). Keep bodies tight: only the
+  attached **slugs** are stored in session `meta` (never bodies), and only the
+  injectable subset of their bodies reaches the model each turn.

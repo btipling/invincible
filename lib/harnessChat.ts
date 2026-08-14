@@ -1021,6 +1021,16 @@ export async function runHarnessTurn(
             lastRingRowIsToolRun = false;
             lastUiKind = 'assistant';
             next = pushSkillRow(bridge, next, ev);
+            // Phase 2 (#517 / adversarial-review Blocker + "fold-before-persist
+            // incl. fail/cancel"): every skill_attached event carries the SAME
+            // final set, so last-writes-wins here never clears across events, and
+            // it is applied BEFORE the model runs — so a success, a 502, or a
+            // user Stop/cancel still ends with the host persisting the sticky set
+            // as `meta.attachedSkills` (omitted field = leave untouched; `[]` =
+            // explicit detach-all).
+            if (Array.isArray(ev.attachedSlugs)) {
+              next = { ...next, attachedSlugs: [...ev.attachedSlugs] };
+            }
             return;
           }
           if (ev.type === 'done') {
@@ -1078,6 +1088,13 @@ export async function runHarnessTurn(
             lastUiKind = 'assistant';
             next = pushSkillRow(bridge, next, ev);
           }
+        }
+        // Phase 2 (#517 / adversarial-review): fold the session-sticky skill set
+        // from the JSON response so the host persists it as `meta.attachedSkills`
+        // on the next PUT (stream path folds it live on each skill_attached event).
+        // Present `[]` = explicit detach-all; omitted = leave the existing set.
+        if (Array.isArray(agentResult.attachedSlugs)) {
+          next = { ...next, attachedSlugs: [...agentResult.attachedSlugs] };
         }
         if (!assistantStarted) {
           bridge.pushMessage(MessageKind.Assistant, agentResult.text);
@@ -1160,6 +1177,17 @@ export async function runHarnessTurn(
       // re-push of already-committed cards.
       resetLiveToolStreak();
       let failedSession = next;
+      // Phase 2 (#517 / "fold-before-persist incl. fail/cancel"): the server
+      // sends the session's current sticky set on error bodies too, so a FAILED
+      // turn still persists the set that was attached before the model errored.
+      // On the stream path the skill_attached events already folded it into
+      // `next`; this catches the JSON path (and is a no-op when neither exists).
+      if (Array.isArray(agentResult.attachedSlugs)) {
+        failedSession = {
+          ...failedSession,
+          attachedSlugs: [...agentResult.attachedSlugs],
+        };
+      }
       const partial = (assistantAcc || '').trim();
       if (partial) {
         failedSession = appendMessage(failedSession, 'assistant', partial);

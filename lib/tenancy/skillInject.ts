@@ -28,14 +28,42 @@
  *   - a malformed stored `attachedSkills` fails closed at read (defense in
  *     depth even beyond the write-side `validateMetaFields` branch).
  *
+ * **Persist seam (adversarial-review H2 fix):** this module writes only through
+ * the phase-0 **envelope** seam (`readEnvelope` / `upsertEnvelope`), never the
+ * legacy whole-blob `get`/`put`. That keeps the agent-side best-effort mirror on
+ * the SAME Redis key the host envelope carrier writes (`harness:envelope:*`),
+ * and never rewrites `messages` (which would bump `updatedAt` and re-open the
+ * mid-turn 409-adopt / dropped-message race). The mirror follows the persona
+ * **clock rule** the other way on purpose: it writes only when `readEnvelope`
+ * succeeded, keeps `updatedAt` UNCHANGED, and skips on conflict — the host PUT
+ * (which now folds `attachedSlugs`) is the source of truth, so the agent mirror
+ * must never fight it.
+ *
+ * **Inject byte budget (adversarial-review L5 fix):** the count cap
+ * (`HARNESS_SESSION_MAX_ATTACHED_SKILLS`, 32) is NOT a size cap. Bodies are
+ * resolved + folded into `skillsPreamble` greedily up to
+ * `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` (256 KiB) so 32 × a 4 MiB stored
+ * body can never concatenate 128 MiB into the model system prompt every turn.
+ * A new **attach** whose body would exceed that budget is rejected
+ * (`too_large` / `budget`) and is never added to the sticky set — so a too-big
+ * skill can never sit "attached" while silently never being injected (the
+ * review's "silent lie" amendment).
+ *
  * The session-store seam is injected so this module never constructs I/O
  * (di-gate).
  */
 import type {
-  HarnessSessionRecord,
+  EnvelopeUpsertResult,
+  SessionEnvelope,
+  SessionEnvelopeInput,
   SessionRecordKey,
 } from '../sessions/sessionStore';
-import { SKILL_SLUG_RE } from './userSkills';
+import {
+  HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES,
+  SKILL_SLUG_RE,
+  parseAttachedSkills,
+  serializeAttachedSkills,
+} from '../sessionCloudCaps';
 
 /** Attachment slash command: a bare leading `/slug` token. */
 export const SKILL_COMMAND_RE = /^\/([a-z][a-z0-9_-]{0,127})(?:\s|$)/;
@@ -80,13 +108,19 @@ export type SkillBodyReader = {
   >;
 };
 
-/** Minimal scoped session-store read/write seam (identity-bound, validated keys). */
-export type SessionStoreLite = {
-  get(key: SessionRecordKey): Promise<HarnessSessionRecord | null>;
-  put(
+/**
+ * Minimal scoped session-store seam (phase-0 ENVELOPE only — adversarial-review
+ * H2 fix). The agent-side best-effort mirror reads + writes the small envelope
+ * (never the whole-blob record / never `messages`), so it stays on the same
+ * `harness:envelope:*` Redis surface the host envelope carrier writes and never
+ * bumps `updatedAt`.
+ */
+export type SessionStoreEnvelope = {
+  readEnvelope(key: SessionRecordKey): Promise<SessionEnvelope | null>;
+  upsertEnvelope(
     key: SessionRecordKey,
-    record: HarnessSessionRecord,
-  ): Promise<{ status: 'stored' | 'conflict' }>;
+    input: SessionEnvelopeInput,
+  ): Promise<EnvelopeUpsertResult>;
 };
 
 export type SkillEvent =
@@ -98,7 +132,7 @@ export type SkillEvent =
 export type ResolveSkillCommandInput = {
   userId: string;
   command: ParsedSkillCommand;
-  sessionStore?: SessionStoreLite;
+  sessionStore?: SessionStoreEnvelope;
   sessionKey?: SessionRecordKey;
   userSkills: SkillBodyReader;
 };
@@ -114,33 +148,13 @@ export type ResolveSkillResult = {
   events: SkillEvent[];
 };
 
-/** Parse a stored `meta.attachedSkills` (JSON array string). Fail-closed → []. */
-export function parseAttachedSkills(value: unknown): string[] {
-  if (typeof value !== 'string') return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-  const out: string[] = [];
-  for (const s of parsed) {
-    if (typeof s === 'string' && SKILL_SLUG_RE.test(s) && !out.includes(s)) {
-      out.push(s);
-    }
-  }
-  return out;
-}
-
-/** Serialize a slug set to the sticky JSON-array string writable form. */
-export function serializeAttachedSkills(slugs: string[]): string {
-  return JSON.stringify(slugs);
-}
-
 /** Full-attachment preamble: one labelled `### Skill attached: <slug>` block. */
 export function buildSkillBlock(slug: string, body: string): string {
   return `### Skill attached: ${slug}\n${body}`;
+}
+
+function byteLength(s: string): number {
+  return new TextEncoder().encode(s).length;
 }
 
 /**
@@ -150,85 +164,168 @@ export function buildSkillBlock(slug: string, body: string): string {
  * applies the current turn's attach/detach command. Returns an events array
  * (for the display-only `skill_attached` rows) plus a `preamble` to append
  * after the persona, plus the final slug set to persist best-effort.
+ *
+ * Sticky re-resolves are SILENT (no event). An **attach** emits exactly one
+ * event: `ok:true` when the skill is injectable, or `ok:false` with a reason
+ * (`unknown skill` / `unavailable` / `too_large` / `budget`). An attach that
+ * fails the inject byte budget (`too_large` > 256 KiB, or `budget` when the
+ * already-attached set leaves no room) is NEVER added to the sticky set, so no
+ * stored-but-never-injected "silent lie" can form.
  */
 export async function resolveSkillPreamble(
   input: ResolveSkillCommandInput,
 ): Promise<ResolveSkillResult> {
   const { userId, command, sessionStore, sessionKey, userSkills } = input;
 
-  // 1. Read the sticky set (mirrors personaInject's fail-open/closed store rules).
+  // 1. Read the sticky set from the envelope (mirrors personaInject's
+  //    fail-open/closed store rules). `readEnvelope` rolls forward from a
+  //    legacy whole-blob record when no envelope key exists yet, so this reads
+  //    the same sticky value either carrier wrote.
   let attached = parseAttachedSkills(undefined);
+  let envelope: SessionEnvelope | null = null;
   let storeQueried = false;
-  let record: HarnessSessionRecord | null = null;
   if (sessionStore && sessionKey) {
     try {
-      record = await sessionStore.get(sessionKey);
+      envelope = await sessionStore.readEnvelope(sessionKey);
       storeQueried = true;
     } catch {
-      record = null;
+      envelope = null;
       storeQueried = false;
     }
   }
-  if (record) {
-    attached = parseAttachedSkills(record.meta?.attachedSkills);
+  if (envelope) {
+    attached = parseAttachedSkills(envelope.meta?.attachedSkills);
   } else if (storeQueried) {
     // Genuinely absent/foreign scoped session → nothing sticky to re-apply.
     attached = [];
   }
 
   const events: SkillEvent[] = [];
-  const set = new Set(attached);
+  // ordered candidate set (insertion order preserved, de-duplicated)
+  const set: string[] = [...attached];
+  const hasSlug = (slug: string) => set.includes(slug);
+  const removeSlug = (slug: string) => {
+    const i = set.indexOf(slug);
+    if (i >= 0) set.splice(i, 1);
+  };
+
+  // Pending attach resolved for this turn (slug + body); confirmed against the
+  // inject budget in step 3 before being committed to the sticky set.
+  let pendingAttach: { slug: string; body: string } | null = null;
 
   // 2. Apply the current command (attach/detach).
   if (command.type === 'attach') {
     if (!SKILL_SLUG_RE.test(command.slug)) {
       events.push({ action: 'attach', slug: command.slug, ok: false, reason: 'invalid slug' });
+    } else if (hasSlug(command.slug)) {
+      // Idempotent re-attach of an already-attached slug still confirms; the
+      // sticky body re-resolves + budget-check below.
+      pendingAttach = {
+        slug: command.slug,
+        body: (await readSkillBody(userId, command.slug, userSkills)).value ?? '',
+      };
     } else {
       const res = await readSkillBody(userId, command.slug, userSkills);
-      if (res.value) {
-        set.add(command.slug);
-        events.push({ action: 'attach', slug: command.slug, ok: true });
-      } else {
+      if (!res.value) {
         events.push({
           action: 'attach',
           slug: command.slug,
           ok: false,
           reason: res.unavailable ? 'unavailable' : 'unknown skill',
         });
+      } else {
+        pendingAttach = { slug: command.slug, body: res.value };
       }
     }
   } else if (command.type === 'detach') {
-    if (set.has(command.slug)) {
-      set.delete(command.slug);
+    if (hasSlug(command.slug)) {
+      removeSlug(command.slug);
       events.push({ action: 'detach', slug: command.slug, ok: true });
     } else {
       events.push({ action: 'detach', slug: command.slug, ok: false, reason: 'not attached' });
     }
   }
 
-  // 3. Re-resolve bodies for ALL attached slugs (staff-of-work: edits re-apply;
-  //    deleted skills silently stop attaching — dropped from the sticky set).
-  const finalSlugs: string[] = [];
-  const blocks: string[] = [];
-  for (const slug of set) {
-    const res = await readSkillBody(userId, slug, userSkills);
-    if (res.value) {
-      finalSlugs.push(slug);
-      blocks.push(buildSkillBlock(slug, res.value));
+  // 3. Budget-gate the pending attach BEFORE it joins the sticky set. A body
+  //    alone > the inject budget → `too_large`; it fits alone but not alongside
+  //    the already-attached injectable set → `budget`. Either way it is NOT
+  //    added to `set` (never a silent never-injected attach).
+  if (pendingAttach) {
+    const bodyBytes = byteLength(pendingAttach.body);
+    const slug = pendingAttach.slug;
+    if (bodyBytes > HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES) {
+      events.push({ action: 'attach', slug, ok: false, reason: 'too_large' });
+      pendingAttach = null;
+    } else {
+      // The already-attached set's current bodies measure the real budget
+      // already in use. When a sticky body fails to resolve, the budget is
+      // unknown → commit optimistically (the greedy build below is the final
+      // word on injection).
+      let used = 0;
+      let allResolve = true;
+      for (const attachedSlug of set) {
+        const res = await readSkillBody(userId, attachedSlug, userSkills);
+        if (!res.value) {
+          allResolve = false;
+          break;
+        }
+        used += byteLength(res.value);
+      }
+      if (allResolve && used + bodyBytes > HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES) {
+        events.push({ action: 'attach', slug, ok: false, reason: 'budget' });
+        pendingAttach = null;
+      } else {
+        // Fits (or budget unknown) → commit the attach (deduped: an idempotent
+        // re-attach of an already-present slug is not appended again) and
+        // confirm with an ok:true event.
+        if (!set.includes(slug)) set.push(slug);
+        events.push({ action: 'attach', slug, ok: true });
+        pendingAttach = null;
+      }
     }
   }
 
-  const attachedSkills = serializeAttachedSkills(finalSlugs);
+  // 4. Re-resolve bodies for ALL candidate slugs (staff-of-work: edits
+  //    re-apply; deleted skills silently stop attaching — dropped from the
+  //    sticky set). The STICKY set (`finalSlugs`) is what stays attached and is
+  //    persisted; the PREAMBLE (`blocks`) is the greedy-injectable subset under
+  //    the byte budget. A sticky slug whose body outgrew the budget drops from
+  //    THIS turn's preamble but stays attached (never a silent dis-attach); a
+  //    NEW accepted attach was pre-validated to fit (step 3), so it is always
+  //    in both.
+  const finalSlugs: string[] = [];
+  const blocks: string[] = [];
+  let used = 0;
+  for (const slug of set) {
+    const res = await readSkillBody(userId, slug, userSkills);
+    if (!res.value) continue; // deleted/stale slug silently drops from sticky
+    const body = res.value;
+    finalSlugs.push(slug); // resolve-able sticky slug stays attached
+    const bytes = byteLength(body);
+    if (used + bytes > HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES) {
+      continue; // exceeds remaining inject budget → not in this turn's preamble
+    }
+    blocks.push(buildSkillBlock(slug, body));
+    used += bytes;
+  }
 
-  // 4. Persist best-effort (store down / no session → skip; still inject THIS turn).
-  if (record && sessionStore && sessionKey) {
+  // 5. Persist best-effort via the ENVELOPE seam (never legacy get/put), only
+  //    when `readEnvelope` succeeded (a real envelope/record exists), with
+  //    `updatedAt` left UNCHANGED, skipping on conflict. The host PUT is the
+  //    source of truth; this mirror must never bump the clock or fight a newer
+  //    write (adversarial-review Minor — do not copy the persona's bump).
+  const attachedSkills = serializeAttachedSkills(finalSlugs);
+  if (envelope && sessionStore && sessionKey) {
     try {
-      const next: HarnessSessionRecord = {
-        ...record,
-        meta: { ...record.meta, attachedSkills },
-        updatedAt: Date.now(),
+      const input: SessionEnvelopeInput = {
+        id: envelope.id,
+        userId: envelope.userId,
+        tenantId: envelope.tenantId,
+        updatedAt: envelope.updatedAt,
+        meta: { ...envelope.meta, attachedSkills },
       };
-      await sessionStore.put(sessionKey, next);
+      const result = await sessionStore.upsertEnvelope(sessionKey, input);
+      // `result.status === 'conflict'` → a newer write won; skip (host source of truth).
     } catch {
       /* fail-open: skip sticky persist */
     }

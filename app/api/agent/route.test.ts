@@ -1344,9 +1344,21 @@ describe('POST /api/agent', () => {
     mockGithubToken();
     mockResolveSandboxOk();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    // Phase-0 ENVELOPE store (adversarial-review H2 seam): the agent mirror
+    // readEnvelope/upsertEnvelope so sticky writes land on the envelope key.
     const fakeSessionStore = {
-      get: vi.fn(async () => null),
-      put: vi.fn(async () => ({ status: 'stored' as const })),
+      readEnvelope: vi.fn(async () => ({
+        id: 'sess_1',
+        tenantId: 'tenant-1',
+        userId: 'user-1',
+        createdAt: 1,
+        updatedAt: 1,
+        meta: {},
+      })),
+      upsertEnvelope: vi.fn(async (_k: unknown, input: { meta?: unknown }) => ({
+        status: 'stored',
+        envelope: input,
+      })),
     };
     vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
       resolveSessionStore: async () => ({ ok: true as const, value: fakeSessionStore }),
@@ -1377,7 +1389,10 @@ describe('POST /api/agent', () => {
       new Request('http://localhost/api/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: '/create-plan please scaffold a plan' }),
+        body: JSON.stringify({
+          prompt: '/create-plan please scaffold a plan',
+          sessionId: 'sess_1',
+        }),
       }),
     );
     expect(res.status).toBe(200);
@@ -1387,9 +1402,16 @@ describe('POST /api/agent', () => {
     // Body folded as the skills preamble (server-side only, after the persona).
     expect(arg.skillsPreamble).toContain('### Skill attached: create-plan');
     expect(arg.skillsPreamble).toContain('PLAN BODY');
-    // JSON path surfaces the skill outcome as slug-only (never a body).
-    const body = (await res.json()) as { skillEvents?: unknown[] };
+    // JSON path surfaces the skill outcome as slug-only (never a body), and the
+    // server persists the sticky set via the envelope seam (updatedAt unchanged).
+    const body = (await res.json()) as { skillEvents?: unknown[]; attachedSkills?: string };
     expect(body.skillEvents).toHaveLength(1);
+    expect(body.attachedSkills).toBe('["create-plan"]');
+    expect(fakeSessionStore.upsertEnvelope).toHaveBeenCalled();
+    const upsert = fakeSessionStore.upsertEnvelope.mock.calls[0]?.[1] as {
+      meta?: { attachedSkills?: string };
+    };
+    expect(upsert.meta?.attachedSkills).toBe('["create-plan"]');
   });
 
   it('pure /unskill detach is a NO-MODEL turn (early response, no runAgent)', async () => {
@@ -1397,16 +1419,18 @@ describe('POST /api/agent', () => {
     mockMcpEmpty();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
     const fakeSessionStore = {
-      get: vi.fn(async () => ({
+      readEnvelope: vi.fn(async () => ({
         id: 'sess_1',
         tenantId: 'tenant-1',
         userId: 'user-1',
         createdAt: 1,
         updatedAt: 1,
-        messages: [],
         meta: { attachedSkills: '["create-plan","other"]' },
       })),
-      put: vi.fn(async () => ({ status: 'stored' as const })),
+      upsertEnvelope: vi.fn(async (_k: unknown, input: { meta?: unknown }) => ({
+        status: 'stored',
+        envelope: input,
+      })),
     };
     vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
       resolveSessionStore: async () => ({ ok: true as const, value: fakeSessionStore }),
@@ -1442,9 +1466,79 @@ describe('POST /api/agent', () => {
     expect(res.status).toBe(200);
     // No model turn for a pure detach; the confirmation echoes the outcome.
     expect(runAgent).not.toHaveBeenCalled();
-    const body = (await res.json()) as { text?: string; skillEvents?: unknown[] };
+    const body = (await res.json()) as {
+      text?: string;
+      skillEvents?: unknown[];
+      attachedSkills?: string;
+    };
     expect(body.skillEvents).toHaveLength(1);
     expect(body.text).toMatch(/detach/);
+    // The NO-MODEL response still carries the post-detach sticky set so the host
+    // folds it (fold-before-persist incl. no-model) → next PUT persists `["other"]`.
+    expect(body.attachedSkills).toBe('["other"]');
+    // ...and the server persists it via the envelope seam (never legacy put).
+    const upsert = fakeSessionStore.upsertEnvelope.mock.calls[0]?.[1] as {
+      meta?: { attachedSkills?: string };
+    };
+    expect(upsert.meta?.attachedSkills).toBe('["other"]');
+  });
+
+  it('a FAILED model turn still carries attachedSkills so the host folds before persist', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    mockResolveSandboxOk();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    const fakeSessionStore = {
+      readEnvelope: vi.fn(async () => ({
+        id: 'sess_1',
+        tenantId: 'tenant-1',
+        userId: 'user-1',
+        createdAt: 1,
+        updatedAt: 1,
+        meta: { attachedSkills: '["create-plan"]' },
+      })),
+      upsertEnvelope: vi.fn(async () => ({ status: 'stored' as const })),
+    };
+    vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: async () => ({ ok: true as const, value: fakeSessionStore }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({
+        tenantId: t,
+        userId: u,
+        sessionId: s,
+      }),
+    }));
+    servicesState.harnessSessionsRedis = {
+      resolveTenantIdForUser: vi.fn(async () => ({ ok: true as const, value: 'tenant-1' })),
+    };
+    servicesState.userSkills = {
+      getSkillBySlug: vi.fn(async () => ({
+        ok: true as const,
+        value: { body: 'BODY' },
+      })),
+    };
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(async () => {
+        throw new Error('inference boom');
+      }),
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'keep going', sessionId: 'sess_1' }),
+      }),
+    );
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    // "fold-before-persist incl. fail/cancel": the stuck set is included on the
+    // error body so the host does NOT wipe an attached skill on a model error.
+    const body = (await res.json()) as { attachedSkills?: string; error?: string };
+    expect(body.error).toBeTruthy();
+    expect(body.attachedSkills).toBe('["create-plan"]');
   });
 
 });

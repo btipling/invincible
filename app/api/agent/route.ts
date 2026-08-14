@@ -31,6 +31,7 @@ import {
   resolveSkillPreamble,
   type ResolveSkillResult,
 } from '../../../lib/tenancy/skillInject';
+import { isEnvelopeStore } from '../../../lib/sessions/sessionStore';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
@@ -142,7 +143,11 @@ export async function POST(req: Request): Promise<Response> {
         ? ''
         : parsed.prompt;
 
-  // Map skill outcomes to the display-only SSE event shape (slug only — never a body).
+  // Map skill outcomes to the display-only SSE event shape (slug only — never a
+  // body). Every skill_attached event of a turn carries the SAME final
+  // `attachedSlugs` set (Nit L6) so the host applies it last-writes-wins and can
+  // persist it as sticky `meta.attachedSkills` on the next PUT — the host-carrier
+  // that stops a host PUT from ever wiping the set (adversarial-review Blocker).
   const skillToEvent = (
     e: ResolveSkillResult['events'][number],
   ): AgentStreamEvent => ({
@@ -151,11 +156,16 @@ export async function POST(req: Request): Promise<Response> {
     action: e.action,
     ok: e.ok,
     ...(e.ok ? {} : { reason: e.reason }),
+    ...(skills ? { attachedSlugs: skills.attachedSlugs } : {}),
   });
 
   // Server secrets resolved once at the root (phase-2 DI) — scrubbed from
   // model-facing and client-facing strings like the BYOK / PAT / MCP secrets.
   const serverSecrets = services.serverSecrets;
+
+  // Hoisted so `skillToEvent` (defined above) can fold the final sticky set onto
+  // every `skill_attached` event; assigned inside the try block below.
+  let skills: ResolveSkillResult | undefined;
 
   let redactList: string[] = [];
   let mcpClose: (() => Promise<void>) | undefined;
@@ -233,7 +243,9 @@ export async function POST(req: Request): Promise<Response> {
     // proceeds), never a 4xx/5xx on the hot path. Sticky persist is best-effort;
     // when no `sessionId`/store is available the attach still injects THIS turn
     // (mirrors persona's offline-safe path), just without a sticky write.
-    let skills: ResolveSkillResult | undefined;
+    // The store is narrowed to the phase-0 ENVELOPE seam (adversarial-review
+    // H2): the agent mirror writes `readEnvelope`/`upsertEnvelope` so it lands on
+    // the same `harness:envelope:*` key the host writes, never legacy `get`/`put`.
     if (skillCommand.type !== 'none' || parsed.sessionId) {
       try {
         const tenantRes = await services.harnessSessionsRedis.resolveTenantIdForUser(
@@ -241,7 +253,10 @@ export async function POST(req: Request): Promise<Response> {
         );
         if (tenantRes.ok) {
           const storeRes = await resolveSessionStore();
-          const sessionStore = storeRes.ok ? storeRes.value : undefined;
+          const sessionStore =
+            storeRes.ok && isEnvelopeStore(storeRes.value)
+              ? storeRes.value
+              : undefined;
           skills = await resolveSkillPreamble({
             userId,
             command: skillCommand,
@@ -556,7 +571,15 @@ export async function POST(req: Request): Promise<Response> {
     const safe =
       redactList.length > 0 ? redactSecrets(error, redactList) : error;
     return Response.json(
-      { error: safe, ...(code != null ? { code } : {}) },
+      {
+        error: safe,
+        ...(code != null ? { code } : {}),
+        // Phase 2 (#517 / adversarial-review "fold before persist incl.
+        // fail/cancel"): even a FAILED model turn carries the session's current
+        // sticky set, so the host folds it before persisting and a host PUT never
+        // wipes a skill that was attached this turn before the model errored.
+        ...(skills?.attachedSkills ? { attachedSkills: skills.attachedSkills } : {}),
+      },
       { status },
     );
   } finally {

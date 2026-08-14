@@ -45,6 +45,22 @@ export type SessionSnapshot = {
    * Omitted = no persona (behaviour identical to a persona-less session).
    */
   personaId?: string;
+  /**
+   * Phase 2 (#517 / adversarial-review fix): the session-sticky attached-skill
+   * set (slugs). This is the **host-carrier** so a host PUT can never wipe the
+   * set: the server folds the final set back to the host on every
+   * `skill_attached` event / JSON `attachedSkills`, the host persists it here,
+   * and `cloudMetaFor` writes it back as the reserved `meta.attachedSkills`
+   * JSON-array string. `meta.attachedSkills` is the server's read/write surface;
+   * this field is the local session's mirror of it.
+   *
+   * `undefined` (omitted) = never carried / no event seen — the host PUT omits
+   * the reserved key so it never clears what it doesn't know (omitted ≠ []).
+   * `[]` (empty array) = an explicit detach-all the host MUST persist as `[]`.
+   * Slugs are validated with `SKILL_SLUG_RE` on the wire; fail-closed to [] at
+   * read (`parseCloudSessionSnapshot`).
+   */
+  attachedSlugs?: string[];
 };
 
 import { isRedisSafeOpaqueId, sanitizeSessionCwd } from './sessionCloudCaps';

@@ -37,6 +37,16 @@ export type AgentStreamEvent =
       action: 'attach' | 'detach';
       ok: boolean;
       reason?: string;
+      /**
+       * Phase 2 (#517 / adversarial-review Nit L6): the FINAL attached-skill set
+       * for the session, carried identically on EVERY skill_attached event of a
+       * turn so the host applies it last-writes-wins (never treats a missing
+       * field on event 1 as *clear*). `[]` = explicit detach-all; OMITTED = the
+       * field is absent (host leaves its existing set untouched). The host's
+       * `SessionSnapshot.attachedSlugs` mirrors this so a host PUT persists it
+       * as the reserved `meta.attachedSkills`.
+       */
+      attachedSlugs?: string[];
     }
   | {
       type: 'done';

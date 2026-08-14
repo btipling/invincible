@@ -9,6 +9,7 @@ import {
   AGENT_STREAM_ACCEPT,
   type AgentStreamEvent,
 } from './agent/agentStream';
+import { parseAttachedSkills } from './sessionCloudCaps';
 
 export type ToolTraceEntry = {
   name: string;
@@ -41,12 +42,25 @@ export type AgentSuccess = {
   sandboxId?: string;
   /** Skill attach/detach outcomes this turn (JSON path). */
   skillEvents?: SkillAttachmentEvent[];
+  /**
+   * Phase 2 (#517 / adversarial-review fix): the session-sticky attached-skill
+   * set parsed from the response's top-level `attachedSkills` JSON-array string.
+   * The host folds this onto `SessionSnapshot.attachedSlugs` so the next PUT
+   * (via `cloudMetaFor`) persists it as the reserved `meta.attachedSkills`.
+   */
+  attachedSlugs?: string[];
 };
 
 export type AgentFailure = {
   ok: false;
   error: string;
   status?: number;
+  /**
+   * Phase 2 (#517 / "fold before persist incl. fail/cancel"): a failed model turn
+   * still carries the current sticky set (server sends `attachedSkills` on error
+   * bodies) so the host folds it before persisting.
+   */
+  attachedSlugs?: string[];
 };
 
 export type AgentResult = AgentSuccess | AgentFailure;
@@ -129,6 +143,16 @@ function parseSkillEvents(raw: unknown): SkillAttachmentEvent[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+/** Parse the session-sticky set from a `{ attachedSkills: '["slug",...]' }` body field. */
+function attachedSlugsFromRecord(record: Record<string, unknown> | null): string[] | undefined {
+  if (!record) return undefined;
+  const raw = record.attachedSkills;
+  // `attachedSkills` is a JSON-array string; `parseAttachedSkills` also covers
+  // the `'[]'` (detach-all) case (a non-empty string → present, NOT omitted).
+  if (typeof raw !== 'string') return undefined;
+  return parseAttachedSkills(raw);
+}
+
 function failureFromJson(
   res: Response,
   record: Record<string, unknown> | null,
@@ -139,10 +163,12 @@ function failureFromJson(
     (res.status === 404
       ? 'Agent API not available.'
       : `Request failed (${res.status}).`);
+  const attachedSlugs = attachedSlugsFromRecord(record);
   return {
     ok: false,
     status: res.status,
     error,
+    ...(attachedSlugs !== undefined ? { attachedSlugs } : {}),
   };
 }
 
@@ -166,6 +192,7 @@ function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
   const sandboxField =
     record && typeof record.sandboxId === 'string' ? record.sandboxId : undefined;
   const skillEvents = parseSkillEvents(record?.skillEvents);
+  const attachedSlugs = attachedSlugsFromRecord(record);
   return {
     ok: true,
     text: textField,
@@ -173,6 +200,7 @@ function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
     ...(cwdField !== undefined ? { cwd: cwdField } : {}),
     ...(sandboxField !== undefined ? { sandboxId: sandboxField } : {}),
     ...(skillEvents ? { skillEvents } : {}),
+    ...(attachedSlugs !== undefined ? { attachedSlugs } : {}),
   };
 }
 

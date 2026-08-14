@@ -1,14 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import type { HarnessSessionRecord } from '../sessions/sessionStore';
+import type {
+  EnvelopeUpsertResult,
+  SessionEnvelope,
+  SessionEnvelopeInput,
+} from '../sessions/sessionStore';
+import {
+  HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES,
+  parseAttachedSkills,
+  serializeAttachedSkills,
+} from '../sessionCloudCaps';
 import {
   buildSkillBlock,
-  parseAttachedSkills,
   parseSkillCommand,
   resolveSkillPreamble,
-  serializeAttachedSkills,
   type ParsedSkillCommand,
+  type SessionStoreEnvelope,
   type SkillBodyReader,
-  type SessionStoreLite,
 } from './skillInject';
 
 const KEY = {
@@ -17,33 +24,42 @@ const KEY = {
   sessionId: 'sess_abc123',
 };
 
-function makeRecord(meta: HarnessSessionRecord['meta']): HarnessSessionRecord {
+function makeEnvelope(meta: SessionEnvelope['meta']): SessionEnvelope {
   return {
     id: KEY.sessionId,
     tenantId: KEY.tenantId,
     userId: KEY.userId,
     createdAt: 1,
     updatedAt: 1,
-    messages: [],
     meta,
   };
 }
 
-/** In-memory fake implementing the minimal session-store seam. */
-class FakeStore implements SessionStoreLite {
-  record: HarnessSessionRecord | null;
-  puts: HarnessSessionRecord[] = [];
-  constructor(record: HarnessSessionRecord | null) {
-    this.record = record;
+/** In-memory fake implementing the phase-0 ENVELOPE session-store seam. */
+class FakeStore implements SessionStoreEnvelope {
+  env: SessionEnvelope | null;
+  upserts: SessionEnvelopeInput[] = [];
+  constructor(env: SessionEnvelope | null) {
+    this.env = env;
   }
-  async get(key: { sessionId: string }) {
+  async readEnvelope(key: { sessionId: string }) {
     if (key.sessionId !== KEY.sessionId) return null;
-    return this.record;
+    return this.env;
   }
-  async put(_key: unknown, record: HarnessSessionRecord) {
-    this.record = record;
-    this.puts.push(record);
-    return { status: 'stored' as const };
+  async upsertEnvelope(
+    _key: unknown,
+    input: SessionEnvelopeInput,
+  ): Promise<EnvelopeUpsertResult> {
+    this.env = {
+      id: input.id,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      createdAt: this.env?.createdAt ?? 1,
+      updatedAt: input.updatedAt,
+      meta: input.meta ?? {},
+    };
+    this.upserts.push(input);
+    return { status: 'stored', envelope: this.env };
   }
 }
 
@@ -110,7 +126,7 @@ describe('parseSkillCommand', () => {
   });
 });
 
-describe('parseAttachedSkills / serializeAttachedSkills', () => {
+describe('parseAttachedSkills / serializeAttachedSkills (caps seam)', () => {
   it('parses a well-formed JSON-array string of slugs; drops dups + invalid', () => {
     expect(parseAttachedSkills('["a","b"]')).toEqual(['a', 'b']);
     expect(parseAttachedSkills('["a","a"]')).toEqual(['a']);
@@ -139,8 +155,8 @@ describe('buildSkillBlock', () => {
 });
 
 describe('resolveSkillPreamble', () => {
-  it('attach resolves + injects THIS turn and persists the sticky set', async () => {
-    const store = new FakeStore(makeRecord({}));
+  it('attach resolves + injects THIS turn and persists the sticky set via the envelope', async () => {
+    const store = new FakeStore(makeEnvelope({}));
     const res = await resolveSkillPreamble({
       userId: KEY.userId,
       command: { type: 'attach', slug: 'create-plan', rest: '' },
@@ -154,12 +170,25 @@ describe('resolveSkillPreamble', () => {
     expect(res.preamble).toContain('### Skill attached: create-plan');
     expect(res.preamble).toContain('PlanX');
     expect(res.attachedSlugs).toEqual(['create-plan']);
-    expect(store.puts).toHaveLength(1);
-    expect(store.puts[0]!.meta.attachedSkills).toBe('["create-plan"]');
+    expect(store.upserts).toHaveLength(1);
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('["create-plan"]');
+  });
+
+  it('envelope persist keeps updatedAt UNCHANGED (never bumps the clock)', async () => {
+    const store = new FakeStore(makeEnvelope({}));
+    await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: 'x', rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      userSkills: readerOf({ x: { body: 'X' } }),
+    });
+    expect(store.upserts[0]!.updatedAt).toBe(1); // = envelope.updatedAt, not Date.now()
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('["x"]');
   });
 
   it('later turn re-applies a sticky skill from meta without a new attach event', async () => {
-    const store = new FakeStore(makeRecord({ attachedSkills: '["create-plan"]' }));
+    const store = new FakeStore(makeEnvelope({ attachedSkills: '["create-plan"]' }));
     const res = await resolveSkillPreamble({
       userId: KEY.userId,
       command: { type: 'none' },
@@ -174,7 +203,7 @@ describe('resolveSkillPreamble', () => {
   });
 
   it('unknown/foreign slug → fail closed (no inject, no leak), event ok:false', async () => {
-    const store = new FakeStore(makeRecord({}));
+    const store = new FakeStore(makeEnvelope({}));
     const res = await resolveSkillPreamble({
       userId: KEY.userId,
       command: { type: 'attach', slug: 'does-not-exist', rest: '' },
@@ -200,7 +229,7 @@ describe('resolveSkillPreamble', () => {
   });
 
   it('/unskill removes a sticky slug, stops re-injecting, persists removal', async () => {
-    const store = new FakeStore(makeRecord({ attachedSkills: '["a","b"]' }));
+    const store = new FakeStore(makeEnvelope({ attachedSkills: '["a","b"]' }));
     const res = await resolveSkillPreamble({
       userId: KEY.userId,
       command: { type: 'detach', slug: 'a', rest: '' },
@@ -213,11 +242,11 @@ describe('resolveSkillPreamble', () => {
     ]);
     expect(res.preamble).toContain('### Skill attached: b');
     expect(res.preamble).not.toContain('### Skill attached: a');
-    expect(store.puts[0]!.meta.attachedSkills).toBe('["b"]');
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('["b"]');
   });
 
   it('re-attach of an already-attached slug is idempotent (dedupes, no duplicate events)', async () => {
-    const store = new FakeStore(makeRecord({ attachedSkills: '["a"]' }));
+    const store = new FakeStore(makeEnvelope({ attachedSkills: '["a"]' }));
     const res = await resolveSkillPreamble({
       userId: KEY.userId,
       command: { type: 'attach', slug: 'a', rest: '' },
@@ -226,13 +255,13 @@ describe('resolveSkillPreamble', () => {
       userSkills: readerOf({ a: { body: 'A' } }),
     });
     expect(res.attachedSlugs).toEqual(['a']);
-    expect(store.puts[0]!.meta.attachedSkills).toBe('["a"]');
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('["a"]');
     // A successful (idempotent) re-attach still emits a confirmation event.
     expect(readEventActions(res)).toEqual([{ action: 'attach', slug: 'a', ok: true }]);
   });
 
   it('/unskill a not-attached slug is a no-op with ok:false', async () => {
-    const store = new FakeStore(makeRecord({ attachedSkills: '["b"]' }));
+    const store = new FakeStore(makeEnvelope({ attachedSkills: '["b"]' }));
     const res = await resolveSkillPreamble({
       userId: KEY.userId,
       command: { type: 'detach', slug: 'zzz', rest: '' },
@@ -256,12 +285,12 @@ describe('resolveSkillPreamble', () => {
     expect(res.preamble).toContain('Offline safe');
   });
 
-  it('store get THROWS → fail open: attach injects this turn, sticky skipped', async () => {
+  it('store readEnvelope THROWS → fail open: attach injects this turn, sticky skipped', async () => {
     const throwingStore = {
-      async get() {
+      async readEnvelope() {
         throw new Error('redis down');
       },
-      async put() {
+      async upsertEnvelope() {
         throw new Error('should not be called');
       },
     };
@@ -276,12 +305,12 @@ describe('resolveSkillPreamble', () => {
     expect(readEventActions(res)).toEqual([{ action: 'attach', slug: 'x', ok: true }]);
   });
 
-  it('store put THROWS → fail open (inject this turn, sticky write skipped)', async () => {
+  it('store upsertEnvelope THROWS → fail open (inject this turn, sticky write skipped)', async () => {
     const store = {
-      async get() {
-        return makeRecord({});
+      async readEnvelope() {
+        return makeEnvelope({});
       },
-      async put() {
+      async upsertEnvelope() {
         throw new Error('redis down');
       },
     };
@@ -297,7 +326,7 @@ describe('resolveSkillPreamble', () => {
   });
 
   it('malformed stored attachedSkills fails closed (no sticky, fresh attach still works)', async () => {
-    const store = new FakeStore(makeRecord({ attachedSkills: 'not-json' }));
+    const store = new FakeStore(makeEnvelope({ attachedSkills: 'not-json' }));
     const res = await resolveSkillPreamble({
       userId: KEY.userId,
       command: { type: 'attach', slug: 'x', rest: '' },
@@ -307,11 +336,11 @@ describe('resolveSkillPreamble', () => {
     });
     expect(res.preamble).toContain('### Skill attached: x');
     expect(res.attachedSlugs).toEqual(['x']);
-    expect(store.puts[0]!.meta.attachedSkills).toBe('["x"]');
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('["x"]');
   });
 
   it('sticky skill whose body no longer resolves silently stops attaching', async () => {
-    const store = new FakeStore(makeRecord({ attachedSkills: '["deleted","kept"]' }));
+    const store = new FakeStore(makeEnvelope({ attachedSkills: '["deleted","kept"]' }));
     const res = await resolveSkillPreamble({
       userId: KEY.userId,
       command: { type: 'none' },
@@ -322,7 +351,88 @@ describe('resolveSkillPreamble', () => {
     expect(res.preamble).toContain('### Skill attached: kept');
     expect(res.preamble).not.toContain('deleted');
     expect(res.attachedSlugs).toEqual(['kept']);
-    expect(store.puts).toHaveLength(1);
-    expect(store.puts[0]!.meta.attachedSkills).toBe('["kept"]');
+    expect(store.upserts).toHaveLength(1);
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('["kept"]');
+  });
+});
+
+describe('resolveSkillPreamble — inject byte budget (adversarial-review L5 + "silent lie" fix)', () => {
+  const bigBody = 'x'.repeat(HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES + 1);
+  const fitsBody = 'y'.repeat(HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES - 1024);
+
+  it('rejects an attach whose body alone exceeds the inject budget (too_large), never adds the slug', async () => {
+    const store = new FakeStore(makeEnvelope({}));
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: 'huge', rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      userSkills: readerOf({ huge: { body: bigBody } }),
+    });
+    expect(res.events[0]).toMatchObject({
+      action: 'attach',
+      slug: 'huge',
+      ok: false,
+      reason: 'too_large',
+    });
+    // The too-big skill is NEVER added to the sticky set (no silent never-injected attach).
+    expect(res.attachedSlugs).toEqual([]);
+    expect(res.preamble).toBeUndefined();
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('[]');
+  });
+
+  it('rejects an attach that fits alone but not alongside the attached set (budget)', async () => {
+    // `a` consumes nearly the whole budget; the new `b` cannot fit → `budget`.
+    const store = new FakeStore(makeEnvelope({ attachedSkills: '["a"]' }));
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: 'b', rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      userSkills: readerOf({ a: { body: fitsBody }, b: { body: fitsBody } }),
+    });
+    expect(res.events[0]).toMatchObject({
+      action: 'attach',
+      slug: 'b',
+      ok: false,
+      reason: 'budget',
+    });
+    expect(res.attachedSlugs).toEqual(['a']);
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('["a"]');
+  });
+
+  it('an attach that fits is accepted and injected even when large', async () => {
+    const midBody = 'm'.repeat(64 * 1024); // 64 KiB — well within budget
+    const store = new FakeStore(makeEnvelope({}));
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'attach', slug: 'big-but-ok', rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      userSkills: readerOf({ 'big-but-ok': { body: midBody } }),
+    });
+    expect(res.events[0]).toMatchObject({ action: 'attach', slug: 'big-but-ok', ok: true });
+    expect(res.attachedSlugs).toEqual(['big-but-ok']);
+    expect(res.preamble).toContain('### Skill attached: big-but-ok');
+  });
+
+  it('a sticky slug that outgrew the budget drops from the PREAMBLE but stays ATTACHED (no silent dis-attach)', async () => {
+    const store = new FakeStore(makeEnvelope({ attachedSkills: '["big","small"]' }));
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'none' },
+      sessionStore: store,
+      sessionKey: KEY,
+      userSkills: readerOf({
+        big: { body: 'x'.repeat(HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES + 1) },
+        small: { body: 'tiny' },
+      }),
+    });
+    // The oversized sticky slug is not injected this turn…
+    expect(res.preamble).not.toContain('### Skill attached: big');
+    expect(res.preamble).toContain('### Skill attached: small');
+    // …but it stays attached (a sticky set is not silently dis-attached)…
+    expect(res.attachedSlugs).toEqual(['big', 'small']);
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('["big","small"]');
   });
 });

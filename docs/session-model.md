@@ -136,7 +136,7 @@ for the open tab).
 | `createdAt` | Epoch ms at mint/backfill — immutable after create |
 | `updatedAt` | Epoch ms of last accepted write. **New sessions are seeded `0`** (first host PUT with epoch-now ≥ 0 is idempotent-accept, never a spurious 409) |
 | Cross-user | Other-user id / nonexistent id → **404** (no existence leak) |
-| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot`, `transcriptPointer`, `attachedSkills` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 512 KiB) and counts toward the raised whole-`meta` budget (**1 MiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection is active — see [docs/personas.md](personas.md)). `attachedSkills` (phase 1 #514) is a **JSON-encoded string** of skill slugs (≤ 32, dedupe). It is the **session-sticky attach carrier** (`/skill-name` / `/unskill` in the composer): the server stores **slugs only** and re-resolves their bodies from the store every turn (staff of work — a mid-session edit applies next turn, a deleted skill silently stops attaching; the body is never snapshotted into `meta` and never shipped to the client). **New session / Clear** mints a fresh session, so `attachedSkills` resets there. `transcriptPointer` (phase 0 #515) is a Redis-safe opaque id of the latest **Blob transcript object** — the envelope's pointer; the transcript itself never lives in Redis |
+| `meta` | **Schema-typed reserved**: `title`, `legacySnapshotId`, `activeSandboxId`, `logicalCwd`, `personaId`, `personaSnapshot`, `transcriptPointer`, `attachedSkills` — opaque scalars + serialized size cap; nothing else. `personaId` is Redis-safe opaque; `personaSnapshot` is the locked-in persona text (≤ `PERSONA_SNAPSHOT_MAX_BYTES` = 512 KiB) and counts toward the raised whole-`meta` budget (**1 MiB**), so it replays on device switch while a mid-session persona edit never rewrites an in-flight session (injection is active — see [docs/personas.md](personas.md)). `attachedSkills` (phase 1 #514) is a **JSON-encoded string** of skill slugs (≤ 32, dedupe). It is the **session-sticky attach carrier** (`/skill-name` / `/unskill` in the composer): the server stores **slugs only** and re-resolves their bodies from the store every turn (staff of work — a mid-session edit applies next turn, a deleted skill silently stops attaching; the body is never snapshotted into `meta` and never shipped to the client). It is **carried on both seams so nothing wipes it**: the server mirror persists via the envelope (`readEnvelope`/`upsertEnvelope`, same `harness:envelope:*` key as the host, `updatedAt` untouched), and the host folds `SessionSnapshot.attachedSlugs` into every PUT's `meta.attachedSkills` so a host record rewrite can never delete it (an omitted reserved key is never *clear*; `[]` is an explicit detach-all — the two are distinct). **New session / Clear** mints a fresh session, so `attachedSkills` resets there. `transcriptPointer` (phase 0 #515) is a Redis-safe opaque id of the latest **Blob transcript object** — the envelope's pointer; the transcript itself never lives in Redis |
 
 ### Caps (server + host pre-PUT trim)
 
@@ -147,13 +147,14 @@ for the open tab).
 | Function-carried full-record body | **2 MiB** (`HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES`) | `/api/sessions/:id` rollforward PUT/GET gate + host rollforward trim — must stay well under the 4.5 MiB Vercel Function payload ceiling (a raised cap never re-enables a one-shot >4.5 MB Function body) |
 | Blob transcript-object body | **8 MiB** (`HARNESS_SESSION_MAX_BODY_BYTES`) | **Object** ceiling only — client→Blob upload, NOT a Function body; the envelope/Blob path passes this cap to `trimForCloudPut` |
 | Record id / tenant / user | max **512**, Redis-safe `^[A-Za-z0-9_-]{1,512}$` | so `KEYS`/prefix globs can never bleed |
-| `meta` total | **1 MiB** UTF-8 bytes (`HARNESS_SESSION_MAX_META_BYTES`) | whole-reserved-meta JSON cap (kept << the 4.5 MiB Vercel Function ceiling for the envelope read path); `personaSnapshot` ≤ **512 KiB** |
+| Attached-skill inject | **256 KiB** total (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`) | bodies folded into `skillsPreamble` greedily up to this per-turn budget (count cap alone is not a size cap); a new attach that would exceed it is rejected (`too_large` / `budget`) and never counted as attached |
 
 Host `trimForCloudPut` folds `cwd` + `activeSandboxId` into `meta.{logicalCwd,activeSandboxId}`
+and (phase 2 #517) `attachedSlugs` into `meta.attachedSkills`
 (shared client-safe predicates; a host-absolute cwd / non-Redis-safe id is dropped to unset),
 enforces count/byte/body caps (byte accounting includes `meta`), then PUT.
-`parseCloudSessionSnapshot` restores both from `meta` on pull/adopt (fail-open: a poisoned
-value drops to unset, never a sticky 400).
+`parseCloudSessionSnapshot` restores those from `meta` on pull/adopt (fail-open: a poisoned
+value drops to unset / [] for `attachedSkills`, never a sticky 400).
 
 ### What is not in a cloud record
 

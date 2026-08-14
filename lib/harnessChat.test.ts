@@ -2395,4 +2395,102 @@ describe('skill attach display (phase 2 #517)', () => {
     const folded = formatPromptWithHistory(session.messages, 'next');
     expect(folded).not.toContain('Skill attached');
   });
+
+  it('stream skill_attached events fold the sticky attachedSlugs onto the session (last-writes-wins)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), '/foo then /bar', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_prompt, init) => {
+        // Server emits skill_attached at the START; EVERY event carries the
+        // same final set, so applying each (last-writes-wins) never clears.
+        await init?.onEvent?.({
+          type: 'skill_attached',
+          slug: 'foo',
+          action: 'attach',
+          ok: true,
+          attachedSlugs: ['foo'],
+        });
+        await init?.onEvent?.({
+          type: 'skill_attached',
+          slug: 'bar',
+          action: 'attach',
+          ok: true,
+          attachedSlugs: ['foo', 'bar'],
+        });
+        await init?.onEvent?.({ type: 'done', text: 'ok' });
+        return { ok: true, text: 'ok' };
+      },
+    });
+    expect(next.attachedSlugs).toEqual(['foo', 'bar']);
+  });
+
+  it('skill_attached omitted attachedSlugs leaves the set; [] is an explicit detach-all (Nit L6)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), '/a /b', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({
+          type: 'skill_attached',
+          slug: 'a',
+          action: 'attach',
+          ok: true,
+          attachedSlugs: ['a'],
+        });
+        // A later event OMITS the field — it must NOT be read as *clear*.
+        await init?.onEvent?.({
+          type: 'skill_attached',
+          slug: 'b',
+          action: 'detach',
+          ok: false,
+          reason: 'not attached',
+        });
+        // Explicit detach-all: [] clears the set to empty (persisted as "[]").
+        await init?.onEvent?.({
+          type: 'skill_attached',
+          slug: 'x',
+          action: 'attach',
+          ok: true,
+          attachedSlugs: [],
+        });
+        await init?.onEvent?.({ type: 'done', text: 'ok' });
+        return { ok: true, text: 'ok' };
+      },
+    });
+    expect(next.attachedSlugs).toEqual([]);
+  });
+
+  it('JSON success path folds agentResult.attachedSlugs onto the session', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'ok',
+      attachedSlugs: ['create-plan'],
+    }));
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'go', {
+      sendAgent,
+      pushUser: false,
+    });
+    expect(next.attachedSlugs).toEqual(['create-plan']);
+  });
+
+  it('a FAILED turn still folds the sticky attachedSlugs before persist (fold-before-persist incl. fail/cancel)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      error: 'model boom',
+      status: 502,
+      attachedSlugs: ['create-plan'],
+    }));
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'go', {
+      sendAgent,
+      pushUser: false,
+    });
+    expect(next.attachedSlugs).toEqual(['create-plan']);
+  });
 });
