@@ -142,6 +142,7 @@ describe('/api/sessions/:id/transcript', () => {
 
     const mint = await blob.mintUpload({
       scope: { tenantId: TENANT, userId: USER, sessionId: 'abc' },
+      maxBytes: 8 * 1024 * 1024,
     });
     await store.upsertEnvelope(
       { tenantId: TENANT, userId: USER, sessionId: 'abc' },
@@ -164,6 +165,7 @@ describe('/api/sessions/:id/transcript', () => {
     // caller's auth (reader's Major L2).
     const foreign = await blob.mintUpload({
       scope: { tenantId: TENANT, userId: USER, sessionId: 'other' },
+      maxBytes: 8 * 1024 * 1024,
     });
     const idor = await GET(
       new Request(`http://localhost/api/sessions/abc/transcript?objectId=${foreign.objectId}`),
@@ -187,6 +189,7 @@ describe('/api/sessions/:id/transcript', () => {
     // reject it (reader's Major L2 defense in depth) — never signed.
     const crossUser = await blob.mintUpload({
       scope: { tenantId: 'tenant-b', userId: 'user-b', sessionId: 'zzz' },
+      maxBytes: 8 * 1024 * 1024,
     });
     await store.upsertEnvelope(
       { tenantId: TENANT, userId: USER, sessionId: 'abc' },

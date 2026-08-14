@@ -1,6 +1,11 @@
 'use client';
 
-import { useActionState, useState, type ReactNode } from 'react';
+import {
+  useActionState,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
 import { ember, teal, warm } from '../../../lib/palette';
 import {
   buttonGhostStyle,
@@ -9,10 +14,7 @@ import {
   panelStyle,
 } from '../ui';
 import {
-  createSkillAction,
   deleteSkillAction,
-  getSkillBodyAction,
-  updateSkillBodyAction,
   updateSkillDetailsAction,
   type SkillActionState,
 } from './actions';
@@ -23,7 +25,7 @@ export type SkillListItem = {
   slug: string;
   /** Short summary (discovery surface shows name/slug/description only). */
   description: string;
-  /** Owner-own body (server-component store read via getSkillBySlug); never in discovery/picker. */
+  /** Owner-own body; the edit form loads it on demand via a measured GET route. */
   body: string;
 };
 
@@ -85,14 +87,130 @@ function ActionFeedback({ state }: { state: SkillActionState }) {
   return null;
 }
 
+function RouteFeedback({ message, error }: { message?: string; error?: string }) {
+  if (error) {
+    return (
+      <p role="alert" style={{ color: ember.accent, fontSize: 13, margin: '8px 0 0' }}>
+        {error}
+      </p>
+    );
+  }
+  if (message) {
+    return (
+      <p style={{ color: teal.accent, fontSize: 13, margin: '8px 0 0' }}>{message}</p>
+    );
+  }
+  return null;
+}
+
+/**
+ * Create-with-body travels the measured route `POST /api/settings/skills` (review
+ * #525 skill-wire plan) — NOT a server action, whose 1 MB default `bodySizeLimit`
+ * would reject a 4 MiB body. Multipart carries the body bytes raw (un-escaped).
+ */
+async function postSkillsForm(
+  form: FormData,
+): Promise<{ ok: boolean; id?: string; error?: string }> {
+  try {
+    const res = await fetch('/api/settings/skills', { method: 'POST', body: form });
+    if (!res.ok) {
+      let msg = `Could not create skill (${res.status}).`;
+      try {
+        const j = (await res.json()) as { error?: unknown };
+        if (j && typeof j.error === 'string') msg = j.error;
+      } catch {
+        /* keep fallback */
+      }
+      return { ok: false, error: msg };
+    }
+    const j = (await res.json().catch(() => ({}))) as { id?: string };
+    return { ok: true, id: j.id };
+  } catch {
+    return { ok: false, error: 'Network error creating skill.' };
+  }
+}
+
+/** Body replace travels the measured route `PUT /api/settings/skills/:id/body` (raw body). */
+async function putSkillBody(
+  id: string,
+  body: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`/api/settings/skills/${encodeURIComponent(id)}/body`, {
+      method: 'PUT',
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+      body,
+    });
+    if (!res.ok) {
+      let msg = `Could not save body (${res.status}).`;
+      try {
+        const j = (await res.json()) as { error?: unknown };
+        if (j && typeof j.error === 'string') msg = j.error;
+      } catch {
+        /* keep fallback */
+      }
+      return { ok: false, error: msg };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: 'Network error saving body.' };
+  }
+}
+
+/** Load the owner's own body via the measured GET route (raw text, no JSON escaping). */
+async function getSkillBody(id: string): Promise<
+  | { ok: true; body: string }
+  | { ok: false; error: string }
+> {
+  try {
+    const res = await fetch(`/api/settings/skills/${encodeURIComponent(id)}/body`, {
+      method: 'GET',
+      credentials: 'same-origin',
+    });
+    if (!res.ok) {
+      let msg = `Could not load body (${res.status}).`;
+      try {
+        const j = (await res.json()) as { error?: unknown };
+        if (j && typeof j.error === 'string') msg = j.error;
+      } catch {
+        /* keep fallback */
+      }
+      return { ok: false, error: msg };
+    }
+    return { ok: true, body: await res.text() };
+  } catch {
+    return { ok: false, error: 'Network error loading body.' };
+  }
+}
+
 function CreateForm() {
-  const [state, action, pending] = useActionState(createSkillAction, initial);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [body, setBody] = useState('');
+  const [pending, setPending] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  async function onSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    setPending(true);
+    setMessage('');
+    setError('');
+    const r = await postSkillsForm(form);
+    setPending(false);
+    if (r.ok) {
+      setMessage('Skill created.');
+      setName('');
+      setDescription('');
+      setBody('');
+    } else {
+      setError(r.error ?? 'Could not create skill.');
+    }
+  }
 
   return (
-    <form action={action} style={panelStyle()}>
+    <form onSubmit={(e) => void onSubmit(e)} style={panelStyle()}>
       <h2 style={{ margin: '0 0 12px', fontSize: 16 }}>Create skill</h2>
       <Field label="Name" hint="A short label, e.g. Create pull request.">
         <input
@@ -107,7 +225,7 @@ function CreateForm() {
       </Field>
       <Field
         label="Description"
-        hint="One-line summary shown in discovery lookups (≤ 500 chars)."
+        hint="One-line summary shown in discovery lookups (≤ 2000 chars)."
       >
         <input
           name="description"
@@ -120,7 +238,7 @@ function CreateForm() {
       </Field>
       <Field
         label="Body"
-        hint="The playbook injected when the skill is attached (≤ 4 MiB). Saved server-side."
+        hint="The playbook injected when the skill is attached (≤ 4 MiB). Saved server-side through the measured create route."
       >
         <textarea
           name="body"
@@ -134,7 +252,7 @@ function CreateForm() {
       <button type="submit" disabled={pending} style={buttonPrimaryStyle()}>
         {pending ? 'Creating…' : 'Create skill'}
       </button>
-      <ActionFeedback state={state} />
+      <RouteFeedback message={message} error={error} />
     </form>
   );
 }
@@ -144,33 +262,46 @@ function SkillCard({ row }: { row: SkillListItem }) {
     updateSkillDetailsAction,
     initial,
   );
-  const [bodyState, bodyAction, bodyPending] = useActionState(
-    updateSkillBodyAction,
-    initial,
-  );
   const [delState, delAction, delPending] = useActionState(
     deleteSkillAction,
     initial,
   );
   const [confirmDelete, setConfirmDelete] = useState(false);
-  // Skill bodies live server-side and are NOT inlined into the SSR page (review
-  // #525 Major — skills wire plan). Each card loads its own body on demand via
-  // `getSkillBodyAction` so one settings page never carries N large bodies in a
-  // single Function response. `loadedBody` is the owner-own body once fetched;
-  // `bodyError` surfaces a failed lazy load inline.
+  // Skill bodies live server-side and are NOT inlined into the SSR page. Each card
+  // loads its own body on demand via the measured `GET /api/settings/skills/:id/body`
+  // route (review #525 skill-wire plan), so one settings page never carries N large
+  // bodies in a single Function response.
   const [loadedBody, setLoadedBody] = useState<string | null>(null);
   const [bodyLoading, setBodyLoading] = useState(false);
+  const [bodySaving, setBodySaving] = useState(false);
   const [bodyError, setBodyError] = useState<string | null>(null);
+  const [bodyMessage, setBodyMessage] = useState('');
 
   async function loadBody() {
     setBodyLoading(true);
     setBodyError(null);
-    const r = await getSkillBodyAction(row.id);
+    const r = await getSkillBody(row.id);
     setBodyLoading(false);
     if (r.ok) {
       setLoadedBody(r.body);
     } else {
       setBodyError(r.error || 'Could not load body.');
+    }
+  }
+
+  async function onSaveBody(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const body = new FormData(e.currentTarget).get('body');
+    if (typeof body !== 'string') return;
+    setBodySaving(true);
+    setBodyError(null);
+    setBodyMessage('');
+    const r = await putSkillBody(row.id, body);
+    setBodySaving(false);
+    if (r.ok) {
+      setBodyMessage('Body saved.');
+    } else {
+      setBodyError(r.error ?? 'Could not save body.');
     }
   }
 
@@ -221,7 +352,7 @@ function SkillCard({ row }: { row: SkillListItem }) {
         <ActionFeedback state={detailsState} />
       </form>
 
-      <form action={bodyAction} style={{ marginBottom: 12 }}>
+      <form onSubmit={(e) => void onSaveBody(e)} style={{ marginBottom: 12 }}>
         <input type="hidden" name="id" value={row.id} />
         <Field label="Edit body">
           {bodyLoading ? (
@@ -255,12 +386,12 @@ function SkillCard({ row }: { row: SkillListItem }) {
         </Field>
         <button
           type="submit"
-          disabled={bodyPending || loadedBody === null}
-          style={bodyPending ? buttonGhostStyle() : buttonGhostStyle()}
+          disabled={bodySaving || loadedBody === null}
+          style={buttonGhostStyle()}
         >
-          {bodyPending ? 'Saving…' : 'Save body'}
+          {bodySaving ? 'Saving…' : 'Save body'}
         </button>
-        <ActionFeedback state={bodyState} />
+        <RouteFeedback message={bodyMessage} error={bodyError ?? undefined} />
       </form>
 
       <div

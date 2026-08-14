@@ -114,8 +114,20 @@ export interface BlobTranscriptStore {
    * from it, so a caller that omits it would mint an unbound/shared-binding object
    * that can never be authorized for any session. Implementations THROW if `scope`
    * is omitted (reader's Nit — no invented shared dummy binding).
+   *
+   * `maxBytes` is likewise REQUIRED and never defaulted (reader's Nit — the
+   * transcript-object ceiling, `HARNESS_SESSION_MAX_BODY_BYTES`). It is encoded into
+   * the minted upload scope so the **object host itself** enforces the byte ceiling
+   * server-side (`file_too_large` on over-size PUT), permanently retiring the
+   * "envelope-on uploads remain client-sized" residual: a compromised/malicious
+   * client that ignores the host's own pre-upload trim still cannot exceed the
+   * object ceiling. There is intentionally no client-honor dependency.
    */
-  mintUpload(options: { scope: ObjectScope; contentType?: string }): Promise<MintedUpload>;
+  mintUpload(options: {
+    scope: ObjectScope;
+    contentType?: string;
+    maxBytes: number;
+  }): Promise<MintedUpload>;
   /** Server-side read of an object (diagnostics / segment-aware fetch). */
   read(objectId: TranscriptObjectId): Promise<string | null>;
   /** Server-side preview URL for an object (signed). Optional. */

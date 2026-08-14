@@ -45,9 +45,10 @@ async function SkillsPageBody({ userId }: { userId: string }) {
   // skill body into one Vercel Function response — N large bodies would blow the
   // 4.5 MB `FUNCTION_RESPONSE_PAYLOAD_TOO_LARGE` ceiling. The page renders
   // summaries only (name/slug/description/id); each SkillCard lazily loads its own
-  // body via `getSkillBodyAction` when the owner opens the body editor (one small
-  // response per skill). SkillListItem.body stays in the type (owner-own edit
-  // surface) but the SSR passes an empty placeholder — the real body loads on demand.
+  // body via the measured `GET /api/settings/skills/:id/body` route when the owner
+  // opens the body editor (one small response per skill). SkillListItem.body stays
+  // in the type (owner-own edit surface) but the SSR passes an empty placeholder —
+  // the real body loads on demand via the route, never a server action.
   const skills: SkillListItem[] = listed.value.map((s) => ({
     id: s.id,
     name: s.name,

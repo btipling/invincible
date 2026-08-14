@@ -19,7 +19,10 @@
  */
 import { requireSessionUser } from '../../../../../lib/tenancy/session';
 import { AUTH_REQUIRED_ERROR } from '../../../../../lib/tenancy/errors';
-import { isRedisSafeOpaqueId } from '../../../../../lib/sessionCloudCaps';
+import {
+  HARNESS_SESSION_MAX_BODY_BYTES,
+  isRedisSafeOpaqueId,
+} from '../../../../../lib/sessionCloudCaps';
 import {
   isObjectIdBoundTo,
   type ObjectScope,
@@ -173,7 +176,16 @@ export async function POST(req: Request, ctx: Ctx): Promise<Response> {
     sessionId: id,
   };
   try {
-    const minted = await store.value.mintUpload({ scope, contentType });
+    // Pass the generous 8 MiB **Blob-transcript-object** ceiling into the mint so the
+    // Vercel Blob host enforces it server-side (`file_too_large`), rather than relying
+    // on the host's own client-side pre-upload trim (review #525 skill-wire plan, Blob
+    // residual). This is an OBJECT ceiling, never a Function body — a client PUTs the
+    // segment directly to Blob (`issueSignedToken` + `presignUrl` encode the limit).
+    const minted = await store.value.mintUpload({
+      scope,
+      contentType,
+      maxBytes: HARNESS_SESSION_MAX_BODY_BYTES,
+    });
     return Response.json(minted, { status: 200 });
   } catch {
     return unavailableResponse('BLOB_STORE_UNAVAILABLE', 'transcript store unavailable');

@@ -28,11 +28,25 @@ export class MemoryBlobTranscriptStore implements BlobTranscriptStore {
   readonly kind = 'memory' as const;
   private readonly objects = new Map<string, string>();
 
-  async mintUpload(options: { scope: ObjectScope; contentType?: string }): Promise<MintedUpload> {
+  async mintUpload(options: {
+    scope: ObjectScope;
+    contentType?: string;
+    maxBytes: number;
+  }): Promise<MintedUpload> {
     // `scope` is REQUIRED — never defaulted to a shared dummy binding (a caller that
     // omits it would mint an object whose binding can't authorize for any session).
     if (!options?.scope) {
       throw new TypeError('mintUpload requires an ownership scope {tenantId,userId,sessionId}');
+    }
+    // `maxBytes` is REQUIRED — never defaulted (a caller that omits it would mint an
+    // object with no byte ceiling, reintroducing the client-honor residual this seam
+    // exists to retire).
+    if (
+      !Number.isInteger(options.maxBytes) ||
+      !Number.isFinite(options.maxBytes) ||
+      options.maxBytes < 1
+    ) {
+      throw new TypeError('mintUpload requires a positive integer maxBytes ceiling');
     }
     // Same compact Redis-safe, session-bound id shape as the Vercel store, so a
     // test-injected memory double never mints an id that would fail
@@ -72,11 +86,27 @@ export class VercelBlobTranscriptStore implements BlobTranscriptStore {
 
   constructor(private readonly opts: { token: string }) {}
 
-  async mintUpload(options: { scope: ObjectScope; contentType?: string }): Promise<MintedUpload> {
+  async mintUpload(options: {
+    scope: ObjectScope;
+    contentType?: string;
+    maxBytes: number;
+  }): Promise<MintedUpload> {
     // `scope` is REQUIRED — never defaulted to a shared dummy binding (a caller that
     // omits it would mint an object whose binding can't authorize for any session).
     if (!options?.scope) {
       throw new TypeError('mintUpload requires an ownership scope {tenantId,userId,sessionId}');
+    }
+    // `maxBytes` is REQUIRED — never defaulted (a caller that omits it would mint an
+    // object with no byte ceiling, reintroducing the client-honor residual this seam
+    // exists to retire). Encoded into BOTH the delegation token (`issueSignedToken`)
+    // and the presigned URL (`presignUrl`), so the Blob object host enforces the
+    // ceiling server-side (`file_too_large`) — never dependent on a client trim.
+    if (
+      !Number.isInteger(options.maxBytes) ||
+      !Number.isFinite(options.maxBytes) ||
+      options.maxBytes < 1
+    ) {
+      throw new TypeError('mintUpload requires a positive integer maxBytes ceiling');
     }
     // The object id IS the Blob pathname AND the Redis envelope pointer (see
     // `newBlobObjectId`): a compact, unguessable, **session-bound**, Redis-safe
@@ -96,11 +126,23 @@ export class VercelBlobTranscriptStore implements BlobTranscriptStore {
       operations: ['put'],
       validUntil,
       allowedContentTypes: options?.contentType ? [options.contentType] : undefined,
+      // Server-side object-host ceiling: the presigned PUT carries
+      // `vercel-blob-maximum-size-in-bytes` and the Vercel Blob host rejects any
+      // over-size upload with `file_too_large` — a malicious client that skips its
+      // own pre-upload trim is still bound (review #525 skill-wire plan, Blob residual).
+      maximumSizeInBytes: options.maxBytes,
     });
     // Presign a control-plane scoped PUT: the client PUTs the segment to Blob directly.
     const { presignedUrl } = await presignUrl(
       { clientSigningToken: signed.clientSigningToken, delegationToken: signed.delegationToken },
-      { access: 'private', operation: 'put', pathname: objectId, validUntil },
+      {
+        access: 'private',
+        operation: 'put',
+        pathname: objectId,
+        validUntil,
+        // Mirrors the delegation ceiling on the signed URL so the CDN enforces it too.
+        maximumSizeInBytes: options.maxBytes,
+      },
     );
     return { uploadUrl: presignedUrl, objectId, readUrl: undefined };
   }
