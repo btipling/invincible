@@ -5,8 +5,10 @@ description: >
   for correctness, performance, architectural soundness, testing, layer placement
   (DOM host vs Wasm harness vs Vercel backend), cloud-native ops (GHA primary for
   Production mutates — never laptop-only), living docs (docs/ AGENTS README
-  SECURITY without phase/issue process artifacts), and parent adherence when
-  phased. DEFAULT: apply recommended fixes by editing the same issue body via gh.
+  SECURITY without phase/issue process artifacts), cap governance (caps in a
+  table; a lowering — suggested or decided — is a BLOCK + human decision), and
+  parent adherence when phased. DEFAULT: apply recommended fixes by editing the
+  same issue body via gh.
   LOAD: do not search — use gh to read .grok/skills/plan-review/* from main.
   Refuse if gh missing/unauthenticated. Never GitHub MCP.
   Triggers: "review plan", "plan review", "review the plan", "team review",
@@ -362,6 +364,27 @@ surface change — and the plan must say why each surface is N/A.
 **Blocker:** only if docs would instruct **secrets in git** or **laptop-only
 Production mutate** as the official path.
 
+### 3.7 Cap governance (mandatory when a plan adds or changes any cap/ceiling/value)
+
+Review every cap, limit, or budget the plan introduces **or** changes. Follow the
+**suggest → decide → approve** split:
+
+| Rule | Fail if |
+|-------|---------|
+| Every cap/limit/budget is in a dedicated **Caps table** (value + rationale + code location) | A new cap value is buried in prose or a later code file |
+| **Generous by default for NEW caps** (no cap / the real transport ceiling) | An invented small number with no justification |
+| **Any change to an existing cap — a raise OR a lowering** ⇒ **BLOCK** routed to a **human**, with the plan carrying an explicit justification/defense (measured budget delta, budget-vs-transport-ceiling accounting incl. the inviolable ceiling of the wire that carries the value, residual risk) | plan-review approves a cap change itself, or a change ships without the human decision + defense |
+| **A raise above the transport ceiling of its carrier is a BLOCK** (the #511/#525 Function-body class) | An over-ceiling raise is scored "raising is fine" |
+
+**Who decides:** plan-review **SUGGESTS** a change (raise or lower; or confirms
+one the plan already proposes) but never decides or approves it. If plan-review
+*or* the implement-plan agent judges any change to an existing cap warranted,
+the plan is **BLOCKED** and requires a **human decision** on the evidence.
+plan-review attaches the defense and routes the decision; the human is the only
+approver of a raised or lowered cap. If the plan fails to carry the required
+justification for a cap change it proposes — including a raise that pushes the
+value over its wire's ceiling — that is itself a Block.
+
 ---
 
 ## 4. Parent-plan adherence (phase issues — mandatory)
@@ -463,6 +486,7 @@ anti-reuse** and document impact in the plan header.
 11. Architectural change with **no** decisions table and no explicit N/A justification  
 12. **Production data/secret cutover with no GHA (or equivalent hosted) primary path** — script/`npm run` only, or “operator’s laptop”  
 13. **Living docs planned to teach laptop-only Production ops** as the official path  
+14. **A plan changes an existing cap** — raise **or** lower, whether plan-review suggests it or the implement-plan agent decides it is warranted — without an explicit **human decision** and the required justification/defense (or plan-review approving a cap change itself). A raise above the transport ceiling of its carrier (the #511/#525 Function-body class) is always such a Block. plan-review may suggest; only a human approves a raised or lowered cap; generous default is for NEW caps only  
 
 ---
 
@@ -552,6 +576,7 @@ Missing sections that the phase needs → finding → pushed into issue under fi
 [ ] Correctness / performance / architecture / testing scored
 [ ] Cloud ops scored (or N/A with reason)
 [ ] Living docs scored (or N/A with reason) — AGENTS + README considered
+[ ] Cap governance scored when the plan adds/changes caps (Caps table present; any change to an existing cap — raise or lower ⇒ BLOCK + human decision; generous default for NEW caps)
 [ ] Parent adherence scored (or N/A)
 [ ] Layer placement + dual-chat check (or N/A)
 [ ] Layout stability for host chrome (or N/A)
