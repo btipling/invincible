@@ -109,8 +109,13 @@ export interface BlobTranscriptStore {
    * transcript segment bound to the given ownership scope (the object id derives
    * its binding prefix from `scope`, so the server can re-derive and verify it).
    * Server holds the credential; the client never sees it.
+   *
+   * `scope` is REQUIRED and never defaulted: the object's binding prefix is derived
+   * from it, so a caller that omits it would mint an unbound/shared-binding object
+   * that can never be authorized for any session. Implementations THROW if `scope`
+   * is omitted (reader's Nit — no invented shared dummy binding).
    */
-  mintUpload(options?: { scope: ObjectScope; contentType?: string }): Promise<MintedUpload>;
+  mintUpload(options: { scope: ObjectScope; contentType?: string }): Promise<MintedUpload>;
   /** Server-side read of an object (diagnostics / segment-aware fetch). */
   read(objectId: TranscriptObjectId): Promise<string | null>;
   /** Server-side preview URL for an object (signed). Optional. */

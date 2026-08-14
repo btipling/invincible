@@ -6,7 +6,7 @@ import {
   objectBindingFor,
   type ObjectScope,
 } from './blobStore';
-import { MemoryBlobTranscriptStore } from './blobStores';
+import { MemoryBlobTranscriptStore, VercelBlobTranscriptStore } from './blobStores';
 
 const SCOPE_A: ObjectScope = { tenantId: 'tenant-a', userId: 'user-a', sessionId: 'abc' };
 const SCOPE_B: ObjectScope = { tenantId: 'tenant-a', userId: 'user-b', sessionId: 'xyz' };
@@ -67,5 +67,24 @@ describe('blobStore — transcript object seam', () => {
     // missing object
     await expect(s.readUrl('tx_missing')).resolves.toBeNull();
     await expect(s.read('tx_missing')).resolves.toBeNull();
+  });
+
+  it('mintUpload REQUIRES an ownership scope — omitting it throws (no invented shared dummy binding, reader Nit)', async () => {
+    // Tracking the reviewer's Nit: `scope` must not default to a shared dummy
+    // `{t,u,s}` binding (a forgetful future caller would mint an object that can
+    // never be authorized for any real session). Both impls throw on omission —
+    // in both cases BEFORE any credential/network work, so no token is needed.
+    const memory = new MemoryBlobTranscriptStore();
+    // `{}` cast through `never`: exercises the runtime guard against a JS caller that
+    // fails to supply `scope` (TS enforces it statically for TS callers, so the
+    // assertion here is deliberate — it peels off only the compile-time requirement).
+    await expect(memory.mintUpload({} as never)).rejects.toThrow(
+      /requires an ownership scope/,
+    );
+
+    const vercel = new VercelBlobTranscriptStore({ token: 'not-read-when-scope-missing' });
+    await expect(vercel.mintUpload({} as never)).rejects.toThrow(
+      /requires an ownership scope/,
+    );
   });
 });

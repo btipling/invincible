@@ -28,11 +28,16 @@ export class MemoryBlobTranscriptStore implements BlobTranscriptStore {
   readonly kind = 'memory' as const;
   private readonly objects = new Map<string, string>();
 
-  async mintUpload(options?: { scope: ObjectScope; contentType?: string }): Promise<MintedUpload> {
+  async mintUpload(options: { scope: ObjectScope; contentType?: string }): Promise<MintedUpload> {
+    // `scope` is REQUIRED — never defaulted to a shared dummy binding (a caller that
+    // omits it would mint an object whose binding can't authorize for any session).
+    if (!options?.scope) {
+      throw new TypeError('mintUpload requires an ownership scope {tenantId,userId,sessionId}');
+    }
     // Same compact Redis-safe, session-bound id shape as the Vercel store, so a
     // test-injected memory double never mints an id that would fail
     // `isTranscriptObjectId` / `isObjectIdBoundTo`.
-    const id = newBlobObjectId(options?.scope ?? { tenantId: 't', userId: 'u', sessionId: 's' });
+    const id = newBlobObjectId(options.scope);
     const readUrl = `memory://transcript/${id}`;
     // Keep a placeholder body so a server-side readUrl resolves to empty until uploaded.
     this.objects.set(id, JSON.stringify({ empty: true }));
@@ -67,7 +72,12 @@ export class VercelBlobTranscriptStore implements BlobTranscriptStore {
 
   constructor(private readonly opts: { token: string }) {}
 
-  async mintUpload(options?: { scope: ObjectScope; contentType?: string }): Promise<MintedUpload> {
+  async mintUpload(options: { scope: ObjectScope; contentType?: string }): Promise<MintedUpload> {
+    // `scope` is REQUIRED — never defaulted to a shared dummy binding (a caller that
+    // omits it would mint an object whose binding can't authorize for any session).
+    if (!options?.scope) {
+      throw new TypeError('mintUpload requires an ownership scope {tenantId,userId,sessionId}');
+    }
     // The object id IS the Blob pathname AND the Redis envelope pointer (see
     // `newBlobObjectId`): a compact, unguessable, **session-bound**, Redis-safe
     // opaque string, never a slashy hierarchical path — so the stored
@@ -78,9 +88,7 @@ export class VercelBlobTranscriptStore implements BlobTranscriptStore {
     // Blocker.) The binding prefix derived from `options.scope` lets the server
     // re-verify at envelope-write/read time that the pointer belongs to THIS
     // session (reader's Major L2).
-    const objectId = newBlobObjectId(
-      options?.scope ?? { tenantId: 't', userId: 'u', sessionId: 's' },
-    );
+    const objectId = newBlobObjectId(options.scope);
     const validUntil = Date.now() + 60 * 60 * 1000; // 1h
     const signed = await issueSignedToken({
       token: this.opts.token,
