@@ -407,9 +407,9 @@ that ceiling (the #511/#525 Function-body class) and must die at the human gate.
 
 A **good raise** keeps the value ≤ the transport ceiling of its carrier and is
 tabled — yet **any** change to an existing cap still routes to a human. A
-**blocked lower** ships without a human decision + defense. A **blocked
-over-ceiling raise** bumps a function-carried cap above its inviolable ceiling
-(the #511/#525 class).
+**blocked lower** is a change that would ship without a human decision +
+defense. A **blocked over-ceiling raise** bumps a function-carried cap above
+its inviolable ceiling (the #511/#525 class).
 
 ### Architectural decisions — when mandatory
 
