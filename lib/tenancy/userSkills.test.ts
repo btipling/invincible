@@ -9,6 +9,7 @@ import {
   listUserSkills,
   renameUserSkill,
   SKILL_BODY_MAX_BYTES,
+  SKILL_DESCRIPTION_MAX_CHARS,
   updateUserSkillBody,
   updateUserSkillSummary,
 } from './userSkills';
@@ -257,6 +258,59 @@ describe('userSkills', () => {
     );
     expect(oversized.ok).toBe(false);
     if (!oversized.ok) expect(oversized.code).toBe('invalid_body');
+  });
+
+  it('description bound: 500 chars accepted, 501 rejected as invalid_description (create + summary)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const atLimit = 'x'.repeat(SKILL_DESCRIPTION_MAX_CHARS);
+    const ok = await createUserSkill(
+      {
+        userId,
+        name: 'A',
+        slug: 'a',
+        body: 'x',
+        description: atLimit,
+      },
+      { db: db as never },
+    );
+    expect(ok.ok).toBe(true);
+    if (!ok.ok) throw new Error('expected ok');
+
+    const over = await createUserSkill(
+      {
+        userId,
+        name: 'B',
+        slug: 'b',
+        body: 'x',
+        description: 'x'.repeat(SKILL_DESCRIPTION_MAX_CHARS + 1),
+      },
+      { db: db as never },
+    );
+    expect(over.ok).toBe(false);
+    if (!over.ok) expect(over.code).toBe('invalid_description');
+
+    // No row persisted for the rejected create.
+    const listed = await listUserSkills(userId, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect(listed.value).toHaveLength(1);
+
+    // updateUserSkillSummary also rejects an oversize description.
+    const id = ok.value.id;
+    const badSummary = await updateUserSkillSummary(
+      userId,
+      id,
+      { name: 'A', description: 'y'.repeat(SKILL_DESCRIPTION_MAX_CHARS + 1) },
+      { db: db as never },
+    );
+    expect(badSummary.ok).toBe(false);
+    if (!badSummary.ok) expect(badSummary.code).toBe('invalid_description');
+
+    // The stored description is unchanged (still 500 chars, not wiped).
+    const bySlug = await getSkillBySlug(userId, 'a', { db: db as never });
+    expect(bySlug.ok).toBe(true);
+    if (!bySlug.ok) throw new Error('expected ok');
+    expect(bySlug.value?.description).toBe(atLimit);
   });
 
   it('list is user-scoped: another user sees an empty list', async () => {

@@ -127,9 +127,9 @@ function trimName(name: string): string | null {
   return n;
 }
 
-function trimDescription(description: string): string {
+function trimDescription(description: string): string | null {
   const d = typeof description === 'string' ? description.trim() : '';
-  if (d.length > SKILL_DESCRIPTION_MAX_CHARS) return '';
+  if (d.length > SKILL_DESCRIPTION_MAX_CHARS) return null;
   return d;
 }
 
@@ -206,6 +206,13 @@ export async function createUserSkill(
     };
   }
   const description = trimDescription(input.description ?? '');
+  if (description === null) {
+    return {
+      ok: false,
+      code: 'invalid_description',
+      error: `description must be ≤ ${SKILL_DESCRIPTION_MAX_CHARS} chars`,
+    };
+  }
 
   try {
     const tid = await resolveTenantId(userId, deps);
@@ -367,6 +374,13 @@ export async function updateUserSkillSummary(
     };
   }
   const description = trimDescription(input.description ?? '');
+  if (description === null) {
+    return {
+      ok: false,
+      code: 'invalid_description',
+      error: `description must be ≤ ${SKILL_DESCRIPTION_MAX_CHARS} chars`,
+    };
+  }
   const tid = await resolveTenantId(uid, deps);
   if (!tid.ok) return tid;
 
