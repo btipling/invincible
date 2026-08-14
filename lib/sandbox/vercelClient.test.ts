@@ -577,6 +577,49 @@ describe('createVercelSandboxClient', () => {
     await client.close?.();
   });
 
+  it('strReplace applies $ template forms literally (unique path)', async () => {
+    const sb = mockSandbox();
+    const getSandbox = vi.fn<GetVercelFsSandboxFn>(async () => sb);
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox,
+    });
+    const origin = 'const x = 0;\nconst y = 1;\n';
+    await client.writeFile('t.ts', origin, true);
+    for (const newString of [
+      '$&',
+      "$'",
+      '$`',
+      '$$',
+      '^`[A-Za-z0-9_-]{1,128}$`',
+    ]) {
+      await expect(
+        client.strReplace('t.ts', 'const x = 0;', newString),
+      ).resolves.toMatchObject({ ok: true, replacements: 1 });
+      const read = await client.readFile('t.ts');
+      expect(read.content).toBe(`${newString}\nconst y = 1;\n`);
+      expect(read.content).not.toContain(origin);
+      await client.writeFile('t.ts', origin, true);
+    }
+    await client.close?.();
+  });
+
+  it('strReplace $ templates literal under replace_all (split/join unchanged)', async () => {
+    const sb = mockSandbox();
+    const getSandbox = vi.fn<GetVercelFsSandboxFn>(async () => sb);
+    const client = createVercelSandboxClient({
+      name: 'inv-workspace-test',
+      getSandbox,
+    });
+    await client.writeFile('t.txt', 'aa bb aa\n', true);
+    await expect(
+      client.strReplace('t.txt', 'aa', '$&', true),
+    ).resolves.toMatchObject({ ok: true, replacements: 2 });
+    const read = await client.readFile('t.txt');
+    expect(read.content).toBe('$& bb $&\n');
+    await client.close?.();
+  });
+
   it('path escape rejected on tools', async () => {
     const sb = mockSandbox();
     const getSandbox = vi.fn<GetVercelFsSandboxFn>(async () => sb);

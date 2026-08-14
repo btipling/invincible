@@ -325,7 +325,10 @@ export async function strReplaceTool(workspace, body) {
 
     const next = replaceAll
       ? content.split(oldStr).join(newStr)
-      : content.replace(oldStr, newStr);
+      : content
+          .slice(0, content.indexOf(oldStr))
+          .concat(newStr)
+          .concat(content.slice(content.indexOf(oldStr) + oldStr.length));
 
     const outBuf = Buffer.from(next, 'utf8');
     if (outBuf.byteLength > MAX_READ_WRITE_BYTES) {
