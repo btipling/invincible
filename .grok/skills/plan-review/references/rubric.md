@@ -142,6 +142,36 @@ Companion to `plan-review/SKILL.md`. Use these prompts while scoring.
 
 ---
 
+## Cap governance (when the plan adds or changes any cap/ceiling/value)
+
+Governs every plan that introduces or changes a cap, limit, or budget (request
+size, message length, count bounds, meta ceilings, skill-body caps, etc.).
+
+| Score | Meaning |
+|-------|---------|
+| 5 | Every cap in a **Caps table** (value + rationale + location); generous default for NEW caps; a lowering is a BLOCK routed to a **human** with the plan's explicit justification/defense (budget accounting vs transport ceiling + residual risk); raising a cap is never a blocker |
+| 4 | Caps table present; minor gaps in the lowering defense or one un-tabled value |
+| 3 | New cap present but value not justified vs the transport ceiling, or lowering shipped without a real justification |
+| 2 | Caps table missing / new cap buried in prose; a lowering proposed with no human-gate framing |
+| 1 | A cap is silently lowered (or new cap invented small) with no table, no human decision, and no defense |
+
+### Prompt questions
+
+- Does every added/changed cap appear in a dedicated **Caps table**?  
+- Is the value **generous by default** for NEW caps (no cap / the real transport ceiling), and explained?  
+- Does the plan **raise or add** caps (fine) vs **lower** an existing cap (must be BLOCK + human decision)?  
+- If a lowering is present: is the plan carrying the explicit justification/defense — measured budget drop, budget-vs-transport-ceiling accounting, residual risk?  
+- Who decides? plan-review **suggests** only; a decided-or-suggested lowering ⇒ **BLOCK**; only a **human** approves a lower cap.  
+
+### Score cap / auto-Blocker
+
+- A plan that **lowers** an existing cap — whether suggested by plan-review or
+  decided by the implement-plan agent — without an explicit human decision +
+  justification/defense is a **Block** (constraint #14). Generous default is for
+  NEW caps only; raising is never a blocker.
+
+---
+
 ## Parent adherence (phase only)
 
 - Parent locked decisions: any reopened cell?  

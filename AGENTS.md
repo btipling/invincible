@@ -83,6 +83,13 @@ Do **not** write product/ops guides as phase narratives or issue archaeology
 - **create-plan** / **plan-review** must lock **Cloud ops path** + **Living docs**
   (always consider `AGENTS.md` + `README.md` updates). plan-review treats
   laptop/script-only Production cutover as a **Blocker**.
+- **Cap governance:** every cap/limit/budget in a plan goes in a **Caps table**
+  (value + rationale + code location), generous by default for NEW caps/ceilings.
+  **Raising a cap is never a blocker.** **Lowering an existing cap is a BLOCK +
+  human decision**: plan-review may **suggest** a lowering, the implement-plan
+  agent **decides** (which blocks the plan), and only a **human** **approves** a
+  lower cap, on the plan's explicit justification/defense (budget accounting vs
+  transport ceiling + residual risk).
 - Config seams for BYO Vercel/keys/runner (#38), **sandbox MVP** (#45),
   **optional multi-tenant auth** (#54 phases 1–5 + cloud cutover #67), and
   the **first-run sign-up bootstrap** ([docs/bring-your-own.md](docs/bring-your-own.md) §4a)

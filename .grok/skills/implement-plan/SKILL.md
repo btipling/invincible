@@ -66,7 +66,24 @@ Parse the header **Status** (table cell or `Status: …` stamp).
 - Reply with the issue number, the Status you read, and that `plan-review` must
   land `HANDOFF-READY` first.
 
-Set the commit author (hard constraint in `AGENTS.md`):
+### Cap-table acceptance + human-gate (when the plan adds/changes caps)
+
+The plan issue must carry a dedicated **Caps table** (value + rationale + code
+location) for every cap/limit/budget it adds or changes. Reject a plan that
+introduces a new cap only in prose with no table, or that ships a **lowered**
+existing cap without an explicit **human decision** + justification/defense.
+
+- **Generous by default for NEW caps** — no cap / the real transport ceiling;
+  do not invent a tight number where the plan didn't.
+- **Raising a cap is never a blocker.**
+- **Lowering an existing cap requires a prior human decision.** Two routes, both
+  dead-end at a human: (a) plan-review suggested a lowering — if you (the
+  implement-plan agent) judge it warranted, the plan is **BLOCKED** and must not
+  be implemented until a human approves with the defense attached; (b) you
+  independently decide a lowering is warranted — same result: stop, mark the
+  plan **BLOCKED**, present the justification/defense (measured budget drop,
+  budget-vs-transport-ceiling accounting, residual risk) and wait for the human.
+  Implementing a cap-lowering without that human decision is forbidden.
 
 ```bash
 git config user.name  "btipling"
@@ -344,6 +361,11 @@ convention).
 
 - **Implementing a plan that is not HANDOFF-READY** (DRAFT / NEEDS REVISION /
   BLOCKED / missing Status) — skill failure; run `plan-review` first
+- **Implementing a cap-lowering without the required human decision** — a plan
+  that lowers an existing cap must be BLOCKED + human-approved (with
+  justification/defense) before any code; skill failure to ship it anyway
+- **Scanning past a caps table** — a plan adding/changing caps that skips the
+  Caps table, or hides a new cap only in prose, must be rejected, not coded
 - Implementing before reading the plan / AGENTS.md
 - Inventing symbols or APIs not on the branch ("Unverified" not marked)
 - Claiming green `npm run build` in a bare sandbox without `HARNESS_ARTIFACT_TOKEN`
@@ -373,6 +395,7 @@ convention).
 [ ] AGENTS.md + plan issue read; feature-divide when UI/bridge/agent
 [ ] Branch plan/<slug> off up-to-date main
 [ ] Implementation in the plan's locked layers, grounded in live code
+[ ] Caps table present for every added/changed cap; no cap-lowering without a human decision (plan-review SUGGESTS, agent DECIDES→BLOCK, human APPROVES)
 [ ] Tests for new logic; counts recorded in PR body (baseline → new)
 [ ] npm run typecheck green
 [ ] `vitest run --changed` green during iteration (not full suite every round)
