@@ -11,16 +11,21 @@
  *
  * SSR/no-JS is NOT a supported baseline for this control (the product requires
  * JS: Wasm canvas + JS logout action). Keyboard/touch rules:
- * toggle on click/tap; Arrow keys + Tab cycle items (wrap), Home/End jump
- * first/last; Escape closes and returns focus to the trigger; a single
- * document-level `pointerdown` closes on any outside click. Touch targets are
- * ≥ ~44px; items never overflow the header on narrow view (the dropdown is the
- * only overflow-safe surface).
+ * toggle on click/tap; Arrow keys + Home/End rove items (wrap); Tab / Shift+Tab
+ * follow the natural document order so tab can reach the footer `LogoutButton`
+ * (never hijacked — the keyboard sign-out path stays reachable); Escape closes
+ * and returns focus to the trigger; a single document-level `pointerdown`
+ * closes on any outside click. Touch targets are ≥ ~44px; items never overflow
+ * the header on narrow view (the dropdown is the only overflow-safe surface).
+ * The trigger is only focused when the menu closes after being opened — never
+ * on first mount — so mounting this control on /harness won't steal the caret
+ * from the composer.
  */
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { CSSProperties, KeyboardEvent, ReactNode } from 'react';
 import { teal } from '../../lib/palette';
+import { navMenuKeyAction, nextFocusIndex } from '../../lib/navMenu';
 import type { NavItem } from '../../lib/navMenu';
 
 type NavMenuProps = {
@@ -88,6 +93,9 @@ export default function NavMenu({ items, footer, ariaLabel = 'Account menu' }: N
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLAnchorElement | null)[]>([]);
+  // Distinguishes a real open→closed transition from a first mount, so the
+  // close handler never steals focus back to the trigger on mount.
+  const wasOpenRef = useRef(false);
 
   const close = () => setOpen(false);
   const toggle = () => setOpen((v) => !v);
@@ -105,13 +113,18 @@ export default function NavMenu({ items, footer, ariaLabel = 'Account menu' }: N
     return () => document.removeEventListener('pointerdown', onPointerDown);
   }, [open]);
 
-  // Focus the menu container while open so Arrow/Tab keys are caught here;
-  // Escape via keydown moves focus back to the trigger on close.
+  // While open, focus the menu container so Arrow/Home/End/Escape are caught
+  // here. On a real close (open → false after being open), return focus to the
+  // trigger. Crucially the initial mount (open: false, wasOpenRef: false) never
+  // focuses the trigger — otherwise AuthNavLinks mounting on /harness would
+  // steal the caret from the composer.
   useEffect(() => {
     if (open) {
+      wasOpenRef.current = true;
       setFocusIndex(0);
       menuRef.current?.focus();
-    } else {
+    } else if (wasOpenRef.current) {
+      wasOpenRef.current = false;
       triggerRef.current?.focus();
     }
   }, [open]);
@@ -122,35 +135,14 @@ export default function NavMenu({ items, footer, ariaLabel = 'Account menu' }: N
   }, [focusIndex, open]);
 
   function onMenuKeyDown(e: KeyboardEvent) {
-    const count = items.length;
-    if (count === 0) {
-      if (e.key === 'Escape') close();
+    const action = navMenuKeyAction(e.key);
+    if (action === 'none') return; // Tab/Shift+Tab → natural order reaches footer
+    if (action === 'escape') {
+      close();
       return;
     }
-    switch (e.key) {
-      case 'ArrowDown':
-      case 'Tab':
-        e.preventDefault();
-        setFocusIndex((i) => (i + 1) % count);
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        setFocusIndex((i) => (i - 1 + count) % count);
-        break;
-      case 'Home':
-        e.preventDefault();
-        setFocusIndex(0);
-        break;
-      case 'End':
-        e.preventDefault();
-        setFocusIndex(count - 1);
-        break;
-      case 'Escape':
-        close();
-        break;
-      default:
-        break;
-    }
+    e.preventDefault();
+    setFocusIndex((i) => nextFocusIndex(items.length, i, action));
   }
 
   return (
@@ -197,7 +189,10 @@ export default function NavMenu({ items, footer, ariaLabel = 'Account menu' }: N
               onMouseEnter={() => setFocusIndex(idx)}
               style={{
                 ...itemStyle,
-                background: idx === focusIndex ? teal.surface : 'transparent',
+                background: idx === focusIndex ? teal.bg : 'transparent',
+                color: idx === focusIndex ? teal.accent : teal.text,
+                boxShadow:
+                  idx === focusIndex ? `inset 0 0 0 1px ${teal.accent}` : 'none',
                 borderBottom: `1px solid ${teal.border}`,
               }}
             >
