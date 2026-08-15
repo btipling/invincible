@@ -32,6 +32,7 @@ import {
   META_TOOLS_SYSTEM_ADDENDUM,
   SKILL_META_ONLY_SYSTEM,
 } from './metaTools';
+import { META_SANDBOX_SYSTEM_ADDENDUM } from './metaSandboxTools';
 
 export type ToolTraceEntry = {
   name: string;
@@ -169,6 +170,7 @@ function resolveSystem(
   const hasHttp = keys.some((k) => k === 'http_get' || k === 'http_head');
   const hasSkill = keys.some((k) => k === 'find_skill' || k === 'fetch_skill');
   const hasMeta = keys.some((k) => k.startsWith('meta_'));
+  const hasMetaSandbox = keys.some((k) => k.startsWith('meta_sandbox_'));
 
   const parts: string[] = [];
   if (hasFsTools) {
@@ -187,6 +189,7 @@ function resolveSystem(
   if (hasMcp) parts.push(MCP_SYSTEM_ADDENDUM);
   if (hasSkill) parts.push(SKILL_TOOLS_SYSTEM_ADDENDUM);
   if (hasMeta) parts.push(META_TOOLS_SYSTEM_ADDENDUM);
+  if (hasMetaSandbox) parts.push(META_SANDBOX_SYSTEM_ADDENDUM);
   // Persona preamble (phase 3, #488) appends last — after the HTTP/MCP addenda —
   // so the persona's standing orders are the final instruction block the model
   // sees. Empty/whitespace is dropped (nothing to inject).

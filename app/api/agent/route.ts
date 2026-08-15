@@ -37,6 +37,7 @@ import {
   createMetaPersonaSkillTools,
   isMetaToolName,
 } from '../../../lib/agent/metaTools';
+import { createMetaSandboxTools } from '../../../lib/agent/metaSandboxTools';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
@@ -226,6 +227,26 @@ export async function POST(req: Request): Promise<Response> {
         userId,
         userPersonas: services.userPersonas,
         userSkills: services.userSkills,
+      }),
+    };
+
+    // Phase 2 (#532): first-party SANDBOX meta tools (`meta_sandbox_list` /
+    // `meta_sandbox_active` / `meta_sandbox_switch`) — always available. Bound
+    // identity: each tool is closed over this route-resolved `userId`; switch
+    // persistence writes ONLY the caller's own `sessionId` (`parsed.sessionId`)
+    // via the session-store envelope seam (fail-closed on an unusable grant or
+    // unavailable store — never a partial write). No secrets in any result.
+    extraTools = {
+      ...extraTools,
+      ...createMetaSandboxTools({
+        userId,
+        sessionId: parsed.sessionId,
+        userPreferredSandbox: services.userPreferredSandbox,
+        sessionStoreSeam: {
+          resolveSessionStore: () => resolveSessionStore(),
+          resolveTenantIdForUser: (uid: string) =>
+            services.harnessSessionsRedis.resolveTenantIdForUser(uid),
+        },
       }),
     };
 

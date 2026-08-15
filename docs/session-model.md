@@ -251,9 +251,16 @@ sandbox tools run* for the current session, never the message history and never
 `logicalCwd`. Mid-session switching (Settings → Sandbox → "Use for this
 session") writes the id into the local `SessionStore`; it is folded into the
 next `/api/agent` POST as a Redis-safe `sandboxId` override and persists across
-devices via `meta.activeSandboxId`. Switching the binding changes the per-binding
-jail root `R` — keep `logicalCwd` workspace-relative (a stale absolute `<oldR>/…`
-from a prior bind fails closed).
+devices via `meta.activeSandboxId`. The built-in agent tools
+(`meta_sandbox_active` / `meta_sandbox_switch`, `lib/agent/metaSandboxTools.ts`)
+read and **write the same value server-side**: `switch` persists
+`meta.activeSandboxId` on the caller's **own** session via the phase-0 envelope
+seam (`resolveSessionStore` → `isEnvelopeStore` → `readEnvelope`/`upsertEnvelope`,
+`updatedAt` preserved like `attachedSkills`, never a partial write), so an
+agent-driven switch survives even without a host PUT round-trip. Switching the
+binding changes the per-binding jail root `R` — keep `logicalCwd`
+workspace-relative (a stale absolute `<oldR>/…` from a prior bind fails
+closed).
 
 Resolve precedence (server-side): **active id → preferred → single → selection-required**.
 A set-but-unusable active id fails closed with the same 403 class as today
