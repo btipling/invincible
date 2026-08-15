@@ -374,6 +374,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
 
   useEffect(() => {
     let cancelled = false;
+    /** Phase 2 (#540): git status-slot cadence timer; armed once boot binds the bridge. */
+    let gitTimer: number | undefined;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -571,6 +573,25 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         if (!cancelled) {
           setPhase('ready');
           requestAnimationFrame(() => canvasRef.current?.focus());
+
+          // Phase 2 (#538/#540): arm the git status-slot cadence ONLY once the
+          // bridge + session exist (they were set earlier this boot effect). Read
+          // the refs live each tick (never capture a stale bridge/session), skip
+          // mid-turn, and fire once immediately so the first git paint isn't
+          // delayed a full interval. The host cadence is the PRIMARY throttle
+          // (the server rate cap is only a per-instance backstop), so keep the
+          // interval well above STATUS_PROBE_MIN_INTERVAL_MS. Fail-soft lives
+          // inside refreshGitStatusSlot (any error keeps the last value and
+          // never blanks a sibling or blocks a turn).
+          const tick = () => {
+            if (cancelled || inflightRef.current) return; // never fire mid-turn
+            const b = bridgeRef.current;
+            const s = sessionRef.current;
+            if (!b || !s) return;
+            void refreshGitStatusSlot(b, s);
+          };
+          tick(); // immediate first paint, not a 10 s-stale header
+          gitTimer = window.setInterval(tick, 10_000);
         }
       } catch (e) {
         if (cancelled) return;
@@ -586,6 +607,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       if (pollRef.current != null) {
         clearTimeout(pollRef.current);
         pollRef.current = null;
+      }
+      if (gitTimer != null) {
+        clearInterval(gitTimer);
+        gitTimer = undefined;
       }
       bridgeRef.current = null;
       repoRef.current = null;
@@ -619,28 +644,6 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     }, 1000);
     return () => window.clearInterval(id);
   }, [busy]);
-
-  /**
-   * Phase 2 (#538/#540): slow cadence for the git status-bar slot. The DOM host
-   * polls the read-only `GET /api/harness/status` probe so the git branch/SHA slot
-   * tracks repo state after turns / branch changes without chasing every event.
-   * The host cadence is the PRIMARY throttle (the server rate cap is only a
-   * per-instance backstop) — keep this interval well above
-   * `STATUS_PROBE_MIN_INTERVAL_MS`. Fail-soft inside `refreshGitStatusSlot`
-   * (any error/abort keeps the last value, never blanks a sibling or blocks a
-   * turn), so a stale sandbox/userId or a dead route just leaves git muted.
-   */
-  useEffect(() => {
-    const b = bridgeRef.current;
-    if (!b) return;
-    const id = window.setInterval(() => {
-      if (inflightRef.current) return; // never fire mid-turn
-      void refreshGitStatusSlot(b, sessionRef.current);
-    }, 10_000);
-    return () => window.clearInterval(id);
-    // Mounted once after the bridge exists; sessionRef is a stable ref so no re-sub.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   /**
    * Phase 3 (#488): persona to bind at New session, honoring the picker.
