@@ -7,7 +7,11 @@ import {
   type UserPersonasLike,
   type UserSkillsLike,
 } from './metaTools';
-import { SKILL_FETCH_MAX_RETURN_BYTES } from '../sessionCloudCaps';
+import {
+  META_USER_PERSONAS_MAX,
+  META_USER_SKILLS_MAX,
+  SKILL_FETCH_MAX_RETURN_BYTES,
+} from '../sessionCloudCaps';
 
 /** AI SDK tool.execute options (mirrors skillTools/httpFetchTools test pattern). */
 const execOpts = { toolCallId: '1', messages: [] } as never;
@@ -419,6 +423,82 @@ describe('createMetaPersonaSkillTools — skill family', () => {
       await tools.meta_skill_create.execute!({ name: 'Big', slug: 'big', body: tooBig }, execOpts),
     );
     expect(res).toMatch(/^ERROR meta_skill_create:/);
+  });
+
+  it('truncates a body at the byte cap WITHOUT splitting a UTF-8 code point', async () => {
+    // A 2-byte rune that would straddle the cap boundary: prefix of (cap-1) ASCII
+    // bytes puts 'é' exactly across the cut (bytes cap-1 and cap). Backoff to a
+    // code-point boundary must yield cap-1 ASCII bytes — never a lone U+FFFD.
+    const prefix = 'a'.repeat(SKILL_FETCH_MAX_RETURN_BYTES - 1);
+    const body = prefix + 'é';
+    const c = String(
+      await tools.meta_skill_create.execute!({ name: 'Utf', slug: 'utf8', body }, execOpts),
+    );
+    expect(c).toMatch(/^created skill/);
+    const read = String(await tools.meta_skill_read.execute!({ slug: 'utf8' }, execOpts));
+    expect(read).toContain('[truncated to');
+    expect(read).toContain('full body is');
+    expect(read).not.toContain('\ufffd'); // never a split rune (no lone replacement char)
+    expect(read.split('\n')[3]).toBe(prefix); // body line is exactly the clean prefix
+  });
+});
+
+describe('createMetaPersonaSkillTools — per-user authoring ceilings (L5)', () => {
+  it('rejects persona create when at/over the per-user ceiling; list is bounded', async () => {
+    const { fake: pFake } = makePersonaFake();
+    const { fake: sFake } = makeSkillFake();
+    const t = createMetaPersonaSkillTools({
+      userId: 'user-1',
+      userPersonas: pFake,
+      userSkills: sFake,
+    });
+
+    const m = META_USER_PERSONAS_MAX;
+    for (let i = 0; i < m; i++) {
+      const r = String(
+        await t.meta_persona_create.execute!(
+          { name: `P${i}`, slug: `p_${i}`, body: 'b' },
+          execOpts,
+        ),
+      );
+      expect(r).toMatch(/^created persona/);
+    }
+    // One more must be rejected at the ceiling.
+    const reject = String(
+      await t.meta_persona_create.execute!({ name: 'Over', slug: 'over', body: 'b' }, execOpts),
+    );
+    expect(reject).toMatch(/^ERROR meta_persona_create:/);
+    expect(reject).toContain(`ceiling`);
+    expect(reject).toContain(String(m));
+
+    // list is bounded to the ceiling (not unbounded).
+    const listed = String(await t.meta_persona_list.execute!({}, execOpts));
+    const rows = listed.split('\n').filter((l) => l.includes('id='));
+    expect(rows.length).toBe(m);
+  });
+
+  it('rejects skill create when at/over the per-user ceiling', async () => {
+    const { fake: pFake } = makePersonaFake();
+    const { fake: sFake } = makeSkillFake();
+    const t = createMetaPersonaSkillTools({
+      userId: 'user-1',
+      userPersonas: pFake,
+      userSkills: sFake,
+    });
+
+    const m = META_USER_SKILLS_MAX;
+    for (let i = 0; i < m; i++) {
+      const r = String(
+        await t.meta_skill_create.execute!({ name: `S${i}`, slug: `s_${i}`, body: 'b' }, execOpts),
+      );
+      expect(r).toMatch(/^created skill/);
+    }
+    const reject = String(
+      await t.meta_skill_create.execute!({ name: 'Over', slug: 'over', body: 'b' }, execOpts),
+    );
+    expect(reject).toMatch(/^ERROR meta_skill_create:/);
+    expect(reject).toContain('ceiling');
+    expect(reject).toContain(String(m));
   });
 });
 

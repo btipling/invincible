@@ -90,6 +90,22 @@ export const SKILL_FIND_RESULT_MAX = 20;
 export const SKILL_FETCH_MAX_RETURN_BYTES = 256 * 1024;
 
 /**
+ * Per-user authoring ceilings for the built-in `meta_*` tools (phase 1 #531,
+ * adversarial-review L5 fix). `createUserPersona` / `createUserSkill` have no
+ * store-side N-row ceiling, and the model loop can run many turns — so without
+ * a ceiling a single turn could insert an unbounded row count (each skill body
+ * up to the 4 MiB store cap) and flood the next `list` / `find_skill` / attached
+ * inject. These are gentle per-user ceilings enforced in the TOOL layer
+ * (`lib/agent/metaTools.ts`): `*_create` rejects with an error past the ceiling,
+ * and `meta_persona_list` / `meta_skill_list` bound their summary output so a
+ * huge library never floods a tool result in one call. Pure backend safety
+ * bounds — invisible in normal use, no confirm/friction on the happy path
+ * (deliberately: authoring stays confirm-free per product decision).
+ */
+export const META_USER_PERSONAS_MAX = 50;
+export const META_USER_SKILLS_MAX = 200;
+
+/**
  * Parse a stored `meta.attachedSkills` (a JSON-array string of skill slugs) into a
  * slug list. Client-safe single source shared by the host session repository
  * (`cloudMetaFor` / `parseCloudSessionSnapshot`), the server `skillInject`, and the

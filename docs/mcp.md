@@ -135,7 +135,7 @@ If harness has no tools: confirm **Enabled**, a configured deploy, and agent pat
 | MCP tools merged cap | ~48 total |
 | Host toolTrace lines | unbounded (`TOOL_TRACE_MAX_LINES`) |
 
-## Built-in meta MCP (first-party `meta_*` tools)
+## Built-in meta tools (first-party `meta_*`) — not MCP
 
 Separate from the per-user **external** MCP servers above, Invincible ships a
 **built-in** "meta" tool surface: first-party `meta_*` tools assembled **always**
@@ -173,9 +173,16 @@ caller (same grants as Settings). No DEK secrets, no sockets, no OAuth: the only
   confirm surface** (the same immediate-mutate semantics as Settings). The only
   confirm-gated product action, "New session with a persona," is **not** part of
   this surface.
-- **Traces:** tool results are short one-liners for the `tool_run` paint
-  (`meta_skill_list · ✓ ok · …`), never raw JSON envelopes, and never carry
-  secrets.
+- **Traces vs result width:** the AI SDK **tool-run trace** is a short one-liner
+  for the `tool_run` paint (`meta_skill_list · ✓ ok · …`), never raw JSON
+  envelopes and never carrying secrets — but the `*_read` / `*_list`
+  **execute() result text** carries the (capped) body / summaries to the model
+  and to the tool preview, so a read of a near-cap body can legitimately ship a
+  large result.
+- **Run ceilings:** authoring is bounded per user (`META_USER_PERSONAS_MAX` /
+  `META_USER_SKILLS_MAX`). `*_create` rejects past the ceiling; `*_list` bounds
+  its summary output. Pure backend DoS ceilings — no confirm/friction on the
+  happy path (authoring stays confirm-free per product decision).
 
 The built-in meta surface is backend-only and does not edit host `.env`,
 Vercel secrets, or any external MCP row.

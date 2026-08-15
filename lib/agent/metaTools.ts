@@ -21,14 +21,27 @@
  * `PERSONA_BODY_MAX_BYTES`; skills: `SKILL_FETCH_MAX_RETURN_BYTES` with an
  * explicit truncation marker, mirroring `fetch_skill`). Writes that exceed a
  * store cap are rejected (the store enforces the cap) — never truncated on
- * write. Tool traces stay short one-liners for the `tool_run` paint.
+ * write. Run breadth is bounded per user (`META_USER_PERSONAS_MAX` /
+ * `META_USER_SKILLS_MAX`): `*_create` rejects past the ceiling and `*_list`
+ * bounds its summary output, so the model loop can never flood the row count or
+ * a single tool result.
+ *
+ * Trace vs result width: the AI SDK **tool-run trace** is a short one-liner for
+ * the `tool_run` paint, but the `*_read` / `*_list` **execute() result text**
+ * carries the (capped) body / summaries to the model — and previews the same
+ * text — so a read of a near-cap body can legitimately ship a large result.
  *
  * Slugs: both stores REQUIRE a slug on create. If the model omits one, we
  * derive it here (Settings-style) before calling the store — the store is never
  * asked to derive.
  */
 import { jsonSchema, tool } from 'ai';
-import { SKILL_FETCH_MAX_RETURN_BYTES, SKILL_FIND_RESULT_MAX } from '../sessionCloudCaps';
+import {
+  META_USER_PERSONAS_MAX,
+  META_USER_SKILLS_MAX,
+  SKILL_FETCH_MAX_RETURN_BYTES,
+  SKILL_FIND_RESULT_MAX,
+} from '../sessionCloudCaps';
 import type {
   CreateUserPersonaInput,
   UserPersonaSummary,
@@ -135,12 +148,20 @@ function deriveSkillSlug(name: string): string {
   return slugify(name, 128, true);
 }
 
-/** Byte-safe skill body truncation to the model-return budget with an explicit marker. */
+/**
+ * Byte-safe, UTF-8-safe skill body truncation to the model-return budget with an
+ * explicit marker. The raw byte cap is backed off to a code-point boundary so a
+ * multi-byte rune at the cut is never split (no lone U+FFFD replacement in the
+ * model/preview text).
+ */
 function boundSkillBody(slug: string, body: string): string {
   const len = Buffer.byteLength(body, 'utf8');
   if (len <= SKILL_FETCH_MAX_RETURN_BYTES) return body;
   const buf = Buffer.from(body, 'utf8');
-  const sliced = buf.subarray(0, SKILL_FETCH_MAX_RETURN_BYTES).toString('utf8');
+  let end = SKILL_FETCH_MAX_RETURN_BYTES;
+  // Back off while buf[end] is a continuation byte so we don't split a code point.
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end -= 1;
+  const sliced = buf.subarray(0, end).toString('utf8');
   const marker =
     `\n…[truncated to ${SKILL_FETCH_MAX_RETURN_BYTES} bytes; full body is ${len} bytes — edit in Settings]`;
   return `${sliced}${marker}`;
@@ -155,11 +176,25 @@ export function createMetaPersonaSkillTools(
 ) {
   const { userId, userPersonas, userSkills } = opts;
 
+  /** Current per-user personas row count (for the authoring ceiling); throws on store failure. */
+  async function personaRowCount(): Promise<number> {
+    const res = await userPersonas.listUserPersonas(userId);
+    if (!res.ok) throw new Error(res.error);
+    return res.value.length;
+  }
+
+  /** Current per-user skills row count (for the authoring ceiling); throws on store failure. */
+  async function skillRowCount(): Promise<number> {
+    const res = await userSkills.listUserSkills(userId);
+    if (!res.ok) throw new Error(res.error);
+    return res.value.length;
+  }
+
   // --- persona family ------------------------------------------------------
 
   const metaPersonaList = tool({
     description:
-      "List the user's own personas (summaries: id, name, slug, isDefault — never body). Returns all personas belonging to the signed-in user only.",
+      `List the user's own personas (summaries: id, name, slug, isDefault — never body). Returns only the signed-in user's personas, bounded to ${META_USER_PERSONAS_MAX}.`,
     inputSchema: jsonSchema<Record<string, never>>({
       type: 'object',
       properties: {},
@@ -169,12 +204,16 @@ export function createMetaPersonaSkillTools(
       try {
         const res = await userPersonas.listUserPersonas(userId);
         if (!res.ok) return `ERROR meta_persona_list: ${res.error}`;
-        if (res.value.length === 0) return 'No personas found.';
-        return res.value
+        const shown = res.value.slice(0, META_USER_PERSONAS_MAX);
+        if (shown.length === 0) return 'No personas found.';
+        let body = shown
           .map((p) =>
             `id=${p.id} slug=${p.slug} name=${p.name}${p.isDefault ? ' [default]' : ''}`,
           )
           .join('\n');
+        const over = res.value.length - shown.length;
+        if (over > 0) body += `\n…[${over} more]`;
+        return body;
       } catch (err) {
         return errText('meta_persona_list', err);
       }
@@ -217,7 +256,7 @@ export function createMetaPersonaSkillTools(
 
   const metaPersonaCreate = tool({
     description:
-      "Create a new persona for the signed-in user. slug is optional — when omitted it is derived from name. Optional isDefault=true sets it as the single default. Body must be under the store cap (rejected otherwise, never truncated). Overwrites nothing (duplicate slug → error).",
+      `Create a new persona for the signed-in user. slug is optional — when omitted it is derived from name. Optional isDefault=true sets it as the single default. Body must be under the store cap (rejected otherwise, never truncated). Overwrites nothing (duplicate slug → error). Rejected past ${META_USER_PERSONAS_MAX} personas for this user.`,
     inputSchema: jsonSchema<{
       name: string;
       slug?: string;
@@ -246,6 +285,10 @@ export function createMetaPersonaSkillTools(
       const supplied = (input?.slug ?? '').trim();
       const slug = supplied || derivePersonaSlug(name);
       try {
+        const count = await personaRowCount();
+        if (count >= META_USER_PERSONAS_MAX) {
+          return `ERROR meta_persona_create: at the ${META_USER_PERSONAS_MAX}-persona ceiling for this user (delete one or edit in Settings)`;
+        }
         const res = await userPersonas.createUserPersona({
           userId,
           name,
@@ -374,7 +417,7 @@ export function createMetaPersonaSkillTools(
 
   const metaSkillList = tool({
     description:
-      "List the user's own skills (summaries: id, slug, name, description — never body). Returns only the signed-in user's skills, bounded.",
+      `List the user's own skills (summaries: id, slug, name, description — never body). Returns only the signed-in user's skills, bounded to ${SKILL_FIND_RESULT_MAX}.`,
     inputSchema: jsonSchema<Record<string, never>>({
       type: 'object',
       properties: {},
@@ -438,7 +481,7 @@ export function createMetaPersonaSkillTools(
 
   const metaSkillCreate = tool({
     description:
-      "Create a new skill for the signed-in user. slug is optional — when omitted it is derived from name. Body must be under the store cap (rejected otherwise, never truncated). Duplicate slug → error.",
+      `Create a new skill for the signed-in user. slug is optional — when omitted it is derived from name. Body must be under the store cap (rejected otherwise, never truncated). Duplicate slug → error. Rejected past ${META_USER_SKILLS_MAX} skills for this user.`,
     inputSchema: jsonSchema<{
       name: string;
       slug?: string;
@@ -465,6 +508,10 @@ export function createMetaPersonaSkillTools(
       const slug = supplied || deriveSkillSlug(name);
       const description = input?.description ?? undefined;
       try {
+        const count = await skillRowCount();
+        if (count >= META_USER_SKILLS_MAX) {
+          return `ERROR meta_skill_create: at the ${META_USER_SKILLS_MAX}-skill ceiling for this user (delete one or edit in Settings)`;
+        }
         const res = await userSkills.createUserSkill({
           userId,
           name,
