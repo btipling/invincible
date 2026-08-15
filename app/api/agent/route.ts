@@ -617,7 +617,8 @@ export async function POST(req: Request): Promise<Response> {
       });
     }
 
-    const { text, toolTrace, cwd, sandboxId } = await runAgent(finalRunParams);
+    const { text, toolTrace, cwd, sandboxId, activeSandboxId } =
+      await runAgent(finalRunParams);
 
     if (!text) {
       return Response.json(
@@ -636,6 +637,7 @@ export async function POST(req: Request): Promise<Response> {
       ...(toolTrace.length > 0 ? { toolTrace } : {}),
       ...(cwd != null ? { cwd } : {}),
       ...(sandboxId != null ? { sandboxId } : {}),
+      ...(activeSandboxId != null ? { activeSandboxId } : {}),
       ...(skills?.events?.length ? { skillEvents: skills.events } : {}),
       ...(skills?.attachedSkills ? { attachedSkills: skills.attachedSkills } : {}),
     });

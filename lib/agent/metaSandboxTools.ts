@@ -201,6 +201,64 @@ function errText(name: string, err: unknown): string {
   return `ERROR ${name}: ${err instanceof Error ? err.message : String(err)}`;
 }
 
+/**
+ * Parse a successful `meta_sandbox_switch` tool RESULT TEXT to the switched-to
+ * id. The tool emits `switched active sandbox to id=<id> tools=[...]` only on a
+ * persisted write; `undefined` on ERROR / any other shape.
+ */
+export function metaSandboxSwitchActiveId(
+  raw: string | undefined,
+): string | undefined {
+  const t = (raw ?? '').trim();
+  if (!t || /^ERROR\b/i.test(t)) return undefined;
+  const m = t.match(/^switched active sandbox to id=(\S+)\s+tools=/i);
+  if (!m) return undefined;
+  return m[1];
+}
+
+/**
+ * Extract the post-turn EFFECTIVE active sandbox id from an AI-SDK step result
+ * set when a `meta_sandbox_switch` SUCCEEDED during the turn. The tool emits
+ * `switched active sandbox to id=<id> tools=[...]` only on a persisted write;
+ * `undefined` when no switch (or only failed/EARLY-return switch) ran. This is
+ * the structured carrier runAgent folds back to the host on `done` / the JSON
+ * result: the host must persist the SWITCHED bind, never the pre-turn
+ * `params.sandboxId` (which would otherwise overwrite the envelope write the
+ * switch just made — blocker B1). Mirrors the `change_dir`/`cwd` typed-carrier
+ * pattern (#470) — never re-derived from the truncated display summary.
+ */
+export function metaSandboxSwitchTargetId(
+  result: {
+    steps?: Array<{
+      toolResults?: Array<{
+        toolName?: string;
+        result?: unknown;
+        output?: unknown;
+      }>;
+    }>;
+  },
+): string | undefined {
+  const steps = result.steps ?? [];
+  let lastId: string | undefined;
+  for (const step of steps) {
+    const results = step.toolResults ?? [];
+    for (const r of results) {
+      if (r.toolName !== 'meta_sandbox_switch') continue;
+      const raw =
+        r.output != null
+          ? r.output
+          : 'result' in r
+            ? r.result
+            : undefined;
+      const id = metaSandboxSwitchActiveId(
+        typeof raw === 'string' ? raw : undefined,
+      );
+      if (id) lastId = id;
+    }
+  }
+  return lastId;
+}
+
 export function createMetaSandboxTools(opts: CreateMetaSandboxToolsOptions) {
   const { userId, sessionId, userPreferredSandbox, sessionStoreSeam } = opts;
 

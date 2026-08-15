@@ -32,7 +32,10 @@ import {
   META_TOOLS_SYSTEM_ADDENDUM,
   SKILL_META_ONLY_SYSTEM,
 } from './metaTools';
-import { META_SANDBOX_SYSTEM_ADDENDUM } from './metaSandboxTools';
+import {
+  META_SANDBOX_SYSTEM_ADDENDUM,
+  metaSandboxSwitchTargetId,
+} from './metaSandboxTools';
 
 export type ToolTraceEntry = {
   name: string;
@@ -147,6 +150,15 @@ export type RunAgentResult = {
   cwd?: string;
   /** Resolved active sandbox bind (present when FS sandbox tools were bound). */
   sandboxId?: string;
+  /**
+   * Post-turn EFFECTIVE active sandbox bind. When a `meta_sandbox_switch`
+   * succeeded during the turn this is the switch target (the host must fold
+   * THIS onto the session — not the pre-turn `sandboxId` — or it overwrites the
+   * envelope write, blocker B1); otherwise it mirrors `sandboxId`. Present when
+   * FS tools were bound, or when a switch target exists (soft/http/meta-only
+   * path still folds a switch).
+   */
+  activeSandboxId?: string;
 };
 
 export const DEFAULT_AGENT_SYSTEM = [
@@ -325,11 +337,17 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
   if (unwrapped != null) {
     text = redactSecrets(unwrapped, secrets);
   }
+  const activeSandboxId =
+    metaSandboxSwitchTargetId(result) ??
+    (hasFsTools ? params.sandboxId : undefined);
   return {
     text,
     toolTrace,
     ...(hasFsTools ? { cwd: cwdState.current } : {}),
     ...(hasFsTools && params.sandboxId ? { sandboxId: params.sandboxId } : {}),
+    ...(activeSandboxId !== undefined
+      ? { activeSandboxId }
+      : {}),
   };
 }
 
@@ -433,18 +451,23 @@ export async function runAgentStream(
     const toolTrace = collectToolTrace({ steps }, secrets);
     const cwdOut = hasFsTools ? cwdState.current : undefined;
     const sandboxOut = hasFsTools ? params.sandboxId : undefined;
+    const activeOut =
+      metaSandboxSwitchTargetId({ steps }) ??
+      (hasFsTools ? params.sandboxId : undefined);
     await handlers.onEvent({
       type: 'done',
       text,
       ...(toolTrace.length > 0 ? { toolTrace } : {}),
       ...(cwdOut != null ? { cwd: cwdOut } : {}),
       ...(sandboxOut != null ? { sandboxId: sandboxOut } : {}),
+      ...(activeOut !== undefined ? { activeSandboxId: activeOut } : {}),
     });
     return {
       text,
       toolTrace,
       ...(cwdOut != null ? { cwd: cwdOut } : {}),
       ...(sandboxOut != null ? { sandboxId: sandboxOut } : {}),
+      ...(activeOut !== undefined ? { activeSandboxId: activeOut } : {}),
     };
   } catch (err) {
     if (err instanceof Error && (err.name === 'AbortError' || err.name === 'ResponseAborted')) {

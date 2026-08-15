@@ -55,6 +55,13 @@ export type AgentStreamEvent =
       cwd?: string;
       /** Resolved active sandbox bind the turn ran against (FS tools bound). */
       sandboxId?: string;
+      /**
+       * Post-turn EFFECTIVE active sandbox bind — the `meta_sandbox_switch`
+       * target when the turn switched, else the pre-turn `sandboxId`. The host
+       * folds THIS onto the session (blocker B1 fix): persisting the pre-turn
+       * `sandboxId` would overwrite the envelope write the switch just made.
+       */
+      activeSandboxId?: string;
     }
   | { type: 'error'; error: string; status?: number };
 
