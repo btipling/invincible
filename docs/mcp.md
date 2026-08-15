@@ -154,6 +154,15 @@ caller (same grants as Settings). No DEK secrets, no sockets, no OAuth: the only
   `meta_skill_update_summary` / `meta_skill_update_body` / `meta_skill_delete`
   (see [skills.md](skills.md); the read-only `find_skill` / `fetch_skill`
   remain the reference path).
+- **Sandboxes** — `meta_sandbox_list` / `meta_sandbox_active` /
+  `meta_sandbox_switch` (see [sandbox.md](sandbox.md)). This sub-family is a
+  **read + bind** (not authoring) surface: `list` is the same non-secret
+  projection as `GET /api/sandboxes.options`; `active` is the currently-bound
+  sandbox (`meta.activeSandboxId` when a usable grant, else null); `switch`
+  persists `meta.activeSandboxId` to the caller's session envelope
+  (`isEnvelopeStore`-guarded), fail-closed on an unusable/ungranted grant or an
+  unavailable store — never a partial write. No `base_url` / token ever leaves
+  the server.
 
 **Semantics** (common to the whole family, in `lib/agent/metaTools.ts`):
 

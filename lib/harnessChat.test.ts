@@ -2104,6 +2104,62 @@ describe('runHarnessTurn session activeSandboxId bind', () => {
     expect(result.session.activeSandboxId).toBe('sbx_active');
   });
 
+  it('folds the post-turn EFFECTIVE activeSandboxId (switch target) over the pre-turn sandboxId (JSON, blocker B1)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // Pre-turn bind is `sbx_old`; the turn's `meta_sandbox_switch` moved it.
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_old' };
+    const { runHarnessTurn } = await import('./harnessChat');
+    let sentSandboxId: string | undefined;
+    const result = await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async (_prompt, init) => {
+        sentSandboxId = init?.sandboxId;
+        // Server: resolved (pre-turn) sandboxId BUT effective post-turn switch.
+        return {
+          ok: true,
+          text: 'switched',
+          sandboxId: 'sbx_old',
+          activeSandboxId: 'sbx_new',
+        };
+      },
+    });
+    expect(sentSandboxId).toBe('sbx_old');
+    expect(result.result.ok).toBe(true);
+    // The switch target wins over the pre-turn `sandboxId` (the B1 bug: the host
+    // folded `sbx_old`, silently overwriting the freshly-persisted switch).
+    expect(result.session.activeSandboxId).toBe('sbx_new');
+  });
+
+  it('folds the post-turn EFFECTIVE activeSandboxId (switch target) over the pre-turn sandboxId (stream, blocker B1)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_old' };
+    const { runHarnessTurn } = await import('./harnessChat');
+    let sentSandboxId: string | undefined;
+    const result = await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        sentSandboxId = init?.sandboxId;
+        await init?.onEvent?.({
+          type: 'done',
+          text: 'switched',
+          sandboxId: 'sbx_old',
+          activeSandboxId: 'sbx_new',
+        });
+        return {
+          ok: true,
+          text: 'switched',
+          sandboxId: 'sbx_old',
+          activeSandboxId: 'sbx_new',
+        };
+      },
+    });
+    expect(sentSandboxId).toBe('sbx_old');
+    expect(result.result.ok).toBe(true);
+    expect(result.session.activeSandboxId).toBe('sbx_new');
+  });
+
   it('does not send sandboxId when session activeSandboxId unset', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);

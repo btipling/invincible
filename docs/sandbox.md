@@ -151,12 +151,26 @@ workspace-relative — a stale absolute `<oldR>/…` from a prior bind fails clo
 | Endpoint | Purpose | Contract |
 |----------|---------|----------|
 | `GET /api/sandboxes` | Inventory of the user's allowed sandboxes + active-bind tool surface | `{ options, active }`; `options[]` entries `{ id, name, slug, backend, status, image, canRead, canWrite, usable, granted }` (`id` projected from `SandboxChoice.sandboxId`); optional `?sandboxId=` (session-carry, Redis-safe) → `active: { sandboxId, tools }` (fail-closed **403** if provided-but-unusable; a present-but-non-Redis-safe value → **400**, matching `parseAgentBody`); `active: null` when omitted. **Never** returns `base_url` / `token_ciphertext` / host inventory. Auth: middleware + in-route `requireSessionUser` (401 unauth) |
+| Built-in `meta_sandbox_*` agent tools | Non-secret inventory + current-bind surface + mid-session **switch** for the agent (`meta_sandbox_list` / `meta_sandbox_active` / `meta_sandbox_switch`) | `list` = the same safe projection as `GET /api/sandboxes.options` (never `base_url`/token). `active` = the persisted `meta.activeSandboxId` **when it is a usable grant**, else null (a set-but-unusable id is reported honestly, fail-closed). `switch` = persist `meta.activeSandboxId` to the caller's session envelope via the phase-0 envelope seam (`resolveSessionStore` → `isEnvelopeStore` → `readEnvelope`/`upsertEnvelope`, `updatedAt` preserved), **fail-closed with no partial write** on a non-Redis-safe id, an unusable/ungranted/wrong-tenant grant, a missing `sessionId`, or an unavailable/non-envelope store. Bound to the route `userId`/`sessionId`; caller-owned session only |
 
 The tool-surface descriptor (`lib/tenancy/sandboxTools.ts` `describeSandboxTools`)
 is permission-aware (read tools on `canRead`; `write_file`/`str_replace`/`exec` on
 `canWrite`; `change_dir`/`pwd` always) and backend-noted (`vercel` attach-only
 durable Workspace; `byo` HTTP daemon v2). It is a display/contract view only — the
-model still sees the real tool schemas via `createAgentTools`.
+model still sees the real tool schemas via `createAgentTools`. The `meta_sandbox_*`
+tools mirror the exact projection + `active` descriptor so the agent can answer
+"which sandbox am I bound to / what can I switch to" (see [mcp.md](mcp.md)).
+
+**Selection-required soft-path (B3 reachability).** A resolve that fails with
+**selection-required** (multiple usable grants, no bound/preferred id) is
+**self-selectable**: the route soft-paths a selection-required resolve to the
+always-present `meta_sandbox_*` tools so the agent can `meta_sandbox_list` the
+usable grants and `meta_sandbox_switch` to one — instead of the former dead-end
+operator 403 right when the agent must pick. This is the **only** soft-resolve
+class where meta tools are a legitimate substitute for FS/MCP/http. A **forbidden**
+resolve (no usable grant at all) and a **softContinue** workspace-not-running
+resolve are **not** that class — meta tools do **not** substitute there and the
+deferred 403 is still returned as before.
 
 
 ---

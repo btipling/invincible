@@ -66,6 +66,15 @@ export type ResolveAgentSandboxResult =
        * Grant/selection failures omit this (hard 403 unless route builtin soft path).
        */
       softContinue?: boolean;
+      /**
+       * True for the SELECTION-REQUIRED class only: the caller has MULTIPLE usable
+       * sandboxes and no bound/preferred id to single one out. Unlike `softContinue`
+       * (workspace-not-running) or a hard forbidden, the agent's always-present
+       * `meta_sandbox_list` / `meta_sandbox_switch` tools can DRIVE the pick, so
+       * the route may soft-path for the agent to self-select (blocker B3
+       * reachability). Never set alongside `softContinue`; never set for forbidden.
+       */
+      selectionRequired?: boolean;
     };
 
 export type ResolveAgentSandboxDeps = {
@@ -226,15 +235,15 @@ async function resolveWithDb(
     if (requested) {
       const match = usable.find((r) => r.sandboxId === requested);
       if (!match) {
+        // Multiple usable alternatives → SELECTION-REQUIRED (self-selectable by the
+        // agent's meta_sandbox tools, blocker B3). A single usable grant with a
+        // stray requested id → forbidden (nothing to select among; agent can't heal).
+        const selection = usable.length > 1;
         return {
           ok: false,
+          ...(selection ? { selectionRequired: true as const } : {}),
           response: Response.json(
-            {
-              error:
-                usable.length > 1
-                  ? SANDBOX_SELECTION_REQUIRED_ERROR
-                  : SANDBOX_FORBIDDEN_ERROR,
-            },
+            { error: selection ? SANDBOX_SELECTION_REQUIRED_ERROR : SANDBOX_FORBIDDEN_ERROR },
             { status: 403 },
           ),
         };
@@ -250,6 +259,10 @@ async function resolveWithDb(
       if (!match) {
         return {
           ok: false,
+          // Selection-required (multiple usable, no preferred match) is the
+          // self-selectable class — mark it so the route soft-paths to the agent's
+          // meta_sandbox tools (blocker B3) instead of a dead-end operator 403.
+          selectionRequired: true as const,
           response: Response.json(
             { error: SANDBOX_SELECTION_REQUIRED_ERROR },
             { status: 403 },

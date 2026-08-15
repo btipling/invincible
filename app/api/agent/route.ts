@@ -37,6 +37,7 @@ import {
   createMetaPersonaSkillTools,
   isMetaToolName,
 } from '../../../lib/agent/metaTools';
+import { createMetaSandboxTools } from '../../../lib/agent/metaSandboxTools';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
@@ -193,10 +194,20 @@ export async function POST(req: Request): Promise<Response> {
       serverSecrets,
     };
     /**
-     * When resolve fails but we soft-path (softContinue or builtin HTTP),
-     * keep the 403 body and return it only if no tools assemble later.
+     * When resolve fails but we soft-path (softContinue / selectionRequired /
+     * builtin HTTP), keep the 403 body and return it only if no valid soft
+     * surface assembles later.
      */
     let deferredNoFsResponse: Response | undefined;
+    /**
+     * True when the deferred 403 is the SELECTION-REQUIRED class (multiple usable
+     * sandboxes, no bound/preferred id). In that class the always-present
+     * `meta_sandbox_*` tools are a LEGITIMATE soft surface: the agent lists the
+     * usable grants and switches (blocker B3 reachability). Distinguishes it from
+     * every OTHER deferral (workspace-not-running softContinue, builtin-http grant
+     * deny) where meta tools must NOT substitute for a real non-FS surface.
+     */
+    let metaSelectionDeferred = false;
 
     const userId = sessionGate.user?.id;
     if (!userId) {
@@ -226,6 +237,26 @@ export async function POST(req: Request): Promise<Response> {
         userId,
         userPersonas: services.userPersonas,
         userSkills: services.userSkills,
+      }),
+    };
+
+    // Phase 2 (#532): first-party SANDBOX meta tools (`meta_sandbox_list` /
+    // `meta_sandbox_active` / `meta_sandbox_switch`) — always available. Bound
+    // identity: each tool is closed over this route-resolved `userId`; switch
+    // persistence writes ONLY the caller's own `sessionId` (`parsed.sessionId`)
+    // via the session-store envelope seam (fail-closed on an unusable grant or
+    // unavailable store — never a partial write). No secrets in any result.
+    extraTools = {
+      ...extraTools,
+      ...createMetaSandboxTools({
+        userId,
+        sessionId: parsed.sessionId,
+        userPreferredSandbox: services.userPreferredSandbox,
+        sessionStoreSeam: {
+          resolveSessionStore: () => resolveSessionStore(),
+          resolveTenantIdForUser: (uid: string) =>
+            services.harnessSessionsRedis.resolveTenantIdForUser(uid),
+        },
       }),
     };
 
@@ -380,6 +411,44 @@ export async function POST(req: Request): Promise<Response> {
     }
     redactList = [...redactList, ...ghSecrets];
 
+    // Phase 2 (#532 / blocker B1 A1): server-authoritative bind seed. The switch
+    // tool persists `meta.activeSandboxId` on the caller's envelope; the route
+    // MUST read it back to seed this turn's resolve so a switch survives the next
+    // turn (previously only the body-provided `parsed.sandboxId` was honored —
+    // the whole reason the switch never persisted). Per approved decision 3, when
+    // a `sessionId` is present the server envelope bind WINS over the body
+    // `sandboxId` (the host body is a mirror; the envelope is authoritative). The
+    // body remains the fallback when the envelope carries no bind (or the store
+    // is unavailable — fail-open: a resolve-read error never 4xx's the turn).
+    // Set-but-unusable in the envelope fails closed via resolveSandbox's existing
+    // grant-honesty 403; an unusable id is never silently dropped.
+    let requestedSandboxId = parsed.sandboxId;
+    if (parsed.sessionId) {
+      try {
+        const tenantRes =
+          await services.harnessSessionsRedis.resolveTenantIdForUser(userId);
+        if (tenantRes.ok) {
+          const storeRes = await resolveSessionStore();
+          const store =
+            storeRes.ok && isEnvelopeStore(storeRes.value)
+              ? storeRes.value
+              : undefined;
+          if (store) {
+            const envelope = await store.readEnvelope(
+              sessionKeyFor(tenantRes.value, userId, parsed.sessionId),
+            );
+            const bound = envelope?.meta?.activeSandboxId;
+            if (typeof bound === 'string' && bound) {
+              requestedSandboxId = bound;
+            }
+          }
+        }
+      } catch {
+        // Fail-open: keep the body fallback below.
+        requestedSandboxId = parsed.sandboxId;
+      }
+    }
+
     const resolved = await services.resolveSandbox.resolveAgentSandbox(
       userId,
       { ...(execEnv ? { execEnv } : {}) },
@@ -389,25 +458,35 @@ export async function POST(req: Request): Promise<Response> {
         // cancels when the request is aborted — never a zombie probe.
         signal: req.signal,
         // Session-owned active sandbox override (Redis-safe, server-validated).
-        // Unset → today's preference/single/selection logic; set-but-unusable →
-        // same 403 class (fail closed, no silent fallback).
-        ...(parsed.sandboxId ? { requestedSandboxId: parsed.sandboxId } : {}),
+        // Envelope-seeded above (B1 A1); unset → today's preference/single/
+        // selection logic; set-but-unusable → same 403 class (fail closed, no
+        // silent fallback).
+        ...(requestedSandboxId ? { requestedSandboxId } : {}),
       },
     );
 
-    // When resolve soft-continues (e.g. Workspace not running), keep the 403
-    // body and only proceed if MCP and/or builtin HTTP supply tools later.
+    // When resolve fails, distinguish the soft-path classes from a hard 403:
+    //  - `softContinue` (Workspace not running) → proceed only if MCP / builtin
+    //    HTTP supply a real non-FS tool surface later.
+    //  - `selectionRequired` (multiple usable sandboxes, no bound/preferred id) →
+    //    proceed only if the agent's `meta_sandbox_*` tools are present, so it can
+    //    self-select (blocker B3 reachability — previously a dead-end operator 403
+    //    right when the agent MUST pick among usable grants).
+    //  - builtin HTTP enabled → grant-deny still proceeds with HTTP-only tools.
+    //  - otherwise → hard 403 (forbidden / bad grant / unusable id, no heal surface).
     if (!resolved.ok) {
-      if (resolved.softContinue || builtinHttp.enabled) {
-        // Soft path: no FS tools; MCP + builtin HTTP may still run.
+      if (resolved.softContinue || resolved.selectionRequired || builtinHttp.enabled) {
+        // Soft path: no FS tools; MCP + builtin HTTP (+ for selectionRequired the
+        // meta_sandbox tools) may still drive the turn.
         runParams = {
           ...runParams,
           skipSandboxTools: true,
           secrets: [...byok.secretsToRedact, ...ghSecrets],
         };
         deferredNoFsResponse = resolved.response;
+        if (resolved.selectionRequired) metaSelectionDeferred = true;
       } else {
-        // Hard 403: grant/membership/selection without alternate soft path.
+        // Hard 403: grant/membership/selection without alternative soft path.
         return resolved.response;
       }
     } else {
@@ -508,20 +587,26 @@ export async function POST(req: Request): Promise<Response> {
       ...(skills?.preamble ? { skillsPreamble: skills.preamble } : {}),
     };
 
-    // Soft path only when a REAL non-FS tool surface exists (MCP / builtin http /
-    // sandbox). The always-on read-only skill tools (phase 3 #516) do NOT count as
-    // a substitute here: a soft-continue / grant-deny with no FS, MCP, or http tools
-    // must still surface the deferred 403 (workspace-required / no grant) rather
-    // than silently running a skill-only turn that hides the unavailable sandbox.
+    // Soft path only when a REAL tool surface exists to justify it:
+    //  - For SELECTION-REQUIRED deferrals the always-present `meta_sandbox_*` tools
+    //    ARE that surface — the agent lists the usable grants and switches (blocker
+    //    B3 reachability), so we proceed when they're present.
+    //  - For every OTHER deferral (workspace-not-running softContinue, grant-deny
+    //    via builtin http) the always-on read-only skill + meta authoring tools do
+    //    NOT count as a substitute: without FS, MCP, or http tools we must still
+    //    surface the deferred 403 (workspace-required / no grant) rather than
+    //    silently running a skill-only turn that hides the unavailable sandbox.
+    const hasMetaSandboxTools = Object.keys(extraTools).some((k) =>
+      k.startsWith('meta_sandbox_'),
+    );
     const nonSkillToolCount = Object.keys(extraTools).filter(
       (k) => k !== 'find_skill' && k !== 'fetch_skill' && !isMetaToolName(k),
     ).length;
-    if (
-      deferredNoFsResponse &&
-      !sandboxClient &&
-      nonSkillToolCount === 0
-    ) {
-      return deferredNoFsResponse;
+    if (deferredNoFsResponse && !sandboxClient) {
+      const canProceed = metaSelectionDeferred
+        ? hasMetaSandboxTools
+        : nonSkillToolCount > 0;
+      if (!canProceed) return deferredNoFsResponse;
     }
 
     if (stream) {
@@ -596,7 +681,8 @@ export async function POST(req: Request): Promise<Response> {
       });
     }
 
-    const { text, toolTrace, cwd, sandboxId } = await runAgent(finalRunParams);
+    const { text, toolTrace, cwd, sandboxId, activeSandboxId } =
+      await runAgent(finalRunParams);
 
     if (!text) {
       return Response.json(
@@ -615,6 +701,7 @@ export async function POST(req: Request): Promise<Response> {
       ...(toolTrace.length > 0 ? { toolTrace } : {}),
       ...(cwd != null ? { cwd } : {}),
       ...(sandboxId != null ? { sandboxId } : {}),
+      ...(activeSandboxId != null ? { activeSandboxId } : {}),
       ...(skills?.events?.length ? { skillEvents: skills.events } : {}),
       ...(skills?.attachedSkills ? { attachedSkills: skills.attachedSkills } : {}),
     });

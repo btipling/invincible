@@ -366,5 +366,52 @@ describe('sendAgent sandboxId fold + reflect', () => {
       expect(result.sandboxId).toBe('sbx_active');
     }
   });
+
+  it('parses the post-turn activeSandboxId from JSON body (blocker B1 wire)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          text: 'switched',
+          sandboxId: 'sbx_old',
+          activeSandboxId: 'sbx_byo',
+        }),
+      ),
+    );
+    const result = await sendAgent('switch me');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.activeSandboxId).toBe('sbx_byo');
+  });
+
+  it('omits activeSandboxId when absent from JSON body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ text: 'ok' })),
+    );
+    const result = await sendAgent('hi');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.activeSandboxId).toBeUndefined();
+  });
+
+  it('parses the post-turn activeSandboxId from the stream done event', async () => {
+    const sse =
+      'data: {"type":"text_delta","text":"hi"}\n\n' +
+      'data: {"type":"done","text":"hi","sandboxId":"sbx_old","activeSandboxId":"sbx_vercel"}\n\n';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(sse, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      ),
+    );
+    const result = await sendAgentStream('x');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.text).toBe('hi');
+      expect(result.activeSandboxId).toBe('sbx_vercel');
+    }
+  });
 });
 

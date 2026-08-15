@@ -707,6 +707,153 @@ describe('runAgent cwd', () => {
   });
 });
 
+describe('runAgent post-turn activeSandboxId (blocker B1 wire)', () => {
+  const client: SandboxClient = {
+    listDir: vi.fn(),
+    readFile: vi.fn(),
+    writeFile: vi.fn(),
+    strReplace: vi.fn(),
+    exec: vi.fn(),
+    stat: vi.fn(),
+  };
+
+  it('runAgent folds the meta_sandbox_switch target into activeSandboxId (JSON)', async () => {
+    const generateTextImpl = vi.fn(async () => ({
+      text: 'switched',
+      steps: [
+        {
+          toolCalls: [{ toolName: 'meta_sandbox_switch', toolCallId: 'c1' }],
+          toolResults: [
+            {
+              toolName: 'meta_sandbox_switch',
+              toolCallId: 'c1',
+              output: 'switched active sandbox to id=sb-byo tools=[read_file, write_file]',
+            },
+          ],
+        },
+      ],
+    }));
+    const result = await runAgent({
+      prompt: 'switch to sb-byo',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: client,
+      // Pre-turn bind differs from the switch target — the host must NOT fold this back.
+      sandboxId: 'sb-original',
+    });
+    expect(result.activeSandboxId).toBe('sb-byo');
+    expect(result.sandboxId).toBe('sb-original');
+  });
+
+  it('runAgent mirrors sandboxId when no switch ran', async () => {
+    const generateTextImpl = vi.fn(async () => ({
+      text: 'done',
+      steps: [{ toolCalls: [], toolResults: [] }],
+    }));
+    const result = await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: client,
+      sandboxId: 'sb-original',
+    });
+    expect(result.activeSandboxId).toBe('sb-original');
+  });
+
+  it('runAgent omits activeSandboxId when no FS bind and no switch', async () => {
+    const generateTextImpl = vi.fn(async () => ({
+      text: 'http only',
+      steps: [],
+    }));
+    const result = await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      skipSandboxTools: true,
+      extraTools: { http_get: { description: 'x', execute: async () => 'ok' } },
+    });
+    expect(result.activeSandboxId).toBeUndefined();
+  });
+
+  it('runAgentStream done event + result include the switched activeSandboxId', async () => {
+    const events: Array<{ type: string; activeSandboxId?: string }> = [];
+    async function* fullStream() {
+      yield {
+        type: 'tool-result',
+        toolName: 'meta_sandbox_switch',
+        toolCallId: 'c1',
+        output: 'switched active sandbox to id=sb-vercel tools=[exec]',
+      };
+    }
+    const streamTextImpl = vi.fn(() => ({
+      fullStream: fullStream(),
+      text: Promise.resolve('switched'),
+      steps: Promise.resolve([
+        {
+          toolCalls: [{ toolName: 'meta_sandbox_switch', toolCallId: 'c1' }],
+          toolResults: [
+            {
+              toolName: 'meta_sandbox_switch',
+              toolCallId: 'c1',
+              output: 'switched active sandbox to id=sb-vercel tools=[exec]',
+            },
+          ],
+        },
+      ]),
+    }));
+    const result = await runAgentStream(
+      {
+        prompt: 'switch',
+        modelId: 'test-model',
+        streamTextImpl: streamTextImpl as never,
+        sandboxClient: client,
+        sandboxId: 'sb-original',
+      },
+      {
+        onEvent: async (ev) => {
+          events.push(ev as { type: string; activeSandboxId?: string });
+        },
+      },
+    );
+    expect(result.activeSandboxId).toBe('sb-vercel');
+    const done = events.find((e) => e.type === 'done') as
+      | { activeSandboxId?: string }
+      | undefined;
+    expect(done?.activeSandboxId).toBe('sb-vercel');
+  });
+
+  it('runAgentStream mirrors sandboxId on done when no switch ran', async () => {
+    const events: Array<{ type: string; activeSandboxId?: string }> = [];
+    async function* emptyStream() {
+      // no parts
+    }
+    const streamTextImpl = vi.fn(() => ({
+      fullStream: emptyStream(),
+      text: Promise.resolve('done'),
+      steps: Promise.resolve([]),
+    }));
+    const result = await runAgentStream(
+      {
+        prompt: 'hi',
+        modelId: 'test-model',
+        streamTextImpl: streamTextImpl as never,
+        sandboxClient: client,
+        sandboxId: 'sb-original',
+      },
+      {
+        onEvent: async (ev) => {
+          events.push(ev as { type: string; activeSandboxId?: string });
+        },
+      },
+    );
+    expect(result.activeSandboxId).toBe('sb-original');
+    const done = events.find((e) => e.type === 'done') as
+      | { activeSandboxId?: string }
+      | undefined;
+    expect(done?.activeSandboxId).toBe('sb-original');
+  });
+});
+
 describe('DEFAULT_AGENT_SYSTEM read-before-edit', () => {
   it('mentions read before edit, re-read on change, and create exception', () => {
     expect(DEFAULT_AGENT_SYSTEM).toMatch(/read_file a path in this agent run/i);

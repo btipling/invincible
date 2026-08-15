@@ -40,6 +40,11 @@ export type AgentSuccess = {
   cwd?: string;
   /** Resolved active sandbox bind the turn ran against (FS tools bound). */
   sandboxId?: string;
+  /**
+   * Post-turn EFFECTIVE active sandbox bind (switch target when the turn
+   * switched, else `sandboxId`). The host folds THIS into the session.
+   */
+  activeSandboxId?: string;
   /** Skill attach/detach outcomes this turn (JSON path). */
   skillEvents?: SkillAttachmentEvent[];
   /**
@@ -191,6 +196,10 @@ function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
     record && typeof record.cwd === 'string' ? record.cwd : undefined;
   const sandboxField =
     record && typeof record.sandboxId === 'string' ? record.sandboxId : undefined;
+  const activeSandboxField =
+    record && typeof record.activeSandboxId === 'string'
+      ? record.activeSandboxId
+      : undefined;
   const skillEvents = parseSkillEvents(record?.skillEvents);
   const attachedSlugs = attachedSlugsFromRecord(record);
   return {
@@ -199,6 +208,9 @@ function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
     ...(toolTrace ? { toolTrace } : {}),
     ...(cwdField !== undefined ? { cwd: cwdField } : {}),
     ...(sandboxField !== undefined ? { sandboxId: sandboxField } : {}),
+    ...(activeSandboxField !== undefined
+      ? { activeSandboxId: activeSandboxField }
+      : {}),
     ...(skillEvents ? { skillEvents } : {}),
     ...(attachedSlugs !== undefined ? { attachedSlugs } : {}),
   };
@@ -404,6 +416,7 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
   let toolTrace: ToolTraceEntry[] | undefined;
   let streamCwd: string | undefined;
   let streamSandboxId: string | undefined;
+  let streamActiveSandboxId: string | undefined;
   let streamError: AgentFailure | null = null;
 
   try {
@@ -430,6 +443,9 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
           }
           if (typeof ev.sandboxId === 'string') {
             streamSandboxId = ev.sandboxId;
+          }
+          if (typeof ev.activeSandboxId === 'string') {
+            streamActiveSandboxId = ev.activeSandboxId;
           }
         } else if (ev.type === 'error') {
           streamError = {
@@ -461,6 +477,9 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
           }
           if (typeof ev.sandboxId === 'string') {
             streamSandboxId = ev.sandboxId;
+          }
+          if (typeof ev.activeSandboxId === 'string') {
+            streamActiveSandboxId = ev.activeSandboxId;
           }
         } else if (ev.type === 'error') {
           streamError = {
@@ -500,5 +519,8 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
     ...(toolTrace ? { toolTrace } : {}),
     ...(streamCwd !== undefined ? { cwd: streamCwd } : {}),
     ...(streamSandboxId !== undefined ? { sandboxId: streamSandboxId } : {}),
+    ...(streamActiveSandboxId !== undefined
+      ? { activeSandboxId: streamActiveSandboxId }
+      : {}),
   };
 };
