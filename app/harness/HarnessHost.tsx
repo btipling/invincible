@@ -5,7 +5,11 @@
  * Product transcript + composer live in Zig/dvui (see docs/feature-divide.md).
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { runHarnessTurn, pushSessionToBridge } from '../../lib/harnessChat';
+import {
+  runHarnessTurn,
+  pushSessionToBridge,
+  refreshGitStatusSlot,
+} from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
 import { formatElapsedSeconds } from '../../lib/elapsedTime';
@@ -370,6 +374,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
 
   useEffect(() => {
     let cancelled = false;
+    /** Phase 2 (#540): git status-slot cadence timer; armed once boot binds the bridge. */
+    let gitTimer: number | undefined;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -567,6 +573,25 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         if (!cancelled) {
           setPhase('ready');
           requestAnimationFrame(() => canvasRef.current?.focus());
+
+          // Phase 2 (#538/#540): arm the git status-slot cadence ONLY once the
+          // bridge + session exist (they were set earlier this boot effect). Read
+          // the refs live each tick (never capture a stale bridge/session), skip
+          // mid-turn, and fire once immediately so the first git paint isn't
+          // delayed a full interval. The host cadence is the PRIMARY throttle
+          // (the server rate cap is only a per-instance backstop), so keep the
+          // interval well above STATUS_PROBE_MIN_INTERVAL_MS. Fail-soft lives
+          // inside refreshGitStatusSlot (any error keeps the last value and
+          // never blanks a sibling or blocks a turn).
+          const tick = () => {
+            if (cancelled || inflightRef.current) return; // never fire mid-turn
+            const b = bridgeRef.current;
+            const s = sessionRef.current;
+            if (!b || !s) return;
+            void refreshGitStatusSlot(b, s);
+          };
+          tick(); // immediate first paint, not a 10 s-stale header
+          gitTimer = window.setInterval(tick, 10_000);
         }
       } catch (e) {
         if (cancelled) return;
@@ -582,6 +607,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       if (pollRef.current != null) {
         clearTimeout(pollRef.current);
         pollRef.current = null;
+      }
+      if (gitTimer != null) {
+        clearInterval(gitTimer);
+        gitTimer = undefined;
       }
       bridgeRef.current = null;
       repoRef.current = null;

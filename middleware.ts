@@ -18,7 +18,8 @@ function isApiProtected(pathname: string): boolean {
     pathname === '/api/models' ||
     pathname === '/api/sandboxes' ||
     pathname === '/api/personas' ||
-    pathname === '/api/skills'
+    pathname === '/api/skills' ||
+    pathname === '/api/harness/status'
   );
 }
 
@@ -108,6 +109,7 @@ export const config = {
     '/api/sandboxes',
     '/api/personas',
     '/api/skills',
+    '/api/harness/status',
     '/api/settings/skills',
     '/api/settings/skills/:path*',
     '/api/sessions',

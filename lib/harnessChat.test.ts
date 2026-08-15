@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   coalesceToolRunMessages,
   collapseThinkingDisplay,
@@ -10,6 +10,7 @@ import {
   parseChangeDirCwd,
   pushSessionToBridge,
   recordLiveCwd,
+  refreshGitStatusSlot,
   runHarnessChat,
   restoreLastUiKind,
   runHarnessTurn,
@@ -2734,5 +2735,260 @@ describe('status-slot fold (protocol v13, plan #538/#541)', () => {
     expect(painted.startsWith(longCwd.slice(0, 10))).toBe(true);
     expect(painted.endsWith('…')).toBe(true);
     expect(new TextEncoder().encode(painted).length).toBeLessThanOrEqual(96);
+  });
+});
+
+describe('refreshGitStatusSlot (phase 2, plan #540)', () => {
+  const realFetch = global.fetch;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  function stubFetch(json: unknown, ok = true, status = 200) {
+    fetchMock = vi.fn(async () => ({
+      ok,
+      status,
+      json: async () => json,
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+  }
+
+  it('pushes a non-empty probe value into the Git slot and ellipsizes to the cap', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubFetch({ value: 'feature/x@a1b2c3d' });
+    const session = {
+      ...createEmptySession('sess_abc123'),
+      activeSandboxId: 'sbx_redis_safe',
+    };
+    await refreshGitStatusSlot(bridge, session);
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('feature/x@a1b2c3d');
+    // sandboxId + sessionId carries were folded into the query string.
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain('sandboxId=sbx_redis_safe');
+    expect(url).toContain('sessionId=sess_abc123');
+  });
+
+  it('clears the Git slot on a genuinely empty probe result (no stale prior value)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setStatusSlot(StatusSlot.Git, 'old@123');
+    stubFetch({ value: '' });
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s'), activeSandboxId: 'sbx_x' });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('');
+  });
+
+  it('keeps the last value on network error / non-ok / 429 — never clears on a transient refresh', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setStatusSlot(StatusSlot.Git, 'main@abc');
+    // network throw
+    fetchMock = vi.fn(async () => {
+      throw new Error('network down');
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
+
+    // non-ok
+    stubFetch({}, false, 500);
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
+
+    // 429 rate-limited (route never actually sends 429 — see next test for the
+    // real wire shape; this guards against a future backend change).
+    stubFetch({}, true, 429);
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
+  });
+
+  it('a rate-limited 200 ({ git, rate_limited:true, value }) KEEPS the slot, never clears (pr #544 #1)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // The route's in-window reply IS this 200 shape — it carries the cached
+    // formatted `value`, which the host must paint (KEEP-last), NOT clear.
+    bridge.setStatusSlot(StatusSlot.Git, 'old@123');
+    stubFetch({ git: { branch: 'main', sha: 'a1b2c3d' }, rate_limited: true, value: 'main@a1b2c3d' });
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@a1b2c3d');
+  });
+
+  it('omits non-Redis-safe carries (never a poisoned query string), still clears on empty', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      ...createEmptySession('bad session :*'),
+      activeSandboxId: 'bad sandbox *,',
+    };
+    stubFetch({ value: 'main@1' });
+    await refreshGitStatusSlot(bridge, session);
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).not.toContain('activeSandboxId');
+    expect(url).not.toContain('bad');
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@1');
+  });
+
+  it('ellipsizes an oversize git value to the 96-byte cap before the wire', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const longVal = 'feature/' + 'x'.repeat(120);
+    stubFetch({ value: longVal });
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
+    const painted = statusSlotAt(exp, StatusSlot.Git);
+    expect(painted.endsWith('…')).toBe(true);
+    expect(new TextEncoder().encode(painted).length).toBeLessThanOrEqual(96);
+  });
+});
+describe('hydrate/turn-refresh git wiring (phase 2, plan #540 — pr #544 #3)', () => {
+  const realFetch = global.fetch;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  function stubFetch(json: unknown, ok = true, status = 200) {
+    fetchMock = vi.fn(async () => ({
+      ok,
+      status,
+      json: async () => json,
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+  }
+
+  it('hydrate (pushSessionToBridge) fires the git probe with the session carries', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubFetch({ value: 'main@abc' });
+    const session = {
+      id: 'sess_hyd',
+      updatedAt: 0,
+      activeSandboxId: 'sbx_v',
+      cwd: 'invincible',
+      messages: [makeMessage('user', 'hi')],
+    };
+    pushSessionToBridge(bridge, session, { clear: true });
+    // flush the fire-and-forget refresh microtasks
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchMock).toHaveBeenCalled();
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain('sandboxId=sbx_v');
+    expect(url).toContain('sessionId=sess_hyd');
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
+  });
+
+  it('a successful agent turn fires the git probe after the status fold', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubFetch({ value: 'feature@1' });
+    const session = { ...createEmptySession('sess_ok'), activeSandboxId: 'sbx_v', cwd: 'invincible' };
+    const sendAgent = vi.fn(async () => ({
+      ok: true as const,
+      text: 'done',
+      sandboxId: 'sbx_v',
+      cwd: 'invincible/sub',
+    }));
+    await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchMock).toHaveBeenCalled();
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain('sessionId=sess_ok');
+    // the git slot was painted from the refreshed value
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('feature@1');
+  });
+
+  it('a failed/cancelled agent turn fires the git probe alongside the fail fold', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubFetch({ value: 'wip@2' });
+    const session = { ...createEmptySession('sess_fail'), activeSandboxId: 'sbx_v', cwd: 'invincible' };
+    const sendAgent = vi.fn(async () => ({
+      ok: false as const,
+      status: 503,
+      error: 'Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.',
+    }));
+    const { result } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(result.ok).toBe(false);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchMock).toHaveBeenCalled();
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain('sessionId=sess_fail');
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('wip@2');
+  });
+
+  it('an ABORTED turn STILL fires the git probe on the fail path (pr #544 Minor L1 fix)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const controller = new AbortController();
+    // Pre-abort: a user Stop leaves `opts.signal` already aborted when this fail
+    // path runs — the exact "stale git slot until the cadence tick" gap the
+    // reviewer flagged (#544 Minor L1). Without the fix the fail path forwarded
+    // `opts?.signal` onto `fetch`, so an aborted signal rejected instantly and
+    // the probe was a dead no-op.
+    controller.abort();
+    // Real `fetch` rejects immediately when handed an already-aborted signal; the
+    // stub mirrors that, so the OLD code hits the catch/keep-last and this test
+    // would fail (git slot stays stale). The FIX omits the signal on the fail
+    // path, so the probe still runs and repaints.
+    fetchMock = vi.fn(
+      async (_url: string | URL, init?: { signal?: AbortSignal }) => {
+        if (init?.signal?.aborted) throw new Error('aborted signal forwarded');
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ value: 'cancel@fixed' }),
+        };
+      },
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const session = {
+      ...createEmptySession('sess_abort'),
+      activeSandboxId: 'sbx_v',
+      cwd: 'invincible',
+    };
+    const sendAgent = vi.fn(async () => ({
+      ok: false as const,
+      error: 'Request cancelled.',
+    }));
+    const { result } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+      signal: controller.signal,
+    });
+    expect(result.ok).toBe(false);
+    await new Promise((r) => setTimeout(r, 0));
+    // The fail-path refresh runs WITHOUT the aborted signal, so the probe fires
+    // instead of dying as an AbortError; the git slot is repainted.
+    expect(fetchMock).toHaveBeenCalled();
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain('/api/harness/status');
+    expect(url).toContain('sessionId=sess_abort');
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('cancel@fixed');
+  });
+
+  it('hydrate with clear:false (ring-only) does NOT fire the git probe', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubFetch({ value: 'should-not-paint' });
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      messages: [makeMessage('user', 'hi')],
+    };
+    pushSessionToBridge(bridge, session, { clear: false });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('');
   });
 });

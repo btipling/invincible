@@ -316,6 +316,11 @@ export function pushSessionToBridge(
       lifecycle: opts?.lifecycle,
     });
     foldStatusSlots(bridge, session);
+    // Phase 2 (plan #540) — hydrate/turn-refresh: pull the git slot right after
+    // the sandbox/cwd fold so a restored or freshly-bound session's first git
+    // paint isn't stale against a full cadence tick. Fail-soft (keeps last on
+    // any error / rate-limit); server rate-limited.
+    void refreshGitStatusSlot(bridge, session);
   } else {
     for (const m of msgs) {
       bridge.pushMessage(m.kind, m.text);
@@ -394,6 +399,58 @@ export function foldStatusSlots(
     bridge.setStatusSlot(StatusSlot.Cwd, truncateStatusValue(cwd));
   } else {
     bridge.clearStatusSlot(StatusSlot.Cwd);
+  }
+}
+
+/**
+ * Phase 2 (plan #540) — refresh the git status slot from the read-only server
+ * probe (`GET /api/harness/status`). The DOM host calls this after hydrate,
+ * after each agent turn / confirmed cwd change, and on the slow cadence timer;
+ * the server resolves the envelope-authoritative bind and runs the bounded git
+ * probe at the bind workspace root.
+ *
+ * Fail-soft on every path — never throws, never blocks a turn, never blanks a
+ * sibling slot:
+ * - any network/abort/cancel error, non-ok status, or a server `rate_limited`
+ *   reply → the git slot KEEPS its last value (it is not cleared on a transient
+ *   rate-limit, so a refresh loop can't flicker the header).
+ * - a valid empty probe result (non-git / no bind) → clear the git slot (stale
+ *   prior value must not linger).
+ * - an oversize value is ellipsized to the status-slot byte cap via
+ *   `truncateStatusValue` before the wire.
+ */
+export async function refreshGitStatusSlot(
+  bridge: HarnessBridge,
+  session: SessionSnapshot,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    const params = new URLSearchParams();
+    // Redis-safe carries only; any non-safe value is simply omitted (the server
+    // still resolves the envelope bind, which is authoritative).
+    if (session.activeSandboxId && isRedisSafeOpaqueId(session.activeSandboxId)) {
+      params.set('sandboxId', session.activeSandboxId);
+    }
+    if (session.id && isRedisSafeOpaqueId(session.id)) {
+      params.set('sessionId', session.id);
+    }
+    const q = params.toString();
+    const res = await fetch(`/api/harness/status${q ? `?${q}` : ''}`, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      ...(signal ? { signal } : {}),
+    });
+    if (!res.ok || res.status === 429) return; // keep last value
+    const data = (await res.json()) as { value?: string };
+    // Rate-limited replies carry the cached value and are not a clear; only a
+    // genuinely empty probe result clears the git slot.
+    if (typeof data.value === 'string' && data.value.length > 0) {
+      bridge.setStatusSlot(StatusSlot.Git, truncateStatusValue(data.value));
+    } else {
+      bridge.clearStatusSlot(StatusSlot.Git);
+    }
+  } catch {
+    // Abort / network error: keep the last git value, never throw.
   }
 }
 
@@ -1237,6 +1294,11 @@ export async function runHarnessTurn(
       // effective bind + cwd into the status-slot pack so the canvas header
       // reflects the post-turn state (incl. a `meta_sandbox_switch`).
       foldStatusSlots(bridge, next);
+      // Phase 2 (plan #540) — post-turn git refresh: a committed `change_dir`
+      // (or any turn) may have moved the bind workspace branch; re-fetch the git
+      // slot right after the fold instead of waiting for the cadence tick.
+      // Fail-soft; server rate-limited; never blocks the turn return.
+      void refreshGitStatusSlot(bridge, next, opts?.signal);
       bridge.setLifecycle(Lifecycle.Ready);
       return {
         result: { ok: true, text: agentResult.text || assistantAcc },
@@ -1329,6 +1391,21 @@ export async function runHarnessTurn(
       // cleared bind, shows the boot cwd the next turn will actually use, and is
       // a harmless idempotent re-paint when nothing changed.
       foldStatusSlots(bridge, failedSession);
+      // Phase 2 (plan #540): a failed/cancelled turn can still commit a
+      // confirmed `change_dir` (which may move the bind workspace branch);
+      // refresh the git slot alongside the fail fold. Fail-soft; server
+      // rate-limited; never blocks the fail return.
+      //
+      // Deliberately OMIT `opts?.signal` here (adversarial review #544 Minor
+      // L1): the success path forwards it because a success turn is never
+      // aborted, but this fail path is reached EXACTLY when the caller's signal
+      // may already be ABORTED — a user Stop. Forwarding that aborted signal
+      // onto `fetch` makes it reject instantly with `AbortError`, the `catch`
+      // keeps last, and this post-cancel refresh becomes a dead no-op (the git
+      // slot stays stale up to the cadence tick, contradicting the intent to
+      // repaint on cancel). The unscoped fetch is bounded by the fail-soft
+      // catch; it only repaints one slot once.
+      void refreshGitStatusSlot(bridge, failedSession);
       bridge.setLifecycle(Lifecycle.Ready);
       return {
         result: {
