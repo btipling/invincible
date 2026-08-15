@@ -164,6 +164,16 @@ export const HARNESS_SESSION_MAX_META_BYTES = 1024 * 1024;
  */
 export const PERSONA_SNAPSHOT_MAX_BYTES = 512 * 1024;
 
+/**
+ * Per-slot status-bar value cap (UTF-8 bytes) — plan #538/#541 (workspace status
+ * bar, phase 1). One status slot (sandbox · cwd) is a short header one-liner;
+ * the value rides the Wasm bridge v13 status store. Matches
+ * `native/harness/src/bridge.zig` `MAX_STATUS_SLOT_LEN` and
+ * `lib/harnessBridge.ts` `MAX_STATUS_SLOT_LEN`. A host push is authoritative:
+ * values over this are REJECTED, never silently truncated on the wire.
+ */
+export const STATUS_SLOT_MAX_BYTES = 96;
+
 /** Max length (chars) of a Redis-safe opaque id / `activeSandboxId`. */
 export const REDIS_SAFE_OPAQUE_ID_MAX = 512;
 

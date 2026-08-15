@@ -651,6 +651,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         ringWindowStartRef.current = 0;
         bridge.setCanLoadEarlier(false);
         bridge.clearMessages();
+        // Protocol v13 (plan #538/#541): a fresh New session has no sandbox/cwd
+        // bind yet — clear the status-slot pack so no stale slots linger.
+        bridge.clearStatusSlots();
         bridge.pushMessage(MessageKind.System, 'New session started.');
         bridge.setLifecycle(Lifecycle.Ready);
       }

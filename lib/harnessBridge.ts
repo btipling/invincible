@@ -8,9 +8,12 @@
  *
  * Protocol doc: native/harness/README.md (table of messages).
  */
+import { STATUS_SLOT_MAX_BYTES } from './sessionCloudCaps';
 
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
-export const HARNESS_PROTOCOL_VERSION = 12 as const;
+// v13 (plan #538/#541): additive status-slot store — `inv_set_status_slot`,
+// `inv_status_slot_len/copy`, `inv_status_slots_clear`. Old exports intact.
+export const HARNESS_PROTOCOL_VERSION = 13 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -18,6 +21,28 @@ export const INV_PING_XOR = 0xa5a5 as const;
 /** Must match Zig `MAX_CATALOG` / `MAX_MODEL_ID_LEN`. */
 export const MAX_MODEL_CATALOG = 64 as const;
 export const MAX_MODEL_ID_LEN = 128 as const;
+
+/** Must match Zig `MAX_STATUS_SLOTS` (protocol v13, plan #538/#541). */
+export const MAX_STATUS_SLOTS = 8 as const;
+/**
+ * Byte cap on a status-slot value, aliased to the SINGLE host source of truth
+ * `STATUS_SLOT_MAX_BYTES` in `./sessionCloudCaps` (PR #543 L8 nit; was a second
+ * duplicated 96 literal). Axis of truth for the whole host — every push/read
+ * and the fold ellipsizer read this alias. Cross-layer equality (this ==
+ * `STATUS_SLOT_MAX_BYTES` == Zig `MAX_STATUS_SLOT_LEN` in
+ * `native/harness/src/bridge.zig`) is locked by a test in `sessionCloudCaps.test.ts`.
+ */
+export const MAX_STATUS_SLOT_LEN = STATUS_SLOT_MAX_BYTES;
+
+/** Status-slot indices (protocol v13, plan #538/#541) — shared with bridge.zig. */
+export enum StatusSlot {
+  Sandbox = 0,
+  Cwd = 1,
+  /** Reserved for Phase 2 (git probe). */
+  Git = 2,
+  /** Reserved for Phase 3 (context/usage). */
+  Context = 3,
+}
 
 export enum Lifecycle {
   Boot = 0,
@@ -106,6 +131,11 @@ export type HarnessBridgeExports = {
   inv_selected_model_len: () => number;
   inv_selected_model_copy: (outPtr: number, maxLen: number) => number;
   inv_cycle_selected_model: () => number;
+  // Protocol v13 — status-slot store (host push + readback + clear).
+  inv_set_status_slot: (slot: number, ptr: number, len: number) => number;
+  inv_status_slot_len: (slot: number) => number;
+  inv_status_slot_copy: (slot: number, outPtr: number, maxLen: number) => number;
+  inv_status_slots_clear: () => void;
   inv_image_cache_put: (
     urlPtr: number,
     urlLen: number,
@@ -159,6 +189,10 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_selected_model_len',
   'inv_selected_model_copy',
   'inv_cycle_selected_model',
+  'inv_set_status_slot',
+  'inv_status_slot_len',
+  'inv_status_slot_copy',
+  'inv_status_slots_clear',
   'inv_image_cache_put',
   'inv_image_cache_clear',
   'inv_math_cache_put',
@@ -553,6 +587,54 @@ export class HarnessBridge {
 
   cycleSelectedModel(): number {
     return this.exports.inv_cycle_selected_model() >>> 0;
+  }
+
+  /**
+   * Protocol v13 (plan #538/#541) — set one status slot. A slot value is a
+   * bounded UTF-8 string (max `MAX_STATUS_SLOT_LEN` bytes) that the Wasm header
+   * band paints (sandbox · cwd …). Returns true when the push was accepted
+   * (non-empty, in-range, ≤ cap). Oversize/empty/out-of-range pushes are
+   * rejected — this is authoritative, never a silent truncation.
+   */
+  setStatusSlot(slot: StatusSlot, value: string): boolean {
+    if (slot < 0 || slot >= MAX_STATUS_SLOTS) return false;
+    const text = value.trim();
+    if (!text || text.length === 0) return false;
+    const bytes = utf8Encode.encode(text);
+    if (bytes.length === 0 || bytes.length > MAX_STATUS_SLOT_LEN) return false;
+    const ptr = this.exports.gpa_u8(bytes.length);
+    if (!ptr) return false;
+    try {
+      new Uint8Array(this.exports.memory.buffer, ptr, bytes.length).set(bytes);
+      return this.exports.inv_set_status_slot(slot, ptr, bytes.length) !== 0;
+    } finally {
+      this.exports.gpa_free(ptr, bytes.length);
+    }
+  }
+
+  /** Protocol v13 — clear one status-slot value (empty slot hides in the pack). */
+  clearStatusSlot(slot: StatusSlot): void {
+    if (slot < 0 || slot >= MAX_STATUS_SLOTS) return;
+    this.exports.inv_set_status_slot(slot, 0, 0);
+  }
+
+  /** Protocol v13 — read one status-slot value, or '' when unset / out of range. */
+  getStatusSlot(slot: StatusSlot): string {
+    const len = this.exports.inv_status_slot_len(slot) >>> 0;
+    if (len === 0) return '';
+    const ptr = this.exports.gpa_u8(len);
+    if (!ptr) throw new Error('gpa_u8 failed for status slot');
+    try {
+      const copied = this.exports.inv_status_slot_copy(slot, ptr, len);
+      return this.readUtf8(ptr, copied);
+    } finally {
+      this.exports.gpa_free(ptr, len);
+    }
+  }
+
+  /** Protocol v13 — clear all status slots (Clear / New session / restore empty). */
+  clearStatusSlots(): void {
+    this.exports.inv_status_slots_clear();
   }
 
   /**

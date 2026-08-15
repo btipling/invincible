@@ -4,6 +4,7 @@ import {
   collapseThinkingDisplay,
   classifyTurnFailure,
   describeTurnEnd,
+  foldStatusSlots,
   getSessionCwd,
   isTurnEndLine,
   parseChangeDirCwd,
@@ -15,6 +16,7 @@ import {
   selectToolTraceLines,
   shouldContinueStreak,
   skillRowText,
+  truncateStatusValue,
   truncateToolTraceSummary,
   type LiveCwdSource,
 } from './harnessChat';
@@ -25,6 +27,7 @@ import {
   INV_PING_XOR,
   Lifecycle,
   MessageKind,
+  StatusSlot,
   type HarnessBridgeExports,
 } from './harnessBridge';
 import type { ChatResult } from './chatApi';
@@ -51,6 +54,7 @@ function makeMockExports(): HarnessBridgeExports & {
   __messages: { kind: number; text: string }[];
   __lifecycle: () => Lifecycle;
   __canLoadEarlier: () => number;
+  __statusSlots: (string | undefined)[];
 } {
   let buf = new ArrayBuffer(64 * 1024);
   const memory = {
@@ -62,6 +66,7 @@ function makeMockExports(): HarnessBridgeExports & {
   let lifecycle = Lifecycle.Boot;
   let canLoadEarlier = 0;
   const messages: { kind: number; text: string }[] = [];
+  const statusSlots: (string | undefined)[] = new Array(8).fill(undefined);
 
   const gpa_u8 = (len: number) => {
     if (len <= 0) return 0;
@@ -134,6 +139,26 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_selected_model_len: () => 0,
     inv_selected_model_copy: () => 0,
     inv_cycle_selected_model: () => 0,
+    inv_set_status_slot: (slot, ptr, len) => {
+      if (slot < 0 || slot >= 8) return 0;
+      if (len > 96) return 0;
+      statusSlots[slot] = len === 0 ? undefined : read(ptr, len);
+      return 1;
+    },
+    inv_status_slot_len: (slot) => {
+      if (slot < 0 || slot >= 8 || statusSlots[slot] == null) return 0;
+      return statusSlots[slot]!.length;
+    },
+    inv_status_slot_copy: (slot, outPtr, maxLen) => {
+      if (slot < 0 || slot >= 8 || statusSlots[slot] == null) return 0;
+      const v = statusSlots[slot]!;
+      const n = Math.min(maxLen, v.length);
+      if (n > 0) new Uint8Array(buf, outPtr, n).set(new TextEncoder().encode(v).slice(0, n));
+      return n;
+    },
+    inv_status_slots_clear: () => {
+      for (let i = 0; i < 8; i++) statusSlots[i] = undefined;
+    },
     inv_image_cache_put: () => 0,
     inv_image_cache_clear: () => {},
     inv_math_cache_put: () => 0,
@@ -141,7 +166,12 @@ function makeMockExports(): HarnessBridgeExports & {
     __messages: messages,
     __lifecycle: () => lifecycle,
     __canLoadEarlier: () => canLoadEarlier,
+    __statusSlots: statusSlots,
   };
+}
+
+function statusSlotAt(exp: ReturnType<typeof makeMockExports>, slot: number): string {
+  return exp.__statusSlots[slot] ?? '';
 }
 
 describe('describeTurnEnd / classifyTurnFailure', () => {
@@ -2548,5 +2578,161 @@ describe('skill attach display (phase 2 #517)', () => {
       pushUser: false,
     });
     expect(next.attachedSlugs).toEqual(['create-plan']);
+  });
+});
+
+describe('status-slot fold (protocol v13, plan #538/#541)', () => {
+  it('folds sandbox + cwd into the pack after a successful agent turn (JSON)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_vercel', cwd: 'invincible/sub' };
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'done',
+      sandboxId: 'sbx_vercel',
+      cwd: 'invincible/sub',
+    }));
+    await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('sandbox sbx_vercel');
+    expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('invincible/sub');
+  });
+
+  it('screen: no-FS turn omits cwd but still folds the bind', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_byo' };
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'http only',
+      activeSandboxId: 'sbx_byo',
+    }));
+    await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('sandbox sbx_byo');
+    expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('');
+  });
+
+  it('pushSessionToBridge folds slots on hydrate (restore)', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      activeSandboxId: 'sbx_vercel',
+      cwd: 'invincible',
+      messages: [makeMessage('user', 'hi')],
+    };
+    pushSessionToBridge(bridge, session, { clear: true });
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('sandbox sbx_vercel');
+    expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('invincible');
+  });
+
+  it('explicit no-bind / no-cwd session clears the slots (mutually safe)', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // Pre-seed stale slots, then fold a bare session → clears them.
+    bridge.setStatusSlot(StatusSlot.Sandbox, 'sandbox stale');
+    bridge.setStatusSlot(StatusSlot.Cwd, 'stale');
+    foldStatusSlots(bridge, createEmptySession('s'));
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('');
+    expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('');
+  });
+
+  it('a FAILED 403 selection-required turn repaints the header to clear the cleared bind (PR #543 L1 Major)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_stale', cwd: 'invincible' };
+    // Pre-seed the header with STALE slots — a no-fold fail path would leave them.
+    bridge.setStatusSlot(StatusSlot.Sandbox, 'sandbox sbx_old');
+    bridge.setStatusSlot(StatusSlot.Cwd, 'stale-cwd');
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async () => ({
+        ok: false,
+        status: 403,
+        error: SANDBOX_SELECTION_REQUIRED_ERROR,
+      }),
+    });
+    expect(result.ok).toBe(false);
+    expect(next.activeSandboxId).toBeUndefined();
+    // The cleared bind is repainted away; the retained cwd is re-shown.
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('');
+    expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('invincible');
+  });
+
+  it('a CANCELLED turn still repaints the committed change_dir cwd into the header (PR #543 L1 Major)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    bridge.setStatusSlot(StatusSlot.Sandbox, 'sandbox stale');
+    bridge.setStatusSlot(StatusSlot.Cwd, 'stale-cwd');
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_p, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: true,
+          summary: 'change_dir · ✓ ok · invincible/sub · cwd=invincible/sub',
+          // The confirmed cwd rides as a typed field (adversarial review #470).
+          changeDirCwd: 'invincible/sub',
+        });
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(next.cwd).toBe('invincible/sub');
+    // Header repainted to the boot cwd the next turn will actually use; stale cleared.
+    expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('invincible/sub');
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('');
+  });
+
+  it('truncateStatusValue truncates an oversize value to the byte cap with "…" (PR #543 #3)', () => {
+    const long = 'a'.repeat(97); // 97 UTF-8 bytes > the 96-cap
+    const out = truncateStatusValue(long);
+    expect(out).toBe('a'.repeat(93) + '…');
+    expect(new TextEncoder().encode(out).length).toBeLessThanOrEqual(96);
+    expect(out.endsWith('…')).toBe(true);
+  });
+
+  it('truncateStatusValue never splits a UTF-8 code point; short/empty pass harmlessly (PR #543 #3)', () => {
+    expect(truncateStatusValue('cwd')).toBe('cwd');
+    expect(truncateStatusValue('')).toBe('');
+    expect(truncateStatusValue('   ')).toBe('');
+    // "₿" (U+20BF) is 3 UTF-8 bytes: cap 96 → budget 93 = 31 × 3, then "…".
+    const out = truncateStatusValue('₿'.repeat(40));
+    expect(out).toBe('₿'.repeat(31) + '…');
+    expect(new TextEncoder().encode(out).length).toBe(31 * 3 + 3);
+    // No lone replacement char / broken multi-byte tail from slicing mid-sequence.
+    expect(out.includes('\uFFFD')).toBe(false);
+  });
+
+  it('a long cwd is truncated into the header slot, never stalled on a stale prior value (PR #543 #3)', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // A workspace-relative cwd ≥ 97 bytes (realistic deep under node_modules).
+    const longCwd = 'packages/' + 'a/'.repeat(50) + 'truly';
+    expect(new TextEncoder().encode(longCwd).length).toBeGreaterThan(96);
+    // Pre-seed a STALE short cwd — the no-truncate bug would leave THIS painted.
+    bridge.setStatusSlot(StatusSlot.Cwd, 'stale-cwd');
+    const session = { ...createEmptySession('s'), cwd: longCwd, activeSandboxId: 'sbx_v' };
+    foldStatusSlots(bridge, session);
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('sandbox sbx_v');
+    // The long cwd lands as an honest truncated-with-ellipsis value (not stale,
+    // not a rejected push that silently kept the prior short cwd).
+    const painted = statusSlotAt(exp, StatusSlot.Cwd);
+    expect(painted).not.toBe('stale-cwd');
+    expect(painted.startsWith(longCwd.slice(0, 10))).toBe(true);
+    expect(painted.endsWith('…')).toBe(true);
+    expect(new TextEncoder().encode(painted).length).toBeLessThanOrEqual(96);
   });
 });

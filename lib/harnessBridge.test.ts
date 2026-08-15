@@ -5,6 +5,7 @@ import {
   INV_PING_XOR,
   Lifecycle,
   MessageKind,
+  StatusSlot,
   isHarnessBridgeExports,
   lifecycleName,
   messageKindLabel,
@@ -37,6 +38,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
   let canLoad = 0;
   const catalog: string[] = [];
   let selected = 0;
+  const statusSlots: (string | undefined)[] = new Array(8).fill(undefined);
 
   const gpa_u8 = (len: number) => {
     if (len <= 0) return 0;
@@ -161,6 +163,26 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
       if (catalog.length <= 1) return selected;
       selected = (selected + 1) % catalog.length;
       return selected;
+    },
+    inv_set_status_slot: (slot, ptr, len) => {
+      if (slot < 0 || slot >= 8) return 0;
+      if (len > 96) return 0;
+      statusSlots[slot] = len === 0 ? undefined : read(ptr, len);
+      return 1;
+    },
+    inv_status_slot_len: (slot) => {
+      if (slot < 0 || slot >= 8 || statusSlots[slot] == null) return 0;
+      return statusSlots[slot]!.length;
+    },
+    inv_status_slot_copy: (slot, outPtr, maxLen) => {
+      if (slot < 0 || slot >= 8 || statusSlots[slot] == null) return 0;
+      const v = statusSlots[slot]!;
+      const n = Math.min(maxLen, v.length);
+      if (n > 0) write(outPtr, v.slice(0, n));
+      return n;
+    },
+    inv_status_slots_clear: () => {
+      for (let i = 0; i < 8; i++) statusSlots[i] = undefined;
     },
     inv_image_cache_put: () => 0,
     inv_image_cache_clear: () => {},
@@ -513,10 +535,10 @@ describe('ring readback exports (protocol v11)', () => {
 describe('skill_attached kind (protocol v12)', () => {
   it('MessageKind.SkillAttached is the next enum value 7 (never the protocol version)', () => {
     expect(MessageKind.SkillAttached).toBe(7);
-    // Distinct from the protocol version (12) — a hardcoded kind 12 would be an
+    // Distinct from the protocol version (13) — a hardcoded kind 13 would be an
     // unknown kind to the Wasm painter.
     expect(MessageKind.SkillAttached).not.toBe(HARNESS_PROTOCOL_VERSION);
-    expect(HARNESS_PROTOCOL_VERSION).toBe(12);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(13);
   });
 
   it('push/readback round-trips a skill_attached row', () => {
@@ -532,5 +554,36 @@ describe('skill_attached kind (protocol v12)', () => {
 
   it('messageKindLabel maps the skill kind', () => {
     expect(messageKindLabel(MessageKind.SkillAttached)).toBe('skill');
+  });
+});
+
+describe('status-slot pack (protocol v13)', () => {
+  it('setStatusSlot + getStatusSlot round-trips', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setStatusSlot(0, 'sandbox sbx-alpha');
+    bridge.setStatusSlot(1, 'src/');
+    expect(bridge.getStatusSlot(0)).toBe('sandbox sbx-alpha');
+    expect(bridge.getStatusSlot(1)).toBe('src/');
+  });
+
+  it('clearStatusSlots empties the pack', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setStatusSlot(0, 'sandbox x');
+    bridge.setStatusSlot(1, 'cwd');
+    bridge.clearStatusSlots();
+    expect(bridge.getStatusSlot(0)).toBe('');
+    expect(bridge.getStatusSlot(1)).toBe('');
+  });
+
+  it('rejects out-of-range slot, empty, and oversize values', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    expect(bridge.setStatusSlot(99 as StatusSlot, 'x')).toBe(false);
+    expect(bridge.setStatusSlot(0, '')).toBe(false);
+    expect(bridge.setStatusSlot(0, '   ')).toBe(false);
+    expect(bridge.setStatusSlot(0, 'x'.repeat(200))).toBe(false);
+    expect(bridge.getStatusSlot(0)).toBe('');
   });
 });

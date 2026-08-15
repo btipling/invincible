@@ -34,6 +34,21 @@ is not stored in `SessionStore`, so the durable transcript after reload is
 scannable groups (`mergeToolRunPayloads`, rolling at `TOOL_RUN_ITEMS_MAX`) so a
 long multi-tool session is not a wall of `N×1` cards.
 
+**Status bar reseed (protocol v13, plan #538/#541):** on hydrate/restore and
+after **every** agent turn the host folds session state into the bridge
+status-slot store (`lib/harnessChat.ts` `foldStatusSlots`) — sandbox from
+`activeSandboxId` (`sandbox <id>` label) and `cwd` (workspace-relative). The
+fold runs on **both** the success path (so the sandbox slot reflects the
+**post-turn** effective bind — a `meta_sandbox_switch` target survives) and the
+**fail path** (so a 403 grant-honesty clear repaints the sandbox slot away, and
+a cancelled/timed-out turn that committed a `change_dir` repaints the boot cwd
+the next turn uses — never a stale pre-turn value; this is the same fold-before-
+persist discipline as `attachedSlugs`). Folded values are **host-ellipsized** to
+the slot byte cap at a UTF-8 boundary before the wire; a no-bind/no-cwd session
+clears the slots (never a stale leftover). The Wasm header band paints the pack
+(see [harness-limits.md](harness-limits.md)). Bridge is **v13** — additive status
+exports, old exports intact.
+
 The **local** blob uses the opaque client snapshot shape:
 
 ```json
