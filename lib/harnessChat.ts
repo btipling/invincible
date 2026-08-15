@@ -1395,7 +1395,17 @@ export async function runHarnessTurn(
       // confirmed `change_dir` (which may move the bind workspace branch);
       // refresh the git slot alongside the fail fold. Fail-soft; server
       // rate-limited; never blocks the fail return.
-      void refreshGitStatusSlot(bridge, failedSession, opts?.signal);
+      //
+      // Deliberately OMIT `opts?.signal` here (adversarial review #544 Minor
+      // L1): the success path forwards it because a success turn is never
+      // aborted, but this fail path is reached EXACTLY when the caller's signal
+      // may already be ABORTED — a user Stop. Forwarding that aborted signal
+      // onto `fetch` makes it reject instantly with `AbortError`, the `catch`
+      // keeps last, and this post-cancel refresh becomes a dead no-op (the git
+      // slot stays stale up to the cadence tick, contradicting the intent to
+      // repaint on cancel). The unscoped fetch is bounded by the fail-soft
+      // catch; it only repaints one slot once.
+      void refreshGitStatusSlot(bridge, failedSession);
       bridge.setLifecycle(Lifecycle.Ready);
       return {
         result: {

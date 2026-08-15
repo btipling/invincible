@@ -2926,6 +2926,57 @@ describe('hydrate/turn-refresh git wiring (phase 2, plan #540 — pr #544 #3)', 
     expect(statusSlotAt(exp, StatusSlot.Git)).toBe('wip@2');
   });
 
+  it('an ABORTED turn STILL fires the git probe on the fail path (pr #544 Minor L1 fix)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const controller = new AbortController();
+    // Pre-abort: a user Stop leaves `opts.signal` already aborted when this fail
+    // path runs — the exact "stale git slot until the cadence tick" gap the
+    // reviewer flagged (#544 Minor L1). Without the fix the fail path forwarded
+    // `opts?.signal` onto `fetch`, so an aborted signal rejected instantly and
+    // the probe was a dead no-op.
+    controller.abort();
+    // Real `fetch` rejects immediately when handed an already-aborted signal; the
+    // stub mirrors that, so the OLD code hits the catch/keep-last and this test
+    // would fail (git slot stays stale). The FIX omits the signal on the fail
+    // path, so the probe still runs and repaints.
+    fetchMock = vi.fn(
+      async (_url: string | URL, init?: { signal?: AbortSignal }) => {
+        if (init?.signal?.aborted) throw new Error('aborted signal forwarded');
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ value: 'cancel@fixed' }),
+        };
+      },
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const session = {
+      ...createEmptySession('sess_abort'),
+      activeSandboxId: 'sbx_v',
+      cwd: 'invincible',
+    };
+    const sendAgent = vi.fn(async () => ({
+      ok: false as const,
+      error: 'Request cancelled.',
+    }));
+    const { result } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+      signal: controller.signal,
+    });
+    expect(result.ok).toBe(false);
+    await new Promise((r) => setTimeout(r, 0));
+    // The fail-path refresh runs WITHOUT the aborted signal, so the probe fires
+    // instead of dying as an AbortError; the git slot is repainted.
+    expect(fetchMock).toHaveBeenCalled();
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain('/api/harness/status');
+    expect(url).toContain('sessionId=sess_abort');
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('cancel@fixed');
+  });
+
   it('hydrate with clear:false (ring-only) does NOT fire the git probe', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
