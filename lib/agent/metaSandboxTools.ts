@@ -39,9 +39,11 @@ import type { SandboxChoice } from '../tenancy/userPreferredSandbox';
 import { isRedisSafeOpaqueId } from '../sessionCloudCaps';
 import {
   isEnvelopeStore,
+  type EnvelopeUpsertResult,
   type ServerSessionStore,
   type SessionEnvelope,
   type SessionEnvelopeInput,
+  type SessionEnvelopeStore,
   type SessionRecordKey,
 } from '../sessions/sessionStore';
 
@@ -124,6 +126,44 @@ function activeDescriptor(c: SandboxChoice): {
 /** A choice is a usable grant (active + read or write), mirroring the route. */
 function isUsable(c: SandboxChoice): boolean {
   return c.usable && (c.canRead || c.canWrite);
+}
+
+/**
+ * Persist `meta.activeSandboxId = activeId` onto the session envelope with a
+ * bounded conflict retry (adversarial-review Block, bug B2). The mirror never
+ * bumps the host clock: it preserves the stored `updatedAt` (a fresh envelope —
+ * none exists yet — seeds the clock so the write persists). When the store
+ * returns `conflict` (a concurrent host PUT advanced `updatedAt` between our
+ * read and write), re-read the live envelope once and retry with its clock so
+ * the switch still lands. Returns `true` ONLY for a stored write — any other
+ * result (a still-conflicting retry, an unexpected status) fails closed and the
+ * caller reports the honest error, never a false "switched" success.
+ */
+async function retryPersistActiveSandbox(
+  store: SessionEnvelopeStore,
+  key: SessionRecordKey,
+  identity: { id: string; userId: string; tenantId: string; activeId: string },
+): Promise<boolean> {
+  const attempt = async (): Promise<EnvelopeUpsertResult> => {
+    const envelope = await store.readEnvelope(key);
+    const updatedAt = envelope?.updatedAt ?? Date.now();
+    // Mirror `resolveSkillPreamble`: preserve the stored `updatedAt` (never bump
+    // the host clock); `createdAt` is preserved by the store.
+    const input: SessionEnvelopeInput = {
+      id: identity.id,
+      userId: identity.userId,
+      tenantId: identity.tenantId,
+      updatedAt,
+      meta: { ...(envelope?.meta ?? {}), activeSandboxId: identity.activeId },
+    };
+    return store.upsertEnvelope(key, input);
+  };
+
+  const first = await attempt();
+  if (first.status === 'stored') return true;
+  // Bound retry once for a concurrent host-bumped clock (LWW conflict).
+  const retried = await attempt();
+  return retried.status === 'stored';
 }
 
 /** A tool's full text — the model-return + preview (no secrets, bounded). */
@@ -288,19 +328,15 @@ export function createMetaSandboxTools(opts: CreateMetaSandboxToolsOptions) {
 
         const key: SessionRecordKey = { tenantId, userId, sessionId };
         try {
-          const envelope = await store.readEnvelope(key);
-          // Mirror `resolveSkillPreamble`: preserve the stored `updatedAt` (never
-          // bump the host clock); a fresh envelope (none exists yet) seeds the
-          // clock so the write persists. `createdAt` is preserved by the store.
-          const updatedAt = envelope?.updatedAt ?? Date.now();
-          const inputEnvelope: SessionEnvelopeInput = {
+          const persisted = await retryPersistActiveSandbox(store, key, {
             id: sessionId,
             userId,
             tenantId,
-            updatedAt,
-            meta: { ...(envelope?.meta ?? {}), activeSandboxId: id },
-          };
-          await store.upsertEnvelope(key, inputEnvelope);
+            activeId: id,
+          });
+          if (!persisted) {
+            return 'ERROR meta_sandbox_switch: active sandbox not switched — the session envelope changed concurrently and could not be re-stored (no partial write; no false success).';
+          }
         } catch {
           return 'ERROR meta_sandbox_switch: failed to persist active sandbox (no partial write).';
         }

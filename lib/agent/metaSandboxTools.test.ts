@@ -98,6 +98,133 @@ function makeEnvelopeStore(initial?: SessionEnvelope) {
   };
 }
 
+/**
+ * Store that simulates a concurrent host PUT advancing the envelope clock
+ * between the mirror's read and its first write: the tool holds a stale
+ * `updatedAt` (100), but the live store is already at 200, so the first upsert
+ * conflicts. The bounded retry re-reads the live envelope (200) and stores.
+ */
+function makeConflictRetryStore() {
+  const LIVE_UPDATED_AT = 200;
+  let reads = 0;
+  let upserts = 0;
+  let stored: SessionEnvelope | null = null;
+  const store: SessionEnvelopeStore = {
+    async get() {
+      return null;
+    },
+    async put() {
+      return { status: 'stored', record: {} as never };
+    },
+    async list() {
+      return [];
+    },
+    async remove() {
+      return false;
+    },
+    async readEnvelope() {
+      reads += 1;
+      if (reads === 1) {
+        // Stale snapshot the mirror read before the host bumped the clock.
+        return {
+          id: 'sess-1',
+          userId: 'user-1',
+          tenantId: 'tenant-1',
+          createdAt: 1,
+          updatedAt: 100,
+          meta: {},
+        };
+      }
+      // Live envelope afterwards so the retry can use the fresh clock.
+      return (
+        stored ?? {
+          id: 'sess-1',
+          userId: 'user-1',
+          tenantId: 'tenant-1',
+          createdAt: 1,
+          updatedAt: LIVE_UPDATED_AT,
+          meta: {},
+        }
+      );
+    },
+    async upsertEnvelope(_key, input: SessionEnvelopeInput) {
+      upserts += 1;
+      if (input.updatedAt < LIVE_UPDATED_AT) {
+        return {
+          status: 'conflict',
+          server: {
+            id: 'sess-1',
+            userId: 'user-1',
+            tenantId: 'tenant-1',
+            createdAt: 1,
+            updatedAt: LIVE_UPDATED_AT,
+            meta: {},
+          },
+        };
+      }
+      const envelope: SessionEnvelope = {
+        id: input.id,
+        userId: input.userId,
+        tenantId: input.tenantId,
+        createdAt: 1,
+        updatedAt: input.updatedAt,
+        meta: input.meta ?? {},
+      };
+      stored = envelope;
+      return { status: 'stored', envelope };
+    },
+  };
+  return {
+    store,
+    upserts: () => upserts,
+    stored: () => stored,
+  };
+}
+
+/** Store that ALWAYS rejects with a conflict (persistent concurrent write). */
+function makeAlwaysConflictStore() {
+  let upserts = 0;
+  const store: SessionEnvelopeStore = {
+    async get() {
+      return null;
+    },
+    async put() {
+      return { status: 'stored', record: {} as never };
+    },
+    async list() {
+      return [];
+    },
+    async remove() {
+      return false;
+    },
+    async readEnvelope() {
+      return {
+        id: 'sess-1',
+        userId: 'user-1',
+        tenantId: 'tenant-1',
+        createdAt: 1,
+        updatedAt: 5,
+        meta: {},
+      };
+    },
+    async upsertEnvelope() {
+      upserts += 1;
+      return {
+        status: 'conflict',
+        server: {
+          id: 'sess-1',
+          userId: 'user-1',
+          tenantId: 'tenant-1',
+          createdAt: 1,
+          updatedAt: 5,
+          meta: {},
+        },
+      };
+    },
+  };
+  return { store, upserts: () => upserts };
+}
+
 type StoreResult = ServerSessionStore | 'unavailable' | Error;
 
 function makeSeam(
@@ -393,6 +520,41 @@ describe('meta_sandbox_switch — persist activeSandboxId via envelope seam', ()
     expect(out).toMatch(/^ERROR meta_sandbox_switch:/);
     expect(out).toContain('Redis-safe');
     expect(envStore.upsertCount()).toBe(0);
+  });
+
+  it('recovers from a concurrent host-bumped clock via ONE bounded conflict retry (no false conflict error)', async () => {
+    const retryStore = makeConflictRetryStore();
+    const tools = createMetaSandboxTools({
+      userId: 'user-1',
+      sessionId: 'sess-1',
+      userPreferredSandbox: makeListProvider(USABLE_OPTIONS),
+      sessionStoreSeam: makeSeam(retryStore.store),
+    });
+    const out = String(
+      await tools.meta_sandbox_switch.execute!({ sandboxId: 'sb-byo' }, execOpts),
+    );
+    expect(out).toContain('switched active sandbox to id=sb-byo');
+    expect(retryStore.stored()?.meta.activeSandboxId).toBe('sb-byo');
+    // Retry reused the LIVE clock (not the stale 100) so the write stored.
+    expect(retryStore.stored()?.updatedAt).toBe(200);
+    expect(retryStore.upserts()).toBe(2); // first conflicted, bound retry stored
+  });
+
+  it('fails closed with an honest error when the store keeps conflicting (never a false "switched" success)', async () => {
+    const conflictStore = makeAlwaysConflictStore();
+    const tools = createMetaSandboxTools({
+      userId: 'user-1',
+      sessionId: 'sess-1',
+      userPreferredSandbox: makeListProvider(USABLE_OPTIONS),
+      sessionStoreSeam: makeSeam(conflictStore.store),
+    });
+    const out = String(
+      await tools.meta_sandbox_switch.execute!({ sandboxId: 'sb-vercel' }, execOpts),
+    );
+    expect(out).toMatch(/^ERROR meta_sandbox_switch:/);
+    expect(out).toContain('not switched');
+    expect(out).toContain('no false success');
+    expect(conflictStore.upserts()).toBe(2); // initial + bounded retry, both conflicted
   });
 });
 
