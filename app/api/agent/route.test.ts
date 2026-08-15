@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AUTH_REQUIRED_ERROR,
   SANDBOX_FORBIDDEN_ERROR,
+  SANDBOX_SELECTION_REQUIRED_ERROR,
   WORKSPACE_INSTANCE_REQUIRED_ERROR,
 } from '../../../lib/tenancy/errors';
 
@@ -1802,6 +1803,88 @@ describe('POST /api/agent', () => {
     expect(res.status).toBe(200);
     // No session → no envelope; the body sandboxId is honored (no regression).
     expect(requestedSandboxId).toBe('sbx_body');
+  });
+
+  it('selection-required resolve soft-paths to meta sandbox tools, no dead-end 403 (blocker B3)', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    delete process.env.BUILTIN_HTTP_FETCH;
+    type RunArg = {
+      skipSandboxTools?: boolean;
+      sandboxClient?: unknown;
+      extraTools?: Record<string, unknown>;
+    };
+    const runAgent = vi.fn(async (_arg: RunArg) => ({ text: 'picked', toolTrace: [] }));
+    servicesState.resolveSandbox = {
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: false as const,
+        selectionRequired: true as const,
+        response: Response.json(
+          { error: SANDBOX_SELECTION_REQUIRED_ERROR },
+          { status: 403 },
+        ),
+      })),
+    };
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent,
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'pick a sandbox' }),
+      }),
+    );
+    // No dead-end operator 403: the always-present meta_sandbox_* tools let the
+    // agent drive the pick, exactly the case the tool was previously unreachable.
+    expect(res.status).toBe(200);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    const arg = runAgent.mock.calls[0]?.[0] as RunArg;
+    expect(arg.skipSandboxTools).toBe(true);
+    expect(arg.sandboxClient).toBeUndefined();
+    expect(arg.extraTools?.meta_sandbox_list).toBeTruthy();
+    expect(arg.extraTools?.meta_sandbox_switch).toBeTruthy();
+  });
+
+  it('hard forbidden resolve does NOT soft-path to meta sandbox tools (still 403)', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    delete process.env.BUILTIN_HTTP_FETCH;
+    const runAgent = vi.fn(async () => ({ text: 'nope', toolTrace: [] }));
+    // No selectionRequired: the user has no usable grant at all — meta sandbox
+    // tools have nothing to list/switch among, so this stays a hard 403 even
+    // though the tools are always present.
+    servicesState.resolveSandbox = {
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: false as const,
+        response: Response.json({ error: SANDBOX_FORBIDDEN_ERROR }, { status: 403 }),
+      })),
+    };
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent,
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SANDBOX_FORBIDDEN_ERROR });
+    expect(runAgent).not.toHaveBeenCalled();
   });
 
 });

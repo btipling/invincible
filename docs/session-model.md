@@ -269,7 +269,13 @@ never a 503 chat-fallback. The host clears the stale id **only on that
 grant-honesty class**; a 403 `Workspace instance is not running.` is a usable
 grant whose instance is simply down, so the session binding is **kept** (the
 operator starts the instance) rather than being silently re-wired to another
-grant. The inventory + tool-surface contract is `GET
+grant. A **selection-required** resolve (multiple usable grants, no bound /
+preferred id) **soft-paths** to the agent's always-present `meta_sandbox_*`
+tools so the agent can `meta_sandbox_list` the usable grants and
+`meta_sandbox_switch` to one (B3 reachability) — the one soft-resolve class where
+meta tools are a legitimate substitute for FS/MCP/http. A **forbidden** resolve
+(no usable grant at all) stays a hard 403 even with meta tools present. The
+inventory + tool-surface contract is `GET
 /api/sandboxes` (see [sandbox.md](sandbox.md)); the host owns the session field
 and #328 status chrome renders it.
 

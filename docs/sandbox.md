@@ -161,6 +161,17 @@ model still sees the real tool schemas via `createAgentTools`. The `meta_sandbox
 tools mirror the exact projection + `active` descriptor so the agent can answer
 "which sandbox am I bound to / what can I switch to" (see [mcp.md](mcp.md)).
 
+**Selection-required soft-path (B3 reachability).** A resolve that fails with
+**selection-required** (multiple usable grants, no bound/preferred id) is
+**self-selectable**: the route soft-paths a selection-required resolve to the
+always-present `meta_sandbox_*` tools so the agent can `meta_sandbox_list` the
+usable grants and `meta_sandbox_switch` to one — instead of the former dead-end
+operator 403 right when the agent must pick. This is the **only** soft-resolve
+class where meta tools are a legitimate substitute for FS/MCP/http. A **forbidden**
+resolve (no usable grant at all) and a **softContinue** workspace-not-running
+resolve are **not** that class — meta tools do **not** substitute there and the
+deferred 403 is still returned as before.
+
 
 ---
 

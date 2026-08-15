@@ -596,6 +596,10 @@ describe('resolveAgentSandbox', () => {
     expect(result.response.status).toBe(403);
     const body = (await result.response.json()) as { error: string };
     expect(body.error).toMatch(/Settings → Sandbox|Multiple sandboxes/i);
+    // Selection-required class is marked (no softContinue, but selectionRequired)
+    // so the route soft-paths to the agent's meta_sandbox tools (blocker B3).
+    expect(result.selectionRequired).toBe(true);
+    expect(result.softContinue).toBeUndefined();
   });
 
   it('requestedSandboxId override routes to that usable grant, ignoring preference', async () => {
@@ -777,6 +781,10 @@ describe('resolveAgentSandbox', () => {
     expect(result.response.status).toBe(403);
     const body = (await result.response.json()) as { error: string };
     expect(body.error).toMatch(/Settings → Sandbox|Multiple sandboxes/i);
+    // Set-but-unusable requested id with multiple alternatives → still the
+    // self-selectable selection-required class (agent can switch away), marked
+    // for the route's B3 soft-path.
+    expect(result.selectionRequired).toBe(true);
   });
 
   it('requestedSandboxId is a stopped vercel workspace → softContinue (honest, not a bind lie)', async () => {
@@ -814,6 +822,10 @@ describe('resolveAgentSandbox', () => {
     expect(result.response.status).toBe(403);
     const body = (await result.response.json()) as { error: string };
     expect(body.error).toBe(SANDBOX_FORBIDDEN_ERROR);
+    // Forbidden (no alternatives) is NOT selection-required — the agent has no
+    // usable grant to pick among, so it must stay a hard 403.
+    expect(result.selectionRequired).toBeUndefined();
+    expect(result.softContinue).toBeUndefined();
   });
 
   it('multiple usable with preference → preferred row', async () => {
