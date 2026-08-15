@@ -10,8 +10,11 @@ To use a skill in a session, **attach it with a slash command** — type
 `/skill-name` in the harness composer. The server resolves the skill, injects
 its body into the session's system context, and the transcript shows only a
 `Skill attached: <slug>` row. The agent can also **search / read your own
-skills directly** with the server-side `find_skill` and `fetch_skill` tools
-(see [Agent skill-search tools](#agent-skill-search-tools-find_skill--fetch_skill)).
+skills directly** with the server-side `find_skill` and `fetch_skill` tools,
+**or manage your skills** (create / read / update / delete) through the
+`meta_skill_*` authoring tools
+(see [Agent skill-search tools](#agent-skill-search-tools-find_skill--fetch_skill)
+and [Agent skill-authoring tools](#agent-skill-authoring-tools-meta_skill_)).
 
 ## Creating and editing a skill
 
@@ -93,9 +96,43 @@ The agent gets two read-only tools, assembled server-side on `/api/agent` in
 
 Both tools are **bound to the caller's identity**: they operate on the
 route-resolved user only, and no identity a model passes is ever used
-(confused-deputy guard). They are pure reads — the agent never creates, edits,
-or deletes a skill, and no body ever travels to the client/Wasm (it is only
-ever served to the model on an explicit `fetch_skill`).
+(confused-deputy guard). They are pure **reads** of your own skills — the agent
+does not create, edit, or delete a skill through these two tools, and no body
+ever travels to the client/Wasm. Authoring (create / edit / delete) happens
+either in Settings or through the separate `meta_skill_*` authoring tools below.
+
+## Agent skill-authoring tools (`meta_skill_*`)
+
+`meta_skill_*` is the **authoring** counterpart to the read-only search tools
+above. It is a first-party tool family on `/api/agent`
+(`lib/agent/metaTools.ts`), always available, and operates only on the signed-in
+caller's own skills (same grants as Settings, confused-deputy bound to the
+route user). Tools and their semantics:
+
+- **`meta_skill_list`** — list your skills (summaries: id, slug, name,
+  description — never body), bounded.
+- **`meta_skill_read`** — read the **full body** of one of your skills **by
+  slug**, capped at `SKILL_FETCH_MAX_RETURN_BYTES` (256 KiB) with an explicit
+  truncation marker when larger (mirrors `fetch_skill`). Unknown or foreign
+  slug → `not_found`, no partial.
+- **`meta_skill_create`** — create a skill (`name`, optional `slug`, `body`,
+  optional `description`). When `slug` is omitted it is **derived in the tool
+  layer** before the store is called. Body is validated against the store's
+  4 MiB cap on **write** (over-cap is rejected, never truncated); duplicate slug
+  → error.
+- **`meta_skill_update_summary`** — update a skill's `name` (+ optional
+  `description`) by **id**. Slug stays immutable.
+- **`meta_skill_update_body`** — replace a skill's `body` by **id**. Over-cap
+  rejected (never truncated on write).
+- **`meta_skill_delete`** — delete a skill by **id**.
+
+Because a skill is updated/deleted **by id** while read resolves **by slug**,
+call `meta_skill_list` first to obtain the `id`/`slug` you need. Authoring runs
+**as the signed-in user** with immediate effect (no separate confirm surface),
+consistent with Settings' own mutating actions. Skill bodies are non-secret user
+content: they are returned to the model **only** on an explicit `*_read` and
+never reach the client/Wasm. These are write tools — they are distinct from the
+read-only `find_skill` / `fetch_skill`, which stay unchanged.
 
 ## Guidance
 

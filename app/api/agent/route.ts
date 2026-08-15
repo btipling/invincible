@@ -33,6 +33,10 @@ import {
 } from '../../../lib/tenancy/skillInject';
 import { isEnvelopeStore } from '../../../lib/sessions/sessionStore';
 import { createSkillTools } from '../../../lib/agent/skillTools';
+import {
+  createMetaPersonaSkillTools,
+  isMetaToolName,
+} from '../../../lib/agent/metaTools';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
@@ -208,6 +212,21 @@ export async function POST(req: Request): Promise<Response> {
     extraTools = {
       ...extraTools,
       ...createSkillTools({ userId, userSkills: services.userSkills }),
+    };
+
+    // Phase 1 (#531): first-party persona + skill AUTHORING tools
+    // (`meta_persona_*` / `meta_skill_*`) — always available, independent of
+    // sandbox state (like the read-only skill tools). Bound identity: each tool
+    // is closed over this route-resolved `userId`; any identity a model passes
+    // is ignored. Author-as-user (same grants as Settings); bodies returned
+    // only on an explicit read, capped; no secrets.
+    extraTools = {
+      ...extraTools,
+      ...createMetaPersonaSkillTools({
+        userId,
+        userPersonas: services.userPersonas,
+        userSkills: services.userSkills,
+      }),
     };
 
     // Persona injection (phase 3, #488): resolve the persona preamble for the
@@ -495,7 +514,7 @@ export async function POST(req: Request): Promise<Response> {
     // must still surface the deferred 403 (workspace-required / no grant) rather
     // than silently running a skill-only turn that hides the unavailable sandbox.
     const nonSkillToolCount = Object.keys(extraTools).filter(
-      (k) => k !== 'find_skill' && k !== 'fetch_skill',
+      (k) => k !== 'find_skill' && k !== 'fetch_skill' && !isMetaToolName(k),
     ).length;
     if (
       deferredNoFsResponse &&
