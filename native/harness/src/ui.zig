@@ -90,6 +90,12 @@ const COMPOSER_INPUT_MAX_H: f32 = 120;
 const BAND_GAP: f32 = 6;
 /// Absolute floor so a short canvas still has a scroll band.
 const SCROLL_FLOOR_H: f32 = 32;
+/// Status-bar band height (px) — a thin, always-mounted full-width strip painted
+/// directly BELOW the composer (plan #555 → #554). Reserved into the bottom
+/// chrome budget so the transcript never overlaps it and the transcript+composer
+/// stack never jumps vertically when a sandbox attaches. A NEW Wasm geometry
+/// cap (see plan #555 Caps table): generous single-line value, never collapsed.
+const STATUS_BAR_H: f32 = 28;
 
 pub fn onInit() void {
     bridge.reset();
@@ -802,46 +808,35 @@ const STATUS_SLOT_GAP: f32 = 10;
 /// live-layout rounding (a couple px either way must not push a primary control).
 const STATUS_PACK_BUDGET_SAFETY: f32 = 4;
 
-/// Width (px) the FIXED primary header controls own this frame (lifecycle /
-/// build-id / model / Next). Measured with the SAME fonts/margins the header
-/// paints with (everything = body; build-id/model lead with their left margins,
-/// the Next button is fixed 52 + 4). The title is deliberately NOT charged: it
-/// paints `.expand = .horizontal` and is the widget that already yields, so
-/// reserving it at full natural width under-reports leftover on a narrow canvas
-/// and hides the pack where the plan says it must render (PR #543 re-run 3,
-/// Minor L9). The pack is always downstream of the fixed band, so it can never
-/// displace a primary control — on tight canvases the pack instead DROPS slots
-/// per `STATUS_SLOT_DROP_ORDER` then pixel-ellipsizes the kept slot to fit.
-/// Mirrors the fixed primary-control import order in `frame()` exactly; sync.
-fn statusPackMaxWidth(life: bridge.Lifecycle) f32 {
-    const body = (dvui.Options{}).fontGet();
-    var total: f32 = 0;
-    total += body.textSize(lifecycleLabel(life)).w;
-    total += 8 + body.textSize("h:").w + body.textSize(BUILD_ID).w;
-    const cat_n = bridge.modelCatalogCount();
-    const model_label: []const u8 = if (cat_n == 0) "no model" else bridge.selectedModelLabel();
-    total += 8 + body.textSize(model_label).w;
-    if (cat_n > 1) total += 4 + 52;
+/// Width (px) available to the status-slot pack this frame. Since the pack now
+/// lives ALONE in its own full-width bottom status bar (plan #555 → #554), the
+/// budget is simply that bar's content-rect width minus the pack's rounding-
+/// safety pad (`STATUS_PACK_BUDGET_SAFETY`) — there are no primary header controls
+/// to reserve against anymore (the old "space-left-over-after-header-controls"
+/// math is gone). The pack still DROPS slots per `STATUS_SLOT_DROP_ORDER` then
+/// pixel-ellipsizes the survivor to fit, exactly as before; only the container
+/// is now the full status-bar strip (see the narrow-canvas ellipsize decision:
+/// even here the operator still sees *which* sandbox is bound, PR #543 re-run L9).
+fn statusPackMaxWidth() f32 {
     const content_w = dvui.parentGet().data().contentRect().w;
-    return @max(0, content_w - total - STATUS_PACK_BUDGET_SAFETY);
+    return @max(0, content_w - STATUS_PACK_BUDGET_SAFETY);
 }
 
-/// Paint the right-aligned status-slot pack (protocol v13, plan #538/#541).
-/// Mounted LAST in the header band, AFTER the primary controls (title /
-/// lifecycle / build-id / model label / Next) so primary-action geometry never
-/// moves. Sandbox + cwd (phase 1) render as muted TEAL one-liners (WARM when
-/// busy); an empty slot is hidden (never a blank placeholder / broken layout).
+/// Paint the right-aligned status-slot pack into the bottom status bar (protocol
+/// v13, plan #538/#541/#554). Mounted ALONE in the always-present status strip
+/// directly below the composer — it is the strip's only occupant, so it can never
+/// displace a primary control; a narrow canvas DROPS slots per
+/// `STATUS_SLOT_DROP_ORDER` then pixel-ellipsizes the kept slot to fit. Sandbox +
+/// cwd render as muted TEAL one-liners (WARM when busy); an empty slot is hidden
+/// (never a blank placeholder / broken layout). When there are NO non-empty slots
+/// at all, the caller still mounts the fixed `STATUS_BAR_H` band as a subtle
+/// empty strip (locked decision, plan #555) — it never collapses and `chrome_y`/
+/// `scroll_h` stay constant, so the transcript+composer stack never jumps.
 /// Slot values are already capped at `MAX_STATUS_SLOT_LEN` by the bridge; this
 /// defends the paint against a stale/oversize value with a UTF-8-safe ellipsis.
-///
-/// Width budget (L9): on a narrow canvas the pack must not crowd the primary
-/// band, so non-empty slots are measured with the live body font and DROPPED in
-/// `STATUS_SLOT_DROP_ORDER` (git → context → cwd → sandbox; sandbox is kept
-/// longest) until the pack fits `statusPackMaxWidth`. A slot that cannot fit
-/// alongside higher-priority slots is skipped — never painted-overlapping.
 fn paintStatusSlots(life: bridge.Lifecycle) void {
     const busy = life == .busy;
-    const budget = statusPackMaxWidth(life);
+    const budget = statusPackMaxWidth();
     if (budget <= 0) return;
 
     // Collect non-empty slots in drop-priority order (first = least important,
@@ -954,9 +949,16 @@ pub fn frame() !void {
     const chrome_h: f32 = COMPOSER_CHROME_MIN + COMPOSER_PAD_Y;
     // Header band: title row ~ TOUCH_H + padding/margin.
     const header_h: f32 = TOUCH_H + 24;
+    // Bottom chrome = composer band + the always-mounted status bar BELOW it.
+    // Reserving both up front keeps scroll/transcript geometry constant whether
+    // or not any status slot is populated, so attaching a sandbox never makes
+    // the transcript+composer stack jump vertically (plan #555 locked decision).
+    const bottom_h: f32 = chrome_h + STATUS_BAR_H;
     const scroll_y = header_h + BAND_GAP;
-    const scroll_h = @max(SCROLL_FLOOR_H, avail.h - scroll_y - chrome_h - BAND_GAP);
-    const chrome_y = avail.h - chrome_h;
+    const scroll_h = @max(SCROLL_FLOOR_H, avail.h - scroll_y - bottom_h - BAND_GAP);
+    // Composer top sits above the fixed status strip, which owns the very bottom.
+    const chrome_y = avail.h - bottom_h;
+    const status_y = avail.h - STATUS_BAR_H;
 
     // ── Header (absolute top band) ────────────────────────────────────────
     {
@@ -971,16 +973,10 @@ pub fn frame() !void {
         });
         defer head.deinit();
 
-        {
-            var tl = dvui.textLayout(@src(), .{}, .{
-                .expand = .horizontal,
-                .font = .theme(.heading),
-                .color_text = palette.teal_text,
-                .gravity_y = 0.5,
-            });
-            tl.addText("Agent harness", .{});
-            tl.deinit();
-        }
+        // Product identity lives in the DOM brand bar (`Invincible` in
+        // AppNav.tsx), so the canvas no longer announces itself — the old
+        // `Agent harness` heading block is gone (plan #555 → #554). The header
+        // keeps its live chrome: lifecycle · build id · model label + Next.
         {
             var tl = dvui.textLayout(@src(), .{}, .{
                 .color_text = if (busy) palette.warm_accent else palette.teal_muted,
@@ -1032,10 +1028,10 @@ pub fn frame() !void {
                 }
             }
         }
-        // Protocol v13 — right-aligned status-slot pack (sandbox · cwd). Mounted
-        // after the primary controls so they never move; a narrow canvas drops
-        // slots (per STATUS_SLOT_DROP_ORDER) instead of clipping the primary band.
-        paintStatusSlots(life);
+        // NOTE: the protocol v13 status-slot pack no longer mounts in the header
+        // — it moved to the always-present status bar mounted at the very bottom
+        // of the frame, below the composer, and is painted there in its own band
+        // at the end of frame() (plan #555 → #554).
     }
 
     // ── Transcript (absolute middle band — fixed pixel height) ────────────
@@ -1418,5 +1414,25 @@ pub fn frame() !void {
                 want_composer_focus = true;
             }
         }
+    }
+
+    // ── Status bar (absolute bottom band — BELOW the composer, always mounted) ──
+    {
+        var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .rect = .{ .x = 0, .y = status_y, .w = 0, .h = STATUS_BAR_H },
+            .expand = .horizontal,
+            .background = true,
+            .color_fill = palette.teal_bg,
+            .color_border = palette.teal_border,
+            .padding = .{ .x = 10, .y = 0, .w = 10, .h = 0 },
+            .min_size_content = .{ .w = 120, .h = STATUS_BAR_H },
+            .id_extra = 0x61_0100,
+        });
+        defer bar.deinit();
+        // Always mounted (locked plan #555): with no non-empty slots this paints
+        // the fixed-height subtle TEAL band and nothing else — it NEVER collapses,
+        // so `chrome_y`/`scroll_h` (reserved above) keep the stack from jumping
+        // when a sandbox attaches. Protocol v13 store + drop order untouched.
+        paintStatusSlots(life);
     }
 }

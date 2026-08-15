@@ -45,9 +45,10 @@ Vertical bands inside the Wasm root (not a DOM panel):
 
 | Band | Behavior |
 |------|----------|
-| **Header** | Compact title / lifecycle / model cycle — height measured each frame |
+| **Header** | Compact lifecycle / build id / model cycle — fixed height (`header_h` = `TOUCH_H + 24`), not measured each frame; no redundant title (brand identity lives in the DOM) |
 | **Transcript** | One outer `scrollArea` that takes **remaining** height only |
 | **Composer chrome** | Single-row text field + one trailing **icon-only** button (▶ Send / ■ Stop) in a **reserved bottom band** outside the scroller (plan #457) |
+| **Status bar** | Thin, always-mounted full-width strip **below the composer** holding the status-slot pack (sandbox · cwd · git · context); fixed `STATUS_BAR_H` height, never collapses (plan #555 → #554) |
 
 | Rule | Behavior |
 |------|----------|
@@ -61,11 +62,11 @@ Vertical bands inside the Wasm root (not a DOM panel):
 | Solid chrome | Composer band uses TEAL fill so transcript paint cannot show through |
 | Forbidden | Nesting the composer inside the transcript `scrollArea`; dual DOM chat input |
 
-## Workspace status bar (header slot pack, protocol v13)
+## Workspace status bar (bottom status bar under the composer, protocol v13)
 
 | Topic | Behavior |
 |-------|----------|
-| Owner | **Wasm-primary** header band (plan #538/#541): a right-aligned pack of status slots painted from bridge state. The DOM host only **mirrors** (see [feature-divide.md](feature-divide.md)) — never a competing status panel |
+| Owner | **Wasm-primary** bottom status bar (plan #538/#541, relocated below the composer by plan #555 → #554): the status-slot pack is painted as a thin full-width strip directly **under** the composer band. The header no longer paints the pack (or a redundant title); the DOM host only **mirrors** (see [feature-divide.md](feature-divide.md)) — never a competing status panel. Empty slot store still mounts the fixed `STATUS_BAR_H` band as a subtle bare strip — it never collapses |
 | Slots | **sandbox** (`activeSandboxId` → `sandbox <id>` short label) · **cwd** (workspace-relative session cwd) · **git** (`branch@sha[∗]`, Phase 2 #540) · **context/usage** (`N in · M out · T tok`, Phase 3 #539) |
 | Bridge carrier | Additive status-slot store (`inv_set_status_slot` / `inv_status_slot_len/copy` / `inv_status_slots_clear`), bridge protocol **v13** (old exports untouched). A host push **replaces** one slot; `len==0` clears it (slot hidden) |
 | Host fold | After hydrate/restore and after **every** agent turn — success **and** fail (PR #543: a 403-clear or committed `change_dir` on a cancelled/timed-out turn repaints the pack; same fold-before-persist discipline as `attachedSlugs`) — the host folds session state into the pack (`lib/harnessChat.ts` `foldStatusSlots`, call sites: hydrate + `runHarnessTurn` success + `runHarnessTurn` fail). Clear/New session clears the pack |
@@ -73,7 +74,7 @@ Vertical bands inside the Wasm root (not a DOM panel):
 | Git probe (server) | **`GET /api/harness/status`** (`app/api/harness/status/route.ts`) resolves the caller's **envelope-authoritative** active bind (envelope `meta.activeSandboxId` wins over a Redis-safe `?sandboxId=` carry) and runs a **bounded, argv-only, read-only** git probe at the **bind workspace root** (`lib/agent/statusProbe.ts` — `rev-parse --abbrev-ref HEAD` + `--short HEAD` + `status --porcelain`; probe `cwd` is always `.`, never a caller session cwd). Non-git / empty-git-dir / probe error → `{ git: {} }` (fail-soft, still 200; git slot stays muted). stdout truncated to `STATUS_GIT_PROBE_OUT_MAX_BYTES` (512). Server-side **per-instance best-effort** rate cap `STATUS_PROBE_MIN_INTERVAL_MS` (2000) serves a cached value + `rate_limited:true` when inside the window (never 429-spam). Auth edge = middleware matcher + in-route `requireSessionUser` (dual gate, mirror `/api/agent`/`/api/sandboxes`). No bind secrets / `base_url` / token ever on the wire |
 | Context slot (Phase 3 #539) | Paints **provider token usage** from the last COMPLETED turn — absolute tokens only (`N in · M out · T tok`; **no `% of window` — v1 has no model max-context source**). Carrier: the bounded `usage` summary on the JSON result / stream `done` / chat result (`lib/agent/usageSummary.ts` `mapProviderUsage`, cap `USAGE_SUMMARY_MAX_BYTES` = 96); the host parses it (`agentApi.ts`/`chatApi.ts` `sanitizeUsageSummary`), mirrors it on `SessionSnapshot.usage`, and `foldStatusSlots` paints the slot from `formatUsageSummary`. **Default on missing usage = hidden** — never a client estimate. A completed turn with no provider usage **clears** the slot; an **aborted/cancelled** turn (no completion) carries the prior honest value forward. Host-local `Snapshot.usage` only — never a reserved cloud `meta` key. Read-side re-sanitized in the fold so a poisoned in-memory usage can never paint |
 | Cap | Per slot **`STATUS_SLOT_MAX_BYTES` = 96** UTF-8 bytes (`lib/sessionCloudCaps.ts` == TS bridge `MAX_STATUS_SLOT_LEN` == Wasm `MAX_STATUS_SLOT_LEN`). The host **ellipsizes** fold values to the cap at a UTF-8 boundary (`harnessChat.ts` `truncateStatusValue`, trailing `…`) before pushing, so a present-but-oversize bound/cwd renders `<…>` instead of being dropped; a raw over-cap push is still **rejected** at the bridge/Wasm (authoritative, never a silent wire truncation) |
-| Narrow canvas | Slots right-align / compact before the **primary header controls (lifecycle · model · Next)** — those are never in the slot drop pool, so primary-action geometry stays stable at ~390px. Slots drop by `STATUS_SLOT_DROP_ORDER` (git → context → cwd → sandbox; sandbox survives last) and, when even the surviving sandbox slot can't fit at full width, it is **pixel-ellipsized** to the leftover budget at paint time (`ui.zig` `truncateToWidthPx`) so the bound sandbox identity stays visible instead of the pack painting nothing |
+| Narrow canvas | The strip is always mounted at fixed `STATUS_BAR_H`; slots right-align within it. Unlike the old header pack (which traded against the primary controls), the slots now trade against the **full strip width** (`statusPackMaxWidth` = strip content width − `STATUS_PACK_BUDGET_SAFETY`) — a wider container, so the drop/ellipsis behavior it triggers is a monotone change. Slots drop by `STATUS_SLOT_DROP_ORDER` (git → context → cwd → sandbox; sandbox survives last) and, when even the surviving sandbox slot can't fit at full width, it is **pixel-ellipsized** to the leftover budget at paint time (`ui.zig` `truncateToWidthPx`) so the bound sandbox identity stays visible instead of the pack painting nothing |
 | Colors | TEAL default, muted when empty (empty slot hides), WARM when busy; **EMBER never** for these slots |
 
 ## Transcript scroll

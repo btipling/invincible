@@ -45,9 +45,10 @@ a cancelled/timed-out turn that committed a `change_dir` repaints the boot cwd
 the next turn uses — never a stale pre-turn value; this is the same fold-before-
 persist discipline as `attachedSlugs`). Folded values are **host-ellipsized** to
 the slot byte cap at a UTF-8 boundary before the wire; a no-bind/no-cwd session
-clears the slots (never a stale leftover). The Wasm header band paints the pack
-(see [harness-limits.md](harness-limits.md)). Bridge is **v13** — additive status
-exports, old exports intact.
+clears the slots (never a stale leftover). The Wasm paints the pack in the
+always-mounted bottom **status bar** directly below the composer — the header no
+longer paints it (see [harness-limits.md](harness-limits.md)). Bridge is **v13** —
+additive status exports, old exports intact.
 
 **Git slot (Phase 2 #540):** the **git** status slot (`branch@sha[∗]`) is
 server-probed, not host-folded. The DOM host polls **`GET /api/harness/status`**
