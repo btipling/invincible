@@ -17,7 +17,9 @@ const ring_slot = @import("ring_slot.zig");
 /// v10: tool-run aggregation message kind (kind 6, `tool_run`) — no new export.
 /// v11: additive ring-readback exports for tests (`inv_message_*_at`) — see below.
 /// v12: additive message kind 7 `skill_attached` (display-only skill row) — no new export.
-pub const PROTOCOL_VERSION: u32 = 12;
+/// v13: additive status-slot store (plan #538/#541) — `inv_set_status_slot`,
+/// `inv_status_slot_len/copy`, `inv_status_slots_clear`.
+pub const PROTOCOL_VERSION: u32 = 13;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -60,6 +62,22 @@ pub const SUBMIT_CAP = 262144;
 /// Protocol v3 model catalog caps (host pushes UTF-8 model ids).
 pub const MAX_CATALOG = 64;
 pub const MAX_MODEL_ID_LEN = 128;
+/// Protocol v13 status-slot store (host pushes one status slot value).
+/// Slots are a fixed, bounded array — a host push REPLACES a slot (no append/
+/// accumulation), mirroring the model-catalog pattern but keyed by index so
+/// later phases (git/context slots) can reserve slots without ABI churn.
+pub const MAX_STATUS_SLOTS = 8;
+pub const MAX_STATUS_SLOT_LEN = 96;
+/// Slot indices — shared contract with the DOM host (plan #538/#541).
+/// Sandbox and cwd ship in phase 1; git/context are reserved for phases 2/3.
+pub const STATUS_SLOT_SANDBOX: u32 = 0;
+pub const STATUS_SLOT_CWD: u32 = 1;
+pub const STATUS_SLOT_GIT: u32 = 2;
+pub const STATUS_SLOT_CONTEXT: u32 = 3;
+/// Priority order for dropping slots on narrow canvases (last = kept longest).
+/// git → context → cwd → sandbox (sandbox is the LAST to hide). Phase 1 paints
+/// sandbox + cwd only; the drop order anticipates phases 2/3 placeholders.
+pub const STATUS_SLOT_DROP_ORDER = [_]u32{ STATUS_SLOT_GIT, STATUS_SLOT_CONTEXT, STATUS_SLOT_CWD, STATUS_SLOT_SANDBOX };
 
 /// Ring slot type. The per-slot `revision` (bumped by `ring_slot.write` on
 /// every body write — #404 dirty detection) lives in `ring_slot.Slot`; all
@@ -95,6 +113,15 @@ const CatalogEntry = struct {
 var catalog: [MAX_CATALOG]CatalogEntry = [_]CatalogEntry{.{}} ** MAX_CATALOG;
 var catalog_count: u32 = 0;
 var selected_index: u32 = 0;
+
+const StatusSlot = struct {
+    len: u32 = 0,
+    data: [MAX_STATUS_SLOT_LEN]u8 = undefined,
+};
+
+/// Protocol v13 status-slot store (keyed, bounded). A push to an index replaces
+/// that slot; out-of-range or oversize pushes are rejected. `reset()` clears all.
+var status_slots: [MAX_STATUS_SLOTS]StatusSlot = [_]StatusSlot{.{}} ** MAX_STATUS_SLOTS;
 
 fn refresh() void {
     if (suppress_refresh) return;
@@ -194,6 +221,7 @@ pub fn reset() void {
     suppress_refresh = false;
     catalog_count = 0;
     selected_index = 0;
+    for (&status_slots) |*s| s.len = 0;
     image_cache.clear();
     math_cache.clear();
 }
@@ -229,6 +257,14 @@ pub fn cycleSelectedModel() void {
     if (catalog_count <= 1) return;
     selected_index = (selected_index + 1) % catalog_count;
     refresh();
+}
+
+/// Protocol v13 — current status-slot value bytes (`slot_status`), or empty when
+/// out of range / unset. ui.zig paints the header slots from this.
+pub fn statusSlotValue(slot: u32) []const u8 {
+    if (slot >= MAX_STATUS_SLOTS) return &[_]u8{};
+    const s = &status_slots[slot];
+    return s.data[0..s.len];
 }
 
 pub fn canLoadEarlier() bool {
@@ -444,6 +480,45 @@ export fn inv_cycle_selected_model() u32 {
     cycleSelectedModel();
     if (catalog_count == 0) return 0;
     return selected_index;
+}
+
+// ── Protocol v13 — status-slot store (host → Wasm) ────────────────────────
+// Fixed, keyed, bounded. A host push REPLACES one slot (no accumulation). The
+// store is additive to v12 (old exports untouched).
+
+/// Set one status slot to a host string. Returns 1 on success, 0 on out-of-range
+/// index or oversized value. `len == 0` CLEARS the slot (empty slot => hidden in
+/// the pack); values over `MAX_STATUS_SLOT_LEN` are rejected (never silently
+/// truncated on the wire — the cap is authoritative).
+export fn inv_set_status_slot(slot: u32, ptr: [*]const u8, len: usize) u8 {
+    if (slot >= MAX_STATUS_SLOTS) return 0;
+    if (len > MAX_STATUS_SLOT_LEN) return 0;
+    const s = &status_slots[slot];
+    if (len == 0) {
+        s.len = 0;
+        refresh();
+        return 1;
+    }
+    s.len = copySlice(&s.data, ptr[0..len]);
+    refresh();
+    return 1;
+}
+
+export fn inv_status_slot_len(slot: u32) u32 {
+    const v = statusSlotValue(slot);
+    return @intCast(v.len);
+}
+
+export fn inv_status_slot_copy(slot: u32, out_ptr: [*]u8, max_len: usize) u32 {
+    const v = statusSlotValue(slot);
+    const n = @min(max_len, v.len);
+    if (n > 0) @memcpy(out_ptr[0..n], v[0..n]);
+    return @intCast(n);
+}
+
+export fn inv_status_slots_clear() void {
+    for (&status_slots) |*s| s.len = 0;
+    refresh();
 }
 
 // ── Protocol v4 image texture cache ───────────────────────────────────────

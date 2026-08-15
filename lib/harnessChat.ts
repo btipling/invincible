@@ -30,6 +30,7 @@ import {
   HarnessBridge,
   Lifecycle,
   MessageKind,
+  StatusSlot,
 } from './harnessBridge';
 import {
   resetHarnessImageSession,
@@ -307,6 +308,7 @@ export function pushSessionToBridge(
     bridge.hydrateMessages(msgs, {
       lifecycle: opts?.lifecycle,
     });
+    foldStatusSlots(bridge, session);
   } else {
     for (const m of msgs) {
       bridge.pushMessage(m.kind, m.text);
@@ -319,6 +321,32 @@ export function pushSessionToBridge(
   scheduleMathFromTexts(bridge, texts);
   bridge.setCanLoadEarlier(canLoadEarlier(windowStart));
   return windowStart;
+}
+
+/**
+ * Protocol v13 (plan #538/#541) — fold session state into the Wasm status-slot
+ * pack that the canvas header paints. Sandbox slot = a human label derived from
+ * the effective `activeSandboxId` (non-secret Redis-safe id; never base_url /
+ * token). cwd slot = the workspace-relative `session.cwd`. An unset value clears
+ * the slot (mutually safe — never a stale leftover from a prior session).
+ * Fail-soft: a rejected/oversize push is ignored, never thrown.
+ */
+export function foldStatusSlots(
+  bridge: HarnessBridge,
+  session: SessionSnapshot,
+): void {
+  const sandbox = session.activeSandboxId;
+  if (sandbox && isRedisSafeOpaqueId(sandbox)) {
+    bridge.setStatusSlot(StatusSlot.Sandbox, `sandbox ${sandbox}`);
+  } else {
+    bridge.clearStatusSlot(StatusSlot.Sandbox);
+  }
+  const cwd = toSessionCwd(session.cwd);
+  if (cwd) {
+    bridge.setStatusSlot(StatusSlot.Cwd, cwd);
+  } else {
+    bridge.clearStatusSlot(StatusSlot.Cwd);
+  }
 }
 
 /**
@@ -1157,6 +1185,10 @@ export async function runHarnessTurn(
       if (foldBind != null && isRedisSafeOpaqueId(foldBind)) {
         next = { ...next, activeSandboxId: foldBind };
       }
+      // Protocol v13 (plan #538/#541): after a successful turn, fold the
+      // effective bind + cwd into the status-slot pack so the canvas header
+      // reflects the post-turn state (incl. a `meta_sandbox_switch`).
+      foldStatusSlots(bridge, next);
       bridge.setLifecycle(Lifecycle.Ready);
       return {
         result: { ok: true, text: agentResult.text || assistantAcc },

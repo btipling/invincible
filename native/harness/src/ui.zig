@@ -728,6 +728,67 @@ fn paintSkillAttached(
     tl.deinit();
 }
 
+/// Cap a status-slot value to `MAX_STATUS_SLOT_LEN` bytes at a UTF-8 boundary
+/// with a trailing ellipsis (never mojibake). The bridge already refuses
+/// oversize pushes, but defends against a hostile pre-v14 wire value anyway.
+fn truncateStatusValue(
+    buf: *[bridge.MAX_STATUS_SLOT_LEN]u8,
+    src: []const u8,
+) []const u8 {
+    if (src.len <= buf.len) return src;
+    // Reserve 3 bytes for the UTF-8 ellipsis (U+2026 = \xE2\x80\xA6).
+    var n: usize = buf.len - 3;
+    // Back off a multibyte char truncated by the byte cap (never mojibake).
+    while (n > 0 and (src[n] & 0xC0) == 0x80) n -= 1;
+    @memcpy(buf[0..n], src[0..n]);
+    @memcpy(buf[n .. n + 3], "…");
+    return buf[0 .. n + 3];
+}
+
+/// Paint the right-aligned status-slot pack (protocol v13, plan #538/#541).
+/// Mounted LAST in the header band, AFTER the primary controls (title /
+/// lifecycle / build-id / model label / Next) so primary-action geometry never
+/// moves. Sandbox + cwd (phase 1) render as muted TEAL one-liners (WARM when
+/// busy); an empty slot is hidden (never a blank placeholder / broken layout).
+/// Slot values are already capped at `MAX_STATUS_SLOT_LEN` by the bridge; this
+/// defends the paint against a stale/oversize value with a UTF-8-safe ellipsis.
+fn paintStatusSlots(busy: bool) void {
+    const sandbox = bridge.statusSlotValue(bridge.STATUS_SLOT_SANDBOX);
+    const cwd = bridge.statusSlotValue(bridge.STATUS_SLOT_CWD);
+    if (sandbox.len == 0 and cwd.len == 0) return;
+
+    const slot_color: dvui.Color = if (busy) palette.warm_accent else palette.teal_muted;
+    // Right-aligned pack: gravity_x pulls the whole group to the trailing edge.
+    var pack = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .gravity_x = 1.0,
+        .gravity_y = 0.5,
+        .id_extra = 0x61_0001,
+    });
+    defer pack.deinit();
+
+    var buf: [bridge.MAX_STATUS_SLOT_LEN]u8 = undefined;
+    if (cwd.len > 0) {
+        var tl = dvui.textLayout(@src(), .{}, .{
+            .id_extra = 0x61_0002,
+            .color_text = slot_color,
+            .gravity_y = 0.5,
+            .margin = .{ .x = 0, .y = 0, .w = 10, .h = 0 },
+        });
+        tl.addText(truncateStatusValue(&buf, cwd), .{});
+        tl.deinit();
+    }
+    if (sandbox.len > 0) {
+        var tl = dvui.textLayout(@src(), .{}, .{
+            .id_extra = 0x61_0003,
+            .color_text = slot_color,
+            .gravity_y = 0.5,
+            .margin = .{ .x = 0, .y = 0, .w = 10, .h = 0 },
+        });
+        tl.addText(truncateStatusValue(&buf, sandbox), .{});
+        tl.deinit();
+    }
+}
+
 fn clearPrompt() void {
     @memset(&prompt_buf, 0);
 }
@@ -854,6 +915,9 @@ pub fn frame() !void {
                 }
             }
         }
+        // Protocol v13 — right-aligned status-slot pack (sandbox · cwd). Mounted
+        // after the primary controls so they never move; empty slots hide.
+        paintStatusSlots(busy);
     }
 
     // ── Transcript (absolute middle band — fixed pixel height) ────────────
