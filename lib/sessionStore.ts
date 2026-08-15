@@ -61,6 +61,15 @@ export type SessionSnapshot = {
    * read (`parseCloudSessionSnapshot`).
    */
   attachedSlugs?: string[];
+  /**
+   * Phase 3 (plan #539 / #327) — host-side mirror of the last COMPLETED turn's
+   * bounded provider-usage summary. `undefined`/absent = the context slot HIDES
+   * (the locked default on missing usage). Cleared on a completed turn whose
+   * provider reported no usage and on New/Clear; KEPT (carried forward) on an
+   * aborted/cancelled turn so the slot never repaints a fake value. Host-local
+   * only — not a reserved cloud `meta` key (does not ride the envelope).
+   */
+  usage?: import('./agent/usageSummary').UsageSummary;
 };
 
 import {
@@ -68,6 +77,7 @@ import {
   isRedisSafeOpaqueId,
   sanitizeSessionCwd,
 } from './sessionCloudCaps';
+import { sanitizeUsageSummary } from './agent/usageSummary';
 export { isRedisSafeOpaqueId, sanitizeSessionCwd } from './sessionCloudCaps';
 
 /**
@@ -163,18 +173,22 @@ export class LocalStorageSessionStore implements SessionStore {
         activeSandboxId?: unknown;
         personaId?: unknown;
         attachedSlugs?: unknown;
+        usage?: unknown;
       };
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) return null;
       // Tolerant: keep only safe workspace-relative cwd strings (parent #270 / phase 2),
       // a Redis-safe `activeSandboxId` (P1/GAP-1, #452), a Redis-safe `personaId`
-      // (phase 3 #488), and a slug-set-valid `attachedSlugs` (phase 2 #517); a bad
-      // local value can't pin. `attachedSlugs` is sanitized so a poisoned local
-      // array is dropped rather than spread raw (review #526 re-run 3 residual).
+      // (phase 3 #488), a slug-set-valid `attachedSlugs` (phase 2 #517), and a
+      // bounded provider-sourced `usage` (phase 3 #539); a bad local value can't
+      // pin. `attachedSlugs` is sanitized so a poisoned local array is dropped
+      // rather than spread raw (review #526 re-run 3 residual); a poisoned `usage`
+      // (non-provider / over-cap) sanitizes to `undefined` → slot hides.
       const {
         cwd: rawCwd,
         activeSandboxId: rawSandbox,
         personaId: rawPersona,
         attachedSlugs: rawAttachedSlugs,
+        usage: rawUsage,
         ...rest
       } = data;
       const cwd = sanitizeSessionCwd(rawCwd);
@@ -187,12 +201,15 @@ export class LocalStorageSessionStore implements SessionStore {
           ? rawPersona
           : undefined;
       const attachedSlugs = sanitizeAttachedSlugs(rawAttachedSlugs);
+      const usage = sanitizeUsageSummary(rawUsage);
       const out: SessionSnapshot = { ...rest } as SessionSnapshot;
       if (cwd !== undefined) out.cwd = cwd;
       if (activeSandboxId !== undefined) out.activeSandboxId = activeSandboxId;
       if (personaId !== undefined) out.personaId = personaId;
       if (attachedSlugs !== undefined) out.attachedSlugs = attachedSlugs;
       else delete out.attachedSlugs;
+      if (usage !== undefined) out.usage = usage;
+      else delete out.usage;
       return out;
     } catch {
       return null;

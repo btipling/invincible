@@ -40,7 +40,7 @@ export enum StatusSlot {
   Cwd = 1,
   /** Reserved for Phase 2 (git probe). */
   Git = 2,
-  /** Reserved for Phase 3 (context/usage). */
+  /** Context slot (Phase 3 #539) — provider token usage. */
   Context = 3,
 }
 

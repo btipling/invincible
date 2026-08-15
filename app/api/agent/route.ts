@@ -681,7 +681,7 @@ export async function POST(req: Request): Promise<Response> {
       });
     }
 
-    const { text, toolTrace, cwd, sandboxId, activeSandboxId } =
+    const { text, toolTrace, cwd, sandboxId, activeSandboxId, usage } =
       await runAgent(finalRunParams);
 
     if (!text) {
@@ -702,6 +702,9 @@ export async function POST(req: Request): Promise<Response> {
       ...(cwd != null ? { cwd } : {}),
       ...(sandboxId != null ? { sandboxId } : {}),
       ...(activeSandboxId != null ? { activeSandboxId } : {}),
+      // Phase 3 (plan #539 / #327): bounded provider-usage summary captured at
+      // completion; absent when the provider reported no usable token counts.
+      ...(usage ? { usage } : {}),
       ...(skills?.events?.length ? { skillEvents: skills.events } : {}),
       ...(skills?.attachedSkills ? { attachedSkills: skills.attachedSkills } : {}),
     });

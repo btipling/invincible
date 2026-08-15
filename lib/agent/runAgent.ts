@@ -4,6 +4,7 @@ import {
   mapFullStreamPart,
   summarizeToolLine,
 } from './agentStream';
+import { mapProviderUsage, type UsageSummary } from './usageSummary';
 import { resolveAgentReasoning } from './reasoningConfig';
 import { resolveAgentMaxSteps } from '../sandbox/config';
 import { type SandboxClient } from '../sandbox/client';
@@ -159,6 +160,12 @@ export type RunAgentResult = {
    * path still folds a switch).
    */
   activeSandboxId?: string;
+  /**
+   * Phase 3 (plan #539 / #327) — bounded provider-usage summary captured at the
+   * FINAL completion (JSON result / stream `done`). Absent when the provider
+   * reported no usable token counts — never a client estimate.
+   */
+  usage?: UsageSummary;
 };
 
 export const DEFAULT_AGENT_SYSTEM = [
@@ -340,6 +347,10 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
   const activeSandboxId =
     metaSandboxSwitchTargetId(result) ??
     (hasFsTools ? params.sandboxId : undefined);
+  // Phase 3 (plan #539) — provider usage is only available after `generateText`
+  // resolves; capture the bounded summary off the completed result (absent when
+  // the provider reported none).
+  const usage = mapProviderUsage(result.usage);
   return {
     text,
     toolTrace,
@@ -348,6 +359,7 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
     ...(activeSandboxId !== undefined
       ? { activeSandboxId }
       : {}),
+    ...(usage ? { usage } : {}),
   };
 }
 
@@ -454,9 +466,22 @@ export async function runAgentStream(
     const activeOut =
       metaSandboxSwitchTargetId({ steps }) ??
       (hasFsTools ? params.sandboxId : undefined);
+    // Phase 3 (plan #539) — provider usage is only available AFTER the
+    // fullStream resolves; the final `done` is the sole authoritative capture
+    // point (never mid-stream). Absent when the provider reported none.
+    // Single read of `result.usage` (an awaitable getter that consumes the
+    // stream): a missing value, a sync getter throw, or a rejected usage read
+    // all OMIT usage — never a broken turn, never an orphaned rejection.
+    let usage: UsageSummary | undefined;
+    try {
+      usage = mapProviderUsage(await Promise.resolve(result.usage));
+    } catch {
+      usage = undefined;
+    }
     await handlers.onEvent({
       type: 'done',
       text,
+      ...(usage ? { usage } : {}),
       ...(toolTrace.length > 0 ? { toolTrace } : {}),
       ...(cwdOut != null ? { cwd: cwdOut } : {}),
       ...(sandboxOut != null ? { sandboxId: sandboxOut } : {}),
@@ -465,6 +490,7 @@ export async function runAgentStream(
     return {
       text,
       toolTrace,
+      ...(usage ? { usage } : {}),
       ...(cwdOut != null ? { cwd: cwdOut } : {}),
       ...(sandboxOut != null ? { sandboxId: sandboxOut } : {}),
       ...(activeOut !== undefined ? { activeSandboxId: activeOut } : {}),
