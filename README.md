@@ -29,6 +29,7 @@ project and keys, and run the same harness on **your** work.
 | **Optional** | Preferred sandbox + instances | Settings → Sandbox (catalog preference + Workspace/HTTP instance lifecycle) ([docs/sandbox.md](docs/sandbox.md)) |
 | **Optional** | OIDC SSO + SCIM | Code on `main`; enable with env ([docs/bring-your-own.md §4b](docs/bring-your-own.md#4b-optional-sso-oidc--scim)) |
 | **Optional** | Agent personas | Per-user `AGENTS.md`-style standing orders bound to a session and injected server-side ([docs/personas.md](docs/personas.md)) |
+| **Optional** | Built-in meta tools | First-party `meta_persona_*` / `meta_skill_*` tools on `/api/agent` let the agent manage its own personas and skills ([docs/mcp.md](docs/mcp.md)) |
 
 ## Try it
 
@@ -135,7 +136,7 @@ Living guides only (process / phase history lives in closed GitHub issues).
 | [sandbox.md](docs/sandbox.md) | Operator — agent tools workspace |
 | [dev/README.md](dev/README.md) | Dogfood sandbox image (`dev/Dockerfile` + GHA→VCR) |
 | [builtin-http.md](docs/builtin-http.md) | Operator — builtin HTTPS fetch (`http_get`) |
-| [mcp.md](docs/mcp.md) | Operator — per-user MCP servers + Exa smoke |
+| [mcp.md](docs/mcp.md) | Operator — per-user MCP servers + built-in `meta_*` tools + Exa smoke |
 | [feature-divide.md](docs/feature-divide.md) | Product — DOM shell vs Wasm harness |
 | [agent-stream.md](docs/agent-stream.md) | Product — agent SSE events, thinking collapse, caps |
 | [runner.md](docs/runner.md) | Operator — self-hosted Zig runner + workflows |

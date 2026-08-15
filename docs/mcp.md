@@ -135,12 +135,58 @@ If harness has no tools: confirm **Enabled**, a configured deploy, and agent pat
 | MCP tools merged cap | ~48 total |
 | Host toolTrace lines | unbounded (`TOOL_TRACE_MAX_LINES`) |
 
+## Built-in meta MCP (first-party `meta_*` tools)
+
+Separate from the per-user **external** MCP servers above, Invincible ships a
+**built-in** "meta" tool surface: first-party `meta_*` tools assembled **always**
+on `/api/agent`, in-process (an AI SDK `tool()` family, not a remote MCP
+transport and not a stdio/spawn server). They let the agent manage its **own**
+workspace configuration — personas and skills — authorized as the signed-in
+caller (same grants as Settings). No DEK secrets, no sockets, no OAuth: the only
+"server" involved is the agent route itself.
+
+- **Personas** — `meta_persona_list` / `meta_persona_read` /
+  `meta_persona_create` / `meta_persona_update_name` /
+  `meta_persona_update_body` / `meta_persona_set_default` /
+  `meta_persona_clear_default` / `meta_persona_delete`
+  (see [personas.md](personas.md)).
+- **Skills** — `meta_skill_list` / `meta_skill_read` / `meta_skill_create` /
+  `meta_skill_update_summary` / `meta_skill_update_body` / `meta_skill_delete`
+  (see [skills.md](skills.md); the read-only `find_skill` / `fetch_skill`
+  remain the reference path).
+
+**Semantics** (common to the whole family, in `lib/agent/metaTools.ts`):
+
+- **Bind-to-caller:** every tool operates on the route-resolved `userId` and
+  ignores any identity a model passes (confused-deputy guard). Rows are scoped
+  tenant+user, so a foreign/unknown id/slug returns `not_found` with no partial
+  body (no existence leak).
+- **Always-on:** no enable flag — it is on whenever the signed-in user calls
+  `/api/agent`.
+- **No secrets:** personas and skill bodies are **non-secret plaintext user
+  content**. A body is returned to the model only on an explicit `*_read`, capped
+  (skills at `SKILL_FETCH_MAX_RETURN_BYTES` with a truncation marker; personas at
+  the store body cap). Writes that exceed a store cap are **rejected** (never
+  truncated on write).
+- **Author-as-user, auto-confirm:** persona/skill delete, `clear_default`, and
+  body overwrites run immediately as the signed-in user — there is **no
+  confirm surface** (the same immediate-mutate semantics as Settings). The only
+  confirm-gated product action, "New session with a persona," is **not** part of
+  this surface.
+- **Traces:** tool results are short one-liners for the `tool_run` paint
+  (`meta_skill_list · ✓ ok · …`), never raw JSON envelopes, and never carry
+  secrets.
+
+The built-in meta surface is backend-only and does not edit host `.env`,
+Vercel secrets, or any external MCP row.
+
 ## Non-goals
 
 - OAuth / dynamic client registration for MCP  
 - stdio or local process MCP  
 - Tenant-admin shared MCP catalog for all members  
-- Invincible acting as an MCP **server**  
+- Invincible acting as an MCP **server** (the built-in `meta_*` tools are an
+  in-process first-party tool surface, not an out-of-process MCP server)  
 - MCP tools on single-shot `POST /api/chat`  
 - Resources / prompts surfaces beyond **tools**  
 - Per-tool allowlists (whole-server enable only)

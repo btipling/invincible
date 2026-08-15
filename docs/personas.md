@@ -25,6 +25,22 @@ A persona body is **not a secret**. Store API keys, tokens, or credentials in th
 proper secrets surface (per-user MCP servers, GitHub PAT, or sandbox env) — never
 inside a persona. Personas are plaintext user content.
 
+### The agent can manage your personas too (`meta_persona_*`)
+
+In addition to the Settings UI above, the agent itself can **list, read, create,
+update, and delete your own personas** through the first-party `meta_persona_*`
+authoring tools on `/api/agent` (`lib/agent/metaTools.ts`, always available,
+bound to the signed-in caller). The surface: `meta_persona_list` (summaries, no
+body), `meta_persona_read` (body by id), `meta_persona_create` (name + body,
+optional slug — derived in the tool layer when omitted, optional `isDefault`),
+`meta_persona_update_name`, `meta_persona_update_body`,
+`meta_persona_set_default`, `meta_persona_clear_default`, `meta_persona_delete`.
+Authoring runs as the signed-in user with immediate effect (no separate confirm),
+consistent with Settings. Persona bodies are non-secret user content: they are
+returned to the model only on an explicit `*_read` and never reach the
+client/Wasm. The snapshot policy above is unaffected — authoring your personas
+does not rewrite a running session's locked snapshot.
+
 ## How a new session uses a persona
 
 Starting a **New session**:

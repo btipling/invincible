@@ -28,6 +28,10 @@ import {
   SKILL_TOOLS_ONLY_SYSTEM,
   SKILL_TOOLS_SYSTEM_ADDENDUM,
 } from './skillTools';
+import {
+  META_TOOLS_SYSTEM_ADDENDUM,
+  SKILL_META_ONLY_SYSTEM,
+} from './metaTools';
 
 export type ToolTraceEntry = {
   name: string;
@@ -164,22 +168,25 @@ function resolveSystem(
   const hasMcp = keys.some((k) => k.startsWith('mcp_'));
   const hasHttp = keys.some((k) => k === 'http_get' || k === 'http_head');
   const hasSkill = keys.some((k) => k === 'find_skill' || k === 'fetch_skill');
+  const hasMeta = keys.some((k) => k.startsWith('meta_'));
 
   const parts: string[] = [];
   if (hasFsTools) {
     parts.push(DEFAULT_AGENT_SYSTEM);
   } else if (hasHttp || hasMcp) {
     parts.push(HTTP_ONLY_SYSTEM);
-  } else if (hasSkill) {
-    // Skills are the only non-FS tools — give an honest prompt (no phantom FS
-    // instructions, and no "use http_get" when http isn't present). Phase 3 #516.
-    parts.push(SKILL_TOOLS_ONLY_SYSTEM);
+  } else if (hasSkill || hasMeta) {
+    // Skill + meta authoring tools are the only non-FS tools — give an honest
+    // prompt (no phantom FS instructions, no "use http_get" when http isn't
+    // present). Phase 1 #531 broadened from skills-only (phase 3 #516).
+    parts.push(hasMeta ? SKILL_META_ONLY_SYSTEM : SKILL_TOOLS_ONLY_SYSTEM);
   } else {
     parts.push(DEFAULT_AGENT_SYSTEM);
   }
   if (hasHttp) parts.push(HTTP_GET_SYSTEM_ADDENDUM);
   if (hasMcp) parts.push(MCP_SYSTEM_ADDENDUM);
   if (hasSkill) parts.push(SKILL_TOOLS_SYSTEM_ADDENDUM);
+  if (hasMeta) parts.push(META_TOOLS_SYSTEM_ADDENDUM);
   // Persona preamble (phase 3, #488) appends last — after the HTTP/MCP addenda —
   // so the persona's standing orders are the final instruction block the model
   // sees. Empty/whitespace is dropped (nothing to inject).
