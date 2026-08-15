@@ -28,7 +28,8 @@ optional login chrome).
 | Session ring window + Load earlier poll | **DOM** host + **Wasm** control | Host slices ≤**2048** (`HARNESS_RING_MAX`); **Load earlier** steps by **`HISTORY_PAGE` = 512**; Wasm pending (protocol v6); no React transcript |
 | Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status; model chip is a **mirror** of Wasm selection, not a second picker |
 | Model catalog fetch (`GET /api/models`) | **DOM** | Session-gated; host pushes ids into Wasm catalog |
-| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v12**) |
+| **Workspace status bar** (sandbox · cwd · git · context) | **Wasm-primary** (header slot pack, protocol v13) | Product truth is in-canvas: a right-aligned pack of status slots painted by the Wasm header band from bridge state. The **DOM host mirrors only** (never a competing status panel). Host folds session state — sandbox (`activeSandboxId`) + `cwd` — into the bridge status-slot store after hydrate/restore and after each successful agent turn (plan #538/#541). Git (Phase 2) + context/usage (Phase 3) are reserved slot indices, not shipped here |
+| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v13**) |
 | Skill attach display (`Skill attached: <slug>`) | **Wasm** (display-only kind 7) + **Vercel** (resolve/inject) | Server resolves `/skill-name` + injects the body into system context (after the persona); the Wasm canvas shows only the skill NAME row (message kind 7, display-only) — never the body |
 | Selected `modelId` on inference | **DOM host** → **Vercel backend** | Host reads bridge; POST body; server re-authorizes grants + BYOK |
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
@@ -125,7 +126,7 @@ re-resolved each turn.
 | Concern | Path |
 |---------|------|
 | Host shell | `app/harness/HarnessHost.tsx` |
-| Bridge TS (protocol **v12**) | `lib/harnessBridge.ts` |
+| Bridge TS (protocol **v13**) | `lib/harnessBridge.ts` |
 | Image fetch/decode | `lib/harnessImages.ts` |
 | Model catalog API | `app/api/models/route.ts` |
 | Admin inference keys | `app/admin/inference/*` |
@@ -138,7 +139,7 @@ re-resolved each turn.
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
 | Export whitelist | `native/harness/build.zig` |
 
-Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **12**).
+Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **13** — primal: 13 adds the additive status-slot store).
 Mismatch → load error; rebuild both sides. Image **bytes** enter only via bridge put; never dual DOM `<img>` product surface.
 
 ## Related

@@ -61,6 +61,18 @@ Vertical bands inside the Wasm root (not a DOM panel):
 | Solid chrome | Composer band uses TEAL fill so transcript paint cannot show through |
 | Forbidden | Nesting the composer inside the transcript `scrollArea`; dual DOM chat input |
 
+## Workspace status bar (header slot pack, protocol v13)
+
+| Topic | Behavior |
+|-------|----------|
+| Owner | **Wasm-primary** header band (plan #538/#541): a right-aligned pack of status slots painted from bridge state. The DOM host only **mirrors** (see [feature-divide.md](feature-divide.md)) — never a competing status panel |
+| Slots (phase 1) | **sandbox** (`activeSandboxId` → `sandbox <id>` short label) · **cwd** (workspace-relative session cwd). Git (Phase 2) + context/usage (Phase 3) are **reserved** slot indices, not shipped yet |
+| Bridge carrier | Additive status-slot store (`inv_set_status_slot` / `inv_status_slot_len/copy` / `inv_status_slots_clear`), bridge protocol **v13** (old exports untouched). A host push **replaces** one slot; `len==0` clears it (slot hidden) |
+| Host fold | After hydrate/restore and after each successful agent turn the host folds session state into the pack (`lib/harnessChat.ts` `foldStatusSlots`). Clear/New session clears the pack |
+| Cap | Per slot **`STATUS_SLOT_MAX_BYTES` = 96** UTF-8 bytes (`lib/sessionCloudCaps.ts` == Wasm `MAX_STATUS_SLOT_LEN`). Oversize pushes are **rejected**, never silently truncated on the wire |
+| Colors | TEAL default, muted when empty (empty slot hides), WARM when busy; **EMBER never** for these slots |
+| Narrow canvas | Slots right-align / compact before the **primary header controls (lifecycle · model · Next)** — those are never in the slot drop pool, so primary-action geometry stays stable at ~390px. Phase-2/3 slots drop by priority later |
+
 ## Transcript scroll
 
 | Topic | Behavior |
