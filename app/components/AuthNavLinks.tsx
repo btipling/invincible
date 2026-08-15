@@ -4,7 +4,9 @@ import { auth } from '../../auth';
 import { teal } from '../../lib/palette';
 import { canAccessAdmin } from '../../lib/tenancy/roles';
 import { createProdServices } from '../../lib/di';
+import { buildSignedInNavItems } from '../../lib/navMenu';
 import { LogoutButton } from '../logout/LogoutButton';
+import NavMenu from './NavMenu';
 
 /** Phase-1 DI: server component wires through the composition root. */
 const services = createProdServices();
@@ -21,8 +23,12 @@ const linkStyle: CSSProperties = {
 };
 
 /**
- * Server-only auth chrome for AppNav right slot when tenancy is on.
- * Admin link only when sole membership role is owner|admin (light lookup).
+ * Server-only auth chrome for the AppNav right slot when tenancy is on.
+ *
+ * Signed-in: renders the shared client `NavMenu` fed pre-gated inert `items`
+ * (role resolved server-side — Admin only when sole membership is owner|admin;
+ * the client never decides who sees Admin) plus the existing `LogoutButton` as
+ * its footer slot. Unauth: inline `Sign in` header control (unchanged).
  */
 export async function AuthNavLinks() {
   const session = await auth();
@@ -38,28 +44,13 @@ export async function AuthNavLinks() {
 
   const membership = await services.soleMembership.loadSoleMembership(userId);
   const showAdmin = membership.ok && canAccessAdmin(membership.role);
+  const items = buildSignedInNavItems({ showAdmin });
 
   return (
-    <span
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: '0.4rem',
-        flexWrap: 'wrap',
-      }}
-    >
-      {showAdmin ? (
-        <Link href="/admin" style={linkStyle}>
-          Admin
-        </Link>
-      ) : null}
-      <Link href="/settings" style={linkStyle}>
-        Settings
-      </Link>
-      <Link href="/harness" style={linkStyle}>
-        Harness
-      </Link>
-      <LogoutButton style={linkStyle} />
-    </span>
+    <NavMenu
+      items={items}
+      ariaLabel="Account menu"
+      footer={<LogoutButton style={linkStyle} />}
+    />
   );
 }
