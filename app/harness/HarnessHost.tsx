@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { runHarnessTurn, pushSessionToBridge } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
+import { formatElapsedSeconds } from '../../lib/elapsedTime';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -192,6 +193,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const [error, setError] = useState<string | null>(null);
   const [lifecycle, setLifecycle] = useState<string>('boot');
   const [busy, setBusy] = useState(false);
+  /** Whole-turn Busy clock (#347/#457): elapsed wall-clock sec shown on the chip. */
+  const [turnElapsedSec, setTurnElapsedSec] = useState(0);
   const [storeKind, setStoreKind] = useState<string>('memory');
   const [loadMs, setLoadMs] = useState<number | null>(null);
   const [hostNote, setHostNote] = useState<string | null>(null);
@@ -593,6 +596,27 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   ]);
 
   /**
+   * Whole-turn Busy clock (#347/#457): while Busy, tick a ~1 Hz host wall-clock
+   * timer so the top-bar chip can show `thinking · 0:42`. The clock is client
+   * wall time from turn start (NOT provider `usage`); it lives on the DOM chip,
+   * never in Wasm. Idle/Stop/error resets it to 0 so no stray `0:00` lingers.
+   * Reduced-motion is naturally satisfied — this is a plain 1 s text update,
+   * no CSS animation.
+   */
+  useEffect(() => {
+    if (!busy) {
+      setTurnElapsedSec(0);
+      return;
+    }
+    const start = performance.now();
+    setTurnElapsedSec(0);
+    const id = window.setInterval(() => {
+      setTurnElapsedSec(Math.max(0, Math.floor((performance.now() - start) / 1000)));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [busy]);
+
+  /**
    * Phase 3 (#488): persona to bind at New session, honoring the picker.
    *   - explicit string → that chosen persona
    *   - explicit null   → None (no bind even if a default exists)
@@ -810,7 +834,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                   padding: '0.2rem 0.5rem',
                 }}
               >
-                {phase === 'ready' && (busy ? 'thinking…' : `ready · ${lifecycle}`)}
+                {phase === 'ready' &&
+                  (busy
+                    ? `thinking · ${formatElapsedSeconds(turnElapsedSec)}`
+                    : `ready · ${lifecycle}`)}
                 {phase === 'error' && 'error'}
               </span>
               {phase === 'ready' && (
