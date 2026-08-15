@@ -745,6 +745,50 @@ fn truncateStatusValue(
     return buf[0 .. n + 3];
 }
 
+/// UTF-8 code-point byte length for the leading byte at `b` (defensive: bridge
+/// slot values are already valid UTF-8, so a lead byte maps to its true length;
+/// a stray continuation byte is treated as 1 so we never over-read).
+fn utf8CharLen(b: u8) usize {
+    if (b < 0x80) return 1;
+    if (b < 0xE0) return 2;
+    if (b < 0xF0) return 3;
+    return 4;
+}
+
+/// Paint-time PIXEL ellipsizer (PR #543 re-run L9): shrink `src` to fit `max_w`
+/// px as measured by `body`, keeping complete UTF-8 code points and a trailing
+/// ellipsis. Only reached when the highest-priority status slot cannot fit at
+/// full width on a very narrow canvas — so the operator still sees which sandbox
+/// is bound (e.g. `sandbox 446655…`) instead of the whole pack painting nothing.
+/// Never mutates the stored bridge value. Returns `src` unchanged when it already
+/// fits; otherwise writes the ellipsized prefix into `buf` (caller-owned, >= the
+/// slot cap) and returns a slice of it.
+fn truncateToWidthPx(
+    body: dvui.Font,
+    buf: []u8,
+    src: []const u8,
+    max_w: f32,
+) []const u8 {
+    const ell = "…";
+    if (max_w <= 0 or src.len == 0) return "";
+    if (body.textSize(src).w <= max_w) return src;
+    const ell_w = body.textSize(ell).w;
+    var i: usize = 0;
+    var used: f32 = 0;
+    while (i < src.len) {
+        const cl = @min(utf8CharLen(src[i]), src.len - i);
+        const cp = src[i .. i + cl];
+        const w = body.textSize(cp).w;
+        if (used + w + ell_w > max_w) break;
+        @memcpy(buf[i .. i + cl], cp);
+        used += w;
+        i += cl;
+    }
+    if (i + ell.len > buf.len or i >= buf.len) return "";
+    @memcpy(buf[i .. i + ell.len], ell);
+    return buf[0 .. i + ell.len];
+}
+
 /// Gap (px) added to each slot's measured text width — matches the `margin.w`
 /// on each slot textLayout below, so the budget math equals the paint exactly.
 const STATUS_SLOT_GAP: f32 = 10;
@@ -817,7 +861,18 @@ fn paintStatusSlots(life: bridge.Lifecycle) void {
     while (keep_from < n and total > budget) : (keep_from += 1) {
         total -= width[keep_from];
     }
-    if (keep_from >= n) return; // even the most important slot doesn't fit — paint nothing
+    if (keep_from >= n) {
+        // Even the most important slot (sandbox — last in the drop order) can't
+        // fit at full width on a very narrow canvas. Never paint nothing (PR
+        // #543 re-run L9): pixel-ellipsize that identity slot down to the leftover
+        // budget so the operator still sees *which* sandbox is bound (e.g.
+        // `sandbox 446655…`). This is the plan's "slots truncate" half that a
+        // pure drop-to-empty would forfeit at exactly the viewport the plan locked.
+        keep_from = n - 1;
+        const max_text_w = budget - STATUS_SLOT_GAP;
+        if (max_text_w <= 0) return; // no room even for the slot's gap — paint nothing
+        text[keep_from] = truncateToWidthPx(body, buf[keep_from][0..], text[keep_from], max_text_w);
+    }
 
     const slot_color: dvui.Color = if (busy) palette.warm_accent else palette.teal_muted;
     // Right-aligned pack: gravity_x pulls the whole group to the trailing edge.
