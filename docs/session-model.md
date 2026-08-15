@@ -51,7 +51,7 @@ The **local** blob uses the opaque client snapshot shape:
 | `updatedAt` | Epoch **ms** (safe integer) — LWW clock for cloud |
 | `messages` | Full transcript for history fold + ring hydrate |
 | `cwd` | **Optional** logical workspace directory (workspace-root-relative). **Session-owned** (P1/GAP-1, #452) — synced to the cloud record as `meta.logicalCwd`, so it survives a device switch. A **confirmed successful `change_dir`** is persisted even when the turn later cancels / times out / hard-errors, so `cwd` survives across turn outcomes — not just a successful turn |
-| `activeSandboxId` | **Optional** server/origin sandbox id (Redis-safe opaque). **Session-owned, server-resolved** (P1/GAP-1, #452 + #330): synced as `meta.activeSandboxId` and sent on every `/api/agent` POST as the resolve **override**. The host folds it into the turn and applies the server's resolved `sandboxId` back on success (authoritative bind); a hard 403 of the **grant-honesty class** (set-but-unusable: `Sandbox access denied.` / selection-required) clears the stale value so the next turn honestly re-resolves from preference / selection. A 403 `Workspace instance is not running.` (a usable grant whose instance is down / softContinue) is **kept** — never silently re-resolved to another grant |
+| `activeSandboxId` | **Optional** server/origin sandbox id (Redis-safe opaque). **Session-owned, server-resolved** (P1/GAP-1, #452 + #330): synced as `meta.activeSandboxId` and sent on every `/api/agent` POST as the resolve **override**. The host folds it into the turn and, on success, applies the server's post-turn effective bind — `agentResult.activeSandboxId` (the `meta_sandbox_switch` target) with fallback to `sandboxId` — back as the authoritative binding (never the pre-turn `sandboxId` clobbering a switch); a hard 403 of the **grant-honesty class** (set-but-unusable: `Sandbox access denied.` / selection-required) clears the stale value so the next turn honestly re-resolves from preference / selection. A 403 `Workspace instance is not running.` (a usable grant whose instance is down / softContinue) is **kept** — never silently re-resolved to another grant |
 
 Storage key: `invincible.harness.session.v1`.
 
@@ -278,6 +278,16 @@ meta tools are a legitimate substitute for FS/MCP/http. A **forbidden** resolve
 inventory + tool-surface contract is `GET
 /api/sandboxes` (see [sandbox.md](sandbox.md)); the host owns the session field
 and #328 status chrome renders it.
+
+**Precedence nit — PUT, then POST.** When a request carries a `sessionId`, the
+server-resolved bind **`meta.activeSandboxId` (envelope) wins over the
+body-provided `sandboxId`** during resolve (`envelope ?? body`). A host/UI-side
+binding change must therefore **PUT the session (persist the envelope) first,
+then POST `/api/agent`** — a change made in chrome but not yet PUT is ignored by
+the next agent turn until the envelope write lands. This is strictly
+server-authoritative: an agent `meta_sandbox_switch` persists to the envelope,
+and the host folds the returned post-turn `activeSandboxId` (not the pre-turn
+`sandboxId`) so the switch survives the follow-up PUT.
 
 ## Product rule
 
