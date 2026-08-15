@@ -324,7 +324,7 @@ invincible/
 | Sandbox daemon version + out-of-date gate + auto-update | `sandbox/constants.mjs` (`INVINCIBLE_SANDBOX_DAEMON_VERSION`), `lib/sandbox/daemonVersion.ts` (`EXPECTED_SANDBOX_DAEMON_VERSION`), `lib/sandbox/client.ts`, `sandbox/createServer.mjs`, `sandbox/autoUpdate.mjs`, `sandbox/server.mjs` — bump **both** version constants in the **same PR** (parity test blocks drift); a bump is required whenever deployed Next relies on a new daemon surface (e.g. **v2** adds `workspaceRoot` to `/health`); see [docs/sandbox.md §3 daemon-version gate](docs/sandbox.md) |
 | Colors / tokens (DOM) | `lib/palette.ts` |
 | Colors / tokens (dvui) | `native/harness/src/palette.zig` (hex sync with palette.ts) |
-| JS ↔ Wasm bridge | `lib/harnessBridge.ts` + `native/harness/src/bridge.zig` |
+| JS ↔ Wasm bridge | `lib/harnessBridge.ts` + `native/harness/src/bridge.zig` — **frame budget** (no app alloc / host I/O in `ui.frame()`): [docs/harness-limits.md](docs/harness-limits.md) · Frame budget |
 | Plans / ops | `docs/*` (living guides); **new plans → GitHub issues** via create-plan |
 | Agent skills | `.grok/skills/*` |
 
@@ -385,6 +385,7 @@ See create-plan / plan-review **layer** rules when planning features.
 - Inference stays server-side (`POST /api/chat` / `POST /api/agent`). No Gateway or sandbox secrets in client or Wasm.
 - Agent sandbox is a **separate process** from the Zig GHA runner — see [`docs/sandbox.md`](docs/sandbox.md).
 - Prefer extending `native/harness` + `HarnessHost` over new infra.
+- **Harness frame budget:** app code in `dvui_update` → `ui.frame()` must not GPA-allocate or do host I/O. Parse / decode / texture belong on the **bridge write** (`inv_push_message` / `inv_update_last` / `inv_*_cache_put`), not paint. Contract + current exceptions: [docs/harness-limits.md](docs/harness-limits.md) · Frame budget.
 - **Tests are run directly with vitest — no script wrappers allowed.** Never
   introduce or use a wrapper script around vitest, and do not re-add one if it was
   removed. Run the suite with `npm test` (= `node scripts/di-gate.mjs && vitest run` —
