@@ -9,6 +9,7 @@ import {
   AGENT_STREAM_ACCEPT,
   type AgentStreamEvent,
 } from './agent/agentStream';
+import { sanitizeUsageSummary, type UsageSummary } from './agent/usageSummary';
 import { parseAttachedSkills } from './sessionCloudCaps';
 
 export type ToolTraceEntry = {
@@ -54,6 +55,12 @@ export type AgentSuccess = {
    * (via `cloudMetaFor`) persists it as the reserved `meta.attachedSkills`.
    */
   attachedSlugs?: string[];
+  /**
+   * Phase 3 (plan #539 / #327) — bounded provider-usage summary parsed from the
+   * JSON result (or the stream `done` event). Absent (hidden) when the provider
+   * reported none or the wire value is invalid/non-provider — never a guess.
+   */
+  usage?: UsageSummary;
 };
 
 export type AgentFailure = {
@@ -202,6 +209,7 @@ function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
       : undefined;
   const skillEvents = parseSkillEvents(record?.skillEvents);
   const attachedSlugs = attachedSlugsFromRecord(record);
+  const usage = sanitizeUsageSummary(record?.usage);
   return {
     ok: true,
     text: textField,
@@ -213,6 +221,7 @@ function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
       : {}),
     ...(skillEvents ? { skillEvents } : {}),
     ...(attachedSlugs !== undefined ? { attachedSlugs } : {}),
+    ...(usage ? { usage } : {}),
   };
 }
 
@@ -417,6 +426,7 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
   let streamCwd: string | undefined;
   let streamSandboxId: string | undefined;
   let streamActiveSandboxId: string | undefined;
+  let streamUsage: UsageSummary | undefined;
   let streamError: AgentFailure | null = null;
 
   try {
@@ -447,6 +457,9 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
           if (typeof ev.activeSandboxId === 'string') {
             streamActiveSandboxId = ev.activeSandboxId;
           }
+          // Phase 3 (plan #539) — usage rides the final `done` alone; absent
+          // mid-stream or on abort (no completion).
+          streamUsage = sanitizeUsageSummary(ev.usage) ?? streamUsage;
         } else if (ev.type === 'error') {
           streamError = {
             ok: false,
@@ -481,6 +494,9 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
           if (typeof ev.activeSandboxId === 'string') {
             streamActiveSandboxId = ev.activeSandboxId;
           }
+          // Phase 3 (plan #539) — usage rides the final `done` alone; absent
+          // mid-stream or on abort (no completion).
+          streamUsage = sanitizeUsageSummary(ev.usage) ?? streamUsage;
         } else if (ev.type === 'error') {
           streamError = {
             ok: false,
@@ -522,5 +538,6 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
     ...(streamActiveSandboxId !== undefined
       ? { activeSandboxId: streamActiveSandboxId }
       : {}),
+    ...(streamUsage ? { usage: streamUsage } : {}),
   };
 };

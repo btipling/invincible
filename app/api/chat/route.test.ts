@@ -150,6 +150,91 @@ describe('POST /api/chat', () => {
     expect(JSON.stringify(body)).not.toContain('sk-chat-byok');
   });
 
+  it('passes bounded provider usage through to the JSON result (plan #539 / #327)', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    const generateText = vi.fn(async () => ({
+      text: 'done',
+      usage: { inputTokens: 40, outputTokens: 10, totalTokens: 50 },
+    }));
+
+    vi.resetModules();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1', email: 'a@b.c' },
+      })),
+    }));
+    mockResolveByok(() => ({
+      ok: true as const,
+      modelId: 'anthropic/claude-a',
+      provider: 'anthropic',
+      credentials: { apiKey: 'sk-chat-byok' },
+      only: ['anthropic'] as [string],
+      byok: { anthropic: [{ apiKey: 'sk-chat-byok' }] },
+      secretId: 'sec-1',
+      secretsToRedact: ['sk-chat-byok'],
+    }));
+    vi.doMock('ai', () => ({ generateText }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      text: string;
+      usage?: { source: string; prompt?: number; completion?: number; total?: number };
+    };
+    expect(body.text).toBe('done');
+    expect(body.usage).toEqual({
+      source: 'provider',
+      prompt: 40,
+      completion: 10,
+      total: 50,
+    });
+  });
+
+  it('omits usage from the chat result when the provider reports none', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    const generateText = vi.fn(async () => ({ text: 'done' }));
+
+    vi.resetModules();
+    vi.doMock('../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({
+        ok: true as const,
+        user: { id: 'user-1', email: 'a@b.c' },
+      })),
+    }));
+    mockResolveByok(() => ({
+      ok: true as const,
+      modelId: 'anthropic/claude-a',
+      provider: 'anthropic',
+      credentials: { apiKey: 'sk-chat-byok' },
+      only: ['anthropic'] as [string],
+      byok: { anthropic: [{ apiKey: 'sk-chat-byok' }] },
+      secretId: 'sec-1',
+      secretsToRedact: ['sk-chat-byok'],
+    }));
+    vi.doMock('ai', () => ({ generateText }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { text: string; usage?: unknown };
+    expect(body.text).toBe('done');
+    expect(body.usage).toBeUndefined();
+  });
+
   it('no grant → 403 and generateText not called', async () => {
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
     const generateText = vi.fn(async (_args: unknown) => ({ text: 'nope' }));

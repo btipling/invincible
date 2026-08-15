@@ -8,6 +8,7 @@ import {
 } from '../../../lib/chatServer';
 import { createProdServices } from '../../../lib/di';
 import { redactSecrets } from '../../../lib/agent/redact';
+import { mapProviderUsage } from '../../../lib/agent/usageSummary';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 
 export const runtime = 'nodejs';
@@ -87,7 +88,13 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json({ error: 'Empty model response.' }, { status: 502 });
     }
 
-    return Response.json({ text });
+    // Phase 3 (plan #539 / #327): always present on a completed chat; the map is
+    // a no-op → absent when the provider reported no usable token counts.
+    const usage = mapProviderUsage(result.usage);
+    return Response.json({
+      text,
+      ...(usage ? { usage } : {}),
+    });
   } catch (err) {
     const { status, error } = mapInferenceError(err);
     const safe =

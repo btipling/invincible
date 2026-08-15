@@ -4,6 +4,7 @@
  */
 
 import type { ToolTraceEntry } from './runAgent';
+import type { UsageSummary } from './usageSummary';
 import { flattenToolResultText } from './toolResultText';
 import { redactSecrets, truncateSummary } from './redact';
 
@@ -62,6 +63,13 @@ export type AgentStreamEvent =
        * `sandboxId` would overwrite the envelope write the switch just made.
        */
       activeSandboxId?: string;
+      /**
+       * Phase 3 (plan #539 / #327) — bounded provider-usage summary. Present
+       * ONLY on the final `done` (the sole authoritative capture point after
+       * the stream resolves); absent mid-stream, on abort/cancel, or when the
+       * provider reported no usable token counts.
+       */
+      usage?: UsageSummary;
     }
   | { type: 'error'; error: string; status?: number };
 

@@ -106,4 +106,42 @@ describe('sendChat', () => {
       }),
     );
   });
+
+  it('parses a bounded provider usage summary on success (plan #539 / #327)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            text: 'pong',
+            usage: { source: 'provider', prompt: 12, completion: 8, total: 20 },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    const result = await sendChat('hi');
+    expect(result).toEqual({
+      ok: true,
+      text: 'pong',
+      usage: { source: 'provider', prompt: 12, completion: 8, total: 20 },
+    });
+  });
+
+  it('omits usage when absent or non-provider (fail-closed, never estimated)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            text: 'pong',
+            usage: { source: 'estimated', prompt: 10 },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    const result = await sendChat('hi');
+    expect(result).toEqual({ ok: true, text: 'pong' }); // usage dropped
+  });
 });

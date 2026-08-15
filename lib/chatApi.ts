@@ -2,6 +2,7 @@
  * Phase 1 chat client — POST prompt, receive full text.
  * Streaming lands when the Gateway route supports it (1.4+).
  */
+import { sanitizeUsageSummary, type UsageSummary } from './agent/usageSummary';
 
 export type ChatRequest = {
   prompt: string;
@@ -11,6 +12,12 @@ export type ChatRequest = {
 export type ChatSuccess = {
   ok: true;
   text: string;
+  /**
+   * Phase 3 (plan #539 / #327) — bounded provider-usage summary parsed from the
+   * chat JSON result. Absent (hidden) when the provider reported none or the
+   * wire value is invalid — never a client estimate.
+   */
+  usage?: UsageSummary;
 };
 
 export type ChatFailure = {
@@ -119,5 +126,10 @@ export async function sendChat(
     return { ok: false, status: res.status, error: errorField || 'Empty model response.' };
   }
 
-  return { ok: true, text: textField };
+  const usage = sanitizeUsageSummary(record?.usage);
+  return {
+    ok: true,
+    text: textField,
+    ...(usage ? { usage } : {}),
+  };
 }

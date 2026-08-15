@@ -30,6 +30,7 @@ import {
   SANDBOX_FORBIDDEN_ERROR,
   SANDBOX_SELECTION_REQUIRED_ERROR,
 } from './tenancy/errors';
+import { formatUsageSummary, sanitizeUsageSummary } from './agent/usageSummary';
 import {
   HarnessBridge,
   Lifecycle,
@@ -399,6 +400,20 @@ export function foldStatusSlots(
     bridge.setStatusSlot(StatusSlot.Cwd, truncateStatusValue(cwd));
   } else {
     bridge.clearStatusSlot(StatusSlot.Cwd);
+  }
+  // Phase 3 (plan #539 / #327) — context/usage slot. Absent usage (or a
+  // non-provider source) HIDES by default; a completed turn always folds its own
+  // summary (clearing the slot when the provider reported none), while an
+  // aborted/cancelled turn carries the prior summary forward so the slot keeps
+  // its last honest value — never a fake number.
+  // Read-side validation (validate on read too): the value is re-sanitized here
+  // so a poisoned in-memory usage (non-provider source / absuuurd clamped counts
+  // past the carrier cap) can never paint — the slot stays hidden instead.
+  const context = formatUsageSummary(sanitizeUsageSummary(session.usage));
+  if (context) {
+    bridge.setStatusSlot(StatusSlot.Context, truncateStatusValue(context));
+  } else {
+    bridge.clearStatusSlot(StatusSlot.Context);
   }
 }
 
@@ -1290,6 +1305,12 @@ export async function runHarnessTurn(
       if (foldBind != null && isRedisSafeOpaqueId(foldBind)) {
         next = { ...next, activeSandboxId: foldBind };
       }
+      // Phase 3 (plan #539 / #327): a COMPLETED turn always writes its OWN usage
+      // onto the session — present paints the context slot, absent CLEARS it to
+      // the locked default-hidden (never a stale prior value). The fail path
+      // below deliberately does NOT touch `usage`, so an aborted/cancelled turn
+      // keeps its last honest value.
+      next = { ...next, usage: agentResult.usage };
       // Protocol v13 (plan #538/#541): after a successful turn, fold the
       // effective bind + cwd into the status-slot pack so the canvas header
       // reflects the post-turn state (incl. a `meta_sandbox_switch`).
@@ -1431,16 +1452,21 @@ export async function runHarnessTurn(
   if (result.ok) {
     let sess = appendMessage(withUser, 'assistant', result.text);
     sess = appendMessage(sess, 'system', describeTurnEnd('chat'));
+    // Phase 3 (plan #539 / #327): the chat path is a completion — fold its
+    // usage (present paints, absent clears-hides), never a stale prior value.
+    sess = { ...sess, usage: result.usage };
+    foldStatusSlots(bridge, sess);
     return { result, session: sess };
   }
   const fail = classifyTurnFailure(result.error, result.status, opts?.signal);
-  // runHarnessChat already painted the end reason on the bridge.
-  return {
-    result,
-    session: appendMessage(
-      withUser,
-      fail.kind === 'stop' ? 'system' : 'error',
-      describeTurnEnd(fail.kind, fail.detail),
-    ),
-  };
+  // runHarnessChat already painted the end reason on the bridge. The fail/cancel
+  // path leaves `usage` untouched (carries the prior honest value forward); fold
+  // so the header stays consistent with the session.
+  let sess = appendMessage(
+    withUser,
+    fail.kind === 'stop' ? 'system' : 'error',
+    describeTurnEnd(fail.kind, fail.detail),
+  );
+  foldStatusSlots(bridge, sess);
+  return { result, session: sess };
 }

@@ -310,6 +310,68 @@ describe('POST /api/agent', () => {
     expect(arg.initialCwd).toBe('invincible');
   });
 
+  it('passes a bounded provider usage summary through on the JSON result (plan #539 / #327)', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    mockResolveSandboxOk();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    const runAgent = vi.fn(async () => ({
+      text: 'done',
+      toolTrace: [],
+      cwd: '.',
+      usage: { source: 'provider', prompt: 300, completion: 100, total: 400 },
+    }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent,
+      runAgentStream: vi.fn(),
+    }));
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { text: string; usage?: unknown };
+    expect(body.text).toBe('done');
+    expect(body.usage).toEqual({
+      source: 'provider',
+      prompt: 300,
+      completion: 100,
+      total: 400,
+    });
+  });
+
+  it('omits usage from the JSON result when runAgent reports none', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    mockResolveSandboxOk();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    const runAgent = vi.fn(async () => ({ text: 'done', toolTrace: [], cwd: '.' }));
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent,
+      runAgentStream: vi.fn(),
+    }));
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { text: string; usage?: unknown };
+    expect(body.text).toBe('done');
+    expect(body.usage).toBeUndefined();
+  });
+
   it('forwards the per-binding workspaceRoot into runAgent when resolve ok', async () => {
     mockAuthedSession();
     mockMcpEmpty();

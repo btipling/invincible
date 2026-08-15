@@ -2992,3 +2992,244 @@ describe('hydrate/turn-refresh git wiring (phase 2, plan #540 — pr #544 #3)', 
     expect(statusSlotAt(exp, StatusSlot.Git)).toBe('');
   });
 });
+
+describe('context/usage slot (phase 3, plan #539 / #327)', () => {
+  const realFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  function stubGitOk() {
+    // The turn paths fire `refreshGitStatusSlot`; make it a harmless no-op so the
+    // context-slot assertions below are deterministic.
+    global.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ value: '' }),
+    })) as unknown as typeof fetch;
+  }
+
+  it('foldStatusSlots paints the context slot from session.usage and hides on absence', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    foldStatusSlots(bridge, {
+      ...createEmptySession('s'),
+      usage: { source: 'provider', prompt: 120, completion: 40, total: 160 } as never,
+    });
+    expect(statusSlotAt(exp, StatusSlot.Context)).toBe('120 in · 40 out · 160 tok');
+
+    // Absent / non-provider usage → hidden (default), never a fake total.
+    const exp2 = makeMockExports();
+    const bridge2 = new HarnessBridge(exp2);
+    bridge2.setStatusSlot(StatusSlot.Context, 'stale-in');
+    foldStatusSlots(bridge2, {
+      ...createEmptySession('s'),
+      usage: { source: 'estimated', prompt: 5 } as never,
+    });
+    expect(statusSlotAt(exp2, StatusSlot.Context)).toBe('');
+  });
+
+  it('a successful agent turn folds provider usage into the context slot (JSON)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubGitOk();
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'done',
+      usage: { source: 'provider', prompt: 300, completion: 100, total: 400 },
+    }));
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(statusSlotAt(exp, StatusSlot.Context)).toBe('300 in · 100 out · 400 tok');
+    expect(next.usage).toEqual({
+      source: 'provider',
+      prompt: 300,
+      completion: 100,
+      total: 400,
+    });
+  });
+
+  it('a successful stream turn folds usage from the done event into the context slot', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubGitOk();
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_p, init) => {
+        await init?.onEvent?.({
+          type: 'done',
+          text: 'ok',
+          usage: { source: 'provider', prompt: 7, completion: 3, total: 10 },
+        });
+        // Production sendAgentStream parses the done-event usage onto the result;
+        // the host folds `agentResult.usage` (not the raw event).
+        return {
+          ok: true,
+          text: 'ok',
+          usage: { source: 'provider', prompt: 7, completion: 3, total: 10 },
+        };
+      },
+    });
+    expect(statusSlotAt(exp, StatusSlot.Context)).toBe('7 in · 3 out · 10 tok');
+    expect(next.usage).toEqual({
+      source: 'provider',
+      prompt: 7,
+      completion: 3,
+      total: 10,
+    });
+  });
+
+  it('a COMPLETED turn with no provider usage CLEARS the context slot (default hidden), never a stale prior', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubGitOk();
+    // Prior turn painted "120 in"; this NEXT completed turn reports no usage.
+    bridge.setStatusSlot(StatusSlot.Context, '120 in');
+    const session = {
+      ...createEmptySession('s'),
+      usage: { source: 'provider', prompt: 120 } as never,
+    };
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'ok', // completed, but no usage → must hide, not keep the stale 120
+    }));
+    const { session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(next.usage).toBeUndefined();
+    expect(statusSlotAt(exp, StatusSlot.Context)).toBe('');
+  });
+
+  it('an aborted/cancelled turn carries the prior honest usage forward (never a fake or cleared number)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubGitOk();
+    const session = {
+      ...createEmptySession('sess'),
+      usage: { source: 'provider', prompt: 55, completion: 20 } as never,
+    };
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      error: 'Request cancelled.',
+    }));
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(result.ok).toBe(false);
+    // No completion → no new usage emitted; the prior honest value is kept.
+    expect(next.usage).toEqual({ source: 'provider', prompt: 55, completion: 20 });
+    expect(statusSlotAt(exp, StatusSlot.Context)).toBe('55 in · 20 out');
+  });
+
+  it('a failed turn keeps the prior usage (no fake usage emitted on a hard error)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubGitOk();
+    const session = {
+      ...createEmptySession('s'),
+      usage: { source: 'provider', prompt: 9, completion: 1, total: 10 } as never,
+    };
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      status: 502,
+      error: 'boom',
+    }));
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(result.ok).toBe(false);
+    expect(next.usage).toEqual({ source: 'provider', prompt: 9, completion: 1, total: 10 });
+    expect(statusSlotAt(exp, StatusSlot.Context)).toBe('9 in · 1 out · 10 tok');
+  });
+
+  it('Clear/New (empty session) resets the context slot to hidden via fold', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setStatusSlot(StatusSlot.Context, 'stale-in');
+    // A fresh empty session (what Clear mints) folds to hidden.
+    foldStatusSlots(bridge, createEmptySession('new'));
+    expect(statusSlotAt(exp, StatusSlot.Context)).toBe('');
+  });
+
+  it('the chat (preferAgent:false) success path also folds usage into the context slot', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const send = vi.fn(async (): Promise<ChatResult> => ({
+      ok: true,
+      text: 'chat pong',
+      usage: { source: 'provider', prompt: 21, completion: 9, total: 30 },
+    }));
+    const { result, session: next } = await runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+      preferAgent: false,
+      send,
+    });
+    expect(result.ok).toBe(true);
+    expect(next.usage).toEqual({ source: 'provider', prompt: 21, completion: 9, total: 30 });
+    expect(statusSlotAt(exp, StatusSlot.Context)).toBe('21 in · 9 out · 30 tok');
+  });
+
+  it('a chat (preferAgent:false) failure keeps the prior usage (no fake usage on no completion)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubGitOk();
+    const send = vi.fn(async (): Promise<ChatResult> => ({
+      ok: false,
+      status: 503,
+      error: 'boom',
+    }));
+    const session = {
+      ...createEmptySession('s'),
+      usage: { source: 'provider', prompt: 4 } as never,
+    };
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      preferAgent: false,
+      send,
+    });
+    expect(result.ok).toBe(false);
+    expect(next.usage).toEqual({ source: 'provider', prompt: 4 });
+    expect(statusSlotAt(exp, StatusSlot.Context)).toBe('4 in');
+  });
+
+  it('hydrate of a session with usage restores the context slot', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      usage: { source: 'provider', prompt: 5, completion: 2 } as never,
+      messages: [makeMessage('user', 'hi')],
+    };
+    pushSessionToBridge(bridge, session, { clear: true });
+    expect(statusSlotAt(exp, StatusSlot.Context)).toBe('5 in · 2 out');
+  });
+
+  it('an oversize/poisoned session usage never paints (sanitized to hidden)', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setStatusSlot(StatusSlot.Context, 'stale');
+    // A localStorage-poisoned usage with absurd clamped counts would over-cap →
+    // sanitized to undefined on load; the fold treats the value as absent.
+    foldStatusSlots(bridge, {
+      ...createEmptySession('s'),
+      usage: {
+        source: 'provider',
+        prompt: 1e15,
+        completion: 1e15,
+        total: 1e15,
+        cached: 1e15,
+      } as never,
+    });
+    expect(statusSlotAt(exp, StatusSlot.Context)).toBe('');
+  });
+});

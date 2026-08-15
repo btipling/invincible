@@ -415,3 +415,97 @@ describe('sendAgent sandboxId fold + reflect', () => {
   });
 });
 
+describe('sendAgent provider usage parse (plan #539 / #327)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('parses a bounded usage summary from the JSON result', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          text: 'done',
+          usage: { source: 'provider', prompt: 120, completion: 40, total: 160 },
+        }),
+      ),
+    );
+    const result = await sendAgent('hi');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.usage).toEqual({
+        source: 'provider',
+        prompt: 120,
+        completion: 40,
+        total: 160,
+      });
+    }
+  });
+
+  it('omits usage when the JSON result carries none', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ text: 'done' })),
+    );
+    const result = await sendAgent('hi');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.usage).toBeUndefined();
+  });
+
+  it('hides usage when the wire value is not a provider source (fail-closed)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          text: 'done',
+          usage: { source: 'estimated', prompt: 100, completion: 50 },
+        }),
+      ),
+    );
+    const result = await sendAgent('hi');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.usage).toBeUndefined();
+  });
+
+  it('parses usage from the stream done event', async () => {
+    const sse =
+      'data: {"type":"text_delta","text":"hi"}\n\n' +
+      'data: {"type":"done","text":"hi","usage":{"source":"provider","prompt":7,"completion":3}}\n\n';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(sse, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      ),
+    );
+    const result = await sendAgentStream('x');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.text).toBe('hi');
+      expect(result.usage).toEqual({
+        source: 'provider',
+        prompt: 7,
+        completion: 3,
+      });
+    }
+  });
+
+  it('omits usage when the stream done event carries none', async () => {
+    const sse = 'data: {"type":"done","text":"hi"}\n\n';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(sse, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      ),
+    );
+    const result = await sendAgentStream('x');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.usage).toBeUndefined();
+  });
+});
+

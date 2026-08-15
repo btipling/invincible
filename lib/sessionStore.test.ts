@@ -257,3 +257,103 @@ describe('attachedSlugs local sanitize (review #526 re-run 3 residual)', () => {
   });
 });
 
+describe('session usage local sanitize (plan #539 / #327)', () => {
+  function installMemoryLocalStorage() {
+    const map = new Map<string, string>();
+    const ls = {
+      getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+      setItem: (k: string, v: string) => {
+        map.set(k, String(v));
+      },
+      removeItem: (k: string) => {
+        map.delete(k);
+      },
+      clear: () => {
+        map.clear();
+      },
+    };
+    vi.stubGlobal('localStorage', ls);
+    return ls;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('LocalStorage load keeps a valid provider usage summary', () => {
+    installMemoryLocalStorage();
+    const key = 'test-usage-key';
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        id: 's',
+        messages: [],
+        updatedAt: 1,
+        usage: { source: 'provider', prompt: 50, completion: 20, total: 70 },
+      }),
+    );
+    const store = new LocalStorageSessionStore(key);
+    expect(store.load()?.usage).toEqual({
+      source: 'provider',
+      prompt: 50,
+      completion: 20,
+      total: 70,
+    });
+  });
+
+  it('LocalStorage load drops a poisoned / non-provider usage (never paints a lie)', () => {
+    installMemoryLocalStorage();
+    const key = 'test-usage-key';
+    // Non-provider source → sanitized to undefined (field dropped → slot hides).
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        id: 's',
+        messages: [],
+        updatedAt: 1,
+        usage: { source: 'estimated', prompt: 9000 },
+      }),
+    );
+    const store = new LocalStorageSessionStore(key);
+    expect(store.load()?.usage).toBeUndefined();
+
+    // Absurd clamped counts over the byte cap → omitted (undefined).
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        id: 's',
+        messages: [],
+        updatedAt: 1,
+        usage: {
+          source: 'provider',
+          prompt: 1e15,
+          completion: 1e15,
+          total: 1e15,
+          cached: 1e15,
+        },
+      }),
+    );
+    expect(store.load()?.usage).toBeUndefined();
+
+    // String / missing source → undefined.
+    localStorage.setItem(
+      key,
+      JSON.stringify({ id: 's', messages: [], updatedAt: 1, usage: 'provider' }),
+    );
+    expect(store.load()?.usage).toBeUndefined();
+  });
+
+  it('Memory/Save round-trips usage', () => {
+    const store = new MemorySessionStore();
+    store.save({
+      ...createEmptySession('x'),
+      usage: { source: 'provider', prompt: 3, completion: 1 },
+    });
+    expect(store.load()?.usage).toEqual({
+      source: 'provider',
+      prompt: 3,
+      completion: 1,
+    });
+  });
+});
+

@@ -8,6 +8,7 @@ import {
   runAgentStream,
 } from './runAgent';
 import { TOOL_TRACE_SUMMARY_MAX_CHARS } from '../sandbox/config';
+import type { AgentStreamEvent } from './agentStream';
 import { MCP_SYSTEM_ADDENDUM } from '../mcp/toolNames';
 import {
   SKILL_TOOLS_ONLY_SYSTEM,
@@ -1017,6 +1018,105 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
       skillsPreamble: '### Skill attached: x\nbody',
     });
     expect(generateTextImpl).toHaveBeenCalled();
+  });
+});
+
+describe('runAgent provider usage capture (plan #539 / #327)', () => {
+  function fsClient(): SandboxClient {
+    return {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      strReplace: vi.fn(),
+      exec: vi.fn(),
+      stat: vi.fn(),
+    };
+  }
+
+  it('carries a bounded usage summary on the JSON result', async () => {
+    const generateTextImpl = vi.fn(async () => ({
+      text: 'ok',
+      steps: [],
+      usage: { inputTokens: 100, outputTokens: 40, totalTokens: 140 },
+    }));
+    const result = await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: fsClient(),
+    });
+    expect(result.usage).toEqual({
+      source: 'provider',
+      prompt: 100,
+      completion: 40,
+      total: 140,
+    });
+  });
+
+  it('omits usage when the provider reports none / a non-usable shape', async () => {
+    const generateTextImpl = vi.fn(async () => ({ text: 'ok', steps: [] }));
+    const result = await runAgent({
+      prompt: 'hi',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      sandboxClient: fsClient(),
+    });
+    expect(result.usage).toBeUndefined();
+  });
+
+  it('attaches usage to the stream done event and the returned result', async () => {
+    const events: AgentStreamEvent[] = [];
+    const streamTextImpl = vi.fn(() => ({
+      fullStream: (async function* () {})(),
+      text: Promise.resolve('ok'),
+      steps: Promise.resolve([]),
+      usage: Promise.resolve({
+        inputTokens: 7,
+        outputTokens: 3,
+        totalTokens: 10,
+      }),
+    }));
+    const result = await runAgentStream(
+      {
+        prompt: 'hi',
+        modelId: 'test-model',
+        streamTextImpl: streamTextImpl as never,
+        sandboxClient: fsClient(),
+      },
+      { onEvent: (ev) => void events.push(ev) },
+    );
+    expect(result.usage).toEqual({
+      source: 'provider',
+      prompt: 7,
+      completion: 3,
+      total: 10,
+    });
+    const done = events.at(-1);
+    expect(done?.type).toBe('done');
+    expect((done as { usage?: unknown })?.usage).toEqual(result.usage);
+  });
+
+  it('a usage read failure never breaks the turn (omits usage)', async () => {
+    const streamTextImpl = vi.fn(() => ({
+      fullStream: (async function* () {})(),
+      text: Promise.resolve('ok'),
+      steps: Promise.resolve([]),
+      // A billing/usage read that rejects must NOT fail the turn.
+      get usage() {
+        return Promise.reject(new Error('usage read failed'));
+      },
+    }));
+    const result = await runAgentStream(
+      {
+        prompt: 'hi',
+        modelId: 'test-model',
+        streamTextImpl: streamTextImpl as never,
+        sandboxClient: fsClient(),
+      },
+      { onEvent: () => {} },
+    );
+    expect(result.text).toBe('ok');
+    expect(result.usage).toBeUndefined();
   });
 });
 
