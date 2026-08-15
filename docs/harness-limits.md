@@ -45,7 +45,7 @@ Vertical bands inside the Wasm root (not a DOM panel):
 
 | Band | Behavior |
 |------|----------|
-| **Header** | Compact lifecycle / build id / model cycle — height measured each frame (no redundant title; brand identity lives in the DOM) |
+| **Header** | Compact lifecycle / build id / model cycle — fixed height (`header_h` = `TOUCH_H + 24`), not measured each frame; no redundant title (brand identity lives in the DOM) |
 | **Transcript** | One outer `scrollArea` that takes **remaining** height only |
 | **Composer chrome** | Single-row text field + one trailing **icon-only** button (▶ Send / ■ Stop) in a **reserved bottom band** outside the scroller (plan #457) |
 | **Status bar** | Thin, always-mounted full-width strip **below the composer** holding the status-slot pack (sandbox · cwd · git · context); fixed `STATUS_BAR_H` height, never collapses (plan #555 → #554) |

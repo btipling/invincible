@@ -1029,8 +1029,9 @@ pub fn frame() !void {
             }
         }
         // NOTE: the protocol v13 status-slot pack no longer mounts in the header
-        // — it moved to the always-present bottom status bar below the composer
-        // (plan #555 → #554), painted there just before the chrome band.
+        // — it moved to the always-present status bar mounted at the very bottom
+        // of the frame, below the composer, and is painted there in its own band
+        // at the end of frame() (plan #555 → #554).
     }
 
     // ── Transcript (absolute middle band — fixed pixel height) ────────────
