@@ -47,12 +47,15 @@ Vertical bands inside the Wasm root (not a DOM panel):
 |------|----------|
 | **Header** | Compact title / lifecycle / model cycle — height measured each frame |
 | **Transcript** | One outer `scrollArea` that takes **remaining** height only |
-| **Composer chrome** | Text field + Send (+ hint) in a **reserved bottom band** outside the scroller |
+| **Composer chrome** | Single-row text field + one trailing **icon-only** button (▶ Send / ■ Stop) in a **reserved bottom band** outside the scroller (plan #457) |
 
 | Rule | Behavior |
 |------|----------|
 | Composer visibility | Fully on-canvas while the harness is ready; not optional |
 | Height budget | Every frame: viewport → absolute `Options.rect` bands (header / transcript / composer). Rect children do not report min-size up the tree, so tall content cannot push chrome off-canvas |
+| Wrap / grow | Field is **`break_lines`** + grows **vertically** with wrapped lines up to `COMPOSER_INPUT_MAX_H` (120 px) then scrolls **inside** the entry — never a horizontal gutter (repo no-h-scroll policy, #344/#457) |
+| Icon button | Fixed **`TOUCH_H`×`TOUCH_H`** (40 px) square on the **same row** as the field, vertically centered. Idle = ▶ Send (submit when non-empty); Busy = ■ Stop (protocol v9 `queueCancelFromUi` → host abort). No labelled Stop/Send pill, no hint copy. Glyphs from the embedded DejaVu Sans Symbols face (no tofu) |
+| Turn clock | Whole-turn **`mm:ss`** (`thinking · 0:42`) is a **DOM top-bar Busy chip** (`HarnessHost` `AppNav`) — client **wall-clock** from Busy start, ~1 Hz tick, reset/hidden on Ready/Stop/error. **Not** Wasm and **not** provider `usage` duration. See [feature-divide.md](feature-divide.md) |
 | Short canvas | Transcript shrinks / scrolls first — chrome keeps touch-sized targets (~40px) |
 | Content size | Tall messages grow **virtual** scroll size only; scroller outer height is fixed to the leftover band |
 | Solid chrome | Composer band uses TEAL fill so transcript paint cannot show through |
