@@ -747,9 +747,10 @@ fn truncateStatusValue(
 
 /// UTF-8 code-point byte length for the leading byte at `b` (defensive: bridge
 /// slot values are already valid UTF-8, so a lead byte maps to its true length;
-/// a stray continuation byte is treated as 1 so we never over-read).
+/// a stray continuation byte (0x80..0xBF) maps to 1 so we never over-read).
 fn utf8CharLen(b: u8) usize {
     if (b < 0x80) return 1;
+    if (b < 0xC0) return 1; // continuation byte — treat as a lone 1-byte unit
     if (b < 0xE0) return 2;
     if (b < 0xF0) return 3;
     return 4;
@@ -777,6 +778,11 @@ fn truncateToWidthPx(
     var used: f32 = 0;
     while (i < src.len) {
         const cl = @min(utf8CharLen(src[i]), src.len - i);
+        // Leave room for the trailing ellipsis in the caller's byte buffer: a
+        // cap-length slot whose prefix would fill buf entirely must still fit
+        // the "…" (Nit L1 — a ≥94-byte cwd would otherwise return "" and leave
+        // an empty gutter slot painted with just the 10px gap).
+        if (i + cl + ell.len > buf.len) break;
         const cp = src[i .. i + cl];
         const w = body.textSize(cp).w;
         if (used + w + ell_w > max_w) break;
@@ -784,7 +790,7 @@ fn truncateToWidthPx(
         used += w;
         i += cl;
     }
-    if (i + ell.len > buf.len or i >= buf.len) return "";
+    if (i == 0 or i + ell.len > buf.len) return "";
     @memcpy(buf[i .. i + ell.len], ell);
     return buf[0 .. i + ell.len];
 }
@@ -796,17 +802,20 @@ const STATUS_SLOT_GAP: f32 = 10;
 /// live-layout rounding (a couple px either way must not push a primary control).
 const STATUS_PACK_BUDGET_SAFETY: f32 = 4;
 
-/// Width (px) the primary header controls already own this frame. Measured with
-/// the SAME fonts/margins the header paints with (title = heading, everything
-/// else = body; build-id/model lead with their left margins, the Next button is
-/// fixed 52 + 4). The status pack is always downstream of this band, so it can
-/// never displace a primary control — on tight canvases the pack instead DROPS
-/// slots per `STATUS_SLOT_DROP_ORDER` until it fits the leftover width.
-/// Mirrors the primary-control import order in `frame()` exactly; keep in sync.
+/// Width (px) the FIXED primary header controls own this frame (lifecycle /
+/// build-id / model / Next). Measured with the SAME fonts/margins the header
+/// paints with (everything = body; build-id/model lead with their left margins,
+/// the Next button is fixed 52 + 4). The title is deliberately NOT charged: it
+/// paints `.expand = .horizontal` and is the widget that already yields, so
+/// reserving it at full natural width under-reports leftover on a narrow canvas
+/// and hides the pack where the plan says it must render (PR #543 re-run 3,
+/// Minor L9). The pack is always downstream of the fixed band, so it can never
+/// displace a primary control — on tight canvases the pack instead DROPS slots
+/// per `STATUS_SLOT_DROP_ORDER` then pixel-ellipsizes the kept slot to fit.
+/// Mirrors the fixed primary-control import order in `frame()` exactly; sync.
 fn statusPackMaxWidth(life: bridge.Lifecycle) f32 {
     const body = (dvui.Options{}).fontGet();
-    const heading = (dvui.Options{ .font = .theme(.heading) }).fontGet();
-    var total: f32 = heading.textSize("Agent harness").w;
+    var total: f32 = 0;
     total += body.textSize(lifecycleLabel(life)).w;
     total += 8 + body.textSize("h:").w + body.textSize(BUILD_ID).w;
     const cat_n = bridge.modelCatalogCount();
@@ -872,6 +881,7 @@ fn paintStatusSlots(life: bridge.Lifecycle) void {
         const max_text_w = budget - STATUS_SLOT_GAP;
         if (max_text_w <= 0) return; // no room even for the slot's gap — paint nothing
         text[keep_from] = truncateToWidthPx(body, buf[keep_from][0..], text[keep_from], max_text_w);
+        if (text[keep_from].len == 0) return; // no room at all — no empty gutter (Nit L1)
     }
 
     const slot_color: dvui.Color = if (busy) palette.warm_accent else palette.teal_muted;
