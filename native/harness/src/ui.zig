@@ -74,15 +74,18 @@ const TOUCH_H: f32 = 40;
 const NEAR_BOTTOM_PX: f32 = 48;
 /// Ignore subpixel layout noise when detecting in-place stream growth (#251).
 const CONTENT_GREW_EPS: f32 = 1.0;
-/// Reserved bottom chrome: textEntry + action row + margins (plan #138).
+/// Reserved bottom chrome: single-row textEntry + trailing TOUCH_H icon + margins
+/// (plan #457 — replaces the old textEntry + Send/Stop action row from plan #138).
 /// Height budget: header + this win over transcript min on short canvases.
-const COMPOSER_CHROME_MIN: f32 = 2 * TOUCH_H + 20;
+const COMPOSER_CHROME_MIN: f32 = COMPOSER_INPUT_MAX_H + 2 * COMPOSER_PAD_Y;
 /// Chrome box top padding (Options.padding.y) — outside min_size_content.
 const COMPOSER_PAD_Y: f32 = 4;
-/// Multi-line composer visible-height cap (px). Stays inside the reserved
-/// bottom band so the absolute-rect transcript height is unchanged; taller
-/// pasted content scrolls internally (plan #334 / #323).
-const COMPOSER_INPUT_MAX_H: f32 = 52;
+/// Multi-line composer visible-height cap (px). Wrapped lines grow the entry up
+/// to this, then it scrolls vertically **inside** the entry — never a horizontal
+/// gutter past the trailing icon (plan #457, repo no-h-scroll policy). Stays
+/// inside the reserved bottom band so the absolute-rect transcript height is
+/// unchanged; taller pasted content scrolls internally (plan #334 / #323).
+const COMPOSER_INPUT_MAX_H: f32 = 120;
 /// Vertical margins between header→scroll and scroll→chrome (Options.margin.h).
 const BAND_GAP: f32 = 6;
 /// Absolute floor so a short canvas still has a scroll band.
@@ -218,6 +221,16 @@ fn chromeCopyFont() dvui.Font {
     const body = dvui.Font.theme(.body);
     return palette.fontEmoji()
         .withSize(body.size * 1.9)
+        .withLineHeight(1.0);
+}
+
+/// Trailing composer icon glyphs (plan #457) — DejaVu Sans Symbols covers both
+/// `▶` (launch/send, U+25B6) and `■` (stop, U+25A0); bump size so they read at
+/// the fixed TOUCH_H square instead of tofu/dust.
+fn composerIconFont() dvui.Font {
+    const body = dvui.Font.theme(.body);
+    return palette.fontSymbols()
+        .withSize(body.size + 4)
         .withLineHeight(1.0);
 }
 
@@ -1120,7 +1133,7 @@ pub fn frame() !void {
     // ── Composer chrome (absolute bottom band — always on-canvas) ─────────
     var typed: []const u8 = prompt_buf[0..0];
     {
-        var chrome = dvui.box(@src(), .{ .dir = .vertical }, .{
+        var chrome = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .rect = .{ .x = 0, .y = chrome_y, .w = 0, .h = chrome_h },
             .expand = .horizontal,
             .background = true,
@@ -1132,12 +1145,16 @@ pub fn frame() !void {
         });
         defer chrome.deinit();
 
-        // Multi-line composer. Plain Enter inserts a newline; the send chord is
-        // Ctrl+Enter (Cmd+Enter on mac). dvui's web backend reports modifier
-        // bits on keydown, and a multiline `textEntry` ignores modifiers on
-        // Enter (it consumes Enter and inserts '\n'), so we detect the chord
-        // here in the pending event list and mark it handled — which also stops
-        // the widget from inserting a stray newline for the submit keystroke.
+        // Single-row composer (plan #457): the multi-line field and ONE trailing
+        // icon button pack horizontally, so a tall paste grows the field up to
+        // COMPOSER_INPUT_MAX_H and then scrolls inside it — there is no second
+        // action row to crush (#344), and no hint copy below the field. Plain
+        // Enter inserts a newline; the send chord is Ctrl+Enter (Cmd+Enter on
+        // mac). dvui's web backend reports modifier bits on keydown, and a
+        // multiline `textEntry` ignores modifiers on Enter (it consumes Enter
+        // and inserts '\n'), so we detect the chord here in the pending event
+        // list and mark it handled — which also stops the widget from inserting
+        // a stray newline for the submit keystroke.
         var composer_submit = false;
         if (!busy) {
             const es = dvui.events();
@@ -1167,12 +1184,13 @@ pub fn frame() !void {
                 .break_lines = true,
             }, .{
                 .expand = .horizontal,
+                .gravity_y = 0.5,
                 .min_size_content = .{ .w = 120, .h = TOUCH_H },
                 .max_size_content = .{ .w = 0, .h = COMPOSER_INPUT_MAX_H },
                 .color_fill = palette.teal_surface,
                 .color_text = palette.teal_text,
                 .color_border = if (busy) palette.teal_border else palette.teal_accent,
-                .margin = .{ .x = 0, .y = 0, .w = 0, .h = 6 },
+                .margin = .{ .x = 0, .y = 0, .w = 8, .h = 0 },
             });
             typed = te.getText();
             if (want_composer_focus) {
@@ -1187,49 +1205,35 @@ pub fn frame() !void {
             }
         }
 
-        {
-            var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
-                .expand = .horizontal,
-                .min_size_content = .{ .w = 0, .h = TOUCH_H + 4 },
-            });
-            defer row.deinit();
-
-            if (busy) {
-                // Stop cancels inflight turn (protocol v9 pending cancel → host abort).
-                if (dvui.button(@src(), "Stop", .{}, .{
-                    .gravity_y = 0.5,
-                    .style = .content,
-                    .min_size_content = .{ .w = 72, .h = TOUCH_H },
-                    .corners = .round(8),
-                    .color_fill = palette.warm_bg,
-                    .color_text = palette.warm_accent,
-                    .color_border = palette.ember_border,
-                })) {
-                    bridge.queueCancelFromUi();
-                }
-            } else if (dvui.button(@src(), "Send", .{}, .{
+        // Single square icon-only action button, same row as the field (no
+        // labelled Stop/Send pill; the hints `busy… Stop to cancel` /
+        // `Ctrl/Cmd+Enter to send` are gone — that state lives on the host
+        // top-bar Busy chip). Idle ▶ = Send (submit when non-empty); Busy ■ =
+        // Stop/cancel (protocol v9 pending cancel → host abort). Glyphs come
+        // from the embedded DejaVu Sans Symbols face so they never tofu.
+        if (busy) {
+            if (dvui.button(@src(), "■", .{}, .{
                 .gravity_y = 0.5,
-                .style = .highlight,
-                .min_size_content = .{ .w = 72, .h = TOUCH_H },
+                .style = .content,
+                .font = composerIconFont(),
+                .min_size_content = .{ .w = TOUCH_H, .h = TOUCH_H },
                 .corners = .round(8),
+                .color_fill = palette.warm_bg,
+                .color_text = palette.warm_accent,
+                .color_border = palette.ember_border,
             })) {
-                if (typed.len > 0) {
-                    submitText(typed);
-                    want_composer_focus = true;
-                }
+                bridge.queueCancelFromUi();
             }
-            {
-                var tl = dvui.textLayout(@src(), .{}, .{
-                    .gravity_y = 0.5,
-                    .color_text = palette.teal_muted,
-                    .margin = .{ .x = 10, .y = 0, .w = 0, .h = 0 },
-                });
-                if (busy) {
-                    tl.addText("busy… Stop to cancel", .{});
-                } else {
-                    tl.addText("Ctrl/Cmd+Enter to send", .{});
-                }
-                tl.deinit();
+        } else if (dvui.button(@src(), "▶", .{}, .{
+            .gravity_y = 0.5,
+            .style = .highlight,
+            .font = composerIconFont(),
+            .min_size_content = .{ .w = TOUCH_H, .h = TOUCH_H },
+            .corners = .round(8),
+        })) {
+            if (typed.len > 0) {
+                submitText(typed);
+                want_composer_focus = true;
             }
         }
     }
