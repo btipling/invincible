@@ -2643,4 +2643,55 @@ describe('status-slot fold (protocol v13, plan #538/#541)', () => {
     expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('');
     expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('');
   });
+
+  it('a FAILED 403 selection-required turn repaints the header to clear the cleared bind (PR #543 L1 Major)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_stale', cwd: 'invincible' };
+    // Pre-seed the header with STALE slots — a no-fold fail path would leave them.
+    bridge.setStatusSlot(StatusSlot.Sandbox, 'sandbox sbx_old');
+    bridge.setStatusSlot(StatusSlot.Cwd, 'stale-cwd');
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'hi', {
+      streamAgent: false,
+      sendAgent: async () => ({
+        ok: false,
+        status: 403,
+        error: SANDBOX_SELECTION_REQUIRED_ERROR,
+      }),
+    });
+    expect(result.ok).toBe(false);
+    expect(next.activeSandboxId).toBeUndefined();
+    // The cleared bind is repainted away; the retained cwd is re-shown.
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('');
+    expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('invincible');
+  });
+
+  it('a CANCELLED turn still repaints the committed change_dir cwd into the header (PR #543 L1 Major)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    bridge.setStatusSlot(StatusSlot.Sandbox, 'sandbox stale');
+    bridge.setStatusSlot(StatusSlot.Cwd, 'stale-cwd');
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_p, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: true,
+          summary: 'change_dir · ✓ ok · invincible/sub · cwd=invincible/sub',
+          // The confirmed cwd rides as a typed field (adversarial review #470).
+          changeDirCwd: 'invincible/sub',
+        });
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(next.cwd).toBe('invincible/sub');
+    // Header repainted to the boot cwd the next turn will actually use; stale cleared.
+    expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('invincible/sub');
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('');
+  });
 });

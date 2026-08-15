@@ -1271,6 +1271,16 @@ export async function runHarnessTurn(
         fail.kind === 'empty' || fail.kind === 'validation'
           ? 'error'
           : 'system';
+      // Protocol v13 (plan #538/#541) fail-path fold (PR #543 L1 Major): the
+      // success reconcile folds status slots, but a FAILED agent turn never did —
+      // leaving the Wasm header showing a STALE sandbox/cwd. On this fail path
+      // the session already mutated: a 403 grant-honesty clear set
+      // `failedSession.activeSandboxId` to undefined, and a cancel/timeout/error
+      // turn committed the last confirmed `change_dir` cwd into
+      // `failedSession.cwd`. Folding now repaints the header to match — clears a
+      // cleared bind, shows the boot cwd the next turn will actually use, and is
+      // a harmless idempotent re-paint when nothing changed.
+      foldStatusSlots(bridge, failedSession);
       bridge.setLifecycle(Lifecycle.Ready);
       return {
         result: {
