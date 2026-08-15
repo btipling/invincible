@@ -5,7 +5,11 @@
  * Product transcript + composer live in Zig/dvui (see docs/feature-divide.md).
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { runHarnessTurn, pushSessionToBridge } from '../../lib/harnessChat';
+import {
+  runHarnessTurn,
+  pushSessionToBridge,
+  refreshGitStatusSlot,
+} from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
 import { formatElapsedSeconds } from '../../lib/elapsedTime';
@@ -615,6 +619,28 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     }, 1000);
     return () => window.clearInterval(id);
   }, [busy]);
+
+  /**
+   * Phase 2 (#538/#540): slow cadence for the git status-bar slot. The DOM host
+   * polls the read-only `GET /api/harness/status` probe so the git branch/SHA slot
+   * tracks repo state after turns / branch changes without chasing every event.
+   * The host cadence is the PRIMARY throttle (the server rate cap is only a
+   * per-instance backstop) — keep this interval well above
+   * `STATUS_PROBE_MIN_INTERVAL_MS`. Fail-soft inside `refreshGitStatusSlot`
+   * (any error/abort keeps the last value, never blanks a sibling or blocks a
+   * turn), so a stale sandbox/userId or a dead route just leaves git muted.
+   */
+  useEffect(() => {
+    const b = bridgeRef.current;
+    if (!b) return;
+    const id = window.setInterval(() => {
+      if (inflightRef.current) return; // never fire mid-turn
+      void refreshGitStatusSlot(b, sessionRef.current);
+    }, 10_000);
+    return () => window.clearInterval(id);
+    // Mounted once after the bridge exists; sessionRef is a stable ref so no re-sub.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /**
    * Phase 3 (#488): persona to bind at New session, honoring the picker.

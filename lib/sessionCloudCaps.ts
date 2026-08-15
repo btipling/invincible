@@ -166,13 +166,26 @@ export const PERSONA_SNAPSHOT_MAX_BYTES = 512 * 1024;
 
 /**
  * Per-slot status-bar value cap (UTF-8 bytes) — plan #538/#541 (workspace status
- * bar, phase 1). One status slot (sandbox · cwd) is a short header one-liner;
- * the value rides the Wasm bridge v13 status store. Matches
+ * bar, phase 1). One status slot (sandbox · cwd · git · context) is a short
+ * header one-liner; the value rides the Wasm bridge v13 status store. Matches
  * `native/harness/src/bridge.zig` `MAX_STATUS_SLOT_LEN` and
  * `lib/harnessBridge.ts` `MAX_STATUS_SLOT_LEN`. A host push is authoritative:
  * values over this are REJECTED, never silently truncated on the wire.
  */
 export const STATUS_SLOT_MAX_BYTES = 96;
+
+/**
+ * Server-side min-interval between git-probe executions on GET
+ * `/api/harness/status` (plan #538/#540, phase 2). **Per-instance best-effort**
+ * (Vercel serverless: no global process clock) — NOT a durable global lock. The
+ * **host cadence is the primary throttle**; this cap only blocks a single-path
+ * hot loop / stale-tab refresh storm from hammering the sandbox with git exec
+ * turns. Generous vs the real host cadence of ~seconds. A request arriving
+ * inside the interval gets `{ rate_limited: true, cached: <last> }` back without
+ * new exec (never 429-spam, never an unbounded exec burst); per-slot fail-soft
+ * holds on exhaustion (the git slot simply keeps its last value / stays empty).
+ */
+export const STATUS_PROBE_MIN_INTERVAL_MS = 2000;
 
 /** Max length (chars) of a Redis-safe opaque id / `activeSandboxId`. */
 export const REDIS_SAFE_OPAQUE_ID_MAX = 512;

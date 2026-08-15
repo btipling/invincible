@@ -49,6 +49,21 @@ clears the slots (never a stale leftover). The Wasm header band paints the pack
 (see [harness-limits.md](harness-limits.md)). Bridge is **v13** — additive status
 exports, old exports intact.
 
+**Git slot (Phase 2 #540):** the **git** status slot (`branch@sha[∗]`) is
+server-probed, not host-folded. The DOM host polls **`GET /api/harness/status`**
+on a ~10 s cadence (`lib/harnessChat.ts` `refreshGitStatusSlot`, wired in
+`app/harness/HarnessHost.tsx`); the route resolves the caller's
+**envelope-authoritative** active sandbox bind (`meta.activeSandboxId` wins over a
+Redis-safe `?sandboxId=` carry — the same `envelope ?? body` precedence as the
+agent route) and runs a **bounded, argv-only, read-only** git probe at the bind
+**workspace root** (`lib/agent/statusProbe.ts`, never the caller's session cwd).
+Read-only git only (`rev-parse` + `status --porcelain`); non-git / probe error →
+empty (`{ git: {} }`), a 200 fail-soft that just mutes the git slot. Server-side
+**per-instance best-effort** rate cap `STATUS_PROBE_MIN_INTERVAL_MS` (the host
+cadence is the real throttle; see [harness-limits.md](harness-limits.md)). The
+probe is **read-only — it never mutates a session or envelope** (no Production
+data write). Auth = middleware matcher + `requireSessionUser`.
+
 The **local** blob uses the opaque client snapshot shape:
 
 ```json

@@ -398,6 +398,58 @@ export function foldStatusSlots(
 }
 
 /**
+ * Phase 2 (plan #540) — refresh the git status slot from the read-only server
+ * probe (`GET /api/harness/status`). The DOM host calls this after hydrate,
+ * after each agent turn / confirmed cwd change, and on the slow cadence timer;
+ * the server resolves the envelope-authoritative bind and runs the bounded git
+ * probe at the bind workspace root.
+ *
+ * Fail-soft on every path — never throws, never blocks a turn, never blanks a
+ * sibling slot:
+ * - any network/abort/cancel error, non-ok status, or a server `rate_limited`
+ *   reply → the git slot KEEPS its last value (it is not cleared on a transient
+ *   rate-limit, so a refresh loop can't flicker the header).
+ * - a valid empty probe result (non-git / no bind) → clear the git slot (stale
+ *   prior value must not linger).
+ * - an oversize value is ellipsized to the status-slot byte cap via
+ *   `truncateStatusValue` before the wire.
+ */
+export async function refreshGitStatusSlot(
+  bridge: HarnessBridge,
+  session: SessionSnapshot,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    const params = new URLSearchParams();
+    // Redis-safe carries only; any non-safe value is simply omitted (the server
+    // still resolves the envelope bind, which is authoritative).
+    if (session.activeSandboxId && isRedisSafeOpaqueId(session.activeSandboxId)) {
+      params.set('sandboxId', session.activeSandboxId);
+    }
+    if (session.id && isRedisSafeOpaqueId(session.id)) {
+      params.set('sessionId', session.id);
+    }
+    const q = params.toString();
+    const res = await fetch(`/api/harness/status${q ? `?${q}` : ''}`, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      ...(signal ? { signal } : {}),
+    });
+    if (!res.ok || res.status === 429) return; // keep last value
+    const data = (await res.json()) as { value?: string };
+    // Rate-limited replies carry the cached value and are not a clear; only a
+    // genuinely empty probe result clears the git slot.
+    if (typeof data.value === 'string' && data.value.length > 0) {
+      bridge.setStatusSlot(StatusSlot.Git, truncateStatusValue(data.value));
+    } else {
+      bridge.clearStatusSlot(StatusSlot.Git);
+    }
+  } catch {
+    // Abort / network error: keep the last git value, never throw.
+  }
+}
+
+/**
  * Run one prompt → Gateway → transcript update.
  * Sets lifecycle busy → ready (soft API errors leave ready for retry).
  */

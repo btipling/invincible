@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   coalesceToolRunMessages,
   collapseThinkingDisplay,
@@ -10,6 +10,7 @@ import {
   parseChangeDirCwd,
   pushSessionToBridge,
   recordLiveCwd,
+  refreshGitStatusSlot,
   runHarnessChat,
   restoreLastUiKind,
   runHarnessTurn,
@@ -2732,6 +2733,98 @@ describe('status-slot fold (protocol v13, plan #538/#541)', () => {
     const painted = statusSlotAt(exp, StatusSlot.Cwd);
     expect(painted).not.toBe('stale-cwd');
     expect(painted.startsWith(longCwd.slice(0, 10))).toBe(true);
+    expect(painted.endsWith('…')).toBe(true);
+    expect(new TextEncoder().encode(painted).length).toBeLessThanOrEqual(96);
+  });
+});
+
+describe('refreshGitStatusSlot (phase 2, plan #540)', () => {
+  const realFetch = global.fetch;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  function stubFetch(json: unknown, ok = true, status = 200) {
+    fetchMock = vi.fn(async () => ({
+      ok,
+      status,
+      json: async () => json,
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+  }
+
+  it('pushes a non-empty probe value into the Git slot and ellipsizes to the cap', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubFetch({ value: 'feature/x@a1b2c3d' });
+    const session = {
+      ...createEmptySession('sess_abc123'),
+      activeSandboxId: 'sbx_redis_safe',
+    };
+    await refreshGitStatusSlot(bridge, session);
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('feature/x@a1b2c3d');
+    // sandboxId + sessionId carries were folded into the query string.
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain('sandboxId=sbx_redis_safe');
+    expect(url).toContain('sessionId=sess_abc123');
+  });
+
+  it('clears the Git slot on a genuinely empty probe result (no stale prior value)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setStatusSlot(StatusSlot.Git, 'old@123');
+    stubFetch({ value: '' });
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s'), activeSandboxId: 'sbx_x' });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('');
+  });
+
+  it('keeps the last value on network error / non-ok / 429 — never clears on a transient refresh', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setStatusSlot(StatusSlot.Git, 'main@abc');
+    // network throw
+    fetchMock = vi.fn(async () => {
+      throw new Error('network down');
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
+
+    // non-ok
+    stubFetch({}, false, 500);
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
+
+    // 429 rate-limited
+    stubFetch({}, true, 429);
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
+  });
+
+  it('omits non-Redis-safe carries (never a poisoned query string), still clears on empty', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      ...createEmptySession('bad session :*'),
+      activeSandboxId: 'bad sandbox *,',
+    };
+    stubFetch({ value: 'main@1' });
+    await refreshGitStatusSlot(bridge, session);
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).not.toContain('activeSandboxId');
+    expect(url).not.toContain('bad');
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@1');
+  });
+
+  it('ellipsizes an oversize git value to the 96-byte cap before the wire', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const longVal = 'feature/' + 'x'.repeat(120);
+    stubFetch({ value: longVal });
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
+    const painted = statusSlotAt(exp, StatusSlot.Git);
     expect(painted.endsWith('…')).toBe(true);
     expect(new TextEncoder().encode(painted).length).toBeLessThanOrEqual(96);
   });
