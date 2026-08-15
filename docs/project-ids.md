@@ -48,3 +48,5 @@ Ops abstract guide: [`runner.md`](runner.md).
 ## Git integration
 
 Production branch: `main` → Vercel.
+
+**Preview deployments are off** (`vercel.json` `ignoreCommand`: skip unless `VERCEL_ENV=production`). Origin does not use Preview — the harness Wasm artifact and env only work on Production. PR pushes still get a skipped Vercel check (no build minutes). `VERCEL_DEPLOY_HOOK_URL` stays: `build-harness` on `main` / dispatch only, Production redeploy.
