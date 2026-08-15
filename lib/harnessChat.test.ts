@@ -4,6 +4,7 @@ import {
   collapseThinkingDisplay,
   classifyTurnFailure,
   describeTurnEnd,
+  foldStatusSlots,
   getSessionCwd,
   isTurnEndLine,
   parseChangeDirCwd,
@@ -25,6 +26,7 @@ import {
   INV_PING_XOR,
   Lifecycle,
   MessageKind,
+  StatusSlot,
   type HarnessBridgeExports,
 } from './harnessBridge';
 import type { ChatResult } from './chatApi';
@@ -51,6 +53,7 @@ function makeMockExports(): HarnessBridgeExports & {
   __messages: { kind: number; text: string }[];
   __lifecycle: () => Lifecycle;
   __canLoadEarlier: () => number;
+  __statusSlots: (string | undefined)[];
 } {
   let buf = new ArrayBuffer(64 * 1024);
   const memory = {
@@ -62,6 +65,7 @@ function makeMockExports(): HarnessBridgeExports & {
   let lifecycle = Lifecycle.Boot;
   let canLoadEarlier = 0;
   const messages: { kind: number; text: string }[] = [];
+  const statusSlots: (string | undefined)[] = new Array(8).fill(undefined);
 
   const gpa_u8 = (len: number) => {
     if (len <= 0) return 0;
@@ -134,6 +138,26 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_selected_model_len: () => 0,
     inv_selected_model_copy: () => 0,
     inv_cycle_selected_model: () => 0,
+    inv_set_status_slot: (slot, ptr, len) => {
+      if (slot < 0 || slot >= 8) return 0;
+      if (len > 96) return 0;
+      statusSlots[slot] = len === 0 ? undefined : read(ptr, len);
+      return 1;
+    },
+    inv_status_slot_len: (slot) => {
+      if (slot < 0 || slot >= 8 || statusSlots[slot] == null) return 0;
+      return statusSlots[slot]!.length;
+    },
+    inv_status_slot_copy: (slot, outPtr, maxLen) => {
+      if (slot < 0 || slot >= 8 || statusSlots[slot] == null) return 0;
+      const v = statusSlots[slot]!;
+      const n = Math.min(maxLen, v.length);
+      if (n > 0) new Uint8Array(buf, outPtr, n).set(new TextEncoder().encode(v).slice(0, n));
+      return n;
+    },
+    inv_status_slots_clear: () => {
+      for (let i = 0; i < 8; i++) statusSlots[i] = undefined;
+    },
     inv_image_cache_put: () => 0,
     inv_image_cache_clear: () => {},
     inv_math_cache_put: () => 0,
@@ -141,7 +165,12 @@ function makeMockExports(): HarnessBridgeExports & {
     __messages: messages,
     __lifecycle: () => lifecycle,
     __canLoadEarlier: () => canLoadEarlier,
+    __statusSlots: statusSlots,
   };
+}
+
+function statusSlotAt(exp: ReturnType<typeof makeMockExports>, slot: number): string {
+  return exp.__statusSlots[slot] ?? '';
 }
 
 describe('describeTurnEnd / classifyTurnFailure', () => {
@@ -2548,5 +2577,70 @@ describe('skill attach display (phase 2 #517)', () => {
       pushUser: false,
     });
     expect(next.attachedSlugs).toEqual(['create-plan']);
+  });
+});
+
+describe('status-slot fold (protocol v13, plan #538/#541)', () => {
+  it('folds sandbox + cwd into the pack after a successful agent turn (JSON)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_vercel', cwd: 'invincible/sub' };
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'done',
+      sandboxId: 'sbx_vercel',
+      cwd: 'invincible/sub',
+    }));
+    await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('sandbox sbx_vercel');
+    expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('invincible/sub');
+  });
+
+  it('screen: no-FS turn omits cwd but still folds the bind', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_byo' };
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'http only',
+      activeSandboxId: 'sbx_byo',
+    }));
+    await runHarnessTurn(bridge, session, 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('sandbox sbx_byo');
+    expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('');
+  });
+
+  it('pushSessionToBridge folds slots on hydrate (restore)', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      id: 's1',
+      updatedAt: 0,
+      activeSandboxId: 'sbx_vercel',
+      cwd: 'invincible',
+      messages: [makeMessage('user', 'hi')],
+    };
+    pushSessionToBridge(bridge, session, { clear: true });
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('sandbox sbx_vercel');
+    expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('invincible');
+  });
+
+  it('explicit no-bind / no-cwd session clears the slots (mutually safe)', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // Pre-seed stale slots, then fold a bare session → clears them.
+    bridge.setStatusSlot(StatusSlot.Sandbox, 'sandbox stale');
+    bridge.setStatusSlot(StatusSlot.Cwd, 'stale');
+    foldStatusSlots(bridge, createEmptySession('s'));
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('');
+    expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('');
   });
 });
