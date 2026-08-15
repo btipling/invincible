@@ -39,8 +39,9 @@ optional login chrome).
 | Image bytes (fetch/decode) | **DOM host** | Browser fetch → RGBA → `inv_image_cache_put`; paint stays Wasm |
 | Math pixels (TeX raster) | **DOM host** | Host MathJax SVG → RGBA → `inv_math_cache_put`; paint stays Wasm |
 | **Composer + Send** | **Wasm** | Primary input |
-| **Stop / cancel turn** | **Wasm** control + **DOM** abort | Canvas **Stop** while busy → pending cancel (protocol v9); host aborts `AbortController` |
+| **Stop / cancel turn** | **Wasm** control + **DOM** abort | Canvas **Stop** (icon-only ■, plan #457) while busy → pending cancel (protocol v9); host aborts `AbortController` |
 | Busy / error presentation for turns | **Wasm** | EMBER for errors |
+| Live whole-turn `mm:ss` clock (Busy) | **DOM** (status chip) | Client **wall-clock** from Busy start, ticked ~1 Hz into the `AppNav` Busy chip (`thinking · 0:42`); reset/hidden on Ready/Stop/error. Composer/Stop stay **Wasm** — this clock is the one DOM-owned busy timer (#347/#457, plan #457) |
 | Empty / onboarding copy for agent | **Wasm** | |
 | Asteronica canvas theme | **Wasm** | `palette.zig` |
 | Frame loop / WebGL | **Wasm** | dvui |
