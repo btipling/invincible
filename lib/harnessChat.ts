@@ -316,6 +316,11 @@ export function pushSessionToBridge(
       lifecycle: opts?.lifecycle,
     });
     foldStatusSlots(bridge, session);
+    // Phase 2 (plan #540) — hydrate/turn-refresh: pull the git slot right after
+    // the sandbox/cwd fold so a restored or freshly-bound session's first git
+    // paint isn't stale against a full cadence tick. Fail-soft (keeps last on
+    // any error / rate-limit); server rate-limited.
+    void refreshGitStatusSlot(bridge, session);
   } else {
     for (const m of msgs) {
       bridge.pushMessage(m.kind, m.text);
@@ -1289,6 +1294,11 @@ export async function runHarnessTurn(
       // effective bind + cwd into the status-slot pack so the canvas header
       // reflects the post-turn state (incl. a `meta_sandbox_switch`).
       foldStatusSlots(bridge, next);
+      // Phase 2 (plan #540) — post-turn git refresh: a committed `change_dir`
+      // (or any turn) may have moved the bind workspace branch; re-fetch the git
+      // slot right after the fold instead of waiting for the cadence tick.
+      // Fail-soft; server rate-limited; never blocks the turn return.
+      void refreshGitStatusSlot(bridge, next, opts?.signal);
       bridge.setLifecycle(Lifecycle.Ready);
       return {
         result: { ok: true, text: agentResult.text || assistantAcc },
@@ -1381,6 +1391,11 @@ export async function runHarnessTurn(
       // cleared bind, shows the boot cwd the next turn will actually use, and is
       // a harmless idempotent re-paint when nothing changed.
       foldStatusSlots(bridge, failedSession);
+      // Phase 2 (plan #540): a failed/cancelled turn can still commit a
+      // confirmed `change_dir` (which may move the bind workspace branch);
+      // refresh the git slot alongside the fail fold. Fail-soft; server
+      // rate-limited; never blocks the fail return.
+      void refreshGitStatusSlot(bridge, failedSession, opts?.signal);
       bridge.setLifecycle(Lifecycle.Ready);
       return {
         result: {
