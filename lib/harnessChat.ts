@@ -21,7 +21,11 @@ import { type AgentStreamEvent } from './agent/agentStream';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
 } from './sandbox/config';
-import { isRedisSafeOpaqueId, normalizeSessionCwd } from './sessionCloudCaps';
+import {
+  isRedisSafeOpaqueId,
+  normalizeSessionCwd,
+  STATUS_SLOT_MAX_BYTES,
+} from './sessionCloudCaps';
 import {
   SANDBOX_FORBIDDEN_ERROR,
   SANDBOX_SELECTION_REQUIRED_ERROR,
@@ -64,6 +68,9 @@ import {
   type ToolRunPayload,
 } from './toolRun';
 import { canLoadEarlier, latestRingStart, sliceMessagesForRing } from './sessionWindow';
+
+/** UTF-8 width helper for `truncateStatusValue` (status-slot byte cap). */
+const utf8Encode = new TextEncoder();
 
 /**
  * Match Wasm MAX_MSG_LEN (`native/harness/src/bridge.zig`).
@@ -324,12 +331,53 @@ export function pushSessionToBridge(
 }
 
 /**
+ * Host-side UTF-8-safe ellipsizer for a status-slot value (PR #543 #3). A status
+ * slot holds at most `STATUS_SLOT_MAX_BYTES` UTF-8 bytes (Zig
+ * `MAX_STATUS_SLOT_LEN`); `setStatusSlot` rejects anything over the cap. Without
+ * a host cap, an oversize fold (realistically a long cwd ≥ 97 bytes) would be
+ * ignored by `setStatusSlot` — leaving the PRIOR slot value painted. Truncating
+ * at a UTF-8 code-point boundary with a trailing "…" keeps the operator's
+ * context and never lets an accepted-but-oversize value stall a stale sibling.
+ * Returns `''` for a whitespace/empty input; otherwise the value ≤ cap bytes
+ * (content at budget + 3-byte ellipsis). Mirrors the Zig `truncateStatusValue`
+ * behavior on the host side (that one is only reachable in-Wasm for a stale wire
+ * value; this is the normal host-push path).
+ */
+export function truncateStatusValue(
+  value: string,
+  maxBytes: number = STATUS_SLOT_MAX_BYTES,
+): string {
+  const text = (value ?? '').trim();
+  if (!text) return '';
+  const bytes = utf8Encode.encode(text);
+  if (bytes.length <= maxBytes) return text;
+  // "…" (U+2026) is 3 UTF-8 bytes — reserve it so the result never exceeds cap.
+  const budget = Math.max(0, maxBytes - 3);
+  if (budget <= 0) return '…';
+  // Iterate full code points (for...of yields astral pairs as one), accumulating
+  // only while the code point's own UTF-8 width still fits the budget. This
+  // never splits a multi-byte sequence — safe to decode the byte prefix.
+  let taken = '';
+  let used = 0;
+  for (const cp of text) {
+    const cpBytes = utf8Encode.encode(cp).length;
+    if (used + cpBytes > budget) break;
+    taken += cp;
+    used += cpBytes;
+  }
+  return `${taken}…`;
+}
+
+/**
  * Protocol v13 (plan #538/#541) — fold session state into the Wasm status-slot
  * pack that the canvas header paints. Sandbox slot = a human label derived from
  * the effective `activeSandboxId` (non-secret Redis-safe id; never base_url /
  * token). cwd slot = the workspace-relative `session.cwd`. An unset value clears
  * the slot (mutually safe — never a stale leftover from a prior session).
- * Fail-soft: a rejected/oversize push is ignored, never thrown.
+ * Oversize values are truncated to the slot byte cap via `truncateStatusValue`
+ * (PR #543 #3) so a present-but-long cwd renders `<…>` instead of failing — the
+ * slot is only ever a real current value, an empty (cleared) slot, or an honest
+ * truncated-with-ellipsis value; never a stale prior sibling.
  */
 export function foldStatusSlots(
   bridge: HarnessBridge,
@@ -337,13 +385,13 @@ export function foldStatusSlots(
 ): void {
   const sandbox = session.activeSandboxId;
   if (sandbox && isRedisSafeOpaqueId(sandbox)) {
-    bridge.setStatusSlot(StatusSlot.Sandbox, `sandbox ${sandbox}`);
+    bridge.setStatusSlot(StatusSlot.Sandbox, truncateStatusValue(`sandbox ${sandbox}`));
   } else {
     bridge.clearStatusSlot(StatusSlot.Sandbox);
   }
   const cwd = toSessionCwd(session.cwd);
   if (cwd) {
-    bridge.setStatusSlot(StatusSlot.Cwd, cwd);
+    bridge.setStatusSlot(StatusSlot.Cwd, truncateStatusValue(cwd));
   } else {
     bridge.clearStatusSlot(StatusSlot.Cwd);
   }

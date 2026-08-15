@@ -8,6 +8,7 @@
  *
  * Protocol doc: native/harness/README.md (table of messages).
  */
+import { STATUS_SLOT_MAX_BYTES } from './sessionCloudCaps';
 
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
 // v13 (plan #538/#541): additive status-slot store — `inv_set_status_slot`,
@@ -21,9 +22,17 @@ export const INV_PING_XOR = 0xa5a5 as const;
 export const MAX_MODEL_CATALOG = 64 as const;
 export const MAX_MODEL_ID_LEN = 128 as const;
 
-/** Must match Zig `MAX_STATUS_SLOTS` / `MAX_STATUS_SLOT_LEN` (protocol v13, plan #538/#541). */
+/** Must match Zig `MAX_STATUS_SLOTS` (protocol v13, plan #538/#541). */
 export const MAX_STATUS_SLOTS = 8 as const;
-export const MAX_STATUS_SLOT_LEN = 96 as const;
+/**
+ * Byte cap on a status-slot value, aliased to the SINGLE host source of truth
+ * `STATUS_SLOT_MAX_BYTES` in `./sessionCloudCaps` (PR #543 L8 nit; was a second
+ * duplicated 96 literal). Axis of truth for the whole host — every push/read
+ * and the fold ellipsizer read this alias. Cross-layer equality (this ==
+ * `STATUS_SLOT_MAX_BYTES` == Zig `MAX_STATUS_SLOT_LEN` in
+ * `native/harness/src/bridge.zig`) is locked by a test in `sessionCloudCaps.test.ts`.
+ */
+export const MAX_STATUS_SLOT_LEN = STATUS_SLOT_MAX_BYTES;
 
 /** Status-slot indices (protocol v13, plan #538/#541) — shared with bridge.zig. */
 export enum StatusSlot {

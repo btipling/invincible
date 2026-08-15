@@ -16,6 +16,7 @@ import {
   selectToolTraceLines,
   shouldContinueStreak,
   skillRowText,
+  truncateStatusValue,
   truncateToolTraceSummary,
   type LiveCwdSource,
 } from './harnessChat';
@@ -2693,5 +2694,45 @@ describe('status-slot fold (protocol v13, plan #538/#541)', () => {
     // Header repainted to the boot cwd the next turn will actually use; stale cleared.
     expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('invincible/sub');
     expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('');
+  });
+
+  it('truncateStatusValue truncates an oversize value to the byte cap with "…" (PR #543 #3)', () => {
+    const long = 'a'.repeat(97); // 97 UTF-8 bytes > the 96-cap
+    const out = truncateStatusValue(long);
+    expect(out).toBe('a'.repeat(93) + '…');
+    expect(new TextEncoder().encode(out).length).toBeLessThanOrEqual(96);
+    expect(out.endsWith('…')).toBe(true);
+  });
+
+  it('truncateStatusValue never splits a UTF-8 code point; short/empty pass harmlessly (PR #543 #3)', () => {
+    expect(truncateStatusValue('cwd')).toBe('cwd');
+    expect(truncateStatusValue('')).toBe('');
+    expect(truncateStatusValue('   ')).toBe('');
+    // "₿" (U+20BF) is 3 UTF-8 bytes: cap 96 → budget 93 = 31 × 3, then "…".
+    const out = truncateStatusValue('₿'.repeat(40));
+    expect(out).toBe('₿'.repeat(31) + '…');
+    expect(new TextEncoder().encode(out).length).toBe(31 * 3 + 3);
+    // No lone replacement char / broken multi-byte tail from slicing mid-sequence.
+    expect(out.includes('\uFFFD')).toBe(false);
+  });
+
+  it('a long cwd is truncated into the header slot, never stalled on a stale prior value (PR #543 #3)', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // A workspace-relative cwd ≥ 97 bytes (realistic deep under node_modules).
+    const longCwd = 'packages/' + 'a/'.repeat(50) + 'truly';
+    expect(new TextEncoder().encode(longCwd).length).toBeGreaterThan(96);
+    // Pre-seed a STALE short cwd — the no-truncate bug would leave THIS painted.
+    bridge.setStatusSlot(StatusSlot.Cwd, 'stale-cwd');
+    const session = { ...createEmptySession('s'), cwd: longCwd, activeSandboxId: 'sbx_v' };
+    foldStatusSlots(bridge, session);
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('sandbox sbx_v');
+    // The long cwd lands as an honest truncated-with-ellipsis value (not stale,
+    // not a rejected push that silently kept the prior short cwd).
+    const painted = statusSlotAt(exp, StatusSlot.Cwd);
+    expect(painted).not.toBe('stale-cwd');
+    expect(painted.startsWith(longCwd.slice(0, 10))).toBe(true);
+    expect(painted.endsWith('…')).toBe(true);
+    expect(new TextEncoder().encode(painted).length).toBeLessThanOrEqual(96);
   });
 });
