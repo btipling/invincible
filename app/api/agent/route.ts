@@ -401,6 +401,44 @@ export async function POST(req: Request): Promise<Response> {
     }
     redactList = [...redactList, ...ghSecrets];
 
+    // Phase 2 (#532 / blocker B1 A1): server-authoritative bind seed. The switch
+    // tool persists `meta.activeSandboxId` on the caller's envelope; the route
+    // MUST read it back to seed this turn's resolve so a switch survives the next
+    // turn (previously only the body-provided `parsed.sandboxId` was honored —
+    // the whole reason the switch never persisted). Per approved decision 3, when
+    // a `sessionId` is present the server envelope bind WINS over the body
+    // `sandboxId` (the host body is a mirror; the envelope is authoritative). The
+    // body remains the fallback when the envelope carries no bind (or the store
+    // is unavailable — fail-open: a resolve-read error never 4xx's the turn).
+    // Set-but-unusable in the envelope fails closed via resolveSandbox's existing
+    // grant-honesty 403; an unusable id is never silently dropped.
+    let requestedSandboxId = parsed.sandboxId;
+    if (parsed.sessionId) {
+      try {
+        const tenantRes =
+          await services.harnessSessionsRedis.resolveTenantIdForUser(userId);
+        if (tenantRes.ok) {
+          const storeRes = await resolveSessionStore();
+          const store =
+            storeRes.ok && isEnvelopeStore(storeRes.value)
+              ? storeRes.value
+              : undefined;
+          if (store) {
+            const envelope = await store.readEnvelope(
+              sessionKeyFor(tenantRes.value, userId, parsed.sessionId),
+            );
+            const bound = envelope?.meta?.activeSandboxId;
+            if (typeof bound === 'string' && bound) {
+              requestedSandboxId = bound;
+            }
+          }
+        }
+      } catch {
+        // Fail-open: keep the body fallback below.
+        requestedSandboxId = parsed.sandboxId;
+      }
+    }
+
     const resolved = await services.resolveSandbox.resolveAgentSandbox(
       userId,
       { ...(execEnv ? { execEnv } : {}) },
@@ -410,9 +448,10 @@ export async function POST(req: Request): Promise<Response> {
         // cancels when the request is aborted — never a zombie probe.
         signal: req.signal,
         // Session-owned active sandbox override (Redis-safe, server-validated).
-        // Unset → today's preference/single/selection logic; set-but-unusable →
-        // same 403 class (fail closed, no silent fallback).
-        ...(parsed.sandboxId ? { requestedSandboxId: parsed.sandboxId } : {}),
+        // Envelope-seeded above (B1 A1); unset → today's preference/single/
+        // selection logic; set-but-unusable → same 403 class (fail closed, no
+        // silent fallback).
+        ...(requestedSandboxId ? { requestedSandboxId } : {}),
       },
     );
 

@@ -1611,4 +1611,197 @@ describe('POST /api/agent', () => {
     expect(body.attachedSkills).toBe('["create-plan"]');
   });
 
+  it('seeds resolve from the envelope activeSandboxId when a sessionId is present, no body sandboxId (blocker B1 A1)', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    // The switch tool persisted `meta.activeSandboxId` on the caller's envelope
+    // last turn; the route MUST read it back to seed this turn's resolve.
+    const fakeSessionStore = {
+      readEnvelope: vi.fn(async () => ({
+        id: 'sess_1',
+        tenantId: 'tenant-1',
+        userId: 'user-1',
+        createdAt: 1,
+        updatedAt: 1,
+        meta: { activeSandboxId: 'sbx_env' },
+      })),
+      upsertEnvelope: vi.fn(async () => ({ status: 'stored' as const })),
+    };
+    vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: async () => ({ ok: true as const, value: fakeSessionStore }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({
+        tenantId: t,
+        userId: u,
+        sessionId: s,
+      }),
+    }));
+    servicesState.harnessSessionsRedis = {
+      resolveTenantIdForUser: vi.fn(async () => ({ ok: true as const, value: 'tenant-1' })),
+    };
+    let requestedSandboxId: string | undefined = 'sentinel';
+    servicesState.resolveSandbox = {
+      resolveAgentSandbox: vi.fn(async (_uid: string, _deps: unknown, opts: {
+        requestedSandboxId?: string;
+      }) => {
+        requestedSandboxId = opts?.requestedSandboxId;
+        return {
+          ok: true as const,
+          value: {
+            client: { listDir: vi.fn(), close: vi.fn(async () => {}) },
+            permissions: { canRead: true, canWrite: true },
+            secrets: [] as string[],
+            sandboxId: 'sbx_env',
+            tenantId: 'tenant-1',
+            backend: 'vercel' as const,
+            resolvedImage: 'img',
+          },
+        };
+      }),
+    };
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(async () => ({ text: 'ok', toolTrace: [] })),
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi', sessionId: 'sess_1' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    // The envelope bind (persisted by a prior switch) seeds the resolve.
+    expect(requestedSandboxId).toBe('sbx_env');
+  });
+
+  it('envelope activeSandboxId WINS over the body sandboxId when a sessionId is present (approved decision 3)', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    const fakeSessionStore = {
+      readEnvelope: vi.fn(async () => ({
+        id: 'sess_1',
+        tenantId: 'tenant-1',
+        userId: 'user-1',
+        createdAt: 1,
+        updatedAt: 1,
+        meta: { activeSandboxId: 'sbx_env' },
+      })),
+      upsertEnvelope: vi.fn(async () => ({ status: 'stored' as const })),
+    };
+    vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: async () => ({ ok: true as const, value: fakeSessionStore }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({
+        tenantId: t,
+        userId: u,
+        sessionId: s,
+      }),
+    }));
+    servicesState.harnessSessionsRedis = {
+      resolveTenantIdForUser: vi.fn(async () => ({ ok: true as const, value: 'tenant-1' })),
+    };
+    let requestedSandboxId: string | undefined = 'sentinel';
+    servicesState.resolveSandbox = {
+      resolveAgentSandbox: vi.fn(async (_uid: string, _deps: unknown, opts: {
+        requestedSandboxId?: string;
+      }) => {
+        requestedSandboxId = opts?.requestedSandboxId;
+        return {
+          ok: true as const,
+          value: {
+            client: { listDir: vi.fn(), close: vi.fn(async () => {}) },
+            permissions: { canRead: true, canWrite: true },
+            secrets: [] as string[],
+            sandboxId: 'sbx_env',
+            tenantId: 'tenant-1',
+            backend: 'vercel' as const,
+            resolvedImage: 'img',
+          },
+        };
+      }),
+    };
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(async () => ({ text: 'ok', toolTrace: [] })),
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'hi',
+          sessionId: 'sess_1',
+          // The host body is a MIRROR (stale pre-turn id); the envelope wins.
+          sandboxId: 'sbx_stale_body',
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(requestedSandboxId).toBe('sbx_env');
+  });
+
+  it('body sandboxId still seeds resolve when a sessionId is absent (legacy path, no envelope)', async () => {
+    mockAuthedSession();
+    mockMcpEmpty();
+    mockByokOk();
+    mockGithubToken();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: async () => ({ ok: true as const, value: undefined }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({
+        tenantId: t,
+        userId: u,
+        sessionId: s,
+      }),
+    }));
+    servicesState.harnessSessionsRedis = {
+      resolveTenantIdForUser: vi.fn(async () => ({ ok: true as const, value: 'tenant-1' })),
+    };
+    let requestedSandboxId: string | undefined;
+    servicesState.resolveSandbox = {
+      resolveAgentSandbox: vi.fn(async (_uid: string, _deps: unknown, opts: {
+        requestedSandboxId?: string;
+      }) => {
+        requestedSandboxId = opts?.requestedSandboxId;
+        return {
+          ok: true as const,
+          value: {
+            client: { listDir: vi.fn(), close: vi.fn(async () => {}) },
+            permissions: { canRead: true, canWrite: true },
+            secrets: [] as string[],
+            sandboxId: 'sbx_body',
+            tenantId: 'tenant-1',
+            backend: 'vercel' as const,
+            resolvedImage: 'img',
+          },
+        };
+      }),
+    };
+    vi.doMock('../../../lib/agent/runAgent', () => ({
+      runAgent: vi.fn(async () => ({ text: 'ok', toolTrace: [] })),
+      runAgentStream: vi.fn(),
+    }));
+
+    const { POST } = await loadRoute();
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi', sandboxId: 'sbx_body' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    // No session → no envelope; the body sandboxId is honored (no regression).
+    expect(requestedSandboxId).toBe('sbx_body');
+  });
+
 });

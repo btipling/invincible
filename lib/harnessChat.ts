@@ -1145,15 +1145,17 @@ export async function runHarnessTurn(
         next = { ...next, cwd: appliedCwd };
       }
       // Success-path active-bind reconcile (authoritative server resolution):
-      // the turn ran against the resolved `sandboxId` (same seam as cwd). Apply
-      // it back onto the session's `activeSandboxId` so the local session + cloud
-      // `meta` carry the authoritative bind (status chrome #328 reads this
-      // field). Only sanitized Redis-safe values persist (local SoT).
-      if (
-        agentResult.sandboxId != null &&
-        isRedisSafeOpaqueId(agentResult.sandboxId)
-      ) {
-        next = { ...next, activeSandboxId: agentResult.sandboxId };
+      // the turn ran against the resolved bind. Fold the POST-TURN EFFECTIVE
+      // bind — `agentResult.activeSandboxId` (switch target when the turn
+      // switched, else the resolved `sandboxId`; blocker B1 / #532 A2 wire) —
+      // onto the session's `activeSandboxId` so a `meta_sandbox_switch` survives
+      // the fold/PUT. Previously the host folded the PRE-turn `sandboxId`, which
+      // silently overwrote a freshly-persisted switch (the very B1 bug). Fall
+      // back to `sandboxId` only when the wire field is absent (pre-wire /
+      // parity). Only sanitized Redis-safe values persist (local SoT).
+      const foldBind = agentResult.activeSandboxId ?? agentResult.sandboxId;
+      if (foldBind != null && isRedisSafeOpaqueId(foldBind)) {
+        next = { ...next, activeSandboxId: foldBind };
       }
       bridge.setLifecycle(Lifecycle.Ready);
       return {
