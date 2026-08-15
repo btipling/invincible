@@ -327,6 +327,16 @@ describe('GET /api/harness/status', () => {
     expect(second.status).toBe(200);
     const body = await second.json();
     expect(body.rate_limited).toBe(true);
+    // PR #544 #1 (Major L1+L9): the rate-limited reply MUST carry the cached
+    // `value` on the wire — the host treats a `rate_limited` 200 as KEEP-last,
+    // and without it the git slot is cleared (inverted contract).
+    // (The fake client's stdout is `main\n${counter}\n` and the three git execs
+    // run concurrently, so the exact sha is nondeterministic — but it MUST be a
+    // non-empty formatted `branch@sha*` value, proving the wire carries it.)
+    expect(typeof body.value).toBe('string');
+    expect(body.value.length).toBeGreaterThan(0);
+    expect(body.value).toContain('@');
+    expect(body.value.endsWith('*')).toBe(true);
     expect(execCalls).toBe(3); // git probe = 3 execs, all on first request
   });
 });

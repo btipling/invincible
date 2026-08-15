@@ -135,15 +135,21 @@ export async function GET(req: Request): Promise<Response> {
   const now = Date.now();
   const last = lastProbeAt.get(key);
   let git: GitStatusProbeResult;
+  let value: string;
   if (last != null && now - last < STATUS_PROBE_MIN_INTERVAL_MS) {
     // In the window: serve the cached last value (per-instance), never a new exec.
+    // The formatted `value` is included here too — the host treats a
+    // `rate_limited` 200 as KEEP-last, so omitting it would CLEAR the git slot
+    // (pr #544 #1 Major L1+L9). Same wire both branches: `value` present when
+    // the cached result has a branch/sha, absent only when git is empty.
     git = lastProbeCache.get(key) ?? {};
-    return Response.json({ git, rate_limited: true });
+    value = formatGitStatusSlot(git);
+    return Response.json({ git, rate_limited: true, ...(value ? { value } : {}) });
   }
   git = await probeGitStatus(resolved.value.client, req.signal);
   boundedSet(lastProbeAt, key, now);
   boundedSet(lastProbeCache, key, git);
 
-  const value = formatGitStatusSlot(git);
+  value = formatGitStatusSlot(git);
   return Response.json({ git, ...(value ? { value } : {}) });
 }

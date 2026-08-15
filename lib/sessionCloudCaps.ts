@@ -181,9 +181,12 @@ export const STATUS_SLOT_MAX_BYTES = 96;
  * **host cadence is the primary throttle**; this cap only blocks a single-path
  * hot loop / stale-tab refresh storm from hammering the sandbox with git exec
  * turns. Generous vs the real host cadence of ~seconds. A request arriving
- * inside the interval gets `{ rate_limited: true, cached: <last> }` back without
- * new exec (never 429-spam, never an unbounded exec burst); per-slot fail-soft
- * holds on exhaustion (the git slot simply keeps its last value / stays empty).
+ * inside the interval gets `{ git: <last>, rate_limited: true, value?: <formatted> }`
+ * back without new exec (never 429-spam, never an unbounded exec burst); the
+ * host treats a `rate_limited` 200 as KEEP-last (pr #544 #1), so the formatted
+ * `value` is included whenever the cached result has a branch/sha; per-slot
+ * fail-soft holds on exhaustion (the git slot simply keeps its last value /
+ * stays empty).
  */
 export const STATUS_PROBE_MIN_INTERVAL_MS = 2000;
 

@@ -2797,10 +2797,22 @@ describe('refreshGitStatusSlot (phase 2, plan #540)', () => {
     await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
     expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
 
-    // 429 rate-limited
+    // 429 rate-limited (route never actually sends 429 — see next test for the
+    // real wire shape; this guards against a future backend change).
     stubFetch({}, true, 429);
     await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
     expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
+  });
+
+  it('a rate-limited 200 ({ git, rate_limited:true, value }) KEEPS the slot, never clears (pr #544 #1)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // The route's in-window reply IS this 200 shape — it carries the cached
+    // formatted `value`, which the host must paint (KEEP-last), NOT clear.
+    bridge.setStatusSlot(StatusSlot.Git, 'old@123');
+    stubFetch({ git: { branch: 'main', sha: 'a1b2c3d' }, rate_limited: true, value: 'main@a1b2c3d' });
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@a1b2c3d');
   });
 
   it('omits non-Redis-safe carries (never a poisoned query string), still clears on empty', async () => {
