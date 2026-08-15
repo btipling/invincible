@@ -25,7 +25,8 @@ Response hints: `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`
 
 **Omitted / null `cwd`:** server uses `"."` (workspace-root default); there is no `SANDBOX_DEFAULT_CWD` env knob.  
 **Present but invalid** (host-absolute, control chars, non-string): **400** JSON error — not a stream.  
-**Response `cwd`:** included on JSON success and SSE `done` only when FS tools ran this turn; always a normalized workspace-relative path. Host session should update stored cwd **only on success** (never on abort/error).
+**Response `cwd`:** included on JSON success and SSE `done` only when FS tools ran this turn; always a normalized workspace-relative path. Host session should update stored cwd **only on success** (never on abort/error).  
+**Response `usage` (Phase 3 #539):** optional `usage` on JSON success and SSE `done` only — a bounded, **provider-sourced** token summary `{ source: "provider", prompt?, completion?, total?, cached? }`, captured at the **final completion** (the JSON result / `done` event are the sole authoritative capture points; **never** mid-stream, **never** per-part). Absent on abort/cancel (no completion) or when the provider reported no usable token counts. The host folds it into the Wasm context status slot, whose default on missing usage is **hidden** — never client token math. Serialized carrier capped at `USAGE_SUMMARY_MAX_BYTES` (96 B); an oversized carrier is omitted, never a broken turn.
 
 ## Events
 
@@ -37,7 +38,7 @@ Each SSE block is one `data: <json>\n\n` line:
 | `tool_result` | `name`, `ok`, `summary`, optional `preview` | **Grow the open `tool_run` card in place** (total increments) while the last ring row is a tool-run; else open a NEW card at `1`. `preview` is a bounded, redacted level-2 detail body (`TOOL_RUN_PREVIEW_MAX_CHARS` = 100k, head+tail `… (N more lines)`) built from flattened+redacted tool output — **not** raw MCP envelopes |
 | `reasoning_delta` | `text` (chunk) | Grow a **Thinking** bubble (protocol v8) |
 | `text_delta` | `text` (chunk) | Grow Assistant bubble(s) |
-| `done` | `text`, optional `toolTrace`, optional `cwd` | Collapse open thinking; finalize session; apply `cwd` on success only; Ready |
+| `done` | `text`, optional `toolTrace`, optional `cwd`, optional `usage` | Collapse open thinking; finalize session; apply `cwd` on success only; fold bounded provider `usage` (Phase 3 #539, default hidden); Ready |
 | `error` | `error`, optional `status` | Collapse open thinking; Error message; Ready |
 
 Unknown types are ignored (forward-compatible). String fields are redacted server-side with the same secret list as JSON responses.
