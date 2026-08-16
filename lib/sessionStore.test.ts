@@ -357,3 +357,62 @@ describe('session usage local sanitize (plan #539 / #327)', () => {
   });
 });
 
+describe('selectedModel local sanitize (plan #616)', () => {
+  function installMemoryLocalStorage() {
+    const map = new Map<string, string>();
+    const ls = {
+      getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+      setItem: (k: string, v: string) => {
+        map.set(k, String(v));
+      },
+      removeItem: (k: string) => {
+        map.delete(k);
+      },
+      clear: () => {
+        map.clear();
+      },
+    };
+    vi.stubGlobal('localStorage', ls);
+    return ls;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('LocalStorage load keeps a valid selectedModel id; drop-to-unset on poison', () => {
+    installMemoryLocalStorage();
+    const key = 'test-model-key';
+    // Valid printable-ASCII catalog id round-trips.
+    localStorage.setItem(
+      key,
+      JSON.stringify({ id: 's', messages: [], updatedAt: 1, selectedModel: 'anthropic/claude-a' }),
+    );
+    const store = new LocalStorageSessionStore(key);
+    expect(store.load()?.selectedModel).toBe('anthropic/claude-a');
+
+    // Poisoned values (non-string / over-length / non-printable) → undefined (drop-to-unset),
+    // so a bad local pick can never pin a ghost model on reload.
+    const poisoned = ['has space', 'x'.repeat(200), 42, 'with\u0007ctl'];
+    for (const bad of poisoned) {
+      localStorage.setItem(
+        key,
+        JSON.stringify({ id: 's', messages: [], updatedAt: 1, selectedModel: bad }),
+      );
+      const loaded = store.load();
+      expect(loaded).not.toBeNull();
+      expect(loaded?.selectedModel).toBeUndefined();
+    }
+  });
+
+  it('MemorySessionStore round-trips selectedModel', () => {
+    const store = new MemorySessionStore();
+    store.save({ ...createEmptySession('z'), selectedModel: 'openai/gpt-a' });
+    expect(store.load()?.selectedModel).toBe('openai/gpt-a');
+  });
+
+  it('createEmptySession omits selectedModel', () => {
+    expect(createEmptySession().selectedModel).toBeUndefined();
+  });
+});
+

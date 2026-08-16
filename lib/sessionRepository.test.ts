@@ -114,6 +114,30 @@ describe('trimForCloudPut', () => {
     expect(out.meta?.attachedSkills).toBeUndefined();
   });
 
+  it('folds selectedModel into meta.selectedModel; drops poison / non-self (plan #616)', () => {
+    const out = trimForCloudPut({
+      id: 'sess_a',
+      updatedAt: 6,
+      messages: [],
+      selectedModel: 'anthropic/claude-a',
+    });
+    expect(out.meta).toEqual({ selectedModel: 'anthropic/claude-a' });
+    expect('selectedModel' in out).toBe(false); // carrier carries in meta, not top-level
+
+    // A poisoned selectedModel sanitizes to undefined → meta omitted entirely.
+    const bad = trimForCloudPut({
+      id: 'sess_b',
+      updatedAt: 6,
+      messages: [],
+      selectedModel: 'not printable!',
+    });
+    expect(bad.meta).toBeUndefined();
+
+    // Omitted → no selectedModel key.
+    const bare = trimForCloudPut({ id: 'sess_c', updatedAt: 6, messages: [] });
+    expect(bare.meta).toBeUndefined();
+  });
+
   it('normalizes escaping `..` out of meta so a record can never diverge from the request cwd (review #453 residual)', () => {
     // A P1-legal-on-record `..` is normalized before it is persisted: it drops out
     // instead of round-tripping `..` into Redis (request sends `.` on any device).
@@ -369,6 +393,29 @@ describe('parseCloudSessionSnapshot', () => {
       meta: { personaId: 'bad persona id' },
     });
     expect(bad?.personaId).toBeUndefined();
+  });
+
+  it('plan #616 — restores selectedModel from stored meta.selectedModel; drops poison to unset', () => {
+    const out = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { selectedModel: 'anthropic/claude-a' },
+    });
+    expect(out?.selectedModel).toBe('anthropic/claude-a');
+
+    // Poisoned / invalid → dropped to unset (never a sticky poison).
+    const bad = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { selectedModel: 'not printable!' },
+    });
+    expect(bad?.selectedModel).toBeUndefined();
+
+    // Omitted meta.selectedModel → field stays undefined (restore falls back to default).
+    const bare = parseCloudSessionSnapshot({ id: 's', updatedAt: 1, messages: [] });
+    expect(bare?.selectedModel).toBeUndefined();
   });
 
   it('restores the sticky attachedSlugs from reserved meta.attachedSkills (fail-closed on poison)', () => {
