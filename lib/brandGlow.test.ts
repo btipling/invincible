@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  BRAND_GLOW_BREATHE_CLASS,
+  BRAND_GLOW_FADE_CLASS,
   BRAND_GLOW_FADE_MS,
+  BRAND_GLOW_KEYFRAMES,
+  BRAND_GLOW_MOTE_CLASS,
   BRAND_GLOW_PARTICLE_COUNT,
   BRAND_GLOW_PARTICLE_DURATION_MAX_MS,
   BRAND_GLOW_PARTICLE_DURATION_MIN_MS,
@@ -9,6 +13,9 @@ import {
   BRAND_GLOW_PARTICLE_SIZE_PX,
   BRAND_GLOW_PULSE_MS,
   brandGlowParticles,
+  finishGlowEnter,
+  glowFadeOpacity,
+  glowSubtreeMounted,
   nextGlowMount,
   prefersReducedMotion,
   resolveBrandGlowVisuals,
@@ -105,11 +112,17 @@ describe('prefersReducedMotion', () => {
 });
 
 describe('nextGlowMount', () => {
-  it('unmounted + busy → on', () => {
-    expect(nextGlowMount('unmounted', true, 0)).toBe('on');
+  it('unmounted + busy → entering (opacity-0 first paint)', () => {
+    expect(nextGlowMount('unmounted', true, 0)).toBe('entering');
+  });
+  it('entering + busy → on', () => {
+    expect(nextGlowMount('entering', true, 0)).toBe('on');
   });
   it('unmounted + idle → unmounted', () => {
     expect(nextGlowMount('unmounted', false, 0)).toBe('unmounted');
+  });
+  it('entering + idle → unmounted (never became visible)', () => {
+    expect(nextGlowMount('entering', false, 0)).toBe('unmounted');
   });
   it('on + busy → on', () => {
     expect(nextGlowMount('on', true, 0)).toBe('on');
@@ -129,6 +142,69 @@ describe('nextGlowMount', () => {
     expect(nextGlowMount('fading', false, BRAND_GLOW_FADE_MS)).toBe(
       'unmounted',
     );
+  });
+});
+
+describe('finishGlowEnter / fade opacity', () => {
+  it('entering → on; other states unchanged', () => {
+    expect(finishGlowEnter('entering')).toBe('on');
+    expect(finishGlowEnter('on')).toBe('on');
+    expect(finishGlowEnter('fading')).toBe('fading');
+    expect(finishGlowEnter('unmounted')).toBe('unmounted');
+  });
+  it('only `on` is fully opaque; entering/fading are 0 so the transition can run', () => {
+    expect(glowFadeOpacity('on')).toBe(1);
+    expect(glowFadeOpacity('entering')).toBe(0);
+    expect(glowFadeOpacity('fading')).toBe(0);
+    expect(glowFadeOpacity('unmounted')).toBe(0);
+  });
+  it('subtree is mounted for entering/on/fading', () => {
+    expect(glowSubtreeMounted('unmounted')).toBe(false);
+    expect(glowSubtreeMounted('entering')).toBe(true);
+    expect(glowSubtreeMounted('on')).toBe(true);
+    expect(glowSubtreeMounted('fading')).toBe(true);
+  });
+});
+
+describe('layer contract (CSS animation must not steal fade / cap opacity)', () => {
+  const nav = readFileSync('app/components/AppNav.tsx', 'utf8');
+
+  it('keyframes keep breathe and mote-life as named animations', () => {
+    expect(BRAND_GLOW_KEYFRAMES).toMatch(/@keyframes inv-brand-breathe/);
+    expect(BRAND_GLOW_KEYFRAMES).toMatch(/@keyframes inv-brand-mote/);
+    expect(BRAND_GLOW_KEYFRAMES).toMatch(
+      new RegExp(`\\.${BRAND_GLOW_BREATHE_CLASS}`),
+    );
+    expect(BRAND_GLOW_KEYFRAMES).toMatch(
+      new RegExp(`\\.${BRAND_GLOW_MOTE_CLASS}`),
+    );
+  });
+
+  it('AppNav puts fade transition and breathe animation on different classNames', () => {
+    expect(nav).toContain(`className={BRAND_GLOW_FADE_CLASS}`);
+    expect(nav).toContain(`className={BRAND_GLOW_BREATHE_CLASS}`);
+    expect(nav).toContain(`className={BRAND_GLOW_MOTE_CLASS}`);
+    expect(BRAND_GLOW_FADE_CLASS).not.toBe(BRAND_GLOW_BREATHE_CLASS);
+    expect(BRAND_GLOW_MOTE_CLASS).not.toBe(BRAND_GLOW_FADE_CLASS);
+
+    const fadeIdx = nav.indexOf('className={BRAND_GLOW_FADE_CLASS}');
+    const breatheIdx = nav.indexOf('className={BRAND_GLOW_BREATHE_CLASS}');
+    const fadeBlock = nav.slice(fadeIdx, breatheIdx);
+    expect(fadeBlock).toMatch(/transition:/);
+    expect(fadeBlock).toMatch(/glowFadeOpacity/);
+    expect(fadeBlock).not.toMatch(/inv-brand-breathe/);
+    expect(fadeBlock).not.toMatch(/animation:/);
+  });
+
+  it('mote cap opacity is on a parent; animated node does not set p.opacity', () => {
+    const moteIdx = nav.indexOf('className={BRAND_GLOW_MOTE_CLASS}');
+    expect(moteIdx).toBeGreaterThan(0);
+    const capIdx = nav.lastIndexOf('opacity: p.opacity', moteIdx);
+    expect(capIdx).toBeGreaterThan(0);
+    expect(capIdx).toBeLessThan(moteIdx);
+    const animatedBlock = nav.slice(moteIdx, moteIdx + 600);
+    expect(animatedBlock).not.toMatch(/opacity:\s*p\.opacity/);
+    expect(animatedBlock).toMatch(/inv-brand-mote/);
   });
 });
 

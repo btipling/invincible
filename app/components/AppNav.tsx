@@ -8,11 +8,18 @@ import {
 } from 'react';
 
 import {
+  BRAND_GLOW_BREATHE_CLASS,
+  BRAND_GLOW_FADE_CLASS,
   BRAND_GLOW_FADE_MS,
+  BRAND_GLOW_KEYFRAMES,
+  BRAND_GLOW_MOTE_CLASS,
   BRAND_GLOW_PARTICLE_COUNT,
   BRAND_GLOW_PARTICLE_SIZE_PX,
   BRAND_GLOW_PULSE_MS,
   brandGlowParticles,
+  finishGlowEnter,
+  glowFadeOpacity,
+  glowSubtreeMounted,
   nextGlowMount,
   prefersReducedMotion,
   resolveBrandGlowVisuals,
@@ -33,22 +40,6 @@ const brandType: CSSProperties = {
   lineHeight: 1.2,
   whiteSpace: 'nowrap',
 };
-
-const brandKeyframes = `
-@keyframes inv-brand-breathe {
-  0%, 100% { opacity: 0.72; }
-  50% { opacity: 1; }
-}
-@keyframes inv-brand-mote {
-  0% { transform: translate(0, 0); opacity: 0; }
-  18% { opacity: 1; }
-  82% { opacity: 1; }
-  100% { transform: translate(var(--inv-dx), var(--inv-dy)); opacity: 0; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .inv-brand-glow, .inv-brand-mote { animation: none !important; }
-}
-`;
 
 /** Site header: brand + optional right slot (session/persona/Clear/auth). */
 export default function AppNav({
@@ -78,17 +69,32 @@ export default function AppNav({
 
   useEffect(() => {
     if (busy) {
-      setMount('on');
-      return;
+      setMount((cur) => nextGlowMount(cur, true, 0));
+      let inner = 0;
+      const outer = window.requestAnimationFrame(() => {
+        inner = window.requestAnimationFrame(() => {
+          setMount((cur) => finishGlowEnter(cur));
+        });
+      });
+      return () => {
+        window.cancelAnimationFrame(outer);
+        window.cancelAnimationFrame(inner);
+      };
     }
-    setMount((cur) => (cur === 'unmounted' ? 'unmounted' : 'fading'));
+    let fading = false;
+    setMount((cur) => {
+      const next = nextGlowMount(cur, false, 0);
+      fading = next === 'fading';
+      return next;
+    });
+    if (!fading) return;
     const id = window.setTimeout(() => {
       setMount((cur) => nextGlowMount(cur, false, BRAND_GLOW_FADE_MS));
     }, BRAND_GLOW_FADE_MS + 50);
     return () => window.clearTimeout(id);
   }, [busy]);
 
-  const showGlow = mount !== 'unmounted';
+  const showGlow = glowSubtreeMounted(mount);
   const visuals = resolveBrandGlowVisuals({
     busy: showGlow,
     reducedMotion,
@@ -107,7 +113,7 @@ export default function AppNav({
         flexShrink: 0,
       }}
     >
-      <style>{brandKeyframes}</style>
+      <style>{BRAND_GLOW_KEYFRAMES}</style>
       <span
         style={{
           ...brandType,
@@ -122,91 +128,106 @@ export default function AppNav({
         {WORDMARK}
         {showGlow ? (
           <span
-            className="inv-brand-glow"
+            className={BRAND_GLOW_FADE_CLASS}
             aria-hidden
             style={{
               position: 'absolute',
               inset: 0,
               pointerEvents: 'none',
-              opacity: mount === 'on' ? 1 : 0,
+              opacity: glowFadeOpacity(mount),
               transition: `opacity ${BRAND_GLOW_FADE_MS}ms ease`,
-              animation: visuals.animate
-                ? `inv-brand-breathe ${BRAND_GLOW_PULSE_MS}ms ease-in-out infinite`
-                : 'none',
             }}
           >
-            {visuals.bloom ? (
-              <>
-                <span
-                  style={{
-                    ...brandType,
-                    position: 'absolute',
-                    inset: 0,
-                    color: teal.accentDark,
-                    filter: 'blur(10px)',
-                    opacity: 0.35,
-                  }}
-                >
-                  {WORDMARK}
-                </span>
-                <span
-                  style={{
-                    ...brandType,
-                    position: 'absolute',
-                    inset: 0,
-                    color: teal.accent,
-                    filter: 'blur(4px)',
-                    opacity: 0.55,
-                  }}
-                >
-                  {WORDMARK}
-                </span>
-              </>
-            ) : null}
-            {visuals.outline ? (
-              <span
-                style={{
-                  ...brandType,
-                  position: 'absolute',
-                  inset: 0,
-                  color: 'transparent',
-                  WebkitTextStroke: `1px ${teal.accent}`,
-                }}
-              >
-                {WORDMARK}
-              </span>
-            ) : null}
-            {visuals.particles ? (
-              <span
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  overflow: 'hidden',
-                  pointerEvents: 'none',
-                }}
-              >
-                {motes.map((p) => (
+            <span
+              className={BRAND_GLOW_BREATHE_CLASS}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                animation: visuals.animate
+                  ? `inv-brand-breathe ${BRAND_GLOW_PULSE_MS}ms ease-in-out infinite`
+                  : 'none',
+              }}
+            >
+              {visuals.bloom ? (
+                <>
                   <span
-                    key={p.id}
-                    className="inv-brand-mote"
                     style={{
+                      ...brandType,
                       position: 'absolute',
-                      left: `${p.x}%`,
-                      top: `${p.y}%`,
-                      width: BRAND_GLOW_PARTICLE_SIZE_PX,
-                      height: BRAND_GLOW_PARTICLE_SIZE_PX,
-                      borderRadius: '50%',
-                      background: teal.accent,
-                      opacity: p.opacity,
-                      animation: `inv-brand-mote ${p.durationMs}ms ease-in-out ${p.delayMs}ms infinite`,
-                      // CSS vars for the mote keyframes
-                      ['--inv-dx' as string]: `${p.driftX}px`,
-                      ['--inv-dy' as string]: `${p.driftY}px`,
+                      inset: 0,
+                      color: teal.accentDark,
+                      filter: 'blur(10px)',
+                      opacity: 0.35,
                     }}
-                  />
-                ))}
-              </span>
-            ) : null}
+                  >
+                    {WORDMARK}
+                  </span>
+                  <span
+                    style={{
+                      ...brandType,
+                      position: 'absolute',
+                      inset: 0,
+                      color: teal.accent,
+                      filter: 'blur(4px)',
+                      opacity: 0.55,
+                    }}
+                  >
+                    {WORDMARK}
+                  </span>
+                </>
+              ) : null}
+              {visuals.outline ? (
+                <span
+                  style={{
+                    ...brandType,
+                    position: 'absolute',
+                    inset: 0,
+                    color: 'transparent',
+                    WebkitTextStroke: `1px ${teal.accent}`,
+                  }}
+                >
+                  {WORDMARK}
+                </span>
+              ) : null}
+              {visuals.particles ? (
+                <span
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    overflow: 'hidden',
+                    pointerEvents: 'none',
+                  }}
+                >
+                  {motes.map((p) => (
+                    <span
+                      key={p.id}
+                      style={{
+                        position: 'absolute',
+                        left: `${p.x}%`,
+                        top: `${p.y}%`,
+                        width: BRAND_GLOW_PARTICLE_SIZE_PX,
+                        height: BRAND_GLOW_PARTICLE_SIZE_PX,
+                        opacity: p.opacity,
+                      }}
+                    >
+                      <span
+                        className={BRAND_GLOW_MOTE_CLASS}
+                        style={{
+                          display: 'block',
+                          width: '100%',
+                          height: '100%',
+                          borderRadius: '50%',
+                          background: teal.accent,
+                          animation: `inv-brand-mote ${p.durationMs}ms ease-in-out ${p.delayMs}ms infinite`,
+                          ['--inv-dx' as string]: `${p.driftX}px`,
+                          ['--inv-dy' as string]: `${p.driftY}px`,
+                        }}
+                      />
+                    </span>
+                  ))}
+                </span>
+              ) : null}
+            </span>
           </span>
         ) : null}
       </span>

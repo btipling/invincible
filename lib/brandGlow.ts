@@ -1,6 +1,13 @@
 /**
  * AppNav Busy-brand visuals — pure helpers + caps.
  * DOM site chrome only. Driven by HarnessHost `busy`; never poll the bridge.
+ *
+ * Layer contract (do not collapse — CSS animations override transitions on
+ * the same property, and keyframe `opacity` replaces the cascade value):
+ *   `.inv-brand-fade`  — only the Busy on/off opacity transition
+ *   `.inv-brand-glow`  — breathe animation (opacity of glow layers only)
+ *   mote parent        — `p.opacity` cap (≤ BRAND_GLOW_PARTICLE_OPACITY)
+ *   `.inv-brand-mote`  — transform + life-cycle opacity 0→1→0 (multiplies cap)
  */
 
 export const BRAND_GLOW_PARTICLE_COUNT = 8;
@@ -10,6 +17,26 @@ export const BRAND_GLOW_PARTICLE_OPACITY = 0.35;
 export const BRAND_GLOW_PARTICLE_SIZE_PX = 2;
 export const BRAND_GLOW_PARTICLE_DURATION_MIN_MS = 3000;
 export const BRAND_GLOW_PARTICLE_DURATION_MAX_MS = 7000;
+
+export const BRAND_GLOW_FADE_CLASS = 'inv-brand-fade';
+export const BRAND_GLOW_BREATHE_CLASS = 'inv-brand-glow';
+export const BRAND_GLOW_MOTE_CLASS = 'inv-brand-mote';
+
+export const BRAND_GLOW_KEYFRAMES = `
+@keyframes inv-brand-breathe {
+  0%, 100% { opacity: 0.72; }
+  50% { opacity: 1; }
+}
+@keyframes inv-brand-mote {
+  0% { transform: translate(0, 0); opacity: 0; }
+  18% { opacity: 1; }
+  82% { opacity: 1; }
+  100% { transform: translate(var(--inv-dx), var(--inv-dy)); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .${BRAND_GLOW_BREATHE_CLASS}, .${BRAND_GLOW_MOTE_CLASS} { animation: none !important; }
+}
+`;
 
 export type BrandGlowParticle = {
   id: string;
@@ -29,7 +56,7 @@ export type BrandGlowVisuals = {
   particles: boolean;
 };
 
-export type GlowMount = 'unmounted' | 'on' | 'fading';
+export type GlowMount = 'unmounted' | 'entering' | 'on' | 'fading';
 
 /** Unit interval in [0, 1) from a deterministic hash of `n`. */
 function unit(n: number): number {
@@ -52,7 +79,9 @@ export function resolveBrandGlowVisuals(opts: {
 
 /**
  * Glow subtree mount machine.
- * Busy wins (including cancelling a fade). Unmount only after fadeMs while idle.
+ * Busy from unmounted goes through `entering` (opacity 0) so the fade
+ * transition has a from-value. Other busy arrivals cancel fade → `on`.
+ * Idle `entering` never painted → unmount. Unmount only after fadeMs while fading.
  */
 export function nextGlowMount(
   current: GlowMount,
@@ -60,10 +89,27 @@ export function nextGlowMount(
   fadeElapsedMs: number,
   fadeMs: number = BRAND_GLOW_FADE_MS,
 ): GlowMount {
-  if (busy) return 'on';
-  if (current === 'unmounted') return 'unmounted';
+  if (busy) {
+    if (current === 'unmounted') return 'entering';
+    return 'on';
+  }
+  if (current === 'unmounted' || current === 'entering') return 'unmounted';
   if (current === 'on') return 'fading';
   return fadeElapsedMs >= fadeMs ? 'unmounted' : 'fading';
+}
+
+/** Finish the enter frame: first paint was opacity 0, now transition to 1. */
+export function finishGlowEnter(current: GlowMount): GlowMount {
+  return current === 'entering' ? 'on' : current;
+}
+
+export function glowSubtreeMounted(mount: GlowMount): boolean {
+  return mount !== 'unmounted';
+}
+
+/** Fade wrapper opacity — only `on` is 1; entering/fading stay 0 so CSS can tween. */
+export function glowFadeOpacity(mount: GlowMount): 0 | 1 {
+  return mount === 'on' ? 1 : 0;
 }
 
 /**
