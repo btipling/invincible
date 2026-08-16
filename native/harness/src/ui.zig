@@ -140,6 +140,10 @@ pub fn onInit() void {
     want_composer_focus = true;
     resetTranscriptScroll();
     rich.clearCache();
+    // Reset the previous-frame hug to idle: an in-process re-init (wasm reload
+    // / host re-mount) must not keep a stale multi-line 124 px band until the
+    // next wrap sample (adversarial review #584 Round 4 Minor L8).
+    composer_last_h = COMPOSER_IDLE_CHROME_H;
 }
 
 fn resetTranscriptScroll() void {
@@ -1354,10 +1358,16 @@ pub fn frame() !void {
             // height (content + TE padding + TE border), convert to content,
             // then pad for the chrome box. Clamped to [IDLE, MAX] so the band
             // hugs the field and never collapses (adversarial review #584
-            // Round 3 Major L1+L9 + Minor L8).
+            // Round 4 Blocker L1 + Major L1: `dvui.minSizeGet` returns `?Size`,
+            // and `TextEntryWidget.deinit` ends in `defer self.* = undefined`,
+            // so the lookup Id must be captured BEFORE deinit — reading
+            // `te.data().id` after would be use-after-undefined. If the queried
+            // id has no stored size this frame, fall back to the previous
+            // frame's measured height instead of collapsing (never a zero shot)).
+            const te_id = te.data().id;
             te.deinit();
-            const outer_h = dvui.minSizeGet(te.data().id).h;
-            const raw_content = @max(0, outer_h - TE_OVERHEAD);
+            const outer_h = if (dvui.minSizeGet(te_id)) |ms| ms.h else composer_last_h;
+            const raw_content = @max(0.0, outer_h - TE_OVERHEAD);
             const content_h = @max(TOUCH_H, @min(raw_content, COMPOSER_INPUT_MAX_H));
             composer_last_h = @max(COMPOSER_IDLE_CHROME_H, @min(content_h + 2 * COMPOSER_HUG_PAD, COMPOSER_MAX_CHROME_H));
             if (composer_submit and typed.len > 0) {
