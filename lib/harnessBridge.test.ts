@@ -552,7 +552,7 @@ describe('skill_attached kind (protocol v12)', () => {
     // Distinct from the protocol version (13) — a hardcoded kind 13 would be an
     // unknown kind to the Wasm painter.
     expect(MessageKind.SkillAttached).not.toBe(HARNESS_PROTOCOL_VERSION);
-    expect(HARNESS_PROTOCOL_VERSION).toBe(14);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(15);
   });
 
   it('push/readback round-trips a skill_attached row', () => {
@@ -581,8 +581,8 @@ describe('setTurnElapsed (protocol v14)', () => {
     expect(exp.__turnElapsed()).toBe(0);
   });
 
-  it('version bumped to 14 and the export is REQUIRED (fail-closed when missing)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(14);
+  it('version bumped to 15 and the export is REQUIRED (fail-closed when missing)', () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe(15);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     // A rebuilt Wasm that omits inv_set_turn_elapsed fails bridge-load closed,

@@ -21,7 +21,9 @@ const ring_slot = @import("ring_slot.zig");
 /// `inv_status_slot_len/copy`, `inv_status_slots_clear`.
 /// v14: additive whole-turn busy clock (plan #567) — scalar export
 /// `inv_set_turn_elapsed(secs)`; the Wasm busy row formats/appends ` · mm:ss`.
-pub const PROTOCOL_VERSION: u32 = 14;
+/// v15: plan #574 addendum — `inv_set_busy_tick` export (10 Hz spinner phase)
+/// is now REQUIRED; version bump for the new export (old hosts fail-closed via REQUIRED_FNS).
+pub const PROTOCOL_VERSION: u32 = 15;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,

@@ -16,8 +16,10 @@ import { STATUS_SLOT_MAX_BYTES } from './sessionCloudCaps';
 // v14 (plan #567): additive whole-turn busy clock — scalar export
 // `inv_set_turn_elapsed(secs)`; the Wasm busy row formats/appends ` · mm:ss`.
 // v14 addendum (plan #574): additive 10 Hz busy-tick scalar `inv_set_busy_tick`
-// driving the 2×4 WARM spinner; no version bump (old hosts leave it at 0).
-export const HARNESS_PROTOCOL_VERSION = 14 as const;
+// driving the 2×4 WARM spinner.
+// v15: `inv_set_busy_tick` is now REQUIRED; version bump for the new export
+// (old hosts fail-closed via REQUIRED_FNS protocol-mismatch diagnostic).
+export const HARNESS_PROTOCOL_VERSION = 15 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
