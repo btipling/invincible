@@ -113,12 +113,25 @@ const COMPOSER_MAX_CHROME_H: f32 = COMPOSER_INPUT_MAX_H + 2 * COMPOSER_HUG_PAD;
 /// is never smaller than this so the textEntry always has a touch target.
 const COMPOSER_IDLE_CHROME_H: f32 = TOUCH_H + 2 * COMPOSER_HUG_PAD;
 
+/// TextEntry internal padding + border overhead (px). The textEntry's computed
+/// min_size (via dvui.minSizeGet after deinit) is the OUTER height (content +
+/// padding + border). We convert outer→content: content_h = outer_h − overhead.
+/// Both values set explicitly on the textEntry below so the formula is
+/// deterministic regardless of dvui defaults (adversarial review #584 Round 3
+/// Major L1+L9 — `WidgetData.min_size` is the options seed, not the computed
+/// wrapped height; the sample must come from minSizeGet after deinit).
+const TE_PAD_H: f32 = 6 + 6; // padding.y + padding.h
+const TE_BORDER_H: f32 = 1 + 1; // border.y + border.h
+const TE_OVERHEAD: f32 = TE_PAD_H + TE_BORDER_H; // 14
+
 /// Previous-frame measured composer-chrome outer height (px). Initialized to
 /// idle so the first frame shows a compact composer. Updated after each frame
-/// from the textEntry's natural wrapped height; clamped to [IDLE, MAX] so the
-/// band never collapses and never exceeds the multi-line cap. The transcript
-/// rect is computed from this value, so both bands shift in tandem (one-frame
-/// settle lag, no visual jump — adversarial review #584 Round 2 Major L1).
+/// from the textEntry's natural wrapped height (sampled via dvui.minSizeGet
+/// after te.deinit — NOT te.data().min_size which is the options seed); clamped
+/// to [IDLE, MAX] so the band never collapses and never exceeds the multi-line
+/// cap. The transcript rect is computed from this value, so both bands shift in
+/// tandem (one-frame settle lag, no visual jump — adversarial review #584
+/// Round 2 Major L1 and Round 3 Major L1+L9).
 var composer_last_h: f32 = COMPOSER_IDLE_CHROME_H;
 
 pub fn onInit() void {
@@ -1321,6 +1334,11 @@ pub fn frame() !void {
                 .color_text = palette.teal_text,
                 .color_border = if (busy) palette.teal_border else palette.teal_accent,
                 .margin = .{ .x = 0, .y = 0, .w = 8, .h = 0 },
+                // Explicit padding + border so TE_OVERHEAD (14) is
+                // deterministic — dvui defaults would otherwise make the
+                // outer→content conversion fragile (Round 3 Minor L8).
+                .padding = .{ .x = 6, .y = 6, .w = 6, .h = 6 },
+                .border = .{ .x = 1, .y = 1, .w = 1, .h = 1 },
             });
             typed = te.getText();
             if (want_composer_focus) {
@@ -1328,15 +1346,20 @@ pub fn frame() !void {
                 want_composer_focus = false;
             }
             // Capture the textEntry's natural wrapped height for next frame's
-            // dynamic hug. The textEntry with break_lines reports a min_size.h
-            // that grows with wrapped lines; we read it before deinit so the
-            // widget data is still valid. Clamped + padded to [IDLE, MAX] so
-            // the chrome band hugs the field and never collapses (adversarial
-            // review #584 Round 2 Major L1+L9).
-            const measured_h = te.data().min_size.h;
-            composer_last_h = @max(TOUCH_H, @min(measured_h, COMPOSER_INPUT_MAX_H)) + 2 * COMPOSER_HUG_PAD;
-            composer_last_h = @max(COMPOSER_IDLE_CHROME_H, @min(composer_last_h, COMPOSER_MAX_CHROME_H));
+            // dynamic hug. `te.data().min_size` is the OPTIONS seed (re-seeded
+            // each frame from min_size_content), NOT the computed wrapped
+            // height. The textEntry's draw() computes the real wrap height but
+            // that value only reaches dvui.minSizeGet(id) AFTER te.deinit()
+            // (its children report back during deinit). We sample the OUTER
+            // height (content + TE padding + TE border), convert to content,
+            // then pad for the chrome box. Clamped to [IDLE, MAX] so the band
+            // hugs the field and never collapses (adversarial review #584
+            // Round 3 Major L1+L9 + Minor L8).
             te.deinit();
+            const outer_h = dvui.minSizeGet(te.data().id).h;
+            const raw_content = @max(0, outer_h - TE_OVERHEAD);
+            const content_h = @max(TOUCH_H, @min(raw_content, COMPOSER_INPUT_MAX_H));
+            composer_last_h = @max(COMPOSER_IDLE_CHROME_H, @min(content_h + 2 * COMPOSER_HUG_PAD, COMPOSER_MAX_CHROME_H));
             if (composer_submit and typed.len > 0) {
                 submitText(typed);
                 typed = prompt_buf[0..0];
