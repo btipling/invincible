@@ -5,28 +5,53 @@
  * Layer contract (do not collapse — CSS animations override transitions on
  * the same property, and keyframe `opacity` replaces the cascade value):
  *   `.inv-brand-fade`  — only the Busy on/off opacity transition
- *   `.inv-brand-glow`  — breathe animation (opacity of glow layers only)
+ *   `.inv-brand-glow`  — sine of glow-layer opacity (not the fade node)
  *   mote parent        — `p.opacity` cap (≤ BRAND_GLOW_PARTICLE_OPACITY)
  *   `.inv-brand-mote`  — transform + life-cycle opacity 0→1→0 (multiplies cap)
  */
 
-export const BRAND_GLOW_PARTICLE_COUNT = 8;
+export const BRAND_GLOW_PARTICLE_COUNT = 20;
 export const BRAND_GLOW_PULSE_MS = 4000;
 export const BRAND_GLOW_FADE_MS = 280;
-export const BRAND_GLOW_PARTICLE_OPACITY = 0.35;
+export const BRAND_GLOW_PARTICLE_OPACITY = 0.75;
+export const BRAND_GLOW_PARTICLE_OPACITY_MIN = 0.45;
 export const BRAND_GLOW_PARTICLE_SIZE_PX = 2;
 export const BRAND_GLOW_PARTICLE_DURATION_MIN_MS = 3000;
 export const BRAND_GLOW_PARTICLE_DURATION_MAX_MS = 7000;
+
+export const BRAND_GLOW_BLOOM_OUTER_BLUR_PX = 16;
+export const BRAND_GLOW_BLOOM_OUTER_OPACITY = 0.65;
+export const BRAND_GLOW_BLOOM_INNER_BLUR_PX = 3;
+export const BRAND_GLOW_BLOOM_INNER_OPACITY = 0.9;
+
+export const BRAND_GLOW_SINE_MIN_OPACITY = 0.7;
+export const BRAND_GLOW_SINE_MAX_OPACITY = 1;
 
 export const BRAND_GLOW_FADE_CLASS = 'inv-brand-fade';
 export const BRAND_GLOW_BREATHE_CLASS = 'inv-brand-glow';
 export const BRAND_GLOW_MOTE_CLASS = 'inv-brand-mote';
 
-export const BRAND_GLOW_KEYFRAMES = `
-@keyframes inv-brand-breathe {
-  0%, 100% { opacity: 0.72; }
-  50% { opacity: 1; }
+const SINE_KEYFRAME_PCTS = [0, 12.5, 25, 37.5, 50, 62.5, 75, 87.5, 100];
+
+/** Glow-layer opacity at unit time t in [0, 1] — mid + amp * sin(2π t). */
+export function brandGlowSineOpacity(t01: number): number {
+  const min = BRAND_GLOW_SINE_MIN_OPACITY;
+  const max = BRAND_GLOW_SINE_MAX_OPACITY;
+  const mid = (min + max) / 2;
+  const amp = (max - min) / 2;
+  return mid + amp * Math.sin(2 * Math.PI * t01);
 }
+
+function sineKeyframes(): string {
+  const lines = SINE_KEYFRAME_PCTS.map((pct) => {
+    const opacity = brandGlowSineOpacity(pct / 100).toFixed(3);
+    return `  ${pct}% { opacity: ${opacity}; }`;
+  });
+  return `@keyframes inv-brand-breathe {\n${lines.join('\n')}\n}`;
+}
+
+export const BRAND_GLOW_KEYFRAMES = `
+${sineKeyframes()}
 @keyframes inv-brand-mote {
   0% { transform: translate(0, 0); opacity: 0; }
   18% { opacity: 1; }
@@ -131,13 +156,13 @@ export function brandGlowParticles(
   const n = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
   const span =
     BRAND_GLOW_PARTICLE_DURATION_MAX_MS - BRAND_GLOW_PARTICLE_DURATION_MIN_MS;
+  const band = BRAND_GLOW_PARTICLE_OPACITY - BRAND_GLOW_PARTICLE_OPACITY_MIN;
   const out: BrandGlowParticle[] = [];
   for (let i = 0; i < n; i++) {
     const seed = (i + 1) * 127.1;
     const durationMs =
       BRAND_GLOW_PARTICLE_DURATION_MIN_MS + Math.round(unit(seed) * span);
-    const opacity =
-      0.18 + unit(seed + 7) * (BRAND_GLOW_PARTICLE_OPACITY - 0.18);
+    const opacity = BRAND_GLOW_PARTICLE_OPACITY_MIN + unit(seed + 7) * band;
     out.push({
       id: `mote-${i}`,
       x: 8 + unit(seed + 19.2) * 84,

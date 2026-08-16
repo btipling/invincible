@@ -16,7 +16,7 @@ optional login chrome).
 | Concern | Owner | Notes |
 |---------|--------|--------|
 | Route `/harness`, App Router, code-split | **DOM** | Next.js |
-| Site chrome | **DOM** | `AppNav` brand header (flat when idle; while the host `busy` flag is true — active harness agent turn — the wordmark shows a TEAL emissive outline + bloom + sparse motes; `prefers-reduced-motion: reduce` keeps a static outline and drops pulse/particles; settings/admin headers never glow); optional `AuthNavLinks` (server role-gates via `soleMembership`+`canAccessAdmin`; signed-in renders the shared client `NavMenu` hamburger dropdown holding Admin/Settings/Harness + the `LogoutButton` footer; unauth keeps an inline `Sign in` link; client holds no role gate logic) — **not** Playground tabs |
+| Site chrome | **DOM** | `AppNav` brand header (flat when idle; while the host `busy` flag is true — active harness agent turn — the wordmark keeps `teal.text` fill, a TEAL outline, a neon bloom (tight inner + soft outer halo), a slow sine pulse of the glow, and a visible TEAL mote wash; `prefers-reduced-motion: reduce` keeps a static outline+bloom and drops the sine and motes; settings/admin headers never glow); optional `AuthNavLinks` (server role-gates via `soleMembership`+`canAccessAdmin`; signed-in renders the shared client `NavMenu` hamburger dropdown holding Admin/Settings/Harness + the `LogoutButton` footer; unauth keeps an inline `Sign in` link; client holds no role gate logic) — **not** Playground tabs |
 | Load `web.js` + `harness.wasm` | **DOM** | Instantiate, MIME, errors |
 | JS ↔ Wasm bridge glue | **DOM** | `lib/harnessBridge.ts` |
 | Poll pending submit | **DOM** | No custom Wasm imports beyond stock dvui `web.js` |
