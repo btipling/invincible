@@ -1,9 +1,9 @@
 //! 2×4 WARM busy spinner (plan #574) — pure layout/logic only; no dvui frame
 //! dependency so it runs under `zig build test-rich` on the self-hosted runner.
 //!
-//! The pulse travels **down column 0, then down column 1** (a descending wave)
-//! over 8 phases → ~0.8 s cycle at the host's 10 Hz busy tick
-//! (`HARNESS_BUSY_TICK_HZ`, protocol v14 addendum `inv_set_busy_tick`).
+//! The pulse travels **clockwise**: left column **bottom→top**, then right
+//! column **top→bottom**, over 8 phases → ~0.8 s cycle at the host's 10 Hz
+//! busy tick (`HARNESS_BUSY_TICK_HZ`, protocol v14 addendum `inv_set_busy_tick`).
 //!
 //! `busySpinnerCells` returns a compile-time-style `[8]u3` intensity ramp —
 //! 0 = head (brightest) · 1/2 = fading trail · 3 = resting/surface. Paint maps
@@ -18,9 +18,11 @@ pub const CELL_COUNT: usize = COLS * ROWS;
 const CYCLE: usize = 8;
 
 /// Where a cell sits in the traversal ("head at phase p = the cell whose order
-/// is p"): column 0 takes order 0..3 (rows 0..3), column 1 takes order 4..7.
+/// is p"): column 0 takes order 0..3 **bottom→top**, column 1 takes order 4..7
+/// **top→bottom** (clockwise loop).
 pub fn cellTraversalOrder(col: usize, row: usize) usize {
-    return if (col == 0) row else ROWS + row;
+    if (col == 0) return (ROWS - 1) - row;
+    return ROWS + row;
 }
 
 /// Cell intensity steps for a given phase (natural u8 wrap, mod 8).

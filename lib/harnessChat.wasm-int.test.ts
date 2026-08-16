@@ -117,7 +117,7 @@ describe('real-Wasm live tool increment (implements #433)', () => {
     const bridge = await loadBridge();
     // REQUIRED_FNS already proves `inv_set_busy_tick` exists (a stale artifact
     // without it fails loadBridge → this suite fails, never it.skip). The
-    // Wasm-internal `busy_tick` starts at 0 (static head at top-left), which is
+    // Wasm-internal `busy_tick` starts at 0 (static head at bottom-left), which is
     // the old-host / reduced-motion / idle value; the old host simply never
     // calls this export, so the pulse stays off. Host-side we assert the export
     // is present and both the static (0) and active (7) pushes are accepted by

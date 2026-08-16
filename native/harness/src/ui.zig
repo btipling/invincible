@@ -550,7 +550,9 @@ fn paintToolRun(
                         .color_text = palette.teal_text,
                         .gravity_y = 0.5,
                     });
-                    tl.addText(item_label, .{});
+                    mixed_text.addTextMixed(tl, item_label, .theme(.body), .{
+                        .color_text = palette.teal_text,
+                    });
                     tl.deinit();
                 }
             }

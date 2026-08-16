@@ -27,30 +27,27 @@ test "8 phases wrap and each phase lights exactly one head cell" {
     }
 }
 
-test "phase 0: head at top-left (0,0); tail from the phase-7 wrap is still fading" {
-    // Phase 8 == phase 0 (cycle wrap): the head returns to top-left and the
-    // previous cycle's tail (phase 7's head + 2 dims, which lived in column 1)
-    // is still visibly fading — mirrors the plan's "Phase 8 wraps → 0" row:
-    // trail-1 (1,3), trail-2 (1,2), trail-3 (1,1) = surface/resting.
+test "phase 0: head at bottom-left (0,3); previous-cycle tail fades up the right column" {
+    // Phase 8 == phase 0 (cycle wrap): the head returns to bottom-left and the
+    // previous cycle's tail (phase 7's head at bottom-right + dims above it)
+    // is still visibly fading.
     const cells = bs.busySpinnerCells(0);
-    try t.expectEqual(@as(u3, 0), cells[idx(0, 0)]); // head
+    try t.expectEqual(@as(u3, 0), cells[idx(0, 3)]); // head
     try t.expectEqual(@as(u3, 1), cells[idx(1, 3)]); // trail-1
     try t.expectEqual(@as(u3, 2), cells[idx(1, 2)]); // trail-2
     try t.expectEqual(@as(u3, 3), cells[idx(1, 1)]); // trail-3
-    // Column 0 (besides the head) and the leftover (1,0) are resting.
+    try t.expectEqual(@as(u3, 3), cells[idx(0, 0)]);
     try t.expectEqual(@as(u3, 3), cells[idx(0, 1)]);
     try t.expectEqual(@as(u3, 3), cells[idx(0, 2)]);
-    try t.expectEqual(@as(u3, 3), cells[idx(0, 3)]);
     try t.expectEqual(@as(u3, 3), cells[idx(1, 0)]);
 }
 
-test "column-wave head descends column 0 then column 1" {
-    // Head positions per phase (traversal of column 0 top→bottom, then column 1).
+test "clockwise head: left column bottom→top, then right column top→bottom" {
     const expect_head = [8]struct { col: usize, row: usize }{
-        .{ .col = 0, .row = 0 },
-        .{ .col = 0, .row = 1 },
-        .{ .col = 0, .row = 2 },
         .{ .col = 0, .row = 3 },
+        .{ .col = 0, .row = 2 },
+        .{ .col = 0, .row = 1 },
+        .{ .col = 0, .row = 0 },
         .{ .col = 1, .row = 0 },
         .{ .col = 1, .row = 1 },
         .{ .col = 1, .row = 2 },
@@ -64,26 +61,26 @@ test "column-wave head descends column 0 then column 1" {
     }
 }
 
-test "phase 3: bottom-left is head, three-cell trail above it" {
+test "phase 3: top-left is head, three-cell trail down the left column" {
     const cells = bs.busySpinnerCells(3);
-    try t.expectEqual(@as(u3, 0), cells[idx(0, 3)]); // head
-    try t.expectEqual(@as(u3, 1), cells[idx(0, 2)]); // trail-1
-    try t.expectEqual(@as(u3, 2), cells[idx(0, 1)]); // trail-2
-    try t.expectEqual(@as(u3, 3), cells[idx(0, 0)]); // trail-3 (resting level)
+    try t.expectEqual(@as(u3, 0), cells[idx(0, 0)]); // head
+    try t.expectEqual(@as(u3, 1), cells[idx(0, 1)]); // trail-1
+    try t.expectEqual(@as(u3, 2), cells[idx(0, 2)]); // trail-2
+    try t.expectEqual(@as(u3, 3), cells[idx(0, 3)]); // trail-3
     try t.expectEqual(@as(u3, 3), cells[idx(1, 0)]);
     try t.expectEqual(@as(u3, 3), cells[idx(1, 1)]);
     try t.expectEqual(@as(u3, 3), cells[idx(1, 2)]);
     try t.expectEqual(@as(u3, 3), cells[idx(1, 3)]);
 }
 
-test "phase 5: head second column row 1; trailing wave wraps through column 0 bottom" {
+test "phase 5: head second column row 1; trail wraps through top-right then top-left" {
     const cells = bs.busySpinnerCells(5);
     try t.expectEqual(@as(u3, 0), cells[idx(1, 1)]); // head
     try t.expectEqual(@as(u3, 1), cells[idx(1, 0)]); // trail-1
-    try t.expectEqual(@as(u3, 2), cells[idx(0, 3)]); // trail-2
-    try t.expectEqual(@as(u3, 3), cells[idx(0, 2)]); // trail-3
-    try t.expectEqual(@as(u3, 3), cells[idx(0, 0)]);
-    try t.expectEqual(@as(u3, 3), cells[idx(0, 1)]);
+    try t.expectEqual(@as(u3, 2), cells[idx(0, 0)]); // trail-2
+    try t.expectEqual(@as(u3, 3), cells[idx(0, 1)]); // trail-3
+    try t.expectEqual(@as(u3, 3), cells[idx(0, 2)]);
+    try t.expectEqual(@as(u3, 3), cells[idx(0, 3)]);
     try t.expectEqual(@as(u3, 3), cells[idx(1, 2)]);
     try t.expectEqual(@as(u3, 3), cells[idx(1, 3)]);
 }

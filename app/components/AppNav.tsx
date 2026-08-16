@@ -8,6 +8,10 @@ import {
 } from 'react';
 
 import {
+  BRAND_GLOW_BLOOM_INNER_BLUR_PX,
+  BRAND_GLOW_BLOOM_INNER_OPACITY,
+  BRAND_GLOW_BLOOM_OUTER_BLUR_PX,
+  BRAND_GLOW_BLOOM_OUTER_OPACITY,
   BRAND_GLOW_BREATHE_CLASS,
   BRAND_GLOW_FADE_CLASS,
   BRAND_GLOW_FADE_MS,
@@ -144,7 +148,7 @@ export default function AppNav({
                 position: 'absolute',
                 inset: 0,
                 animation: visuals.animate
-                  ? `inv-brand-breathe ${BRAND_GLOW_PULSE_MS}ms ease-in-out infinite`
+                  ? `inv-brand-breathe ${BRAND_GLOW_PULSE_MS}ms linear infinite`
                   : 'none',
               }}
             >
@@ -156,8 +160,8 @@ export default function AppNav({
                       position: 'absolute',
                       inset: 0,
                       color: teal.accentDark,
-                      filter: 'blur(10px)',
-                      opacity: 0.35,
+                      filter: `blur(${BRAND_GLOW_BLOOM_OUTER_BLUR_PX}px)`,
+                      opacity: BRAND_GLOW_BLOOM_OUTER_OPACITY,
                     }}
                   >
                     {WORDMARK}
@@ -168,8 +172,8 @@ export default function AppNav({
                       position: 'absolute',
                       inset: 0,
                       color: teal.accent,
-                      filter: 'blur(4px)',
-                      opacity: 0.55,
+                      filter: `blur(${BRAND_GLOW_BLOOM_INNER_BLUR_PX}px)`,
+                      opacity: BRAND_GLOW_BLOOM_INNER_OPACITY,
                     }}
                   >
                     {WORDMARK}

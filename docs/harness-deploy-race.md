@@ -25,14 +25,22 @@ On Vercel (`VERCEL=1`):
 | Poll | `build-harness.yml` runs for that `head_sha` |
 | Grace | If **no** run appears within ~90s → inspect commit file list |
 | No run + harness paths | **Fail the Vercel build** — do not ship stale Wasm (`native/harness/**`, `native/ZIG_VERSION`, or `build-harness.yml`) |
-| No run + other paths | Commit did not need a harness rebuild → use **latest** artifact |
+| No run + other paths | Commit did not need a harness rebuild → use **latest `main` artifact** (never a PR head) |
 | Wait | If a run exists → wait until `success` (up to ~12m) |
 | Fetch | Artifact from **that run**, not “whatever is latest” mid-race |
 | Fail | If harness CI fails for this SHA → **fail the Vercel build** (no silent stale ship) |
 
-Local/default: `HARNESS_WAIT_MS=0` → latest artifact immediately.
+Local/default: `HARNESS_WAIT_MS=0` → latest **main-branch** artifact immediately.
 
-Path match helpers: `isHarnessBuildPath` / `commitTouchesHarnessBuild` in `scripts/harnessRepo.mjs` (unit-tested; keep aligned with workflow path filters).
+### PR builds must not ship
+
+`build-harness` still **compiles + `zig build test-rich`** on same-repo contributor PRs (merge gate) and uploads **`harness-wasm-pr-<n>`** so the Zig/Wasm build is a downloadable CI artifact. It does **not** upload the production name `harness-wasm` unless `github.ref == refs/heads/main` (push to main or `workflow_dispatch --ref main`).
+
+`scripts/fetch-harness-artifact.mjs` `latest` also ignores any `harness-wasm` whose `workflow_run.head_branch !== main`. A host-only `main` deploy that falls back to latest cannot pick up an unmerged PR head.
+
+**Incident:** a same-repo harness PR uploaded `harness-wasm`; the next Production Git deploy did not touch `native/harness/**`, so fetch fell back to latest and served that PR’s Wasm. `workflow_dispatch` on main rebuilt a good artifact, but `VERCEL_DEPLOY_HOOK_URL` was empty so Vercel never redeployed — Production stayed on the poisoned build. Recovery is a Production Git deploy of `main` (this doc + fetch filter) after a main artifact exists.
+
+Path match helpers: `isHarnessBuildPath` / `commitTouchesHarnessBuild` / `isShippableHarnessArtifact` in `scripts/harnessRepo.mjs` (unit-tested; keep aligned with workflow path filters **and** the main-only upload `if:`).
 
 If Production fails closed with “no build-harness run … touches harness build paths”, recover with **`workflow_dispatch`** on `build-harness` for `main` (artifact upload then pings the deploy hook). When the DO runner is offline, dispatch with **`runner=ubuntu-latest`** (Zig freestanding build works on GitHub-hosted).
 
@@ -40,9 +48,7 @@ If Production fails closed with “no build-harness run … touches harness buil
 
 `.github/workflows/build-harness.yml` posts `VERCEL_DEPLOY_HOOK_URL` **after** artifact upload.
 
-**Status: already configured** (GitHub secret). Agents must not prompt the user to add or “wire” this hook. See [`AGENTS.md`](../AGENTS.md).
-
-If a workflow log prints `VERCEL_DEPLOY_HOOK_URL not set`, that is a regression — investigate secrets access, do not re-explain setup to the user by default.
+**Status: secret may be empty.** `build-harness` then WARNs and skips the hook (exit 0) — a `workflow_dispatch` on main uploads a good artifact but **does not** create a Vercel deployment. Recover with a Production Git deploy of `main` so `fetch-harness` can bind a main-branch artifact. If a log prints `VERCEL_DEPLOY_HOOK_URL` empty, that is a secrets-access regression on origin — investigate in Actions secrets; do not re-explain setup to the user by default.
 
 ### 3. Merge discipline for harness PRs
 

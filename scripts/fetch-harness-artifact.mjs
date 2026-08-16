@@ -8,7 +8,8 @@
  * On Vercel we wait for a successful build-harness run for VERCEL_GIT_COMMIT_SHA
  * (if one is queued/running), then download *that* run's artifact. If no run
  * appears after grace: if the commit touches harness build paths → **fail closed**
- * (do not ship stale Wasm); otherwise fall back to latest.
+ * (do not ship stale Wasm); otherwise fall back to latest **main-branch**
+ * artifact (PR heads that share the name are ignored — they must not ship).
  *
  * Env (first match wins for token):
  *   HARNESS_ARTIFACT_TOKEN  — preferred (fine-grained PAT, Actions: Read)
@@ -46,6 +47,7 @@ import {
   commitTouchesHarnessBuild,
   isHarnessBuildPath,
   isHarnessRequire,
+  pickLatestShippableHarnessArtifact,
   resolveHarnessRepo,
 } from './harnessRepo.mjs';
 
@@ -296,10 +298,12 @@ async function latestArtifact(tok) {
     `https://api.github.com/repos/${OWNER}/${REPO}/actions/artifacts?name=${encodeURIComponent(ARTIFACT_NAME)}&per_page=20`,
     tok,
   );
-  const artifact = (list.artifacts || []).find((a) => !a.expired);
+  const artifact = pickLatestShippableHarnessArtifact(list.artifacts || [], ARTIFACT_NAME);
   if (!artifact) {
     throw new Error(
-      `no non-expired artifact named "${ARTIFACT_NAME}" — run build-harness on invincible-do-1 first`,
+      `no non-expired main-branch artifact named "${ARTIFACT_NAME}" — ` +
+        `PR / feature-branch uploads are ignored. Run build-harness on main ` +
+        `(push or workflow_dispatch --ref main).`,
     );
   }
   return artifact;

@@ -200,13 +200,13 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const change_dir = tool({
     description:
-      'Change the logical workspace directory for subsequent tools this turn (and session when the host persists cwd). Path is relative to the current logical cwd unless already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Prefer as its own step before a burst of path tools. Does not run process.chdir on the sandbox daemon.',
+      'Change the logical workspace directory for subsequent tools this turn (and session when the host persists cwd). Path is relative to the current logical cwd unless already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Prefer as its own step before a burst of path tools. Does not run process.chdir on the sandbox daemon. Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
     inputSchema: jsonSchema<{ path: string }>({
       type: 'object',
       properties: {
         path: {
           type: 'string',
-          description: 'Directory relative to current logical cwd, already root-relative under it, or an in-jail absolute path under the sandbox root',
+          description: 'Directory relative to current logical cwd, already root-relative under it, or an in-jail absolute path under the sandbox root. Must be within the workspace — never /tmp or host temp dirs.',
         },
       },
       required: ['path'],
@@ -241,13 +241,13 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const list_dir = tool({
     description:
-      'List files and directories under the sandbox workspace. Paths are relative to the logical cwd (or workspace-root-relative when already rooted under cwd), or an in-jail absolute path under the sandbox root (same file as the relative form).',
+      'List files and directories under the sandbox workspace. Paths are relative to the logical cwd (or workspace-root-relative when already rooted under cwd), or an in-jail absolute path under the sandbox root (same file as the relative form). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
     inputSchema: jsonSchema<{ path?: string }>({
       type: 'object',
       properties: {
         path: {
           type: 'string',
-          description: 'Directory path relative to logical cwd (default "."), or an in-jail absolute path under the sandbox root',
+          description: 'Directory path relative to logical cwd (default "."), or an in-jail absolute path under the sandbox root. Must be within the workspace — never /tmp or host temp dirs.',
         },
       },
       additionalProperties: false,
@@ -280,14 +280,14 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const read_file = tool({
     description:
-      'Read a text file from the sandbox workspace (max 16 MiB). A successful full (non-truncated) read authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. Path is relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form).',
+      'Read a text file from the sandbox workspace (max 16 MiB). A successful full (non-truncated) read authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. Path is relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
     inputSchema: jsonSchema<{ path: string; maxBytes?: number }>({
       type: 'object',
       properties: {
         path: {
           type: 'string',
           description:
-            'File path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form)',
+            'File path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Must be within the workspace — never /tmp or host temp dirs.',
         },
         maxBytes: {
           type: 'number',
@@ -336,14 +336,14 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const write_file = tool({
     description:
-      'Write a text file in the sandbox workspace (max 16 MiB). Creating a new path does not require a prior read. Overwriting an existing file requires a successful full read_file of that path earlier in this agent run (re-read if the file changed on disk). Path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form).',
+      'Write a text file in the sandbox workspace (max 16 MiB). Creating a new path does not require a prior read. Overwriting an existing file requires a successful full read_file of that path earlier in this agent run (re-read if the file changed on disk). Path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
     inputSchema: jsonSchema<{ path: string; content: string; mkdir?: boolean }>({
       type: 'object',
       properties: {
         path: {
           type: 'string',
           description:
-            'File path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form)',
+            'File path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Must be within the workspace — never /tmp or host temp dirs.',
         },
         content: { type: 'string' },
         mkdir: {
@@ -429,7 +429,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const str_replace = tool({
     description:
-      'Exact string replace in a workspace file (coding-agent search_replace). Requires a successful full read_file of the path earlier in this agent run; re-read if the file changed on disk (other session, device, tool, or exec). old_string must match uniquely unless replace_all is true. Prefer this over write_file for small edits; use write_file to create or fully rewrite files. Path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form).',
+      'Exact string replace in a workspace file (coding-agent search_replace). Requires a successful full read_file of the path earlier in this agent run; re-read if the file changed on disk (other session, device, tool, or exec). old_string must match uniquely unless replace_all is true. Prefer this over write_file for small edits; use write_file to create or fully rewrite files. Path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
     inputSchema: jsonSchema<{
       path: string;
       old_string: string;
@@ -441,7 +441,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         path: {
           type: 'string',
           description:
-            'File path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form)',
+            'File path relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Must be within the workspace — never /tmp or host temp dirs.',
         },
         old_string: {
           type: 'string',
@@ -534,7 +534,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const exec = tool({
     description:
-      'Run a command in the sandbox (argv only, no shell). Optional cwd is resolved against the logical workspace cwd (default = logical cwd). Optional stdin/heredoc feeds multi-line input on the process stdin without a shell. Default timeout 5 min, max 30 min. Absolute workspace paths in stdout/stderr are printed workspace-relative.',
+      'Run a command in the sandbox (argv only, no shell). Optional cwd is resolved against the logical workspace cwd (default = logical cwd). Optional stdin/heredoc feeds multi-line input on the process stdin without a shell. Default timeout 5 min, max 30 min. Absolute workspace paths in stdout/stderr are printed workspace-relative. Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
     inputSchema: jsonSchema<{
       cmd: string;
       args?: string[];
@@ -553,7 +553,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         },
         cwd: {
           type: 'string',
-          description: 'Working directory under workspace (relative to logical cwd; default = logical cwd). In-jail absolute paths under the sandbox root are accepted.',
+          description: 'Working directory under workspace (relative to logical cwd; default = logical cwd). In-jail absolute paths under the sandbox root are accepted. Must be within the workspace — never /tmp or host temp dirs.',
         },
         timeoutMs: { type: 'number', description: 'Timeout in ms (default 5 min, max 30 min)' },
         stdin: {

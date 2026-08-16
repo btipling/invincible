@@ -7,6 +7,7 @@ import {
   runAgent,
   runAgentStream,
 } from './runAgent';
+import { createAgentTools } from './tools';
 import { TOOL_TRACE_SUMMARY_MAX_CHARS } from '../sandbox/config';
 import type { AgentStreamEvent } from './agentStream';
 import { MCP_SYSTEM_ADDENDUM } from '../mcp/toolNames';
@@ -855,11 +856,19 @@ describe('runAgent post-turn activeSandboxId (blocker B1 wire)', () => {
   });
 });
 
-describe('DEFAULT_AGENT_SYSTEM read-before-edit', () => {
+describe('DEFAULT_AGENT_SYSTEM standing orders', () => {
   it('mentions read before edit, re-read on change, and create exception', () => {
     expect(DEFAULT_AGENT_SYSTEM).toMatch(/read_file a path in this agent run/i);
     expect(DEFAULT_AGENT_SYSTEM).toMatch(/read_file again before editing/i);
     expect(DEFAULT_AGENT_SYSTEM).toMatch(/Creating a new file with write_file does not require/i);
+  });
+
+  it('must mention /tmp', () => {
+    expect(DEFAULT_AGENT_SYSTEM).toMatch(/\/tmp/i);
+  });
+
+  it('must mention workspace root is writable', () => {
+    expect(DEFAULT_AGENT_SYSTEM).toMatch(/workspace root is writable/i);
   });
 });
 
@@ -1117,6 +1126,77 @@ describe('runAgent provider usage capture (plan #539 / #327)', () => {
     );
     expect(result.text).toBe('ok');
     expect(result.usage).toBeUndefined();
+  });
+});
+
+describe('AGENT TOOL descriptions ban /tmp', () => {
+  function mockClient(): SandboxClient {
+    return {
+      listDir: vi.fn(),
+      readFile: vi.fn(),
+      writeFile: vi.fn(),
+      strReplace: vi.fn(),
+      exec: vi.fn(),
+      stat: vi.fn(),
+    };
+  }
+
+  it('every edited FS tool description mentions /tmp (not just workspace)', () => {
+    const tools = createAgentTools({
+      client: mockClient(),
+      freshness: { recordRead: vi.fn(), recordWrite: vi.fn(), assertCanEdit: vi.fn(() => ({ ok: true } as const)) } as never,
+    });
+
+    // Only the six tools edited in this PR — pwd is unchanged and was not part of the plan.
+    const editedTools = ['change_dir', 'list_dir', 'read_file', 'write_file', 'str_replace', 'exec'] as const;
+    for (const name of editedTools) {
+      const t = tools[name] as { description?: string } | undefined;
+      expect(t, `tool ${name} exists`).toBeTruthy();
+      expect(
+        t?.description,
+        `tool ${name} description must mention /tmp`,
+      ).toMatch(/\/tmp/i);
+    }
+  });
+
+  it('every FS path arg description mentions /tmp', () => {
+    const tools = createAgentTools({
+      client: mockClient(),
+      freshness: { recordRead: vi.fn(), recordWrite: vi.fn(), assertCanEdit: vi.fn(() => ({ ok: true } as const)) } as never,
+    });
+
+    // Inspect inputSchema.jsonSchema.properties.path.description directly —
+    // not JSON.stringify, which would match /tmp from the parent tool
+    // description and leave the test vacuous.
+    const pathTools = ['change_dir', 'list_dir', 'read_file', 'write_file', 'str_replace'] as const;
+    for (const name of pathTools) {
+      const t = tools[name] as {
+        inputSchema?: { jsonSchema?: { properties?: { path?: { description?: string } } } };
+      };
+      expect(t, `tool ${name} exists`).toBeTruthy();
+      const pathDesc = t?.inputSchema?.jsonSchema?.properties?.path?.description ?? '';
+      expect(
+        pathDesc,
+        `tool ${name} path arg description must contain /tmp`,
+      ).toMatch(/\/tmp/i);
+    }
+  });
+
+  it('exec cwd arg description mentions /tmp', () => {
+    const tools = createAgentTools({
+      client: mockClient(),
+      freshness: { recordRead: vi.fn(), recordWrite: vi.fn(), assertCanEdit: vi.fn(() => ({ ok: true } as const)) } as never,
+    });
+
+    const exec = tools.exec as {
+      inputSchema?: { jsonSchema?: { properties?: { cwd?: { description?: string } } } };
+    };
+    expect(exec).toBeTruthy();
+    const cwdDesc = exec?.inputSchema?.jsonSchema?.properties?.cwd?.description ?? '';
+    expect(
+      cwdDesc,
+      'exec cwd arg description must contain /tmp',
+    ).toMatch(/\/tmp/i);
   });
 });
 

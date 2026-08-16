@@ -263,7 +263,7 @@ Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURI
 ## Public repository policy
 
 - Do **not** commit host IPs, droplet IDs, or cloud account GUIDs.
-- Self-hosted workflows: default `workflow_dispatch` or `push` to `main`. **`build-harness` only** also runs **same-repo** contributor `pull_request` → `main` (not forks; no `pull_request_target`; no Vercel deploy hook on PR). Other self-hosted workflows stay main/dispatch only.
+- Self-hosted workflows: default `workflow_dispatch` or `push` to `main`. **`build-harness` only** also **compiles** on **same-repo** contributor `pull_request` → `main` (not forks; no `pull_request_target`; no Vercel deploy hook on PR; production artifact `harness-wasm` is **main-only** — PRs upload `harness-wasm-pr-<n>`). Other self-hosted workflows stay main/dispatch only.
 - Job `if:` opt-in: `vars.SELF_HOSTED_BUILDS == 'true'` **or** origin grandfather `github.repository == 'btipling/invincible'`. Clones must set the Actions **variable** (not secret) after attaching their own runner; foreign repos without the var **skip**.
 - Optional `vars.RUNNER_LABELS` JSON array for `runs-on` (default `["self-hosted","invincible","zig"]`). See `SECURITY.md` + `docs/runner.md`.
 - Prefer abstract runner docs; private inventory stays offline.
@@ -288,7 +288,7 @@ invincible/
 | Kind of change | Where |
 |----------------|--------|
 | UI page / layout | `app/` |
-| DOM site chrome nav (hamburger Account menu) | `app/components/AppNav.tsx` (brand wordmark; optional `busy?: boolean` from `HarnessHost` only — TEAL emissive outline + bloom + motes while the active harness turn is Busy; never poll the bridge; settings/admin omit the prop), `app/components/AuthNavLinks.tsx` (server: `soleMembership`+`canAccessAdmin` → `showAdmin`), `app/components/NavMenu.tsx` (client dropdown: ARIA `menu`, Arrow/Tab/Home/End, Escape + click-outside close + focus return, ≥44px touch targets, palette-only TEAL), `lib/navMenu.ts` + `lib/navMenu.test.ts` (`buildSignedInNavItems` — pure ordering/gating rule, unit-tested), footer slot `app/logout/LogoutButton.tsx`; unauth keeps inline `Sign in` header control. Client holds **zero** role-gate logic — it renders pre-gated inert `items` only |
+| DOM site chrome nav (hamburger Account menu) | `app/components/AppNav.tsx` (brand wordmark; optional `busy?: boolean` from `HarnessHost` only — TEAL outline + neon bloom + sine pulse + motes while the active harness turn is Busy; never poll the bridge; settings/admin omit the prop), `app/components/AuthNavLinks.tsx` (server: `soleMembership`+`canAccessAdmin` → `showAdmin`), `app/components/NavMenu.tsx` (client dropdown: ARIA `menu`, Arrow/Tab/Home/End, Escape + click-outside close + focus return, ≥44px touch targets, palette-only TEAL), `lib/navMenu.ts` + `lib/navMenu.test.ts` (`buildSignedInNavItems` — pure ordering/gating rule, unit-tested), footer slot `app/logout/LogoutButton.tsx`; unauth keeps inline `Sign in` header control. Client holds **zero** role-gate logic — it renders pre-gated inert `items` only |
 | API / AI Gateway / agent | `app/api/*`, `lib/agent/*`, `lib/sandbox/*` |
 | Agent SSE stream (tools + text + reasoning) | `lib/agent/agentStream.ts`, `lib/agent/runAgent.ts`, `lib/agent/reasoningConfig.ts`, `app/api/agent/route.ts`, `lib/agentApi.ts`, `docs/agent-stream.md` |
 | Agent read-before-edit / file freshness | `lib/agent/fileFreshness.ts`, `lib/agent/pathLock.ts` (per-path apply serialization), `lib/agent/tools.ts`, `lib/agent/runAgent.ts`, [docs/sandbox.md](docs/sandbox.md) |
