@@ -49,11 +49,12 @@ import type {
   UserPersonasDeps,
   UserPersonasResult,
 } from '../tenancy/userPersonas';
-import type {
-  CreateUserSkillInput,
-  UserSkillSummary,
-  UserSkillsDeps,
-  UserSkillsResult,
+import {
+  SKILL_BODY_MAX_BYTES,
+  type CreateUserSkillInput,
+  type UserSkillSummary,
+  type UserSkillsDeps,
+  type UserSkillsResult,
 } from '../tenancy/userSkills';
 
 /** Reserved first-party prefix that marks this family (route soft-path guard). */
@@ -653,6 +654,20 @@ export function createMetaPersonaSkillTools(
           return `ERROR meta_skill_str_replace: old_string matched ${count} times; pass replace_all: true or provide a unique sufficient snippet (no partial write)`;
         }
 
+        // Reject empty / over-cap results *before* split/join. replace_all of a
+        // short needle with a 64 KiB fragment in a large body would otherwise
+        // allocate count×|new| (hundreds of MB–GB) before the store cap ran.
+        const bodyBytes = Buffer.byteLength(body, 'utf8');
+        const oldBytes = Buffer.byteLength(oldStr, 'utf8');
+        const newBytes = Buffer.byteLength(newStr, 'utf8');
+        const nextBytes = bodyBytes + count * (newBytes - oldBytes);
+        if (nextBytes <= 0) {
+          return 'ERROR meta_skill_str_replace: resulting body would be empty; no write performed';
+        }
+        if (nextBytes > SKILL_BODY_MAX_BYTES) {
+          return `ERROR meta_skill_str_replace: resulting body exceeds the store's 4 MiB write cap (never truncated); no write performed`;
+        }
+
         // Literal build — split/join or slice+concat, NEVER String.prototype.replace.
         const nextBody = replaceAll
           ? body.split(oldStr).join(newStr)
@@ -665,9 +680,6 @@ export function createMetaPersonaSkillTools(
         // 4 MiB SKILL_BODY_MAX_BYTES store write cap — rejects, never truncates).
         const upd = await userSkills.updateUserSkillBody(userId, id, nextBody);
         if (!upd.ok) {
-          if (upd.code === 'invalid_body') {
-            return `ERROR meta_skill_str_replace: resulting body exceeds the store's 4 MiB write cap (never truncated); no write performed`;
-          }
           return `ERROR meta_skill_str_replace: ${upd.error}`;
         }
         return `replaced ${replaceAll ? count : 1} occurrence(s) of old_string in skill id=${id}`;

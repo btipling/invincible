@@ -136,9 +136,10 @@ route user). Tools and their semantics:
   - **empty `old_string`** → error.
   - each `old_string` / `new_string` fragment is capped at
     `META_SKILL_FRAGMENT_MAX_BYTES` (64 KiB), so the tool cannot be used to
-    rewrite a whole body in one call; the **resulting full body** is still
-    re-validated against the store's 4 MiB `SKILL_BODY_MAX_BYTES` write cap on
-    write (rejected, never truncated).
+    rewrite a whole body in one call; the **resulting full body** size is
+    computed from the match count **before** the replacement is materialized
+    and is rejected when empty or over the store's 4 MiB `SKILL_BODY_MAX_BYTES`
+    write cap (never truncated, never allocated past the cap).
   - replacement is built **literally** (`split`/`join` + slice, never
     `String.prototype.replace`), so `$` templates (`$&`, `$1`, `$\'`, `` $\` ``),
     backslashes, and regex metacharacters in **either** string are treated

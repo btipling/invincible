@@ -187,11 +187,11 @@ function makeSkillFake(initial: SRow[] = []) {
     async updateUserSkillBody(_u, id, body) {
       const r = rows.find((x) => x.id === id);
       if (!r) return { ok: false, code: 'not_found', error: 'skill not found' };
-      if (Buffer.byteLength(body, 'utf8') > SKILL_BODY_CAP) {
+      if (typeof body !== 'string' || !body.trim() || Buffer.byteLength(body, 'utf8') > SKILL_BODY_CAP) {
         return {
           ok: false,
           code: 'invalid_body',
-          error: `body must be ≤ ${SKILL_BODY_CAP} bytes`,
+          error: `body is required and must be ≤ ${SKILL_BODY_CAP} bytes`,
         };
       }
       r.body = body;
@@ -589,6 +589,53 @@ describe('createMetaPersonaSkillTools — meta_skill_str_replace', () => {
     expect(res).toContain('store\'s 4 MiB write cap');
     // Body unchanged (no write) — still the near-cap body with the marker.
     expect(sFake.rows.find((r) => r.id === skillId)!.body).toBe(nearCap);
+  });
+
+  it('replace_all expansion past the store cap is rejected before split/join (no write)', async () => {
+    // 32 KiB of 'x' × 64 KiB new_string would materialize ~2 GiB if split/join
+    // ran. The byte pre-check must reject this in milliseconds.
+    const repeated = 'x'.repeat(32 * 1024);
+    await tools.meta_skill_update_body.execute!({ id: skillId, body: repeated }, execOpts);
+    const grow = 'y'.repeat(64 * 1024);
+    const started = Date.now();
+    const res = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'x', new_string: grow, replace_all: true },
+        execOpts,
+      ),
+    );
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(res).toMatch(/^ERROR meta_skill_str_replace:/);
+    expect(res).toContain('store\'s 4 MiB write cap');
+    expect(sFake.rows.find((r) => r.id === skillId)!.body).toBe(repeated);
+  });
+
+  it('empty new_string wiping the whole body → empty-body error, not over-cap', async () => {
+    await tools.meta_skill_update_body.execute!({ id: skillId, body: 'hello' }, execOpts);
+    const res = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'hello', new_string: '' },
+        execOpts,
+      ),
+    );
+    expect(res).toMatch(/^ERROR meta_skill_str_replace:/);
+    expect(res).toContain('empty');
+    expect(res).not.toContain('4 MiB');
+    expect(sFake.rows.find((r) => r.id === skillId)!.body).toBe('hello');
+  });
+
+  it('whitespace-only result is rejected with the store reason (not a 4 MiB lie)', async () => {
+    await tools.meta_skill_update_body.execute!({ id: skillId, body: 'hello' }, execOpts);
+    const res = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'hello', new_string: '   ' },
+        execOpts,
+      ),
+    );
+    expect(res).toMatch(/^ERROR meta_skill_str_replace:/);
+    expect(res).toContain('body is required');
+    expect(res).not.toMatch(/exceeds the store's 4 MiB write cap/);
+    expect(sFake.rows.find((r) => r.id === skillId)!.body).toBe('hello');
   });
 
   it('UTF-8 multi-byte rune in old_string matches correctly (row 9)', async () => {

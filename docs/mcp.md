@@ -158,7 +158,8 @@ caller (same grants as Settings). No DEK secrets, no sockets, no OAuth: the only
   exact-text fragment (`old_string` → `new_string`, optional `replace_all`) for
   output-token-safe editing of large bodies: `$`-template / regex metacharacters
   in either string land verbatim (never interpolated), each fragment capped at
-  64 KiB, the resulting body still bounded by the 4 MiB store write cap.
+  64 KiB, the resulting body size computed before materializing the
+  replacement and still bounded by the 4 MiB store write cap.
 - **Sandboxes** — `meta_sandbox_list` / `meta_sandbox_active` /
   `meta_sandbox_switch` (see [sandbox.md](sandbox.md)). This sub-family is a
   **read + bind** (not authoring) surface: `list` is the same non-secret
