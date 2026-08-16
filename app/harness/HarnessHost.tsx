@@ -12,15 +12,13 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
-import { formatElapsedSeconds } from '../../lib/elapsedTime';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
   Lifecycle,
   MessageKind,
-  lifecycleName,
 } from '../../lib/harnessBridge';
-import { ember, teal, warm } from '../../lib/palette';
+import { ember, teal } from '../../lib/palette';
 import {
   createDefaultSessionStore,
   createEmptySession,
@@ -76,11 +74,6 @@ async function fetchHarnessBuildId(): Promise<string> {
   } catch {
     return '';
   }
-}
-
-function shortModelChip(id: string | null, max = 28): string {
-  if (!id) return 'no model';
-  return id.length <= max ? id : `${id.slice(0, max - 1)}…`;
 }
 
 type ModelCatalogResult =
@@ -189,22 +182,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const sessionRef = useRef<SessionSnapshot>(createEmptySession());
   /** Oldest session.messages index currently hydrated into the Wasm ring. */
   const ringWindowStartRef = useRef(0);
-  const loadStarted = useRef(
-    typeof performance !== 'undefined' ? performance.now() : 0,
-  );
 
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState<string | null>(null);
-  const [lifecycle, setLifecycle] = useState<string>('boot');
   const [busy, setBusy] = useState(false);
-  /** Whole-turn Busy clock (#347/#457): elapsed wall-clock sec shown on the chip. */
-  const [turnElapsedSec, setTurnElapsedSec] = useState(0);
-  const [storeKind, setStoreKind] = useState<string>('memory');
-  const [loadMs, setLoadMs] = useState<number | null>(null);
   const [hostNote, setHostNote] = useState<string | null>(null);
-  const [modelChip, setModelChip] = useState<string>('…');
-  /** Wasm build id from public/harness/build-id.txt — stale-cache detector. */
-  const [harnessBuildId, setHarnessBuildId] = useState<string>('');
   /** Cloud session summaries for the picker (no transcripts). */
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   /** Canonical active session id (= `SessionSnapshot.id`, server-minted when cloud). */
@@ -322,8 +304,6 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       inflightRef.current = true;
       setBusy(true);
       setHostNote(null);
-      setLifecycle(lifecycleName(Lifecycle.Busy));
-      setModelChip(shortModelChip(modelId));
 
       try {
         const { result, session: next } = await runHarnessTurn(
@@ -345,7 +325,6 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         if (!result.ok) {
           setHostNote(result.error);
         }
-        setLifecycle(lifecycleName(Lifecycle.Ready));
       } finally {
         inflightRef.current = false;
         setBusy(false);
@@ -383,7 +362,6 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       try {
         const store = createDefaultSessionStore();
         storeRef.current = store;
-        setStoreKind(store.kind);
         // Cloud repo for multi-device sync — pull is async after first paint path.
         const repo = createHttpSessionRepository({
           getLocal: () => sessionRef.current,
@@ -403,7 +381,6 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
 
         const buildId = await fetchHarnessBuildId();
         if (cancelled) return;
-        if (buildId) setHarnessBuildId(buildId);
         const bust = buildId || String(Date.now());
         const wasmUrl = `/harness/harness.wasm?v=${encodeURIComponent(bust)}`;
 
@@ -435,13 +412,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         if (cancelled) return;
         if (catalog.ok) {
           bridge.setModelCatalog(catalog.models);
-          setModelChip(shortModelChip(bridge.getSelectedModel()));
           if (catalog.models.length === 0) {
             setHostNote('No models granted — ask a tenant admin for inference access.');
           }
         } else {
           bridge.setModelCatalog([]);
-          setModelChip('no model');
           setHostNote(catalog.message);
         }
 
@@ -529,20 +504,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           void refreshSessions();
         })();
 
-        setLoadMs(Math.round(performance.now() - loadStarted.current));
-        setLifecycle(lifecycleName(Lifecycle.Ready));
-
         const poll = () => {
           if (cancelled) return;
           const b = bridgeRef.current;
           if (b) {
-            // Reflect Wasm lifecycle + selected model on host chips.
-            try {
-              setLifecycle(lifecycleName(b.getLifecycle()));
-              setModelChip(shortModelChip(b.getSelectedModel()));
-            } catch {
-              /* ignore */
-            }
             // Protocol v9: Stop first — abort inflight and skip starting a turn this tick.
             if (b.takePendingCancel()) {
               abortRef.current?.abort();
@@ -625,24 +590,34 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   ]);
 
   /**
-   * Whole-turn Busy clock (#347/#457): while Busy, tick a ~1 Hz host wall-clock
-   * timer so the top-bar chip can show `thinking · 0:42`. The clock is client
-   * wall time from turn start (NOT provider `usage`); it lives on the DOM chip,
-   * never in Wasm. Idle/Stop/error resets it to 0 so no stray `0:00` lingers.
-   * Reduced-motion is naturally satisfied — this is a plain 1 s text update,
-   * no CSS animation.
+   * Whole-turn Busy clock (#347 / plan #457, protocol v14 / plan #567): while
+   * Busy, tick a ~1 Hz host wall-clock timer. The clock is client wall time
+   * from turn start (NOT provider `usage`). Since the DOM top-bar chip was
+   * removed (plan #567) the host never renders the timer — it is a pure feeder
+   * with NO React state: each tick it pushes the elapsed seconds straight to
+   * the Wasm busy row via `bridge.setTurnElapsed(sec)`, which formats/appends
+   * `Waiting for model… · mm:ss` in-canvas. There is intentionally no `useState`
+   * here — a state round-trip per second would re-render the whole host
+   * (pickers, authNav, canvas parent) just to feed a value no JSX reads
+   * (adversarial review #568 L5). Idle/Stop/error resets to 0 so no stray
+   * `0:00` lingers. Reduced-motion is naturally satisfied — a plain 1 s scalar
+   * push, no CSS animation.
    */
   useEffect(() => {
     if (!busy) {
-      setTurnElapsedSec(0);
+      bridgeRef.current?.setTurnElapsed(0);
       return;
     }
     const start = performance.now();
-    setTurnElapsedSec(0);
+    bridgeRef.current?.setTurnElapsed(0);
     const id = window.setInterval(() => {
-      setTurnElapsedSec(Math.max(0, Math.floor((performance.now() - start) / 1000)));
+      const sec = Math.max(0, Math.floor((performance.now() - start) / 1000));
+      bridgeRef.current?.setTurnElapsed(sec);
     }, 1000);
-    return () => window.clearInterval(id);
+    return () => {
+      window.clearInterval(id);
+      bridgeRef.current?.setTurnElapsed(0);
+    };
   }, [busy]);
 
   /**
@@ -687,7 +662,6 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         bridge.setLifecycle(Lifecycle.Ready);
       }
       setHostNote(null);
-      setLifecycle(lifecycleName(Lifecycle.Ready));
       canvasRef.current?.focus();
     };
 
@@ -805,73 +779,6 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                 justifyContent: 'flex-end',
               }}
             >
-              <span
-                style={{
-                  fontSize: '0.7rem',
-                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                  color: warm.muted,
-                  border: `1px solid ${warm.border}`,
-                  background: warm.surface,
-                  borderRadius: 4,
-                  padding: '0.2rem 0.45rem',
-                  maxWidth: 160,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-                title="Selected model (change in canvas header)"
-              >
-                {modelChip}
-              </span>
-              <span
-                style={{
-                  fontSize: '0.7rem',
-                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                  color: teal.muted,
-                  border: `1px solid ${teal.border}`,
-                  background: teal.surface,
-                  borderRadius: 4,
-                  padding: '0.2rem 0.45rem',
-                }}
-                title={`Harness Wasm build id (native/harness). Mismatch with canvas h:… means stale wasm cache.`}
-              >
-                h:{harnessBuildId || '…'}
-              </span>
-              <span
-                style={{
-                  fontSize: '0.7rem',
-                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                  color: teal.muted,
-                  border: `1px solid ${teal.border}`,
-                  background: teal.surface,
-                  borderRadius: 4,
-                  padding: '0.2rem 0.45rem',
-                }}
-                title={`Session store: ${storeKind}${loadMs != null ? ` · ready in ${loadMs}ms` : ''}`}
-              >
-                {storeKind}
-                {loadMs != null ? ` · ${loadMs}ms` : ''}
-              </span>
-              <span
-                role="status"
-                aria-live="polite"
-                style={{
-                  fontSize: '0.75rem',
-                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                  color:
-                    phase === 'error' ? ember.accent : busy ? warm.accent : warm.muted,
-                  border: `1px solid ${phase === 'error' ? ember.border : warm.border}`,
-                  background: phase === 'error' ? ember.surface : warm.surface,
-                  borderRadius: 4,
-                  padding: '0.2rem 0.5rem',
-                }}
-              >
-                {phase === 'ready' &&
-                  (busy
-                    ? `thinking · ${formatElapsedSeconds(turnElapsedSec)}`
-                    : `ready · ${lifecycle}`)}
-                {phase === 'error' && 'error'}
-              </span>
               {phase === 'ready' && (
                 <SessionPicker
                   sessions={sessions}

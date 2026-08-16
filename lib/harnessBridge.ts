@@ -13,7 +13,9 @@ import { STATUS_SLOT_MAX_BYTES } from './sessionCloudCaps';
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
 // v13 (plan #538/#541): additive status-slot store — `inv_set_status_slot`,
 // `inv_status_slot_len/copy`, `inv_status_slots_clear`. Old exports intact.
-export const HARNESS_PROTOCOL_VERSION = 13 as const;
+// v14 (plan #567): additive whole-turn busy clock — scalar export
+// `inv_set_turn_elapsed(secs)`; the Wasm busy row formats/appends ` · mm:ss`.
+export const HARNESS_PROTOCOL_VERSION = 14 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -136,6 +138,9 @@ export type HarnessBridgeExports = {
   inv_status_slot_len: (slot: number) => number;
   inv_status_slot_copy: (slot: number, outPtr: number, maxLen: number) => number;
   inv_status_slots_clear: () => void;
+  // Protocol v14 (plan #567) — whole-turn busy clock: host feeds scalar elapsed
+  // seconds; the Wasm busy row formats/appends ` · mm:ss`.
+  inv_set_turn_elapsed: (secs: number) => void;
   inv_image_cache_put: (
     urlPtr: number,
     urlLen: number,
@@ -193,6 +198,7 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_status_slot_len',
   'inv_status_slot_copy',
   'inv_status_slots_clear',
+  'inv_set_turn_elapsed',
   'inv_image_cache_put',
   'inv_image_cache_clear',
   'inv_math_cache_put',
@@ -635,6 +641,18 @@ export class HarnessBridge {
   /** Protocol v13 — clear all status slots (Clear / New session / restore empty). */
   clearStatusSlots(): void {
     this.exports.inv_status_slots_clear();
+  }
+
+  /**
+   * Protocol v14 (plan #567) — the host feeds the whole-turn elapsed wall-clock
+   * seconds while a turn is busy; the Wasm busy row formats/appends ` · mm:ss`.
+   * `0` clears the clock (idle/stop/error/clear) so no stale `0:00` lingers.
+   * Scalar u32 transport — no string/byte budget on the hot path. The host calls
+   * this ~1 Hz from its Busy wall-clock effect (the host owns the only reliable
+   * wall clock; the Wasm holds a passive display only).
+   */
+  setTurnElapsed(secs: number): void {
+    this.exports.inv_set_turn_elapsed(Math.max(0, Math.floor(secs)) | 0);
   }
 
   /**

@@ -19,7 +19,9 @@ const ring_slot = @import("ring_slot.zig");
 /// v12: additive message kind 7 `skill_attached` (display-only skill row) — no new export.
 /// v13: additive status-slot store (plan #538/#541) — `inv_set_status_slot`,
 /// `inv_status_slot_len/copy`, `inv_status_slots_clear`.
-pub const PROTOCOL_VERSION: u32 = 13;
+/// v14: additive whole-turn busy clock (plan #567) — scalar export
+/// `inv_set_turn_elapsed(secs)`; the Wasm busy row formats/appends ` · mm:ss`.
+pub const PROTOCOL_VERSION: u32 = 14;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -88,6 +90,11 @@ pub const STATUS_SLOT_DROP_ORDER = [_]u32{ STATUS_SLOT_GIT, STATUS_SLOT_CONTEXT,
 const StoredMsg = ring_slot.Slot;
 
 var lifecycle: Lifecycle = .boot;
+/// Protocol v14 — whole-turn elapsed wall-clock seconds pushed by the host while
+/// a turn runs (plan #567). Scalar u32 (no string/byte budget on the hot path).
+/// Reset on `reset()` and on a host push of 0 (idle/stop/error/clear); the Wasm
+/// busy row hides the clock while this is 0.
+var turn_elapsed: u32 = 0;
 var messages: [MAX_MSG]StoredMsg = [_]StoredMsg{.{}} ** MAX_MSG;
 var msg_head: usize = 0;
 var msg_count: usize = 0;
@@ -222,6 +229,7 @@ pub fn reset() void {
     catalog_count = 0;
     selected_index = 0;
     for (&status_slots) |*s| s.len = 0;
+    turn_elapsed = 0;
     image_cache.clear();
     math_cache.clear();
 }
@@ -265,6 +273,12 @@ pub fn statusSlotValue(slot: u32) []const u8 {
     if (slot >= MAX_STATUS_SLOTS) return &[_]u8{};
     const s = &status_slots[slot];
     return s.data[0..s.len];
+}
+
+/// Protocol v14 — whole-turn elapsed seconds fed by the host (0 = idle). The
+/// Wasm busy row appends a formatted ` · mm:ss` while a turn runs.
+pub fn turnElapsed() u32 {
+    return turn_elapsed;
 }
 
 pub fn canLoadEarlier() bool {
@@ -518,6 +532,20 @@ export fn inv_status_slot_copy(slot: u32, out_ptr: [*]u8, max_len: usize) u32 {
 
 export fn inv_status_slots_clear() void {
     for (&status_slots) |*s| s.len = 0;
+    refresh();
+}
+
+// ── Protocol v14 — whole-turn busy clock (host feeds, Wasm formats) ───────
+// The host owns the only reliable wall clock (no WASI clock in Wasm). While a
+// turn is busy it pushes the elapsed integer seconds ~1 Hz via this scalar
+// export; the Wasm busy row formats/appends ` · mm:ss` (plan #567). `0` clears
+// it (idle/stop/error/clear) so no stale clock lingers. v14 is additive — all
+// v13 exports + the status-slot store are intact.
+
+/// Set the whole-turn elapsed wall-clock seconds. Scalar u32 — no string/byte
+/// budget. `secs == 0` hides the clock in the busy row.
+export fn inv_set_turn_elapsed(secs: u32) void {
+    turn_elapsed = secs;
     refresh();
 }
 

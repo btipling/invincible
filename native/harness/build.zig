@@ -98,6 +98,7 @@ pub fn build(b: *std.Build) void {
         "inv_status_slot_len",
         "inv_status_slot_copy",
         "inv_status_slots_clear",
+        "inv_set_turn_elapsed",
         "inv_image_cache_put",
         "inv_image_cache_clear",
         "inv_math_cache_put",
@@ -169,6 +170,21 @@ pub fn build(b: *std.Build) void {
             }),
         });
         test_rich.dependOn(&b.addRunArtifact(composer_text_tests).step);
+    }
+
+    // Host unit tests for elapsed_clock.zig (plan #567, protocol v14 turn-clock
+    // feed): the four `m:ss` / `h:mm:ss` format cases + undersized-buffer guard.
+    // Pure, no dvui.
+    {
+        const elapsed_clock_tests = b.addTest(.{
+            .name = "elapsed_clock",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/elapsed_clock.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(elapsed_clock_tests).step);
     }
 
     const link_tests = b.addTest(.{

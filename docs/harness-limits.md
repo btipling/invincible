@@ -20,7 +20,7 @@ See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 | MIME | `application/wasm` for `/harness/*.wasm` (`next.config.js`) |
 | First paint | Spinner until instantiate; full-bleed canvas after ready |
 | Cache | `public, max-age=3600, stale-while-revalidate=86400` |
-| Build id | Baked short git SHA (`-Dbuild-id`); file `public/harness/build-id.txt`; shown as `h:…` in host chip **and** canvas header — must match after deploy |
+| Build id | Baked short git SHA (`-Dbuild-id`); file `public/harness/build-id.txt`; shown as `h:…` in canvas header — must match after deploy |
 
 ## Keyboard & focus
 
@@ -56,7 +56,7 @@ Vertical bands inside the Wasm root (not a DOM panel):
 | Height budget | Every frame: viewport → absolute `Options.rect` bands (header / transcript / composer). Rect children do not report min-size up the tree, so tall content cannot push chrome off-canvas |
 | Wrap / grow | Field is **`break_lines`** + grows **vertically** with wrapped lines up to `COMPOSER_INPUT_MAX_H` (120 px) then scrolls **inside** the entry — never a horizontal gutter (repo no-h-scroll policy, #344/#457) |
 | Icon button | Fixed **`TOUCH_H`×`TOUCH_H`** (40 px) square on the **same row** as the field, vertically centered. Idle = ▶ Send (submit when non-empty); Busy = ■ Stop (protocol v9 `queueCancelFromUi` → host abort). No labelled Stop/Send pill, no hint copy. Glyphs from the embedded DejaVu Sans Symbols face (no tofu) |
-| Turn clock | Whole-turn **`mm:ss`** (`thinking · 0:42`) is a **DOM top-bar Busy chip** (`HarnessHost` `AppNav`) — client **wall-clock** from Busy start, ~1 Hz tick, reset/hidden on Ready/Stop/error. **Not** Wasm and **not** provider `usage` duration. See [feature-divide.md](feature-divide.md) |
+| Turn clock | Whole-turn **`mm:ss`** is painted **in-canvas** by the Wasm busy row (`Waiting for model… · 0:42`), protocol **v14** (`inv_set_turn_elapsed`). The **DOM host** owns the only reliable wall-clock (no WASI clock in Wasm): its ~1 Hz Busy effect pushes the elapsed seconds to the bridge (`HarnessBridge.setTurnElapsed` → `inv_set_turn_elapsed`), reset to 0 on Ready/Stop/error so no bare `0:00` lingers. The clock is client wall-time from turn start — **not** provider `usage` duration. See [feature-divide.md](feature-divide.md) |
 | Short canvas | Transcript shrinks / scrolls first — chrome keeps touch-sized targets (~40px) |
 | Content size | Tall messages grow **virtual** scroll size only; scroller outer height is fixed to the leftover band |
 | Solid chrome | Composer band uses TEAL fill so transcript paint cannot show through |

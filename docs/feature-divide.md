@@ -26,10 +26,10 @@ optional login chrome).
 | `SessionStore` load/save/clear | **DOM** | memory / localStorage (first paint) |
 | Cloud session list/mint/pull/push/DELETE (`/api/sessions*`) | **DOM** host + **Vercel backend** | Redis multi-session (+ **phase 0 #515 envelope + Blob transcript**), server-minted ids; hybrid async; never blocks first paint; no dual chat. **Wasm never talks to Redis or Blob** — the DOM host drives the client→Blob upload + envelope upsert |
 | Session ring window + Load earlier poll | **DOM** host + **Wasm** control | Host slices ≤**2048** (`HARNESS_RING_MAX`); **Load earlier** steps by **`HISTORY_PAGE` = 512**; Wasm pending (protocol v6); no React transcript |
-| Thin status chips (model, lifecycle) | **DOM** (optional) | Must not replace in-canvas status; model chip is a **mirror** of Wasm selection, not a second picker |
+| Thin status chips (model, lifecycle) | **Removed** (plan #567) | The DOM top-bar diagnostic chips (model · `h:{build}` · store-kind+loadMs badge · `ready`/`thinking`+clock) were removed — the canvas is the single source (model selector, build-id header, ready/busy). No DOM mirror, no second picker |
 | Model catalog fetch (`GET /api/models`) | **DOM** | Session-gated; host pushes ids into Wasm catalog |
 | **Workspace status bar** (sandbox · cwd · git · context) | **Wasm-primary** (bottom status bar under the composer, protocol v13) | Product truth is in-canvas: the status-slot pack is painted as a thin, **always-present full-width status bar directly below the composer** from bridge state (plan #555 → #554); the header no longer paints the pack nor a redundant title. The **DOM host mirrors only** (never a competing status panel). Host folds session state — sandbox (`activeSandboxId`) + `cwd` — into the bridge status-slot store after hydrate/restore and after **every** agent turn (success **and** fail: a 403-clear or a committed `change_dir` on a cancelled/timed-out turn repaints the pack — PR #543; host-ellipsized to the byte cap before the wire). The **git** slot (Phase 2 #540) is filled by the DOM host polling the read-only **`GET /api/harness/status`** server probe on a ~10 s cadence (`refreshGitStatusSlot`); the server probes the bind workspace root with bounded argv-only read-only git (`statusProbe.ts`) and rate-limits per instance. The **context/usage** slot (Phase 3 #539) is **host-folded provider token usage** captured at the final completion (JSON result / stream `done` / chat result), painted absolute-tokens-only and **hidden by default** on missing usage — never a client estimate; abort/cancel keeps the prior honest value. Capture lives in the **Vercel backend** (`runAgent`/`agentStream`/`chatServer`-side `usageSummary.ts`); parsing + fold live in **DOM** (`agentApi.ts`, `chatApi.ts`, `harnessChat.ts` `foldStatusSlots`) |
-| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v13**) |
+| Model selection UI (label + **Next** cycle) | **Wasm** | Canvas header; protocol v3 catalog (bridge overall **v14**) |
 | Skill attach display (`Skill attached: <slug>`) | **Wasm** (display-only kind 7) + **Vercel** (resolve/inject) | Server resolves `/skill-name` + injects the body into system context (after the persona); the Wasm canvas shows only the skill NAME row (message kind 7, display-only) — never the body |
 | Selected `modelId` on inference | **DOM host** → **Vercel backend** | Host reads bridge; POST body; server re-authorizes grants + BYOK |
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
@@ -42,7 +42,7 @@ optional login chrome).
 | **Composer + Send** | **Wasm** | Primary input |
 | **Stop / cancel turn** | **Wasm** control + **DOM** abort | Canvas **Stop** (icon-only ■, plan #457) while busy → pending cancel (protocol v9); host aborts `AbortController` |
 | Busy / error presentation for turns | **Wasm** | EMBER for errors |
-| Live whole-turn `mm:ss` clock (Busy) | **DOM** (status chip) | Client **wall-clock** from Busy start, ticked ~1 Hz into the `AppNav` Busy chip (`thinking · 0:42`); reset/hidden on Ready/Stop/error. Composer/Stop stay **Wasm** — this clock is the one DOM-owned busy timer (#347/#457, plan #457) |
+| Whole-turn `mm:ss` clock (Busy) | **Wasm** (busy row) fed by the **DOM** host | The host owns the only reliable wall-clock (no WASI clock in Wasm) and ticks it ~1 Hz, pushing the elapsed seconds into the Wasm busy row via protocol **v14** `inv_set_turn_elapsed` (plan #567). The canvas appends `Waiting for model… · 0:42` in-canvas while a turn runs; reset to 0 on Ready/Stop/error so no `0:00` lingers. Composer/Stop stay **Wasm** |
 | Empty / onboarding copy for agent | **Wasm** | |
 | Asteronica canvas theme | **Wasm** | `palette.zig` |
 | Frame loop / WebGL | **Wasm** | dvui |
@@ -69,7 +69,7 @@ Track any exception in the issue that introduces it:
 
 ```text
 Host loads Wasm → GET /api/models → push catalog into bridge (protocol v6; catalog APIs from v3)
-User cycles model in Wasm header (optional Next) — host chip mirrors selection
+User cycles model in Wasm header (optional Next) — model selection truth stays in-canvas
 (optional) User configures personal MCP on /settings/mcp (keys → tenant DEK ciphertext)
 User types in Wasm composer
   → inv_* pending submit (poll)
@@ -126,7 +126,7 @@ re-resolved each turn.
 | Concern | Path |
 |---------|------|
 | Host shell | `app/harness/HarnessHost.tsx` |
-| Bridge TS (protocol **v13**) | `lib/harnessBridge.ts` |
+| Bridge TS (protocol **v14**) | `lib/harnessBridge.ts` |
 | Image fetch/decode | `lib/harnessImages.ts` |
 | Model catalog API | `app/api/models/route.ts` |
 | Admin inference keys | `app/admin/inference/*` |
@@ -139,7 +139,7 @@ re-resolved each turn.
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
 | Export whitelist | `native/harness/build.zig` |
 
-Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **13** — primal: 13 adds the additive status-slot store).
+Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **14** — 13 added the additive status-slot store; **14** adds the scalar turn-clock feed `inv_set_turn_elapsed`).
 Mismatch → load error; rebuild both sides. Image **bytes** enter only via bridge put; never dual DOM `<img>` product surface.
 
 ## Related

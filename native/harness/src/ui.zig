@@ -14,6 +14,7 @@ const mixed_text = @import("rich/mixed_text.zig");
 const composer_text = @import("composer_text.zig");
 const toolrun = @import("rich/toolrun.zig");
 const thinking_collapse = @import("thinking_collapse.zig");
+const elapsed_clock = @import("elapsed_clock.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
@@ -1263,6 +1264,16 @@ pub fn frame() !void {
                 .id_extra = 0xffff_ffff,
             });
             tl.addText("Waiting for model…", .{});
+            // Protocol v14 — whole-turn clock relocated from the DOM top-bar chip
+            // into this Wasm busy row (plan #567): the host feeds elapsed seconds
+            // and we append ` · mm:ss` only while > 0, so no bare `0:00` lingers
+            // at t=0. The host resets to 0 on idle/stop/error/clear.
+            if (bridge.turnElapsed() > 0) {
+                var clock_buf: [32]u8 = undefined;
+                const clock = elapsed_clock.formatElapsedClock(&clock_buf, bridge.turnElapsed());
+                tl.addText(" · ", .{});
+                tl.addText(clock, .{});
+            }
             tl.deinit();
         }
     }
