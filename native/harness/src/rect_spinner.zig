@@ -1,7 +1,11 @@
 //! Generic reusable 2×4 rectangle spinner. Callers pass a palette ramp, a tag
-//! prefix, and an id_extra offset — no dependency on busy row / waiting copy /
+//! prefix, and an id_extra base — no dependency on busy row / waiting copy /
 //! bridge. Two instances on one frame do not collide as long as they use
-//! different (tag_prefix, id_extra) pairs.
+//! different `tag_prefix` values **and** `id_extra` bases spaced at least
+//! `ID_SPAN` apart (see `ID_SPAN` below). A shared `src` (two calls to
+//! `paint` from the same call site, e.g. a future caller painting two
+//! spinners) is disambiguated only by `id_extra`, so bases closer than
+//! `ID_SPAN` alias each other's row/cell boxes.
 //!
 //! Named ramps: WARM_RAMP (busy row) and TEAL_RAMP (future chrome). No EMBER.
 //!
@@ -30,6 +34,12 @@ pub const RADIUS: f32 = 2;
 /// Grid overall footprint (px) — 2×5+3 = 13 wide, 4×5+3×3 = 29 tall.
 pub const W: f32 = @as(f32, @floatFromInt(COLS)) * CELL + @as(f32, @floatFromInt(COLS - 1)) * GAP;
 pub const H: f32 = @as(f32, @floatFromInt(ROWS)) * CELL + @as(f32, @floatFromInt(ROWS - 1)) * GAP;
+/// Span of the `id_extra` namespace this spinner consumes: the base (outer
+/// box), rows `base+0x10..0x13`, cells `base+0x20..0x27`. Two spinners sharing
+/// one `src` must use `id_extra` bases spaced **at least this many apart** so
+/// no row/cell id aliases another instance's tree. Same for any other dvui
+/// widget drawing into the same id domain.
+pub const ID_SPAN: usize = 0x28;
 
 /// 4-step ramp: [head, trail1, trail2, rest] → dvui.Color per LUT step.
 pub const ColorRamp = [4]dvui.Color;
@@ -48,8 +58,11 @@ pub const Options = struct {
     /// Tag namespace prefix (e.g. "busy-spinner"). The outer box gets
     /// `{tag_prefix}`; each cell gets `{tag_prefix}-cell-{row}-{col}`.
     tag_prefix: []const u8,
-    /// Base id for inner box id_extra values. Caller controls the collision
-    /// domain by picking a unique offset.
+    /// Base id for inner box id_extra values. When a caller paints more than
+    /// one spinner from the same call site (shared `src`), it must space the
+    /// `id_extra` bases at least `ID_SPAN` apart so no row/cell box aliases
+    /// another spinner's tree. Different `tag_prefix` values keep tags
+    /// disjoint but do **not** fix id aliasing.
     id_extra: usize,
     /// Right margin on the outer box (px), applied before the next element.
     /// Default 10 px matches the busy-row TRAIL.
@@ -60,8 +73,10 @@ pub const Options = struct {
 /// alloc in the frame path; cell color is a LUT lookup only. `dvui.tag` names
 /// are registered once into the window tag map and updated in place; they are
 /// how the host layout test reads the resulting rects. Inner boxes use the
-/// caller's `id_extra` namespace (+0x10 row offset, +0x20 cell offset) so two
-/// callers with different `id_extra` values never alias each other.
+/// caller's `id_extra` namespace (+0x10 row offset, +0x20 cell offset,
+/// consuming `ID_SPAN` = 0x28 in total). Two callers sharing a `src` must
+/// space their `id_extra` bases at least `ID_SPAN` apart, or the row/cell
+/// boxes alias each other's ids.
 pub fn paint(src: std.builtin.SourceLocation, opts: Options) void {
     const cells = busy_spinner.busySpinnerCells(opts.phase);
     var out = dvui.box(src, .{ .dir = .vertical }, .{

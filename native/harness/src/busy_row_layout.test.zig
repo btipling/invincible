@@ -26,6 +26,7 @@ const std = @import("std");
 const t = std.testing;
 const dvui = @import("dvui");
 const busy_row = @import("busy_row.zig");
+const rect_spinner = @import("rect_spinner.zig");
 
 /// Gap tolerance for floating-point position assertions (sub-pixel rounding).
 const EPS: f32 = 1.0;
@@ -193,5 +194,76 @@ test "all 8 cells share the same painted height (CELL)" {
         while (col < busy_row.COLS) : (col += 1) {
             try t.expectApproxEqAbs(busy_row.CELL * PX, rects.cells[row][col].h, EPS);
         }
+    }
+}
+
+/// Paint TWO `rect_spinner.paint` instances from the same call site in one
+/// frame, with disjoint `tag_prefix` values and `id_extra` bases spaced
+/// `ID_SPAN` apart. Returns both spinners' outer rects and their 8 cells, so
+/// the caller can assert every widget of each instance landed without aliasing
+/// (PR #608 Minor L1+L8 — the reuse contract must not rely on lucky ids).
+fn paintTwoSpinners() struct {
+    a_root: dvui.Rect.Physical,
+    b_root: dvui.Rect.Physical,
+    a_cells: [rect_spinner.ROWS][rect_spinner.COLS]dvui.Rect.Physical,
+    b_cells: [rect_spinner.ROWS][rect_spinner.COLS]dvui.Rect.Physical,
+} {
+    const ID_A: usize = 0x70_0000;
+    const ID_B: usize = ID_A + rect_spinner.ID_SPAN;
+    const frame = struct {
+        fn paint() !dvui.App.Result {
+            const src = @src();
+            rect_spinner.paint(src, .{ .phase = 0, .ramp = rect_spinner.WARM_RAMP, .tag_prefix = "spa", .id_extra = ID_A });
+            rect_spinner.paint(src, .{ .phase = 2, .ramp = rect_spinner.TEAL_RAMP, .tag_prefix = "spb", .id_extra = ID_B });
+            return .ok;
+        }
+    }.paint;
+
+    _ = dvui.testing.step(frame) catch @panic("step 1 failed");
+    _ = dvui.testing.step(frame) catch @panic("step 2 failed");
+
+    const a_root = (dvui.tagGet("spa") orelse @panic("tag 'spa' not found")).rect;
+    const b_root = (dvui.tagGet("spb") orelse @panic("tag 'spb' not found")).rect;
+
+    var a_cells: [rect_spinner.ROWS][rect_spinner.COLS]dvui.Rect.Physical = undefined;
+    var b_cells: [rect_spinner.ROWS][rect_spinner.COLS]dvui.Rect.Physical = undefined;
+    var r: usize = 0;
+    while (r < rect_spinner.ROWS) : (r += 1) {
+        var col: usize = 0;
+        while (col < rect_spinner.COLS) : (col += 1) {
+            var buf_a: [64]u8 = undefined;
+            var buf_b: [64]u8 = undefined;
+            const ta = std.fmt.bufPrint(&buf_a, "spa-cell-{d}-{d}", .{ r, col }) catch unreachable;
+            const tb = std.fmt.bufPrint(&buf_b, "spb-cell-{d}-{d}", .{ r, col }) catch unreachable;
+            a_cells[r][col] = (dvui.tagGet(ta) orelse @panic("spa cell tag not found")).rect;
+            b_cells[r][col] = (dvui.tagGet(tb) orelse @panic("spb cell tag not found")).rect;
+        }
+    }
+
+    return .{ .a_root = a_root, .b_root = b_root, .a_cells = a_cells, .b_cells = b_cells };
+}
+
+test "two spinners from one src with ID_SPAN-apart bases do not alias (PR #608 Minor L1+L8)" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    const both = paintTwoSpinners();
+
+    // Both outer boxes rendered with the same W×H geometry (margin default 10).
+    try t.expectApproxEqAbs((rect_spinner.W + 10) * PX, both.a_root.w, EPS);
+    try t.expectApproxEqAbs(rect_spinner.H * PX, both.a_root.h, EPS);
+    try t.expectApproxEqAbs((rect_spinner.W + 10) * PX, both.b_root.w, EPS);
+    try t.expectApproxEqAbs(rect_spinner.H * PX, both.b_root.h, EPS);
+
+    // Both instances' cells are laid out at the same geometry as the single
+    // busy-row caller (independence of the shared src): dvui tag rects include
+    // each widget's margin, so col-0 is CELL×CELL and col-1 is (CELL+GAP)×CELL.
+    // If the two instances' ids aliased each other, dvui would fold one
+    // instance's widgets into the other and these width checks would differ.
+    var row: usize = 0;
+    while (row < rect_spinner.ROWS) : (row += 1) {
+        try t.expectApproxEqAbs(rect_spinner.CELL * PX, both.a_cells[row][0].w, EPS);
+        try t.expectApproxEqAbs(rect_spinner.CELL * PX, both.b_cells[row][0].w, EPS);
+        try t.expectApproxEqAbs((rect_spinner.CELL + rect_spinner.GAP) * PX, both.a_cells[row][1].w, EPS);
+        try t.expectApproxEqAbs((rect_spinner.CELL + rect_spinner.GAP) * PX, both.b_cells[row][1].w, EPS);
     }
 }
