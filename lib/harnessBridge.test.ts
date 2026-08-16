@@ -20,6 +20,8 @@ type MockExtras = {
   __lifecycle: () => Lifecycle;
   __turnElapsed: () => number;
   __busyTick: () => number;
+  __setModelPending: (on: boolean) => void;
+  __modelPending: () => boolean;
 };
 
 function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBridgeExports & MockExtras {
@@ -40,6 +42,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
   let canLoad = 0;
   const catalog: string[] = [];
   let selected = 0;
+  let modelPending = false;
   const statusSlots: (string | undefined)[] = new Array(8).fill(undefined);
   let turnElapsedSec = 0;
   let busyTickPhase = 0;
@@ -166,7 +169,24 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_cycle_selected_model: () => {
       if (catalog.length <= 1) return selected;
       selected = (selected + 1) % catalog.length;
+      modelPending = true; // user Next cycle raises the flag
       return selected;
+    },
+    inv_set_selected_model: (ptr, len) => {
+      if (len > 128) return 0;
+      const id = len === 0 ? null : read(ptr, len);
+      if (id != null && /[\x00-\x20\x7f-\xff]/.test(id)) return 0;
+      if (id == null) {
+        selected = 0;
+        return 1;
+      }
+      const i = catalog.indexOf(id);
+      selected = i >= 0 ? i : 0;
+      return 1; // host restore never raises the pending flag
+    },
+    inv_has_pending_model_change: () => (modelPending ? 1 : 0),
+    inv_ack_pending_model_change: () => {
+      modelPending = false;
     },
     inv_set_status_slot: (slot, ptr, len) => {
       if (slot < 0 || slot >= 8) return 0;
@@ -211,6 +231,10 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     __lifecycle: () => lifecycle,
     __turnElapsed: () => turnElapsedSec,
     __busyTick: () => busyTickPhase,
+    __setModelPending: (on) => {
+      modelPending = !!on;
+    },
+    __modelPending: () => modelPending,
   };
 
   return {
@@ -223,6 +247,8 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     __lifecycle: base.__lifecycle,
     __turnElapsed: base.__turnElapsed,
     __busyTick: base.__busyTick,
+    __setModelPending: base.__setModelPending,
+    __modelPending: base.__modelPending,
   };
 }
 
@@ -391,6 +417,68 @@ describe('model catalog protocol v3', () => {
   });
 });
 
+describe('model persistence (protocol v16, plan #616)', () => {
+  it('setSelectedModel picks the matching catalog entry by id; null/absent resets to default', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setModelCatalog(['anthropic/claude-a', 'openai/gpt-b', 'x/y']);
+    expect(bridge.getSelectedModel()).toBe('anthropic/claude-a');
+    expect(bridge.setSelectedModel('openai/gpt-b')).toBe(true);
+    expect(bridge.getSelectedModel()).toBe('openai/gpt-b');
+    // Unknown id → reset to default (index 0), accepted.
+    expect(bridge.setSelectedModel('nope/nope')).toBe(true);
+    expect(bridge.getSelectedModel()).toBe('anthropic/claude-a');
+    // null / empty → default.
+    expect(bridge.setSelectedModel(null)).toBe(true);
+    expect(bridge.getSelectedModel()).toBe('anthropic/claude-a');
+    expect(bridge.setSelectedModel('')).toBe(true);
+    expect(bridge.getSelectedModel()).toBe('anthropic/claude-a');
+  });
+
+  it('setSelectedModel rejects oversize / non-printable ids (selection unchanged)', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setModelCatalog(['a/ok', 'b/ok']);
+    expect(bridge.setSelectedModel('x'.repeat(200))).toBe(false);
+    expect(bridge.setSelectedModel('has space')).toBe(false);
+    expect(bridge.getSelectedModel()).toBe('a/ok'); // unchanged
+  });
+
+  it('cycleSelectedModel raises pending flag; restore path does NOT; ack clears', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setModelCatalog(['anthropic/claude-a', 'openai/gpt-b']);
+    expect(bridge.hasPendingModelChange()).toBe(false);
+    bridge.cycleSelectedModel(); // user Next path
+    expect(bridge.hasPendingModelChange()).toBe(true);
+    expect(bridge.getSelectedModel()).toBe('openai/gpt-b');
+    // Host restore-by-id must NOT spin the flag.
+    exp.__setModelPending(false);
+    bridge.setSelectedModel('anthropic/claude-a');
+    expect(bridge.hasPendingModelChange()).toBe(false);
+    // Ack clears a held flag.
+    exp.__setModelPending(true);
+    expect(bridge.hasPendingModelChange()).toBe(true);
+    bridge.ackPendingModelChange();
+    expect(bridge.hasPendingModelChange()).toBe(false);
+  });
+
+  it('v16 exports are REQUIRED (fail-closed when any missing)', () => {
+    const exp = makeMockExports() as unknown as WebAssembly.Exports;
+    expect(isHarnessBridgeExports(exp)).toBe(true);
+    for (const name of [
+      'inv_set_selected_model',
+      'inv_has_pending_model_change',
+      'inv_ack_pending_model_change',
+    ]) {
+      const record = exp as unknown as Record<string, unknown>;
+      const copy = { ...record };
+      delete copy[name];
+      expect(isHarnessBridgeExports(copy as WebAssembly.Exports)).toBe(false);
+    }
+  });
+});
+
 describe("imageCachePut (protocol v4)", () => {
   it("copies RGBA into inv_image_cache_put", () => {
     const exp = makeMockExports();
@@ -552,7 +640,7 @@ describe('skill_attached kind (protocol v12)', () => {
     // Distinct from the protocol version (13) — a hardcoded kind 13 would be an
     // unknown kind to the Wasm painter.
     expect(MessageKind.SkillAttached).not.toBe(HARNESS_PROTOCOL_VERSION);
-    expect(HARNESS_PROTOCOL_VERSION).toBe(15);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(16);
   });
 
   it('push/readback round-trips a skill_attached row', () => {
@@ -581,8 +669,8 @@ describe('setTurnElapsed (protocol v14)', () => {
     expect(exp.__turnElapsed()).toBe(0);
   });
 
-  it('version bumped to 15 and the export is REQUIRED (fail-closed when missing)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(15);
+  it('version bumped to 16 and the export is REQUIRED (fail-closed when missing)', () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe(16);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     // A rebuilt Wasm that omits inv_set_turn_elapsed fails bridge-load closed,

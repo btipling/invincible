@@ -222,6 +222,44 @@ export function isRedisSafeOpaqueId(s: unknown): s is string {
 }
 
 /**
+ * Max UTF-8 byte length of a model id carried as the session carrier
+ * `meta.selectedModel` (plan #616 / source #610). Single TS source shared by the
+ * host trim/parse (`lib/sessionRepository.ts`, `lib/sessionStore.ts`) and server
+ * validation (`lib/sessions/sessionStore.ts`, `native/harness` bridge catalog).
+ * Mirrors the existing Zig `MAX_MODEL_ID_LEN = 128` catalog-entry bound
+ * (`native/harness/src/bridge.zig`) — a NEW TS-side enforcement surface, tabled
+ * in plan #616's Caps table as a NEW generous cap (no existing cap value
+ * changed; no human gate). Gateway ids (`provider/model`) are short; 128 bytes
+ * rides the tiny session envelope far below the 4.5 MB Function ceiling and the
+ * 1 MiB whole-meta cap.
+ */
+export const MAX_MODEL_ID_LEN = 128;
+
+/**
+ * Client-safe predicate for a session-carrier model id (`meta.selectedModel`).
+ * Gateway model ids contain `/`, `.`, `:`, `+`, `-` — NOT Redis-safe opaque
+ * charset, and the carrier is a meta **value** (never a Redis keyspace segment),
+ * so a printable-ASCII ≤ `MAX_MODEL_ID_LEN` bound (mirroring the bridge catalog
+ * acceptance) is the correct form. Fail-closed: returns `undefined` for a
+ * non-string, empty, over-length, or non-printable-ASCII value (control chars,
+ * `\x7f` DEL, or anything outside `\x21`–`\x7e`). Shared by the host trim/parse
+ * (drop-to-unset on read, so a poisoned carrier never sticks) and the server
+ * validator (which DROPS an invalid `selectedModel` to unset — never a 400 —
+ * per plan #616 decision).
+ */
+export function sanitizeModelId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const s = value.trim();
+  if (!s) return undefined;
+  if (s.length > MAX_MODEL_ID_LEN) return undefined;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x21 || c > 0x7e) return undefined; // printable ASCII only
+  }
+  return s;
+}
+
+/**
  * Workspace-relative cwd hygiene shared by server validation and host trim/parse.
  * Keeps only non-empty workspace-relative strings; drops host-absolute, drive/UNC,
  * control characters, and non-strings. `..`-style traversal is intentionally NOT

@@ -1,8 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { STATUS_SLOT_MAX_BYTES } from './sessionCloudCaps';
-import { MAX_STATUS_SLOT_LEN } from './harnessBridge';
+import {
+  MAX_MODEL_ID_LEN,
+  STATUS_SLOT_MAX_BYTES,
+  sanitizeModelId,
+} from './sessionCloudCaps';
+import { MAX_MODEL_ID_LEN as BRIDGE_MAX_MODEL_ID_LEN, MAX_STATUS_SLOT_LEN } from './harnessBridge';
 
 /**
  * Cross-layer equality lock for the status-slot byte cap (PR #543 #4). The 96
@@ -33,5 +37,41 @@ describe('status-slot cap (single host source + Zig parity)', () => {
   it('Zig MAX_STATUS_SLOT_LEN agrees with the host cap (cross-layer)', () => {
     expect(zigMaxStatusSlotLen()).toBe(STATUS_SLOT_MAX_BYTES);
     expect(zigMaxStatusSlotLen()).toBe(MAX_STATUS_SLOT_LEN);
+  });
+});
+
+describe('sanitizeModelId (plan #616 — selected-model carrier predicate + cap)', () => {
+  it('single host source: harnessBridge aliases the caps MAX_MODEL_ID_LEN (no drift)', () => {
+    // harnessBridge re-exports the caps constant; a second literal would drift.
+    expect(BRIDGE_MAX_MODEL_ID_LEN).toBe(MAX_MODEL_ID_LEN);
+    expect(MAX_MODEL_ID_LEN).toBe(128);
+  });
+
+  it('keeps valid printable-ASCII provider/model ids (incl. / . : + -)', () => {
+    expect(sanitizeModelId('anthropic/claude-a')).toBe('anthropic/claude-a');
+    expect(sanitizeModelId('provider/model.big:x+y-123')).toBe('provider/model.big:x+y-123');
+    // trims surrounding whitespace
+    expect(sanitizeModelId('  openai/gpt-b  ')).toBe('openai/gpt-b');
+  });
+
+  it('drops non-string / empty / non-printable / over-length (drop-to-unset)', () => {
+    expect(sanitizeModelId(undefined)).toBeUndefined();
+    expect(sanitizeModelId(42)).toBeUndefined();
+    expect(sanitizeModelId('')).toBeUndefined();
+    expect(sanitizeModelId('   ')).toBeUndefined();
+    expect(sanitizeModelId('has space')).toBeUndefined();
+    expect(sanitizeModelId('tab\there')).toBeUndefined();
+    expect(sanitizeModelId('ctrl\u0007here')).toBeUndefined();
+    expect(sanitizeModelId('x'.repeat(MAX_MODEL_ID_LEN + 1))).toBeUndefined();
+  });
+
+  it('cap-bound: the 128-byte model id rides the tiny envelope far below the meta cap (row 13)', () => {
+    // The carrier is ≤ 128 bytes — a tiny fraction of the 1 MiB whole-meta budget,
+    // and far below the 4.5 MB Function ceiling (Caps table in plan #616).
+    expect(MAX_MODEL_ID_LEN).toBeLessThanOrEqual(1024 * 1024);
+    expect(MAX_MODEL_ID_LEN).toBeLessThan(4.5 * 1024 * 1024);
+    // A 128-char printable id is accepted; 129 rejected.
+    expect(sanitizeModelId('a'.repeat(MAX_MODEL_ID_LEN))).toBe('a'.repeat(MAX_MODEL_ID_LEN));
+    expect(sanitizeModelId('a'.repeat(MAX_MODEL_ID_LEN + 1))).toBeUndefined();
   });
 });
