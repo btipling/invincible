@@ -2,8 +2,8 @@
 //! Polish (4.7): density, focus composer, touch targets, scroll stick-to-bottom.
 //! #131 / plan #135: persistent transcript ScrollInfo + conditional stick rules.
 //! #251: stick also on in-place stream growth (update_last / content height).
-//! #137: IMGUI absolute-rect bands (header / transcript / composer) so content
-//! min-size cannot push chrome off-canvas. Build id (`h:…`) detects stale wasm.
+//! #137/#579: dvui flex layout for transcript + composer (natural hug/grow-up);
+//! status bar stays absolute-rect at the very bottom. Build id (`h:…`) detects stale wasm.
 const std = @import("std");
 const dvui = @import("dvui");
 const bridge = @import("bridge.zig");
@@ -77,15 +77,15 @@ const NEAR_BOTTOM_PX: f32 = 48;
 const CONTENT_GREW_EPS: f32 = 1.0;
 /// Reserved bottom chrome: single-row textEntry + trailing TOUCH_H icon + margins
 /// (plan #457 — replaces the old textEntry + Send/Stop action row from plan #138).
-/// Height budget: composer chrome wins over transcript min on short canvases.
-const COMPOSER_CHROME_MIN: f32 = COMPOSER_INPUT_MAX_H + 2 * COMPOSER_PAD_Y;
-/// Chrome box top padding (Options.padding.y) — outside min_size_content.
-const COMPOSER_PAD_Y: f32 = 4;
+/// Per-edge margin between textEntry content rect and composer-chrome box edge
+/// (Options.padding.y). Plan #579 replaces the old fixed COMPOSER_PAD_Y (4 px
+/// top-only) with 2 px per edge on the new dynamic hug box.
+const COMPOSER_HUG_PAD: f32 = 2;
 /// Multi-line composer visible-height cap (px). Wrapped lines grow the entry up
 /// to this, then it scrolls vertically **inside** the entry — never a horizontal
-/// gutter past the trailing icon (plan #457, repo no-h-scroll policy). Stays
-/// inside the reserved bottom band so the absolute-rect transcript height is
-/// unchanged; taller pasted content scrolls internally (plan #334 / #323).
+/// gutter past the trailing icon (plan #457, repo no-h-scroll policy). The
+/// composer-chrome box caps at COMPOSER_INPUT_MAX_H + 2*COMPOSER_HUG_PAD via
+/// max_size_content; taller pasted content scrolls internally (plan #334 / #323).
 const COMPOSER_INPUT_MAX_H: f32 = 120;
 /// Vertical margins between header→scroll and scroll→chrome (Options.margin.h).
 const BAND_GAP: f32 = 6;
@@ -852,6 +852,8 @@ fn paintStatusSlots(life: bridge.Lifecycle) void {
     for (bridge.STATUS_SLOT_DROP_ORDER) |s| {
         const raw = bridge.statusSlotValue(s);
         if (raw.len == 0) continue;
+        // Cwd "." is the workspace-root default — hide the trivial chip (plan #579).
+        if (s == bridge.STATUS_SLOT_CWD and std.mem.eql(u8, raw, ".")) continue;
         slot[n] = s;
         text[n] = truncateStatusValue(&buf[n], raw);
         width[n] = body.textSize(text[n]).w + STATUS_SLOT_GAP;
@@ -893,6 +895,7 @@ fn paintStatusSlots(life: bridge.Lifecycle) void {
     var i = keep_from;
     while (i < n) : (i += 1) {
         var tl = dvui.textLayout(@src(), .{}, .{
+            .background = false,
             .id_extra = 0x61_0002 + @as(usize, slot[i]),
             .color_text = slot_color,
             .gravity_y = 0.5,
@@ -946,21 +949,12 @@ pub fn frame() !void {
         avail = .{ .x = 0, .y = 0, .w = @max(1, wr.w - 16), .h = @max(1, wr.h - 16) };
     }
 
-    // Fixed chrome height (content + pad). Absolute placement so bands never
-    // depend on expand packing order (header band removed — plan #570).
-    const chrome_h: f32 = COMPOSER_CHROME_MIN + COMPOSER_PAD_Y;
-    // Bottom chrome = composer band + the always-mounted status bar BELOW it.
-    // Reserving both up front keeps scroll/transcript geometry constant whether
-    // or not any status slot is populated, so attaching a sandbox never makes
-    // the transcript+composer stack jump vertically (plan #555 locked decision).
-    const bottom_h: f32 = chrome_h + STATUS_BAR_H;
-    const scroll_y = BAND_GAP;
-    const scroll_h = @max(SCROLL_FLOOR_H, avail.h - scroll_y - bottom_h - BAND_GAP);
-    // Composer top sits above the fixed status strip, which owns the very bottom.
-    const chrome_y = avail.h - bottom_h;
+    // Status bar is absolute-rect at the very bottom (always-mounted, fixed 64 px).
+    // Transcript + composer use natural flex layout — no absolute rects for the
+    // main bands; the status bar stays absolute so it never moves vertically.
     const status_y = avail.h - STATUS_BAR_H;
 
-    // ── Transcript (absolute middle band — fixed pixel height) ────────────
+    // ── Transcript (flex — takes remaining space after composer) ──────────
     // (Header band removed — plan #570 merges its content into the two-line status bar)
     const near_before = isNearBottom(&transcript_scroll);
     const prev_msg = last_msg_count;
@@ -980,21 +974,16 @@ pub fn frame() !void {
     }
     var user_scroll: dvui.Point = .{};
     {
-        // Content height = band minus vertical padding (all 8 → 16).
-        const scroll_pad_v: f32 = 16;
-        const scroll_content_h = @max(SCROLL_FLOOR_H, scroll_h - scroll_pad_v);
         var scroll = dvui.scrollArea(@src(), .{
             .scroll_info = &transcript_scroll,
             .vertical_bar = .auto,
             .user_scroll = &user_scroll,
         }, .{
-            .rect = .{ .x = 0, .y = scroll_y, .w = 0, .h = scroll_h },
-            .expand = .horizontal,
+            .expand = .both,
             .background = true,
             .color_fill = palette.teal_surface,
             .color_border = palette.teal_border,
-            .min_size_content = .{ .w = 120, .h = scroll_content_h },
-            .max_size_content = .height(scroll_content_h),
+            .min_size_content = .{ .w = 120, .h = SCROLL_FLOOR_H },
             .padding = .all(8),
         });
         defer scroll.deinit();
@@ -1236,18 +1225,17 @@ pub fn frame() !void {
     last_msg_count = n;
     last_scroll_max_y = transcript_scroll.scrollMax(.vertical);
 
-    // ── Composer chrome (absolute bottom band — always on-canvas) ─────────
+    // ── Composer chrome (flex — natural hug height, grows up to cap) ──────
     var typed: []const u8 = prompt_buf[0..0];
     {
         var chrome = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .rect = .{ .x = 0, .y = chrome_y, .w = 0, .h = chrome_h },
             .expand = .horizontal,
             .background = true,
             .color_fill = palette.teal_bg,
             .color_border = palette.teal_border,
-            .min_size_content = .{ .w = 120, .h = COMPOSER_CHROME_MIN },
-            .max_size_content = .height(COMPOSER_CHROME_MIN),
-            .padding = .{ .x = 0, .y = COMPOSER_PAD_Y, .w = 0, .h = 0 },
+            .max_size_content = .height(COMPOSER_INPUT_MAX_H + 2 * COMPOSER_HUG_PAD),
+            .padding = .{ .x = 0, .y = COMPOSER_HUG_PAD, .w = 0, .h = 0 },
+            .margin = .{ .x = 0, .y = BAND_GAP, .w = 0, .h = STATUS_BAR_H },
         });
         defer chrome.deinit();
 
@@ -1376,6 +1364,7 @@ pub fn frame() !void {
 
             {
                 var tl = dvui.textLayout(@src(), .{}, .{
+                    .background = false,
                     .color_text = if (busy) palette.warm_accent else palette.teal_muted,
                     .gravity_y = 0.5,
                 });
@@ -1384,6 +1373,7 @@ pub fn frame() !void {
             }
             {
                 var tl = dvui.textLayout(@src(), .{}, .{
+                    .background = false,
                     .color_text = palette.teal_muted,
                     .gravity_y = 0.5,
                     .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
@@ -1395,6 +1385,7 @@ pub fn frame() !void {
                 const cat_n = bridge.modelCatalogCount();
                 {
                     var tl = dvui.textLayout(@src(), .{}, .{
+                        .background = false,
                         .color_text = if (cat_n == 0) palette.teal_muted else palette.teal_accent,
                         .gravity_y = 0.5,
                         .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
@@ -1412,9 +1403,9 @@ pub fn frame() !void {
                         .style = .content,
                         .min_size_content = .{ .w = 52, .h = TOUCH_H - 8 },
                         .corners = .round(6),
-                        .color_fill = palette.teal_bg,
+                        .color_fill = palette.teal_surface,
                         .color_text = palette.teal_accent,
-                        .color_border = palette.teal_border,
+                        .color_border = palette.teal_accent,
                         .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
                     })) {
                         if (!busy) {
