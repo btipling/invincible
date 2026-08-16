@@ -1141,55 +1141,62 @@ describe('AGENT TOOL descriptions ban /tmp', () => {
     };
   }
 
-  it('every FS tool description mentions /tmp or workspace', () => {
+  it('every edited FS tool description mentions /tmp (not just workspace)', () => {
     const tools = createAgentTools({
       client: mockClient(),
       freshness: { recordRead: vi.fn(), recordWrite: vi.fn(), assertCanEdit: vi.fn(() => ({ ok: true } as const)) } as never,
     });
 
-    const fsTools = ['pwd', 'change_dir', 'list_dir', 'read_file', 'write_file', 'str_replace', 'exec'] as const;
-    for (const name of fsTools) {
+    // Only the six tools edited in this PR — pwd is unchanged and was not part of the plan.
+    const editedTools = ['change_dir', 'list_dir', 'read_file', 'write_file', 'str_replace', 'exec'] as const;
+    for (const name of editedTools) {
       const t = tools[name] as { description?: string } | undefined;
       expect(t, `tool ${name} exists`).toBeTruthy();
       expect(
         t?.description,
-        `tool ${name} description must mention /tmp or workspace`,
-      ).toMatch(/\/tmp|workspace/i);
+        `tool ${name} description must mention /tmp`,
+      ).toMatch(/\/tmp/i);
     }
   });
 
-  it('every FS path arg description mentions /tmp or host temp dirs', () => {
+  it('every FS path arg description mentions /tmp', () => {
     const tools = createAgentTools({
       client: mockClient(),
       freshness: { recordRead: vi.fn(), recordWrite: vi.fn(), assertCanEdit: vi.fn(() => ({ ok: true } as const)) } as never,
     });
 
-    // Tools with a `path` arg — use JSON.stringify to inspect the schema.
+    // Inspect inputSchema.jsonSchema.properties.path.description directly —
+    // not JSON.stringify, which would match /tmp from the parent tool
+    // description and leave the test vacuous.
     const pathTools = ['change_dir', 'list_dir', 'read_file', 'write_file', 'str_replace'] as const;
     for (const name of pathTools) {
-      const t = tools[name];
+      const t = tools[name] as {
+        inputSchema?: { jsonSchema?: { properties?: { path?: { description?: string } } } };
+      };
       expect(t, `tool ${name} exists`).toBeTruthy();
-      const serialized = JSON.stringify(t);
+      const pathDesc = t?.inputSchema?.jsonSchema?.properties?.path?.description ?? '';
       expect(
-        serialized,
-        `tool ${name} serialized form must contain /tmp or host temp dirs`,
-      ).toMatch(/\/tmp|host temp dirs/i);
+        pathDesc,
+        `tool ${name} path arg description must contain /tmp`,
+      ).toMatch(/\/tmp/i);
     }
   });
 
-  it('exec cwd arg description mentions /tmp or host temp dirs', () => {
+  it('exec cwd arg description mentions /tmp', () => {
     const tools = createAgentTools({
       client: mockClient(),
       freshness: { recordRead: vi.fn(), recordWrite: vi.fn(), assertCanEdit: vi.fn(() => ({ ok: true } as const)) } as never,
     });
 
-    const exec = tools.exec;
+    const exec = tools.exec as {
+      inputSchema?: { jsonSchema?: { properties?: { cwd?: { description?: string } } } };
+    };
     expect(exec).toBeTruthy();
-    const serialized = JSON.stringify(exec);
+    const cwdDesc = exec?.inputSchema?.jsonSchema?.properties?.cwd?.description ?? '';
     expect(
-      serialized,
-      'exec serialized form must contain /tmp or host temp dirs',
-    ).toMatch(/\/tmp|host temp dirs/i);
+      cwdDesc,
+      'exec cwd arg description must contain /tmp',
+    ).toMatch(/\/tmp/i);
   });
 });
 
