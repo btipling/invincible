@@ -446,4 +446,22 @@ pub fn build(b: *std.Build) void {
         busy_row_layout_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
         test_rich.dependOn(&b.addRunArtifact(busy_row_layout_tests).step);
     }
+
+    // Host dvui testing-backend tests for `mixed_text.lookalikePaintFont`
+    // (PR #595 adversarial-review Minors L1/L6): pins that the U+2015 separator
+    // lookalike is ALWAYS Noto body at the surrounding run's size, regardless of
+    // whether the base is Vera mono / body / DejaVu symbols — the exact gap that
+    // shipped a wrong face in #594 while tests stayed green. No frame needed.
+    {
+        const mixed_text_lookalike_tests = b.addTest(.{
+            .name = "mixed_text_lookalike",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/mixed_text_lookalike.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        mixed_text_lookalike_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
+        test_rich.dependOn(&b.addRunArtifact(mixed_text_lookalike_tests).step);
+    }
 }

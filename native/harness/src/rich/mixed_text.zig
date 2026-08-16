@@ -62,8 +62,8 @@ pub fn addTextMixed(
             continue;
         };
         if (separatorLookalike(first.cp) != null) {
-            // No shipped face embeds these CPs — paint Noto U+2015. Ring bytes
-            // stay the original scalars (Copy is not this slice).
+            // No shipped face embeds these CPs — paint Noto U+2015 (Vera/mono
+            // does not have that glyph). Ring bytes stay the original scalars.
             var n: usize = 1;
             i += first.len;
             while (nextCodepoint(text, i)) |nx| {
@@ -101,10 +101,11 @@ pub fn addTextMixed(
 }
 
 /// Paint `text` on a single `base` face/ink, substituting report-separator CPs
-/// (U+23AF etc., no embedded glyph) with Noto U+2015. For mono / plain paths that
-/// bypass addTextMixed (diff/patch fences, plain-body fallback — see the harness
-/// paint choke-point note). Length-agnostic: emits contiguous runs, so ring/Copy
-/// bytes stay the original scalars.
+/// (U+23AF etc., no embedded glyph) with Noto U+2015 at the surrounding size.
+/// For mono / plain paths that bypass addTextMixed (diff/patch fences, plain-body
+/// fallback). Lookalike is always Noto — Vera has no U+2015, so painting the
+/// substitute on `base` when `base` is mono still tofus (fences / inline code).
+/// Ring/Copy bytes stay the original scalars.
 pub fn addTextSubstituted(
     tl: *dvui.TextLayoutWidget,
     text: []const u8,
@@ -143,13 +144,27 @@ pub fn addTextSubstituted(
 
 const hbar_utf8 = "\u{2015}";
 
+/// Face used to paint the U+2015 separator lookalike: always Noto body at the
+/// surrounding run's size / weight / style / strike. Noto body embeds U+2015;
+/// Vera (mono) and the DejaVu symbols subset do not, so painting the substitute
+/// on a mono `base` still tofus (fenced / inline code / diff fences). Pure —
+/// host-testable (adversarial-review PR #595 Minors L1/L6).
+pub fn lookalikePaintFont(base: dvui.Font) dvui.Font {
+    return palette.fontBody()
+        .withSize(base.size)
+        .withWeight(base.weight)
+        .withStyle(base.style)
+        .withStrike(base.strike);
+}
+
 fn paintLookalikeRun(
     tl: *dvui.TextLayoutWidget,
     count: usize,
-    font: dvui.Font,
+    base: dvui.Font,
     opts: PaintOpts,
 ) void {
     if (count == 0) return;
+    const font = lookalikePaintFont(base);
     var buf: [96]u8 = undefined;
     const per = hbar_utf8.len;
     const chunk = buf.len / per;
