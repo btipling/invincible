@@ -769,6 +769,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
 
       {phase !== 'loading' && (
         <AppNav
+          busy={busy}
           right={
             <span
               style={{

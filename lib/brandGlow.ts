@@ -1,0 +1,153 @@
+/**
+ * AppNav Busy-brand visuals — pure helpers + caps.
+ * DOM site chrome only. Driven by HarnessHost `busy`; never poll the bridge.
+ *
+ * Layer contract (do not collapse — CSS animations override transitions on
+ * the same property, and keyframe `opacity` replaces the cascade value):
+ *   `.inv-brand-fade`  — only the Busy on/off opacity transition
+ *   `.inv-brand-glow`  — breathe animation (opacity of glow layers only)
+ *   mote parent        — `p.opacity` cap (≤ BRAND_GLOW_PARTICLE_OPACITY)
+ *   `.inv-brand-mote`  — transform + life-cycle opacity 0→1→0 (multiplies cap)
+ */
+
+export const BRAND_GLOW_PARTICLE_COUNT = 8;
+export const BRAND_GLOW_PULSE_MS = 4000;
+export const BRAND_GLOW_FADE_MS = 280;
+export const BRAND_GLOW_PARTICLE_OPACITY = 0.35;
+export const BRAND_GLOW_PARTICLE_SIZE_PX = 2;
+export const BRAND_GLOW_PARTICLE_DURATION_MIN_MS = 3000;
+export const BRAND_GLOW_PARTICLE_DURATION_MAX_MS = 7000;
+
+export const BRAND_GLOW_FADE_CLASS = 'inv-brand-fade';
+export const BRAND_GLOW_BREATHE_CLASS = 'inv-brand-glow';
+export const BRAND_GLOW_MOTE_CLASS = 'inv-brand-mote';
+
+export const BRAND_GLOW_KEYFRAMES = `
+@keyframes inv-brand-breathe {
+  0%, 100% { opacity: 0.72; }
+  50% { opacity: 1; }
+}
+@keyframes inv-brand-mote {
+  0% { transform: translate(0, 0); opacity: 0; }
+  18% { opacity: 1; }
+  82% { opacity: 1; }
+  100% { transform: translate(var(--inv-dx), var(--inv-dy)); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .${BRAND_GLOW_BREATHE_CLASS}, .${BRAND_GLOW_MOTE_CLASS} { animation: none !important; }
+}
+`;
+
+export type BrandGlowParticle = {
+  id: string;
+  x: number;
+  y: number;
+  delayMs: number;
+  durationMs: number;
+  driftX: number;
+  driftY: number;
+  opacity: number;
+};
+
+export type BrandGlowVisuals = {
+  outline: boolean;
+  bloom: boolean;
+  animate: boolean;
+  particles: boolean;
+};
+
+export type GlowMount = 'unmounted' | 'entering' | 'on' | 'fading';
+
+/** Unit interval in [0, 1) from a deterministic hash of `n`. */
+function unit(n: number): number {
+  const x = Math.sin(n) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+export function resolveBrandGlowVisuals(opts: {
+  busy: boolean;
+  reducedMotion: boolean;
+}): BrandGlowVisuals {
+  if (!opts.busy) {
+    return { outline: false, bloom: false, animate: false, particles: false };
+  }
+  if (opts.reducedMotion) {
+    return { outline: true, bloom: true, animate: false, particles: false };
+  }
+  return { outline: true, bloom: true, animate: true, particles: true };
+}
+
+/**
+ * Glow subtree mount machine.
+ * Busy from unmounted goes through `entering` (opacity 0) so the fade
+ * transition has a from-value. Other busy arrivals cancel fade → `on`.
+ * Idle `entering` never painted → unmount. Unmount only after fadeMs while fading.
+ */
+export function nextGlowMount(
+  current: GlowMount,
+  busy: boolean,
+  fadeElapsedMs: number,
+  fadeMs: number = BRAND_GLOW_FADE_MS,
+): GlowMount {
+  if (busy) {
+    if (current === 'unmounted') return 'entering';
+    return 'on';
+  }
+  if (current === 'unmounted' || current === 'entering') return 'unmounted';
+  if (current === 'on') return 'fading';
+  return fadeElapsedMs >= fadeMs ? 'unmounted' : 'fading';
+}
+
+/** Finish the enter frame: first paint was opacity 0, now transition to 1. */
+export function finishGlowEnter(current: GlowMount): GlowMount {
+  return current === 'entering' ? 'on' : current;
+}
+
+export function glowSubtreeMounted(mount: GlowMount): boolean {
+  return mount !== 'unmounted';
+}
+
+/** Fade wrapper opacity — only `on` is 1; entering/fading stay 0 so CSS can tween. */
+export function glowFadeOpacity(mount: GlowMount): 0 | 1 {
+  return mount === 'on' ? 1 : 0;
+}
+
+/**
+ * Fail toward less motion when `window` / `matchMedia` is missing
+ * (SSR, node tests). CSS `@media (prefers-reduced-motion)` is still
+ * the first-paint kill-switch in AppNav.
+ */
+export function prefersReducedMotion(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return true;
+  }
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+/** Deterministic mote specs — same inputs always yield the same wash. */
+export function brandGlowParticles(
+  count: number = BRAND_GLOW_PARTICLE_COUNT,
+): BrandGlowParticle[] {
+  const n = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  const span =
+    BRAND_GLOW_PARTICLE_DURATION_MAX_MS - BRAND_GLOW_PARTICLE_DURATION_MIN_MS;
+  const out: BrandGlowParticle[] = [];
+  for (let i = 0; i < n; i++) {
+    const seed = (i + 1) * 127.1;
+    const durationMs =
+      BRAND_GLOW_PARTICLE_DURATION_MIN_MS + Math.round(unit(seed) * span);
+    const opacity =
+      0.18 + unit(seed + 7) * (BRAND_GLOW_PARTICLE_OPACITY - 0.18);
+    out.push({
+      id: `mote-${i}`,
+      x: 8 + unit(seed + 19.2) * 84,
+      y: 15 + unit(seed + 41.7) * 70,
+      delayMs: Math.round(unit(seed + 73.3) * 2200),
+      durationMs,
+      driftX: (unit(seed + 3) - 0.5) * 18,
+      driftY: -8 - unit(seed + 5) * 14,
+      opacity,
+    });
+  }
+  return out;
+}
