@@ -166,7 +166,12 @@ describe('resolveHarnessRepo', () => {
   });
 });
 
-import { commitTouchesHarnessBuild, isHarnessBuildPath } from './harnessRepo.mjs';
+import {
+  commitTouchesHarnessBuild,
+  isHarnessBuildPath,
+  isShippableHarnessArtifact,
+  pickLatestShippableHarnessArtifact,
+} from './harnessRepo.mjs';
 
 describe('isHarnessBuildPath / commitTouchesHarnessBuild', () => {
   it('matches build-harness path filters', () => {
@@ -193,3 +198,39 @@ describe('isHarnessBuildPath / commitTouchesHarnessBuild', () => {
     expect(commitTouchesHarnessBuild([])).toBe(false);
   });
 });
+
+describe('isShippableHarnessArtifact / pickLatestShippableHarnessArtifact', () => {
+  const main = {
+    name: 'harness-wasm',
+    expired: false,
+    id: 1,
+    workflow_run: { head_branch: 'main', head_sha: 'aaa' },
+  };
+  const pr = {
+    name: 'harness-wasm',
+    expired: false,
+    id: 2,
+    workflow_run: { head_branch: 'plan/composer-hug-status-bar-flush', head_sha: 'bbb' },
+  };
+
+  it('accepts only non-expired harness-wasm from main', () => {
+    expect(isShippableHarnessArtifact(main)).toBe(true);
+    expect(isShippableHarnessArtifact(pr)).toBe(false);
+    expect(isShippableHarnessArtifact({ ...main, expired: true })).toBe(false);
+    expect(isShippableHarnessArtifact({ ...main, name: 'harness-wasm-pr-584' })).toBe(
+      false,
+    );
+    expect(isShippableHarnessArtifact({ ...main, workflow_run: undefined })).toBe(
+      false,
+    );
+    expect(isShippableHarnessArtifact(null)).toBe(false);
+  });
+
+  it('picks newest main and skips a newer PR head', () => {
+    expect(pickLatestShippableHarnessArtifact([pr, main])).toEqual(main);
+    expect(pickLatestShippableHarnessArtifact([pr])).toBe(null);
+    expect(pickLatestShippableHarnessArtifact([])).toBe(null);
+    expect(pickLatestShippableHarnessArtifact(null)).toBe(null);
+  });
+});
+
