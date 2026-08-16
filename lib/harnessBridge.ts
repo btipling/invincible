@@ -666,7 +666,7 @@ export class HarnessBridge {
   /**
    * Protocol v14 addendum (plan #574) — the host feeds the 10 Hz busy-tick
    * phase for the 2×4 WARM spinner. Scalar u8 transport (truncated): drives the
-   * column-wave pulse (`busy_tick % 8`). `phase == 0` = head at top-left — also
+   * clockwise pulse (`busy_tick % 8`). `phase == 0` = head at bottom-left — also
    * the reduced-motion static value and the idle/Stop/error reset. The host
    * calls this while a turn is Busy; 0 on idle/Stop/error/clear stops the pulse.
    */
