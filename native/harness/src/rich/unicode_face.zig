@@ -20,7 +20,15 @@ pub fn isEmojiRelated(cp: u21) bool {
         // Emoji-style arrows OpenMoji actually ships (not U+2190–U+2193 text arrows)
         0x2194...0x2199 => true,
         0x21A9...0x21AA => true,
-        0x231A...0x23FA => true,
+        // Misc Technical emoji OpenMoji actually ships. Do **not** span
+        // 0x231A…0x23FA — that range includes Vitest U+23AF ⎯ (and scan lines)
+        // which OpenMoji lacks; those go to isSymbolRelated + separatorLookalike.
+        0x231A, 0x231B => true, // watch / hourglass
+        0x2328 => true, // keyboard
+        0x23CF => true, // eject
+        0x23E9...0x23EF => true, // media skip / play
+        0x23F0...0x23F3 => true, // clocks / timer hourglass
+        0x23F8...0x23FA => true, // pause / stop / record
         0x24C2 => true,
         0x25AA...0x25FE => true,
         // Misc symbols + dingbats as emoji — except text check/ballot marks used in
@@ -47,6 +55,9 @@ pub fn isSymbolRelated(cp: u21) bool {
         0x2200...0x22FF => true,
         // Miscellaneous technical
         0x2300...0x23FF => true,
+        // Box-drawing light/heavy horizontal (report rules). Paint uses
+        // separatorLookalike → U+2015 until a face embeds these CPs.
+        0x2500...0x2501 => true,
         // Geometric shapes
         0x25A0...0x25FF => true,
         // Misc symbols / dingbats (only those not claimed by emoji face)
@@ -66,6 +77,18 @@ pub fn faceFor(cp: u21) Face {
     if (isEmojiRelated(cp)) return .emoji;
     if (isSymbolRelated(cp)) return .symbols;
     return .body;
+}
+
+/// Noto body HORIZONTAL BAR — lookalike for report separators no shipped face embeds.
+pub const HBAR_LOOKALIKE: u21 = 0x2015;
+
+/// Paint-only substitute for Vitest/report separator CPs. Null = paint `cp` as usual.
+/// Copy / ring bytes stay the original scalar.
+pub fn separatorLookalike(cp: u21) ?u21 {
+    return switch (cp) {
+        0x23AF, 0x23BA...0x23BD, 0x2500, 0x2501 => HBAR_LOOKALIKE,
+        else => null,
+    };
 }
 
 test "isEmojiRelated covers smile and zwj" {
@@ -148,4 +171,49 @@ test "arrow in tool-style summary is symbols face" {
         i += need;
     }
     try std.testing.expect(saw_sym);
+}
+
+test "vitest U+23AF and box-drawing horizontals are not emoji" {
+    try std.testing.expect(!isEmojiRelated(0x23AF));
+    try std.testing.expect(isSymbolRelated(0x23AF));
+    try std.testing.expect(faceFor(0x23AF) == .symbols);
+    try std.testing.expect(faceFor(0x2500) == .symbols);
+    try std.testing.expect(faceFor(0x2501) == .symbols);
+    // Watch / timer / eject stay emoji (OpenMoji has them)
+    try std.testing.expect(faceFor(0x231A) == .emoji);
+    try std.testing.expect(faceFor(0x23F3) == .emoji);
+    try std.testing.expect(faceFor(0x23CF) == .emoji);
+    // Prior carve-outs still hold
+    try std.testing.expect(faceFor(0x2713) == .symbols);
+    try std.testing.expect(faceFor(0x2192) == .symbols);
+}
+
+test "separatorLookalike maps report bars to U+2015; latin is null" {
+    try std.testing.expectEqual(@as(?u21, 0x2015), separatorLookalike(0x23AF));
+    try std.testing.expectEqual(@as(?u21, 0x2015), separatorLookalike(0x23BA));
+    try std.testing.expectEqual(@as(?u21, 0x2015), separatorLookalike(0x23BB));
+    try std.testing.expectEqual(@as(?u21, 0x2015), separatorLookalike(0x23BC));
+    try std.testing.expectEqual(@as(?u21, 0x2015), separatorLookalike(0x23BD));
+    try std.testing.expectEqual(@as(?u21, 0x2015), separatorLookalike(0x2500));
+    try std.testing.expectEqual(@as(?u21, 0x2015), separatorLookalike(0x2501));
+    try std.testing.expectEqual(@as(?u21, null), separatorLookalike('A'));
+    try std.testing.expectEqual(@as(?u21, null), separatorLookalike(0x231A));
+    try std.testing.expectEqual(@as(?u21, null), separatorLookalike(0x2713));
+}
+
+test "vitest banner utf8 sample has a lookalike CP" {
+    const s = "\u{23AF} Failed Tests 5 \u{23AF}";
+    var n_look: usize = 0;
+    var i: usize = 0;
+    while (i < s.len) {
+        const need = std.unicode.utf8ByteSequenceLength(s[i]) catch {
+            i += 1;
+            continue;
+        };
+        if (i + need > s.len) break;
+        const cp = try std.unicode.utf8Decode(s[i .. i + need]);
+        if (separatorLookalike(cp) != null) n_look += 1;
+        i += need;
+    }
+    try std.testing.expectEqual(@as(usize, 2), n_look);
 }
