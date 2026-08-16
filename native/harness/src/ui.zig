@@ -83,6 +83,13 @@ const CONTENT_GREW_EPS: f32 = 1.0;
 /// (Options.padding.y). Plan #579 replaces the old fixed COMPOSER_PAD_Y (4 px
 /// top-only) with 2 px per edge on the new dynamic hug box.
 const COMPOSER_HUG_PAD: f32 = 2;
+/// Inset between glyphs and the textEntry's teal border (px). #584 zeroed this
+/// so dvui's padding-bake would not double-count in the outer→content convert;
+/// glyphs then sat on the stroke. 5 px is the operator ask after #584 shipped.
+/// Passed as textEntry Options.padding — TextEntryWidget.init bakes it into
+/// min/max_size_content then nulls the option, so we subtract 2× this from
+/// those sizes to keep the 44/124 chrome caps.
+const COMPOSER_TE_PAD: f32 = 5;
 /// Multi-line composer visible-height cap (px). Wrapped lines grow the entry up
 /// to this, then it scrolls vertically **inside** the entry — never a horizontal
 /// gutter past the trailing icon (plan #457, repo no-h-scroll policy). The
@@ -118,10 +125,10 @@ const COMPOSER_IDLE_CHROME_H: f32 = TOUCH_H + 2 * COMPOSER_HUG_PAD;
 /// dvui TextEntryWidget.init *bakes* options.padding into min_size_content
 /// and nulls options.padding, so minSizeGet adds border only (2) — NOT
 /// padding. We convert outer→content: content_h = outer_h − TE_OVERHEAD.
-/// Border is set explicitly on the textEntry below; padding is zeroed
-/// (adversarial review #584 PASS-WITH-NOTES Minor L1+L9 — the prior formula
-/// subtracted 14 from a value that already excludes padding, squeezing the
-/// TE well ~14 px short of the named 44/124 caps).
+/// Border is set explicitly on the textEntry below. Padding is COMPOSER_TE_PAD
+/// (5); we pass min/max_size_content *already minus* 2×TE_PAD so the bake
+/// restores the named 40/120 wells and the 44/124 chrome caps (#584 squeeze
+/// was subtracting pad *again* from a post-null minSizeGet).
 const TE_BORDER_H: f32 = 1 + 1; // border.y + border.h
 const TE_OVERHEAD: f32 = TE_BORDER_H; // 2
 
@@ -1335,20 +1342,18 @@ pub fn frame() !void {
             }, .{
                 .expand = .horizontal,
                 .gravity_y = 0.5,
-                .min_size_content = .{ .w = 120, .h = TOUCH_H },
-                .max_size_content = .{ .w = 0, .h = COMPOSER_INPUT_MAX_H },
+                // TE_PAD is baked into min/max by TextEntryWidget.init — pass
+                // the well size minus 2×pad so the named TOUCH_H / 120 caps
+                // (and 44/124 chrome) survive the bake. Width max is
+                // max_float_safe (not 0): a 0 width + 2×TE_PAD bake would
+                // cap the internal layout at 10 px.
+                .min_size_content = .{ .w = 120, .h = TOUCH_H - 2 * COMPOSER_TE_PAD },
+                .max_size_content = .{ .w = dvui.max_float_safe, .h = COMPOSER_INPUT_MAX_H - 2 * COMPOSER_TE_PAD },
                 .color_fill = palette.teal_surface,
                 .color_text = palette.teal_text,
                 .color_border = if (busy) palette.teal_border else palette.teal_accent,
                 .margin = .{ .x = 0, .y = 0, .w = 8, .h = 0 },
-                // Padding is zeroed: dvui TextEntryWidget.init bakes
-                // options.padding into min_size_content then nulls it, so
-                // minSizeGet returns content + border only. Setting non-zero
-                // padding here bakes it into the TE's min_size while our
-                // outer→content conversion subtracts it — double-counting
-                // squeezes the text well ~14 px short of the caps (review
-                // #584 PASS-WITH-NOTES Minor L1+L9).
-                .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+                .padding = .{ .x = COMPOSER_TE_PAD, .y = COMPOSER_TE_PAD, .w = COMPOSER_TE_PAD, .h = COMPOSER_TE_PAD },
                 .border = .{ .x = 1, .y = 1, .w = 1, .h = 1 },
             });
             typed = te.getText();
@@ -1363,10 +1368,12 @@ pub fn frame() !void {
             // that value only reaches dvui.minSizeGet(id) AFTER te.deinit()
             // (its children report back during deinit). We sample the OUTER
             // height (content + border only — dvui bakes padding into
-            // min_size_content and nulls it, so minSizeGet adds border = 2),
-            // convert to content (subtract TE_OVERHEAD = 2), then pad for the
-            // chrome box. Clamped to [IDLE, MAX] so the band hugs the field
-            // and never collapses (adversarial review #584 Round 4 Blocker L1
+            // min_size_content and nulls it, so minSizeGet adds border = 2).
+            // min/max_size_content are passed *minus* 2×COMPOSER_TE_PAD so the
+            // bake restores the named 40/120 wells. Convert to content
+            // (subtract TE_OVERHEAD = 2), then pad for the chrome box.
+            // Clamped to [IDLE, MAX] so the band hugs the field and never
+            // collapses (adversarial review #584 Round 4 Blocker L1
             // + Major L1: `dvui.minSizeGet` returns `?Size`, and
             // `TextEntryWidget.deinit` ends in `defer self.* = undefined`, so
             // the lookup Id must be captured BEFORE deinit — reading
