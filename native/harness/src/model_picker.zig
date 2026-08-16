@@ -69,7 +69,9 @@ fn paintMenuTrigger(view: CatalogView) ?u32 {
         .tag = "status-model-trigger",
         .id_extra = TRIGGER_ID + 1,
         .gravity_y = 0.5,
-        .min_size_content = .{ .h = PICKER_TRIGGER_H },
+        // Border bakes into outer height (same class as COMPOSER_TE_PAD).
+        // 32 − 2×1 = 30 content so the tagged rect stays PICKER_TRIGGER_H.
+        .min_size_content = .{ .h = PICKER_TRIGGER_H - 2 },
         .padding = .{ .x = 4, .y = 0, .w = 4, .h = 0 },
         .margin = .all(0),
         .border = .all(1),

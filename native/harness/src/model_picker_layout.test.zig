@@ -5,6 +5,9 @@
 //! Two frames: auto-sized boxes start at 0×0 on frame 1; the second frame
 //! picks up the settled layout. The testing backend uses a 2× physical pixel
 //! scale by default — assertions use physical pixels with `PX = 2`.
+//!
+//! The count>1 trigger has a 1 px border. `min_size_content.h` is passed
+//! minus 2×border so the tagged outer rect stays `PICKER_TRIGGER_H`.
 const std = @import("std");
 const t = std.testing;
 const dvui = @import("dvui");
