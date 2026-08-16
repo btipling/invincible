@@ -3,8 +3,8 @@
 //! #131 / plan #135: persistent transcript ScrollInfo + conditional stick rules.
 //! #251: stick also on in-place stream growth (update_last / content height).
 //! #137/#579: absolute-rect bands for transcript + composer (composer hugs one
-//! line, grows up to cap); status bar stays absolute-rect at the very bottom.
-//! Build id (`h:…`) detects stale wasm.
+//! line via previous-frame measured height, grows up to cap); status bar stays
+//! absolute-rect at the very bottom. Build id (`h:…`) detects stale wasm.
 const std = @import("std");
 const dvui = @import("dvui");
 const bridge = @import("bridge.zig");
@@ -101,13 +101,25 @@ const SCROLL_FLOOR_H: f32 = 32;
 /// Total chrome (64) ≤ old header+bar (92) — net −28 px transcript gain (plan #570).
 const STATUS_BAR_H: f32 = 64;
 
-/// Maximum composer-chrome outer height (px). The composer box rect is this tall
-/// so the textEntry always has room to grow from idle hug (~44 px) up to the
-/// multi-line cap (120 px content + 2×2 px per-edge pad). The transcript rect
-/// is computed from this constant, so both bands are stable absolute rects and
-/// the scrollArea never publishes virtual content height into the root flex
-/// (dvui `.auto` bar overwrites min_size.h — adversarial review #584 Blocker).
+/// Maximum composer-chrome outer height (px). The composer box rect grows up to
+/// this from idle hug (~44 px) via previous-frame measured height. Multi-line
+/// content past this cap scrolls internally (plan #457). The rect is still
+/// absolute (Options.rect), so the scrollArea never publishes virtual content
+/// height into the root flex (dvui `.auto` bar overwrites min_size.h —
+/// adversarial review #584 Blocker L1).
 const COMPOSER_MAX_CHROME_H: f32 = COMPOSER_INPUT_MAX_H + 2 * COMPOSER_HUG_PAD;
+/// Idle composer-chrome outer height (px) when the field is a single line.
+/// TOUCH_H (40) + 2 px top + 2 px bottom padding = 44 px. The composer band
+/// is never smaller than this so the textEntry always has a touch target.
+const COMPOSER_IDLE_CHROME_H: f32 = TOUCH_H + 2 * COMPOSER_HUG_PAD;
+
+/// Previous-frame measured composer-chrome outer height (px). Initialized to
+/// idle so the first frame shows a compact composer. Updated after each frame
+/// from the textEntry's natural wrapped height; clamped to [IDLE, MAX] so the
+/// band never collapses and never exceeds the multi-line cap. The transcript
+/// rect is computed from this value, so both bands shift in tandem (one-frame
+/// settle lag, no visual jump — adversarial review #584 Round 2 Major L1).
+var composer_last_h: f32 = COMPOSER_IDLE_CHROME_H;
 
 pub fn onInit() void {
     bridge.reset();
@@ -964,12 +976,16 @@ pub fn frame() !void {
     // so the scrollArea's `.auto` bar cannot publish virtual content height as the
     // root's min-size (dvui ScrollContainerWidget.deinit overwrites min_size.h with
     // full virtual content — adversarial review #584 Blocker L1).
+    // Composer height is dynamic: previous-frame measured via composer_last_h,
+    // clamped to [IDLE, MAX], so the band hugs the field at idle (~44 px) and
+    // grows up as lines wrap (adversarial review #584 Round 2 Major L1+L9).
+    const composer_h = @max(COMPOSER_IDLE_CHROME_H, @min(composer_last_h, COMPOSER_MAX_CHROME_H));
     const status_y = avail.h - STATUS_BAR_H;
-    const composer_y = status_y - COMPOSER_MAX_CHROME_H;
+    const composer_y = status_y - composer_h;
     const scroll_y: f32 = BAND_GAP;
     const scroll_h: f32 = @max(SCROLL_FLOOR_H, composer_y - BAND_GAP - scroll_y);
 
-    // ── Transcript (absolute rect — fixed pixel height) ──────────────────
+    // ── Transcript (absolute rect — height from dynamic composer band) ────
     // (Header band removed — plan #570 merges its content into the two-line status bar)
     const near_before = isNearBottom(&transcript_scroll);
     const prev_msg = last_msg_count;
@@ -999,8 +1015,8 @@ pub fn frame() !void {
             .background = true,
             .color_fill = palette.teal_surface,
             .color_border = palette.teal_border,
-            .min_size_content = .{ .w = 120, .h = scroll_h },
-            .max_size_content = .height(scroll_h),
+            .min_size_content = .{ .w = 120, .h = scroll_h - 16 },
+            .max_size_content = .height(scroll_h - 16),
             .padding = .all(8),
         });
         defer scroll.deinit();
@@ -1243,10 +1259,14 @@ pub fn frame() !void {
     last_scroll_max_y = transcript_scroll.scrollMax(.vertical);
 
     // ── Composer chrome (absolute rect — hugs one line, grows up to cap) ───
+    // Dynamic height: previous-frame measured via composer_last_h, clamped to
+    // [COMPOSER_IDLE_CHROME_H, COMPOSER_MAX_CHROME_H]. At idle the band is ~44 px
+    // (Send sits on the field baseline); multi-line paste grows the rect up to
+    // 124 px over one frame settle (adversarial review #584 Round 2 Major L1+L9).
     var typed: []const u8 = prompt_buf[0..0];
     {
         var chrome = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .rect = .{ .x = 0, .y = composer_y, .w = 0, .h = COMPOSER_MAX_CHROME_H },
+            .rect = .{ .x = 0, .y = composer_y, .w = 0, .h = composer_h },
             .expand = .horizontal,
             .background = true,
             .color_fill = palette.teal_bg,
@@ -1307,6 +1327,15 @@ pub fn frame() !void {
                 dvui.focusWidget(te.data().id, null, null);
                 want_composer_focus = false;
             }
+            // Capture the textEntry's natural wrapped height for next frame's
+            // dynamic hug. The textEntry with break_lines reports a min_size.h
+            // that grows with wrapped lines; we read it before deinit so the
+            // widget data is still valid. Clamped + padded to [IDLE, MAX] so
+            // the chrome band hugs the field and never collapses (adversarial
+            // review #584 Round 2 Major L1+L9).
+            const measured_h = te.data().min_size.h;
+            composer_last_h = @max(TOUCH_H, @min(measured_h, COMPOSER_INPUT_MAX_H)) + 2 * COMPOSER_HUG_PAD;
+            composer_last_h = @max(COMPOSER_IDLE_CHROME_H, @min(composer_last_h, COMPOSER_MAX_CHROME_H));
             te.deinit();
             if (composer_submit and typed.len > 0) {
                 submitText(typed);

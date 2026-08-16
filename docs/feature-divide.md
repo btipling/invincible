@@ -39,7 +39,7 @@ optional login chrome).
 | **Transcript (read messages)** | **Wasm** | Primary UX; rich MD + images + math + diff/patch fence paint in-canvas (`rich/*`) — no DOM markdown |
 | Image bytes (fetch/decode) | **DOM host** | Browser fetch → RGBA → `inv_image_cache_put`; paint stays Wasm |
 | Math pixels (TeX raster) | **DOM host** | Host MathJax SVG → RGBA → `inv_math_cache_put`; paint stays Wasm |
-| **Composer + Send** | **Wasm** | Primary input; idle hugs one line (~44 px), grows up to cap (124 px chrome) — absolute-rect bands (plan #579), textEntry hugs one line then grows up; icon is bottom-pinned |
+| **Composer + Send** | **Wasm** | Primary input; dynamic absolute-rect from previous-frame measured height: idle hugs one line (~44 px), grows up to cap (124 px), scrolls internally past 120 px content; Send/Stop icon bottom-pinned (`gravity_y = 1.0`) stays on field baseline at all heights (plan #579) |
 | **Stop / cancel turn** | **Wasm** control + **DOM** abort | Canvas **Stop** (icon-only ■, plan #457) while busy → pending cancel (protocol v9); host aborts `AbortController` |
 | Busy / error presentation for turns | **Wasm** | EMBER for errors |
 | Whole-turn `mm:ss` clock (Busy) | **Wasm** (busy row) fed by the **DOM** host | The host owns the only reliable wall-clock (no WASI clock in Wasm) and ticks it ~1 Hz, pushing the elapsed seconds into the Wasm busy row via protocol **v14** `inv_set_turn_elapsed` (plan #567). The canvas appends `Waiting for model… · 0:42` in-canvas while a turn runs; reset to 0 on Ready/Stop/error so no `0:00` lingers. Composer/Stop stay **Wasm** |
