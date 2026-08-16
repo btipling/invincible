@@ -186,14 +186,6 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  /**
-   * Whole-turn Busy clock (#347 / plan #457). The host owns the only reliable
-   * wall clock (no WASI clock in the Wasm); this state tracks the elapsed
-   * seconds so the ~1 Hz Busy effect relays them to the canvas busy row via
-   * `bridge.setTurnElapsed(sec)` (protocol v14, plan #567). Never rendered in
-   * the DOM — the clock paints in-canvas, so no chip consumes it anymore.
-   */
-  const [turnElapsedSec, setTurnElapsedSec] = useState(0);
   const [hostNote, setHostNote] = useState<string | null>(null);
   /** Cloud session summaries for the picker (no transcripts). */
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -601,28 +593,25 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
    * Whole-turn Busy clock (#347 / plan #457, protocol v14 / plan #567): while
    * Busy, tick a ~1 Hz host wall-clock timer. The clock is client wall time
    * from turn start (NOT provider `usage`). Since the DOM top-bar chip was
-   * removed (plan #567), the host no longer renders the timer — it is a pure
-   * feeder: each tick it pushes the elapsed seconds to the Wasm busy row via
-   * `bridge.setTurnElapsed(sec)`, which formats/appends `Waiting for model… ·
-   * mm:ss` in-canvas. Idle/Stop/error resets to 0 so no stray `0:00` lingers.
-   * Reduced-motion is naturally satisfied — a plain 1 s scalar push, no CSS
-   * animation.
+   * removed (plan #567) the host never renders the timer — it is a pure feeder
+   * with NO React state: each tick it pushes the elapsed seconds straight to
+   * the Wasm busy row via `bridge.setTurnElapsed(sec)`, which formats/appends
+   * `Waiting for model… · mm:ss` in-canvas. There is intentionally no `useState`
+   * here — a state round-trip per second would re-render the whole host
+   * (pickers, authNav, canvas parent) just to feed a value no JSX reads
+   * (adversarial review #568 L5). Idle/Stop/error resets to 0 so no stray
+   * `0:00` lingers. Reduced-motion is naturally satisfied — a plain 1 s scalar
+   * push, no CSS animation.
    */
   useEffect(() => {
     if (!busy) {
-      setTurnElapsedSec(0);
       bridgeRef.current?.setTurnElapsed(0);
       return;
     }
     const start = performance.now();
-    setTurnElapsedSec(0);
     bridgeRef.current?.setTurnElapsed(0);
     const id = window.setInterval(() => {
       const sec = Math.max(0, Math.floor((performance.now() - start) / 1000));
-      setTurnElapsedSec(sec);
-      // Feed the Wasm busy row (protocol v14, plan #567): the host is the sole
-      // wall-clock owner; the canvas forms/appends `Waiting for model… · mm:ss`
-      // while busy. `0` is pushed on idle/stop/error so no stale `0:00` lingers.
       bridgeRef.current?.setTurnElapsed(sec);
     }, 1000);
     return () => {

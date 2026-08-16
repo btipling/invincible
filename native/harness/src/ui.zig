@@ -14,6 +14,7 @@ const mixed_text = @import("rich/mixed_text.zig");
 const composer_text = @import("composer_text.zig");
 const toolrun = @import("rich/toolrun.zig");
 const thinking_collapse = @import("thinking_collapse.zig");
+const elapsed_clock = @import("elapsed_clock.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
@@ -155,22 +156,6 @@ fn lifecycleLabel(l: bridge.Lifecycle) []const u8 {
         .busy => "busy",
         .err => "error",
     };
-}
-
-/// Whole-turn busy-row clock (protocol v14, plan #567): compact `m:ss` (two-digit
-/// seconds) or `h:mm:ss` past an hour — mirroring the formatter of the removed
-/// DOM top-bar chip. The host owns the only reliable wall clock (no WASI clock in
-/// Wasm) and feeds elapsed seconds via `inv_set_turn_elapsed`; the Wasm is a
-/// passive receiver that only formats into the caller-owned fixed stack buffer
-/// (no alloc / no frame-budget traffic).
-fn formatElapsedClock(dst: []u8, total_sec: u32) []const u8 {
-    const sec: u32 = total_sec % 60;
-    const m: u32 = total_sec / 60;
-    const h: u32 = m / 60;
-    if (h > 0) {
-        return std.fmt.bufPrint(dst, "{d}:{d:0>2}:{d:0>2}", .{ h, m % 60, sec }) catch "0:00";
-    }
-    return std.fmt.bufPrint(dst, "{d}:{d:0>2}", .{ m, sec }) catch "0:00";
 }
 
 fn kindTextColor(kind: u8) dvui.Color {
@@ -1285,7 +1270,7 @@ pub fn frame() !void {
             // at t=0. The host resets to 0 on idle/stop/error/clear.
             if (bridge.turnElapsed() > 0) {
                 var clock_buf: [32]u8 = undefined;
-                const clock = formatElapsedClock(&clock_buf, bridge.turnElapsed());
+                const clock = elapsed_clock.formatElapsedClock(&clock_buf, bridge.turnElapsed());
                 tl.addText(" · ", .{});
                 tl.addText(clock, .{});
             }

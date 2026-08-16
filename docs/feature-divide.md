@@ -139,7 +139,7 @@ re-resolved each turn.
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
 | Export whitelist | `native/harness/build.zig` |
 
-Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **14** — 13 added the additive status-slot store; **14** adds the scalar turn-clock feed `inv_set_turn_elapsed`.
+Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **14** — 13 added the additive status-slot store; **14** adds the scalar turn-clock feed `inv_set_turn_elapsed`).
 Mismatch → load error; rebuild both sides. Image **bytes** enter only via bridge put; never dual DOM `<img>` product surface.
 
 ## Related
