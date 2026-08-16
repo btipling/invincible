@@ -36,6 +36,7 @@
  * asked to derive.
  */
 import { jsonSchema, tool } from 'ai';
+import { PathLock } from './pathLock';
 import {
   META_SKILL_FRAGMENT_MAX_BYTES,
   META_USER_PERSONAS_MAX,
@@ -178,6 +179,7 @@ export function createMetaPersonaSkillTools(
   opts: CreateMetaPersonaSkillToolsOptions,
 ) {
   const { userId, userPersonas, userSkills } = opts;
+  const skillLock = new PathLock();
 
   /** Current per-user personas row count (for the authoring ceiling); throws on store failure. */
   async function personaRowCount(): Promise<number> {
@@ -631,58 +633,63 @@ export function createMetaPersonaSkillTools(
       }
       const replaceAll = input?.replace_all === true;
       try {
-        const res = await userSkills.getSkillById(userId, id);
-        if (!res.ok) return `ERROR meta_skill_str_replace: ${res.error}`;
-        if (!res.value) {
-          return `not_found: no skill with id "${id}" (user-scoped). No partial write.`;
-        }
-        const body = res.value.body;
+        // Serialize same-id read→write window so two parallel patches on one
+        // skill within a single generateText step never interleave (bug #479
+        // class).  Lock key is the skill id — different ids proceed in parallel.
+        return await skillLock.withPathLock(id, async () => {
+          const res = await userSkills.getSkillById(userId, id);
+          if (!res.ok) return `ERROR meta_skill_str_replace: ${res.error}`;
+          if (!res.value) {
+            return `not_found: no skill with id "${id}" (user-scoped). No partial write.`;
+          }
+          const body = res.value.body;
 
-        // Literal non-overlapping occurrence count (mirrors sandbox str_replace).
-        let count = 0;
-        let from = 0;
-        while (from <= body.length) {
-          const idx = body.indexOf(oldStr, from);
-          if (idx === -1) break;
-          count += 1;
-          from = idx + oldStr.length;
-        }
-        if (count === 0) {
-          return 'ERROR meta_skill_str_replace: old_string not found in skill body (no partial write)';
-        }
-        if (count > 1 && !replaceAll) {
-          return `ERROR meta_skill_str_replace: old_string matched ${count} times; pass replace_all: true or provide a unique sufficient snippet (no partial write)`;
-        }
+          // Literal non-overlapping occurrence count (mirrors sandbox str_replace).
+          let count = 0;
+          let from = 0;
+          while (from <= body.length) {
+            const idx = body.indexOf(oldStr, from);
+            if (idx === -1) break;
+            count += 1;
+            from = idx + oldStr.length;
+          }
+          if (count === 0) {
+            return 'ERROR meta_skill_str_replace: old_string not found in skill body (no partial write)';
+          }
+          if (count > 1 && !replaceAll) {
+            return `ERROR meta_skill_str_replace: old_string matched ${count} times; pass replace_all: true or provide a unique sufficient snippet (no partial write)`;
+          }
 
-        // Reject empty / over-cap results *before* split/join. replace_all of a
-        // short needle with a 64 KiB fragment in a large body would otherwise
-        // allocate count×|new| (hundreds of MB–GB) before the store cap ran.
-        const bodyBytes = Buffer.byteLength(body, 'utf8');
-        const oldBytes = Buffer.byteLength(oldStr, 'utf8');
-        const newBytes = Buffer.byteLength(newStr, 'utf8');
-        const nextBytes = bodyBytes + count * (newBytes - oldBytes);
-        if (nextBytes <= 0) {
-          return 'ERROR meta_skill_str_replace: resulting body would be empty; no write performed';
-        }
-        if (nextBytes > SKILL_BODY_MAX_BYTES) {
-          return `ERROR meta_skill_str_replace: resulting body exceeds the store's 4 MiB write cap (never truncated); no write performed`;
-        }
+          // Reject empty / over-cap results *before* split/join. replace_all of a
+          // short needle with a 64 KiB fragment in a large body would otherwise
+          // allocate count×|new| (hundreds of MB–GB) before the store cap ran.
+          const bodyBytes = Buffer.byteLength(body, 'utf8');
+          const oldBytes = Buffer.byteLength(oldStr, 'utf8');
+          const newBytes = Buffer.byteLength(newStr, 'utf8');
+          const nextBytes = bodyBytes + count * (newBytes - oldBytes);
+          if (nextBytes <= 0) {
+            return 'ERROR meta_skill_str_replace: resulting body would be empty; no write performed';
+          }
+          if (nextBytes > SKILL_BODY_MAX_BYTES) {
+            return `ERROR meta_skill_str_replace: resulting body exceeds the store's 4 MiB write cap (never truncated); no write performed`;
+          }
 
-        // Literal build — split/join or slice+concat, NEVER String.prototype.replace.
-        const nextBody = replaceAll
-          ? body.split(oldStr).join(newStr)
-          : body
-              .slice(0, body.indexOf(oldStr))
-              .concat(newStr)
-              .concat(body.slice(body.indexOf(oldStr) + oldStr.length));
+          // Literal build — split/join or slice+concat, NEVER String.prototype.replace.
+          const nextBody = replaceAll
+            ? body.split(oldStr).join(newStr)
+            : body
+                .slice(0, body.indexOf(oldStr))
+                .concat(newStr)
+                .concat(body.slice(body.indexOf(oldStr) + oldStr.length));
 
-        // Write via the store's validated updateUserSkillBody (enforces the
-        // 4 MiB SKILL_BODY_MAX_BYTES store write cap — rejects, never truncates).
-        const upd = await userSkills.updateUserSkillBody(userId, id, nextBody);
-        if (!upd.ok) {
-          return `ERROR meta_skill_str_replace: ${upd.error}`;
-        }
-        return `replaced ${replaceAll ? count : 1} occurrence(s) of old_string in skill id=${id}`;
+          // Write via the store's validated updateUserSkillBody (enforces the
+          // 4 MiB SKILL_BODY_MAX_BYTES store write cap — rejects, never truncates).
+          const upd = await userSkills.updateUserSkillBody(userId, id, nextBody);
+          if (!upd.ok) {
+            return `ERROR meta_skill_str_replace: ${upd.error}`;
+          }
+          return `replaced ${replaceAll ? count : 1} occurrence(s) of old_string in skill id=${id}`;
+        });
       } catch (err) {
         return errText('meta_skill_str_replace', err);
       }

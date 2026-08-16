@@ -688,6 +688,42 @@ describe('createMetaPersonaSkillTools — meta_skill_str_replace', () => {
       'alpha $& $1 $\' $` $$ LITERAL omega',
     );
   });
+
+  it('same-id parallel patches serialize (no silent hunk drop)', async () => {
+    // Two concurrent str_replace calls on the SAME skill id. The lock must
+    // serialize the read→write window — if it didn't, both would read v1 and
+    // one write would be silently dropped (the #479 class). We use two
+    // non-overlapping old_strings so both calls CAN succeed: each replaces a
+    // distinct literal region. The second reader must see the first writer's
+    // result, not a stale snapshot.
+    await tools.meta_skill_update_body.execute!(
+      { id: skillId, body: '[START]\nalpha\n[END]' },
+      execOpts,
+    );
+    const [r1, r2] = await Promise.all([
+      tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'alpha', new_string: 'ALPHA' },
+        execOpts,
+      ),
+      tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: '[START]', new_string: '<<<' },
+        execOpts,
+      ),
+    ]);
+    const s1 = String(r1);
+    const s2 = String(r2);
+    // Both should succeed — replacements are on disjoint regions.
+    expect(s1).toMatch(/replaced 1 occurrence/);
+    expect(s2).toMatch(/replaced 1 occurrence/);
+    // Final body must carry BOTH replacements — never the original, and never
+    // missing one hunk.
+    const final = sFake.rows.find((r) => r.id === skillId)!.body;
+    expect(final).toContain('ALPHA');
+    expect(final).toContain('<<<');
+    expect(final).not.toContain('alpha'); // replaced by first
+    expect(final).not.toContain('[START]'); // replaced by second
+    // Lock: 1 occurrence each (no overlapping-match ambiguity).
+  });
 });
 
 describe('createMetaPersonaSkillTools — per-user authoring ceilings (L5)', () => {
