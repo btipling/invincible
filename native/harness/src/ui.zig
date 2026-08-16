@@ -2,8 +2,9 @@
 //! Polish (4.7): density, focus composer, touch targets, scroll stick-to-bottom.
 //! #131 / plan #135: persistent transcript ScrollInfo + conditional stick rules.
 //! #251: stick also on in-place stream growth (update_last / content height).
-//! #137: IMGUI absolute-rect bands (header / transcript / composer) so content
-//! min-size cannot push chrome off-canvas. Build id (`h:…`) detects stale wasm.
+//! #137/#579: absolute-rect bands for transcript + composer (composer hugs one
+//! line via previous-frame measured height, grows up to cap); status bar stays
+//! absolute-rect at the very bottom. Build id (`h:…`) detects stale wasm.
 const std = @import("std");
 const dvui = @import("dvui");
 const bridge = @import("bridge.zig");
@@ -12,6 +13,7 @@ const build_options = @import("build_options");
 const rich = @import("rich/root.zig");
 const mixed_text = @import("rich/mixed_text.zig");
 const composer_text = @import("composer_text.zig");
+const cwd_slot = @import("cwd_slot.zig");
 const toolrun = @import("rich/toolrun.zig");
 const thinking_collapse = @import("thinking_collapse.zig");
 const busy_row = @import("busy_row.zig");
@@ -77,15 +79,15 @@ const NEAR_BOTTOM_PX: f32 = 48;
 const CONTENT_GREW_EPS: f32 = 1.0;
 /// Reserved bottom chrome: single-row textEntry + trailing TOUCH_H icon + margins
 /// (plan #457 — replaces the old textEntry + Send/Stop action row from plan #138).
-/// Height budget: composer chrome wins over transcript min on short canvases.
-const COMPOSER_CHROME_MIN: f32 = COMPOSER_INPUT_MAX_H + 2 * COMPOSER_PAD_Y;
-/// Chrome box top padding (Options.padding.y) — outside min_size_content.
-const COMPOSER_PAD_Y: f32 = 4;
+/// Per-edge margin between textEntry content rect and composer-chrome box edge
+/// (Options.padding.y). Plan #579 replaces the old fixed COMPOSER_PAD_Y (4 px
+/// top-only) with 2 px per edge on the new dynamic hug box.
+const COMPOSER_HUG_PAD: f32 = 2;
 /// Multi-line composer visible-height cap (px). Wrapped lines grow the entry up
 /// to this, then it scrolls vertically **inside** the entry — never a horizontal
-/// gutter past the trailing icon (plan #457, repo no-h-scroll policy). Stays
-/// inside the reserved bottom band so the absolute-rect transcript height is
-/// unchanged; taller pasted content scrolls internally (plan #334 / #323).
+/// gutter past the trailing icon (plan #457, repo no-h-scroll policy). The
+/// composer-chrome box caps at COMPOSER_INPUT_MAX_H + 2*COMPOSER_HUG_PAD via
+/// max_size_content; taller pasted content scrolls internally (plan #334 / #323).
 const COMPOSER_INPUT_MAX_H: f32 = 120;
 /// Vertical margins between header→scroll and scroll→chrome (Options.margin.h).
 const BAND_GAP: f32 = 6;
@@ -99,12 +101,50 @@ const SCROLL_FLOOR_H: f32 = 32;
 /// Total chrome (64) ≤ old header+bar (92) — net −28 px transcript gain (plan #570).
 const STATUS_BAR_H: f32 = 64;
 
+/// Maximum composer-chrome outer height (px). The composer box rect grows up to
+/// this from idle hug (~44 px) via previous-frame measured height. Multi-line
+/// content past this cap scrolls internally (plan #457). The rect is still
+/// absolute (Options.rect), so the scrollArea never publishes virtual content
+/// height into the root flex (dvui `.auto` bar overwrites min_size.h —
+/// adversarial review #584 Blocker L1).
+const COMPOSER_MAX_CHROME_H: f32 = COMPOSER_INPUT_MAX_H + 2 * COMPOSER_HUG_PAD;
+/// Idle composer-chrome outer height (px) when the field is a single line.
+/// TOUCH_H (40) + 2 px top + 2 px bottom padding = 44 px. The composer band
+/// is never smaller than this so the textEntry always has a touch target.
+const COMPOSER_IDLE_CHROME_H: f32 = TOUCH_H + 2 * COMPOSER_HUG_PAD;
+
+/// TextEntry border overhead (px). The textEntry's computed min_size (via
+/// dvui.minSizeGet after deinit) is the OUTER height (content + border).
+/// dvui TextEntryWidget.init *bakes* options.padding into min_size_content
+/// and nulls options.padding, so minSizeGet adds border only (2) — NOT
+/// padding. We convert outer→content: content_h = outer_h − TE_OVERHEAD.
+/// Border is set explicitly on the textEntry below; padding is zeroed
+/// (adversarial review #584 PASS-WITH-NOTES Minor L1+L9 — the prior formula
+/// subtracted 14 from a value that already excludes padding, squeezing the
+/// TE well ~14 px short of the named 44/124 caps).
+const TE_BORDER_H: f32 = 1 + 1; // border.y + border.h
+const TE_OVERHEAD: f32 = TE_BORDER_H; // 2
+
+/// Previous-frame measured composer-chrome outer height (px). Initialized to
+/// idle so the first frame shows a compact composer. Updated after each frame
+/// from the textEntry's natural wrapped height (sampled via dvui.minSizeGet
+/// after te.deinit — NOT te.data().min_size which is the options seed); clamped
+/// to [IDLE, MAX] so the band never collapses and never exceeds the multi-line
+/// cap. The transcript rect is computed from this value, so both bands shift in
+/// tandem (one-frame settle lag, no visual jump — adversarial review #584
+/// Round 2 Major L1 and Round 3 Major L1+L9).
+var composer_last_h: f32 = COMPOSER_IDLE_CHROME_H;
+
 pub fn onInit() void {
     bridge.reset();
     @memset(&prompt_buf, 0);
     want_composer_focus = true;
     resetTranscriptScroll();
     rich.clearCache();
+    // Reset the previous-frame hug to idle: an in-process re-init (wasm reload
+    // / host re-mount) must not keep a stale multi-line 124 px band until the
+    // next wrap sample (adversarial review #584 Round 4 Minor L8).
+    composer_last_h = COMPOSER_IDLE_CHROME_H;
 }
 
 fn resetTranscriptScroll() void {
@@ -854,6 +894,8 @@ fn paintStatusSlots(life: bridge.Lifecycle) void {
     for (bridge.STATUS_SLOT_DROP_ORDER) |s| {
         const raw = bridge.statusSlotValue(s);
         if (raw.len == 0) continue;
+        // Cwd "." is the workspace-root default — hide the trivial chip (plan #579).
+        if (s == bridge.STATUS_SLOT_CWD and !cwd_slot.isVisible(raw)) continue;
         slot[n] = s;
         text[n] = truncateStatusValue(&buf[n], raw);
         width[n] = body.textSize(text[n]).w + STATUS_SLOT_GAP;
@@ -895,6 +937,7 @@ fn paintStatusSlots(life: bridge.Lifecycle) void {
     var i = keep_from;
     while (i < n) : (i += 1) {
         var tl = dvui.textLayout(@src(), .{}, .{
+            .background = false,
             .id_extra = 0x61_0002 + @as(usize, slot[i]),
             .color_text = slot_color,
             .gravity_y = 0.5,
@@ -948,21 +991,21 @@ pub fn frame() !void {
         avail = .{ .x = 0, .y = 0, .w = @max(1, wr.w - 16), .h = @max(1, wr.h - 16) };
     }
 
-    // Fixed chrome height (content + pad). Absolute placement so bands never
-    // depend on expand packing order (header band removed — plan #570).
-    const chrome_h: f32 = COMPOSER_CHROME_MIN + COMPOSER_PAD_Y;
-    // Bottom chrome = composer band + the always-mounted status bar BELOW it.
-    // Reserving both up front keeps scroll/transcript geometry constant whether
-    // or not any status slot is populated, so attaching a sandbox never makes
-    // the transcript+composer stack jump vertically (plan #555 locked decision).
-    const bottom_h: f32 = chrome_h + STATUS_BAR_H;
-    const scroll_y = BAND_GAP;
-    const scroll_h = @max(SCROLL_FLOOR_H, avail.h - scroll_y - bottom_h - BAND_GAP);
-    // Composer top sits above the fixed status strip, which owns the very bottom.
-    const chrome_y = avail.h - bottom_h;
+    // Status bar is absolute-rect at the very bottom (always-mounted, fixed 64 px).
+    // Transcript + composer use absolute rects — neither participates in root flex,
+    // so the scrollArea's `.auto` bar cannot publish virtual content height as the
+    // root's min-size (dvui ScrollContainerWidget.deinit overwrites min_size.h with
+    // full virtual content — adversarial review #584 Blocker L1).
+    // Composer height is dynamic: previous-frame measured via composer_last_h,
+    // clamped to [IDLE, MAX], so the band hugs the field at idle (~44 px) and
+    // grows up as lines wrap (adversarial review #584 Round 2 Major L1+L9).
+    const composer_h = @max(COMPOSER_IDLE_CHROME_H, @min(composer_last_h, COMPOSER_MAX_CHROME_H));
     const status_y = avail.h - STATUS_BAR_H;
+    const composer_y = status_y - composer_h;
+    const scroll_y: f32 = BAND_GAP;
+    const scroll_h: f32 = @max(SCROLL_FLOOR_H, composer_y - BAND_GAP - scroll_y);
 
-    // ── Transcript (absolute middle band — fixed pixel height) ────────────
+    // ── Transcript (absolute rect — height from dynamic composer band) ────
     // (Header band removed — plan #570 merges its content into the two-line status bar)
     const near_before = isNearBottom(&transcript_scroll);
     const prev_msg = last_msg_count;
@@ -982,9 +1025,6 @@ pub fn frame() !void {
     }
     var user_scroll: dvui.Point = .{};
     {
-        // Content height = band minus vertical padding (all 8 → 16).
-        const scroll_pad_v: f32 = 16;
-        const scroll_content_h = @max(SCROLL_FLOOR_H, scroll_h - scroll_pad_v);
         var scroll = dvui.scrollArea(@src(), .{
             .scroll_info = &transcript_scroll,
             .vertical_bar = .auto,
@@ -995,8 +1035,8 @@ pub fn frame() !void {
             .background = true,
             .color_fill = palette.teal_surface,
             .color_border = palette.teal_border,
-            .min_size_content = .{ .w = 120, .h = scroll_content_h },
-            .max_size_content = .height(scroll_content_h),
+            .min_size_content = .{ .w = 120, .h = scroll_h - 16 },
+            .max_size_content = .height(scroll_h - 16),
             .padding = .all(8),
         });
         defer scroll.deinit();
@@ -1238,18 +1278,20 @@ pub fn frame() !void {
     last_msg_count = n;
     last_scroll_max_y = transcript_scroll.scrollMax(.vertical);
 
-    // ── Composer chrome (absolute bottom band — always on-canvas) ─────────
+    // ── Composer chrome (absolute rect — hugs one line, grows up to cap) ───
+    // Dynamic height: previous-frame measured via composer_last_h, clamped to
+    // [COMPOSER_IDLE_CHROME_H, COMPOSER_MAX_CHROME_H]. At idle the band is ~44 px
+    // (Send sits on the field baseline); multi-line paste grows the rect up to
+    // 124 px over one frame settle (adversarial review #584 Round 2 Major L1+L9).
     var typed: []const u8 = prompt_buf[0..0];
     {
         var chrome = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .rect = .{ .x = 0, .y = chrome_y, .w = 0, .h = chrome_h },
+            .rect = .{ .x = 0, .y = composer_y, .w = 0, .h = composer_h },
             .expand = .horizontal,
             .background = true,
             .color_fill = palette.teal_bg,
             .color_border = palette.teal_border,
-            .min_size_content = .{ .w = 120, .h = COMPOSER_CHROME_MIN },
-            .max_size_content = .height(COMPOSER_CHROME_MIN),
-            .padding = .{ .x = 0, .y = COMPOSER_PAD_Y, .w = 0, .h = 0 },
+            .padding = .{ .x = 0, .y = COMPOSER_HUG_PAD, .w = 0, .h = COMPOSER_HUG_PAD },
         });
         defer chrome.deinit();
 
@@ -1299,13 +1341,44 @@ pub fn frame() !void {
                 .color_text = palette.teal_text,
                 .color_border = if (busy) palette.teal_border else palette.teal_accent,
                 .margin = .{ .x = 0, .y = 0, .w = 8, .h = 0 },
+                // Padding is zeroed: dvui TextEntryWidget.init bakes
+                // options.padding into min_size_content then nulls it, so
+                // minSizeGet returns content + border only. Setting non-zero
+                // padding here bakes it into the TE's min_size while our
+                // outer→content conversion subtracts it — double-counting
+                // squeezes the text well ~14 px short of the caps (review
+                // #584 PASS-WITH-NOTES Minor L1+L9).
+                .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+                .border = .{ .x = 1, .y = 1, .w = 1, .h = 1 },
             });
             typed = te.getText();
             if (want_composer_focus) {
                 dvui.focusWidget(te.data().id, null, null);
                 want_composer_focus = false;
             }
+            // Capture the textEntry's natural wrapped height for next frame's
+            // dynamic hug. `te.data().min_size` is the OPTIONS seed (re-seeded
+            // each frame from min_size_content), NOT the computed wrapped
+            // height. The textEntry's draw() computes the real wrap height but
+            // that value only reaches dvui.minSizeGet(id) AFTER te.deinit()
+            // (its children report back during deinit). We sample the OUTER
+            // height (content + border only — dvui bakes padding into
+            // min_size_content and nulls it, so minSizeGet adds border = 2),
+            // convert to content (subtract TE_OVERHEAD = 2), then pad for the
+            // chrome box. Clamped to [IDLE, MAX] so the band hugs the field
+            // and never collapses (adversarial review #584 Round 4 Blocker L1
+            // + Major L1: `dvui.minSizeGet` returns `?Size`, and
+            // `TextEntryWidget.deinit` ends in `defer self.* = undefined`, so
+            // the lookup Id must be captured BEFORE deinit — reading
+            // `te.data().id` after would be use-after-undefined. If the queried
+            // id has no stored size this frame, fall back to the previous
+            // frame's measured height instead of collapsing (never a zero shot)).
+            const te_id = te.data().id;
             te.deinit();
+            const outer_h = if (dvui.minSizeGet(te_id)) |ms| ms.h else composer_last_h;
+            const raw_content = @max(0.0, outer_h - TE_OVERHEAD);
+            const content_h = @max(TOUCH_H, @min(raw_content, COMPOSER_INPUT_MAX_H));
+            composer_last_h = @max(COMPOSER_IDLE_CHROME_H, @min(content_h + 2 * COMPOSER_HUG_PAD, COMPOSER_MAX_CHROME_H));
             if (composer_submit and typed.len > 0) {
                 submitText(typed);
                 typed = prompt_buf[0..0];
@@ -1321,7 +1394,7 @@ pub fn frame() !void {
         // from the embedded DejaVu Sans Symbols face so they never tofu.
         if (busy) {
             if (dvui.button(@src(), "■", .{}, .{
-                .gravity_y = 0.5,
+                .gravity_y = 1.0,
                 .style = .content,
                 .font = composerIconFont(),
                 .min_size_content = .{ .w = TOUCH_H, .h = TOUCH_H },
@@ -1333,7 +1406,7 @@ pub fn frame() !void {
                 bridge.queueCancelFromUi();
             }
         } else if (dvui.button(@src(), "▶", .{}, .{
-            .gravity_y = 0.5,
+            .gravity_y = 1.0,
             .style = .highlight,
             .font = composerIconFont(),
             .min_size_content = .{ .w = TOUCH_H, .h = TOUCH_H },
@@ -1378,6 +1451,7 @@ pub fn frame() !void {
 
             {
                 var tl = dvui.textLayout(@src(), .{}, .{
+                    .background = false,
                     .color_text = if (busy) palette.warm_accent else palette.teal_muted,
                     .gravity_y = 0.5,
                 });
@@ -1386,6 +1460,7 @@ pub fn frame() !void {
             }
             {
                 var tl = dvui.textLayout(@src(), .{}, .{
+                    .background = false,
                     .color_text = palette.teal_muted,
                     .gravity_y = 0.5,
                     .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
@@ -1397,6 +1472,7 @@ pub fn frame() !void {
                 const cat_n = bridge.modelCatalogCount();
                 {
                     var tl = dvui.textLayout(@src(), .{}, .{
+                        .background = false,
                         .color_text = if (cat_n == 0) palette.teal_muted else palette.teal_accent,
                         .gravity_y = 0.5,
                         .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
@@ -1414,9 +1490,9 @@ pub fn frame() !void {
                         .style = .content,
                         .min_size_content = .{ .w = 52, .h = TOUCH_H - 8 },
                         .corners = .round(6),
-                        .color_fill = palette.teal_bg,
+                        .color_fill = palette.teal_surface,
                         .color_text = palette.teal_accent,
-                        .color_border = palette.teal_border,
+                        .color_border = palette.teal_accent,
                         .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
                     })) {
                         if (!busy) {
