@@ -34,7 +34,7 @@ Local/default: `HARNESS_WAIT_MS=0` → latest **main-branch** artifact immediate
 
 ### PR builds must not ship
 
-`build-harness` still **compiles + `zig build test-rich`** on same-repo contributor PRs (merge gate). It does **not** upload the production artifact name `harness-wasm` unless `github.ref == refs/heads/main` (push to main or `workflow_dispatch --ref main`).
+`build-harness` still **compiles + `zig build test-rich`** on same-repo contributor PRs (merge gate) and uploads **`harness-wasm-pr-<n>`** so the Zig/Wasm build is a downloadable CI artifact. It does **not** upload the production name `harness-wasm` unless `github.ref == refs/heads/main` (push to main or `workflow_dispatch --ref main`).
 
 `scripts/fetch-harness-artifact.mjs` `latest` also ignores any `harness-wasm` whose `workflow_run.head_branch !== main`. A host-only `main` deploy that falls back to latest cannot pick up an unmerged PR head.
 

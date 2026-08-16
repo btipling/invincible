@@ -6,8 +6,9 @@
 #   - pull_request: same-repo head only (contributors with push access); never forks
 #   - never pull_request_target
 #   - never upload production artifact name `harness-wasm` except on `main`
-#     (push or workflow_dispatch --ref main) — PR heads used to share that
-#     name and win fetch-harness `latest`, shipping unmerged Zig to Production
+#     (push or workflow_dispatch --ref main). Same-repo PRs still compile and
+#     upload `harness-wasm-pr-<n>` so CI proves the Zig/Wasm build; fetch-harness
+#     only ever downloads the production name from main.
 #   - never Vercel deploy hook on PR
 name: build-harness
 
@@ -139,11 +140,13 @@ jobs:
           echo "web.js bytes=$(wc -c < "$STAGE/web.js" | tr -d ' ')"
           head -c 4 "$STAGE/harness.wasm" | od -An -tx1
 
-      - name: Upload harness-wasm artifact
-        if: github.ref == 'refs/heads/main'
+      - name: Upload harness artifact
         uses: actions/upload-artifact@v4
         with:
-          name: harness-wasm
+          # Production fetch (`scripts/fetch-harness-artifact.mjs`) only
+          # downloads name `harness-wasm`. PR / non-main refs use a distinct
+          # name so the compile gate still produces a downloadable wasm.
+          name: ${{ github.ref == 'refs/heads/main' && 'harness-wasm' || format('harness-wasm-pr-{0}', github.event.pull_request.number || github.sha) }}
           path: |
             native/dist/harness/harness.wasm
             native/dist/harness/web.js
