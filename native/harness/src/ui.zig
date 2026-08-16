@@ -2,8 +2,9 @@
 //! Polish (4.7): density, focus composer, touch targets, scroll stick-to-bottom.
 //! #131 / plan #135: persistent transcript ScrollInfo + conditional stick rules.
 //! #251: stick also on in-place stream growth (update_last / content height).
-//! #137/#579: dvui flex layout for transcript + composer (natural hug/grow-up);
-//! status bar stays absolute-rect at the very bottom. Build id (`h:…`) detects stale wasm.
+//! #137/#579: absolute-rect bands for transcript + composer (composer hugs one
+//! line, grows up to cap); status bar stays absolute-rect at the very bottom.
+//! Build id (`h:…`) detects stale wasm.
 const std = @import("std");
 const dvui = @import("dvui");
 const bridge = @import("bridge.zig");
@@ -12,6 +13,7 @@ const build_options = @import("build_options");
 const rich = @import("rich/root.zig");
 const mixed_text = @import("rich/mixed_text.zig");
 const composer_text = @import("composer_text.zig");
+const cwd_slot = @import("cwd_slot.zig");
 const toolrun = @import("rich/toolrun.zig");
 const thinking_collapse = @import("thinking_collapse.zig");
 const busy_row = @import("busy_row.zig");
@@ -98,6 +100,14 @@ const SCROLL_FLOOR_H: f32 = 32;
 /// 64 px = two 32 px rows, exactly fitting Next (TOUCH_H − 8 = 32) + status slots.
 /// Total chrome (64) ≤ old header+bar (92) — net −28 px transcript gain (plan #570).
 const STATUS_BAR_H: f32 = 64;
+
+/// Maximum composer-chrome outer height (px). The composer box rect is this tall
+/// so the textEntry always has room to grow from idle hug (~44 px) up to the
+/// multi-line cap (120 px content + 2×2 px per-edge pad). The transcript rect
+/// is computed from this constant, so both bands are stable absolute rects and
+/// the scrollArea never publishes virtual content height into the root flex
+/// (dvui `.auto` bar overwrites min_size.h — adversarial review #584 Blocker).
+const COMPOSER_MAX_CHROME_H: f32 = COMPOSER_INPUT_MAX_H + 2 * COMPOSER_HUG_PAD;
 
 pub fn onInit() void {
     bridge.reset();
@@ -853,7 +863,7 @@ fn paintStatusSlots(life: bridge.Lifecycle) void {
         const raw = bridge.statusSlotValue(s);
         if (raw.len == 0) continue;
         // Cwd "." is the workspace-root default — hide the trivial chip (plan #579).
-        if (s == bridge.STATUS_SLOT_CWD and std.mem.eql(u8, raw, ".")) continue;
+        if (s == bridge.STATUS_SLOT_CWD and !cwd_slot.isVisible(raw)) continue;
         slot[n] = s;
         text[n] = truncateStatusValue(&buf[n], raw);
         width[n] = body.textSize(text[n]).w + STATUS_SLOT_GAP;
@@ -950,11 +960,16 @@ pub fn frame() !void {
     }
 
     // Status bar is absolute-rect at the very bottom (always-mounted, fixed 64 px).
-    // Transcript + composer use natural flex layout — no absolute rects for the
-    // main bands; the status bar stays absolute so it never moves vertically.
+    // Transcript + composer use absolute rects — neither participates in root flex,
+    // so the scrollArea's `.auto` bar cannot publish virtual content height as the
+    // root's min-size (dvui ScrollContainerWidget.deinit overwrites min_size.h with
+    // full virtual content — adversarial review #584 Blocker L1).
     const status_y = avail.h - STATUS_BAR_H;
+    const composer_y = status_y - COMPOSER_MAX_CHROME_H;
+    const scroll_y: f32 = BAND_GAP;
+    const scroll_h: f32 = @max(SCROLL_FLOOR_H, composer_y - BAND_GAP - scroll_y);
 
-    // ── Transcript (flex — takes remaining space after composer) ──────────
+    // ── Transcript (absolute rect — fixed pixel height) ──────────────────
     // (Header band removed — plan #570 merges its content into the two-line status bar)
     const near_before = isNearBottom(&transcript_scroll);
     const prev_msg = last_msg_count;
@@ -979,11 +994,13 @@ pub fn frame() !void {
             .vertical_bar = .auto,
             .user_scroll = &user_scroll,
         }, .{
-            .expand = .both,
+            .rect = .{ .x = 0, .y = scroll_y, .w = 0, .h = scroll_h },
+            .expand = .horizontal,
             .background = true,
             .color_fill = palette.teal_surface,
             .color_border = palette.teal_border,
-            .min_size_content = .{ .w = 120, .h = SCROLL_FLOOR_H },
+            .min_size_content = .{ .w = 120, .h = scroll_h },
+            .max_size_content = .height(scroll_h),
             .padding = .all(8),
         });
         defer scroll.deinit();
@@ -1225,17 +1242,16 @@ pub fn frame() !void {
     last_msg_count = n;
     last_scroll_max_y = transcript_scroll.scrollMax(.vertical);
 
-    // ── Composer chrome (flex — natural hug height, grows up to cap) ──────
+    // ── Composer chrome (absolute rect — hugs one line, grows up to cap) ───
     var typed: []const u8 = prompt_buf[0..0];
     {
         var chrome = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .rect = .{ .x = 0, .y = composer_y, .w = 0, .h = COMPOSER_MAX_CHROME_H },
             .expand = .horizontal,
             .background = true,
             .color_fill = palette.teal_bg,
             .color_border = palette.teal_border,
-            .max_size_content = .height(COMPOSER_INPUT_MAX_H + 2 * COMPOSER_HUG_PAD),
-            .padding = .{ .x = 0, .y = COMPOSER_HUG_PAD, .w = 0, .h = 0 },
-            .margin = .{ .x = 0, .y = BAND_GAP, .w = 0, .h = STATUS_BAR_H },
+            .padding = .{ .x = 0, .y = COMPOSER_HUG_PAD, .w = 0, .h = COMPOSER_HUG_PAD },
         });
         defer chrome.deinit();
 
@@ -1307,7 +1323,7 @@ pub fn frame() !void {
         // from the embedded DejaVu Sans Symbols face so they never tofu.
         if (busy) {
             if (dvui.button(@src(), "■", .{}, .{
-                .gravity_y = 0.5,
+                .gravity_y = 1.0,
                 .style = .content,
                 .font = composerIconFont(),
                 .min_size_content = .{ .w = TOUCH_H, .h = TOUCH_H },
@@ -1319,7 +1335,7 @@ pub fn frame() !void {
                 bridge.queueCancelFromUi();
             }
         } else if (dvui.button(@src(), "▶", .{}, .{
-            .gravity_y = 0.5,
+            .gravity_y = 1.0,
             .style = .highlight,
             .font = composerIconFont(),
             .min_size_content = .{ .w = TOUCH_H, .h = TOUCH_H },

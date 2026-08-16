@@ -155,7 +155,7 @@ pub fn build(b: *std.Build) void {
     test_parse.dependOn(&run_parse_tests.step);
 
     // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
-    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + ring_slot (#404 write seam)");
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + cwd_slot + ring_slot (#404 write seam)");
     test_rich.dependOn(&run_parse_tests.step);
 
     const cache_tests = b.addTest(.{
@@ -181,6 +181,20 @@ pub fn build(b: *std.Build) void {
             }),
         });
         test_rich.dependOn(&b.addRunArtifact(composer_text_tests).step);
+    }
+
+    // Host unit tests for cwd_slot.zig (plan #579, adversarial review #584
+    // Minor L6): the "."-hidden predicate. Pure, no dvui.
+    {
+        const cwd_slot_tests = b.addTest(.{
+            .name = "cwd_slot",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/cwd_slot.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(cwd_slot_tests).step);
     }
 
     // Host unit tests for elapsed_clock.zig (plan #567, protocol v14 turn-clock
