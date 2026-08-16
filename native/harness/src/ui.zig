@@ -113,16 +113,17 @@ const COMPOSER_MAX_CHROME_H: f32 = COMPOSER_INPUT_MAX_H + 2 * COMPOSER_HUG_PAD;
 /// is never smaller than this so the textEntry always has a touch target.
 const COMPOSER_IDLE_CHROME_H: f32 = TOUCH_H + 2 * COMPOSER_HUG_PAD;
 
-/// TextEntry internal padding + border overhead (px). The textEntry's computed
-/// min_size (via dvui.minSizeGet after deinit) is the OUTER height (content +
-/// padding + border). We convert outer→content: content_h = outer_h − overhead.
-/// Both values set explicitly on the textEntry below so the formula is
-/// deterministic regardless of dvui defaults (adversarial review #584 Round 3
-/// Major L1+L9 — `WidgetData.min_size` is the options seed, not the computed
-/// wrapped height; the sample must come from minSizeGet after deinit).
-const TE_PAD_H: f32 = 6 + 6; // padding.y + padding.h
+/// TextEntry border overhead (px). The textEntry's computed min_size (via
+/// dvui.minSizeGet after deinit) is the OUTER height (content + border).
+/// dvui TextEntryWidget.init *bakes* options.padding into min_size_content
+/// and nulls options.padding, so minSizeGet adds border only (2) — NOT
+/// padding. We convert outer→content: content_h = outer_h − TE_OVERHEAD.
+/// Border is set explicitly on the textEntry below; padding is zeroed
+/// (adversarial review #584 PASS-WITH-NOTES Minor L1+L9 — the prior formula
+/// subtracted 14 from a value that already excludes padding, squeezing the
+/// TE well ~14 px short of the named 44/124 caps).
 const TE_BORDER_H: f32 = 1 + 1; // border.y + border.h
-const TE_OVERHEAD: f32 = TE_PAD_H + TE_BORDER_H; // 14
+const TE_OVERHEAD: f32 = TE_BORDER_H; // 2
 
 /// Previous-frame measured composer-chrome outer height (px). Initialized to
 /// idle so the first frame shows a compact composer. Updated after each frame
@@ -1338,10 +1339,14 @@ pub fn frame() !void {
                 .color_text = palette.teal_text,
                 .color_border = if (busy) palette.teal_border else palette.teal_accent,
                 .margin = .{ .x = 0, .y = 0, .w = 8, .h = 0 },
-                // Explicit padding + border so TE_OVERHEAD (14) is
-                // deterministic — dvui defaults would otherwise make the
-                // outer→content conversion fragile (Round 3 Minor L8).
-                .padding = .{ .x = 6, .y = 6, .w = 6, .h = 6 },
+                // Padding is zeroed: dvui TextEntryWidget.init bakes
+                // options.padding into min_size_content then nulls it, so
+                // minSizeGet returns content + border only. Setting non-zero
+                // padding here bakes it into the TE's min_size while our
+                // outer→content conversion subtracts it — double-counting
+                // squeezes the text well ~14 px short of the caps (review
+                // #584 PASS-WITH-NOTES Minor L1+L9).
+                .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
                 .border = .{ .x = 1, .y = 1, .w = 1, .h = 1 },
             });
             typed = te.getText();
@@ -1355,12 +1360,14 @@ pub fn frame() !void {
             // height. The textEntry's draw() computes the real wrap height but
             // that value only reaches dvui.minSizeGet(id) AFTER te.deinit()
             // (its children report back during deinit). We sample the OUTER
-            // height (content + TE padding + TE border), convert to content,
-            // then pad for the chrome box. Clamped to [IDLE, MAX] so the band
-            // hugs the field and never collapses (adversarial review #584
-            // Round 4 Blocker L1 + Major L1: `dvui.minSizeGet` returns `?Size`,
-            // and `TextEntryWidget.deinit` ends in `defer self.* = undefined`,
-            // so the lookup Id must be captured BEFORE deinit — reading
+            // height (content + border only — dvui bakes padding into
+            // min_size_content and nulls it, so minSizeGet adds border = 2),
+            // convert to content (subtract TE_OVERHEAD = 2), then pad for the
+            // chrome box. Clamped to [IDLE, MAX] so the band hugs the field
+            // and never collapses (adversarial review #584 Round 4 Blocker L1
+            // + Major L1: `dvui.minSizeGet` returns `?Size`, and
+            // `TextEntryWidget.deinit` ends in `defer self.* = undefined`, so
+            // the lookup Id must be captured BEFORE deinit — reading
             // `te.data().id` after would be use-after-undefined. If the queried
             // id has no stored size this frame, fall back to the previous
             // frame's measured height instead of collapsing (never a zero shot)).
