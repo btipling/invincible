@@ -148,6 +148,10 @@ function makeSkillFake(initial: SRow[] = []) {
       const r = rows.find((x) => x.slug === slug);
       return { ok: true, value: r ? { ...r } : null };
     },
+    async getSkillById(_u, id) {
+      const r = rows.find((x) => x.id === id);
+      return { ok: true, value: r ? { ...r } : null };
+    },
     async createUserSkill(input) {
       if (!input.name || input.name.length > SKILL_NAME_MAX) {
         return { ok: false, code: 'invalid_name', error: 'name invalid' };
@@ -183,6 +187,13 @@ function makeSkillFake(initial: SRow[] = []) {
     async updateUserSkillBody(_u, id, body) {
       const r = rows.find((x) => x.id === id);
       if (!r) return { ok: false, code: 'not_found', error: 'skill not found' };
+      if (typeof body !== 'string' || !body.trim() || Buffer.byteLength(body, 'utf8') > SKILL_BODY_CAP) {
+        return {
+          ok: false,
+          code: 'invalid_body',
+          error: `body is required and must be ≤ ${SKILL_BODY_CAP} bytes`,
+        };
+      }
       r.body = body;
       r.updatedAt = new Date();
       return { ok: true, value: { id } };
@@ -443,6 +454,278 @@ describe('createMetaPersonaSkillTools — skill family', () => {
   });
 });
 
+describe('createMetaPersonaSkillTools — meta_skill_str_replace', () => {
+  let sFake: ReturnType<typeof makeSkillFake>;
+  let tools: ReturnType<typeof createMetaPersonaSkillTools>;
+  let skillId: string;
+
+  beforeEach(async () => {
+    const pFake = makePersonaFake();
+    sFake = makeSkillFake();
+    tools = createMetaPersonaSkillTools({
+      userId: 'user-1',
+      userPersonas: pFake.fake,
+      userSkills: sFake.fake,
+    });
+    const c = String(
+      await tools.meta_skill_create.execute!(
+        { name: 'Patch Me', slug: 'patch_me', body: 'line one\n$& $1 x\ntail' },
+        execOpts,
+      ),
+    );
+    skillId = extractId(c, 'id');
+  });
+
+  it('single literal match replaces and writes; result one-liner, no body echo', async () => {
+    const res = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'line one', new_string: 'line ONE' },
+        execOpts,
+      ),
+    );
+    expect(res).toMatch(/^replaced 1 occurrence\(s\) of old_string in skill id=/);
+    expect(res).not.toContain('line ONE'); // one-liner — do not echo the new body
+    expect(sFake.rows.find((r) => r.id === skillId)?.body).toContain('line ONE');
+  });
+
+  it('old_string absent → error, body unchanged (row 2)', async () => {
+    const before = sFake.rows.find((r) => r.id === skillId)!.body;
+    const res = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'nope', new_string: 'x' },
+        execOpts,
+      ),
+    );
+    expect(res).toMatch(/^ERROR meta_skill_str_replace:/);
+    expect(res).toContain('not found');
+    expect(sFake.rows.find((r) => r.id === skillId)!.body).toBe(before);
+  });
+
+  it('multiple matches without replace_all → error, no write (row 3)', async () => {
+    await tools.meta_skill_update_body.execute!({ id: skillId, body: 'ab ab ab' }, execOpts);
+    const before = sFake.rows.find((r) => r.id === skillId)!.body;
+    const res = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'ab', new_string: 'XY' },
+        execOpts,
+      ),
+    );
+    expect(res).toMatch(/^ERROR meta_skill_str_replace:/);
+    expect(res).toContain('matched 3 times');
+    expect(res).toContain('replace_all');
+    expect(sFake.rows.find((r) => r.id === skillId)!.body).toBe(before);
+  });
+
+  it('replace_all: true replaces every non-overlapping occurrence and counts N (row 4)', async () => {
+    await tools.meta_skill_update_body.execute!({ id: skillId, body: 'ab ab ab' }, execOpts);
+    const res = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'ab', new_string: 'XY', replace_all: true },
+        execOpts,
+      ),
+    );
+    expect(res).toMatch(/replaced 3 occurrence/);
+    expect(sFake.rows.find((r) => r.id === skillId)!.body).toBe('XY XY XY');
+  });
+
+  it('empty old_string → error (row 5)', async () => {
+    const res = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: '', new_string: 'x' },
+        execOpts,
+      ),
+    );
+    expect(res).toMatch(/^ERROR meta_skill_str_replace:/);
+    expect(res).toContain('old_string');
+  });
+
+  it('missing / foreign id → not_found, no partial (row 6)', async () => {
+    const res = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: 'sNOPE', old_string: 'line one', new_string: 'x' },
+        execOpts,
+      ),
+    );
+    expect(res).toMatch(/^not_found: no skill with id "sNOPE"/);
+    expect(res).not.toContain('line one'); // no body leak
+  });
+
+  it('fragment over 64 KiB (old or new) → rejected, no write (row 7)', async () => {
+    const big = 'a'.repeat(64 * 1024 + 1);
+    const resOld = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: big, new_string: 'x' },
+        execOpts,
+      ),
+    );
+    expect(resOld).toMatch(/^ERROR meta_skill_str_replace:/);
+    expect(resOld).toContain('old_string exceeds');
+    const resNew = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'line one', new_string: big },
+        execOpts,
+      ),
+    );
+    expect(resNew).toMatch(/^ERROR meta_skill_str_replace:/);
+    expect(resNew).toContain('new_string exceeds');
+    expect(sFake.rows.find((r) => r.id === skillId)!.body).toContain('line one');
+  });
+
+  it('result body over the 4 MiB store cap → rejected, never truncated (row 8)', async () => {
+    // Seed a body just under the 4 MiB store cap, then a str_replace where the
+    // new_string (still under the 64 KiB fragment cap) pushes the FULL body over
+    // the store cap. The store write must be rejected — never truncated.
+    const nearCap = 'z'.repeat(SKILL_BODY_CAP - 100) + 'MARK';
+    await tools.meta_skill_update_body.execute!({ id: skillId, body: nearCap }, execOpts);
+    // new_string of max fragment size appended around the marker → total > 4 MiB.
+    const grow = 'y'.repeat(64 * 1024);
+    const res = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'MARK', new_string: grow },
+        execOpts,
+      ),
+    );
+    expect(res).toMatch(/^ERROR meta_skill_str_replace:/);
+    expect(res).toContain('store\'s 4 MiB write cap');
+    // Body unchanged (no write) — still the near-cap body with the marker.
+    expect(sFake.rows.find((r) => r.id === skillId)!.body).toBe(nearCap);
+  });
+
+  it('replace_all expansion past the store cap is rejected before split/join (no write)', async () => {
+    // 32 KiB of 'x' × 64 KiB new_string would materialize ~2 GiB if split/join
+    // ran. The byte pre-check must reject this in milliseconds.
+    const repeated = 'x'.repeat(32 * 1024);
+    await tools.meta_skill_update_body.execute!({ id: skillId, body: repeated }, execOpts);
+    const grow = 'y'.repeat(64 * 1024);
+    const started = Date.now();
+    const res = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'x', new_string: grow, replace_all: true },
+        execOpts,
+      ),
+    );
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(res).toMatch(/^ERROR meta_skill_str_replace:/);
+    expect(res).toContain('store\'s 4 MiB write cap');
+    expect(sFake.rows.find((r) => r.id === skillId)!.body).toBe(repeated);
+  });
+
+  it('empty new_string wiping the whole body → empty-body error, not over-cap', async () => {
+    await tools.meta_skill_update_body.execute!({ id: skillId, body: 'hello' }, execOpts);
+    const res = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'hello', new_string: '' },
+        execOpts,
+      ),
+    );
+    expect(res).toMatch(/^ERROR meta_skill_str_replace:/);
+    expect(res).toContain('empty');
+    expect(res).not.toContain('4 MiB');
+    expect(sFake.rows.find((r) => r.id === skillId)!.body).toBe('hello');
+  });
+
+  it('whitespace-only result is rejected with the store reason (not a 4 MiB lie)', async () => {
+    await tools.meta_skill_update_body.execute!({ id: skillId, body: 'hello' }, execOpts);
+    const res = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'hello', new_string: '   ' },
+        execOpts,
+      ),
+    );
+    expect(res).toMatch(/^ERROR meta_skill_str_replace:/);
+    expect(res).toContain('body is required');
+    expect(res).not.toMatch(/exceeds the store's 4 MiB write cap/);
+    expect(sFake.rows.find((r) => r.id === skillId)!.body).toBe('hello');
+  });
+
+  it('UTF-8 multi-byte rune in old_string matches correctly (row 9)', async () => {
+    await tools.meta_skill_update_body.execute!({ id: skillId, body: 'café menü' }, execOpts);
+    const res = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'é', new_string: 'E' },
+        execOpts,
+      ),
+    );
+    expect(res).toMatch(/replaced 1 occurrence/);
+    expect(sFake.rows.find((r) => r.id === skillId)!.body).toBe('cafE menü');
+  });
+
+  it('Markdown/$-template literals in new_string and regex metachars in old_string land verbatim (row 12)', async () => {
+    // new_string carrying $-templates, a backtick, backslashes and regex
+    // metacharacters must land EXACTLY literal — this mirrors the sandbox
+    // str_replace regression tests ($& / $1 / $\' / $` / $$ are never
+    // interpolated, unlike String.prototype.replace, and regex metachars in
+    // EITHER string never compile to a pattern).
+    const body = 'alpha BETA omega';
+    await tools.meta_skill_update_body.execute!({ id: skillId, body }, execOpts);
+    const resNew = String(
+      await tools.meta_skill_str_replace.execute!(
+        {
+          id: skillId,
+          old_string: 'BETA',
+          new_string: '$& $1 $\' $` $$ ^[A-Za-z0-9_-]{1,128}$',
+        },
+        execOpts,
+      ),
+    );
+    expect(resNew).toMatch(/replaced 1 occurrence/);
+    expect(sFake.rows.find((r) => r.id === skillId)!.body).toBe(
+      // Exact-string, byte-for-byte: nothing was interpolated or treated as a
+      // template/regex — 'BETA' was replaced with the literal replacement text.
+      'alpha $& $1 $\' $` $$ ^[A-Za-z0-9_-]{1,128}$ omega',
+    );
+
+    // old_string that LOOKS like a regex matches ONLY the literal text, and a
+    // regex-metachar-containing new_string lands verbatim again.
+    const resOld = String(
+      await tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: '^[A-Za-z0-9_-]{1,128}$', new_string: 'LITERAL' },
+        execOpts,
+      ),
+    );
+    expect(resOld).toMatch(/replaced 1 occurrence/);
+    expect(sFake.rows.find((r) => r.id === skillId)!.body).toBe(
+      'alpha $& $1 $\' $` $$ LITERAL omega',
+    );
+  });
+
+  it('same-id parallel patches serialize (no silent hunk drop)', async () => {
+    // Two concurrent str_replace calls on the SAME skill id. The lock must
+    // serialize the read→write window — if it didn't, both would read v1 and
+    // one write would be silently dropped (the #479 class). We use two
+    // non-overlapping old_strings so both calls CAN succeed: each replaces a
+    // distinct literal region. The second reader must see the first writer's
+    // result, not a stale snapshot.
+    await tools.meta_skill_update_body.execute!(
+      { id: skillId, body: '[START]\nalpha\n[END]' },
+      execOpts,
+    );
+    const [r1, r2] = await Promise.all([
+      tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: 'alpha', new_string: 'ALPHA' },
+        execOpts,
+      ),
+      tools.meta_skill_str_replace.execute!(
+        { id: skillId, old_string: '[START]', new_string: '<<<' },
+        execOpts,
+      ),
+    ]);
+    const s1 = String(r1);
+    const s2 = String(r2);
+    // Both should succeed — replacements are on disjoint regions.
+    expect(s1).toMatch(/replaced 1 occurrence/);
+    expect(s2).toMatch(/replaced 1 occurrence/);
+    // Final body must carry BOTH replacements — never the original, and never
+    // missing one hunk.
+    const final = sFake.rows.find((r) => r.id === skillId)!.body;
+    expect(final).toContain('ALPHA');
+    expect(final).toContain('<<<');
+    expect(final).not.toContain('alpha'); // replaced by first
+    expect(final).not.toContain('[START]'); // replaced by second
+    // Lock: 1 occurrence each (no overlapping-match ambiguity).
+  });
+});
+
 describe('createMetaPersonaSkillTools — per-user authoring ceilings (L5)', () => {
   it('rejects persona create when at/over the per-user ceiling; list is bounded', async () => {
     const { fake: pFake } = makePersonaFake();
@@ -533,6 +816,7 @@ describe('createMetaPersonaSkillTools — separation + surface shape', () => {
         'meta_skill_create',
         'meta_skill_update_summary',
         'meta_skill_update_body',
+        'meta_skill_str_replace',
         'meta_skill_delete',
       ].sort(),
     );

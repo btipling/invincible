@@ -36,7 +36,9 @@
  * asked to derive.
  */
 import { jsonSchema, tool } from 'ai';
+import { PathLock } from './pathLock';
 import {
+  META_SKILL_FRAGMENT_MAX_BYTES,
   META_USER_PERSONAS_MAX,
   META_USER_SKILLS_MAX,
   SKILL_FETCH_MAX_RETURN_BYTES,
@@ -48,11 +50,12 @@ import type {
   UserPersonasDeps,
   UserPersonasResult,
 } from '../tenancy/userPersonas';
-import type {
-  CreateUserSkillInput,
-  UserSkillSummary,
-  UserSkillsDeps,
-  UserSkillsResult,
+import {
+  SKILL_BODY_MAX_BYTES,
+  type CreateUserSkillInput,
+  type UserSkillSummary,
+  type UserSkillsDeps,
+  type UserSkillsResult,
 } from '../tenancy/userSkills';
 
 /** Reserved first-party prefix that marks this family (route soft-path guard). */
@@ -97,6 +100,7 @@ export type UserPersonasLike = {
 export type UserSkillsLike = {
   listUserSkills: (userId: string, o?: UserSkillsDeps) => Promise<UserSkillsResult<UserSkillSummary[]>>;
   getSkillBySlug: (userId: string, slug: string, o?: UserSkillsDeps) => Promise<UserSkillsResult<SkillRow | null>>;
+  getSkillById: (userId: string, id: string, o?: UserSkillsDeps) => Promise<UserSkillsResult<SkillRow | null>>;
   createUserSkill: (input: CreateUserSkillInput, o?: UserSkillsDeps) => Promise<UserSkillsResult<{ id: string }>>;
   updateUserSkillSummary: (
     userId: string,
@@ -116,7 +120,7 @@ export type CreateMetaPersonaSkillToolsOptions = {
 
 /** System-prompt addendum shown whenever the meta authoring tools are on the surface. */
 export const META_TOOLS_SYSTEM_ADDENDUM =
-  'First-party authoring tools exist under the meta_* namespace: meta_persona_* (list/read/create/update_name/update_body/set_default/clear_default/delete the user\'s own personas) and meta_skill_* (list/read/create/update_summary/update_body/delete the user\'s own skills). Bodies are non-secret user content returned only on an explicit read and are capped. Authoring runs as the signed-in user (no separate confirm), same as Settings. Use these to manage the user\'s persona/skill configuration; find_skill / fetch_skill remain for quick read-only reference.';
+  'First-party authoring tools exist under the meta_* namespace: meta_persona_* (list/read/create/update_name/update_body/set_default/clear_default/delete the user\'s own personas) and meta_skill_* (list/read/create/update_summary/update_body/str_replace/delete the user\'s own skills). meta_skill_str_replace patches a skill body by exact literal match (0 matches or ambiguous multiple matches without replace_all:true → error, no write); replacement is literal (never a template/regex), so $ and regex metacharacters in either string land verbatim. Bodies are non-secret user content returned only on an explicit read and are capped. Authoring runs as the signed-in user (no separate confirm), same as Settings. Use these to manage the user\'s persona/skill configuration; find_skill / fetch_skill remain for quick read-only reference.';
 
 /** System prompt when skill + meta tools are the ONLY non-filesystem tools available. */
 export const SKILL_META_ONLY_SYSTEM =
@@ -175,6 +179,7 @@ export function createMetaPersonaSkillTools(
   opts: CreateMetaPersonaSkillToolsOptions,
 ) {
   const { userId, userPersonas, userSkills } = opts;
+  const skillLock = new PathLock();
 
   /** Current per-user personas row count (for the authoring ceiling); throws on store failure. */
   async function personaRowCount(): Promise<number> {
@@ -581,6 +586,116 @@ export function createMetaPersonaSkillTools(
     },
   });
 
+  const metaSkillStrReplace = tool({
+    description:
+      "Apply a literal (exact-text) patch to the body of the user's own skill by id, so you can maintain a skill larger than your output-token budget without resending the whole body. Replaces old_string with new_string at literal text matches — regex and $ -template syntax in EITHER string is treated verbatim, never interpreted. Exact-match rules (fail-closed, no partial write): an empty old_string is an error; old_string not found is an error; old_string found multiple times is an error unless replace_all:true (then all non-overlapping occurrences are replaced). Each fragment (old_string / new_string) is capped at " + String(META_SKILL_FRAGMENT_MAX_BYTES) + " bytes; the resulting full body must still fit the store's 4 MiB write cap (rejected, never truncated). Result is a one-liner with the occurrence count — the new body is NOT echoed. Use this to patch a section of a skill (e.g. an outdated bullet) instead of meta_skill_update_body when the body is large; read the skill first with meta_skill_read / getSkillById-backed lookup, noting matches are counted against the FULL stored body.",
+    inputSchema: jsonSchema<{
+      id: string;
+      old_string: string;
+      new_string: string;
+      replace_all?: boolean;
+    }>({
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Skill id (from meta_skill_list).' },
+        old_string: {
+          type: 'string',
+          description: `Exact literal text to replace (must be non-empty and ≤ ${META_SKILL_FRAGMENT_MAX_BYTES} bytes; regex/metachar and \$ -templates are literal).`,
+        },
+        new_string: {
+          type: 'string',
+          description: `Literal replacement text (≤ ${META_SKILL_FRAGMENT_MAX_BYTES} bytes; \$ -templates and regex metacharacters are literal).`,
+        },
+        replace_all: {
+          type: 'boolean',
+          description: 'Optional: replace every non-overlapping occurrence. Required when old_string occurs more than once; default false.',
+        },
+      },
+      required: ['id', 'old_string', 'new_string'],
+      additionalProperties: false,
+    }),
+    execute: async (input) => {
+      const id = (input?.id ?? '').trim();
+      if (!id) return 'ERROR meta_skill_str_replace: id is required';
+      const oldStr = input?.old_string ?? '';
+      const newStr = input?.new_string ?? '';
+      if (!oldStr) {
+        return 'ERROR meta_skill_str_replace: old_string is required and must be non-empty';
+      }
+      if (typeof input?.new_string !== 'string') {
+        return 'ERROR meta_skill_str_replace: new_string must be a string';
+      }
+      if (Buffer.byteLength(oldStr, 'utf8') > META_SKILL_FRAGMENT_MAX_BYTES) {
+        return `ERROR meta_skill_str_replace: old_string exceeds ${META_SKILL_FRAGMENT_MAX_BYTES}-byte fragment cap`;
+      }
+      if (Buffer.byteLength(newStr, 'utf8') > META_SKILL_FRAGMENT_MAX_BYTES) {
+        return `ERROR meta_skill_str_replace: new_string exceeds ${META_SKILL_FRAGMENT_MAX_BYTES}-byte fragment cap`;
+      }
+      const replaceAll = input?.replace_all === true;
+      try {
+        // Serialize same-id read→write window so two parallel patches on one
+        // skill within a single generateText step never interleave (bug #479
+        // class).  Lock key is the skill id — different ids proceed in parallel.
+        return await skillLock.withPathLock(id, async () => {
+          const res = await userSkills.getSkillById(userId, id);
+          if (!res.ok) return `ERROR meta_skill_str_replace: ${res.error}`;
+          if (!res.value) {
+            return `not_found: no skill with id "${id}" (user-scoped). No partial write.`;
+          }
+          const body = res.value.body;
+
+          // Literal non-overlapping occurrence count (mirrors sandbox str_replace).
+          let count = 0;
+          let from = 0;
+          while (from <= body.length) {
+            const idx = body.indexOf(oldStr, from);
+            if (idx === -1) break;
+            count += 1;
+            from = idx + oldStr.length;
+          }
+          if (count === 0) {
+            return 'ERROR meta_skill_str_replace: old_string not found in skill body (no partial write)';
+          }
+          if (count > 1 && !replaceAll) {
+            return `ERROR meta_skill_str_replace: old_string matched ${count} times; pass replace_all: true or provide a unique sufficient snippet (no partial write)`;
+          }
+
+          // Reject empty / over-cap results *before* split/join. replace_all of a
+          // short needle with a 64 KiB fragment in a large body would otherwise
+          // allocate count×|new| (hundreds of MB–GB) before the store cap ran.
+          const bodyBytes = Buffer.byteLength(body, 'utf8');
+          const oldBytes = Buffer.byteLength(oldStr, 'utf8');
+          const newBytes = Buffer.byteLength(newStr, 'utf8');
+          const nextBytes = bodyBytes + count * (newBytes - oldBytes);
+          if (nextBytes <= 0) {
+            return 'ERROR meta_skill_str_replace: resulting body would be empty; no write performed';
+          }
+          if (nextBytes > SKILL_BODY_MAX_BYTES) {
+            return `ERROR meta_skill_str_replace: resulting body exceeds the store's 4 MiB write cap (never truncated); no write performed`;
+          }
+
+          // Literal build — split/join or slice+concat, NEVER String.prototype.replace.
+          const nextBody = replaceAll
+            ? body.split(oldStr).join(newStr)
+            : body
+                .slice(0, body.indexOf(oldStr))
+                .concat(newStr)
+                .concat(body.slice(body.indexOf(oldStr) + oldStr.length));
+
+          // Write via the store's validated updateUserSkillBody (enforces the
+          // 4 MiB SKILL_BODY_MAX_BYTES store write cap — rejects, never truncates).
+          const upd = await userSkills.updateUserSkillBody(userId, id, nextBody);
+          if (!upd.ok) {
+            return `ERROR meta_skill_str_replace: ${upd.error}`;
+          }
+          return `replaced ${replaceAll ? count : 1} occurrence(s) of old_string in skill id=${id}`;
+        });
+      } catch (err) {
+        return errText('meta_skill_str_replace', err);
+      }
+    },
+  });
+
   const metaSkillDelete = tool({
     description: "Delete the user's own skill by id.",
     inputSchema: jsonSchema<{ id: string }>({
@@ -616,6 +731,7 @@ export function createMetaPersonaSkillTools(
     meta_skill_create: metaSkillCreate,
     meta_skill_update_summary: metaSkillUpdateSummary,
     meta_skill_update_body: metaSkillUpdateBody,
+    meta_skill_str_replace: metaSkillStrReplace,
     meta_skill_delete: metaSkillDelete,
   };
 }

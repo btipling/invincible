@@ -54,6 +54,9 @@ export type UserSkillsDeps = {
   connect?: () => Promise<TenancyConnection>;
 };
 
+/** UUID id shape (skills rows keyed by uuid primary key). Fail-closed on read. */
+const SKILL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export type UserSkillsErrorCode =
   | 'invalid_name'
   | 'invalid_slug'
@@ -511,6 +514,68 @@ export async function getSkillBySlug(
   }
 }
 
+/**
+ * Scoped single row including body, resolved by id (server-side injection seam
+ * for the `meta_skill_str_replace` patch tool — see plan for #600). Returns
+ * null for another-user/tenant rows (no existence leak). Mirrors `getPersonaById`
+ * and always returns the FULL stored body (server-side) regardless of the
+ * model-return read cap so a patch is resolved against the actual on-disk body,
+ * never a truncated read.
+ */
+export async function getSkillById(
+  userId: string,
+  id: string,
+  deps: UserSkillsDeps = {},
+): Promise<UserSkillsResult<{
+  id: string;
+  tenantId: string;
+  userId: string;
+  name: string;
+  slug: string;
+  description: string;
+  body: string;
+} | null>> {
+  const uid = userId?.trim();
+  const pid = id?.trim();
+  if (!uid || !pid || !SKILL_ID_RE.test(pid)) {
+    // Malformed / non-UUID id fails closed to null on read (a bare string would
+    // otherwise hit a Postgres uuid-cast error, leaking a DB error instead of
+    // the no-existence contract).
+    return { ok: true, value: null };
+  }
+  try {
+    const tid = await resolveTenantId(uid, deps);
+    if (!tid.ok) return tid;
+
+    return await withDb(deps, async (db) => {
+      const rows = await db
+        .select()
+        .from(userSkills)
+        .where(and(eq(userSkills.id, pid), eq(userSkills.userId, uid), eq(userSkills.tenantId, tid.value)))
+        .limit(1);
+      const row = rows[0];
+      if (!row) return { ok: true as const, value: null };
+      return {
+        ok: true as const,
+        value: {
+          id: row.id,
+          tenantId: row.tenantId,
+          userId: row.userId,
+          name: row.name,
+          slug: row.slug,
+          description: row.description,
+          body: row.body,
+        },
+      };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'user_skills unavailable' };
+    }
+    return { ok: false, code: 'unavailable', error: 'could not load skill' };
+  }
+}
+
 /** List summaries (no body) for discovery. */
 export async function listUserSkills(
   userId: string,
@@ -563,6 +628,8 @@ export function createUserSkills(deps: UserSkillsDeps = {}) {
       deleteUserSkill(userId, id, { ...deps, ...o }),
     getSkillBySlug: (userId: string, slug: string, o?: UserSkillsDeps) =>
       getSkillBySlug(userId, slug, { ...deps, ...o }),
+    getSkillById: (userId: string, id: string, o?: UserSkillsDeps) =>
+      getSkillById(userId, id, { ...deps, ...o }),
     listUserSkills: (userId: string, o?: UserSkillsDeps) =>
       listUserSkills(userId, { ...deps, ...o }),
   };

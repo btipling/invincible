@@ -106,6 +106,19 @@ export const META_USER_PERSONAS_MAX = 50;
 export const META_USER_SKILLS_MAX = 200;
 
 /**
+ * Per-tool `old_string` / `new_string` fragment cap for the literal
+ * `meta_skill_str_replace` patch tool (plan for #600). Each fragment a model
+ * emits to patch a skill body is bounded here so the tool cannot be used as a
+ * backdoor full-body rewrite (each fragment stays within a typical output-token
+ * budget). This is a NEW additive cap (generous default at 64 KiB) — it does not
+ * relax anything. The **final** patched body is still bounded by the store write
+ * cap `SKILL_BODY_MAX_BYTES` (4 MiB, `lib/tenancy/userSkills.ts`), never
+ * truncated. Both fragment and patched body ride the `/api/agent` Function wire
+ * far below the 4.5 MB Function ceiling.
+ */
+export const META_SKILL_FRAGMENT_MAX_BYTES = 64 * 1024;
+
+/**
  * Parse a stored `meta.attachedSkills` (a JSON-array string of skill slugs) into a
  * slug list. Client-safe single source shared by the host session repository
  * (`cloudMetaFor` / `parseCloudSessionSnapshot`), the server `skillInject`, and the
