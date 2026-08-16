@@ -99,6 +99,7 @@ pub fn build(b: *std.Build) void {
         "inv_status_slot_copy",
         "inv_status_slots_clear",
         "inv_set_turn_elapsed",
+        "inv_set_busy_tick",
         "inv_image_cache_put",
         "inv_image_cache_clear",
         "inv_math_cache_put",
@@ -129,6 +130,16 @@ pub fn build(b: *std.Build) void {
     const zmd_host = b.dependency("zmd", .{
         .target = host_target,
         .optimize = optimize,
+    });
+
+    // Host-target dvui with testing backend — used only by busy_row_layout
+    // layout-rect tests (PR #576 Blocker L6). No SDL/GLFW/OpenGL; pure IMGUI
+    // layout (rects, no pixels). The test imports busy_row.zig which needs dvui
+    // + palette, so both ride the same module graph.
+    const dvui_testing_dep = b.dependency("dvui", .{
+        .target = host_target,
+        .optimize = optimize,
+        .backend = .testing,
     });
     const parse_tests = b.addTest(.{
         .name = "rich-parse",
@@ -185,6 +196,20 @@ pub fn build(b: *std.Build) void {
             }),
         });
         test_rich.dependOn(&b.addRunArtifact(elapsed_clock_tests).step);
+    }
+
+    // Host unit tests for busy_spinner.zig (plan #574): the 2×4 column-wave LUT —
+    // head-per-phase, trail ramp, and natural u8 wrap. Pure, no dvui.
+    {
+        const busy_spinner_tests = b.addTest(.{
+            .name = "busy_spinner",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/busy_spinner.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(busy_spinner_tests).step);
     }
 
     const link_tests = b.addTest(.{
@@ -389,5 +414,22 @@ pub fn build(b: *std.Build) void {
     const run_red_tests = b.addRunArtifact(red_tests);
     const test_rich_invariants = b.step("test-rich-invariants", "Run rich-glue invariant suite (#387 white-space/glue pins + #336 fixed guard + #341 fixed guard + #343 fixed guard; green, non-blocking)");
     test_rich_invariants.dependOn(&run_red_tests.step);
-}
 
+    // Host dvui testing-backend layout-rect tests for busy_row.zig (plan #574,
+    // PR #576 Blocker L6). Imports busy_row.zig (which needs dvui + palette)
+    // and runs the exact same `paintBusyRow` that the harness emits, asserting
+    // cell 5×5, sibling-only 3 px gaps, outer grid 13×29, and spinner-left-of-
+    // text positioning — no pixels, no SDL/GLFW/OpenGL, no PNG goldens.
+    {
+        const busy_row_layout_tests = b.addTest(.{
+            .name = "busy_row_layout",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/busy_row_layout.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        busy_row_layout_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
+        test_rich.dependOn(&b.addRunArtifact(busy_row_layout_tests).step);
+    }
+}

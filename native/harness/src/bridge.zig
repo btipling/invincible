@@ -21,7 +21,9 @@ const ring_slot = @import("ring_slot.zig");
 /// `inv_status_slot_len/copy`, `inv_status_slots_clear`.
 /// v14: additive whole-turn busy clock (plan #567) — scalar export
 /// `inv_set_turn_elapsed(secs)`; the Wasm busy row formats/appends ` · mm:ss`.
-pub const PROTOCOL_VERSION: u32 = 14;
+/// v15: plan #574 addendum — `inv_set_busy_tick` export (10 Hz spinner phase)
+/// is now REQUIRED; version bump for the new export (old hosts fail-closed via REQUIRED_FNS).
+pub const PROTOCOL_VERSION: u32 = 15;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -95,6 +97,12 @@ var lifecycle: Lifecycle = .boot;
 /// Reset on `reset()` and on a host push of 0 (idle/stop/error/clear); the Wasm
 /// busy row hides the clock while this is 0.
 var turn_elapsed: u32 = 0;
+/// Protocol v14 addendum (plan #574) — host 10 Hz busy-tick phase counter that
+/// drives the 2×4 WARM spinner (column-wave pulse). Scalar u8 wraps naturally;
+/// the spinner's 8-cell cycle uses `busy_tick % 8`. `0` = head at top-left
+/// (also the static/reduced-motion / old-host value). Reset on `reset()` and on
+/// a host push of 0 (idle/stop/error/clear).
+var busy_tick: u8 = 0;
 var messages: [MAX_MSG]StoredMsg = [_]StoredMsg{.{}} ** MAX_MSG;
 var msg_head: usize = 0;
 var msg_count: usize = 0;
@@ -230,6 +238,7 @@ pub fn reset() void {
     selected_index = 0;
     for (&status_slots) |*s| s.len = 0;
     turn_elapsed = 0;
+    busy_tick = 0;
     image_cache.clear();
     math_cache.clear();
 }
@@ -279,6 +288,12 @@ pub fn statusSlotValue(slot: u32) []const u8 {
 /// Wasm busy row appends a formatted ` · mm:ss` while a turn runs.
 pub fn turnElapsed() u32 {
     return turn_elapsed;
+}
+
+/// Protocol v14 addendum — the current busy-tick phase counter (0 = head at
+/// top-left). The Wasm busy row reads this each frame via `busySpinnerCells`.
+pub fn busyTick() u8 {
+    return busy_tick;
 }
 
 pub fn canLoadEarlier() bool {
@@ -546,6 +561,17 @@ export fn inv_status_slots_clear() void {
 /// budget. `secs == 0` hides the clock in the busy row.
 export fn inv_set_turn_elapsed(secs: u32) void {
     turn_elapsed = secs;
+    refresh();
+}
+
+/// Protocol v14 addendum (plan #574) — host 10 Hz busy-tick phase for the 2×4
+/// spinner. Scalar u8 (truncated from the host's monotonic tick counter; wraps
+/// naturally at 256 ≫ the 8-cell cycle). `phase == 0` → head at top-left, which
+/// is also the reduced-motion / idle / old-host value. Each write calls
+/// `refresh()` so the canvas reconstitutes at up to 10 Hz while Busy (see
+/// `HARNESS_BUSY_TICK_HZ` in docs — well below the dvui 60 fps ceiling).
+export fn inv_set_busy_tick(phase: u32) void {
+    busy_tick = @truncate(phase);
     refresh();
 }
 

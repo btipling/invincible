@@ -161,6 +161,7 @@ function makeMockExports(): HarnessBridgeExports & {
       for (let i = 0; i < 8; i++) statusSlots[i] = undefined;
     },
     inv_set_turn_elapsed: () => {},
+    inv_set_busy_tick: () => {},
     inv_image_cache_put: () => 0,
     inv_image_cache_clear: () => {},
     inv_math_cache_put: () => 0,

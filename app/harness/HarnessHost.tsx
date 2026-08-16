@@ -59,6 +59,15 @@ type DvuiHost = {
   stop?: () => void;
 };
 
+/**
+ * Busy spinner pulse cadence (plan #574, `HARNESS_BUSY_TICK_HZ`). NEW cap —
+ * 10 Hz while Busy, 0 otherwise. The host wall-clock tick advances the 8-cell
+ * 2×4 WARM column-wave pulse one cell per tick (~0.8 s cycle) and re-uses the
+ * v14 whole-turn clock feed (`setTurnElapsed`) every 10th tick (~1 Hz). 10 Hz ≪
+ * the dvui 60 fps frame ceiling and turns are transient — see docs/harness-limits.md.
+ */
+const HARNESS_BUSY_TICK_HZ = 10 as const;
+
 async function loadDvuiGlue(cacheBust: string): Promise<DvuiModule> {
   const q = cacheBust ? `?v=${encodeURIComponent(cacheBust)}` : '';
   const href = `/harness/web.js${q}`;
@@ -590,32 +599,57 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   ]);
 
   /**
-   * Whole-turn Busy clock (#347 / plan #457, protocol v14 / plan #567): while
-   * Busy, tick a ~1 Hz host wall-clock timer. The clock is client wall time
-   * from turn start (NOT provider `usage`). Since the DOM top-bar chip was
-   * removed (plan #567) the host never renders the timer — it is a pure feeder
-   * with NO React state: each tick it pushes the elapsed seconds straight to
-   * the Wasm busy row via `bridge.setTurnElapsed(sec)`, which formats/appends
-   * `Waiting for model… · mm:ss` in-canvas. There is intentionally no `useState`
+   * Whole-turn Busy clock + spinner pulse (#347 / plan #457, protocol v14 / plan
+   * #567; plan #574): while Busy, tick a host wall-clock timer at
+   * `HARNESS_BUSY_TICK_HZ` (10 Hz). Clock is client wall time from turn start
+   * (NOT provider `usage`); since the DOM top-bar chip was removed (plan #567)
+   * the host never renders anything — it is a pure feeder with NO React state.
+   * Each 10 Hz tick advances the Wasm 2×4 spinner phase via `setBusyTick(tick)`;
+   * every 10th tick it also pushes the elapsed seconds via `setTurnElapsed(sec)`
+   * (the ~1 Hz `mm:ss` clock) to the Wasm busy row. Intentionally no `useState`
    * here — a state round-trip per second would re-render the whole host
-   * (pickers, authNav, canvas parent) just to feed a value no JSX reads
-   * (adversarial review #568 L5). Idle/Stop/error resets to 0 so no stray
-   * `0:00` lingers. Reduced-motion is naturally satisfied — a plain 1 s scalar
-   * push, no CSS animation.
+   * (pickers, authNav, canvas parent) just to feed values no JSX reads
+   * (adversarial review #568 L5). Idle/Stop/error clears both to 0.
+   *
+   * Reduced motion (plan #574 Major fix): the host still runs the interval, but
+   * SKIPS the per-tick spinner push (`setBusyTick`) so the grid stays static at
+   * phase 0 while the FULL-TURN `mm:ss` clock (`setTurnElapsed`) keeps ticking
+   * — reduced motion disables only the pulse travel, never the clock (the v14
+   * regression plan-review caught). `prefers-reduced-motion` is read fresh at
+   * each busy start, so an OS-level toggle applies on the next turn.
    */
   useEffect(() => {
     if (!busy) {
+      bridgeRef.current?.setBusyTick(0);
       bridgeRef.current?.setTurnElapsed(0);
       return;
     }
+    const reduceMotion =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     const start = performance.now();
+    bridgeRef.current?.setBusyTick(0);
     bridgeRef.current?.setTurnElapsed(0);
+    let tick = 0;
     const id = window.setInterval(() => {
-      const sec = Math.max(0, Math.floor((performance.now() - start) / 1000));
-      bridgeRef.current?.setTurnElapsed(sec);
-    }, 1000);
+      tick += 1;
+      // Batch scalar pushes so the Wasm refreshes once per tick even when both
+      // setBusyTick and setTurnElapsed fire on the same 10th-tick interval
+      // (adversarial review #576 L5 — each export calls refresh() independently
+      // in bridge.zig; beginBatch/endBatch coalesce them into a single frame).
+      bridgeRef.current?.beginBatch();
+      if (!reduceMotion) {
+        bridgeRef.current?.setBusyTick(tick);
+      }
+      if (tick % HARNESS_BUSY_TICK_HZ === 0) {
+        const sec = Math.max(0, Math.floor((performance.now() - start) / 1000));
+        bridgeRef.current?.setTurnElapsed(sec);
+      }
+      bridgeRef.current?.endBatch();
+    }, Math.round(1000 / HARNESS_BUSY_TICK_HZ));
     return () => {
       window.clearInterval(id);
+      bridgeRef.current?.setBusyTick(0);
       bridgeRef.current?.setTurnElapsed(0);
     };
   }, [busy]);

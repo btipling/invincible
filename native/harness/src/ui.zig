@@ -14,7 +14,7 @@ const mixed_text = @import("rich/mixed_text.zig");
 const composer_text = @import("composer_text.zig");
 const toolrun = @import("rich/toolrun.zig");
 const thinking_collapse = @import("thinking_collapse.zig");
-const elapsed_clock = @import("elapsed_clock.zig");
+const busy_row = @import("busy_row.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
@@ -1184,23 +1184,14 @@ pub fn frame() !void {
         }
 
         if (busy) {
-            var tl = dvui.textLayout(@src(), .{}, .{
-                .expand = .horizontal,
-                .color_text = palette.warm_accent,
-                .id_extra = 0xffff_ffff,
-            });
-            tl.addText("Waiting for model…", .{});
-            // Protocol v14 — whole-turn clock relocated from the DOM top-bar chip
-            // into this Wasm busy row (plan #567): the host feeds elapsed seconds
-            // and we append ` · mm:ss` only while > 0, so no bare `0:00` lingers
-            // at t=0. The host resets to 0 on idle/stop/error/clear.
-            if (bridge.turnElapsed() > 0) {
-                var clock_buf: [32]u8 = undefined;
-                const clock = elapsed_clock.formatElapsedClock(&clock_buf, bridge.turnElapsed());
-                tl.addText(" · ", .{});
-                tl.addText(clock, .{});
-            }
-            tl.deinit();
+            // Busy row (plan #574): the 2×4 WARM spinner sits LEFT of
+            // "Waiting for model…" on the same line. Painted by the standalone
+            // `busy_row` module (extracted so the host dvui testing-backend test
+            // `busy_row_layout.test.zig` runs the exact same paint — PR #576
+            // Blocker L6). The spinner's phase scalar comes from the host 10 Hz
+            // tick (`inv_set_busy_tick`); the v14 ` · mm:ss` clock from
+            // `bridge.turnElapsed()` — both passed in, no wasm/global dependency.
+            busy_row.paintBusyRow(bridge.busyTick(), bridge.turnElapsed());
         }
     }
 

@@ -15,7 +15,11 @@ import { STATUS_SLOT_MAX_BYTES } from './sessionCloudCaps';
 // `inv_status_slot_len/copy`, `inv_status_slots_clear`. Old exports intact.
 // v14 (plan #567): additive whole-turn busy clock — scalar export
 // `inv_set_turn_elapsed(secs)`; the Wasm busy row formats/appends ` · mm:ss`.
-export const HARNESS_PROTOCOL_VERSION = 14 as const;
+// v14 addendum (plan #574): additive 10 Hz busy-tick scalar `inv_set_busy_tick`
+// driving the 2×4 WARM spinner.
+// v15: `inv_set_busy_tick` is now REQUIRED; version bump for the new export
+// (old hosts fail-closed via REQUIRED_FNS protocol-mismatch diagnostic).
+export const HARNESS_PROTOCOL_VERSION = 15 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -141,6 +145,9 @@ export type HarnessBridgeExports = {
   // Protocol v14 (plan #567) — whole-turn busy clock: host feeds scalar elapsed
   // seconds; the Wasm busy row formats/appends ` · mm:ss`.
   inv_set_turn_elapsed: (secs: number) => void;
+  // Protocol v14 addendum (plan #574) — 10 Hz busy-tick phase for the 2×4
+  // spinner: host feeds the pulse phase; the Wasm busy row paints the WARM grid.
+  inv_set_busy_tick: (phase: number) => void;
   inv_image_cache_put: (
     urlPtr: number,
     urlLen: number,
@@ -199,6 +206,7 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_status_slot_copy',
   'inv_status_slots_clear',
   'inv_set_turn_elapsed',
+  'inv_set_busy_tick',
   'inv_image_cache_put',
   'inv_image_cache_clear',
   'inv_math_cache_put',
@@ -653,6 +661,17 @@ export class HarnessBridge {
    */
   setTurnElapsed(secs: number): void {
     this.exports.inv_set_turn_elapsed(Math.max(0, Math.floor(secs)) | 0);
+  }
+
+  /**
+   * Protocol v14 addendum (plan #574) — the host feeds the 10 Hz busy-tick
+   * phase for the 2×4 WARM spinner. Scalar u8 transport (truncated): drives the
+   * column-wave pulse (`busy_tick % 8`). `phase == 0` = head at top-left — also
+   * the reduced-motion static value and the idle/Stop/error reset. The host
+   * calls this while a turn is Busy; 0 on idle/Stop/error/clear stops the pulse.
+   */
+  setBusyTick(phase: number): void {
+    this.exports.inv_set_busy_tick(Math.max(0, Math.floor(phase)) | 0);
   }
 
   /**

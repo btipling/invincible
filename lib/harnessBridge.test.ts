@@ -19,6 +19,7 @@ type MockExtras = {
   __setCancelPending: (on: boolean) => void;
   __lifecycle: () => Lifecycle;
   __turnElapsed: () => number;
+  __busyTick: () => number;
 };
 
 function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBridgeExports & MockExtras {
@@ -41,6 +42,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
   let selected = 0;
   const statusSlots: (string | undefined)[] = new Array(8).fill(undefined);
   let turnElapsedSec = 0;
+  let busyTickPhase = 0;
 
   const gpa_u8 = (len: number) => {
     if (len <= 0) return 0;
@@ -189,6 +191,9 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_set_turn_elapsed: (secs: number) => {
       turnElapsedSec = secs;
     },
+    inv_set_busy_tick: (phase: number) => {
+      busyTickPhase = phase;
+    },
     inv_image_cache_put: () => 0,
     inv_image_cache_clear: () => {},
     inv_math_cache_put: () => 0,
@@ -205,6 +210,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     },
     __lifecycle: () => lifecycle,
     __turnElapsed: () => turnElapsedSec,
+    __busyTick: () => busyTickPhase,
   };
 
   return {
@@ -216,6 +222,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     __setCancelPending: base.__setCancelPending,
     __lifecycle: base.__lifecycle,
     __turnElapsed: base.__turnElapsed,
+    __busyTick: base.__busyTick,
   };
 }
 
@@ -545,7 +552,7 @@ describe('skill_attached kind (protocol v12)', () => {
     // Distinct from the protocol version (13) — a hardcoded kind 13 would be an
     // unknown kind to the Wasm painter.
     expect(MessageKind.SkillAttached).not.toBe(HARNESS_PROTOCOL_VERSION);
-    expect(HARNESS_PROTOCOL_VERSION).toBe(14);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(15);
   });
 
   it('push/readback round-trips a skill_attached row', () => {
@@ -574,14 +581,39 @@ describe('setTurnElapsed (protocol v14)', () => {
     expect(exp.__turnElapsed()).toBe(0);
   });
 
-  it('version bumped to 14 and the export is REQUIRED (fail-closed when missing)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(14);
+  it('version bumped to 15 and the export is REQUIRED (fail-closed when missing)', () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe(15);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     // A rebuilt Wasm that omits inv_set_turn_elapsed fails bridge-load closed,
     // mirroring a missed build.zig export-symbol whitelist entry (plan #567 1a).
     const record = exp as unknown as Record<string, unknown>;
     delete record.inv_set_turn_elapsed;
+    expect(isHarnessBridgeExports(record as WebAssembly.Exports)).toBe(false);
+  });
+});
+
+describe('setBusyTick (protocol v14 addendum — 2×4 spinner pulse)', () => {
+  it('pushes the scalar phase to the Wasm (passthrough, floor + nonneg)', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setBusyTick(7);
+    expect(exp.__busyTick()).toBe(7);
+    bridge.setBusyTick(8);
+    expect(exp.__busyTick()).toBe(8); // u8 wraps naturally in Wasm (mod 8 cycle)
+    bridge.setBusyTick(0);
+    expect(exp.__busyTick()).toBe(0); // idle/Stop/reset → static head at (0,0)
+    bridge.setBusyTick(-3);
+    expect(exp.__busyTick()).toBe(0); // nonneg floor like the clock
+    bridge.setBusyTick(9.7);
+    expect(exp.__busyTick()).toBe(9); // floor, no fractional phase
+  });
+
+  it('export is REQUIRED (fail-closed when missing)', () => {
+    const exp = makeMockExports() as unknown as WebAssembly.Exports;
+    expect(isHarnessBridgeExports(exp)).toBe(true);
+    const record = exp as unknown as Record<string, unknown>;
+    delete record.inv_set_busy_tick;
     expect(isHarnessBridgeExports(record as WebAssembly.Exports)).toBe(false);
   });
 });
