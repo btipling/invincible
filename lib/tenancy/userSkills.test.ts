@@ -5,6 +5,7 @@ import * as schema from '../../db/schema';
 import {
   createUserSkill,
   deleteUserSkill,
+  getSkillById,
   getSkillBySlug,
   listUserSkills,
   renameUserSkill,
@@ -180,6 +181,64 @@ describe('userSkills', () => {
     expect(malformed.ok).toBe(true);
     if (!malformed.ok) throw new Error('expected ok');
     expect(malformed.value).toBeNull();
+  });
+
+  it('getSkillById returns the FULL body for the owner; other-user / foreign id → null (no leak)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      {
+        userId,
+        name: 'A',
+        slug: 'a',
+        body: 'full-body-with-marker',
+      },
+      { db: db as never },
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error('expected ok');
+    const id = created.value.id;
+
+    const own = await getSkillById(userId, id, { db: db as never });
+    expect(own.ok).toBe(true);
+    if (!own.ok) throw new Error('expected ok');
+    expect(own.value?.id).toBe(id);
+    expect(own.value?.body).toBe('full-body-with-marker');
+
+    // Another user (same or different tenant) sees null — no existence leak.
+    const { userId: otherId } = await seedUser('t2', 'other@example.com');
+    const cross = await getSkillById(otherId, id, { db: db as never });
+    expect(cross.ok).toBe(true);
+    if (!cross.ok) throw new Error('expected ok');
+    expect(cross.value).toBeNull();
+
+    // An unstored id is null too.
+    const missing = await getSkillById(
+      userId,
+      '00000000-0000-0000-0000-000000000000',
+      { db: db as never },
+    );
+    expect(missing.ok).toBe(true);
+    if (!missing.ok) throw new Error('expected ok');
+    expect(missing.value).toBeNull();
+
+    // A malformed / non-UUID id fails closed to null on read (never a Postgres
+    // uuid-cast DB error leak).
+    const malformed = await getSkillById(userId, 'not-a-uuid', {
+      db: db as never,
+    });
+    expect(malformed.ok).toBe(true);
+    if (!malformed.ok) throw new Error('expected ok');
+    expect(malformed.value).toBeNull();
+
+    // Empty id / empty userId fail closed to null (never a partial-row leak).
+    const emptyId = await getSkillById(userId, '', { db: db as never });
+    expect(emptyId.ok).toBe(true);
+    if (!emptyId.ok) throw new Error('expected ok');
+    expect(emptyId.value).toBeNull();
+    const emptyUser = await getSkillById('', id, { db: db as never });
+    expect(emptyUser.ok).toBe(true);
+    if (!emptyUser.ok) throw new Error('expected ok');
+    expect(emptyUser.value).toBeNull();
   });
 
   it('rename keeps body; updateBody keeps name; updateSummary sets name+description', async () => {
@@ -402,5 +461,13 @@ describe('userSkills unavailable (missing table)', () => {
     const bySlug = await getSkillBySlug(userId, 'a', { db: iso.db as never });
     expect(bySlug.ok).toBe(false);
     if (!bySlug.ok) expect(bySlug.code).toBe('unavailable');
+
+    const byId = await getSkillById(
+      userId,
+      '00000000-0000-0000-0000-000000000000',
+      { db: iso.db as never },
+    );
+    expect(byId.ok).toBe(false);
+    if (!byId.ok) expect(byId.code).toBe('unavailable');
   });
 });

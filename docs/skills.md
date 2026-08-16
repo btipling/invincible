@@ -124,6 +124,30 @@ route user). Tools and their semantics:
   `description`) by **id**. Slug stays immutable.
 - **`meta_skill_update_body`** — replace a skill's `body` by **id**. Over-cap
   rejected (never truncated on write).
+- **`meta_skill_str_replace`** — patch a skill's `body` by **id** with a
+  **literal exact-text** replacement (`old_string` → `new_string`, optional
+  `replace_all`). Its purpose is **output-token-safe editing of a body larger
+  than the model's output budget**: instead of re-emitting the whole body, the
+  agent sends only a fragment. Semantics (all fail-closed, no partial write):
+  - exactly **one** non-overlapping literal match of `old_string` in the full
+    stored body → replaced; `replace_all:true` → every non-overlapping
+    occurrence; **0 matches** → error; **`>1` without `replace_all:true`** →
+    error (the model must disambiguate or opt into replace-all).
+  - **empty `old_string`** → error.
+  - each `old_string` / `new_string` fragment is capped at
+    `META_SKILL_FRAGMENT_MAX_BYTES` (64 KiB), so the tool cannot be used to
+    rewrite a whole body in one call; the **resulting full body** is still
+    re-validated against the store's 4 MiB `SKILL_BODY_MAX_BYTES` write cap on
+    write (rejected, never truncated).
+  - replacement is built **literally** (`split`/`join` + slice, never
+    `String.prototype.replace`), so `$` templates (`$&`, `$1`, `$\'`, `` $\` ``),
+    backslashes, and regex metacharacters in **either** string are treated
+    **verbatim** — safe for Markdown/code skill bodies (this mirrors the proven
+    sandbox `str_replace`, which fixed exactly this regression).
+  - result is a **one-liner** (occurrence count, no body echo); the patch is
+    resolved against the **full stored body** regardless of the read truncation
+    cap. Use it to fix a section of a large skill instead of
+    `meta_skill_update_body` when re-emitting the whole body is impractical.
 - **`meta_skill_delete`** — delete a skill by **id**.
 
 Because a skill is updated/deleted **by id** while read resolves **by slug**,
