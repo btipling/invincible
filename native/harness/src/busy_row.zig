@@ -115,6 +115,9 @@ pub fn paintBusyRow(phase: u8, turn_elapsed: u32) void {
     const src = @src();
     var row = dvui.box(src, .{ .dir = .horizontal }, .{
         .expand = .horizontal,
+        .background = true,
+        .color_fill = palette.teal_bg,
+        .tag = "busy-row",
         .id_extra = ROW_CONTAINER_ID,
     });
     defer row.deinit();
@@ -122,6 +125,7 @@ pub fn paintBusyRow(phase: u8, turn_elapsed: u32) void {
     {
         var tl = dvui.textLayout(src, .{}, .{
             .expand = .horizontal,
+            .background = false,
             .color_text = palette.warm_accent,
             .gravity_y = 0.5,
             .tag = "busy-waiting-text",

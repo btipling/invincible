@@ -35,6 +35,7 @@ const PX: f32 = 2;
 /// Run TWO frames painting only the busy row and return the tag rects from the
 /// SECOND frame. See file-level doc for the two-frame rationale.
 fn paintAndGetRects() struct {
+    row: dvui.Rect.Physical,
     spinner: dvui.Rect.Physical,
     cells: [busy_row.ROWS][busy_row.COLS]dvui.Rect.Physical,
     text: dvui.Rect.Physical,
@@ -49,24 +50,35 @@ fn paintAndGetRects() struct {
     _ = dvui.testing.step(frame) catch @panic("step 1 failed");
     _ = dvui.testing.step(frame) catch @panic("step 2 failed");
 
+    const row_rect = (dvui.tagGet("busy-row") orelse @panic("tag 'busy-row' not found")).rect;
     const spinner = (dvui.tagGet("busy-spinner") orelse @panic("tag 'busy-spinner' not found")).rect;
     const text = (dvui.tagGet("busy-waiting-text") orelse @panic("tag 'busy-waiting-text' not found")).rect;
 
     var cells: [busy_row.ROWS][busy_row.COLS]dvui.Rect.Physical = undefined;
-    var row: usize = 0;
-    while (row < busy_row.ROWS) : (row += 1) {
+    var r: usize = 0;
+    while (r < busy_row.ROWS) : (r += 1) {
         var col: usize = 0;
         while (col < busy_row.COLS) : (col += 1) {
             var buf: [64]u8 = undefined;
-            const cell_tag = std.fmt.bufPrint(&buf, "busy-spinner-cell-{d}-{d}", .{ row, col }) catch unreachable;
-            cells[row][col] = (dvui.tagGet(cell_tag) orelse {
+            const cell_tag = std.fmt.bufPrint(&buf, "busy-spinner-cell-{d}-{d}", .{ r, col }) catch unreachable;
+            cells[r][col] = (dvui.tagGet(cell_tag) orelse {
                 std.debug.print("tag '{s}' not found\n", .{cell_tag});
                 @panic("cell tag not found");
             }).rect;
         }
     }
 
-    return .{ .spinner = spinner, .cells = cells, .text = text };
+    return .{ .row = row_rect, .spinner = spinner, .cells = cells, .text = text };
+}
+
+test "busy-row expands to window content width (full-width teal_bg bar)" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    const rects = paintAndGetRects();
+    // Default testing window is 600 logical (1200 physical). expand=.horizontal
+    // must fill that content — not shrink-wrap a text chip.
+    try t.expect(rects.row.w >= 500 * PX);
+    try t.expect(rects.row.w + EPS >= rects.spinner.w + rects.text.w);
 }
 
 test "cell rect: col-0 = CELL×CELL, col-1 = (CELL+GAP)×CELL (margin in rect)" {
