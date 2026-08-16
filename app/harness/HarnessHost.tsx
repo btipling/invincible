@@ -446,7 +446,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           if (!catalog.ok) {
             systemLine = `Invincible harness · ${catalog.message} Reload the page to retry.`;
           } else if (sel) {
-            systemLine = `Invincible harness · ${sel} · type below, Enter to send · use Next in the canvas header to cycle`;
+            systemLine = `Invincible harness · ${sel} · type below, Enter to send`;
           } else {
             systemLine =
               'Invincible harness · no models granted — ask a tenant admin for inference access';

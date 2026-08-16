@@ -247,7 +247,7 @@ the tenant’s**, not Invincible host system credits.
 | Role | What they do |
 |------|----------------|
 | Tenant **admin** / owner | `/admin/inference` — create provider secrets (encrypted under the **tenant DEK**), attach **model ids**, grant members **`can_use`**. UI shows **masks** only — never plaintext keys. |
-| Member | Signs in → `/harness` → catalog from **`GET /api/models`** (session-gated, grants only) → cycles model with **Next** in the **canvas** header (protocol v3) → Send. Host chip **mirrors** selection (not a second picker). |
+| Member | Signs in → `/harness` → catalog from **`GET /api/models`** (session-gated, grants only) → picks a model from the **status-bar menu** (protocol v3) → Send. Host does **not** offer a second picker. |
 
 **Request path:**
 
@@ -281,7 +281,7 @@ Timeless steps (no personal-laptop Production shell):
 2. **App:** tenancy triple on Production; redeploy if you just migrated.
 3. **Vercel credits:** team has **paid AI Gateway credits** (BYOK is not on free tier).
 4. **Admin:** sign in → **`/admin/inference`** → create provider secret + model ids → grant members.
-5. **Harness:** member → `/harness` → catalog loads → **Next** cycles models → Send; chip mirrors selection.
+5. **Harness:** member → `/harness` → catalog loads → status-bar model menu → Send.
 6. **Negative smoke:** member without grant cannot use ungranted models; empty catalog does not hit Gateway.
 7. **Never** put provider API keys in client, Wasm, git, issues, or logs.
 
@@ -569,7 +569,7 @@ empty `public/harness`.
 |------------|--------|
 | Pluggable **sandbox** for agent build/run tools | **Shipped (MVP)** — config seam; see [sandbox.md](sandbox.md) |
 | Multi-tenant auth (login + DB grants) | **Required & always on** — [§4a](#4a-multi-tenant-auth) |
-| Tenant BYOK inference keys + harness model cycle | **Shipped** — [§4a Inference keys](#inference-keys-byok) |
+| Tenant BYOK inference keys + harness model menu | **Shipped** — [§4a Inference keys](#inference-keys-byok) |
 | Multi-tenant sandbox isolation / fleet | **Not shipped** — single workspace root per process for now |
 | Optional **OIDC SSO** + **SCIM** provisioning | **Shipped (optional config)** — [§4b](#4b-optional-sso-oidc--scim) |
 | Per-user **MCP** tools (remote HTTPS) | **Shipped** — [mcp.md](mcp.md); Settings `/settings/mcp` |
@@ -605,7 +605,7 @@ listed as Done in [AGENTS.md](../AGENTS.md). Operators on **forks/clones** use
 - [ ] If using self-hosted builds: runner online + `SELF_HOSTED_BUILDS=true`
 - [ ] Optional: sandbox daemon + Vercel/local `SANDBOX_URL`/`SANDBOX_TOKEN` ([sandbox.md](sandbox.md))
 - [ ] Tenancy: cloud cutover [§4a](#4a-multi-tenant-auth) (GHA `db-migrate`, then first-run sign-up + `AUTH_SECRET`)
-- [ ] Optional BYOK: GHA **db-migrate** if needed + `/admin/inference` + harness model cycle ([§4a](#inference-keys-byok))
+- [ ] Optional BYOK: GHA **db-migrate** if needed + `/admin/inference` + status-bar model menu ([§4a](#inference-keys-byok))
 - [ ] Optional MCP: GHA **db-migrate** if needed + `/settings/mcp` + Exa smoke ([mcp.md](mcp.md))
 - [ ] Optional OIDC / SCIM: [§4b](#4b-optional-sso-oidc--scim) (credentials break-glass still works; hybrid roster)
 - [ ] No keys in client/Wasm; no PR triggers on self-hosted workflows
