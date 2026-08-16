@@ -99,6 +99,7 @@ pub fn build(b: *std.Build) void {
         "inv_status_slot_copy",
         "inv_status_slots_clear",
         "inv_set_turn_elapsed",
+        "inv_set_busy_tick",
         "inv_image_cache_put",
         "inv_image_cache_clear",
         "inv_math_cache_put",
@@ -185,6 +186,20 @@ pub fn build(b: *std.Build) void {
             }),
         });
         test_rich.dependOn(&b.addRunArtifact(elapsed_clock_tests).step);
+    }
+
+    // Host unit tests for busy_spinner.zig (plan #574): the 2×4 column-wave LUT —
+    // head-per-phase, trail ramp, and natural u8 wrap. Pure, no dvui.
+    {
+        const busy_spinner_tests = b.addTest(.{
+            .name = "busy_spinner",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/busy_spinner.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(busy_spinner_tests).step);
     }
 
     const link_tests = b.addTest(.{
@@ -390,4 +405,3 @@ pub fn build(b: *std.Build) void {
     const test_rich_invariants = b.step("test-rich-invariants", "Run rich-glue invariant suite (#387 white-space/glue pins + #336 fixed guard + #341 fixed guard + #343 fixed guard; green, non-blocking)");
     test_rich_invariants.dependOn(&run_red_tests.step);
 }
-
