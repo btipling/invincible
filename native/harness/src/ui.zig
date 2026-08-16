@@ -77,7 +77,7 @@ const NEAR_BOTTOM_PX: f32 = 48;
 const CONTENT_GREW_EPS: f32 = 1.0;
 /// Reserved bottom chrome: single-row textEntry + trailing TOUCH_H icon + margins
 /// (plan #457 — replaces the old textEntry + Send/Stop action row from plan #138).
-/// Height budget: header + this win over transcript min on short canvases.
+/// Height budget: composer chrome wins over transcript min on short canvases.
 const COMPOSER_CHROME_MIN: f32 = COMPOSER_INPUT_MAX_H + 2 * COMPOSER_PAD_Y;
 /// Chrome box top padding (Options.padding.y) — outside min_size_content.
 const COMPOSER_PAD_Y: f32 = 4;
@@ -91,12 +91,13 @@ const COMPOSER_INPUT_MAX_H: f32 = 120;
 const BAND_GAP: f32 = 6;
 /// Absolute floor so a short canvas still has a scroll band.
 const SCROLL_FLOOR_H: f32 = 32;
-/// Status-bar band height (px) — a thin, always-mounted full-width strip painted
-/// directly BELOW the composer (plan #555 → #554). Reserved into the bottom
-/// chrome budget so the transcript never overlaps it and the transcript+composer
-/// stack never jumps vertically when a sandbox attaches. A NEW Wasm geometry
-/// cap (see plan #555 Caps table): generous single-line value, never collapsed.
-const STATUS_BAR_H: f32 = 28;
+/// Status-bar band height (px) — a two-line always-mounted full-width strip painted
+/// directly BELOW the composer (plan #555 → #554, header merged by plan #570).
+/// Reserved into the bottom chrome budget so the transcript never overlaps it and
+/// the transcript+composer stack never jumps vertically when a sandbox attaches.
+/// 64 px = two 32 px rows, exactly fitting Next (TOUCH_H − 8 = 32) + status slots.
+/// Total chrome (64) ≤ old header+bar (92) — net −28 px transcript gain (plan #570).
+const STATUS_BAR_H: f32 = 64;
 
 pub fn onInit() void {
     bridge.reset();
@@ -332,12 +333,11 @@ fn paintToolRun(
     const arena = dvui.currentWindow().arena();
     const run: ?*const toolrun.ToolRun = if (slot) |s|
         rich.toolrunCacheSlot(s, revision, text)
-    else
-        blk: {
-            const dec = toolrun.decode(arena, text) orelse break :blk null;
-            owned = dec;
-            break :blk &owned.?.run;
-        };
+    else blk: {
+        const dec = toolrun.decode(arena, text) orelse break :blk null;
+        owned = dec;
+        break :blk &owned.?.run;
+    };
     if (run == null) return false;
     const runv = run.?;
     // Decoders recount ok/fail/pending from the kept (capped) items, so the
@@ -364,9 +364,9 @@ fn paintToolRun(
     var header_label: [40]u8 = undefined;
     const label =
         if (total == 1)
-        (std.fmt.bufPrint(&header_label, "1 tool called", .{}) catch "tools")
-    else
-        (std.fmt.bufPrint(&header_label, "{d} tools called", .{total}) catch "tools");
+            (std.fmt.bufPrint(&header_label, "1 tool called", .{}) catch "tools")
+        else
+            (std.fmt.bufPrint(&header_label, "{d} tools called", .{total}) catch "tools");
 
     {
         // Single horizontal row: expander (fills) + one trailing chrome pack so
@@ -809,32 +809,33 @@ const STATUS_SLOT_GAP: f32 = 10;
 /// live-layout rounding (a couple px either way must not push a primary control).
 const STATUS_PACK_BUDGET_SAFETY: f32 = 4;
 
-/// Width (px) available to the status-slot pack this frame. Since the pack now
-/// lives ALONE in its own full-width bottom status bar (plan #555 → #554), the
-/// budget is simply that bar's content-rect width minus the pack's rounding-
-/// safety pad (`STATUS_PACK_BUDGET_SAFETY`) — there are no primary header controls
-/// to reserve against anymore (the old "space-left-over-after-header-controls"
-/// math is gone). The pack still DROPS slots per `STATUS_SLOT_DROP_ORDER` then
-/// pixel-ellipsizes the survivor to fit, exactly as before; only the container
-/// is now the full status-bar strip (see the narrow-canvas ellipsize decision:
+/// Width (px) available to the status-slot pack this frame. The pack lives on
+/// line 2 of the two-line bottom status bar (plan #555 → #554, header merged by
+/// plan #570); the budget is the bar's content-rect width minus the rounding-
+/// safety pad (`STATUS_PACK_BUDGET_SAFETY`). Line 1 holds identity controls
+/// (lifecycle · build id · model · Next), so the pack shares the bar but each
+/// line has its own fixed 32 px height — neither can displace the other. The pack
+/// still DROPS slots per `STATUS_SLOT_DROP_ORDER` then pixel-ellipsizes the
+/// survivor to fit, exactly as before (see the narrow-canvas ellipsize decision:
 /// even here the operator still sees *which* sandbox is bound, PR #543 re-run L9).
 fn statusPackMaxWidth() f32 {
     const content_w = dvui.parentGet().data().contentRect().w;
     return @max(0, content_w - STATUS_PACK_BUDGET_SAFETY);
 }
 
-/// Paint the right-aligned status-slot pack into the bottom status bar (protocol
-/// v13, plan #538/#541/#554). Mounted ALONE in the always-present status strip
-/// directly below the composer — it is the strip's only occupant, so it can never
-/// displace a primary control; a narrow canvas DROPS slots per
-/// `STATUS_SLOT_DROP_ORDER` then pixel-ellipsizes the kept slot to fit. Sandbox +
-/// cwd render as muted TEAL one-liners (WARM when busy); an empty slot is hidden
-/// (never a blank placeholder / broken layout). When there are NO non-empty slots
-/// at all, the caller still mounts the fixed `STATUS_BAR_H` band as a subtle
-/// empty strip (locked decision, plan #555) — it never collapses and `chrome_y`/
-/// `scroll_h` stay constant, so the transcript+composer stack never jumps.
-/// Slot values are already capped at `MAX_STATUS_SLOT_LEN` by the bridge; this
-/// defends the paint against a stale/oversize value with a UTF-8-safe ellipsis.
+/// Paint the right-aligned status-slot pack into line 2 of the two-line bottom
+/// status bar (protocol v13, plan #538/#541/#554, header merged by plan #570).
+/// Line 2 is a fixed 32 px horizontal row sharing the 64 px bar with the identity
+/// row (line 1: lifecycle · build id · model · Next); each line has its own
+/// explicit height so neither can displace the other. A narrow canvas DROPS slots
+/// per `STATUS_SLOT_DROP_ORDER` then pixel-ellipsizes the kept slot to fit.
+/// Sandbox + cwd render as muted TEAL one-liners (WARM when busy); an empty slot
+/// is hidden (never a blank placeholder / broken layout). When there are NO
+/// non-empty slots at all, the caller still mounts the fixed `STATUS_BAR_H` band
+/// as a subtle empty strip (locked decision, plan #555) — it never collapses and
+/// `chrome_y`/`scroll_h` stay constant, so the transcript+composer stack never
+/// jumps. Slot values are already capped at `MAX_STATUS_SLOT_LEN` by the bridge;
+/// this defends the paint against a stale/oversize value with a UTF-8-safe ellipsis.
 fn paintStatusSlots(life: bridge.Lifecycle) void {
     const busy = life == .busy;
     const budget = statusPackMaxWidth();
@@ -945,97 +946,22 @@ pub fn frame() !void {
         avail = .{ .x = 0, .y = 0, .w = @max(1, wr.w - 16), .h = @max(1, wr.h - 16) };
     }
 
-    // Fixed chrome height (content + pad). Header uses a measured estimate then
-    // absolute placement so bands never depend on expand packing order.
+    // Fixed chrome height (content + pad). Absolute placement so bands never
+    // depend on expand packing order (header band removed — plan #570).
     const chrome_h: f32 = COMPOSER_CHROME_MIN + COMPOSER_PAD_Y;
-    // Header band: title row ~ TOUCH_H + padding/margin.
-    const header_h: f32 = TOUCH_H + 24;
     // Bottom chrome = composer band + the always-mounted status bar BELOW it.
     // Reserving both up front keeps scroll/transcript geometry constant whether
     // or not any status slot is populated, so attaching a sandbox never makes
     // the transcript+composer stack jump vertically (plan #555 locked decision).
     const bottom_h: f32 = chrome_h + STATUS_BAR_H;
-    const scroll_y = header_h + BAND_GAP;
+    const scroll_y = BAND_GAP;
     const scroll_h = @max(SCROLL_FLOOR_H, avail.h - scroll_y - bottom_h - BAND_GAP);
     // Composer top sits above the fixed status strip, which owns the very bottom.
     const chrome_y = avail.h - bottom_h;
     const status_y = avail.h - STATUS_BAR_H;
 
-    // ── Header (absolute top band) ────────────────────────────────────────
-    {
-        var head = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .rect = .{ .x = 0, .y = 0, .w = 0, .h = header_h },
-            .expand = .horizontal,
-            .background = true,
-            .color_fill = palette.teal_surface,
-            .color_border = palette.teal_border,
-            .padding = .{ .x = 10, .y = 6, .w = 10, .h = 6 },
-            .min_size_content = .{ .w = 0, .h = TOUCH_H - 8 },
-        });
-        defer head.deinit();
-
-        // Product identity lives in the DOM brand bar (`Invincible` in
-        // AppNav.tsx), so the canvas no longer announces itself — the old
-        // `Agent harness` heading block is gone (plan #555 → #554). The header
-        // keeps its live chrome: lifecycle · build id · model label + Next.
-        {
-            var tl = dvui.textLayout(@src(), .{}, .{
-                .color_text = if (busy) palette.warm_accent else palette.teal_muted,
-                .gravity_y = 0.5,
-            });
-            tl.format("{s}", .{lifecycleLabel(life)}, .{});
-            tl.deinit();
-        }
-        // Build id — proves which wasm is running (stale-cache detector).
-        {
-            var tl = dvui.textLayout(@src(), .{}, .{
-                .color_text = palette.teal_muted,
-                .gravity_y = 0.5,
-                .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
-            });
-            tl.format("h:{s}", .{BUILD_ID}, .{});
-            tl.deinit();
-        }
-        // Protocol v3: cycle through granted models (host pushed catalog).
-        {
-            const cat_n = bridge.modelCatalogCount();
-            {
-                var tl = dvui.textLayout(@src(), .{}, .{
-                    .color_text = if (cat_n == 0) palette.teal_muted else palette.teal_accent,
-                    .gravity_y = 0.5,
-                    .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
-                });
-                if (cat_n == 0) {
-                    tl.addText("no model", .{});
-                } else {
-                    tl.format("{s}", .{bridge.selectedModelLabel()}, .{});
-                }
-                tl.deinit();
-            }
-            if (cat_n > 1) {
-                if (dvui.button(@src(), "Next", .{}, .{
-                    .gravity_y = 0.5,
-                    .style = .content,
-                    .min_size_content = .{ .w = 52, .h = TOUCH_H - 8 },
-                    .corners = .round(6),
-                    .color_fill = palette.teal_bg,
-                    .color_text = palette.teal_accent,
-                    .color_border = palette.teal_border,
-                    .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
-                })) {
-                    if (!busy) {
-                        bridge.cycleSelectedModel();
-                    }
-                }
-            }
-        }
-        // NOTE: the protocol v13 status-slot pack no longer mounts in the header
-        // — it moved to the always-present status bar mounted at the very bottom
-        // of the frame, below the composer, and is painted there in its own band
-        // at the end of frame() (plan #555 → #554).
-    }
-
     // ── Transcript (absolute middle band — fixed pixel height) ────────────
+    // (Header band removed — plan #570 merges its content into the two-line status bar)
     const near_before = isNearBottom(&transcript_scroll);
     const prev_msg = last_msg_count;
     const prev_shown = last_shown_count;
@@ -1107,7 +1033,7 @@ pub fn frame() !void {
                 );
             } else {
                 tl.addText(
-                    "Start a conversation\n\nType below, then Ctrl+Enter or Send.\nUse Next in the header to cycle models.\n",
+                    "Start a conversation\n\nType below, then Ctrl+Enter or Send.\nUse Next in the status bar to cycle models.\n",
                     .{},
                 );
             }
@@ -1428,22 +1354,98 @@ pub fn frame() !void {
     }
 
     // ── Status bar (absolute bottom band — BELOW the composer, always mounted) ──
+    // Two-line layout (plan #570): vertical container with identity on line 1
+    // and status slots on line 2. Always mounted at fixed STATUS_BAR_H so the
+    // transcript+composer stack never jumps when a sandbox attaches.
     {
-        var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        var bar = dvui.box(@src(), .{ .dir = .vertical }, .{
             .rect = .{ .x = 0, .y = status_y, .w = 0, .h = STATUS_BAR_H },
             .expand = .horizontal,
             .background = true,
-            .color_fill = palette.teal_bg,
+            .color_fill = palette.teal_surface,
             .color_border = palette.teal_border,
             .padding = .{ .x = 10, .y = 0, .w = 10, .h = 0 },
             .min_size_content = .{ .w = 120, .h = STATUS_BAR_H },
-            .id_extra = 0x61_0100,
+            .id_extra = 0x61_0300,
         });
         defer bar.deinit();
-        // Always mounted (locked plan #555): with no non-empty slots this paints
-        // the fixed-height subtle TEAL band and nothing else — it NEVER collapses,
-        // so `chrome_y`/`scroll_h` (reserved above) keep the stack from jumping
-        // when a sandbox attaches. Protocol v13 store + drop order untouched.
-        paintStatusSlots(life);
+
+        // Line 1: identity (lifecycle · build id · model label · Next)
+        // Each line gets exactly STATUS_BAR_H/2 = 32 px so the Next button
+        // (TOUCH_H − 8 = 32) fills its row without clipping line 2 (plan #570
+        // fallback, adversarial review #573 Major L9).
+        {
+            var line1 = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                .expand = .horizontal,
+                .gravity_y = 0.5,
+                .min_size_content = .{ .w = 120, .h = STATUS_BAR_H / 2 },
+                .id_extra = 0x61_0100,
+            });
+            defer line1.deinit();
+
+            {
+                var tl = dvui.textLayout(@src(), .{}, .{
+                    .color_text = if (busy) palette.warm_accent else palette.teal_muted,
+                    .gravity_y = 0.5,
+                });
+                tl.format("{s}", .{lifecycleLabel(life)}, .{});
+                tl.deinit();
+            }
+            {
+                var tl = dvui.textLayout(@src(), .{}, .{
+                    .color_text = palette.teal_muted,
+                    .gravity_y = 0.5,
+                    .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
+                });
+                tl.format("h:{s}", .{BUILD_ID}, .{});
+                tl.deinit();
+            }
+            {
+                const cat_n = bridge.modelCatalogCount();
+                {
+                    var tl = dvui.textLayout(@src(), .{}, .{
+                        .color_text = if (cat_n == 0) palette.teal_muted else palette.teal_accent,
+                        .gravity_y = 0.5,
+                        .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
+                    });
+                    if (cat_n == 0) {
+                        tl.addText("no model", .{});
+                    } else {
+                        tl.format("{s}", .{bridge.selectedModelLabel()}, .{});
+                    }
+                    tl.deinit();
+                }
+                if (cat_n > 1) {
+                    if (dvui.button(@src(), "Next", .{}, .{
+                        .gravity_y = 0.5,
+                        .style = .content,
+                        .min_size_content = .{ .w = 52, .h = TOUCH_H - 8 },
+                        .corners = .round(6),
+                        .color_fill = palette.teal_bg,
+                        .color_text = palette.teal_accent,
+                        .color_border = palette.teal_border,
+                        .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
+                    })) {
+                        if (!busy) {
+                            bridge.cycleSelectedModel();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Line 2: status slots (protocol v13 store + drop order untouched).
+        // Each line gets exactly STATUS_BAR_H/2 = 32 px so the two rows never
+        // compete for space (plan #570 fallback, adversarial review #573 Major L9).
+        {
+            var line2 = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                .expand = .horizontal,
+                .gravity_y = 0.5,
+                .min_size_content = .{ .w = 120, .h = STATUS_BAR_H / 2 },
+                .id_extra = 0x61_0200,
+            });
+            defer line2.deinit();
+            paintStatusSlots(life);
+        }
     }
 }
