@@ -47,7 +47,7 @@ Vertical bands inside the Wasm root (not a DOM panel):
 |------|----------|
 | **Transcript** | One outer `scrollArea` that takes **remaining** height only |
 | **Composer chrome** | Single-row text field + one trailing **icon-only** button (▶ Send / ■ Stop) in a **reserved bottom band** outside the scroller (plan #457) |
-| **Status bar** | **Two-line** always-mounted full-width strip **below the composer**: line 1 = identity (lifecycle · `h:{build-id}` · model label · Next), line 2 = status-slot pack (sandbox · cwd · git · context); fixed `STATUS_BAR_H` = 56 px, never collapses (plan #570, merged from header per plan #555 → #554) |
+| **Status bar** | **Two-line** always-mounted full-width strip **below the composer**: line 1 = identity (lifecycle · `h:{build-id}` · model label · Next), line 2 = status-slot pack (sandbox · cwd · git · context); fixed `STATUS_BAR_H` = 64 px, never collapses (plan #570, merged from header per plan #555 → #554) |
 
 | Rule | Behavior |
 |------|----------|
@@ -65,7 +65,7 @@ Vertical bands inside the Wasm root (not a DOM panel):
 
 | Topic | Behavior |
 |-------|----------|
-| Owner | **Wasm-primary** two-line bottom status bar (plan #538/#541, relocated below the composer by plan #555 → #554, header merged by plan #570): **line 1** = identity (lifecycle · `h:{build-id}` · model label · Next — formerly the top header band), **line 2** = status-slot pack (sandbox · cwd · git · context). The top header band is removed entirely; the DOM host only **mirrors** (see [feature-divide.md](feature-divide.md)) — never a competing status panel. Empty slot store still mounts the fixed `STATUS_BAR_H` = 56 px band as a subtle bare strip — it never collapses |
+| Owner | **Wasm-primary** two-line bottom status bar (plan #538/#541, relocated below the composer by plan #555 → #554, header merged by plan #570): **line 1** = identity (lifecycle · `h:{build-id}` · model label · Next — formerly the top header band), **line 2** = status-slot pack (sandbox · cwd · git · context). The top header band is removed entirely; the DOM host only **mirrors** (see [feature-divide.md](feature-divide.md)) — never a competing status panel. Empty slot store still mounts the fixed `STATUS_BAR_H` = 64 px band as a subtle bare strip — it never collapses |
 | Slots | **sandbox** (`activeSandboxId` → `sandbox <id>` short label) · **cwd** (workspace-relative session cwd) · **git** (`branch@sha[∗]`, Phase 2 #540) · **context/usage** (`N in · M out · T tok`, Phase 3 #539) |
 | Bridge carrier | Additive status-slot store (`inv_set_status_slot` / `inv_status_slot_len/copy` / `inv_status_slots_clear`), bridge protocol **v13** (old exports untouched). A host push **replaces** one slot; `len==0` clears it (slot hidden) |
 | Host fold | After hydrate/restore and after **every** agent turn — success **and** fail (PR #543: a 403-clear or committed `change_dir` on a cancelled/timed-out turn repaints the pack; same fold-before-persist discipline as `attachedSlugs`) — the host folds session state into the pack (`lib/harnessChat.ts` `foldStatusSlots`, call sites: hydrate + `runHarnessTurn` success + `runHarnessTurn` fail). Clear/New session clears the pack |
