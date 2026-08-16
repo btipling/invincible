@@ -18,7 +18,7 @@
 
 - Noto Sans: Latin, Greek, Cyrillic, and broad European punctuation — **not** full CJK; **not** the Unicode Arrows block (U+2190–U+21FF). Four faces: Regular, Bold, Italic, Bold Italic (rich MD emph/strong compose).
 - DejaVu symbols subset: arrows (including **→**), tool status **✓**/**✗**, many math operators and geometric/dingbat code points that Noto omits. Paint routes via `isSymbolRelated` in `rich/unicode_face.zig` (check/ballot marks are carved out of the emoji face so they do not tofu).
-- Report separators (Vitest **U+23AF** `⎯`, scan lines U+23BA–U+23BD, box-drawing horizontals U+2500/U+2501) are **not** in any embedded face. Mixed paint draws **U+2015 HORIZONTAL BAR** (Noto body) for those CPs only — Copy / ring bytes stay the original scalar. Full box-drawing and `dvui.expander` titles may still tofu.
+- Report separators (Vitest **U+23AF** `⎯`, scan lines U+23BA–U+23BD, box-drawing horizontals U+2500/U+2501) are **not** in any embedded face. Mixed / substituted paint draws **U+2015 HORIZONTAL BAR** on **Noto body** (sized to the surrounding run) — Vera Mono does **not** contain U+2015, so painting the lookalike on the fence face still tofus. Copy / ring bytes stay the original scalar. Full box-drawing and `dvui.expander` titles may still tofu.
 - OpenMoji subset: common emoji + modifiers (ZWJ, VS16, skin tones, regional indicators). Color emoji and perfect ZWJ family glyphs depend on the shaper; FreeType/stb outline path is monochrome single-glyph.
 - CJK (e.g. 日本語) may still missing-glyph until a CJK face is added.
 - Mono (Vera) still lacks arrows — fence code with `→` may still tofu; body/system/tool lines use mixed body+symbols.
