@@ -71,14 +71,15 @@ fn paintAndGetRects() struct {
     return .{ .row = row_rect, .spinner = spinner, .cells = cells, .text = text };
 }
 
-test "busy-row expands to window content width (full-width teal_bg bar)" {
+test "busy-row fills window content width edge-to-edge (full-width teal_bg bar)" {
     var tr = try dvui.testing.init(.{});
     defer tr.deinit();
     const rects = paintAndGetRects();
-    // Default testing window is 600 logical (1200 physical). expand=.horizontal
-    // must fill that content — not shrink-wrap a text chip.
-    try t.expect(rects.row.w >= 500 * PX);
-    try t.expect(rects.row.w + EPS >= rects.spinner.w + rects.text.w);
+    const win = dvui.windowRect();
+    // expand=.horizontal must fill window content width, not shrink-wrap.
+    try t.expectApproxEqAbs(win.w, rects.row.w, EPS);
+    // Must be pinned to the content origin (x=0), not inset.
+    try t.expectApproxEqAbs(win.x, rects.row.x, EPS);
 }
 
 test "cell rect: col-0 = CELL×CELL, col-1 = (CELL+GAP)×CELL (margin in rect)" {

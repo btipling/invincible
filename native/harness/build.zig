@@ -198,7 +198,7 @@ pub fn build(b: *std.Build) void {
         test_rich.dependOn(&b.addRunArtifact(elapsed_clock_tests).step);
     }
 
-    // Host unit tests for busy_spinner.zig (plan #574): the 2×4 column-wave LUT —
+    // Host unit tests for busy_spinner.zig (plan #574): the 2×4 clockwise LUT —
     // head-per-phase, trail ramp, and natural u8 wrap. Pure, no dvui.
     {
         const busy_spinner_tests = b.addTest(.{
