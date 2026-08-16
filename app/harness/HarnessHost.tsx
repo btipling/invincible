@@ -633,6 +633,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     let tick = 0;
     const id = window.setInterval(() => {
       tick += 1;
+      // Batch scalar pushes so the Wasm refreshes once per tick even when both
+      // setBusyTick and setTurnElapsed fire on the same 10th-tick interval
+      // (adversarial review #576 L5 — each export calls refresh() independently
+      // in bridge.zig; beginBatch/endBatch coalesce them into a single frame).
+      bridgeRef.current?.beginBatch();
       if (!reduceMotion) {
         bridgeRef.current?.setBusyTick(tick);
       }
@@ -640,6 +645,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         const sec = Math.max(0, Math.floor((performance.now() - start) / 1000));
         bridgeRef.current?.setTurnElapsed(sec);
       }
+      bridgeRef.current?.endBatch();
     }, Math.round(1000 / HARNESS_BUSY_TICK_HZ));
     return () => {
       window.clearInterval(id);
