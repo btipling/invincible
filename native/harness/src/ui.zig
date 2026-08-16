@@ -14,8 +14,7 @@ const mixed_text = @import("rich/mixed_text.zig");
 const composer_text = @import("composer_text.zig");
 const toolrun = @import("rich/toolrun.zig");
 const thinking_collapse = @import("thinking_collapse.zig");
-const elapsed_clock = @import("elapsed_clock.zig");
-const busy_spinner = @import("busy_spinner.zig");
+const busy_row = @import("busy_row.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
@@ -904,81 +903,6 @@ fn paintStatusSlots(life: bridge.Lifecycle) void {
     }
 }
 
-// ── Busy spinner (plan #574): 2×4 WARM grid left of "Waiting for model…" ──
-// Cell geometry locked by the plan (5×5 px, 2 px corner radius, 3 px gap →
-// 13×29 px). The grid is painted as nested dvui.boxes (vertical rows ×
-// horizontal columns), one filled rounded-rect per cell, color from the
-// compile-time WARM LUT (accent → muted → border → surface). The horizontal
-// busy-row box gravity-centers the grid with the text (the same `gravity_y =
-// 0.5` convention every other in-row chrome here uses — status chips, kind
-// labels, tool-run heads). Exact baseline tightening is a documented living
-// comment on the PR pending operator smoke (dvui draws glyphs from the baseline
-// downward; the precise bias needs a real canvas, not a blind constant).
-
-/// 2×4 grid cells (row-major) — matches `busy_spinner.zig` COLS/ROWS.
-const BUSY_SPINNER_COLS: usize = busy_spinner.COLS;
-const BUSY_SPINNER_ROWS: usize = busy_spinner.ROWS;
-/// Cell edge (px).
-const BUSY_SPINNER_CELL: f32 = 5;
-/// Padding gap between cells (px).
-const BUSY_SPINNER_GAP: f32 = 3;
-/// Cell corner radius (px).
-const BUSY_SPINNER_RADIUS: f32 = 2;
-/// Grid overall footprint (px) — 2×5+3 = 13 wide, 4×5+3×3 = 29 tall.
-const BUSY_SPINNER_W: f32 = @as(f32, @floatFromInt(BUSY_SPINNER_COLS)) * BUSY_SPINNER_CELL +
-    @as(f32, @floatFromInt(BUSY_SPINNER_COLS - 1)) * BUSY_SPINNER_GAP;
-const BUSY_SPINNER_H: f32 = @as(f32, @floatFromInt(BUSY_SPINNER_ROWS)) * BUSY_SPINNER_CELL +
-    @as(f32, @floatFromInt(BUSY_SPINNER_ROWS - 1)) * BUSY_SPINNER_GAP;
-/// Right margin before the busy text — inline spacing like the kind-label rows.
-const BUSY_SPINNER_TRAIL: f32 = 10;
-
-/// Map a LUT step (0=head .. 3=surface) to its WARM palette token. No freehand
-/// hex; monotone WARM keeps the spinner unified with the warm waiting text.
-fn busySpinnerColor(step: u3) dvui.Color {
-    return switch (step) {
-        0 => palette.warm_accent,
-        1 => palette.warm_muted,
-        2 => palette.warm_border,
-        else => palette.warm_surface,
-    };
-}
-
-/// Paint the 2×4 WARM spinner from the current busy-tick phase. Pure paint —
-/// reads the LUT only, no IO/alloc in the frame path. `gravity_y = 0.5` centers
-/// the grid with the busy-row text (see header note). Inner boxes use a
-/// dedicated id namespace (`0x60_…`) so they never alias the message-loop rows
-/// or the busy textLayout (`0xffff_ffff`).
-fn paintBusySpinner(src: std.builtin.SourceLocation, phase: u8) void {
-    const cells = busy_spinner.busySpinnerCells(phase);
-    var out = dvui.box(src, .{ .dir = .vertical }, .{
-        .gravity_y = 0.5,
-        .min_size_content = .{ .w = BUSY_SPINNER_W, .h = BUSY_SPINNER_H },
-        .margin = .{ .x = 0, .y = 0, .w = BUSY_SPINNER_TRAIL, .h = 0 },
-        .id_extra = 0x60_00a0,
-    });
-    defer out.deinit();
-    var row: usize = 0;
-    while (row < BUSY_SPINNER_ROWS) : (row += 1) {
-        var rb = dvui.box(src, .{ .dir = .horizontal }, .{
-            .id_extra = 0x60_00b0 + row,
-        });
-        defer rb.deinit();
-        var col: usize = 0;
-        while (col < BUSY_SPINNER_COLS) : (col += 1) {
-            const step = cells[row * BUSY_SPINNER_COLS + col];
-            var cell = dvui.box(src, .{}, .{
-                .background = true,
-                .color_fill = busySpinnerColor(step),
-                .corners = .round(BUSY_SPINNER_RADIUS),
-                .min_size_content = .{ .w = BUSY_SPINNER_CELL, .h = BUSY_SPINNER_CELL },
-                .margin = .{ .x = @as(f32, @floatFromInt(col)) * BUSY_SPINNER_GAP, .y = @as(f32, @floatFromInt(row)) * BUSY_SPINNER_GAP, .w = 0, .h = 0 },
-                .id_extra = 0x60_00c0 + row * BUSY_SPINNER_COLS + col,
-            });
-            defer cell.deinit();
-        }
-    }
-}
-
 fn clearPrompt() void {
     @memset(&prompt_buf, 0);
 }
@@ -1261,37 +1185,13 @@ pub fn frame() !void {
 
         if (busy) {
             // Busy row (plan #574): the 2×4 WARM spinner sits LEFT of
-            // "Waiting for model…" on the same line. A horizontal box packs them
-            // side by side; both gravity-center vertically (the house convention
-            // for inline chrome). The spinner's phase scalar comes from the host
-            // 10 Hz tick (`inv_set_busy_tick`) — pure LUT paint, no frame alloc.
-            var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
-                .expand = .horizontal,
-                .id_extra = 0x60_0000,
-            });
-            defer row.deinit();
-            paintBusySpinner(@src(), bridge.busyTick());
-            {
-                var tl = dvui.textLayout(@src(), .{}, .{
-                    .expand = .horizontal,
-                    .color_text = palette.warm_accent,
-                    .id_extra = 0xffff_ffff,
-                    .gravity_y = 0.5,
-                });
-                tl.addText("Waiting for model…", .{});
-                // Protocol v14 — whole-turn clock relocated from the DOM top-bar
-                // chip into this Wasm busy row (plan #567): the host feeds elapsed
-                // seconds and we append ` · mm:ss` only while > 0, so no bare
-                // `0:00` lingers at t=0. The host resets to 0 on idle/stop/error/
-                // clear. (Reduced motion keeps this clock — plan #574 Major.)
-                if (bridge.turnElapsed() > 0) {
-                    var clock_buf: [32]u8 = undefined;
-                    const clock = elapsed_clock.formatElapsedClock(&clock_buf, bridge.turnElapsed());
-                    tl.addText(" · ", .{});
-                    tl.addText(clock, .{});
-                }
-                tl.deinit();
-            }
+            // "Waiting for model…" on the same line. Painted by the standalone
+            // `busy_row` module (extracted so the host dvui testing-backend test
+            // `busy_row_layout.test.zig` runs the exact same paint — PR #576
+            // Blocker L6). The spinner's phase scalar comes from the host 10 Hz
+            // tick (`inv_set_busy_tick`); the v14 ` · mm:ss` clock from
+            // `bridge.turnElapsed()` — both passed in, no wasm/global dependency.
+            busy_row.paintBusyRow(bridge.busyTick(), bridge.turnElapsed());
         }
     }
 
