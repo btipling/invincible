@@ -113,6 +113,21 @@ describe('real-Wasm live tool increment (implements #433)', () => {
     expect(typeof bridge.exports.inv_message_kind_at).toBe('function');
   });
 
+  it('real Wasm carries the additive 2×4 spinner export (plan #574) and accepts tick pushes', async () => {
+    const bridge = await loadBridge();
+    // REQUIRED_FNS already proves `inv_set_busy_tick` exists (a stale artifact
+    // without it fails loadBridge → this suite fails, never it.skip). The
+    // Wasm-internal `busy_tick` starts at 0 (static head at top-left), which is
+    // the old-host / reduced-motion / idle value; the old host simply never
+    // calls this export, so the pulse stays off. Host-side we assert the export
+    // is present and both the static (0) and active (7) pushes are accepted by
+    // the real Wasm without throwing.
+    expect(typeof bridge.exports.inv_set_busy_tick).toBe('function');
+    bridge.setBusyTick(0); // static head / reset — must not throw
+    bridge.setBusyTick(7); // bottom-right pulse phase — must not throw
+    bridge.setBusyTick(0); // back to reset
+  });
+
   it('case 1 — one tool_start paints kind-6 immediately with total 1', async () => {
     const bridge = await loadBridge();
     const session = createEmptySession();
