@@ -1044,8 +1044,7 @@ pub fn frame() !void {
             .vertical_bar = .auto,
             .user_scroll = &user_scroll,
         }, .{
-            .rect = .{ .x = pane_w, .y = scroll_y, .w = 0, .h = scroll_h },
-            .expand = .horizontal,
+            .rect = .{ .x = pane_w, .y = scroll_y, .w = @max(0, avail.w - pane_w), .h = scroll_h },
             .background = true,
             .color_fill = palette.teal_bg,
             .padding = .all(0),
