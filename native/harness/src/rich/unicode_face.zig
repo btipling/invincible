@@ -35,7 +35,14 @@ pub fn isEmojiRelated(cp: u21) bool {
         // toolTrace ("✓ ok" / "✗ failed"). OpenMoji subset lacks those glyphs; DejaVu
         // symbols has them (isSymbolRelated). Without this carve-out paint shows tofu.
         0x2600...0x2712 => true,
-        0x2719...0x27BF => true,
+        0x2719...0x276D => true,
+        // CLI dingbats 0x276E–0x27BF: carved out so ❯❮ and similar route to
+        // isSymbolRelated → DejaVu (OpenMoji lacks them). Explicit emoji keepers
+        // below prevent regression for the few CPs OpenMoji actually ships.
+        0x2795...0x2797 => true, // ➕➖➗
+        0x27A1 => true, // ➡
+        0x27B0 => true, // ➰
+        0x27BF => true, // ➿
         0x2934...0x2935 => true,
         0x2B05...0x2B55 => true,
         0x3030, 0x303D => true,
@@ -185,6 +192,29 @@ test "vitest U+23AF and box-drawing horizontals are not emoji" {
     // Prior carve-outs still hold
     try std.testing.expect(faceFor(0x2713) == .symbols);
     try std.testing.expect(faceFor(0x2192) == .symbols);
+}
+
+test "CLI dingbats ❯❮ route to symbols not emoji" {
+    // U+276F HEAVY RIGHT-POINTING ANGLE QUOTATION MARK ORNAMENT (❯)
+    try std.testing.expect(!isEmojiRelated(0x276F));
+    try std.testing.expect(isSymbolRelated(0x276F));
+    try std.testing.expect(faceFor(0x276F) == .symbols);
+    // U+276E HEAVY LEFT-POINTING ANGLE QUOTATION MARK ORNAMENT (❮)
+    try std.testing.expect(!isEmojiRelated(0x276E));
+    try std.testing.expect(isSymbolRelated(0x276E));
+    try std.testing.expect(faceFor(0x276E) == .symbols);
+    // U+27A4 BLACK RIGHTWARDS ARROWHEAD (➤) — in the carved gap
+    try std.testing.expect(!isEmojiRelated(0x27A4));
+    try std.testing.expect(faceFor(0x27A4) == .symbols);
+    // Regression: ❤ U+2764 stays emoji (before carve boundary)
+    try std.testing.expect(faceFor(0x2764) == .emoji);
+    // Regression: explicit emoji keepers stay emoji
+    try std.testing.expect(faceFor(0x2795) == .emoji); // ➕
+    try std.testing.expect(faceFor(0x2796) == .emoji); // ➖
+    try std.testing.expect(faceFor(0x2797) == .emoji); // ➗
+    try std.testing.expect(faceFor(0x27A1) == .emoji); // ➡
+    try std.testing.expect(faceFor(0x27B0) == .emoji); // ➰
+    try std.testing.expect(faceFor(0x27BF) == .emoji); // ➿
 }
 
 test "separatorLookalike maps report bars to U+2015; latin is null" {

@@ -21,7 +21,7 @@
 - Report separators (Vitest **U+23AF** `⎯`, scan lines U+23BA–U+23BD, box-drawing horizontals U+2500/U+2501) are **not** in any embedded face. Mixed / substituted paint draws **U+2015 HORIZONTAL BAR** on **Noto body** (sized to the surrounding run) — Vera Mono does **not** contain U+2015, so painting the lookalike on the fence face still tofus. Copy / ring bytes stay the original scalar. Full box-drawing and `dvui.expander` titles may still tofu.
 - OpenMoji subset: common emoji + modifiers (ZWJ, VS16, skin tones, regional indicators). Color emoji and perfect ZWJ family glyphs depend on the shaper; FreeType/stb outline path is monochrome single-glyph.
 - CJK (e.g. 日本語) may still missing-glyph until a CJK face is added.
-- Mono (Vera) still lacks arrows — fence code with `→` may still tofu; body/system/tool lines use mixed body+symbols.
+- Mono (Vera) still lacks arrows and CLI dingbats (❯❮ etc.) — fence code paths paint these via `addTextMixed` DejaVu symbols at mono size (same `faceFor` switching as body text).
 
 ## Rebuild symbols subset
 
