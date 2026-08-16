@@ -75,7 +75,9 @@ test "busy-row fills window content width edge-to-edge (full-width teal_bg bar)"
     var tr = try dvui.testing.init(.{});
     defer tr.deinit();
     const rects = paintAndGetRects();
-    const win = dvui.windowRect();
+    // Tag rects are physical pixels; use windowRectPixels() so this passes
+    // regardless of the testing backend's pixel-scale version (local vs CI).
+    const win = dvui.windowRectPixels();
     // expand=.horizontal must fill window content width, not shrink-wrap.
     try t.expectApproxEqAbs(win.w, rects.row.w, EPS);
     // Must be pinned to the content origin (x=0), not inset.
