@@ -6,6 +6,7 @@ const parse = @import("parse.zig");
 const paint_text = @import("paint_text.zig");
 const paint_code = @import("paint_code.zig");
 const diff_lang = @import("diff_lang.zig");
+const mixed_text = @import("mixed_text.zig");
 
 pub const isDiffLang = diff_lang.isDiffLang;
 pub const classifyLine = diff_lang.classifyLine;
@@ -84,9 +85,10 @@ fn paintDiffText(
             const kind = classifyLine(line, in_hunk.*);
             if (std.mem.startsWith(u8, line, "@@")) in_hunk.* = true;
             const color = lineColor(kind, ctx);
-            tl.addText(line, .{
+            // Mono (Vera) lacks U+23AF/U+2500/U+2501 — substitute U+2015 so a
+            // report banner inside a diff/patch fence does not tofu (paint-only).
+            mixed_text.addTextSubstituted(tl, line, .theme(.mono), .{
                 .color_text = color,
-                .font = .theme(.mono),
             });
             if (at_nl and line_count.* + 1 < cap) {
                 tl.addText("\n", .{ .font = .theme(.mono) });

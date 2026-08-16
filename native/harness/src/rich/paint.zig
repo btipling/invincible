@@ -5,6 +5,7 @@ const parse = @import("parse.zig");
 const cache = @import("cache.zig");
 const style_mod = @import("style.zig");
 const paint_text = @import("paint_text.zig");
+const mixed_text = @import("mixed_text.zig");
 const registry = @import("registry.zig");
 const kinds = @import("kinds.zig");
 
@@ -91,13 +92,21 @@ pub fn paintDocument(
 
 fn paintPlainBody(src: std.builtin.SourceLocation, text: []const u8, opts: MessagePaintOpts, is_err: bool) void {
     const st = style_mod.defaultStyle();
+    const color = if (is_err) @import("../palette.zig").ember_text else st.body_text;
     var tl = dvui.textLayout(src, .{}, .{
         .expand = .horizontal,
         .id_extra = opts.msg_index *% 1024,
-        .color_text = if (is_err) @import("../palette.zig").ember_text else st.body_text,
+        .color_text = color,
         .font = .theme(.body),
         .background = false,
     });
     defer tl.deinit();
-    if (text.len > 0) tl.addText(text, .{});
+    if (text.len > 0) {
+        // Noto lacks U+23AF/U+2500/U+2501 — substitute U+2015 so a report
+        // banner in a system/error/parse-fail/empty-block row does not tofu
+        // (paint-only; ring/Copy bytes keep the original scalars).
+        mixed_text.addTextSubstituted(tl, text, .theme(.body), .{
+            .color_text = color,
+        });
+    }
 }

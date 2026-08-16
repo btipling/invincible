@@ -1,6 +1,7 @@
 //! Split text runs across body + emoji + symbols faces (dvui has no per-glyph fallback).
 //! Emoji: OpenMoji monochrome outlines inked with Asteronica teal_accent.
 //! Symbols: DejaVu subset (arrows / math / dingbats missing from Noto) at body size + body ink.
+//! Report separators with no embedded glyph paint as Noto U+2015 (see separatorLookalike).
 //! Zig 0.16: `utf8Decode` requires an exact one-codepoint byte slice (len 1–4).
 const std = @import("std");
 const dvui = @import("dvui");
@@ -11,6 +12,7 @@ pub const isEmojiRelated = unicode_face.isEmojiRelated;
 pub const isSymbolRelated = unicode_face.isSymbolRelated;
 pub const Face = unicode_face.Face;
 pub const faceFor = unicode_face.faceFor;
+pub const separatorLookalike = unicode_face.separatorLookalike;
 
 pub const PaintOpts = struct {
     color_text: ?dvui.Color = null,
@@ -59,6 +61,19 @@ pub fn addTextMixed(
             paintSlice(tl, text[start..i], base, opts);
             continue;
         };
+        if (separatorLookalike(first.cp) != null) {
+            // No shipped face embeds these CPs — paint Noto U+2015. Ring bytes
+            // stay the original scalars (Copy is not this slice).
+            var n: usize = 1;
+            i += first.len;
+            while (nextCodepoint(text, i)) |nx| {
+                if (separatorLookalike(nx.cp) == null) break;
+                n += 1;
+                i += nx.len;
+            }
+            paintLookalikeRun(tl, n, base, opts);
+            continue;
+        }
         const want = faceFor(first.cp);
         i += first.len;
 
@@ -82,6 +97,71 @@ pub fn addTextMixed(
             },
             .body => paintSlice(tl, slice, base, opts),
         }
+    }
+}
+
+/// Paint `text` on a single `base` face/ink, substituting report-separator CPs
+/// (U+23AF etc., no embedded glyph) with Noto U+2015. For mono / plain paths that
+/// bypass addTextMixed (diff/patch fences, plain-body fallback — see the harness
+/// paint choke-point note). Length-agnostic: emits contiguous runs, so ring/Copy
+/// bytes stay the original scalars.
+pub fn addTextSubstituted(
+    tl: *dvui.TextLayoutWidget,
+    text: []const u8,
+    base: dvui.Font,
+    opts: PaintOpts,
+) void {
+    if (text.len == 0) return;
+    var i: usize = 0;
+    while (i < text.len) {
+        const first = nextCodepoint(text, i) orelse {
+            // invalid lead — advance one byte on the base face
+            i += 1;
+            paintSlice(tl, text[i - 1 .. i], base, opts);
+            continue;
+        };
+        if (separatorLookalike(first.cp) != null) {
+            var n: usize = 1;
+            i += first.len;
+            while (nextCodepoint(text, i)) |nx| {
+                if (separatorLookalike(nx.cp) == null) break;
+                n += 1;
+                i += nx.len;
+            }
+            paintLookalikeRun(tl, n, base, opts);
+            continue;
+        }
+        const start = i;
+        i += first.len;
+        while (nextCodepoint(text, i)) |nc| {
+            if (separatorLookalike(nc.cp) != null) break;
+            i += nc.len;
+        }
+        paintSlice(tl, text[start..i], base, opts);
+    }
+}
+
+const hbar_utf8 = "\u{2015}";
+
+fn paintLookalikeRun(
+    tl: *dvui.TextLayoutWidget,
+    count: usize,
+    font: dvui.Font,
+    opts: PaintOpts,
+) void {
+    if (count == 0) return;
+    var buf: [96]u8 = undefined;
+    const per = hbar_utf8.len;
+    const chunk = buf.len / per;
+    var left = count;
+    while (left > 0) {
+        const take = @min(left, chunk);
+        var k: usize = 0;
+        while (k < take) : (k += 1) {
+            @memcpy(buf[k * per ..][0..per], hbar_utf8);
+        }
+        paintSlice(tl, buf[0 .. take * per], font, opts);
+        left -= take;
     }
 }
 
