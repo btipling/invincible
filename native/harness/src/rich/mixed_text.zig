@@ -144,6 +144,19 @@ pub fn addTextSubstituted(
 
 const hbar_utf8 = "\u{2015}";
 
+/// Face used to paint the U+2015 separator lookalike: always Noto body at the
+/// surrounding run's size / weight / style / strike. Noto body embeds U+2015;
+/// Vera (mono) and the DejaVu symbols subset do not, so painting the substitute
+/// on a mono `base` still tofus (fenced / inline code / diff fences). Pure —
+/// host-testable (adversarial-review PR #595 Minors L1/L6).
+pub fn lookalikePaintFont(base: dvui.Font) dvui.Font {
+    return palette.fontBody()
+        .withSize(base.size)
+        .withWeight(base.weight)
+        .withStyle(base.style)
+        .withStrike(base.strike);
+}
+
 fn paintLookalikeRun(
     tl: *dvui.TextLayoutWidget,
     count: usize,
@@ -151,14 +164,7 @@ fn paintLookalikeRun(
     opts: PaintOpts,
 ) void {
     if (count == 0) return;
-    // Vera (mono) and the DejaVu symbols subset do not embed U+2015; Noto body
-    // does. Always paint the lookalike on Noto at the surrounding run's size
-    // so fenced / inline code (base = .theme(.mono)) does not tofu.
-    const font = palette.fontBody()
-        .withSize(base.size)
-        .withWeight(base.weight)
-        .withStyle(base.style)
-        .withStrike(base.strike);
+    const font = lookalikePaintFont(base);
     var buf: [96]u8 = undefined;
     const per = hbar_utf8.len;
     const chunk = buf.len / per;
