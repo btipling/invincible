@@ -18,6 +18,7 @@ type MockExtras = {
   __setLoadEarlierPending: (on: boolean) => void;
   __setCancelPending: (on: boolean) => void;
   __lifecycle: () => Lifecycle;
+  __turnElapsed: () => number;
 };
 
 function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBridgeExports & MockExtras {
@@ -39,6 +40,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
   const catalog: string[] = [];
   let selected = 0;
   const statusSlots: (string | undefined)[] = new Array(8).fill(undefined);
+  let turnElapsedSec = 0;
 
   const gpa_u8 = (len: number) => {
     if (len <= 0) return 0;
@@ -184,6 +186,9 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_status_slots_clear: () => {
       for (let i = 0; i < 8; i++) statusSlots[i] = undefined;
     },
+    inv_set_turn_elapsed: (secs: number) => {
+      turnElapsedSec = secs;
+    },
     inv_image_cache_put: () => 0,
     inv_image_cache_clear: () => {},
     inv_math_cache_put: () => 0,
@@ -199,6 +204,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
       cancelPending = !!on;
     },
     __lifecycle: () => lifecycle,
+    __turnElapsed: () => turnElapsedSec,
   };
 
   return {
@@ -209,6 +215,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     __setLoadEarlierPending: base.__setLoadEarlierPending,
     __setCancelPending: base.__setCancelPending,
     __lifecycle: base.__lifecycle,
+    __turnElapsed: base.__turnElapsed,
   };
 }
 
@@ -538,7 +545,7 @@ describe('skill_attached kind (protocol v12)', () => {
     // Distinct from the protocol version (13) — a hardcoded kind 13 would be an
     // unknown kind to the Wasm painter.
     expect(MessageKind.SkillAttached).not.toBe(HARNESS_PROTOCOL_VERSION);
-    expect(HARNESS_PROTOCOL_VERSION).toBe(13);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(14);
   });
 
   it('push/readback round-trips a skill_attached row', () => {
@@ -554,6 +561,28 @@ describe('skill_attached kind (protocol v12)', () => {
 
   it('messageKindLabel maps the skill kind', () => {
     expect(messageKindLabel(MessageKind.SkillAttached)).toBe('skill');
+  });
+});
+
+describe('setTurnElapsed (protocol v14)', () => {
+  it('feeds scalar elapsed seconds to the Wasm (passthrough)', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setTurnElapsed(42);
+    expect(exp.__turnElapsed()).toBe(42);
+    bridge.setTurnElapsed(0);
+    expect(exp.__turnElapsed()).toBe(0);
+  });
+
+  it('version bumped to 14 and the export is REQUIRED (fail-closed when missing)', () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe(14);
+    const exp = makeMockExports() as unknown as WebAssembly.Exports;
+    expect(isHarnessBridgeExports(exp)).toBe(true);
+    // A rebuilt Wasm that omits inv_set_turn_elapsed fails bridge-load closed,
+    // mirroring a missed build.zig export-symbol whitelist entry (plan #567 1a).
+    const record = exp as unknown as Record<string, unknown>;
+    delete record.inv_set_turn_elapsed;
+    expect(isHarnessBridgeExports(record as WebAssembly.Exports)).toBe(false);
   });
 });
 

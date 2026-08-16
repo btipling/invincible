@@ -98,6 +98,7 @@ pub fn build(b: *std.Build) void {
         "inv_status_slot_len",
         "inv_status_slot_copy",
         "inv_status_slots_clear",
+        "inv_set_turn_elapsed",
         "inv_image_cache_put",
         "inv_image_cache_clear",
         "inv_math_cache_put",
