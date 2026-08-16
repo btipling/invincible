@@ -62,7 +62,7 @@ type DvuiHost = {
 /**
  * Busy spinner pulse cadence (plan #574, `HARNESS_BUSY_TICK_HZ`). NEW cap —
  * 10 Hz while Busy, 0 otherwise. The host wall-clock tick advances the 8-cell
- * 2×4 WARM column-wave pulse one cell per tick (~0.8 s cycle) and re-uses the
+ * 2×4 WARM clockwise pulse one cell per tick (~0.8 s cycle) and re-uses the
  * v14 whole-turn clock feed (`setTurnElapsed`) every 10th tick (~1 Hz). 10 Hz ≪
  * the dvui 60 fps frame ceiling and turns are transient — see docs/harness-limits.md.
  */

@@ -98,8 +98,8 @@ var lifecycle: Lifecycle = .boot;
 /// busy row hides the clock while this is 0.
 var turn_elapsed: u32 = 0;
 /// Protocol v14 addendum (plan #574) — host 10 Hz busy-tick phase counter that
-/// drives the 2×4 WARM spinner (column-wave pulse). Scalar u8 wraps naturally;
-/// the spinner's 8-cell cycle uses `busy_tick % 8`. `0` = head at top-left
+/// drives the 2×4 WARM spinner (clockwise pulse). Scalar u8 wraps naturally;
+/// the spinner's 8-cell cycle uses `busy_tick % 8`. `0` = head at bottom-left
 /// (also the static/reduced-motion / old-host value). Reset on `reset()` and on
 /// a host push of 0 (idle/stop/error/clear).
 var busy_tick: u8 = 0;
@@ -291,7 +291,7 @@ pub fn turnElapsed() u32 {
 }
 
 /// Protocol v14 addendum — the current busy-tick phase counter (0 = head at
-/// top-left). The Wasm busy row reads this each frame via `busySpinnerCells`.
+/// bottom-left). The Wasm busy row reads this each frame via `busySpinnerCells`.
 pub fn busyTick() u8 {
     return busy_tick;
 }
@@ -566,7 +566,7 @@ export fn inv_set_turn_elapsed(secs: u32) void {
 
 /// Protocol v14 addendum (plan #574) — host 10 Hz busy-tick phase for the 2×4
 /// spinner. Scalar u8 (truncated from the host's monotonic tick counter; wraps
-/// naturally at 256 ≫ the 8-cell cycle). `phase == 0` → head at top-left, which
+/// naturally at 256 ≫ the 8-cell cycle). `phase == 0` → head at bottom-left, which
 /// is also the reduced-motion / idle / old-host value. Each write calls
 /// `refresh()` so the canvas reconstitutes at up to 10 Hz while Busy (see
 /// `HARNESS_BUSY_TICK_HZ` in docs — well below the dvui 60 fps ceiling).
