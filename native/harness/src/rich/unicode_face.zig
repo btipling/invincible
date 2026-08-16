@@ -118,7 +118,6 @@ test "text arrows route to symbols not emoji" {
     try std.testing.expect(faceFor(0x1F600) == .emoji);
 }
 
-
 test "tool status check and ballot marks route to symbols not emoji" {
     // U+2713 CHECK MARK, U+2717 BALLOT X — summarizeToolLine status
     try std.testing.expect(!isEmojiRelated(0x2713));

@@ -100,6 +100,47 @@ pub fn addTextMixed(
     }
 }
 
+/// Paint `text` on a single `base` face/ink, substituting report-separator CPs
+/// (U+23AF etc., no embedded glyph) with Noto U+2015. For mono / plain paths that
+/// bypass addTextMixed (diff/patch fences, plain-body fallback — see the harness
+/// paint choke-point note). Length-agnostic: emits contiguous runs, so ring/Copy
+/// bytes stay the original scalars.
+pub fn addTextSubstituted(
+    tl: *dvui.TextLayoutWidget,
+    text: []const u8,
+    base: dvui.Font,
+    opts: PaintOpts,
+) void {
+    if (text.len == 0) return;
+    var i: usize = 0;
+    while (i < text.len) {
+        const first = nextCodepoint(text, i) orelse {
+            // invalid lead — advance one byte on the base face
+            i += 1;
+            paintSlice(tl, text[i - 1 .. i], base, opts);
+            continue;
+        };
+        if (separatorLookalike(first.cp) != null) {
+            var n: usize = 1;
+            i += first.len;
+            while (nextCodepoint(text, i)) |nx| {
+                if (separatorLookalike(nx.cp) == null) break;
+                n += 1;
+                i += nx.len;
+            }
+            paintLookalikeRun(tl, n, base, opts);
+            continue;
+        }
+        const start = i;
+        i += first.len;
+        while (nextCodepoint(text, i)) |nc| {
+            if (separatorLookalike(nc.cp) != null) break;
+            i += nc.len;
+        }
+        paintSlice(tl, text[start..i], base, opts);
+    }
+}
+
 const hbar_utf8 = "\u{2015}";
 
 fn paintLookalikeRun(
