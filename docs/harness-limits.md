@@ -20,7 +20,7 @@ See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 | MIME | `application/wasm` for `/harness/*.wasm` (`next.config.js`) |
 | First paint | Spinner until instantiate; full-bleed canvas after ready |
 | Cache | `public, max-age=3600, stale-while-revalidate=86400` |
-| Build id | Baked short git SHA (`-Dbuild-id`); file `public/harness/build-id.txt`; shown as `h:…` in canvas header — must match after deploy |
+| Build id | Baked short git SHA (`-Dbuild-id`); file `public/harness/build-id.txt`; shown as `h:…` in status bar line 1 — must match after deploy |
 
 ## Keyboard & focus
 
@@ -45,15 +45,14 @@ Vertical bands inside the Wasm root (not a DOM panel):
 
 | Band | Behavior |
 |------|----------|
-| **Header** | Compact lifecycle / build id / model cycle — fixed height (`header_h` = `TOUCH_H + 24`), not measured each frame; no redundant title (brand identity lives in the DOM) |
 | **Transcript** | One outer `scrollArea` that takes **remaining** height only |
 | **Composer chrome** | Single-row text field + one trailing **icon-only** button (▶ Send / ■ Stop) in a **reserved bottom band** outside the scroller (plan #457) |
-| **Status bar** | Thin, always-mounted full-width strip **below the composer** holding the status-slot pack (sandbox · cwd · git · context); fixed `STATUS_BAR_H` height, never collapses (plan #555 → #554) |
+| **Status bar** | **Two-line** always-mounted full-width strip **below the composer**: line 1 = identity (lifecycle · `h:{build-id}` · model label · Next), line 2 = status-slot pack (sandbox · cwd · git · context); fixed `STATUS_BAR_H` = 56 px, never collapses (plan #570, merged from header per plan #555 → #554) |
 
 | Rule | Behavior |
 |------|----------|
 | Composer visibility | Fully on-canvas while the harness is ready; not optional |
-| Height budget | Every frame: viewport → absolute `Options.rect` bands (header / transcript / composer). Rect children do not report min-size up the tree, so tall content cannot push chrome off-canvas |
+| Height budget | Every frame: viewport → absolute `Options.rect` bands (transcript / composer / two-line status bar). Rect children do not report min-size up the tree, so tall content cannot push chrome off-canvas |
 | Wrap / grow | Field is **`break_lines`** + grows **vertically** with wrapped lines up to `COMPOSER_INPUT_MAX_H` (120 px) then scrolls **inside** the entry — never a horizontal gutter (repo no-h-scroll policy, #344/#457) |
 | Icon button | Fixed **`TOUCH_H`×`TOUCH_H`** (40 px) square on the **same row** as the field, vertically centered. Idle = ▶ Send (submit when non-empty); Busy = ■ Stop (protocol v9 `queueCancelFromUi` → host abort). No labelled Stop/Send pill, no hint copy. Glyphs from the embedded DejaVu Sans Symbols face (no tofu) |
 | Turn clock | Whole-turn **`mm:ss`** is painted **in-canvas** by the Wasm busy row (`Waiting for model… · 0:42`), protocol **v14** (`inv_set_turn_elapsed`). The **DOM host** owns the only reliable wall-clock (no WASI clock in Wasm): its ~1 Hz Busy effect pushes the elapsed seconds to the bridge (`HarnessBridge.setTurnElapsed` → `inv_set_turn_elapsed`), reset to 0 on Ready/Stop/error so no bare `0:00` lingers. The clock is client wall-time from turn start — **not** provider `usage` duration. See [feature-divide.md](feature-divide.md) |
@@ -66,7 +65,7 @@ Vertical bands inside the Wasm root (not a DOM panel):
 
 | Topic | Behavior |
 |-------|----------|
-| Owner | **Wasm-primary** bottom status bar (plan #538/#541, relocated below the composer by plan #555 → #554): the status-slot pack is painted as a thin full-width strip directly **under** the composer band. The header no longer paints the pack (or a redundant title); the DOM host only **mirrors** (see [feature-divide.md](feature-divide.md)) — never a competing status panel. Empty slot store still mounts the fixed `STATUS_BAR_H` band as a subtle bare strip — it never collapses |
+| Owner | **Wasm-primary** two-line bottom status bar (plan #538/#541, relocated below the composer by plan #555 → #554, header merged by plan #570): **line 1** = identity (lifecycle · `h:{build-id}` · model label · Next — formerly the top header band), **line 2** = status-slot pack (sandbox · cwd · git · context). The top header band is removed entirely; the DOM host only **mirrors** (see [feature-divide.md](feature-divide.md)) — never a competing status panel. Empty slot store still mounts the fixed `STATUS_BAR_H` = 56 px band as a subtle bare strip — it never collapses |
 | Slots | **sandbox** (`activeSandboxId` → `sandbox <id>` short label) · **cwd** (workspace-relative session cwd) · **git** (`branch@sha[∗]`, Phase 2 #540) · **context/usage** (`N in · M out · T tok`, Phase 3 #539) |
 | Bridge carrier | Additive status-slot store (`inv_set_status_slot` / `inv_status_slot_len/copy` / `inv_status_slots_clear`), bridge protocol **v13** (old exports untouched). A host push **replaces** one slot; `len==0` clears it (slot hidden) |
 | Host fold | After hydrate/restore and after **every** agent turn — success **and** fail (PR #543: a 403-clear or committed `change_dir` on a cancelled/timed-out turn repaints the pack; same fold-before-persist discipline as `attachedSlugs`) — the host folds session state into the pack (`lib/harnessChat.ts` `foldStatusSlots`, call sites: hydrate + `runHarnessTurn` success + `runHarnessTurn` fail). Clear/New session clears the pack |

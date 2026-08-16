@@ -77,7 +77,7 @@ const NEAR_BOTTOM_PX: f32 = 48;
 const CONTENT_GREW_EPS: f32 = 1.0;
 /// Reserved bottom chrome: single-row textEntry + trailing TOUCH_H icon + margins
 /// (plan #457 — replaces the old textEntry + Send/Stop action row from plan #138).
-/// Height budget: header + this win over transcript min on short canvases.
+/// Height budget: composer chrome wins over transcript min on short canvases.
 const COMPOSER_CHROME_MIN: f32 = COMPOSER_INPUT_MAX_H + 2 * COMPOSER_PAD_Y;
 /// Chrome box top padding (Options.padding.y) — outside min_size_content.
 const COMPOSER_PAD_Y: f32 = 4;
@@ -96,7 +96,7 @@ const SCROLL_FLOOR_H: f32 = 32;
 /// chrome budget so the transcript never overlaps it and the transcript+composer
 /// stack never jumps vertically when a sandbox attaches. A NEW Wasm geometry
 /// cap (see plan #555 Caps table): generous single-line value, never collapsed.
-const STATUS_BAR_H: f32 = 28;
+const STATUS_BAR_H: f32 = 56;
 
 pub fn onInit() void {
     bridge.reset();
@@ -945,97 +945,22 @@ pub fn frame() !void {
         avail = .{ .x = 0, .y = 0, .w = @max(1, wr.w - 16), .h = @max(1, wr.h - 16) };
     }
 
-    // Fixed chrome height (content + pad). Header uses a measured estimate then
-    // absolute placement so bands never depend on expand packing order.
+    // Fixed chrome height (content + pad). Absolute placement so bands never
+    // depend on expand packing order (header band removed — plan #570).
     const chrome_h: f32 = COMPOSER_CHROME_MIN + COMPOSER_PAD_Y;
-    // Header band: title row ~ TOUCH_H + padding/margin.
-    const header_h: f32 = TOUCH_H + 24;
     // Bottom chrome = composer band + the always-mounted status bar BELOW it.
     // Reserving both up front keeps scroll/transcript geometry constant whether
     // or not any status slot is populated, so attaching a sandbox never makes
     // the transcript+composer stack jump vertically (plan #555 locked decision).
     const bottom_h: f32 = chrome_h + STATUS_BAR_H;
-    const scroll_y = header_h + BAND_GAP;
+    const scroll_y = BAND_GAP;
     const scroll_h = @max(SCROLL_FLOOR_H, avail.h - scroll_y - bottom_h - BAND_GAP);
     // Composer top sits above the fixed status strip, which owns the very bottom.
     const chrome_y = avail.h - bottom_h;
     const status_y = avail.h - STATUS_BAR_H;
 
-    // ── Header (absolute top band) ────────────────────────────────────────
-    {
-        var head = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .rect = .{ .x = 0, .y = 0, .w = 0, .h = header_h },
-            .expand = .horizontal,
-            .background = true,
-            .color_fill = palette.teal_surface,
-            .color_border = palette.teal_border,
-            .padding = .{ .x = 10, .y = 6, .w = 10, .h = 6 },
-            .min_size_content = .{ .w = 0, .h = TOUCH_H - 8 },
-        });
-        defer head.deinit();
-
-        // Product identity lives in the DOM brand bar (`Invincible` in
-        // AppNav.tsx), so the canvas no longer announces itself — the old
-        // `Agent harness` heading block is gone (plan #555 → #554). The header
-        // keeps its live chrome: lifecycle · build id · model label + Next.
-        {
-            var tl = dvui.textLayout(@src(), .{}, .{
-                .color_text = if (busy) palette.warm_accent else palette.teal_muted,
-                .gravity_y = 0.5,
-            });
-            tl.format("{s}", .{lifecycleLabel(life)}, .{});
-            tl.deinit();
-        }
-        // Build id — proves which wasm is running (stale-cache detector).
-        {
-            var tl = dvui.textLayout(@src(), .{}, .{
-                .color_text = palette.teal_muted,
-                .gravity_y = 0.5,
-                .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
-            });
-            tl.format("h:{s}", .{BUILD_ID}, .{});
-            tl.deinit();
-        }
-        // Protocol v3: cycle through granted models (host pushed catalog).
-        {
-            const cat_n = bridge.modelCatalogCount();
-            {
-                var tl = dvui.textLayout(@src(), .{}, .{
-                    .color_text = if (cat_n == 0) palette.teal_muted else palette.teal_accent,
-                    .gravity_y = 0.5,
-                    .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
-                });
-                if (cat_n == 0) {
-                    tl.addText("no model", .{});
-                } else {
-                    tl.format("{s}", .{bridge.selectedModelLabel()}, .{});
-                }
-                tl.deinit();
-            }
-            if (cat_n > 1) {
-                if (dvui.button(@src(), "Next", .{}, .{
-                    .gravity_y = 0.5,
-                    .style = .content,
-                    .min_size_content = .{ .w = 52, .h = TOUCH_H - 8 },
-                    .corners = .round(6),
-                    .color_fill = palette.teal_bg,
-                    .color_text = palette.teal_accent,
-                    .color_border = palette.teal_border,
-                    .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
-                })) {
-                    if (!busy) {
-                        bridge.cycleSelectedModel();
-                    }
-                }
-            }
-        }
-        // NOTE: the protocol v13 status-slot pack no longer mounts in the header
-        // — it moved to the always-present status bar mounted at the very bottom
-        // of the frame, below the composer, and is painted there in its own band
-        // at the end of frame() (plan #555 → #554).
-    }
-
     // ── Transcript (absolute middle band — fixed pixel height) ────────────
+    // (Header band removed — plan #570 merges its content into the two-line status bar)
     const near_before = isNearBottom(&transcript_scroll);
     const prev_msg = last_msg_count;
     const prev_shown = last_shown_count;
@@ -1428,8 +1353,11 @@ pub fn frame() !void {
     }
 
     // ── Status bar (absolute bottom band — BELOW the composer, always mounted) ──
+    // Two-line layout (plan #570): vertical container with identity on line 1
+    // and status slots on line 2. Always mounted at fixed STATUS_BAR_H so the
+    // transcript+composer stack never jumps when a sandbox attaches.
     {
-        var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        var bar = dvui.box(@src(), .{ .dir = .vertical }, .{
             .rect = .{ .x = 0, .y = status_y, .w = 0, .h = STATUS_BAR_H },
             .expand = .horizontal,
             .background = true,
@@ -1437,13 +1365,79 @@ pub fn frame() !void {
             .color_border = palette.teal_border,
             .padding = .{ .x = 10, .y = 0, .w = 10, .h = 0 },
             .min_size_content = .{ .w = 120, .h = STATUS_BAR_H },
-            .id_extra = 0x61_0100,
+            .id_extra = 0x61_0300,
         });
         defer bar.deinit();
-        // Always mounted (locked plan #555): with no non-empty slots this paints
-        // the fixed-height subtle TEAL band and nothing else — it NEVER collapses,
-        // so `chrome_y`/`scroll_h` (reserved above) keep the stack from jumping
-        // when a sandbox attaches. Protocol v13 store + drop order untouched.
-        paintStatusSlots(life);
+
+        // Line 1: identity (lifecycle · build id · model label · Next)
+        {
+            var line1 = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                .expand = .horizontal,
+                .gravity_y = 0.5,
+                .id_extra = 0x61_0100,
+            });
+            defer line1.deinit();
+
+            {
+                var tl = dvui.textLayout(@src(), .{}, .{
+                    .color_text = if (busy) palette.warm_accent else palette.teal_muted,
+                    .gravity_y = 0.5,
+                });
+                tl.format("{s}", .{lifecycleLabel(life)}, .{});
+                tl.deinit();
+            }
+            {
+                var tl = dvui.textLayout(@src(), .{}, .{
+                    .color_text = palette.teal_muted,
+                    .gravity_y = 0.5,
+                    .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
+                });
+                tl.format("h:{s}", .{BUILD_ID}, .{});
+                tl.deinit();
+            }
+            {
+                const cat_n = bridge.modelCatalogCount();
+                {
+                    var tl = dvui.textLayout(@src(), .{}, .{
+                        .color_text = if (cat_n == 0) palette.teal_muted else palette.teal_accent,
+                        .gravity_y = 0.5,
+                        .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
+                    });
+                    if (cat_n == 0) {
+                        tl.addText("no model", .{});
+                    } else {
+                        tl.format("{s}", .{bridge.selectedModelLabel()}, .{});
+                    }
+                    tl.deinit();
+                }
+                if (cat_n > 1) {
+                    if (dvui.button(@src(), "Next", .{}, .{
+                        .gravity_y = 0.5,
+                        .style = .content,
+                        .min_size_content = .{ .w = 52, .h = TOUCH_H - 8 },
+                        .corners = .round(6),
+                        .color_fill = palette.teal_bg,
+                        .color_text = palette.teal_accent,
+                        .color_border = palette.teal_border,
+                        .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
+                    })) {
+                        if (!busy) {
+                            bridge.cycleSelectedModel();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Line 2: status slots (protocol v13 store + drop order untouched)
+        {
+            var line2 = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                .expand = .horizontal,
+                .gravity_y = 0.5,
+                .id_extra = 0x61_0200,
+            });
+            defer line2.deinit();
+            paintStatusSlots(life);
+        }
     }
 }
