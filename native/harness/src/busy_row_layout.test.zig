@@ -19,7 +19,8 @@
 //!
 //! TextLayout heights are non-zero when the host build includes freetype
 //! rasterization (which the host-target testing build does). Vertical-
-//! alignment tests are conditional — they skip on h==0.
+//! alignment tests assert h>0 so the midpoint measurement is real, not a
+//! fail-open no-op (adversarial-review Minor L6).
 
 const std = @import("std");
 const t = std.testing;
@@ -139,8 +140,9 @@ test "spinner and text midpoints are gravity-centered (gravity_y=0.5)" {
     defer tr.deinit();
     const rects = paintAndGetRects();
 
-    // Host build includes freetype — text may have non-zero height.
-    if (rects.text.h <= 0) return;
+    // Host build includes freetype — require non-zero text height so this is a
+    // real measured midpoint, not a silent skip (adversarial-review Minor L6).
+    try t.expect(rects.text.h > 0);
 
     const smy = rects.spinner.y + rects.spinner.h / 2.0;
     const tmy = rects.text.y + rects.text.h / 2.0;
