@@ -37,6 +37,7 @@ optional login chrome).
 | Per-user MCP tools (connect + execute) | **Vercel backend** | `lib/mcp/*`; keys under tenant DEK; never Wasm/client |
 | Builtin HTTPS fetch (`http_get`) | **Vercel backend** | Env `BUILTIN_HTTP_FETCH`; attach-only durable HTTP instance (Settings Create HTTP instance); see [builtin-http.md](builtin-http.md) |
 | **Transcript (read messages)** | **Wasm** | Primary UX; rich MD + images + math + diff/patch fence paint in-canvas (`rich/*`) — no DOM markdown |
+| Transcript left rail (empty, collapsible) | **Wasm** | Inside the transcript band only (canvas top → composer). Default closed: 40 px icon strip. Open: 220 px empty TEAL column. Session list stays DOM `SessionPicker` in AppNav until a later move. No host CSS sidebar, no protocol |
 | Image bytes (fetch/decode) | **DOM host** | Browser fetch → RGBA → `inv_image_cache_put`; paint stays Wasm |
 | Math pixels (TeX raster) | **DOM host** | Host MathJax SVG → RGBA → `inv_math_cache_put`; paint stays Wasm |
 | **Composer + Send** | **Wasm** | Primary input; dynamic absolute-rect from previous-frame measured height: idle hugs one line (~44 px), grows up to cap (124 px), scrolls internally past 120 px content; glyphs inset 5 px from the field border; Send/Stop icon bottom-pinned (`gravity_y = 1.0`) stays on field baseline at all heights (plan #579) |

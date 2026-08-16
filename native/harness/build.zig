@@ -447,6 +447,21 @@ pub fn build(b: *std.Build) void {
         test_rich.dependOn(&b.addRunArtifact(busy_row_layout_tests).step);
     }
 
+    // Host dvui testing-backend layout-rect tests for transcript_split.zig
+    // (empty collapsible left rail). Closed 40 / open 220 widths + toggle tag.
+    {
+        const transcript_split_layout_tests = b.addTest(.{
+            .name = "transcript_split_layout",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/transcript_split_layout.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        transcript_split_layout_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
+        test_rich.dependOn(&b.addRunArtifact(transcript_split_layout_tests).step);
+    }
+
     // Host dvui testing-backend tests for `mixed_text.lookalikePaintFont`
     // (PR #595 adversarial-review Minors L1/L6): pins that the U+2015 separator
     // lookalike is ALWAYS Noto body at the surrounding run's size, regardless of

@@ -17,6 +17,7 @@ const cwd_slot = @import("cwd_slot.zig");
 const toolrun = @import("rich/toolrun.zig");
 const thinking_collapse = @import("thinking_collapse.zig");
 const busy_row = @import("busy_row.zig");
+const transcript_split = @import("transcript_split.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
@@ -150,6 +151,7 @@ pub fn onInit() void {
     // / host re-mount) must not keep a stale multi-line 124 px band until the
     // next wrap sample (adversarial review #584 Round 4 Minor L8).
     composer_last_h = COMPOSER_IDLE_CHROME_H;
+    transcript_split.reset();
 }
 
 fn resetTranscriptScroll() void {
@@ -1009,8 +1011,15 @@ pub fn frame() !void {
     const composer_y = status_y - composer_h;
     const scroll_y: f32 = 0;
     const scroll_h: f32 = @max(SCROLL_FLOOR_H, composer_y - scroll_y);
+    // Read pane width *before* paint so a same-frame toggle cannot desync the
+    // rail rect from the scrollArea x (IMGUI: click takes effect next frame).
+    const pane_w = transcript_split.paneWidth();
+    transcript_split.paint(scroll_y, scroll_h);
 
-    // ── Transcript (absolute rect — height from dynamic composer band) ────
+    // ── Transcript band (rail + scrollArea, sibling Options.rect) ──────────
+    // Rail is a sibling absolute rect in this same scroll_y/scroll_h slice.
+    // The scrollArea keeps its own Options.rect (x = pane_w) so the `.auto`
+    // bar cannot publish virtual content height into the root flex.
     // (Header band removed — plan #570 merges its content into the two-line status bar)
     const near_before = isNearBottom(&transcript_scroll);
     const prev_msg = last_msg_count;
@@ -1035,8 +1044,7 @@ pub fn frame() !void {
             .vertical_bar = .auto,
             .user_scroll = &user_scroll,
         }, .{
-            .rect = .{ .x = 0, .y = scroll_y, .w = 0, .h = scroll_h },
-            .expand = .horizontal,
+            .rect = .{ .x = pane_w, .y = scroll_y, .w = @max(0, avail.w - pane_w), .h = scroll_h },
             .background = true,
             .color_fill = palette.teal_bg,
             .padding = .all(0),
