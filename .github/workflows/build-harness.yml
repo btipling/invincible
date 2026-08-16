@@ -4,7 +4,11 @@
 #   - workflow_dispatch can force ubuntu-latest (Zig freestanding — no DO runner needed)
 #   - push main / workflow_dispatch always (path-filtered)
 #   - pull_request: same-repo head only (contributors with push access); never forks
-#   - never pull_request_target; never Vercel deploy hook on PR
+#   - never pull_request_target
+#   - never upload production artifact name `harness-wasm` except on `main`
+#     (push or workflow_dispatch --ref main) — PR heads used to share that
+#     name and win fetch-harness `latest`, shipping unmerged Zig to Production
+#   - never Vercel deploy hook on PR
 name: build-harness
 
 on:
@@ -136,6 +140,7 @@ jobs:
           head -c 4 "$STAGE/harness.wasm" | od -An -tx1
 
       - name: Upload harness-wasm artifact
+        if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
           name: harness-wasm

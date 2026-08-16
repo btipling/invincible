@@ -119,3 +119,39 @@ export function commitTouchesHarnessBuild(paths) {
   }
   return false;
 }
+
+/**
+ * True when an Actions artifact is allowed to ship to Vercel Production.
+ * Same name (`harness-wasm`) from a PR head used to win `latest` and poison
+ * the canvas (unmerged Zig). Only `main` (push or workflow_dispatch on main)
+ * is shippable. `expired` / wrong name / missing branch → false.
+ *
+ * @param {unknown} artifact
+ * @param {string} [artifactName='harness-wasm']
+ * @returns {boolean}
+ */
+export function isShippableHarnessArtifact(artifact, artifactName = 'harness-wasm') {
+  if (!artifact || typeof artifact !== 'object') return false;
+  const a = /** @type {{ expired?: boolean, name?: string, workflow_run?: { head_branch?: string } }} */ (
+    artifact
+  );
+  if (a.expired) return false;
+  if (a.name != null && a.name !== artifactName) return false;
+  return a.workflow_run?.head_branch === 'main';
+}
+
+/**
+ * First shippable artifact in a GitHub list (newest-first).
+ *
+ * @param {unknown} artifacts
+ * @param {string} [artifactName='harness-wasm']
+ * @returns {object | null}
+ */
+export function pickLatestShippableHarnessArtifact(artifacts, artifactName = 'harness-wasm') {
+  if (!Array.isArray(artifacts)) return null;
+  for (const a of artifacts) {
+    if (isShippableHarnessArtifact(a, artifactName)) return a;
+  }
+  return null;
+}
+
