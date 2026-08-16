@@ -7,8 +7,9 @@
 //! scale by default — assertions use physical pixels with `PX = 2`.
 //!
 //! dvui tag rects **include the widget's margin**. The rail uses no outer
-//! margin, so tag `w` should match `paneWidth * PX` (plus the 1 px right
-//! border, which lives inside the rect).
+//! margin and draws a 1 px TEAL right border (inside its rect), so tag `w`
+//! = `paneWidth * PX`. The toggle button zeroes inherited dvui defaults
+//! (margin/padding/border) so its outer tag rect matches `TOUCH_H * PX`.
 
 const std = @import("std");
 const t = std.testing;
@@ -57,7 +58,10 @@ test "default closed: rail width is SIDEBAR_RAIL_W, height is band_h" {
     try t.expectApproxEqAbs(transcript_split.SIDEBAR_RAIL_W * PX, rail.w, EPS);
     try t.expectApproxEqAbs(BAND_H * PX, rail.h, EPS);
     try t.expectApproxEqAbs(0, rail.x, EPS);
-    _ = dvui.tagGet("transcript-rail-toggle") orelse @panic("toggle tag not found");
+    const toggle = dvui.tagGet("transcript-rail-toggle") orelse @panic("toggle tag not found");
+    // Button chrome zeroed; toggle is TOUCH_H × TOUCH_H (± dvui rounding at 2×).
+    try t.expectApproxEqAbs(transcript_split.TOUCH_H * PX, toggle.rect.w, PX);
+    try t.expectApproxEqAbs(transcript_split.TOUCH_H * PX, toggle.rect.h, PX);
 }
 
 test "open: rail width is SIDEBAR_OPEN_W; toggle tag still present" {
@@ -68,7 +72,10 @@ test "open: rail width is SIDEBAR_OPEN_W; toggle tag still present" {
     const rail = paintAndGetRail();
     try t.expectApproxEqAbs(transcript_split.SIDEBAR_OPEN_W * PX, rail.w, EPS);
     try t.expectApproxEqAbs(BAND_H * PX, rail.h, EPS);
-    _ = dvui.tagGet("transcript-rail-toggle") orelse @panic("toggle tag not found");
+    const toggle = dvui.tagGet("transcript-rail-toggle") orelse @panic("toggle tag not found");
+    // Button chrome zeroed; toggle is TOUCH_H × TOUCH_H (± dvui rounding at 2×).
+    try t.expectApproxEqAbs(transcript_split.TOUCH_H * PX, toggle.rect.w, PX);
+    try t.expectApproxEqAbs(transcript_split.TOUCH_H * PX, toggle.rect.h, PX);
 }
 
 // Root window logical width — dvui testing backend defaults to 800×600.
