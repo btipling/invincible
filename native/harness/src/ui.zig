@@ -96,8 +96,6 @@ const COMPOSER_TE_PAD: f32 = 5;
 /// composer-chrome box caps at COMPOSER_INPUT_MAX_H + 2*COMPOSER_HUG_PAD via
 /// max_size_content; taller pasted content scrolls internally (plan #334 / #323).
 const COMPOSER_INPUT_MAX_H: f32 = 120;
-/// Vertical margins between header→scroll and scroll→chrome (Options.margin.h).
-const BAND_GAP: f32 = 6;
 /// Absolute floor so a short canvas still has a scroll band.
 const SCROLL_FLOOR_H: f32 = 32;
 /// Status-bar band height (px) — a two-line always-mounted full-width strip painted
@@ -986,8 +984,8 @@ pub fn frame() !void {
         .style = .window,
         .color_fill = palette.teal_bg,
         .color_text = palette.teal_text,
-        .color_border = palette.teal_border,
-        .padding = .all(8),
+        .padding = .all(0),
+        .border = .all(0),
     });
     defer root.deinit();
 
@@ -995,7 +993,7 @@ pub fn frame() !void {
     var avail = root.data().contentRect().justSize();
     if (avail.h < 1 or avail.w < 1) {
         const wr = dvui.windowRect();
-        avail = .{ .x = 0, .y = 0, .w = @max(1, wr.w - 16), .h = @max(1, wr.h - 16) };
+        avail = .{ .x = 0, .y = 0, .w = @max(1, wr.w), .h = @max(1, wr.h) };
     }
 
     // Status bar is absolute-rect at the very bottom (always-mounted, fixed 64 px).
@@ -1009,8 +1007,8 @@ pub fn frame() !void {
     const composer_h = @max(COMPOSER_IDLE_CHROME_H, @min(composer_last_h, COMPOSER_MAX_CHROME_H));
     const status_y = avail.h - STATUS_BAR_H;
     const composer_y = status_y - composer_h;
-    const scroll_y: f32 = BAND_GAP;
-    const scroll_h: f32 = @max(SCROLL_FLOOR_H, composer_y - BAND_GAP - scroll_y);
+    const scroll_y: f32 = 0;
+    const scroll_h: f32 = @max(SCROLL_FLOOR_H, composer_y - scroll_y);
 
     // ── Transcript (absolute rect — height from dynamic composer band) ────
     // (Header band removed — plan #570 merges its content into the two-line status bar)
@@ -1040,11 +1038,12 @@ pub fn frame() !void {
             .rect = .{ .x = 0, .y = scroll_y, .w = 0, .h = scroll_h },
             .expand = .horizontal,
             .background = true,
-            .color_fill = palette.teal_surface,
-            .color_border = palette.teal_border,
-            .min_size_content = .{ .w = 120, .h = scroll_h - 16 },
-            .max_size_content = .height(scroll_h - 16),
-            .padding = .all(8),
+            .color_fill = palette.teal_bg,
+            .padding = .all(0),
+            .border = .all(0),
+            .corners = .{ .tl = .square, .tr = .square, .br = .square, .bl = .square },
+            .min_size_content = .{ .w = 120, .h = scroll_h },
+            .max_size_content = .height(scroll_h),
         });
         defer scroll.deinit();
 
