@@ -80,7 +80,7 @@ To reduce abuse risk when this repository is **public**:
    - head branch is in **this** repository (`head.repo.full_name == github.repository`) — **not** forks;
    - `author_association` is one of `OWNER` / `MEMBER` / `COLLABORATOR` / `CONTRIBUTOR`;
    - path filter matches harness sources / this workflow.
-   - **Never** `pull_request_target`. **Never** Vercel deploy hook on PR. **Never** upload the production artifact name `harness-wasm` except when `github.ref == refs/heads/main` (PR compile/test only). Other self-hosted workflows stay main/`workflow_dispatch` only.
+   - **Never** `pull_request_target`. **Never** Vercel deploy hook on PR. **Never** upload the production artifact name `harness-wasm` except when `github.ref == refs/heads/main` (PRs compile and upload `harness-wasm-pr-<n>` only). Other self-hosted workflows stay main/`workflow_dispatch` only.
 3. Jobs include `if:` guards:
    - **Opt-in:** `vars.SELF_HOSTED_BUILDS == 'true'` (repository **Actions variable**, not a secret), **or**
    - **Origin grandfather:** `github.repository == 'btipling/invincible'` (maintainer continuity if the variable is unset)
