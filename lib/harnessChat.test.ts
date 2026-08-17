@@ -3238,3 +3238,145 @@ describe('context/usage slot (phase 3, plan #539 / #327)', () => {
     expect(statusSlotAt(exp, StatusSlot.Context)).toBe('');
   });
 });
+
+describe('Phase 2 mid-turn live status bar (plan #627)', () => {
+  it('stream change_dir mid-turn updates cwd AND calls onSessionPatch before done (test 2)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    const patches: string[] = [];
+    const { session: next } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      onSessionPatch: (s) => {
+        patches.push(s.cwd ?? '(unset)');
+      },
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: true,
+          summary: 'change_dir · ✓ ok · invincible/sub · cwd=invincible/sub',
+          changeDirCwd: 'invincible/sub',
+        });
+        await init?.onEvent?.({ type: 'done', text: 'moved' });
+        return { ok: true, text: 'moved' };
+      },
+    });
+    // onSessionPatch was called mid-turn with the new cwd.
+    expect(patches).toContain('invincible/sub');
+    // Session carries the new cwd.
+    expect(next.cwd).toBe('invincible/sub');
+    // Status slots were repainted mid-turn.
+    expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('invincible/sub');
+  });
+
+  it('stream meta_sandbox_switch mid-turn updates bind + git slot before done (test 3)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_old' };
+    const patches: Array<string | undefined> = [];
+    const { session: next } = await runHarnessTurn(bridge, session, 'switch', {
+      streamAgent: true,
+      pushUser: false,
+      onSessionPatch: (s) => {
+        patches.push(s.activeSandboxId);
+      },
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'meta_sandbox_switch' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'meta_sandbox_switch',
+          ok: true,
+          summary: 'meta_sandbox_switch · ✓ ok · switched active sandbox to id=sbx_new',
+          activeSandboxId: 'sbx_new',
+        });
+        await init?.onEvent?.({
+          type: 'done',
+          text: 'switched',
+          sandboxId: 'sbx_old',
+          activeSandboxId: 'sbx_new',
+        });
+        return { ok: true, text: 'switched', sandboxId: 'sbx_old', activeSandboxId: 'sbx_new' };
+      },
+    });
+    // onSessionPatch was called mid-turn with the new bind.
+    expect(patches).toContain('sbx_new');
+    // Session carries the new bind.
+    expect(next.activeSandboxId).toBe('sbx_new');
+    // Sandbox slot was repainted mid-turn.
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('sandbox sbx_new');
+  });
+
+  it('abort after a live change_dir keeps cwd/bind (test 4)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = { ...createEmptySession('s'), cwd: 'invincible', activeSandboxId: 'sbx_v' };
+    const patches: string[] = [];
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      onSessionPatch: (s) => {
+        patches.push(s.cwd ?? '(unset)');
+      },
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: true,
+          summary: 'change_dir · ✓ ok · invincible/deep · cwd=invincible/deep',
+          changeDirCwd: 'invincible/deep',
+        });
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(result.ok).toBe(false);
+    // onSessionPatch was called mid-turn before the abort.
+    expect(patches).toContain('invincible/deep');
+    // After abort, cwd is kept (live patch survives).
+    expect(next.cwd).toBe('invincible/deep');
+    // Bind is also kept (no switch happened, but existing value survives).
+    expect(next.activeSandboxId).toBe('sbx_v');
+    // Status slots reflect the live patch.
+    expect(statusSlotAt(exp, StatusSlot.Cwd)).toBe('invincible/deep');
+    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('sandbox sbx_v');
+  });
+
+  it('onSessionPatch is NOT awaited — fire-and-forget (test 5)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    let patchResolved = false;
+    let patchPromise: Promise<void> | undefined;
+    const session = { ...createEmptySession('s'), cwd: 'invincible' };
+    const { result } = await runHarnessTurn(bridge, session, 'cd', {
+      streamAgent: true,
+      pushUser: false,
+      onSessionPatch: (_s) => {
+        // Simulate a slow persist — the test asserts the turn does not await it.
+        patchPromise = new Promise<void>((r) => setTimeout(() => { patchResolved = true; r(); }, 100));
+        // Intentionally not returned — the host must not await this.
+      },
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onEvent?.({ type: 'tool_start', name: 'change_dir' });
+        await init?.onEvent?.({
+          type: 'tool_result',
+          name: 'change_dir',
+          ok: true,
+          summary: 'change_dir · ✓ ok · invincible/sub · cwd=invincible/sub',
+          changeDirCwd: 'invincible/sub',
+        });
+        await init?.onEvent?.({ type: 'done', text: 'moved' });
+        return { ok: true, text: 'moved' };
+      },
+    });
+    expect(result.ok).toBe(true);
+    // The turn returned WITHOUT waiting for the slow onSessionPatch.
+    // It fires and is forgotten — status bar update is best-effort, not turn-gating.
+    expect(patchResolved).toBe(false);
+    // Let it drain so the test doesn't leak.
+    await patchPromise;
+    expect(patchResolved).toBe(true);
+  });
+});
