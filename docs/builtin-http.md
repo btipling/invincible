@@ -17,7 +17,7 @@ Related: [sandbox.md](sandbox.md) · [mcp.md](mcp.md) · [feature-divide.md](fea
 |--|--|
 | **Is** | Server-side AI SDK tools on `POST /api/agent` |
 | **Is** | Target fetch inside a **Vercel Sandbox** microVM (isolated network) after app-side SSRF policy |
-| **Is** | Env-gated (`BUILTIN_HTTP_FETCH=sandbox`); default **off** |
+| **Is** | Always-available when a running HTTP instance exists; no env gate |
 | **Is** | **Attach-only** to a durable **HTTP/curl instance** the user created under **Settings → Sandbox** |
 | **Is not** | The BYO sandbox daemon (`list_dir` / `read_file` / `write_file` / `exec`) |
 | **Is not** | The **Workspace** FS instance — hop-B uses a **separate** named microVM (`purpose=http`) |
@@ -49,11 +49,17 @@ User (Wasm composer)
 
 ## 3. Enablement
 
-| Env | Values | Default |
-|-----|--------|---------|
-| `BUILTIN_HTTP_FETCH` | `off` \| `sandbox` | `off` |
-| `BUILTIN_HTTP_TIMEOUT_MS` | 1–1800000 | `120000` (per fetch) |
-| `BUILTIN_HTTP_MAX_BYTES` | ≤ 16 MiB | `2 MiB` |
+No env kill switch. HTTP tools are **always available** on `/api/agent` when
+the user has a **running HTTP/curl instance** created under **Settings → Sandbox**.
+The instance check is a single DB read per turn — the same cost as the prior env
+flag parse, reordered before the grant-deny branch to feed both the soft-continue
+gate and the tool assembly decision.
+
+| Env | Default | Notes |
+|-----|---------|-------|
+| `BUILTIN_HTTP_TIMEOUT_MS` | `120000` (2 min) | Per-fetch timeout, 1–1,800,000 ms |
+| `BUILTIN_HTTP_MAX_BYTES` | `2097152` (2 MiB) | Per-fetch transfer cap, ≤ 16 MiB |
+| `BUILTIN_HTTP_SANDBOX_TIMEOUT_MS` | `1800000` (30 min) | Legacy; not used for attach create |
 
 Set on the **Vercel project** (server-only). No `NEXT_PUBLIC_*`.
 
@@ -62,16 +68,11 @@ Idle extendTimeout for the attached VM uses the same **30 minute** family as Wor
 ### Operator steps
 
 1. Deploy a build that includes builtin HTTP.
-2. Vercel → Project → Environment Variables → set `BUILTIN_HTTP_FETCH=sandbox`.
-3. Confirm the Vercel team can use **Vercel Sandbox** (product entitlement).
-4. In the product: **Settings → Sandbox → HTTP / curl instance → Create** (once).
-5. Smoke from the harness: ask the agent to fetch `https://example.com` and summarize.
-6. Expect a short toolTrace system line (`http_get · ✓ ok · …`) and a grounded assistant reply.
-7. If the HTTP instance is missing/stopped, the turn **omits** http tools (FS/MCP may still run) — the agent does **not** create a VM.
-8. Disable: set `BUILTIN_HTTP_FETCH=off` (or unset) and redeploy.
-
-If builtin is on but the user has no HTTP instance → the agent returns a
-**config error** (fail closed; no create).
+2. Confirm the Vercel team can use **Vercel Sandbox** (product entitlement).
+3. In the product: **Settings → Sandbox → HTTP / curl instance → Create** (once).
+4. Smoke from the harness: ask the agent to fetch `https://example.com` and summarize.
+5. Expect a short toolTrace system line (`http_get · ✓ ok · …`) and a grounded assistant reply.
+6. If the HTTP instance is missing/stopped, the turn **omits** http tools (FS/MCP may still run) — the agent does **not** create a VM.
 
 Cloud agents may use `vercel link` + `vercel env pull` in the **agent workspace** for OIDC smoke — not a human laptop requirement.
 
@@ -79,18 +80,14 @@ Cloud agents may use `vercel link` + `vercel env pull` in the **agent workspace*
 
 ## 4. Coexistence matrix
 
-| Workspace FS | Builtin HTTP | Agent route |
-|--------------|--------------|-------------|
-| grant OK + Workspace running | on + HTTP running | FS tools + http + MCP |
-| Workspace missing/stopped | on + HTTP running | Soft-continue: **http ± MCP**, no FS |
-| grant OK + Workspace running | on + HTTP missing/stopped | FS ± MCP; **http tools omitted** |
-| grant deny | on + HTTP running | **http ± MCP** only |
-| grant deny | on + HTTP missing | **403** grant (no tools assembled) |
-| no Workspace grant, builtin **off** | off | **403** `Sandbox access denied.` (no chat fallback) |
-
-There is no 503 `SANDBOX_NOT_CONFIGURED` → chat fallback in the current product:
-with builtin off and no usable sandbox grant + no alternate tools, the route
-returns **403** `Sandbox access denied.` and the turn fails closed.
+| Workspace FS | HTTP instance | Agent route |
+|--------------|---------------|-------------|
+| grant OK + Workspace running | running | FS tools + http + MCP |
+| Workspace missing/stopped | running | Soft-continue: **http ± MCP**, no FS |
+| grant OK + Workspace running | missing/stopped | FS ± MCP; **http tools omitted** |
+| grant deny | running | **http ± MCP** only |
+| grant deny | missing | **403** grant (no tools assembled) |
+| no usable sandbox grant, no HTTP instance | missing | **403** `Sandbox access denied.`
 
 ---
 

@@ -4,7 +4,7 @@
  */
 
 import type { ToolTraceEntry } from './runAgent';
-import type { UsageSummary } from './usageSummary';
+import { mapProviderUsage, type UsageSummary } from './usageSummary';
 import { flattenToolResultText } from './toolResultText';
 import { redactSecrets, truncateSummary } from './redact';
 
@@ -71,12 +71,26 @@ export type AgentStreamEvent =
        */
       activeSandboxId?: string;
       /**
-       * Phase 3 (plan #539 / #327) — bounded provider-usage summary. Present
-       * ONLY on the final `done` (the sole authoritative capture point after
-       * the stream resolves); absent mid-stream, on abort/cancel, or when the
-       * provider reported no usable token counts.
+       * Phase 3 (plan #539 + #628) — bounded provider-usage summary. The
+       * conclusive reconcile after any mid-stream `usage` events (carried
+       * separately). Present on the final `done` when the provider reported
+       * usable token counts; absent on abort/cancel or when the provider
+       * reported none — the `done.usage` REPLACES (never falls back to the
+       * last live mid-stream value), so a completed turn where the provider
+       * reports no final usage clears the context slot.
        */
       usage?: UsageSummary;
+    }
+  | {
+      /**
+       * Phase 3 (plan #628) — live provider usage. Emitted mid-stream when the
+       * AI SDK reports **aggregate** usage on a `finish` part (`totalUsage`,
+       * or v7 `usage`). `finish-step` is never a source — its per-step counts
+       * are not a turn total. Non-empty only (never a clear/flicker). The host
+       * folds the context slot immediately; `done.usage` is the final reconcile.
+       */
+      type: 'usage';
+      usage: UsageSummary;
     }
   | { type: 'error'; error: string; status?: number };
 
@@ -468,6 +482,19 @@ export function mapFullStreamPart(
           : '';
     if (!text) return [];
     return [{ type: 'text_delta', text: redactSecrets(text, secrets) }];
+  }
+
+  // Phase 3 (plan #628) — live provider usage: emit a `usage` event when the
+  // AI SDK reports aggregate usage on a `finish` part (the turn total).
+  // `part.totalUsage` is the v6 name; v7 renames it to `part.usage` (scan
+  // both). `finish-step` is NEVER emitted — its per-step counts are not a
+  // turn aggregate and would flicker the context slot downward on multi-step
+  // turns. Non-empty only → no clear/flicker when the provider reported no
+  // usable token counts.
+  if (type === 'finish') {
+    const summary = mapProviderUsage(part.totalUsage ?? part.usage);
+    if (summary) return [{ type: 'usage', usage: summary }];
+    return [];
   }
 
   if (type === 'error') {

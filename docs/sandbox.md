@@ -58,7 +58,7 @@ instance survive across turns until idle auto-stop (~30m) or user Stop/Destroy.
 |------|----------------------------|-------------|
 | **byo** | HTTP client → protocol v2 daemon | URL + token (DEK-encrypted at rest) |
 | **vercel** (FS tools) | Attach-only `@vercel/sandbox` client to the user's **Workspace instance** | **Host** Vercel project OIDC/quota. No per-tenant Vercel tokens in DB |
-| **hop-B** `http_get` | Attach-only runner to the user's **HTTP instance** when `BUILTIN_HTTP_FETCH=sandbox` | Same host OIDC; not a catalog-row backend |
+| **hop-B** `http_get` | Attach-only runner to the user's **HTTP instance** (always-available when running) | Same host OIDC; not a catalog-row backend |
 
 When hop-B and Workspace FS both run on one turn, **two durable** named VMs may be
 attached (sharing one VM is not a product goal). Missing Workspace → soft-continue
