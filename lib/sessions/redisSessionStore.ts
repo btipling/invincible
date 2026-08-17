@@ -392,6 +392,7 @@ export class RedisSessionStore implements ServerSessionStore, BackfillMarkerStor
       tenantId: input.tenantId,
       createdAt,
       updatedAt: input.updatedAt,
+      // Replace, not merge: absent key = clear (RESERVED_META_KEYS contract).
       meta: input.meta ?? {},
     };
     assertValidSessionEnvelope(envelope);

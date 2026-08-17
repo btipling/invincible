@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   USAGE_SUMMARY_MAX_BYTES,
   USAGE_TOKEN_MAX,
+  decodeUsageMetaString,
+  encodeUsageMetaString,
   formatTokenCount,
   formatUsageSummary,
   mapProviderUsage,
@@ -159,5 +161,23 @@ describe('formatTokenCount / formatUsageSummary (host slot display)', () => {
 
   it('shows only what it has (never invents a total)', () => {
     expect(formatUsageSummary({ source: 'provider', prompt: 42 })).toBe('42 in');
+  });
+});
+
+describe('decodeUsageMetaString / encodeUsageMetaString', () => {
+  it('round-trips a clean provider summary as a JSON string', () => {
+    const summary = { source: 'provider' as const, prompt: 8, completion: 2, total: 10 };
+    const encoded = encodeUsageMetaString(summary);
+    expect(encoded).toBe(JSON.stringify(summary));
+    expect(decodeUsageMetaString(encoded)).toEqual(summary);
+  });
+
+  it('drops non-string, bad JSON, non-provider, and empty', () => {
+    expect(decodeUsageMetaString({ source: 'provider', prompt: 1 })).toBeUndefined();
+    expect(decodeUsageMetaString('{not json')).toBeUndefined();
+    expect(decodeUsageMetaString(JSON.stringify({ source: 'estimated', prompt: 1 }))).toBeUndefined();
+    expect(decodeUsageMetaString('')).toBeUndefined();
+    expect(decodeUsageMetaString(undefined)).toBeUndefined();
+    expect(encodeUsageMetaString({ source: 'estimated', prompt: 1 })).toBeUndefined();
   });
 });

@@ -128,6 +128,32 @@ export function sanitizeUsageSummary(value: unknown): UsageSummary | undefined {
   return summary;
 }
 
+/**
+ * Decode a reserved `meta.usage` JSON string (cloud envelope / transcript).
+ * Non-string, empty, JSON-parse failure, or a summary that fails
+ * `sanitizeUsageSummary` → `undefined` (slot hides). Never throws.
+ */
+export function decodeUsageMetaString(raw: unknown): UsageSummary | undefined {
+  if (typeof raw !== 'string' || raw.length === 0) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  return sanitizeUsageSummary(parsed);
+}
+
+/**
+ * Encode a usage summary for reserved `meta.usage`. Returns a JSON string of
+ * the sanitized summary, or `undefined` when there is nothing honest to store.
+ */
+export function encodeUsageMetaString(usage: unknown): string | undefined {
+  const s = sanitizeUsageSummary(usage);
+  if (!s) return undefined;
+  return JSON.stringify(s);
+}
+
 /** Compact human token abbreviation (absolute tokens, no fake denominator). */
 export function formatTokenCount(n: number): string {
   const v = Math.max(0, Math.floor(n));

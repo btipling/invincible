@@ -7,10 +7,13 @@ import {
 import {
   createHttpSessionRepository,
   isEmptyOfDialogue,
+  mergeAdoptedUsage,
+  overlayEnvelopeMeta,
   parseCloudSessionSnapshot,
   parseSessionSummaryList,
   shouldAdoptServer,
   trimForCloudPut,
+  cloudMetaFor,
   truncateUtf8,
   utf8ByteLength,
   type SessionSummary,
@@ -93,7 +96,7 @@ describe('trimForCloudPut', () => {
     expect('attachedSlugs' in out).toBe(false); // carrier carries in meta, not top-level
   });
 
-  it('detach-all: attachedSlugs:[] persists as "[]" (omitted ≠ detach-all, review Nit L6)', () => {
+  it('detach-all: attachedSlugs:[] persists as "[]" (empty-set value)', () => {
     const out = trimForCloudPut({
       id: 'sess_a',
       updatedAt: 4,
@@ -103,7 +106,7 @@ describe('trimForCloudPut', () => {
     expect(out.meta).toEqual({ attachedSkills: '[]' });
   });
 
-  it('omitted attachedSlugs → reserved key left OFF (never clears an unknown set)', () => {
+  it('undefined attachedSlugs omits the key (host hole = store clear)', () => {
     const out = trimForCloudPut({
       id: 'sess_a',
       updatedAt: 5,
@@ -470,6 +473,157 @@ describe('parseCloudSessionSnapshot', () => {
     });
     expect(inBounds?.cwd).toBe('a/c');
   });
+
+  it('restores usage from meta.usage; poison / non-provider / bad JSON → unset', () => {
+    const clean = {
+      source: 'provider' as const,
+      prompt: 50,
+      completion: 20,
+      total: 70,
+    };
+    const out = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      meta: { usage: JSON.stringify(clean) },
+    });
+    expect(out?.usage).toEqual(clean);
+
+    const poison = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      meta: { usage: '{nope' },
+    });
+    expect(poison?.usage).toBeUndefined();
+
+    const estimated = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      meta: { usage: JSON.stringify({ source: 'estimated', prompt: 9 }) },
+    });
+    expect(estimated?.usage).toBeUndefined();
+
+    const nonString = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      meta: { usage: clean },
+    });
+    expect(nonString?.usage).toBeUndefined();
+  });
+});
+
+describe('cloudMetaFor usage fold', () => {
+  it('folds a sanitized summary; omits when unset', () => {
+    const usage = { source: 'provider' as const, prompt: 4, completion: 1, total: 5 };
+    const folded = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      usage,
+    });
+    expect(folded).toEqual({ usage: JSON.stringify(usage) });
+    expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [] })).toBeUndefined();
+  });
+
+  it('usage-only snap still emits meta.usage (empty-conjunction includes usage)', () => {
+    const usage = { source: 'provider' as const, prompt: 2 };
+    const meta = cloudMetaFor({ id: 's', updatedAt: 1, messages: [], usage });
+    expect(meta?.usage).toBe(JSON.stringify(usage));
+    expect(meta?.logicalCwd).toBeUndefined();
+    expect(trimForCloudPut({ id: 's', updatedAt: 1, messages: [], usage }).meta).toEqual({
+      usage: JSON.stringify(usage),
+    });
+  });
+});
+
+describe('overlayEnvelopeMeta', () => {
+  it('envelope values win; absent envelope keys clear transcript (replace)', () => {
+    const transcript = {
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      cwd: 'old/path',
+      activeSandboxId: 'sbx_old',
+      usage: { source: 'provider' as const, prompt: 1 },
+      selectedModel: 'anthropic/claude-a',
+      attachedSlugs: ['create-plan'],
+      personaId: 'pers_old',
+    };
+    const over = overlayEnvelopeMeta(transcript, {
+      activeSandboxId: 'sbx_new',
+      logicalCwd: 'new/path',
+      usage: JSON.stringify({ source: 'provider', prompt: 9, completion: 1, total: 10 }),
+      selectedModel: 'openai/gpt-a',
+      attachedSkills: '["plan-review"]',
+      personaId: 'pers_new',
+    });
+    expect(over.activeSandboxId).toBe('sbx_new');
+    expect(over.cwd).toBe('new/path');
+    expect(over.usage).toEqual({ source: 'provider', prompt: 9, completion: 1, total: 10 });
+    expect(over.selectedModel).toBe('openai/gpt-a');
+    expect(over.attachedSlugs).toEqual(['plan-review']);
+    expect(over.personaId).toBe('pers_new');
+
+    const cleared = overlayEnvelopeMeta(transcript, { transcriptPointer: 'tx_1' });
+    expect(cleared.cwd).toBeUndefined();
+    expect(cleared.activeSandboxId).toBeUndefined();
+    expect(cleared.usage).toBeUndefined();
+    expect(cleared.selectedModel).toBeUndefined();
+    expect(cleared.attachedSlugs).toBeUndefined();
+    expect(cleared.personaId).toBeUndefined();
+  });
+});
+
+describe('mergeAdoptedUsage (plan #626 test 5)', () => {
+  const usageA = { source: 'provider' as const, prompt: 42, completion: 10, total: 52 };
+  const usageB = { source: 'provider' as const, prompt: 8, completion: 2, total: 10 };
+
+  it('same id: server has usage → server wins', () => {
+    const out = mergeAdoptedUsage(
+      { id: 'a', updatedAt: 10, messages: [], usage: usageA },
+      { id: 'a', updatedAt: 5, messages: [], usage: usageB },
+    );
+    expect(out.usage).toEqual(usageA);
+    expect(out.updatedAt).toBe(10);
+  });
+
+  it('same id: server has no usage → keep local', () => {
+    const out = mergeAdoptedUsage(
+      { id: 'a', updatedAt: 10, messages: [] },
+      { id: 'a', updatedAt: 5, messages: [], usage: usageA },
+    );
+    expect(out.usage).toEqual(usageA);
+    expect(out.updatedAt).toBe(10);
+  });
+
+  it('same id: neither has usage → undefined', () => {
+    const out = mergeAdoptedUsage(
+      { id: 'a', updatedAt: 10, messages: [] },
+      { id: 'a', updatedAt: 5, messages: [] },
+    );
+    expect(out.usage).toBeUndefined();
+  });
+
+  it('different id: server-only (no merge)', () => {
+    const out = mergeAdoptedUsage(
+      { id: 'b', updatedAt: 10, messages: [] },
+      { id: 'a', updatedAt: 5, messages: [], usage: usageA },
+    );
+    expect(out.usage).toBeUndefined();
+    expect(out.id).toBe('b');
+  });
+
+  it('different id: server has usage → keep server', () => {
+    const out = mergeAdoptedUsage(
+      { id: 'b', updatedAt: 10, messages: [], usage: usageA },
+      { id: 'a', updatedAt: 5, messages: [], usage: usageB },
+    );
+    expect(out.usage).toEqual(usageA);
+    expect(out.id).toBe('b');
+  });
 });
 
 describe('parseSessionSummaryList', () => {
@@ -828,6 +982,55 @@ describe('createHttpSessionRepository — envelope carrier (phase 0 #515)', () =
     if (res.action === 'ok') {
       expect(res.snapshot.id).toBe(idA);
       expect(res.snapshot.updatedAt).toBe(30);
+    }
+  });
+
+  it('get() overlays envelope bind/cwd/usage over the transcript body', async () => {
+    const usage = { source: 'provider', prompt: 11, completion: 2, total: 13 };
+    const blobUrl = `${UPLOAD_URL}/read?obj=tx_obj1`;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && u.endsWith('/envelope')) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 30,
+            meta: {
+              transcriptPointer: 'tx_obj1',
+              activeSandboxId: 'sbx_env',
+              logicalCwd: 'from/envelope',
+              usage: JSON.stringify(usage),
+            },
+            transcriptReadUrl: blobUrl,
+          },
+          { status: 200 },
+        );
+      }
+      if (u === blobUrl) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 30,
+            messages: [{ id: 'm', role: 'user', text: 'hi', at: 1 }],
+            meta: {
+              activeSandboxId: 'sbx_tx',
+              logicalCwd: 'from/transcript',
+              usage: JSON.stringify({ source: 'provider', prompt: 1 }),
+            },
+          },
+          { status: 200 },
+        );
+      }
+      return new Response(null, { status: 204 });
+    });
+    const repo = createHttpSessionRepository({ fetchImpl, carrier: 'envelope' });
+    const res = await repo.get(idA);
+    expect(res.action).toBe('ok');
+    if (res.action === 'ok') {
+      expect(res.snapshot.activeSandboxId).toBe('sbx_env');
+      expect(res.snapshot.cwd).toBe('from/envelope');
+      expect(res.snapshot.usage).toEqual(usage);
     }
   });
 

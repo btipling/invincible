@@ -41,6 +41,7 @@ import {
   sanitizeSessionCwd,
 } from '../sessionCloudCaps';
 export { isRedisSafeOpaqueId } from '../sessionCloudCaps';
+import { decodeUsageMetaString } from '../agent/usageSummary';
 import { validateSessionSnapshot } from '../tenancy/harnessSessions';
 import type { HarnessSessionErrorCode } from '../tenancy/harnessSessions';
 import type { SessionMessage } from '../sessionStore';
@@ -50,6 +51,14 @@ import type { SessionMessage } from '../sessionStore';
  * `activeSandboxId` / `logicalCwd` are P1 (GAP-1); `legacySnapshotId` is the
  * Phase 4 backfill trace key; `title` is the optional display title stored by the
  * Phase 2 mint (list summary).
+ *
+ * **Reserved-meta write contract (going forward, every key):**
+ * PUT / `upsertEnvelope` `meta` is the **full desired set** (replace).
+ * Absent key = clear that field. The store does **not** merge holes.
+ * Mid-turn writers MUST copy existing meta, then override the one key they
+ * mean to change. Host `cloudMetaFor` omits a key only when the snapshot
+ * field is unset (that omit is a clear). Do not add a new reserved key that
+ * treats omit as "keep previous."
  */
 export const RESERVED_META_KEYS = [
   'activeSandboxId',
@@ -61,6 +70,7 @@ export const RESERVED_META_KEYS = [
   'transcriptPointer',
   'attachedSkills',
   'selectedModel',
+  'usage',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -149,7 +159,11 @@ export type EnvelopeUpsertResult =
 export interface SessionEnvelopeStore extends ServerSessionStore {
   /** Read only the envelope (never the transcript). `null` when absent/roll-forward-only. */
   readEnvelope(key: SessionRecordKey): Promise<SessionEnvelope | null>;
-  /** Upsert the envelope (LWW on `updatedAt`, `createdAt` preserved). Never touches transcript. */
+  /**
+   * Upsert the envelope (LWW on `updatedAt`, `createdAt` preserved). Never touches
+   * transcript. `input.meta` **replaces** stored meta (absent key = clear) —
+   * see reserved-meta write contract on `RESERVED_META_KEYS`.
+   */
   upsertEnvelope(
     key: SessionRecordKey,
     input: SessionEnvelopeInput,
@@ -386,14 +400,17 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
       return { ok: false, code: 'invalid_meta', error: `meta key '${key}' is not a reserved key.` };
     }
     const v = raw[key];
-    // Plan #616 (source #610): `meta.selectedModel` is a NON-critical session
-    // carrier — a poisoned value (non-string, empty, control chars, over-length)
-    // is DROPPED to unset (the key is omitted) rather than 400-ing the record,
-    // so a bad pick can never brick a session with a permanent `INVALID_META`.
-    // Restore falls back to the default first-granted model server/device-side.
+    // Non-critical UX carriers: poison drops to unset (omit), never 400s the
+    // record. PUT meta is a full replace — absent key = clear. Do not copy
+    // attachedSkills (that key still fail-closes on malformed JSON).
     if (key === 'selectedModel') {
       const cleaned = sanitizeModelId(v);
       if (cleaned !== undefined) meta.selectedModel = cleaned;
+      continue;
+    }
+    if (key === 'usage') {
+      const cleaned = decodeUsageMetaString(v);
+      if (cleaned !== undefined) meta.usage = JSON.stringify(cleaned);
       continue;
     }
     if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {
@@ -555,6 +572,14 @@ export function validateMetaFields(
           error: 'meta.attachedSkills must decode to a JSON array of valid skill slugs.',
         };
       }
+    }
+  }
+  if (out.usage !== undefined) {
+    const cleaned = decodeUsageMetaString(out.usage);
+    if (cleaned === undefined) {
+      delete out.usage;
+    } else {
+      out.usage = JSON.stringify(cleaned);
     }
   }
   return { ok: true, value: out };

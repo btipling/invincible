@@ -54,20 +54,16 @@ export type SessionSnapshot = {
    * JSON-array string. `meta.attachedSkills` is the server's read/write surface;
    * this field is the local session's mirror of it.
    *
-   * `undefined` (omitted) = never carried / no event seen — the host PUT omits
-   * the reserved key so it never clears what it doesn't know (omitted ≠ []).
-   * `[]` (empty array) = an explicit detach-all the host MUST persist as `[]`.
-   * Slugs are validated with `SKILL_SLUG_RE` on the wire; fail-closed to [] at
-   * read (`parseCloudSessionSnapshot`).
+   * Absent = clear (RESERVED_META_KEYS replace contract); `[]` = explicit
+   * detach-all value. Slugs are validated with `SKILL_SLUG_RE` on the wire;
+   * fail-closed to [] at read (`parseCloudSessionSnapshot`).
    */
   attachedSlugs?: string[];
   /**
-   * Phase 3 (plan #539 / #327) — host-side mirror of the last COMPLETED turn's
-   * bounded provider-usage summary. `undefined`/absent = the context slot HIDES
-   * (the locked default on missing usage). Cleared on a completed turn whose
-   * provider reported no usage and on New/Clear; KEPT (carried forward) on an
-   * aborted/cancelled turn so the slot never repaints a fake value. Host-local
-   * only — not a reserved cloud `meta` key (does not ride the envelope).
+   * Phase 3 (plan #539 / #327) — last COMPLETED turn's bounded provider-usage
+   * summary. `undefined`/absent = the context slot HIDES. Cleared on a completed
+   * turn whose provider reported no usage and on New/Clear; KEPT on abort/cancel.
+   * Cloud carrier: reserved `meta.usage` (JSON string, drop-to-unset).
    */
   usage?: import('./agent/usageSummary').UsageSummary;
   /**
