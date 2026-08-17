@@ -385,6 +385,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // true when host snapped from a historical ring window before the turn.
             pushUser: opts?.pushUser ?? false,
             modelId,
+            // Phase 2 (#627 / #625): persist every mid-turn session patch
+            // (cwd change, sandbox switch) via the same persist callback the
+            // turn-end path uses — local write + coalesced cloud PUT.
+            onSessionPatch: persist,
           },
         );
         // Plan #616 (source #610): fold the LIVE selection into the snapshot before

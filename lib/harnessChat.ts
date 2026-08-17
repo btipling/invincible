@@ -132,6 +132,12 @@ export type RunHarnessTurnOptions = Omit<RunHarnessChatOptions, 'history'> & {
   streamAgent?: boolean;
   /** Inject for tests; defaults to sendAgentStream. */
   sendAgentStream?: SendAgentStreamFn;
+  /**
+   * Phase 2 (#627 / #625): called after each mid-turn session mutation
+   * (cwd change, sandbox switch) so the host can persist the live state
+   * before `done`. Never awaited; wired to the existing `persist` callback.
+   */
+  onSessionPatch?: (s: SessionSnapshot) => void;
 };
 
 export type HarnessTurnResult = {
@@ -966,6 +972,36 @@ export async function runHarnessTurn(
         // from the truncated display `summary` (adversarial review #470 Major).
         if (ev.name === 'change_dir' && ev.ok) {
           liveCwd = recordLiveCwd(liveCwd, ev.changeDirCwd);
+          // Phase 2 (#627 / #625): live cwd mutation mid-turn — apply the
+          // confirmed cwd to the session and repaint the status bar immediately,
+          // without waiting for `done`.
+          if (ev.changeDirCwd !== undefined) {
+            const cd = toSessionCwd(ev.changeDirCwd);
+            if (cd !== undefined) {
+              next = { ...next, cwd: cd };
+              foldStatusSlots(bridge, next);
+              opts?.onSessionPatch?.(next);
+            }
+          }
+        }
+        // Phase 2 (#627 / #625): live sandbox bind switch mid-turn. A
+        // successful `meta_sandbox_switch` carries the typed target id; apply
+        // it to the session, repaint the sandbox + git slots, and persist the
+        // patched snapshot immediately — the switch envelope write is already
+        // done server-side; this mirrors it on the host.
+        if (ev.name === 'meta_sandbox_switch' && ev.ok && ev.activeSandboxId) {
+          const id = ev.activeSandboxId;
+          if (isRedisSafeOpaqueId(id)) {
+            next = { ...next, activeSandboxId: id };
+            foldStatusSlots(bridge, next);
+            void refreshGitStatusSlot(bridge, next, opts?.signal);
+            opts?.onSessionPatch?.(next);
+          }
+        }
+        // Phase 2 (#627 / #625): git refresh on any successful exec — no
+        // session mutation, no onSessionPatch. Fail-soft; server rate-limited.
+        if (ev.name === 'exec' && ev.ok) {
+          void refreshGitStatusSlot(bridge, next, opts?.signal);
         }
       }
       // Paint now — the operator sees `N tools called` on THIS event.

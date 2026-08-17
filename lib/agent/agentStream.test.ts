@@ -8,6 +8,7 @@ import {
   salientToolBits,
   buildToolPreview,
   changeDirSuccessCwd,
+  metaSandboxSwitchActiveId,
   TOOL_LINE_SALIENT_MAX,
   TOOL_RUN_PREVIEW_HEAD_LINES,
   TOOL_RUN_PREVIEW_TAIL_LINES,
@@ -324,5 +325,61 @@ describe('salientToolBits cwd tools', () => {
     expect(bits).toContain('invincible/a.ts');
     expect(bits).toContain('cwd=invincible');
     expect(bits).toContain('2 lines');
+  });
+});
+
+describe('metaSandboxSwitchActiveId + activeSandboxId typed field (Phase 2 #627)', () => {
+  it('parses a successful switch result to the target id', () => {
+    expect(
+      metaSandboxSwitchActiveId(
+        'switched active sandbox to id=sbx_abc123 tools=["list_dir","exec","read_file","write_file","str_replace","change_dir","pwd","http_get","http_head"]',
+      ),
+    ).toBe('sbx_abc123');
+  });
+
+  it('returns undefined for errors / non-switch / empty', () => {
+    expect(metaSandboxSwitchActiveId('ERROR meta_sandbox_switch: no sandbox configured')).toBeUndefined();
+    expect(metaSandboxSwitchActiveId('list_dir .: 2 entries')).toBeUndefined();
+    expect(metaSandboxSwitchActiveId('')).toBeUndefined();
+    expect(metaSandboxSwitchActiveId(undefined)).toBeUndefined();
+  });
+
+  it('attaches the TYPED activeSandboxId on a successful meta_sandbox_switch tool_result (Phase 2 #627 test 1)', () => {
+    const evs = mapFullStreamPart({
+      type: 'tool-result',
+      toolName: 'meta_sandbox_switch',
+      toolCallId: 'c1',
+      output:
+        'switched active sandbox to id=sbx_abc123 tools=["list_dir","exec","read_file","write_file","str_replace","change_dir","pwd","http_get","http_head"]',
+    });
+    const ev = evs[0];
+    expect(ev && ev.type).toBe('tool_result');
+    if (ev && ev.type === 'tool_result') {
+      expect(ev.ok).toBe(true);
+      expect(ev.activeSandboxId).toBe('sbx_abc123');
+    }
+  });
+
+  it('does NOT attach activeSandboxId to a failed switch or a non-switch tool', () => {
+    const errEv = mapFullStreamPart({
+      type: 'tool-result',
+      toolName: 'meta_sandbox_switch',
+      toolCallId: 'c1',
+      output: 'ERROR meta_sandbox_switch: no sandbox configured',
+    })[0];
+    if (errEv && errEv.type === 'tool_result') {
+      expect(errEv.ok).toBe(false);
+      expect(errEv.activeSandboxId).toBeUndefined();
+    }
+    const listEv = mapFullStreamPart({
+      type: 'tool-result',
+      toolName: 'list_dir',
+      toolCallId: 'c1',
+      output: 'list_dir .: 1 entry',
+    })[0];
+    if (listEv && listEv.type === 'tool_result') {
+      expect(listEv.ok).toBe(true);
+      expect(listEv.activeSandboxId).toBeUndefined();
+    }
   });
 });

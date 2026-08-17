@@ -35,7 +35,7 @@ Each SSE block is one `data: <json>\n\n` line:
 | `type` | Fields | Host use |
 |--------|--------|----------|
 | `tool_start` | `name`, optional `id` | **Live-paint** one display-only `tool_run` card (protocol v11 / kind 6) on this event |
-| `tool_result` | `name`, `ok`, `summary`, optional `preview` | **Grow the open `tool_run` card in place** (total increments) while the last ring row is a tool-run; else open a NEW card at `1`. `preview` is a bounded, redacted level-2 detail body (`TOOL_RUN_PREVIEW_MAX_CHARS` = 100k, head+tail `… (N more lines)`) built from flattened+redacted tool output — **not** raw MCP envelopes |
+| `tool_result` | `name`, `ok`, `summary`, optional `preview`, optional `changeDirCwd`, optional `activeSandboxId` | **Grow the open `tool_run` card in place** (total increments) while the last ring row is a tool-run; else open a NEW card at `1`. `preview` is a bounded, redacted level-2 detail body (`TOOL_RUN_PREVIEW_MAX_CHARS` = 100k, head+tail `… (N more lines)`) built from flattened+redacted tool output — **not** raw MCP envelopes. `changeDirCwd` is the confirmed workspace-relative cwd from a successful `change_dir` (typed field from the raw result — never the truncated summary). `activeSandboxId` is the switched-to sandbox id from a successful `meta_sandbox_switch` (Phase 2 #627 / #625) — the host applies it live mid-turn |
 | `reasoning_delta` | `text` (chunk) | Grow a **Thinking** bubble (protocol v8) |
 | `text_delta` | `text` (chunk) | Grow Assistant bubble(s) |
 | `done` | `text`, optional `toolTrace`, optional `cwd`, optional `usage` | Collapse open thinking; finalize session; apply `cwd` on success only; fold bounded provider `usage` (Phase 3 #539, default hidden); Ready |

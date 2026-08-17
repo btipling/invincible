@@ -23,6 +23,13 @@ export type AgentStreamEvent =
        * corrupt long targets (adversarial review #470 Major).
        */
       changeDirCwd?: string;
+      /**
+       * Phase 2 (#627 / #625): successful `meta_sandbox_switch` target id
+       * carried as a TYPED field from the raw (untruncated) tool result text.
+       * The host applies this LIVE on the result event (mid-turn bind change),
+       * before `done`. Absent on ERROR / non-switch tools / truncated summary.
+       */
+      activeSandboxId?: string;
     }
   | { type: 'reasoning_delta'; text: string }
   | { type: 'text_delta'; text: string }
@@ -322,6 +329,26 @@ export function changeDirSuccessCwd(raw: string | undefined): string | undefined
   return m[2];
 }
 
+/**
+ * Parse a successful `meta_sandbox_switch` tool RESULT TEXT to the switched-to
+ * id. The tool emits `switched active sandbox to id=<id> tools=[...]` only on a
+ * persisted write; `undefined` on ERROR / any other shape.
+ *
+ * Defined here (pure, no server deps) so the client-side `agentStream.ts`
+ * `mapFullStreamPart` can extract the typed `activeSandboxId` for the
+ * `tool_result` event. `metaSandboxTools.ts` re-imports it for the JSON-path
+ * step-result parser (`metaSandboxSwitchTargetId`).
+ */
+export function metaSandboxSwitchActiveId(
+  raw: string | undefined,
+): string | undefined {
+  const t = (raw ?? '').trim();
+  if (!t || /^ERROR\b/i.test(t)) return undefined;
+  const m = t.match(/^switched active sandbox to id=(\S+)\s+tools=/i);
+  if (!m) return undefined;
+  return m[1];
+}
+
 export function summarizeToolLine(
   name: string,
   resultText: string,
@@ -384,6 +411,8 @@ export function mapFullStreamPart(
     const preview = buildToolPreview(redacted || '');
     const changeDirCwd =
       name === 'change_dir' && ok ? changeDirSuccessCwd(redacted) : undefined;
+    const activeSandboxId =
+      name === 'meta_sandbox_switch' && ok ? metaSandboxSwitchActiveId(redacted) : undefined;
     return [
       {
         type: 'tool_result',
@@ -391,6 +420,7 @@ export function mapFullStreamPart(
         ok,
         summary: summarizeToolLine(name, redacted || '', ok, secrets),
         ...(changeDirCwd !== undefined ? { changeDirCwd } : {}),
+        ...(activeSandboxId !== undefined ? { activeSandboxId } : {}),
         ...(preview ? { preview } : {}),
       },
     ];

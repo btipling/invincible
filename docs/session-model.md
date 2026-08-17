@@ -43,7 +43,11 @@ fold runs on **both** the success path (so the sandbox slot reflects the
 **fail path** (so a 403 grant-honesty clear repaints the sandbox slot away, and
 a cancelled/timed-out turn that committed a `change_dir` repaints the boot cwd
 the next turn uses — never a stale pre-turn value; this is the same fold-before-
-persist discipline as `attachedSlugs`). Folded values are **host-ellipsized** to
+persist discipline as `attachedSlugs`). **Phase 2 (#627 / #625):** folds are now
+**LIVE on tool results** mid-turn — a confirmed `change_dir` or successful
+`meta_sandbox_switch` repaints the sandbox/cwd slots immediately (plus git on
+switch), and the host persists the patched snapshot via `onSessionPatch` before
+`done`. Folded values are **host-ellipsized** to
 the slot byte cap at a UTF-8 boundary before the wire; a no-bind/no-cwd session
 clears the slots (never a stale leftover). The Wasm paints the pack in the
 always-mounted bottom **status bar** directly below the composer — the header no

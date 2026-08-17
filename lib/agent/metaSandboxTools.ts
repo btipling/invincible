@@ -46,6 +46,7 @@ import {
   type SessionEnvelopeStore,
   type SessionRecordKey,
 } from '../sessions/sessionStore';
+import { metaSandboxSwitchActiveId } from './agentStream';
 
 /** Non-secret projection of a user's allowed sandboxes (mirrors the route). */
 export function projectSandboxOption(c: SandboxChoice) {
@@ -200,21 +201,6 @@ async function readPersistedActive(
 
 function errText(name: string, err: unknown): string {
   return `ERROR ${name}: ${err instanceof Error ? err.message : String(err)}`;
-}
-
-/**
- * Parse a successful `meta_sandbox_switch` tool RESULT TEXT to the switched-to
- * id. The tool emits `switched active sandbox to id=<id> tools=[...]` only on a
- * persisted write; `undefined` on ERROR / any other shape.
- */
-export function metaSandboxSwitchActiveId(
-  raw: string | undefined,
-): string | undefined {
-  const t = (raw ?? '').trim();
-  if (!t || /^ERROR\b/i.test(t)) return undefined;
-  const m = t.match(/^switched active sandbox to id=(\S+)\s+tools=/i);
-  if (!m) return undefined;
-  return m[1];
 }
 
 /**
