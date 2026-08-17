@@ -383,3 +383,44 @@ describe('metaSandboxSwitchActiveId + activeSandboxId typed field (Phase 2 #627)
     }
   });
 });
+
+describe('mapFullStreamPart finish-step / finish usage events (Phase 3 #628)', () => {
+  it('emits a usage event from a finish-step part with SDK-shaped usage', () => {
+    const evs = mapFullStreamPart({
+      type: 'finish-step',
+      usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+    });
+    expect(evs).toHaveLength(1);
+    expect(evs[0]).toEqual({
+      type: 'usage',
+      usage: { source: 'provider', prompt: 100, completion: 50, total: 150 },
+    });
+  });
+
+  it('emits a usage event from a finish part with SDK-shaped totalUsage', () => {
+    const evs = mapFullStreamPart({
+      type: 'finish',
+      finishReason: 'stop',
+      totalUsage: { inputTokens: 200, outputTokens: 75, totalTokens: 275 },
+    });
+    expect(evs).toHaveLength(1);
+    expect(evs[0]).toEqual({
+      type: 'usage',
+      usage: { source: 'provider', prompt: 200, completion: 75, total: 275 },
+    });
+  });
+
+  it('emits NO usage event when a finish-step part has empty/absent usage', () => {
+    // Empty usage object — provider reported nothing usable.
+    expect(mapFullStreamPart({ type: 'finish-step', usage: {} })).toEqual([]);
+    // No usage field at all.
+    expect(mapFullStreamPart({ type: 'finish-step' })).toEqual([]);
+    // Null usage.
+    expect(mapFullStreamPart({ type: 'finish-step', usage: null })).toEqual([]);
+  });
+
+  it('emits NO usage event when a finish part has empty/absent totalUsage', () => {
+    expect(mapFullStreamPart({ type: 'finish', finishReason: 'stop' })).toEqual([]);
+    expect(mapFullStreamPart({ type: 'finish', totalUsage: null })).toEqual([]);
+  });
+});

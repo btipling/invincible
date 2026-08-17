@@ -467,12 +467,14 @@ export async function runAgentStream(
     const activeOut =
       metaSandboxSwitchTargetId({ steps }) ??
       (hasFsTools ? params.sandboxId : undefined);
-    // Phase 3 (plan #539) — provider usage is only available AFTER the
-    // fullStream resolves; the final `done` is the sole authoritative capture
-    // point (never mid-stream). Absent when the provider reported none.
-    // Single read of `result.usage` (an awaitable getter that consumes the
-    // stream): a missing value, a sync getter throw, or a rejected usage read
-    // all OMIT usage — never a broken turn, never an orphaned rejection.
+    // Phase 3 (plan #539 + #628) — provider usage: mid-stream `usage` events
+    // are emitted from `finish-step`/`finish` parts when the provider reports
+    // counts; the final `done.usage` is the conclusive reconcile (the
+    // authoritative aggregate after the stream resolves). Absent when the
+    // provider reported none. Single read of `result.usage` (an awaitable
+    // getter that consumes the stream): a missing value, a sync getter throw,
+    // or a rejected usage read all OMIT usage — never a broken turn, never an
+    // orphaned rejection.
     let usage: UsageSummary | undefined;
     try {
       usage = mapProviderUsage(await Promise.resolve(result.usage));

@@ -1217,6 +1217,18 @@ export async function runHarnessTurn(
             }
             return;
           }
+          if (ev.type === 'usage') {
+            // Phase 3 (plan #628) — live provider usage mid-stream: fold the
+            // context slot immediately so the operator sees token counts before
+            // the turn completes. `done.usage` is the final reconcile.
+            const liveUsage = sanitizeUsageSummary(ev.usage);
+            if (liveUsage) {
+              next = { ...next, usage: liveUsage };
+              foldStatusSlots(bridge, next);
+              opts?.onSessionPatch?.(next);
+            }
+            return;
+          }
           if (ev.type === 'done') {
             sawStreamTerminal = true;
             closeThinkingSegment();

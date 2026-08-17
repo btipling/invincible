@@ -3237,6 +3237,98 @@ describe('context/usage slot (phase 3, plan #539 / #327)', () => {
     });
     expect(statusSlotAt(exp, StatusSlot.Context)).toBe('');
   });
+
+  it('a stream usage event mid-turn folds the context slot before done AND calls onSessionPatch (Phase 3 #628)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubGitOk();
+    const patches: Array<Record<string, unknown>> = [];
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+      streamAgent: true,
+      pushUser: false,
+      onSessionPatch: (s) => patches.push({ usage: s.usage }),
+      sendAgentStream: async (_p, init) => {
+        // Mid-stream usage event from a finish-step part.
+        await init?.onEvent?.({
+          type: 'usage',
+          usage: { source: 'provider', prompt: 42, completion: 8, total: 50 },
+        });
+        // Then the final done reconcile.
+        await init?.onEvent?.({
+          type: 'done',
+          text: 'ok',
+          usage: { source: 'provider', prompt: 55, completion: 10, total: 65 },
+        });
+        return {
+          ok: true,
+          text: 'ok',
+          usage: { source: 'provider', prompt: 55, completion: 10, total: 65 },
+        };
+      },
+    });
+    // The mid-stream fold happened — onSessionPatch was called with the live value.
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toEqual({
+      usage: { source: 'provider', prompt: 42, completion: 8, total: 50 },
+    });
+    // The final reconcile wins.
+    expect(next.usage).toEqual({
+      source: 'provider',
+      prompt: 55,
+      completion: 10,
+      total: 65,
+    });
+    expect(statusSlotAt(exp, StatusSlot.Context)).toBe('55 in · 10 out · 65 tok');
+  });
+
+  it('done with absent usage after a mid-stream usage event clears to the completed-turn rule (Phase 3 #628)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubGitOk();
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_p, init) => {
+        // Mid-stream usage event.
+        await init?.onEvent?.({
+          type: 'usage',
+          usage: { source: 'provider', prompt: 10, completion: 2 },
+        });
+        // Done with NO usage — the completed-turn rule clears it.
+        await init?.onEvent?.({ type: 'done', text: 'ok' });
+        return { ok: true, text: 'ok' };
+      },
+    });
+    expect(next.usage).toBeUndefined();
+    expect(statusSlotAt(exp, StatusSlot.Context)).toBe('');
+  });
+
+  it('abort after a live usage event keeps that summary (fail path does not clear — Phase 3 #628)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubGitOk();
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+      streamAgent: true,
+      pushUser: false,
+      sendAgentStream: async (_p, init) => {
+        // Live usage event arrives before the abort.
+        await init?.onEvent?.({
+          type: 'usage',
+          usage: { source: 'provider', prompt: 30, completion: 5, total: 35 },
+        });
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    // The live usage event was folded into the session before the abort.
+    // The fail path does NOT clear usage → it carries forward.
+    expect(next.usage).toEqual({
+      source: 'provider',
+      prompt: 30,
+      completion: 5,
+      total: 35,
+    });
+    expect(statusSlotAt(exp, StatusSlot.Context)).toBe('30 in · 5 out · 35 tok');
+  });
 });
 
 describe('Phase 2 mid-turn live status bar (plan #627)', () => {

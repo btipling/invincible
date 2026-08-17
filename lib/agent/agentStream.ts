@@ -4,7 +4,7 @@
  */
 
 import type { ToolTraceEntry } from './runAgent';
-import type { UsageSummary } from './usageSummary';
+import { mapProviderUsage, type UsageSummary } from './usageSummary';
 import { flattenToolResultText } from './toolResultText';
 import { redactSecrets, truncateSummary } from './redact';
 
@@ -77,6 +77,16 @@ export type AgentStreamEvent =
        * provider reported no usable token counts.
        */
       usage?: UsageSummary;
+    }
+  | {
+      /**
+       * Phase 3 (plan #628) — live provider usage. Emitted mid-stream when the
+       * AI SDK reports per-step or aggregate usage on a finish-step / finish
+       * part. Non-empty only (never a clear/flicker). The host folds the context
+       * slot immediately; `done.usage` is the final reconcile.
+       */
+      type: 'usage';
+      usage: UsageSummary;
     }
   | { type: 'error'; error: string; status?: number };
 
@@ -468,6 +478,21 @@ export function mapFullStreamPart(
           : '';
     if (!text) return [];
     return [{ type: 'text_delta', text: redactSecrets(text, secrets) }];
+  }
+
+  // Phase 3 (plan #628) — live provider usage: emit a `usage` event when the
+  // AI SDK reports per-step (`finish-step`) or aggregate (`finish`) usage.
+  // Non-empty only → no clear/flicker on a finish part where the provider
+  // reported no usable token counts.
+  if (type === 'finish-step') {
+    const summary = mapProviderUsage(part.usage);
+    if (summary) return [{ type: 'usage', usage: summary }];
+    return [];
+  }
+  if (type === 'finish') {
+    const summary = mapProviderUsage(part.totalUsage);
+    if (summary) return [{ type: 'usage', usage: summary }];
+    return [];
   }
 
   if (type === 'error') {

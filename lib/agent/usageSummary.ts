@@ -12,9 +12,10 @@
  *    and none may be invented without an explicit *labeled* client-side source.
  *    A read-side summary whose `source` is not `'provider'` is treated as
  *    **absent** (the context slot hides) — never presented as API truth.
- *  - Usage is only available AFTER the stream/JSON completion resolves. A
- *    mid-stream / aborted / cancelled turn has NO completion → no usage is
- *    emitted and the slot keeps its prior honest value.
+ *  - Usage is available mid-stream when the provider reports counts on
+ *    finish-step/finish parts (live `usage` events), and the final `done.usage`
+ *    is the conclusive reconcile. An aborted / cancelled turn has NO completion
+ *    → no usage emitted and the slot keeps its prior honest value.
  *  - Values are clamped to `USAGE_TOKEN_MAX` and the serialized summary is
  *    bounded at `USAGE_SUMMARY_MAX_BYTES`; an oversized carrier is **omitted**
  *    (never breaks the turn, never truncated into a lie).

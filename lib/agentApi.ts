@@ -457,8 +457,8 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
           if (typeof ev.activeSandboxId === 'string') {
             streamActiveSandboxId = ev.activeSandboxId;
           }
-          // Phase 3 (plan #539) — usage rides the final `done` alone; absent
-          // mid-stream or on abort (no completion).
+          // Phase 3 (plan #539 + #628) — `done.usage` is the conclusive
+          // reconcile (may be absent → clear, the completed-turn rule).
           streamUsage = sanitizeUsageSummary(ev.usage) ?? streamUsage;
         } else if (ev.type === 'error') {
           streamError = {
@@ -466,6 +466,12 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
             error: ev.error || 'Stream error.',
             ...(typeof ev.status === 'number' ? { status: ev.status } : {}),
           };
+        } else if (ev.type === 'usage') {
+          // Phase 3 (plan #628) — live provider usage mid-stream. Last honest
+          // wins; never step back to empty on a finish part that reported none
+          // (such parts never emit a `usage` event).
+          streamUsage =
+            sanitizeUsageSummary(ev.usage) ?? streamUsage;
         } else if (ev.type === 'text_delta' && typeof ev.text === 'string') {
           // Host may grow assistant; keep a fallback accumulation.
           finalText += ev.text;
@@ -494,8 +500,8 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
           if (typeof ev.activeSandboxId === 'string') {
             streamActiveSandboxId = ev.activeSandboxId;
           }
-          // Phase 3 (plan #539) — usage rides the final `done` alone; absent
-          // mid-stream or on abort (no completion).
+          // Phase 3 (plan #539 + #628) — `done.usage` is the conclusive
+          // reconcile (may be absent → clear, the completed-turn rule).
           streamUsage = sanitizeUsageSummary(ev.usage) ?? streamUsage;
         } else if (ev.type === 'error') {
           streamError = {
