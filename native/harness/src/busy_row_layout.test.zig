@@ -16,6 +16,9 @@
 //! margin.x=GAP inside its rect → rect.w = CELL + GAP. The spinner outer box
 //! has margin.w=TRAIL inside its rect → rect.w = W + TRAIL. Gap assertions
 //! measure rect-to-rect boundaries, not content-to-content visual gaps.
+//! Padding on the outer box is **not** in the tag the same way: it insets
+//! `contentRect`, so cells sit `PAD_X`/`PAD_Y` inside the 13×29 slot. Right-
+//! edge locks must use `W` (the slot), never `spinner.w` (which includes TRAIL).
 //!
 //! TextLayout heights are non-zero when the host build includes freetype
 //! rasterization (which the host-target testing build does). Vertical-
@@ -85,6 +88,13 @@ test "busy-row fills window content width edge-to-edge (full-width teal_bg bar)"
     try t.expectApproxEqAbs(win.x, rects.row.x, EPS);
 }
 
+test "slot identity: INNER + 2×PAD == W×H" {
+    try t.expectEqual(busy_row.W, busy_row.INNER_W + 2.0 * busy_row.PAD_X);
+    try t.expectEqual(busy_row.H, busy_row.INNER_H + 2.0 * busy_row.PAD_Y);
+    try t.expectEqual(rect_spinner.W, rect_spinner.INNER_W + 2.0 * rect_spinner.PAD_X);
+    try t.expectEqual(rect_spinner.H, rect_spinner.INNER_H + 2.0 * rect_spinner.PAD_Y);
+}
+
 test "cell rect: col-0 = CELL×CELL, col-1 = (CELL+GAP)×CELL (margin in rect)" {
     var tr = try dvui.testing.init(.{});
     defer tr.deinit();
@@ -129,7 +139,7 @@ test "spinner rect: (W + TRAIL) × H (right margin in rect, no vert margin)" {
     var tr = try dvui.testing.init(.{});
     defer tr.deinit();
     const rects = paintAndGetRects();
-    // Outer box has margin.w=TRAIL, min_size_content=W×H → w=W+TRAIL, h=H.
+    // Outer box has margin.w=TRAIL, padSize(INNER)+PAD → w=W+TRAIL, h=H.
     try t.expectApproxEqAbs((busy_row.W + busy_row.TRAIL) * PX, rects.spinner.w, EPS);
     try t.expectApproxEqAbs(busy_row.H * PX, rects.spinner.h, EPS);
 }
@@ -167,21 +177,50 @@ test "spinner and text midpoints are gravity-centered (gravity_y=0.5)" {
     try t.expect(@abs(smy - tmy) <= 4.0);
 }
 
-test "first cell of each row sits at spinner left edge (no col*GAP on box tree)" {
+test "first cell of each row is inset by PAD_X from spinner left" {
     var tr = try dvui.testing.init(.{});
     defer tr.deinit();
     const rects = paintAndGetRects();
     var row: usize = 0;
     while (row < busy_row.ROWS) : (row += 1) {
-        try t.expectApproxEqAbs(rects.spinner.x, rects.cells[row][0].x, EPS);
+        try t.expectApproxEqAbs(rects.spinner.x + busy_row.PAD_X * PX, rects.cells[row][0].x, EPS);
     }
 }
 
-test "first row cells sit at spinner top edge (no row*GAP on box tree)" {
+test "first row cells are inset by PAD_Y from spinner top" {
     var tr = try dvui.testing.init(.{});
     defer tr.deinit();
     const rects = paintAndGetRects();
-    try t.expectApproxEqAbs(rects.spinner.y, rects.cells[0][0].y, EPS);
+    var col: usize = 0;
+    while (col < busy_row.COLS) : (col += 1) {
+        try t.expectApproxEqAbs(rects.spinner.y + busy_row.PAD_Y * PX, rects.cells[0][col].y, EPS);
+    }
+}
+
+test "last col visual right is inset by PAD_X from the slot (not spinner.w)" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    const rects = paintAndGetRects();
+    // col-1 tag includes left GAP, so x+w is the visual right of the cell.
+    // Use W (13) — spinner.w includes TRAIL and would miss the slot.
+    const want = rects.spinner.x + busy_row.W * PX - busy_row.PAD_X * PX;
+    var row: usize = 0;
+    while (row < busy_row.ROWS) : (row += 1) {
+        const cell = rects.cells[row][1];
+        try t.expectApproxEqAbs(want, cell.x + cell.w, EPS);
+    }
+}
+
+test "last row visual bottom is inset by PAD_Y from the slot" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    const rects = paintAndGetRects();
+    const want = rects.spinner.y + busy_row.H * PX - busy_row.PAD_Y * PX;
+    var col: usize = 0;
+    while (col < busy_row.COLS) : (col += 1) {
+        const cell = rects.cells[busy_row.ROWS - 1][col];
+        try t.expectApproxEqAbs(want, cell.y + cell.h, EPS);
+    }
 }
 
 test "all 8 cells share the same painted height (CELL)" {

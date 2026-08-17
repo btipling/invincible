@@ -9,8 +9,10 @@
 //!
 //! Named ramps: WARM_RAMP (busy row) and TEAL_RAMP (future chrome). No EMBER.
 //!
-//! Geometry: 5×5 px cells, 3 px sibling gaps, 2 px corner radius → 13×29 grid.
-//! Margin between the grid and the next element is caller-controlled via
+//! Geometry: 4×4 px cells, 2 px sibling gaps, 1.5 px corner radius → inner
+//! 10×22 grid, centered by equal pad (1.5 / 3.5) inside a reserved 13×29
+//! slot. `W`/`H` **are** that slot, not products of `CELL`/`GAP`. Margin
+//! between the slot and the next element is caller-controlled via
 //! `Options.margin_right` (default 10 px, matching the original busy-row TRAIL).
 //!
 //! The pulse travels **clockwise**: left column **bottom→top**, then right
@@ -26,14 +28,20 @@ const busy_spinner = @import("busy_spinner.zig");
 pub const COLS: usize = busy_spinner.COLS;
 pub const ROWS: usize = busy_spinner.ROWS;
 /// Cell edge (px).
-pub const CELL: f32 = 5;
+pub const CELL: f32 = 4;
 /// Padding gap between cells (px) — sibling-only spacing.
-pub const GAP: f32 = 3;
+pub const GAP: f32 = 2;
 /// Cell corner radius (px).
-pub const RADIUS: f32 = 2;
-/// Grid overall footprint (px) — 2×5+3 = 13 wide, 4×5+3×3 = 29 tall.
-pub const W: f32 = @as(f32, @floatFromInt(COLS)) * CELL + @as(f32, @floatFromInt(COLS - 1)) * GAP;
-pub const H: f32 = @as(f32, @floatFromInt(ROWS)) * CELL + @as(f32, @floatFromInt(ROWS - 1)) * GAP;
+pub const RADIUS: f32 = 1.5;
+/// Inner grid footprint (px) — 2×4+2 = 10 wide, 4×4+3×2 = 22 tall.
+pub const INNER_W: f32 = @as(f32, @floatFromInt(COLS)) * CELL + @as(f32, @floatFromInt(COLS - 1)) * GAP;
+pub const INNER_H: f32 = @as(f32, @floatFromInt(ROWS)) * CELL + @as(f32, @floatFromInt(ROWS - 1)) * GAP;
+/// Reserved outer slot (px), independent of `CELL`/`GAP`. Leftover is pad.
+pub const W: f32 = 13;
+pub const H: f32 = 29;
+/// Equal inset that centers the inner grid in the slot.
+pub const PAD_X: f32 = (W - INNER_W) / 2.0;
+pub const PAD_Y: f32 = (H - INNER_H) / 2.0;
 /// Span of the `id_extra` namespace this spinner consumes: the base (outer
 /// box), rows `base+0x10..0x13`, cells `base+0x20..0x27`. Two spinners sharing
 /// one `src` must use `id_extra` bases spaced **at least this many apart** so
@@ -81,7 +89,10 @@ pub fn paint(src: std.builtin.SourceLocation, opts: Options) void {
     const cells = busy_spinner.busySpinnerCells(opts.phase);
     var out = dvui.box(src, .{ .dir = .vertical }, .{
         .gravity_y = 0.5,
-        .min_size_content = .{ .w = W, .h = H },
+        // padSize(INNER) + PAD + TRAIL margin → tagged slot stays W×H.
+        // Do not bake+null padding (TextEntry-only); contentRect insets PAD.
+        .min_size_content = .{ .w = INNER_W, .h = INNER_H },
+        .padding = .{ .x = PAD_X, .y = PAD_Y, .w = PAD_X, .h = PAD_Y },
         .margin = .{ .x = 0, .y = 0, .w = opts.margin_right, .h = 0 },
         .tag = opts.tag_prefix,
         .id_extra = opts.id_extra,
@@ -90,7 +101,7 @@ pub fn paint(src: std.builtin.SourceLocation, opts: Options) void {
     var row: usize = 0;
     while (row < ROWS) : (row += 1) {
         // Sibling-only vertical gap: each row box after the first gets a top
-        // margin of GAP, so 4×5 + 3×3 = 29 total.
+        // margin of GAP, so 4×4 + 3×2 = 22 inner tall (pad fills the 29 slot).
         var rb = dvui.box(src, .{ .dir = .horizontal }, .{
             .margin = .{ .x = 0, .y = if (row == 0) 0 else GAP, .w = 0, .h = 0 },
             .id_extra = opts.id_extra + 0x10 + row,
@@ -102,7 +113,7 @@ pub fn paint(src: std.builtin.SourceLocation, opts: Options) void {
             var cell_tag_buf: [64]u8 = undefined;
             const cell_tag = std.fmt.bufPrint(&cell_tag_buf, "{s}-cell-{d}-{d}", .{ opts.tag_prefix, row, col }) catch unreachable;
             // Sibling-only horizontal gap: leading cell (col>0) adds a left
-            // margin of GAP, so each row is 2×5 + 3 = 13 wide — never col*GAP.
+            // margin of GAP, so each row is 2×4 + 2 = 10 inner wide.
             var cell = dvui.box(src, .{}, .{
                 .background = true,
                 .color_fill = opts.ramp[@intCast(step)],

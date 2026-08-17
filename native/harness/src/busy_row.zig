@@ -10,10 +10,12 @@
 //! the 10 Hz phase scalar and the wall-clock seconds are passed in, not read
 //! from a global, so no bridge/wasm dependency lives here.
 //!
-//! Geometry locked by plan #574: 5×5 px cells, 3 px sibling gaps, 2 px corner
-//! radius → 13×29 grid, 10 px right margin before the text (TRAIL). Gaps are
-//! SIBLING-ONLY (see `rect_spinner.zig`); the layout tests lock this: cell 5×5,
-//! exact 3 px gaps, outer rect 13×29.
+//! Geometry: 4×4 px cells, 2 px sibling gaps, 1.5 px corner radius → inner
+//! 10×22 grid, centered by equal pad (1.5 / 3.5) inside a reserved 13×29
+//! slot. `W`/`H` are that slot (not recomputed from `CELL`/`GAP`). 10 px
+//! right margin before the text (`TRAIL`). Gaps are SIBLING-ONLY (see
+//! `rect_spinner.zig`); the layout tests lock inner sizes, the pad inset on
+//! all four sides, and the unchanged 13×29 slot.
 //!
 //! Vertical placement uses `gravity_y = 0.5` on the outer spinner box and the
 //! busy text (the house convention for inline chrome — status chips, kind
@@ -33,8 +35,12 @@ pub const ROWS = rect_spinner.ROWS;
 pub const CELL = rect_spinner.CELL;
 pub const GAP = rect_spinner.GAP;
 pub const RADIUS = rect_spinner.RADIUS;
+pub const INNER_W = rect_spinner.INNER_W;
+pub const INNER_H = rect_spinner.INNER_H;
 pub const W = rect_spinner.W;
 pub const H = rect_spinner.H;
+pub const PAD_X = rect_spinner.PAD_X;
+pub const PAD_Y = rect_spinner.PAD_Y;
 /// Right margin before the busy text — inline spacing like the kind-label rows.
 pub const TRAIL: f32 = 10;
 
