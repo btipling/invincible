@@ -242,6 +242,20 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   }, []);
 
   /**
+   * Meta-only persist seam (Plan #616, PR #618 re-run 6 Minor L1). A model-pick
+   * fold on the 150 ms poll updates `sessionRef` + local save (the fold also
+   * PUTs the cloud row) but must NOT move `ringWindowStartRef` or touch
+   * `setCanLoadEarlier`. `writeLocalSession` snaps the pointer to latest, which
+   * would clear a live Load-earlier window in the host while the Wasm ring still
+   * shows the earlier page — the next send's `needSnap` then says already-latest
+   * and paints the turn onto the stale window. A pick is not a transcript change.
+   */
+  const writeLocalSessionMeta = useCallback((next: SessionSnapshot) => {
+    sessionRef.current = next;
+    storeRef.current?.save(next);
+  }, []);
+
+  /**
    * Plan #616 (source #610) — delegate to the extracted pure function in
    * lib/harnessHostModelPersist.ts so the logic is unit-testable without
    * rendering React.
@@ -286,8 +300,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const foldPendingModelChange = useCallback(() => {
     const b = bridgeRef.current;
     if (!b) return;
-    foldPendingModelChangeFn(b, sessionRef, writeLocalSession, repoRef.current, inflightRef.current);
-  }, [writeLocalSession]);
+    foldPendingModelChangeFn(b, sessionRef, writeLocalSessionMeta, repoRef.current, inflightRef.current);
+  }, [writeLocalSessionMeta]);
 
   /** Persist the active session id into the URL `?s=` (no new history entry). */
   const setUrlSessionId = useCallback((id: string | null) => {
@@ -529,10 +543,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               // re-run 5 Minor L1). activateSession flushes again (no-op).
               const bootBridge = bridgeRef.current;
               if (bootBridge) {
+                // Meta-only persist — never disturbs the ring window (PR #618
+                // re-run 6 Minor L1). The subsequent activateSession/adopt
+                // rehydrates to latest anyway.
                 foldPendingModelChangeFn(
                   bootBridge,
                   sessionRef,
-                  writeLocalSession,
+                  writeLocalSessionMeta,
                   repoRef.current,
                   inflightRef.current,
                 );
