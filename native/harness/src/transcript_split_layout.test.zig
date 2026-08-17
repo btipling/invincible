@@ -149,3 +149,35 @@ test "open with session rows still SIDEBAR_OPEN_W wide" {
     try t.expectApproxEqAbs(BAND_H * PX, rail.h, EPS);
     session_catalog.reset();
 }
+
+test "open with a long title still SIDEBAR_OPEN_W wide" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    transcript_split.reset();
+    session_catalog.reset();
+    const long = "A very long session title that cannot fit in two hundred pixels of rail";
+    try t.expect(session_catalog.push("sess-long", long));
+    transcript_split.setOpen(true);
+    const rail = paintAndGetRail();
+    try t.expectApproxEqAbs(transcript_split.SIDEBAR_OPEN_W * PX, rail.w, EPS);
+    session_catalog.reset();
+}
+
+fn byteWidth(s: []const u8) f32 {
+    return @floatFromInt(s.len);
+}
+
+test "ellipsizeToWidth: short fits; long gets ellipsis; utf8 not split" {
+    var buf: [64]u8 = undefined;
+    const short = transcript_split.ellipsizeToWidth("Hello", &buf, 10, &byteWidth);
+    try t.expectEqualStrings("Hello", short);
+
+    const long = transcript_split.ellipsizeToWidth("abcdefghij", &buf, 6, &byteWidth);
+    try t.expect(std.mem.endsWith(u8, long, "…"));
+    try t.expect(long.len <= 6);
+
+    const cjk_src = "文文文文文";
+    const cjk = transcript_split.ellipsizeToWidth(cjk_src, &buf, 8, &byteWidth);
+    try t.expect(std.unicode.utf8ValidateSlice(cjk));
+    try t.expect(std.mem.endsWith(u8, cjk, "…"));
+}

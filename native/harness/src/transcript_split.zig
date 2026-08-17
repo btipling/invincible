@@ -71,6 +71,51 @@ fn rowFont() dvui.Font {
     return body.withSize(body.size).withLineHeight(1.0);
 }
 
+fn utf8CharLen(b: u8, remain: usize) usize {
+    const n: usize = if (b < 0x80) 1 else if (b < 0xC0) 1 else if (b < 0xE0) 2 else if (b < 0xF0) 3 else 4;
+    return @min(n, remain);
+}
+
+/// Keep complete UTF-8 code points + trailing "…" so `widthOf` stays ≤ `max_w`.
+/// `widthOf` is 1 px/byte in unit tests; paint uses `Font.textSize`.
+pub fn ellipsizeToWidth(
+    src: []const u8,
+    buf: []u8,
+    max_w: f32,
+    widthOf: *const fn ([]const u8) f32,
+) []const u8 {
+    const ell = "…";
+    if (max_w <= 0 or src.len == 0) return "";
+    if (widthOf(src) <= max_w) return src;
+    const ell_w = widthOf(ell);
+    var i: usize = 0;
+    var used: f32 = 0;
+    while (i < src.len) {
+        const cl = utf8CharLen(src[i], src.len - i);
+        if (i + cl + ell.len > buf.len) break;
+        const cp = src[i .. i + cl];
+        const w = widthOf(cp);
+        if (used + w + ell_w > max_w) break;
+        @memcpy(buf[i .. i + cl], cp);
+        used += w;
+        i += cl;
+    }
+    if (i == 0 or i + ell.len > buf.len) return "";
+    @memcpy(buf[i .. i + ell.len], ell);
+    return buf[0 .. i + ell.len];
+}
+
+var measure_font: ?dvui.Font = null;
+
+fn measureLabelPx(s: []const u8) f32 {
+    const font = measure_font orelse return @floatFromInt(s.len);
+    return font.textSize(s).w;
+}
+
+/// Horizontal pad on each rail row (matches paint `.padding` x/w).
+pub const ROW_PAD_X: f32 = 8;
+
+
 /// Paint the rail as an absolute rect in the transcript band.
 /// `band_y` / `band_h` are the same `scroll_y` / `scroll_h` the scroller uses.
 pub fn paint(band_y: f32, band_h: f32) void {
@@ -129,16 +174,23 @@ pub fn paint(band_y: f32, band_h: f32) void {
 
     var i: u32 = 0;
     const n = session_catalog.catalogCount();
+    const font = rowFont();
+    measure_font = font;
+    defer measure_font = null;
+    const max_label_w = @max(0, w - 1 - ROW_PAD_X * 2);
     while (i < n) : (i += 1) {
         const selected = if (session_catalog.currentIndex()) |cur| cur == i else false;
         var tag_buf: [40]u8 = undefined;
         const tag = std.fmt.bufPrint(&tag_buf, "transcript-rail-row-{d}", .{i}) catch "transcript-rail-row";
-        if (dvui.button(src, session_catalog.labelAt(i), .{}, .{
-            .font = rowFont(),
+        var label_buf: [session_catalog.MAX_SESSION_LABEL_LEN + 3]u8 = undefined;
+        const raw = session_catalog.labelAt(i);
+        const shown = ellipsizeToWidth(raw, &label_buf, max_label_w, &measureLabelPx);
+        if (dvui.button(src, shown, .{}, .{
+            .font = font,
             .style = .content,
             .expand = .horizontal,
             .min_size_content = .{ .w = w - 1, .h = TOUCH_H },
-            .max_size_content = .{ .h = TOUCH_H },
+            .max_size_content = .{ .w = w - 1, .h = TOUCH_H },
             .corners = .round(0),
             .color_fill = palette.teal_surface,
             .color_text = if (selected) palette.teal_accent else palette.teal_text,
@@ -146,7 +198,7 @@ pub fn paint(band_y: f32, band_h: f32) void {
             .color_text_hover = palette.teal_accent,
             .color_border = palette.teal_border,
             .margin = .all(0),
-            .padding = .{ .x = 8, .y = 0, .w = 8, .h = 0 },
+            .padding = .{ .x = ROW_PAD_X, .y = 0, .w = ROW_PAD_X, .h = 0 },
             .border = .all(0),
             .tag = tag,
             .id_extra = ROW_ID + i,

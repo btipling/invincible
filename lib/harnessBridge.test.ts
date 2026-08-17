@@ -109,6 +109,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     },
     inv_clear_messages: () => {
       messages.length = 0;
+      pending = null;
     },
     inv_echo: (ptr: number, len: number) => {
       echo = len === 0 ? '' : read(ptr, len);
@@ -396,6 +397,15 @@ describe('HarnessBridge', () => {
     expect(bridge.hasPendingSubmit()).toBe(false);
     expect(bridge.takePendingSubmit()).toBeNull();
   });
+
+  it('clearMessages drops leftover pending submit', () => {
+    const exports = makeMockExports();
+    exports.__setPending('do not leak');
+    const bridge = new HarnessBridge(exports);
+    expect(bridge.hasPendingSubmit()).toBe(true);
+    bridge.clearMessages();
+    expect(bridge.hasPendingSubmit()).toBe(false);
+  });
 });
 
 describe('hydrateMessages (protocol v2)', () => {
@@ -584,6 +594,40 @@ describe('session catalog (protocol v17)', () => {
     };
     expect(bridge.takePendingSessionSwitch()).toBe('sess-bbbbbbb');
     expect(acked).toBe(true);
+  });
+
+  it('setSessionCatalog rewrite does not drop a pending switch', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setSessionCatalog(
+      [
+        { id: 'sess-aaaaaaa', label: 'A' },
+        { id: 'sess-bbbbbbb', label: 'B' },
+      ],
+      'sess-aaaaaaa',
+    );
+    let pending: string | null = 'sess-bbbbbbb';
+    exp.inv_has_pending_session_switch = () => (pending != null ? 1 : 0);
+    exp.inv_pending_session_switch_len = () => pending?.length ?? 0;
+    exp.inv_pending_session_switch_copy = (outPtr, maxLen) => {
+      if (pending == null) return 0;
+      const id = pending;
+      const n = Math.min(maxLen, id.length);
+      new Uint8Array(exp.memory.buffer, outPtr, n).set(new TextEncoder().encode(id).slice(0, n));
+      return n;
+    };
+    exp.inv_ack_pending_session_switch = () => {
+      pending = null;
+    };
+    bridge.setSessionCatalog(
+      [
+        { id: 'sess-aaaaaaa', label: 'A' },
+        { id: 'sess-bbbbbbb', label: 'B' },
+      ],
+      'sess-aaaaaaa',
+    );
+    expect(bridge.takePendingSessionSwitch()).toBe('sess-bbbbbbb');
+    expect(pending).toBeNull();
   });
 });
 

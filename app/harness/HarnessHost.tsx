@@ -50,6 +50,7 @@ import {
 import {
   buildSessionCatalogEntries,
   foldPendingSessionSwitch,
+  foldSessionListResult,
 } from '../../lib/sessionSummaryLabel';
 import AppNav from '../components/AppNav';
 import SessionPicker from '../components/SessionPicker';
@@ -329,8 +330,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     const repo = repoRef.current;
     if (!repo) return;
     const res = await repo.list();
-    if (res.action === 'ok') setSessions(res.sessions);
-    else if (res.action === 'disabled') setCloudEnabled(false);
+    setSessions((prev) => {
+      const next = foldSessionListResult(prev, res);
+      if (next.cloudEnabled === false) setCloudEnabled(false);
+      return next.sessions;
+    });
   }, []);
 
   /** Activate a session (canonical id) on local state + Wasm ring + URL + picker. */
@@ -629,6 +633,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                 false,
                 () => b.takePendingSessionSwitch(),
                 (id) => onSwitchSessionRef.current(id),
+                () => {
+                  // Adversarial #642: leftover Send must not run on the destination.
+                  b.takePendingSubmit();
+                  b.setLifecycle(Lifecycle.Ready);
+                },
               );
               if (switched !== 'switched' && b.takePendingLoadEarlier()) {
                 const session = sessionRef.current;

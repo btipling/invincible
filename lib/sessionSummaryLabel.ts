@@ -66,10 +66,30 @@ export function foldPendingSessionSwitch(
   inflight: boolean,
   take: () => string | null,
   onSwitch: (id: string) => void,
+  discardSubmit?: () => void,
 ): 'switched' | 'dropped' | 'none' {
   const id = take();
   if (id == null || id.length === 0) return 'none';
   if (inflight) return 'dropped';
+  // Exclusive tick: leftover Send must not run on the destination session.
+  discardSubmit?.();
   onSwitch(id);
   return 'switched';
+}
+
+/**
+ * Fold a `list()` result into host picker state.
+ * ok → replace sessions; disabled → keep sessions, cloud off; 5xx/error → keep both.
+ */
+export function foldSessionListResult<T>(
+  prevSessions: T[],
+  res: { action: string; sessions?: T[] },
+): { sessions: T[]; cloudEnabled?: boolean } {
+  if (res.action === 'ok' && Array.isArray(res.sessions)) {
+    return { sessions: res.sessions };
+  }
+  if (res.action === 'disabled') {
+    return { sessions: prevSessions, cloudEnabled: false };
+  }
+  return { sessions: prevSessions };
 }

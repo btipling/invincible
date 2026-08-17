@@ -24,13 +24,16 @@ var pending_len: u32 = 0;
 pub fn reset() void {
     clear();
     busy = false;
+    // reset (harness onInit) drops pending; catalog rewrite via clear() must not.
+    has_pending = false;
+    pending_len = 0;
 }
 
 pub fn clear() void {
     count = 0;
     current = null;
-    has_pending = false;
-    pending_len = 0;
+    // Do not drop has_pending — same contract as inv_clear_model_catalog
+    // vs pending-model-change. Host setSessionCatalog = clear + repush.
 }
 
 pub fn setBusy(v: bool) void {
@@ -202,4 +205,18 @@ test "last click wins pending" {
     try std.testing.expect(requestSwitch(1));
     try std.testing.expect(requestSwitch(2));
     try std.testing.expectEqualStrings("sess-c", pendingId());
+}
+
+test "clear keeps pending; reset drops it" {
+    reset();
+    try std.testing.expect(push("sess-a", "A"));
+    try std.testing.expect(push("sess-b", "B"));
+    try std.testing.expect(requestSwitch(1));
+    clear();
+    try std.testing.expect(hasPending());
+    try std.testing.expectEqualStrings("sess-b", pendingId());
+    try std.testing.expectEqual(@as(u32, 0), catalogCount());
+    reset();
+    try std.testing.expect(!hasPending());
+    try std.testing.expectEqual(@as(usize, 0), pendingId().len);
 }

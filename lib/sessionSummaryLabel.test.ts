@@ -8,6 +8,7 @@ import {
 import {
   buildSessionCatalogEntries,
   foldPendingSessionSwitch,
+  foldSessionListResult,
   sessionSummaryLabel,
 } from './sessionSummaryLabel';
 
@@ -133,6 +134,72 @@ describe('foldPendingSessionSwitch', () => {
   it('none when take returns null / empty', () => {
     expect(foldPendingSessionSwitch(false, () => null, () => {})).toBe('none');
     expect(foldPendingSessionSwitch(false, () => '', () => {})).toBe('none');
+  });
+
+  it('discards leftover submit on switch, not on drop / none', () => {
+    const discarded: string[] = [];
+    const discard = () => discarded.push('x');
+    expect(
+      foldPendingSessionSwitch(false, () => 'sess-a', () => {}, discard),
+    ).toBe('switched');
+    expect(discarded).toEqual(['x']);
+    discarded.length = 0;
+    expect(
+      foldPendingSessionSwitch(true, () => 'sess-b', () => {}, discard),
+    ).toBe('dropped');
+    expect(discarded).toEqual([]);
+    expect(
+      foldPendingSessionSwitch(false, () => null, () => {}, discard),
+    ).toBe('none');
+    expect(discarded).toEqual([]);
+  });
+});
+
+describe('foldSessionListResult', () => {
+  const prev = [
+    { id: 'keep-id-aaaaaa', title: 'keep' },
+    { id: 'old-id-bbbbbbb', title: 'old' },
+  ];
+
+  it('ok replaces the list and leaves cloud enabled', () => {
+    const next = foldSessionListResult(prev, {
+      action: 'ok',
+      sessions: [{ id: 'new-id-ccccccc', title: 'new' }],
+    });
+    expect(next.sessions).toEqual([{ id: 'new-id-ccccccc', title: 'new' }]);
+    expect(next.cloudEnabled).toBeUndefined();
+  });
+
+  it('disabled keeps last list and flips cloud off', () => {
+    const next = foldSessionListResult(prev, { action: 'disabled' });
+    expect(next.sessions).toEqual(prev);
+    expect(next.cloudEnabled).toBe(false);
+  });
+
+  it('5xx / error keeps last list and does not flip cloud', () => {
+    const next = foldSessionListResult(prev, { action: 'error', status: 503 } as {
+      action: string;
+    });
+    expect(next.sessions).toEqual(prev);
+    expect(next.cloudEnabled).toBeUndefined();
+  });
+});
+
+describe('HarnessHost poll / list wiring (PR #642 review)', () => {
+  const host = readFileSync(resolve(process.cwd(), 'app/harness/HarnessHost.tsx'), 'utf8');
+
+  it('switch tick discards leftover submit and sets Ready', () => {
+    expect(host).toContain('b.takePendingSubmit()');
+    expect(host).toContain('b.setLifecycle(Lifecycle.Ready)');
+    expect(host).toContain('foldPendingSessionSwitch(');
+    expect(host).toMatch(/takePendingSubmit\(\);\s*\n\s*b\.setLifecycle\(Lifecycle\.Ready\)/);
+  });
+
+  it('refreshSessions folds list via foldSessionListResult (5xx keeps last)', () => {
+    expect(host).toContain('foldSessionListResult');
+    const fn = host.slice(host.indexOf('const refreshSessions'), host.indexOf('const activateSession'));
+    expect(fn).toContain('foldSessionListResult');
+    expect(fn).not.toMatch(/setSessions\(\[\]\)/);
   });
 });
 

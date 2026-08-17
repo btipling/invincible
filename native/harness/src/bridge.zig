@@ -225,6 +225,9 @@ pub fn queueSubmitFromUi(text: []const u8) void {
         if (msg_count < MAX_MSG) msg_count += 1;
     }
     lifecycle = .busy;
+    // Send is already a turn: refuse rail clicks until host sets Ready.
+    // inv_set_lifecycle is not on this path (host has not polled yet).
+    session_catalog.setBusy(true);
     refresh();
 }
 
@@ -467,6 +470,9 @@ export fn inv_clear_messages() void {
     msg_head = 0;
     msg_count = 0;
     has_pending_cancel = false;
+    // Hydrate / New must not leave a queued Send from the previous session.
+    has_pending_submit = false;
+    pending_submit_len = 0;
     image_cache.clear();
     math_cache.clear();
     refresh();
