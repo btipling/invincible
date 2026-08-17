@@ -3248,7 +3248,7 @@ describe('context/usage slot (phase 3, plan #539 / #327)', () => {
       pushUser: false,
       onSessionPatch: (s) => patches.push({ usage: s.usage }),
       sendAgentStream: async (_p, init) => {
-        // Mid-stream usage event from a finish-step part.
+        // Mid-stream usage event from a finish part (aggregate).
         await init?.onEvent?.({
           type: 'usage',
           usage: { source: 'provider', prompt: 42, completion: 8, total: 50 },

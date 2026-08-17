@@ -468,8 +468,9 @@ export async function runAgentStream(
       metaSandboxSwitchTargetId({ steps }) ??
       (hasFsTools ? params.sandboxId : undefined);
     // Phase 3 (plan #539 + #628) — provider usage: mid-stream `usage` events
-    // are emitted from `finish-step`/`finish` parts when the provider reports
-    // counts; the final `done.usage` is the conclusive reconcile (the
+    // are emitted from `finish` parts (aggregate `totalUsage` / v7 `usage`)
+    // when the provider reports counts — never from `finish-step` (per-step).
+    // The final `done.usage` is the conclusive reconcile (the
     // authoritative aggregate after the stream resolves). Absent when the
     // provider reported none. Single read of `result.usage` (an awaitable
     // getter that consumes the stream): a missing value, a sync getter throw,

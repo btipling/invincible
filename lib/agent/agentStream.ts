@@ -84,9 +84,10 @@ export type AgentStreamEvent =
   | {
       /**
        * Phase 3 (plan #628) — live provider usage. Emitted mid-stream when the
-       * AI SDK reports per-step or aggregate usage on a finish-step / finish
-       * part. Non-empty only (never a clear/flicker). The host folds the context
-       * slot immediately; `done.usage` is the final reconcile.
+       * AI SDK reports **aggregate** usage on a `finish` part (`totalUsage`,
+       * or v7 `usage`). `finish-step` is never a source — its per-step counts
+       * are not a turn total. Non-empty only (never a clear/flicker). The host
+       * folds the context slot immediately; `done.usage` is the final reconcile.
        */
       type: 'usage';
       usage: UsageSummary;
