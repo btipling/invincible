@@ -89,7 +89,8 @@ pub fn paint(src: std.builtin.SourceLocation, opts: Options) void {
     const cells = busy_spinner.busySpinnerCells(opts.phase);
     var out = dvui.box(src, .{ .dir = .vertical }, .{
         .gravity_y = 0.5,
-        // padSize(INNER) + PAD + TRAIL margin → tagged slot stays W×H.
+        // padSize(INNER) + PAD → content is W×H inside the padded box.
+        // Tagged rect includes TRAIL margin: (W+TRAIL)×H (see layout test lock).
         // Do not bake+null padding (TextEntry-only); contentRect insets PAD.
         .min_size_content = .{ .w = INNER_W, .h = INNER_H },
         .padding = .{ .x = PAD_X, .y = PAD_Y, .w = PAD_X, .h = PAD_Y },
