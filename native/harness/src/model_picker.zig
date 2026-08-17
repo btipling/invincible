@@ -13,10 +13,20 @@ pub const PICKER_ITEM_H: f32 = 32;
 
 /// Closed **U+25BE ▾** — Geometric Shapes; paint with `fontSymbols()` only.
 const GLYPH_CHEVRON: []const u8 = "\u{25BE}";
+/// Left margin on the caret run (px) — the declared gap between label and ▾.
+/// Lives in the caret tag rect (same class as `rect_spinner` TRAIL).
+pub const CARET_GAP: f32 = 4;
 
 /// Dedicated extras — never reuse the `0x61_*` rail / slot / bar namespace.
 const TRIGGER_ID: usize = 0x62_0000;
 const MENU_ID: usize = 0x62_0010;
+
+/// Caret paint-face for the closed trigger — host-testable seam so the
+/// face-pin test can assert `familyName() == family_symbols` without
+/// touching `palette` directly (the #595 `mixed_text_lookalike` mechanism).
+pub fn chevronFont() dvui.Font {
+    return palette.fontSymbols();
+}
 
 pub const CatalogView = struct {
     count: u32,
@@ -81,18 +91,31 @@ fn paintMenuTrigger(view: CatalogView) ?u32 {
         .color_border = palette.teal_accent,
         .style = .content,
     });
+    // Wrap label + caret in a horizontal box so dvui lays them out
+    // sequentially (menuItem places raw children at the same origin).
+    // The box is the single content child of the menuItem; tag rects
+    // on the inner label/caret are sequential sibling widgets.
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .gravity_y = 0.5,
+        .background = false,
+    });
     dvui.labelNoFmt(@src(), view.short_label, .{}, .{
         .color_text = palette.teal_accent,
         .gravity_y = 0.5,
+        .tag = "status-model-label",
+        .id_extra = TRIGGER_ID + 2,
     });
     if (model_catalog.showChevron(view.count)) {
         dvui.labelNoFmt(@src(), GLYPH_CHEVRON, .{}, .{
-            .font = palette.fontSymbols(),
+            .font = chevronFont(),
             .color_text = palette.teal_accent,
             .gravity_y = 0.5,
-            .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
+            .margin = .{ .x = CARET_GAP, .y = 0, .w = 0, .h = 0 },
+            .tag = "status-model-caret",
+            .id_extra = TRIGGER_ID + 3,
         });
     }
+    row.deinit();
     const maybe_r = mi.activeRect();
     mi.deinit();
 
