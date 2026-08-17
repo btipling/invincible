@@ -51,7 +51,7 @@ pub const TRAIL: f32 = 6;
 
 // id namespace for the busy row inner boxes — never aliases message-loop rows
 // (which use their own high ids) or the busy textLayout (`0xffff_ffff`).
-const LEAD_SPACER_ID = 0x60_0050;
+const LEAD_WRAPPER_ID = 0x60_0050;
 const SPINNER_ID = 0x60_00a0;
 const ROW_CONTAINER_ID = 0x60_0000;
 const TEXT_ID = 0xffff_ffff;
@@ -75,7 +75,7 @@ pub fn paintBusyRow(phase: u8, turn_elapsed: u32) void {
         .margin = .{ .x = LEAD, .y = 0, .w = 0, .h = 0 },
         .background = false,
         .tag = "busy-row-lead",
-        .id_extra = LEAD_SPACER_ID,
+        .id_extra = LEAD_WRAPPER_ID,
     });
     defer lead_wrapper.deinit();
     rect_spinner.paint(src, .{
