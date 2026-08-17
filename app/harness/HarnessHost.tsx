@@ -40,6 +40,10 @@ import {
   earlierRingStart,
   latestRingStart,
 } from '../../lib/sessionWindow';
+import {
+  applySessionModel as applySessionModelFn,
+  foldPendingModelChange as foldPendingModelChangeFn,
+} from '../../lib/harnessHostModelPersist';
 import AppNav from '../components/AppNav';
 import SessionPicker from '../components/SessionPicker';
 import PersonaPicker from '../components/PersonaPicker';
@@ -236,36 +240,14 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   }, []);
 
   /**
-   * Plan #616 (source #610) — apply the snapshot's stored model id to the Wasm
-   * selection BY ID (after the catalog is loaded). `undefined`/absent or a
-   * not-in-catalog id → reset to the default (index 0). Called idempotently on
-   * boot restore, cloud adopt, and session switch; the set-by-id path never
-   * raises the pending-model-change flag (only the user Next cycle does).
-   *
-   * Goal 3 (plan #616): after a catalog-push restore, if the stored model id is
-   * NOT in the current catalog, drop `selectedModel` from the snapshot so a
-   * revoked model never ghosts back on re-grant. The host compares the live
-   * selection after the set-by-id call — the bridge returns `true` even on a
-   * miss (Wasm falls back to index 0 silently), so a host-side compare is
-   * mandatory. Only drops when the catalog is loaded AND non-empty
-   * (`getSelectedModel()` non-null); never drops on transport failure.
+   * Plan #616 (source #610) — delegate to the extracted pure function in
+   * lib/harnessHostModelPersist.ts so the logic is unit-testable without
+   * rendering React.
    */
   const applySessionModel = useCallback((snap: SessionSnapshot) => {
     const b = bridgeRef.current;
     if (!b) return;
-    const storedId = snap.selectedModel;
-    b.setSelectedModel(storedId ?? null);
-    if (!storedId) return;
-    // Compare the live selection after set-by-id — if the catalog is loaded
-    // (non-null) and the live id differs from the stored id, the stored id
-    // wasn't in the catalog. Drop it from the snapshot + persist so the ghost
-    // pick can never resurrect on a later re-grant.
-    const live = b.getSelectedModel();
-    if (live !== null && live !== storedId) {
-      delete sessionRef.current.selectedModel;
-      writeLocalSession({ ...sessionRef.current });
-      repoRef.current?.put(sessionRef.current.id, sessionRef.current);
-    }
+    applySessionModelFn(snap, b, sessionRef, writeLocalSession, repoRef.current);
   }, [writeLocalSession]);
 
   /** Apply server snapshot to local store + latest Wasm ring window. */
@@ -282,28 +264,14 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   );
 
   /**
-   * Plan #616 (source #610) — a user Next cycle in Wasm raises the
-   * pending-model-change flag. The host folds the LIVE selection into the
-   * session snapshot and persists (local save + cloud PUT) so a pick survives
-   * without waiting for a turn, then acks. Skipped mid-turn and guarded against
-   * adoption races (`next.id !== sessionRef.current.id`, mirroring
-   * `adoptCloudSession`'s identity guard).
+   * Plan #616 (source #610) — delegate to the extracted pure function in
+   * lib/harnessHostModelPersist.ts so the logic is unit-testable without
+   * rendering React.
    */
   const foldPendingModelChange = useCallback(() => {
     const b = bridgeRef.current;
-    if (!b || inflightRef.current) return;
-    if (!b.hasPendingModelChange()) return;
-    const liveId = b.getSelectedModel();
-    const next: SessionSnapshot = { ...sessionRef.current, updatedAt: Date.now() };
-    if (liveId) next.selectedModel = liveId;
-    else delete next.selectedModel;
-    if (next.id !== sessionRef.current.id) {
-      b.ackPendingModelChange();
-      return;
-    }
-    writeLocalSession(next);
-    repoRef.current?.put(next.id, next);
-    b.ackPendingModelChange();
+    if (!b) return;
+    foldPendingModelChangeFn(b, sessionRef, writeLocalSession, repoRef.current, inflightRef.current);
   }, [writeLocalSession]);
 
   /** Persist the active session id into the URL `?s=` (no new history entry). */
