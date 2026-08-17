@@ -111,13 +111,20 @@ fn paintMenuTrigger(view: CatalogView) ?u32 {
         while (i < view.count) : (i += 1) {
             const id = view.idAt(i);
             const selected = i == view.selected;
+            var item_tag_buf: [48]u8 = undefined;
+            const item_tag = std.fmt.bufPrint(&item_tag_buf, "status-model-item-{d}", .{i}) catch "status-model-item";
             if (dvui.menuItemLabel(@src(), id, .{}, .{
+                .tag = item_tag,
                 .id_extra = i,
                 .expand = .horizontal,
                 .min_size_content = .{ .h = PICKER_ITEM_H },
                 .padding = .{ .x = 8, .y = 4, .w = 8, .h = 4 },
                 .color_fill = if (selected) palette.teal_border else palette.teal_surface,
                 .color_text = if (selected) palette.teal_accent else palette.teal_text,
+                // Plan lock (test row 11): hover = teal_border fill + teal_accent text,
+                // so an idle row under the pointer reads exactly like the selected row.
+                .color_fill_hover = palette.teal_border,
+                .color_text_hover = palette.teal_accent,
                 .style = .content,
             }) != null) {
                 if (model_catalog.canCommit(view.busy)) picked = i;

@@ -68,3 +68,77 @@ test "count > 1: trigger tagged, height still ≤ PICKER_TRIGGER_H + slack" {
     });
     try t.expectApproxEqAbs(model_picker.PICKER_TRIGGER_H * PX, rect.h, EPS);
 }
+
+// Commit-path click tests (adversarial review PR #617 Minor L6): the
+// `menuItemLabel(...) != null → picked = i` branch had no automated proof.
+// The trigger is a submenu, so a testing-backend click opens the floating
+// menu; clicking a row then makes `paint` return that catalog index (or null
+// while busy, because `canCommit` gates the pick).
+const Click = struct {
+    var view: model_picker.CatalogView = undefined;
+    var picked: ?u32 = null;
+    fn frame() !dvui.App.Result {
+        picked = model_picker.paint(view);
+        return .ok;
+    }
+};
+
+test "click item 1 → paint returns 1" {
+    var tr = try dvui.testing.init(.{ .window_size = .{ .w = 400, .h = 300 } });
+    defer tr.deinit();
+    Click.view = .{
+        .count = 2,
+        .selected = 0,
+        .busy = false,
+        .short_label = "claude-a",
+        .idAt = idAt2,
+    };
+    Click.picked = null;
+
+    // settle the trigger layout
+    _ = try dvui.testing.step(Click.frame);
+    _ = try dvui.testing.step(Click.frame);
+
+    // open the menu: click the trigger submenu, then settle the floating panel
+    // (it needs a second frame to lay out its rows so they become visible).
+    try dvui.testing.moveTo("status-model-trigger");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(Click.frame);
+    _ = try dvui.testing.step(Click.frame);
+
+    // click row "openai/gpt-b" (index 1). The pick is set in the single
+    // step that processes the release; a second step would re-paint with the
+    // just-closed menu and reset `picked` to null.
+    try dvui.testing.moveTo("status-model-item-1");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(Click.frame);
+
+    try t.expectEqual(@as(?u32, 1), Click.picked);
+}
+
+test "click item while busy → paint returns null" {
+    var tr = try dvui.testing.init(.{ .window_size = .{ .w = 400, .h = 300 } });
+    defer tr.deinit();
+    Click.view = .{
+        .count = 2,
+        .selected = 0,
+        .busy = true,
+        .short_label = "claude-a",
+        .idAt = idAt2,
+    };
+    Click.picked = null;
+
+    _ = try dvui.testing.step(Click.frame);
+    _ = try dvui.testing.step(Click.frame);
+
+    try dvui.testing.moveTo("status-model-trigger");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(Click.frame);
+    _ = try dvui.testing.step(Click.frame);
+
+    try dvui.testing.moveTo("status-model-item-0");
+    try dvui.testing.click(.left);
+    _ = try dvui.testing.step(Click.frame);
+
+    try t.expectEqual(@as(?u32, null), Click.picked);
+}
