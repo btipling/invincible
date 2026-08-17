@@ -320,6 +320,24 @@ export function overlayEnvelopeMeta(
   return out;
 }
 
+/**
+ * Merge `usage` on same-id adopt so a server snapshot without `meta.usage`
+ * (other tab on a pre-#626 bundle, or any prior persist that omitted usage)
+ * does not wipe an honest local last-completed value.
+ *
+ * - Same id: `server.usage ?? local.usage` — server wins when it has one.
+ * - Different id: server-only (a switch is a different session).
+ */
+export function mergeAdoptedUsage(
+  server: SessionSnapshot,
+  local: SessionSnapshot,
+): SessionSnapshot {
+  if (server.id === local.id) {
+    return { ...server, usage: server.usage ?? local.usage };
+  }
+  return server;
+}
+
 /** Parse one `GET /api/sessions` summary row; null if invalid. */
 export function parseSessionSummary(body: unknown): SessionSummary | null {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) return null;
@@ -356,8 +374,8 @@ export type CloudPutBody = {
     /**
      * Phase 2 (#517): the session-sticky attached-skill set as a JSON-array
      * string of slugs (the server's reserved `meta.attachedSkills` surface).
-     * `undefined` = omitted (never clears what the host doesn't know);
-     * `'[]'` = explicit detach-all. Folded from `snapshot.attachedSlugs`.
+     * Absent = clear (RESERVED_META_KEYS replace contract); `'[]'` = explicit
+     * detach-all value. Folded from `snapshot.attachedSlugs`.
      */
     attachedSkills?: string;
     /**

@@ -27,6 +27,7 @@ import {
 } from '../../lib/sessionStore';
 import {
   createHttpSessionRepository,
+  mergeAdoptedUsage,
   type IdSessionRepository,
   type SessionSummary,
 } from '../../lib/sessionRepository';
@@ -269,12 +270,15 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   /** Apply server snapshot to local store + latest Wasm ring window. */
   const adoptCloudSession = useCallback(
     (next: SessionSnapshot) => {
+      // Merge usage: same-id adopt keeps local's honest last-completed value
+      // when the server snapshot has none (plan #626 test 5).
+      const merged = mergeAdoptedUsage(next, sessionRef.current);
       const b = bridgeRef.current;
       if (b) {
         // Flush a pending menu/Next pick onto the CURRENT session before
         // replacing it (PR #618 re-run 5 Minor L1). Restore-by-id never acks.
         flushPendingThenRestore(
-          next,
+          merged,
           b,
           sessionRef,
           writeLocalSession,
@@ -282,11 +286,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           inflightRef.current,
         );
       } else {
-        writeLocalSession(next);
+        writeLocalSession(merged);
       }
       const bridge = bridgeRef.current;
       if (bridge) {
-        hydrateRingWindow(bridge, next, latestRingStart(next.messages.length));
+        hydrateRingWindow(bridge, merged, latestRingStart(merged.messages.length));
       }
     },
     [writeLocalSession, hydrateRingWindow],
@@ -566,7 +570,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                 repoRef.current?.put(id, local);
                 return;
               }
-              activateSession({ ...serverSnap, id });
+              activateSession(mergeAdoptedUsage({ ...serverSnap, id }, local));
             },
             onMint: (createdSnap, id) => {
               if (cancelled) return;

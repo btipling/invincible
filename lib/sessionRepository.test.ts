@@ -7,6 +7,7 @@ import {
 import {
   createHttpSessionRepository,
   isEmptyOfDialogue,
+  mergeAdoptedUsage,
   overlayEnvelopeMeta,
   parseCloudSessionSnapshot,
   parseSessionSummaryList,
@@ -573,6 +574,55 @@ describe('overlayEnvelopeMeta', () => {
     expect(cleared.selectedModel).toBeUndefined();
     expect(cleared.attachedSlugs).toBeUndefined();
     expect(cleared.personaId).toBeUndefined();
+  });
+});
+
+describe('mergeAdoptedUsage (plan #626 test 5)', () => {
+  const usageA = { source: 'provider' as const, prompt: 42, completion: 10, total: 52 };
+  const usageB = { source: 'provider' as const, prompt: 8, completion: 2, total: 10 };
+
+  it('same id: server has usage → server wins', () => {
+    const out = mergeAdoptedUsage(
+      { id: 'a', updatedAt: 10, messages: [], usage: usageA },
+      { id: 'a', updatedAt: 5, messages: [], usage: usageB },
+    );
+    expect(out.usage).toEqual(usageA);
+    expect(out.updatedAt).toBe(10);
+  });
+
+  it('same id: server has no usage → keep local', () => {
+    const out = mergeAdoptedUsage(
+      { id: 'a', updatedAt: 10, messages: [] },
+      { id: 'a', updatedAt: 5, messages: [], usage: usageA },
+    );
+    expect(out.usage).toEqual(usageA);
+    expect(out.updatedAt).toBe(10);
+  });
+
+  it('same id: neither has usage → undefined', () => {
+    const out = mergeAdoptedUsage(
+      { id: 'a', updatedAt: 10, messages: [] },
+      { id: 'a', updatedAt: 5, messages: [] },
+    );
+    expect(out.usage).toBeUndefined();
+  });
+
+  it('different id: server-only (no merge)', () => {
+    const out = mergeAdoptedUsage(
+      { id: 'b', updatedAt: 10, messages: [] },
+      { id: 'a', updatedAt: 5, messages: [], usage: usageA },
+    );
+    expect(out.usage).toBeUndefined();
+    expect(out.id).toBe('b');
+  });
+
+  it('different id: server has usage → keep server', () => {
+    const out = mergeAdoptedUsage(
+      { id: 'b', updatedAt: 10, messages: [], usage: usageA },
+      { id: 'a', updatedAt: 5, messages: [], usage: usageB },
+    );
+    expect(out.usage).toEqual(usageA);
+    expect(out.id).toBe('b');
   });
 });
 
