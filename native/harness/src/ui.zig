@@ -142,6 +142,21 @@ const TE_OVERHEAD: f32 = TE_BORDER_H; // 2
 /// Round 2 Major L1 and Round 3 Major L1+L9).
 var composer_last_h: f32 = COMPOSER_IDLE_CHROME_H;
 
+/// Sticky last-user-message chip (plan #645, source issue #339).
+const LAST_USER_CHIP_PREVIEW_MAX_BYTES: usize = 100;
+const CHIP_VISIBILITY_MARGIN: f32 = 8;
+
+/// Per-slot content-local y-offset in scroll content space. Indexed by physical
+/// ring slot (0..RING_CAP). Pre-allocated 2048 × 4 = 8 KiB — zero frame-path alloc.
+/// Populated during the message paint loop; cleared on reset/clear.
+var msg_content_y: [2048]f32 = [_]f32{0} ** 2048;
+/// Physical ring slot of the most recent user message, or null when no user
+/// messages exist in the current ring window.
+var last_user_slot: ?usize = null;
+/// Chip visibility from the PREVIOUS frame — drives scroll-area rect adjustment
+/// and chip paint this frame. One-frame settle (same pattern as composer_last_h).
+var prev_chip_visible: bool = false;
+
 pub fn onInit() void {
     bridge.reset();
     @memset(&prompt_buf, 0);
@@ -167,6 +182,9 @@ fn resetTranscriptScroll() void {
     clearThinkingOpenState();
     thinking_collapse_state.reset();
     prev_lifecycle = .boot;
+    @memset(&msg_content_y, 0);
+    last_user_slot = null;
+    prev_chip_visible = false;
 }
 
 fn isNearBottom(si: *const dvui.ScrollInfo) bool {
@@ -624,6 +642,96 @@ fn thinkingPreview(buf: *[96]u8, text: []const u8) []const u8 {
     return buf[0..out];
 }
 
+/// One-line preview of a user message for the sticky last-user-message chip
+/// (plan #645). Strips a leading slash command when body text follows (e.g.
+/// `/skill-name explain this` → `explain this`); keeps the slash command when
+/// it's the only text (e.g. just `/skill-name`). Caps at
+/// `LAST_USER_CHIP_PREVIEW_MAX_BYTES` with UTF-8 boundary safety, mirroring
+/// `thinkingPreview`. Returns a slice into `buf`.
+fn chipPreview(buf: *[LAST_USER_CHIP_PREVIEW_MAX_BYTES + 1]u8, text: []const u8) []const u8 {
+    // Slash-command stripping: if the message starts with '/', strip the leading
+    // command when body text follows; keep the command when it's the only text.
+    const body: []const u8 = if (text.len > 0 and text[0] == '/') blk: {
+        if (std.mem.indexOfScalar(u8, text, ' ')) |space_idx| {
+            const after = text[space_idx + 1 ..];
+            if (after.len > 0) {
+                var has_content = false;
+                for (after) |c| {
+                    if (c != ' ' and c != '\t' and c != '\n' and c != '\r') {
+                        has_content = true;
+                        break;
+                    }
+                }
+                if (has_content) break :blk after;
+            }
+        }
+        break :blk text;
+    } else text;
+
+    var out: usize = 0;
+    for (body) |c| {
+        if (out >= LAST_USER_CHIP_PREVIEW_MAX_BYTES) break;
+        if (c == '\n' or c == '\r') break;
+        buf[out] = c;
+        out += 1;
+    }
+    // Trailing whitespace isn't part of the preview.
+    while (out > 0 and (buf[out - 1] == ' ' or buf[out - 1] == '\t')) out -= 1;
+    // Drop a multi-byte char truncated by the byte cap (never mojibake).
+    while (out > 0 and isUtf8Continuation(buf[out - 1])) out -= 1;
+    if (out > 0 and (buf[out - 1] & 0xC0) == 0xC0) out -= 1;
+    return buf[0..out];
+}
+
+/// Paint the sticky last-user-message chip as an absolute-rect strip above the
+/// transcript scroll area (plan #645). The entire strip is a clickable button:
+/// one click scrolls the transcript so the last user message is aligned at the
+/// top of the viewport. The chip shows a truncated one-line preview of the user
+/// message; hidden when the message is already visible or there are no user
+/// messages.
+fn paintLastUserChip(
+    src: std.builtin.SourceLocation,
+    slot: usize,
+    chip_y: f32,
+    pane_w: f32,
+    avail: dvui.Size,
+) void {
+    // Find the user message text for this physical ring slot.
+    const n = bridge.messageCount();
+    var chip_text: []const u8 = "";
+    for (0..n) |i| {
+        if (bridge.messageSlotAt(i)) |s| {
+            if (s == slot) {
+                if (bridge.messageAt(i)) |m| {
+                    chip_text = m.text;
+                }
+                break;
+            }
+        }
+    }
+
+    var preview_buf: [LAST_USER_CHIP_PREVIEW_MAX_BYTES + 1]u8 = undefined;
+    const preview = chipPreview(&preview_buf, chip_text);
+
+    // Build label: truncated preview + " ↑" jump hint.
+    var label_buf: [LAST_USER_CHIP_PREVIEW_MAX_BYTES + 8]u8 = undefined;
+    const label = std.fmt.bufPrint(&label_buf, "{s} ↑", .{preview}) catch preview;
+
+    if (dvui.button(src, label, .{}, .{
+        .rect = .{ .x = pane_w, .y = chip_y, .w = @max(0, avail.w - pane_w), .h = TOUCH_H },
+        .expand = .horizontal,
+        .style = .content,
+        .min_size_content = .{ .w = 120, .h = TOUCH_H },
+        .color_fill = palette.teal_surface,
+        .color_border = palette.teal_border,
+        .color_text = palette.teal_muted,
+        .padding = .{ .x = 8, .y = 0, .w = 8, .h = 0 },
+    })) {
+        transcript_scroll.viewport.y = msg_content_y[slot];
+        clampScrollToContent(&transcript_scroll);
+    }
+}
+
 /// Paint a thinking row (protocol v8 kind / bridge kind 5, #424).
 ///
 /// When the row belongs to the active Busy turn (or the operator has expanded
@@ -1022,6 +1130,21 @@ pub fn frame() !void {
     // The scrollArea keeps its own Options.rect (x = pane_w) so the `.auto`
     // bar cannot publish virtual content height into the root flex.
     // (Header band removed — plan #570 merges its content into the two-line status bar)
+    // Sticky last-user-message chip (plan #645): when visible from the previous
+    // frame, the chip strip occupies TOUCH_H px above the scroll area. The
+    // scroll area's y offset moves down and its height shrinks by the same
+    // amount so content doesn't overlap. One-frame settle (same pattern as
+    // composer_last_h).
+    const chip_h: f32 = if (prev_chip_visible) TOUCH_H else 0;
+    const scroll_h_chip: f32 = @max(SCROLL_FLOOR_H, scroll_h - chip_h);
+
+    // Paint the chip strip above the scroll area when visible.
+    if (prev_chip_visible) {
+        if (last_user_slot) |slot| {
+            paintLastUserChip(@src(), slot, scroll_y, pane_w, avail);
+        }
+    }
+
     const near_before = isNearBottom(&transcript_scroll);
     const prev_msg = last_msg_count;
     const prev_shown = last_shown_count;
@@ -1045,14 +1168,14 @@ pub fn frame() !void {
             .vertical_bar = .auto,
             .user_scroll = &user_scroll,
         }, .{
-            .rect = .{ .x = pane_w, .y = scroll_y, .w = @max(0, avail.w - pane_w), .h = scroll_h },
+            .rect = .{ .x = pane_w, .y = scroll_y + chip_h, .w = @max(0, avail.w - pane_w), .h = scroll_h_chip },
             .background = true,
             .color_fill = palette.teal_bg,
             .padding = .all(0),
             .border = .all(0),
             .corners = .{ .tl = .square, .tr = .square, .br = .square, .bl = .square },
-            .min_size_content = .{ .w = 120, .h = scroll_h },
-            .max_size_content = .height(scroll_h),
+            .min_size_content = .{ .w = 120, .h = scroll_h_chip },
+            .max_size_content = .height(scroll_h_chip),
         });
         defer scroll.deinit();
 
@@ -1241,6 +1364,18 @@ pub fn frame() !void {
                             tl.deinit();
                         }
                     }
+                    // Per-message y-tracking for the sticky last-user-message chip
+                    // (plan #645). Capture the content-local y-offset after the row
+                    // is fully laid out but before deinit fires (data() is still
+                    // valid). Keyed by physical ring slot so ring wrap can never
+                    // alias entries across different messages.
+                    if (bridge.messageSlotAt(i)) |slot| {
+                        const cr = row.data().contentRect();
+                        msg_content_y[slot] = cr.y;
+                        if (m.kind == @intFromEnum(bridge.MessageKind.user)) {
+                            last_user_slot = slot;
+                        }
+                    }
                 }
             }
         }
@@ -1276,6 +1411,10 @@ pub fn frame() !void {
         thinking_collapse_state.reset();
         transcript_scroll.velocity = .{ .x = 0, .y = 0 };
         scrollToBottom(&transcript_scroll);
+        // Clear chip state — no user messages remain (plan #645).
+        @memset(&msg_content_y, 0);
+        last_user_slot = null;
+        prev_chip_visible = false;
     } else if (count_changed or content_grew) {
         const newest_is_user = blk: {
             if (n == 0) break :blk false;
@@ -1297,6 +1436,17 @@ pub fn frame() !void {
     last_shown_count = shown;
     last_msg_count = n;
     last_scroll_max_y = transcript_scroll.scrollMax(.vertical);
+
+    // Sticky last-user-message chip visibility for NEXT frame (plan #645).
+    // Computed from this frame's final scroll state + per-message y-track array.
+    // The chip appears when the last user message's top edge has scrolled above
+    // the viewport with a small margin to prevent flicker at the boundary.
+    // One-frame settle: this value drives next frame's rect adjustment + paint.
+    prev_chip_visible = if (last_user_slot) |s| blk: {
+        const msg_y = msg_content_y[s];
+        const view_top = transcript_scroll.viewport.y;
+        break :blk msg_y < view_top - CHIP_VISIBILITY_MARGIN;
+    } else false;
 
     // ── Composer chrome (absolute rect — hugs one line, grows up to cap) ───
     // Dynamic height: previous-frame measured via composer_last_h, clamped to

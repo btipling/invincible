@@ -11,6 +11,25 @@ Documented browser / dvui / product constraints for `/harness` (Wasm-primary).
 
 See [feature-divide.md](feature-divide.md). No competing DOM chat panel.
 
+### Sticky last-user-message chip
+
+When the operator scrolls up far enough that the **last user message** scrolls
+above the transcript viewport, a compact **sticky chip** appears at the top of
+the transcript band, showing a truncated one-line preview of that message. One
+click/tap scrolls the transcript so the message is back in view near the top.
+
+| Topic | Behavior |
+|-------|----------|
+| When visible | The last user message's top edge is above the viewport top (with an 8 px margin to prevent flicker at the boundary). Hidden when the message is already visible or when there are no user messages |
+| Preview | First line of the user message, capped at 100 bytes, UTF-8 safe (never mojibake). A leading slash command (e.g. `/skill-name`) is stripped when body text follows; the slash command itself is shown when it's the only text |
+| Click / tap | Scrolls the transcript so the last user message is aligned at the top of the viewport. Chip hides on the next frame (message is now visible) |
+| New user send | Replaces the tracked message; chip tracks the new last user message |
+| Clear / New session | Removes the chip — no user messages remain |
+| Colors | TEAL only (`teal_surface` fill, `teal_border` border, `teal_muted` text) |
+| Touch target | 40 px (matching all other harness touch targets) |
+| Layer | Wasm-internal only — no bridge protocol change, no DOM host involvement |
+| One-frame settle | Chip visibility is computed from the current frame's final scroll state and applied on the **next** frame (same settle pattern as the dynamic composer height) |
+
 ## Load & performance
 
 | Topic | Behavior |
