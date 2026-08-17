@@ -32,8 +32,12 @@ pub fn reset() void {
 pub fn clear() void {
     count = 0;
     current = null;
-    // Do not drop has_pending — same contract as inv_clear_model_catalog
-    // vs pending-model-change. Host setSessionCatalog = clear + repush.
+    // Session pending is navigation state (user wants to leave this session),
+    // NOT a durable setting like the model pick. Drop it on clear so a catalog
+    // rewrite (host setSessionCatalog = clear + repush) does not replay a stale
+    // click after the user already navigated away via New/Clear.
+    has_pending = false;
+    pending_len = 0;
 }
 
 pub fn setBusy(v: bool) void {
@@ -207,15 +211,23 @@ test "last click wins pending" {
     try std.testing.expectEqualStrings("sess-c", pendingId());
 }
 
-test "clear keeps pending; reset drops it" {
+test "clear drops pending; reset also drops it" {
     reset();
     try std.testing.expect(push("sess-a", "A"));
     try std.testing.expect(push("sess-b", "B"));
     try std.testing.expect(requestSwitch(1));
-    clear();
     try std.testing.expect(hasPending());
-    try std.testing.expectEqualStrings("sess-b", pendingId());
+    clear();
+    // Session pending is navigation state — clear() must drop it so a catalog
+    // rewrite (host setSessionCatalog) does not replay a stale click.
+    try std.testing.expect(!hasPending());
+    try std.testing.expectEqual(@as(usize, 0), pendingId().len);
     try std.testing.expectEqual(@as(u32, 0), catalogCount());
+    try std.testing.expect(currentIndex() == null);
+    // reset() also works (harness onInit path).
+    try std.testing.expect(push("sess-c", "C"));
+    try std.testing.expect(requestSwitch(0));
+    try std.testing.expect(hasPending());
     reset();
     try std.testing.expect(!hasPending());
     try std.testing.expectEqual(@as(usize, 0), pendingId().len);

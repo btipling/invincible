@@ -201,6 +201,42 @@ describe('HarnessHost poll / list wiring (PR #642 review)', () => {
     expect(fn).toContain('foldSessionListResult');
     expect(fn).not.toMatch(/setSessions\(\[\]\)/);
   });
+
+  // Adversarial #642: New and Clear must discard session-switch pending.
+  it('onClear acks pending session switch (like discardPendingModelChange)', () => {
+    expect(host).toContain('bridge.takePendingSessionSwitch()');
+    const onClear = host.slice(host.indexOf('const onClear = useCallback'), host.indexOf('const onNewSession'));
+    expect(onClear).toContain('takePendingSessionSwitch()');
+    expect(onClear).toContain('discardPendingModelChange');
+  });
+
+  it('onNewSession acks pending session switch before async', () => {
+    const onNew = host.slice(host.indexOf('const onNewSession = useCallback'), host.indexOf('  const onSwitchSession = useCallback'));
+    expect(onNew).toContain('takePendingSessionSwitch()');
+  });
+
+  it('switchInFlightRef exists and guards poll, Clear, New, and onSwitchSession', () => {
+    expect(host).toContain('switchInFlightRef');
+    // Poll: inflightRef.current || switchInFlightRef.current → ack-and-drop.
+    expect(host).toContain('inflightRef.current || switchInFlightRef.current');
+    // Clear / New both guard with switchInFlightRef.
+    const onClear = host.slice(host.indexOf('const onClear = useCallback'), host.indexOf('  const onNewSession'));
+    expect(onClear).toContain('switchInFlightRef.current');
+    // NOTE: use a unique prefix so indexOf doesn't match onSwitchSessionRef (the useRef).
+    const onNew = host.slice(host.indexOf('const onNewSession = useCallback'), host.indexOf('  const onSwitchSession = useCallback'));
+    expect(onNew).toContain('switchInFlightRef.current');
+    // onSwitchSession is the last callback before the useEffect catalog push.
+    const onSwitch = host.slice(host.indexOf('  const onSwitchSession = useCallback'), host.indexOf('onSwitchSessionRef.current = onSwitchSession'));
+    expect(onSwitch).toContain('switchInFlightRef.current');
+  });
+
+  it('onSwitchSession sets switchInFlightRef and re-checks sessionRef after await', () => {
+    const onSwitch = host.slice(host.indexOf('  const onSwitchSession = useCallback'), host.indexOf('onSwitchSessionRef.current = onSwitchSession'));
+    expect(onSwitch).toContain('switchInFlightRef.current = true');
+    expect(onSwitch).toContain('switchInFlightRef.current = false');
+    expect(onSwitch).toContain('sourceId');
+    expect(onSwitch).toContain('sessionRef.current.id !== sourceId');
+  });
 });
 
 describe('session-rail cap parity (TS ↔ Zig)', () => {

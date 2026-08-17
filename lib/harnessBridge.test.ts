@@ -195,6 +195,9 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_clear_session_catalog: () => {
       sessionCatalog.length = 0;
       currentSession = null;
+      // Adversarial #642: session pending is navigation state — clear drops it
+      // so a catalog rewrite does not replay a stale click.
+      sessionSwitchPending = null;
     },
     inv_push_session_catalog_entry: (idPtr, idLen, labelPtr, labelLen) => {
       if (sessionCatalog.length >= 256) return 0;
@@ -596,7 +599,7 @@ describe('session catalog (protocol v17)', () => {
     expect(acked).toBe(true);
   });
 
-  it('setSessionCatalog rewrite does not drop a pending switch', () => {
+  it('setSessionCatalog rewrite drops a pending switch (navigation state, not model setting)', () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     bridge.setSessionCatalog(
@@ -606,19 +609,30 @@ describe('session catalog (protocol v17)', () => {
       ],
       'sess-aaaaaaa',
     );
-    let pending: string | null = 'sess-bbbbbbb';
-    exp.inv_has_pending_session_switch = () => (pending != null ? 1 : 0);
-    exp.inv_pending_session_switch_len = () => pending?.length ?? 0;
+    // Set a pending switch via the mock's backing store (not an export override)
+    // so the clear() inside setSessionCatalog can observe and drop it.
+    let sessionSwitchPending: string | null = 'sess-bbbbbbb';
+    exp.inv_has_pending_session_switch = () => (sessionSwitchPending != null ? 1 : 0);
+    exp.inv_pending_session_switch_len = () => sessionSwitchPending?.length ?? 0;
     exp.inv_pending_session_switch_copy = (outPtr, maxLen) => {
-      if (pending == null) return 0;
-      const id = pending;
+      if (sessionSwitchPending == null) return 0;
+      const id = sessionSwitchPending;
       const n = Math.min(maxLen, id.length);
       new Uint8Array(exp.memory.buffer, outPtr, n).set(new TextEncoder().encode(id).slice(0, n));
       return n;
     };
     exp.inv_ack_pending_session_switch = () => {
-      pending = null;
+      sessionSwitchPending = null;
     };
+    // NOTE: the mock's inv_clear_session_catalog (above) also sets sessionSwitchPending = null.
+    // But this test's export override shadows that — so we patch the override too
+    // to faithfully mirror the real Zig clear() dropping pending.
+    const origClearSessionCatalog = exp.inv_clear_session_catalog;
+    exp.inv_clear_session_catalog = () => {
+      sessionSwitchPending = null;
+      origClearSessionCatalog();
+    };
+
     bridge.setSessionCatalog(
       [
         { id: 'sess-aaaaaaa', label: 'A' },
@@ -626,8 +640,9 @@ describe('session catalog (protocol v17)', () => {
       ],
       'sess-aaaaaaa',
     );
-    expect(bridge.takePendingSessionSwitch()).toBe('sess-bbbbbbb');
-    expect(pending).toBeNull();
+    // setSessionCatalog → clearSessionCatalog() dropped the pending.
+    expect(bridge.takePendingSessionSwitch()).toBeNull();
+    expect(sessionSwitchPending).toBeNull();
   });
 });
 

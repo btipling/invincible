@@ -198,6 +198,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const pollRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const inflightRef = useRef(false);
+  /** True while an async switch (repo.get → activateSession) is in flight; New/Clear/poll ack-and-drop while set. */
+  const switchInFlightRef = useRef(false);
   const onSwitchSessionRef = useRef<(id: string) => void>(() => {});
   /** Server id to bind once the in-flight turn finishes (boot mint mid-turn), #430. */
   const pendingMintBindRef = useRef<string | null>(null);
@@ -623,7 +625,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // Protocol v9: Stop first — abort inflight and skip starting a turn this tick.
             if (b.takePendingCancel()) {
               abortRef.current?.abort();
-            } else if (inflightRef.current) {
+            } else if (inflightRef.current || switchInFlightRef.current) {
               foldPendingSessionSwitch(true, () => b.takePendingSessionSwitch(), () => {});
             } else {
               // Plan #616 (source #610): fold a user Next cycle into the session
@@ -786,7 +788,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   }, [personaPick]);
 
   const onClear = useCallback(() => {
-    if (inflightRef.current) return;
+    if (inflightRef.current || switchInFlightRef.current) return;
     abortRef.current?.abort();
     const repo = repoRef.current;
     const bridge = bridgeRef.current;
@@ -795,7 +797,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     // row. Fold-after-remove resurrects via a new-epoch PUT; fold-before-remove
     // is a wasted PUT then DELETE. New/switch flush; Clear acks. See
     // discardPendingModelChange.
-    if (bridge) discardPendingModelChange(bridge);
+    // Adversarial #642: ack any stale session-switch pending synchronously at
+    // click (navigation discard, mirror discardPendingModelChange). The catalog
+    // rewrite (useEffect → setSessionCatalog) no longer replays it.
+    if (bridge) {
+      discardPendingModelChange(bridge);
+      bridge.takePendingSessionSwitch();
+    }
 
     const resetBridge = (id: string, personaId?: string) => {
       // Local only — never PUT empty. Cloud clear = DELETE this session + mint new.
@@ -858,7 +866,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
 
   const onNewSession = useCallback(() => {
     const repo = repoRef.current;
-    if (!repo || !repo.enabled || inflightRef.current) return;
+    if (!repo || !repo.enabled || inflightRef.current || switchInFlightRef.current) return;
+    // Adversarial #642: ack any stale session-switch pending synchronously at
+    // click before the async repo.create + activateSession.
+    bridgeRef.current?.takePendingSessionSwitch();
     abortRef.current?.abort();
     void (async () => {
       const created = await repo.create();
@@ -880,14 +891,24 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       const repo = repoRef.current;
       const bridge = bridgeRef.current;
       if (!repo || !repo.enabled || !bridge || inflightRef.current) return;
+      if (switchInFlightRef.current) return; // another switch already in-flight
       if (id === sessionRef.current.id) return;
       abortRef.current?.abort();
+      const sourceId = sessionRef.current.id; // generation token — guard against stale get
+      switchInFlightRef.current = true;
       void (async () => {
-        const got = await repo.get(id);
-        if (got.action !== 'ok') return; // 404/gone stays on current local session (never blank)
-        // Adopt the server transcript; canonical id = fetched id.
-        activateSession(got.snapshot);
-        setUrlSessionId(id);
+        try {
+          const got = await repo.get(id);
+          // Adversarial #642: re-check the generation token after every await so
+          // a New/Clear during repo.get does not activate the stale destination.
+          if (sessionRef.current.id !== sourceId) return;
+          if (got.action !== 'ok') return; // 404/gone stays on current local session (never blank)
+          // Adopt the server transcript; canonical id = fetched id.
+          activateSession(got.snapshot);
+          setUrlSessionId(id);
+        } finally {
+          switchInFlightRef.current = false;
+        }
       })();
     },
     [activateSession, setUrlSessionId],
