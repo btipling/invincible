@@ -13,6 +13,9 @@ pub const PICKER_ITEM_H: f32 = 32;
 
 /// Closed **U+25BE ▾** — Geometric Shapes; paint with `fontSymbols()` only.
 const GLYPH_CHEVRON: []const u8 = "\u{25BE}";
+/// Left margin on the caret run (px) — the declared gap between label and ▾.
+/// Lives in the caret tag rect (same class as `rect_spinner` TRAIL).
+pub const CARET_GAP: f32 = 4;
 
 /// Dedicated extras — never reuse the `0x61_*` rail / slot / bar namespace.
 const TRIGGER_ID: usize = 0x62_0000;
@@ -99,7 +102,7 @@ fn paintMenuTrigger(view: CatalogView) ?u32 {
             .font = chevronFont(),
             .color_text = palette.teal_accent,
             .gravity_y = 0.5,
-            .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
+            .margin = .{ .x = CARET_GAP, .y = 0, .w = 0, .h = 0 },
             .tag = "status-model-caret",
             .id_extra = TRIGGER_ID + 3,
         });

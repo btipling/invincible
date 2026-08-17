@@ -1,6 +1,9 @@
 //! Host dvui testing-backend layout-rect tests for `model_picker.zig`.
 //! Asserts trigger height stays PICKER_TRIGGER_H (32 logical / 64 physical)
-//! for count 0 and count > 1. No pixels, no SDL/GLFW/OpenGL.
+//! for count 0 and count > 1, and (plan #624) that the closed-trigger label
+//! and caret slots are disjoint with the caret to the right of the label.
+//! No pixels, no SDL/GLFW/OpenGL, no capturePng — the testing backend never
+//! rasterizes. Geometry is `tagGet().rect` only (same mechanism as height).
 //!
 //! Two frames: auto-sized boxes start at 0×0 on frame 1; the second frame
 //! picks up the settled layout. The testing backend uses a 2× physical pixel
@@ -8,6 +11,8 @@
 //!
 //! The count>1 trigger has a 1 px border. `min_size_content.h` is passed
 //! minus 2×border so the tagged outer rect stays `PICKER_TRIGGER_H`.
+//! The caret's left margin (`CARET_GAP`) is inside its tag rect, so the
+//! label and caret rects are adjacent (same class as busy-row TRAIL).
 const std = @import("std");
 const t = std.testing;
 const dvui = @import("dvui");
@@ -144,11 +149,11 @@ test "click item while busy → paint returns null" {
     try t.expectEqual(@as(?u32, null), Click.picked);
 }
 
-// ── Caret geometry + face-pin regression (plan #624) ──────────────────
-// Guards against a double-caret / glyph-face fallback rendering (the
-// #595 `mixed_text_lookalike` class: a wrong face ships while geometry
-// tests stay green). The label and caret each carry a stable `.tag` and
-// `.id_extra` so the testing backend can query their bounding rects.
+// ── Caret geometry + face-pin regression (plan #624 / PR #630 Major L6) ─
+// Host `tagGet().rect` only — not capturePng / Wasm / WebGL. The testing
+// backend never rasterizes. A caret painted under/over the label fails
+// disjoint + right-of. `tagGet` is last-writer, so a second *untagged*
+// U+25BE is still residual (operator row 6).
 
 fn paintTriggerMenu(view: model_picker.CatalogView) void {
     const frame = struct {
@@ -164,7 +169,16 @@ fn paintTriggerMenu(view: model_picker.CatalogView) void {
     _ = dvui.testing.step(frame.paint) catch @panic("menu step 2 failed");
 }
 
-test "count > 1: label and caret tags both exist" {
+/// True when the two physical rects do not overlap (touching edges count
+/// as disjoint). Same-row label+caret share y, so this reduces to x-gap.
+fn rectsDisjoint(a: dvui.Rect.Physical, b: dvui.Rect.Physical) bool {
+    return a.x + a.w <= b.x + EPS or
+        b.x + b.w <= a.x + EPS or
+        a.y + a.h <= b.y + EPS or
+        b.y + b.h <= a.y + EPS;
+}
+
+test "count > 1: label and caret disjoint, caret right of label by CARET_GAP" {
     var tr = try dvui.testing.init(.{});
     defer tr.deinit();
     paintTriggerMenu(.{
@@ -175,9 +189,22 @@ test "count > 1: label and caret tags both exist" {
         .idAt = idAt2,
     });
 
-    // Both tagged text runs are present — at most one caret is painted.
-    _ = dvui.tagGet("status-model-label") orelse @panic("tag 'status-model-label' not found");
-    _ = dvui.tagGet("status-model-caret") orelse @panic("tag 'status-model-caret' not found");
+    const label = (dvui.tagGet("status-model-label") orelse @panic("tag 'status-model-label' not found")).rect;
+    const caret = (dvui.tagGet("status-model-caret") orelse @panic("tag 'status-model-caret' not found")).rect;
+
+    try t.expect(label.w > 0);
+    try t.expect(label.h > 0);
+    try t.expect(caret.w > 0);
+    try t.expect(caret.h > 0);
+
+    // Plan #624 row 1: slots do not overlap (caret-under-label fails here).
+    try t.expect(rectsDisjoint(label, caret));
+
+    // Caret sits to the right of the label. CARET_GAP lives in the caret's
+    // left margin, so the tagged rects are adjacent (TRAIL-class).
+    try t.expect(caret.x + EPS >= label.x + label.w);
+    try t.expectApproxEqAbs(label.x + label.w, caret.x, EPS);
+    try t.expect(caret.w + EPS >= model_picker.CARET_GAP * PX);
 }
 
 test "count > 1: caret face pinned to family_symbols (host face-pin)" {
@@ -187,7 +214,7 @@ test "count > 1: caret face pinned to family_symbols (host face-pin)" {
     try t.expectEqualStrings(palette.family_symbols, cf.familyName());
 }
 
-test "count 0: no caret, no label tag painted (static path)" {
+test "count 0: no caret tag, no label tag (static path)" {
     var tr = try dvui.testing.init(.{});
     defer tr.deinit();
     paintTriggerMenu(.{
@@ -198,9 +225,10 @@ test "count 0: no caret, no label tag painted (static path)" {
         .idAt = idAt0,
     });
     try t.expect(dvui.tagGet("status-model-caret") == null);
+    try t.expect(dvui.tagGet("status-model-label") == null);
 }
 
-test "count 1: no caret, no submenu (static path, single model)" {
+test "count 1: no caret tag, no label tag (static path, single model)" {
     var tr = try dvui.testing.init(.{});
     defer tr.deinit();
     paintTriggerMenu(.{
@@ -211,4 +239,5 @@ test "count 1: no caret, no submenu (static path, single model)" {
         .idAt = idAt0,
     });
     try t.expect(dvui.tagGet("status-model-caret") == null);
+    try t.expect(dvui.tagGet("status-model-label") == null);
 }
