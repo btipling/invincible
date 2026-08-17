@@ -12,10 +12,11 @@
 //!
 //! Geometry: 4×4 px cells, 2 px sibling gaps, 1.5 px corner radius → inner
 //! 10×22 grid, centered by equal pad (1.5 / 3.5) inside a reserved 13×29
-//! slot. `W`/`H` are that slot (not recomputed from `CELL`/`GAP`). 10 px
-//! right margin before the text (`TRAIL`). Gaps are SIBLING-ONLY (see
-//! `rect_spinner.zig`); the layout tests lock inner sizes, the pad inset on
-//! all four sides, and the unchanged 13×29 slot.
+//! slot. `W`/`H` are that slot (not recomputed from `CELL`/`GAP`). 8 px
+//! left inset (`LEAD`) via a wrapper box with left margin, 6 px right margin
+//! before the text (`TRAIL`). Gaps are SIBLING-ONLY (see `rect_spinner.zig`);
+//! the layout tests lock inner sizes, the pad inset on all four sides, the
+//! LEAD+TRAIL insets, and the unchanged 13×29 slot.
 //!
 //! Vertical placement uses `gravity_y = 0.5` on the outer spinner box and the
 //! busy text (the house convention for inline chrome — status chips, kind
@@ -41,11 +42,16 @@ pub const W = rect_spinner.W;
 pub const H = rect_spinner.H;
 pub const PAD_X = rect_spinner.PAD_X;
 pub const PAD_Y = rect_spinner.PAD_Y;
+/// Left inset from the bar's left edge before the spinner+text pack. Applied
+/// via a wrapper box with left margin — dvui has no CSS-padding, so margin on
+/// a wrapper is the standard way to indent child content within a horizontal row.
+pub const LEAD: f32 = 8;
 /// Right margin before the busy text — inline spacing like the kind-label rows.
-pub const TRAIL: f32 = 10;
+pub const TRAIL: f32 = 6;
 
 // id namespace for the busy row inner boxes — never aliases message-loop rows
 // (which use their own high ids) or the busy textLayout (`0xffff_ffff`).
+const LEAD_WRAPPER_ID = 0x60_0050;
 const SPINNER_ID = 0x60_00a0;
 const ROW_CONTAINER_ID = 0x60_0000;
 const TEXT_ID = 0xffff_ffff;
@@ -63,11 +69,21 @@ pub fn paintBusyRow(phase: u8, turn_elapsed: u32) void {
         .id_extra = ROW_CONTAINER_ID,
     });
     defer row.deinit();
+    // LEAD inset: wrap the spinner+text in a horizontal box with left margin.
+    // dvui has no CSS-padding — margin on a wrapper box is the standard indent.
+    var lead_wrapper = dvui.box(src, .{ .dir = .horizontal }, .{
+        .margin = .{ .x = LEAD, .y = 0, .w = 0, .h = 0 },
+        .background = false,
+        .tag = "busy-row-lead",
+        .id_extra = LEAD_WRAPPER_ID,
+    });
+    defer lead_wrapper.deinit();
     rect_spinner.paint(src, .{
         .phase = phase,
         .ramp = rect_spinner.WARM_RAMP,
         .tag_prefix = "busy-spinner",
         .id_extra = SPINNER_ID,
+        .margin_right = TRAIL,
     });
     {
         var tl = dvui.textLayout(src, .{}, .{
