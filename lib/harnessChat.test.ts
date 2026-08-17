@@ -3277,36 +3277,62 @@ describe('Phase 2 mid-turn live status bar (plan #627)', () => {
     const bridge = new HarnessBridge(exp);
     const session = { ...createEmptySession('s'), activeSandboxId: 'sbx_old' };
     const patches: Array<string | undefined> = [];
-    const { session: next } = await runHarnessTurn(bridge, session, 'switch', {
-      streamAgent: true,
-      pushUser: false,
-      onSessionPatch: (s) => {
-        patches.push(s.activeSandboxId);
-      },
-      sendAgentStream: async (_prompt, init) => {
-        await init?.onEvent?.({ type: 'tool_start', name: 'meta_sandbox_switch' });
-        await init?.onEvent?.({
-          type: 'tool_result',
-          name: 'meta_sandbox_switch',
-          ok: true,
-          summary: 'meta_sandbox_switch · ✓ ok · switched active sandbox to id=sbx_new',
-          activeSandboxId: 'sbx_new',
-        });
-        await init?.onEvent?.({
-          type: 'done',
-          text: 'switched',
-          sandboxId: 'sbx_old',
-          activeSandboxId: 'sbx_new',
-        });
-        return { ok: true, text: 'switched', sandboxId: 'sbx_old', activeSandboxId: 'sbx_new' };
-      },
-    });
-    // onSessionPatch was called mid-turn with the new bind.
-    expect(patches).toContain('sbx_new');
-    // Session carries the new bind.
-    expect(next.activeSandboxId).toBe('sbx_new');
-    // Sandbox slot was repainted mid-turn.
-    expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('sandbox sbx_new');
+    // The switch branch fires an on-demand `refreshGitStatusSlot(bridge, next)`
+    // with the NEW bind — spy that the probe actually hits the wire with
+    // `sandboxId=sbx_new` before `done`, so deleting that call (or passing the
+    // stale pre-switch `session`) fails here instead of silently keeping the git
+    // slot on the old bind until the 10 s cadence.
+    const realFetch = global.fetch;
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ value: 'feature/x@a1b2c3d' }),
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const { session: next } = await runHarnessTurn(bridge, session, 'switch', {
+        streamAgent: true,
+        pushUser: false,
+        onSessionPatch: (s) => {
+          patches.push(s.activeSandboxId);
+        },
+        sendAgentStream: async (_prompt, init) => {
+          await init?.onEvent?.({ type: 'tool_start', name: 'meta_sandbox_switch' });
+          await init?.onEvent?.({
+            type: 'tool_result',
+            name: 'meta_sandbox_switch',
+            ok: true,
+            summary: 'meta_sandbox_switch · ✓ ok · switched active sandbox to id=sbx_new',
+            activeSandboxId: 'sbx_new',
+          });
+          await init?.onEvent?.({
+            type: 'done',
+            text: 'switched',
+            sandboxId: 'sbx_old',
+            activeSandboxId: 'sbx_new',
+          });
+          return { ok: true, text: 'switched', sandboxId: 'sbx_old', activeSandboxId: 'sbx_new' };
+        },
+      });
+      // onSessionPatch was called mid-turn with the new bind.
+      expect(patches).toContain('sbx_new');
+      // Session carries the new bind.
+      expect(next.activeSandboxId).toBe('sbx_new');
+      // Sandbox slot was repainted mid-turn.
+      expect(statusSlotAt(exp, StatusSlot.Sandbox)).toBe('sandbox sbx_new');
+      // flush the fire-and-forget git probe microtasks
+      await new Promise((r) => setTimeout(r, 0));
+      // The on-demand git probe fired and carried the NEW bind.
+      expect(fetchMock).toHaveBeenCalled();
+      const calls = fetchMock.mock.calls as unknown[][];
+      const url = String(calls[0]?.[0] ?? '');
+      expect(url).toContain('/api/harness/status');
+      expect(url).toContain('sandboxId=sbx_new');
+      expect(url).not.toContain('sandboxId=sbx_old');
+      expect(statusSlotAt(exp, StatusSlot.Git)).toBe('feature/x@a1b2c3d');
+    } finally {
+      global.fetch = realFetch;
+    }
   });
 
   it('abort after a live change_dir keeps cwd/bind (test 4)', async () => {
