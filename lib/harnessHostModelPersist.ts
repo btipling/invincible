@@ -113,9 +113,20 @@ export function flushPendingThenRestore(
 }
 
 /**
- * PR #618 re-run 5 Minor L1: Clear deletes the current session. Folding
- * would PUT the pick and can race the DELETE (resurrect). Ack the flag
- * only so the next session does not inherit a stale pending.
+ * Clear-only. INTENTIONAL — not a missed flush (PR #618 re-run 5 Minor L1).
+ *
+ * Switch / New / adopt use `flushPendingThenRestore` so the pick lands on
+ * the session that stays in the list. Clear DELETES that session:
+ *
+ * - Fold **after** `repo.remove` PUTs with a fresh epoch → resurrect (the
+ *   race `sessionRepository.remove` exists to prevent: epoch++ + drop
+ *   pending so Clear never brings the row back).
+ * - Fold **before** `remove` is epoch-safe but a no-op write: PUT the pick,
+ *   then DELETE the row. Do not do it "for symmetry."
+ *
+ * So Clear **acks only**. The doomed row does not get a PUT; the next
+ * session does not inherit a stale pending flag. Do not "fix" this by
+ * routing Clear through `flushPendingThenRestore`.
  */
 export function discardPendingModelChange(bridge: HarnessBridge): void {
   if (bridge.hasPendingModelChange()) bridge.ackPendingModelChange();

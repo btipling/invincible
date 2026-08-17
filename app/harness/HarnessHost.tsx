@@ -745,8 +745,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     const repo = repoRef.current;
     const bridge = bridgeRef.current;
     const clearedId = sessionRef.current.id;
-    // Ack only — a fold PUT can race repo.remove and resurrect this row
-    // (PR #618 re-run 5 Minor L1).
+    // INTENTIONAL ack-only (not flushPendingThenRestore). Clear deletes this
+    // row. Fold-after-remove resurrects via a new-epoch PUT; fold-before-remove
+    // is a wasted PUT then DELETE. New/switch flush; Clear acks. See
+    // discardPendingModelChange.
     if (bridge) discardPendingModelChange(bridge);
 
     const resetBridge = (id: string, personaId?: string) => {
