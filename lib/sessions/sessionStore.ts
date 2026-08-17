@@ -41,6 +41,7 @@ import {
   sanitizeSessionCwd,
 } from '../sessionCloudCaps';
 export { isRedisSafeOpaqueId } from '../sessionCloudCaps';
+import { decodeUsageMetaString } from '../agent/usageSummary';
 import { validateSessionSnapshot } from '../tenancy/harnessSessions';
 import type { HarnessSessionErrorCode } from '../tenancy/harnessSessions';
 import type { SessionMessage } from '../sessionStore';
@@ -61,6 +62,7 @@ export const RESERVED_META_KEYS = [
   'transcriptPointer',
   'attachedSkills',
   'selectedModel',
+  'usage',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -386,14 +388,17 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
       return { ok: false, code: 'invalid_meta', error: `meta key '${key}' is not a reserved key.` };
     }
     const v = raw[key];
-    // Plan #616 (source #610): `meta.selectedModel` is a NON-critical session
-    // carrier — a poisoned value (non-string, empty, control chars, over-length)
-    // is DROPPED to unset (the key is omitted) rather than 400-ing the record,
-    // so a bad pick can never brick a session with a permanent `INVALID_META`.
-    // Restore falls back to the default first-granted model server/device-side.
+    // Non-critical UX carriers: poison drops to unset (omit), never 400s the
+    // record. PUT meta is a full replace — absent key = clear. Do not copy
+    // attachedSkills (that key still fail-closes on malformed JSON).
     if (key === 'selectedModel') {
       const cleaned = sanitizeModelId(v);
       if (cleaned !== undefined) meta.selectedModel = cleaned;
+      continue;
+    }
+    if (key === 'usage') {
+      const cleaned = decodeUsageMetaString(v);
+      if (cleaned !== undefined) meta.usage = JSON.stringify(cleaned);
       continue;
     }
     if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {
@@ -555,6 +560,14 @@ export function validateMetaFields(
           error: 'meta.attachedSkills must decode to a JSON array of valid skill slugs.',
         };
       }
+    }
+  }
+  if (out.usage !== undefined) {
+    const cleaned = decodeUsageMetaString(out.usage);
+    if (cleaned === undefined) {
+      delete out.usage;
+    } else {
+      out.usage = JSON.stringify(cleaned);
     }
   }
   return { ok: true, value: out };

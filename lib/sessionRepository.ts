@@ -23,6 +23,10 @@ import {
   serializeAttachedSkills,
 } from './sessionCloudCaps';
 import type { SessionMessage, SessionRole, SessionSnapshot } from './sessionStore';
+import {
+  decodeUsageMetaString,
+  encodeUsageMetaString,
+} from './agent/usageSummary';
 
 // Must stay in sync with the server-side role allowlist (`harnessSessions.ts`):
 // a kind-7 `skill_attached` row rides the transcript the host PUTs after `/foo`,
@@ -258,8 +262,63 @@ export function parseCloudSessionSnapshot(
     if (meta.attachedSkills !== undefined) {
       snapshot.attachedSlugs = parseAttachedSkills(meta.attachedSkills);
     }
+    const usage = decodeUsageMetaString(meta.usage);
+    if (usage !== undefined) snapshot.usage = usage;
   }
   return snapshot;
+}
+
+/**
+ * Overlay envelope `meta` onto a parsed transcript snapshot.
+ *
+ * PUT `meta` is a **full desired set** (replace). The envelope is the last
+ * accepted desired set for session-carrier keys, so GET treats it the same way:
+ * a valid envelope value wins; an absent or poison value **clears** the
+ * transcript field (absent = unset). Mid-turn server writers must
+ * read-copy-override the whole existing meta so they do not clear siblings.
+ */
+export function overlayEnvelopeMeta(
+  snapshot: SessionSnapshot,
+  envMeta: Record<string, unknown> | undefined,
+): SessionSnapshot {
+  if (!envMeta || typeof envMeta !== 'object' || Array.isArray(envMeta)) {
+    return snapshot;
+  }
+  const out: SessionSnapshot = { ...snapshot };
+
+  const sandbox = envMeta.activeSandboxId;
+  if (typeof sandbox === 'string' && sandbox && isRedisSafeOpaqueId(sandbox)) {
+    out.activeSandboxId = sandbox;
+  } else {
+    delete out.activeSandboxId;
+  }
+
+  const cwd = normalizeSessionCwd(envMeta.logicalCwd);
+  if (cwd !== undefined) out.cwd = cwd;
+  else delete out.cwd;
+
+  const usage = decodeUsageMetaString(envMeta.usage);
+  if (usage !== undefined) out.usage = usage;
+  else delete out.usage;
+
+  const selectedModel = sanitizeModelId(envMeta.selectedModel);
+  if (selectedModel !== undefined) out.selectedModel = selectedModel;
+  else delete out.selectedModel;
+
+  if (envMeta.attachedSkills !== undefined) {
+    out.attachedSlugs = parseAttachedSkills(envMeta.attachedSkills);
+  } else {
+    delete out.attachedSlugs;
+  }
+
+  const pid = envMeta.personaId;
+  if (typeof pid === 'string' && pid && isRedisSafeOpaqueId(pid)) {
+    out.personaId = pid;
+  } else {
+    delete out.personaId;
+  }
+
+  return out;
 }
 
 /** Parse one `GET /api/sessions` summary row; null if invalid. */
@@ -305,9 +364,14 @@ export type CloudPutBody = {
     /**
      * Plan #616 (source #610): the selected model id (non-secret printable-ASCII
      * catalog string). Folded from `snapshot.selectedModel` via `sanitizeModelId`
-     * (drop-to-unset on invalid). `undefined` = omitted (no model pick carried).
+     * (drop-to-unset on invalid). Absent = clear (no model pick carried).
      */
     selectedModel?: string;
+    /**
+     * Last-completed provider usage as a JSON string of a sanitized
+     * UsageSummary. Absent = clear (hide the context slot).
+     */
+    usage?: string;
   };
 };
 
@@ -358,16 +422,19 @@ export function cloudMetaFor(
   // Plan #616 (source #610): the selected model id rides the reserved
   // `meta.selectedModel` so the cloud record retains the pick across reload /
   // device-switch. Sanitized via the shared client-safe predicate (drop-to-unset
-  // on invalid — never a sticky 400). Omitted by default.
+  // on invalid — never a sticky 400). Absent = clear.
   const selectedModel = snapshot.selectedModel
     ? sanitizeModelId(snapshot.selectedModel)
     : undefined;
   if (selectedModel !== undefined) meta.selectedModel = selectedModel;
+  const usage = encodeUsageMetaString(snapshot.usage);
+  if (usage !== undefined) meta.usage = usage;
   return meta.logicalCwd === undefined &&
     meta.activeSandboxId === undefined &&
     meta.personaId === undefined &&
     meta.attachedSkills === undefined &&
-    meta.selectedModel === undefined
+    meta.selectedModel === undefined &&
+    meta.usage === undefined
     ? undefined
     : meta;
 }
@@ -542,7 +609,10 @@ export function createHttpSessionRepository(
       if (!parsed) {
         return { action: 'error', status: 0, message: 'Invalid transcript body.' };
       }
-      return { action: 'ok', snapshot: parsed };
+      return {
+        action: 'ok',
+        snapshot: overlayEnvelopeMeta(parsed, env.meta),
+      };
     } catch {
       return { action: 'error', status: 0, message: 'Network error pulling session.' };
     }

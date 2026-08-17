@@ -62,12 +62,10 @@ export type SessionSnapshot = {
    */
   attachedSlugs?: string[];
   /**
-   * Phase 3 (plan #539 / #327) — host-side mirror of the last COMPLETED turn's
-   * bounded provider-usage summary. `undefined`/absent = the context slot HIDES
-   * (the locked default on missing usage). Cleared on a completed turn whose
-   * provider reported no usage and on New/Clear; KEPT (carried forward) on an
-   * aborted/cancelled turn so the slot never repaints a fake value. Host-local
-   * only — not a reserved cloud `meta` key (does not ride the envelope).
+   * Phase 3 (plan #539 / #327) — last COMPLETED turn's bounded provider-usage
+   * summary. `undefined`/absent = the context slot HIDES. Cleared on a completed
+   * turn whose provider reported no usage and on New/Clear; KEPT on abort/cancel.
+   * Cloud carrier: reserved `meta.usage` (JSON string, drop-to-unset).
    */
   usage?: import('./agent/usageSummary').UsageSummary;
   /**

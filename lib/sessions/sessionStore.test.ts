@@ -171,11 +171,19 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'transcriptPointer',
       'attachedSkills',
       'selectedModel',
+      'usage',
     ]);
     for (const k of RESERVED_META_KEYS) {
-      // `attachedSkills` is a JSON-encoded string; use a valid value so the
-      // reserved-key acceptance loop passes for every key.
-      const rawMeta: unknown = { [k]: k === 'attachedSkills' ? '[]' : 'x' };
+      // `attachedSkills` is a JSON-encoded string; `usage` is a JSON UsageSummary
+      // string. Use a valid value so the reserved-key acceptance loop passes.
+      const rawMeta: unknown = {
+        [k]:
+          k === 'attachedSkills'
+            ? '[]'
+            : k === 'usage'
+              ? JSON.stringify({ source: 'provider', prompt: 1, completion: 1, total: 2 })
+              : 'x',
+      };
       const res = validateSessionRecord(
         makeRecord({ meta: rawMeta as HarnessSessionRecord['meta'] }),
       );
@@ -676,6 +684,35 @@ describe('envelope carrier (phase 0 #515)', () => {
     expect(validateMetaFields({ attachedSkills: JSON.stringify(many) }).ok).toBe(false);
     const atCap = Array.from({ length: HARNESS_SESSION_MAX_ATTACHED_SKILLS }, (_, i) => `skill_${i}`);
     expect(validateMetaFields({ attachedSkills: JSON.stringify(atCap) }).ok).toBe(true);
+  });
+
+  it('meta.usage accepts a clean JSON-string summary and never 400s on poison', () => {
+    const clean = JSON.stringify({ source: 'provider', prompt: 12, completion: 3, total: 15 });
+    const ok = validateMeta({ usage: clean });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.value.usage).toBe(clean);
+    }
+    const rec = validateSessionRecord(makeRecord({ meta: { usage: clean } }));
+    expect(rec.ok).toBe(true);
+    if (rec.ok) expect(rec.value.meta.usage).toBe(clean);
+
+    // Object / number / bad JSON / non-provider / oversize-poison → ok, key absent.
+    for (const bad of [
+      { source: 'provider', prompt: 1 },
+      12,
+      '{not json',
+      JSON.stringify({ source: 'estimated', prompt: 9 }),
+      JSON.stringify({ source: 'provider' }),
+    ]) {
+      const res = validateMeta({ usage: bad });
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.value.usage).toBeUndefined();
+      expect(validateMetaFields({ usage: bad as never }).ok).toBe(true);
+    }
+
+    // Unknown keys still 400.
+    expect(validateMeta({ usage: clean, sneaky: 1 }).ok).toBe(false);
   });
 
   it('validateSessionEnvelope validates ownership + LWW updatedAt + reserved meta (never messages)', () => {
