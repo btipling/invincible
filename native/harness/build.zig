@@ -166,7 +166,7 @@ pub fn build(b: *std.Build) void {
     test_parse.dependOn(&run_parse_tests.step);
 
     // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
-    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + cwd_slot + ring_slot (#404 write seam)");
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645)");
     test_rich.dependOn(&run_parse_tests.step);
 
     const cache_tests = b.addTest(.{
@@ -206,6 +206,21 @@ pub fn build(b: *std.Build) void {
             }),
         });
         test_rich.dependOn(&b.addRunArtifact(cwd_slot_tests).step);
+    }
+
+    // Host unit tests for chip_preview.zig (plan #645, review #646 L6): slash+body
+    // strips, slash-only keeps, empty, newline, UTF-8 back-off, trailing ws.
+    // Pure, no dvui.
+    {
+        const chip_preview_tests = b.addTest(.{
+            .name = "chip_preview",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/chip_preview.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(chip_preview_tests).step);
     }
 
     // Host unit tests for elapsed_clock.zig (plan #567, protocol v14 turn-clock
