@@ -99,8 +99,7 @@ When the user has a valid Auth.js session, the host also uses an async
 **`/api/sessions*`** surface with `credentials: 'same-origin'`. The cloud store
 is **Redis** (`lib/sessions/redisSessionStore.ts`, RESP over a single
 `REDIS_URL`); each session is a server-minted UUID record owned by
-`{tenant, userId, sessionId}`. The host can hold **many** cloud sessions
-(`app/components/SessionPicker.tsx`) and switch between them; starting a **New session** (the **Clear** control is now its alias) deletes
+`{tenant, userId, sessionId}`. The host holds **many** cloud sessions; the **list and switch** live in the Wasm transcript left rail (host pushes summaries from `GET /api/sessions`; a row click hydrates via the existing host switch path). **New session**, **Persona**, and **Clear** stay in DOM `AppNav`. Starting a **New session** (the **Clear** control is now its alias) deletes
 just the active one and mints a fresh one.
 
 | Piece | Location | Notes |

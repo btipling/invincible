@@ -47,6 +47,10 @@ import {
   flushPendingThenRestore,
   discardPendingModelChange,
 } from '../../lib/harnessHostModelPersist';
+import {
+  buildSessionCatalogEntries,
+  foldPendingSessionSwitch,
+} from '../../lib/sessionSummaryLabel';
 import AppNav from '../components/AppNav';
 import SessionPicker from '../components/SessionPicker';
 import PersonaPicker from '../components/PersonaPicker';
@@ -193,6 +197,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const pollRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const inflightRef = useRef(false);
+  const onSwitchSessionRef = useRef<(id: string) => void>(() => {});
   /** Server id to bind once the in-flight turn finishes (boot mint mid-turn), #430. */
   const pendingMintBindRef = useRef<string | null>(null);
   const sessionRef = useRef<SessionSnapshot>(createEmptySession());
@@ -614,15 +619,22 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // Protocol v9: Stop first — abort inflight and skip starting a turn this tick.
             if (b.takePendingCancel()) {
               abortRef.current?.abort();
-            } else if (!inflightRef.current) {
+            } else if (inflightRef.current) {
+              foldPendingSessionSwitch(true, () => b.takePendingSessionSwitch(), () => {});
+            } else {
               // Plan #616 (source #610): fold a user Next cycle into the session
               // snapshot + persist + ack before any other pending event this tick.
               foldPendingModelChange();
-              if (b.takePendingLoadEarlier()) {
+              const switched = foldPendingSessionSwitch(
+                false,
+                () => b.takePendingSessionSwitch(),
+                (id) => onSwitchSessionRef.current(id),
+              );
+              if (switched !== 'switched' && b.takePendingLoadEarlier()) {
                 const session = sessionRef.current;
                 const nextStart = earlierRingStart(ringWindowStartRef.current);
                 hydrateRingWindow(b, session, nextStart);
-              } else {
+              } else if (switched !== 'switched') {
                 const pending = b.takePendingSubmit();
                 if (pending != null && pending.length > 0) {
                   const latest = latestRingStart(sessionRef.current.messages.length);
@@ -871,6 +883,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     },
     [activateSession, setUrlSessionId],
   );
+  onSwitchSessionRef.current = onSwitchSession;
+
+  useEffect(() => {
+    const b = bridgeRef.current;
+    if (!b || phase !== 'ready') return;
+    if (!cloudEnabled) {
+      b.setSessionCatalog([], null);
+      return;
+    }
+    b.setSessionCatalog(buildSessionCatalogEntries(sessions, activeSessionId), activeSessionId);
+  }, [sessions, activeSessionId, cloudEnabled, phase]);
 
   // Single always-mounted canvas — never unmount across phase changes.
   const canvasNode = (
@@ -923,12 +946,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             >
               {phase === 'ready' && (
                 <SessionPicker
-                  sessions={sessions}
-                  currentId={activeSessionId}
                   hidden={!cloudEnabled}
                   disabled={busy}
                   onNew={onNewSession}
-                  onSwitch={onSwitchSession}
                 />
               )}
               {phase === 'ready' && (

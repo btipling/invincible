@@ -15,6 +15,7 @@ const std = @import("std");
 const t = std.testing;
 const dvui = @import("dvui");
 const transcript_split = @import("transcript_split.zig");
+const session_catalog = @import("session_catalog.zig");
 
 const EPS: f32 = 1.0;
 const PX: f32 = 2;
@@ -131,4 +132,20 @@ test "sibling box with scroller rect: no overlap, spans remaining width" {
 
     // No overlap: rail right edge ≤ sibling left edge.
     try t.expect(rail.x + rail.w <= sib.x + EPS);
+}
+
+test "open with session rows still SIDEBAR_OPEN_W wide" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    transcript_split.reset();
+    session_catalog.reset();
+    try t.expect(session_catalog.push("sess-aaa", "Alpha"));
+    try t.expect(session_catalog.push("sess-bbb", "Beta"));
+    try t.expect(session_catalog.push("sess-ccc", "Gamma"));
+    try t.expect(session_catalog.setCurrent("sess-bbb"));
+    transcript_split.setOpen(true);
+    const rail = paintAndGetRail();
+    try t.expectApproxEqAbs(transcript_split.SIDEBAR_OPEN_W * PX, rail.w, EPS);
+    try t.expectApproxEqAbs(BAND_H * PX, rail.h, EPS);
+    session_catalog.reset();
 }

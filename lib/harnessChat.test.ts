@@ -143,6 +143,14 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_set_selected_model: (_ptr, len) => (len <= 128 ? 1 : 0),
     inv_has_pending_model_change: () => 0,
     inv_ack_pending_model_change: () => {},
+    inv_clear_session_catalog: () => {},
+    inv_push_session_catalog_entry: () => 0,
+    inv_session_catalog_count: () => 0,
+    inv_set_current_session: () => 0,
+    inv_has_pending_session_switch: () => 0,
+    inv_pending_session_switch_len: () => 0,
+    inv_pending_session_switch_copy: () => 0,
+    inv_ack_pending_session_switch: () => {},
     inv_set_status_slot: (slot, ptr, len) => {
       if (slot < 0 || slot >= 8) return 0;
       if (len > 96) return 0;

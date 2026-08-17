@@ -43,6 +43,9 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
   const catalog: string[] = [];
   let selected = 0;
   let modelPending = false;
+  const sessionCatalog: { id: string; label: string }[] = [];
+  let currentSession: string | null = null;
+  let sessionSwitchPending: string | null = null;
   const statusSlots: (string | undefined)[] = new Array(8).fill(undefined);
   let turnElapsedSec = 0;
   let busyTickPhase = 0;
@@ -187,6 +190,41 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_has_pending_model_change: () => (modelPending ? 1 : 0),
     inv_ack_pending_model_change: () => {
       modelPending = false;
+    },
+    inv_clear_session_catalog: () => {
+      sessionCatalog.length = 0;
+      currentSession = null;
+    },
+    inv_push_session_catalog_entry: (idPtr, idLen, labelPtr, labelLen) => {
+      if (sessionCatalog.length >= 256) return 0;
+      const id = read(idPtr, idLen);
+      const label = read(labelPtr, labelLen);
+      if (!id || !/^[A-Za-z0-9_-]{1,512}$/.test(id)) return 0;
+      if (!label || new TextEncoder().encode(label).length > 128) return 0;
+      sessionCatalog.push({ id, label });
+      return 1;
+    },
+    inv_session_catalog_count: () => sessionCatalog.length,
+    inv_set_current_session: (ptr, len) => {
+      if (len === 0) {
+        currentSession = null;
+        return 1;
+      }
+      const id = read(ptr, len);
+      if (!sessionCatalog.some((e) => e.id === id)) return 0;
+      currentSession = id;
+      return 1;
+    },
+    inv_has_pending_session_switch: () => (sessionSwitchPending != null ? 1 : 0),
+    inv_pending_session_switch_len: () => sessionSwitchPending?.length ?? 0,
+    inv_pending_session_switch_copy: (outPtr, maxLen) => {
+      if (sessionSwitchPending == null) return 0;
+      const n = Math.min(maxLen, sessionSwitchPending.length);
+      if (n > 0) write(outPtr, sessionSwitchPending.slice(0, n));
+      return n;
+    },
+    inv_ack_pending_session_switch: () => {
+      sessionSwitchPending = null;
     },
     inv_set_status_slot: (slot, ptr, len) => {
       if (slot < 0 || slot >= 8) return 0;
@@ -479,6 +517,76 @@ describe('model persistence (protocol v16, plan #616)', () => {
   });
 });
 
+describe('session catalog (protocol v17)', () => {
+  it('setSessionCatalog push + count; continue on mid-list reject', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setSessionCatalog(
+      [
+        { id: 'sess-aaaaaaa', label: 'A' },
+        { id: 'has space', label: 'bad' },
+        { id: 'sess-bbbbbbb', label: 'B' },
+      ],
+      'sess-aaaaaaa',
+    );
+    expect(bridge.sessionCatalogCount()).toBe(2);
+    expect(bridge.setCurrentSession('sess-bbbbbbb')).toBe(true);
+    expect(bridge.setCurrentSession('missing-id')).toBe(false);
+  });
+
+  it('rejects empty / oversize label / 257th; earlier kept', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    expect(bridge.pushSessionCatalogEntry('sess-ok', '')).toBe(false);
+    expect(bridge.pushSessionCatalogEntry('sess-ok', 'x'.repeat(200))).toBe(false);
+    const many = Array.from({ length: 257 }, (_, i) => ({
+      id: `id-${String(i).padStart(8, '0')}`,
+      label: 'L',
+    }));
+    bridge.setSessionCatalog(many, null);
+    expect(bridge.sessionCatalogCount()).toBe(256);
+  });
+
+  it('v17 session exports are REQUIRED', () => {
+    const exp = makeMockExports() as unknown as WebAssembly.Exports;
+    expect(isHarnessBridgeExports(exp)).toBe(true);
+    for (const name of [
+      'inv_clear_session_catalog',
+      'inv_push_session_catalog_entry',
+      'inv_session_catalog_count',
+      'inv_set_current_session',
+      'inv_has_pending_session_switch',
+      'inv_pending_session_switch_len',
+      'inv_pending_session_switch_copy',
+      'inv_ack_pending_session_switch',
+    ]) {
+      const record = exp as unknown as Record<string, unknown>;
+      const copy = { ...record };
+      delete copy[name];
+      expect(isHarnessBridgeExports(copy as WebAssembly.Exports)).toBe(false);
+    }
+  });
+
+  it('takePendingSessionSwitch reads and acks', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    let acked = false;
+    exp.inv_has_pending_session_switch = () => 1;
+    exp.inv_pending_session_switch_len = () => 'sess-bbbbbbb'.length;
+    exp.inv_pending_session_switch_copy = (outPtr, maxLen) => {
+      const id = 'sess-bbbbbbb';
+      const n = Math.min(maxLen, id.length);
+      new Uint8Array(exp.memory.buffer, outPtr, n).set(new TextEncoder().encode(id).slice(0, n));
+      return n;
+    };
+    exp.inv_ack_pending_session_switch = () => {
+      acked = true;
+    };
+    expect(bridge.takePendingSessionSwitch()).toBe('sess-bbbbbbb');
+    expect(acked).toBe(true);
+  });
+});
+
 describe("imageCachePut (protocol v4)", () => {
   it("copies RGBA into inv_image_cache_put", () => {
     const exp = makeMockExports();
@@ -640,7 +748,7 @@ describe('skill_attached kind (protocol v12)', () => {
     // Distinct from the protocol version (13) — a hardcoded kind 13 would be an
     // unknown kind to the Wasm painter.
     expect(MessageKind.SkillAttached).not.toBe(HARNESS_PROTOCOL_VERSION);
-    expect(HARNESS_PROTOCOL_VERSION).toBe(16);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(17);
   });
 
   it('push/readback round-trips a skill_attached row', () => {
@@ -669,8 +777,8 @@ describe('setTurnElapsed (protocol v14)', () => {
     expect(exp.__turnElapsed()).toBe(0);
   });
 
-  it('version bumped to 16 and the export is REQUIRED (fail-closed when missing)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(16);
+  it('version bumped to 17 and the export is REQUIRED (fail-closed when missing)', () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe(17);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     // A rebuilt Wasm that omits inv_set_turn_elapsed fails bridge-load closed,

@@ -97,6 +97,14 @@ pub fn build(b: *std.Build) void {
         "inv_set_selected_model",
         "inv_has_pending_model_change",
         "inv_ack_pending_model_change",
+        "inv_clear_session_catalog",
+        "inv_push_session_catalog_entry",
+        "inv_session_catalog_count",
+        "inv_set_current_session",
+        "inv_has_pending_session_switch",
+        "inv_pending_session_switch_len",
+        "inv_pending_session_switch_copy",
+        "inv_ack_pending_session_switch",
         "inv_set_status_slot",
         "inv_status_slot_len",
         "inv_status_slot_copy",
@@ -227,6 +235,19 @@ pub fn build(b: *std.Build) void {
             }),
         });
         test_rich.dependOn(&b.addRunArtifact(model_catalog_tests).step);
+    }
+
+    // Host unit tests for session_catalog.zig (protocol v17 session-rail list).
+    {
+        const session_catalog_tests = b.addTest(.{
+            .name = "session_catalog",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/session_catalog.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(session_catalog_tests).step);
     }
 
     // Host unit tests for busy_spinner.zig (plan #574): the 2×4 clockwise LUT —
