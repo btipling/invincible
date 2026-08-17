@@ -35,7 +35,7 @@ optional login chrome).
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
 | Per-user MCP config UI | **DOM** | `/settings`, `/settings/mcp` — not dual chat; not Admin |
 | Per-user MCP tools (connect + execute) | **Vercel backend** | `lib/mcp/*`; keys under tenant DEK; never Wasm/client |
-| Builtin HTTPS fetch (`http_get`) | **Vercel backend** | Env `BUILTIN_HTTP_FETCH`; attach-only durable HTTP instance (Settings Create HTTP instance); see [builtin-http.md](builtin-http.md) |
+| Builtin HTTPS fetch (`http_get`) | **Vercel backend** | Always-available when a running HTTP instance exists; attach-only (Settings Create HTTP instance); see [builtin-http.md](builtin-http.md) |
 | **Transcript (read messages)** | **Wasm** | Primary UX; rich MD + images + math + diff/patch fence paint in-canvas (`rich/*`) — no DOM markdown |
 | Transcript left rail (empty, collapsible) | **Wasm** | Inside the transcript band only (canvas top → composer). Default closed: 40 px icon strip. Open: 220 px empty TEAL column. Session list stays DOM `SessionPicker` in AppNav until a later move. No host CSS sidebar, no protocol |
 | Image bytes (fetch/decode) | **DOM host** | Browser fetch → RGBA → `inv_image_cache_put`; paint stays Wasm |
@@ -80,7 +80,7 @@ User types in Wasm composer
   → POST /api/agent { prompt, modelId? } with Accept: text/event-stream (default host)
        server requires the session user: request-scoped BYOK for the authorized modelId
        tools → sandbox (DB grants + Settings Workspace attach)
-              + optional builtin http_get (attach-only durable HTTPS instance; env BUILTIN_HTTP_FETCH)
+              + optional builtin http_get (attach-only durable HTTPS instance)
               + enabled per-user MCP tools (server-side only; soft-fail dead servers)
        SSE: tool_start / tool_result / reasoning_delta / text_delta / done (see docs/agent-stream.md)
        JSON fallback when Accept is not event-stream (tests / simple clients)

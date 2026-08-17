@@ -52,7 +52,7 @@ Product behavior: [docs/session-model.md](docs/session-model.md).
 
 ## Builtin HTTPS fetch (Vercel Sandbox)
 
-When `BUILTIN_HTTP_FETCH=sandbox`, agent tools may fetch **public HTTPS** URLs via a
+Agent tools may fetch **public HTTPS** URLs via a
 **durable HTTP/curl** Vercel Sandbox instance (hop B) — attach-only to a name the
 user created under **Settings → Sandbox**. App-side SSRF
 policy runs first (https-only; no private/metadata hosts; redirects only after

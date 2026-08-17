@@ -106,8 +106,8 @@ async function closeRunners(
  * → or SSE (Accept: text/event-stream) agent events (docs/agent-stream.md)
  *
  * Always multi-tenant on: session user required, DB-resolved sandbox + grants +
- * request-scoped BYOK + user MCP tools. Builtin HTTP: BUILTIN_HTTP_FETCH=sandbox +
- * Settings HTTP instance attach; never create on the hot path.
+ * request-scoped BYOK + user MCP tools. Builtin HTTP: always-available when the
+ * user has a running Settings HTTP instance; never create on the hot path.
  */
 export async function POST(req: Request): Promise<Response> {
   const sessionGate = await requireSessionUser();
@@ -120,7 +120,6 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error }, { status });
   }
 
-  const builtinHttp = resolveBuiltinHttpConfig();
   const stream = wantsAgentStream(req);
 
   let body: unknown;
@@ -213,6 +212,25 @@ export async function POST(req: Request): Promise<Response> {
     if (!userId) {
       const { AUTH_REQUIRED_ERROR } = await import('../../../lib/tenancy/errors');
       return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
+    }
+
+    // Load HTTP instance early — single DB read, idempotent — to feed both
+    // the soft-continue gate (grant-deny + HTTP instance → proceed) and the
+    // tool assembly decision. Key off the attachable instance, not an env flag.
+    let httpAttachName: string | null = null;
+    {
+      const loaded = await services.userSandboxInstance.loadInstance(
+        userId,
+        'http',
+      );
+      if (
+        loaded.ok &&
+        loaded.value &&
+        loaded.value.status === 'running' &&
+        loaded.value.vercelName?.trim()
+      ) {
+        httpAttachName = loaded.value.vercelName.trim();
+      }
     }
 
     // Phase 3 (#516): read-only agent skill tools (`find_skill` / `fetch_skill`)
@@ -475,7 +493,7 @@ export async function POST(req: Request): Promise<Response> {
     //  - builtin HTTP enabled → grant-deny still proceeds with HTTP-only tools.
     //  - otherwise → hard 403 (forbidden / bad grant / unusable id, no heal surface).
     if (!resolved.ok) {
-      if (resolved.softContinue || resolved.selectionRequired || builtinHttp.enabled) {
+      if (resolved.softContinue || resolved.selectionRequired || httpAttachName) {
         // Soft path: no FS tools; MCP + builtin HTTP (+ for selectionRequired the
         // meta_sandbox tools) may still drive the turn.
         runParams = {
@@ -536,36 +554,19 @@ export async function POST(req: Request): Promise<Response> {
       ],
     };
 
-    if (builtinHttp.enabled) {
-      let httpAttachName: string | undefined;
-
-      // Settings HTTP/curl instance — omit tools when missing/stopped/error.
-      const loaded = await services.userSandboxInstance.loadInstance(
-        userId,
-        'http',
-      );
-      if (
-        loaded.ok &&
-        loaded.value &&
-        loaded.value.status === 'running' &&
-        loaded.value.vercelName?.trim()
-      ) {
-        httpAttachName = loaded.value.vercelName.trim();
-      }
-
-      if (httpAttachName) {
-        // Constructed via the composition root (phase-2 DI), request-scoped.
-        httpRunner = services.createHttpRunner({ name: httpAttachName });
-        const httpTools = createHttpFetchTools({
-          runner: httpRunner,
-          secrets: runParams.secrets,
-          serverSecrets,
-          signal: req.signal,
-          maxBytes: builtinHttp.maxBytes,
-          timeoutMs: builtinHttp.timeoutMs,
-        });
-        extraTools = { ...extraTools, ...httpTools };
-      }
+    if (httpAttachName) {
+      const builtinHttp = resolveBuiltinHttpConfig();
+      // Constructed via the composition root (phase-2 DI), request-scoped.
+      httpRunner = services.createHttpRunner({ name: httpAttachName });
+      const httpTools = createHttpFetchTools({
+        runner: httpRunner,
+        secrets: runParams.secrets,
+        serverSecrets,
+        signal: req.signal,
+        maxBytes: builtinHttp.maxBytes,
+        timeoutMs: builtinHttp.timeoutMs,
+      });
+      extraTools = { ...extraTools, ...httpTools };
     }
 
     runParams = { ...runParams, extraTools };

@@ -35,7 +35,9 @@ describe('POST /api/agent', () => {
     (servicesState as any).userMcpServers = servicesState.userMcpServers ?? {};
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (servicesState as any).userSandboxInstance =
-      servicesState.userSandboxInstance ?? {};
+      servicesState.userSandboxInstance ?? {
+        loadInstance: vi.fn(async () => ({ ok: true as const, value: null })),
+      };
     // Phase-2 DI (#439): the route reads `serverSecrets` and builds the hop-B HTTP
     // runner via `createHttpRunner` from the root. Default serverSecrets to empty
     // (no gateway-token redaction) unless a test overrides them. Phase 3 (#476):
@@ -463,7 +465,6 @@ describe('POST /api/agent', () => {
     mockByokOk();
     mockGithubToken();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    delete process.env.BUILTIN_HTTP_FETCH;
     const runAgent = vi.fn(async () => ({
       text: 'should-not-run',
       toolTrace: [],
@@ -499,7 +500,6 @@ describe('POST /api/agent', () => {
   it('softContinue from resolve skips FS tools and still runs agent when MCP tools exist', async () => {
     mockAuthedSession();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    delete process.env.BUILTIN_HTTP_FETCH;
 
     type RunArg = {
       skipSandboxTools?: boolean;
@@ -775,7 +775,7 @@ describe('POST /api/agent', () => {
     mockHttpInstance({ status: 'running', vercelName: 'inv-http-user1' });
     mockMcpEmpty();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
 
     const closeHttp = vi.fn(async () => {});
     type HttpOnlyRunArg = {
@@ -833,7 +833,7 @@ describe('POST /api/agent', () => {
     mockHttpInstance(null);
     mockMcpEmpty();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
     const runAgent = vi.fn(async () => ({ text: 'nope', toolTrace: [] }));
     servicesState.resolveSandbox = {
       resolveAgentSandbox: vi.fn(async () => ({
@@ -869,7 +869,7 @@ describe('POST /api/agent', () => {
     mockGithubToken();
     mockHttpInstance({ status: 'stopped', vercelName: 'inv-http-stopped' });
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
     const sandboxClient = { close: vi.fn(async () => {}) };
     type RunArg = {
       skipSandboxTools?: boolean;
@@ -926,7 +926,7 @@ describe('POST /api/agent', () => {
     mockGithubToken();
     mockHttpInstance({ status: 'error', vercelName: 'inv-http-err' });
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
     type RunArg = {
       sandboxClient?: unknown;
       extraTools?: Record<string, unknown>;
@@ -976,7 +976,7 @@ describe('POST /api/agent', () => {
     mockGithubToken();
     mockHttpInstance({ status: 'running', vercelName: '  inv-http-both  ' });
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
     const closeHttp = vi.fn(async () => {});
     type RunArg = {
       sandboxClient?: unknown;
@@ -1037,7 +1037,7 @@ describe('POST /api/agent', () => {
     mockResolveSandboxOk();
     mockHttpInstance({ status: 'running', vercelName: 'inv-http-host' });
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    process.env.BUILTIN_HTTP_FETCH = 'sandbox';
+    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
 
     const closeHttp = vi.fn(async () => {});
     servicesState.createHttpRunner = vi.fn(() => ({
@@ -1258,7 +1258,11 @@ describe('POST /api/agent', () => {
       runAgentStream: vi.fn(),
     }));
     vi.doMock('../../../lib/agent/builtinHttpConfig', () => ({
-      resolveBuiltinHttpConfig: () => ({ enabled: false }),
+      resolveBuiltinHttpConfig: () => ({
+        timeoutMs: 120_000,
+        maxBytes: 2_097_152,
+        sandboxTimeoutMs: 1_800_000,
+      }),
     }));
 
     const { POST } = await loadRoute();
@@ -1313,7 +1317,11 @@ describe('POST /api/agent', () => {
       runAgentStream: vi.fn(),
     }));
     vi.doMock('../../../lib/agent/builtinHttpConfig', () => ({
-      resolveBuiltinHttpConfig: () => ({ enabled: false }),
+      resolveBuiltinHttpConfig: () => ({
+        timeoutMs: 120_000,
+        maxBytes: 2_097_152,
+        sandboxTimeoutMs: 1_800_000,
+      }),
     }));
 
     const { POST } = await loadRoute();
@@ -1873,7 +1881,7 @@ describe('POST /api/agent', () => {
     mockByokOk();
     mockGithubToken();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    delete process.env.BUILTIN_HTTP_FETCH;
+    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
     type RunArg = {
       skipSandboxTools?: boolean;
       sandboxClient?: unknown;
@@ -1920,7 +1928,7 @@ describe('POST /api/agent', () => {
     mockByokOk();
     mockGithubToken();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    delete process.env.BUILTIN_HTTP_FETCH;
+    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
     const runAgent = vi.fn(async () => ({ text: 'nope', toolTrace: [] }));
     // No selectionRequired: the user has no usable grant at all — meta sandbox
     // tools have nothing to list/switch among, so this stays a hard 403 even
