@@ -241,8 +241,9 @@ describe('applySessionModel — row 9: stored id NOT in catalog (revoked)', () =
     const bridge = new HarnessBridge(exp);
     bridge.setModelCatalog(['anthropic/claude-a', 'openai/gpt-b']);
 
+    const originalUpdatedAt = 1723843200000;
     const ref: ModelPersistSessionRef = {
-      current: { ...createEmptySession('s1'), selectedModel: 'revoked/old' },
+      current: { ...createEmptySession('s1'), selectedModel: 'revoked/old', updatedAt: originalUpdatedAt },
     };
     let persisted: SessionSnapshot | null = null;
     const persist = (next: SessionSnapshot) => { persisted = next; };
@@ -257,10 +258,15 @@ describe('applySessionModel — row 9: stored id NOT in catalog (revoked)', () =
     // Local persist called with the dropped snapshot.
     expect(persisted).not.toBeNull();
     expect(persisted!.selectedModel).toBeUndefined();
+    // updatedAt stamped fresher on both the local persist AND the cloud PUT
+    // so LWW peers and shouldAdoptBootServer see the drop (same stamp
+    // convention as foldPendingModelChange).
+    expect(persisted!.updatedAt).toBeGreaterThan(originalUpdatedAt);
     // Cloud PUT called.
     expect(repo.lastPut).not.toBeNull();
     expect(repo.lastPut!.id).toBe('s1');
     expect(repo.lastPut!.snap.selectedModel).toBeUndefined();
+    expect(repo.lastPut!.snap.updatedAt).toBe(persisted!.updatedAt);
   });
 
   it('does NOT drop on a catalog that failed to load (getSelectedModel returns null)', () => {

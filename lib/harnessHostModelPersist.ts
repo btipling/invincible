@@ -49,6 +49,7 @@ export function applySessionModel(
   const live = bridge.getSelectedModel();
   if (live !== null && live !== storedId) {
     delete sessionRef.current.selectedModel;
+    sessionRef.current.updatedAt = Date.now();
     persist({ ...sessionRef.current });
     repo?.put(sessionRef.current.id, sessionRef.current);
   }
