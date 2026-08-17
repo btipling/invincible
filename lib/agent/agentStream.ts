@@ -71,10 +71,13 @@ export type AgentStreamEvent =
        */
       activeSandboxId?: string;
       /**
-       * Phase 3 (plan #539 / #327) — bounded provider-usage summary. Present
-       * ONLY on the final `done` (the sole authoritative capture point after
-       * the stream resolves); absent mid-stream, on abort/cancel, or when the
-       * provider reported no usable token counts.
+       * Phase 3 (plan #539 + #628) — bounded provider-usage summary. The
+       * conclusive reconcile after any mid-stream `usage` events (carried
+       * separately). Present on the final `done` when the provider reported
+       * usable token counts; absent on abort/cancel or when the provider
+       * reported none — the `done.usage` REPLACES (never falls back to the
+       * last live mid-stream value), so a completed turn where the provider
+       * reports no final usage clears the context slot.
        */
       usage?: UsageSummary;
     }
@@ -481,16 +484,14 @@ export function mapFullStreamPart(
   }
 
   // Phase 3 (plan #628) — live provider usage: emit a `usage` event when the
-  // AI SDK reports per-step (`finish-step`) or aggregate (`finish`) usage.
-  // Non-empty only → no clear/flicker on a finish part where the provider
-  // reported no usable token counts.
-  if (type === 'finish-step') {
-    const summary = mapProviderUsage(part.usage);
-    if (summary) return [{ type: 'usage', usage: summary }];
-    return [];
-  }
+  // AI SDK reports aggregate usage on a `finish` part (the turn total).
+  // `part.totalUsage` is the v6 name; v7 renames it to `part.usage` (scan
+  // both). `finish-step` is NEVER emitted — its per-step counts are not a
+  // turn aggregate and would flicker the context slot downward on multi-step
+  // turns. Non-empty only → no clear/flicker when the provider reported no
+  // usable token counts.
   if (type === 'finish') {
-    const summary = mapProviderUsage(part.totalUsage);
+    const summary = mapProviderUsage(part.totalUsage ?? part.usage);
     if (summary) return [{ type: 'usage', usage: summary }];
     return [];
   }

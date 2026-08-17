@@ -458,8 +458,9 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
             streamActiveSandboxId = ev.activeSandboxId;
           }
           // Phase 3 (plan #539 + #628) — `done.usage` is the conclusive
-          // reconcile (may be absent → clear, the completed-turn rule).
-          streamUsage = sanitizeUsageSummary(ev.usage) ?? streamUsage;
+          // reconcile that REPLACES any live mid-stream value (absent → clear,
+          // the completed-turn rule; never falls back to a prior live value).
+          streamUsage = sanitizeUsageSummary(ev.usage);
         } else if (ev.type === 'error') {
           streamError = {
             ok: false,
@@ -501,8 +502,9 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
             streamActiveSandboxId = ev.activeSandboxId;
           }
           // Phase 3 (plan #539 + #628) — `done.usage` is the conclusive
-          // reconcile (may be absent → clear, the completed-turn rule).
-          streamUsage = sanitizeUsageSummary(ev.usage) ?? streamUsage;
+          // reconcile that REPLACES any live mid-stream value (absent → clear,
+          // the completed-turn rule; never falls back to a prior live value).
+          streamUsage = sanitizeUsageSummary(ev.usage);
         } else if (ev.type === 'error') {
           streamError = {
             ok: false,
