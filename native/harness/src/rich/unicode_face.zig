@@ -30,7 +30,18 @@ pub fn isEmojiRelated(cp: u21) bool {
         0x23F0...0x23F3 => true, // clocks / timer hourglass
         0x23F8...0x23FA => true, // pause / stop / record
         0x24C2 => true,
-        0x25AA...0x25FE => true,
+        // Geometric Shapes: only CPs the OpenMoji subset actually ships.
+        // Text triangles / pointers (▾ ▸ ▴ ◂ ▲ ▼ ► ◄ …) fall through to
+        // isSymbolRelated → DejaVu. Do not restore a blanket 0x25AA…0x25FE —
+        // that routes U+25BE onto OpenMoji (.notdef tofu) in body and code.
+        0x25AA...0x25AE => true, // ▪▫▬▭▮
+        0x25B6 => true, // ▶ play
+        0x25C0 => true, // ◀ reverse
+        0x25C9 => true, // ◉
+        0x25D0...0x25D1 => true, // ◐◑
+        0x25E7...0x25EA => true, // ◧◨◩◪
+        0x25ED...0x25EE => true, // ◭◮
+        0x25FB...0x25FE => true, // ◻◼◽◾
         // Misc symbols + dingbats as emoji — except text check/ballot marks used in
         // toolTrace ("✓ ok" / "✗ failed"). OpenMoji subset lacks those glyphs; DejaVu
         // symbols has them (isSymbolRelated). Without this carve-out paint shows tofu.
@@ -65,8 +76,10 @@ pub fn isSymbolRelated(cp: u21) bool {
         // Box-drawing light/heavy horizontal (report rules). Paint uses
         // separatorLookalike → U+2015 until a face embeds these CPs.
         0x2500...0x2501 => true,
-        // Geometric shapes
-        0x25A0...0x25FF => true,
+        // Geometric shapes — U+25CC DOTTED CIRCLE is Noto-only (DejaVu subset
+        // and OpenMoji lack it); leave it on the body face.
+        0x25A0...0x25CB => true,
+        0x25CD...0x25FF => true,
         // Misc symbols / dingbats (only those not claimed by emoji face)
         0x2600...0x27BF => true,
         // Supplemental arrows A/B + misc arrows
@@ -215,6 +228,32 @@ test "CLI dingbats ❯❮ route to symbols not emoji" {
     try std.testing.expect(faceFor(0x27A1) == .emoji); // ➡
     try std.testing.expect(faceFor(0x27B0) == .emoji); // ➰
     try std.testing.expect(faceFor(0x27BF) == .emoji); // ➿
+}
+
+test "Geometric Shapes text triangles route to symbols not emoji" {
+    // U+25BE BLACK DOWN-POINTING SMALL TRIANGLE (▾) — HTML details / picker-style
+    try std.testing.expect(!isEmojiRelated(0x25BE));
+    try std.testing.expect(isSymbolRelated(0x25BE));
+    try std.testing.expect(faceFor(0x25BE) == .symbols);
+    // Small-triangle neighbors
+    try std.testing.expect(faceFor(0x25B4) == .symbols); // ▴
+    try std.testing.expect(faceFor(0x25B8) == .symbols); // ▸
+    try std.testing.expect(faceFor(0x25C2) == .symbols); // ◂
+    // Larger / pointer neighbors
+    try std.testing.expect(faceFor(0x25B2) == .symbols); // ▲
+    try std.testing.expect(faceFor(0x25BC) == .symbols); // ▼
+    try std.testing.expect(faceFor(0x25BA) == .symbols); // ►
+    try std.testing.expect(faceFor(0x25C4) == .symbols); // ◄
+    // OpenMoji keepers stay emoji (do not swallow play/reverse)
+    try std.testing.expect(faceFor(0x25B6) == .emoji); // ▶
+    try std.testing.expect(faceFor(0x25C0) == .emoji); // ◀
+    try std.testing.expect(faceFor(0x25AA) == .emoji); // ▪
+    try std.testing.expect(faceFor(0x25FB) == .emoji); // ◻
+    try std.testing.expect(faceFor(0x25FE) == .emoji); // ◾
+    // U+25CC DOTTED CIRCLE — Noto body (DejaVu + OpenMoji lack it)
+    try std.testing.expect(!isEmojiRelated(0x25CC));
+    try std.testing.expect(!isSymbolRelated(0x25CC));
+    try std.testing.expect(faceFor(0x25CC) == .body);
 }
 
 test "separatorLookalike maps report bars to U+2015; latin is null" {
