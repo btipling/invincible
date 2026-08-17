@@ -95,7 +95,7 @@ describe('trimForCloudPut', () => {
     expect('attachedSlugs' in out).toBe(false); // carrier carries in meta, not top-level
   });
 
-  it('detach-all: attachedSlugs:[] persists as "[]" (omitted ≠ detach-all, review Nit L6)', () => {
+  it('detach-all: attachedSlugs:[] persists as "[]" (empty-set value)', () => {
     const out = trimForCloudPut({
       id: 'sess_a',
       updatedAt: 4,
@@ -105,7 +105,7 @@ describe('trimForCloudPut', () => {
     expect(out.meta).toEqual({ attachedSkills: '[]' });
   });
 
-  it('omitted attachedSlugs → reserved key left OFF (never clears an unknown set)', () => {
+  it('undefined attachedSlugs omits the key (host hole = store clear)', () => {
     const out = trimForCloudPut({
       id: 'sess_a',
       updatedAt: 5,

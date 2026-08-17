@@ -51,6 +51,14 @@ import type { SessionMessage } from '../sessionStore';
  * `activeSandboxId` / `logicalCwd` are P1 (GAP-1); `legacySnapshotId` is the
  * Phase 4 backfill trace key; `title` is the optional display title stored by the
  * Phase 2 mint (list summary).
+ *
+ * **Reserved-meta write contract (going forward, every key):**
+ * PUT / `upsertEnvelope` `meta` is the **full desired set** (replace).
+ * Absent key = clear that field. The store does **not** merge holes.
+ * Mid-turn writers MUST copy existing meta, then override the one key they
+ * mean to change. Host `cloudMetaFor` omits a key only when the snapshot
+ * field is unset (that omit is a clear). Do not add a new reserved key that
+ * treats omit as "keep previous."
  */
 export const RESERVED_META_KEYS = [
   'activeSandboxId',
@@ -151,7 +159,11 @@ export type EnvelopeUpsertResult =
 export interface SessionEnvelopeStore extends ServerSessionStore {
   /** Read only the envelope (never the transcript). `null` when absent/roll-forward-only. */
   readEnvelope(key: SessionRecordKey): Promise<SessionEnvelope | null>;
-  /** Upsert the envelope (LWW on `updatedAt`, `createdAt` preserved). Never touches transcript. */
+  /**
+   * Upsert the envelope (LWW on `updatedAt`, `createdAt` preserved). Never touches
+   * transcript. `input.meta` **replaces** stored meta (absent key = clear) —
+   * see reserved-meta write contract on `RESERVED_META_KEYS`.
+   */
   upsertEnvelope(
     key: SessionRecordKey,
     input: SessionEnvelopeInput,

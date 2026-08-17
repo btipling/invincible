@@ -154,6 +154,7 @@ async function retryPersistActiveSandbox(
       userId: identity.userId,
       tenantId: identity.tenantId,
       updatedAt,
+      // Copy-forward then override: store replaces whole meta (omit = clear).
       meta: { ...(envelope?.meta ?? {}), activeSandboxId: identity.activeId },
     };
     return store.upsertEnvelope(key, input);

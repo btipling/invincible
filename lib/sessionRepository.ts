@@ -271,11 +271,10 @@ export function parseCloudSessionSnapshot(
 /**
  * Overlay envelope `meta` onto a parsed transcript snapshot.
  *
- * PUT `meta` is a **full desired set** (replace). The envelope is the last
- * accepted desired set for session-carrier keys, so GET treats it the same way:
- * a valid envelope value wins; an absent or poison value **clears** the
- * transcript field (absent = unset). Mid-turn server writers must
- * read-copy-override the whole existing meta so they do not clear siblings.
+ * Same reserved-meta write contract as PUT (`RESERVED_META_KEYS`): the envelope
+ * is the last full desired set. A valid envelope value wins; absent or poison
+ * **clears** the transcript field. Mid-turn server writers must copy-forward
+ * existing meta so a one-key update cannot clear siblings.
  */
 export function overlayEnvelopeMeta(
   snapshot: SessionSnapshot,
@@ -381,8 +380,11 @@ export type CloudPutBody = {
  * `snapshot.activeSandboxId`. The cwd is run through `normalizeSessionCwd` (the
  * same form sent to `/api/agent`) so the persisted `meta.logicalCwd` is ALWAYS a
  * form the request path accepts on any device — a P1-legal-but-escaping `..`
- * cannot round-trip into Redis (review #453 residual). Empty / unset fields are
- * omitted. Returns `undefined` when nothing to carry.
+ * cannot round-trip into Redis (review #453 residual).
+ *
+ * Reserved-meta write contract (`RESERVED_META_KEYS`): this object is the
+ * **full desired set**. A key left off is a **clear**, not a hole. Returns
+ * `undefined` when every carrier is unset (empty desired set).
  */
 export function cloudMetaFor(
   snapshot: SessionSnapshot,
@@ -407,14 +409,10 @@ export function cloudMetaFor(
       ? snapshot.personaId
       : undefined;
   if (pid !== undefined) meta.personaId = pid;
-  // Phase 2 (#517 / adversarial-review Blocker): the session-sticky attached
-  // skill set. The HOST is a first-class carrier: `snapshot.attachedSlugs` rides
-  // the PUT meta as the reserved `meta.attachedSkills` JSON-array string, so a
-  // host PUT (which rewrites the whole record's `meta` every turn) can never
-  // silently delete the set the server injected. `undefined` (omitted) → the key
-  // is left OFF the meta so we never clear an unknown set; `[]` (explicit
-  // detach-all) → persisted as `'[]'` (omitted ≠ []). Never persists a malformed
-  // value — re-serialize the validated parse.
+  // attachedSkills: fold the known set on every PUT. Omit = clear at the store
+  // (RESERVED_META_KEYS contract). `[]` is the empty-set value. `attachedSlugs`
+  // undefined (never loaded) still omits — that host hole is a store clear.
+  // Never persist a malformed value — re-serialize the validated parse.
   const attachedSkills = Array.isArray(snapshot.attachedSlugs)
     ? serializeAttachedSkills(snapshot.attachedSlugs)
     : undefined;

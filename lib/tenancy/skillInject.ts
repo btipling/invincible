@@ -322,6 +322,7 @@ export async function resolveSkillPreamble(
         userId: envelope.userId,
         tenantId: envelope.tenantId,
         updatedAt: envelope.updatedAt,
+        // Copy-forward then override: store replaces whole meta (omit = clear).
         meta: { ...envelope.meta, attachedSkills },
       };
       const result = await sessionStore.upsertEnvelope(sessionKey, input);
