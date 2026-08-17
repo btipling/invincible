@@ -12,6 +12,7 @@ const math_cache = @import("rich/math_cache.zig");
 const composer_text = @import("composer_text.zig");
 const ring_slot = @import("ring_slot.zig");
 const model_catalog = @import("model_catalog.zig");
+const session_catalog = @import("session_catalog.zig");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
 /// v9: pending cancel (user Stop) — additive exports.
@@ -27,7 +28,10 @@ const model_catalog = @import("model_catalog.zig");
 /// v16: plan #616 — model-selection persistence: `inv_set_selected_model` (set-by-id
 /// restore) + `inv_has_pending_model_change` / `inv_ack_pending_model_change` (host
 /// observes a user Next cycle). Additive exports now REQUIRED.
-pub const PROTOCOL_VERSION: u32 = 16;
+/// v17: session-rail catalog + pending switch — `inv_clear_session_catalog`,
+/// `inv_push_session_catalog_entry`, `inv_set_current_session`,
+/// `inv_has_pending_session_switch` / len / copy / ack. Additive, now REQUIRED.
+pub const PROTOCOL_VERSION: u32 = 17;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -221,6 +225,9 @@ pub fn queueSubmitFromUi(text: []const u8) void {
         if (msg_count < MAX_MSG) msg_count += 1;
     }
     lifecycle = .busy;
+    // Send is already a turn: refuse rail clicks until host sets Ready.
+    // inv_set_lifecycle is not on this path (host has not polled yet).
+    session_catalog.setBusy(true);
     refresh();
 }
 
@@ -244,6 +251,7 @@ pub fn reset() void {
     has_pending_load_earlier = false;
     has_pending_cancel = false;
     has_pending_model_change = false;
+    session_catalog.reset();
     suppress_refresh = false;
     catalog_count = 0;
     selected_index = 0;
@@ -392,6 +400,7 @@ export fn inv_set_lifecycle(status: u8) void {
         3 => .err,
         else => .err,
     };
+    session_catalog.setBusy(lifecycle == .busy);
     refresh();
 }
 
@@ -461,6 +470,9 @@ export fn inv_clear_messages() void {
     msg_head = 0;
     msg_count = 0;
     has_pending_cancel = false;
+    // Hydrate / New must not leave a queued Send from the previous session.
+    has_pending_submit = false;
+    pending_submit_len = 0;
     image_cache.clear();
     math_cache.clear();
     refresh();
@@ -607,6 +619,53 @@ export fn inv_has_pending_model_change() u8 {
 /// Protocol v16 — host folded the live selection; clear the flag.
 export fn inv_ack_pending_model_change() void {
     ackPendingModelChange();
+}
+
+// ── Protocol v17 — session-rail catalog + pending switch ──────────────────
+
+export fn inv_clear_session_catalog() void {
+    session_catalog.clear();
+    refresh();
+}
+
+export fn inv_push_session_catalog_entry(
+    id_ptr: [*]const u8,
+    id_len: usize,
+    label_ptr: [*]const u8,
+    label_len: usize,
+) u8 {
+    const ok = session_catalog.push(id_ptr[0..id_len], label_ptr[0..label_len]);
+    if (ok) refresh();
+    return if (ok) 1 else 0;
+}
+
+export fn inv_session_catalog_count() u32 {
+    return session_catalog.catalogCount();
+}
+
+export fn inv_set_current_session(ptr: [*]const u8, len: usize) u8 {
+    const ok = session_catalog.setCurrent(if (len == 0) &.{} else ptr[0..len]);
+    if (ok) refresh();
+    return if (ok) 1 else 0;
+}
+
+export fn inv_has_pending_session_switch() u8 {
+    return if (session_catalog.hasPending()) 1 else 0;
+}
+
+export fn inv_pending_session_switch_len() u32 {
+    return @intCast(session_catalog.pendingId().len);
+}
+
+export fn inv_pending_session_switch_copy(out_ptr: [*]u8, max_len: usize) u32 {
+    const id = session_catalog.pendingId();
+    const n = @min(max_len, id.len);
+    if (n > 0) @memcpy(out_ptr[0..n], id[0..n]);
+    return @intCast(n);
+}
+
+export fn inv_ack_pending_session_switch() void {
+    session_catalog.ackPending();
 }
 
 // ── Protocol v13 — status-slot store (host → Wasm) ────────────────────────

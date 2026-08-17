@@ -47,6 +47,11 @@ import {
   flushPendingThenRestore,
   discardPendingModelChange,
 } from '../../lib/harnessHostModelPersist';
+import {
+  buildSessionCatalogEntries,
+  foldPendingSessionSwitch,
+  foldSessionListResult,
+} from '../../lib/sessionSummaryLabel';
 import AppNav from '../components/AppNav';
 import SessionPicker from '../components/SessionPicker';
 import PersonaPicker from '../components/PersonaPicker';
@@ -193,6 +198,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const pollRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const inflightRef = useRef(false);
+  /** True while an async switch (repo.get → activateSession) is in flight; New/Clear/poll ack-and-drop while set. */
+  const switchInFlightRef = useRef(false);
+  const onSwitchSessionRef = useRef<(id: string) => void>(() => {});
   /** Server id to bind once the in-flight turn finishes (boot mint mid-turn), #430. */
   const pendingMintBindRef = useRef<string | null>(null);
   const sessionRef = useRef<SessionSnapshot>(createEmptySession());
@@ -324,8 +332,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     const repo = repoRef.current;
     if (!repo) return;
     const res = await repo.list();
-    if (res.action === 'ok') setSessions(res.sessions);
-    else if (res.action === 'disabled') setCloudEnabled(false);
+    setSessions((prev) => {
+      const next = foldSessionListResult(prev, res);
+      if (next.cloudEnabled === false) setCloudEnabled(false);
+      return next.sessions;
+    });
   }, []);
 
   /** Activate a session (canonical id) on local state + Wasm ring + URL + picker. */
@@ -614,15 +625,27 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // Protocol v9: Stop first — abort inflight and skip starting a turn this tick.
             if (b.takePendingCancel()) {
               abortRef.current?.abort();
-            } else if (!inflightRef.current) {
+            } else if (inflightRef.current || switchInFlightRef.current) {
+              foldPendingSessionSwitch(true, () => b.takePendingSessionSwitch(), () => {});
+            } else {
               // Plan #616 (source #610): fold a user Next cycle into the session
               // snapshot + persist + ack before any other pending event this tick.
               foldPendingModelChange();
-              if (b.takePendingLoadEarlier()) {
+              const switched = foldPendingSessionSwitch(
+                false,
+                () => b.takePendingSessionSwitch(),
+                (id) => onSwitchSessionRef.current(id),
+                () => {
+                  // Adversarial #642: leftover Send must not run on the destination.
+                  b.takePendingSubmit();
+                  b.setLifecycle(Lifecycle.Ready);
+                },
+              );
+              if (switched !== 'switched' && b.takePendingLoadEarlier()) {
                 const session = sessionRef.current;
                 const nextStart = earlierRingStart(ringWindowStartRef.current);
                 hydrateRingWindow(b, session, nextStart);
-              } else {
+              } else if (switched !== 'switched') {
                 const pending = b.takePendingSubmit();
                 if (pending != null && pending.length > 0) {
                   const latest = latestRingStart(sessionRef.current.messages.length);
@@ -765,7 +788,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   }, [personaPick]);
 
   const onClear = useCallback(() => {
-    if (inflightRef.current) return;
+    if (inflightRef.current || switchInFlightRef.current) return;
     abortRef.current?.abort();
     const repo = repoRef.current;
     const bridge = bridgeRef.current;
@@ -774,7 +797,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     // row. Fold-after-remove resurrects via a new-epoch PUT; fold-before-remove
     // is a wasted PUT then DELETE. New/switch flush; Clear acks. See
     // discardPendingModelChange.
-    if (bridge) discardPendingModelChange(bridge);
+    // Adversarial #642: ack any stale session-switch pending synchronously at
+    // click (navigation discard, mirror discardPendingModelChange). The catalog
+    // rewrite (useEffect → setSessionCatalog) no longer replays it.
+    if (bridge) {
+      discardPendingModelChange(bridge);
+      bridge.takePendingSessionSwitch();
+    }
 
     const resetBridge = (id: string, personaId?: string) => {
       // Local only — never PUT empty. Cloud clear = DELETE this session + mint new.
@@ -837,7 +866,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
 
   const onNewSession = useCallback(() => {
     const repo = repoRef.current;
-    if (!repo || !repo.enabled || inflightRef.current) return;
+    if (!repo || !repo.enabled || inflightRef.current || switchInFlightRef.current) return;
+    // Adversarial #642: ack any stale session-switch pending synchronously at
+    // click before the async repo.create + activateSession.
+    bridgeRef.current?.takePendingSessionSwitch();
     abortRef.current?.abort();
     void (async () => {
       const created = await repo.create();
@@ -859,18 +891,39 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       const repo = repoRef.current;
       const bridge = bridgeRef.current;
       if (!repo || !repo.enabled || !bridge || inflightRef.current) return;
+      if (switchInFlightRef.current) return; // another switch already in-flight
       if (id === sessionRef.current.id) return;
       abortRef.current?.abort();
+      const sourceId = sessionRef.current.id; // generation token — guard against stale get
+      switchInFlightRef.current = true;
       void (async () => {
-        const got = await repo.get(id);
-        if (got.action !== 'ok') return; // 404/gone stays on current local session (never blank)
-        // Adopt the server transcript; canonical id = fetched id.
-        activateSession(got.snapshot);
-        setUrlSessionId(id);
+        try {
+          const got = await repo.get(id);
+          // Adversarial #642: re-check the generation token after every await so
+          // a New/Clear during repo.get does not activate the stale destination.
+          if (sessionRef.current.id !== sourceId) return;
+          if (got.action !== 'ok') return; // 404/gone stays on current local session (never blank)
+          // Adopt the server transcript; canonical id = fetched id.
+          activateSession(got.snapshot);
+          setUrlSessionId(id);
+        } finally {
+          switchInFlightRef.current = false;
+        }
       })();
     },
     [activateSession, setUrlSessionId],
   );
+  onSwitchSessionRef.current = onSwitchSession;
+
+  useEffect(() => {
+    const b = bridgeRef.current;
+    if (!b || phase !== 'ready') return;
+    if (!cloudEnabled) {
+      b.setSessionCatalog([], null);
+      return;
+    }
+    b.setSessionCatalog(buildSessionCatalogEntries(sessions, activeSessionId), activeSessionId);
+  }, [sessions, activeSessionId, cloudEnabled, phase]);
 
   // Single always-mounted canvas — never unmount across phase changes.
   const canvasNode = (
@@ -923,12 +976,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             >
               {phase === 'ready' && (
                 <SessionPicker
-                  sessions={sessions}
-                  currentId={activeSessionId}
                   hidden={!cloudEnabled}
                   disabled={busy}
                   onNew={onNewSession}
-                  onSwitch={onSwitchSession}
                 />
               )}
               {phase === 'ready' && (

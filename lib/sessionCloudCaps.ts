@@ -236,6 +236,20 @@ export function isRedisSafeOpaqueId(s: unknown): s is string {
 export const MAX_MODEL_ID_LEN = 128;
 
 /**
+ * Display catalog for the Wasm transcript-rail session list (protocol v17).
+ * NEW generous cap — host slices newest-by-updatedAt and always pins current.
+ * Not a Redis/list store cap; leftover ids are not painted (not deleted).
+ * Must match Zig `MAX_SESSION_CATALOG`.
+ */
+export const HARNESS_SESSION_RAIL_MAX = 256;
+
+/**
+ * UTF-8 byte cap for a rail row label (host-truncated title).
+ * NEW — not a `meta.title` store cap. Must match Zig `MAX_SESSION_LABEL_LEN`.
+ */
+export const HARNESS_SESSION_LABEL_MAX_BYTES = 128;
+
+/**
  * Client-safe predicate for a session-carrier model id (`meta.selectedModel`).
  * Gateway model ids contain `/`, `.`, `:`, `+`, `-` — NOT Redis-safe opaque
  * charset, and the carrier is a meta **value** (never a Redis keyspace segment),

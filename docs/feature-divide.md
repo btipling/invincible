@@ -37,7 +37,7 @@ optional login chrome).
 | Per-user MCP tools (connect + execute) | **Vercel backend** | `lib/mcp/*`; keys under tenant DEK; never Wasm/client |
 | Builtin HTTPS fetch (`http_get`) | **Vercel backend** | Always-available when a running HTTP instance exists; attach-only (Settings Create HTTP instance); see [builtin-http.md](builtin-http.md) |
 | **Transcript (read messages)** | **Wasm** | Primary UX; rich MD + images + math + diff/patch fence paint in-canvas (`rich/*`) — no DOM markdown |
-| Transcript left rail (empty, collapsible) | **Wasm** | Inside the transcript band only (canvas top → composer). Default closed: 40 px icon strip. Open: 220 px empty TEAL column. Session list stays DOM `SessionPicker` in AppNav until a later move. No host CSS sidebar, no protocol |
+| Transcript left rail (collapsible session list) | **Wasm** | Inside the transcript band only (canvas top → composer). Default closed: 40 px icon strip. Open: 220 px TEAL column with the session list (scroll). Host pushes summaries (`GET /api/sessions`); Wasm paints and raises a pending switch; host hydrates. New session / Persona / Clear stay in DOM `AppNav`. No host CSS sidebar. |
 | Image bytes (fetch/decode) | **DOM host** | Browser fetch → RGBA → `inv_image_cache_put`; paint stays Wasm |
 | Math pixels (TeX raster) | **DOM host** | Host MathJax SVG → RGBA → `inv_math_cache_put`; paint stays Wasm |
 | **Composer + Send** | **Wasm** | Primary input; dynamic absolute-rect from previous-frame measured height: idle hugs one line (~44 px), grows up to cap (124 px), scrolls internally past 120 px content; glyphs inset 5 px from the field border; Send/Stop icon bottom-pinned (`gravity_y = 1.0`) stays on field baseline at all heights (plan #579) |
@@ -128,7 +128,7 @@ re-resolved each turn.
 | Concern | Path |
 |---------|------|
 | Host shell | `app/harness/HarnessHost.tsx` |
-| Bridge TS (protocol **v16**) | `lib/harnessBridge.ts` |
+| Bridge TS (protocol **v17**) | `lib/harnessBridge.ts` |
 | Image fetch/decode | `lib/harnessImages.ts` |
 | Model catalog API | `app/api/models/route.ts` |
 | Admin inference keys | `app/admin/inference/*` |
@@ -141,7 +141,7 @@ re-resolved each turn.
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
 | Export whitelist | `native/harness/build.zig` |
 
-Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **16** — 13 added the additive status-slot store; 14 the scalar turn-clock feed `inv_set_turn_elapsed`; 15 added the busy-tick `inv_set_busy_tick`; **16** (plan #616) adds model-selection persistence `inv_set_selected_model` + `inv_has_pending_model_change` / `inv_ack_pending_model_change`).
+Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **17** — 13 added the additive status-slot store; 14 the scalar turn-clock feed `inv_set_turn_elapsed`; 15 added the busy-tick `inv_set_busy_tick`; 16 added model-selection persistence `inv_set_selected_model` + pending-model-change; **17** adds the session-rail catalog + pending switch).
 Mismatch → load error; rebuild both sides. Image **bytes** enter only via bridge put; never dual DOM `<img>` product surface.
 
 ## Related

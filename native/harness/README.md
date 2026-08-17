@@ -107,6 +107,9 @@ Host is dvui’s `web.js`. Required exports (app + backend):
 | `inv_has_pending_cancel` / `inv_ack_pending_cancel` | User **Stop** while busy (protocol v9); host aborts inflight turn |
 | `inv_clear_model_catalog` / `inv_push_model_catalog_entry` / `inv_model_catalog_count` | Protocol v3 model catalog |
 | `inv_selected_model_len` / `inv_selected_model_copy` / `inv_cycle_selected_model` | Protocol v3 selection |
+| `inv_set_selected_model` / `inv_has_pending_model_change` / `inv_ack_pending_model_change` | Protocol v16 model-selection persistence |
+| `inv_clear_session_catalog` / `inv_push_session_catalog_entry` / `inv_session_catalog_count` / `inv_set_current_session` | Protocol v17 session-rail catalog (host → Wasm) |
+| `inv_has_pending_session_switch` / `inv_pending_session_switch_len` / `_copy` / `inv_ack_pending_session_switch` | Protocol v17 pending session switch (Wasm → host) |
 | `inv_set_turn_elapsed` | **v14** whole-turn busy clock — the host pushes elapsed wall-clock seconds while a turn runs; the Wasm busy row formats/appends `Waiting for model… · mm:ss` in-canvas |
 
 Whitelist: `build.zig` → `export_symbol_names` (Zig 0.16 freestanding + `entry = .disabled` strips unrooted exports).
@@ -118,7 +121,7 @@ Inference stays on the host: `POST /api/chat` and `POST /api/agent` hold
 
 | | |
 |--|--|
-| **Protocol version** | `14` (v13 added the additive status-slot store; **v14** adds the scalar turn-clock feed `inv_set_turn_elapsed`) |
+| **Protocol version** | `17` (v16 added model-selection persistence; **v17** adds the session-rail catalog + pending switch) |
 | **TS** | `lib/harnessBridge.ts` |
 | **Zig** | `src/bridge.zig` |
 | **Host** | `app/harness/HarnessHost.tsx` (shell: load + bridge + APIs) |

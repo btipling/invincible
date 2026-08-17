@@ -8,7 +8,12 @@
  *
  * Protocol doc: native/harness/README.md (table of messages).
  */
-import { MAX_MODEL_ID_LEN, STATUS_SLOT_MAX_BYTES } from './sessionCloudCaps';
+import {
+  HARNESS_SESSION_LABEL_MAX_BYTES,
+  isRedisSafeOpaqueId,
+  MAX_MODEL_ID_LEN,
+  STATUS_SLOT_MAX_BYTES,
+} from './sessionCloudCaps';
 
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
 // v13 (plan #538/#541): additive status-slot store — `inv_set_status_slot`,
@@ -22,7 +27,10 @@ import { MAX_MODEL_ID_LEN, STATUS_SLOT_MAX_BYTES } from './sessionCloudCaps';
 // v16 (plan #616): model-selection persistence — `inv_set_selected_model`
 // (restore-by-id) + `inv_has_pending_model_change` / `inv_ack_pending_model_change`
 // (host observes a user Next cycle). All three are now REQUIRED.
-export const HARNESS_PROTOCOL_VERSION = 16 as const;
+// v17: session-rail catalog + pending switch — `inv_clear_session_catalog`,
+// `inv_push_session_catalog_entry`, `inv_set_current_session`,
+// `inv_has_pending_session_switch` / len / copy / ack. Additive, now REQUIRED.
+export const HARNESS_PROTOCOL_VERSION = 17 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -151,6 +159,20 @@ export type HarnessBridgeExports = {
   inv_set_selected_model: (ptr: number, len: number) => number;
   inv_has_pending_model_change: () => number;
   inv_ack_pending_model_change: () => void;
+  // Protocol v17 — session-rail catalog + pending switch.
+  inv_clear_session_catalog: () => void;
+  inv_push_session_catalog_entry: (
+    idPtr: number,
+    idLen: number,
+    labelPtr: number,
+    labelLen: number,
+  ) => number;
+  inv_session_catalog_count: () => number;
+  inv_set_current_session: (ptr: number, len: number) => number;
+  inv_has_pending_session_switch: () => number;
+  inv_pending_session_switch_len: () => number;
+  inv_pending_session_switch_copy: (outPtr: number, maxLen: number) => number;
+  inv_ack_pending_session_switch: () => void;
   // Protocol v13 — status-slot store (host push + readback + clear).
   inv_set_status_slot: (slot: number, ptr: number, len: number) => number;
   inv_status_slot_len: (slot: number) => number;
@@ -218,6 +240,14 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_set_selected_model',
   'inv_has_pending_model_change',
   'inv_ack_pending_model_change',
+  'inv_clear_session_catalog',
+  'inv_push_session_catalog_entry',
+  'inv_session_catalog_count',
+  'inv_set_current_session',
+  'inv_has_pending_session_switch',
+  'inv_pending_session_switch_len',
+  'inv_pending_session_switch_copy',
+  'inv_ack_pending_session_switch',
   'inv_set_status_slot',
   'inv_status_slot_len',
   'inv_status_slot_copy',
@@ -654,6 +684,90 @@ export class HarnessBridge {
   /** Protocol v16 (plan #616) — clear the pending-model-change flag. */
   ackPendingModelChange(): void {
     this.exports.inv_ack_pending_model_change();
+  }
+
+  clearSessionCatalog(): void {
+    this.exports.inv_clear_session_catalog();
+  }
+
+  /**
+   * Push one session row. Two GPA buffers (id + label), both freed.
+   * Rejects empty / non-Redis-safe id, empty / oversize label (host-side).
+   */
+  pushSessionCatalogEntry(id: string, label: string): boolean {
+    if (!isRedisSafeOpaqueId(id)) return false;
+    const labelBytes = utf8Encode.encode(label);
+    if (labelBytes.length === 0 || labelBytes.length > HARNESS_SESSION_LABEL_MAX_BYTES) {
+      return false;
+    }
+    const idBuf = this.writeUtf8(id);
+    const labelBuf = this.writeUtf8(label);
+    try {
+      return (
+        this.exports.inv_push_session_catalog_entry(
+          idBuf.ptr,
+          idBuf.len,
+          labelBuf.ptr,
+          labelBuf.len,
+        ) !== 0
+      );
+    } finally {
+      if (idBuf.len > 0) this.exports.gpa_free(idBuf.ptr, idBuf.len);
+      if (labelBuf.len > 0) this.exports.gpa_free(labelBuf.ptr, labelBuf.len);
+    }
+  }
+
+  /** Replace catalog (clear + push each; continue on reject) + set current. */
+  setSessionCatalog(
+    entries: { id: string; label: string }[],
+    currentId: string | null,
+  ): void {
+    this.clearSessionCatalog();
+    for (const e of entries) {
+      this.pushSessionCatalogEntry(e.id, e.label);
+    }
+    this.setCurrentSession(currentId);
+  }
+
+  sessionCatalogCount(): number {
+    return this.exports.inv_session_catalog_count() >>> 0;
+  }
+
+  setCurrentSession(id: string | null): boolean {
+    if (id === null || id.length === 0) {
+      return this.exports.inv_set_current_session(0, 0) !== 0;
+    }
+    if (!isRedisSafeOpaqueId(id)) return false;
+    const { ptr, len } = this.writeUtf8(id);
+    try {
+      return this.exports.inv_set_current_session(ptr, len) !== 0;
+    } finally {
+      if (len > 0) this.exports.gpa_free(ptr, len);
+    }
+  }
+
+  hasPendingSessionSwitch(): boolean {
+    return this.exports.inv_has_pending_session_switch() !== 0;
+  }
+
+  /** Read + ack pending session-switch id, or null if none. */
+  takePendingSessionSwitch(): string | null {
+    if (!this.hasPendingSessionSwitch()) return null;
+    const len = this.exports.inv_pending_session_switch_len() >>> 0;
+    if (len === 0) {
+      this.exports.inv_ack_pending_session_switch();
+      return null;
+    }
+    const ptr = this.exports.gpa_u8(len);
+    if (!ptr) throw new Error('gpa_u8 failed for pending session switch');
+    try {
+      const copied = this.exports.inv_pending_session_switch_copy(ptr, len);
+      const text = this.readUtf8(ptr, copied).trim();
+      this.exports.inv_ack_pending_session_switch();
+      return text.length > 0 ? text : null;
+    } finally {
+      this.exports.gpa_free(ptr, len);
+    }
   }
 
   /**
