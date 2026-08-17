@@ -11,6 +11,7 @@ const image_cache = @import("rich/image_cache.zig");
 const math_cache = @import("rich/math_cache.zig");
 const composer_text = @import("composer_text.zig");
 const ring_slot = @import("ring_slot.zig");
+const model_catalog = @import("model_catalog.zig");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
 /// v9: pending cancel (user Stop) — additive exports.
@@ -264,18 +265,35 @@ pub fn selectedModelId() []const u8 {
     return e.data[0..e.len];
 }
 
+/// Catalog id at `index`, or empty if out of range.
+pub fn modelCatalogIdAt(index: u32) []const u8 {
+    if (index >= catalog_count) return &[_]u8{};
+    const e = &catalog[index];
+    return e.data[0..e.len];
+}
+
+/// Current selection index (0 when empty).
+pub fn selectedModelIndex() u32 {
+    if (catalog_count == 0) return 0;
+    return @min(selected_index, catalog_count - 1);
+}
+
 /// Short label for UI: after last '/' else full id.
 pub fn selectedModelLabel() []const u8 {
-    const id = selectedModelId();
-    if (id.len == 0) return id;
-    var last_slash: ?usize = null;
-    for (id, 0..) |c, i| {
-        if (c == '/') last_slash = i;
+    return model_catalog.shortLabel(selectedModelId());
+}
+
+/// Set selection to `index`. No-op if empty, out of range, or already selected.
+/// Protocol v16 (plan #616): raises the pending-model-change flag so the host
+/// can observe + persist a menu pick without waiting for a turn. The restore-
+/// by-id path (`selectModelById`) never sets the flag.
+pub fn setSelectedModel(index: u32) void {
+    if (model_catalog.chooseIndex(catalog_count, index)) |idx| {
+        if (idx == selected_index) return;
+        selected_index = idx;
+        has_pending_model_change = true;
+        refresh();
     }
-    if (last_slash) |s| {
-        if (s + 1 < id.len) return id[s + 1 ..];
-    }
-    return id;
 }
 
 /// Cycle selection forward. No-op if count ≤ 1.
@@ -294,7 +312,9 @@ pub fn cycleSelectedModel() void {
 /// Returns true when accepted; rejects non-printable-ASCII / over-length ids
 /// (mirrors `inv_push_model_catalog_entry` acceptance). Never sets the
 /// pending-model-change flag — this is a host-driven restore, not a user cycle.
-pub fn setSelectedModel(id: []const u8) bool {
+/// Distinct name from the index setter (`setSelectedModel`) so the picker path
+/// and the restore path never alias (protocol v16, PR #618 rebase onto #617).
+pub fn selectModelById(id: []const u8) bool {
     if (id.len > MAX_MODEL_ID_LEN) return false;
     if (id.len == 0) {
         selected_index = 0;
@@ -575,7 +595,7 @@ export fn inv_cycle_selected_model() u32 {
 /// reset), 0 on oversize / non-printable (selection unchanged). Never sets the
 /// pending-model-change flag.
 export fn inv_set_selected_model(ptr: [*]const u8, len: usize) u8 {
-    const accepted = setSelectedModel(ptr[0..len]);
+    const accepted = selectModelById(ptr[0..len]);
     refresh();
     return if (accepted) 1 else 0;
 }
