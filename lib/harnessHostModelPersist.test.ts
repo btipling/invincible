@@ -4,6 +4,8 @@
  * lib/harnessHostModelPersist.ts. Uses the same mock-bridge pattern as
  * lib/harnessBridge.test.ts + lib/harnessChat.test.ts — no React render.
  */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   HARNESS_PROTOCOL_VERSION,
@@ -579,5 +581,26 @@ describe('picker index setter vs restore-by-id (PR #618 re-run 5 Minor L6)', () 
     expect(bridge.setSelectedModel('anthropic/claude-a')).toBe(true);
     expect(bridge.hasPendingModelChange()).toBe(false);
     expect(bridge.getSelectedModel()).toBe('anthropic/claude-a');
+  });
+});
+
+describe('HarnessHost wiring lock — foldPendingModelChange must use writeLocalSessionMeta (PR #618 re-run 7 Nit L6)', () => {
+  it('foldPendingModelChangeFn is called with writeLocalSessionMeta, not writeLocalSession', () => {
+    const src = readFileSync(
+      resolve(import.meta.dirname, '..', 'app/harness/HarnessHost.tsx'),
+      'utf-8',
+    );
+    // Assert the meta-only persist helper exists (avoids a false pass on a
+    // source that renamed both sides of the wiring).
+    expect(src).toContain(
+      'const writeLocalSessionMeta = useCallback((next: SessionSnapshot) => {',
+    );
+    // Lock: foldPendingModelChangeFn's persist arg is writeLocalSessionMeta.
+    // If someone dedupes and points back at writeLocalSession, this fails.
+    expect(src).toContain(
+      'foldPendingModelChangeFn(b, sessionRef, writeLocalSessionMeta, repoRef.current, inflightRef.current);',
+    );
+    // Double-check: the fold's own deps array also locks the name.
+    expect(src).toContain('}, [writeLocalSessionMeta]);');
   });
 });
