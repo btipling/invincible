@@ -19,6 +19,7 @@ const thinking_collapse = @import("thinking_collapse.zig");
 const busy_row = @import("busy_row.zig");
 const transcript_split = @import("transcript_split.zig");
 const model_picker = @import("model_picker.zig");
+const chip_preview = @import("chip_preview.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
@@ -143,7 +144,6 @@ const TE_OVERHEAD: f32 = TE_BORDER_H; // 2
 var composer_last_h: f32 = COMPOSER_IDLE_CHROME_H;
 
 /// Sticky last-user-message chip (plan #645, source issue #339).
-const LAST_USER_CHIP_PREVIEW_MAX_BYTES: usize = 100;
 const CHIP_VISIBILITY_MARGIN: f32 = 8;
 
 /// Per-slot content-local y-offset in scroll content space. Indexed by physical
@@ -613,11 +613,6 @@ fn paintToolRun(
     return true;
 }
 
-/// True when `b` is a UTF-8 continuation byte (0b10xxxxxx).
-fn isUtf8Continuation(b: u8) bool {
-    return (b & 0xC0) == 0x80;
-}
-
 /// One-line muted preview of a thinking monologue for the collapsed header
 /// (text-only, bounded — no markdown parse, no full-body read). Returns a slice
 /// into `buf`. Stops at the first newline and caps at ~80 bytes. Review: the
@@ -637,48 +632,7 @@ fn thinkingPreview(buf: *[96]u8, text: []const u8) []const u8 {
     // Drop a multi-byte char truncated by the byte cap: first any trailing
     // continuation bytes, then a truncated leading byte (0xC0..0xFF). What's
     // left ends on a valid single-byte (ASCII) boundary — never mojibake.
-    while (out > 0 and isUtf8Continuation(buf[out - 1])) out -= 1;
-    if (out > 0 and (buf[out - 1] & 0xC0) == 0xC0) out -= 1;
-    return buf[0..out];
-}
-
-/// One-line preview of a user message for the sticky last-user-message chip
-/// (plan #645). Strips a leading slash command when body text follows (e.g.
-/// `/skill-name explain this` → `explain this`); keeps the slash command when
-/// it's the only text (e.g. just `/skill-name`). Caps at
-/// `LAST_USER_CHIP_PREVIEW_MAX_BYTES` with UTF-8 boundary safety, mirroring
-/// `thinkingPreview`. Returns a slice into `buf`.
-fn chipPreview(buf: *[LAST_USER_CHIP_PREVIEW_MAX_BYTES + 1]u8, text: []const u8) []const u8 {
-    // Slash-command stripping: if the message starts with '/', strip the leading
-    // command when body text follows; keep the command when it's the only text.
-    const body: []const u8 = if (text.len > 0 and text[0] == '/') blk: {
-        if (std.mem.indexOfScalar(u8, text, ' ')) |space_idx| {
-            const after = text[space_idx + 1 ..];
-            if (after.len > 0) {
-                var has_content = false;
-                for (after) |c| {
-                    if (c != ' ' and c != '\t' and c != '\n' and c != '\r') {
-                        has_content = true;
-                        break;
-                    }
-                }
-                if (has_content) break :blk after;
-            }
-        }
-        break :blk text;
-    } else text;
-
-    var out: usize = 0;
-    for (body) |c| {
-        if (out >= LAST_USER_CHIP_PREVIEW_MAX_BYTES) break;
-        if (c == '\n' or c == '\r') break;
-        buf[out] = c;
-        out += 1;
-    }
-    // Trailing whitespace isn't part of the preview.
-    while (out > 0 and (buf[out - 1] == ' ' or buf[out - 1] == '\t')) out -= 1;
-    // Drop a multi-byte char truncated by the byte cap (never mojibake).
-    while (out > 0 and isUtf8Continuation(buf[out - 1])) out -= 1;
+    while (out > 0 and chip_preview.isUtf8Continuation(buf[out - 1])) out -= 1;
     if (out > 0 and (buf[out - 1] & 0xC0) == 0xC0) out -= 1;
     return buf[0..out];
 }
@@ -710,12 +664,27 @@ fn paintLastUserChip(
         }
     }
 
-    var preview_buf: [LAST_USER_CHIP_PREVIEW_MAX_BYTES + 1]u8 = undefined;
-    const preview = chipPreview(&preview_buf, chip_text);
+    var preview_buf: [chip_preview.LAST_USER_CHIP_PREVIEW_MAX_BYTES + 1]u8 = undefined;
+    const preview = chip_preview.chipPreview(&preview_buf, chip_text);
 
-    // Build label: truncated preview + " ↑" jump hint.
-    var label_buf: [LAST_USER_CHIP_PREVIEW_MAX_BYTES + 8]u8 = undefined;
-    const label = std.fmt.bufPrint(&label_buf, "{s} ↑", .{preview}) catch preview;
+    // Pixel-ellipsize the preview to fit the available chip width on narrow
+    // canvas (~390 px phone with open rail). " ↑" suffix + 16 px total
+    // horizontal padding must be reserved so the label never overflows and
+    // dvui clips mid-glyph (adversarial review #646 Minor L9).
+    const body = dvui.Font.theme(.body);
+    const chip_w = @max(0, avail.w - pane_w);
+    const suffix = " ↑";
+    const suffix_w = body.textSize(suffix).w;
+    const max_text_w = @max(0, chip_w - 16 - suffix_w);
+    var ellip_buf: [chip_preview.LAST_USER_CHIP_PREVIEW_MAX_BYTES + 4]u8 = undefined;
+    const display_preview = if (body.textSize(preview).w <= max_text_w)
+        preview
+    else
+        truncateToWidthPx(body, &ellip_buf, preview, max_text_w);
+
+    // Build label: display preview + " ↑" jump hint.
+    var label_buf: [chip_preview.LAST_USER_CHIP_PREVIEW_MAX_BYTES + 8]u8 = undefined;
+    const label = std.fmt.bufPrint(&label_buf, "{s}{s}", .{ display_preview, suffix }) catch display_preview;
 
     if (dvui.button(src, label, .{}, .{
         .rect = .{ .x = pane_w, .y = chip_y, .w = @max(0, avail.w - pane_w), .h = TOUCH_H },
