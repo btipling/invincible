@@ -241,10 +241,32 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
    * not-in-catalog id → reset to the default (index 0). Called idempotently on
    * boot restore, cloud adopt, and session switch; the set-by-id path never
    * raises the pending-model-change flag (only the user Next cycle does).
+   *
+   * Goal 3 (plan #616): after a catalog-push restore, if the stored model id is
+   * NOT in the current catalog, drop `selectedModel` from the snapshot so a
+   * revoked model never ghosts back on re-grant. The host compares the live
+   * selection after the set-by-id call — the bridge returns `true` even on a
+   * miss (Wasm falls back to index 0 silently), so a host-side compare is
+   * mandatory. Only drops when the catalog is loaded AND non-empty
+   * (`getSelectedModel()` non-null); never drops on transport failure.
    */
   const applySessionModel = useCallback((snap: SessionSnapshot) => {
-    bridgeRef.current?.setSelectedModel(snap.selectedModel ?? null);
-  }, []);
+    const b = bridgeRef.current;
+    if (!b) return;
+    const storedId = snap.selectedModel;
+    b.setSelectedModel(storedId ?? null);
+    if (!storedId) return;
+    // Compare the live selection after set-by-id — if the catalog is loaded
+    // (non-null) and the live id differs from the stored id, the stored id
+    // wasn't in the catalog. Drop it from the snapshot + persist so the ghost
+    // pick can never resurrect on a later re-grant.
+    const live = b.getSelectedModel();
+    if (live !== null && live !== storedId) {
+      delete sessionRef.current.selectedModel;
+      writeLocalSession({ ...sessionRef.current });
+      repoRef.current?.put(sessionRef.current.id, sessionRef.current);
+    }
+  }, [writeLocalSession]);
 
   /** Apply server snapshot to local store + latest Wasm ring window. */
   const adoptCloudSession = useCallback(
@@ -272,7 +294,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     if (!b || inflightRef.current) return;
     if (!b.hasPendingModelChange()) return;
     const liveId = b.getSelectedModel();
-    const next: SessionSnapshot = { ...sessionRef.current };
+    const next: SessionSnapshot = { ...sessionRef.current, updatedAt: Date.now() };
     if (liveId) next.selectedModel = liveId;
     else delete next.selectedModel;
     if (next.id !== sessionRef.current.id) {
