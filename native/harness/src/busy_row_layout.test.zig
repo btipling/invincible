@@ -40,6 +40,7 @@ const PX: f32 = 2;
 /// SECOND frame. See file-level doc for the two-frame rationale.
 fn paintAndGetRects() struct {
     row: dvui.Rect.Physical,
+    lead: dvui.Rect.Physical,
     spinner: dvui.Rect.Physical,
     cells: [busy_row.ROWS][busy_row.COLS]dvui.Rect.Physical,
     text: dvui.Rect.Physical,
@@ -55,6 +56,7 @@ fn paintAndGetRects() struct {
     _ = dvui.testing.step(frame) catch @panic("step 2 failed");
 
     const row_rect = (dvui.tagGet("busy-row") orelse @panic("tag 'busy-row' not found")).rect;
+    const lead = (dvui.tagGet("busy-row-lead") orelse @panic("tag 'busy-row-lead' not found")).rect;
     const spinner = (dvui.tagGet("busy-spinner") orelse @panic("tag 'busy-spinner' not found")).rect;
     const text = (dvui.tagGet("busy-waiting-text") orelse @panic("tag 'busy-waiting-text' not found")).rect;
 
@@ -72,7 +74,7 @@ fn paintAndGetRects() struct {
         }
     }
 
-    return .{ .row = row_rect, .spinner = spinner, .cells = cells, .text = text };
+    return .{ .row = row_rect, .lead = lead, .spinner = spinner, .cells = cells, .text = text };
 }
 
 test "busy-row fills window content width edge-to-edge (full-width teal_bg bar)" {
@@ -221,6 +223,40 @@ test "last row visual bottom is inset by PAD_Y from the slot" {
         const cell = rects.cells[busy_row.ROWS - 1][col];
         try t.expectApproxEqAbs(want, cell.y + cell.h, EPS);
     }
+}
+
+test "LEAD wrapper: x=0 pinned at bar left edge, wraps spinner+text with left margin" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    const rects = paintAndGetRects();
+    // The LEAD wrapper is the first child of the row, pinned at x=0.
+    // Its rect.w includes the left margin plus its children (spinner+text).
+    try t.expectApproxEqAbs(rects.row.x, rects.lead.x, EPS);
+    // The wrapper must be at least LEAD wide (margin) plus the spinner.
+    try t.expect(rects.lead.w >= busy_row.LEAD * PX + rects.spinner.w - EPS);
+}
+
+test "spinner x = LEAD (inset from bar left edge via wrapper margin)" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    const rects = paintAndGetRects();
+    // The spinner is the first child of the LEAD wrapper, which has
+    // margin.x=LEAD. The spinner starts at the wrapper's content origin:
+    // lead.x + margin.x = 0 + LEAD = LEAD.
+    try t.expectApproxEqAbs(busy_row.LEAD * PX, rects.spinner.x, EPS);
+}
+
+test "LEAD wrapper contains spinner+text: children are packed inside the wrapper" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    const rects = paintAndGetRects();
+    // Spinner+text are inside the lead_wrapper (children of the inner
+    // horizontal box), so the wrapper's outer rect encompasses both.
+    try t.expect(rects.lead.x <= rects.spinner.x);
+    try t.expect(rects.spinner.x + rects.spinner.w <= rects.lead.x + rects.lead.w + EPS);
+    try t.expect(rects.text.x + rects.text.w <= rects.lead.x + rects.lead.w + EPS);
+    // Text still starts immediately after spinner (TRAIL in spinner rect).
+    try t.expectApproxEqAbs(rects.spinner.x + rects.spinner.w, rects.text.x, EPS);
 }
 
 test "all 8 cells share the same painted height (CELL)" {
