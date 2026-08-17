@@ -490,7 +490,7 @@ export async function POST(req: Request): Promise<Response> {
     //    proceed only if the agent's `meta_sandbox_*` tools are present, so it can
     //    self-select (blocker B3 reachability — previously a dead-end operator 403
     //    right when the agent MUST pick among usable grants).
-    //  - builtin HTTP enabled → grant-deny still proceeds with HTTP-only tools.
+    //  - HTTP instance running → grant-deny still proceeds with HTTP-only tools.
     //  - otherwise → hard 403 (forbidden / bad grant / unusable id, no heal surface).
     if (!resolved.ok) {
       if (resolved.softContinue || resolved.selectionRequired || httpAttachName) {

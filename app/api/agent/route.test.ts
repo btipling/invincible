@@ -768,14 +768,13 @@ describe('POST /api/agent', () => {
     expect(body.error).toBe('Request cancelled.');
   });
 
-  it('grant deny, builtin on + running HTTP instance → not 403; http tools only', async () => {
+  it('grant deny + running HTTP instance → not 403; http tools only', async () => {
     mockAuthedSession();
     mockByokOk();
     mockGithubToken();
     mockHttpInstance({ status: 'running', vercelName: 'inv-http-user1' });
     mockMcpEmpty();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
 
     const closeHttp = vi.fn(async () => {});
     type HttpOnlyRunArg = {
@@ -826,14 +825,13 @@ describe('POST /api/agent', () => {
     expect(closeHttp).toHaveBeenCalled();
   });
 
-  it('grant deny, builtin on, no HTTP instance → hard 403 grant', async () => {
+  it('grant deny, no HTTP instance → hard 403 grant', async () => {
     mockAuthedSession();
     mockByokOk();
     mockGithubToken();
     mockHttpInstance(null);
     mockMcpEmpty();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
     const runAgent = vi.fn(async () => ({ text: 'nope', toolTrace: [] }));
     servicesState.resolveSandbox = {
       resolveAgentSandbox: vi.fn(async () => ({
@@ -862,6 +860,49 @@ describe('POST /api/agent', () => {
     expect(runAgent).not.toHaveBeenCalled();
   });
 
+  it('grant deny, loadInstance error (ok:false) → hard 403 grant', async () => {
+    mockAuthedSession();
+    mockByokOk();
+    mockGithubToken();
+    mockMcpEmpty();
+    process.env.AI_GATEWAY_API_KEY = 'gw-key';
+    // Simulate a transient DB read error — loadInstance returns {ok:false}.
+    servicesState.userSandboxInstance = {
+      loadInstance: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unavailable' as const,
+      })),
+    };
+    const runAgent = vi.fn(async () => ({ text: 'nope', toolTrace: [] }));
+    servicesState.resolveSandbox = {
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: false as const,
+        response: Response.json(
+          { error: SANDBOX_FORBIDDEN_ERROR },
+          { status: 403 },
+        ),
+      })),
+    };
+    const createRunner = vi.fn(() => ({ get: vi.fn(), close: vi.fn() }));
+    servicesState.createHttpRunner = createRunner;
+    vi.doMock('../../../lib/agent/runAgent', () => ({ runAgent }));
+
+    const { POST } = await import('./route');
+    const res = await POST(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'hi' }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SANDBOX_FORBIDDEN_ERROR });
+    // httpAttachName stayed null (loadInstance returned !ok), so no runner was
+    // created and the soft-path was not entered.
+    expect(createRunner).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
   it('FS ok, stopped HTTP instance → omit http tools; runAgent still runs', async () => {
     mockAuthedSession();
     const mcp = mockMcpEmpty();
@@ -869,7 +910,6 @@ describe('POST /api/agent', () => {
     mockGithubToken();
     mockHttpInstance({ status: 'stopped', vercelName: 'inv-http-stopped' });
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
     const sandboxClient = { close: vi.fn(async () => {}) };
     type RunArg = {
       skipSandboxTools?: boolean;
@@ -926,7 +966,6 @@ describe('POST /api/agent', () => {
     mockGithubToken();
     mockHttpInstance({ status: 'error', vercelName: 'inv-http-err' });
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
     type RunArg = {
       sandboxClient?: unknown;
       extraTools?: Record<string, unknown>;
@@ -976,7 +1015,7 @@ describe('POST /api/agent', () => {
     mockGithubToken();
     mockHttpInstance({ status: 'running', vercelName: '  inv-http-both  ' });
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
+
     const closeHttp = vi.fn(async () => {});
     type RunArg = {
       sandboxClient?: unknown;
@@ -1037,7 +1076,6 @@ describe('POST /api/agent', () => {
     mockResolveSandboxOk();
     mockHttpInstance({ status: 'running', vercelName: 'inv-http-host' });
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
 
     const closeHttp = vi.fn(async () => {});
     servicesState.createHttpRunner = vi.fn(() => ({
@@ -1881,7 +1919,6 @@ describe('POST /api/agent', () => {
     mockByokOk();
     mockGithubToken();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
     type RunArg = {
       skipSandboxTools?: boolean;
       sandboxClient?: unknown;
@@ -1928,7 +1965,6 @@ describe('POST /api/agent', () => {
     mockByokOk();
     mockGithubToken();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    // (BUILTIN_HTTP_FETCH removed — instance-based gating)
     const runAgent = vi.fn(async () => ({ text: 'nope', toolTrace: [] }));
     // No selectionRequired: the user has no usable grant at all — meta sandbox
     // tools have nothing to list/switch among, so this stays a hard 403 even
