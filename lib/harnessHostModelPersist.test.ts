@@ -423,15 +423,17 @@ describe('foldPendingModelChange — row 3: stamp updatedAt on Next-cycle persis
     expect(repo.lastPut).toBeNull();
   });
 
-  it('acks without persist when session id changed (adoption race guard)', () => {
+  it('persists normally — no identity guard (removed tautology, PR #618 review #6)', () => {
+    // The prior identity guard (next.id !== sessionRef.current.id) was a
+    // tautology: `next` is spread from `sessionRef.current` so the ids
+    // always match. JS is single-threaded and the poll handler reads the
+    // flag/folds/acks atomically — no other callback can change the session
+    // id between the flag read and this fold. Removed in PR #618 review #6.
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     bridge.setModelCatalog(['a/m1', 'b/m2']);
     bridge.cycleSelectedModel(); // pending=true
 
-    // The current session id changed since the pending flag was raised
-    // (an adoption/reload mid-poll). The guard mirrors adoptCloudSession's
-    // identity check.
     const ref: ModelPersistSessionRef = {
       current: { ...createEmptySession('s1'), selectedModel: 'a/m1' },
     };
@@ -439,18 +441,11 @@ describe('foldPendingModelChange — row 3: stamp updatedAt on Next-cycle persis
     const persist = (next: SessionSnapshot) => { persisted = next; };
     const repo = makeMockRepo();
 
-    // The fold constructs { ...sessionRef.current, updatedAt: Date.now() }
-    // which sets next.id = sessionRef.current.id = 's1'. Then it checks
-    // next.id !== sessionRef.current.id → false (they match).
-    // So this test actually verifies the normal case where they match.
-    // The race guard fires when next.id !== sessionRef.current.id,
-    // which can't happen in this pure-function test (both read from ref).
-    // Covered by: the condition exists in prod code; the mock test verifies
-    // the normal path works. The race is a live-host concurrency edge.
     foldPendingModelChange(bridge, ref, persist, repo, false);
 
-    // Normal flow: persisted.
+    // Normal flow: persisted with live model and flag acked.
     expect(persisted).not.toBeNull();
+    expect(persisted!.selectedModel).toBe('b/m2');
     expect(bridge.hasPendingModelChange()).toBe(false);
   });
 });

@@ -81,10 +81,10 @@ export function foldPendingModelChange(
   const next: SessionSnapshot = { ...sessionRef.current, updatedAt: Date.now() };
   if (liveId) next.selectedModel = liveId;
   else delete next.selectedModel;
-  if (next.id !== sessionRef.current.id) {
-    bridge.ackPendingModelChange();
-    return;
-  }
+  // No identity guard — the spread always copies sessionRef.current.id (JS
+  // is single-threaded and the poll handler reads/flags/acks atomically, so
+  // the id cannot change between the flag read and this fold). The prior
+  // guard was a tautology (review #618 re-run 3 Minor L1+L6).
   persist(next);
   repo?.put(next.id, next);
   bridge.ackPendingModelChange();

@@ -40,11 +40,31 @@ describe('status-slot cap (single host source + Zig parity)', () => {
   });
 });
 
+/**
+ * Cross-layer equality lock for the model-id byte cap (PR #618 re-run 3 Minor L6).
+ * Mirrors `zigMaxStatusSlotLen()` — parses `bridge.zig` for `pub const MAX_MODEL_ID_LEN`
+ * so a 128→64 drift fails the suite instead of splitting host-accepts/Wasm-rejects.
+ */
+function zigMaxModelIdLen(): number {
+  const src = readFileSync(
+    resolve(process.cwd(), 'native/harness/src/bridge.zig'),
+    'utf8',
+  );
+  const m = src.match(/pub\s+const\s+MAX_MODEL_ID_LEN\s*=\s*(\d+)\s*;/);
+  if (!m) throw new Error('MAX_MODEL_ID_LEN not found in bridge.zig');
+  return Number(m[1]);
+}
+
 describe('sanitizeModelId (plan #616 — selected-model carrier predicate + cap)', () => {
   it('single host source: harnessBridge aliases the caps MAX_MODEL_ID_LEN (no drift)', () => {
     // harnessBridge re-exports the caps constant; a second literal would drift.
     expect(BRIDGE_MAX_MODEL_ID_LEN).toBe(MAX_MODEL_ID_LEN);
     expect(MAX_MODEL_ID_LEN).toBe(128);
+  });
+
+  it('Zig MAX_MODEL_ID_LEN agrees with the host cap (cross-layer parity, PR #618 review #7)', () => {
+    expect(zigMaxModelIdLen()).toBe(MAX_MODEL_ID_LEN);
+    expect(zigMaxModelIdLen()).toBe(128);
   });
 
   it('keeps valid printable-ASCII provider/model ids (incl. / . : + -)', () => {
