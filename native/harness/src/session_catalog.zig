@@ -24,7 +24,9 @@ var pending_len: u32 = 0;
 pub fn reset() void {
     clear();
     busy = false;
-    // reset (harness onInit) drops pending; catalog rewrite via clear() must not.
+    // reset (harness onInit) drops busy + pending. clear() also drops pending
+    // because session-switch pending is navigation state (not a durable setting
+    // like the model pick), so a catalog rewrite does not replay a stale click.
     has_pending = false;
     pending_len = 0;
 }
