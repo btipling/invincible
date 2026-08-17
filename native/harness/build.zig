@@ -212,6 +212,20 @@ pub fn build(b: *std.Build) void {
         test_rich.dependOn(&b.addRunArtifact(elapsed_clock_tests).step);
     }
 
+    // Host unit tests for model_catalog.zig (plan #614): shortLabel / chooseIndex /
+    // showChevron / canCommit. Pure, no dvui.
+    {
+        const model_catalog_tests = b.addTest(.{
+            .name = "model_catalog",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/model_catalog.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(model_catalog_tests).step);
+    }
+
     // Host unit tests for busy_spinner.zig (plan #574): the 2×4 clockwise LUT —
     // head-per-phase, trail ramp, and natural u8 wrap. Pure, no dvui.
     {
@@ -460,6 +474,21 @@ pub fn build(b: *std.Build) void {
         });
         transcript_split_layout_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
         test_rich.dependOn(&b.addRunArtifact(transcript_split_layout_tests).step);
+    }
+
+    // Host dvui testing-backend layout-rect tests for model_picker.zig
+    // (status-bar model menu). Trigger height locked at PICKER_TRIGGER_H.
+    {
+        const model_picker_layout_tests = b.addTest(.{
+            .name = "model_picker_layout",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/model_picker_layout.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        model_picker_layout_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
+        test_rich.dependOn(&b.addRunArtifact(model_picker_layout_tests).step);
     }
 
     // Host dvui testing-backend tests for `mixed_text.lookalikePaintFont`

@@ -18,6 +18,7 @@ const toolrun = @import("rich/toolrun.zig");
 const thinking_collapse = @import("thinking_collapse.zig");
 const busy_row = @import("busy_row.zig");
 const transcript_split = @import("transcript_split.zig");
+const model_picker = @import("model_picker.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
@@ -103,7 +104,7 @@ const SCROLL_FLOOR_H: f32 = 32;
 /// directly BELOW the composer (plan #555 → #554, header merged by plan #570).
 /// Reserved into the bottom chrome budget so the transcript never overlaps it and
 /// the transcript+composer stack never jumps vertically when a sandbox attaches.
-/// 64 px = two 32 px rows, exactly fitting Next (TOUCH_H − 8 = 32) + status slots.
+/// 64 px = two 32 px rows, exactly fitting the model picker (PICKER_TRIGGER_H = 32) + status slots.
 /// Total chrome (64) ≤ old header+bar (92) — net −28 px transcript gain (plan #570).
 const STATUS_BAR_H: f32 = 64;
 
@@ -862,7 +863,7 @@ const STATUS_PACK_BUDGET_SAFETY: f32 = 4;
 /// line 2 of the two-line bottom status bar (plan #555 → #554, header merged by
 /// plan #570); the budget is the bar's content-rect width minus the rounding-
 /// safety pad (`STATUS_PACK_BUDGET_SAFETY`). Line 1 holds identity controls
-/// (lifecycle · build id · model · Next), so the pack shares the bar but each
+/// (lifecycle · build id · model picker), so the pack shares the bar but each
 /// line has its own fixed 32 px height — neither can displace the other. The pack
 /// still DROPS slots per `STATUS_SLOT_DROP_ORDER` then pixel-ellipsizes the
 /// survivor to fit, exactly as before (see the narrow-canvas ellipsize decision:
@@ -875,7 +876,7 @@ fn statusPackMaxWidth() f32 {
 /// Paint the right-aligned status-slot pack into line 2 of the two-line bottom
 /// status bar (protocol v13, plan #538/#541/#554, header merged by plan #570).
 /// Line 2 is a fixed 32 px horizontal row sharing the 64 px bar with the identity
-/// row (line 1: lifecycle · build id · model · Next); each line has its own
+/// row (line 1: lifecycle · build id · model picker); each line has its own
 /// explicit height so neither can displace the other. A narrow canvas DROPS slots
 /// per `STATUS_SLOT_DROP_ORDER` then pixel-ellipsizes the kept slot to fit.
 /// Sandbox + cwd render as muted TEAL one-liners (WARM when busy); an empty slot
@@ -1087,9 +1088,14 @@ pub fn frame() !void {
                     "No models available\n\nAsk a tenant admin to grant you an inference key,\nor wait for the host catalog to load.\n",
                     .{},
                 );
+            } else if (bridge.modelCatalogCount() == 1) {
+                tl.addText(
+                    "Start a conversation\n\nType below, then Ctrl+Enter or Send.\n",
+                    .{},
+                );
             } else {
                 tl.addText(
-                    "Start a conversation\n\nType below, then Ctrl+Enter or Send.\nUse Next in the status bar to cycle models.\n",
+                    "Start a conversation\n\nType below, then Ctrl+Enter or Send.\nPick a model in the status bar.\n",
                     .{},
                 );
             }
@@ -1450,10 +1456,9 @@ pub fn frame() !void {
         });
         defer bar.deinit();
 
-        // Line 1: identity (lifecycle · build id · model label · Next)
-        // Each line gets exactly STATUS_BAR_H/2 = 32 px so the Next button
-        // (TOUCH_H − 8 = 32) fills its row without clipping line 2 (plan #570
-        // fallback, adversarial review #573 Major L9).
+        // Line 1: identity (lifecycle · build id · model picker)
+        // Each line gets exactly STATUS_BAR_H/2 = 32 px so the picker trigger
+        // (PICKER_TRIGGER_H = 32) fills its row without clipping line 2.
         {
             var line1 = dvui.box(@src(), .{ .dir = .horizontal }, .{
                 .expand = .horizontal,
@@ -1484,35 +1489,14 @@ pub fn frame() !void {
             }
             {
                 const cat_n = bridge.modelCatalogCount();
-                {
-                    var tl = dvui.textLayout(@src(), .{}, .{
-                        .background = false,
-                        .color_text = if (cat_n == 0) palette.teal_muted else palette.teal_accent,
-                        .gravity_y = 0.5,
-                        .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
-                    });
-                    if (cat_n == 0) {
-                        tl.addText("no model", .{});
-                    } else {
-                        tl.format("{s}", .{bridge.selectedModelLabel()}, .{});
-                    }
-                    tl.deinit();
-                }
-                if (cat_n > 1) {
-                    if (dvui.button(@src(), "Next", .{}, .{
-                        .gravity_y = 0.5,
-                        .style = .content,
-                        .min_size_content = .{ .w = 52, .h = TOUCH_H - 8 },
-                        .corners = .round(6),
-                        .color_fill = palette.teal_surface,
-                        .color_text = palette.teal_accent,
-                        .color_border = palette.teal_accent,
-                        .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
-                    })) {
-                        if (!busy) {
-                            bridge.cycleSelectedModel();
-                        }
-                    }
+                if (model_picker.paint(.{
+                    .count = cat_n,
+                    .selected = bridge.selectedModelIndex(),
+                    .busy = busy,
+                    .short_label = if (cat_n == 0) "" else bridge.selectedModelLabel(),
+                    .idAt = bridge.modelCatalogIdAt,
+                })) |idx| {
+                    bridge.setSelectedModel(idx);
                 }
             }
         }

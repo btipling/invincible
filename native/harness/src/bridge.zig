@@ -11,6 +11,7 @@ const image_cache = @import("rich/image_cache.zig");
 const math_cache = @import("rich/math_cache.zig");
 const composer_text = @import("composer_text.zig");
 const ring_slot = @import("ring_slot.zig");
+const model_catalog = @import("model_catalog.zig");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
 /// v9: pending cancel (user Stop) — additive exports.
@@ -255,18 +256,31 @@ pub fn selectedModelId() []const u8 {
     return e.data[0..e.len];
 }
 
+/// Catalog id at `index`, or empty if out of range.
+pub fn modelCatalogIdAt(index: u32) []const u8 {
+    if (index >= catalog_count) return &[_]u8{};
+    const e = &catalog[index];
+    return e.data[0..e.len];
+}
+
+/// Current selection index (0 when empty).
+pub fn selectedModelIndex() u32 {
+    if (catalog_count == 0) return 0;
+    return @min(selected_index, catalog_count - 1);
+}
+
 /// Short label for UI: after last '/' else full id.
 pub fn selectedModelLabel() []const u8 {
-    const id = selectedModelId();
-    if (id.len == 0) return id;
-    var last_slash: ?usize = null;
-    for (id, 0..) |c, i| {
-        if (c == '/') last_slash = i;
+    return model_catalog.shortLabel(selectedModelId());
+}
+
+/// Set selection to `index`. No-op if empty, out of range, or already selected.
+pub fn setSelectedModel(index: u32) void {
+    if (model_catalog.chooseIndex(catalog_count, index)) |idx| {
+        if (idx == selected_index) return;
+        selected_index = idx;
+        refresh();
     }
-    if (last_slash) |s| {
-        if (s + 1 < id.len) return id[s + 1 ..];
-    }
-    return id;
 }
 
 /// Cycle selection forward. No-op if count ≤ 1.
