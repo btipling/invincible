@@ -115,7 +115,6 @@ fn measureLabelPx(s: []const u8) f32 {
 /// Horizontal pad on each rail row (matches paint `.padding` x/w).
 pub const ROW_PAD_X: f32 = 8;
 
-
 /// Paint the rail as an absolute rect in the transcript band.
 /// `band_y` / `band_h` are the same `scroll_y` / `scroll_h` the scroller uses.
 pub fn paint(band_y: f32, band_h: f32) void {
