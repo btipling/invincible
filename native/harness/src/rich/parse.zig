@@ -89,7 +89,6 @@ pub const ParsedDoc = struct {
     }
 };
 
-
 /// Result of stripping a leading GFM task-list marker from list item text.
 const TaskMarkerStrip = struct {
     checked: bool,
@@ -209,92 +208,92 @@ pub fn parse(parent_allocator: Allocator, src: []const u8) !ParsedDoc {
             }
             if (mseg.text.len == 0 or !bq.hasNonWs(mseg.text)) continue;
 
-        // Thematic breaks on non-table spans (fence-aware); then quotes + zmd.
-        const hr_segs = try thematic.partition(a, mseg.text);
-        for (hr_segs) |hseg| {
-            if (hseg.is_hr) {
-                try blocks.append(a, .{
-                    .kind = .thematic_break,
-                    .level = 0,
-                    .meta = null,
-                    .inlines = &.{},
-                });
-                continue;
-            }
-            if (hseg.text.len == 0) continue;
-            if (!bq.hasNonWs(hseg.text)) continue;
+            // Thematic breaks on non-table spans (fence-aware); then quotes + zmd.
+            const hr_segs = try thematic.partition(a, mseg.text);
+            for (hr_segs) |hseg| {
+                if (hseg.is_hr) {
+                    try blocks.append(a, .{
+                        .kind = .thematic_break,
+                        .level = 0,
+                        .meta = null,
+                        .inlines = &.{},
+                    });
+                    continue;
+                }
+                if (hseg.text.len == 0) continue;
+                if (!bq.hasNonWs(hseg.text)) continue;
 
-            const segments = try bq.partition(a, hseg.text);
-            for (segments) |seg| {
-                if (seg.text.len == 0) continue;
-                if (!bq.hasNonWs(seg.text)) continue;
-                if (seg.is_quote) {
-                    const math_res = try math.extractInline(a, seg.text);
-                    const pre = try preprocess.preprocessInlineSugar(a, math_res.body);
-                    const ir = try zmd.parseAlloc(a, pre, markerConfig);
-                    const lowered = try lowerIr(a, ir, math_res.texs);
-                    const depth: u8 = if (seg.depth == 0) 1 else seg.depth;
-                    for (lowered) |blk| {
-                        if (blk.inlines.len == 0) continue;
-                        if (blk.kind == .list_item) {
-                            try blocks.append(a, .{
-                                .kind = .list_item,
-                                .level = blk.level,
-                                .quote_depth = depth,
-                                .indent_cols = seg.indent_cols,
-                                .checked = blk.checked,
-                                .meta = blk.meta,
-                                .inlines = blk.inlines,
-                            });
-                        } else {
-                            // paragraph/plain/other → blockquote; fence/heading flatten (v1 non-goal chrome).
-                            try blocks.append(a, .{
-                                .kind = .blockquote,
-                                .level = depth,
-                                .quote_depth = 0,
-                                .indent_cols = seg.indent_cols,
-                                .meta = null,
-                                .inlines = blk.inlines,
-                            });
+                const segments = try bq.partition(a, hseg.text);
+                for (segments) |seg| {
+                    if (seg.text.len == 0) continue;
+                    if (!bq.hasNonWs(seg.text)) continue;
+                    if (seg.is_quote) {
+                        const math_res = try math.extractInline(a, seg.text);
+                        const pre = try preprocess.preprocessInlineSugar(a, math_res.body);
+                        const ir = try zmd.parseAlloc(a, pre, markerConfig);
+                        const lowered = try lowerIr(a, ir, math_res.texs);
+                        const depth: u8 = if (seg.depth == 0) 1 else seg.depth;
+                        for (lowered) |blk| {
+                            if (blk.inlines.len == 0) continue;
+                            if (blk.kind == .list_item) {
+                                try blocks.append(a, .{
+                                    .kind = .list_item,
+                                    .level = blk.level,
+                                    .quote_depth = depth,
+                                    .indent_cols = seg.indent_cols,
+                                    .checked = blk.checked,
+                                    .meta = blk.meta,
+                                    .inlines = blk.inlines,
+                                });
+                            } else {
+                                // paragraph/plain/other → blockquote; fence/heading flatten (v1 non-goal chrome).
+                                try blocks.append(a, .{
+                                    .kind = .blockquote,
+                                    .level = depth,
+                                    .quote_depth = 0,
+                                    .indent_cols = seg.indent_cols,
+                                    .meta = null,
+                                    .inlines = blk.inlines,
+                                });
+                            }
                         }
-                    }
-                } else {
-                    // Definition lists on non-quote prose (fence-aware local partition).
-                    const dl_segs = try deflist.partition(a, seg.text);
-                    for (dl_segs) |dseg| {
-                        if (dseg.is_deflist) {
-                            const term_inl = try lowerInlineOnly(a, dseg.term);
-                            if (term_inl.len > 0 or dseg.term.len > 0) {
-                                const inl = if (term_inl.len > 0) term_inl else try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, dseg.term) }});
-                                try blocks.append(a, .{
-                                    .kind = .def_term,
-                                    .level = 0,
-                                    .meta = null,
-                                    .inlines = inl,
-                                });
+                    } else {
+                        // Definition lists on non-quote prose (fence-aware local partition).
+                        const dl_segs = try deflist.partition(a, seg.text);
+                        for (dl_segs) |dseg| {
+                            if (dseg.is_deflist) {
+                                const term_inl = try lowerInlineOnly(a, dseg.term);
+                                if (term_inl.len > 0 or dseg.term.len > 0) {
+                                    const inl = if (term_inl.len > 0) term_inl else try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, dseg.term) }});
+                                    try blocks.append(a, .{
+                                        .kind = .def_term,
+                                        .level = 0,
+                                        .meta = null,
+                                        .inlines = inl,
+                                    });
+                                }
+                                for (dseg.descs) |body| {
+                                    const desc_inl = try lowerInlineOnly(a, body);
+                                    const inl = if (desc_inl.len > 0) desc_inl else try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, body) }});
+                                    try blocks.append(a, .{
+                                        .kind = .def_desc,
+                                        .level = 0,
+                                        .meta = null,
+                                        .inlines = inl,
+                                    });
+                                }
+                            } else {
+                                if (dseg.text.len == 0 or !bq.hasNonWs(dseg.text)) continue;
+                                const math_res = try math.extractInline(a, dseg.text);
+                                const pre = try preprocess.preprocessInlineSugar(a, math_res.body);
+                                const ir = try zmd.parseAlloc(a, pre, markerConfig);
+                                const lowered = try lowerIr(a, ir, math_res.texs);
+                                try blocks.appendSlice(a, lowered);
                             }
-                            for (dseg.descs) |body| {
-                                const desc_inl = try lowerInlineOnly(a, body);
-                                const inl = if (desc_inl.len > 0) desc_inl else try a.dupe(Inline, &[_]Inline{.{ .kind = .text, .text = try a.dupe(u8, body) }});
-                                try blocks.append(a, .{
-                                    .kind = .def_desc,
-                                    .level = 0,
-                                    .meta = null,
-                                    .inlines = inl,
-                                });
-                            }
-                        } else {
-                            if (dseg.text.len == 0 or !bq.hasNonWs(dseg.text)) continue;
-                            const math_res = try math.extractInline(a, dseg.text);
-                            const pre = try preprocess.preprocessInlineSugar(a, math_res.body);
-                            const ir = try zmd.parseAlloc(a, pre, markerConfig);
-                            const lowered = try lowerIr(a, ir, math_res.texs);
-                            try blocks.appendSlice(a, lowered);
                         }
                     }
                 }
             }
-        }
         } // math_segs
     }
 
@@ -780,6 +779,15 @@ const Builder = struct {
                 },
                 preprocess.pua_strike_close => {
                     try self.closeInlineRole(.strike);
+                },
+                preprocess.pua_bi_open => {
+                    try self.flushText();
+                    try self.pending.append(self.a, .{ .role = .strong });
+                    try self.pending.append(self.a, .{ .role = .emph });
+                },
+                preprocess.pua_bi_close => {
+                    try self.closeInlineRole(.emph);
+                    try self.closeInlineRole(.strong);
                 },
                 footnote.pua_fn_open => {
                     try self.flushText();
@@ -1347,7 +1355,6 @@ test "parse invalid utf8 does not panic" {
     _ = doc.blocks;
 }
 
-
 test "nested bold italic composes flags" {
     // **a *b* c** → b has strong+emph
     var doc = try parse(std.testing.allocator, "**a *b* c**");
@@ -1364,26 +1371,76 @@ test "nested bold italic composes flags" {
     try std.testing.expect(saw_strong_only);
 }
 
-test "triple star bold italic" {
-    // zmd treats *** as italic-open then **...**; prefer **_bi_** which nests cleanly.
-    // Also accept *** if it composes; require at least one of the two forms.
-    var ok = false;
+test "triple star bold italic composes both flags" {
+    // *** rewrites to PUA bold+italic (preprocess), lowerer stacks both flags.
+    var doc = try parse(std.testing.allocator, "***bi***");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    // Joined text must NOT contain leftover *
+    const joined = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(joined);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "*") == null);
+    var saw = false;
+    for (doc.blocks[0].inlines) |inl| {
+        if (std.mem.indexOf(u8, inl.text, "bi") != null and inl.flags.strong and inl.flags.emph) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
+test "triple star adjacent prose" {
+    var doc = try parse(std.testing.allocator, "x ***y*** z");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    const joined = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(joined);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "***") == null);
+    // y is the strong+emph run; surrounding x and z are plain
+    var y_bi = false;
+    var x_plain = false;
+    var z_plain = false;
+    for (doc.blocks[0].inlines) |inl| {
+        if (std.mem.eql(u8, inl.text, "y") and inl.flags.strong and inl.flags.emph) y_bi = true;
+        if (std.mem.indexOf(u8, inl.text, "x") != null and !inl.flags.any()) x_plain = true;
+        if (std.mem.indexOf(u8, inl.text, "z") != null and !inl.flags.any()) z_plain = true;
+    }
+    try std.testing.expect(y_bi);
+    try std.testing.expect(x_plain);
+    try std.testing.expect(z_plain);
+}
+
+test "triple underscore bold italic composes both flags" {
+    var doc = try parse(std.testing.allocator, "___bi___");
+    defer doc.deinit();
+    try std.testing.expect(doc.blocks.len >= 1);
+    const joined = try joinBlockText(std.testing.allocator, doc.blocks[0]);
+    defer std.testing.allocator.free(joined);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "_") == null);
+    var saw = false;
+    for (doc.blocks[0].inlines) |inl| {
+        if (std.mem.indexOf(u8, inl.text, "bi") != null and inl.flags.strong and inl.flags.emph) saw = true;
+    }
+    try std.testing.expect(saw);
+}
+
+test "nested forms still compose via zmd" {
+    var ok1 = false;
     {
         var doc = try parse(std.testing.allocator, "**_bi_**");
         defer doc.deinit();
         for (doc.blocks[0].inlines) |inl| {
-            if (std.mem.indexOf(u8, inl.text, "bi") != null and inl.flags.strong and inl.flags.emph) ok = true;
+            if (std.mem.indexOf(u8, inl.text, "bi") != null and inl.flags.strong and inl.flags.emph) ok1 = true;
         }
     }
+    var ok2 = false;
     {
-        var doc = try parse(std.testing.allocator, "***bi***");
+        var doc = try parse(std.testing.allocator, "__*bi*__");
         defer doc.deinit();
-        // At minimum bold or italic on bi — document zmd *** quirk if both not set
         for (doc.blocks[0].inlines) |inl| {
-            if (std.mem.indexOf(u8, inl.text, "bi") != null and inl.flags.strong and inl.flags.emph) ok = true;
+            if (std.mem.indexOf(u8, inl.text, "bi") != null and inl.flags.strong and inl.flags.emph) ok2 = true;
         }
     }
-    try std.testing.expect(ok);
+    try std.testing.expect(ok1);
+    try std.testing.expect(ok2);
 }
 
 test "strikethrough flags" {
@@ -1449,7 +1506,6 @@ test "fence body not rewritten as strike" {
     try std.testing.expect(saw);
 }
 
-
 test "escape underscore no emph" {
     var doc = try parse(std.testing.allocator, "\\_not emph\\_");
     defer doc.deinit();
@@ -1497,7 +1553,6 @@ test "overlapping strike and strong role-matched close" {
     try std.testing.expect(x_struck);
     try std.testing.expect(!y_strong);
 }
-
 
 test "blockquote single line" {
     var doc = try parse(std.testing.allocator, "> hello");
@@ -1660,7 +1715,6 @@ test "blockquote spaced nest depth" {
     try std.testing.expect(saw2);
 }
 
-
 test "table 2x3 parse" {
     const src =
         \\| Name | Age |
@@ -1758,7 +1812,6 @@ test "table header only has aligns" {
     try std.testing.expectEqual(@as(usize, 3), doc.blocks[0].inlines.len);
 }
 
-
 test "table between prose" {
     const src = "before\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nafter\n";
     var doc = try parse(std.testing.allocator, src);
@@ -1780,8 +1833,6 @@ test "table between prose" {
     try std.testing.expect(saw_b);
     try std.testing.expect(saw_a);
 }
-
-
 
 test "table cell strong" {
     const src =
@@ -2169,7 +2220,6 @@ test "table cell bare url fast path" {
     try std.testing.expect(saw);
 }
 
-
 test "thematic break ---" {
     const src = "before\n\n---\n\nafter\n";
     var doc = try parse(std.testing.allocator, src);
@@ -2287,7 +2337,6 @@ test "footnote does not destroy surrounding paragraph" {
     try std.testing.expect(saw_alpha);
     try std.testing.expect(saw_beta);
 }
-
 
 test "deflist multi-term multi-def parse" {
     const src =
@@ -2427,7 +2476,6 @@ test "deflist does not steal footnote def" {
     try std.testing.expect(saw_term);
     try std.testing.expect(saw_desc);
 }
-
 
 test "ordered list meta outside quote" {
     var doc = try parse(std.testing.allocator, "1. alpha\n2. beta\n");
@@ -2731,7 +2779,6 @@ test "plain quote no list non-regression" {
     }
 }
 
-
 test "stripTaskMarker pure helper" {
     const u = stripTaskMarker("[ ] foo").?;
     try std.testing.expect(!u.checked);
@@ -2959,7 +3006,6 @@ test "star and plus list markers are tasks" {
     try std.testing.expectEqual(@as(usize, 1), checked_n);
 }
 
-
 test "image inline https alt and href" {
     var doc = try parse(std.testing.allocator, "![Architecture](https://example.com/arch.png)\n");
     defer doc.deinit();
@@ -3035,7 +3081,6 @@ test "image mid-paragraph among text" {
     try std.testing.expect(has_text);
 }
 
-
 test "image with double-quoted title strips to bare url" {
     var doc = try parse(std.testing.allocator, "![Random test image](https://example.com/a.png \"title\")\n");
     defer doc.deinit();
@@ -3068,7 +3113,6 @@ test "image with single-quoted title strips to bare url" {
     }
     try std.testing.expect(found);
 }
-
 
 test "inline math E=mc^2" {
     var doc = try parse(std.testing.allocator, "energy $E=mc^2$ free");
@@ -3356,7 +3400,6 @@ test "#336 uniform intra-word rule across contexts" {
     try std.testing.expect(saw_term);
     try std.testing.expect(saw_desc);
 }
-
 
 test "#336 link/image destinations keep ASCII underscores in href (#399 review L1/L6)" {
     // Preprocess turns an intra-word `_` (alnum both sides) into pua_lit_under.

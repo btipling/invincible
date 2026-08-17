@@ -14,6 +14,8 @@ pub const pua_lit_tick: u21 = 0xE022;
 pub const pua_lit_backslash: u21 = 0xE023;
 pub const pua_lit_tilde: u21 = 0xE024;
 pub const pua_lit_dollar: u21 = 0xE025;
+pub const pua_bi_open: u21 = 0xE012;
+pub const pua_bi_close: u21 = 0xE013;
 
 fn appendCp(out: *std.ArrayList(u8), a: Allocator, cp: u21) !void {
     var buf: [4]u8 = undefined;
@@ -164,6 +166,35 @@ fn rewriteProseLine(a: Allocator, out: *std.ArrayList(u8), line: []const u8) !vo
                 }
             }
         }
+        // ***...*** / ___...___ exact-3 same-line pair → PUA bold+italic
+        if ((line[j] == '*' or line[j] == '_') and j + 3 <= line.len and
+            line[j] == line[j + 1] and line[j + 1] == line[j + 2] and
+            (j + 3 == line.len or line[j + 3] != line[j]) and
+            !code_mask[j] and !code_mask[j + 1] and !code_mask[j + 2])
+        {
+            const delim = line[j];
+            const inner_start = j + 3;
+            const needle = [3]u8{ delim, delim, delim };
+            if (std.mem.indexOfPos(u8, line, inner_start, &needle)) |close| {
+                // empty *** → skip; close must be exact-3
+                if (inner_start != close and
+                    (close + 3 == line.len or line[close + 3] != delim))
+                {
+                    var ok = true;
+                    var t = close;
+                    while (t < close + 3) : (t += 1) {
+                        if (t < line.len and code_mask[t]) ok = false;
+                    }
+                    if (ok) {
+                        try appendCp(out, a, pua_bi_open);
+                        try rewriteProseLineNoStrike(a, out, line[inner_start..close], code_mask[inner_start..close]);
+                        try appendCp(out, a, pua_bi_close);
+                        j = close + 3;
+                        continue;
+                    }
+                }
+            }
+        }
         // intra-word underscore run → literal (GFM no-intra-word `_`, #336).
         // Feedback-dependent handlers above (code mask / escape / strike) have
         // already consumed their `_`, so any `_` reaching here is untouched.
@@ -240,4 +271,87 @@ test "preprocess skips fence body" {
     const out = try preprocessInlineSugar(std.testing.allocator, src);
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "~~not~~") != null);
+}
+
+test "triple star bold italic PUA" {
+    const out = try preprocessInlineSugar(std.testing.allocator, "***x***");
+    defer std.testing.allocator.free(out);
+    var o: [4]u8 = undefined;
+    var c: [4]u8 = undefined;
+    const no = try std.unicode.utf8Encode(pua_bi_open, &o);
+    const nc = try std.unicode.utf8Encode(pua_bi_close, &c);
+    try std.testing.expect(std.mem.indexOf(u8, out, o[0..no]) != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, c[0..nc]) != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "x") != null);
+    // raw *** must be gone
+    try std.testing.expect(std.mem.indexOf(u8, out, "***") == null);
+}
+
+test "triple underscore bold italic PUA" {
+    const out = try preprocessInlineSugar(std.testing.allocator, "___x___");
+    defer std.testing.allocator.free(out);
+    var o: [4]u8 = undefined;
+    const no = try std.unicode.utf8Encode(pua_bi_open, &o);
+    try std.testing.expect(std.mem.indexOf(u8, out, o[0..no]) != null);
+    // raw ___ must be gone
+    try std.testing.expect(std.mem.indexOf(u8, out, "___") == null);
+}
+
+test "four-star not rewritten" {
+    const out = try preprocessInlineSugar(std.testing.allocator, "****x****");
+    defer std.testing.allocator.free(out);
+    var o: [4]u8 = undefined;
+    const no = try std.unicode.utf8Encode(pua_bi_open, &o);
+    try std.testing.expect(std.mem.indexOf(u8, out, o[0..no]) == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "****x****") != null);
+}
+
+test "triple star inside fence stays literal" {
+    const src = "```\n***x***\n```\n";
+    const out = try preprocessInlineSugar(std.testing.allocator, src);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "***x***") != null);
+}
+
+test "triple star inside backtick stays literal" {
+    const out = try preprocessInlineSugar(std.testing.allocator, "`***x***`");
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "***x***") != null);
+}
+
+test "triple star adjacent prose" {
+    const out = try preprocessInlineSugar(std.testing.allocator, "a ***y*** z");
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "z") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "y") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "***") == null);
+}
+
+test "two sequential triple-star pairs" {
+    const out = try preprocessInlineSugar(std.testing.allocator, "***a*** and ***b***");
+    defer std.testing.allocator.free(out);
+    var o: [4]u8 = undefined;
+    const no = try std.unicode.utf8Encode(pua_bi_open, &o);
+    // PUA open must appear twice
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, out, pos, o[0..no])) |p| {
+        count += 1;
+        pos = p + 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expect(std.mem.indexOf(u8, out, "***") == null);
+}
+
+test "triple star no broken on intra-word underscore inner" {
+    const out = try preprocessInlineSugar(std.testing.allocator, "***foo_bar***");
+    defer std.testing.allocator.free(out);
+    // inner `_` becomes pua_lit_under (same intra-word rule), so `foo` and `bar`
+    // are split by the sentinel byte sequence — but they are still inside the
+    // PUA bi pair (no emph-split, no `_` delimiter re-parsed by zmd).
+    try std.testing.expect(std.mem.indexOf(u8, out, "foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "bar") != null);
+    // raw *** must be gone
+    try std.testing.expect(std.mem.indexOf(u8, out, "***") == null);
 }
