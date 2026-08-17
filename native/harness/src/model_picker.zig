@@ -91,6 +91,14 @@ fn paintMenuTrigger(view: CatalogView) ?u32 {
         .color_border = palette.teal_accent,
         .style = .content,
     });
+    // Wrap label + caret in a horizontal box so dvui lays them out
+    // sequentially (menuItem places raw children at the same origin).
+    // The box is the single content child of the menuItem; tag rects
+    // on the inner label/caret are sequential sibling widgets.
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .gravity_y = 0.5,
+        .background = false,
+    });
     dvui.labelNoFmt(@src(), view.short_label, .{}, .{
         .color_text = palette.teal_accent,
         .gravity_y = 0.5,
@@ -107,6 +115,7 @@ fn paintMenuTrigger(view: CatalogView) ?u32 {
             .id_extra = TRIGGER_ID + 3,
         });
     }
+    row.deinit();
     const maybe_r = mi.activeRect();
     mi.deinit();
 

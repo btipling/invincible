@@ -11,8 +11,9 @@
 //!
 //! The count>1 trigger has a 1 px border. `min_size_content.h` is passed
 //! minus 2×border so the tagged outer rect stays `PICKER_TRIGGER_H`.
-//! The caret's left margin (`CARET_GAP`) is inside its tag rect, so the
-//! label and caret rects are adjacent (same class as busy-row TRAIL).
+//! The label + caret are siblings in a horizontal `dvui.box` inside the
+//! menuItem, so their tag rects are sequential. The caret's left margin
+//! (`CARET_GAP`) is inside its own tag rect (same class as busy-row TRAIL).
 const std = @import("std");
 const t = std.testing;
 const dvui = @import("dvui");
@@ -198,6 +199,8 @@ test "count > 1: label and caret disjoint, caret right of label by CARET_GAP" {
     try t.expect(caret.h > 0);
 
     // Plan #624 row 1: slots do not overlap (caret-under-label fails here).
+    // The label + caret are siblings inside a horizontal dvui.box, so their
+    // tag rects are sequential (label first, caret with CARET_GAP margin).
     try t.expect(rectsDisjoint(label, caret));
 
     // Caret sits to the right of the label. CARET_GAP lives in the caret's
