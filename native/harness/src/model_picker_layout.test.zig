@@ -11,6 +11,7 @@
 const std = @import("std");
 const t = std.testing;
 const dvui = @import("dvui");
+const palette = @import("palette.zig");
 const model_picker = @import("model_picker.zig");
 
 const EPS: f32 = 2.0;
@@ -141,4 +142,73 @@ test "click item while busy → paint returns null" {
     _ = try dvui.testing.step(Click.frame);
 
     try t.expectEqual(@as(?u32, null), Click.picked);
+}
+
+// ── Caret geometry + face-pin regression (plan #624) ──────────────────
+// Guards against a double-caret / glyph-face fallback rendering (the
+// #595 `mixed_text_lookalike` class: a wrong face ships while geometry
+// tests stay green). The label and caret each carry a stable `.tag` and
+// `.id_extra` so the testing backend can query their bounding rects.
+
+fn paintTriggerMenu(view: model_picker.CatalogView) void {
+    const frame = struct {
+        var held: model_picker.CatalogView = undefined;
+        fn paint() !dvui.App.Result {
+            _ = model_picker.paint(held);
+            return .ok;
+        }
+    };
+    frame.held = view;
+
+    _ = dvui.testing.step(frame.paint) catch @panic("menu step 1 failed");
+    _ = dvui.testing.step(frame.paint) catch @panic("menu step 2 failed");
+}
+
+test "count > 1: label and caret tags both exist" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    paintTriggerMenu(.{
+        .count = 2,
+        .selected = 0,
+        .busy = false,
+        .short_label = "claude-a",
+        .idAt = idAt2,
+    });
+
+    // Both tagged text runs are present — at most one caret is painted.
+    _ = dvui.tagGet("status-model-label") orelse @panic("tag 'status-model-label' not found");
+    _ = dvui.tagGet("status-model-caret") orelse @panic("tag 'status-model-caret' not found");
+}
+
+test "count > 1: caret face pinned to family_symbols (host face-pin)" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    const cf = model_picker.chevronFont();
+    try t.expectEqualStrings(palette.family_symbols, cf.familyName());
+}
+
+test "count 0: no caret, no label tag painted (static path)" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    paintTriggerMenu(.{
+        .count = 0,
+        .selected = 0,
+        .busy = false,
+        .short_label = "",
+        .idAt = idAt0,
+    });
+    try t.expect(dvui.tagGet("status-model-caret") == null);
+}
+
+test "count 1: no caret, no submenu (static path, single model)" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    paintTriggerMenu(.{
+        .count = 1,
+        .selected = 0,
+        .busy = false,
+        .short_label = "single-model",
+        .idAt = idAt0,
+    });
+    try t.expect(dvui.tagGet("status-model-caret") == null);
 }

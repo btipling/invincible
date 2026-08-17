@@ -1,5 +1,8 @@
 //! Pure catalog helpers for the status-bar model picker.
 //! No dvui, no wasm refresh — host-testable in `test-rich`.
+//! (The `chevronFont` face-pin seam lives in `model_picker.zig` because
+//! `model_catalog` tests don't link dvui — it is tested via the
+//! model_picker_layout face-pin assert.)
 const std = @import("std");
 
 /// Short label: after the last `/`, else the full id.

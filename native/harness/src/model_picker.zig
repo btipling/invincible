@@ -18,6 +18,13 @@ const GLYPH_CHEVRON: []const u8 = "\u{25BE}";
 const TRIGGER_ID: usize = 0x62_0000;
 const MENU_ID: usize = 0x62_0010;
 
+/// Caret paint-face for the closed trigger — host-testable seam so the
+/// face-pin test can assert `familyName() == family_symbols` without
+/// touching `palette` directly (the #595 `mixed_text_lookalike` mechanism).
+pub fn chevronFont() dvui.Font {
+    return palette.fontSymbols();
+}
+
 pub const CatalogView = struct {
     count: u32,
     selected: u32,
@@ -84,13 +91,17 @@ fn paintMenuTrigger(view: CatalogView) ?u32 {
     dvui.labelNoFmt(@src(), view.short_label, .{}, .{
         .color_text = palette.teal_accent,
         .gravity_y = 0.5,
+        .tag = "status-model-label",
+        .id_extra = TRIGGER_ID + 2,
     });
     if (model_catalog.showChevron(view.count)) {
         dvui.labelNoFmt(@src(), GLYPH_CHEVRON, .{}, .{
-            .font = palette.fontSymbols(),
+            .font = chevronFont(),
             .color_text = palette.teal_accent,
             .gravity_y = 0.5,
             .margin = .{ .x = 4, .y = 0, .w = 0, .h = 0 },
+            .tag = "status-model-caret",
+            .id_extra = TRIGGER_ID + 3,
         });
     }
     const maybe_r = mi.activeRect();
