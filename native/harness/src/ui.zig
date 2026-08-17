@@ -648,7 +648,7 @@ fn paintLastUserChip(
     slot: usize,
     chip_y: f32,
     pane_w: f32,
-    avail: dvui.Size,
+    avail: dvui.Rect,
 ) void {
     // Find the user message text for this physical ring slot.
     const n = bridge.messageCount();
