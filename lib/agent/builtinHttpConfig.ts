@@ -1,16 +1,12 @@
 /**
  * Env config for builtin HTTPS fetch via Vercel Sandbox (hop-B).
  * Server-only — never NEXT_PUBLIC_*.
- * Attach-only when enabled: uses the user's Settings HTTP instance
- * (never create on hot path).
+ *
+ * Always-available: HTTP tools auto-attach when the user has a running
+ * Settings HTTP instance (create one under Settings → Sandbox). No env
+ * kill switch — the presence of a durable HTTP instance is the gate.
+ * Attach-only: never create on the hot path.
  */
-
-export const BUILTIN_HTTP_FETCH_OFF = 'off' as const;
-export const BUILTIN_HTTP_FETCH_SANDBOX = 'sandbox' as const;
-
-export type BuiltinHttpFetchMode =
-  | typeof BUILTIN_HTTP_FETCH_OFF
-  | typeof BUILTIN_HTTP_FETCH_SANDBOX;
 
 export const DEFAULT_BUILTIN_HTTP_TIMEOUT_MS = 120_000; // 2 min
 export const MAX_BUILTIN_HTTP_TIMEOUT_MS = 1_800_000; // 30 min
@@ -27,8 +23,6 @@ export const MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS = 1_800_000;
 export const DEFAULT_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS = 1_800_000;
 
 export type BuiltinHttpConfig = {
-  enabled: boolean;
-  mode: BuiltinHttpFetchMode;
   timeoutMs: number;
   maxBytes: number;
   /** Legacy VM-lifetime env clamp (not used for attach create). */
@@ -51,18 +45,13 @@ function clampInt(
 }
 
 /**
- * Parse builtin HTTP env. Default off.
- * Only `sandbox` enables tools.
+ * Parse builtin HTTP budget env knobs (timeout + byte caps).
+ * No enable flag — HTTP tools are always available when the user
+ * has a running Settings HTTP instance.
  */
 export function resolveBuiltinHttpConfig(
   env: Record<string, string | undefined> = process.env,
 ): BuiltinHttpConfig {
-  const raw = (env.BUILTIN_HTTP_FETCH ?? '').trim().toLowerCase();
-  const mode: BuiltinHttpFetchMode =
-    raw === BUILTIN_HTTP_FETCH_SANDBOX
-      ? BUILTIN_HTTP_FETCH_SANDBOX
-      : BUILTIN_HTTP_FETCH_OFF;
-
   const timeoutMs = clampInt(
     env.BUILTIN_HTTP_TIMEOUT_MS,
     DEFAULT_BUILTIN_HTTP_TIMEOUT_MS,
@@ -84,11 +73,5 @@ export function resolveBuiltinHttpConfig(
     MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS,
   );
 
-  return {
-    enabled: mode === BUILTIN_HTTP_FETCH_SANDBOX,
-    mode,
-    timeoutMs,
-    maxBytes,
-    sandboxTimeoutMs,
-  };
+  return { timeoutMs, maxBytes, sandboxTimeoutMs };
 }

@@ -9,23 +9,23 @@ import {
 } from './builtinHttpConfig';
 
 describe('resolveBuiltinHttpConfig', () => {
-  it('defaults to off', () => {
+  it('returns defaults when env is empty', () => {
     const c = resolveBuiltinHttpConfig({});
-    expect(c.enabled).toBe(false);
-    expect(c.mode).toBe('off');
     expect(c.timeoutMs).toBe(DEFAULT_BUILTIN_HTTP_TIMEOUT_MS);
     expect(c.maxBytes).toBe(DEFAULT_BUILTIN_HTTP_MAX_BYTES);
   });
 
-  it('enables sandbox mode', () => {
-    const c = resolveBuiltinHttpConfig({ BUILTIN_HTTP_FETCH: 'sandbox' });
-    expect(c.enabled).toBe(true);
-    expect(c.mode).toBe('sandbox');
+  it('resolves timeout and max bytes from env', () => {
+    const c = resolveBuiltinHttpConfig({
+      BUILTIN_HTTP_TIMEOUT_MS: '30000',
+      BUILTIN_HTTP_MAX_BYTES: '1048576',
+    });
+    expect(c.timeoutMs).toBe(30_000);
+    expect(c.maxBytes).toBe(1_048_576);
   });
 
-  it('clamps timeout and max bytes', () => {
+  it('clamps timeout and max bytes to max', () => {
     const c = resolveBuiltinHttpConfig({
-      BUILTIN_HTTP_FETCH: 'sandbox',
       BUILTIN_HTTP_TIMEOUT_MS: '9999999',
       BUILTIN_HTTP_MAX_BYTES: '999999999',
       BUILTIN_HTTP_SANDBOX_TIMEOUT_MS: '9999999',
@@ -33,11 +33,5 @@ describe('resolveBuiltinHttpConfig', () => {
     expect(c.timeoutMs).toBe(MAX_BUILTIN_HTTP_TIMEOUT_MS);
     expect(c.maxBytes).toBe(MAX_BUILTIN_HTTP_MAX_BYTES);
     expect(c.sandboxTimeoutMs).toBe(MAX_BUILTIN_HTTP_SANDBOX_TIMEOUT_MS);
-  });
-
-  it('treats unknown mode as off', () => {
-    expect(resolveBuiltinHttpConfig({ BUILTIN_HTTP_FETCH: 'yes' }).enabled).toBe(
-      false,
-    );
   });
 });
