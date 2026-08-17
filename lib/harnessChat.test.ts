@@ -140,6 +140,9 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_selected_model_len: () => 0,
     inv_selected_model_copy: () => 0,
     inv_cycle_selected_model: () => 0,
+    inv_set_selected_model: (_ptr, len) => (len <= 128 ? 1 : 0),
+    inv_has_pending_model_change: () => 0,
+    inv_ack_pending_model_change: () => {},
     inv_set_status_slot: (slot, ptr, len) => {
       if (slot < 0 || slot >= 8) return 0;
       if (len > 96) return 0;

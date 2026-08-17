@@ -70,15 +70,26 @@ export type SessionSnapshot = {
    * only — not a reserved cloud `meta` key (does not ride the envelope).
    */
   usage?: import('./agent/usageSummary').UsageSummary;
+  /**
+   * Plan #616 (source #610) — the selected model id (a non-secret catalog
+   * string, e.g. `provider/model`), carried as the session-owned carrier on the
+   * cloud record as the reserved `meta.selectedModel` (mirrors `personaId`).
+   * Omitted = unset (restore falls back to the default first-granted model).
+   * Sanitized with `sanitizeModelId` on read (drop-to-unset on poison) so a
+   * poisoned value never sticks or bricks the session.
+   */
+  selectedModel?: string;
 };
 
 import {
+  MAX_MODEL_ID_LEN,
   SKILL_SLUG_RE,
   isRedisSafeOpaqueId,
+  sanitizeModelId,
   sanitizeSessionCwd,
 } from './sessionCloudCaps';
 import { sanitizeUsageSummary } from './agent/usageSummary';
-export { isRedisSafeOpaqueId, sanitizeSessionCwd } from './sessionCloudCaps';
+export { MAX_MODEL_ID_LEN, isRedisSafeOpaqueId, sanitizeSessionCwd } from './sessionCloudCaps';
 
 /**
  * Sanitize a locally-persisted `attachedSlugs` array. LocalStorage is a plain
@@ -174,21 +185,25 @@ export class LocalStorageSessionStore implements SessionStore {
         personaId?: unknown;
         attachedSlugs?: unknown;
         usage?: unknown;
+        selectedModel?: unknown;
       };
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) return null;
       // Tolerant: keep only safe workspace-relative cwd strings (parent #270 / phase 2),
       // a Redis-safe `activeSandboxId` (P1/GAP-1, #452), a Redis-safe `personaId`
-      // (phase 3 #488), a slug-set-valid `attachedSlugs` (phase 2 #517), and a
-      // bounded provider-sourced `usage` (phase 3 #539); a bad local value can't
+      // (phase 3 #488), a slug-set-valid `attachedSlugs` (phase 2 #517), a
+      // bounded provider-sourced `usage` (phase 3 #539), and a printable-ASCII
+      // ≤ `MAX_MODEL_ID_LEN` `selectedModel` (plan #616); a bad local value can't
       // pin. `attachedSlugs` is sanitized so a poisoned local array is dropped
       // rather than spread raw (review #526 re-run 3 residual); a poisoned `usage`
-      // (non-provider / over-cap) sanitizes to `undefined` → slot hides.
+      // (non-provider / over-cap) sanitizes to `undefined` → slot hides; a poisoned
+      // `selectedModel` sanitizes to `undefined` → model restore falls back to default.
       const {
         cwd: rawCwd,
         activeSandboxId: rawSandbox,
         personaId: rawPersona,
         attachedSlugs: rawAttachedSlugs,
         usage: rawUsage,
+        selectedModel: rawSelectedModel,
         ...rest
       } = data;
       const cwd = sanitizeSessionCwd(rawCwd);
@@ -202,6 +217,7 @@ export class LocalStorageSessionStore implements SessionStore {
           : undefined;
       const attachedSlugs = sanitizeAttachedSlugs(rawAttachedSlugs);
       const usage = sanitizeUsageSummary(rawUsage);
+      const selectedModel = sanitizeModelId(rawSelectedModel);
       const out: SessionSnapshot = { ...rest } as SessionSnapshot;
       if (cwd !== undefined) out.cwd = cwd;
       if (activeSandboxId !== undefined) out.activeSandboxId = activeSandboxId;
@@ -210,6 +226,8 @@ export class LocalStorageSessionStore implements SessionStore {
       else delete out.attachedSlugs;
       if (usage !== undefined) out.usage = usage;
       else delete out.usage;
+      if (selectedModel !== undefined) out.selectedModel = selectedModel;
+      else delete out.selectedModel;
       return out;
     } catch {
       return null;

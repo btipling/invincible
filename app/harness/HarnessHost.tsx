@@ -40,6 +40,12 @@ import {
   earlierRingStart,
   latestRingStart,
 } from '../../lib/sessionWindow';
+import {
+  applySessionModel as applySessionModelFn,
+  foldPendingModelChange as foldPendingModelChangeFn,
+  flushPendingThenRestore,
+  discardPendingModelChange,
+} from '../../lib/harnessHostModelPersist';
 import AppNav from '../components/AppNav';
 import SessionPicker from '../components/SessionPicker';
 import PersonaPicker from '../components/PersonaPicker';
@@ -235,10 +241,49 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     }
   }, []);
 
+  /**
+   * Meta-only persist seam (Plan #616, PR #618 re-run 6 Minor L1). A model-pick
+   * fold on the 150 ms poll updates `sessionRef` + local save (the fold also
+   * PUTs the cloud row) but must NOT move `ringWindowStartRef` or touch
+   * `setCanLoadEarlier`. `writeLocalSession` snaps the pointer to latest, which
+   * would clear a live Load-earlier window in the host while the Wasm ring still
+   * shows the earlier page — the next send's `needSnap` then says already-latest
+   * and paints the turn onto the stale window. A pick is not a transcript change.
+   */
+  const writeLocalSessionMeta = useCallback((next: SessionSnapshot) => {
+    sessionRef.current = next;
+    storeRef.current?.save(next);
+  }, []);
+
+  /**
+   * Plan #616 (source #610) — delegate to the extracted pure function in
+   * lib/harnessHostModelPersist.ts so the logic is unit-testable without
+   * rendering React.
+   */
+  const applySessionModel = useCallback((snap: SessionSnapshot) => {
+    const b = bridgeRef.current;
+    if (!b) return;
+    applySessionModelFn(snap, b, sessionRef, writeLocalSession, repoRef.current);
+  }, [writeLocalSession]);
+
   /** Apply server snapshot to local store + latest Wasm ring window. */
   const adoptCloudSession = useCallback(
     (next: SessionSnapshot) => {
-      writeLocalSession(next);
+      const b = bridgeRef.current;
+      if (b) {
+        // Flush a pending menu/Next pick onto the CURRENT session before
+        // replacing it (PR #618 re-run 5 Minor L1). Restore-by-id never acks.
+        flushPendingThenRestore(
+          next,
+          b,
+          sessionRef,
+          writeLocalSession,
+          repoRef.current,
+          inflightRef.current,
+        );
+      } else {
+        writeLocalSession(next);
+      }
       const bridge = bridgeRef.current;
       if (bridge) {
         hydrateRingWindow(bridge, next, latestRingStart(next.messages.length));
@@ -246,6 +291,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     },
     [writeLocalSession, hydrateRingWindow],
   );
+
+  /**
+   * Plan #616 (source #610) — delegate to the extracted pure function in
+   * lib/harnessHostModelPersist.ts so the logic is unit-testable without
+   * rendering React.
+   */
+  const foldPendingModelChange = useCallback(() => {
+    const b = bridgeRef.current;
+    if (!b) return;
+    foldPendingModelChangeFn(b, sessionRef, writeLocalSessionMeta, repoRef.current, inflightRef.current);
+  }, [writeLocalSessionMeta]);
 
   /** Persist the active session id into the URL `?s=` (no new history entry). */
   const setUrlSessionId = useCallback((id: string | null) => {
@@ -327,10 +383,18 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             modelId,
           },
         );
+        // Plan #616 (source #610): fold the LIVE selection into the snapshot before
+        // persisting — a Next-cycle-then-immediate-send right before a poll tick must
+        // still persist (row 12: submit still reads the live `getSelectedModel()`; this
+        // just carries that same truth forward into the snapshot).
+        const liveId = bridge.getSelectedModel();
+        const folded: SessionSnapshot = liveId
+          ? { ...next, selectedModel: liveId }
+          : next;
         // Always persist — including user Stop/cancel (and late abort after a finished
         // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
         // Load earlier / refresh could wipe the cancelled turn from the ring.
-        persist(next);
+        persist(folded);
         if (!result.ok) {
           setHostNote(result.error);
         }
@@ -454,6 +518,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           bridge.pushMessage(MessageKind.System, systemLine);
         }
 
+        // Plan #616 (source #610): restore the stored selected model by id AFTER the
+        // catalog push + local/empty session establish — a stored id that matches the
+        // catalog selects it; null/absent resets to the default. (A revoke/catalog
+        // change lands on the default first granted, never a ghost index.)
+        applySessionModel(sessionRef.current);
+
         // Cloud multi-session boot (phase 3, #415): mint the first session / pin
         // `?s=` / adopt a bound local id — async AFTER local first paint so nothing
         // blocks. A gone `?s=` falls back to local/empty first paint, never blank.
@@ -468,6 +538,22 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             onAdopt: (serverSnap, id) => {
               if (cancelled) return;
               if (inflightRef.current) return;
+              // Flush a pending pick onto local before LWW so a menu click
+              // during boot is in `local.updatedAt` / `selectedModel` (PR #618
+              // re-run 5 Minor L1). activateSession flushes again (no-op).
+              const bootBridge = bridgeRef.current;
+              if (bootBridge) {
+                // Meta-only persist — never disturbs the ring window (PR #618
+                // re-run 6 Minor L1). The subsequent activateSession/adopt
+                // rehydrates to latest anyway.
+                foldPendingModelChangeFn(
+                  bootBridge,
+                  sessionRef,
+                  writeLocalSessionMeta,
+                  repoRef.current,
+                  inflightRef.current,
+                );
+              }
               // LWW guard for the boot-pin path (re-review #430 pass 3): the server row
               // can be the EMPTY mint (`updatedAt: 0`) while local holds dialogue under
               // the SAME id that a still-in-flight put() hasn't flushed yet. If the server
@@ -521,6 +607,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             if (b.takePendingCancel()) {
               abortRef.current?.abort();
             } else if (!inflightRef.current) {
+              // Plan #616 (source #610): fold a user Next cycle into the session
+              // snapshot + persist + ack before any other pending event this tick.
+              foldPendingModelChange();
               if (b.takePendingLoadEarlier()) {
                 const session = sessionRef.current;
                 const nextStart = earlierRingStart(ringWindowStartRef.current);
@@ -596,6 +685,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     activateSession,
     refreshSessions,
     setUrlSessionId,
+    applySessionModel,
+    foldPendingModelChange,
   ]);
 
   /**
@@ -671,6 +762,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     const repo = repoRef.current;
     const bridge = bridgeRef.current;
     const clearedId = sessionRef.current.id;
+    // INTENTIONAL ack-only (not flushPendingThenRestore). Clear deletes this
+    // row. Fold-after-remove resurrects via a new-epoch PUT; fold-before-remove
+    // is a wasted PUT then DELETE. New/switch flush; Clear acks. See
+    // discardPendingModelChange.
+    if (bridge) discardPendingModelChange(bridge);
 
     const resetBridge = (id: string, personaId?: string) => {
       // Local only — never PUT empty. Cloud clear = DELETE this session + mint new.
@@ -692,6 +788,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // Protocol v13 (plan #538/#541): a fresh New session has no sandbox/cwd
         // bind yet — clear the status-slot pack so no stale slots linger.
         bridge.clearStatusSlots();
+        // Plan #616 (source #610): New/Clear starts on the default model (index 0);
+        // the fresh empty snapshot already omits `selectedModel`.
+        bridge.setSelectedModel(null);
         bridge.pushMessage(MessageKind.System, 'New session started.');
         bridge.setLifecycle(Lifecycle.Ready);
       }

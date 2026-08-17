@@ -170,6 +170,7 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'personaSnapshot',
       'transcriptPointer',
       'attachedSkills',
+      'selectedModel',
     ]);
     for (const k of RESERVED_META_KEYS) {
       // `attachedSkills` is a JSON-encoded string; use a valid value so the
@@ -204,6 +205,49 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
     expect(
       validateSessionRecord(makeRecord({ meta: { legacySnapshotId: 'sess_tok_0123456789abcdef', activeSandboxId: 'sbx-1' } })).ok,
     ).toBe(true);
+  });
+
+  it('plan #616 — accepts a valid meta.selectedModel and DROPS a poisoned one to unset (never 400)', () => {
+    // Valid printable-ASCII model id ≤ 128 (catalog string) is preserved.
+    const ok = validateSessionRecord(
+      makeRecord({ meta: { selectedModel: 'anthropic/claude-a' } as HarnessSessionRecord['meta'] }),
+    );
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.meta.selectedModel).toBe('anthropic/claude-a');
+
+    // Poisoned values (non-string, empty, control chars / non-printable, over-length)
+    // are DROPPED to unset (the key is omitted) — the record still validates (never 400).
+    for (const bad of [
+      'has space',
+      'x'.repeat(129),
+      42 as unknown,
+      undefined as unknown,
+      'with\u0007control',
+    ]) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { selectedModel: bad } as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true); // drop-to-unset, not a 400
+      if (res.ok) expect(res.value.meta.selectedModel).toBeUndefined();
+    }
+
+    // Unknown keys are STILL rejected (reserved-key contract intact).
+    expect(
+      validateSessionRecord(
+        makeRecord({ meta: { notReserved: 1 } as HarnessSessionRecord['meta'] }),
+      ).ok,
+    ).toBe(false);
+  });
+
+  it('plan #616 — validateMeta drops a poisoned selectedModel but keeps it omitted from meta', () => {
+    const res = validateSessionRecord(
+      makeRecord({ meta: { selectedModel: 'not printable...' } as unknown as HarnessSessionRecord['meta'] }),
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect('selectedModel' in res.value.meta).toBe(false);
+      expect(res.value.meta.selectedModel).toBeUndefined();
+    }
   });
 });
 

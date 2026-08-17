@@ -19,6 +19,7 @@ import {
   isRedisSafeOpaqueId,
   normalizeSessionCwd,
   parseAttachedSkills,
+  sanitizeModelId,
   serializeAttachedSkills,
 } from './sessionCloudCaps';
 import type { SessionMessage, SessionRole, SessionSnapshot } from './sessionStore';
@@ -219,6 +220,7 @@ export function parseCloudSessionSnapshot(
   let cwd: string | undefined;
   let activeSandboxId: string | undefined;
   let personaId: string | undefined;
+  let selectedModel: string | undefined;
   if (o.meta !== null && typeof o.meta === 'object' && !Array.isArray(o.meta)) {
     const meta = o.meta as Record<string, unknown>;
     cwd = normalizeSessionCwd(meta.logicalCwd);
@@ -233,6 +235,11 @@ export function parseCloudSessionSnapshot(
     if (typeof pid === 'string' && pid && isRedisSafeOpaqueId(pid)) {
       personaId = pid;
     }
+    // Plan #616 (source #610): restore the selected model id from the reserved
+    // `meta.selectedModel` so a reload / device-switch / adopt rebuilds the
+    // session's pick by id. `sanitizeModelId` drops a poisoned / invalid value
+    // to unset (restore falls back to the default first-granted model).
+    selectedModel = sanitizeModelId(meta.selectedModel);
   }
   const snapshot: SessionSnapshot = {
     id: o.id,
@@ -242,6 +249,7 @@ export function parseCloudSessionSnapshot(
   if (cwd !== undefined) snapshot.cwd = cwd;
   if (activeSandboxId !== undefined) snapshot.activeSandboxId = activeSandboxId;
   if (personaId !== undefined) snapshot.personaId = personaId;
+  if (selectedModel !== undefined) snapshot.selectedModel = selectedModel;
   // Phase 2 (#517): restore the sticky attached-skill set from the reserved
   // `meta.attachedSkills` JSON-array string (fail-closed → [] on any malformed /
   // foreign value; never a sticky poison). `[]` restore means detach-all.
@@ -294,6 +302,12 @@ export type CloudPutBody = {
      * `'[]'` = explicit detach-all. Folded from `snapshot.attachedSlugs`.
      */
     attachedSkills?: string;
+    /**
+     * Plan #616 (source #610): the selected model id (non-secret printable-ASCII
+     * catalog string). Folded from `snapshot.selectedModel` via `sanitizeModelId`
+     * (drop-to-unset on invalid). `undefined` = omitted (no model pick carried).
+     */
+    selectedModel?: string;
   };
 };
 
@@ -341,10 +355,19 @@ export function cloudMetaFor(
     ? serializeAttachedSkills(snapshot.attachedSlugs)
     : undefined;
   if (attachedSkills !== undefined) meta.attachedSkills = attachedSkills;
+  // Plan #616 (source #610): the selected model id rides the reserved
+  // `meta.selectedModel` so the cloud record retains the pick across reload /
+  // device-switch. Sanitized via the shared client-safe predicate (drop-to-unset
+  // on invalid — never a sticky 400). Omitted by default.
+  const selectedModel = snapshot.selectedModel
+    ? sanitizeModelId(snapshot.selectedModel)
+    : undefined;
+  if (selectedModel !== undefined) meta.selectedModel = selectedModel;
   return meta.logicalCwd === undefined &&
     meta.activeSandboxId === undefined &&
     meta.personaId === undefined &&
-    meta.attachedSkills === undefined
+    meta.attachedSkills === undefined &&
+    meta.selectedModel === undefined
     ? undefined
     : meta;
 }

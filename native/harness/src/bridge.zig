@@ -24,7 +24,10 @@ const model_catalog = @import("model_catalog.zig");
 /// `inv_set_turn_elapsed(secs)`; the Wasm busy row formats/appends ` · mm:ss`.
 /// v15: plan #574 addendum — `inv_set_busy_tick` export (10 Hz spinner phase)
 /// is now REQUIRED; version bump for the new export (old hosts fail-closed via REQUIRED_FNS).
-pub const PROTOCOL_VERSION: u32 = 15;
+/// v16: plan #616 — model-selection persistence: `inv_set_selected_model` (set-by-id
+/// restore) + `inv_has_pending_model_change` / `inv_ack_pending_model_change` (host
+/// observes a user Next cycle). Additive exports now REQUIRED.
+pub const PROTOCOL_VERSION: u32 = 16;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -119,6 +122,12 @@ var can_load_earlier: bool = false;
 var has_pending_load_earlier: bool = false;
 /// Protocol v9 — user Stop; host polls and aborts inflight turn.
 var has_pending_cancel: bool = false;
+/// Protocol v16 (plan #616) — set by the user cycle path (`cycleSelectedModel()`)
+/// AND the status-bar menu picker (`setSelectedModel(index)`), never by the host
+/// restore-by-id path (`inv_set_selected_model` / `selectModelById`). The host
+/// polls this flag, folds the live selection into the session snapshot, persists,
+/// then acks it.
+var has_pending_model_change: bool = false;
 var suppress_refresh: bool = false;
 
 const CatalogEntry = struct {
@@ -234,6 +243,7 @@ pub fn reset() void {
     can_load_earlier = false;
     has_pending_load_earlier = false;
     has_pending_cancel = false;
+    has_pending_model_change = false;
     suppress_refresh = false;
     catalog_count = 0;
     selected_index = 0;
@@ -274,19 +284,60 @@ pub fn selectedModelLabel() []const u8 {
     return model_catalog.shortLabel(selectedModelId());
 }
 
-/// Set selection to `index`. No-op if empty, out of range, or already selected.
+/// Protocol v16 (plan #616) — set selection by exact catalog id. `id.len == 0`
+/// resets to index 0 (default). Returns true when accepted; rejects non-printable-
+/// ASCII / over-length ids (mirrors `inv_push_model_catalog_entry` acceptance).
+/// Never sets the pending-model-change flag — host-driven restore, not a user cycle.
+pub fn selectModelById(id: []const u8) bool {
+    if (id.len > MAX_MODEL_ID_LEN) return false;
+    if (id.len == 0) {
+        selected_index = 0;
+        return true;
+    }
+    for (id) |c| {
+        if (c < 0x21 or c > 0x7e) return false; // printable ASCII only
+    }
+    var idx: u32 = 0;
+    var found = false;
+    for (catalog[0..catalog_count], 0..) |*e, i| {
+        if (e.len != id.len) continue;
+        var eq = true;
+        for (e.data[0..e.len], 0..) |cc, j| {
+            if (cc != id[j]) {
+                eq = false;
+                break;
+            }
+        }
+        if (eq) {
+            idx = @intCast(i);
+            found = true;
+            break;
+        }
+    }
+    selected_index = if (found) idx else 0;
+    return true;
+}
+
+/// Protocol v16: set selection to `index` from the status-bar model picker
+/// (plan #617). No-op if empty, out of range, or already selected. Raises the
+/// pending-model-change flag so the host can observe + persist the user pick
+/// without waiting for a turn.
 pub fn setSelectedModel(index: u32) void {
     if (model_catalog.chooseIndex(catalog_count, index)) |idx| {
         if (idx == selected_index) return;
         selected_index = idx;
+        has_pending_model_change = true;
         refresh();
     }
 }
 
 /// Cycle selection forward. No-op if count ≤ 1.
+/// Protocol v16: raises the pending-model-change flag so the host can observe +
+/// persist the user Next cycle without waiting for a turn.
 pub fn cycleSelectedModel() void {
     if (catalog_count <= 1) return;
     selected_index = (selected_index + 1) % catalog_count;
+    has_pending_model_change = true;
     refresh();
 }
 
@@ -523,6 +574,39 @@ export fn inv_cycle_selected_model() u32 {
     cycleSelectedModel();
     if (catalog_count == 0) return 0;
     return selected_index;
+}
+
+// ── Protocol v16 — model-selection persistence (plan #616) ────────────────
+
+/// Whether the user cycled the model via Next / status-bar menu since the last
+/// ack (host polls, persists the live selection, then acks).
+pub fn hasPendingModelChange() bool {
+    return has_pending_model_change;
+}
+
+/// Clear the pending-model-change flag after the host folded the live selection.
+pub fn ackPendingModelChange() void {
+    has_pending_model_change = false;
+}
+
+/// Protocol v16 — host restore-by-id. Sets the selection to the catalog entry
+/// whose id equals the bytes (exact, not index arithmetic); `len == 0` resets to
+/// index 0 (default). Returns 1 on accepted (incl. reset), 0 on oversize / non-
+/// printable (selection unchanged). Never sets the pending-model-change flag.
+export fn inv_set_selected_model(ptr: [*]const u8, len: usize) u8 {
+    const accepted = selectModelById(ptr[0..len]);
+    refresh();
+    return if (accepted) 1 else 0;
+}
+
+/// Protocol v16 — whether the user cycled the model since the last ack.
+export fn inv_has_pending_model_change() u8 {
+    return if (hasPendingModelChange()) 1 else 0;
+}
+
+/// Protocol v16 — host folded the live selection; clear the flag.
+export fn inv_ack_pending_model_change() void {
+    ackPendingModelChange();
 }
 
 // ── Protocol v13 — status-slot store (host → Wasm) ────────────────────────

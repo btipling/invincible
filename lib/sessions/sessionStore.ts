@@ -37,6 +37,7 @@ import {
   PERSONA_SNAPSHOT_MAX_BYTES,
   SKILL_SLUG_RE,
   isRedisSafeOpaqueId,
+  sanitizeModelId,
   sanitizeSessionCwd,
 } from '../sessionCloudCaps';
 export { isRedisSafeOpaqueId } from '../sessionCloudCaps';
@@ -59,6 +60,7 @@ export const RESERVED_META_KEYS = [
   'personaSnapshot',
   'transcriptPointer',
   'attachedSkills',
+  'selectedModel',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -384,6 +386,16 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
       return { ok: false, code: 'invalid_meta', error: `meta key '${key}' is not a reserved key.` };
     }
     const v = raw[key];
+    // Plan #616 (source #610): `meta.selectedModel` is a NON-critical session
+    // carrier — a poisoned value (non-string, empty, control chars, over-length)
+    // is DROPPED to unset (the key is omitted) rather than 400-ing the record,
+    // so a bad pick can never brick a session with a permanent `INVALID_META`.
+    // Restore falls back to the default first-granted model server/device-side.
+    if (key === 'selectedModel') {
+      const cleaned = sanitizeModelId(v);
+      if (cleaned !== undefined) meta.selectedModel = cleaned;
+      continue;
+    }
     if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {
       return {
         ok: false,

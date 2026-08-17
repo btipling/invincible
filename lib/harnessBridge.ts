@@ -8,7 +8,7 @@
  *
  * Protocol doc: native/harness/README.md (table of messages).
  */
-import { STATUS_SLOT_MAX_BYTES } from './sessionCloudCaps';
+import { MAX_MODEL_ID_LEN, STATUS_SLOT_MAX_BYTES } from './sessionCloudCaps';
 
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
 // v13 (plan #538/#541): additive status-slot store — `inv_set_status_slot`,
@@ -19,14 +19,24 @@ import { STATUS_SLOT_MAX_BYTES } from './sessionCloudCaps';
 // driving the 2×4 WARM spinner.
 // v15: `inv_set_busy_tick` is now REQUIRED; version bump for the new export
 // (old hosts fail-closed via REQUIRED_FNS protocol-mismatch diagnostic).
-export const HARNESS_PROTOCOL_VERSION = 15 as const;
+// v16 (plan #616): model-selection persistence — `inv_set_selected_model`
+// (restore-by-id) + `inv_has_pending_model_change` / `inv_ack_pending_model_change`
+// (host observes a user Next cycle). All three are now REQUIRED.
+export const HARNESS_PROTOCOL_VERSION = 16 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
 
-/** Must match Zig `MAX_CATALOG` / `MAX_MODEL_ID_LEN`. */
+/** Must match Zig `MAX_CATALOG`. */
 export const MAX_MODEL_CATALOG = 64 as const;
-export const MAX_MODEL_ID_LEN = 128 as const;
+/**
+ * Must match Zig `MAX_MODEL_ID_LEN`. Aliased to the SINGLE host source of truth
+ * `MAX_MODEL_ID_LEN` in `./sessionCloudCaps` (plan #616 step 5: the caps module
+ * is the shared client-safe source for host trim/parse AND server validation).
+ * Cross-layer equality with the Zig constant is locked by a test in
+ * `sessionCloudCaps.test.ts`.
+ */
+export { MAX_MODEL_ID_LEN };
 
 /** Must match Zig `MAX_STATUS_SLOTS` (protocol v13, plan #538/#541). */
 export const MAX_STATUS_SLOTS = 8 as const;
@@ -137,6 +147,10 @@ export type HarnessBridgeExports = {
   inv_selected_model_len: () => number;
   inv_selected_model_copy: (outPtr: number, maxLen: number) => number;
   inv_cycle_selected_model: () => number;
+  // Protocol v16 (plan #616) — model-selection persistence.
+  inv_set_selected_model: (ptr: number, len: number) => number;
+  inv_has_pending_model_change: () => number;
+  inv_ack_pending_model_change: () => void;
   // Protocol v13 — status-slot store (host push + readback + clear).
   inv_set_status_slot: (slot: number, ptr: number, len: number) => number;
   inv_status_slot_len: (slot: number) => number;
@@ -201,6 +215,9 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_selected_model_len',
   'inv_selected_model_copy',
   'inv_cycle_selected_model',
+  'inv_set_selected_model',
+  'inv_has_pending_model_change',
+  'inv_ack_pending_model_change',
   'inv_set_status_slot',
   'inv_status_slot_len',
   'inv_status_slot_copy',
@@ -601,6 +618,42 @@ export class HarnessBridge {
 
   cycleSelectedModel(): number {
     return this.exports.inv_cycle_selected_model() >>> 0;
+  }
+
+  /**
+   * Protocol v16 (plan #616) — host restore-by-id. Selects the catalog entry
+   * whose id equals `id` (exact match, not index arithmetic), or resets to the
+   * default (index 0) when `id` is `null`/empty/not-in-catalog. Returns true
+   * when accepted; rejects oversize / non-printable-ASCII ids. Never raises the
+   * pending-model-change flag (this is host-driven restore, not a user cycle).
+   */
+  setSelectedModel(id: string | null): boolean {
+    if (id === null || id.length === 0) {
+      return this.exports.inv_set_selected_model(0, 0) !== 0;
+    }
+    const bytes = utf8Encode.encode(id);
+    if (bytes.length === 0 || bytes.length > MAX_MODEL_ID_LEN) return false;
+    const ptr = this.exports.gpa_u8(bytes.length);
+    if (!ptr) return false;
+    try {
+      new Uint8Array(this.exports.memory.buffer, ptr, bytes.length).set(bytes);
+      return this.exports.inv_set_selected_model(ptr, bytes.length) !== 0;
+    } finally {
+      this.exports.gpa_free(ptr, bytes.length);
+    }
+  }
+
+  /**
+   * Protocol v16 (plan #616) — whether the USER cycled the model via Next since
+   * the last ack. The host reads the live selection and persists it, then acks.
+   */
+  hasPendingModelChange(): boolean {
+    return this.exports.inv_has_pending_model_change() !== 0;
+  }
+
+  /** Protocol v16 (plan #616) — clear the pending-model-change flag. */
+  ackPendingModelChange(): void {
+    this.exports.inv_ack_pending_model_change();
   }
 
   /**

@@ -29,9 +29,9 @@ optional login chrome).
 | Thin status chips (model, lifecycle) | **Removed** (plan #567) | The DOM top-bar diagnostic chips (model · `h:{build}` · store-kind+loadMs badge · `ready`/`thinking`+clock) were removed — the canvas is the single source (model selector, build-id header, ready/busy). No DOM mirror, no second picker |
 | Model catalog fetch (`GET /api/models`) | **DOM** | Session-gated; host pushes ids into Wasm catalog |
 | **Workspace status bar** (sandbox · cwd · git · context) | **Wasm-primary** (two-line bottom status bar under the composer, protocol v13) | Product truth is in-canvas: a **two-line 64 px always-present full-width status bar directly below the composer** from bridge state (plan #555 → #554, header merged by plan #570). **Line 1** = identity (lifecycle · `h:{build-id}` · model menu), **line 2** = right-aligned status-slot pack (sandbox · cwd · git · context). The top header band is removed entirely. The **DOM host mirrors only** (never a competing status panel). Host folds session state — sandbox (`activeSandboxId`) + `cwd` — into the bridge status-slot store after hydrate/restore and after **every** agent turn (success **and** fail: a 403-clear or a committed `change_dir` on a cancelled/timed-out turn repaints the pack — PR #543; host-ellipsized to the byte cap before the wire). The **git** slot (Phase 2 #540) is filled by the DOM host polling the read-only **`GET /api/harness/status`** server probe on a ~10 s cadence (`refreshGitStatusSlot`); the server probes the bind workspace root with bounded argv-only read-only git (`statusProbe.ts`) and rate-limits per instance. The **context/usage** slot (Phase 3 #539) is **host-folded provider token usage** captured at the final completion (JSON result / stream `done` / chat result), painted absolute-tokens-only and **hidden by default** on missing usage — never a client estimate; abort/cancel keeps the prior honest value. Capture lives in the **Vercel backend** (`runAgent`/`agentStream`/`chatServer`-side `usageSummary.ts`); parsing + fold live in **DOM** (`agentApi.ts`, `chatApi.ts`, `harnessChat.ts` `foldStatusSlots`) |
-| Model selection UI (status-bar menu) | **Wasm** | Status bar line 1; protocol v3 catalog (bridge overall **v14**); stock dvui dropdown, not a Next cycle |
+| Model selection UI (status-bar menu) | **Wasm** | Status bar line 1; protocol v3 catalog + stock dvui dropdown menu (#617). The selected **model id** rides the session-carrier `meta.selectedModel` (DOM fold + backend reserved key — plan #616 / source #610): the DOM host folds the live Wasm selection into `SessionSnapshot.selectedModel` (folding a user menu pick or **Next** cycle via the additive **v16** `inv_has_pending_model_change` / `inv_ack_pending_model_change`, and at `runPrompt`), persists it via the reserved `meta.selectedModel`, and restores **by id** after the catalog push via the additive **v16** `inv_set_selected_model`. Restore-by-id never sets the pending flag; a revoked/absent stored id falls back to the default first-granted. The picker UI stays **Wasm**; submit still reads the live `getSelectedModel()` (no second POST-body truth) |
 | Skill attach display (`Skill attached: <slug>`) | **Wasm** (display-only kind 7) + **Vercel** (resolve/inject) | Server resolves `/skill-name` + injects the body into system context (after the persona); the Wasm canvas shows only the skill NAME row (message kind 7, display-only) — never the body |
-| Selected `modelId` on inference | **DOM host** → **Vercel backend** | Host reads bridge; POST body; server re-authorizes grants + BYOK |
+| Selected `modelId` on inference | **DOM host** → **Vercel backend** | Host reads the live Wasm bridge `getSelectedModel()` at submit (never a second source of truth); POST body; server re-authorizes grants + BYOK. The persisted `SessionSnapshot.selectedModel` / `meta.selectedModel` is a **restore + continuity** carrier only — it is applied to the Wasm selection by id at boot/adopt/switch so the next submit reads the same live value it would have after any reopen |
 | Provider secrets / BYOK resolve | **Vercel backend** | DEK ciphertext; never Wasm/client |
 | Per-user MCP config UI | **DOM** | `/settings`, `/settings/mcp` — not dual chat; not Admin |
 | Per-user MCP tools (connect + execute) | **Vercel backend** | `lib/mcp/*`; keys under tenant DEK; never Wasm/client |
@@ -128,7 +128,7 @@ re-resolved each turn.
 | Concern | Path |
 |---------|------|
 | Host shell | `app/harness/HarnessHost.tsx` |
-| Bridge TS (protocol **v14**) | `lib/harnessBridge.ts` |
+| Bridge TS (protocol **v16**) | `lib/harnessBridge.ts` |
 | Image fetch/decode | `lib/harnessImages.ts` |
 | Model catalog API | `app/api/models/route.ts` |
 | Admin inference keys | `app/admin/inference/*` |
@@ -141,7 +141,7 @@ re-resolved each turn.
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
 | Export whitelist | `native/harness/build.zig` |
 
-Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **14** — 13 added the additive status-slot store; **14** adds the scalar turn-clock feed `inv_set_turn_elapsed`).
+Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **16** — 13 added the additive status-slot store; 14 the scalar turn-clock feed `inv_set_turn_elapsed`; 15 added the busy-tick `inv_set_busy_tick`; **16** (plan #616) adds model-selection persistence `inv_set_selected_model` + `inv_has_pending_model_change` / `inv_ack_pending_model_change`).
 Mismatch → load error; rebuild both sides. Image **bytes** enter only via bridge put; never dual DOM `<img>` product surface.
 
 ## Related
