@@ -5,7 +5,7 @@
  */
 import type { HarnessBridge } from './harnessBridge';
 import type { IdSessionRepository } from './sessionRepository';
-import type { SessionSnapshot, SessionStore } from './sessionStore';
+import type { SessionSnapshot } from './sessionStore';
 
 /**
  * Host-side session-ref shape — the mutable current-session holder + persist seam.
@@ -56,11 +56,11 @@ export function applySessionModel(
 }
 
 /**
- * Plan #616: a user Next cycle in Wasm raises the pending-model-change flag.
- * The host folds the LIVE selection into the session snapshot and persists
- * (local save + cloud PUT) so a pick survives without waiting for a turn, then
- * acks. Stamps `updatedAt: Date.now()` so LWW peers and `shouldAdoptBootServer`
- * see the Next-only persist.
+ * Plan #616: a user Next cycle / status-bar menu pick in Wasm raises the
+ * pending-model-change flag. The host folds the LIVE selection into the
+ * session snapshot and persists (local save + cloud PUT) so a pick survives
+ * without waiting for a turn, then acks. Stamps `updatedAt: Date.now()` so
+ * LWW peers and `shouldAdoptBootServer` see the Next-only persist.
  *
  * @param bridge — live HarnessBridge (null-guarded by the caller).
  * @param sessionRef — mutable holder of the current SessionSnapshot.
@@ -88,4 +88,35 @@ export function foldPendingModelChange(
   persist(next);
   repo?.put(next.id, next);
   bridge.ackPendingModelChange();
+}
+
+/**
+ * PR #618 re-run 5 Minor L1: flush a pending user pick onto the CURRENT
+ * session, replace `sessionRef` with `incoming`, then restore-by-id.
+ * Call before adopt / switch / New so the pick cannot land on the next
+ * session (the 150 ms poll is not a flush).
+ *
+ * `persist` must assign `sessionRef.current = incoming` (HarnessHost
+ * `writeLocalSession` does). Ghost-drop then mutates the incoming row.
+ */
+export function flushPendingThenRestore(
+  incoming: SessionSnapshot,
+  bridge: HarnessBridge,
+  sessionRef: ModelPersistSessionRef,
+  persist: PersistLocal,
+  repo: IdSessionRepository | null,
+  isInflight: boolean,
+): void {
+  foldPendingModelChange(bridge, sessionRef, persist, repo, isInflight);
+  persist(incoming);
+  applySessionModel(incoming, bridge, sessionRef, persist, repo);
+}
+
+/**
+ * PR #618 re-run 5 Minor L1: Clear deletes the current session. Folding
+ * would PUT the pick and can race the DELETE (resurrect). Ack the flag
+ * only so the next session does not inherit a stale pending.
+ */
+export function discardPendingModelChange(bridge: HarnessBridge): void {
+  if (bridge.hasPendingModelChange()) bridge.ackPendingModelChange();
 }

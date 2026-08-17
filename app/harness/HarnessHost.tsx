@@ -43,6 +43,8 @@ import {
 import {
   applySessionModel as applySessionModelFn,
   foldPendingModelChange as foldPendingModelChangeFn,
+  flushPendingThenRestore,
+  discardPendingModelChange,
 } from '../../lib/harnessHostModelPersist';
 import AppNav from '../components/AppNav';
 import SessionPicker from '../components/SessionPicker';
@@ -253,14 +255,27 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   /** Apply server snapshot to local store + latest Wasm ring window. */
   const adoptCloudSession = useCallback(
     (next: SessionSnapshot) => {
-      writeLocalSession(next);
-      applySessionModel(next);
+      const b = bridgeRef.current;
+      if (b) {
+        // Flush a pending menu/Next pick onto the CURRENT session before
+        // replacing it (PR #618 re-run 5 Minor L1). Restore-by-id never acks.
+        flushPendingThenRestore(
+          next,
+          b,
+          sessionRef,
+          writeLocalSession,
+          repoRef.current,
+          inflightRef.current,
+        );
+      } else {
+        writeLocalSession(next);
+      }
       const bridge = bridgeRef.current;
       if (bridge) {
         hydrateRingWindow(bridge, next, latestRingStart(next.messages.length));
       }
     },
-    [writeLocalSession, applySessionModel, hydrateRingWindow],
+    [writeLocalSession, hydrateRingWindow],
   );
 
   /**
@@ -509,6 +524,19 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             onAdopt: (serverSnap, id) => {
               if (cancelled) return;
               if (inflightRef.current) return;
+              // Flush a pending pick onto local before LWW so a menu click
+              // during boot is in `local.updatedAt` / `selectedModel` (PR #618
+              // re-run 5 Minor L1). activateSession flushes again (no-op).
+              const bootBridge = bridgeRef.current;
+              if (bootBridge) {
+                foldPendingModelChangeFn(
+                  bootBridge,
+                  sessionRef,
+                  writeLocalSession,
+                  repoRef.current,
+                  inflightRef.current,
+                );
+              }
               // LWW guard for the boot-pin path (re-review #430 pass 3): the server row
               // can be the EMPTY mint (`updatedAt: 0`) while local holds dialogue under
               // the SAME id that a still-in-flight put() hasn't flushed yet. If the server
@@ -717,6 +745,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     const repo = repoRef.current;
     const bridge = bridgeRef.current;
     const clearedId = sessionRef.current.id;
+    // Ack only — a fold PUT can race repo.remove and resurrect this row
+    // (PR #618 re-run 5 Minor L1).
+    if (bridge) discardPendingModelChange(bridge);
 
     const resetBridge = (id: string, personaId?: string) => {
       // Local only — never PUT empty. Cloud clear = DELETE this session + mint new.

@@ -22,6 +22,8 @@ import {
 import {
   applySessionModel,
   foldPendingModelChange,
+  flushPendingThenRestore,
+  discardPendingModelChange,
   type ModelPersistSessionRef,
 } from './harnessHostModelPersist';
 
@@ -37,6 +39,8 @@ type MockExtras = {
   __modelPending: () => boolean;
   __setPending: (s: string | null) => void;
   __setLoadEarlierPending: (on: boolean) => void;
+  /** Mirrors Zig `setSelectedModel(index)` — the #617 picker path. */
+  __selectByIndex: (index: number) => void;
 };
 
 function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBridgeExports & MockExtras {
@@ -170,6 +174,12 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     __modelPending: () => modelPending,
     __setPending: (s: string | null) => { pending = s; },
     __setLoadEarlierPending: () => {},
+    __selectByIndex: (index: number) => {
+      if (catalog.length === 0 || index < 0 || index >= catalog.length) return;
+      if (index === selected) return;
+      selected = index;
+      modelPending = true;
+    },
   };
 
   return {
@@ -472,5 +482,102 @@ describe('foldPendingModelChange — edge cases', () => {
     expect(persisted).not.toBeNull();
     expect(persisted!.selectedModel).toBeUndefined();
     expect(bridge.hasPendingModelChange()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #618 re-run 5 Minor L1: flush pick onto current before adopt/switch
+// ---------------------------------------------------------------------------
+
+describe('flushPendingThenRestore — pick then switch does not lose the pick', () => {
+  it('persists Y on s1, restores s2, acks (picker index setter)', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setModelCatalog(['anthropic/claude-a', 'openai/gpt-b']);
+
+    const ref: ModelPersistSessionRef = {
+      current: {
+        ...createEmptySession('s1'),
+        updatedAt: 100,
+        selectedModel: 'anthropic/claude-a',
+      },
+    };
+    const puts: { id: string; selectedModel?: string }[] = [];
+    const persist = (next: SessionSnapshot) => {
+      puts.push({ id: next.id, selectedModel: next.selectedModel });
+      ref.current = next;
+    };
+    const repo = makeMockRepo();
+
+    // Status-bar menu pick (Zig setSelectedModel(index)), not Next cycle.
+    exp.__selectByIndex(1);
+    expect(bridge.hasPendingModelChange()).toBe(true);
+    expect(bridge.getSelectedModel()).toBe('openai/gpt-b');
+
+    const incoming: SessionSnapshot = {
+      ...createEmptySession('s2'),
+      updatedAt: 200,
+      selectedModel: 'anthropic/claude-a',
+    };
+    flushPendingThenRestore(incoming, bridge, ref, persist, repo, false);
+
+    expect(bridge.hasPendingModelChange()).toBe(false);
+    expect(bridge.getSelectedModel()).toBe('anthropic/claude-a');
+    expect(ref.current.id).toBe('s2');
+    expect(puts[0]).toEqual({ id: 's1', selectedModel: 'openai/gpt-b' });
+    expect(puts[1]?.id).toBe('s2');
+    expect(repo.lastPut?.id).toBe('s1');
+    expect(repo.lastPut?.snap.selectedModel).toBe('openai/gpt-b');
+  });
+
+  it('is a no-op fold when nothing is pending, then restores incoming', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setModelCatalog(['anthropic/claude-a', 'openai/gpt-b']);
+    const ref: ModelPersistSessionRef = {
+      current: { ...createEmptySession('s1'), selectedModel: 'anthropic/claude-a' },
+    };
+    const persist = (next: SessionSnapshot) => {
+      ref.current = next;
+    };
+    flushPendingThenRestore(
+      { ...createEmptySession('s2'), selectedModel: 'openai/gpt-b' },
+      bridge,
+      ref,
+      persist,
+      makeMockRepo(),
+      false,
+    );
+    expect(ref.current.id).toBe('s2');
+    expect(bridge.getSelectedModel()).toBe('openai/gpt-b');
+    expect(bridge.hasPendingModelChange()).toBe(false);
+  });
+});
+
+describe('discardPendingModelChange — Clear must not PUT', () => {
+  it('acks a pending pick without persisting', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setModelCatalog(['anthropic/claude-a', 'openai/gpt-b']);
+    exp.__selectByIndex(1);
+    expect(bridge.hasPendingModelChange()).toBe(true);
+    discardPendingModelChange(bridge);
+    expect(bridge.hasPendingModelChange()).toBe(false);
+    expect(bridge.getSelectedModel()).toBe('openai/gpt-b');
+  });
+});
+
+describe('picker index setter vs restore-by-id (PR #618 re-run 5 Minor L6)', () => {
+  it('__selectByIndex raises pending; setSelectedModel(id) does not', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setModelCatalog(['anthropic/claude-a', 'openai/gpt-b']);
+    exp.__selectByIndex(1);
+    expect(bridge.hasPendingModelChange()).toBe(true);
+    expect(bridge.getSelectedModel()).toBe('openai/gpt-b');
+    bridge.ackPendingModelChange();
+    expect(bridge.setSelectedModel('anthropic/claude-a')).toBe(true);
+    expect(bridge.hasPendingModelChange()).toBe(false);
+    expect(bridge.getSelectedModel()).toBe('anthropic/claude-a');
   });
 });

@@ -67,6 +67,28 @@ describe('sanitizeModelId (plan #616 — selected-model carrier predicate + cap)
     expect(zigMaxModelIdLen()).toBe(128);
   });
 
+  it('Zig setSelectedModel(index) raises pending; selectModelById does not (PR #618 re-run 5 Minor L6)', () => {
+    const src = readFileSync(
+      resolve(process.cwd(), 'native/harness/src/bridge.zig'),
+      'utf8',
+    );
+    const sliceFn = (sig: string): string => {
+      const start = src.indexOf(sig);
+      if (start < 0) throw new Error(`${sig} not found in bridge.zig`);
+      const from = src.slice(start);
+      const nextPub = from.indexOf('\npub fn ', 1);
+      const nextExport = from.indexOf('\nexport fn ', 1);
+      let end = from.length;
+      if (nextPub > 0) end = Math.min(end, nextPub);
+      if (nextExport > 0) end = Math.min(end, nextExport);
+      return from.slice(0, end);
+    };
+    const indexFn = sliceFn('pub fn setSelectedModel(index: u32)');
+    const byIdFn = sliceFn('pub fn selectModelById(id: []const u8)');
+    expect(indexFn).toContain('has_pending_model_change = true');
+    expect(byIdFn).not.toContain('has_pending_model_change = true');
+  });
+
   it('keeps valid printable-ASCII provider/model ids (incl. / . : + -)', () => {
     expect(sanitizeModelId('anthropic/claude-a')).toBe('anthropic/claude-a');
     expect(sanitizeModelId('provider/model.big:x+y-123')).toBe('provider/model.big:x+y-123');
