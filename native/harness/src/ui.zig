@@ -13,6 +13,7 @@ const thinking_collapse = @import("thinking_collapse.zig");
 const busy_row = @import("busy_row.zig");
 const transcript_split = @import("transcript_split.zig");
 const model_picker = @import("model_picker.zig");
+const rect_spinner = @import("rect_spinner.zig");
 
 const state = @import("ui/state.zig");
 const metrics = @import("ui/metrics.zig");
@@ -568,7 +569,7 @@ pub fn frame() !void {
         });
         defer bar.deinit();
 
-        // Line 1: identity (lifecycle · build id · model picker)
+        // Line 1: identity (spinner · build id · model picker)
         // Each line gets exactly STATUS_BAR_H/2 = 32 px so the picker trigger
         // (PICKER_TRIGGER_H = 32) fills its row without clipping line 2.
         {
@@ -580,15 +581,14 @@ pub fn frame() !void {
             });
             defer line1.deinit();
 
-            {
-                var tl = dvui.textLayout(@src(), .{}, .{
-                    .background = false,
-                    .color_text = if (busy) palette.warm_accent else palette.teal_muted,
-                    .gravity_y = 0.5,
-                });
-                tl.format("{s}", .{kinds.lifecycleLabel(life)}, .{});
-                tl.deinit();
-            }
+            // Spinner: idle = TEAL_IDLE_RAMP (static teal_muted grid),
+            // busy = WARM_RAMP pulse (plan #651).
+            rect_spinner.paint(@src(), .{
+                .phase = if (busy) bridge.busyTick() else 0,
+                .ramp = if (busy) rect_spinner.WARM_RAMP else rect_spinner.TEAL_IDLE_RAMP,
+                .tag_prefix = "status-spinner",
+                .id_extra = 0x61_0105,
+            });
             {
                 var tl = dvui.textLayout(@src(), .{}, .{
                     .background = false,
