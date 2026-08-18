@@ -87,6 +87,10 @@ pub var prev_queue_band_h: f32 = 0;
 pub var queue_closed_edit: bool = false;
 /// Scratch buffer for the in-band queue-row editor.
 pub var queue_edit_buf: [bridge.SUBMIT_CAP]u8 = [_]u8{0} ** bridge.SUBMIT_CAP;
+/// dvui widget id of the active queue-row textEntry (set during paintRow
+/// while editing; cleared on close). Used for blur-save detection — if the
+/// textEntry loses focus while queue_editing_index is set, we save-and-close.
+pub var queue_edit_textentry_id: ?dvui.Id = null;
 pub var queue_list_scroll: dvui.ScrollInfo = .{
     .vertical = .auto,
     .horizontal = .none,
@@ -108,6 +112,7 @@ pub fn resetTranscriptScroll() void {
     last_user_slot = null;
     prev_chip_visible = false;
     queue_editing_index = null;
+    queue_edit_textentry_id = null;
     prev_queue_band_h = 0;
     queue_closed_edit = false;
     @memset(&queue_edit_buf, 0);

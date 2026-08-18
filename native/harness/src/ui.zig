@@ -392,6 +392,13 @@ pub fn frame() !void {
         @memset(&state.msg_content_y, 0);
         state.last_user_slot = null;
         state.prev_chip_visible = false;
+        // Clear queue editing state — otherwise an edit open during
+        // New/Clear or a session switch ghosts a band and blocks promote
+        // until an unmarked Escape (adversarial review #666 Major L1).
+        state.queue_editing_index = null;
+        state.prev_queue_band_h = 0;
+        state.queue_closed_edit = false;
+        @memset(&state.queue_edit_buf, 0);
     } else if (count_changed or content_grew) {
         const newest_is_user = blk: {
             if (n == 0) break :blk false;

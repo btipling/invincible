@@ -92,6 +92,17 @@ pub fn paint(band_y: f32, band_h: f32, avail_w: f32) void {
 
     if (state.queue_editing_index != null) {
         handleEscape();
+        // Blur-save: if the queue-row textEntry lost focus this frame
+        // (e.g. operator clicked the composer), save the edit and close
+        // so promote isn't stalled behind a ghost edit (plan #664, review
+        // #666 Minor L1+L8).
+        const focused = dvui.focusedWidgetIdInCurrentSubwindow();
+        if (state.queue_edit_textentry_id) |te_id| {
+            if (focused == null or (focused.? != te_id)) {
+                const text = std.mem.sliceTo(state.queue_edit_buf[0..], 0);
+                saveEdit(@intCast(state.queue_editing_index.?), text);
+            }
+        }
     }
 }
 
@@ -123,6 +134,7 @@ fn paintRow(src: std.builtin.SourceLocation, i: u32) void {
             .id_extra = i,
         });
         typed = te.getText();
+        state.queue_edit_textentry_id = te.data().id;
         te.deinit();
         if (submitChord()) {
             saveEdit(i, typed);
@@ -196,6 +208,7 @@ fn cancelEdit() void {
 
 fn closeEdit() void {
     state.queue_editing_index = null;
+    state.queue_edit_textentry_id = null;
     @memset(&state.queue_edit_buf, 0);
     state.queue_closed_edit = true;
 }
