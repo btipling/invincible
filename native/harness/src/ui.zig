@@ -663,10 +663,17 @@ fn paintLastUserChip(
     // canvas (~390 px phone with open rail). " ↑" suffix + 16 px total
     // horizontal padding must be reserved so the label never overflows and
     // dvui clips mid-glyph (adversarial review #646 Minor L9).
+    //
+    // U+2191 is in the Arrows block — Noto body does not ship it (tofu). DejaVu
+    // Symbols does. Measure the arrow on the symbols face; paint the combined
+    // label through addTextMixed (same face split as rich text). Do **not** pin
+    // `.font = fontSymbols()` on the whole chip — that face has no Latin
+    // (adversarial review #648 Blocker).
     const body = dvui.Font.theme(.body);
+    const font_symbols = palette.fontSymbols().withSize(body.size);
     const chip_w = @max(0, avail.w - pane_w);
     const suffix = " ↑";
-    const suffix_w = body.textSize(suffix).w;
+    const suffix_w = body.textSize(" ").w + font_symbols.textSize("↑").w;
     const max_text_w = @max(0, chip_w - 16 - suffix_w);
     var ellip_buf: [chip_preview.LAST_USER_CHIP_PREVIEW_MAX_BYTES + 4]u8 = undefined;
     const display_preview = if (body.textSize(preview).w <= max_text_w)
@@ -674,11 +681,14 @@ fn paintLastUserChip(
     else
         truncateToWidthPx(body, &ellip_buf, preview, max_text_w);
 
-    // Build label: display preview + " ↑" jump hint.
+    // Preview (Noto) + " ↑" (DejaVu) — mixed in one label, same as rich text.
     var label_buf: [chip_preview.LAST_USER_CHIP_PREVIEW_MAX_BYTES + 8]u8 = undefined;
     const label = std.fmt.bufPrint(&label_buf, "{s}{s}", .{ display_preview, suffix }) catch display_preview;
 
-    if (dvui.button(src, label, .{}, .{
+    // Same as dvui.button but the label is addTextMixed, not labelNoFmt (one
+    // face). ButtonWidget so the strip stays one click target.
+    var bw: dvui.ButtonWidget = undefined;
+    bw.init(src, .{}, .{
         .rect = .{ .x = pane_w, .y = chip_y, .w = @max(0, avail.w - pane_w), .h = TOUCH_H },
         .expand = .horizontal,
         .style = .content,
@@ -686,8 +696,29 @@ fn paintLastUserChip(
         .color_fill = palette.teal_border,
         .color_border = palette.teal_muted,
         .color_text = palette.teal_text,
+        .margin = dvui.Rect.all(0),
         .padding = .{ .x = 8, .y = 0, .w = 8, .h = 0 },
-    })) {
+    });
+    bw.processEvents();
+    bw.drawBackground();
+    const clicked = bw.clicked();
+    {
+        var tl = dvui.textLayout(@src(), .{
+            .break_lines = false,
+        }, .{
+            .background = false,
+            .color_text = palette.teal_text,
+            .gravity_x = 0.0,
+            .gravity_y = 0.5,
+            .expand = .horizontal,
+            .padding = dvui.Rect.all(0),
+        });
+        mixed_text.addTextMixed(tl, label, body, .{ .color_text = palette.teal_text });
+        tl.deinit();
+    }
+    bw.drawFocus();
+    bw.deinit();
+    if (clicked) {
         transcript_scroll.viewport.y = msg_content_y[slot];
         clampScrollToContent(&transcript_scroll);
     }
