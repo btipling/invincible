@@ -395,13 +395,7 @@ pub fn frame() !void {
         // Clear queue editing state — otherwise an edit open during
         // New/Clear or a session switch ghosts a band and blocks promote
         // until an unmarked Escape (adversarial review #666 Major L1).
-        state.queue_editing_index = null;
-        state.queue_edit_textentry_id = null;
-        state.queue_want_editor_focus = false;
-        state.queue_edit_seen_focused = false;
-        state.prev_queue_band_h = 0;
-        state.queue_closed_edit = false;
-        @memset(&state.queue_edit_buf, 0);
+        queue_band.resetQueueEditState();
     } else if (count_changed or content_grew) {
         const newest_is_user = blk: {
             if (n == 0) break :blk false;
@@ -425,13 +419,7 @@ pub fn frame() !void {
     // the queue FIFO is empty. Without this guard, a ghost band appears and
     // promote is blocked (plan #677 fix 2).
     if (state.queue_editing_index != null and bridge.queuedCount() == 0) {
-        state.queue_editing_index = null;
-        state.queue_edit_textentry_id = null;
-        state.queue_want_editor_focus = false;
-        state.queue_edit_seen_focused = false;
-        state.prev_queue_band_h = 0;
-        state.queue_closed_edit = false;
-        @memset(&state.queue_edit_buf, 0);
+        queue_band.resetQueueEditState();
     }
 
     // Always refresh trackers (grow, shrink, no-op) so stream deltas stay accurate.

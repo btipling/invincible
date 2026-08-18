@@ -1,18 +1,17 @@
-//! Unit tests for `queue_band.zig` state-mutation contracts (plan #677).
-//! Tests the beginEdit/closeEdit flag lifecycle, desiredHeight ghost-band
-//! sentinel, and the new want_editor_focus / seen_focused flags.
+//! Unit tests for `queue_band.zig` state-mutation contracts (plan #677,
+//! adversarial review #680 Major L6 + Minor L1). Calls the pub lifecycle
+//! functions (`beginEdit`, `closeEdit`, `saveEdit`, `resetQueueEditState`)
+//! directly so the tests exercise production code paths, not local mirrors.
 const std = @import("std");
 const t = std.testing;
-const dvui = @import("dvui");
 const bridge = @import("bridge.zig");
 const metrics = @import("ui/metrics.zig");
 const queue_band = @import("ui/queue_band.zig");
 const state = @import("ui/state.zig");
-const submit_queue = @import("submit_queue.zig");
 
 const EPS: f32 = 1.0;
 
-// ── desiredHeight unit tests ─────────────────────────────────────────────
+// ── desiredHeight unit tests (real — desiredHeight is pub) ───────────────
 
 test "desiredHeight: 0 items, no edit -> 0" {
     bridge.reset();
@@ -50,53 +49,71 @@ test "desiredHeight: 5 items, capped at MAX_ROWS" {
     try t.expectApproxEqAbs(want, queue_band.desiredHeight(), EPS);
 }
 
-// ── beginEdit / closeEdit flag lifecycle ─────────────────────────────────
+// ── resetQueueEditState (extracted helper, plan #680 Major L6) ─────────
 
-test "beginEdit contract: want_editor_focus set, seen_focused cleared" {
-    bridge.reset();
-    _ = bridge.enqueueFromUi("original text") catch @panic("enqueue failed");
-    // beginEdit is file-private — replicate its contract:
-    //   - Copy text to queue_edit_buf
-    //   - Set queue_editing_index = i
-    //   - Set queue_want_editor_focus = true
-    //   - Set queue_edit_seen_focused = false
-    state.queue_want_editor_focus = false;
-    state.queue_edit_seen_focused = true; // stale from prior edit
-
-    const txt = bridge.queuedItemAt(0).?;
-    @memset(&state.queue_edit_buf, 0);
-    const n = @min(txt.len, state.queue_edit_buf.len);
-    if (n > 0) @memcpy(state.queue_edit_buf[0..n], txt[0..n]);
+test "resetQueueEditState: clears all editing state" {
+    // Set every state field dirty.
     state.queue_editing_index = 0;
+    state.queue_edit_textentry_id = @as(@import("dvui").Id, @enumFromInt(1));
     state.queue_want_editor_focus = true;
-    state.queue_edit_seen_focused = false;
+    state.queue_edit_seen_focused = true;
+    state.prev_queue_band_h = 100;
+    state.queue_closed_edit = false;
+    @memset(&state.queue_edit_buf, 'x');
 
-    try t.expect(state.queue_want_editor_focus);
+    queue_band.resetQueueEditState();
+
+    try t.expect(state.queue_editing_index == null);
+    try t.expect(state.queue_edit_textentry_id == null);
+    try t.expect(!state.queue_want_editor_focus);
     try t.expect(!state.queue_edit_seen_focused);
-    try t.expect(state.queue_editing_index != null);
+    try t.expectEqual(@as(f32, 0), state.prev_queue_band_h);
+    try t.expect(!state.queue_closed_edit);
+    try t.expectEqual(@as(u8, 0), state.queue_edit_buf[0]);
 }
 
-test "closeEdit contract: all editing state cleared including new flags" {
-    // Replicate closeEdit's state-mutation contract:
-    //   - queue_editing_index = null
-    //   - queue_edit_textentry_id = null
-    //   - queue_want_editor_focus = false
-    //   - queue_edit_seen_focused = false
-    //   - @memset queue_edit_buf to 0
-    //   - queue_closed_edit = true
+// ── beginEdit / closeEdit / saveEdit lifecycle (calls production code) ──
+
+test "beginEdit: copies text, sets editing_index, flags" {
+    bridge.reset();
+    _ = bridge.enqueueFromUi("hello world") catch @panic("enqueue failed");
+    // Pre-set stale values to verify they are overwritten.
+    state.queue_want_editor_focus = false;
+    state.queue_edit_seen_focused = true;
+    @memset(&state.queue_edit_buf, 0);
+
+    queue_band.beginEdit(0);
+
+    try t.expect(state.queue_editing_index != null);
+    try t.expectEqual(@as(usize, 0), state.queue_editing_index.?);
+    try t.expect(state.queue_want_editor_focus);
+    try t.expect(!state.queue_edit_seen_focused);
+    // The edit buf must contain the original text.
+    try t.expect(std.mem.eql(u8, "hello world", std.mem.sliceTo(state.queue_edit_buf[0..], 0)));
+}
+
+test "beginEdit: out-of-range index is a no-op (queuedItemAt returns null)" {
+    bridge.reset();
+    queue_band.resetQueueEditState();
+    state.queue_want_editor_focus = false;
+
+    queue_band.beginEdit(0);
+
+    // No item at index 0 — beginEdit returns early without changing state.
+    try t.expect(state.queue_editing_index == null);
+    try t.expect(!state.queue_want_editor_focus);
+}
+
+test "closeEdit: clears all editing state" {
+    // Set every state field dirty.
     state.queue_editing_index = 0;
-    state.queue_edit_textentry_id = @as(dvui.Id, @enumFromInt(1));
+    state.queue_edit_textentry_id = @as(@import("dvui").Id, @enumFromInt(1));
     state.queue_want_editor_focus = true;
     state.queue_edit_seen_focused = true;
     state.queue_closed_edit = false;
     @memset(&state.queue_edit_buf, 'x');
 
-    state.queue_editing_index = null;
-    state.queue_edit_textentry_id = null;
-    state.queue_want_editor_focus = false;
-    state.queue_edit_seen_focused = false;
-    @memset(&state.queue_edit_buf, 0);
-    state.queue_closed_edit = true;
+    queue_band.closeEdit();
 
     try t.expect(state.queue_editing_index == null);
     try t.expect(state.queue_edit_textentry_id == null);
@@ -106,11 +123,61 @@ test "closeEdit contract: all editing state cleared including new flags" {
     try t.expectEqual(@as(u8, 0), state.queue_edit_buf[0]);
 }
 
+test "saveEdit: replaces text and closes on success" {
+    bridge.reset();
+    _ = bridge.enqueueFromUi("original") catch @panic("enqueue failed");
+    // Simulate an open edit with different text in the buffer.
+    queue_band.beginEdit(0);
+    @memset(&state.queue_edit_buf, 0);
+    const new_text = "modified";
+    @memcpy(state.queue_edit_buf[0..new_text.len], new_text);
+
+    queue_band.saveEdit(0, new_text);
+
+    // Editing latch must be closed after successful replace.
+    try t.expect(state.queue_editing_index == null);
+    // The queue item must now hold "modified".
+    try t.expect(bridge.queuedCount() == 1);
+    const item = bridge.queuedItemAt(0).?;
+    try t.expect(std.mem.eql(u8, "modified", item));
+}
+
+test "saveEdit: blank text calls cancelEdit, releases latch, preserves original" {
+    bridge.reset();
+    _ = bridge.enqueueFromUi("keep me") catch @panic("enqueue failed");
+    queue_band.beginEdit(0);
+    // Simulate select-all + delete — buffer is empty.
+    @memset(&state.queue_edit_buf, 0);
+
+    queue_band.saveEdit(0, "");
+
+    // Blank replace is rejected (data preserved), but latch MUST be released
+    // so click-away leaves the editor (adversarial review #680 Minor L1).
+    try t.expect(state.queue_editing_index == null);
+    try t.expect(!state.queue_want_editor_focus);
+    try t.expect(!state.queue_edit_seen_focused);
+    // Original text must still be in the queue.
+    try t.expect(bridge.queuedCount() == 1);
+    const item = bridge.queuedItemAt(0).?;
+    try t.expect(std.mem.eql(u8, "keep me", item));
+}
+
+test "saveEdit: out-of-range index (no replace, no crash)" {
+    bridge.reset();
+    // No items in the queue — saveEdit at index 0 hits replaceQueuedAt BadIndex.
+    queue_band.saveEdit(0, "xxx");
+    // Should not crash and should not leave latch set.
+    try t.expect(state.queue_editing_index == null);
+}
+
 test "resetTranscriptScroll clears new flags" {
     state.queue_want_editor_focus = true;
     state.queue_edit_seen_focused = true;
     state.queue_editing_index = 1;
-    state.queue_edit_textentry_id = @as(dvui.Id, @enumFromInt(1));
+    state.queue_edit_textentry_id = @as(@import("dvui").Id, @enumFromInt(1));
+    state.prev_queue_band_h = 50;
+    state.queue_closed_edit = false;
+    @memset(&state.queue_edit_buf, 'x');
 
     state.resetTranscriptScroll();
 
@@ -118,12 +185,7 @@ test "resetTranscriptScroll clears new flags" {
     try t.expect(!state.queue_edit_seen_focused);
     try t.expect(state.queue_editing_index == null);
     try t.expect(state.queue_edit_textentry_id == null);
-}
-
-// ── existing queue tests still pass ──────────────────────────────────────
-
-test "submit_queue: push / count smoke" {
-    var q: submit_queue.Q = .{};
-    try submit_queue.push(&q, "test");
-    try t.expectEqual(@as(u32, 1), submit_queue.count(&q));
+    try t.expectEqual(@as(f32, 0), state.prev_queue_band_h);
+    try t.expect(!state.queue_closed_edit);
+    try t.expectEqual(@as(u8, 0), state.queue_edit_buf[0]);
 }

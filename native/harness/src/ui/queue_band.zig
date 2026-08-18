@@ -9,6 +9,20 @@ const state = @import("state.zig");
 const metrics = @import("metrics.zig");
 const chrome = @import("chrome.zig");
 
+/// Reset all queue-edit state to idle — called from `ui.zig` on ring clear
+/// (`n < prev_msg`) and on the `queuedCount()==0` empty-FIFO guard (plan #677
+/// fix 2 + adversarial review #680 Major L6). Exported as a pub helper so the
+/// unit test can call it directly.
+pub fn resetQueueEditState() void {
+    state.queue_editing_index = null;
+    state.queue_edit_textentry_id = null;
+    state.queue_want_editor_focus = false;
+    state.queue_edit_seen_focused = false;
+    state.prev_queue_band_h = 0;
+    state.queue_closed_edit = false;
+    @memset(&state.queue_edit_buf, 0);
+}
+
 pub fn desiredHeight() f32 {
     const n = bridge.queuedCount();
     const editing = state.queue_editing_index != null;
@@ -200,7 +214,7 @@ fn paintRow(src: std.builtin.SourceLocation, i: u32) void {
     }
 }
 
-fn beginEdit(i: u32) void {
+pub fn beginEdit(i: u32) void {
     const text = bridge.queuedItemAt(i) orelse return;
     @memset(&state.queue_edit_buf, 0);
     const n = @min(text.len, state.queue_edit_buf.len);
@@ -212,9 +226,14 @@ fn beginEdit(i: u32) void {
     state.queue_edit_seen_focused = false;
 }
 
-fn saveEdit(i: u32, typed: []const u8) void {
+pub fn saveEdit(i: u32, typed: []const u8) void {
     if (bridge.replaceQueuedAt(i, typed)) {
         closeEdit();
+    } else {
+        // Blank text or error — replace was rejected (data is not lost).
+        // Release the latch so click-away always leaves the editor even
+        // when the field was cleared (adversarial review #680 Minor L1).
+        cancelEdit();
     }
 }
 
@@ -222,7 +241,7 @@ fn cancelEdit() void {
     if (state.queue_editing_index != null) closeEdit();
 }
 
-fn closeEdit() void {
+pub fn closeEdit() void {
     state.queue_editing_index = null;
     state.queue_edit_textentry_id = null;
     state.queue_want_editor_focus = false;
