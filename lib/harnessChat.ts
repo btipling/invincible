@@ -437,6 +437,9 @@ export function foldStatusSlots(
  *   rate-limit, so a refresh loop can't flicker the header).
  * - a valid empty probe result (non-git / no bind) → clear the git slot (stale
  *   prior value must not linger).
+ * - a SHA-only result (sha present, branch absent — detached HEAD / transient
+ *   git lock) → keep the last honest branch@sha (structured git fields are
+ *   authoritative: a real @-prefixed branch has both fields and passes through).
  * - an oversize value is ellipsized to the status-slot byte cap via
  *   `truncateStatusValue` before the wire.
  */
