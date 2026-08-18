@@ -136,7 +136,7 @@ re-resolved each turn.
 | BYOK resolve | `lib/tenancy/resolveInference*.ts`, `lib/gateway/byokProviders.ts` |
 | Chat turn | `lib/harnessChat.ts` |
 | Session | `lib/sessionStore.ts`, `lib/sessionRepository.ts`, `lib/sessions/*` (incl. `blobStore.ts`/`blobStores.ts`), [session-model.md](session-model.md) |
-| Zig UI | `native/harness/src/ui.zig` |
+| Zig UI | `native/harness/src/ui.zig` (facade + `frame`) + `native/harness/src/ui/*.zig` |
 | Bridge Zig | `native/harness/src/bridge.zig` |
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
 | Export whitelist | `native/harness/build.zig` |

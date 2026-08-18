@@ -139,5 +139,5 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Route SSE vs JSON | `app/api/agent/route.ts` |
 | Logical cwd parse / default | `lib/agent/agentBody.ts`, `lib/sandbox/config.ts`, `lib/agent/workPath.ts` |
 | Host consumer + collapse/caps | `lib/harnessChat.ts`, `lib/agentApi.ts` |
-| Thinking paint | `native/harness/src/ui.zig` (protocol v8 kind) |
+| Thinking paint | `native/harness/src/ui/thinking.zig` (protocol v8 kind) |
 | Feature divide | [feature-divide.md](feature-divide.md) |
