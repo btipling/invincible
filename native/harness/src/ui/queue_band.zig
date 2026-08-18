@@ -4,6 +4,7 @@ const dvui = @import("dvui");
 const bridge = @import("../bridge.zig");
 const palette = @import("../palette.zig");
 const queue_preview = @import("../queue_preview.zig");
+const submit_queue = @import("../submit_queue.zig");
 const state = @import("state.zig");
 const metrics = @import("metrics.zig");
 const chrome = @import("chrome.zig");
@@ -48,6 +49,15 @@ pub fn paint(band_y: f32, band_h: f32, avail_w: f32) void {
             .color_text = palette.teal_muted,
             .expand = .horizontal,
         });
+        if (n >= @as(u32, @intCast(submit_queue.MAX_ITEMS))) {
+            // Queue at capacity — a further ▶ / Ctrl+Enter is a no-op. EMBER
+            // makes the failed enqueue visible instead of silent (adversarial
+            // review #666, L9 Minor).
+            dvui.labelNoFmt(@src(), "· full", .{}, .{
+                .gravity_y = 0.5,
+                .color_text = palette.ember_text,
+            });
+        }
         if (n > 0) {
             if (dvui.button(@src(), "Clear", .{}, .{
                 .gravity_y = 0.5,
