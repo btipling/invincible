@@ -272,6 +272,38 @@ test "all 8 cells share the same painted height (CELL)" {
     }
 }
 
+/// Paint busy row with turn_elapsed > 0 and return the `busy-waiting-text`
+/// tag rect. Two frames (same pattern as paintAndGetRects). The clock suffix
+/// is inside text_wave's textLayout; there is no separate clock tag.
+fn paintWithClock(phase: u8, elapsed: u32) dvui.Rect.Physical {
+    const frame = struct {
+        fn paint() !dvui.App.Result {
+            busy_row.paintBusyRow(phase, elapsed);
+            return .ok;
+        }
+    }.paint;
+
+    _ = dvui.testing.step(frame) catch @panic("step 1 failed");
+    _ = dvui.testing.step(frame) catch @panic("step 2 failed");
+
+    return (dvui.tagGet("busy-waiting-text") orelse @panic("tag 'busy-waiting-text' not found")).rect;
+}
+
+test "clock suffix: text rect wider when turn_elapsed > 0 (plan #655 L1 Major)" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    // elapsed=0: no clock suffix, text = "Waiting for model…" only.
+    const text0 = paintWithClock(0, 0);
+    // elapsed=60: clock suffix " · 1:00" appended inside the same textLayout.
+    // phase=7 exercises the wave path (not the phase-0 solid path; the bridge
+    // fix reserves 0 for idle so busy phases are always > 0).
+    const text60 = paintWithClock(7, 60);
+    // Clock suffix must add measurable width vs plain "Waiting for model…".
+    try t.expect(text60.w > text0.w + EPS);
+    // Text origin must not shift (same LEAD + spinner + TRAIL prefix).
+    try t.expectApproxEqAbs(text0.x, text60.x, EPS);
+}
+
 /// Paint TWO `rect_spinner.paint` instances from the same call site in one
 /// frame, with disjoint `tag_prefix` values and `id_extra` bases spaced
 /// `ID_SPAN` apart. Returns both spinners' outer rects and their 8 cells, so
