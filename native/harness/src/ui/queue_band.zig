@@ -96,9 +96,12 @@ pub fn paint(band_y: f32, band_h: f32, avail_w: f32) void {
         // (e.g. operator clicked the composer), save the edit and close
         // so promote isn't stalled behind a ghost edit (plan #664, review
         // #666 Minor L1+L8).
+        // Guard on seen_focused: the first frame(s) after beginEdit have
+        // no TE yet or no focus on it; focused==null or focused≠te_id is
+        // normal then and must not close the editor (plan #677 fix 1).
         const focused = dvui.focusedWidgetIdInCurrentSubwindow();
         if (state.queue_edit_textentry_id) |te_id| {
-            if (focused == null or (focused.? != te_id)) {
+            if (state.queue_edit_seen_focused and (focused == null or focused.? != te_id)) {
                 const text = std.mem.sliceTo(state.queue_edit_buf[0..], 0);
                 saveEdit(@intCast(state.queue_editing_index.?), text);
             }
@@ -135,6 +138,15 @@ fn paintRow(src: std.builtin.SourceLocation, i: u32) void {
         });
         typed = te.getText();
         state.queue_edit_textentry_id = te.data().id;
+        if (state.queue_want_editor_focus) {
+            dvui.focusWidget(te.data().id, null, null);
+            state.queue_want_editor_focus = false;
+        }
+        // Track when the TE has actually been focused — blur-save
+        // waits for this so the first frame(s) don't close early.
+        if (dvui.focusedWidgetIdInCurrentSubwindow()) |fid| {
+            if (fid == te.data().id) state.queue_edit_seen_focused = true;
+        }
         te.deinit();
         if (submitChord()) {
             saveEdit(i, typed);
@@ -194,6 +206,10 @@ fn beginEdit(i: u32) void {
     const n = @min(text.len, state.queue_edit_buf.len);
     if (n > 0) @memcpy(state.queue_edit_buf[0..n], text[0..n]);
     state.queue_editing_index = i;
+    // The textEntry widget doesn't exist yet on this frame (editing was false
+    // when paintRow ran) — request focus for the next frame when it's created.
+    state.queue_want_editor_focus = true;
+    state.queue_edit_seen_focused = false;
 }
 
 fn saveEdit(i: u32, typed: []const u8) void {
@@ -209,6 +225,8 @@ fn cancelEdit() void {
 fn closeEdit() void {
     state.queue_editing_index = null;
     state.queue_edit_textentry_id = null;
+    state.queue_want_editor_focus = false;
+    state.queue_edit_seen_focused = false;
     @memset(&state.queue_edit_buf, 0);
     state.queue_closed_edit = true;
 }

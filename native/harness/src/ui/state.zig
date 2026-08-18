@@ -91,6 +91,14 @@ pub var queue_edit_buf: [bridge.SUBMIT_CAP]u8 = [_]u8{0} ** bridge.SUBMIT_CAP;
 /// while editing; cleared on close). Used for blur-save detection — if the
 /// textEntry loses focus while queue_editing_index is set, we save-and-close.
 pub var queue_edit_textentry_id: ?dvui.Id = null;
+/// Set in beginEdit; cleared after the first focusWidget call in paintRow.
+/// Bridges the gap between beginEdit (sets editing_index) and the frame the
+/// textEntry widget is actually created, so the TE receives focus immediately.
+pub var queue_want_editor_focus: bool = false;
+/// Set after the queue-row textEntry has been focused at least once.
+/// Blur-save only fires when this is true and focus moves away — on the first
+/// frame(s) of a new textEntry, `focused == null` is normal and must not close.
+pub var queue_edit_seen_focused: bool = false;
 pub var queue_list_scroll: dvui.ScrollInfo = .{
     .vertical = .auto,
     .horizontal = .none,
@@ -113,6 +121,8 @@ pub fn resetTranscriptScroll() void {
     prev_chip_visible = false;
     queue_editing_index = null;
     queue_edit_textentry_id = null;
+    queue_want_editor_focus = false;
+    queue_edit_seen_focused = false;
     prev_queue_band_h = 0;
     queue_closed_edit = false;
     @memset(&queue_edit_buf, 0);

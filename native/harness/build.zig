@@ -171,7 +171,7 @@ pub fn build(b: *std.Build) void {
     test_parse.dependOn(&run_parse_tests.step);
 
     // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
-    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, link_click, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + text_wave (#655) + rect_spinner (#651) + busy_spinner + elapsed_clock + model_catalog + session_catalog + submit_queue + queue_preview");
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, link_click, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + text_wave (#655) + rect_spinner (#651) + busy_spinner + elapsed_clock + model_catalog + session_catalog + submit_queue + queue_preview + queue_band");
     test_rich.dependOn(&run_parse_tests.step);
 
     const cache_tests = b.addTest(.{
@@ -250,6 +250,29 @@ pub fn build(b: *std.Build) void {
             }),
         });
         test_rich.dependOn(&b.addRunArtifact(queue_preview_tests).step);
+    }
+
+    // Host unit tests for queue_band.zig (plan #677 — blur-save + latch-drop
+    // fixes: desiredHeight, ghost-band sentinel, beginEdit/closeEdit flags).
+    // Pure state-mutation contract tests; no dvui frame needed.
+    {
+        const queue_band_tests = b.addTest(.{
+            .name = "queue_band",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/queue_band.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        queue_band_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
+        // bridge.zig imports web-backend (Wasm-only); provide a no-op stub
+        // for host-target tests so the queue-bridge functions compile.
+        queue_band_tests.root_module.addImport("web-backend", b.createModule(.{
+            .root_source_file = b.path("src/test_web_backend_stub.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }));
+        test_rich.dependOn(&b.addRunArtifact(queue_band_tests).step);
     }
 
     // Host unit tests for elapsed_clock.zig (plan #567, protocol v14 turn-clock

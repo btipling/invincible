@@ -396,6 +396,9 @@ pub fn frame() !void {
         // New/Clear or a session switch ghosts a band and blocks promote
         // until an unmarked Escape (adversarial review #666 Major L1).
         state.queue_editing_index = null;
+        state.queue_edit_textentry_id = null;
+        state.queue_want_editor_focus = false;
+        state.queue_edit_seen_focused = false;
         state.prev_queue_band_h = 0;
         state.queue_closed_edit = false;
         @memset(&state.queue_edit_buf, 0);
@@ -416,6 +419,21 @@ pub fn frame() !void {
     } else {
         scroll.clampScrollToContent(&state.transcript_scroll);
     }
+    // Drop queue editing latch when the FIFO is empty — the ring-length
+    // proxy (n < prev_msg) misses hydrate-to-same-or-longer-session, where
+    // clearMessages + push in one batch leaves msg_count >= prev_msg but
+    // the queue FIFO is empty. Without this guard, a ghost band appears and
+    // promote is blocked (plan #677 fix 2).
+    if (state.queue_editing_index != null and bridge.queuedCount() == 0) {
+        state.queue_editing_index = null;
+        state.queue_edit_textentry_id = null;
+        state.queue_want_editor_focus = false;
+        state.queue_edit_seen_focused = false;
+        state.prev_queue_band_h = 0;
+        state.queue_closed_edit = false;
+        @memset(&state.queue_edit_buf, 0);
+    }
+
     // Always refresh trackers (grow, shrink, no-op) so stream deltas stay accurate.
     state.last_shown_count = shown;
     state.last_msg_count = n;
