@@ -704,6 +704,7 @@ fn paintLastUserChip(
         .color_fill = palette.teal_border,
         .color_border = palette.teal_muted,
         .color_text = palette.teal_text,
+        .margin = dvui.Rect.all(0),
         .padding = .{ .x = 8, .y = 0, .w = 8, .h = 0 },
     });
     bw.processEvents();
