@@ -61,7 +61,7 @@ const TEXT_WAVE_ID = 0x60_0100;
 /// Paint the whole busy row (spinner + "Waiting for model…" + optional v14
 /// clock) inside one horizontal container. This is what `ui.zig` emits in its
 /// busy branch and what the host layout test runs under the dvui testing backend.
-pub fn paintBusyRow(phase: u8, turn_elapsed: u32) void {
+pub fn paintBusyRow(phase: u32, turn_elapsed: u32) void {
     const src = @src();
     var row = dvui.box(src, .{ .dir = .horizontal }, .{
         .expand = .horizontal,

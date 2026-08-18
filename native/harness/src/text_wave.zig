@@ -23,11 +23,9 @@
 //! Reduced motion: phase 0 → fast-path solid `ramp[0]` on all glyphs (no
 //! per-scalar wave). Without it the comet would paint a dim muted/border tail
 //! at the string's trailing edge whenever the wave phase sits near index 0.
-//! The bridge reserves phase 0 for idle/stop/error — busy ticks map to 1..255
-//! and wrap at 255→1 at 10 Hz (never 0), so the animation wraps after 25.6 s.
-//! The 255→1 wrap is a single discontinuous frame (~7-glyph teleport at N=18)
-//! because the u8 phase range is incommensurate with the 27-tick comet period;
-//! fixing it requires a wider phase or a remap — not an occupancy tweak.
+//! The bridge reserves phase 0 for idle/stop/error — busy ticks are the raw
+//! host u32 (no fold, no u8 wrap). The comet's only wrap is N*STEPS (visible
+//! loop ~2.7 s at N=18), not a 25.6 s u8 fold.
 
 const std = @import("std");
 const dvui = @import("dvui");
@@ -51,8 +49,8 @@ pub const DARK_SPAN: f32 = 1.0;
 pub const Options = struct {
     /// The string to wave (e.g. "Waiting for model…").
     text: []const u8,
-    /// Current tick phase from busyTick() (u8, 1..255 while busy, 0 = idle).
-    phase: u8,
+    /// Current tick phase from busyTick() (u32, > 0 while busy, 0 = idle).
+    phase: u32,
     /// Palette ramp: text_wave uses 3 stops — ramp[0] is head + accent rest,
     /// ramp[1] is muted, ramp[2] is the single dark scalar. ramp[3] is never
     /// indexed by text_wave (reserved for rect_spinner off-cells).
@@ -79,11 +77,12 @@ pub fn countScalars(text: []const u8) usize {
 
 /// Compute the float sub-char head position for a given phase and scalar count N.
 /// head = ((phase * SPEED) % (N * STEPS)) / STEPS, or 0 when N == 0.
-/// The phase*SPEED multiply is done in u32 so phase 255*2 never overflows u8.
-pub fn headPosition(phase: u8, N: usize) f32 {
+/// The phase*SPEED multiply is done in u64 so u32 phase never overflows
+/// (u32*SPEED fits in u64; u32 overflow at ~6.8 y at 10 Hz is unreachable).
+pub fn headPosition(phase: u32, N: usize) f32 {
     if (N == 0) return 0;
-    const period: u32 = @intCast(N * STEPS); // e.g. 54 for N=18
-    const raw: u32 = @as(u32, phase) * @as(u32, SPEED); // 255*2 must not wrap u8
+    const period: u64 = @intCast(N * STEPS); // e.g. 54 for N=18
+    const raw: u64 = @as(u64, phase) * @as(u64, SPEED);
     return @as(f32, @floatFromInt(raw % period)) / @as(f32, @floatFromInt(STEPS));
 }
 
