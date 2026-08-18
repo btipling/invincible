@@ -710,12 +710,15 @@ fn paintLastUserChip(
     bw.drawBackground();
     const clicked = bw.clicked();
     {
-        var tl = dvui.textLayout(@src(), .{}, .{
+        var tl = dvui.textLayout(@src(), .{
+            .break_lines = false,
+        }, .{
             .background = false,
             .color_text = palette.teal_text,
             .gravity_x = 0.0,
             .gravity_y = 0.5,
             .expand = .horizontal,
+            .padding = dvui.Rect.all(0),
         });
         mixed_text.addTextMixed(tl, label, body, .{ .color_text = palette.teal_text });
         tl.deinit();
