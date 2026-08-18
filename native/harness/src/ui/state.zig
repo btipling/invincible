@@ -79,6 +79,23 @@ pub var last_user_slot: ?usize = null;
 /// and chip paint this frame. One-frame settle (same pattern as composer_last_h).
 pub var prev_chip_visible: bool = false;
 
+/// Queue-row being edited, or null. Held promote while non-null.
+pub var queue_editing_index: ?usize = null;
+/// One-frame settle for the queue band height (same pattern as chip / composer).
+pub var prev_queue_band_h: f32 = 0;
+/// Set when an edit is saved or cancelled — Trigger B for `tryPromoteQueued`.
+pub var queue_closed_edit: bool = false;
+/// Scratch buffer for the in-band queue-row editor.
+pub var queue_edit_buf: [bridge.SUBMIT_CAP]u8 = [_]u8{0} ** bridge.SUBMIT_CAP;
+/// dvui widget id of the active queue-row textEntry (set during paintRow
+/// while editing; cleared on close). Used for blur-save detection — if the
+/// textEntry loses focus while queue_editing_index is set, we save-and-close.
+pub var queue_edit_textentry_id: ?dvui.Id = null;
+pub var queue_list_scroll: dvui.ScrollInfo = .{
+    .vertical = .auto,
+    .horizontal = .none,
+};
+
 pub fn resetTranscriptScroll() void {
     transcript_scroll = .{
         .vertical = .auto,
@@ -94,4 +111,13 @@ pub fn resetTranscriptScroll() void {
     @memset(&msg_content_y, 0);
     last_user_slot = null;
     prev_chip_visible = false;
+    queue_editing_index = null;
+    queue_edit_textentry_id = null;
+    prev_queue_band_h = 0;
+    queue_closed_edit = false;
+    @memset(&queue_edit_buf, 0);
+    queue_list_scroll = .{
+        .vertical = .auto,
+        .horizontal = .none,
+    };
 }

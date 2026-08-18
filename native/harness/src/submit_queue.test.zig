@@ -1,0 +1,153 @@
+//! Host unit tests for `submit_queue.zig` (plan #664).
+const std = @import("std");
+const t = std.testing;
+const sq = @import("submit_queue.zig");
+
+test "push happy / peek / pop FIFO" {
+    var q: sq.Q = .{};
+    try sq.push(&q, "one");
+    try sq.push(&q, "two");
+    try sq.push(&q, "three");
+    try t.expectEqual(@as(u32, 3), sq.count(&q));
+    try t.expectEqualStrings("one", sq.peek(&q).?);
+    sq.pop(&q);
+    try t.expectEqualStrings("two", sq.peek(&q).?);
+    sq.pop(&q);
+    try t.expectEqualStrings("three", sq.peek(&q).?);
+    sq.pop(&q);
+    try t.expectEqual(@as(u32, 0), sq.count(&q));
+    try t.expect(sq.peek(&q) == null);
+}
+
+test "push blank rejected" {
+    var q: sq.Q = .{};
+    try t.expectError(error.Blank, sq.push(&q, "   \n\t"));
+    try t.expectError(error.Blank, sq.push(&q, ""));
+    try t.expectEqual(@as(u32, 0), sq.count(&q));
+}
+
+test "push full rejects 17th" {
+    var q: sq.Q = .{};
+    var i: usize = 0;
+    while (i < sq.MAX_ITEMS) : (i += 1) {
+        try sq.push(&q, "x");
+    }
+    try t.expectError(error.Full, sq.push(&q, "overflow"));
+    try t.expectEqual(@as(u32, sq.MAX_ITEMS), sq.count(&q));
+}
+
+test "removeAt middle compact" {
+    var q: sq.Q = .{};
+    try sq.push(&q, "a");
+    try sq.push(&q, "b");
+    try sq.push(&q, "c");
+    sq.removeAt(&q, 1);
+    try t.expectEqual(@as(u32, 2), sq.count(&q));
+    try t.expectEqualStrings("a", sq.item(&q, 0).?);
+    try t.expectEqualStrings("c", sq.item(&q, 1).?);
+}
+
+test "removeAt head is pop" {
+    var q: sq.Q = .{};
+    try sq.push(&q, "a");
+    try sq.push(&q, "b");
+    sq.removeAt(&q, 0);
+    try t.expectEqualStrings("b", sq.peek(&q).?);
+}
+
+test "replaceAt updates; blank / bad index rejected" {
+    var q: sq.Q = .{};
+    try sq.push(&q, "old");
+    try sq.replaceAt(&q, 0, "new");
+    try t.expectEqualStrings("new", sq.peek(&q).?);
+    try t.expectError(error.Blank, sq.replaceAt(&q, 0, "  "));
+    try t.expectEqualStrings("new", sq.peek(&q).?);
+    try t.expectError(error.BadIndex, sq.replaceAt(&q, 3, "nope"));
+}
+
+test "clear empties" {
+    var q: sq.Q = .{};
+    try sq.push(&q, "a");
+    try sq.push(&q, "b");
+    sq.clear(&q);
+    try t.expectEqual(@as(u32, 0), sq.count(&q));
+    try t.expect(sq.peek(&q) == null);
+}
+
+test "CRLF normalizes on push" {
+    var q: sq.Q = .{};
+    try sq.push(&q, "hello\r\nworld");
+    try t.expectEqualStrings("hello\nworld", sq.peek(&q).?);
+}
+
+test "canPromote truth table" {
+    const yes = sq.canPromote(.{
+        .editing = false,
+        .busy = false,
+        .has_pending_submit = false,
+        .has_pending_load_earlier = false,
+        .count = 1,
+    });
+    try t.expect(yes);
+    try t.expect(!sq.canPromote(.{
+        .editing = true,
+        .busy = false,
+        .has_pending_submit = false,
+        .has_pending_load_earlier = false,
+        .count = 1,
+    }));
+    try t.expect(!sq.canPromote(.{
+        .editing = false,
+        .busy = true,
+        .has_pending_submit = false,
+        .has_pending_load_earlier = false,
+        .count = 1,
+    }));
+    try t.expect(!sq.canPromote(.{
+        .editing = false,
+        .busy = false,
+        .has_pending_submit = true,
+        .has_pending_load_earlier = false,
+        .count = 1,
+    }));
+    try t.expect(!sq.canPromote(.{
+        .editing = false,
+        .busy = false,
+        .has_pending_submit = false,
+        .has_pending_load_earlier = true,
+        .count = 1,
+    }));
+    try t.expect(!sq.canPromote(.{
+        .editing = false,
+        .busy = false,
+        .has_pending_submit = false,
+        .has_pending_load_earlier = false,
+        .count = 0,
+    }));
+}
+
+var g_accept: bool = true;
+var g_seen: usize = 0;
+
+fn acceptSubmit(_: []const u8) bool {
+    g_seen += 1;
+    return g_accept;
+}
+
+test "promoteIf pops only after accept" {
+    var q: sq.Q = .{};
+    try sq.push(&q, "keep");
+    g_accept = false;
+    g_seen = 0;
+    try t.expect(!sq.promoteIf(&q, acceptSubmit));
+    try t.expectEqual(@as(usize, 1), g_seen);
+    try t.expectEqualStrings("keep", sq.peek(&q).?);
+
+    g_accept = true;
+    try t.expect(sq.promoteIf(&q, acceptSubmit));
+    try t.expectEqual(@as(u32, 0), sq.count(&q));
+}
+
+test "ITEM_BYTES matches the live Send cap" {
+    try t.expectEqual(@as(usize, 262144), sq.ITEM_BYTES);
+}

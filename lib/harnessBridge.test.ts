@@ -132,6 +132,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_ack_pending_submit: () => {
       pending = null;
     },
+    inv_queued_count: () => 0,
     inv_set_can_load_earlier: (v: number) => {
       canLoad = v ? 1 : 0;
       if (!canLoad) loadEarlier = false;
@@ -807,7 +808,7 @@ describe('skill_attached kind (protocol v12)', () => {
     // Distinct from the protocol version (13) — a hardcoded kind 13 would be an
     // unknown kind to the Wasm painter.
     expect(MessageKind.SkillAttached).not.toBe(HARNESS_PROTOCOL_VERSION);
-    expect(HARNESS_PROTOCOL_VERSION).toBe(17);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(18);
   });
 
   it('push/readback round-trips a skill_attached row', () => {
@@ -836,8 +837,8 @@ describe('setTurnElapsed (protocol v14)', () => {
     expect(exp.__turnElapsed()).toBe(0);
   });
 
-  it('version bumped to 17 and the export is REQUIRED (fail-closed when missing)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(17);
+  it('version bumped to 18 and the export is REQUIRED (fail-closed when missing)', () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe(18);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     // A rebuilt Wasm that omits inv_set_turn_elapsed fails bridge-load closed,
@@ -901,5 +902,17 @@ describe('status-slot pack (protocol v13)', () => {
     expect(bridge.setStatusSlot(0, '   ')).toBe(false);
     expect(bridge.setStatusSlot(0, 'x'.repeat(200))).toBe(false);
     expect(bridge.getStatusSlot(0)).toBe('');
+  });
+});
+
+describe('queuedCount (protocol v18)', () => {
+  it('reads inv_queued_count and fails closed when the export is missing', () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe(18);
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    expect(bridge.queuedCount()).toBe(0);
+    const record = exp as unknown as Record<string, unknown>;
+    delete record.inv_queued_count;
+    expect(isHarnessBridgeExports(record as unknown as WebAssembly.Exports)).toBe(false);
   });
 });

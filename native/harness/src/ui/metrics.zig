@@ -63,6 +63,9 @@ pub const TE_OVERHEAD: f32 = TE_BORDER_H; // 2
 /// Sticky last-user-message chip (plan #645, source issue #339).
 pub const CHIP_VISIBILITY_MARGIN: f32 = 8;
 
+/// Submit-queue band (plan #664): header + up to this many visible rows.
+pub const QUEUE_BAND_MAX_ROWS: u32 = 3;
+
 /// Gap (px) added to each slot's measured text width — matches the `margin.w`
 /// on each slot textLayout below, so the budget math equals the paint exactly.
 pub const STATUS_SLOT_GAP: f32 = 10;

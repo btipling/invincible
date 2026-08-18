@@ -13,6 +13,7 @@ const composer_text = @import("composer_text.zig");
 const ring_slot = @import("ring_slot.zig");
 const model_catalog = @import("model_catalog.zig");
 const session_catalog = @import("session_catalog.zig");
+const submit_queue = @import("submit_queue.zig");
 
 /// Bump on breaking export/layout changes. Must match `HARNESS_PROTOCOL_VERSION` in TS.
 /// v9: pending cancel (user Stop) — additive exports.
@@ -31,7 +32,9 @@ const session_catalog = @import("session_catalog.zig");
 /// v17: session-rail catalog + pending switch — `inv_clear_session_catalog`,
 /// `inv_push_session_catalog_entry`, `inv_set_current_session`,
 /// `inv_has_pending_session_switch` / len / copy / ack. Additive, now REQUIRED.
-pub const PROTOCOL_VERSION: u32 = 17;
+/// v18: submit-queue count — `inv_queued_count` (Wasm-ephemeral FIFO; host
+/// auto-continue must wait for 0). Additive, now REQUIRED.
+pub const PROTOCOL_VERSION: u32 = 18;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -121,6 +124,8 @@ var echo_len: u32 = 0;
 var pending_submit: [SUBMIT_CAP]u8 = undefined;
 var pending_submit_len: u32 = 0;
 var has_pending_submit: bool = false;
+/// Wasm-ephemeral operator follow-up FIFO (protocol v18).
+var queue: submit_queue.Q = .{};
 /// Host sets when SessionStore has messages older than the current ring window.
 var can_load_earlier: bool = false;
 var has_pending_load_earlier: bool = false;
@@ -231,6 +236,53 @@ pub fn queueSubmitFromUi(text: []const u8) void {
     refresh();
 }
 
+pub fn enqueueFromUi(text: []const u8) error{ Blank, Full }!void {
+    try submit_queue.push(&queue, text);
+    refresh();
+}
+
+/// Promote the queue head into `queueSubmitFromUi` when the turn is terminal
+/// and the operator is not mid-edit. Peek → submit → pop only if accepted.
+pub fn tryPromoteQueued(editing: bool) bool {
+    if (!submit_queue.canPromote(.{
+        .editing = editing,
+        .busy = lifecycle == .busy,
+        .has_pending_submit = has_pending_submit,
+        .has_pending_load_earlier = has_pending_load_earlier,
+        .count = submit_queue.count(&queue),
+    })) return false;
+    return submit_queue.promoteIf(&queue, promoteSubmit);
+}
+
+fn promoteSubmit(text: []const u8) bool {
+    queueSubmitFromUi(text);
+    return has_pending_submit;
+}
+
+pub fn queuedCount() u32 {
+    return submit_queue.count(&queue);
+}
+
+pub fn queuedItemAt(i: u32) ?[]const u8 {
+    return submit_queue.item(&queue, i);
+}
+
+pub fn clearSubmitQueue() void {
+    submit_queue.clear(&queue);
+    refresh();
+}
+
+pub fn removeQueuedAt(i: u32) void {
+    submit_queue.removeAt(&queue, i);
+    refresh();
+}
+
+pub fn replaceQueuedAt(i: u32, text: []const u8) bool {
+    submit_queue.replaceAt(&queue, i, text) catch return false;
+    refresh();
+    return true;
+}
+
 /// User Stop — discard unacked submit and signal host to abort. Does not set Ready.
 pub fn queueCancelFromUi() void {
     if (lifecycle != .busy and !has_pending_submit) return;
@@ -247,6 +299,7 @@ pub fn reset() void {
     echo_len = 0;
     has_pending_submit = false;
     pending_submit_len = 0;
+    submit_queue.clear(&queue);
     can_load_earlier = false;
     has_pending_load_earlier = false;
     has_pending_cancel = false;
@@ -473,6 +526,7 @@ export fn inv_clear_messages() void {
     // Hydrate / New must not leave a queued Send from the previous session.
     has_pending_submit = false;
     pending_submit_len = 0;
+    submit_queue.clear(&queue);
     image_cache.clear();
     math_cache.clear();
     refresh();
@@ -514,6 +568,11 @@ export fn inv_ack_pending_submit() void {
     has_pending_submit = false;
     pending_submit_len = 0;
     refresh();
+}
+
+/// Protocol v18 — host / future auto-continue reads the ephemeral queue depth.
+export fn inv_queued_count() u32 {
+    return submit_queue.count(&queue);
 }
 
 export fn inv_set_can_load_earlier(v: u8) void {
