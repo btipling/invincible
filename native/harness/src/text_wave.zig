@@ -1,7 +1,8 @@
 //! Generic reusable text wave — paints a string with a left-to-right cyclic
 //! color wave driven by a tick phase. Same module shape as `rect_spinner.zig`:
-//! callers pass a palette ramp (4-stop ColorRamp), a tag, and an id_extra
-//! base. No dependency on busy row / bridge / clock.
+//! callers pass a palette ramp (ColorRamp), a tag, and an id_extra base. The
+//! comet wave uses 3 of the 4 stops — ramp[3] is never indexed (reserved for
+//! rect_spinner off-cells). No dependency on busy row / bridge / clock.
 //!
 //! Wave algorithm: per-scalar `addText` with individual `.color_text` (the only
 //! way to vary color per glyph in dvui). STEPS=3 sub-char smoothing gives ~2.7 s
@@ -23,8 +24,10 @@
 //! per-scalar wave). Without it the comet would paint a dim muted/border tail
 //! at the string's trailing edge whenever the wave phase sits near index 0.
 //! The bridge reserves phase 0 for idle/stop/error — busy ticks map to 1..255
-//! and wrap at 255→1 (never 0), so the animation never flashes a tail after
-//! 12.8 s.
+//! and wrap at 255→1 at 10 Hz (never 0), so the animation wraps after 25.6 s.
+//! The 255→1 wrap is a single discontinuous frame (~7-glyph teleport at N=18)
+//! because the u8 phase range is incommensurate with the 27-tick comet period;
+//! fixing it requires a wider phase or a remap — not an occupancy tweak.
 
 const std = @import("std");
 const dvui = @import("dvui");
@@ -50,8 +53,9 @@ pub const Options = struct {
     text: []const u8,
     /// Current tick phase from busyTick() (u8, 1..255 while busy, 0 = idle).
     phase: u8,
-    /// 4-step palette ramp: [head, trail1, trail2, rest]. text_wave caps at
-    /// index 2 — ramp[3] is for rect_spinner off-cells, not body text.
+    /// Palette ramp: text_wave uses 3 stops — ramp[0] is head + accent rest,
+    /// ramp[1] is muted, ramp[2] is the single dark scalar. ramp[3] is never
+    /// indexed by text_wave (reserved for rect_spinner off-cells).
     ramp: rect_spinner.ColorRamp,
     /// dvui tag for the inner textLayout (e.g. "busy-waiting-text").
     tag: []const u8,

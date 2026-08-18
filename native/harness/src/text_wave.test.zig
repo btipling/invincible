@@ -174,6 +174,20 @@ test "UTF-8 safety: multi-byte scalar splits at codepoint boundary" {
     try t.expectEqual(@as(usize, 1), text_wave.colorStep(text_wave.trailDistance(1, 2.0, 4)));
 }
 
+test "headPosition: 255→1 wrap teleport — pin the discontinuous frame (review #671 L1+L9)" {
+    // The u8 phase 1..255 is incommensurate with the 27-tick comet period
+    // (period = 18*3 = 54 raw; 255*2 = 510; 510%54 = 24; head = 24/3 = 8.0).
+    // Next tick: phase 1 → raw=2; 2%54 = 2; head = 2/3 ≈ 0.667. The comet
+    // head teleports ~7 glyphs in one 100 ms frame. This test pins the
+    // pre-existing wrap so any follow-up remap can measure the delta.
+    // Fix: wider phase or wrap at a multiple of N*STEPS — not an occupancy tweak.
+    try t.expectApproxEqAbs(8.0, text_wave.headPosition(255, 18), 0.01);
+    try t.expectApproxEqAbs(0.667, text_wave.headPosition(1, 18), 0.05);
+    // The jump: |8.0 - 0.667| ≈ 7.33 scalars — a visible teleport.
+    const delta = @abs(text_wave.headPosition(255, 18) - text_wave.headPosition(1, 18));
+    try t.expect(delta > 5.0);
+}
+
 test "STEPS constant is 3, SPEED constant is 2" {
     try t.expectEqual(@as(usize, 3), text_wave.STEPS);
     try t.expectEqual(@as(u8, 2), text_wave.SPEED);
