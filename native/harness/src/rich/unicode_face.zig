@@ -42,10 +42,12 @@ pub fn isEmojiRelated(cp: u21) bool {
         0x25E7...0x25EA => true, // ◧◨◩◪
         0x25ED...0x25EE => true, // ◭◮
         0x25FB...0x25FE => true, // ◻◼◽◾
-        // Misc symbols + dingbats as emoji — except text check/ballot marks used in
-        // toolTrace ("✓ ok" / "✗ failed"). OpenMoji subset lacks those glyphs; DejaVu
-        // symbols has them (isSymbolRelated). Without this carve-out paint shows tofu.
-        0x2600...0x2712 => true,
+        // Misc symbols + dingbats as emoji — except text marks OpenMoji does
+        // not ship. U+2713…U+2718 (✓/✗) already sit in the hole before 0x2719.
+        // U+270E LOWER RIGHT PENCIL: OpenMoji subset lacks it (has U+270F ✏);
+        // DejaVu symbols has it → isSymbolRelated → .symbols (body + mono mixed).
+        0x2600...0x270D => true,
+        0x270F...0x2712 => true,
         0x2719...0x276D => true,
         // CLI dingbats 0x276E–0x27BF: carved out so ❯❮ and similar route to
         // isSymbolRelated → DejaVu (OpenMoji lacks them). Explicit emoji keepers
@@ -151,6 +153,17 @@ test "tool status check and ballot marks route to symbols not emoji" {
     try std.testing.expect(faceFor(0x2718) == .symbols);
     // Still-emoji dingbat (e.g. heavy black heart U+2764) stays emoji
     try std.testing.expect(faceFor(0x2764) == .emoji);
+}
+
+test "U+270E pencil routes to symbols not emoji" {
+    // OpenMoji subset lacks U+270E (it ships ✏ U+270F). DejaVu has 270E.
+    try std.testing.expect(!isEmojiRelated(0x270E));
+    try std.testing.expect(isSymbolRelated(0x270E));
+    try std.testing.expect(faceFor(0x270E) == .symbols);
+    // Neighbors stay emoji (OpenMoji has 270F; 270D/2712 stay in the emoji span)
+    try std.testing.expect(faceFor(0x270F) == .emoji);
+    try std.testing.expect(faceFor(0x270D) == .emoji);
+    try std.testing.expect(faceFor(0x2712) == .emoji);
 }
 
 test "utf8 stress sample splits emoji from latin" {

@@ -167,7 +167,7 @@ fn paintRow(src: std.builtin.SourceLocation, i: u32) void {
             beginEdit(i);
         }
     }
-    if (dvui.button(@src(), "×", .{}, .{
+    if (dvui.button(@src(), "✕", .{}, .{
         .gravity_y = 0.5,
         .style = .content,
         .font = chrome.composerIconFont(),

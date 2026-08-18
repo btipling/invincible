@@ -85,9 +85,10 @@ fn paintDiffText(
             const kind = classifyLine(line, in_hunk.*);
             if (std.mem.startsWith(u8, line, "@@")) in_hunk.* = true;
             const color = lineColor(kind, ctx);
-            // Mono (Vera) lacks U+23AF/U+2500/U+2501 — substitute U+2015 so a
-            // report banner inside a diff/patch fence does not tofu (paint-only).
-            mixed_text.addTextSubstituted(tl, line, .theme(.mono), .{
+            // Mixed: DejaVu for text symbols (✎ U+270E, arrows, …) at mono
+            // size; report-bar lookalike (U+23AF/U+2500/U+2501 → U+2015) stays
+            // inside addTextMixed. Substituted-only would pin Vera and tofu.
+            mixed_text.addTextMixed(tl, line, .theme(.mono), .{
                 .color_text = color,
             });
             if (at_nl and line_count.* + 1 < cap) {
