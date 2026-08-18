@@ -58,6 +58,13 @@ pub const WARM_RAMP: ColorRamp = .{ palette.warm_accent, palette.warm_muted, pal
 /// TEAL ramp — future chrome spinner (teal_accent → teal_muted → teal_border → teal_surface).
 pub const TEAL_RAMP: ColorRamp = .{ palette.teal_accent, palette.teal_muted, palette.teal_border, palette.teal_surface };
 
+/// TEAL idle ramp — all 8 cells `teal_muted` (static, no pulse). Used by the
+/// status-bar line-1 spinner when the lifecycle is non-Busy (Ready / boot / error).
+pub const TEAL_IDLE_RAMP: ColorRamp = .{
+    palette.teal_muted, palette.teal_muted,
+    palette.teal_muted, palette.teal_muted,
+};
+
 pub const Options = struct {
     /// Current tick phase (0..7, wraps internally).
     phase: u8,

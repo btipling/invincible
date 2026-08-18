@@ -20,6 +20,7 @@ const busy_row = @import("busy_row.zig");
 const transcript_split = @import("transcript_split.zig");
 const model_picker = @import("model_picker.zig");
 const chip_preview = @import("chip_preview.zig");
+const rect_spinner = @import("rect_spinner.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
@@ -213,15 +214,6 @@ fn kindLabel(kind: u8) []const u8 {
         6 => "tools",
         7 => "skill",
         else => "msg",
-    };
-}
-
-fn lifecycleLabel(l: bridge.Lifecycle) []const u8 {
-    return switch (l) {
-        .boot => "boot",
-        .ready => "ready",
-        .busy => "busy",
-        .err => "error",
     };
 }
 
@@ -940,7 +932,7 @@ const STATUS_PACK_BUDGET_SAFETY: f32 = 4;
 /// line 2 of the two-line bottom status bar (plan #555 → #554, header merged by
 /// plan #570); the budget is the bar's content-rect width minus the rounding-
 /// safety pad (`STATUS_PACK_BUDGET_SAFETY`). Line 1 holds identity controls
-/// (lifecycle · build id · model picker), so the pack shares the bar but each
+/// (spinner · build id · model picker), so the pack shares the bar but each
 /// line has its own fixed 32 px height — neither can displace the other. The pack
 /// still DROPS slots per `STATUS_SLOT_DROP_ORDER` then pixel-ellipsizes the
 /// survivor to fit, exactly as before (see the narrow-canvas ellipsize decision:
@@ -953,7 +945,7 @@ fn statusPackMaxWidth() f32 {
 /// Paint the right-aligned status-slot pack into line 2 of the two-line bottom
 /// status bar (protocol v13, plan #538/#541/#554, header merged by plan #570).
 /// Line 2 is a fixed 32 px horizontal row sharing the 64 px bar with the identity
-/// row (line 1: lifecycle · build id · model picker); each line has its own
+/// row (line 1: spinner · build id · model picker); each line has its own
 /// explicit height so neither can displace the other. A narrow canvas DROPS slots
 /// per `STATUS_SLOT_DROP_ORDER` then pixel-ellipsizes the kept slot to fit.
 /// Sandbox + cwd render as muted TEAL one-liners (WARM when busy); an empty slot
@@ -1575,7 +1567,7 @@ pub fn frame() !void {
         });
         defer bar.deinit();
 
-        // Line 1: identity (lifecycle · build id · model picker)
+        // Line 1: identity (spinner · build id · model picker)
         // Each line gets exactly STATUS_BAR_H/2 = 32 px so the picker trigger
         // (PICKER_TRIGGER_H = 32) fills its row without clipping line 2.
         {
@@ -1587,15 +1579,14 @@ pub fn frame() !void {
             });
             defer line1.deinit();
 
-            {
-                var tl = dvui.textLayout(@src(), .{}, .{
-                    .background = false,
-                    .color_text = if (busy) palette.warm_accent else palette.teal_muted,
-                    .gravity_y = 0.5,
-                });
-                tl.format("{s}", .{lifecycleLabel(life)}, .{});
-                tl.deinit();
-            }
+            // Spinner: idle = TEAL_IDLE_RAMP (static teal_muted grid),
+            // busy = WARM_RAMP pulse (plan #651).
+            rect_spinner.paint(@src(), .{
+                .phase = if (busy) bridge.busyTick() else 0,
+                .ramp = if (busy) rect_spinner.WARM_RAMP else rect_spinner.TEAL_IDLE_RAMP,
+                .tag_prefix = "status-spinner",
+                .id_extra = 0x61_0105,
+            });
             {
                 var tl = dvui.textLayout(@src(), .{}, .{
                     .background = false,
