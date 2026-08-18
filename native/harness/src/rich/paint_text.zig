@@ -8,6 +8,7 @@ const palette = @import("../palette.zig");
 const image_cache = @import("image_cache.zig");
 const math_cache = @import("math_cache.zig");
 const link_url = @import("link_url.zig");
+const link_click = @import("link_click.zig");
 
 /// `[^` + label≤32 + `]` fits in 36 bytes; pad for safety.
 const MAX_FN_MARK: usize = 48;
@@ -88,13 +89,25 @@ pub fn paintInlines(tl: *dvui.TextLayoutWidget, inlines: []const parse.Inline, c
                 const href = inl.href orelse "";
                 if (style_mod.isSafeLinkUrl(href)) {
                     const label = if (inl.text.len > 0) inl.text else href;
-                    tl.addLink(.{
-                        .text = label,
-                        .url = href,
-                    }, .{
+                    if (tl.addTextClick(label, .{
                         .color_text = st.link_text,
                         .font = font.withUnderline(.{}),
-                    });
+                    })) |ev| {
+                        const p: link_click.Pointer = switch (ev) {
+                            .mouse => |me| .{
+                                .right = me.button == .right,
+                                .middle = me.button == .middle,
+                                .alt = me.mod.alt(),
+                                .ctrl_cmd = me.mod.matchBind("ctrl/cmd"),
+                            },
+                            else => .{},
+                        };
+                        switch (link_click.kind(p)) {
+                            .copy => dvui.clipboardTextSet(href),
+                            .open => _ = dvui.openURL(.{ .url = href, .new_window = false }),
+                            .open_new => _ = dvui.openURL(.{ .url = href, .new_window = true }),
+                        }
+                    }
                 } else {
                     mixed_text.addTextMixed(tl, if (inl.text.len > 0) inl.text else href, font, .{ .color_text = st.body_text });
                 }

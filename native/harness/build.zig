@@ -14,6 +14,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .backend = .web,
     });
+    // plan #647: dedicated right-click branch in vendored TextLayoutWidget.
+    // zig-pkg is extracted by b.dependency; compile steps created below see the
+    // patched file. Idempotent (marker comment).
+    applyInvincibleRightClickPatch(b, dvui_dep);
 
     // Phase 1 rich transcript (#143): zmd (MIT) markdown parser, freestanding.
     const zmd_dep = b.dependency("zmd", .{
@@ -166,7 +170,7 @@ pub fn build(b: *std.Build) void {
     test_parse.dependOn(&run_parse_tests.step);
 
     // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
-    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + text_wave (#655) + rect_spinner (#651) + busy_spinner + elapsed_clock + model_catalog + session_catalog");
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, link_click, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + text_wave (#655) + rect_spinner (#651) + busy_spinner + elapsed_clock + model_catalog + session_catalog");
     test_rich.dependOn(&run_parse_tests.step);
 
     const cache_tests = b.addTest(.{
@@ -321,6 +325,20 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_rich.dependOn(&b.addRunArtifact(link_tests).step);
+
+    // Host unit tests for link_click.zig (plan #647): copy vs open vs open_new.
+    // Pure pointer flags, no dvui.
+    {
+        const link_click_tests = b.addTest(.{
+            .name = "rich-link-click",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/rich/link_click.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(link_click_tests).step);
+    }
 
     const image_cache_tests = b.addTest(.{
         .name = "rich-image-cache",
@@ -580,4 +598,101 @@ pub fn build(b: *std.Build) void {
         mixed_text_lookalike_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
         test_rich.dependOn(&b.addRunArtifact(mixed_text_lookalike_tests).step);
     }
+}
+
+/// plan #647 — insert a dedicated right-click press/release branch into vendored
+/// `TextLayoutWidget.processEvent`. Must NOT OR `.right` into the left/middle
+/// selection gate (that starts `dragPreStart` / `sel_move`).
+///
+/// Runs at build-file eval, after `b.dependency("dvui")` has extracted zig-pkg.
+/// Idempotent via the `invincible: dedicated right-click` marker.
+/// Fail-closed: every error path is fatal — if the vendored branch cannot be
+/// applied the build must fail (review #662 L1+L4+L6).
+fn applyInvincibleRightClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency) void {
+    const io = b.graph.io;
+    const widget = resolveDvuiWidgetPath(b, io, dvui_dep) orelse {
+        @panic("plan #647: TextLayoutWidget.zig not found — right-click patch cannot be applied (fail-closed)");
+    };
+    const widget_dirname = std.fs.path.dirname(widget) orelse
+        @panic("plan #647: cannot resolve parent dir of TextLayoutWidget.zig path");
+    const widget_basename = std.fs.path.basename(widget);
+
+    var widget_parent_dir = std.Io.Dir.openDirAbsolute(io, widget_dirname, .{}) catch |err| {
+        std.debug.panic("plan #647: openDirAbsolute({s}) failed: {}", .{ widget_dirname, err });
+    };
+    defer widget_parent_dir.close(io);
+
+    const src = std.Io.Dir.readFileAlloc(widget_parent_dir, io, widget_basename, b.allocator, .limited(4 * 1024 * 1024)) catch |err| {
+        std.debug.panic("plan #647: read {s} failed: {}", .{ widget, err });
+    };
+    if (std.mem.indexOf(u8, src, "invincible: dedicated right-click") != null) return;
+
+    const needle = "            } else if (me.action == .motion and dvui.captured(self.data().id)) {";
+    const insert =
+        \\            } else if (me.action == .press and me.button == .right) {
+        \\                // invincible: dedicated right-click — capture only, no drag/select
+        \\                e.handle(@src(), self.data());
+        \\                dvui.captureMouse(self.data(), e.num);
+        \\            } else if (me.action == .release and me.button == .right) {
+        \\                // invincible: dedicated right-click — set click_pt for addTextClick
+        \\                e.handle(@src(), self.data());
+        \\                if (dvui.captured(self.data().id)) {
+        \\                    self.click_pt = self.data().contentRectScale().pointFromPhysical(me.p);
+        \\                    self.click_event = e.evt;
+        \\                    dvui.captureMouse(null, e.num);
+        \\                    dvui.dragEnd();
+        \\                }
+        \\            } else if (me.action == .motion and dvui.captured(self.data().id)) {
+    ;
+    const idx = std.mem.indexOf(u8, src, needle) orelse {
+        @panic("plan #647: right-click needle not found in TextLayoutWidget.zig — dvui pin may have drifted; update the needle in build.zig applyInvincibleRightClickPatch");
+    };
+    const new_src = std.mem.concat(b.allocator, u8, &.{ src[0..idx], insert, src[idx + needle.len ..] }) catch
+        @panic("plan #647: OOM concatenating right-click patch");
+
+    var file = widget_parent_dir.createFile(io, widget_basename, .{}) catch |err| {
+        std.debug.panic("plan #647: createFile {s} failed: {}", .{ widget, err });
+    };
+    defer file.close(io);
+    file.writeStreamingAll(io, new_src) catch |err| {
+        std.debug.panic("plan #647: writeStreamingAll {s} failed: {}", .{ widget, err });
+    };
+}
+
+fn resolveDvuiWidgetPath(b: *std.Build, io: std.Io, dvui_dep: *std.Build.Dependency) ?[]const u8 {
+    const lp = dvui_dep.path("src/widgets/TextLayoutWidget.zig");
+    const Lp = @TypeOf(lp);
+    if (@hasDecl(Lp, "getPath")) {
+        return lp.getPath(b);
+    }
+    if (@hasDecl(Lp, "getPath3")) {
+        const p = lp.getPath3(b, null);
+        return b.pathResolve(&.{ p.root_dir.path orelse ".", p.sub_path });
+    }
+    return findTextLayoutWidgetOnDisk(b, io);
+}
+
+fn findTextLayoutWidgetOnDisk(b: *std.Build, io: std.Io) ?[]const u8 {
+    const roots = [_][]const u8{ "zig-pkg", ".zig-cache", "zig-cache" };
+    for (roots) |root| {
+        if (walkForWidget(b, io, root)) |p| return p;
+    }
+    return null;
+}
+
+fn walkForWidget(b: *std.Build, io: std.Io, root: []const u8) ?[]const u8 {
+    // Resolve root relative to build root (Zig 0.16: no std.fs.cwd()).
+    const build_root_abs = b.build_root.getPath(b);
+    const full_root = std.fs.path.join(b.allocator, &.{ build_root_abs, root }) catch return null;
+    var dir = std.Io.Dir.openDirAbsolute(io, full_root, .{ .iterate = true }) catch return null;
+    defer dir.close(io);
+    var it = dir.walk(b.allocator) catch return null;
+    defer it.deinit();
+    while (it.next() catch null) |ent| {
+        if (ent.kind != .file) continue;
+        if (std.mem.eql(u8, ent.basename, "TextLayoutWidget.zig")) {
+            return std.fs.path.join(b.allocator, &.{ root, ent.path }) catch return null;
+        }
+    }
+    return null;
 }
