@@ -466,6 +466,7 @@ export async function refreshGitStatusSlot(
     // Rate-limited replies carry the cached value and are not a clear; only a
     // genuinely empty probe result clears the git slot.
     if (typeof data.value === 'string' && data.value.length > 0) {
+      if (data.value.startsWith('@')) return; // SHA-only partial probe → unreliable; keep last honest branch@sha
       bridge.setStatusSlot(StatusSlot.Git, truncateStatusValue(data.value));
     } else {
       bridge.clearStatusSlot(StatusSlot.Git);

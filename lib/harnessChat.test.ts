@@ -2853,6 +2853,76 @@ describe('refreshGitStatusSlot (phase 2, plan #540)', () => {
     expect(painted.endsWith('…')).toBe(true);
     expect(new TextEncoder().encode(painted).length).toBeLessThanOrEqual(96);
   });
+
+  it('suppresses a SHA-only value (@abc1234) — keeps the last honest branch@sha (plan #660)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setStatusSlot(StatusSlot.Git, 'main@abc1234');
+    stubFetch({ value: '@abc1234' });
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s'), activeSandboxId: 'sbx_x' });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc1234');
+  });
+
+  it('passes through a normal branch@sha value (does not start with @)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubFetch({ value: 'main@abc1234' });
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s'), activeSandboxId: 'sbx_x' });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc1234');
+  });
+
+  it('passes through a dirty branch@sha value (does not start with @)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubFetch({ value: 'main@abc1234*' });
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s'), activeSandboxId: 'sbx_x' });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc1234*');
+  });
+
+  it('passes through a branch-only value (no @ prefix, no sha)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubFetch({ value: 'main' });
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s'), activeSandboxId: 'sbx_x' });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main');
+  });
+
+  it('clears the slot on genuinely empty probe after SHA-only was suppressed earlier (not stale)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // First: SHA-only probe → suppressed (keep main@abc).
+    bridge.setStatusSlot(StatusSlot.Git, 'main@abc');
+    stubFetch({ value: '@xyz' });
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
+    // Then: a real clear (empty value) → clear the slot.
+    stubFetch({ value: '' });
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('');
+  });
+
+  it('SHA-only suppression does not fire on network error (keep-last still works)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setStatusSlot(StatusSlot.Git, 'main@abc');
+    // network throw — code path never reaches the @ guard.
+    fetchMock = vi.fn(async () => {
+      throw new Error('network down');
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
+  });
+
+  it('SHA-only suppression does not fire on 429 (keep-last code path before guard)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setStatusSlot(StatusSlot.Git, 'main@abc');
+    stubFetch({ value: '@abc1234' }, true, 429);
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
+    // 429 short-circuits before the JSON parse → before the @ guard.
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
+  });
 });
 describe('hydrate/turn-refresh git wiring (phase 2, plan #540 — pr #544 #3)', () => {
   const realFetch = global.fetch;
