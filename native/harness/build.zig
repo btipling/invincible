@@ -691,7 +691,7 @@ fn walkForWidget(b: *std.Build, io: std.Io, root: []const u8) ?[]const u8 {
     while (it.next() catch null) |ent| {
         if (ent.kind != .file) continue;
         if (std.mem.eql(u8, ent.basename, "TextLayoutWidget.zig")) {
-            return std.fs.path.join(b.allocator, &.{ root, ent.path }) catch return null;
+            return std.fs.path.join(b.allocator, &.{ build_root_abs, root, ent.path }) catch return null;
         }
     }
     return null;
