@@ -26,6 +26,7 @@ const chip = @import("ui/chip.zig");
 const status = @import("ui/status.zig");
 const skill = @import("ui/skill.zig");
 const composer = @import("ui/composer.zig");
+const queue_band = @import("ui/queue_band.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
@@ -47,7 +48,7 @@ pub fn onDeinit() void {}
 
 pub fn frame() !void {
     const life = bridge.getLifecycle();
-    const busy = life == .busy;
+    var busy = life == .busy;
 
     // Full-bleed root. Children that use Options.rect do not report min-size up
     // the tree (WidgetData.minSizeReportToParent) — required so tall transcript
@@ -79,10 +80,12 @@ pub fn frame() !void {
     // clamped to [IDLE, MAX], so the band hugs the field at idle (~44 px) and
     // grows up as lines wrap (adversarial review #584 Round 2 Major L1+L9).
     const composer_h = @max(metrics.COMPOSER_IDLE_CHROME_H, @min(state.composer_last_h, metrics.COMPOSER_MAX_CHROME_H));
+    const queue_band_h = @max(0, state.prev_queue_band_h);
     const status_y = avail.h - metrics.STATUS_BAR_H;
     const composer_y = status_y - composer_h;
+    const queue_band_y = composer_y - queue_band_h;
     const scroll_y: f32 = 0;
-    const scroll_h: f32 = @max(metrics.SCROLL_FLOOR_H, composer_y - scroll_y);
+    const scroll_h: f32 = @max(metrics.SCROLL_FLOOR_H, queue_band_y - scroll_y);
     // Read pane width *before* paint so a same-frame toggle cannot desync the
     // rail rect from the scrollArea x (IMGUI: click takes effect next frame).
     const pane_w = transcript_split.paneWidth();
@@ -121,8 +124,19 @@ pub fn frame() !void {
     // appending at), not a message count, so membership survives saturation/wrap.
     {
         const cur_lc: thinking_collapse.Lifecycle = @enumFromInt(@intFromEnum(life));
-        state.thinking_collapse_state.onLifecycleTransition(state.prev_lifecycle, cur_lc, bridge.messageHead());
+        const prev_lc = state.prev_lifecycle;
+        state.thinking_collapse_state.onLifecycleTransition(prev_lc, cur_lc, bridge.messageHead());
         state.prev_lifecycle = cur_lc;
+        const terminal = cur_lc == .ready or cur_lc == .err;
+        const trigger_a = prev_lc == .busy and terminal;
+        const trigger_b = state.queue_closed_edit and terminal;
+        state.queue_closed_edit = false;
+        const editing = state.queue_editing_index != null;
+        if ((trigger_a or trigger_b) and !editing) {
+            if (bridge.tryPromoteQueued(false)) {
+                busy = true;
+            }
+        }
     }
     var user_scroll: dvui.Point = .{};
     {
@@ -411,6 +425,12 @@ pub fn frame() !void {
         break :blk msg_y < view_top - metrics.CHIP_VISIBILITY_MARGIN;
     } else false;
 
+    // ── Submit queue band (absolute rect — above composer, below transcript) ──
+    if (queue_band_h > 0) {
+        queue_band.paint(queue_band_y, queue_band_h, avail.w);
+    }
+    state.prev_queue_band_h = queue_band.desiredHeight();
+
     // ── Composer chrome (absolute rect — hugs one line, grows up to cap) ───
     // Dynamic height: previous-frame measured via composer_last_h, clamped to
     // [COMPOSER_IDLE_CHROME_H, COMPOSER_MAX_CHROME_H]. At idle the band is ~44 px
@@ -439,7 +459,7 @@ pub fn frame() !void {
         // list and mark it handled — which also stops the widget from inserting
         // a stray newline for the submit keystroke.
         var composer_submit = false;
-        if (!busy) {
+        {
             const es = dvui.events();
             for (0..es.len) |idx| {
                 const e = &es[idx];
@@ -513,7 +533,7 @@ pub fn frame() !void {
             const content_h = @max(metrics.TOUCH_H, @min(raw_content, metrics.COMPOSER_INPUT_MAX_H));
             state.composer_last_h = @max(metrics.COMPOSER_IDLE_CHROME_H, @min(content_h + 2 * metrics.COMPOSER_HUG_PAD, metrics.COMPOSER_MAX_CHROME_H));
             if (composer_submit and typed.len > 0) {
-                composer.submitText(typed);
+                composer.submitOrEnqueue(typed);
                 typed = state.prompt_buf[0..0];
                 state.want_composer_focus = true;
             }
@@ -525,7 +545,20 @@ pub fn frame() !void {
         // top-bar Busy chip). Idle ▶ = Send (submit when non-empty); Busy ■ =
         // Stop/cancel (protocol v9 pending cancel → host abort). Glyphs come
         // from the embedded DejaVu Sans Symbols face so they never tofu.
+        // Idle ▶ = Send. Busy ▶ = enqueue + ■ Stop (protocol v9).
         if (busy) {
+            if (dvui.button(@src(), "▶", .{}, .{
+                .gravity_y = 1.0,
+                .style = .highlight,
+                .font = chrome.composerIconFont(),
+                .min_size_content = .{ .w = metrics.TOUCH_H, .h = metrics.TOUCH_H },
+                .corners = .round(8),
+            })) {
+                if (typed.len > 0) {
+                    composer.submitOrEnqueue(typed);
+                    state.want_composer_focus = true;
+                }
+            }
             if (dvui.button(@src(), "■", .{}, .{
                 .gravity_y = 1.0,
                 .style = .content,
@@ -546,7 +579,7 @@ pub fn frame() !void {
             .corners = .round(8),
         })) {
             if (typed.len > 0) {
-                composer.submitText(typed);
+                composer.submitOrEnqueue(typed);
                 state.want_composer_focus = true;
             }
         }

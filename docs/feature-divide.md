@@ -128,7 +128,7 @@ re-resolved each turn.
 | Concern | Path |
 |---------|------|
 | Host shell | `app/harness/HarnessHost.tsx` |
-| Bridge TS (protocol **v17**) | `lib/harnessBridge.ts` |
+| Bridge TS (protocol **v18**) | `lib/harnessBridge.ts` |
 | Image fetch/decode | `lib/harnessImages.ts` |
 | Model catalog API | `app/api/models/route.ts` |
 | Admin inference keys | `app/admin/inference/*` |
@@ -141,7 +141,7 @@ re-resolved each turn.
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
 | Export whitelist | `native/harness/build.zig` |
 
-Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **17** — 13 added the additive status-slot store; 14 the scalar turn-clock feed `inv_set_turn_elapsed`; 15 added the busy-tick `inv_set_busy_tick`; 16 added model-selection persistence `inv_set_selected_model` + pending-model-change; **17** adds the session-rail catalog + pending switch).
+Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **18** — 13 added the additive status-slot store; 14 the scalar turn-clock feed `inv_set_turn_elapsed`; 15 added the busy-tick `inv_set_busy_tick`; 16 added model-selection persistence `inv_set_selected_model` + pending-model-change; 17 added the session-rail catalog + pending switch; **18** adds `inv_queued_count` for the in-canvas submit queue).
 Mismatch → load error; rebuild both sides. Image **bytes** enter only via bridge put; never dual DOM `<img>` product surface.
 
 ## Related

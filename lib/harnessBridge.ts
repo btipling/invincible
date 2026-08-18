@@ -30,7 +30,8 @@ import {
 // v17: session-rail catalog + pending switch — `inv_clear_session_catalog`,
 // `inv_push_session_catalog_entry`, `inv_set_current_session`,
 // `inv_has_pending_session_switch` / len / copy / ack. Additive, now REQUIRED.
-export const HARNESS_PROTOCOL_VERSION = 17 as const;
+// v18: submit-queue count — `inv_queued_count` (Wasm-ephemeral FIFO). Additive, now REQUIRED.
+export const HARNESS_PROTOCOL_VERSION = 18 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -144,6 +145,7 @@ export type HarnessBridgeExports = {
   inv_pending_submit_len: () => number;
   inv_pending_submit_copy: (outPtr: number, maxLen: number) => number;
   inv_ack_pending_submit: () => void;
+  inv_queued_count: () => number;
   inv_set_can_load_earlier: (v: number) => void;
   inv_has_pending_load_earlier: () => number;
   inv_ack_pending_load_earlier: () => void;
@@ -226,6 +228,7 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_pending_submit_len',
   'inv_pending_submit_copy',
   'inv_ack_pending_submit',
+  'inv_queued_count',
   'inv_set_can_load_earlier',
   'inv_has_pending_load_earlier',
   'inv_ack_pending_load_earlier',
@@ -556,6 +559,11 @@ export class HarnessBridge {
 
   hasPendingSubmit(): boolean {
     return this.exports.inv_has_pending_submit() !== 0;
+  }
+
+  /** Protocol v18 — Wasm-ephemeral follow-up queue depth. */
+  queuedCount(): number {
+    return this.exports.inv_queued_count();
   }
 
   /** Read + ack pending Wasm→JS submit, or null if none. */

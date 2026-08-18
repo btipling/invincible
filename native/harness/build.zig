@@ -87,6 +87,7 @@ pub fn build(b: *std.Build) void {
         "inv_pending_submit_len",
         "inv_pending_submit_copy",
         "inv_ack_pending_submit",
+        "inv_queued_count",
         "inv_set_can_load_earlier",
         "inv_has_pending_load_earlier",
         "inv_ack_pending_load_earlier",
@@ -170,7 +171,7 @@ pub fn build(b: *std.Build) void {
     test_parse.dependOn(&run_parse_tests.step);
 
     // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
-    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, link_click, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + text_wave (#655) + rect_spinner (#651) + busy_spinner + elapsed_clock + model_catalog + session_catalog");
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, link_click, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + text_wave (#655) + rect_spinner (#651) + busy_spinner + elapsed_clock + model_catalog + session_catalog + submit_queue + queue_preview");
     test_rich.dependOn(&run_parse_tests.step);
 
     const cache_tests = b.addTest(.{
@@ -225,6 +226,30 @@ pub fn build(b: *std.Build) void {
             }),
         });
         test_rich.dependOn(&b.addRunArtifact(chip_preview_tests).step);
+    }
+
+    // Host unit tests for submit_queue.zig + queue_preview.zig (plan #664).
+    {
+        const submit_queue_tests = b.addTest(.{
+            .name = "submit_queue",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/submit_queue.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(submit_queue_tests).step);
+    }
+    {
+        const queue_preview_tests = b.addTest(.{
+            .name = "queue_preview",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/queue_preview.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(queue_preview_tests).step);
     }
 
     // Host unit tests for elapsed_clock.zig (plan #567, protocol v14 turn-clock

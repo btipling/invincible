@@ -127,6 +127,7 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_pending_submit_len: () => 0,
     inv_pending_submit_copy: () => 0,
     inv_ack_pending_submit: () => {},
+    inv_queued_count: () => 0,
     inv_set_can_load_earlier: (v: number) => {
       canLoadEarlier = v ? 1 : 0;
     },

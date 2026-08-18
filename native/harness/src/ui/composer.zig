@@ -21,3 +21,18 @@ pub fn submitText(text: []const u8) void {
     bridge.queueSubmitFromUi(norm.text);
     clearPrompt();
 }
+
+pub fn submitOrEnqueue(text: []const u8) void {
+    const norm = composer_text.normalizeInto(text, state.prompt_buf[0..], bridge.SUBMIT_CAP);
+    if (norm.is_blank) {
+        clearPrompt();
+        return;
+    }
+    if (bridge.getLifecycle() == .busy) {
+        bridge.enqueueFromUi(norm.text) catch return;
+        clearPrompt();
+        return;
+    }
+    bridge.queueSubmitFromUi(norm.text);
+    clearPrompt();
+}
