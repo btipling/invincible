@@ -166,7 +166,7 @@ pub fn build(b: *std.Build) void {
     test_parse.dependOn(&run_parse_tests.step);
 
     // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
-    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + rect_spinner (#651)");
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + text_wave (#655) + rect_spinner (#651) + busy_spinner + elapsed_clock + model_catalog + session_catalog");
     test_rich.dependOn(&run_parse_tests.step);
 
     const cache_tests = b.addTest(.{
@@ -277,6 +277,23 @@ pub fn build(b: *std.Build) void {
             }),
         });
         test_rich.dependOn(&b.addRunArtifact(busy_spinner_tests).step);
+    }
+
+    // Host unit tests for text_wave.zig (plan #655): head position, cyclic
+    // distance, color-step mapping, scalar count, empty/single-char/UTF-8 edges,
+    // full-cycle ramp coverage. Pure logic, no dvui frame — but text_wave.zig
+    // imports dvui (via rect_spinner.ColorRamp), so add dvui_testing.
+    {
+        const text_wave_tests = b.addTest(.{
+            .name = "text_wave",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/text_wave.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        text_wave_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
+        test_rich.dependOn(&b.addRunArtifact(text_wave_tests).step);
     }
 
     // Host unit tests for rect_spinner.zig (plan #651 L6 lock): TEAL_IDLE_RAMP

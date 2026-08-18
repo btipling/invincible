@@ -1,7 +1,7 @@
 //! Busy-row chrome — the 2×4 WARM spinner (plan #574, extracted to
-//! `rect_spinner.zig` in #607) + "Waiting for model…" + optional v14
-//! ` · mm:ss` clock, painted as nested dvui boxes + a text layout sharing one
-//! horizontal row container.
+//! `rect_spinner.zig` in #607) + text-wave "Waiting for model…" (plan #655,
+//! extracted to `text_wave.zig`) + optional v14 ` · mm:ss` clock, painted as
+//! nested dvui boxes + two text layouts sharing one horizontal row container.
 //!
 //! Standalone on purpose (no `ui.zig` / `bridge` / wasm-web glue) so the host
 //! dvui **testing-backend** test `busy_row_layout.test.zig` can run the exact
@@ -27,6 +27,7 @@ const std = @import("std");
 const dvui = @import("dvui");
 const palette = @import("palette.zig");
 const rect_spinner = @import("rect_spinner.zig");
+const text_wave = @import("text_wave.zig");
 const elapsed_clock = @import("elapsed_clock.zig");
 
 /// Re-export geometry constants from `rect_spinner.zig` for backward compat
@@ -54,6 +55,7 @@ pub const TRAIL: f32 = 6;
 const LEAD_WRAPPER_ID = 0x60_0050;
 const SPINNER_ID = 0x60_00a0;
 const ROW_CONTAINER_ID = 0x60_0000;
+const TEXT_WAVE_ID = 0x60_0100;
 const TEXT_ID = 0xffff_ffff;
 
 /// Paint the whole busy row (spinner + "Waiting for model…" + optional v14
@@ -85,25 +87,32 @@ pub fn paintBusyRow(phase: u8, turn_elapsed: u32) void {
         .id_extra = SPINNER_ID,
         .margin_right = TRAIL,
     });
-    {
+    text_wave.paint(src, .{
+        .text = "Waiting for model…",
+        .phase = phase,
+        .ramp = rect_spinner.WARM_RAMP,
+        .tag = "busy-waiting-text",
+        .id_extra = TEXT_WAVE_ID,
+    });
+    // Protocol v14 — whole-turn clock: paint ` · mm:ss` only while > 0 so
+    // no bare `0:00` lingers at t=0. Skip the textLayout entirely at t=0
+    // (no ghost padded box between the wave and nothing). The host resets
+    // to 0 on idle/stop/error/clear. Reduced motion keeps this clock
+    // (plan #574 Major).
+    if (turn_elapsed > 0) {
         var tl = dvui.textLayout(src, .{}, .{
             .expand = .horizontal,
             .background = false,
             .color_text = palette.warm_accent,
             .gravity_y = 0.5,
-            .tag = "busy-waiting-text",
+            .padding = dvui.Rect.all(0),
+            .tag = "busy-clock-text",
             .id_extra = TEXT_ID,
         });
-        tl.addText("Waiting for model…", .{});
-        // Protocol v14 — whole-turn clock: append ` · mm:ss` only while > 0 so
-        // no bare `0:00` lingers at t=0. The host resets to 0 on idle/stop/
-        // error/clear. Reduced motion keeps this clock (plan #574 Major).
-        if (turn_elapsed > 0) {
-            var clock_buf: [32]u8 = undefined;
-            const clock = elapsed_clock.formatElapsedClock(&clock_buf, turn_elapsed);
-            tl.addText(" · ", .{});
-            tl.addText(clock, .{});
-        }
-        tl.deinit();
+        defer tl.deinit();
+        var clock_buf: [32]u8 = undefined;
+        const clock = elapsed_clock.formatElapsedClock(&clock_buf, turn_elapsed);
+        tl.addText(" · ", .{});
+        tl.addText(clock, .{});
     }
 }
