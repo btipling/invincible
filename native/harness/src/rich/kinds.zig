@@ -14,8 +14,9 @@ pub const KIND_TOOL: u8 = 6;
 pub const KIND_SKILL: u8 = 7;
 
 /// User, assistant, and thinking monologues get GFM. System/tool-run lines and
-/// errors stay plain (tool-run has its own custom expandable paint in ui.zig;
-/// skill rows have a compact headerless paint in ui.zig).
+/// errors stay plain (tool-run has its own custom expandable paint in
+/// `ui/toolrun.zig`; skill rows have a compact headerless paint in
+/// `ui/skill.zig`).
 pub fn shouldPaintMarkdown(kind: u8) bool {
     return kind == KIND_USER or kind == KIND_ASSISTANT or kind == KIND_THINKING;
 }

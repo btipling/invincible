@@ -9,7 +9,7 @@
 //!     newest slot.
 //!   - When a turn **completes** (Busy -> ready/err), every committed thinking
 //!     row collapses to the compact expandable control. Re-clicking a row opens
-//!     it (operator set lives in `ui.zig`, in-memory only — thinking is
+//!     it (operator set lives in `ui/state.zig`, in-memory only — thinking is
 //!     ephemeral and never survives refresh).
 //!
 //! Turn membership is decided by **physical ring-slot contiguity**, not by a

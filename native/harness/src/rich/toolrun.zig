@@ -236,7 +236,7 @@ test "decode tolerates malformed item lines" {
 }
 
 test "ui id packing is unique for a full group and across rows" {
-    // Mirrors the IMGUI id scheme in ui.zig paintToolRun: each item owns a
+    // Mirrors the IMGUI id scheme in `ui/toolrun.zig` paintToolRun: each item owns a
     // `item_stride`-wide namespace (`it_id * item_stride + slot`) under a row
     // that advances by `row_step` = msg_index *% 1000003. Serves as the
     // reviewer-requested cheap guard that MAX_ITEMS items never alias.
