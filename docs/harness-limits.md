@@ -21,7 +21,7 @@ click/tap scrolls the transcript so the message is back in view near the top.
 | Topic | Behavior |
 |-------|----------|
 | When visible | The last user message's top edge is above the viewport top (with an 8 px margin to prevent flicker at the boundary). Hidden when the message is already visible or when there are no user messages |
-| Preview | First line of the user message, capped at 100 bytes, UTF-8 safe (never mojibake). A leading slash command (e.g. `/skill-name`) is stripped when body text follows; the slash command itself is shown when it's the only text |
+| Preview | First line of the user message, capped at 100 bytes, UTF-8 safe (never mojibake). A leading slash command (e.g. `/skill-name`) is stripped when body text follows; the slash command itself is shown when it's the only text. Jump hint is U+2191 `↑` via the same body + DejaVu mixed paint as rich text (`addTextMixed`) — Noto has no Arrows block; do not pin the whole chip on `fontSymbols()` (no Latin) |
 | Click / tap | Scrolls the transcript so the last user message is aligned at the top of the viewport. Chip hides on the next frame (message is now visible) |
 | New user send | Replaces the tracked message; chip tracks the new last user message |
 | Clear / New session | Removes the chip — no user messages remain |
