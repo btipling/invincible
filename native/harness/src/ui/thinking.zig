@@ -1,6 +1,7 @@
 //! Thinking-row paint: expandable control + full GFM monologue (#424).
 const std = @import("std");
 const dvui = @import("dvui");
+const bridge = @import("../bridge.zig");
 const palette = @import("../palette.zig");
 const chip_preview = @import("../chip_preview.zig");
 const rich = @import("../rich/root.zig");
