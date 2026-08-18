@@ -717,7 +717,7 @@ fn paintLastUserChip(
             .gravity_y = 0.5,
             .expand = .horizontal,
         });
-        mixed_text.addTextMixed(&tl, label, body, .{ .color_text = palette.teal_text });
+        mixed_text.addTextMixed(tl, label, body, .{ .color_text = palette.teal_text });
         tl.deinit();
     }
     bw.drawFocus();
