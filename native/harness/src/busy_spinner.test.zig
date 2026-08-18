@@ -96,3 +96,11 @@ test "phase wraps: phase 8 == phase 0, phase 255 == phase 7" {
     // Head at bottom-right on phase 7.
     try t.expectEqual(@as(u3, 0), c7[idx(1, 3)]);
 }
+
+test "phase wraps: phase 256 == phase 0 (plan #674 Goal 3 — continuity across old fold)" {
+    const c0 = bs.busySpinnerCells(0);
+    const c256 = bs.busySpinnerCells(256);
+    try t.expectEqualSlices(u3, c0[0..], c256[0..]);
+    // Head at bottom-left (phase 0 / 8 / 256).
+    try t.expectEqual(@as(u3, 0), c256[idx(0, 3)]);
+}

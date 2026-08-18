@@ -174,18 +174,38 @@ test "UTF-8 safety: multi-byte scalar splits at codepoint boundary" {
     try t.expectEqual(@as(usize, 1), text_wave.colorStep(text_wave.trailDistance(1, 2.0, 4)));
 }
 
-test "headPosition: 255→1 wrap teleport — pin the discontinuous frame (review #671 L1+L9)" {
-    // The u8 phase 1..255 is incommensurate with the 27-tick comet period
-    // (period = 18*3 = 54 raw; 255*2 = 510; 510%54 = 24; head = 24/3 = 8.0).
-    // Next tick: phase 1 → raw=2; 2%54 = 2; head = 2/3 ≈ 0.667. The comet
-    // head teleports ~7 glyphs in one 100 ms frame. This test pins the
-    // pre-existing wrap so any follow-up remap can measure the delta.
-    // Fix: wider phase or wrap at a multiple of N*STEPS — not an occupancy tweak.
+test "headPosition: continuity across the old 255→256 fold (plan #674 Goal 1)" {
+    // The host sends 255, 256, 257, … monotonically. With the raw u32 stored
+    // (no % 255 fold), adjacent host ticks advance by exactly one SPEED step
+    // (~2/3 glyph at N=18, SPEED=2). The old fold produced a ~7.3-glyph jump.
+    // 255: raw=510, 510%54=24, /3=8.0
+    // 256: raw=512, 512%54=26, /3≈8.667
     try t.expectApproxEqAbs(8.0, text_wave.headPosition(255, 18), 0.01);
-    try t.expectApproxEqAbs(0.667, text_wave.headPosition(1, 18), 0.05);
-    // The jump: |8.0 - 0.667| ≈ 7.33 scalars — a visible teleport.
-    const delta = @abs(text_wave.headPosition(255, 18) - text_wave.headPosition(1, 18));
-    try t.expect(delta > 5.0);
+    try t.expectApproxEqAbs(8.667, text_wave.headPosition(256, 18), 0.05);
+    const delta = text_wave.headPosition(256, 18) - text_wave.headPosition(255, 18);
+    try t.expectApproxEqAbs(2.0 / 3.0, delta, 0.05); // one SPEED step
+}
+
+test "headPosition: interior step is also one SPEED increment" {
+    try t.expectApproxEqAbs(4.667, text_wave.headPosition(7, 18), 0.05);
+    try t.expectApproxEqAbs(5.333, text_wave.headPosition(8, 18), 0.05);
+    const delta = text_wave.headPosition(8, 18) - text_wave.headPosition(7, 18);
+    try t.expectApproxEqAbs(2.0 / 3.0, delta, 0.05);
+}
+
+test "headPosition: comet ring wrap still works (period = N*STEPS)" {
+    // phase 27 = N*STEPS/SPEED = 18*3/2 — full comet loop.
+    try t.expectApproxEqAbs(0.0, text_wave.headPosition(27, 18), 0.01);
+    try t.expectApproxEqAbs(text_wave.headPosition(0, 18), text_wave.headPosition(27, 18), 0.01);
+}
+
+test "headPosition: u64 multiply — phase 1<<31 is not 0 (u32*SPEED would overflow)" {
+    // phase = 2^31, raw = 2^32, period = 54 for N=18.
+    // 2^32 % 54 = 22, head = 22/3 ≈ 7.333.
+    // If headPosition used u32 multiply, 2^31 * 2 would overflow to 0 — head 0.
+    try t.expectApproxEqAbs(7.333, text_wave.headPosition(1 << 31, 18), 0.05);
+    // Not 0 — proves the u64 multiply path.
+    try t.expect(@abs(text_wave.headPosition(1 << 31, 18)) > 0.01);
 }
 
 test "STEPS constant is 3, SPEED constant is 2" {
