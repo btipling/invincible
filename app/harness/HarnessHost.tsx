@@ -450,6 +450,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    // plan #647: suppress the browser context menu so right-click on a link
+    // copies the URL in Wasm without also showing Back/Reload/Inspect.
+    // Product copy stays 📋 + Ctrl/Cmd+C; composer paste stays Ctrl/Cmd+V.
+    const onCanvasContextMenu = (e: Event) => e.preventDefault();
+    canvas.addEventListener('contextmenu', onCanvasContextMenu);
+
     (async () => {
       try {
         const store = createDefaultSessionStore();
@@ -697,6 +703,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
 
     return () => {
       cancelled = true;
+      canvas.removeEventListener('contextmenu', onCanvasContextMenu);
       abortRef.current?.abort();
       if (pollRef.current != null) {
         clearTimeout(pollRef.current);
