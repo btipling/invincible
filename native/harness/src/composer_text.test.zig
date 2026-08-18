@@ -6,7 +6,7 @@ const t = std.testing;
 const composer_text = @import("composer_text.zig");
 const kinds = @import("rich/kinds.zig");
 
-const BUF: [64]u8 = undefined;
+var BUF: [64]u8 = undefined;
 
 fn normalize(src: []const u8, cap: usize) composer_text.NormalizeResult {
     return composer_text.normalizeInto(src, BUF[0..], cap);
