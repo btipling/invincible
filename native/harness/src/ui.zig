@@ -691,9 +691,9 @@ fn paintLastUserChip(
         .expand = .horizontal,
         .style = .content,
         .min_size_content = .{ .w = 120, .h = TOUCH_H },
-        .color_fill = palette.teal_surface,
-        .color_border = palette.teal_border,
-        .color_text = palette.teal_muted,
+        .color_fill = palette.teal_border,
+        .color_border = palette.teal_muted,
+        .color_text = palette.teal_text,
         .padding = .{ .x = 8, .y = 0, .w = 8, .h = 0 },
     })) {
         transcript_scroll.viewport.y = msg_content_y[slot];

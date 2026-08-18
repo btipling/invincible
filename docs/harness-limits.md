@@ -25,7 +25,7 @@ click/tap scrolls the transcript so the message is back in view near the top.
 | Click / tap | Scrolls the transcript so the last user message is aligned at the top of the viewport. Chip hides on the next frame (message is now visible) |
 | New user send | Replaces the tracked message; chip tracks the new last user message |
 | Clear / New session | Removes the chip — no user messages remain |
-| Colors | TEAL only (`teal_surface` fill, `teal_border` border, `teal_muted` text) |
+| Colors | TEAL only (`teal_border` fill, `teal_muted` border, `teal_text` text) |
 | Touch target | 40 px (matching all other harness touch targets) |
 | Layer | Wasm-internal only — no bridge protocol change, no DOM host involvement |
 | One-frame settle | Chip visibility is computed from the current frame's final scroll state and applied on the **next** frame (same settle pattern as the dynamic composer height) |
