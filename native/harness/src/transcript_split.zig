@@ -17,7 +17,7 @@ const dvui = @import("dvui");
 const palette = @import("palette.zig");
 const session_catalog = @import("session_catalog.zig");
 
-/// Closed rail width (px) — one touch target, matches `ui.zig` `TOUCH_H`.
+/// Closed rail width (px) — one touch target, matches `ui/metrics.zig` `TOUCH_H`.
 pub const SIDEBAR_RAIL_W: f32 = 40;
 /// Open column width (px). Session list scrolls inside this width.
 pub const SIDEBAR_OPEN_W: f32 = 220;

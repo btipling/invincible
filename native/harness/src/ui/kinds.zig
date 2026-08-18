@@ -1,7 +1,6 @@
 //! Kind label / color / fill helpers. Pure functions — no frame state, no dvui calls.
 const dvui = @import("dvui");
 const palette = @import("../palette.zig");
-const bridge = @import("../bridge.zig");
 
 pub fn kindLabel(kind: u8) []const u8 {
     return switch (kind) {
@@ -13,15 +12,6 @@ pub fn kindLabel(kind: u8) []const u8 {
         6 => "tools",
         7 => "skill",
         else => "msg",
-    };
-}
-
-pub fn lifecycleLabel(l: bridge.Lifecycle) []const u8 {
-    return switch (l) {
-        .boot => "boot",
-        .ready => "ready",
-        .busy => "busy",
-        .err => "error",
     };
 }
 
