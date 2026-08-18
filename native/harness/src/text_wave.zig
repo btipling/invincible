@@ -4,8 +4,15 @@
 //! base. No dependency on busy row / bridge / clock.
 //!
 //! Wave algorithm: per-scalar `addText` with individual `.color_text` (the only
-//! way to vary color per glyph in dvui). STEPS=3 sub-char smoothing gives ~5.4 s
-//! full cycle for 18 chars at 10 Hz.
+//! way to vary color per glyph in dvui). STEPS=3 sub-char smoothing gives ~2.7 s
+//! full cycle for 18 chars at 10 Hz (SPEED=2 doubles the head's advance per
+//! tick — 18*3/2 = 27 ticks).
+//!
+//! Occupancy is a **localized directed comet** behind the traveling head, not a
+//! full-ring gradient: at any phase the head scalar is `warm_accent`, the next
+//! 2 scalars behind it are `warm_muted`, the next 1 is `warm_border`, and the
+//! rest of the line stays `warm_accent` (readable). Dark occupancy is ≤ 1
+//! scalar, never ~1/3 of the sentence.
 //!
 //! Color ramp: reuses `rect_spinner.ColorRamp` but caps at index 2 (warm_border
 //! #3a2818) — warm_surface (#1a120c) is ~1:1 on teal_bg and unreadable as body
@@ -13,9 +20,11 @@
 //! at step 2.
 //!
 //! Reduced motion: phase 0 → fast-path solid `ramp[0]` on all glyphs (no
-//! per-scalar wave). The bridge reserves phase 0 for idle/stop/error — busy
-//! ticks map to 1..255 and wrap at 255→1 (never 0), so the animation never
-//! flashes solid after 25.6 s.
+//! per-scalar wave). Without it the comet would paint a dim muted/border tail
+//! at the string's trailing edge whenever the wave phase sits near index 0.
+//! The bridge reserves phase 0 for idle/stop/error — busy ticks map to 1..255
+//! and wrap at 255→1 (never 0), so the animation never flashes a tail after
+//! 12.8 s.
 
 const std = @import("std");
 const dvui = @import("dvui");
@@ -23,6 +32,18 @@ const rect_spinner = @import("rect_spinner.zig");
 
 /// Sub-char smoothing steps: 3 steps per scalar for smooth travel.
 pub const STEPS: usize = 3;
+/// Head advance per tick. 2 doubles the wave speed: `N * STEPS / SPEED` ticks
+/// per loop (18*3/2 = 27 ticks = ~2.7 s at 10 Hz).
+pub const SPEED: u8 = 2;
+
+/// Head scalar occupies `HEAD_SPAN` scalars (accent). Absolute paint constants —
+/// not transport budgets.
+pub const HEAD_SPAN: f32 = 1.0;
+/// `warm_muted` scalars immediately behind the head.
+pub const MUTED_SPAN: f32 = 2.0;
+/// Single `warm_border` scalar behind the muted trail — the dark stop is one
+/// scalar, not a third of the string.
+pub const DARK_SPAN: f32 = 1.0;
 
 pub const Options = struct {
     /// The string to wave (e.g. "Waiting for model…").
@@ -53,33 +74,36 @@ pub fn countScalars(text: []const u8) usize {
 }
 
 /// Compute the float sub-char head position for a given phase and scalar count N.
-/// head = (phase % (N * STEPS)) / STEPS, or 0 when N == 0.
+/// head = ((phase * SPEED) % (N * STEPS)) / STEPS, or 0 when N == 0.
+/// The phase*SPEED multiply is done in u32 so phase 255*2 never overflows u8.
 pub fn headPosition(phase: u8, N: usize) f32 {
     if (N == 0) return 0;
-    const fN: f32 = @floatFromInt(N);
-    const denom = fN * @as(f32, @floatFromInt(STEPS));
-    const raw: f32 = @floatFromInt(phase);
-    return @mod(raw, denom) / @as(f32, @floatFromInt(STEPS));
+    const period: u32 = @intCast(N * STEPS); // e.g. 54 for N=18
+    const raw: u32 = @as(u32, phase) * @as(u32, SPEED); // 255*2 must not wrap u8
+    return @as(f32, @floatFromInt(raw % period)) / @as(f32, @floatFromInt(STEPS));
 }
 
-/// Cyclic distance from scalar index `i` to float head position `head` on a
-/// ring of `N` elements. Returns 0 when N <= 1.
-pub fn cyclicDistance(i: usize, head: f32, N: usize) f32 {
+/// How far scalar index `i` sits *behind* the float head on a ring of `N`
+/// scalars: 0 at the head, increasing toward the tail (the direction of
+/// travel). Ring-wrapped so a head near the end of the string still has a
+/// contiguous behind-it trail. Returns 0 when N <= 1.
+pub fn trailDistance(i: usize, head: f32, N: usize) f32 {
     if (N <= 1) return 0;
+    const fN: f32 = @floatFromInt(N);
     const fi: f32 = @floatFromInt(i);
-    const fN: f32 = @floatFromInt(N);
-    const d = @abs(fi - head);
-    return @min(d, fN - d);
+    return @mod(head - fi + fN, fN);
 }
 
-/// Map cyclic distance to a color ramp index (0–2). Capped at 2 (warm_border)
+/// Map a trail distance to a color ramp index (0–2). Capped at 2 (warm_border)
 /// — never returns 3 (warm_surface, unreadable as body text on teal_bg).
-/// dist=0 → 0 (head, warm_accent), dist=N/2 → 2 (warm_border).
-pub fn colorStep(dist: f32, N: usize) usize {
-    if (N <= 1) return 0;
-    const denom = @as(f32, @floatFromInt(N)) / 2.0;
-    const raw = dist * 3.0 / denom;
-    return @min(@as(usize, @intFromFloat(@floor(raw))), 2);
+/// trail < HEAD_SPAN → 0 (head, warm_accent); then MUTED_SPAN of step 1;
+/// then DARK_SPAN of step 2; everything farther behind → step 0 (accent rest).
+/// Occupancy is absolute scalars — no N-relative full-ring gradient.
+pub fn colorStep(trail: f32) usize {
+    if (trail < HEAD_SPAN) return 0;
+    if (trail < HEAD_SPAN + MUTED_SPAN) return 1;
+    if (trail < HEAD_SPAN + MUTED_SPAN + DARK_SPAN) return 2;
+    return 0; // rest of the line — accent
 }
 
 /// Paint the text wave: a `dvui.textLayout` with per-scalar color from the
@@ -111,7 +135,8 @@ pub fn paint(src: std.builtin.SourceLocation, opts: Options) void {
     // Phase 0 is reserved by the bridge for idle/stop/error — busy ticks are
     // 1..255 and wrap 255→1 (never 0). So phase 0 reliably means reduced
     // motion, old host, or boot. Fast-path the whole string as one addText
-    // at ramp[0] — no wave, no gradient tail.
+    // at ramp[0] — no wave, no dim comet tail (at head 0 the scalars right
+    // behind index 0 on the ring would land muted/border).
     if (opts.phase == 0) {
         tl.addText(opts.text, .{ .color_text = opts.ramp[0] });
         if (opts.suffix_text) |suffix| {
@@ -128,8 +153,8 @@ pub fn paint(src: std.builtin.SourceLocation, opts: Options) void {
     while (iter.nextCodepoint()) |_| {
         const slice = opts.text[prev_i..iter.i];
         prev_i = iter.i;
-        const dist = cyclicDistance(i, head, N);
-        const step = colorStep(dist, N);
+        const trail = trailDistance(i, head, N);
+        const step = colorStep(trail);
         tl.addText(slice, .{ .color_text = opts.ramp[step] });
         i += 1;
     }
