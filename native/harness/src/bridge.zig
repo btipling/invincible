@@ -237,7 +237,7 @@ pub fn queueSubmitFromUi(text: []const u8) void {
 }
 
 pub fn enqueueFromUi(text: []const u8) error{ Blank, Full }!void {
-    try queue.push(text);
+    try submit_queue.push(&queue, text);
     refresh();
 }
 
@@ -249,7 +249,7 @@ pub fn tryPromoteQueued(editing: bool) bool {
         .busy = lifecycle == .busy,
         .has_pending_submit = has_pending_submit,
         .has_pending_load_earlier = has_pending_load_earlier,
-        .count = queue.count(),
+        .count = submit_queue.count(&queue),
     })) return false;
     return submit_queue.promoteIf(&queue, promoteSubmit);
 }
@@ -260,25 +260,25 @@ fn promoteSubmit(text: []const u8) bool {
 }
 
 pub fn queuedCount() u32 {
-    return queue.count();
+    return submit_queue.count(&queue);
 }
 
 pub fn queuedItemAt(i: u32) ?[]const u8 {
-    return queue.item(i);
+    return submit_queue.item(&queue, i);
 }
 
 pub fn clearSubmitQueue() void {
-    queue.clear();
+    submit_queue.clear(&queue);
     refresh();
 }
 
 pub fn removeQueuedAt(i: u32) void {
-    queue.removeAt(i);
+    submit_queue.removeAt(&queue, i);
     refresh();
 }
 
 pub fn replaceQueuedAt(i: u32, text: []const u8) bool {
-    queue.replaceAt(i, text) catch return false;
+    submit_queue.replaceAt(&queue, i, text) catch return false;
     refresh();
     return true;
 }
@@ -299,7 +299,7 @@ pub fn reset() void {
     echo_len = 0;
     has_pending_submit = false;
     pending_submit_len = 0;
-    queue.clear();
+    submit_queue.clear(&queue);
     can_load_earlier = false;
     has_pending_load_earlier = false;
     has_pending_cancel = false;
@@ -526,7 +526,7 @@ export fn inv_clear_messages() void {
     // Hydrate / New must not leave a queued Send from the previous session.
     has_pending_submit = false;
     pending_submit_len = 0;
-    queue.clear();
+    submit_queue.clear(&queue);
     image_cache.clear();
     math_cache.clear();
     refresh();
@@ -572,7 +572,7 @@ export fn inv_ack_pending_submit() void {
 
 /// Protocol v18 — host / future auto-continue reads the ephemeral queue depth.
 export fn inv_queued_count() u32 {
-    return queue.count();
+    return submit_queue.count(&queue);
 }
 
 export fn inv_set_can_load_earlier(v: u8) void {
