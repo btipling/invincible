@@ -166,7 +166,7 @@ pub fn build(b: *std.Build) void {
     test_parse.dependOn(&run_parse_tests.step);
 
     // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
-    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645)");
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + rect_spinner (#651)");
     test_rich.dependOn(&run_parse_tests.step);
 
     const cache_tests = b.addTest(.{
@@ -277,6 +277,20 @@ pub fn build(b: *std.Build) void {
             }),
         });
         test_rich.dependOn(&b.addRunArtifact(busy_spinner_tests).step);
+    }
+
+    // Host unit tests for rect_spinner.zig (plan #651 L6 lock): TEAL_IDLE_RAMP
+    // constant — all four entries are teal_muted. Pure, no dvui.
+    {
+        const rect_spinner_tests = b.addTest(.{
+            .name = "rect_spinner",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/rect_spinner.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(rect_spinner_tests).step);
     }
 
     const link_tests = b.addTest(.{
