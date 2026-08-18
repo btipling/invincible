@@ -1,5 +1,7 @@
-//! Host unit tests for `rect_spinner.zig` constant ramps — pure data, no
-//! dvui frame, runs in `build.zig` `test-rich` on the self-hosted runner.
+//! Host unit tests for `rect_spinner.zig` constant ramps — tests are pure
+//! (no dvui frame calls), but the import chain (rect_spinner → dvui + palette)
+//! requires the dvui_testing module in `build.zig`. Runs in `test-rich` on the
+//! self-hosted runner.
 //!
 //! Plan #651 L6 lock: TEAL_IDLE_RAMP must be four identical `teal_muted`
 //! entries so the idle grid paints a uniform static grid with no pulse.

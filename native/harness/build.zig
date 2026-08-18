@@ -280,7 +280,8 @@ pub fn build(b: *std.Build) void {
     }
 
     // Host unit tests for rect_spinner.zig (plan #651 L6 lock): TEAL_IDLE_RAMP
-    // constant — all four entries are teal_muted. Pure, no dvui.
+    // constant — all four entries are teal_muted. Imports rect_spinner.zig,
+    // which needs dvui + palette; tests are pure, no frame.
     {
         const rect_spinner_tests = b.addTest(.{
             .name = "rect_spinner",
@@ -290,6 +291,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             }),
         });
+        rect_spinner_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
         test_rich.dependOn(&b.addRunArtifact(rect_spinner_tests).step);
     }
 
