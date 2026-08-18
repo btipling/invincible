@@ -462,11 +462,21 @@ export async function refreshGitStatusSlot(
       ...(signal ? { signal } : {}),
     });
     if (!res.ok || res.status === 429) return; // keep last value
-    const data = (await res.json()) as { value?: string };
+    const data = (await res.json()) as {
+      value?: string;
+      git?: { branch?: string; sha?: string; dirty?: boolean };
+    };
     // Rate-limited replies carry the cached value and are not a clear; only a
     // genuinely empty probe result clears the git slot.
     if (typeof data.value === 'string' && data.value.length > 0) {
-      if (data.value.startsWith('@')) return; // SHA-only partial probe → unreliable; keep last honest branch@sha
+      // When the server returns a sha but no branch (detached HEAD / transient
+      // git lock), keep the last honest branch@sha. The structured git fields
+      // are authoritative: a real @-prefixed branch has both git.branch AND
+      // git.sha and passes through — only the sha-present+branch-absent case is
+      // an unreliable SHA-only partial (adversarial review L1: git check-ref-format
+      // accepts @-prefixed branch names, so the string prefix is not a reliable
+      // discriminator).
+      if (data.git?.sha && !data.git?.branch) return;
       bridge.setStatusSlot(StatusSlot.Git, truncateStatusValue(data.value));
     } else {
       bridge.clearStatusSlot(StatusSlot.Git);

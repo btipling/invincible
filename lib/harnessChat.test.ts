@@ -2854,35 +2854,56 @@ describe('refreshGitStatusSlot (phase 2, plan #540)', () => {
     expect(new TextEncoder().encode(painted).length).toBeLessThanOrEqual(96);
   });
 
-  it('suppresses a SHA-only value (@abc1234) — keeps the last honest branch@sha (plan #660)', async () => {
+  it('suppresses a SHA-only probe (sha present, branch absent) — keeps the last honest branch@sha (plan #660)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     bridge.setStatusSlot(StatusSlot.Git, 'main@abc1234');
-    stubFetch({ value: '@abc1234' });
+    // Detached-HEAD probe: sha=abc1234, no branch → formatted value @abc1234.
+    stubFetch({ value: '@abc1234', git: { sha: 'abc1234' } });
     await refreshGitStatusSlot(bridge, { ...createEmptySession('s'), activeSandboxId: 'sbx_x' });
     expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc1234');
   });
 
-  it('passes through a normal branch@sha value (does not start with @)', async () => {
+  it('suppresses a dirty SHA-only probe (sha+dirty, branch absent)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
-    stubFetch({ value: 'main@abc1234' });
+    bridge.setStatusSlot(StatusSlot.Git, 'main@abc1234');
+    // Detached HEAD + dirty tree: sha present, branch absent, dirty=true.
+    stubFetch({ value: '@abc1234*', git: { sha: 'abc1234', dirty: true } });
     await refreshGitStatusSlot(bridge, { ...createEmptySession('s'), activeSandboxId: 'sbx_x' });
     expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc1234');
   });
 
-  it('passes through a dirty branch@sha value (does not start with @)', async () => {
+  it('passes through an @-prefixed branch name (@hotfix@sha) — structured git.branch is authoritative (L1 fix)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
-    stubFetch({ value: 'main@abc1234*' });
+    // `git branch @hotfix` is legal; git check-ref-format accepts @-prefixed
+    // branch names. Structured fields have both branch AND sha → passes through.
+    stubFetch({ value: '@hotfix@abc1234', git: { branch: '@hotfix', sha: 'abc1234' } });
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s'), activeSandboxId: 'sbx_x' });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('@hotfix@abc1234');
+  });
+
+  it('passes through a normal branch@sha value (both branch and sha present)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubFetch({ value: 'main@abc1234', git: { branch: 'main', sha: 'abc1234' } });
+    await refreshGitStatusSlot(bridge, { ...createEmptySession('s'), activeSandboxId: 'sbx_x' });
+    expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc1234');
+  });
+
+  it('passes through a dirty branch@sha value (branch+sha+dirty)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    stubFetch({ value: 'main@abc1234*', git: { branch: 'main', sha: 'abc1234', dirty: true } });
     await refreshGitStatusSlot(bridge, { ...createEmptySession('s'), activeSandboxId: 'sbx_x' });
     expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc1234*');
   });
 
-  it('passes through a branch-only value (no @ prefix, no sha)', async () => {
+  it('passes through a branch-only value (branch present, no sha)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
-    stubFetch({ value: 'main' });
+    stubFetch({ value: 'main', git: { branch: 'main' } });
     await refreshGitStatusSlot(bridge, { ...createEmptySession('s'), activeSandboxId: 'sbx_x' });
     expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main');
   });
@@ -2892,7 +2913,7 @@ describe('refreshGitStatusSlot (phase 2, plan #540)', () => {
     const bridge = new HarnessBridge(exp);
     // First: SHA-only probe → suppressed (keep main@abc).
     bridge.setStatusSlot(StatusSlot.Git, 'main@abc');
-    stubFetch({ value: '@xyz' });
+    stubFetch({ value: '@xyz', git: { sha: 'xyz' } });
     await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
     expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
     // Then: a real clear (empty value) → clear the slot.
@@ -2901,11 +2922,11 @@ describe('refreshGitStatusSlot (phase 2, plan #540)', () => {
     expect(statusSlotAt(exp, StatusSlot.Git)).toBe('');
   });
 
-  it('SHA-only suppression does not fire on network error (keep-last still works)', async () => {
+  it('suppression does not fire on network error (keep-last code path — no structured check needed)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     bridge.setStatusSlot(StatusSlot.Git, 'main@abc');
-    // network throw — code path never reaches the @ guard.
+    // network throw — code path never reaches the structured git guard.
     fetchMock = vi.fn(async () => {
       throw new Error('network down');
     });
@@ -2914,13 +2935,13 @@ describe('refreshGitStatusSlot (phase 2, plan #540)', () => {
     expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
   });
 
-  it('SHA-only suppression does not fire on 429 (keep-last code path before guard)', async () => {
+  it('suppression does not fire on 429 (keep-last short-circuits before JSON parse)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     bridge.setStatusSlot(StatusSlot.Git, 'main@abc');
-    stubFetch({ value: '@abc1234' }, true, 429);
+    stubFetch({}, true, 429);
     await refreshGitStatusSlot(bridge, { ...createEmptySession('s') });
-    // 429 short-circuits before the JSON parse → before the @ guard.
+    // 429 short-circuits before the JSON parse → before the structured guard.
     expect(statusSlotAt(exp, StatusSlot.Git)).toBe('main@abc');
   });
 });
