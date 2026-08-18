@@ -64,7 +64,7 @@ build-harness → artifact harness-wasm
 
 ```text
 src/main.zig     # dvui_init / deinit / update + Asteronica themeSet
-src/ui.zig       # frame: transcript, composer, Send
+src/ui.zig       # facade — frame() band layout; delegates to src/ui/* modules
 src/bridge.zig   # inv_* export fns + ring buffer + pending submit
 src/palette.zig  # TEAL/WARM/EMBER hex (sync with lib/palette.ts)
 src/rich/        # Markdown + fence paint (zmd MIT parse → cache → registry)
