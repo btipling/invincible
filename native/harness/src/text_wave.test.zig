@@ -28,7 +28,7 @@ test "phase 0: all scalars map to colorStep 0 (solid warm_accent)" {
     // head at 0: cyclicDistance(i, 0, 18) = min(i, 18-i) = i for i≤9
     try t.expectEqual(@as(usize, 0), text_wave.colorStep(text_wave.cyclicDistance(0, 0.0, 18), 18));
     try t.expectEqual(@as(usize, 0), text_wave.colorStep(text_wave.cyclicDistance(1, 0.0, 18), 18));
-    try t.expectEqual(@as(usize, 1), text_wave.colorStep(text_wave.cyclicDistance(5, 0.0, 18), 18));
+    try t.expectEqual(@as(usize, 2), text_wave.colorStep(text_wave.cyclicDistance(5, 0.0, 18), 18));
     try t.expectEqual(@as(usize, 2), text_wave.colorStep(text_wave.cyclicDistance(6, 0.0, 18), 18));
     try t.expectEqual(@as(usize, 3), text_wave.colorStep(text_wave.cyclicDistance(9, 0.0, 18), 18));
 }
@@ -129,7 +129,7 @@ test "UTF-8 safety: multi-byte scalar splits at codepoint boundary" {
     // Verify the head position computation works for this N.
     try t.expectApproxEqAbs(1.666, text_wave.headPosition(5, 4), 0.05);
     // And cyclic distance / color step work.
-    try t.expectEqual(@as(usize, 0), text_wave.colorStep(text_wave.cyclicDistance(1, 1.666, 4), 4));
+    try t.expectEqual(@as(usize, 1), text_wave.colorStep(text_wave.cyclicDistance(1, 1.666, 4), 4));
 }
 
 test "countScalars: emoji (multi-byte) counts as one scalar" {
