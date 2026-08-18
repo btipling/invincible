@@ -136,10 +136,10 @@ pub fn paint(src: std.builtin.SourceLocation, opts: Options) void {
     }
 
     // Phase 0 is reserved by the bridge for idle/stop/error — busy ticks are
-    // 1..255 and wrap 255→1 (never 0). So phase 0 reliably means reduced
-    // motion, old host, or boot. Fast-path the whole string as one addText
-    // at ramp[0] — no wave, no dim comet tail (at head 0 the scalars right
-    // behind index 0 on the ring would land muted/border).
+    // raw host u32 (no fold, no u8 wrap; never 0 while busy). So phase 0
+    // reliably means reduced motion, old host, or boot. Fast-path the whole
+    // string as one addText at ramp[0] — no wave, no dim comet tail (at head
+    // 0 the scalars right behind index 0 on the ring would land muted/border).
     if (opts.phase == 0) {
         tl.addText(opts.text, .{ .color_text = opts.ramp[0] });
         if (opts.suffix_text) |suffix| {
