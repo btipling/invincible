@@ -106,10 +106,10 @@ var lifecycle: Lifecycle = .boot;
 /// busy row hides the clock while this is 0.
 var turn_elapsed: u32 = 0;
 /// Protocol v14 addendum (plan #574) — host 10 Hz busy-tick phase counter that
-/// drives the 2×4 WARM spinner (clockwise pulse). Scalar u8 wraps naturally;
-/// the spinner's 8-cell cycle uses `busy_tick % 8`. `0` = head at bottom-left
-/// (also the static/reduced-motion / old-host value). Reset on `reset()` and on
-/// a host push of 0 (idle/stop/error/clear).
+/// drives the 2×4 WARM spinner (clockwise pulse) and text_wave (plan #655).
+/// Reserved 0 = idle/stop/error/reduced-motion sentinel. The bridge remaps
+/// host ticks to 1..255 (wrapping 255→1) so a long turn never wraps to 0
+/// mid-animation. Reset on `reset()` and on a host push of 0.
 var busy_tick: u8 = 0;
 var messages: [MAX_MSG]StoredMsg = [_]StoredMsg{.{}} ** MAX_MSG;
 var msg_head: usize = 0;
@@ -722,13 +722,16 @@ export fn inv_set_turn_elapsed(secs: u32) void {
 }
 
 /// Protocol v14 addendum (plan #574) — host 10 Hz busy-tick phase for the 2×4
-/// spinner. Scalar u8 (truncated from the host's monotonic tick counter; wraps
-/// naturally at 256 ≫ the 8-cell cycle). `phase == 0` → head at bottom-left, which
-/// is also the reduced-motion / idle / old-host value. Each write calls
-/// `refresh()` so the canvas reconstitutes at up to 10 Hz while Busy (see
-/// `HARNESS_BUSY_TICK_HZ` in docs — well below the dvui 60 fps ceiling).
+/// spinner and text_wave. The host passes a monotonic u32 tick counter; this
+/// export remaps it to u8 reserving 0 for idle/stop/error:
+///   phase == 0 → busy_tick = 0 (reduced-motion / idle / old-host sentinel)
+///   phase  > 0 → busy_tick = (phase-1) % 255 + 1 (range 1..255, wraps 255→1)
+/// This guarantees a long busy turn (≥ 25.6 s) never wraps to 0 mid-animation,
+/// preventing a 1-frame flash of solid accent in text_wave.zig. Each write
+/// calls `refresh()` so the canvas reconstitutes at up to 10 Hz while Busy
+/// (see `HARNESS_BUSY_TICK_HZ` in docs — well below the dvui 60 fps ceiling).
 export fn inv_set_busy_tick(phase: u32) void {
-    busy_tick = @truncate(phase);
+    busy_tick = if (phase == 0) @as(u8, 0) else @as(u8, @intCast((phase - 1) % 255 + 1));
     refresh();
 }
 
