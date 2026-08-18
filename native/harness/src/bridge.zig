@@ -106,10 +106,10 @@ var lifecycle: Lifecycle = .boot;
 /// busy row hides the clock while this is 0.
 var turn_elapsed: u32 = 0;
 /// Protocol v14 addendum (plan #574) — host 10 Hz busy-tick phase counter that
-/// drives the 2×4 WARM spinner (clockwise pulse). Scalar u8 wraps naturally;
-/// the spinner's 8-cell cycle uses `busy_tick % 8`. `0` = head at bottom-left
-/// (also the static/reduced-motion / old-host value). Reset on `reset()` and on
-/// a host push of 0 (idle/stop/error/clear).
+/// drives the 2×4 WARM spinner (clockwise pulse) and text_wave (plan #655).
+/// Reserved 0 = idle/stop/error/reduced-motion sentinel. The bridge remaps
+/// host ticks to 1..255 (wrapping 255→1) so a long turn never wraps to 0
+/// mid-animation. Reset on `reset()` and on a host push of 0.
 var busy_tick: u8 = 0;
 var messages: [MAX_MSG]StoredMsg = [_]StoredMsg{.{}} ** MAX_MSG;
 var msg_head: usize = 0;

@@ -138,11 +138,11 @@ test "UTF-8 safety: multi-byte scalar splits at codepoint boundary" {
     const N = text_wave.countScalars("café");
     try t.expectEqual(@as(usize, 4), N);
     // Verify the head position computation works for this N.
-    try t.expectApproxEqAbs(1.666, text_wave.headPosition(5, 4), 0.05);
-    // cyclic distance for i=1, head=1.666, N=4:
-    // |1-1.666| = 0.666; min(0.666, 3.334) = 0.666
-    // denom = 2.0, raw = 0.666*3/2 = 1.0 → step 1
-    try t.expectEqual(@as(usize, 1), text_wave.colorStep(text_wave.cyclicDistance(1, 1.666, 4), 4));
+    try t.expectApproxEqAbs(2.0, text_wave.headPosition(6, 4), 0.05);
+    // cyclic distance for i=1, head=2.0, N=4:
+    // |1-2.0| = 1.0; min(1.0, 3.0) = 1.0
+    // denom = 2.0, raw = 1.0*3/2 = 1.5 → floor 1 → step 1
+    try t.expectEqual(@as(usize, 1), text_wave.colorStep(text_wave.cyclicDistance(1, 2.0, 4), 4));
 }
 
 test "countScalars: emoji (multi-byte) counts as one scalar" {

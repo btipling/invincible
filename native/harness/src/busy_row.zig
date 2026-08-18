@@ -52,7 +52,7 @@ pub const LEAD: f32 = 8;
 pub const TRAIL: f32 = 6;
 
 // id namespace for the busy row inner boxes — never aliases message-loop rows
-// (which use their own high ids) or the busy textLayout (`0xffff_ffff`).
+// (which use their own high ids) or the busy textLayout (TEXT_WAVE_ID).
 const LEAD_WRAPPER_ID = 0x60_0050;
 const SPINNER_ID = 0x60_00a0;
 const ROW_CONTAINER_ID = 0x60_0000;
