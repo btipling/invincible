@@ -9,8 +9,7 @@ const kinds = @import("rich/kinds.zig");
 const BUF: [64]u8 = undefined;
 
 fn normalize(src: []const u8, cap: usize) composer_text.NormalizeResult {
-    var dest: [BUF.len]u8 = BUF;
-    return composer_text.normalizeInto(src, dest[0..], cap);
+    return composer_text.normalizeInto(src, BUF[0..], cap);
 }
 
 // ── paint-omit rule (issue #324 / plan #340) ────────────────────────────────
