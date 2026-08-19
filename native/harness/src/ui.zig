@@ -669,16 +669,20 @@ pub fn frame() !void {
                 .placeholder = "Message the model…",
                 .multiline = true,
                 .break_lines = true,
+                .scroll_horizontal = false,
             }, .{
                 .expand = .horizontal,
                 .gravity_y = 0.5,
                 // TE_PAD is baked into min/max by TextEntryWidget.init — pass
                 // the well size minus 2×pad so the named TOUCH_H / 120 caps
-                // (and 44/124 chrome) survive the bake. Width max is the
-                // viewport width (floor 120): a finite cap lets break_lines
-                // fire so long lines wrap instead of h-scrolling.
+                // (and 44/124 chrome) survive the bake. Width max is
+                // max_float_safe (not 0): a 0 width + 2×TE_PAD bake would
+                // cap the internal layout at 10 px. Long-line wrapping comes
+                // from scroll_horizontal = false, which gives the inner
+                // TextLayout a finite viewport width via ScrollContainerWidget
+                // (horizontal = .none → child gets viewport.w).
                 .min_size_content = .{ .w = 120, .h = metrics.TOUCH_H - 2 * metrics.COMPOSER_TE_PAD },
-                .max_size_content = .{ .w = @max(120, avail.w), .h = metrics.COMPOSER_INPUT_MAX_H - 2 * metrics.COMPOSER_TE_PAD },
+                .max_size_content = .{ .w = dvui.max_float_safe, .h = metrics.COMPOSER_INPUT_MAX_H - 2 * metrics.COMPOSER_TE_PAD },
                 .color_fill = palette.teal_surface,
                 .color_text = palette.teal_text,
                 .color_border = if (busy) palette.teal_border else palette.teal_accent,
