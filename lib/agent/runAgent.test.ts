@@ -912,6 +912,9 @@ describe('DEFAULT_AGENT_SYSTEM standing orders', () => {
     expect(DEFAULT_AGENT_SYSTEM).toMatch(/read_file a path in this agent run/i);
     expect(DEFAULT_AGENT_SYSTEM).toMatch(/read_file again before editing/i);
     expect(DEFAULT_AGENT_SYSTEM).toMatch(/Creating a new file with write_file does not require/i);
+    expect(DEFAULT_AGENT_SYSTEM).toMatch(/offset=1/);
+    expect(DEFAULT_AGENT_SYSTEM).toMatch(/limit/);
+    expect(DEFAULT_AGENT_SYSTEM).toMatch(/maxBytes/);
   });
 
   it('must mention /tmp', () => {
