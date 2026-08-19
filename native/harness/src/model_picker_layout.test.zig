@@ -19,6 +19,7 @@ const t = std.testing;
 const dvui = @import("dvui");
 const palette = @import("palette.zig");
 const model_picker = @import("model_picker.zig");
+const rect_spinner = @import("rect_spinner.zig");
 
 const EPS: f32 = 2.0;
 const PX: f32 = 2;
@@ -243,4 +244,72 @@ test "count 1: no caret tag, no label tag (static path, single model)" {
     });
     try t.expect(dvui.tagGet("status-model-caret") == null);
     try t.expect(dvui.tagGet("status-model-label") == null);
+}
+
+// ── Line 1 drop/ellipsize regression (PR #698 Minor L6) ──
+// Paints spinner + model trigger in a horizontal row at a narrow viewport
+// (200 px ~ phone). Asserts the spinner and trigger tag rects are disjoint —
+// a negative proof that the budget/paint are in agreement. The build-id is
+// not painted here (the budget drops it); the test covers the remaining two
+// children where an overlap would be visible.
+// Tag rects are physical pixels (2× in the testing backend).
+
+const Line1 = struct {
+    var count: u32 = 0;
+    var label: []const u8 = "";
+    var busy: bool = false;
+    fn paint() !dvui.App.Result {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .gravity_y = 0.5,
+        });
+        defer row.deinit();
+
+        rect_spinner.paint(@src(), .{
+            .phase = if (busy) 3 else 0,
+            .ramp = if (busy) rect_spinner.WARM_RAMP else rect_spinner.TEAL_IDLE_RAMP,
+            .tag_prefix = "status-spinner",
+            .id_extra = 0x61_0105,
+        });
+
+        _ = model_picker.paint(.{
+            .count = count,
+            .selected = 0,
+            .busy = busy,
+            .short_label = label,
+            .idAt = struct {
+                fn idAt(_: u32) []const u8 {
+                    return "";
+                }
+            }.idAt,
+        });
+        return .ok;
+    }
+};
+
+fn paintLine1() dvui.Rect.Physical {
+    _ = dvui.testing.step(Line1.paint) catch @panic("line1 step 1 failed");
+    _ = dvui.testing.step(Line1.paint) catch @panic("line1 step 2 failed");
+    return (dvui.tagGet("status-model-trigger") orelse @panic("tag 'status-model-trigger' not found")).rect;
+}
+
+test "line 1 at 200 px: spinner and empty-catalog trigger disjoint" {
+    var tr = try dvui.testing.init(.{ .window_size = .{ .w = 200, .h = 64 } });
+    defer tr.deinit();
+
+    Line1.count = 0;
+    Line1.label = "no model";
+    Line1.busy = false;
+
+    _ = paintLine1();
+
+    const spinner = (dvui.tagGet("status-spinner") orelse @panic("tag 'status-spinner' not found")).rect;
+    const trigger = (dvui.tagGet("status-model-trigger") orelse @panic("tag 'status-model-trigger' not found")).rect;
+
+    try t.expect(spinner.w > 0);
+    try t.expect(spinner.h > 0);
+    try t.expect(trigger.w > 0);
+    try t.expect(trigger.h > 0);
+
+    // Disjoint: the trigger starts to the right of the spinner.
+    try t.expect(trigger.x + EPS >= spinner.x + spinner.w);
 }

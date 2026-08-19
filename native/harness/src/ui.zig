@@ -803,13 +803,14 @@ pub fn frame() !void {
             // Priority: spinner (always keep) > model label (ellipsize) > build-id (drop).
             const budget = @max(0, line1.data().contentRect().w - metrics.STATUS_PACK_BUDGET_SAFETY);
             const body = (dvui.Options{}).fontGet();
-            const spinner_w: f32 = rect_spinner.W; // 13 px — no margin
+            const spinner_w: f32 = rect_spinner.W; // 13 px slot; default TRAIL margin 10 px
             const build_id_text = "h:" ++ BUILD_ID;
             const build_id_text_w: f32 = body.textSize(build_id_text).w;
             const build_id_w: f32 = build_id_text_w + 8; // 8 px left margin on textLayout
             const cat_n = bridge.modelCatalogCount();
-            const raw_label: []const u8 = if (cat_n == 0) "" else bridge.selectedModelLabel();
+            const raw_label: []const u8 = if (cat_n == 0) "no model" else bridge.selectedModelLabel();
             var label: []const u8 = raw_label;
+            var ellip_buf: [128]u8 = undefined;
             const label_text_w: f32 = if (label.len > 0) body.textSize(label).w else 0;
             // Conservative overhead: menu-trigger path (margin 8 + border 2 +
             // padding 8 + chevron ~10 + CARET_GAP 4). Same budget for both
@@ -832,7 +833,6 @@ pub fn frame() !void {
             // Ellipsize model label when even spinner + model overflows (priority 2).
             if (total > budget and label.len > 0) {
                 const label_budget = @max(0, budget - spinner_w - trigger_overhead - label_gap);
-                var ellip_buf: [128]u8 = undefined;
                 label = status.truncateToWidthPx(body, &ellip_buf, label, label_budget);
             }
 
