@@ -49,6 +49,7 @@ pub fn paintDiffFence(src: std.builtin.SourceLocation, block: parse.Block, ctx: 
         .color_text = ctx.style.code_text,
         .font = .theme(.mono),
         .background = false,
+        .tag = "diff-body",
     });
     defer tl.deinit();
 
@@ -65,7 +66,7 @@ pub fn paintDiffFence(src: std.builtin.SourceLocation, block: parse.Block, ctx: 
     }
 }
 
-fn paintDiffText(
+pub fn paintDiffText(
     tl: *dvui.TextLayoutWidget,
     text: []const u8,
     line_count: *usize,
