@@ -157,6 +157,92 @@ async function putSkillBody(
   }
 }
 
+type SkillVersionSummary = {
+  id: string;
+  label: string;
+  createdAt: string; // ISO string
+};
+
+/** List version summaries for a skill (no body). */
+async function listVersions(
+  id: string,
+): Promise<{ ok: boolean; versions?: SkillVersionSummary[]; error?: string }> {
+  try {
+    const res = await fetch(
+      `/api/settings/skills/${encodeURIComponent(id)}/versions`,
+      { credentials: 'same-origin' },
+    );
+    if (!res.ok) {
+      let msg = `Could not load versions (${res.status}).`;
+      try {
+        const j = (await res.json()) as { error?: unknown };
+        if (j && typeof j.error === 'string') msg = j.error;
+      } catch { /* keep fallback */ }
+      return { ok: false, error: msg };
+    }
+    const j = (await res.json()) as {
+      ok: boolean;
+      versions?: SkillVersionSummary[];
+    };
+    return { ok: true, versions: j.versions ?? [] };
+  } catch {
+    return { ok: false, error: 'Network error loading versions.' };
+  }
+}
+
+/** Get a single version body as raw text. */
+async function getVersionBody(
+  skillId: string,
+  versionId: string,
+): Promise<{ ok: boolean; body?: string; error?: string }> {
+  try {
+    const res = await fetch(
+      `/api/settings/skills/${encodeURIComponent(skillId)}/versions/${encodeURIComponent(versionId)}`,
+      { credentials: 'same-origin' },
+    );
+    if (!res.ok) {
+      let msg = `Could not load version (${res.status}).`;
+      try {
+        const j = (await res.json()) as { error?: unknown };
+        if (j && typeof j.error === 'string') msg = j.error;
+      } catch { /* keep fallback */ }
+      return { ok: false, error: msg };
+    }
+    return { ok: true, body: await res.text() };
+  } catch {
+    return { ok: false, error: 'Network error loading version.' };
+  }
+}
+
+/** Rollback to a version. */
+async function postRollback(
+  skillId: string,
+  versionId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(
+      `/api/settings/skills/${encodeURIComponent(skillId)}/rollback`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ versionId }),
+        credentials: 'same-origin',
+      },
+    );
+    if (!res.ok) {
+      let msg = `Rollback failed (${res.status}).`;
+      try {
+        const j = (await res.json()) as { error?: unknown };
+        if (j && typeof j.error === 'string') msg = j.error;
+      } catch { /* keep fallback */ }
+      return { ok: false, error: msg };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: 'Network error during rollback.' };
+  }
+}
+
 /** Load the owner's own body via the measured GET route (raw text, no JSON escaping). */
 async function getSkillBody(id: string): Promise<
   | { ok: true; body: string }
@@ -277,6 +363,77 @@ function SkillCard({ row }: { row: SkillListItem }) {
   const [bodyError, setBodyError] = useState<string | null>(null);
   const [bodyMessage, setBodyMessage] = useState('');
 
+  // Version timeline state (plan #711 phase 1).
+  const [versions, setVersions] = useState<SkillVersionSummary[] | null>(null);
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const [versionsError, setVersionsError] = useState<string | null>(null);
+  // Diff view: selected version id → its raw body.
+  const [diffVersionId, setDiffVersionId] = useState<string | null>(null);
+  const [diffBody, setDiffBody] = useState<string | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState<string | null>(null);
+  // Rollback state.
+  const [rollbackPending, setRollbackPending] = useState(false);
+  const [rollbackFeedback, setRollbackFeedback] = useState<{
+    ok?: boolean;
+    message?: string;
+    error?: string;
+  }>({});
+
+  async function loadVersions() {
+    setVersionsLoading(true);
+    setVersionsError(null);
+    const r = await listVersions(row.id);
+    setVersionsLoading(false);
+    if (r.ok && r.versions) {
+      setVersions(r.versions);
+    } else {
+      setVersionsError(r.error ?? 'Could not load versions.');
+    }
+  }
+
+  async function showDiff(versionId: string) {
+    if (diffVersionId === versionId) {
+      setDiffVersionId(null);
+      setDiffBody(null);
+      return;
+    }
+    setDiffVersionId(versionId);
+    setDiffBody(null);
+    setDiffLoading(true);
+    setDiffError(null);
+    const r = await getVersionBody(row.id, versionId);
+    setDiffLoading(false);
+    if (r.ok && r.body !== undefined) {
+      setDiffBody(r.body);
+    } else {
+      setDiffError(r.error ?? 'Could not load version body.');
+    }
+  }
+
+  async function doRollback(versionId: string) {
+    setRollbackPending(true);
+    setRollbackFeedback({});
+    const r = await postRollback(row.id, versionId);
+    setRollbackPending(false);
+    if (r.ok) {
+      setRollbackFeedback({ ok: true, message: 'Rollback complete.' });
+      // Invalidate loaded body + versions so the editor reflects the new state.
+      setLoadedBody(null);
+      setVersions(null);
+    } else {
+      setRollbackFeedback({ ok: false, error: r.error ?? 'Rollback failed.' });
+    }
+  }
+
+  function versionDate(d: string): string {
+    try {
+      return new Date(d).toLocaleString();
+    } catch {
+      return d;
+    }
+  }
+
   async function loadBody() {
     setBodyLoading(true);
     setBodyError(null);
@@ -393,6 +550,141 @@ function SkillCard({ row }: { row: SkillListItem }) {
         </button>
         <RouteFeedback message={bodyMessage} error={bodyError ?? undefined} />
       </form>
+
+      {/* Version timeline (plan #711 phase 1) */}
+      <div
+        style={{
+          marginBottom: 12,
+          paddingTop: 12,
+          borderTop: `1px solid ${teal.border}`,
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            marginBottom: 8,
+          }}
+        >
+          <span style={{ fontSize: 13, fontWeight: 600, color: teal.muted }}>
+            Version history
+          </span>
+          {versions === null && !versionsLoading ? (
+            <button
+              type="button"
+              onClick={() => void loadVersions()}
+              style={{ ...buttonGhostStyle(), fontSize: 12 }}
+            >
+              Show
+            </button>
+          ) : versionsLoading ? (
+            <span style={{ color: teal.muted, fontSize: 12 }}>Loading…</span>
+          ) : null}
+        </div>
+        {versionsError ? (
+          <p role="alert" style={{ color: ember.accent, fontSize: 13, margin: '0 0 8px' }}>
+            {versionsError}
+          </p>
+        ) : null}
+        {versions && versions.length === 0 ? (
+          <p style={{ color: teal.muted, fontSize: 13, margin: 0 }}>
+            No versions yet — the first edit creates version history.
+          </p>
+        ) : versions ? (
+          <div
+            style={{
+              maxHeight: 240,
+              overflowY: 'auto',
+              border: `1px solid ${teal.border}`,
+              borderRadius: 4,
+              padding: 4,
+            }}
+          >
+            {versions.map((v, i) => {
+              const isDiffing = diffVersionId === v.id;
+              return (
+                <div key={v.id}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '4px 8px',
+                      fontSize: 12,
+                      color: teal.text,
+                    }}
+                  >
+                    <span style={{ color: teal.muted, minWidth: 24 }}>
+                      {i === 0 ? <strong>now</strong> : `v${versions.length - i}`}
+                    </span>
+                    <span style={{ flex: 1 }}>{versionDate(v.createdAt)}</span>
+                    {v.label ? (
+                      <span style={{ color: warm.accent }}>{v.label}</span>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => void showDiff(v.id)}
+                      style={{ ...buttonGhostStyle(), fontSize: 11, padding: '2px 6px' }}
+                    >
+                      {isDiffing ? 'Hide diff' : 'Diff'}
+                    </button>
+                    {i > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => void doRollback(v.id)}
+                        disabled={rollbackPending}
+                        style={{
+                          ...buttonGhostStyle(),
+                          fontSize: 11,
+                          padding: '2px 6px',
+                          color: warm.accent,
+                        }}
+                      >
+                        Restore
+                      </button>
+                    ) : null}
+                  </div>
+                  {isDiffing && diffLoading ? (
+                    <div style={{ color: teal.muted, fontSize: 12, padding: '0 8px 8px' }}>
+                      Loading diff…
+                    </div>
+                  ) : isDiffing && diffError ? (
+                    <p
+                      role="alert"
+                      style={{ color: ember.accent, fontSize: 12, padding: '0 8px 8px', margin: 0 }}
+                    >
+                      {diffError}
+                    </p>
+                  ) : isDiffing && diffBody !== null ? (
+                    <pre
+                      style={{
+                        margin: '0 8px 8px',
+                        padding: 8,
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                        whiteSpace: 'pre-wrap',
+                        background: 'rgba(255,255,255,0.03)',
+                        border: `1px solid ${teal.border}`,
+                        borderRadius: 4,
+                        color: teal.muted,
+                        maxHeight: 160,
+                        overflowY: 'auto',
+                      }}
+                    >
+                      {diffBody}
+                    </pre>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+        <RouteFeedback
+          message={rollbackFeedback.message}
+          error={rollbackFeedback.error}
+        />
+      </div>
 
       <div
         style={{

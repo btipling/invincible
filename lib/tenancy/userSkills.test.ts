@@ -444,6 +444,7 @@ describe('userSkills unavailable (missing table)', () => {
   it('missing user_skills table → unavailable (create + list + getBySlug fail closed)', async () => {
     // Drop the table after seeding so membership resolution still succeeds but
     // any user_skills query hits the undefined relation.
+    await iso.client.exec('DROP TABLE IF EXISTS "user_skill_versions"');
     await iso.client.exec('DROP TABLE IF EXISTS "user_skills"');
     const userId = await seedUserId();
 

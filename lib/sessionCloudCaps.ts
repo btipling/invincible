@@ -119,6 +119,14 @@ export const META_USER_SKILLS_MAX = 200;
 export const META_SKILL_FRAGMENT_MAX_BYTES = 64 * 1024;
 
 /**
+ * Max version rows per skill (plan #711 phase 1). Append-only version history
+ * caps the number of stored full-body copies so a tight loop of edits cannot
+ * produce unbounded rows per skill. Rollback inserts a new version (itself
+ * versioned) and counts toward this cap. NEW generous cap.
+ */
+export const SKILL_VERSION_MAX = 100;
+
+/**
  * Parse a stored `meta.attachedSkills` (a JSON-array string of skill slugs) into a
  * slug list. Client-safe single source shared by the host session repository
  * (`cloudMetaFor` / `parseCloudSessionSnapshot`), the server `skillInject`, and the

@@ -27,7 +27,32 @@ Open **Settings → Skills** (from the Settings sidebar, or `/settings/skills`).
   description. **The slug never changes on rename**, so the `/<slug>`
   identifier stays stable across renames.
 - **Edit body:** replace the playbook text. Body is required and ≤ 4 MiB.
-- **Delete:** removes the skill from your account.
+- **Delete:** removes the skill from your account (cascade-deletes its version
+  history).
+- **Version history:** every body edit creates a new version row. The Settings
+  skill card includes a **Version history** section where you can **Diff** (view
+  any past version's body) and **Restore** (roll back the current body to that
+  version). Rollback creates a fresh version row so it is itself versioned.
+  Each skill can hold up to 100 versions.
+
+### Version history & rollback
+
+Each time you save a body edit (Create or Edit body), the **previous** body is
+preserved as a version row in the append-only `user_skill_versions` table. The
+version timeline is visible inside each skill card in Settings → Skills:
+
+1. Click **Show** on the "Version history" header to load the timeline.
+2. The timeline lists versions newest-first (the current body is labeled
+   **now**).
+3. Click **Diff** on a version to view its full body inline (raw text).
+4. Click **Restore** on a past version to roll the skill body back. This copies
+   the version's body into the live `body` field **and** inserts a new version
+   row — rollback is itself versioned and counts against the 100-version cap.
+5. Deleting a skill cascade-deletes its entire version history (FK `ON DELETE
+   CASCADE`).
+6. When a skill hits the 100-version cap, further body edits are rejected
+   (`invalid_body` with a hint). Roll back to a past version (which creates a
+   new version row) to free space under the cap.
 
 ### Slug derivation
 

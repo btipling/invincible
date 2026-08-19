@@ -16,14 +16,15 @@
  * user/tenant, and getSkillBySlug returns null for another-user rows (no
  * existence leak).
  */
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import {
   userSkills,
+  userSkillVersions,
   type Db,
 } from '../../db';
 import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { loadSoleMembership } from './soleMembership';
-import { SKILL_SLUG_RE as SKILL_SLUG_RE_SRC } from '../sessionCloudCaps';
+import { SKILL_SLUG_RE as SKILL_SLUG_RE_SRC, SKILL_VERSION_MAX } from '../sessionCloudCaps';
 
 /** Display name limits (mirror personas; generously raised in #514). */
 export const SKILL_NAME_MIN = 1;
@@ -240,6 +241,12 @@ export async function createUserSkill(
             description,
           })
           .returning({ id: userSkills.id });
+        // Insert initial version row (same body) — plan #711 phase 1.
+        await db.insert(userSkillVersions).values({
+          skillId: row.id,
+          body,
+          label: '',
+        });
         return { ok: true as const, value: { id: row.id } };
       } catch (err) {
         if (isUniqueViolation(err)) {
@@ -338,6 +345,14 @@ export async function updateUserSkillBody(
 
   try {
     return await withDb(deps, async (db) => {
+      // Version count gate — plan #711 phase 1. Counts all rows for this skill,
+      // not just those visible in an incomplete listing.
+      const versions = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(userSkillVersions)
+        .where(eq(userSkillVersions.skillId, pid));
+      const count = Number(versions[0]?.count ?? 0);
+
       const updated = await db
         .update(userSkills)
         .set({ body: clean, updatedAt: new Date() })
@@ -352,6 +367,21 @@ export async function updateUserSkillBody(
       if (!updated[0]) {
         return { ok: false as const, code: 'not_found' as const, error: 'skill not found' };
       }
+
+      // Insert version row (cap-gated; the body was already written above, but
+      // we reject past the cap rather than silently dropping version history).
+      if (count >= SKILL_VERSION_MAX) {
+        return {
+          ok: false as const,
+          code: 'invalid_body' as const,
+          error: `version limit reached (${SKILL_VERSION_MAX}) — rollback to free space`,
+        };
+      }
+      await db.insert(userSkillVersions).values({
+        skillId: pid,
+        body: clean,
+        label: '',
+      });
       return { ok: true, value: { id: pid } };
     });
   } catch (err) {
@@ -576,6 +606,227 @@ export async function getSkillById(
   }
 }
 
+/** Version summary projection (no body). */
+export type SkillVersionSummary = {
+  id: string;
+  label: string;
+  createdAt: Date;
+};
+
+/** Full version row including body. */
+export type SkillVersion = SkillVersionSummary & { body: string };
+
+/**
+ * List version summaries (no body) for a skill, newest first.
+ * Ownership-tenancy inside the skill lookup itself.
+ */
+export async function listSkillVersions(
+  userId: string,
+  skillId: string,
+  deps: UserSkillsDeps = {},
+): Promise<UserSkillsResult<SkillVersionSummary[]>> {
+  const uid = userId?.trim();
+  const sid = skillId?.trim();
+  if (!uid || !sid || !SKILL_ID_RE.test(sid)) {
+    return { ok: true, value: [] };
+  }
+  const tid = await resolveTenantId(uid, deps);
+  if (!tid.ok) return tid;
+
+  try {
+    return await withDb(deps, async (db) => {
+      // Ownership gate: only list versions of skills the user owns.
+      const own = await db
+        .select({ id: userSkills.id })
+        .from(userSkills)
+        .where(
+          and(
+            eq(userSkills.id, sid),
+            eq(userSkills.userId, uid),
+            eq(userSkills.tenantId, tid.value),
+          ),
+        )
+        .limit(1);
+      if (!own[0]) return { ok: true as const, value: [] };
+
+      const rows = await db
+        .select({
+          id: userSkillVersions.id,
+          label: userSkillVersions.label,
+          createdAt: userSkillVersions.createdAt,
+        })
+        .from(userSkillVersions)
+        .where(eq(userSkillVersions.skillId, sid))
+        .orderBy(desc(userSkillVersions.createdAt))
+        .limit(SKILL_VERSION_MAX);
+      return { ok: true as const, value: rows.map((r) => ({ ...r })) };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'user_skill_versions unavailable' };
+    }
+    return { ok: false, code: 'unavailable', error: 'could not list versions' };
+  }
+}
+
+/**
+ * Get a single version with body, by version id. Ownership-tenancy gated.
+ */
+export async function getSkillVersion(
+  userId: string,
+  skillId: string,
+  versionId: string,
+  deps: UserSkillsDeps = {},
+): Promise<UserSkillsResult<SkillVersion | null>> {
+  const uid = userId?.trim();
+  const sid = skillId?.trim();
+  const vid = versionId?.trim();
+  if (!uid || !sid || !vid || !SKILL_ID_RE.test(sid) || !SKILL_ID_RE.test(vid)) {
+    return { ok: true, value: null };
+  }
+  const tid = await resolveTenantId(uid, deps);
+  if (!tid.ok) return tid;
+
+  try {
+    return await withDb(deps, async (db) => {
+      // Ownership gate on the skill.
+      const own = await db
+        .select({ id: userSkills.id })
+        .from(userSkills)
+        .where(
+          and(
+            eq(userSkills.id, sid),
+            eq(userSkills.userId, uid),
+            eq(userSkills.tenantId, tid.value),
+          ),
+        )
+        .limit(1);
+      if (!own[0]) return { ok: true as const, value: null };
+
+      const rows = await db
+        .select({
+          id: userSkillVersions.id,
+          label: userSkillVersions.label,
+          body: userSkillVersions.body,
+          createdAt: userSkillVersions.createdAt,
+        })
+        .from(userSkillVersions)
+        .where(
+          and(
+            eq(userSkillVersions.id, vid),
+            eq(userSkillVersions.skillId, sid),
+          ),
+        )
+        .limit(1);
+      const row = rows[0];
+      if (!row) return { ok: true as const, value: null };
+      return { ok: true as const, value: { ...row } };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'user_skill_versions unavailable' };
+    }
+    return { ok: false, code: 'unavailable', error: 'could not load version' };
+  }
+}
+
+/**
+ * Rollback a skill to a specific version. Copies the version's body into
+ * user_skills.body + inserts a NEW version row (rollback itself IS versioned).
+ * Ownership-tenancy gated; counts against SKILL_VERSION_MAX.
+ */
+export async function rollbackSkill(
+  userId: string,
+  skillId: string,
+  versionId: string,
+  deps: UserSkillsDeps = {},
+): Promise<UserSkillsResult<{ id: string }>> {
+  const uid = userId?.trim();
+  const sid = skillId?.trim();
+  const vid = versionId?.trim();
+  if (!uid || !sid || !vid || !SKILL_ID_RE.test(sid) || !SKILL_ID_RE.test(vid)) {
+    return { ok: false, code: 'not_found', error: 'skill or version not found' };
+  }
+  const tid = await resolveTenantId(uid, deps);
+  if (!tid.ok) return tid;
+
+  try {
+    return await withDb(deps, async (db) => {
+      // Ownership gate on the skill.
+      const own = await db
+        .select({ id: userSkills.id })
+        .from(userSkills)
+        .where(
+          and(
+            eq(userSkills.id, sid),
+            eq(userSkills.userId, uid),
+            eq(userSkills.tenantId, tid.value),
+          ),
+        )
+        .limit(1);
+      if (!own[0]) {
+        return { ok: false as const, code: 'not_found' as const, error: 'skill not found' };
+      }
+
+      // Fetch the target version body.
+      const ver = await db
+        .select({ body: userSkillVersions.body })
+        .from(userSkillVersions)
+        .where(
+          and(
+            eq(userSkillVersions.id, vid),
+            eq(userSkillVersions.skillId, sid),
+          ),
+        )
+        .limit(1);
+      if (!ver[0]) {
+        return { ok: false as const, code: 'not_found' as const, error: 'version not found' };
+      }
+      const body = ver[0].body;
+
+      // Version count gate.
+      const countRows = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(userSkillVersions)
+        .where(eq(userSkillVersions.skillId, sid));
+      const count = Number(countRows[0]?.count ?? 0);
+      if (count >= SKILL_VERSION_MAX) {
+        return {
+          ok: false as const,
+          code: 'invalid_body' as const,
+          error: `version limit reached (${SKILL_VERSION_MAX}) — rollback to free space`,
+        };
+      }
+
+      // Update the skill body.
+      await db
+        .update(userSkills)
+        .set({ body, updatedAt: new Date() })
+        .where(
+          and(
+            eq(userSkills.id, sid),
+            eq(userSkills.userId, uid),
+            eq(userSkills.tenantId, tid.value),
+          ),
+        );
+
+      // Insert a new version row recording the rollback.
+      await db.insert(userSkillVersions).values({
+        skillId: sid,
+        body,
+        label: '',
+      });
+
+      return { ok: true, value: { id: sid } };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'user_skill_versions unavailable' };
+    }
+    return { ok: false, code: 'unavailable', error: 'could not roll back skill' };
+  }
+}
+
 /** List summaries (no body) for discovery. */
 export async function listUserSkills(
   userId: string,
@@ -630,6 +881,12 @@ export function createUserSkills(deps: UserSkillsDeps = {}) {
       getSkillBySlug(userId, slug, { ...deps, ...o }),
     getSkillById: (userId: string, id: string, o?: UserSkillsDeps) =>
       getSkillById(userId, id, { ...deps, ...o }),
+    listSkillVersions: (userId: string, skillId: string, o?: UserSkillsDeps) =>
+      listSkillVersions(userId, skillId, { ...deps, ...o }),
+    getSkillVersion: (userId: string, skillId: string, versionId: string, o?: UserSkillsDeps) =>
+      getSkillVersion(userId, skillId, versionId, { ...deps, ...o }),
+    rollbackSkill: (userId: string, skillId: string, versionId: string, o?: UserSkillsDeps) =>
+      rollbackSkill(userId, skillId, versionId, { ...deps, ...o }),
     listUserSkills: (userId: string, o?: UserSkillsDeps) =>
       listUserSkills(userId, { ...deps, ...o }),
   };
