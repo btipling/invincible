@@ -93,7 +93,9 @@ pub var history_draft_len: usize = 0;
 /// user row changed identity (session hydrate / ring wrap), so drop history.
 /// Load earlier preserves the newest user row → fingerprint matches → no drop.
 pub var history_newest_fingerprint: [64]u8 = [_]u8{0} ** 64;
-pub var history_newest_fp_len: u6 = 0;
+/// Length 0..64. u8 so 64 is storable (Debug @intCast of 64 into u6 panics;
+/// ReleaseSmall wraps to 0 which disables the drop entirely — #686 R3 Blocker).
+pub var history_newest_fp_len: u8 = 0;
 
 /// One-frame settle for the queue band height (same pattern as chip / composer).
 pub var prev_queue_band_h: f32 = 0;

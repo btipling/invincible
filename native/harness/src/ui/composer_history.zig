@@ -4,6 +4,7 @@
 //!
 //! Newest-first: ordinal 0 is the most recent user message in the visible
 //! ring window. Re-resolve each step so ordinals stay correct after wrap/shrink.
+const std = @import("std");
 
 pub const USER_KIND: u8 = 1; // bridge.MessageKind.user
 
@@ -35,6 +36,21 @@ pub fn userTextAt(msgs: []const KindText, ordinal: usize) ?[]const u8 {
         }
     }
     return null;
+}
+
+/// Compare candidate text against a stored fingerprint (first N bytes of the
+/// newest user row at history-entry time). Returns true when the candidate
+/// matches the fingerprint exactly (length checked, not a prefix).
+///
+/// - fp.len == 0 → false (no fingerprint stored)
+/// - candidate shorter than fp → false
+/// - exact fp.len bytes match → true
+/// - longer message starting with fp → false (length guards prefix collision:
+///   fp="ok" does not match candidate="okay rewrite the tests")
+pub fn fingerprintMatch(fp: []const u8, candidate: []const u8) bool {
+    if (fp.len == 0) return false;
+    if (candidate.len < fp.len) return false;
+    return std.mem.eql(u8, fp, candidate[0..fp.len]);
 }
 
 pub const Step = enum { older, newer };

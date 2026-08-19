@@ -166,3 +166,46 @@ test "step: single user, newer from 0 → restore_draft" {
     try testing.expectEqual(hist.Outcome.restore_draft, r.outcome);
     try testing.expectEqual(@as(?usize, null), r.index);
 }
+
+// ── fingerprintMatch ───────────────────────────────────────────────────────
+
+test "fingerprintMatch: empty fp → false" {
+    try testing.expectEqual(false, hist.fingerprintMatch("", "any"));
+}
+
+test "fingerprintMatch: candidate shorter than fp → false" {
+    try testing.expectEqual(false, hist.fingerprintMatch("hello world", "hi"));
+}
+
+test "fingerprintMatch: exact match → true" {
+    try testing.expectEqual(true, hist.fingerprintMatch("exact", "exact"));
+}
+
+test "fingerprintMatch: fp prefix of longer candidate → true (documented residual)" {
+    // R3 Major L1: with the length check in place, a 2-byte fingerprint
+    // "ok" DOES match candidate "okay rewrite the tests" because the first
+    // 2 bytes are identical. This is the documented residual of Strategy A
+    // (no session id). The real bug was fp_len==0 (u6 overflow in R3 Blocker)
+    // where `eql([0]u8{}, text[0..0])` == true for ANY text.
+    try testing.expectEqual(true, hist.fingerprintMatch("ok", "okay rewrite the tests"));
+}
+
+test "fingerprintMatch: fp.len == 64, both match first 64 → true" {
+    // R3 Blocker: u6 overflow caused 64-byte text to panic or wrap.
+    // u8 stores 64 safely. Both candidate and fingerprint are identical.
+    const fp = "A" ** 64;
+    const candidate = "A" ** 64 ++ "extra";
+    try testing.expectEqual(true, hist.fingerprintMatch(fp, candidate));
+}
+
+test "fingerprintMatch: fp.len == 63, candidate == 63 → true" {
+    const fp = "B" ** 63;
+    try testing.expectEqual(true, hist.fingerprintMatch(fp, fp));
+}
+
+test "fingerprintMatch: fp.len == 63, candidate == 64 with same prefix → true" {
+    // The first 63 bytes match → true (length-exact 63-byte compare).
+    const fp = "C" ** 63;
+    const candidate = "C" ** 63 ++ "D";
+    try testing.expectEqual(true, hist.fingerprintMatch(fp, candidate));
+}

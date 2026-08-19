@@ -530,13 +530,21 @@ pub fn frame() !void {
             if (bridge.messageAt(ri)) |m| {
                 if (m.kind == composer_history.USER_KIND) {
                     const fp = state.history_newest_fingerprint[0..state.history_newest_fp_len];
-                    fp_match = std.mem.eql(u8, fp, m.text[0..@min(m.text.len, fp.len)]);
+                    fp_match = composer_history.fingerprintMatch(fp, m.text);
                     break;
                 }
             }
         }
         if (!fp_match) {
             state.history_index = null;
+            // Restore saved draft so the operator's pre-history prompt
+            // survives a session switch / hydrate (#686 R3 Minor L1).
+            if (state.history_draft_len > 0) {
+                const dlen = @min(state.history_draft_len, state.prompt_buf.len - 1);
+                @memset(&state.prompt_buf, 0);
+                @memcpy(state.prompt_buf[0..dlen], state.history_draft_buf[0..dlen]);
+                state.prompt_buf[dlen] = 0;
+            }
             state.history_draft_len = 0;
             @memset(&state.history_draft_buf, 0);
             @memset(&state.history_newest_fingerprint, 0);
