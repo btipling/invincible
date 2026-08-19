@@ -15,6 +15,17 @@ fn makeMsgs(comptime kinds: []const u8) [2048]KindText {
     return msgs;
 }
 
+/// Build a slice of KindText with distinct text per row. Each user row
+/// gets its own text label so `userTextAt` ordinals are verifiable.
+fn buildMsgs(comptime rows: []const struct { kind: u8, text: []const u8 }) [2048]KindText {
+    var msgs: [2048]KindText = undefined;
+    @memset(&msgs, KindText{ .kind = 0, .text = "" });
+    for (rows, 0..) |r, i| {
+        msgs[i] = KindText{ .kind = r.kind, .text = r.text };
+    }
+    return msgs;
+}
+
 fn slice(msgs: []KindText, n: usize) []const KindText {
     return msgs[0..n];
 }
@@ -39,18 +50,28 @@ test "userCount: skips assistant/thinking/tool/skill/system/error" {
 // ── userTextAt (newest-first) ──────────────────────────────────────────────
 
 test "userTextAt: ordinal 0 = last user in visible order" {
-    var msgs = makeMsgs(&[_]u8{ 1, 2, 1 });
-    // visible: user(user→"x"), assistant, user(user→"x")
+    var msgs = buildMsgs(&.{
+        .{ .kind = 1, .text = "first" },
+        .{ .kind = 2, .text = "ignored" },
+        .{ .kind = 1, .text = "last" },
+    });
+    // visible: user(text="first"), assistant, user(text="last")
+    // ordinal 0 = newest-first = the LAST user (index 2 → "last")
     const last = hist.userTextAt(slice(&msgs, 3), 0);
     try testing.expect(last != null);
-    // ordinal 0 is the LAST user (index 2 in the msgs)
+    try testing.expectEqualStrings("last", last.?);
 }
 
 test "userTextAt: ordinal 1 = second-to-last user" {
-    var msgs = makeMsgs(&[_]u8{ 1, 2, 1 });
-    // ordinal 1 = the first user (index 0)
+    var msgs = buildMsgs(&.{
+        .{ .kind = 1, .text = "first" },
+        .{ .kind = 2, .text = "ignored" },
+        .{ .kind = 1, .text = "last" },
+    });
+    // ordinal 1 = the first user (index 0 → "first")
     const second = hist.userTextAt(slice(&msgs, 3), 1);
     try testing.expect(second != null);
+    try testing.expectEqualStrings("first", second.?);
 }
 
 test "userTextAt: out of range → null" {

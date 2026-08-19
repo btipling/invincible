@@ -38,9 +38,9 @@ pub const BUILD_ID: []const u8 = build_options.build_id;
 /// no alloc, no bridge.zig import in the history module.
 fn historyApply(dir: composer_history.Step) void {
     const n = bridge.messageCount();
-    // Stack allocate a KindText view from the ring. RING_CAP = 2048.
+    // Stack allocate a KindText view from the ring (bridge.RING_CAP).
     // Walk visible indices only (messageAt), newest-first.
-    var msgs_buf: [2048]composer_history.KindText = undefined;
+    var msgs_buf: [bridge.RING_CAP]composer_history.KindText = undefined;
     var user_n: usize = 0;
     var newest: usize = 0; // ordinal counter for newest-first collection
     {
@@ -493,6 +493,17 @@ pub fn frame() !void {
     if (queue_band.shouldDropEditOnEmptyQueue()) {
         queue_band.resetQueueEditState();
     }
+    // Drop composer arrow-key history state on the same hydrate path that
+    // the queue-band guard catches (plan #667, adversarial review #686).
+    // During not-busy (when history is active per the event-scan guard),
+    // queuedCount() == 0 is the steady state and submit is not in flight,
+    // so a non-zero ring change with an empty FIFO signals a hydrate where
+    // clearMessages + push in one batch left msg_count >= prev_msg.
+    if (prev_msg > 0 and state.history_index != null and n != prev_msg and bridge.queuedCount() == 0) {
+        state.history_index = null;
+        state.history_draft_len = 0;
+        @memset(&state.history_draft_buf, 0);
+    }
 
     // Always refresh trackers (grow, shrink, no-op) so stream deltas stay accurate.
     state.last_shown_count = shown;
@@ -571,18 +582,24 @@ pub fn frame() !void {
                 // through (textEntry moves the caret). Both .down and .repeat
                 // are handled so a held arrow walks instead of also moving the
                 // caret (matching shell readline).
-                if (ke.action == .down or ke.action == .repeat) {
-                    if (ke.code == .up) {
-                        const in_hist = state.history_index != null;
-                        const buf_empty = state.prompt_buf[0] == 0;
-                        if (in_hist or buf_empty) {
-                            e.handled = true;
-                            if (ke.action == .down) historyApply(.older);
-                        }
-                    } else if (ke.code == .down) {
-                        if (state.history_index != null) {
-                            e.handled = true;
-                            if (ke.action == .down) historyApply(.newer);
+                //
+                // Skip history when busy (model is running — arrows pass through
+                // to textEntry) or when editing a queued item (queue-row editor
+                // owns the caret).
+                if (!busy and state.queue_editing_index == null) {
+                    if (ke.action == .down or ke.action == .repeat) {
+                        if (ke.code == .up) {
+                            const in_hist = state.history_index != null;
+                            const buf_empty = state.prompt_buf[0] == 0;
+                            if (in_hist or buf_empty) {
+                                e.handled = true;
+                                historyApply(.older);
+                            }
+                        } else if (ke.code == .down) {
+                            if (state.history_index != null) {
+                                e.handled = true;
+                                historyApply(.newer);
+                            }
                         }
                     }
                 }
