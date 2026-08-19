@@ -254,6 +254,13 @@ describe('buildToolPreview (phase 3 #353 — bounded redacted L2 detail)', () =>
     expect(buildToolPreview(body)).toBe(body);
   });
 
+  it('produces a preview for a multi-line str_replace audit block (plan #665)', () => {
+    const body =
+      'str_replace lib/foo.ts: ok replacements=1 bytes=123\n-old_string\nfoo\n+new_string\nbar';
+    expect(buildToolPreview(body)).toBe(body);
+    expect(buildToolPreview('str_replace lib/foo.ts: ok replacements=1 bytes=123')).toBeUndefined();
+  });
+
   it('collapses long output to head + tail + … (N more lines)', () => {
     const body = Array.from(
       { length: TOOL_RUN_PREVIEW_HEAD_LINES + TOOL_RUN_PREVIEW_TAIL_LINES + 20 },

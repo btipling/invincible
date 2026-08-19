@@ -64,6 +64,43 @@ export type CreateAgentToolsOptions = {
   workspaceRoot?: string | null;
 };
 
+/** Per-side cap for the expandable str_replace old→new audit block (plan #665). */
+export const STR_REPLACE_DIFF_SIDE_MAX_BYTES = 4096;
+
+const STR_REPLACE_DIFF_TRUNC_SUFFIX = '… (truncated)';
+
+function clipUtf8Bytes(s: string, maxBytes: number): string {
+  const buf = Buffer.from(s, 'utf8');
+  if (buf.byteLength <= maxBytes) return s;
+  let end = maxBytes;
+  while (end > 0 && (buf[end]! & 0xc0) === 0x80) end -= 1;
+  return buf.subarray(0, end).toString('utf8');
+}
+
+/** Redact then cap one side of the str_replace audit diff. */
+export function formatStrReplaceDiffSide(
+  text: string,
+  secrets: Array<string | undefined | null>,
+): string {
+  const redacted = redactSecrets(text ?? '', secrets);
+  if (Buffer.byteLength(redacted, 'utf8') <= STR_REPLACE_DIFF_SIDE_MAX_BYTES) {
+    return redacted;
+  }
+  return `${clipUtf8Bytes(redacted, STR_REPLACE_DIFF_SIDE_MAX_BYTES)}${STR_REPLACE_DIFF_TRUNC_SUFFIX}`;
+}
+
+function appendStrReplaceDiff(
+  statusLine: string,
+  oldString: string,
+  newString: string,
+  secrets: Array<string | undefined | null>,
+): string {
+  return (
+    `${statusLine}\n-old_string\n${formatStrReplaceDiffSide(oldString, secrets)}\n` +
+    `+new_string\n${formatStrReplaceDiffSide(newString, secrets)}`
+  );
+}
+
 function finalize(text: string, secrets: Array<string | undefined | null>): string {
   return truncateForModel(redactSecrets(text, secrets), TOOL_RESULT_MAX_CHARS);
 }
@@ -519,7 +556,12 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
             freshness.recordWrite(path, fp);
             const ann = formatCwdAnnotation(cwdSnap);
             return finalize(
-              `str_replace ${path}${ann}: ok replacements=${result.replacements} bytes=${result.bytes}`,
+              appendStrReplaceDiff(
+                `str_replace ${path}${ann}: ok replacements=${result.replacements} bytes=${result.bytes}`,
+                input.old_string,
+                input.new_string,
+                secrets,
+              ),
               secrets,
             );
           },

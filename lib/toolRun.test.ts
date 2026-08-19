@@ -202,6 +202,16 @@ describe('buildTraceGroups (JSON/non-stream fallback)', () => {
     // Richer multi-line preview → kept verbatim (body keeps its symbols).
     addToolResult(g, 'exec', true, 'exec · ✓ ok · exit=0', 'cmd\nline two\n→ done');
     expect(g.items[3]!.detail).toBe('cmd\nline two\n→ done');
+    // str_replace audit block is richer than the L1 one-liner → kept as detail.
+    addToolResult(
+      g,
+      'str_replace',
+      true,
+      'str_replace lib/foo.ts: ok replacements=1 bytes=123',
+      'str_replace lib/foo.ts: ok replacements=1 bytes=123\n-old_string\nfoo\n+new_string\nbar',
+    );
+    expect(g.items[4]!.detail).toContain('-old_string\nfoo\n+new_string\nbar');
+    expect(g.items[4]!.brief).toContain('lib/foo.ts');
   });
 
   it('clamps a multi-preview group so the encoded message stays ≤ TOOL_RUN_MSG_HARD_MAX', () => {

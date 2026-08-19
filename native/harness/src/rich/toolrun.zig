@@ -31,6 +31,13 @@ pub const Item = struct {
     detail: []const u8,
 };
 
+/// L1 item label: `brief` when non-empty, else the tool `name`. Independent of
+/// whether level-2 detail exists (plan #665) — a short one-liner still shows
+/// the file path from `brief` instead of a bare `str_replace`.
+pub fn itemLabel(brief: []const u8, name: []const u8) []const u8 {
+    return if (brief.len > 0) brief else name;
+}
+
 pub const ToolRun = struct {
     ok: u32 = 0,
     fail: u32 = 0,
@@ -162,6 +169,18 @@ pub fn decode(alloc: std.mem.Allocator, text: []const u8) ?Decoded {
         .items = items.toOwnedSlice(alloc) catch return null,
     };
     return .{ .run = run, .alloc = alloc };
+}
+
+test "itemLabel prefers non-empty brief over name (plan #665 8a)" {
+    try std.testing.expectEqualStrings(
+        "str_replace lib/foo.ts: ok replacements=1 bytes=123",
+        itemLabel("str_replace lib/foo.ts: ok replacements=1 bytes=123", "str_replace"),
+    );
+}
+
+test "itemLabel falls back to name when brief is empty (plan #665 8b)" {
+    try std.testing.expectEqualStrings("str_replace", itemLabel("", "str_replace"));
+    try std.testing.expectEqualStrings("exec", itemLabel("", "exec"));
 }
 
 test "decode round-trip with escaping" {
