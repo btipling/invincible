@@ -89,7 +89,7 @@ While a turn is **Busy**, follow-up prompts go into an in-canvas FIFO **above** 
 |-------|----------|
 | Enqueue | Busy Ctrl/Cmd+Enter or the extra ▶ icon appends the composer text. Idle ▶ still starts a turn immediately |
 | Visibility | Compact TEAL list (header + up to 3 rows, extra rows scroll). Each row: first-line preview (100 bytes, UTF-8 safe, slash commands kept) + edit + remove |
-| Edit / cancel | Edit in place (Ctrl+Enter / blur saves; Escape reverts). × removes one item. **Clear** empties the queue. The in-flight turn is untouched |
+| Edit / cancel | Edit in place (Ctrl+Enter / blur saves; Escape reverts). ✕ removes one item. **Clear** empties the queue. The in-flight turn is untouched |
 | When it runs | After the current turn reaches Ready or error, the head submits as a normal user turn (same `pending_submit` path). Promote is held while a row is being edited |
 | Stop | Cancels **only** the in-flight turn. The queue stays and drains after Ready |
 | Lifetime | Wasm-ephemeral. Refresh, New session, Clear, and session switch wipe it. Not stored on the cloud session |
@@ -217,7 +217,7 @@ Wasm canvas (`native/harness/src/rich/*`). **User, assistant, and thinking** get
 | Caps | Same ring / 256 KiB line; paint all in-ring (≤2048) as above |
 | Unicode | Message bodies are **UTF-8** end-to-end (host `TextEncoder` → Wasm ring → zmd parse → paint → Copy source). Integrity = scalars/bytes preserved; glyphs depend on the faces below |
 | Fonts (embedded) | **Noto Sans** Regular/Bold/Italic/BoldItalic (body + rich emph) · **OpenMoji** black outline subset (emoji) · **DejaVu symbols** subset (arrows / math / dingbats / text-ornament Geometric Shapes missing from Noto, e.g. → `▾`) · **Vera Sans Mono** Regular/Bold (fences / inline code). Licenses: `native/harness/src/fonts/README.md` |
-| Paint faces | Transcript paint **splits** emoji → OpenMoji, text symbols (arrows, CLI dingbats, text-ornament Geometric Shapes such as `▾`) → DejaVu symbols, else Noto Sans / mono (dvui has no automatic per-glyph fallback). Report separators (U+23AF, U+2500/U+2501, scan lines U+23BA–U+23BD) paint as Noto **U+2015** lookalikes **on the body face** (including inside fences / inline code — Vera has no U+2015) — Copy still yields the source scalar |
+| Paint faces | Transcript paint **splits** emoji → OpenMoji, text symbols (arrows, CLI dingbats, dingbats such as `✎` U+270E, text-ornament Geometric Shapes such as `▾`) → DejaVu symbols, else Noto Sans / mono (dvui has no automatic per-glyph fallback). Report separators (U+23AF, U+2500/U+2501, scan lines U+23BA–U+23BD) paint as Noto **U+2015** lookalikes **on the body face** (including inside fences / inline code / diff-patch — Vera has no U+2015) — Copy still yields the source scalar |
 | Missing glyphs | Scripts outside these faces (notably **full CJK**) may still show a **missing-glyph placeholder**. That is **not** mojibake; **Copy** still yields UTF-8 source when the browser allows clipboard write |
 | Truncation | `MAX_MSG_LEN` (256 KiB) is a **byte** cap — a multi-byte sequence at the limit may be cut mid-code-point (pre-existing ring behavior) |
 
@@ -227,9 +227,9 @@ Wasm canvas (`native/harness/src/rich/*`). **User, assistant, and thinking** get
 |-------|----------|
 | Host → Wasm | UTF-8 via `TextEncoder`; ring stores raw bytes |
 | Parse / fences | Non-ASCII kept in inline and fence text; allowlisted token HL keeps complete UTF-8 sequences whole on the default path |
-| Paint | Mixed runs: Noto Sans for letters/punctuation; DejaVu symbols for arrows / math ops / text-ornament Geometric Shapes (`▾` `▸` `▴` …) missing from Noto; OpenMoji for emoji / pictographs (**monochrome outlines, inked teal_accent**) including play/reverse `▶◀` and the small/medium squares it actually ships. ZWJ / skin-tone / VS stay on the emoji face. Report separators with no embedded glyph (U+23AF Vitest `⎯`, U+2500/U+2501, U+23BA–U+23BD) paint as U+2015 on the **Noto body** face even inside fences / inline code (Vera has no U+2015); expander titles and other box-drawing may still tofu |
+| Paint | Mixed runs: Noto Sans for letters/punctuation; DejaVu symbols for arrows / math ops / dingbats such as `✎` U+270E / text-ornament Geometric Shapes (`▾` `▸` `▴` …) missing from Noto (including inside fences, inline code, and diff/patch); OpenMoji for emoji / pictographs (**monochrome outlines, inked teal_accent**) including play/reverse `▶◀` and the small/medium squares it actually ships. ZWJ / skin-tone / VS stay on the emoji face. Report separators with no embedded glyph (U+23AF Vitest `⎯`, U+2500/U+2501, U+23BA–U+23BD) paint as U+2015 on the **Noto body** face even inside fences / inline code (Vera has no U+2015); expander titles and other box-drawing may still tofu |
 | Composer | Canvas `textEntry` uses theme body (Noto Sans); emoji/symbol while typing follows the same face rules when painted in the transcript after send |
-| Coverage | Latin / Greek / Cyrillic (Noto) + arrows/operators/text triangles (DejaVu symbols subset) + common emoji (OpenMoji subset). Report separators with no embedded glyph paint as U+2015. **Not** full CJK; **not** color emoji; complex ZWJ families are best-effort without a full shaper |
+| Coverage | Latin / Greek / Cyrillic (Noto) + arrows/operators/text triangles/dingbats such as `✎` (DejaVu symbols subset) + common emoji (OpenMoji subset). Report separators with no embedded glyph paint as U+2015. **Not** full CJK; **not** color emoji; complex ZWJ families are best-effort without a full shaper |
 | Out of scope (today) | Full CJK face pack; **color** emoji (monochrome teal is intentional); full BiDi |
 
 Feature divide: transcript **read** path remains canvas-only — see [feature-divide.md](feature-divide.md).

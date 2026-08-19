@@ -102,9 +102,10 @@ pub fn addTextMixed(
 
 /// Paint `text` on a single `base` face/ink, substituting report-separator CPs
 /// (U+23AF etc., no embedded glyph) with Noto U+2015 at the surrounding size.
-/// For mono / plain paths that bypass addTextMixed (diff/patch fences, plain-body
-/// fallback). Lookalike is always Noto — Vera has no U+2015, so painting the
-/// substitute on `base` when `base` is mono still tofus (fences / inline code).
+/// For mono / plain paths that bypass addTextMixed (plain-body fallback).
+/// Diff/patch fences use addTextMixed (DejaVu symbols for ✎ U+270E etc.).
+/// Lookalike is always Noto — Vera has no U+2015, so painting the substitute
+/// on `base` when `base` is mono still tofus (fences / inline code).
 /// Ring/Copy bytes stay the original scalars.
 pub fn addTextSubstituted(
     tl: *dvui.TextLayoutWidget,

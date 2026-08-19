@@ -251,3 +251,17 @@ test "resetTranscriptScroll clears new flags" {
     try t.expect(!state.queue_closed_edit);
     try t.expectEqual(@as(u8, 0), state.queue_edit_buf[0]);
 }
+
+// ── cancel glyph constant (PR #681) ──────────────────────────────────────
+
+test "cancel glyph is U+2715 (DejaVu subset)" {
+    // queue_band.cancel_glyph must be exactly U+2715 (3 bytes UTF-8).
+    // U+00D7 is not in the shipped DejaVu subset — would tofu at 40 px.
+    const expected = "\u{2715}";
+    try t.expectEqualStrings(expected, queue_band.cancel_glyph);
+    try t.expectEqual(@as(usize, 3), queue_band.cancel_glyph.len);
+
+    // U+2715 decodes correctly.
+    const cp = std.unicode.utf8Decode(queue_band.cancel_glyph) catch @panic("invalid UTF-8");
+    try t.expectEqual(@as(u21, 0x2715), cp);
+}

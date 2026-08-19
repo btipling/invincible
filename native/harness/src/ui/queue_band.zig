@@ -1,4 +1,6 @@
 //! Compact in-canvas submit-queue list above the composer (plan #664).
+//! Cancel button glyph: ✕ U+2715 (DejaVu symbols subset; Vera lacks U+00D7).
+pub const cancel_glyph = "\u{2715}";
 const std = @import("std");
 const dvui = @import("dvui");
 const bridge = @import("../bridge.zig");
@@ -213,7 +215,7 @@ fn paintRow(src: std.builtin.SourceLocation, i: u32) void {
             beginEdit(i);
         }
     }
-    if (dvui.button(@src(), "×", .{}, .{
+    if (dvui.button(@src(), cancel_glyph, .{}, .{
         .gravity_y = 0.5,
         .style = .content,
         .font = chrome.composerIconFont(),

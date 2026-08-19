@@ -1,5 +1,13 @@
 //! Unified diff / patch fence paint — line colors from palette (no freehand hex).
 //! EMBER on '-' lines is intentional **removed-line** semantics, not error chrome.
+//!
+//! Test seam: diffTextPainter / DiffTextPainter pins that paintDiffText uses
+//! addTextMixed (face-aware DejaVu symbols for ✎ U+270E etc.), not the
+//! face-blind addTextSubstituted (Vera .notdef). A revert must flip this
+//! constant; the test in paint_diff.test.zig fails if it does.
+pub const DiffTextPainter = enum { mixed, substituted };
+pub const diffTextPainter: DiffTextPainter = .mixed;
+
 const std = @import("std");
 const dvui = @import("dvui");
 const parse = @import("parse.zig");
@@ -49,6 +57,7 @@ pub fn paintDiffFence(src: std.builtin.SourceLocation, block: parse.Block, ctx: 
         .color_text = ctx.style.code_text,
         .font = .theme(.mono),
         .background = false,
+        .tag = "diff-body",
     });
     defer tl.deinit();
 
@@ -65,7 +74,7 @@ pub fn paintDiffFence(src: std.builtin.SourceLocation, block: parse.Block, ctx: 
     }
 }
 
-fn paintDiffText(
+pub fn paintDiffText(
     tl: *dvui.TextLayoutWidget,
     text: []const u8,
     line_count: *usize,
@@ -85,9 +94,10 @@ fn paintDiffText(
             const kind = classifyLine(line, in_hunk.*);
             if (std.mem.startsWith(u8, line, "@@")) in_hunk.* = true;
             const color = lineColor(kind, ctx);
-            // Mono (Vera) lacks U+23AF/U+2500/U+2501 — substitute U+2015 so a
-            // report banner inside a diff/patch fence does not tofu (paint-only).
-            mixed_text.addTextSubstituted(tl, line, .theme(.mono), .{
+            // Mixed: DejaVu for text symbols (✎ U+270E, arrows, …) at mono
+            // size; report-bar lookalike (U+23AF/U+2500/U+2501 → U+2015) stays
+            // inside addTextMixed. Substituted-only would pin Vera and tofu.
+            mixed_text.addTextMixed(tl, line, .theme(.mono), .{
                 .color_text = color,
             });
             if (at_nl and line_count.* + 1 < cap) {
