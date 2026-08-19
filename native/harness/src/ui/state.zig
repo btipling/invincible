@@ -82,6 +82,14 @@ pub var prev_chip_visible: bool = false;
 /// Queue-row being edited, or null. Held promote while non-null.
 pub var queue_editing_index: ?usize = null;
 /// One-frame settle for the queue band height (same pattern as chip / composer).
+/// Composer arrow-key history (plan #667). Newest-first ordinal into the
+/// visible user-message list, or null when not in history (live draft).
+/// 0 = the most recent user message in the current ring window.
+pub var history_index: ?usize = null;
+/// Saved draft from the ↑ that ENTERED history. Restored when ↓ walks past 0.
+pub var history_draft_buf: [bridge.SUBMIT_CAP]u8 = [_]u8{0} ** bridge.SUBMIT_CAP;
+pub var history_draft_len: usize = 0;
+
 pub var prev_queue_band_h: f32 = 0;
 /// Set when an edit is saved or cancelled — Trigger B for `tryPromoteQueued`.
 pub var queue_closed_edit: bool = false;
@@ -119,6 +127,9 @@ pub fn resetTranscriptScroll() void {
     @memset(&msg_content_y, 0);
     last_user_slot = null;
     prev_chip_visible = false;
+    history_index = null;
+    history_draft_len = 0;
+    @memset(&history_draft_buf, 0);
     queue_editing_index = null;
     queue_edit_textentry_id = null;
     queue_want_editor_focus = false;
