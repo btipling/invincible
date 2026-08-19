@@ -216,17 +216,11 @@ pub fn paintToolRun(
                     tl.deinit();
                 }
 
-                // L1 label: when the row has level-2 detail (e.g. a
-                // successful str_replace with its diff block), prefer `brief`
-                // (which carries the file path from the status line). When
-                // `has_detail` is false, `brief` is a host status fallback
-                // (`name · running…` / `name · ok`) — paint the tool `name`
-                // only; the status glyph already communicates ok/fail/running
-                // (adversarial review #684 Major R2 — restore Goal 3).
-                const item_label: []const u8 = if (has_detail)
-                    rich_toolrun.itemLabel(it.brief, it.name)
-                else
-                    it.name;
+                // L1 label: see `itemLabel`. Success-with-L2 uses brief (path).
+                // No-detail host fallbacks (`name · running…` / `name · ok`)
+                // paint as `name` (Goal 3). Error one-liners that carry a path
+                // are not fallbacks — those briefs stay visible (#368).
+                const item_label: []const u8 = rich_toolrun.itemLabel(it.brief, it.name, has_detail);
                 if (has_detail) {
                     // Same as L0: natural height so label centers with the status glyph.
                     const open = dvui.expander(src, item_label, .{ .expanded = &l2_expanded }, .{
@@ -236,10 +230,9 @@ pub fn paintToolRun(
                     });
                     if (open) state.toolrun_open_l2.put(l2_key, {}) catch {} else _ = state.toolrun_open_l2.remove(l2_key);
                 } else {
-                    // No level-2 detail (e.g. a short/empty summary) — mount a
-                    // static label, not a blank expander (review nit). The
-                    // colored glyph is still the only status channel; the label
-                    // is `brief` (path) when the host sent one, else `name`.
+                    // No level-2 detail — static label, not a blank expander.
+                    // `itemLabel` already chose brief (real error/path one-liner)
+                    // or `name` (host status fallback). Glyph is the status channel.
                     var tl = dvui.textLayout(src, .{}, .{
                         .id_extra = item_base + 2, // expander slot — mutually exclusive
                         .expand = .horizontal,

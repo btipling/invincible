@@ -177,18 +177,19 @@ function windowSideLines(lines: string[], head: number, tail: number): string {
  */
 function buildStrReplacePreview(body: string): string | undefined {
   const lines = body.split('\n');
-  // Need at least: status line + -old_string + +new_string + something.
-  if (lines.length < 4) return undefined;
+  // Structural parse: status, then required `-old_string` header on line 1.
+  // Content lines that equal a marker are escaped (leading space) at emit time
+  // so the first `+new_string` after that header is the real separator
+  // (adversarial review #684 R2 Minor — do not indexOf from anywhere).
+  if (lines.length < 4 || lines[1] !== '-old_string') return undefined;
 
-  const oldMarker = lines.indexOf('-old_string');
-  const newMarker = lines.indexOf('+new_string');
-  // Markers must be present and in order: status (line 0) < oldMarker < newMarker.
-  if (oldMarker < 1 || newMarker < oldMarker + 1) return undefined;
+  const newMarker = lines.indexOf('+new_string', 2);
+  if (newMarker < 2) return undefined;
 
   const statusLine = lines[0]!;
 
   // Old side: lines after -old_string, before +new_string.
-  const oldLines = lines.slice(oldMarker + 1, newMarker);
+  const oldLines = lines.slice(2, newMarker);
   const oldBlock = `-old_string\n${windowSideLines(oldLines, STR_REPLACE_SIDE_HEAD_LINES, STR_REPLACE_SIDE_TAIL_LINES)}`;
 
   // New side: lines after +new_string.
@@ -225,12 +226,7 @@ export function buildToolPreview(redacted: string): string | undefined {
   if (lines.length === 1 && norm.length <= TOOL_RUN_PREVIEW_MIN_LEN) return undefined;
 
   // str_replace two-sided diff — per-side windows (see fn doc).
-  if (
-    lines.length >= 4 &&
-    /^str_replace\s/.test(lines[0]!) &&
-    lines.includes('-old_string') &&
-    lines.includes('+new_string')
-  ) {
+  if (lines.length >= 4 && /^str_replace\s/.test(lines[0]!) && lines[1] === '-old_string') {
     return buildStrReplacePreview(norm);
   }
 

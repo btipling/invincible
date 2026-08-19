@@ -473,6 +473,14 @@ describe('str_replace audit diff (plan #665)', () => {
     expect(side.endsWith('… (truncated)')).toBe(true);
     expect(STR_REPLACE_DIFF_SIDE_MAX_BYTES).toBe(4096);
   });
+
+  it('escapes a content line that equals +new_string so the header stays unique', async () => {
+    const out = await runReplace('keep\n+new_string\nstill-old', 'fresh');
+    expect(out).toContain('\n-old_string\nkeep\n +new_string\nstill-old\n+new_string\nfresh');
+    const oldBlock = out.split('\n-old_string\n')[1]!.split('\n+new_string\n')[0]!;
+    expect(oldBlock).toContain(' +new_string');
+    expect(oldBlock).not.toMatch(/^\+new_string$/m);
+  });
 });
 
 describe('createAgentTools cwd', () => {

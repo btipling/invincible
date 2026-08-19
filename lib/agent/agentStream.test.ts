@@ -13,8 +13,6 @@ import {
   TOOL_RUN_PREVIEW_HEAD_LINES,
   TOOL_RUN_PREVIEW_TAIL_LINES,
   TOOL_RUN_PREVIEW_MAX_CHARS,
-  STR_REPLACE_SIDE_HEAD_LINES,
-  STR_REPLACE_SIDE_TAIL_LINES,
   LIVE_TOOL_LINES_MAX,
 } from './agentStream';
 
@@ -277,38 +275,32 @@ describe('buildToolPreview (phase 3 #353 — bounded redacted L2 detail)', () =>
     expect(buildToolPreview('str_replace lib/foo.ts: ok replacements=1 bytes=123')).toBeUndefined();
   });
 
-  it('keeps both -old_string and +new_string headers visible in a function-sized diff via per-side window (#684 Major R1)', () => {
-    const SIDE_H = STR_REPLACE_SIDE_HEAD_LINES;
-    const SIDE_T = STR_REPLACE_SIDE_TAIL_LINES;
-    // Simulate a function-sized replace: old is 30 lines, new is 15 lines.
-    // Total = 1 (status) + 1 (-old_string) + 30 + 1 (+new_string) + 15 = 48 lines.
-    // Under generic 40/10, the +new_string header at line 33 would be in the
-    // middle gap — but the per-side window keeps both headers in their side's head.
-    const oldLines = Array.from({ length: 30 }, (_, i) => `  old line ${i}`).join('\n');
-    const newLines = Array.from({ length: 15 }, (_, i) => `  new line ${i}`).join('\n');
-    const body = `str_replace lib/bar.ts: ok replacements=1 bytes=600\n-old_string\n${oldLines}\n+new_string\n${newLines}`;
+  it('keeps both headers when a 45+25 replace would drop +new_string under generic 40/10 (#684 R2)', () => {
+    // 1 status + 1 -old_string + 45 old + 1 +new_string + 25 new = 73 lines.
+    // Generic HEAD 40 / TAIL 10 skips 23 lines starting at index 40 — the
+    // +new_string header sits at line 47 and would vanish. Per-side windows
+    // keep both headers and new line 0.
+    const oldLines = Array.from({ length: 45 }, (_, i) => `  old line ${i}`).join('\n');
+    const newLines = Array.from({ length: 25 }, (_, i) => `  new line ${i}`).join('\n');
+    const body = `str_replace lib/bar.ts: ok replacements=1 bytes=900\n-old_string\n${oldLines}\n+new_string\n${newLines}`;
     const preview = buildToolPreview(body)!;
-    expect(preview).toBeDefined();
-    // Status line is first.
-    expect(preview.startsWith('str_replace lib/bar.ts: ok replacements=1 bytes=600')).toBe(true);
-    // -old_string header is present (in old side's head).
     expect(preview).toContain('\n-old_string\n');
-    // +new_string header is present (in new side's head — this is the fix).
     expect(preview).toContain('\n+new_string\n');
-    // Old content start is visible.
     expect(preview).toContain('old line 0');
-    // New content start is visible (this is the fix — was collapsed before).
     expect(preview).toContain('new line 0');
-    // Bounded: per-side window caps old to SIDE_H + SIDE_T + marker.
-    const oldVisible = oldLines.split('\n').length;
-    if (oldVisible > SIDE_H + SIDE_T) {
-      expect(preview).toContain('more lines'); // collapse marker
-    }
-    // The tail of the new side is present.
-    expect(preview).toContain('new line 14');
-    // The collapsed middle of old (lines 20-23) is absent — 30 lines with
-    // head=20, tail=6 means indices 20-23 are skipped.
+    expect(preview).toContain('new line 24');
+    expect(preview).toContain('more lines');
     expect(preview).not.toContain('old line 22');
+  });
+
+  it('does not split at a +new_string line that is old-side content (#684 R2)', () => {
+    const body =
+      'str_replace lib/x.ts: ok replacements=1 bytes=20\n-old_string\n +new_string\nkeep-old\n+new_string\nreal-new';
+    const preview = buildToolPreview(body)!;
+    expect(preview).toContain('\n +new_string\n');
+    expect(preview).toContain('keep-old');
+    expect(preview).toContain('\n+new_string\nreal-new');
+    expect(preview.indexOf('\n+new_string\n')).toBeGreaterThan(preview.indexOf('\n +new_string\n'));
   });
 
   it('collapses long output to head + tail + … (N more lines)', () => {

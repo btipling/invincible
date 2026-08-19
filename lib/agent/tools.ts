@@ -89,16 +89,33 @@ export function formatStrReplaceDiffSide(
   return `${clipUtf8Bytes(redacted, STR_REPLACE_DIFF_SIDE_MAX_BYTES)}${STR_REPLACE_DIFF_TRUNC_SUFFIX}`;
 }
 
+/** Sentinel lines used as structural headers in the audit block. */
+const AUDIT_OLD_MARKER = '-old_string';
+const AUDIT_NEW_MARKER = '+new_string';
+
+/** Keep content from colliding with the structural `-old_string` / `+new_string` headers. */
+function escapeAuditContent(s: string): string {
+  return s
+    .split('\n')
+    .map((line) =>
+      line === AUDIT_OLD_MARKER || line === AUDIT_NEW_MARKER ? ` ${line}` : line,
+    )
+    .join('\n');
+}
+
 function appendStrReplaceDiff(
   statusLine: string,
   oldString: string,
   newString: string,
   secrets: Array<string | undefined | null>,
 ): string {
-  return (
-    `${statusLine}\n-old_string\n${formatStrReplaceDiffSide(oldString, secrets)}\n` +
-    `+new_string\n${formatStrReplaceDiffSide(newString, secrets)}`
-  );
+  const oldSide = escapeAuditContent(formatStrReplaceDiffSide(oldString, secrets));
+  const newSide = escapeAuditContent(formatStrReplaceDiffSide(newString, secrets));
+  return `${statusLine}\n${AUDIT_OLD_MARKER}\n${oldSide}\n${AUDIT_NEW_MARKER}\n${newSide}`;
+}
+
+function strReplaceError(path: string | undefined, rest: string): string {
+  return path ? `ERROR str_replace ${path}: ${rest}` : `ERROR str_replace: ${rest}`;
 }
 
 function finalize(text: string, secrets: Array<string | undefined | null>): string {
@@ -495,23 +512,23 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
     }),
     execute: async (input) => {
       if (!permissions.canWrite) {
-        return deny('str_replace', 'write', secrets);
+        return finalize(strReplaceError(input.path, 'permission denied (need write)'), secrets);
       }
       try {
         if (!input.path) return finalize('ERROR str_replace: path is required', secrets);
         if (typeof input.old_string !== 'string' || input.old_string.length === 0) {
           return finalize(
-            'ERROR str_replace: old_string is required and must be non-empty',
+            strReplaceError(input.path, 'old_string is required and must be non-empty'),
             secrets,
           );
         }
         if (typeof input.new_string !== 'string') {
-          return finalize('ERROR str_replace: new_string must be a string', secrets);
+          return finalize(strReplaceError(input.path, 'new_string must be a string'), secrets);
         }
         const cwdSnap = cwdState.current;
         const resolved = resolvePathOrError(workspaceRoot, cwdSnap, input.path);
         if (!resolved.ok) {
-          return finalize(`ERROR str_replace: ${resolved.error}`, secrets);
+          return finalize(strReplaceError(input.path, resolved.error), secrets);
         }
         const path = resolved.path;
 
@@ -529,10 +546,10 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
               live = finiteFp({ mtimeMs: st.mtimeMs, size: st.size });
             } catch (err) {
               if (isPathMissingError(err)) {
-                return finalize(`ERROR str_replace ${path}: File not found`, secrets);
+                return finalize(strReplaceError(path, 'File not found'), secrets);
               }
               const msg = err instanceof Error ? err.message : String(err);
-              return finalize(`ERROR str_replace ${path}: ${msg}`, secrets);
+              return finalize(strReplaceError(path, msg), secrets);
             }
 
             const gate = freshness.assertCanEdit(path, live);
@@ -574,7 +591,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return finalize(`ERROR str_replace: ${msg}`, secrets);
+        return finalize(strReplaceError(input.path, msg), secrets);
       }
     },
   });
