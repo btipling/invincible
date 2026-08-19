@@ -290,9 +290,9 @@ export function salientToolBits(name: string, resultText: string): string {
     return text.replace(/\s+/g, ' ').trim().slice(0, TOOL_LINE_SALIENT_MAX);
   }
 
-  // read_file path (truncated)? (cwd=...)?:\n<body>
+  // read_file path [offset= N limit= N lines= N[/N]] (truncated)? (cwd=...)?:\n<body>
   const readM = text.match(
-    /^read_file\s+(\S+)((?:\s*\(truncated\))?)((?:\s+cwd=\S+)?)\s*:\s*\n?([\s\S]*)$/i,
+    /^read_file\s+(\S+)(?:\s+offset=\d+\s+limit=\d+\s+lines=\d+(?:\/\d+)?)?((?:\s*\(truncated\))?)((?:\s+cwd=\S+)?)\s*:\s*\n?([\s\S]*)$/i,
   );
   if (readM || name === 'read_file' || /(^|_)read_file$/i.test(name)) {
     if (readM) {
