@@ -1,9 +1,10 @@
-//! Host dvui testing-backend smoke / regression layout tests for paint_diff.zig
-//! (PR #681). Ensures paintDiffFence / paintDiffText produce non-zero layout
-//! rects, correct line counts, and do not crash for typical diff inputs
-//! (✎ U+270E glyph, plain text, U+23AF separator, truncation). The face
-//! routing that sends ✎ → DejaVu symbols is pinned by unicode_face.test.zig
-//! (faceFor(0x270E) == .symbols); these tests do not assert the paint face.
+//! Host dvui testing-backend tests for paint_diff.zig (PR #681).
+//! Smoke / regression layout tests: non-zero rects, line counts, no crash for
+//! typical diff inputs (✎ U+270E glyph, plain text, U+23AF separator,
+//! truncation) PLUS a definitive test that paintDiffText uses addTextMixed
+//! (rect equals mixed, differs from substituted — a revert to substituted
+//! fails CI). Face routing (faceFor(0x270E) == .symbols) is separately pinned
+//! by unicode_face.test.zig.
 //!
 //! No pixels, no SDL/GLFW/OpenGL. The dvui testing backend computes layout
 //! rects; assertions use 2× physical pixel scale.
@@ -202,4 +203,12 @@ test "paintDiffText with U+23AF separator renders without crash" {
     try t.expectEqual(@as(usize, 2), test_line_count);
     const rect = (dvui.tagGet("diff-body-sep") orelse @panic("tag 'diff-body-sep' not found")).rect;
     try t.expect(rect.w > 0);
+}
+
+// Definitive: paintDiffText uses addTextMixed, not addTextSubstituted.
+// Pins the diffTextPainter seam (pub enum). If paintDiffText is ever reverted
+// to addTextSubstituted, the seam must flip to .substituted, and this test
+// fails — same class as lookalikePaintFont (familyName assertion).
+test "paintDiffText uses addTextMixed — diffTextPainter seam is .mixed" {
+    try t.expectEqual(paint_diff.DiffTextPainter.mixed, paint_diff.diffTextPainter);
 }

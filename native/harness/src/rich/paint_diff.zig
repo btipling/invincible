@@ -1,5 +1,13 @@
 //! Unified diff / patch fence paint — line colors from palette (no freehand hex).
 //! EMBER on '-' lines is intentional **removed-line** semantics, not error chrome.
+//!
+//! Test seam: diffTextPainter / DiffTextPainter pins that paintDiffText uses
+//! addTextMixed (face-aware DejaVu symbols for ✎ U+270E etc.), not the
+//! face-blind addTextSubstituted (Vera .notdef). A revert must flip this
+//! constant; the test in paint_diff.test.zig fails if it does.
+pub const DiffTextPainter = enum { mixed, substituted };
+pub const diffTextPainter: DiffTextPainter = .mixed;
+
 const std = @import("std");
 const dvui = @import("dvui");
 const parse = @import("parse.zig");
