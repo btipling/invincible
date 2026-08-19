@@ -26,10 +26,98 @@ const chip = @import("ui/chip.zig");
 const status = @import("ui/status.zig");
 const skill = @import("ui/skill.zig");
 const composer = @import("ui/composer.zig");
+const composer_history = @import("ui/composer_history.zig");
 const queue_band = @import("ui/queue_band.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
+
+/// Apply one arrow-key history step (plan #667). Called from the composer
+/// event scan BEFORE textEntry — the step machine loads a prior user message
+/// into `prompt_buf` or restores the saved draft. Pure data walk: no dvui,
+/// no alloc, no bridge.zig import in the history module.
+fn historyApply(dir: composer_history.Step) void {
+    const n = bridge.messageCount();
+    // Stack allocate a KindText view from the ring (bridge.RING_CAP).
+    // Walk visible indices only (messageAt), newest-first.
+    var msgs_buf: [bridge.RING_CAP]composer_history.KindText = undefined;
+    var user_n: usize = 0;
+    var newest: usize = 0; // ordinal counter for newest-first collection
+    {
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            if (bridge.messageAt(i)) |m| {
+                msgs_buf[i] = .{ .kind = m.kind, .text = m.text };
+                if (m.kind == composer_history.USER_KIND) {
+                    newest += 1;
+                }
+            } else {
+                msgs_buf[i] = .{ .kind = 0, .text = "" };
+            }
+        }
+        user_n = newest;
+    }
+    const msgs = msgs_buf[0..n];
+
+    // Save draft on the step that ENTERS history (null → some index).
+    // Subsequent walks leave the saved draft alone.
+    const entering = state.history_index == null and dir == .older and user_n > 0;
+    if (entering) {
+        // Use the caret-positioned buffer from the current textEntry by
+        // reading prompt_buf directly — this is the same buffer textEntry
+        // points at, so it captures the most recent operator keystrokes.
+        const draft = std.mem.sliceTo(&state.prompt_buf, 0);
+        const dlen = @min(draft.len, state.history_draft_buf.len);
+        if (dlen > 0) @memcpy(state.history_draft_buf[0..dlen], draft[0..dlen]);
+        state.history_draft_len = dlen;
+
+        // Record a fingerprint of the newest user row so frame() can detect
+        // session hydrate (plan #667, review #686 R2).
+        // Session hydrate replaces all rows → fingerprint mismatches → drop.
+        // Load earlier slides the ring window, so the newest user usually
+        // changes — that fingerprint will also mismatch, which is acceptable
+        // because ordinals name a different ring window after sliding.
+        {
+            var ri: usize = n;
+            while (ri > 0) {
+                ri -= 1;
+                if (bridge.messageAt(ri)) |m| {
+                    if (m.kind == composer_history.USER_KIND) {
+                        const fplen = @min(m.text.len, state.history_newest_fingerprint.len);
+                        state.history_newest_fp_len = @intCast(fplen);
+                        @memcpy(state.history_newest_fingerprint[0..fplen], m.text[0..fplen]);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    const r = composer_history.step(state.history_index, user_n, dir);
+    state.history_index = r.index;
+
+    switch (r.outcome) {
+        .load => {
+            if (r.index) |idx| {
+                if (composer_history.userTextAt(msgs, idx)) |text| {
+                    const ncopy = @min(text.len, state.prompt_buf.len - 1);
+                    @memset(&state.prompt_buf, 0);
+                    if (ncopy > 0) @memcpy(state.prompt_buf[0..ncopy], text[0..ncopy]);
+                    state.prompt_buf[ncopy] = 0;
+                }
+            }
+        },
+        .restore_draft => {
+            _ = composer_history.restoreDraftToPrompt(
+                &state.prompt_buf,
+                state.history_draft_buf[0..state.history_draft_len],
+            );
+            state.history_draft_len = 0;
+            @memset(&state.history_draft_buf, 0);
+        },
+        .noop => {},
+    }
+}
 
 pub fn onInit() void {
     bridge.reset();
@@ -396,6 +484,22 @@ pub fn frame() !void {
         // New/Clear or a session switch ghosts a band and blocks promote
         // until an unmarked Escape (adversarial review #666 Major L1).
         queue_band.resetQueueEditState();
+        // Drop composer arrow-key history state (plan #667) — a New /
+        // Clear / session hydrate drops the ring, so ordinals are stale.
+        // Only restore the saved draft when actually in history (#686 R6):
+        // a live draft in prompt_buf is operator content and must survive
+        // ring shrink (New / Clear / hydrate-to-shorter).
+        if (state.history_index != null) {
+            _ = composer_history.restoreDraftToPrompt(
+                &state.prompt_buf,
+                state.history_draft_buf[0..state.history_draft_len],
+            );
+        }
+        state.history_index = null;
+        state.history_draft_len = 0;
+        @memset(&state.history_draft_buf, 0);
+        @memset(&state.history_newest_fingerprint, 0);
+        state.history_newest_fp_len = 0;
     } else if (count_changed or content_grew) {
         const newest_is_user = blk: {
             if (n == 0) break :blk false;
@@ -420,6 +524,43 @@ pub fn frame() !void {
     // promote is blocked (plan #677 fix 2).
     if (queue_band.shouldDropEditOnEmptyQueue()) {
         queue_band.resetQueueEditState();
+    }
+    // Drop composer arrow-key history when the newest user row's identity
+    // changed since entry (plan #667, adversarial review #686 R2).
+    // This fingerprint check catches session hydrate (same-or-different-count
+    // batch replace) where the newest user message is a different row than the
+    // one we entered on. Load earlier changes the ring via a sliding window
+    // (not a prepend), so the newest user usually changes and the fingerprint
+    // WILL mismatch — dropping history. This is acceptable because ordinals
+    // would name a different window after sliding. Submit already resets
+    // history_index via resetHistory().
+    // The n < prev_msg block above handles New / Clear / hydrate-to-shorter
+    // with the same restoreDraftToPrompt helper (#686 R5).
+    if (state.history_index != null and state.history_newest_fp_len > 0) {
+        var fp_match = false;
+        // Walk newest-first to find the current newest user row.
+        var ri: usize = n;
+        while (ri > 0) {
+            ri -= 1;
+            if (bridge.messageAt(ri)) |m| {
+                if (m.kind == composer_history.USER_KIND) {
+                    const fp = state.history_newest_fingerprint[0..state.history_newest_fp_len];
+                    fp_match = composer_history.fingerprintMatch(fp, m.text);
+                    break;
+                }
+            }
+        }
+        if (!fp_match) {
+            state.history_index = null;
+            _ = composer_history.restoreDraftToPrompt(
+                &state.prompt_buf,
+                state.history_draft_buf[0..state.history_draft_len],
+            );
+            state.history_draft_len = 0;
+            @memset(&state.history_draft_buf, 0);
+            @memset(&state.history_newest_fingerprint, 0);
+            state.history_newest_fp_len = 0;
+        }
     }
 
     // Always refresh trackers (grow, shrink, no-op) so stream deltas stay accurate.
@@ -481,6 +622,7 @@ pub fn frame() !void {
                     .key => |k| k,
                     else => continue,
                 };
+
                 if (ke.code == .enter and (ke.mod.control() or ke.mod.command())) {
                     // A multiline textEntry consumes Enter and inserts '\n',
                     // ignoring the modifier (verified against pinned dvui), so
@@ -489,6 +631,35 @@ pub fn frame() !void {
                     // stroke. Submit once per gesture, on the initial .down.
                     e.handled = true;
                     if (ke.action == .down) composer_submit = true;
+                    continue;
+                }
+
+                // ── Composer arrow-key history (plan #667) ───────────────────
+                // ↑ enters history when the composer is empty OR while already
+                // in history. ↓ walks history forward; outside history ↓ passes
+                // through (textEntry moves the caret). Both .down and .repeat
+                // are handled so a held arrow walks instead of also moving the
+                // caret (matching shell readline).
+                //
+                // Skip history when busy (model is running — arrows pass through
+                // to textEntry) or when editing a queued item (queue-row editor
+                // owns the caret).
+                if (!busy and state.queue_editing_index == null) {
+                    if (ke.action == .down or ke.action == .repeat) {
+                        if (ke.code == .up) {
+                            const in_hist = state.history_index != null;
+                            const buf_empty = state.prompt_buf[0] == 0;
+                            if (in_hist or buf_empty) {
+                                e.handled = true;
+                                historyApply(.older);
+                            }
+                        } else if (ke.code == .down) {
+                            if (state.history_index != null) {
+                                e.handled = true;
+                                historyApply(.newer);
+                            }
+                        }
+                    }
                 }
             }
         }
