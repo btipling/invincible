@@ -66,8 +66,8 @@ pub const TEAL_IDLE_RAMP: ColorRamp = .{
 };
 
 pub const Options = struct {
-    /// Current tick phase (0..7, wraps internally).
-    phase: u8,
+    /// Current tick phase (u32, wraps internally mod 8).
+    phase: u32,
     /// 4-step palette ramp picked by the caller.
     ramp: ColorRamp,
     /// Tag namespace prefix (e.g. "busy-spinner"). The outer box gets

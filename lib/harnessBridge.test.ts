@@ -856,7 +856,7 @@ describe('setBusyTick (protocol v14 addendum — 2×4 spinner pulse)', () => {
     bridge.setBusyTick(7);
     expect(exp.__busyTick()).toBe(7);
     bridge.setBusyTick(8);
-    expect(exp.__busyTick()).toBe(8); // u8 wraps naturally in Wasm (mod 8 cycle)
+    expect(exp.__busyTick()).toBe(8); // raw u32 passthrough (no fold, no u8 truncation)
     bridge.setBusyTick(0);
     expect(exp.__busyTick()).toBe(0); // idle/Stop/reset → static head at (0,0)
     bridge.setBusyTick(-3);

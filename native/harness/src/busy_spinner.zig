@@ -25,9 +25,9 @@ pub fn cellTraversalOrder(col: usize, row: usize) usize {
     return ROWS + row;
 }
 
-/// Cell intensity steps for a given phase (natural u8 wrap, mod 8).
+/// Cell intensity steps for a given phase (natural wrap, mod 8).
 /// `out[i]` is row-major (`i = row * COLS + col`).
-pub fn busySpinnerCells(phase: u8) [CELL_COUNT]u3 {
+pub fn busySpinnerCells(phase: u32) [CELL_COUNT]u3 {
     const head_order: usize = @intCast(@mod(@as(usize, phase), CYCLE));
     var out: [CELL_COUNT]u3 = undefined;
     var i: usize = 0;
