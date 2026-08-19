@@ -253,8 +253,9 @@ pub fn build(b: *std.Build) void {
     }
 
     // Host unit tests for queue_band.zig (plan #677 — blur-save + latch-drop
-    // fixes: desiredHeight, ghost-band sentinel, beginEdit/closeEdit flags).
-    // Pure state-mutation contract tests; no dvui frame needed.
+    // fixes: desiredHeight, beginEdit/closeEdit/saveEdit lifecycle,
+    // shouldBlurSave + shouldDropEditOnEmptyQueue predicates
+    // (adversarial review #680 Round 2 Major L6)).
     {
         const queue_band_tests = b.addTest(.{
             .name = "queue_band",

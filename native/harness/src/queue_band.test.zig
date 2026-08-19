@@ -170,6 +170,68 @@ test "saveEdit: out-of-range index (no replace, no crash)" {
     try t.expect(state.queue_editing_index == null);
 }
 
+// ── shouldBlurSave predicates (adversarial review #680 Round 2 Major L6) ──
+
+test "shouldBlurSave: false when seen_focused=false (first frame)" {
+    // Regression guard: before plan #677 fix 1, the blur-save guard was
+    // `focused == null or focused.? != te_id` with no seen_focused gate.
+    // On the FIRST frame after beginEdit, the textEntry widget doesn't
+    // exist yet — focused is null (no focusWidget has landed). Without
+    // seen_focused, shouldBlurSave returns true → saveEdit + closeEdit
+    // fires one frame after open → ✎ flashes and closes.
+    state.queue_edit_seen_focused = false;
+    state.queue_edit_textentry_id = @as(@import("dvui").Id, @enumFromInt(1));
+    try t.expect(!queue_band.shouldBlurSave(@as(@import("dvui").Id, @enumFromInt(1)), null));
+}
+
+test "shouldBlurSave: true when seen_focused=true and focused null (blur)" {
+    // After the TE has been focused at least once (seen_focused=true),
+    // focused=null (clicked empty canvas or no widget has focus) is a
+    // genuine blur — should close the edit.
+    state.queue_edit_seen_focused = true;
+    state.queue_edit_textentry_id = @as(@import("dvui").Id, @enumFromInt(1));
+    try t.expect(queue_band.shouldBlurSave(@as(@import("dvui").Id, @enumFromInt(1)), null));
+}
+
+test "shouldBlurSave: true when seen_focused=true and focused on different widget" {
+    // seen_focused=true but focus moved to another widget (e.g. composer)
+    // → blur-save should fire.
+    state.queue_edit_seen_focused = true;
+    state.queue_edit_textentry_id = @as(@import("dvui").Id, @enumFromInt(1));
+    try t.expect(queue_band.shouldBlurSave(@as(@import("dvui").Id, @enumFromInt(1)), @as(@import("dvui").Id, @enumFromInt(2))));
+}
+
+test "shouldBlurSave: false when seen_focused=true and focused on te itself" {
+    // Normal editing — focus is still on the textEntry. No blur.
+    state.queue_edit_seen_focused = true;
+    state.queue_edit_textentry_id = @as(@import("dvui").Id, @enumFromInt(1));
+    try t.expect(!queue_band.shouldBlurSave(@as(@import("dvui").Id, @enumFromInt(1)), @as(@import("dvui").Id, @enumFromInt(1))));
+}
+
+// ── shouldDropEditOnEmptyQueue predicate (adversarial review #680 Round 2 Major L6) ──
+
+test "shouldDropEditOnEmptyQueue: true when editing + queue empty" {
+    bridge.reset();
+    state.queue_editing_index = 0;
+    // FIFO is empty after reset; editing latch is set → must return true.
+    try t.expect(queue_band.shouldDropEditOnEmptyQueue());
+}
+
+test "shouldDropEditOnEmptyQueue: false when not editing" {
+    bridge.reset();
+    state.queue_editing_index = null;
+    // FIFO empty but no edit open → no latch to drop.
+    try t.expect(!queue_band.shouldDropEditOnEmptyQueue());
+}
+
+test "shouldDropEditOnEmptyQueue: false when editing + queue non-empty" {
+    bridge.reset();
+    _ = bridge.enqueueFromUi("x") catch @panic("enqueue failed");
+    state.queue_editing_index = 0;
+    // Editing is open but the queue has an item → no drop.
+    try t.expect(!queue_band.shouldDropEditOnEmptyQueue());
+}
+
 test "resetTranscriptScroll clears new flags" {
     state.queue_want_editor_focus = true;
     state.queue_edit_seen_focused = true;

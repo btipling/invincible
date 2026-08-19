@@ -418,7 +418,7 @@ pub fn frame() !void {
     // clearMessages + push in one batch leaves msg_count >= prev_msg but
     // the queue FIFO is empty. Without this guard, a ghost band appears and
     // promote is blocked (plan #677 fix 2).
-    if (state.queue_editing_index != null and bridge.queuedCount() == 0) {
+    if (queue_band.shouldDropEditOnEmptyQueue()) {
         queue_band.resetQueueEditState();
     }
 

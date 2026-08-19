@@ -23,6 +23,27 @@ pub fn resetQueueEditState() void {
     @memset(&state.queue_edit_buf, 0);
 }
 
+/// Predicate extracted from the `paint()` blur-save guard so a host-target
+/// unit test can prove the `seen_focused` conjunct works. `focused` is the
+/// dvui-global focused-widget id (null when no window is active or no widget
+/// has focus). Removing the `seen_focused` conjunct (reverting to the #666
+/// condition) makes this return true when `seen_focused` is false and
+/// `focused` is null — the first-frame premature-close bug (plan #677 fix 1,
+/// adversarial review #680 Round 2 Major L6).
+pub fn shouldBlurSave(te_id: dvui.Id, focused: ?dvui.Id) bool {
+    if (!state.queue_edit_seen_focused) return false;
+    return focused == null or focused.? != te_id;
+}
+
+/// Predicate extracted from the `ui.zig` empty-FIFO guard so a host-target
+/// unit test can prove the condition logic. Removing the `queuedCount()==0`
+/// guard from `ui.zig` (reverting the #677 fix 2) would leave the editing
+/// latch set after a hydrate-to-same-or-longer-session, ghosting a band and
+/// blocking promote (adversarial review #680 Round 2 Major L6).
+pub fn shouldDropEditOnEmptyQueue() bool {
+    return state.queue_editing_index != null and bridge.queuedCount() == 0;
+}
+
 pub fn desiredHeight() f32 {
     const n = bridge.queuedCount();
     const editing = state.queue_editing_index != null;
@@ -113,9 +134,8 @@ pub fn paint(band_y: f32, band_h: f32, avail_w: f32) void {
         // Guard on seen_focused: the first frame(s) after beginEdit have
         // no TE yet or no focus on it; focused==null or focused≠te_id is
         // normal then and must not close the editor (plan #677 fix 1).
-        const focused = dvui.focusedWidgetIdInCurrentSubwindow();
         if (state.queue_edit_textentry_id) |te_id| {
-            if (state.queue_edit_seen_focused and (focused == null or focused.? != te_id)) {
+            if (shouldBlurSave(te_id, dvui.focusedWidgetIdInCurrentSubwindow())) {
                 const text = std.mem.sliceTo(state.queue_edit_buf[0..], 0);
                 saveEdit(@intCast(state.queue_editing_index.?), text);
             }
