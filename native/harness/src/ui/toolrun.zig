@@ -176,7 +176,8 @@ pub fn paintToolRun(
             const it_id: usize = it.id;
             // Widget slots inside the item's 1024-wide namespace:
             //   +0 item box · +1 status glyph · +2 expander / static label
-            //   +3 detail box · +4 detail body
+            //   +3 detail box · +4 status (str_replace) / detail body
+            //   +5 old box · +6 old tl · +7 new box · +8 new tl (str_replace sides)
             const item_base: usize = id_base + it_id *% 1024;
             const has_detail = it.detail.len > 0;
             var l2_expanded = state.toolrun_open_l2.contains(l2_key);
