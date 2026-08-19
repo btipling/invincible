@@ -375,6 +375,17 @@ describe('salientToolBits cwd tools', () => {
     expect(bits).toContain('cwd=invincible');
     expect(bits).toContain('2 lines');
   });
+
+  it('read_file windowed status line stays path · N lines · M B', () => {
+    const raw =
+      'read_file src/foo.ts offset=40 limit=20 lines=20/412 (truncated):\n40→mid\n41→next';
+    const bits = salientToolBits('read_file', raw);
+    expect(bits).toContain('src/foo.ts');
+    expect(bits).toContain('truncated');
+    expect(bits).toMatch(/2 lines/);
+    expect(bits).not.toContain('offset=');
+    expect(bits).not.toContain('40→mid');
+  });
 });
 
 describe('metaSandboxSwitchActiveId + activeSandboxId typed field (Phase 2 #627)', () => {

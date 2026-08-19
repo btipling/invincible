@@ -77,6 +77,53 @@ function clipUtf8Bytes(s: string, maxBytes: number): string {
   return buf.subarray(0, end).toString('utf8');
 }
 
+/** Default line window for read_file (Grok Build; plan #689). NEW cap. */
+export const READ_FILE_DEFAULT_LIMIT = 1000;
+
+export type LineWindow = {
+  body: string;
+  returned: number;
+  totalLines: number;
+};
+
+/**
+ * Numbered line window over backend content. `offset` is 1-based.
+ * `totalLines` is lines in `content` (`split('\\n')`), not a disk recount.
+ */
+export function formatLineWindow(
+  content: string,
+  offset: number,
+  limit: number,
+): LineWindow {
+  const allLines = content.split('\n');
+  const totalLines = allLines.length;
+  const start = Math.max(0, offset - 1);
+  const selected =
+    start >= allLines.length ? [] : allLines.slice(start, start + limit);
+  const body = selected
+    .map((line, i) => `${start + i + 1}→${line}`)
+    .join('\n');
+  return { body, returned: selected.length, totalLines };
+}
+
+/** Full-file edit grant: offset 1, not byte-truncated, window reached content EOF. */
+export function isFullFileReadGrant(opts: {
+  offset: number;
+  returned: number;
+  totalLines: number;
+  byteTruncated: boolean;
+}): boolean {
+  if (opts.offset !== 1 || opts.byteTruncated) return false;
+  return opts.offset - 1 + opts.returned >= opts.totalLines;
+}
+
+function parsePositiveInt(n: unknown, fallback: number): number {
+  if (typeof n === 'number' && Number.isFinite(n) && n >= 1) {
+    return Math.floor(n);
+  }
+  return fallback;
+}
+
 /** Redact then cap one side of the str_replace audit diff. */
 export function formatStrReplaceDiffSide(
   text: string,
@@ -334,8 +381,13 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const read_file = tool({
     description:
-      'Read a text file from the sandbox workspace (max 16 MiB). A successful full (non-truncated) read authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. Path is relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
-    inputSchema: jsonSchema<{ path: string; maxBytes?: number }>({
+      'Read a text file from the sandbox workspace (max 16 MiB). Optional offset (1-based start line, default 1) and limit (max lines, default 1000) return a line-numbered window (N→content). A successful full read — offset 1 covering every line of the returned content, not clipped by limit or maxBytes — authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. Path is relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
+    inputSchema: jsonSchema<{
+      path: string;
+      maxBytes?: number;
+      offset?: number;
+      limit?: number;
+    }>({
       type: 'object',
       properties: {
         path: {
@@ -346,6 +398,14 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         maxBytes: {
           type: 'number',
           description: 'Optional max bytes to read (server-capped at 16 MiB)',
+        },
+        offset: {
+          type: 'number',
+          description: '1-based start line (default 1)',
+        },
+        limit: {
+          type: 'number',
+          description: 'Max lines to return (default 1000)',
         },
       },
       required: ['path'],
@@ -363,10 +423,18 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           return finalize(`ERROR read_file: ${resolved.error}`, secrets);
         }
         const path = resolved.path;
+        const offset = parsePositiveInt(input.offset, 1);
+        const limit = parsePositiveInt(input.limit, READ_FILE_DEFAULT_LIMIT);
         const result = await client.readFile(path, input.maxBytes, { signal });
-        if (result.truncated) {
-          freshness.recordRead(path, { truncated: true });
-        } else {
+        const window = formatLineWindow(result.content, offset, limit);
+        const byteTruncated = result.truncated === true;
+        const fullGrant = isFullFileReadGrant({
+          offset,
+          returned: window.returned,
+          totalLines: window.totalLines,
+          byteTruncated,
+        });
+        if (fullGrant) {
           const fp = await resolveFingerprint(
             client,
             path,
@@ -374,11 +442,13 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
             signal,
           );
           freshness.recordRead(path, { ...fp, truncated: false });
+        } else {
+          freshness.recordRead(path, { truncated: true });
         }
-        const flag = result.truncated ? ' (truncated)' : '';
+        const flag = fullGrant ? '' : ' (truncated)';
         const ann = formatCwdAnnotation(cwdSnap);
         return finalize(
-          `read_file ${path}${flag}${ann}:\n${result.content}`,
+          `read_file ${path} offset=${offset} limit=${limit} lines=${window.returned}/${window.totalLines}${flag}${ann}:\n${window.body}`,
           secrets,
         );
       } catch (err) {

@@ -316,7 +316,7 @@ alternate tools (MCP / builtin HTTP) gets **403** `Sandbox access denied.` (or
 |--------|------|------|---------|
 | `GET` | `/health` | none | `{ ok: true, version: 2, daemonVersion: N, workspaceRoot?: "/…" }` — the per-binding jail root `R` (daemon ≥ **2**); `workspaceRoot` is **omitted** when the jail root cannot yet be resolved (liveness/version always stay 200) |
 | `POST` | `/v1/list_dir` | Bearer | List directory entries |
-| `POST` | `/v1/read_file` | Bearer | Read file (max 16 MiB); additive `mtimeMs` + `size` when daemon supports |
+| `POST` | `/v1/read_file` | Bearer | Read file (max 16 MiB prefix from byte 0); additive `mtimeMs` + `size` when daemon supports. The **agent** `read_file` tool then windows that prefix: `offset` (1-based line, default 1) + `limit` (default 1000) return `N→` numbered lines. Daemon request shape is still `path` + `maxBytes` |
 | `POST` | `/v1/write_file` | Bearer | Write file (max 16 MiB); post-write fingerprint when supported |
 | `POST` | `/v1/str_replace` | Bearer | Exact string replace (unique match or `replace_all`); post-write fingerprint when supported. **Unique match and `replace_all` replace literally** — `$` in `new_string` is never a `String.replace` template (`$&`/`` $` ``/`$'`/`$$` are written byte-for-byte) |
 | `POST` | `/v1/stat` | Bearer | Path metadata `{ path, type, size, mtimeMs? }` — path missing: **404** with path-missing body (e.g. `Path not found`); not bare `Not found` (that is unknown-route). No file content |
@@ -711,9 +711,9 @@ Agent filesystem tools enforce **read-before-edit** on the shared sandbox jail:
 
 | Rule | Behavior |
 |------|----------|
-| Edit existing file | A successful full **`read_file`** of that path is required **in this agent run** before **`str_replace`** or overwriting with **`write_file`** |
+| Edit existing file | A successful **full** **`read_file`** of that path is required **in this agent run** before **`str_replace`** or overwriting with **`write_file`**. Full means `offset` 1 and the window reached the end of the returned content, not clipped by `limit` or `maxBytes` |
 | Create new file | **`write_file`** to a path that does not exist yet does **not** require a prior read. Existence is decided only when **`stat` reports true path-missing** (e.g. ENOENT / daemon `Path not found`) — not on bare HTTP 404 or generic `Not found` from a missing route |
-| Truncated read | Does **not** authorize edit — read the full file first |
+| Truncated read | Does **not** authorize edit — including a default 1000-line window on a longer file, any `offset` other than 1, or a `maxBytes` prefix. Re-read the full file (`offset` 1 and a `limit` that covers every line) first |
 | Concurrent change | Before each mutate, tools **re-stat** the path. If mtime/size changed since the last observation (another browser tab, device, agent run, **`exec`**, or human on the same workspace), the tool soft-fails and the model must **`read_file` again** |
 | Soft fail | Tools return `ERROR write_file:` / `ERROR str_replace:` strings — they do not throw |
 | Unknown existence | If pre-mutate **`stat` fails** for a reason other than path-missing (including a daemon that does not implement **`POST /v1/stat`** yet), tools **fail closed** — they do **not** treat the path as create-new and do **not** overwrite |
