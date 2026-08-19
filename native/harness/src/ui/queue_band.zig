@@ -9,6 +9,41 @@ const state = @import("state.zig");
 const metrics = @import("metrics.zig");
 const chrome = @import("chrome.zig");
 
+/// Reset all queue-edit state to idle — called from `ui.zig` on ring clear
+/// (`n < prev_msg`) and on the `queuedCount()==0` empty-FIFO guard (plan #677
+/// fix 2 + adversarial review #680 Major L6). Exported as a pub helper so the
+/// unit test can call it directly.
+pub fn resetQueueEditState() void {
+    state.queue_editing_index = null;
+    state.queue_edit_textentry_id = null;
+    state.queue_want_editor_focus = false;
+    state.queue_edit_seen_focused = false;
+    state.prev_queue_band_h = 0;
+    state.queue_closed_edit = false;
+    @memset(&state.queue_edit_buf, 0);
+}
+
+/// Predicate extracted from the `paint()` blur-save guard so a host-target
+/// unit test can prove the `seen_focused` conjunct works. `focused` is the
+/// dvui-global focused-widget id (null when no window is active or no widget
+/// has focus). Removing the `seen_focused` conjunct (reverting to the #666
+/// condition) makes this return true when `seen_focused` is false and
+/// `focused` is null — the first-frame premature-close bug (plan #677 fix 1,
+/// adversarial review #680 Round 2 Major L6).
+pub fn shouldBlurSave(te_id: dvui.Id, focused: ?dvui.Id) bool {
+    if (!state.queue_edit_seen_focused) return false;
+    return focused == null or focused.? != te_id;
+}
+
+/// Predicate extracted from the `ui.zig` empty-FIFO guard so a host-target
+/// unit test can prove the condition logic. Removing the `queuedCount()==0`
+/// guard from `ui.zig` (reverting the #677 fix 2) would leave the editing
+/// latch set after a hydrate-to-same-or-longer-session, ghosting a band and
+/// blocking promote (adversarial review #680 Round 2 Major L6).
+pub fn shouldDropEditOnEmptyQueue() bool {
+    return state.queue_editing_index != null and bridge.queuedCount() == 0;
+}
+
 pub fn desiredHeight() f32 {
     const n = bridge.queuedCount();
     const editing = state.queue_editing_index != null;
@@ -96,9 +131,11 @@ pub fn paint(band_y: f32, band_h: f32, avail_w: f32) void {
         // (e.g. operator clicked the composer), save the edit and close
         // so promote isn't stalled behind a ghost edit (plan #664, review
         // #666 Minor L1+L8).
-        const focused = dvui.focusedWidgetIdInCurrentSubwindow();
+        // Guard on seen_focused: the first frame(s) after beginEdit have
+        // no TE yet or no focus on it; focused==null or focused≠te_id is
+        // normal then and must not close the editor (plan #677 fix 1).
         if (state.queue_edit_textentry_id) |te_id| {
-            if (focused == null or (focused.? != te_id)) {
+            if (shouldBlurSave(te_id, dvui.focusedWidgetIdInCurrentSubwindow())) {
                 const text = std.mem.sliceTo(state.queue_edit_buf[0..], 0);
                 saveEdit(@intCast(state.queue_editing_index.?), text);
             }
@@ -135,6 +172,15 @@ fn paintRow(src: std.builtin.SourceLocation, i: u32) void {
         });
         typed = te.getText();
         state.queue_edit_textentry_id = te.data().id;
+        if (state.queue_want_editor_focus) {
+            dvui.focusWidget(te.data().id, null, null);
+            state.queue_want_editor_focus = false;
+        }
+        // Track when the TE has actually been focused — blur-save
+        // waits for this so the first frame(s) don't close early.
+        if (dvui.focusedWidgetIdInCurrentSubwindow()) |fid| {
+            if (fid == te.data().id) state.queue_edit_seen_focused = true;
+        }
         te.deinit();
         if (submitChord()) {
             saveEdit(i, typed);
@@ -188,17 +234,26 @@ fn paintRow(src: std.builtin.SourceLocation, i: u32) void {
     }
 }
 
-fn beginEdit(i: u32) void {
+pub fn beginEdit(i: u32) void {
     const text = bridge.queuedItemAt(i) orelse return;
     @memset(&state.queue_edit_buf, 0);
     const n = @min(text.len, state.queue_edit_buf.len);
     if (n > 0) @memcpy(state.queue_edit_buf[0..n], text[0..n]);
     state.queue_editing_index = i;
+    // The textEntry widget doesn't exist yet on this frame (editing was false
+    // when paintRow ran) — request focus for the next frame when it's created.
+    state.queue_want_editor_focus = true;
+    state.queue_edit_seen_focused = false;
 }
 
-fn saveEdit(i: u32, typed: []const u8) void {
+pub fn saveEdit(i: u32, typed: []const u8) void {
     if (bridge.replaceQueuedAt(i, typed)) {
         closeEdit();
+    } else {
+        // Blank text or error — replace was rejected (data is not lost).
+        // Release the latch so click-away always leaves the editor even
+        // when the field was cleared (adversarial review #680 Minor L1).
+        cancelEdit();
     }
 }
 
@@ -206,9 +261,11 @@ fn cancelEdit() void {
     if (state.queue_editing_index != null) closeEdit();
 }
 
-fn closeEdit() void {
+pub fn closeEdit() void {
     state.queue_editing_index = null;
     state.queue_edit_textentry_id = null;
+    state.queue_want_editor_focus = false;
+    state.queue_edit_seen_focused = false;
     @memset(&state.queue_edit_buf, 0);
     state.queue_closed_edit = true;
 }
