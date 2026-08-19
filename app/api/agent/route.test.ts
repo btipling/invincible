@@ -374,13 +374,24 @@ describe('POST /api/agent', () => {
     expect(body.usage).toBeUndefined();
   });
 
-  it('forwards the per-binding workspaceRoot into runAgent when resolve ok', async () => {
+  it('forwards the per-binding workspaceRoot + bind projection into runAgent when resolve ok', async () => {
     mockAuthedSession();
     mockMcpEmpty();
     mockByokOk();
     mockGithubToken();
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
-    type RunArg = { workspaceRoot?: string | null; sandboxClient?: unknown };
+    type RunArg = {
+      workspaceRoot?: string | null;
+      sandboxClient?: unknown;
+      bind?: {
+        backend: string;
+        sandboxId: string;
+        name: string;
+        slug: string;
+        status: string;
+        image?: string | null;
+      };
+    };
     const runAgent = vi.fn(async (_arg: RunArg) => ({
       text: 'ok',
       toolTrace: [],
@@ -395,7 +406,10 @@ describe('POST /api/agent', () => {
           sandboxId: 'sbx-1',
           tenantId: 'ten-1',
           backend: 'vercel' as const,
-          resolvedImage: 'img',
+          name: 'prod',
+          slug: 'prod',
+          status: 'active',
+          resolvedImage: 'vercel/sandbox/universal:latest',
           workspaceRoot: '/vercel/workspace',
         },
       })),
@@ -414,6 +428,19 @@ describe('POST /api/agent', () => {
     const arg = runAgent.mock.calls[0]?.[0] as RunArg;
     expect(arg).toBeDefined();
     expect(arg!.workspaceRoot).toBe('/vercel/workspace');
+    // bind is the six-field non-secret projection — never baseUrl / workspaceRoot / secrets / client
+    expect(arg!.bind).toEqual({
+      backend: 'vercel',
+      sandboxId: 'sbx-1',
+      name: 'prod',
+      slug: 'prod',
+      status: 'active',
+      image: 'vercel/sandbox/universal:latest',
+    });
+    expect(arg!.bind).not.toHaveProperty('baseUrl');
+    expect(arg!.bind).not.toHaveProperty('workspaceRoot');
+    expect(arg!.bind).not.toHaveProperty('secrets');
+    expect(arg!.bind).not.toHaveProperty('client');
   });
 
   it('returns 401 with AUTH_REQUIRED_ERROR when unauthenticated', async () => {
