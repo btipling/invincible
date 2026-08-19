@@ -53,6 +53,47 @@ fn isHostStatusFallback(brief: []const u8, name: []const u8) bool {
         std.mem.eql(u8, rest, " · failed");
 }
 
+/// L2 preview sides for a successful `str_replace` audit block.
+/// Slices point into `detail` (no allocation).
+pub const StrReplaceSides = struct {
+    status: []const u8,
+    old: []const u8,
+    new: []const u8,
+};
+
+const STR_REPLACE_OLD_SENTINEL = "-old_string";
+const STR_REPLACE_NEW_SENTINEL = "+new_string";
+
+/// When `detail` has the str_replace L2-preview shape (line-exact
+/// `-old_string` / `+new_string` sentinels), split into status / old / new.
+/// Returns null when the detail is not that shape (plain body / ERROR / malformed).
+pub fn splitStrReplaceDetail(detail: []const u8) ?StrReplaceSides {
+    const nl1 = std.mem.indexOfScalar(u8, detail, '\n') orelse return null;
+    const status = detail[0..nl1];
+    const after_status = detail[nl1 + 1 ..];
+    if (!std.mem.startsWith(u8, after_status, STR_REPLACE_OLD_SENTINEL)) return null;
+    const after_old_marker = after_status[STR_REPLACE_OLD_SENTINEL.len..];
+    if (after_old_marker.len == 0 or after_old_marker[0] != '\n') return null;
+    const after_old_nl = after_old_marker[1..];
+
+    var i: usize = 0;
+    var line_start: usize = 0;
+    while (i <= after_old_nl.len) : (i += 1) {
+        if (i != after_old_nl.len and after_old_nl[i] != '\n') continue;
+        const line = after_old_nl[line_start..i];
+        if (std.mem.eql(u8, line, STR_REPLACE_NEW_SENTINEL)) {
+            const old_body = if (line_start > 0 and after_old_nl[line_start - 1] == '\n')
+                after_old_nl[0 .. line_start - 1]
+            else
+                after_old_nl[0..line_start];
+            const new_body = if (i < after_old_nl.len) after_old_nl[i + 1 ..] else after_old_nl[i..];
+            return .{ .status = status, .old = old_body, .new = new_body };
+        }
+        line_start = i + 1;
+    }
+    return null;
+}
+
 pub const ToolRun = struct {
     ok: u32 = 0,
     fail: u32 = 0,
@@ -340,4 +381,93 @@ test "decode caps items at MAX_ITEMS (defense against dense/restored blobs)" {
     var d = decode(a, text.items) orelse return error.ExpectedDecode;
     defer d.deinit();
     try std.testing.expectEqual(@as(usize, MAX_ITEMS), d.run.items.len);
+}
+
+test "splitStrReplaceDetail normal status + old + new" {
+    const detail =
+        "str_replace lib/foo.ts: ok replacements=1 bytes=12\n" ++
+        "-old_string\n" ++
+        "const a = 1;\n" ++
+        "+new_string\n" ++
+        "const a = 2;";
+    const sides = splitStrReplaceDetail(detail) orelse return error.ExpectedSides;
+    try std.testing.expectEqualStrings("str_replace lib/foo.ts: ok replacements=1 bytes=12", sides.status);
+    try std.testing.expectEqualStrings("const a = 1;", sides.old);
+    try std.testing.expectEqualStrings("const a = 2;", sides.new);
+}
+
+test "splitStrReplaceDetail delete: empty new, both sentinels present" {
+    const detail =
+        "str_replace a.txt: ok replacements=1 bytes=0\n" ++
+        "-old_string\n" ++
+        "gone\n" ++
+        "+new_string\n";
+    const sides = splitStrReplaceDetail(detail) orelse return error.ExpectedSides;
+    try std.testing.expectEqualStrings("gone", sides.old);
+    try std.testing.expectEqualStrings("", sides.new);
+}
+
+test "splitStrReplaceDetail replace_all is still one pair" {
+    const detail =
+        "str_replace a.ts: ok replacements=3 bytes=9\n" ++
+        "-old_string\n" ++
+        "foo\n" ++
+        "+new_string\n" ++
+        "bar";
+    const sides = splitStrReplaceDetail(detail) orelse return error.ExpectedSides;
+    try std.testing.expectEqualStrings("foo", sides.old);
+    try std.testing.expectEqualStrings("bar", sides.new);
+}
+
+test "splitStrReplaceDetail escaped content line is not a sentinel" {
+    const detail =
+        "str_replace a.ts: ok replacements=1 bytes=20\n" ++
+        "-old_string\n" ++
+        " -old_string\n" ++
+        "keep\n" ++
+        "+new_string\n" ++
+        " +new_string";
+    const sides = splitStrReplaceDetail(detail) orelse return error.ExpectedSides;
+    try std.testing.expectEqualStrings(" -old_string\nkeep", sides.old);
+    try std.testing.expectEqualStrings(" +new_string", sides.new);
+}
+
+test "splitStrReplaceDetail no sentinels / ERROR → null" {
+    try std.testing.expect(splitStrReplaceDetail("ERROR str_replace a.ts: File not found") == null);
+    try std.testing.expect(splitStrReplaceDetail("exec ls\nexit=0\nstdout:\nok") == null);
+    try std.testing.expect(splitStrReplaceDetail("") == null);
+}
+
+test "splitStrReplaceDetail only one sentinel → null" {
+    try std.testing.expect(splitStrReplaceDetail("status\n-old_string\nonly old") == null);
+    try std.testing.expect(splitStrReplaceDetail("status\n+new_string\nonly new") == null);
+    try std.testing.expect(splitStrReplaceDetail("status\n-old_string extra\nfoo\n+new_string\nbar") == null);
+}
+
+test "splitStrReplaceDetail windowed preview with more-lines marker still splits" {
+    const detail =
+        "str_replace big.ts: ok replacements=1 bytes=400\n" ++
+        "-old_string\n" ++
+        "head old\n" ++
+        "… (3 more lines)\n" ++
+        "tail old\n" ++
+        "+new_string\n" ++
+        "head new\n" ++
+        "… (2 more lines)\n" ++
+        "tail new";
+    const sides = splitStrReplaceDetail(detail) orelse return error.ExpectedSides;
+    try std.testing.expectEqualStrings("head old\n… (3 more lines)\ntail old", sides.old);
+    try std.testing.expectEqualStrings("head new\n… (2 more lines)\ntail new", sides.new);
+}
+
+test "splitStrReplaceDetail empty old with both sentinels is empty body not null" {
+    const detail =
+        "str_replace a.ts: ok replacements=1 bytes=3\n" ++
+        "-old_string\n" ++
+        "\n" ++
+        "+new_string\n" ++
+        "new";
+    const sides = splitStrReplaceDetail(detail) orelse return error.ExpectedSides;
+    try std.testing.expectEqualStrings("", sides.old);
+    try std.testing.expectEqualStrings("new", sides.new);
 }

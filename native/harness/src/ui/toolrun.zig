@@ -176,7 +176,8 @@ pub fn paintToolRun(
             const it_id: usize = it.id;
             // Widget slots inside the item's 1024-wide namespace:
             //   +0 item box · +1 status glyph · +2 expander / static label
-            //   +3 detail box · +4 detail body
+            //   +3 detail box · +4 status (str_replace) / detail body
+            //   +5 old box · +6 old tl · +7 new box · +8 new tl (str_replace sides)
             const item_base: usize = id_base + it_id *% 1024;
             const has_detail = it.detail.len > 0;
             var l2_expanded = state.toolrun_open_l2.contains(l2_key);
@@ -253,23 +254,90 @@ pub fn paintToolRun(
                     .margin = .{ .x = 26, .y = 0, .w = 0, .h = 0 },
                 });
                 defer detail.deinit();
-                var tl = dvui.textLayout(src, .{}, .{
-                    .id_extra = item_base + 4,
-                    .expand = .horizontal,
-                    .color_text = palette.teal_text,
-                });
-                // Phase 3 (#353): command/output previews (exec, filesystem,
-                // http) paint in the embedded Vera Sans Mono face for a readable
-                // aligned block; prose/other detail stays the body face. Symbols
-                // still route to their DejaVu/OpenMoji faces via addTextMixed.
-                const detail_font: dvui.Font = if (detailUsesMono(it.name, it.detail))
-                    palette.fontMono()
+
+                const sides = if (std.mem.eql(u8, it.name, "str_replace"))
+                    rich_toolrun.splitStrReplaceDetail(it.detail)
                 else
-                    .theme(.body);
-                mixed_text.addTextMixed(tl, it.detail, detail_font, .{
-                    .color_text = palette.teal_text,
-                });
-                tl.deinit();
+                    null;
+
+                if (sides) |s| {
+                    {
+                        var st = dvui.textLayout(src, .{}, .{
+                            .id_extra = item_base + 4,
+                            .expand = .horizontal,
+                            .color_text = palette.teal_text,
+                        });
+                        mixed_text.addTextMixed(st, s.status, .theme(.body), .{
+                            .color_text = palette.teal_text,
+                        });
+                        st.deinit();
+                    }
+
+                    const mono = palette.fontMono();
+                    const band_h = mono.lineHeight();
+
+                    {
+                        var old_box = dvui.box(src, .{ .dir = .vertical }, .{
+                            .id_extra = item_base + 5,
+                            .expand = .horizontal,
+                            .background = true,
+                            .color_fill = palette.ember_surface,
+                            .color_text = palette.ember_text,
+                            .padding = .all(2),
+                            .min_size_content = .{ .w = 0, .h = band_h },
+                        });
+                        defer old_box.deinit();
+                        var otl = dvui.textLayout(src, .{}, .{
+                            .id_extra = item_base + 6,
+                            .expand = .horizontal,
+                            .color_text = palette.ember_text,
+                        });
+                        mixed_text.addTextMixed(otl, s.old, mono, .{
+                            .color_text = palette.ember_text,
+                        });
+                        otl.deinit();
+                    }
+
+                    {
+                        var new_box = dvui.box(src, .{ .dir = .vertical }, .{
+                            .id_extra = item_base + 7,
+                            .expand = .horizontal,
+                            .background = true,
+                            .color_fill = palette.teal_surface,
+                            .color_text = palette.teal_text,
+                            .padding = .all(2),
+                            .min_size_content = .{ .w = 0, .h = band_h },
+                        });
+                        defer new_box.deinit();
+                        var ntl = dvui.textLayout(src, .{}, .{
+                            .id_extra = item_base + 8,
+                            .expand = .horizontal,
+                            .color_text = palette.teal_text,
+                        });
+                        mixed_text.addTextMixed(ntl, s.new, mono, .{
+                            .color_text = palette.teal_text,
+                        });
+                        ntl.deinit();
+                    }
+                } else {
+                    var tl = dvui.textLayout(src, .{}, .{
+                        .id_extra = item_base + 4,
+                        .expand = .horizontal,
+                        .color_text = palette.teal_text,
+                    });
+                    // Phase 3 (#353): command/output previews (exec, filesystem,
+                    // http) paint in the embedded Vera Sans Mono face for a readable
+                    // aligned block; prose/other detail stays the body face. Symbols
+                    // still route to their DejaVu/OpenMoji faces via addTextMixed.
+                    const detail_font: dvui.Font = if (detailUsesMono(it.name, it.detail))
+                        palette.fontMono()
+                    else
+                        .theme(.body);
+                    mixed_text.addTextMixed(tl, it.detail, detail_font, .{
+                        .color_text = palette.teal_text,
+                    });
+                    tl.deinit();
+                }
             }
         }
     }
