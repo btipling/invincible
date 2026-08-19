@@ -537,14 +537,13 @@ pub fn frame() !void {
         }
         if (!fp_match) {
             state.history_index = null;
-            // Restore saved draft so the operator's pre-history prompt
-            // survives a session switch / hydrate (#686 R3 Minor L1).
-            if (state.history_draft_len > 0) {
-                const dlen = @min(state.history_draft_len, state.prompt_buf.len - 1);
-                @memset(&state.prompt_buf, 0);
-                @memcpy(state.prompt_buf[0..dlen], state.history_draft_buf[0..dlen]);
-                state.prompt_buf[dlen] = 0;
-            }
+            // Always restore the saved draft — including empty — so a
+            // session switch does not leave the foreign history line in
+            // prompt_buf as a fake typed draft (#686 R4 Major L1).
+            @memset(&state.prompt_buf, 0);
+            const dlen = @min(state.history_draft_len, state.prompt_buf.len - 1);
+            if (dlen > 0) @memcpy(state.prompt_buf[0..dlen], state.history_draft_buf[0..dlen]);
+            state.prompt_buf[dlen] = 0;
             state.history_draft_len = 0;
             @memset(&state.history_draft_buf, 0);
             @memset(&state.history_newest_fingerprint, 0);

@@ -8,6 +8,11 @@ const std = @import("std");
 
 pub const USER_KIND: u8 = 1; // bridge.MessageKind.user
 
+/// Bytes stored from the newest user row at history-entry. Messages shorter
+/// than this are stored in full (exact compare). Longer messages store a
+/// prefix; only that truncated case may match a different longer string.
+pub const FINGERPRINT_MAX: usize = 64;
+
 pub const KindText = struct {
     kind: u8,
     text: []const u8,
@@ -38,19 +43,20 @@ pub fn userTextAt(msgs: []const KindText, ordinal: usize) ?[]const u8 {
     return null;
 }
 
-/// Compare candidate text against a stored fingerprint (first N bytes of the
-/// newest user row at history-entry time). Returns true when the candidate
-/// matches the fingerprint exactly (length checked, not a prefix).
+/// Compare candidate text against a stored fingerprint of the newest user
+/// row at history-entry time.
 ///
 /// - fp.len == 0 → false (no fingerprint stored)
-/// - candidate shorter than fp → false
-/// - exact fp.len bytes match → true
-/// - longer message starting with fp → false (length guards prefix collision:
-///   fp="ok" does not match candidate="okay rewrite the tests")
+/// - fp.len < FINGERPRINT_MAX → exact identity (`eql(fp, candidate)`).
+///   `fp="ok"` does **not** match `"okay rewrite the tests"`.
+/// - fp.len >= FINGERPRINT_MAX → first-64 compare (truncated store). Two
+///   different ≥64 B messages that share those 64 bytes still match — that
+///   is the Strategy A residual without a session id.
 pub fn fingerprintMatch(fp: []const u8, candidate: []const u8) bool {
     if (fp.len == 0) return false;
-    if (candidate.len < fp.len) return false;
-    return std.mem.eql(u8, fp, candidate[0..fp.len]);
+    if (fp.len < FINGERPRINT_MAX) return std.mem.eql(u8, fp, candidate);
+    if (candidate.len < FINGERPRINT_MAX) return false;
+    return std.mem.eql(u8, fp[0..FINGERPRINT_MAX], candidate[0..FINGERPRINT_MAX]);
 }
 
 pub const Step = enum { older, newer };
