@@ -666,7 +666,6 @@ pub fn build(b: *std.Build) void {
         paint_diff_tests.root_module.addImport("zmd", zmd_host.module("zmd"));
         test_rich.dependOn(&b.addRunArtifact(paint_diff_tests).step);
     }
-
 }
 
 /// plan #647 — insert a dedicated right-click press/release branch into vendored
