@@ -1029,7 +1029,7 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
     expect(generateTextImpl).toHaveBeenCalled();
   });
 
-  it('appends skills even without a persona (after the base system + addenda)', async () => {
+  it('appends skills even without a persona (after the base system)', async () => {
     const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
       const system = String(args.system);
       expect(system).toContain('<attached_skills>');
