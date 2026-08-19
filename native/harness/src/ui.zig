@@ -634,6 +634,19 @@ pub fn frame() !void {
                     continue;
                 }
 
+                // ── Escape — cancel in-progress turn (plan #705) ─────────────
+                // Same path as the ■ Stop icon. Only .down fires cancel (single-
+                // fire). Gated on busy so idle Esc is not marked handled and can
+                // still close dvui menus (MenuWidget.processEventsAfter). Skip
+                // when a queue-row editor is open — queue_band owns Esc there.
+                if (busy and ke.code == .escape and ke.action == .down and
+                    state.queue_editing_index == null)
+                {
+                    e.handled = true;
+                    bridge.queueCancelFromUi();
+                    continue;
+                }
+
                 // ── Composer arrow-key history (plan #667) ───────────────────
                 // ↑ enters history when the composer is empty OR while already
                 // in history. ↓ walks history forward; outside history ↓ passes
