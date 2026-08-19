@@ -3,6 +3,7 @@ const std = @import("std");
 const bridge = @import("../bridge.zig");
 const composer_text = @import("../composer_text.zig");
 const state = @import("state.zig");
+const scroll = @import("scroll.zig");
 
 pub fn clearPrompt() void {
     @memset(&state.prompt_buf, 0);
@@ -45,6 +46,13 @@ pub fn submitOrEnqueue(text: []const u8) void {
         bridge.enqueueFromUi(norm.text) catch return;
         clearPrompt();
         resetHistory();
+        // Transcript layout already ran this frame — follow immediately
+        // (same feedback as idle send). Queue-band paint already ran
+        // (above the composer), so queue virtual_size is stale; latch a
+        // follow for the end of next `queue_band.paint` after the new row
+        // is laid out (plan #699 / source #696; n > QUEUE_BAND_MAX_ROWS).
+        scroll.scrollToBottom(&state.transcript_scroll);
+        state.queue_follow = true;
         return;
     }
     bridge.queueSubmitFromUi(norm.text);

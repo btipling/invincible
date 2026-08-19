@@ -121,6 +121,10 @@ pub var queue_list_scroll: dvui.ScrollInfo = .{
     .vertical = .auto,
     .horizontal = .none,
 };
+/// Latch: successful enqueue should scroll the queue list to the newest row
+/// on the *next* `queue_band.paint` (after virtual_size includes the new item).
+/// Enqueue runs after the band paints this frame (plan #699).
+pub var queue_follow: bool = false;
 
 pub fn resetTranscriptScroll() void {
     transcript_scroll = .{
@@ -153,4 +157,5 @@ pub fn resetTranscriptScroll() void {
         .vertical = .auto,
         .horizontal = .none,
     };
+    queue_follow = false;
 }
