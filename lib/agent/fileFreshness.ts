@@ -63,7 +63,10 @@ export function createRunFileFreshness(): RunFileFreshness {
   return {
     recordRead(path, info) {
       if (info.truncated) {
-        grants.set(path, { kind: 'truncated' });
+        // Never downgrade an existing grant (full → windowed peek).
+        // If the file changed on disk between reads, gate 2 (stale
+        // fingerprint check) catches it at edit time.
+        if (!grants.has(path)) grants.set(path, { kind: 'truncated' });
         return;
       }
       const fp: DiskFingerprint = {};

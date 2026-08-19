@@ -1777,5 +1777,117 @@ describe('read_file line window (plan #689)', () => {
     expect(out).toContain('1→token=');
     expect(out).not.toContain(secret);
   });
+
+  it('full read then windowed peek does not revoke edit grant (Major #1)', async () => {
+    const client = mockClient({
+      readFile: vi.fn(async () => ({
+        content: nLines(50),
+        mtimeMs: 1,
+        size: 100,
+      })),
+      strReplace: vi.fn(async () => ({
+        ok: true as const,
+        path: 'a.txt',
+        replacements: 1,
+        bytes: 2,
+        mtimeMs: 1,
+        size: 100,
+      })),
+      stat: vi.fn(async () => ({
+        path: 'a.txt',
+        type: 'file' as const,
+        mtimeMs: 1,
+        size: 100,
+      })),
+    });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    // Full read → grant
+    const r1 = (await tools.read_file.execute!({ path: 'a.txt' }, execCtx)) as string;
+    expect(r1).not.toContain('(truncated)');
+    // Windowed peek → must NOT revoke the grant
+    const r2 = (await tools.read_file.execute!(
+      { path: 'a.txt', offset: 40, limit: 10 },
+      execCtx,
+    )) as string;
+    expect(r2).toContain('(truncated)');
+    // Edit still works
+    const edit = (await tools.str_replace.execute!(
+      { path: 'a.txt', old_string: 'L1', new_string: 'X' },
+      execCtx,
+    )) as string;
+    expect(edit).toMatch(/^str_replace a\.txt: ok/);
+  });
+
+  it('trailing-newline 1000-line file is truncated at default limit', async () => {
+    const content = nLines(READ_FILE_DEFAULT_LIMIT) + '\n'; // POSIX trailing newline
+    const client = mockClient({
+      readFile: vi.fn(async () => ({
+        content,
+        mtimeMs: 1,
+        size: 4000,
+      })),
+      stat: vi.fn(async () => ({
+        path: 't.txt',
+        type: 'file' as const,
+        mtimeMs: 1,
+        size: 4000,
+      })),
+    });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    const out = (await tools.read_file.execute!({ path: 't.txt' }, execCtx)) as string;
+    // trailing \n adds an empty 1001st line → default limit 1000 misses it
+    expect(out).toMatch(/lines=1000\/1001 \(truncated\)/);
+    const edit = (await tools.str_replace.execute!(
+      { path: 't.txt', old_string: 'L1', new_string: 'X' },
+      execCtx,
+    )) as string;
+    expect(edit).toMatch(/truncated read_file/);
+  });
+
+  it('trailing-newline 1000-line file grants with limit=1001', async () => {
+    const content = nLines(READ_FILE_DEFAULT_LIMIT) + '\n'; // POSIX trailing newline
+    const client = mockClient({
+      readFile: vi.fn(async () => ({
+        content,
+        mtimeMs: 1,
+        size: 4000,
+      })),
+      strReplace: vi.fn(async () => ({
+        ok: true as const,
+        path: 't.txt',
+        replacements: 1,
+        bytes: 2,
+        mtimeMs: 1,
+        size: 4000,
+      })),
+      stat: vi.fn(async () => ({
+        path: 't.txt',
+        type: 'file' as const,
+        mtimeMs: 1,
+        size: 4000,
+      })),
+    });
+    const tools = createAgentTools({
+      client,
+      freshness: createRunFileFreshness(),
+    });
+    const out = (await tools.read_file.execute!(
+      { path: 't.txt', limit: READ_FILE_DEFAULT_LIMIT + 1 },
+      execCtx,
+    )) as string;
+    expect(out).toMatch(/lines=1001\/1001:/);
+    expect(out).not.toContain('(truncated)');
+    const edit = (await tools.str_replace.execute!(
+      { path: 't.txt', old_string: 'L1', new_string: 'X' },
+      execCtx,
+    )) as string;
+    expect(edit).toMatch(/^str_replace t\.txt: ok/);
+  });
 });
 
