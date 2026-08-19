@@ -837,4 +837,18 @@ describe('createMetaPersonaSkillTools — separation + surface shape', () => {
     expect(SKILL_META_ONLY_SYSTEM).toContain('meta_persona_*');
     expect(SKILL_META_ONLY_SYSTEM).not.toContain('http_get');
   });
+
+  it('prefixes first-party authoring pick-criteria onto each meta_* description', () => {
+    const { fake: pFake } = makePersonaFake();
+    const { fake: sFake } = makeSkillFake();
+    const tools = createMetaPersonaSkillTools({
+      userId: 'user-1',
+      userPersonas: pFake,
+      userSkills: sFake,
+    });
+    for (const [name, t] of Object.entries(tools)) {
+      expect(t.description, name).toMatch(/^First-party authoring tool\. /);
+    }
+    expect(tools.meta_persona_list.description).toContain('List the user');
+  });
 });

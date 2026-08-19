@@ -186,7 +186,7 @@ export function createHttpFetchTools(opts: CreateHttpFetchToolsOptions) {
 
   const http_get = tool({
     description:
-      'Fetch a public HTTPS URL (GET). Returns text/JSON/XML bodies only. Follows redirects only to policy-safe HTTPS targets. Read-only.',
+      'Fetch a public HTTPS URL (GET). Returns text/JSON/XML bodies only. Follows redirects only to policy-safe HTTPS targets. Read-only. Use http_get to retrieve public HTTPS pages (read-only). Prefer it for docs and references. Do not invent URLs with secrets.',
     inputSchema: jsonSchema<{ url: string; maxBytes?: number }>({
       type: 'object',
       properties: {
@@ -259,7 +259,7 @@ export function createHttpFetchTools(opts: CreateHttpFetchToolsOptions) {
 
   const http_head = tool({
     description:
-      'HTTP HEAD for a public HTTPS URL. Returns status and headers only. Follows redirects only to policy-safe HTTPS targets.',
+      'HTTP HEAD for a public HTTPS URL. Returns status and headers only. Follows redirects only to policy-safe HTTPS targets. Use http_get to retrieve public HTTPS pages (read-only). Prefer it for docs and references. Do not invent URLs with secrets.',
     inputSchema: jsonSchema<{ url: string }>({
       type: 'object',
       properties: {

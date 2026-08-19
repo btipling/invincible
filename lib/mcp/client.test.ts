@@ -75,6 +75,10 @@ describe('buildUserMcpTools', () => {
       'mcp_exa__bad_name',
       'mcp_exa__web_search',
     ]);
+    expect(result.tools.mcp_exa__web_search.description).toBe(
+      'External MCP tool. search',
+    );
+    expect(result.tools.mcp_exa__bad_name.description).toBe('External MCP tool. x');
     expect(result.secretsToRedact).toContain('mcp-secret-key-aaaa');
     expect(result.connectedSlugs).toEqual(['exa']);
     expect(setLastError).toHaveBeenCalledWith('user-1', 's1', null);

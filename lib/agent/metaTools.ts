@@ -126,6 +126,21 @@ export const META_TOOLS_SYSTEM_ADDENDUM =
 export const SKILL_META_ONLY_SYSTEM =
   'You are the Invincible agent. Workspace filesystem tools are unavailable this turn. Use find_skill / fetch_skill to read the user\'s skills, and meta_persona_* / meta_skill_* to manage the user\'s personas and skills. Be concise.';
 
+/** Prefix pick-criteria onto each tool description (moved off the system string). */
+function prefixToolDescriptions<T extends Record<string, unknown>>(
+  tools: T,
+  prefix: string,
+): T {
+  for (const key of Object.keys(tools) as Array<keyof T>) {
+    const toolObj = tools[key];
+    if (!toolObj || typeof toolObj !== 'object') continue;
+    const slot = toolObj as { description?: unknown };
+    const text = typeof slot.description === 'string' ? slot.description : '';
+    slot.description = text ? `${prefix}${text}` : prefix;
+  }
+  return tools;
+}
+
 /**
  * Settings-style slug derivation, applied in the TOOL layer (never the store).
  * `hyphen` selects the skill charset (hyphen allowed) vs the persona charset
@@ -717,21 +732,24 @@ export function createMetaPersonaSkillTools(
     },
   });
 
-  return {
-    meta_persona_list: metaPersonaList,
-    meta_persona_read: metaPersonaRead,
-    meta_persona_create: metaPersonaCreate,
-    meta_persona_update_name: metaPersonaUpdateName,
-    meta_persona_update_body: metaPersonaUpdateBody,
-    meta_persona_set_default: metaPersonaSetDefault,
-    meta_persona_clear_default: metaPersonaClearDefault,
-    meta_persona_delete: metaPersonaDelete,
-    meta_skill_list: metaSkillList,
-    meta_skill_read: metaSkillRead,
-    meta_skill_create: metaSkillCreate,
-    meta_skill_update_summary: metaSkillUpdateSummary,
-    meta_skill_update_body: metaSkillUpdateBody,
-    meta_skill_str_replace: metaSkillStrReplace,
-    meta_skill_delete: metaSkillDelete,
-  };
+  return prefixToolDescriptions(
+    {
+      meta_persona_list: metaPersonaList,
+      meta_persona_read: metaPersonaRead,
+      meta_persona_create: metaPersonaCreate,
+      meta_persona_update_name: metaPersonaUpdateName,
+      meta_persona_update_body: metaPersonaUpdateBody,
+      meta_persona_set_default: metaPersonaSetDefault,
+      meta_persona_clear_default: metaPersonaClearDefault,
+      meta_persona_delete: metaPersonaDelete,
+      meta_skill_list: metaSkillList,
+      meta_skill_read: metaSkillRead,
+      meta_skill_create: metaSkillCreate,
+      meta_skill_update_summary: metaSkillUpdateSummary,
+      meta_skill_update_body: metaSkillUpdateBody,
+      meta_skill_str_replace: metaSkillStrReplace,
+      meta_skill_delete: metaSkillDelete,
+    },
+    'First-party authoring tool. ',
+  );
 }

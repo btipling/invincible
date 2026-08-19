@@ -136,7 +136,29 @@ describe('resolvePersonaPreamble', () => {
     expect(store.puts[0]!.meta.personaId).toBe('pers_2');
   });
 
-  it('sessionId present but session absent → fail closed (no inject, no leak)', async () => {
+  it('sessionId present, session absent, body personaId → inject this turn (no persist)', async () => {
+    const store = new FakeStore(null);
+    let readCalls = 0;
+    const rd: PersonaBodyReader = {
+      async getPersonaById() {
+        readCalls += 1;
+        return { ok: true, value: { body: 'First-turn race.' } };
+      },
+    };
+    const out = await resolvePersonaPreamble({
+      userId: KEY.userId,
+      personaId: 'pers_1',
+      sessionId: KEY.sessionId,
+      sessionStore: store,
+      sessionKey: KEY,
+      userPersonas: rd,
+    });
+    expect(out).toBe('First-turn race.');
+    expect(readCalls).toBe(1);
+    expect(store.puts).toHaveLength(0);
+  });
+
+  it('sessionId present, session absent, no personaId → fail closed (no inject, no leak)', async () => {
     const store = new FakeStore(null);
     let readCalls = 0;
     const rd: PersonaBodyReader = {
@@ -147,7 +169,6 @@ describe('resolvePersonaPreamble', () => {
     };
     const out = await resolvePersonaPreamble({
       userId: KEY.userId,
-      personaId: 'pers_1',
       sessionId: KEY.sessionId,
       sessionStore: store,
       sessionKey: KEY,

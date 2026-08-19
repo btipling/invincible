@@ -13,11 +13,13 @@
  *   2. Else a bound persona id (body `personaId`, else `meta.personaId`) →
  *      `userPersonas.getPersonaById` (scoped) → use the body; best-effort persist
  *      `meta.{personaId,personaSnapshot}` once when a matching session exists.
- *   3. `sessionId` present AND the store WAS queried and returned **null** (a
- *      genuine absent/foreign scoped session) → **no inject** (never resolve
- *      against an ambiguous session; fail closed). If the store/key were absent
- *      (Redis off / resolve not ok) or `get` THREW, we do NOT fail closed — the
- *      turn falls through to the body/`meta.personaId` inject (offline-safe).
+ *   3. `sessionId` present AND the store WAS queried and returned **null** AND
+ *      the request carries **no** body `personaId` → **no inject** (genuine
+ *      absent/foreign session). If the body carries `personaId`, inject this
+ *      turn (first-turn / host-PUT race) and skip persist when there is no
+ *      record to merge into. If the store/key were absent (Redis off / resolve
+ *      not ok) or `get` THREW, we do NOT fail closed — the turn falls through
+ *      to the body/`meta.personaId` inject (offline-safe).
  *   4. No sessionId and no personaId → `undefined` (behaviour identical to today).
  *
  * The snapshot cap is enforced by the server record validator
@@ -120,10 +122,11 @@ export async function resolvePersonaPreamble(
     if (!boundPersonaId && typeof record.meta?.personaId === 'string') {
       boundPersonaId = record.meta.personaId;
     }
-  } else if (storeQueried) {
-    // sessionId present, store queried, and it returned **null** → a genuine
-    // absent/foreign scoped session → fail closed (no existence leak, never
-    // resolve against an ambiguous session).
+  } else if (storeQueried && !boundPersonaId) {
+    // sessionId present, store queried, returned null, AND the request carries
+    // no personaId → genuine absent/foreign session → fail closed.
+    // When boundPersonaId is set (body personaId), fall through and inject
+    // this turn; persist is a no-op until the host creates the session row.
     return undefined;
   }
 

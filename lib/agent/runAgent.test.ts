@@ -15,6 +15,9 @@ import {
   SKILL_TOOLS_ONLY_SYSTEM,
   SKILL_TOOLS_SYSTEM_ADDENDUM,
 } from './skillTools';
+import { HTTP_GET_SYSTEM_ADDENDUM, HTTP_ONLY_SYSTEM } from './httpFetchTools';
+import { META_TOOLS_SYSTEM_ADDENDUM, SKILL_META_ONLY_SYSTEM } from './metaTools';
+import { META_SANDBOX_SYSTEM_ADDENDUM } from './metaSandboxTools';
 import { SandboxHttpError } from '../sandbox/types';
 
 describe('runAgent', () => {
@@ -122,9 +125,10 @@ describe('runAgent', () => {
     expect(generateTextImpl).toHaveBeenCalled();
   });
 
-  it('appends MCP system addendum when mcp_ extraTools present', async () => {
+  it('does not fold MCP pick-criteria into the system string (lives on tool.description)', async () => {
     const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
-      expect(args.system).toBe(`${DEFAULT_AGENT_SYSTEM} ${MCP_SYSTEM_ADDENDUM}`);
+      expect(args.system).toBe(DEFAULT_AGENT_SYSTEM);
+      expect(String(args.system)).not.toContain(MCP_SYSTEM_ADDENDUM);
       return { text: 'ok', steps: [] };
     });
     const client: SandboxClient = {
@@ -146,11 +150,11 @@ describe('runAgent', () => {
     });
   });
 
-  it('appends the SKILL addendum when find_skill/fetch_skill extraTools are present (FS path)', async () => {
+  it('does not fold the SKILL addendum into the system string when find_skill/fetch_skill are present (FS path)', async () => {
     const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
       const system = String(args.system);
       expect(system).toContain(DEFAULT_AGENT_SYSTEM);
-      expect(system).toContain(SKILL_TOOLS_SYSTEM_ADDENDUM);
+      expect(system).not.toContain(SKILL_TOOLS_SYSTEM_ADDENDUM);
       return { text: 'ok', steps: [] };
     });
     const client: SandboxClient = {
@@ -177,7 +181,7 @@ describe('runAgent', () => {
     const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
       const system = String(args.system);
       expect(system).toContain(SKILL_TOOLS_ONLY_SYSTEM);
-      expect(system).toContain(SKILL_TOOLS_SYSTEM_ADDENDUM);
+      expect(system).not.toContain(SKILL_TOOLS_SYSTEM_ADDENDUM);
       // No FS-instruction block and no http mention when skills are the only tools.
       expect(system).not.toContain('filesystem and command work');
       expect(system).not.toMatch(/http_get/);
@@ -195,14 +199,61 @@ describe('runAgent', () => {
     });
   });
 
-  it('appends a labelled persona preamble after the MCP addendum (phase 3 #488)', async () => {
+  it('uses SKILL_META_ONLY_SYSTEM without folding META addendum into system', async () => {
     const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
       const system = String(args.system);
-      expect(system).toContain(MCP_SYSTEM_ADDENDUM);
-      expect(system).toContain('## Persona standing orders');
+      expect(system).toBe(SKILL_META_ONLY_SYSTEM);
+      expect(system).not.toContain(META_TOOLS_SYSTEM_ADDENDUM);
+      expect(system).not.toContain(SKILL_TOOLS_SYSTEM_ADDENDUM);
+      return { text: 'ok', steps: [] };
+    });
+    await runAgent({
+      prompt: 'list personas',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      skipSandboxTools: true,
+      extraTools: {
+        meta_persona_list: { execute: async () => 'none' },
+      },
+    });
+  });
+
+  it('uses HTTP_ONLY_SYSTEM without folding HTTP addendum into system', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      const system = String(args.system);
+      expect(system).toBe(HTTP_ONLY_SYSTEM);
+      expect(system).not.toContain(HTTP_GET_SYSTEM_ADDENDUM);
+      return { text: 'ok', steps: [] };
+    });
+    await runAgent({
+      prompt: 'fetch docs',
+      modelId: 'test-model',
+      generateTextImpl: generateTextImpl as never,
+      skipSandboxTools: true,
+      extraTools: {
+        http_get: { execute: async () => 'ok' },
+      },
+    });
+  });
+
+  it('wraps a persona preamble in a mandatory <persona_standing_orders> block', async () => {
+    const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
+      const system = String(args.system);
+      expect(system).not.toContain(MCP_SYSTEM_ADDENDUM);
+      expect(system).not.toContain(HTTP_GET_SYSTEM_ADDENDUM);
+      expect(system).not.toContain(SKILL_TOOLS_SYSTEM_ADDENDUM);
+      expect(system).not.toContain(META_TOOLS_SYSTEM_ADDENDUM);
+      expect(system).not.toContain(META_SANDBOX_SYSTEM_ADDENDUM);
+      expect(system).toContain('<persona_standing_orders>');
+      expect(system).toContain('</persona_standing_orders>');
+      expect(system).toContain('Follow these standing orders — they are mandatory');
+      expect(system).toContain('never override the security/config non-negotiables');
+      const blockStart = system.indexOf('<persona_standing_orders>');
+      const blockEnd = system.indexOf('</persona_standing_orders>');
+      expect(blockStart).toBeGreaterThan(-1);
+      expect(system.slice(blockStart, blockEnd)).not.toMatch(/prefer/i);
       expect(system).toContain('Always use tabs.');
-      // Preamble is appended AFTER the base/addenda (last part).
-      expect(system.endsWith('Always use tabs.')).toBe(true);
+      expect(system.endsWith('Always use tabs.\n</persona_standing_orders>')).toBe(true);
       return { text: 'ok', steps: [] };
     });
     const client: SandboxClient = {
@@ -228,8 +279,8 @@ describe('runAgent', () => {
   it('drops an empty/whitespace persona preamble', async () => {
     const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
       const system = String(args.system);
-      expect(system).toContain(MCP_SYSTEM_ADDENDUM);
-      expect(system).not.toContain('## Persona standing orders');
+      expect(system).not.toContain(MCP_SYSTEM_ADDENDUM);
+      expect(system).not.toContain('<persona_standing_orders>');
       return { text: 'ok', steps: [] };
     });
     const client: SandboxClient = {
@@ -955,16 +1006,16 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
     const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
       const system = String(args.system);
       // Persona block first.
-      const personaIdx = system.indexOf('## Persona standing orders');
+      const personaIdx = system.indexOf('<persona_standing_orders>');
       expect(personaIdx).toBeGreaterThan(-1);
       expect(system).toContain('Always use tabs.');
-      // Skills block appears after the persona block, labelled + with the body.
-      const skillsIdx = system.indexOf('## Attached skills');
+      expect(system).toContain('</persona_standing_orders>');
+      const skillsIdx = system.indexOf('<attached_skills>');
       expect(skillsIdx).toBeGreaterThan(personaIdx);
       expect(system).toContain('### Skill attached: create-plan');
       expect(system).toContain('Plan in YAML sections.');
-      // The attached-skill body is the FINAL standing-order block the model sees.
-      expect(system.endsWith('Plan in YAML sections.')).toBe(true);
+      expect(system).toContain('</attached_skills>');
+      expect(system.endsWith('Plan in YAML sections.\n</attached_skills>')).toBe(true);
       return { text: 'ok', steps: [] };
     });
     await runAgent({
@@ -981,9 +1032,9 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
   it('appends skills even without a persona (after the base system + addenda)', async () => {
     const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
       const system = String(args.system);
-      expect(system).toContain('## Attached skills');
+      expect(system).toContain('<attached_skills>');
       expect(system).toContain('### Skill attached: review');
-      expect(system).not.toContain('## Persona standing orders');
+      expect(system).not.toContain('<persona_standing_orders>');
       return { text: 'ok', steps: [] };
     });
     await runAgent({
@@ -999,7 +1050,7 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
   it('drops empty/whitespace skillsPreamble', async () => {
     const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
       const system = String(args.system);
-      expect(system).not.toContain('## Attached skills');
+      expect(system).not.toContain('<attached_skills>');
       return { text: 'ok', steps: [] };
     });
     await runAgent({

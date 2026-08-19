@@ -48,8 +48,10 @@ Starting a **New session**:
 1. The harness picks the persona you choose, or your **default** persona, or
    **None** if you have no default.
 2. On the **first agent turn**, the server resolves the persona body server-side
-   and injects it as a labelled **Persona standing orders** block into the agent
-   system prompt.
+   and injects it inside a `<persona_standing_orders>` boundary block, separated
+   from the agent's shared rules. A short `<reminder>` is appended to the user's
+   message on each turn, directing the model to follow the standing orders
+   already in context. The reminder never asks the model to re-read the persona.
 3. The server locks a **snapshot** of that text into the session. Every later
    turn (and every reload or device switch) replays the **same snapshot**.
 

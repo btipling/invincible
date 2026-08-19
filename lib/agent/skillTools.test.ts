@@ -194,4 +194,15 @@ describe('skill tool system prompts (phase 3 #516)', () => {
     expect(SKILL_TOOLS_ONLY_SYSTEM).toContain('find_skill');
     expect(SKILL_TOOLS_ONLY_SYSTEM).not.toContain('http_get');
   });
+
+  it('folds pick-criteria into find_skill / fetch_skill descriptions', () => {
+    const us = makeUserSkills();
+    const tools = createSkillTools({ userId: 'user-1', userSkills: us });
+    expect(tools.find_skill.description).toContain(
+      "Use find_skill to locate the user's skills",
+    );
+    expect(tools.fetch_skill.description).toContain(
+      "fetch_skill to read the full body of one of the user's skills by slug",
+    );
+  });
 });

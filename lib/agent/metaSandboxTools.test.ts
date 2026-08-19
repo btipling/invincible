@@ -576,4 +576,17 @@ describe('surface shape + system addendum', () => {
     expect(META_SANDBOX_SYSTEM_ADDENDUM).toContain('meta_sandbox_switch');
     expect(META_SANDBOX_SYSTEM_ADDENDUM).not.toContain('base_url');
   });
+
+  it('folds bind-tool pick-criteria onto each meta_sandbox_* description', () => {
+    const tools = createMetaSandboxTools({
+      userId: 'user-1',
+      sessionId: 'sess-1',
+      userPreferredSandbox: makeListProvider(USABLE_OPTIONS),
+      sessionStoreSeam: makeSeam('unavailable'),
+    });
+    for (const [name, t] of Object.entries(tools)) {
+      expect(t.description, name).toMatch(/^Sandbox bind tool\. /);
+      expect(t.description, name).toContain('Sandbox secrets are never exposed');
+    }
+  });
 });

@@ -314,6 +314,13 @@ export async function POST(req: Request): Promise<Response> {
       }
     }
 
+    // Reinforce a bound persona on the trailing user turn (recency vs tool
+    // schemas). Never appended on a no-model skill-attach (empty prompt
+    // returns before the model call). Never tells the model to read the persona.
+    if (personaPreamble && modelPrompt.trim()) {
+      runParams.prompt = `${modelPrompt}\n\n<reminder>Your persona standing orders (in the <persona_standing_orders> block above) are already in context. Follow them before any tool use.</reminder>`;
+    }
+
     // Phase 2 (#517) — resolve attached skills (sticky re-read from
     // `meta.attachedSkills` + the current `/slug` attach or `/unskill` detach).
     // Modeled on personaInject but WITHOUT the snapshot lock: skills are

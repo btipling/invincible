@@ -143,6 +143,20 @@ describe('fetchFollowingRedirects', () => {
 });
 
 describe('createHttpFetchTools', () => {
+  it('folds pick-criteria into http_get / http_head descriptions', () => {
+    const tools = createHttpFetchTools({
+      runner: fakeRunner(vi.fn()),
+      maxBytes: 1024,
+      timeoutMs: 5000,
+    });
+    expect(tools.http_get.description).toContain(
+      'Use http_get to retrieve public HTTPS pages',
+    );
+    expect(tools.http_head?.description).toContain(
+      'Do not invent URLs with secrets',
+    );
+  });
+
   it('rejects non-https via policy without calling runner', async () => {
     const get = vi.fn();
     const tools = createHttpFetchTools({

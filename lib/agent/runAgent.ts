@@ -20,23 +20,10 @@ import {
   flattenToolResultText,
   parseAndFlattenIfMcpEnvelope,
 } from './toolResultText';
-import { MCP_SYSTEM_ADDENDUM } from '../mcp/toolNames';
-import {
-  HTTP_GET_SYSTEM_ADDENDUM,
-  HTTP_ONLY_SYSTEM,
-} from './httpFetchTools';
-import {
-  SKILL_TOOLS_ONLY_SYSTEM,
-  SKILL_TOOLS_SYSTEM_ADDENDUM,
-} from './skillTools';
-import {
-  META_TOOLS_SYSTEM_ADDENDUM,
-  SKILL_META_ONLY_SYSTEM,
-} from './metaTools';
-import {
-  META_SANDBOX_SYSTEM_ADDENDUM,
-  metaSandboxSwitchTargetId,
-} from './metaSandboxTools';
+import { HTTP_ONLY_SYSTEM } from './httpFetchTools';
+import { SKILL_TOOLS_ONLY_SYSTEM } from './skillTools';
+import { SKILL_META_ONLY_SYSTEM } from './metaTools';
+import { metaSandboxSwitchTargetId } from './metaSandboxTools';
 
 export type ToolTraceEntry = {
   name: string;
@@ -129,10 +116,10 @@ export type RunAgentParams = {
    */
   sandboxId?: string;
   /**
-   * Persona preamble (phase 3, #488). Server-resolved persona snapshot text to
-   * append as a labelled part in `resolveSystem` after the base system and the
-   * HTTP/MCP addenda — always after those addenda, unless a caller already
-   * supplied a `system` override (early-return keeps the override intact).
+   * Persona preamble. Server-resolved persona snapshot text, wrapped by
+   * `resolveSystem` in a `<persona_standing_orders>` block after the base
+   * system. Empty/whitespace is dropped. Pick-criteria for tools live on
+   * each `tool.description`, not in this string.
    */
   personaPreamble?: string;
   /**
@@ -190,7 +177,6 @@ function resolveSystem(
   const hasHttp = keys.some((k) => k === 'http_get' || k === 'http_head');
   const hasSkill = keys.some((k) => k === 'find_skill' || k === 'fetch_skill');
   const hasMeta = keys.some((k) => k.startsWith('meta_'));
-  const hasMetaSandbox = keys.some((k) => k.startsWith('meta_sandbox_'));
 
   const parts: string[] = [];
   if (hasFsTools) {
@@ -200,39 +186,34 @@ function resolveSystem(
   } else if (hasSkill || hasMeta) {
     // Skill + meta authoring tools are the only non-FS tools — give an honest
     // prompt (no phantom FS instructions, no "use http_get" when http isn't
-    // present). Phase 1 #531 broadened from skills-only (phase 3 #516).
+    // present). Pick-criteria live on each tool.description.
     parts.push(hasMeta ? SKILL_META_ONLY_SYSTEM : SKILL_TOOLS_ONLY_SYSTEM);
   } else {
     parts.push(DEFAULT_AGENT_SYSTEM);
   }
-  if (hasHttp) parts.push(HTTP_GET_SYSTEM_ADDENDUM);
-  if (hasMcp) parts.push(MCP_SYSTEM_ADDENDUM);
-  if (hasSkill) parts.push(SKILL_TOOLS_SYSTEM_ADDENDUM);
-  if (hasMeta) parts.push(META_TOOLS_SYSTEM_ADDENDUM);
-  if (hasMetaSandbox) parts.push(META_SANDBOX_SYSTEM_ADDENDUM);
-  // Persona preamble (phase 3, #488) appends last — after the HTTP/MCP addenda —
-  // so the persona's standing orders are the final instruction block the model
-  // sees. Empty/whitespace is dropped (nothing to inject).
+
   const persona = params.personaPreamble?.trim();
   if (persona) {
     parts.push(
-      '## Persona standing orders\n' +
-        'The user bound this persona to the session. Its instructions are explicit standing orders for this session, carried in a locked snapshot so later turns reuse the same text. Prefer the persona guidance when it is more specific than the shared agent rules (it never overrides the security/config non-negotiables).\n' +
-        persona,
+      '<persona_standing_orders>\n' +
+        'The user bound this persona to the session. Its instructions are explicit standing orders for this session, carried in a locked snapshot so later turns reuse the same text. Follow these standing orders — they are mandatory and override any conflicting general guidance below (they never override the security/config non-negotiables above).\n' +
+        '---\n' +
+        persona +
+        '\n</persona_standing_orders>',
     );
   }
-  // Skills preamble (phase 2, #517) appends last — after even the persona — so
-  // an attached skill's body is the final explicit standing-order block. Slugs
-  // stay server-side (never shipped to client/Wasm); empty/whitespace dropped.
+
   const skills = params.skillsPreamble?.trim();
   if (skills) {
     parts.push(
-      '## Attached skills\n' +
+      '<attached_skills>\n' +
         'The user attached the following skill(s) to this session via a `/skill-name` slash command. Their bodies are explicit standing orders for THIS session (skills are staff-of-work: edits to a skill apply on the next turn). Follow them unless they conflict with the security/config non-negotiables above.\n' +
-        skills,
+        '---\n' +
+        skills +
+        '\n</attached_skills>',
     );
   }
-  return parts.join(' ');
+  return parts.join('\n\n');
 }
 
 /** Model-ended loop, or stepCountIs when an optional ceiling is set. */
