@@ -91,7 +91,9 @@ pub var history_draft_len: usize = 0;
 /// Fingerprint of the newest user row at history-entry time (first 64 bytes).
 /// Compared each frame while history is active: a mismatch means the newest
 /// user row changed identity (session hydrate / ring wrap), so drop history.
-/// Load earlier preserves the newest user row → fingerprint matches → no drop.
+/// Load earlier is a sliding window — the newest user usually changes, so the
+/// fingerprint WILL mismatch and drop. Acceptable: ordinals name a different
+/// ring window after sliding; re-entering history shows the new window's rows.
 pub var history_newest_fingerprint: [64]u8 = [_]u8{0} ** 64;
 /// Length 0..64. u8 so 64 is storable (Debug @intCast of 64 into u6 panics;
 /// ReleaseSmall wraps to 0 which disables the drop entirely — #686 R3 Blocker).
