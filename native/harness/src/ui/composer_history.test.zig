@@ -208,3 +208,30 @@ test "fingerprintMatch: fp.len == 64, candidate shorter → false" {
     const fp = "D" ** 64;
     try testing.expectEqual(false, hist.fingerprintMatch(fp, "D" ** 63));
 }
+
+// ── restoreDraftToPrompt ───────────────────────────────────────────────────
+
+test "restoreDraftToPrompt: empty draft → all zeros, returns 0" {
+    var buf: [32]u8 = [_]u8{'X'} ** 32;
+    const n = hist.restoreDraftToPrompt(&buf, &.{});
+    try testing.expectEqual(@as(usize, 0), n);
+    for (buf) |b| try testing.expectEqual(@as(u8, 0), b);
+}
+
+test "restoreDraftToPrompt: non-empty draft → copied + nul-terminated" {
+    var buf: [32]u8 = [_]u8{'X'} ** 32;
+    const n = hist.restoreDraftToPrompt(&buf, "hello");
+    try testing.expectEqual(@as(usize, 5), n);
+    try testing.expectEqualStrings("hello", buf[0..5]);
+    try testing.expectEqual(@as(u8, 0), buf[5]);
+    // Remainder zeroed.
+    for (buf[6..]) |b| try testing.expectEqual(@as(u8, 0), b);
+}
+
+test "restoreDraftToPrompt: draft larger than prompt → truncated, nul-terminated" {
+    var buf: [5]u8 = [_]u8{'X'} ** 5;
+    const n = hist.restoreDraftToPrompt(&buf, "hello world");
+    try testing.expectEqual(@as(usize, 4), n);
+    try testing.expectEqualStrings("hell", buf[0..4]);
+    try testing.expectEqual(@as(u8, 0), buf[4]);
+}

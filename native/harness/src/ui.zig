@@ -484,9 +484,17 @@ pub fn frame() !void {
         queue_band.resetQueueEditState();
         // Drop composer arrow-key history state (plan #667) — a New /
         // Clear / session hydrate drops the ring, so ordinals are stale.
+        // Always restore the saved draft (including empty) so the composer
+        // never carries a foreign history line as a fake live draft (#686 R5).
         state.history_index = null;
+        _ = composer_history.restoreDraftToPrompt(
+            &state.prompt_buf,
+            state.history_draft_buf[0..state.history_draft_len],
+        );
         state.history_draft_len = 0;
         @memset(&state.history_draft_buf, 0);
+        @memset(&state.history_newest_fingerprint, 0);
+        state.history_newest_fp_len = 0;
     } else if (count_changed or content_grew) {
         const newest_is_user = blk: {
             if (n == 0) break :blk false;
@@ -514,13 +522,14 @@ pub fn frame() !void {
     }
     // Drop composer arrow-key history when the newest user row's identity
     // changed since entry (plan #667, adversarial review #686 R2).
-    // The n < prev_msg block above already handles ring-clear (New / Clear).
     // This fingerprint check catches session hydrate (same-or-different-count
     // batch replace) where the newest user message is a different row than the
     // one we entered on. Load earlier preserves the newest user row unchanged →
     // fingerprint matches → history survives. Submit already resets history_index
     // via resetHistory(), so this guard only fires when the ring mutated without
     // a submit — i.e. hydrate or Load earlier.
+    // The n < prev_msg block above handles New / Clear / hydrate-to-shorter
+    // with the same restoreDraftToPrompt helper (#686 R5).
     if (state.history_index != null and state.history_newest_fp_len > 0) {
         var fp_match = false;
         // Walk newest-first to find the current newest user row.
@@ -537,13 +546,10 @@ pub fn frame() !void {
         }
         if (!fp_match) {
             state.history_index = null;
-            // Always restore the saved draft — including empty — so a
-            // session switch does not leave the foreign history line in
-            // prompt_buf as a fake typed draft (#686 R4 Major L1).
-            @memset(&state.prompt_buf, 0);
-            const dlen = @min(state.history_draft_len, state.prompt_buf.len - 1);
-            if (dlen > 0) @memcpy(state.prompt_buf[0..dlen], state.history_draft_buf[0..dlen]);
-            state.prompt_buf[dlen] = 0;
+            _ = composer_history.restoreDraftToPrompt(
+                &state.prompt_buf,
+                state.history_draft_buf[0..state.history_draft_len],
+            );
             state.history_draft_len = 0;
             @memset(&state.history_draft_buf, 0);
             @memset(&state.history_newest_fingerprint, 0);

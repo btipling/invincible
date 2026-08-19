@@ -72,6 +72,19 @@ pub const StepResult = struct {
     index: ?usize, // next history_index (null = not in history)
 };
 
+/// Restore a saved draft into a prompt buffer. Always memsets prompt_buf to 0
+/// first, then copies up to draft.len bytes (0-length copy is a no-op for empty
+/// drafts). Always nul-terminates. Returns the actual bytes copied (≤ prompt.len-1).
+/// Caller sets history_index = null and clears history-state fields after calling.
+pub fn restoreDraftToPrompt(prompt_buf: []u8, draft: []const u8) usize {
+    @memset(prompt_buf, 0);
+    if (draft.len == 0) return 0;
+    const ncopy = @min(draft.len, prompt_buf.len - 1);
+    @memcpy(prompt_buf[0..ncopy], draft[0..ncopy]);
+    prompt_buf[ncopy] = 0;
+    return ncopy;
+}
+
 /// Pure step machine — no side effects (no alloc, no global state).
 ///
 /// - older: null → 0 (enter, if user_n > 0); Some(i) → i+1 (stay at oldest)
