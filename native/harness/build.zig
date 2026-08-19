@@ -624,10 +624,9 @@ pub fn build(b: *std.Build) void {
         test_rich.dependOn(&b.addRunArtifact(mixed_text_lookalike_tests).step);
     }
 
-    // PR #681 adversarial-review Major L6: pins that paintDiffText uses
-    // addTextMixed so ✎ U+270E renders via DejaVu symbols on diff fences.
-    // If this test is updated because paintDiffText was reverted to
-    // addTextSubstituted, the revert is visible — subject to operator check.
+    // PR #681 smoke / regression layout tests for paintDiffFence / paintDiffText:
+    // non-zero rects, line counts, no crash. Face routing (✎ → DejaVu symbols)
+    // is pinned by unicode_face.test.zig.
     {
         const paint_diff_tests = b.addTest(.{
             .name = "paint_diff",

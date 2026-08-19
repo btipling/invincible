@@ -1,8 +1,9 @@
-//! Host dvui testing-backend tests for paint_diff.zig (PR #681 adversarial-review
-//! Major L6). Pins that paintDiffText uses addTextMixed so ✎ U+270E renders
-//! via DejaVu symbols on diff fences. If this test is updated because
-//! paintDiffText was reverted to addTextSubstituted, the revert is visible —
-//! ✎ would tofu on Vera mono and the diff-body tag rect width would change.
+//! Host dvui testing-backend smoke / regression layout tests for paint_diff.zig
+//! (PR #681). Ensures paintDiffFence / paintDiffText produce non-zero layout
+//! rects, correct line counts, and do not crash for typical diff inputs
+//! (✎ U+270E glyph, plain text, U+23AF separator, truncation). The face
+//! routing that sends ✎ → DejaVu symbols is pinned by unicode_face.test.zig
+//! (faceFor(0x270E) == .symbols); these tests do not assert the paint face.
 //!
 //! No pixels, no SDL/GLFW/OpenGL. The dvui testing backend computes layout
 //! rects; assertions use 2× physical pixel scale.
