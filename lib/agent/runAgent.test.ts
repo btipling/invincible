@@ -924,6 +924,13 @@ describe('DEFAULT_AGENT_SYSTEM standing orders', () => {
   it('must mention workspace root is writable', () => {
     expect(DEFAULT_AGENT_SYSTEM).toMatch(/workspace root is writable/i);
   });
+
+  it('names sandbox_info and forbids learning the sandbox via exec env', () => {
+    expect(DEFAULT_AGENT_SYSTEM).toMatch(/sandbox_info/);
+    expect(DEFAULT_AGENT_SYSTEM).toMatch(/do not exec env/);
+    expect(DEFAULT_AGENT_SYSTEM).toMatch(/printenv/);
+    expect(DEFAULT_AGENT_SYSTEM).toMatch(/uname/);
+  });
 });
 
 describe('runAgent daemon-version preflight', () => {

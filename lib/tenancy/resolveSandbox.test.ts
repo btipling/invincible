@@ -120,6 +120,9 @@ describe('resolveAgentSandbox', () => {
     expect(result.value.secrets).toContain('sandbox-token-secret-xyz');
     expect(result.value.baseUrl).toBe('http://127.0.0.1:8787');
     expect(result.value.backend).toBe('byo');
+    expect(result.value.name).toBe('default');
+    expect(result.value.slug).toBe('default');
+    expect(result.value.status).toBe('active');
     expect(result.value.resolvedImage).toBeNull();
     expect((result.value.client as { __meta?: { token: string } }).__meta?.token).toBe(
       'sandbox-token-secret-xyz',
@@ -319,6 +322,9 @@ describe('resolveAgentSandbox', () => {
     if (!result.ok) throw new Error('expected ok');
     expect(result.value.client).toBe(vercelClient);
     expect(result.value.backend).toBe('vercel');
+    expect(result.value.name).toBe('default');
+    expect(result.value.slug).toBe('default');
+    expect(result.value.status).toBe('active');
     expect(result.value.secrets).toEqual([]);
     expect(result.value.baseUrl).toBeUndefined();
     expect(result.value.resolvedImage).toBe('vercel/sandbox/universal:latest');

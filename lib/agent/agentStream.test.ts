@@ -388,6 +388,41 @@ describe('salientToolBits cwd tools', () => {
   });
 });
 
+describe('salientToolBits sandbox_info', () => {
+  it('shows backend · cwd · env count, not PATH or values', () => {
+    const raw = [
+      'sandbox_info:',
+      'backend=byo',
+      'cwd=invincible',
+      'env.PATH=["/usr/bin","node_modules/.bin"]',
+      'env.LANG=C.UTF-8',
+    ].join('\n');
+    const bits = salientToolBits('sandbox_info', raw);
+    expect(bits).toBe('backend=byo · cwd=invincible · 2 env');
+    expect(bits).not.toContain('PATH=');
+    expect(bits).not.toContain('/usr/bin');
+    expect(bits).not.toContain('C.UTF-8');
+  });
+
+  it('skips missing backend/cwd and flags env unavailable', () => {
+    const bits = salientToolBits(
+      'sandbox_info',
+      'sandbox_info:\ncwd=invincible\nenv: unavailable (error)',
+    );
+    expect(bits).toBe('cwd=invincible · unavailable');
+    expect(bits).not.toMatch(/PATH=/);
+  });
+
+  it('name fallback without dumping the body', () => {
+    const bits = salientToolBits(
+      'sandbox_info',
+      'sandbox_info:\nenv.SECRET=should-not-leak',
+    );
+    expect(bits).toBe('1 env');
+    expect(bits).not.toContain('SECRET');
+  });
+});
+
 describe('metaSandboxSwitchActiveId + activeSandboxId typed field (Phase 2 #627)', () => {
   it('parses a successful switch result to the target id', () => {
     expect(

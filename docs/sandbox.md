@@ -154,7 +154,7 @@ workspace-relative — a stale absolute `<oldR>/…` from a prior bind fails clo
 | Built-in `meta_sandbox_*` agent tools | Non-secret inventory + current-bind surface + mid-session **switch** for the agent (`meta_sandbox_list` / `meta_sandbox_active` / `meta_sandbox_switch`) | `list` = the same safe projection as `GET /api/sandboxes.options` (never `base_url`/token). `active` = the persisted `meta.activeSandboxId` **when it is a usable grant**, else null (a set-but-unusable id is reported honestly, fail-closed). `switch` = persist `meta.activeSandboxId` to the caller's session envelope via the phase-0 envelope seam (`resolveSessionStore` → `isEnvelopeStore` → `readEnvelope`/`upsertEnvelope`, `updatedAt` preserved), **fail-closed with no partial write** on a non-Redis-safe id, an unusable/ungranted/wrong-tenant grant, a missing `sessionId`, or an unavailable/non-envelope store. Bound to the route `userId`/`sessionId`; caller-owned session only |
 
 The tool-surface descriptor (`lib/tenancy/sandboxTools.ts` `describeSandboxTools`)
-is permission-aware (read tools on `canRead`; `write_file`/`str_replace`/`exec` on
+is permission-aware (read tools on `canRead` including `sandbox_info`; `write_file`/`str_replace`/`exec` on
 `canWrite`; `change_dir`/`pwd` always) and backend-noted (`vercel` attach-only
 durable Workspace; `byo` HTTP daemon v2). It is a display/contract view only — the
 model still sees the real tool schemas via `createAgentTools`. The `meta_sandbox_*`
@@ -773,6 +773,7 @@ short relative paths.
 |------|------|
 | `change_dir` | Set logical cwd for subsequent tools this turn (host persists a confirmed `change_dir` even if the turn later cancels / times out / hard-errors) |
 | `pwd` | Print current logical cwd (workspace-root-relative) |
+| `sandbox_info` | Read-only structured facts about the **active** bind: backend, name/slug/status, logical cwd, grant permissions, capabilities, daemon protocol/version (BYO) or `daemon=none` (Vercel), and a redacted env map. PATH-like values are JSON arrays rewritten **per colon-separated entry** (workspace-relative under the jail; out-of-jail OS entries such as `/usr/bin` stay). Not `exec env` / `printenv` — those still exhibit joined-line `:` truncation. Omits tokens, jail root `R`, host IPs, droplet ids, and `base_url`. Soft-fails `env: unavailable` if the internal `env` spawn fails; bind/cwd/caps still print. |
 | path tools (`list_dir`, `read_file`, `write_file`, `str_replace`, `exec`) | Resolve paths against logical cwd |
 
 Every path-accepting tool (`list_dir`, `read_file`, `write_file`, `str_replace`,

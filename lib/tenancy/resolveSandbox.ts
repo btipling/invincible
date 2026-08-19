@@ -44,6 +44,9 @@ export type ResolvedAgentSandbox = {
   sandboxId: string;
   tenantId: string;
   backend: SandboxBackend;
+  name: string;
+  slug: string;
+  status: string;
   /** Present for byo only — never invent a host URL for vercel. */
   baseUrl?: string;
   /** Resolved Vercel image ref; null for byo. */
@@ -205,6 +208,8 @@ async function resolveWithDb(
       .select({
         sandboxId: sandboxes.id,
         backend: sandboxes.backend,
+        name: sandboxes.name,
+        slug: sandboxes.slug,
         image: sandboxes.image,
         baseUrl: sandboxes.baseUrl,
         tokenCiphertext: sandboxes.tokenCiphertext,
@@ -346,6 +351,9 @@ async function resolveWithDb(
           sandboxId: row.sandboxId,
           tenantId,
           backend: 'vercel',
+          name: row.name,
+          slug: row.slug,
+          status: row.status,
           resolvedImage: resolvedImg.image,
         },
       };
@@ -397,6 +405,9 @@ async function resolveWithDb(
         sandboxId: row.sandboxId,
         tenantId,
         backend: 'byo',
+        name: row.name,
+        slug: row.slug,
+        status: row.status,
         baseUrl,
         resolvedImage: null,
       },

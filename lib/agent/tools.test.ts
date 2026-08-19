@@ -1891,3 +1891,160 @@ describe('read_file line window (plan #689)', () => {
   });
 });
 
+describe('createAgentTools sandbox_info', () => {
+  const execCtx = { toolCallId: '1', messages: [] } as never;
+  const envStdout = [
+    'PATH=/usr/bin:/jail/ws/node_modules/.bin',
+    'LANG=C.UTF-8',
+    'GITHUB_TOKEN=ghp_secret',
+  ].join('\n');
+
+  function infoClient(partial: Partial<SandboxClient> = {}): SandboxClient {
+    return mockClient({
+      exec: vi.fn(async () => ({
+        exitCode: 0,
+        stdout: envStdout,
+        stderr: '',
+      })),
+      ...partial,
+    });
+  }
+
+  it('read deny', async () => {
+    const tools = createAgentTools({
+      client: infoClient(),
+      freshness: createRunFileFreshness(),
+      permissions: { canRead: false, canWrite: false },
+    });
+    const out = (await tools.sandbox_info.execute!({}, execCtx)) as string;
+    expect(out).toMatch(/^ERROR sandbox_info: permission denied \(need read\)/);
+  });
+
+  it('write-false + read-true still dumps env (internal exec)', async () => {
+    const exec = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: 'FOO=1\n',
+      stderr: '',
+    }));
+    const tools = createAgentTools({
+      client: infoClient({ exec }),
+      freshness: createRunFileFreshness(),
+      permissions: { canRead: true, canWrite: false },
+      workspaceRoot: '/jail/ws',
+    });
+    const out = (await tools.sandbox_info.execute!({}, execCtx)) as string;
+    expect(exec).toHaveBeenCalledWith(
+      { cmd: 'env', timeoutMs: 10_000 },
+      expect.anything(),
+    );
+    expect(out).toContain('permissions.write=false');
+    expect(out).toContain('capabilities.exec=false');
+    expect(out).toContain('env.FOO=1');
+    expect(out).toMatch(/capabilities\.path_tools=.*sandbox_info/);
+    expect(out).not.toMatch(/capabilities\.path_tools=.*write_file/);
+    expect(out).not.toMatch(/capabilities\.path_tools=.*\bstat\b/);
+  });
+
+  it('env exec fail → bind/cwd still present, env unavailable, no stderr echo', async () => {
+    const tools = createAgentTools({
+      client: infoClient({
+        exec: vi.fn(async () => {
+          throw new Error('boom /jail/ws secret-token-value');
+        }),
+      }),
+      freshness: createRunFileFreshness(),
+      secrets: ['secret-token-value'],
+      bind: {
+        backend: 'byo',
+        sandboxId: 'sb-1',
+        name: 'prod',
+        slug: 'prod',
+        status: 'active',
+      },
+      cwdState: { current: 'invincible' },
+      workspaceRoot: '/jail/ws',
+    });
+    const out = (await tools.sandbox_info.execute!({}, execCtx)) as string;
+    expect(out).toMatch(/^sandbox_info:/);
+    expect(out).toContain('backend=byo');
+    expect(out).toContain('id=sb-1');
+    expect(out).toContain('name=prod');
+    expect(out).toContain('cwd=invincible');
+    expect(out).toContain('env: unavailable (error)');
+    expect(out).not.toContain('/jail/ws');
+    expect(out).not.toContain('secret-token-value');
+    expect(out).not.toContain('boom');
+  });
+
+  it('thrown 504 → env: unavailable (timeout)', async () => {
+    const tools = createAgentTools({
+      client: infoClient({
+        exec: vi.fn(async () => {
+          throw new SandboxHttpError('Sandbox request aborted or timed out', 504);
+        }),
+      }),
+      freshness: createRunFileFreshness(),
+    });
+    const out = (await tools.sandbox_info.execute!({}, execCtx)) as string;
+    expect(out).toContain('env: unavailable (timeout)');
+    expect(out).not.toContain('aborted');
+  });
+
+  it('missing bind still returns cwd + env', async () => {
+    const tools = createAgentTools({
+      client: infoClient(),
+      freshness: createRunFileFreshness(),
+      workspaceRoot: '/jail/ws',
+    });
+    const out = (await tools.sandbox_info.execute!({}, execCtx)) as string;
+    expect(out).toMatch(/^sandbox_info:/);
+    expect(out).toContain('cwd=.');
+    expect(out).toContain('env.LANG=C.UTF-8');
+    expect(out).toContain('env.PATH=["/usr/bin","node_modules/.bin"]');
+    expect(out).not.toMatch(/^backend=/m);
+    expect(out).not.toMatch(/^id=/m);
+    expect(out).not.toMatch(/^name=/m);
+    expect(out).not.toContain('GITHUB_TOKEN');
+    expect(out).not.toContain('ghp_secret');
+  });
+
+  it('BYO daemonInfo maps protocol vs version (unequal) and vercel omits', async () => {
+    const daemonInfo = vi.fn(async () => ({ version: 2, daemonVersion: 1 }));
+    const byo = createAgentTools({
+      client: infoClient({ daemonInfo }),
+      freshness: createRunFileFreshness(),
+      bind: {
+        backend: 'byo',
+        sandboxId: 'sb-1',
+        name: 'prod',
+        slug: 'prod',
+        status: 'active',
+      },
+    });
+    const byoOut = (await byo.sandbox_info.execute!({}, execCtx)) as string;
+    expect(byoOut).toContain('daemon.protocol=2');
+    expect(byoOut).toContain('daemon.version=1');
+    expect(byoOut).toContain('daemon.out_of_date=true');
+    expect(byoOut).toContain('capabilities.stdin=true');
+
+    const vercel = createAgentTools({
+      client: infoClient({ daemonInfo }),
+      freshness: createRunFileFreshness(),
+      bind: {
+        backend: 'vercel',
+        sandboxId: 'sb-2',
+        name: 'ws',
+        slug: 'ws',
+        status: 'active',
+        image: 'vercel/sandbox/universal:latest',
+      },
+    });
+    const vercelOut = (await vercel.sandbox_info.execute!({}, execCtx)) as string;
+    expect(vercelOut).toContain('daemon=none');
+    expect(vercelOut).toContain('capabilities.stdin=false');
+    expect(vercelOut).toContain('image=vercel/sandbox/universal:latest');
+    expect(vercelOut).not.toContain('daemon.protocol=');
+    expect(daemonInfo).toHaveBeenCalledTimes(1); // vercel short-circuit
+  });
+});
+

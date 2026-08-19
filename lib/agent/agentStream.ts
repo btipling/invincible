@@ -388,6 +388,23 @@ export function salientToolBits(name: string, resultText: string): string {
     return text.replace(/\s+/g, ' ').trim();
   }
 
+  // sandbox_info: backend · cwd · env-count — never env values / PATH=
+  if (name === 'sandbox_info' || /^sandbox_info:/.test(text)) {
+    const bits: string[] = [];
+    const backend = text.match(/^backend=(.+)$/m);
+    if (backend) bits.push(`backend=${backend[1]!.trim()}`);
+    const cwd = text.match(/^cwd=(.+)$/m);
+    if (cwd) bits.push(`cwd=${cwd[1]!.trim()}`);
+    if (/^env: unavailable/m.test(text)) {
+      bits.push('unavailable');
+    } else {
+      const envKeys = text.match(/^env\.[A-Za-z_][A-Za-z0-9_]*=/gm) ?? [];
+      const count = envKeys.filter((l) => !/^env\.omitted=/.test(l)).length;
+      bits.push(`${count} env`);
+    }
+    return bits.join(' · ');
+  }
+
   // Generic / MCP: no multi-line dumps — count + short first-line clip
   const lines = text.split('\n');
   if (lines.length > 1 || text.length > 100) {

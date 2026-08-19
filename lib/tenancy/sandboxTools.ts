@@ -23,6 +23,7 @@ const READ_TOOLS: SandboxToolSurface[] = [
   { name: 'list_dir', requiresPermission: 'read' },
   { name: 'read_file', requiresPermission: 'read' },
   { name: 'stat', requiresPermission: 'read' },
+  { name: 'sandbox_info', requiresPermission: 'read' },
 ];
 
 /** Write bind surface — write implies read (effective permissions). */
