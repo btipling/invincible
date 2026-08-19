@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TOOL_RESULT_MAX_CHARS } from '../sandbox/config';
 import type { SandboxClient } from '../sandbox/client';
-import { createAgentTools, isPathMissingError } from './tools';
+import { createAgentTools, formatStrReplaceDiffSide, isPathMissingError, STR_REPLACE_DIFF_SIDE_MAX_BYTES } from './tools';
 import { createRunFileFreshness } from './fileFreshness';
 import { SandboxHttpError } from '../sandbox/types';
 
@@ -374,6 +374,7 @@ describe('str_replace tool', () => {
       { toolCallId: 'sr1', messages: [] } as never,
     )) as string;
     expect(out).toMatch(/str_replace a\.ts: ok replacements=2 bytes=99/);
+    expect(out).toContain('\n-old_string\nfoo\n+new_string\nbar');
     expect(strReplace).toHaveBeenCalledWith(
       'a.ts',
       'foo',
@@ -381,6 +382,104 @@ describe('str_replace tool', () => {
       true,
       expect.objectContaining({ signal: undefined }),
     );
+  });
+});
+
+describe('str_replace audit diff (plan #665)', () => {
+  async function runReplace(
+    oldString: string,
+    newString: string,
+    secrets?: Array<string | undefined | null>,
+  ): Promise<string> {
+    const client = mockClient({
+      strReplace: vi.fn(async () => ({
+        ok: true as const,
+        path: 'a.ts',
+        replacements: 1,
+        bytes: 10,
+        mtimeMs: 5,
+        size: 10,
+      })),
+      readFile: vi.fn(async () => ({ content: oldString, mtimeMs: 5, size: oldString.length })),
+      stat: vi.fn(async () => ({
+        path: 'a.ts',
+        type: 'file' as const,
+        mtimeMs: 5,
+        size: oldString.length,
+      })),
+    });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+      secrets,
+    });
+    await tools.read_file.execute!(
+      { path: 'a.ts' },
+      { toolCallId: 'sr-read', messages: [] } as never,
+    );
+    return (await tools.str_replace.execute!(
+      { path: 'a.ts', old_string: oldString, new_string: newString },
+      { toolCallId: 'sr-write', messages: [] } as never,
+    )) as string;
+  }
+
+  it('appends -old_string / +new_string headers around the sides', async () => {
+    const out = await runReplace('alpha', 'beta');
+    expect(out).toMatch(/^str_replace a\.ts: ok replacements=1 bytes=10\n/);
+    expect(out).toContain('\n-old_string\nalpha\n+new_string\nbeta');
+  });
+
+  it('redacts old_string in the diff block', async () => {
+    const secret = 'sk-live-old-token-aaaa';
+    const out = await runReplace(`const k = '${secret}'`, "const k = 'ok'", [secret]);
+    expect(out).toContain('\n-old_string\n');
+    expect(out).not.toContain(secret);
+    expect(out).toContain("const k = '[redacted]'");
+  });
+
+  it('redacts new_string in the diff block', async () => {
+    const secret = 'sk-live-new-token-bbbb';
+    const out = await runReplace('const k = 1', `const k = '${secret}'`, [secret]);
+    expect(out).toContain('\n+new_string\n');
+    expect(out).not.toContain(secret);
+    expect(out).toContain("const k = '[redacted]'");
+  });
+
+  it('caps old_string at 4 KiB with a truncation marker', async () => {
+    const oldString = 'o'.repeat(STR_REPLACE_DIFF_SIDE_MAX_BYTES + 80);
+    const out = await runReplace(oldString, 'new');
+    const oldBlock = out.split('\n-old_string\n')[1]!.split('\n+new_string\n')[0]!;
+    expect(oldBlock.endsWith('… (truncated)')).toBe(true);
+    const body = oldBlock.slice(0, -'… (truncated)'.length);
+    expect(Buffer.byteLength(body, 'utf8')).toBe(STR_REPLACE_DIFF_SIDE_MAX_BYTES);
+    expect(oldBlock).not.toContain('o'.repeat(STR_REPLACE_DIFF_SIDE_MAX_BYTES + 1));
+  });
+
+  it('caps new_string at 4 KiB with a truncation marker', async () => {
+    const newString = 'n'.repeat(STR_REPLACE_DIFF_SIDE_MAX_BYTES + 80);
+    const out = await runReplace('old', newString);
+    const newBlock = out.split('\n+new_string\n')[1]!;
+    expect(newBlock.endsWith('… (truncated)')).toBe(true);
+    const body = newBlock.slice(0, -'… (truncated)'.length);
+    expect(Buffer.byteLength(body, 'utf8')).toBe(STR_REPLACE_DIFF_SIDE_MAX_BYTES);
+  });
+
+  it('formatStrReplaceDiffSide redacts then caps independently of finalize', () => {
+    const secret = 'sk-side-secret-cccc';
+    const raw = `${secret}${'x'.repeat(STR_REPLACE_DIFF_SIDE_MAX_BYTES)}`;
+    const side = formatStrReplaceDiffSide(raw, [secret]);
+    expect(side).not.toContain(secret);
+    expect(side.startsWith('[redacted]')).toBe(true);
+    expect(side.endsWith('… (truncated)')).toBe(true);
+    expect(STR_REPLACE_DIFF_SIDE_MAX_BYTES).toBe(4096);
+  });
+
+  it('escapes a content line that equals +new_string so the header stays unique', async () => {
+    const out = await runReplace('keep\n+new_string\nstill-old', 'fresh');
+    expect(out).toContain('\n-old_string\nkeep\n +new_string\nstill-old\n+new_string\nfresh');
+    const oldBlock = out.split('\n-old_string\n')[1]!.split('\n+new_string\n')[0]!;
+    expect(oldBlock).toContain(' +new_string');
+    expect(oldBlock).not.toMatch(/^\+new_string$/m);
   });
 });
 
@@ -732,7 +831,7 @@ describe('read-before-edit gates', () => {
       { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
       execCtx,
     )) as string;
-    expect(out).toMatch(/^ERROR str_replace: read_file required/);
+    expect(out).toMatch(/^ERROR str_replace a\.txt: read_file required/);
     expect(client.strReplace).not.toHaveBeenCalled();
   });
 
@@ -785,7 +884,7 @@ describe('read-before-edit gates', () => {
       { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
       execCtx,
     )) as string;
-    expect(stale).toMatch(/^ERROR str_replace: file changed since last read_file/);
+    expect(stale).toMatch(/^ERROR str_replace a\.txt: file changed since last read_file/);
     await tools.read_file.execute!({ path: 'a.txt' }, execCtx);
     const ok = (await tools.str_replace.execute!(
       { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
@@ -893,7 +992,7 @@ describe('read-before-edit gates', () => {
       { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
       execCtx,
     )) as string;
-    expect(out).toMatch(/^ERROR str_replace: read_file required/);
+    expect(out).toMatch(/^ERROR str_replace a\.txt: read_file required/);
   });
 
   it('read omits mtime; stat supplies it → stale detect works', async () => {

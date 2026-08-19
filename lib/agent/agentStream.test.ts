@@ -240,6 +240,20 @@ describe('salientToolBits / summarizeToolLine', () => {
     const line = summarizeToolLine('x', 'y'.repeat(5000), true);
     expect(line.length).toBeLessThanOrEqual(TOOL_LINE_SALIENT_MAX);
   });
+
+  it('str_replace multi-line body only uses the first (status) line, never the diff block (#684 Minor R4)', () => {
+    const body =
+      'str_replace lib/foo.ts: ok replacements=1 bytes=450\n-old_string\nfunction old() {\n  return 1;\n}\n+new_string\nfunction new() {\n  return 2;\n}';
+    const bits = salientToolBits('str_replace', body);
+    // Only the first line is parsed — path + count, no diff content.
+    expect(bits).toContain('lib/foo.ts');
+    expect(bits).toContain('1 replacement');
+    expect(bits).toContain('450 B');
+    expect(bits).not.toContain('function old');
+    expect(bits).not.toContain('function new');
+    expect(bits).not.toContain('-old_string');
+    expect(bits).not.toContain('+new_string');
+  });
 });
 
 describe('buildToolPreview (phase 3 #353 — bounded redacted L2 detail)', () => {
@@ -252,6 +266,41 @@ describe('buildToolPreview (phase 3 #353 — bounded redacted L2 detail)', () =>
   it('keeps multi-line detail verbatim when within head+tail window', () => {
     const body = Array.from({ length: 6 }, (_, i) => `line ${i}`).join('\n');
     expect(buildToolPreview(body)).toBe(body);
+  });
+
+  it('produces a preview for a multi-line str_replace audit block (plan #665)', () => {
+    const body =
+      'str_replace lib/foo.ts: ok replacements=1 bytes=123\n-old_string\nfoo\n+new_string\nbar';
+    expect(buildToolPreview(body)).toBe(body);
+    expect(buildToolPreview('str_replace lib/foo.ts: ok replacements=1 bytes=123')).toBeUndefined();
+  });
+
+  it('keeps both headers when a 45+25 replace would drop +new_string under generic 40/10 (#684 R2)', () => {
+    // 1 status + 1 -old_string + 45 old + 1 +new_string + 25 new = 73 lines.
+    // Generic HEAD 40 / TAIL 10 skips 23 lines starting at index 40 — the
+    // +new_string header sits at line 47 and would vanish. Per-side windows
+    // keep both headers and new line 0.
+    const oldLines = Array.from({ length: 45 }, (_, i) => `  old line ${i}`).join('\n');
+    const newLines = Array.from({ length: 25 }, (_, i) => `  new line ${i}`).join('\n');
+    const body = `str_replace lib/bar.ts: ok replacements=1 bytes=900\n-old_string\n${oldLines}\n+new_string\n${newLines}`;
+    const preview = buildToolPreview(body)!;
+    expect(preview).toContain('\n-old_string\n');
+    expect(preview).toContain('\n+new_string\n');
+    expect(preview).toContain('old line 0');
+    expect(preview).toContain('new line 0');
+    expect(preview).toContain('new line 24');
+    expect(preview).toContain('more lines');
+    expect(preview).not.toContain('old line 22');
+  });
+
+  it('does not split at a +new_string line that is old-side content (#684 R2)', () => {
+    const body =
+      'str_replace lib/x.ts: ok replacements=1 bytes=20\n-old_string\n +new_string\nkeep-old\n+new_string\nreal-new';
+    const preview = buildToolPreview(body)!;
+    expect(preview).toContain('\n +new_string\n');
+    expect(preview).toContain('keep-old');
+    expect(preview).toContain('\n+new_string\nreal-new');
+    expect(preview.indexOf('\n+new_string\n')).toBeGreaterThan(preview.indexOf('\n +new_string\n'));
   });
 
   it('collapses long output to head + tail + … (N more lines)', () => {

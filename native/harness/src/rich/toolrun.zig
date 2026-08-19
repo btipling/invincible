@@ -31,6 +31,28 @@ pub const Item = struct {
     detail: []const u8,
 };
 
+/// L1 item label.
+/// - `has_detail`: `brief` when non-empty (path + count on a successful
+///   str_replace), else `name`.
+/// - no detail: `brief` only when it is a real one-liner (e.g. an ERROR that
+///   includes the path). Host status fallbacks (`name · running…` / `name · ok`
+///   / `name · failed`) paint as `name` so the glyph stays the only status
+///   channel (Goal 3 / adversarial review #684).
+pub fn itemLabel(brief: []const u8, name: []const u8, has_detail: bool) []const u8 {
+    if (brief.len == 0) return name;
+    if (has_detail) return brief;
+    if (isHostStatusFallback(brief, name)) return name;
+    return brief;
+}
+
+fn isHostStatusFallback(brief: []const u8, name: []const u8) bool {
+    if (!std.mem.startsWith(u8, brief, name)) return false;
+    const rest = brief[name.len..];
+    return std.mem.eql(u8, rest, " · running…") or
+        std.mem.eql(u8, rest, " · ok") or
+        std.mem.eql(u8, rest, " · failed");
+}
+
 pub const ToolRun = struct {
     ok: u32 = 0,
     fail: u32 = 0,
@@ -162,6 +184,34 @@ pub fn decode(alloc: std.mem.Allocator, text: []const u8) ?Decoded {
         .items = items.toOwnedSlice(alloc) catch return null,
     };
     return .{ .run = run, .alloc = alloc };
+}
+
+test "itemLabel prefers non-empty brief when has_detail (plan #665 8a)" {
+    try std.testing.expectEqualStrings(
+        "str_replace lib/foo.ts: ok replacements=1 bytes=123",
+        itemLabel("str_replace lib/foo.ts: ok replacements=1 bytes=123", "str_replace", true),
+    );
+}
+
+test "itemLabel falls back to name when brief is empty (plan #665 8b)" {
+    try std.testing.expectEqualStrings("str_replace", itemLabel("", "str_replace", false));
+    try std.testing.expectEqualStrings("exec", itemLabel("", "exec", true));
+}
+
+test "itemLabel hides host status fallbacks when there is no L2 (#684 Goal 3)" {
+    try std.testing.expectEqualStrings(
+        "str_replace",
+        itemLabel("str_replace · running…", "str_replace", false),
+    );
+    try std.testing.expectEqualStrings("exec", itemLabel("exec · ok", "exec", false));
+    try std.testing.expectEqualStrings("read_file", itemLabel("read_file · failed", "read_file", false));
+}
+
+test "itemLabel shows error brief with path when there is no L2 (#684 #368)" {
+    try std.testing.expectEqualStrings(
+        "ERROR str_replace a.ts: File not found",
+        itemLabel("ERROR str_replace a.ts: File not found", "str_replace", false),
+    );
 }
 
 test "decode round-trip with escaping" {

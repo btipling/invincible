@@ -216,11 +216,11 @@ pub fn paintToolRun(
                     tl.deinit();
                 }
 
-                // No-detail items carry only the host's status-suffixed fallback
-                // `brief` (`name · ✓/✗/running`); the colored glyph is the single
-                // status channel, so paint those labels from `name` to avoid a
-                // redundant second status affordance (parent Goal 3 / issue review).
-                const item_label: []const u8 = if (has_detail and it.brief.len > 0) it.brief else it.name;
+                // L1 label: see `itemLabel`. Success-with-L2 uses brief (path).
+                // No-detail host fallbacks (`name · running…` / `name · ok`)
+                // paint as `name` (Goal 3). Error one-liners that carry a path
+                // are not fallbacks — those briefs stay visible (#368).
+                const item_label: []const u8 = rich_toolrun.itemLabel(it.brief, it.name, has_detail);
                 if (has_detail) {
                     // Same as L0: natural height so label centers with the status glyph.
                     const open = dvui.expander(src, item_label, .{ .expanded = &l2_expanded }, .{
@@ -230,9 +230,9 @@ pub fn paintToolRun(
                     });
                     if (open) state.toolrun_open_l2.put(l2_key, {}) catch {} else _ = state.toolrun_open_l2.remove(l2_key);
                 } else {
-                    // No level-2 detail (e.g. a short/empty summary) — mount a
-                    // static label, not a blank expander (review nit). The no-detail label
-                    // is painted from `name`, so the colored glyph is the only status channel.
+                    // No level-2 detail — static label, not a blank expander.
+                    // `itemLabel` already chose brief (real error/path one-liner)
+                    // or `name` (host status fallback). Glyph is the status channel.
                     var tl = dvui.textLayout(src, .{}, .{
                         .id_extra = item_base + 2, // expander slot — mutually exclusive
                         .expand = .horizontal,

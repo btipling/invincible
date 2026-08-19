@@ -137,6 +137,69 @@ export const TOOL_RUN_PREVIEW_HEAD_LINES = 40;
 export const TOOL_RUN_PREVIEW_TAIL_LINES = 10;
 
 /**
+ * Per-side head/tail line window for a str_replace two-sided audit diff.
+ * Each side (old / new) is windowed independently so the `-old_string` and
+ * `+new_string` headers are always in their side's head — a 40/10 window on the
+ * concatenated block would collapse the second-side header + content-start into
+ * the middle gap for a normal function-sized replace (adversarial review #684
+ * Major R1).
+ */
+export const STR_REPLACE_SIDE_HEAD_LINES = 20;
+export const STR_REPLACE_SIDE_TAIL_LINES = 6;
+
+/**
+ * Apply a head/tail line window to the given lines, returning the joined string.
+ * When the total fits, the full block is returned; otherwise head + `… (N more
+ * lines)` + tail.
+ */
+function windowSideLines(lines: string[], head: number, tail: number): string {
+  if (lines.length <= head + tail) return lines.join('\n');
+  const headText = lines.slice(0, head).join('\n');
+  const tailText = lines.slice(-tail).join('\n');
+  const skipped = lines.length - head - tail;
+  return `${headText}\n… (${skipped} more lines)\n${tailText}`;
+}
+
+/**
+ * Build a preview for a str_replace tool result carrying a two-sided old→new
+ * diff block. The body MUST have the shape:
+ *
+ *   str_replace <path> …<status>
+ *   -old_string
+ *   <old content>
+ *   +new_string
+ *   <new content>
+ *
+ * We window each side independently so both headers and the start of each
+ * side's content are always visible, even when the concatenated block would
+ * exceed the generic 40/10 window and drop the `+new_string` header into the
+ * middle gap.
+ */
+function buildStrReplacePreview(body: string): string | undefined {
+  const lines = body.split('\n');
+  // Structural parse: status, then required `-old_string` header on line 1.
+  // Content lines that equal a marker are escaped (leading space) at emit time
+  // so the first `+new_string` after that header is the real separator
+  // (adversarial review #684 R2 Minor — do not indexOf from anywhere).
+  if (lines.length < 4 || lines[1] !== '-old_string') return undefined;
+
+  const newMarker = lines.indexOf('+new_string', 2);
+  if (newMarker < 2) return undefined;
+
+  const statusLine = lines[0]!;
+
+  // Old side: lines after -old_string, before +new_string.
+  const oldLines = lines.slice(2, newMarker);
+  const oldBlock = `-old_string\n${windowSideLines(oldLines, STR_REPLACE_SIDE_HEAD_LINES, STR_REPLACE_SIDE_TAIL_LINES)}`;
+
+  // New side: lines after +new_string.
+  const newLines = lines.slice(newMarker + 1);
+  const newBlock = `+new_string\n${windowSideLines(newLines, STR_REPLACE_SIDE_HEAD_LINES, STR_REPLACE_SIDE_TAIL_LINES)}`;
+
+  return `${statusLine}\n${oldBlock}\n${newBlock}`;
+}
+
+/**
  * Build the bounded, redacted L2 `preview` for a `tool_result` from already
  * flattened + redacted tool output. Head/tail are taken from the FULL output
  * (first `HEAD` lines / last `TAIL` lines) joined by `… (M more lines)` and only
@@ -146,6 +209,11 @@ export const TOOL_RUN_PREVIEW_TAIL_LINES = 10;
  * pretend-expand) when the output is a short single-line result that adds
  * nothing beyond the L1 one-liner — the host then keeps the static label path
  * (no blank expander). Never raw MCP envelopes.
+ *
+ * str_replace two-sided diffs get per-side windows (STR_REPLACE_SIDE_HEAD_LINES
+ * / STR_REPLACE_SIDE_TAIL_LINES) so both `-old_string` and `+new_string` headers
+ * are always visible — the generic 40/10 would collapse the second-side header
+ * for a function-sized replace (adversarial review #684 Major R1).
  */
 export function buildToolPreview(redacted: string): string | undefined {
   const norm = (redacted ?? '')
@@ -156,6 +224,11 @@ export function buildToolPreview(redacted: string): string | undefined {
   const lines = norm.split('\n');
   // Short single-line result adds nothing beyond the L1 one-liner — omit.
   if (lines.length === 1 && norm.length <= TOOL_RUN_PREVIEW_MIN_LEN) return undefined;
+
+  // str_replace two-sided diff — per-side windows (see fn doc).
+  if (lines.length >= 4 && /^str_replace\s/.test(lines[0]!) && lines[1] === '-old_string') {
+    return buildStrReplacePreview(norm);
+  }
 
   const HEAD = TOOL_RUN_PREVIEW_HEAD_LINES;
   const TAIL = TOOL_RUN_PREVIEW_TAIL_LINES;
