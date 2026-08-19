@@ -636,12 +636,10 @@ pub fn frame() !void {
 
                 // ── Escape — cancel in-progress turn (plan #705) ─────────────
                 // Same path as the ■ Stop icon. Only .down fires cancel (single-
-                // fire). Skip when a queue-row editor is open — queue_band
-                // owns Esc in that case. Idle Esc is a no-op (queueCancelFromUi
-                // already guards not-busy, but we skip the call so Esc doesn't
-                // count as "handled" and can be picked up by the DOM host for
-                // nav overlays).
-                if (ke.code == .escape and ke.action == .down and
+                // fire). Gated on busy so idle Esc is not marked handled and can
+                // still close dvui menus (MenuWidget.processEventsAfter). Skip
+                // when a queue-row editor is open — queue_band owns Esc there.
+                if (busy and ke.code == .escape and ke.action == .down and
                     state.queue_editing_index == null)
                 {
                     e.handled = true;
