@@ -72,9 +72,11 @@ fn historyApply(dir: composer_history.Step) void {
         state.history_draft_len = dlen;
 
         // Record a fingerprint of the newest user row so frame() can detect
-        // session hydrate vs Load earlier (plan #667, review #686 R2).
-        // Load earlier preserves the newest user → fingerprint matches.
+        // session hydrate (plan #667, review #686 R2).
         // Session hydrate replaces all rows → fingerprint mismatches → drop.
+        // Load earlier slides the ring window, so the newest user usually
+        // changes — that fingerprint will also mismatch, which is acceptable
+        // because ordinals name a different ring window after sliding.
         {
             var ri: usize = n;
             while (ri > 0) {
@@ -106,10 +108,10 @@ fn historyApply(dir: composer_history.Step) void {
             }
         },
         .restore_draft => {
-            @memset(&state.prompt_buf, 0);
-            const dlen = @min(state.history_draft_len, state.prompt_buf.len - 1);
-            if (dlen > 0) @memcpy(state.prompt_buf[0..dlen], state.history_draft_buf[0..dlen]);
-            state.prompt_buf[dlen] = 0;
+            _ = composer_history.restoreDraftToPrompt(
+                &state.prompt_buf,
+                state.history_draft_buf[0..state.history_draft_len],
+            );
             state.history_draft_len = 0;
             @memset(&state.history_draft_buf, 0);
         },
@@ -484,13 +486,16 @@ pub fn frame() !void {
         queue_band.resetQueueEditState();
         // Drop composer arrow-key history state (plan #667) — a New /
         // Clear / session hydrate drops the ring, so ordinals are stale.
-        // Always restore the saved draft (including empty) so the composer
-        // never carries a foreign history line as a fake live draft (#686 R5).
+        // Only restore the saved draft when actually in history (#686 R6):
+        // a live draft in prompt_buf is operator content and must survive
+        // ring shrink (New / Clear / hydrate-to-shorter).
+        if (state.history_index != null) {
+            _ = composer_history.restoreDraftToPrompt(
+                &state.prompt_buf,
+                state.history_draft_buf[0..state.history_draft_len],
+            );
+        }
         state.history_index = null;
-        _ = composer_history.restoreDraftToPrompt(
-            &state.prompt_buf,
-            state.history_draft_buf[0..state.history_draft_len],
-        );
         state.history_draft_len = 0;
         @memset(&state.history_draft_buf, 0);
         @memset(&state.history_newest_fingerprint, 0);
@@ -524,10 +529,11 @@ pub fn frame() !void {
     // changed since entry (plan #667, adversarial review #686 R2).
     // This fingerprint check catches session hydrate (same-or-different-count
     // batch replace) where the newest user message is a different row than the
-    // one we entered on. Load earlier preserves the newest user row unchanged →
-    // fingerprint matches → history survives. Submit already resets history_index
-    // via resetHistory(), so this guard only fires when the ring mutated without
-    // a submit — i.e. hydrate or Load earlier.
+    // one we entered on. Load earlier changes the ring via a sliding window
+    // (not a prepend), so the newest user usually changes and the fingerprint
+    // WILL mismatch — dropping history. This is acceptable because ordinals
+    // would name a different window after sliding. Submit already resets
+    // history_index via resetHistory().
     // The n < prev_msg block above handles New / Clear / hydrate-to-shorter
     // with the same restoreDraftToPrompt helper (#686 R5).
     if (state.history_index != null and state.history_newest_fp_len > 0) {
