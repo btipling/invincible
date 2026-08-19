@@ -786,7 +786,8 @@ pub fn frame() !void {
         });
         defer bar.deinit();
 
-        // Line 1: identity (spinner · build id · model picker)
+        // Line 1: identity (spinner · build id · model picker).
+        // Narrow viewport: drop build-id first, then ellipsize model label (plan #695).
         // Each line gets exactly STATUS_BAR_H/2 = 32 px so the picker trigger
         // (PICKER_TRIGGER_H = 32) fills its row without clipping line 2.
         {
@@ -798,15 +799,52 @@ pub fn frame() !void {
             });
             defer line1.deinit();
 
-            // Spinner: idle = TEAL_IDLE_RAMP (static teal_muted grid),
-            // busy = WARM_RAMP pulse (plan #651).
+            // Width budget + drop/ellipsize on narrow viewport (plan #695).
+            // Priority: spinner (always keep) > model label (ellipsize) > build-id (drop).
+            const budget = @max(0, line1.data().contentRect().w - metrics.STATUS_PACK_BUDGET_SAFETY);
+            const body = (dvui.Options{}).fontGet();
+            const spinner_w: f32 = rect_spinner.W; // 13 px slot; default TRAIL margin 10 px
+            const build_id_text = "h:" ++ BUILD_ID;
+            const build_id_text_w: f32 = body.textSize(build_id_text).w;
+            const build_id_w: f32 = build_id_text_w + 8; // 8 px left margin on textLayout
+            const cat_n = bridge.modelCatalogCount();
+            const raw_label: []const u8 = if (cat_n == 0) "no model" else bridge.selectedModelLabel();
+            var label: []const u8 = raw_label;
+            var ellip_buf: [128]u8 = undefined;
+            const label_text_w: f32 = if (label.len > 0) body.textSize(label).w else 0;
+            // Conservative overhead: menu-trigger path (margin 8 + border 2 +
+            // padding 8 + chevron ~10 + CARET_GAP 4). Same budget for both
+            // trigger styles — the static path just gets a few extra px of slack.
+            const trigger_overhead: f32 = 8 + 2 + 8 + 10 + 4; // = 32
+            const label_gap: f32 = 8; // trigger left margin
+            const build_id_gap: f32 = 8; // textLayout left margin
+
+            var paint_build_id = true;
+            var total: f32 = spinner_w + build_id_w + build_id_gap;
+            if (label.len > 0) total += label_text_w + trigger_overhead + label_gap;
+
+            // Drop build-id when the row overflows (priority 3).
+            if (total > budget) {
+                paint_build_id = false;
+                total = spinner_w;
+                if (label.len > 0) total += label_text_w + trigger_overhead + label_gap;
+            }
+
+            // Ellipsize model label when even spinner + model overflows (priority 2).
+            if (total > budget and label.len > 0) {
+                const label_budget = @max(0, budget - spinner_w - trigger_overhead - label_gap);
+                label = status.truncateToWidthPx(body, &ellip_buf, label, label_budget);
+            }
+
+            // Spinner: always painted (priority 1).
             rect_spinner.paint(@src(), .{
                 .phase = if (busy) bridge.busyTick() else 0,
                 .ramp = if (busy) rect_spinner.WARM_RAMP else rect_spinner.TEAL_IDLE_RAMP,
                 .tag_prefix = "status-spinner",
                 .id_extra = 0x61_0105,
             });
-            {
+            // Build-id: dropped on narrow viewport (priority 3).
+            if (paint_build_id) {
                 var tl = dvui.textLayout(@src(), .{}, .{
                     .background = false,
                     .color_text = palette.teal_muted,
@@ -816,13 +854,13 @@ pub fn frame() !void {
                 tl.format("h:{s}", .{BUILD_ID}, .{});
                 tl.deinit();
             }
+            // Model picker: ellipsized on narrow viewport (priority 2).
             {
-                const cat_n = bridge.modelCatalogCount();
                 if (model_picker.paint(.{
                     .count = cat_n,
                     .selected = bridge.selectedModelIndex(),
                     .busy = busy,
-                    .short_label = if (cat_n == 0) "" else bridge.selectedModelLabel(),
+                    .short_label = label,
                     .idAt = bridge.modelCatalogIdAt,
                 })) |idx| {
                     bridge.setSelectedModel(idx);
