@@ -216,11 +216,12 @@ pub fn paintToolRun(
                     tl.deinit();
                 }
 
-                // No-detail items carry only the host's status-suffixed fallback
-                // `brief` (`name · ✓/✗/running`); the colored glyph is the single
-                // status channel, so paint those labels from `name` to avoid a
-                // redundant second status affordance (parent Goal 3 / issue review).
-                const item_label: []const u8 = if (has_detail and it.brief.len > 0) it.brief else it.name;
+                // Show the brief (file path + count) even when no L2 detail exists,
+                // so collapsed rows are informative without expanding (plan #663).
+                // The colored glyph is the single status channel; the `brief` is
+                // already sanitized (asciiStatus strips ✓/✗) so there is no
+                // redundant status affordance (parent Goal 3 / issue review).
+                const item_label: []const u8 = if (it.brief.len > 0) it.brief else it.name;
                 if (has_detail) {
                     // Same as L0: natural height so label centers with the status glyph.
                     const open = dvui.expander(src, item_label, .{ .expanded = &l2_expanded }, .{

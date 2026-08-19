@@ -240,6 +240,32 @@ describe('salientToolBits / summarizeToolLine', () => {
     const line = summarizeToolLine('x', 'y'.repeat(5000), true);
     expect(line.length).toBeLessThanOrEqual(TOOL_LINE_SALIENT_MAX);
   });
+
+  it('str_replace brief shows path + count, ignores trailing diff block', () => {
+    const raw =
+      'str_replace lib/foo.ts: ok replacements=1 bytes=123\n-old line\n+new line';
+    const bits = salientToolBits('str_replace', raw);
+    expect(bits).toContain('lib/foo.ts');
+    expect(bits).toContain('1 replacement');
+    expect(bits).toContain('123 B');
+    expect(bits).not.toContain('-old');
+    expect(bits).not.toContain('+new');
+    const line = summarizeToolLine('str_replace', raw, true);
+    expect(line).toContain('lib/foo.ts');
+    expect(line).not.toContain('-old');
+    expect(line).not.toContain('+new');
+    expect(line.length).toBeLessThanOrEqual(TOOL_LINE_SALIENT_MAX);
+  });
+
+  it('str_replace brief works for multiple replacements', () => {
+    const bits = salientToolBits(
+      'str_replace',
+      'str_replace lib/bar.ts: ok replacements=3 bytes=456\n-old\n+new',
+    );
+    expect(bits).toContain('3 replacements');
+    expect(bits).not.toContain('-old');
+    expect(bits).not.toContain('+new');
+  });
 });
 
 describe('buildToolPreview (phase 3 #353 — bounded redacted L2 detail)', () => {
@@ -303,6 +329,42 @@ describe('buildToolPreview (phase 3 #353 — bounded redacted L2 detail)', () =>
     expect(preview).not.toContain('middle-b');
     expect(preview).toContain('HHHH');
   });
+
+  it('str_replace diff block becomes the L2 preview (multi-line)', () => {
+    const raw =
+      'str_replace lib/foo.ts: ok replacements=1 bytes=123\n-old line here\n+new line here';
+    const preview = buildToolPreview(raw);
+    expect(preview).toBeDefined();
+    expect(preview!).toContain('-old line here');
+    expect(preview!).toContain('+new line here');
+  });
+
+  it('str_replace error stays single-line → no preview (no pretend expand)', () => {
+    expect(
+      buildToolPreview('ERROR str_replace: old_string not found'),
+    ).toBeUndefined();
+  });
+
+  it('str_replace diff with short old/new still multi-line → preview kept', () => {
+    const raw = 'str_replace lib/x.ts: ok replacements=1 bytes=2\n-a\n+b';
+    const preview = buildToolPreview(raw);
+    expect(preview).toBeDefined();
+    // 3 lines = multi-line even though each line is short
+    expect(preview!.split('\n')).toHaveLength(3);
+    expect(preview!).toContain('-a');
+    expect(preview!).toContain('+b');
+  });
+
+  it('str_replace diff with multiline old/new gets per-line -/+ prefixes', () => {
+    const raw =
+      'str_replace lib/x.ts: ok replacements=1 bytes=20\n-line 1\n-line 2\n+new 1\n+new 2';
+    const preview = buildToolPreview(raw);
+    expect(preview).toBeDefined();
+    expect(preview!).toContain('-line 1');
+    expect(preview!).toContain('-line 2');
+    expect(preview!).toContain('+new 1');
+    expect(preview!).toContain('+new 2');
+  });
 });
 
 describe('LIVE_TOOL_LINES_MAX', () => {
@@ -325,6 +387,16 @@ describe('salientToolBits cwd tools', () => {
     expect(bits).toContain('invincible/a.ts');
     expect(bits).toContain('cwd=invincible');
     expect(bits).toContain('2 lines');
+  });
+
+  it('str_replace with cwd annotation + trailing diff block', () => {
+    const raw =
+      'str_replace invincible/lib/x.ts cwd=invincible: ok replacements=1 bytes=99\n-old\n+new';
+    const bits = salientToolBits('str_replace', raw);
+    expect(bits).toContain('invincible/lib/x.ts');
+    expect(bits).not.toContain('\n');
+    expect(bits).not.toContain('-old');
+    expect(bits).not.toContain('+new');
   });
 });
 

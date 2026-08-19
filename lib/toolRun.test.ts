@@ -202,6 +202,21 @@ describe('buildTraceGroups (JSON/non-stream fallback)', () => {
     // Richer multi-line preview → kept verbatim (body keeps its symbols).
     addToolResult(g, 'exec', true, 'exec · ✓ ok · exit=0', 'cmd\nline two\n→ done');
     expect(g.items[3]!.detail).toBe('cmd\nline two\n→ done');
+    // str_replace diff block: preview is the -/+ diff, not identical to summary.
+    // Detail carries the diff for L2 expanded display (plan #663).
+    addToolResult(
+      g,
+      'str_replace',
+      true,
+      'str_replace · ✓ ok · lib/foo.ts · 1 replacement · 123 B',
+      '-old line\n+new line',
+    );
+    expect(g.items[4]!.detail).toBe('-old line\n+new line');
+    expect(g.items[4]!.brief).toBe('str_replace · ok · lib/foo.ts · 1 replacement · 123 B');
+    expect(g.items[4]!.brief).not.toContain('\n');
+    // Detail is the diff block — shorter than the L1 brief, but NOT empty
+    // (not a duplicate-of-L1 blank expander; it's the real L2 preview).
+    expect(g.items[4]!.detail.length).toBeGreaterThan(0);
   });
 
   it('clamps a multi-preview group so the encoded message stays ≤ TOOL_RUN_MSG_HARD_MAX', () => {

@@ -518,8 +518,27 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
             );
             freshness.recordWrite(path, fp);
             const ann = formatCwdAnnotation(cwdSnap);
+            // Append a bounded -old +new diff block so the operator can
+            // audit the edit without re-running the tool (plan #663).
+            // Each capped at 4096 bytes; explicit `…` on truncation.
+            // redactSecrets runs over the full text (header + diff block)
+            // so tokens/keys in old/new are redacted.
+            const oldCapped =
+              input.old_string.length > 4096
+                ? `${input.old_string.slice(0, 4093)}…`
+                : input.old_string;
+            const newCapped =
+              input.new_string.length > 4096
+                ? `${input.new_string.slice(0, 4093)}…`
+                : input.new_string;
+            const indent = (pfx: string, s: string) =>
+              s
+                .split('\n')
+                .map((line) => pfx + line)
+                .join('\n');
+            const diffBlock = `\n${indent('-', oldCapped)}\n${indent('+', newCapped)}`;
             return finalize(
-              `str_replace ${path}${ann}: ok replacements=${result.replacements} bytes=${result.bytes}`,
+              `str_replace ${path}${ann}: ok replacements=${result.replacements} bytes=${result.bytes}${diffBlock}`,
               secrets,
             );
           },
