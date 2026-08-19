@@ -641,10 +641,11 @@ pub fn frame() !void {
                 // are handled so a held arrow walks instead of also moving the
                 // caret (matching shell readline).
                 //
-                // Skip history when busy (model is running — arrows pass through
-                // to textEntry) or when editing a queued item (queue-row editor
-                // owns the caret).
-                if (!busy and state.queue_editing_index == null) {
+                // When editing a queued item the queue-row editor owns the caret,
+                // so arrows pass through. History works during inference because
+                // historyApply is a pure in-memory read (no bridge write, no
+                // alloc, no I/O).
+                if (state.queue_editing_index == null) {
                     if (ke.action == .down or ke.action == .repeat) {
                         if (ke.code == .up) {
                             const in_hist = state.history_index != null;
