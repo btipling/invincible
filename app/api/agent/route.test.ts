@@ -1413,9 +1413,15 @@ describe('POST /api/agent', () => {
     expect(runAgent).toHaveBeenCalledTimes(1);
     const arg = runAgent.mock.calls[0]?.[0] as RunArg;
     // The route passes the resolved snapshot text as `personaPreamble`; the
-    // labelled "## Persona standing orders" header is added by runAgent's
-    // resolveSystem (covered in lib/agent/runAgent.test.ts).
+    // `<persona_standing_orders>` wrapper is added by runAgent's
+    // resolveSystem (covered in lib/agent/runAgent.test.ts). A trailing
+    // <reminder> is appended to the user prompt.
     expect(arg.personaPreamble).toBe('Always use tabs.');
+    expect(arg.prompt).toContain('hi');
+    expect(arg.prompt).toContain('<reminder>');
+    expect(arg.prompt).toContain('<persona_standing_orders>');
+    expect(arg.prompt).toContain('Follow them before any tool use');
+    expect(arg.prompt).not.toContain('meta_persona_read');
   });
 
   it('no persona preamble when no sessionId/personaId (behaviour identical to today)', async () => {
@@ -1430,7 +1436,7 @@ describe('POST /api/agent', () => {
     servicesState.harnessSessionsRedis = {
       resolveTenantIdForUser: vi.fn(),
     };
-    type RunArg = { personaPreamble?: string };
+    type RunArg = { personaPreamble?: string; prompt?: string };
     const runAgent = vi.fn(async (_arg: RunArg) => ({ text: 'ok', toolTrace: [] }));
     vi.doMock('../../../lib/agent/runAgent', () => ({
       runAgent,
@@ -1448,6 +1454,8 @@ describe('POST /api/agent', () => {
     expect(res.status).toBe(200);
     const arg = runAgent.mock.calls[0]?.[0] as RunArg;
     expect(arg.personaPreamble).toBeUndefined();
+    expect(arg.prompt).toBe('hi');
+    expect(arg.prompt).not.toContain('<reminder>');
     expect(userPersonas).not.toHaveBeenCalled();
   });
 

@@ -71,6 +71,17 @@ function isAbortLike(err: unknown, signal?: AbortSignal): boolean {
   return false;
 }
 
+/** Pick-criteria prefix — moved off the agent system string. */
+function prefixMcpDescription(tool: unknown): unknown {
+  if (!tool || typeof tool !== 'object') return tool;
+  const t = tool as { description?: unknown };
+  const desc = typeof t.description === 'string' ? t.description.trim() : '';
+  return {
+    ...(t as object),
+    description: desc ? `External MCP tool. ${desc}` : 'External MCP tool.',
+  };
+}
+
 /**
  * Wire auth header. Parent #116: if name is Authorization (case-insensitive),
  * send `Bearer <raw>`; otherwise send the raw secret as the header value.
@@ -376,7 +387,7 @@ export async function buildUserMcpTools(
     for (const key of keys) {
       if (Object.keys(tools).length >= maxTools) break;
       if (key in tools) continue; // first wins
-      tools[key] = result.tools[key];
+      tools[key] = prefixMcpDescription(result.tools[key]);
     }
   }
 

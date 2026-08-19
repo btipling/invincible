@@ -100,6 +100,20 @@ export type CreateMetaSandboxToolsOptions = {
 export const META_SANDBOX_SYSTEM_ADDENDUM =
   'Sandbox bind tools exist under the meta_sandbox_* namespace: meta_sandbox_list (non-secret inventory of the user\'s allowed sandboxes), meta_sandbox_active (the currently-bound sandbox + its tool surface), and meta_sandbox_switch (persist meta.activeSandboxId to the session envelope so this session binds that sandbox; fail-closed on an unusable/ungranted id or an unavailable session store — no partial write). Sandbox secrets are never exposed.';
 
+function prefixToolDescriptions<T extends Record<string, unknown>>(
+  tools: T,
+  prefix: string,
+): T {
+  for (const key of Object.keys(tools) as Array<keyof T>) {
+    const toolObj = tools[key];
+    if (!toolObj || typeof toolObj !== 'object') continue;
+    const slot = toolObj as { description?: unknown };
+    const text = typeof slot.description === 'string' ? slot.description : '';
+    slot.description = text ? `${prefix}${text}` : prefix;
+  }
+  return tools;
+}
+
 /** Readable one-line summary of one projected option. */
 function optionLine(o: ReturnType<typeof projectSandboxOption>): string {
   const flags: string[] = [];
@@ -395,9 +409,12 @@ export function createMetaSandboxTools(opts: CreateMetaSandboxToolsOptions) {
     },
   });
 
-  return {
-    meta_sandbox_list: metaSandboxList,
-    meta_sandbox_active: metaSandboxActive,
-    meta_sandbox_switch: metaSandboxSwitch,
-  };
+  return prefixToolDescriptions(
+    {
+      meta_sandbox_list: metaSandboxList,
+      meta_sandbox_active: metaSandboxActive,
+      meta_sandbox_switch: metaSandboxSwitch,
+    },
+    'Sandbox bind tool. Sandbox secrets are never exposed. ',
+  );
 }

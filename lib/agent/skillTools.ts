@@ -84,7 +84,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
 
   const findSkill = tool({
     description:
-      'Find the user\'s skills whose slug, name, or description match a query. Returns user-scoped summaries (slug, name, description) — never bodies. Use it to catch typos/references before fetch_skill.',
+      'Find the user\'s skills whose slug, name, or description match a query. Returns user-scoped summaries (slug, name, description) — never bodies. Use find_skill to locate the user\'s skills (search / catch typos) and fetch_skill to read the full body of one of the user\'s skills by slug.',
     inputSchema: jsonSchema<{ query?: string }>({
       type: 'object',
       properties: {
@@ -123,7 +123,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
 
   const fetchSkill = tool({
     description:
-      'Read the full body of one of the user\'s own skills by slug (user-scoped; unknown or another user\'s skill returns not_found, no partial). The body is bounded to the model-return budget and truncated with a marker when larger.',
+      'Read the full body of one of the user\'s own skills by slug (user-scoped; unknown or another user\'s skill returns not_found, no partial). The body is bounded to the model-return budget and truncated with a marker when larger. Use find_skill to locate the user\'s skills (search / catch typos) and fetch_skill to read the full body of one of the user\'s skills by slug.',
     inputSchema: jsonSchema<{ slug: string }>({
       type: 'object',
       properties: {
