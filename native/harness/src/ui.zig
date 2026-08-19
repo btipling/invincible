@@ -70,6 +70,25 @@ fn historyApply(dir: composer_history.Step) void {
         const dlen = @min(draft.len, state.history_draft_buf.len);
         if (dlen > 0) @memcpy(state.history_draft_buf[0..dlen], draft[0..dlen]);
         state.history_draft_len = dlen;
+
+        // Record a fingerprint of the newest user row so frame() can detect
+        // session hydrate vs Load earlier (plan #667, review #686 R2).
+        // Load earlier preserves the newest user → fingerprint matches.
+        // Session hydrate replaces all rows → fingerprint mismatches → drop.
+        {
+            var ri: usize = n;
+            while (ri > 0) {
+                ri -= 1;
+                if (bridge.messageAt(ri)) |m| {
+                    if (m.kind == composer_history.USER_KIND) {
+                        const fplen = @min(m.text.len, state.history_newest_fingerprint.len);
+                        state.history_newest_fp_len = @intCast(fplen);
+                        @memcpy(state.history_newest_fingerprint[0..fplen], m.text[0..fplen]);
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     const r = composer_history.step(state.history_index, user_n, dir);
@@ -493,16 +512,36 @@ pub fn frame() !void {
     if (queue_band.shouldDropEditOnEmptyQueue()) {
         queue_band.resetQueueEditState();
     }
-    // Drop composer arrow-key history state on the same hydrate path that
-    // the queue-band guard catches (plan #667, adversarial review #686).
-    // During not-busy (when history is active per the event-scan guard),
-    // queuedCount() == 0 is the steady state and submit is not in flight,
-    // so a non-zero ring change with an empty FIFO signals a hydrate where
-    // clearMessages + push in one batch left msg_count >= prev_msg.
-    if (prev_msg > 0 and state.history_index != null and n != prev_msg and bridge.queuedCount() == 0) {
-        state.history_index = null;
-        state.history_draft_len = 0;
-        @memset(&state.history_draft_buf, 0);
+    // Drop composer arrow-key history when the newest user row's identity
+    // changed since entry (plan #667, adversarial review #686 R2).
+    // The n < prev_msg block above already handles ring-clear (New / Clear).
+    // This fingerprint check catches session hydrate (same-or-different-count
+    // batch replace) where the newest user message is a different row than the
+    // one we entered on. Load earlier preserves the newest user row unchanged →
+    // fingerprint matches → history survives. Submit already resets history_index
+    // via resetHistory(), so this guard only fires when the ring mutated without
+    // a submit — i.e. hydrate or Load earlier.
+    if (state.history_index != null and state.history_newest_fp_len > 0) {
+        var fp_match = false;
+        // Walk newest-first to find the current newest user row.
+        var ri: usize = n;
+        while (ri > 0) {
+            ri -= 1;
+            if (bridge.messageAt(ri)) |m| {
+                if (m.kind == composer_history.USER_KIND) {
+                    const fp = state.history_newest_fingerprint[0..state.history_newest_fp_len];
+                    fp_match = std.mem.eql(u8, fp, m.text[0..@min(m.text.len, fp.len)]);
+                    break;
+                }
+            }
+        }
+        if (!fp_match) {
+            state.history_index = null;
+            state.history_draft_len = 0;
+            @memset(&state.history_draft_buf, 0);
+            @memset(&state.history_newest_fingerprint, 0);
+            state.history_newest_fp_len = 0;
+        }
     }
 
     // Always refresh trackers (grow, shrink, no-op) so stream deltas stay accurate.

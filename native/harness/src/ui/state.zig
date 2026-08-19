@@ -88,6 +88,12 @@ pub var history_index: ?usize = null;
 /// Saved draft from the ↑ that ENTERED history. Restored when ↓ walks past 0.
 pub var history_draft_buf: [bridge.SUBMIT_CAP]u8 = [_]u8{0} ** bridge.SUBMIT_CAP;
 pub var history_draft_len: usize = 0;
+/// Fingerprint of the newest user row at history-entry time (first 64 bytes).
+/// Compared each frame while history is active: a mismatch means the newest
+/// user row changed identity (session hydrate / ring wrap), so drop history.
+/// Load earlier preserves the newest user row → fingerprint matches → no drop.
+pub var history_newest_fingerprint: [64]u8 = [_]u8{0} ** 64;
+pub var history_newest_fp_len: u6 = 0;
 
 /// One-frame settle for the queue band height (same pattern as chip / composer).
 pub var prev_queue_band_h: f32 = 0;
@@ -130,6 +136,8 @@ pub fn resetTranscriptScroll() void {
     history_index = null;
     history_draft_len = 0;
     @memset(&history_draft_buf, 0);
+    @memset(&history_newest_fingerprint, 0);
+    history_newest_fp_len = 0;
     queue_editing_index = null;
     queue_edit_textentry_id = null;
     queue_want_editor_focus = false;

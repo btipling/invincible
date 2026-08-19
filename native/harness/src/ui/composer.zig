@@ -14,6 +14,8 @@ pub fn resetHistory() void {
     state.history_index = null;
     state.history_draft_len = 0;
     @memset(&state.history_draft_buf, 0);
+    @memset(&state.history_newest_fingerprint, 0);
+    state.history_newest_fp_len = 0;
 }
 
 pub fn submitText(text: []const u8) void {
