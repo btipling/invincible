@@ -10,6 +10,7 @@ import { resolveAgentMaxSteps } from '../sandbox/config';
 import { type SandboxClient } from '../sandbox/client';
 import type { ServerSecrets } from '../di';
 import { createAgentTools, type CwdState } from './tools';
+import type { SandboxInfoBind } from './sandboxInfo';
 import {
   createRunFileFreshness,
   type RunFileFreshness,
@@ -116,6 +117,11 @@ export type RunAgentParams = {
    */
   sandboxId?: string;
   /**
+   * Optional non-secret active-bind projection for `sandbox_info`.
+   * Route supplies it from `resolved.value` after a successful resolve.
+   */
+  bind?: SandboxInfoBind;
+  /**
    * Persona preamble. Server-resolved persona snapshot text, wrapped by
    * `resolveSystem` in a `<persona_standing_orders>` block after the base
    * system. Empty/whitespace is dropped. Pick-criteria for tools live on
@@ -157,7 +163,7 @@ export type RunAgentResult = {
 
 export const DEFAULT_AGENT_SYSTEM = [
   'You are the Invincible coding agent.',
-  'The workspace is a remote sandbox root. Prefer tools (list_dir, read_file, write_file, str_replace, exec, change_dir, pwd) for filesystem and command work. Use str_replace for surgical edits (unique old_string unless replace_all); write_file to create or fully rewrite. For multi-line process input prefer exec stdin (heredoc alias ok) on BYO sandboxes; if exec rejects stdin (Vercel backend), write_file the input and pass the path via args instead — never claim stdin was fed when the tool errors.',
+  'The workspace is a remote sandbox root. Prefer tools (list_dir, read_file, write_file, str_replace, exec, change_dir, pwd, sandbox_info) for filesystem and command work. Use str_replace for surgical edits (unique old_string unless replace_all); write_file to create or fully rewrite. Use sandbox_info for active-bind facts, cwd, capabilities, and env — do not exec env, printenv, or uname to learn the sandbox. For multi-line process input prefer exec stdin (heredoc alias ok) on BYO sandboxes; if exec rejects stdin (Vercel backend), write_file the input and pass the path via args instead — never claim stdin was fed when the tool errors.',
   'Logical cwd starts at the workspace root (or the session cwd). Prefer change_dir into the project once, then short relative paths under that cwd. Prefer change_dir as its own step before a burst of path tools. Use pwd to inspect cwd.',
   'Must read_file a path in this agent run (with offset=1 covering every line of the returned content, not truncated by limit or maxBytes) before str_replace or overwriting an existing file with write_file. Creating a new file with write_file does not require a prior read. If tools report the file changed since your last read (another edit, command, concurrent session, or device on the same sandbox), read_file again before editing.',
   'Tool results always show workspace-root-relative paths (and cwd= when not at root). Paths that already include the cwd prefix also work. Absolute paths are accepted when they resolve inside the sandbox root and are canonicalized to the same file as their relative form — but never invent host absolute paths outside the sandbox.',
@@ -291,6 +297,7 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
         permissions: params.permissions,
         cwdState,
         workspaceRoot: params.workspaceRoot,
+        bind: params.bind,
       })
     : {};
 
@@ -397,6 +404,7 @@ export async function runAgentStream(
         permissions: params.permissions,
         cwdState,
         workspaceRoot: params.workspaceRoot,
+        bind: params.bind,
       })
     : {};
 

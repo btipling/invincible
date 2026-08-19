@@ -2,6 +2,7 @@ import { jsonSchema, tool } from 'ai';
 import {
   TOOL_RESULT_MAX_CHARS,
   clampExecTimeoutMs,
+  MIN_SANDBOX_PROTOCOL_STDIN,
 } from '../sandbox/config';
 import type { SandboxClient } from '../sandbox/client';
 import { redactSecrets, truncateForModel } from './redact';
@@ -19,6 +20,13 @@ import {
   type RunFileFreshness,
 } from './fileFreshness';
 import { defaultPathLock, lockKey } from './pathLock';
+import {
+  envUnavailableReason,
+  formatSandboxInfoEnv,
+  SANDBOX_INFO_ENV_EXEC_TIMEOUT_MS,
+  type SandboxInfoBind,
+} from './sandboxInfo';
+import { EXPECTED_SANDBOX_DAEMON_VERSION } from '../sandbox/daemonVersion';
 
 export type ToolPermissions = {
   canRead: boolean;
@@ -62,6 +70,12 @@ export type CreateAgentToolsOptions = {
    * unaffected in all cases.
    */
   workspaceRoot?: string | null;
+  /**
+   * Optional active-bind projection for `sandbox_info`. Omitted in unit tests
+   * that only exercise other tools — the info tool still returns cwd /
+   * permissions / env.
+   */
+  bind?: SandboxInfoBind;
 };
 
 /** Per-side cap for the expandable str_replace old→new audit block (plan #665). */
@@ -259,6 +273,7 @@ async function resolveFingerprint(
 export function createAgentTools(opts: CreateAgentToolsOptions) {
   const { client, signal, freshness } = opts;
   const workspaceRoot = opts.workspaceRoot;
+  const bind = opts.bind;
   const secrets = opts.secrets ?? [];
   const permissions: ToolPermissions = opts.permissions ?? {
     canRead: true,
@@ -769,7 +784,104 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
     },
   });
 
-  return { pwd, change_dir, list_dir, read_file, write_file, str_replace, exec };
+  const sandbox_info = tool({
+    description:
+      'Structured facts about the active sandbox bind: backend, name/slug, logical cwd, grant permissions, capabilities (path tools, exec, stdin, stat), daemon protocol/version when a BYO daemon is bound, and a redacted env map. PATH-like values are per-entry arrays (workspace-relative under the jail). Use this instead of exec env, printenv, or uname. Needs read permission. No arguments.',
+    inputSchema: jsonSchema<Record<string, never>>({
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    }),
+    execute: async () => {
+      if (!permissions.canRead) {
+        return deny('sandbox_info', 'read', secrets);
+      }
+      try {
+        const lines: string[] = ['sandbox_info:'];
+        if (bind?.backend) lines.push(`backend=${bind.backend}`);
+        if (bind?.sandboxId) lines.push(`id=${bind.sandboxId}`);
+        if (bind?.name) lines.push(`name=${bind.name}`);
+        if (bind?.slug) lines.push(`slug=${bind.slug}`);
+        if (bind?.status) lines.push(`status=${bind.status}`);
+        if (bind?.image) lines.push(`image=${bind.image}`);
+        lines.push(`cwd=${cwdState.current}`);
+        lines.push(`permissions.read=${permissions.canRead ? 'true' : 'false'}`);
+        lines.push(`permissions.write=${permissions.canWrite ? 'true' : 'false'}`);
+
+        let stdin = false;
+        if (bind?.backend === 'vercel') {
+          lines.push('daemon=none');
+        } else if (typeof client.daemonInfo === 'function') {
+          const d = await client.daemonInfo({ signal });
+          if (!d) {
+            lines.push('daemon: unavailable');
+          } else {
+            lines.push(`daemon.protocol=${d.version}`);
+            lines.push(`daemon.version=${d.daemonVersion}`);
+            lines.push(
+              `daemon.out_of_date=${d.daemonVersion < EXPECTED_SANDBOX_DAEMON_VERSION ? 'true' : 'false'}`,
+            );
+            stdin = d.version >= MIN_SANDBOX_PROTOCOL_STDIN;
+          }
+        } else {
+          lines.push('daemon=none');
+        }
+
+        const pathTools: string[] = [];
+        if (permissions.canRead) pathTools.push('list_dir', 'read_file');
+        if (permissions.canWrite) pathTools.push('write_file', 'str_replace', 'exec');
+        pathTools.push('change_dir', 'pwd');
+        if (permissions.canRead) pathTools.push('sandbox_info');
+
+        lines.push(`capabilities.exec=${permissions.canWrite ? 'true' : 'false'}`);
+        lines.push(`capabilities.stdin=${stdin ? 'true' : 'false'}`);
+        lines.push('capabilities.stat=true');
+        lines.push(`capabilities.path_tools=${pathTools.join(',')}`);
+
+        try {
+          const result = await client.exec(
+            { cmd: 'env', timeoutMs: SANDBOX_INFO_ENV_EXEC_TIMEOUT_MS },
+            { signal },
+          );
+          if (result.timedOut || result.exitCode !== 0) {
+            lines.push(
+              envUnavailableReason({
+                timedOut: result.timedOut,
+                exitCode: result.exitCode,
+              }),
+            );
+          } else {
+            const env = formatSandboxInfoEnv(
+              result.stdout ?? '',
+              workspaceRoot,
+              secrets,
+            );
+            lines.push(...env.lines);
+            if (env.omittedByCap > 0) {
+              lines.push(`env.omitted=${env.omittedByCap}`);
+            }
+          }
+        } catch (err) {
+          const throwStatus =
+            err && typeof err === 'object' && 'status' in err
+              && typeof (err as { status: unknown }).status === 'number'
+              ? (err as { status: number }).status
+              : undefined;
+          const throwName = err instanceof Error ? err.name : undefined;
+          lines.push(
+            envUnavailableReason({ threw: true, throwStatus, throwName }),
+          );
+        }
+
+        return finalize(lines.join('\n'), secrets);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return finalize(`ERROR sandbox_info: ${msg}`, secrets);
+      }
+    },
+  });
+
+  return { pwd, change_dir, list_dir, read_file, write_file, str_replace, exec, sandbox_info };
 }
 
 export type AgentToolSet = ReturnType<typeof createAgentTools>;

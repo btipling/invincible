@@ -116,6 +116,14 @@ export type SandboxClient = {
    */
   workspaceRoot?: (init?: { signal?: AbortSignal }) => Promise<string | null>;
   /**
+   * Non-secret daemon protocol snapshot from `GET /health`. **Never** includes
+   * `workspaceRoot`. Absent on non-HTTP backends (Vercel). **Non-throwing:**
+   * probe fail / 426 / abort → `null`.
+   */
+  daemonInfo?: (
+    init?: { signal?: AbortSignal },
+  ) => Promise<{ version: number; daemonVersion: number } | null>;
+  /**
    * Optional lifecycle hook for ephemeral backends (Vercel Sandbox).
    * BYO HTTP client omits this. Idempotent when present.
    */
@@ -380,6 +388,14 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
     workspaceRoot: async (init?): Promise<string | null> => {
       try {
         return (await fetchHealth(init)).workspaceRoot;
+      } catch {
+        return null;
+      }
+    },
+    daemonInfo: async (init?): Promise<{ version: number; daemonVersion: number } | null> => {
+      try {
+        const h = await fetchHealth(init);
+        return { version: h.version, daemonVersion: h.daemonVersion };
       } catch {
         return null;
       }

@@ -149,7 +149,10 @@ Returns the user's allowed sandboxes `{ id, name, slug, backend, status, image,
 canRead, canWrite, usable, granted }` and, when `?sandboxId=` (the session-owned
 active id, Redis-safe) is supplied, an `active` bind with its permission-aware
 tool-surface descriptor (`lib/tenancy/sandboxTools.ts`). **Always** omits
-`base_url` / `token_ciphertext` / host inventory. A provided-but-unusable active
+`base_url` / `token_ciphertext` / host inventory. The read-only `sandbox_info`
+agent tool likewise omits tokens, jail root `R`, host IPs, droplet ids, and
+`base_url` (PATH-like env is rewritten per entry, never a joined `PATH=` leak of
+`R`). A provided-but-unusable active
 id is **403** (mirrors resolve) — never a stubbed `active`; a present-but-non-Redis-safe `?sandboxId=` is **400** (matches `parseAgentBody`, not silently `active: null`). The session binding
 itself is server-authoritative: switching routes tools via
 `resolveAgentSandbox`'s `init.requestedSandboxId`, never via a client-chosen

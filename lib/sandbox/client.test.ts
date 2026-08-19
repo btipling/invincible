@@ -615,6 +615,41 @@ describe('sandbox client', () => {
     });
   });
 
+  describe('daemonInfo', () => {
+    it('returns protocol + daemonVersion and never workspaceRoot', async () => {
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        if (path.endsWith('/health')) {
+          return Response.json({
+            ok: true,
+            version: 2,
+            daemonVersion: 1,
+            workspaceRoot: '/secret/jail',
+          });
+        }
+        return Response.json({ ok: true });
+      });
+      const client = createSandboxClient({
+        baseUrl: 'http://sandbox.test',
+        token,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const info = await client.daemonInfo?.();
+      expect(info).toEqual({ version: 2, daemonVersion: 1 });
+      expect(info).not.toHaveProperty('workspaceRoot');
+    });
+
+    it('non-throwing: probe fail → null', async () => {
+      const fetchImpl = vi.fn(async () => new Response('down', { status: 503 }));
+      const client = createSandboxClient({
+        baseUrl: 'http://sandbox.test',
+        token,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await expect(client.daemonInfo?.()).resolves.toBeNull();
+    });
+  });
+
   it('checkDaemonCurrent rejects when daemon out of date, passes when current', async () => {
     let backend = 0; // running daemonVersion
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {

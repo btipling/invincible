@@ -529,6 +529,16 @@ export async function POST(req: Request): Promise<Response> {
         // Reflect the authoritative resolved bind so the host can reconcile
         // after the turn (also surfaced on the `done` stream event).
         sandboxId: resolved.value.sandboxId,
+        // Non-secret projection for sandbox_info — never the whole
+        // resolved.value (that carries baseUrl / client / secrets / R).
+        bind: {
+          backend: resolved.value.backend,
+          sandboxId: resolved.value.sandboxId,
+          name: resolved.value.name,
+          slug: resolved.value.slug,
+          status: resolved.value.status,
+          image: resolved.value.resolvedImage,
+        },
         secrets: [
           ...resolved.value.secrets,
           ...byok.secretsToRedact,

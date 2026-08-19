@@ -10,6 +10,7 @@ describe('describeSandboxTools', () => {
     expect(names).toContain('stat');
     expect(names).toContain('change_dir');
     expect(names).toContain('pwd');
+    expect(names).toContain('sandbox_info');
     expect(names).not.toContain('exec');
     expect(names).not.toContain('write_file');
     expect(names).not.toContain('str_replace');
@@ -27,6 +28,7 @@ describe('describeSandboxTools', () => {
       'exec',
       'change_dir',
       'pwd',
+      'sandbox_info',
     ]) {
       expect(names).toContain(n);
     }
@@ -43,6 +45,7 @@ describe('describeSandboxTools', () => {
     });
     const names = tools.map((t) => t.name);
     expect(names).not.toContain('list_dir');
+    expect(names).not.toContain('sandbox_info');
     expect(names).toContain('write_file');
     expect(names).toContain('change_dir');
   });
