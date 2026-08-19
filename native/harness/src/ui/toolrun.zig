@@ -216,10 +216,17 @@ pub fn paintToolRun(
                     tl.deinit();
                 }
 
-                // L1 label is `brief` when non-empty (includes the file path
-                // on a short one-liner), else the tool `name`. Independent of
-                // `has_detail` so a no-L2 row still shows the path (plan #665).
-                const item_label: []const u8 = rich_toolrun.itemLabel(it.brief, it.name);
+                // L1 label: when the row has level-2 detail (e.g. a
+                // successful str_replace with its diff block), prefer `brief`
+                // (which carries the file path from the status line). When
+                // `has_detail` is false, `brief` is a host status fallback
+                // (`name · running…` / `name · ok`) — paint the tool `name`
+                // only; the status glyph already communicates ok/fail/running
+                // (adversarial review #684 Major R2 — restore Goal 3).
+                const item_label: []const u8 = if (has_detail)
+                    rich_toolrun.itemLabel(it.brief, it.name)
+                else
+                    it.name;
                 if (has_detail) {
                     // Same as L0: natural height so label centers with the status glyph.
                     const open = dvui.expander(src, item_label, .{ .expanded = &l2_expanded }, .{

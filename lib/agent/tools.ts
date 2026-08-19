@@ -529,15 +529,20 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
               live = finiteFp({ mtimeMs: st.mtimeMs, size: st.size });
             } catch (err) {
               if (isPathMissingError(err)) {
-                return finalize('ERROR str_replace: File not found', secrets);
+                return finalize(`ERROR str_replace ${path}: File not found`, secrets);
               }
               const msg = err instanceof Error ? err.message : String(err);
-              return finalize(`ERROR str_replace: ${msg}`, secrets);
+              return finalize(`ERROR str_replace ${path}: ${msg}`, secrets);
             }
 
             const gate = freshness.assertCanEdit(path, live);
             if (!gate.ok) {
-              return finalize(editGateError('str_replace', gate.code), secrets);
+              const errMsg = editGateError('str_replace', gate.code);
+              // editGateError returns "ERROR str_replace: …rest" — inject the resolved path.
+              return finalize(
+                errMsg.replace('ERROR str_replace:', `ERROR str_replace ${path}:`),
+                secrets,
+              );
             }
 
             const result = await client.strReplace(

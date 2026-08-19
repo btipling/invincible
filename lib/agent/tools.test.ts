@@ -823,7 +823,7 @@ describe('read-before-edit gates', () => {
       { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
       execCtx,
     )) as string;
-    expect(out).toMatch(/^ERROR str_replace: read_file required/);
+    expect(out).toMatch(/^ERROR str_replace a\.txt: read_file required/);
     expect(client.strReplace).not.toHaveBeenCalled();
   });
 
@@ -876,7 +876,7 @@ describe('read-before-edit gates', () => {
       { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
       execCtx,
     )) as string;
-    expect(stale).toMatch(/^ERROR str_replace: file changed since last read_file/);
+    expect(stale).toMatch(/^ERROR str_replace a\.txt: file changed since last read_file/);
     await tools.read_file.execute!({ path: 'a.txt' }, execCtx);
     const ok = (await tools.str_replace.execute!(
       { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
@@ -984,7 +984,7 @@ describe('read-before-edit gates', () => {
       { path: 'a.txt', old_string: 'hello', new_string: 'HELLO' },
       execCtx,
     )) as string;
-    expect(out).toMatch(/^ERROR str_replace: read_file required/);
+    expect(out).toMatch(/^ERROR str_replace a\.txt: read_file required/);
   });
 
   it('read omits mtime; stat supplies it → stale detect works', async () => {
