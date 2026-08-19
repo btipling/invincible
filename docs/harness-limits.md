@@ -47,7 +47,7 @@ click/tap scrolls the transcript so the message is back in view near the top.
 |-------|--------|
 | **Enter** (composer focused) | Insert a newline (composer is multi-line) |
 | **Ctrl+Enter** / **Cmd+Enter** (composer focused) | Send prompt when idle; **enqueue** a follow-up when Busy |
-| **↑** / **↓** (composer focused) | **↑** on an empty composer loads the newest user message; further ↑ walk older user rows. **↓** walks forward; ↓ past the newest restores the in-progress draft. Only user messages appear (assistant/thinking/tool/system/error/skill rows never load). Works while Busy — the queue band is visible and the spinner is active, but arrows still navigate history. Ring window only (Load earlier for prompts that have aged out) |
+| **↑** / **↓** (composer focused) | **↑** on an empty composer loads the newest user message; further ↑ walk older user rows. **↓** walks forward; ↓ past the newest restores the in-progress draft. Only user messages appear (assistant/thinking/tool/system/error/skill rows never load). Works while Busy. Ring window only (Load earlier for prompts that have aged out) |
 | Tab | DOM nav / Clear (canvas uses pointer + dvui focus) |
 | Composer focus | Requested on ready and after each send |
 
