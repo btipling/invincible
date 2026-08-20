@@ -403,6 +403,7 @@ When the issue is a phase of a parent (`Parent: #N`, or title `phase N`):
 | Depends on prior phases COMPLETE or assumed | Builds on unfinished work quietly |
 | Next-phase preview does not leak into this scope | Scope bleed |
 | Cloud ops / docs deferred incorrectly across phases | Mutate script in phase N, GHA “later” with no owner |
+| **Each phase is its own issue** — parent is tracking-only, never implemented | A single issue lists multiple phases as deliverables; parent issue is being implemented directly instead of phase issues |
 
 ### 4.2 Allowed refinements
 
@@ -555,6 +556,7 @@ Missing sections that the phase needs → finding → pushed into issue under fi
 - **Chat-only fixes when mode=fix** — **skill failure**  
 - Using GitHub MCP instead of `gh`  
 - Ignoring parent locks on phase issues  
+- **Approving a single-issue multi-phase plan** — each phase must be its own issue with its own lifecycle; a single issue spanning Phase 1+2+3 is a Blocker (or Major) during review
 - Rubber-stamping UI on palette alone while **actions hop**  
 - Approving DOM dual-chat as “faster MVP” without exception  
 - Approving **script-only Production cutover** because “AGENTS says cloud”  
