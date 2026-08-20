@@ -128,7 +128,10 @@ export function formatLineWindow(
 
 /**
  * Full-file edit grant: offset 1 + daemon returned full content (not byte-truncated).
- * Line-window limits (totalLines/returned) are display-only and do NOT block the grant.
+ * Line-window limits (totalLines/returned) are display-only and do NOT block the
+ * grant. When the window clips the file, the read_file output still shows
+ * `(truncated)` with a hint to increase limit — the model must re-read with
+ * `limit>=totalLines` before editing to confirm it has seen every line.
  */
 export function isFullFileReadGrant(opts: {
   offset: number;
@@ -405,7 +408,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const read_file = tool({
     description:
-      'Read a text file from the sandbox workspace (max 16 MiB). Optional offset (1-based start line, default 1) and limit (max lines, default 1000) return a line-numbered window (N→content). A successful full read — offset 1 covering every line of the returned content, not clipped by limit or maxBytes — authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. Path is relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
+      'Read a text file from the sandbox workspace (max 16 MiB). Optional offset (1-based start line, default 1) and limit (max lines, default 1000) return a line-numbered window (N→content). A successful full read — offset 1 covering every line of the returned content, not clipped by limit or maxBytes — authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. The grant is given when offset=1 and the daemon returned the full file (not byte-truncated). When the default limit clips the window, the result shows (truncated) with a hint — increase limit to the total line count for a full view. Path is relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
     inputSchema: jsonSchema<{
       path: string;
       maxBytes?: number;
@@ -452,6 +455,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         const result = await client.readFile(path, input.maxBytes, { signal });
         const window = formatLineWindow(result.content, offset, limit);
         const byteTruncated = result.truncated === true;
+        const windowClipped = window.returned < window.totalLines;
         const fullGrant = isFullFileReadGrant({
           offset,
           returned: window.returned,
@@ -469,10 +473,21 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         } else {
           freshness.recordRead(path, { truncated: true });
         }
-        const flag = fullGrant ? '' : ' (truncated)';
+        // Show (truncated) when the line window clips the file (even when
+        // the edit grant is given — the model still hasn't seen those lines)
+        // or when the daemon byte-truncated the result.
+        const truncated = byteTruncated || windowClipped;
+        const flag = truncated ? ' (truncated)' : '';
+        // When offset=1 and the limit clips the window, tell the model to
+        // increase limit to see every line. Only useful at offset=1 — mid-file
+        // offsets can never grant a full view so the hint would mislead.
+        const hint =
+          offset === 1 && windowClipped && !byteTruncated
+            ? ` — use limit>=${window.totalLines} to read all lines`
+            : '';
         const ann = formatCwdAnnotation(cwdSnap);
         return finalize(
-          `read_file ${path} offset=${offset} limit=${limit} lines=${window.returned}/${window.totalLines}${flag}${ann}:\n${window.body}`,
+          `read_file ${path} offset=${offset} limit=${limit} lines=${window.returned}/${window.totalLines}${flag}${hint}${ann}:\n${window.body}`,
           secrets,
         );
       } catch (err) {
