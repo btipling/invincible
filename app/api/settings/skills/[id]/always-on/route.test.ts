@@ -157,7 +157,7 @@ describe('POST /api/settings/skills/[id]/always-on', () => {
     mockAuthed();
     const setAlwaysOn = vi.fn().mockResolvedValue({
       ok: false,
-      code: 'invalid_body',
+      code: 'limit_reached',
       error: 'always-on limit reached (8)',
     });
     mockDi({ setAlwaysOn });

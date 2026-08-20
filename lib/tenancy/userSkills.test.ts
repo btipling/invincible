@@ -93,6 +93,7 @@ describe('userSkills', () => {
       name: 'Create plan',
       slug: 'create-plan',
       description: 'Writes a plan issue.',
+      isAlwaysOn: false,
       updatedAt: expect.any(Date),
     });
     expect('body' in (listed.value[0] as Record<string, unknown>)).toBe(false);

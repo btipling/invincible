@@ -53,7 +53,7 @@ export async function POST(
     if (result.code === 'not_found') {
       return Response.json({ error: result.error }, { status: 404 });
     }
-    if (result.code === 'invalid_body') {
+    if (result.code === 'limit_reached') {
       return Response.json({ error: result.error }, { status: 400 });
     }
     return Response.json({ error: result.error }, { status: 500 });

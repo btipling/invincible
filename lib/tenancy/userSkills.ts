@@ -66,7 +66,8 @@ export type UserSkillsErrorCode =
   | 'duplicate_slug'
   | 'not_found'
   | 'no_membership'
-  | 'unavailable';
+  | 'unavailable'
+  | 'limit_reached';
 
 export type UserSkillsResult<T> =
   | { ok: true; value: T }
@@ -981,7 +982,7 @@ export async function setAlwaysOn(
           if (current >= USER_ALWAYS_ON_SKILLS_MAX) {
             return {
               ok: false as const,
-              code: 'invalid_body' as const,
+              code: 'limit_reached' as const,
               error: `always-on limit reached (${USER_ALWAYS_ON_SKILLS_MAX})`,
             };
           }

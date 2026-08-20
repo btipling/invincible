@@ -458,7 +458,7 @@ describe('userPersonas', () => {
     );
     expect(created.ok).toBe(false);
     if (!created.ok) {
-      expect(created.code).toBe('invalid_body');
+      expect(created.code).toBe('limit_reached');
       expect(created.error).toContain(`recommended skills max ${PERSONA_RECOMMENDED_SKILLS_MAX}`);
     }
 
@@ -471,7 +471,7 @@ describe('userPersonas', () => {
     if (!ok.ok) throw new Error('expected ok');
     const upd = await updateRecommendedSlugs(userId, ok.value.id, slugs, { db: db as never });
     expect(upd.ok).toBe(false);
-    if (!upd.ok) expect(upd.code).toBe('invalid_body');
+    if (!upd.ok) expect(upd.code).toBe('limit_reached');
   });
 
   it('recommendedSkillSlugs: invalid/malformed slugs are silently dropped on write', async () => {

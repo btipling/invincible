@@ -48,7 +48,8 @@ export type UserPersonasErrorCode =
   | 'duplicate_slug'
   | 'not_found'
   | 'no_membership'
-  | 'unavailable';
+  | 'unavailable'
+  | 'limit_reached';
 
 export type UserPersonasResult<T> =
   | { ok: true; value: T }
@@ -216,7 +217,7 @@ export async function createUserPersona(
   if (recSlugs.length > PERSONA_RECOMMENDED_SKILLS_MAX) {
     return {
       ok: false,
-      code: 'invalid_body',
+      code: 'limit_reached',
       error: `recommended skills max ${PERSONA_RECOMMENDED_SKILLS_MAX}`,
     };
   }
@@ -522,7 +523,7 @@ export async function updateRecommendedSlugs(
   if (slugs.length > PERSONA_RECOMMENDED_SKILLS_MAX) {
     return {
       ok: false,
-      code: 'invalid_body',
+      code: 'limit_reached',
       error: `recommended skills max ${PERSONA_RECOMMENDED_SKILLS_MAX}`,
     };
   }
