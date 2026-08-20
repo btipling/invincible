@@ -226,3 +226,27 @@ export async function clearDefaultPersonaAction(
   revalidateSettings();
   return { ok: true, message: 'Default persona cleared.' };
 }
+
+/** Update a persona's recommended skill slugs (plan #720 phase 3). */
+export async function updatePersonaRecommendedSlugsAction(
+  _prev: PersonaActionState,
+  formData: FormData,
+): Promise<PersonaActionState> {
+  const session = await requireSettingsSession();
+  if (!session.ok) return { error: session.error };
+
+  const id = String(formData.get('id') ?? '').trim();
+  if (!id) return { error: 'Missing persona id.' };
+  const slugs = formData.getAll('slug').map((s) => String(s));
+
+  const result = await services.userPersonas.updateRecommendedSlugs(
+    session.userId,
+    id,
+    slugs,
+  );
+  if (!result.ok) {
+    return { error: mapError(result.code, result.error), id };
+  }
+  revalidateSettings();
+  return { ok: true, message: 'Recommended skills saved.', id };
+}

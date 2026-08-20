@@ -12,7 +12,7 @@ import type { SkillActionState } from './actions';
  *
  * - The discovery surface (`UserSkillSummary`, used by `listUserSkills`,
  *   `GET /api/skills`, and later `find_skill`) is EXACTLY {id,name,slug,
- *   description,updatedAt} — a body field would break the exact-type match.
+ *   description,isAlwaysOn,updatedAt} — a body field would break the exact-type match.
  * - Server-action return states never carry a body.
  * - The client list-item type carries a body ONLY for the owner's own edit form
  *   (personas parity: server component prefills the textarea via getSkillBySlug);
@@ -24,6 +24,7 @@ it('UserSkillSummary is summaries-only (no body in discovery)', () => {
     name: string;
     slug: string;
     description: string;
+    isAlwaysOn: boolean;
     updatedAt: Date;
   }>();
 });

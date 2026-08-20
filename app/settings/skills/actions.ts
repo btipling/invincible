@@ -132,3 +132,24 @@ export async function deleteSkillAction(
   revalidateSettings();
   return { ok: true, message: 'Skill deleted.', id };
 }
+
+/** Toggle always-on (plan #720 phase 2). */
+export async function toggleAlwaysOnAction(
+  _prev: SkillActionState,
+  formData: FormData,
+): Promise<SkillActionState> {
+  const session = await requireSettingsSession();
+  if (!session.ok) return { error: session.error };
+
+  const id = String(formData.get('id') ?? '').trim();
+  if (!id) return { error: 'Missing skill id.' };
+  const raw = String(formData.get('value') ?? '');
+  const value = raw === 'on' || raw === 'true';
+
+  const result = await services.userSkills.setAlwaysOn(session.userId, id, value);
+  if (!result.ok) {
+    return { error: mapError(result.code, result.error), id };
+  }
+  revalidateSettings();
+  return { ok: true, message: value ? 'Always on enabled.' : 'Always on disabled.', id };
+}

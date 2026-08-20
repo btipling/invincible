@@ -78,6 +78,7 @@ export type UserSkillSummary = {
   name: string;
   slug: string;
   description: string;
+  isAlwaysOn: boolean;
   updatedAt: Date;
 };
 
@@ -163,6 +164,7 @@ function toSummary(
     name: string;
     slug: string;
     description: string;
+    isAlwaysOn: boolean;
     updatedAt: Date;
   },
 ): UserSkillSummary {
@@ -171,6 +173,7 @@ function toSummary(
     name: row.name,
     slug: row.slug,
     description: row.description,
+    isAlwaysOn: row.isAlwaysOn,
     updatedAt: row.updatedAt,
   };
 }
@@ -1031,6 +1034,7 @@ export async function listUserSkills(
           name: userSkills.name,
           slug: userSkills.slug,
           description: userSkills.description,
+          isAlwaysOn: userSkills.isAlwaysOn,
           updatedAt: userSkills.updatedAt,
         })
         .from(userSkills)
