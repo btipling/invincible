@@ -26,6 +26,12 @@ test "submitOrEnqueue: busy enqueue latches follow and scrolls transcript" {
     composer.submitOrEnqueue("start a turn");
     scrolledUpTranscript();
     state.queue_follow = false;
+    // submitOrEnqueue does NOT touch queue_list_scroll — the latch is the
+    // only mechanism: defer followIfRequested() in queue_band.paint snaps
+    // after the next frame's virtual_size is settled (plan #699 / source
+    // #696). Deleting that defer is a silent regress — this assertion stays
+    // green regardless of whether queue_band.paint calls followIfRequested.
+    state.queue_list_scroll.viewport.y = 0;
     composer.submitOrEnqueue("follow-up");
     try t.expectEqual(@as(u32, 1), bridge.queuedCount());
     try t.expect(state.queue_follow);
@@ -34,6 +40,7 @@ test "submitOrEnqueue: busy enqueue latches follow and scrolls transcript" {
         state.transcript_scroll.viewport.y,
     );
     try t.expectEqual(@as(u8, 0), state.prompt_buf[0]);
+    try t.expectEqual(@as(f32, 0), state.queue_list_scroll.viewport.y);
 }
 
 test "submitOrEnqueue: blank does not scroll or latch" {

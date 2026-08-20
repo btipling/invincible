@@ -113,7 +113,9 @@ pub fn paint(band_y: f32, band_h: f32, avail_w: f32) void {
 
     const list_h = @max(0, band_h - metrics.TOUCH_H);
     // After scroll_area.deinit() (LIFO) virtual_size includes this frame's
-    // rows — then snap to the newest if enqueue latched a follow.
+    // rows — then snap to the newest if enqueue latched a follow. Deleting
+    // this defer is a silent regress of #696 (queue_list_scroll stale —
+    // enqueue runs after paint, so submitOrEnqueue can't scroll it directly).
     defer followIfRequested();
     var scroll_area = dvui.scrollArea(@src(), .{
         .scroll_info = &state.queue_list_scroll,

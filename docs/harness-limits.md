@@ -88,7 +88,7 @@ While a turn is **Busy**, follow-up prompts go into an in-canvas FIFO **above** 
 
 | Topic | Behavior |
 |-------|----------|
-| Enqueue | Busy Ctrl/Cmd+Enter or the extra ▶ icon appends the composer text. Idle ▶ still starts a turn immediately. A **successful** enqueue scrolls the queue list to the newest row and the transcript to the bottom (same “I sent something” follow as idle send). Blank or full enqueue does not scroll — composer text stays; `· full` is the signal |
+| Enqueue | Busy Ctrl/Cmd+Enter or the extra ▶ icon appends the composer text. Idle ▶ still starts a turn immediately. A **successful** enqueue scrolls the queue list to the newest row and the transcript to the bottom (same “I sent something” follow as idle send). Blank enqueue clears the composer (same as idle empty-send). Full enqueue does not scroll — composer text stays; `· full` is the signal |
 | Visibility | Compact TEAL list (header + up to 3 rows, extra rows scroll). Each row: first-line preview (100 bytes, UTF-8 safe, slash commands kept) + edit + remove. Enqueue follows the newest row into view when `n > 3` |
 | Edit / cancel | Edit in place (Ctrl+Enter / blur saves; Escape reverts). ✕ removes one item. **Clear** empties the queue. The in-flight turn is untouched |
 | When it runs | After the current turn reaches Ready or error, the head submits as a normal user turn (same `pending_submit` path). Promote is held while a row is being edited |
