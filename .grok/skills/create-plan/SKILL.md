@@ -212,10 +212,17 @@ not re-ask the user to create them unless a log proves regression.
 **Parent issue** = epic / Phase 0: goals, locks, phase table, non-goals, risks.  
 **Phase issues** = implementable handoffs: intent lock, baseline, design, tests, DoD.
 
-Create the **parent first**, then phases that **link back** (see §5).
+**⚠️ Each phase MUST be its own GitHub issue** with its own lifecycle (DRAFT →
+HANDOFF-READY → IMPLEMENTED). A single issue that contains multiple phases shipping
+in separate PRs is **forbidden** — when Phase 1 is marked IMPLEMENTED, the issue
+is closed and Phase 2 has no home. If the work needs N PRs, create N phase issues
+(plus a parent tracking issue). The parent itself is **never implemented**; it
+tracks overall progress and links to phase issues.
 
-Phase numbers belong in **issues only** — never as the primary structure of
+**Phase numbers belong in **issues only** — never as the primary structure of
 living product docs shipped by the same work.
+
+Create the **parent first**, then phases that **link back** (see §5).
 
 ---
 
@@ -474,9 +481,9 @@ Title conventions:
 | Phase | `plan: <topic> — phase N — <slice>` |
 | Single | `plan: <topic>` |
 
-### Create phase issues (optional)
+### Create phase issues (mandatory for multi-phase work)
 
-After parent `#P` exists:
+After parent `#P` exists, create **one issue per phase**:
 
 ```bash
 # body MUST include: Parent: #P  (and the full phase plan format)
@@ -530,6 +537,7 @@ Do **not** start coding unless the user explicitly asks.
 
 - Plan only in chat / local markdown with no GitHub issue  
 - Phase issues with **no parent link**  
+- **Single issue containing multiple phases that ship in separate PRs** — each phase must be its own issue; a parent tracking issue is never implemented directly
 - “Add tests later” with empty matrix  
 - Architectural change with no decisions table  
 - DOM dual chat “just for MVP” without exception + exit criteria  
