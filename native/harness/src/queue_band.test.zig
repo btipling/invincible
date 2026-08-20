@@ -239,6 +239,7 @@ test "resetTranscriptScroll clears new flags" {
     state.queue_edit_textentry_id = @as(@import("dvui").Id, @enumFromInt(1));
     state.prev_queue_band_h = 50;
     state.queue_closed_edit = false;
+    state.queue_follow = true;
     @memset(&state.queue_edit_buf, 'x');
 
     state.resetTranscriptScroll();
@@ -249,6 +250,7 @@ test "resetTranscriptScroll clears new flags" {
     try t.expect(state.queue_edit_textentry_id == null);
     try t.expectEqual(@as(f32, 0), state.prev_queue_band_h);
     try t.expect(!state.queue_closed_edit);
+    try t.expect(!state.queue_follow);
     try t.expectEqual(@as(u8, 0), state.queue_edit_buf[0]);
 }
 
@@ -265,3 +267,26 @@ test "cancel glyph is U+2715 (DejaVu subset)" {
     const cp = std.unicode.utf8Decode(queue_band.cancel_glyph) catch @panic("invalid UTF-8");
     try t.expectEqual(@as(u21, 0x2715), cp);
 }
+
+// ── enqueue follow (plan #699) ───────────────────────────────────────────
+
+test "followIfRequested: no-op when flag false" {
+    state.queue_follow = false;
+    state.queue_list_scroll.virtual_size.h = 400;
+    state.queue_list_scroll.viewport.h = 120;
+    state.queue_list_scroll.viewport.y = 0;
+    queue_band.followIfRequested();
+    try t.expectEqual(@as(f32, 0), state.queue_list_scroll.viewport.y);
+    try t.expect(!state.queue_follow);
+}
+
+test "followIfRequested: snaps to bottom and clears flag" {
+    state.queue_follow = true;
+    state.queue_list_scroll.virtual_size.h = 400;
+    state.queue_list_scroll.viewport.h = 120;
+    state.queue_list_scroll.viewport.y = 0;
+    queue_band.followIfRequested();
+    try t.expectEqual(@as(f32, 280), state.queue_list_scroll.viewport.y);
+    try t.expect(!state.queue_follow);
+}
+

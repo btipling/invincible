@@ -10,6 +10,7 @@ const submit_queue = @import("../submit_queue.zig");
 const state = @import("state.zig");
 const metrics = @import("metrics.zig");
 const chrome = @import("chrome.zig");
+const scroll = @import("scroll.zig");
 
 /// Reset all queue-edit state to idle — called from `ui.zig` on ring clear
 /// (`n < prev_msg`) and on the `queuedCount()==0` empty-FIFO guard (plan #677
@@ -111,6 +112,11 @@ pub fn paint(band_y: f32, band_h: f32, avail_w: f32) void {
     }
 
     const list_h = @max(0, band_h - metrics.TOUCH_H);
+    // After scroll_area.deinit() (LIFO) virtual_size includes this frame's
+    // rows — then snap to the newest if enqueue latched a follow. Deleting
+    // this defer is a silent regress of #696 (queue_list_scroll stale —
+    // enqueue runs after paint, so submitOrEnqueue can't scroll it directly).
+    defer followIfRequested();
     var scroll_area = dvui.scrollArea(@src(), .{
         .scroll_info = &state.queue_list_scroll,
         .vertical_bar = .auto,
@@ -143,6 +149,16 @@ pub fn paint(band_y: f32, band_h: f32, avail_w: f32) void {
             }
         }
     }
+}
+
+/// Snap `queue_list_scroll` to the newest row when enqueue latched a follow.
+/// Called at the end of `paint` (after the list's `scrollArea` deinit so
+/// `virtual_size` includes the new row). Pub so host tests can drive it
+/// without a dvui frame (plan #699).
+pub fn followIfRequested() void {
+    if (!state.queue_follow) return;
+    scroll.scrollToBottom(&state.queue_list_scroll);
+    state.queue_follow = false;
 }
 
 fn paintRow(src: std.builtin.SourceLocation, i: u32) void {

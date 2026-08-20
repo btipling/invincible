@@ -171,7 +171,7 @@ pub fn build(b: *std.Build) void {
     test_parse.dependOn(&run_parse_tests.step);
 
     // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
-    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, link_click, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + composer_history + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + text_wave (#655) + rect_spinner (#651) + busy_spinner + elapsed_clock + model_catalog + session_catalog + submit_queue + queue_preview + queue_band + paint_diff");
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, link_click, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + composer_history + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + text_wave (#655) + rect_spinner (#651) + busy_spinner + elapsed_clock + model_catalog + session_catalog + submit_queue + queue_preview + queue_band + composer + paint_diff");
     test_rich.dependOn(&run_parse_tests.step);
 
     const cache_tests = b.addTest(.{
@@ -288,6 +288,25 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }));
         test_rich.dependOn(&b.addRunArtifact(queue_band_tests).step);
+    }
+
+    // Host unit tests for composer.zig enqueue follow (plan #699).
+    {
+        const composer_tests = b.addTest(.{
+            .name = "composer",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/composer.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        composer_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
+        composer_tests.root_module.addImport("web-backend", b.createModule(.{
+            .root_source_file = b.path("src/test_web_backend_stub.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }));
+        test_rich.dependOn(&b.addRunArtifact(composer_tests).step);
     }
 
     // Host unit tests for elapsed_clock.zig (plan #567, protocol v14 turn-clock
