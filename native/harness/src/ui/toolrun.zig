@@ -11,6 +11,7 @@ const mixed_text = @import("../rich/mixed_text.zig");
 const state = @import("state.zig");
 const chrome = @import("chrome.zig");
 const metrics = @import("metrics.zig");
+const bridge = @import("../bridge.zig");
 
 /// True for tool names whose level-2 detail is a command/output block (exec
 /// stdout/stderr, filesystem results, http bodies). Those previews paint in the
@@ -85,9 +86,33 @@ pub fn paintToolRun(
 
     const l1_raw: usize = id_base + 7;
     const l1_key: dvui.Id = @enumFromInt(l1_raw);
-    var l1_expanded = state.toolrun_open_l1.contains(l1_key);
 
     if (total == 0) return false;
+
+    // Turn-membership, not thinking-specific: `thinking_collapse_state.isActiveTurnFull`
+    // answers "does physical ring slot `s` fall inside the current Busy turn's
+    // written range [active_turn_start_slot, ring_head)?" — a general predicate the
+    // thinking rows also use. We reuse it to pin a tool-run group open while its
+    // turn is active. The helper lives in the thinking_collapse module for history
+    // reasons; it is NOT a thinking-only concept. Do not rename/relocate it as a
+    // layering cleanup — the name is Plan #715-locked.
+    const is_active = if (slot) |s|
+        state.thinking_collapse_state.isActiveTurnFull(s, bridge.messageHead(), bridge.RING_CAP)
+    else
+        false;
+    var has_str_replace = false;
+    for (runv.items) |it| {
+        if (std.mem.eql(u8, it.name, "str_replace")) {
+            has_str_replace = true;
+            break;
+        }
+    }
+    const pin_l0 = rich_toolrun.toolRunL0PinnedOpen(is_active, has_str_replace, false);
+    var l1_expanded = rich_toolrun.toolRunL0PinnedOpen(
+        is_active,
+        has_str_replace,
+        state.toolrun_open_l1.contains(l1_key),
+    );
 
     // ── Level 0 header: expander label + right-aligned colored count chips ──
     var header_label: [40]u8 = undefined;
@@ -115,7 +140,14 @@ pub fn paintToolRun(
             .gravity_y = 0.5,
             .id_extra = id_base + 2,
         });
-        if (open) state.toolrun_open_l1.put(l1_key, {}) catch {} else _ = state.toolrun_open_l1.remove(l1_key);
+        if (pin_l0) {
+            // Pinned for an in-flight str_replace; click cannot collapse.
+            l1_expanded = true;
+        } else if (open) {
+            state.toolrun_open_l1.put(l1_key, {}) catch {};
+        } else {
+            _ = state.toolrun_open_l1.remove(l1_key);
+        }
 
         // Trailing pack (right): 📋 then ✓N / ✗N / …N — one gravity box so
         // padding/baseline match (operator: glyphs were tiny + clipboard pad fat
@@ -168,19 +200,27 @@ pub fn paintToolRun(
             const l2_key: dvui.Id = @enumFromInt(l1_raw *% 31 + it.id);
             // `it.id` is 1-based per group with up to MAX_ITEMS items. Each item
             // owns a 1024-wide namespace (`it_id *% 1024`) under this message's
-            // id_base, holding up to 5 widget slots, so every (item, widget)
+            // id_base, holding slots `+0..+9`, so every (item, widget)
             // pair is unique within the row even for a full 200-item group;
             // 1000003 > 200·1024 keeps distinct rows disjoint. Matches the
             // rich/paint.zig `msg_index *% …` discipline (id = src + id_extra,
             // not a parent chain).
             const it_id: usize = it.id;
             // Widget slots inside the item's 1024-wide namespace:
-            //   +0 item box · +1 status glyph · +2 expander / static label
+            //   +0 item box · +1 status glyph · +2 expander (has-detail)
             //   +3 detail box · +4 status (str_replace) / detail body
             //   +5 old box · +6 old tl · +7 new box · +8 new tl (str_replace sides)
+            //   +9 static L1 label (no-detail) — distinct from +2 so a running
+            //      row that later gains detail does not reuse expander persist
             const item_base: usize = id_base + it_id *% 1024;
             const has_detail = it.detail.len > 0;
-            var l2_expanded = state.toolrun_open_l2.contains(l2_key);
+            const pin_l2 = rich_toolrun.strReplaceL2PinnedOpen(is_active, it.name, has_detail, false);
+            var l2_expanded = rich_toolrun.strReplaceL2PinnedOpen(
+                is_active,
+                it.name,
+                has_detail,
+                state.toolrun_open_l2.contains(l2_key),
+            );
 
             {
                 var item_head = dvui.box(src, .{ .dir = .horizontal }, .{
@@ -229,13 +269,19 @@ pub fn paintToolRun(
                         .expand = .horizontal,
                         .gravity_y = 0.5,
                     });
-                    if (open) state.toolrun_open_l2.put(l2_key, {}) catch {} else _ = state.toolrun_open_l2.remove(l2_key);
+                    if (pin_l2) {
+                        l2_expanded = true;
+                    } else if (open) {
+                        state.toolrun_open_l2.put(l2_key, {}) catch {};
+                    } else {
+                        _ = state.toolrun_open_l2.remove(l2_key);
+                    }
                 } else {
                     // No level-2 detail — static label, not a blank expander.
                     // `itemLabel` already chose brief (real error/path one-liner)
                     // or `name` (host status fallback). Glyph is the status channel.
                     var tl = dvui.textLayout(src, .{}, .{
-                        .id_extra = item_base + 2, // expander slot — mutually exclusive
+                        .id_extra = item_base + 9, // not +2 — expander persist is distinct
                         .expand = .horizontal,
                         .color_text = palette.teal_text,
                         .gravity_y = 0.5,
@@ -255,16 +301,15 @@ pub fn paintToolRun(
                 });
                 defer detail.deinit();
 
-                const sides = if (std.mem.eql(u8, it.name, "str_replace"))
-                    rich_toolrun.splitStrReplaceDetail(it.detail)
-                else
-                    null;
+                const sides = it.str_replace_sides;
+                const sides_stable = it.status != .running;
 
                 if (sides) |s| {
                     {
-                        var st = dvui.textLayout(src, .{}, .{
+                        var st = dvui.textLayout(src, .{ .cache_layout = sides_stable }, .{
                             .id_extra = item_base + 4,
                             .expand = .horizontal,
+                            .background = false,
                             .color_text = palette.teal_text,
                         });
                         mixed_text.addTextMixed(st, s.status, .theme(.body), .{
@@ -281,20 +326,22 @@ pub fn paintToolRun(
                             .id_extra = item_base + 5,
                             .expand = .horizontal,
                             .background = true,
-                            .color_fill = palette.ember_surface,
+                            .color_fill = palette.ember_border,
+                            .color_border = palette.ember_muted,
+                            .border = .{ .x = 1, .y = 1, .w = 1, .h = 1 },
                             .color_text = palette.ember_text,
                             .padding = .all(2),
                             .min_size_content = .{ .w = 0, .h = band_h },
                         });
                         defer old_box.deinit();
-                        var otl = dvui.textLayout(src, .{}, .{
+                        var otl = dvui.textLayout(src, .{ .cache_layout = sides_stable }, .{
                             .id_extra = item_base + 6,
                             .expand = .horizontal,
+                            .background = false,
                             .color_text = palette.ember_text,
+                            .font = mono,
                         });
-                        mixed_text.addTextMixed(otl, s.old, mono, .{
-                            .color_text = palette.ember_text,
-                        });
+                        otl.addText(s.old, .{});
                         otl.deinit();
                     }
 
@@ -303,24 +350,26 @@ pub fn paintToolRun(
                             .id_extra = item_base + 7,
                             .expand = .horizontal,
                             .background = true,
-                            .color_fill = palette.teal_surface,
+                            .color_fill = palette.teal_border,
+                            .color_border = palette.teal_muted,
+                            .border = .{ .x = 1, .y = 1, .w = 1, .h = 1 },
                             .color_text = palette.teal_text,
                             .padding = .all(2),
                             .min_size_content = .{ .w = 0, .h = band_h },
                         });
                         defer new_box.deinit();
-                        var ntl = dvui.textLayout(src, .{}, .{
+                        var ntl = dvui.textLayout(src, .{ .cache_layout = sides_stable }, .{
                             .id_extra = item_base + 8,
                             .expand = .horizontal,
+                            .background = false,
                             .color_text = palette.teal_text,
+                            .font = mono,
                         });
-                        mixed_text.addTextMixed(ntl, s.new, mono, .{
-                            .color_text = palette.teal_text,
-                        });
+                        ntl.addText(s.new, .{});
                         ntl.deinit();
                     }
                 } else {
-                    var tl = dvui.textLayout(src, .{}, .{
+                    var tl = dvui.textLayout(src, .{ .cache_layout = sides_stable }, .{
                         .id_extra = item_base + 4,
                         .expand = .horizontal,
                         .color_text = palette.teal_text,
