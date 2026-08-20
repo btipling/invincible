@@ -356,3 +356,18 @@ resolved **server-side** on the first agent turn, then locked into
 / reload / device-switch replay that snapshot; editing a persona never rewrites an
 in-flight session. The picker only ever receives persona summaries. See
 [docs/personas.md](personas.md).
+
+### Always-on skill auto-attach
+
+Skills marked **always-on** (Settings → Skills toggle) auto-attach on **every**
+new session, regardless of the chosen persona. The always-on set is:
+
+- Re-resolved from the DB on every agent turn (same as sticky attachment).
+- **Not persisted in `meta.attachedSkills`** — it is the user's global toggle,
+  not session state.
+- Merged into the candidate set **before** sticky slugs and the current turn's
+  slash command, then de-duplicated.
+- Capped at 8 skills (`USER_ALWAYS_ON_SKILLS_MAX`), subject to the same 256 KiB
+  per-turn inject budget as all other attached skills.
+
+See [docs/skills.md](skills.md) — always-on skills.

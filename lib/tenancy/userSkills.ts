@@ -24,7 +24,7 @@ import {
 } from '../../db';
 import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { loadSoleMembership } from './soleMembership';
-import { SKILL_SLUG_RE as SKILL_SLUG_RE_SRC, SKILL_VERSION_MAX } from '../sessionCloudCaps';
+import { SKILL_SLUG_RE as SKILL_SLUG_RE_SRC, SKILL_VERSION_MAX, USER_ALWAYS_ON_SKILLS_MAX } from '../sessionCloudCaps';
 
 /** Display name limits (mirror personas; generously raised in #514). */
 export const SKILL_NAME_MIN = 1;
@@ -908,6 +908,111 @@ export async function rollbackSkill(
   }
 }
 
+/**
+ * Toggle `is_always_on` on a skill (plan #720 phase 2). Enforces
+ * `USER_ALWAYS_ON_SKILLS_MAX` when setting `true` — rejects at the cap so a
+ * tight loop can never flip more than the cap onto the always-on set. Setting
+ * `false` (clearing) is always ok.
+ */
+export async function setAlwaysOn(
+  userId: string,
+  id: string,
+  value: boolean,
+  deps: UserSkillsDeps = {},
+): Promise<UserSkillsResult<{ id: string }>> {
+  const uid = userId?.trim();
+  const pid = id?.trim();
+  if (!uid || !pid) {
+    return { ok: false, code: 'not_found', error: 'skill not found' };
+  }
+  const tid = await resolveTenantId(uid, deps);
+  if (!tid.ok) return tid;
+
+  try {
+    return await withDb(deps, async (db) => {
+      // When setting true: count current always-on skills and enforce cap.
+      if (value) {
+        const counts = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(userSkills)
+          .where(
+            and(
+              eq(userSkills.userId, uid),
+              eq(userSkills.tenantId, tid.value),
+              eq(userSkills.isAlwaysOn, true),
+            ),
+          );
+        const current = Number(counts[0]?.count ?? 0);
+        if (current >= USER_ALWAYS_ON_SKILLS_MAX) {
+          return {
+            ok: false as const,
+            code: 'invalid_body' as const,
+            error: `always-on limit reached (${USER_ALWAYS_ON_SKILLS_MAX})`,
+          };
+        }
+      }
+
+      const updated = await db
+        .update(userSkills)
+        .set({ isAlwaysOn: value, updatedAt: new Date() })
+        .where(
+          and(
+            eq(userSkills.id, pid),
+            eq(userSkills.userId, uid),
+            eq(userSkills.tenantId, tid.value),
+          ),
+        )
+        .returning({ id: userSkills.id });
+      if (!updated[0]) {
+        return { ok: false as const, code: 'not_found' as const, error: 'skill not found' };
+      }
+      return { ok: true, value: { id: pid } };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'user_skills unavailable' };
+    }
+    return { ok: false, code: 'unavailable', error: 'could not set always-on' };
+  }
+}
+
+/**
+ * List slugs of the user's always-on skills (plan #720 phase 2).
+ * Returns only the slugs of rows with `is_always_on = true`, ordered by
+ * updatedAt desc (deterministic for the inject merge).
+ */
+export async function listAlwaysOnSkills(
+  userId: string,
+  deps: UserSkillsDeps = {},
+): Promise<UserSkillsResult<string[]>> {
+  const uid = userId?.trim();
+  if (!uid) return { ok: true, value: [] };
+  try {
+    const tid = await resolveTenantId(uid, deps);
+    if (!tid.ok) return tid;
+
+    return await withDb(deps, async (db) => {
+      const rows = await db
+        .select({ slug: userSkills.slug })
+        .from(userSkills)
+        .where(
+          and(
+            eq(userSkills.userId, uid),
+            eq(userSkills.tenantId, tid.value),
+            eq(userSkills.isAlwaysOn, true),
+          ),
+        )
+        .orderBy(desc(userSkills.updatedAt));
+      return { ok: true as const, value: rows.map((r) => r.slug) };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'user_skills unavailable' };
+    }
+    return { ok: false, code: 'unavailable', error: 'could not list always-on skills' };
+  }
+}
+
 /** List summaries (no body) for discovery. */
 export async function listUserSkills(
   userId: string,
@@ -970,5 +1075,9 @@ export function createUserSkills(deps: UserSkillsDeps = {}) {
       rollbackSkill(userId, skillId, versionId, { ...deps, ...o }),
     listUserSkills: (userId: string, o?: UserSkillsDeps) =>
       listUserSkills(userId, { ...deps, ...o }),
+    setAlwaysOn: (userId: string, id: string, value: boolean, o?: UserSkillsDeps) =>
+      setAlwaysOn(userId, id, value, { ...deps, ...o }),
+    listAlwaysOnSkills: (userId: string, o?: UserSkillsDeps) =>
+      listAlwaysOnSkills(userId, { ...deps, ...o }),
   };
 }

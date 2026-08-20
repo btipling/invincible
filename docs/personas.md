@@ -20,6 +20,13 @@ same locked text is reused for the rest of the session (and on other devices).
 - **Clear default**: remove the default so new sessions start with **None**.
 - **Delete**: removes the persona. Sessions already running keep their snapshot
   (see below).
+- **Recommended skills** (Settings persona editor): assign up to 16 skill slugs
+  that complement this persona. A persona like "Invincible maintainer" might
+  recommend `/implement_plan` and `/address_pr_feedback`. These are
+  **discovery-only** — recommended skills are shown in the persona picker and
+  boost `find_skill` results when a `personaId` is passed, but they never
+  auto-attach (use always-on for that). A stale slug from a deleted skill stays
+  until the next persona edit (no cross-table validation on save).
 
 A persona body is **not a secret**. Store API keys, tokens, or credentials in the
 proper secrets surface (per-user MCP servers, GitHub PAT, or sandbox env) — never

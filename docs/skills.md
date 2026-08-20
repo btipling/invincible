@@ -102,6 +102,27 @@ record PUT rewrites `meta.attachedSkills` verbatim instead of silently dropping
 it (an omitted reserved key is never treated as *clear*; an explicit empty set
 means detach-all — the two are distinct).
 
+### Always-on skills
+
+A skill can be toggled **"always on"** in Settings → Skills (the always-on
+toggle on each skill row). An always-on skill **auto-attaches to every new
+session**, regardless of the chosen persona. The always-on set is:
+
+- **User-global** — the same set applies to every session for that user.
+- **Re-resolved from the DB every turn** — a skill edit or delete takes
+  effect the next turn (same as sticky attachment).
+- **Not persisted in `meta.attachedSkills`** — always-on slugs are never
+  session state; they are the user's global toggle.
+- **Capped at 8 skills** (`USER_ALWAYS_ON_SKILLS_MAX`).
+- **Cannot be detached by `/unskill`** — always-on means always-on. Toggle
+  it off in Settings to stop auto-attaching.
+
+An always-on skill body still counts toward the same per-turn inject byte
+budget as every other attached skill (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`,
+256 KiB). If you need a skill everywhere by default, flip the always-on toggle.
+If you want persona-specific recommendations instead, see
+[personas.md](personas.md) — recommended skills.
+
 ### What the UI shows
 
 The transcript shows **only the skill name**: a compact `Skill attached:

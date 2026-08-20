@@ -132,6 +132,13 @@ export type SkillEvent =
 export type ResolveSkillCommandInput = {
   userId: string;
   command: ParsedSkillCommand;
+  /**
+   * Slugs of skills with `is_always_on = true` (plan #720 phase 2).
+   * Prepend to the candidate set before sticky re-resolution and command
+   * processing; de-duplicated so a sticky slug that's also always-on is not
+   * injected twice. Resolved by the caller once per turn from the DB.
+   */
+  alwaysOnSlugs?: string[];
   sessionStore?: SessionStoreEnvelope;
   sessionKey?: SessionRecordKey;
   userSkills: SkillBodyReader;
@@ -175,7 +182,7 @@ function byteLength(s: string): number {
 export async function resolveSkillPreamble(
   input: ResolveSkillCommandInput,
 ): Promise<ResolveSkillResult> {
-  const { userId, command, sessionStore, sessionKey, userSkills } = input;
+  const { userId, command, sessionStore, sessionKey, userSkills, alwaysOnSlugs } = input;
 
   // 1. Read the sticky set from the envelope (mirrors personaInject's
   //    fail-open/closed store rules). `readEnvelope` rolls forward from a
@@ -201,10 +208,27 @@ export async function resolveSkillPreamble(
   }
 
   const events: SkillEvent[] = [];
-  // ordered candidate set (insertion order preserved, de-duplicated)
-  const set: string[] = [...attached];
+  // Ordered candidate set (insertion order preserved, de-duplicated).
+  // Always-on slugs (plan #720 phase 2) are prepended BEFORE the sticky set
+  // so they are resolved first in the greedy budget build — but they are
+  // NEVER added to the sticky set or persisted to `meta.attachedSkills`.
+  const alwaysOn = alwaysOnSlugs?.filter((s) => SKILL_SLUG_RE.test(s)) ?? [];
+  const set: string[] = [];
+  // Prepending always-on slugs first (order = auto-attach, then sticky).
+  for (const slug of alwaysOn) {
+    if (!set.includes(slug)) set.push(slug);
+  }
+  // Append sticky slugs second, deduped against always-on set.
+  for (const slug of attached) {
+    if (!set.includes(slug)) set.push(slug);
+  }
+  // Track always-on slugs so step 5 never persists them.
+  const alwaysOnSet = new Set(alwaysOn);
   const hasSlug = (slug: string) => set.includes(slug);
   const removeSlug = (slug: string) => {
+    // Always-on slugs cannot be detached by `/unskill` — they are user-global,
+    // not session state.
+    if (alwaysOnSet.has(slug)) return;
     const i = set.indexOf(slug);
     if (i >= 0) set.splice(i, 1);
   };
@@ -238,7 +262,12 @@ export async function resolveSkillPreamble(
       }
     }
   } else if (command.type === 'detach') {
-    if (hasSlug(command.slug)) {
+    // Always-on slugs cannot be detached: they are user-global, not session
+    // state. Report as not_attached even though the slug is in the candidate
+    // set (it was prepended from alwaysOnSlugs, not sticky).
+    if (alwaysOnSet.has(command.slug)) {
+      events.push({ action: 'detach', slug: command.slug, ok: false, reason: 'not attached' });
+    } else if (hasSlug(command.slug)) {
       removeSlug(command.slug);
       events.push({ action: 'detach', slug: command.slug, ok: true });
     } else {
@@ -314,7 +343,10 @@ export async function resolveSkillPreamble(
   //    `updatedAt` left UNCHANGED, skipping on conflict. The host PUT is the
   //    source of truth; this mirror must never bump the clock or fight a newer
   //    write (adversarial-review Minor — do not copy the persona's bump).
-  const attachedSkills = serializeAttachedSkills(finalSlugs);
+  //    Always-on slugs (plan #720 phase 2) are NOT persisted into
+  //    `meta.attachedSkills` — they are re-resolved from the DB every turn.
+  const stickySlugs = finalSlugs.filter((s) => !alwaysOnSet.has(s));
+  const attachedSkills = serializeAttachedSkills(stickySlugs);
   if (envelope && sessionStore && sessionKey) {
     try {
       const input: SessionEnvelopeInput = {

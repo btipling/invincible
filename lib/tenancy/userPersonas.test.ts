@@ -74,6 +74,7 @@ describe('userPersonas', () => {
       name: 'Frontend',
       slug: 'frontend',
       isDefault: false,
+      recommendedSkillSlugs: [],
       updatedAt: expect.any(Date),
     });
     expect('body' in (listed.value[0] as Record<string, unknown>)).toBe(false);

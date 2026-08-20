@@ -8,16 +8,18 @@ import {
   getSkillById,
   getSkillBySlug,
   getSkillVersion,
+  listAlwaysOnSkills,
   listSkillVersions,
   listUserSkills,
   renameUserSkill,
   rollbackSkill,
+  setAlwaysOn,
   SKILL_BODY_MAX_BYTES,
   SKILL_DESCRIPTION_MAX_CHARS,
   updateUserSkillBody,
   updateUserSkillSummary,
 } from './userSkills';
-import { SKILL_VERSION_MAX } from '../sessionCloudCaps';
+import { SKILL_VERSION_MAX, USER_ALWAYS_ON_SKILLS_MAX } from '../sessionCloudCaps';
 import {
   createIsolatedTestDb,
   getSharedDb,
@@ -408,6 +410,130 @@ describe('userSkills', () => {
     );
     expect(createNoUser.ok).toBe(false);
     if (!createNoUser.ok) expect(createNoUser.code).toBe('no_membership');
+  });
+});
+
+describe('setAlwaysOn + listAlwaysOnSkills (plan #720 phase 2)', () => {
+  beforeAll(async () => {
+    db = await getSharedDb();
+  });
+
+  beforeEach(async () => {
+    await resetTenantTables();
+  });
+
+  it('toggles is_always_on on a skill; listAlwaysOnSkills returns only enabled slugs', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const a = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'body a' },
+      { db: db as never },
+    );
+    const b = await createUserSkill(
+      { userId, name: 'B', slug: 'b', body: 'body b' },
+      { db: db as never },
+    );
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+
+    // None set as always-on initially.
+    const before = await listAlwaysOnSkills(userId, { db: db as never });
+    expect(before.ok).toBe(true);
+    if (!before.ok) throw new Error('expected ok');
+    expect(before.value).toEqual([]);
+
+    // Set skill A to always-on.
+    const aId = a.ok ? a.value.id : '';
+    const set = await setAlwaysOn(userId, aId, true, { db: db as never });
+    expect(set.ok).toBe(true);
+
+    const after = await listAlwaysOnSkills(userId, { db: db as never });
+    expect(after.ok).toBe(true);
+    if (!after.ok) throw new Error('expected ok');
+    expect(after.value).toEqual(['a']);
+
+    // Set skill B to always-on too.
+    const bId = b.ok ? b.value.id : '';
+    const set2 = await setAlwaysOn(userId, bId, true, { db: db as never });
+    expect(set2.ok).toBe(true);
+
+    const after2 = await listAlwaysOnSkills(userId, { db: db as never });
+    expect(after2.ok).toBe(true);
+    if (!after2.ok) throw new Error('expected ok');
+    expect(after2.value).toContain('a');
+    expect(after2.value).toContain('b');
+
+    // Toggle skill A off.
+    const off = await setAlwaysOn(userId, aId, false, { db: db as never });
+    expect(off.ok).toBe(true);
+
+    const after3 = await listAlwaysOnSkills(userId, { db: db as never });
+    expect(after3.ok).toBe(true);
+    if (!after3.ok) throw new Error('expected ok');
+    expect(after3.value).toEqual(['b']);
+  });
+
+  it('enforces USER_ALWAYS_ON_SKILLS_MAX when setting true; setting false always ok', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const ids: string[] = [];
+
+    // Create (CAP + 1) skills but only set CAP as always-on.
+    for (let i = 0; i < USER_ALWAYS_ON_SKILLS_MAX + 1; i++) {
+      const c = await createUserSkill(
+        { userId, name: `S${i}`, slug: `s_${i}`, body: `body ${i}` },
+        { db: db as never },
+      );
+      expect(c.ok).toBe(true);
+      if (c.ok) ids.push(c.value.id);
+    }
+
+    // Set the first CAP to always-on — all must succeed.
+    for (let i = 0; i < USER_ALWAYS_ON_SKILLS_MAX; i++) {
+      const s = await setAlwaysOn(userId, ids[i], true, { db: db as never });
+      expect(s.ok).toBe(true);
+    }
+
+    // One more over the cap must fail.
+    const over = await setAlwaysOn(userId, ids[USER_ALWAYS_ON_SKILLS_MAX], true, { db: db as never });
+    expect(over.ok).toBe(false);
+    if (!over.ok) expect(over.error).toContain('always-on limit reached');
+
+    // Setting false on an existing always-on skill is always ok.
+    const off = await setAlwaysOn(userId, ids[0], false, { db: db as never });
+    expect(off.ok).toBe(true);
+
+    // Now we have one slot; setting true after freeing a slot works.
+    const refill = await setAlwaysOn(userId, ids[USER_ALWAYS_ON_SKILLS_MAX], true, { db: db as never });
+    expect(refill.ok).toBe(true);
+  });
+
+  it('setAlwaysOn returns not_found for a foreign/non-existent skill', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const other = await seedUser('t2', 'other@example.com');
+    const a = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'body' },
+      { db: db as never },
+    );
+    expect(a.ok).toBe(true);
+
+    // Foreign user id → not_found
+    const foreign = await setAlwaysOn(
+      other.userId,
+      a.ok ? a.value.id : '',
+      true,
+      { db: db as never },
+    );
+    expect(foreign.ok).toBe(false);
+    if (!foreign.ok) expect(foreign.code).toBe('not_found');
+
+    // Bogus id → not_found
+    const bogus = await setAlwaysOn(
+      userId,
+      '00000000-0000-0000-0000-000000000000',
+      true,
+      { db: db as never },
+    );
+    expect(bogus.ok).toBe(false);
+    if (!bogus.ok) expect(bogus.code).toBe('not_found');
   });
 });
 
