@@ -127,7 +127,12 @@ export function formatLineWindow(
   return { body, returned: selected.length, totalLines };
 }
 
-/** Full-file edit grant: offset 1, not byte-truncated, window reached content EOF. */
+/**
+ * Full-file edit grant: offset 1, daemon returned full content (not byte-truncated),
+ * AND the model saw every line (line-window not clipped by limit). When the window
+ * clips, read_file shows `(truncated) — use limit>=N to read all lines` so the
+ * model can re-read with a larger limit and achieve a grant.
+ */
 export function isFullFileReadGrant(opts: {
   offset: number;
   returned: number;
@@ -135,7 +140,7 @@ export function isFullFileReadGrant(opts: {
   byteTruncated: boolean;
 }): boolean {
   if (opts.offset !== 1 || opts.byteTruncated) return false;
-  return opts.offset - 1 + opts.returned >= opts.totalLines;
+  return opts.returned >= opts.totalLines;
 }
 
 function parsePositiveInt(n: unknown, fallback: number): number {
@@ -433,7 +438,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const read_file = tool({
     description:
-      'Read a text file from the sandbox workspace (max 16 MiB). Optional offset (1-based start line, default 1) and limit (max lines, default 1000) return a line-numbered window (N→content). A successful full read — offset 1 covering every line of the returned content, not clipped by limit or maxBytes — authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. Path is relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
+      'Read a text file from the sandbox workspace (max 16 MiB). Optional offset (1-based start line, default 1) and limit (max lines, default 1000) return a line-numbered window (N→content). A successful full read — offset 1 covering every line of the returned content, not clipped by limit or maxBytes — authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. When the default limit clips the window, the result shows (truncated) — use limit>=N to read all lines — and the edit grant is denied until the model re-reads with a larger limit. Path is relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
     inputSchema: jsonSchema<{
       path: string;
       maxBytes?: number;
@@ -480,6 +485,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         const result = await client.readFile(path, input.maxBytes, { signal });
         const window = formatLineWindow(result.content, offset, limit);
         const byteTruncated = result.truncated === true;
+        const windowClipped = window.returned < window.totalLines;
         const fullGrant = isFullFileReadGrant({
           offset,
           returned: window.returned,
@@ -497,10 +503,21 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         } else {
           freshness.recordRead(path, { truncated: true });
         }
-        const flag = fullGrant ? '' : ' (truncated)';
+        // Show (truncated) when the line window clips the file (grant is
+        // denied — the model hasn't seen every line) or when the daemon
+        // byte-truncated the result.
+        const truncated = byteTruncated || windowClipped;
+        const flag = truncated ? ' (truncated)' : '';
+        // When offset=1 and the limit clips the window, tell the model to
+        // increase limit to see every line. Only useful at offset=1 — mid-file
+        // offsets can never grant a full view so the hint would mislead.
+        const hint =
+          offset === 1 && windowClipped && !byteTruncated
+            ? ` — use limit>=${window.totalLines} to read all lines`
+            : '';
         const ann = formatCwdAnnotation(cwdSnap);
         return finalize(
-          `read_file ${path} offset=${offset} limit=${limit} lines=${window.returned}/${window.totalLines}${flag}${ann}:\n${window.body}`,
+          `read_file ${path} offset=${offset} limit=${limit} lines=${window.returned}/${window.totalLines}${flag}${hint}${ann}:\n${window.body}`,
           secrets,
         );
       } catch (err) {
