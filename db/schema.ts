@@ -428,6 +428,32 @@ export type UserSkill = typeof userSkills.$inferSelect;
 export type UserSkillInsert = typeof userSkills.$inferInsert;
 
 /**
+ * Per-skill append-only version history (plan #711 phase 1).
+ * Each row is a full body copy at a point in time; FK cascades on skill delete.
+ * Rollback copies an old version's body into user_skills.body + inserts a new
+ * version row (rollback itself IS versioned).
+ */
+export const userSkillVersions = pgTable(
+  'user_skill_versions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    skillId: uuid('skill_id')
+      .notNull()
+      .references(() => userSkills.id, { onDelete: 'cascade' }),
+    body: text('body').notNull(),
+    /** Optional human tag e.g. "v1". */
+    label: text('label').notNull().default(''),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('user_skill_versions_skill_id_idx').on(t.skillId),
+  ],
+);
+
+export type UserSkillVersion = typeof userSkillVersions.$inferSelect;
+export type UserSkillVersionInsert = typeof userSkillVersions.$inferInsert;
+
+/**
  * Cloud multi-device harness session (parent #242 / phase #243).
  * One row per user. snapshot_id is opaque client SessionSnapshot.id (e.g. sess_…),
  * not a UUID — never uuid-validate client ids.

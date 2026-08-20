@@ -7,13 +7,17 @@ import {
   deleteUserSkill,
   getSkillById,
   getSkillBySlug,
+  getSkillVersion,
+  listSkillVersions,
   listUserSkills,
   renameUserSkill,
+  rollbackSkill,
   SKILL_BODY_MAX_BYTES,
   SKILL_DESCRIPTION_MAX_CHARS,
   updateUserSkillBody,
   updateUserSkillSummary,
 } from './userSkills';
+import { SKILL_VERSION_MAX } from '../sessionCloudCaps';
 import {
   createIsolatedTestDb,
   getSharedDb,
@@ -407,6 +411,390 @@ describe('userSkills', () => {
   });
 });
 
+describe('skill version history (plan #711 phase 1)', () => {
+  beforeAll(async () => {
+    db = await getSharedDb();
+  });
+
+  beforeEach(async () => {
+    await resetTenantTables();
+  });
+
+  async function countVersions(skillId: string): Promise<number> {
+    const rows = await db
+      .select({ count: schema.userSkillVersions.id })
+      .from(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, skillId));
+    return rows.length;
+  }
+
+  it('create inserts one initial version row recording the create body', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'initial-body' },
+      { db: db as never },
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error('expected ok');
+
+    const rows = await db
+      .select()
+      .from(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, created.value.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].body).toBe('initial-body');
+  });
+
+  it('updateUserSkillBody changes the body AND inserts a version row for the new body', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'v1' },
+      { db: db as never },
+    );
+    const id = created.ok ? created.value.id : '';
+    if (!created.ok) throw new Error('expected ok');
+
+    const updated = await updateUserSkillBody(userId, id, 'v2', { db: db as never });
+    expect(updated.ok).toBe(true);
+
+    // Live body changed.
+    const bySlug = await getSkillBySlug(userId, 'a', { db: db as never });
+    expect(bySlug.ok).toBe(true);
+    if (!bySlug.ok) throw new Error('expected ok');
+    expect(bySlug.value?.body).toBe('v2');
+
+    // Two version rows: create's v1 + update's v2.
+    const rows = await db
+      .select()
+      .from(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, id));
+    expect(rows).toHaveLength(2);
+    const bodies = rows.map((r) => r.body);
+    expect(bodies).toContain('v1');
+    expect(bodies).toContain('v2');
+  });
+
+  it('listSkillVersions lists newest-first summaries (no body) for the owner; foreign skill → empty (no leak)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'v1' },
+      { db: db as never },
+    );
+    const id = created.ok ? created.value.id : '';
+    if (!created.ok) throw new Error('expected ok');
+    await updateUserSkillBody(userId, id, 'v2', { db: db as never });
+
+    const listed = await listSkillVersions(userId, id, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect(listed.value).toHaveLength(2);
+    // Newest first → v2's row is index 0.
+    const first = listed.value[0]!;
+    const firstRow = (
+      await db
+        .select()
+        .from(schema.userSkillVersions)
+        .where(eq(schema.userSkillVersions.id, first.id))
+    )[0];
+    expect(firstRow.body).toBe('v2');
+    // Summary projection: no body.
+    expect('body' in (listed.value[0] as unknown as { body?: unknown })).toBe(false);
+
+    // Foreign user's id → their own empty list (no existence leak).
+    const { userId: otherId } = await seedUser('t2', 'other@example.com');
+    const foreign = await listSkillVersions(otherId, id, { db: db as never });
+    expect(foreign.ok).toBe(true);
+    if (!foreign.ok) throw new Error('expected ok');
+    expect(foreign.value).toEqual([]);
+  });
+
+  it('getSkillVersion returns a single version body to the owner; foreign id → null (no leak)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'v1' },
+      { db: db as never },
+    );
+    const id = created.ok ? created.value.id : '';
+    if (!created.ok) throw new Error('expected ok');
+    await updateUserSkillBody(userId, id, 'v2', { db: db as never });
+
+    const rows = await db
+      .select()
+      .from(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, id));
+    const versionRow = rows.find((r) => r.body === 'v1');
+    if (!versionRow) throw new Error('expected v1 version row');
+
+    const got = await getSkillVersion(userId, id, versionRow.id, { db: db as never });
+    expect(got.ok).toBe(true);
+    if (!got.ok) throw new Error('expected ok');
+    expect(got.value?.body).toBe('v1');
+
+    const { userId: otherId } = await seedUser('t2', 'other@example.com');
+    const foreign = await getSkillVersion(otherId, id, versionRow.id, {
+      db: db as never,
+    });
+    expect(foreign.ok).toBe(true);
+    if (!foreign.ok) throw new Error('expected ok');
+    expect(foreign.value).toBeNull();
+  });
+
+  it('rollbackSkill copies the version body into live body AND inserts a NEW version row', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'v1' },
+      { db: db as never },
+    );
+    const id = created.ok ? created.value.id : '';
+    if (!created.ok) throw new Error('expected ok');
+    await updateUserSkillBody(userId, id, 'v2', { db: db as never });
+    await updateUserSkillBody(userId, id, 'v3', { db: db as never });
+
+    const rows = await db
+      .select()
+      .from(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, id));
+    const v1Row = rows.find((r) => r.body === 'v1');
+    if (!v1Row) throw new Error('expected v1 version row');
+
+    const rolled = await rollbackSkill(userId, id, v1Row.id, { db: db as never });
+    expect(rolled.ok).toBe(true);
+
+    // Live body is now v1.
+    const bySlug = await getSkillBySlug(userId, 'a', { db: db as never });
+    expect(bySlug.ok).toBe(true);
+    if (!bySlug.ok) throw new Error('expected ok');
+    expect(bySlug.value?.body).toBe('v1');
+
+    // Rollback INSERTED a new row (v1 again), so the timeline grew to 4.
+    expect(await countVersions(id)).toBe(4);
+  });
+
+  it('at the cap, updateUserSkillBody rejects AND leaves the live body unchanged', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'v1' },
+      { db: db as never },
+    );
+    const id = created.ok ? created.value.id : '';
+    if (!created.ok) throw new Error('expected ok');
+
+    // Seed to exactly SKILL_VERSION_MAX rows (create added 1, add 99 more).
+    for (let i = 0; i < SKILL_VERSION_MAX - 1; i++) {
+      await db.insert(schema.userSkillVersions).values({
+        skillId: id,
+        body: `seed-${i}`,
+        label: '',
+      });
+    }
+    expect(await countVersions(id)).toBe(SKILL_VERSION_MAX);
+
+    // At the cap an edit must be rejected WITHOUT mutating the live body.
+    const rejected = await updateUserSkillBody(userId, id, 'should-not-stick', {
+      db: db as never,
+    });
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.code).toBe('invalid_body');
+
+    const bySlug = await getSkillBySlug(userId, 'a', { db: db as never });
+    expect(bySlug.ok).toBe(true);
+    if (!bySlug.ok) throw new Error('expected ok');
+    // Body is still the original — the cap reject never committed a write.
+    expect(bySlug.value?.body).toBe('v1');
+
+    // No version row was added for the rejected edit.
+    expect(await countVersions(id)).toBe(SKILL_VERSION_MAX);
+  });
+
+  it('at the cap, rollbackSkill rejects AND leaves the live body unchanged', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'v1' },
+      { db: db as never },
+    );
+    const id = created.ok ? created.value.id : '';
+    if (!created.ok) throw new Error('expected ok');
+    await updateUserSkillBody(userId, id, 'v2', { db: db as never });
+
+    // Find the v1 version row to attempt a rollback to.
+    const rows = await db
+      .select()
+      .from(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, id));
+    const v1Row = rows.find((r) => r.body === 'v1');
+    if (!v1Row) throw new Error('expected v1 version row');
+
+    // Seed to exactly SKILL_VERSION_MAX rows (create added 1, update added 1).
+    for (let i = 0; i < SKILL_VERSION_MAX - 2; i++) {
+      await db.insert(schema.userSkillVersions).values({
+        skillId: id,
+        body: `seed-${i}`,
+        label: '',
+      });
+    }
+    expect(await countVersions(id)).toBe(SKILL_VERSION_MAX);
+
+    // At the cap, rollback (which would INSERT a row) must be rejected WITHOUT
+    // mutating the live body (adversarial-review L6 round 2: untested branch).
+    const rejected = await rollbackSkill(userId, id, v1Row.id, { db: db as never });
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.code).toBe('invalid_body');
+
+    const bySlug = await getSkillBySlug(userId, 'a', { db: db as never });
+    expect(bySlug.ok).toBe(true);
+    if (!bySlug.ok) throw new Error('expected ok');
+    // Body is still v2 — the cap reject never committed a write.
+    expect(bySlug.value?.body).toBe('v2');
+
+    // No version row was added for the rejected rollback.
+    expect(await countVersions(id)).toBe(SKILL_VERSION_MAX);
+  });
+
+  it('first edit of a legacy pre-0012 skill (count === 0) snapshots the ORIGINAL body so Restore can reach it', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'legacy' },
+      { db: db as never },
+    );
+    const id = created.ok ? created.value.id : '';
+    if (!created.ok) throw new Error('expected ok');
+    // Simulate a pre-0012 skill (schema-only cutover, no backfill): the skill
+    // exists but has NO version history yet (adversarial-review L1 round 2).
+    await db
+      .delete(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, id));
+    expect(await countVersions(id)).toBe(0);
+
+    const updated = await updateUserSkillBody(userId, id, 'edited', {
+      db: db as never,
+    });
+    expect(updated.ok).toBe(true);
+
+    // Two rows now: the ORIGINAL pre-edit body + the new edited body. The
+    // original was snapshotted BEFORE the update so the timeline exposes a
+    // Restore target for the previous playbook (not just the new text).
+    const rows = await db
+      .select()
+      .from(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, id));
+    expect(rows).toHaveLength(2);
+    const bodies = rows.map((r) => r.body);
+    expect(bodies).toContain('legacy');
+    expect(bodies).toContain('edited');
+
+    // Restore to the snapshotted original works.
+    const origRow = rows.find((r) => r.body === 'legacy');
+    if (!origRow) throw new Error('expected original snapshot row');
+    const rolled = await rollbackSkill(userId, id, origRow.id, { db: db as never });
+    expect(rolled.ok).toBe(true);
+    const bySlug = await getSkillBySlug(userId, 'a', { db: db as never });
+    expect(bySlug.ok).toBe(true);
+    if (!bySlug.ok) throw new Error('expected ok');
+    expect(bySlug.value?.body).toBe('legacy');
+  });
+
+  it('two-insert first edit (snapshot + new body, ONE tx) orders EDITED newest-first — no created_at tie (adversarial-review L1 round 3)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'legacy' },
+      { db: db as never },
+    );
+    const id = created.ok ? created.value.id : '';
+    if (!created.ok) throw new Error('expected ok');
+    // Legacy pre-0012 skill with no version history yet.
+    await db
+      .delete(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, id));
+    expect(await countVersions(id)).toBe(0);
+
+    const updated = await updateUserSkillBody(userId, id, 'edited', {
+      db: db as never,
+    });
+    expect(updated.ok).toBe(true);
+
+    const listed = await listSkillVersions(userId, id, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect(listed.value).toHaveLength(2);
+
+    // Resolve each listed summary to its stored body.
+    const bodiesForListed: (string | undefined)[] = [];
+    for (const s of listed.value) {
+      const row = (
+        await db
+          .select()
+          .from(schema.userSkillVersions)
+          .where(eq(schema.userSkillVersions.id, s.id))
+      )[0];
+      bodiesForListed.push(row?.body);
+    }
+    // Index 0 is the **now** row → must be the freshly-edited (live) body, NOT
+    // the snapshot, even though both rows were written in ONE transaction whose
+    // shared Postgres `now()` would otherwise give them the SAME created_at.
+    expect(bodiesForListed[0]).toBe('edited');
+    expect(bodiesForListed[1]).toBe('legacy');
+    // The snapshot's created_at is skewed strictly before the new-body row.
+    expect(new Date(listed.value[0]!.createdAt).getTime()).toBeGreaterThan(
+      new Date(listed.value[1]!.createdAt).getTime(),
+    );
+  });
+
+  it('a SECOND edit after a legacy first-edit does NOT insert a duplicate snapshot (no extra cap-slot burn)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'legacy' },
+      { db: db as never },
+    );
+    const id = created.ok ? created.value.id : '';
+    if (!created.ok) throw new Error('expected ok');
+    await db
+      .delete(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, id));
+    expect(await countVersions(id)).toBe(0);
+
+    // First edit writes snapshot + new body (2 rows).
+    await updateUserSkillBody(userId, id, 'edited1', { db: db as never });
+    expect(await countVersions(id)).toBe(2);
+
+    // Second edit: the pre-edit body (edited1) is ALREADY stored as a version,
+    // so the order-INDEPENDENT capture check (`WHERE body = prevBody`) must
+    // NOT snapshot it again — only the new body row is added, growing the count
+    // by exactly 1 (never a duplicate snapshot that silently burns a cap slot).
+    await updateUserSkillBody(userId, id, 'edited2', { db: db as never });
+    expect(await countVersions(id)).toBe(3);
+
+    // Newest-first is still deterministic: the latest edit is the **now** row.
+    const listed = await listSkillVersions(userId, id, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect(listed.value).toHaveLength(3);
+    const firstRow = (
+      await db
+        .select()
+        .from(schema.userSkillVersions)
+        .where(eq(schema.userSkillVersions.id, listed.value[0]!.id))
+    )[0];
+    expect(firstRow.body).toBe('edited2');
+  });
+
+  it('deleting a skill cascade-deletes its version history (FK ON DELETE CASCADE)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'v1' },
+      { db: db as never },
+    );
+    const id = created.ok ? created.value.id : '';
+    if (!created.ok) throw new Error('expected ok');
+    await updateUserSkillBody(userId, id, 'v2', { db: db as never });
+    expect(await countVersions(id)).toBe(2);
+
+    const del = await deleteUserSkill(userId, id, { db: db as never });
+    expect(del.ok).toBe(true);
+
+    expect(await countVersions(id)).toBe(0);
+  });
+});
+
 /**
  * Missing-table behavior is exercised on an ISOLATED engine (the documented
  * carve-out in lib/tenancy/test/shared.ts): we boot a fresh engine, apply all
@@ -444,6 +832,7 @@ describe('userSkills unavailable (missing table)', () => {
   it('missing user_skills table → unavailable (create + list + getBySlug fail closed)', async () => {
     // Drop the table after seeding so membership resolution still succeeds but
     // any user_skills query hits the undefined relation.
+    await iso.client.exec('DROP TABLE IF EXISTS "user_skill_versions"');
     await iso.client.exec('DROP TABLE IF EXISTS "user_skills"');
     const userId = await seedUserId();
 

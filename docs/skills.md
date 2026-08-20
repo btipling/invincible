@@ -27,7 +27,40 @@ Open **Settings → Skills** (from the Settings sidebar, or `/settings/skills`).
   description. **The slug never changes on rename**, so the `/<slug>`
   identifier stays stable across renames.
 - **Edit body:** replace the playbook text. Body is required and ≤ 4 MiB.
-- **Delete:** removes the skill from your account.
+- **Delete:** removes the skill from your account (cascade-deletes its version
+  history).
+- **Version history:** every body edit creates a new version row. The Settings
+  skill card includes a **Version history** section where you can **View body**
+  (see any past version's full raw body text — displayed inline, not a computed
+  diff), **Copy body** (copy a version's text to the clipboard, handy before a
+  last-slot Restore), and **Restore** (roll the current body back to that
+  version). Rollback creates a fresh version row so it is itself versioned.
+  Each skill can hold up to 100 versions.
+
+### Version history & rollback
+
+Each time you save a body edit (Create or Edit body), the **previous** body is
+preserved as a version row in the append-only `user_skill_versions` table. The
+version timeline is visible inside each skill card in Settings → Skills:
+
+1. Click **Show** on the "Version history" header to load the timeline.
+2. The timeline lists versions newest-first (the current body is labeled
+   **now**).
+3. Click **View body** on a version to see its full body inline (raw text, not
+   a computed diff). Use **Copy body** to copy that version's text to the
+   clipboard, especially before a last-slot Restore.
+4. Click **Restore** on a past version to roll the skill body back. This copies
+   the version's body into the live `body` field **and** inserts a new version
+   row — rollback is itself versioned and counts against the 100-version cap.
+5. Deleting a skill cascade-deletes its entire version history (FK `ON DELETE
+   CASCADE`).
+6. When a skill hits the 100-version cap, further body edits **and** further
+   rollbacks are rejected (`invalid_body` with a hint). **Rolling back does not
+   free a slot** — it copies a past body and inserts a *new* version row, so it
+   counts against the cap just like an edit. To keep editing past the cap, you
+   must either **delete the skill** (which cascade-deletes its version history)
+   or **raise `SKILL_VERSION_MAX`** (a deliberate ops decision — done in code,
+   then `db-migrate` is not needed since it is not a schema change).
 
 ### Slug derivation
 
