@@ -1,5 +1,11 @@
 import { jsonSchema, tool } from 'ai';
 import {
+  SEARCH_LINE_MAX_BYTES,
+  SEARCH_MAX_FILESIZE_STR,
+  SEARCH_MAX_RESULTS,
+  SEARCH_PER_FILE_MAX_COUNT,
+  SEARCH_RESULT_MAX_BYTES,
+  SEARCH_TIMEOUT_MS,
   TOOL_RESULT_MAX_CHARS,
   clampExecTimeoutMs,
   MIN_SANDBOX_PROTOCOL_STDIN,
@@ -784,6 +790,177 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
     },
   });
 
+  const search = tool({
+    description:
+      'Search (code-grep) the sandbox workspace with rg (ripgrep). Returns a bounded list of {path, line, text} hits with line numbers. Read-grant-only; argv is hard-built (never model-supplied cmd). Use this instead of exec rg/grep for "where is X?" questions. Pattern is a regex or fixed string (rg default). Optional globs are passed as -g <glob> (gitignore-aware full-path patterns). Path resolves against logical cwd (default "."). Caps: max_results server-capped to SEARCH_MAX_RESULTS, per-file max-count, max-filesize, per-line byte clip, and total result bytes. No matches returns "0 hits" (success, not error).',
+    inputSchema: jsonSchema<{
+      pattern: string;
+      glob?: string[];
+      path?: string;
+      max_results?: number;
+    }>({
+      type: 'object',
+      properties: {
+        pattern: {
+          type: 'string',
+          description: 'Required; regex or fixed string (rg default).',
+        },
+        glob: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional; each passed as -g <glob> (gitignore-aware full-path patterns).',
+        },
+        path: {
+          type: 'string',
+          description: 'Optional; resolvePathForTool, default cwd "."',
+        },
+        max_results: {
+          type: 'number',
+          description: 'Optional; server-capped to SEARCH_MAX_RESULTS.',
+        },
+      },
+      required: ['pattern'],
+      additionalProperties: false,
+    }),
+    execute: async (input) => {
+      if (!permissions.canRead) {
+        return deny('search', 'read', secrets);
+      }
+      try {
+        if (!input.pattern) {
+          return finalize('ERROR search: pattern is required', secrets);
+        }
+        const cwdSnap = cwdState.current;
+        const resolved = resolvePathOrError(workspaceRoot, cwdSnap, input.path ?? '.');
+        if (!resolved.ok) {
+          return finalize(`ERROR search: ${resolved.error}`, secrets);
+        }
+        const searchPath = resolved.path;
+
+        // Build fixed argv (never a model-supplied cmd)
+        const args: string[] = [
+          '-n',
+          '--no-heading',
+          '--max-count',
+          String(SEARCH_PER_FILE_MAX_COUNT),
+          '--max-filesize',
+          SEARCH_MAX_FILESIZE_STR,
+          '-S', // smart-case
+        ];
+        const globs: string[] = Array.isArray(input.glob)
+          ? input.glob.filter((g): g is string => typeof g === 'string' && g.length > 0)
+          : [];
+        for (const g of globs) {
+          args.push('-g', g);
+        }
+        args.push(input.pattern, searchPath);
+
+        const result = await client.exec(
+          {
+            cmd: 'rg',
+            args,
+            cwd: cwdSnap,
+            timeoutMs: SEARCH_TIMEOUT_MS,
+          },
+          { signal },
+        );
+
+        // rg exit 1 = no matches (success, not error)
+        if (result.exitCode !== 0 && result.exitCode !== 1) {
+          const stderr = rewriteExecRootToRel(workspaceRoot, result.stderr);
+          const hint =
+            stderr && /command not found|No such file/i.test(stderr)
+              ? 'rg not available in this sandbox — add it to the toolchain image or use exec'
+              : stderr || `exit=${result.exitCode}`;
+          return finalize(`ERROR search: ${hint}`, secrets);
+        }
+
+        const raw = rewriteExecRootToRel(workspaceRoot, result.stdout);
+        if (result.exitCode === 1 || !raw.trim()) {
+          return finalize(`search ${searchPath}${formatCwdAnnotation(cwdSnap)}: 0 hits`, secrets);
+        }
+
+        // Parse rg output: each line is "path:line:text"
+        const lines = raw.split('\n');
+        const cap = Math.min(
+          input.max_results != null && Number.isFinite(input.max_results)
+            ? Math.max(1, Math.floor(Number(input.max_results)))
+            : SEARCH_MAX_RESULTS,
+          SEARCH_MAX_RESULTS,
+        );
+
+        const hits: string[] = [];
+        let byteTotal = 0;
+        let skipped = 0;
+        for (const rawLine of lines) {
+          const trimmed = rawLine.trim();
+          if (!trimmed) continue;
+
+          // Split into path:line:text (at most first two colons to preserve text content)
+          const firstColon = trimmed.indexOf(':');
+          const afterFirst = firstColon >= 0 ? trimmed.slice(firstColon + 1) : '';
+          const secondColon = afterFirst.indexOf(':');
+          const filePath = firstColon >= 0 ? trimmed.slice(0, firstColon) : trimmed;
+          const lineNum = secondColon >= 0 ? afterFirst.slice(0, secondColon) : '';
+          const text = secondColon >= 0 ? afterFirst.slice(secondColon + 1) : '';
+
+          // Per-line byte clip
+          let clippedText = text;
+          const textBytes = Buffer.byteLength(text, 'utf8');
+          if (textBytes > SEARCH_LINE_MAX_BYTES) {
+            clippedText = `${clipUtf8Bytes(text, SEARCH_LINE_MAX_BYTES)}…`;
+          }
+
+          const hit = `${filePath}:${lineNum}:${clippedText}`;
+          const hitBytes = Buffer.byteLength(hit, 'utf8');
+
+          if (hits.length >= cap || byteTotal + hitBytes > SEARCH_RESULT_MAX_BYTES) {
+            skipped += 1;
+            continue;
+          }
+
+          hits.push(hit);
+          byteTotal += hitBytes;
+        }
+
+        // In case we counted the hit-line that overflowed, run a final pass through the
+        // remaining lines for an accurate skipped count.
+        let remainingSkipped = skipped;
+        if (remainingSkipped === 0 && hits.length >= cap) {
+          // We may have stopped because of the cap without incrementing skipped.
+          // Count remaining non-empty lines.
+          let hitCount = 0;
+          let remaining = 0;
+          for (const rawLine of lines) {
+            const trimmed = rawLine.trim();
+            if (!trimmed) continue;
+            if (hitCount < hits.length) {
+              hitCount += 1;
+              continue;
+            }
+            remaining += 1;
+          }
+          remainingSkipped = remaining;
+        }
+
+        const header = `search ${searchPath}${formatCwdAnnotation(cwdSnap)}: ${hits.length} hits`;
+        const body = hits.join('\n');
+        const truncated = remainingSkipped > 0 ? `\n(truncated, ${remainingSkipped} more)` : '';
+        return finalize(`${header}\n${body}${truncated}`, secrets);
+      } catch (err) {
+        // rg missing / non-zero crash → soft-fail with guidance
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/command not found|ENOENT|No such file/i.test(msg)) {
+          return finalize(
+            'ERROR search: rg not available in this sandbox — add it to the toolchain image or use exec',
+            secrets,
+          );
+        }
+        return finalize(`ERROR search: ${msg}`, secrets);
+      }
+    },
+  });
+
   const sandbox_info = tool({
     description:
       'Structured facts about the active sandbox bind: backend, name/slug, logical cwd, grant permissions, capabilities (path tools, exec, stdin, stat), daemon protocol/version when a BYO daemon is bound, and a redacted env map. PATH-like values are per-entry arrays (workspace-relative under the jail). Use this instead of exec env, printenv, or uname. Needs read permission. No arguments.',
@@ -828,7 +1005,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         }
 
         const pathTools: string[] = [];
-        if (permissions.canRead) pathTools.push('list_dir', 'read_file');
+        if (permissions.canRead) pathTools.push('list_dir', 'read_file', 'search');
         if (permissions.canWrite) pathTools.push('write_file', 'str_replace', 'exec');
         pathTools.push('change_dir', 'pwd');
         if (permissions.canRead) pathTools.push('sandbox_info');
@@ -881,7 +1058,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
     },
   });
 
-  return { pwd, change_dir, list_dir, read_file, write_file, str_replace, exec, sandbox_info };
+  return { pwd, change_dir, list_dir, read_file, write_file, str_replace, exec, search, sandbox_info };
 }
 
 export type AgentToolSet = ReturnType<typeof createAgentTools>;

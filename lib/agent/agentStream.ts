@@ -368,6 +368,18 @@ export function salientToolBits(name: string, resultText: string): string {
     return bits.join(' · ');
   }
 
+  // search path: N hits\npath:line:text
+  // N hits + truncated
+  if (/^search\s+/i.test(text) || name === 'search') {
+    const header = text.split('\n')[0] ?? '';
+    const hits = header.match(/(\d+)\s+hits/i);
+    const truncated = text.match(/truncated,\s+(\d+)\s+more/i);
+    const bits: string[] = [];
+    if (hits) bits.push(`${hits[1]} hits`);
+    if (truncated) bits.push(`+${truncated[1]} more`);
+    return bits.length > 0 ? `search · ${bits.join(' · ')}` : header.replace(/\s+/g, ' ').trim();
+  }
+
   // http_get URL → status flags\nbody
   const httpGet = text.match(
     /^http_get\s+(\S+)\s+→\s+(\d+)([^\n]*)\n?([\s\S]*)$/i,

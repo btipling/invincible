@@ -2048,3 +2048,184 @@ describe('createAgentTools sandbox_info', () => {
   });
 });
 
+describe('createAgentTools search', () => {
+  const ectx = { toolCallId: '1', messages: [] } as never;
+
+  it('forwards correct rg argv with caps, globs and resolved path', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: 'a.ts:1:hello\nb.ts:2:world\n', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client, workspaceRoot: '/ws' });
+    const out = (await tools.search.execute!({ pattern: 'hello', glob: ['*.ts'], path: 'src' }, ectx)) as string;
+
+    expect(exec).toHaveBeenCalledTimes(1);
+    const call = exec.mock.calls[0]?.[0];
+    expect(call.cmd).toBe('rg');
+    expect(call.args).toContain('-n');
+    expect(call.args).toContain('--no-heading');
+    expect(call.args).toContain('--max-count');
+    expect(call.args).toContain('20');
+    expect(call.args).toContain('--max-filesize');
+    expect(call.args).toContain('1M');
+    expect(call.args).toContain('-S');
+    expect(call.args).toContain('-g');
+    expect(call.args).toContain('*.ts');
+    expect(call.args).toContain('hello');
+    expect(call.args).toContain('src');
+    expect(out).toContain('search src: 2 hits');
+    expect(out).toContain('a.ts:1:hello');
+  });
+
+  it('read-grant-only: denied when canRead=false', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+      permissions: { canRead: false, canWrite: false },
+    });
+    const out = (await tools.search.execute!({ pattern: 'x' }, ectx)) as string;
+    expect(out).toMatch(/^ERROR search: permission denied \(need read\)/);
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it('search available with read-only grant', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: 'f.ts:3:match\n', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+      permissions: { canRead: true, canWrite: false },
+    });
+    const out = (await tools.search.execute!({ pattern: 'match' }, ectx)) as string;
+    expect(out).toContain('search .: 1 hits');
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  it('no matches → 0 hits (rg exit 1, not error)', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 1, stdout: '', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    const out = (await tools.search.execute!({ pattern: 'no-match-xyz' }, ectx)) as string;
+    expect(out).toContain('search .: 0 hits');
+    expect(out).not.toMatch(/^ERROR/);
+  });
+
+  it('hit cap → truncated + N more when rows exceed SEARCH_MAX_RESULTS', async () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 250; i++) {
+      lines.push(`f.ts:${i + 1}:line ${i}`);
+    }
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: lines.join('\n') + '\n', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    const out = (await tools.search.execute!({ pattern: 'line' }, ectx)) as string;
+    expect(out).toContain('search .: 200 hits');
+    expect(out).toContain('(truncated, 50 more)');
+  });
+
+  it('per-line cap clips long line with …', async () => {
+    const longText = 'x'.repeat(400);
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: `a.ts:1:${longText}\n`, stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    const out = (await tools.search.execute!({ pattern: 'x' }, ectx)) as string;
+    expect(out).toContain('search .: 1 hits');
+    // The line text should be clipped (≤ SEARCH_LINE_MAX_BYTES + '…')
+    const bodyLine = out.split('\n').find((l) => l.startsWith('a.ts:1:'));
+    expect(bodyLine).toBeDefined();
+    const textPart = bodyLine!.split(':').slice(2).join(':');
+    expect(textPart.length).toBeLessThanOrEqual(210);
+    expect(textPart).toContain('…');
+  });
+
+  it('path resolve: relative, in-jail-abs works; out-of-jail fails closed', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: 'x.ts:1:hi\n', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client, workspaceRoot: '/ws' });
+
+    // relative
+    const r = (await tools.search.execute!({ pattern: 'hi', path: 'src' }, ectx)) as string;
+    expect(r).toContain('search src: 1 hits');
+    expect(exec).toHaveBeenCalledWith(expect.objectContaining({ args: expect.arrayContaining(['src']) }), expect.anything());
+
+    // in-jail-abs
+    exec.mockClear();
+    const a = (await tools.search.execute!({ pattern: 'hi', path: '/ws/src' }, ectx)) as string;
+    expect(a).toContain('search src: 1 hits');
+
+    // out-of-jail
+    const o = (await tools.search.execute!({ pattern: 'hi', path: '/etc' }, ectx)) as string;
+    expect(o).toContain('ERROR search');
+    expect(o).toContain('escapes workspace root');
+  });
+
+  it('schema has no cmd field; argv is always hard-built rg', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    // additionalProperties:false ensures a model-supplied cmd is ignored
+    const out = (await tools.search.execute!({ pattern: 'x', cmd: 'evil' } as never, ectx)) as string;
+    expect(exec).toHaveBeenCalledWith(expect.objectContaining({ cmd: 'rg' }), expect.anything());
+    expect(out).not.toMatch(/^ERROR search: pattern/);
+  });
+
+  it('soft-fails on rg non-zero/non-1 exit (bad regex)', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 2, stdout: '', stderr: 'rg: invalid regex\n' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    const out = (await tools.search.execute!({ pattern: '[' }, ectx)) as string;
+    expect(out).toMatch(/^ERROR search:/);
+  });
+
+  it('soft-fails on client error without throwing', async () => {
+    const exec = vi.fn(async () => {
+      throw new Error('boom search-token-xyz');
+    });
+    const client = mockClient({ exec });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+      secrets: ['search-token-xyz'],
+    });
+    const out = (await tools.search.execute!({ pattern: 'x' }, ectx)) as string;
+    expect(out).toMatch(/^ERROR search:/);
+    expect(out).not.toContain('search-token-xyz');
+    expect(out).toContain('[redacted]');
+  });
+
+  it('rg-missing fallback → error with guidance', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 127, stdout: '', stderr: 'rg: command not found\n' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    const out = (await tools.search.execute!({ pattern: 'x' }, ectx)) as string;
+    expect(out).toMatch(/^ERROR search:/);
+    expect(out).toContain('rg not available');
+  });
+
+  it('secrets redacted from search results', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: 'env.ts:1:SECRET=my-token-abc\n', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+      secrets: ['my-token-abc'],
+    });
+    const out = (await tools.search.execute!({ pattern: 'SECRET' }, ectx)) as string;
+    expect(out).not.toContain('my-token-abc');
+    expect(out).toContain('[redacted]');
+  });
+
+  it('search respects max_results input cap', async () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 50; i++) {
+      lines.push(`f.ts:${i + 1}:line ${i}`);
+    }
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: lines.join('\n') + '\n', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    const out = (await tools.search.execute!({ pattern: 'line', max_results: 10 }, ectx)) as string;
+    expect(out).toContain('search .: 10 hits');
+    expect(out).toContain('(truncated, 40 more)');
+  });
+});
+
