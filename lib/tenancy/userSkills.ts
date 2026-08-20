@@ -230,24 +230,28 @@ export async function createUserSkill(
 
     return await withDb(deps, async (db) => {
       try {
-        const [row] = await db
-          .insert(userSkills)
-          .values({
-            tenantId: tid.value,
-            userId,
-            name,
-            slug,
+        // Skill + initial version row are atomic (adversarial-review L1): a
+        // version-insert failure rolls back the skill insert, so a skill is
+        // never left with no version snapshot.
+        return await db.transaction(async (tx) => {
+          const [row] = await tx
+            .insert(userSkills)
+            .values({
+              tenantId: tid.value,
+              userId,
+              name,
+              slug,
+              body,
+              description,
+            })
+            .returning({ id: userSkills.id });
+          await tx.insert(userSkillVersions).values({
+            skillId: row.id,
             body,
-            description,
-          })
-          .returning({ id: userSkills.id });
-        // Insert initial version row (same body) — plan #711 phase 1.
-        await db.insert(userSkillVersions).values({
-          skillId: row.id,
-          body,
-          label: '',
+            label: '',
+          });
+          return { ok: true as const, value: { id: row.id } };
         });
-        return { ok: true as const, value: { id: row.id } };
       } catch (err) {
         if (isUniqueViolation(err)) {
           return {
@@ -346,43 +350,50 @@ export async function updateUserSkillBody(
   try {
     return await withDb(deps, async (db) => {
       // Version count gate — plan #711 phase 1. Counts all rows for this skill,
-      // not just those visible in an incomplete listing.
+      // not just those visible in an incomplete listing. The gate runs BEFORE
+      // any write (adversarial-review L1): a cap reject must never touch the
+      // live body, and rollback does NOT free a slot (it inserts a row), so at
+      // the cap we fail closed with an honest recovery message rather than
+      // silently committing the body and dropping its version history.
       const versions = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(userSkillVersions)
         .where(eq(userSkillVersions.skillId, pid));
       const count = Number(versions[0]?.count ?? 0);
-
-      const updated = await db
-        .update(userSkills)
-        .set({ body: clean, updatedAt: new Date() })
-        .where(
-          and(
-            eq(userSkills.id, pid),
-            eq(userSkills.userId, uid),
-            eq(userSkills.tenantId, tid.value),
-          ),
-        )
-        .returning({ id: userSkills.id });
-      if (!updated[0]) {
-        return { ok: false as const, code: 'not_found' as const, error: 'skill not found' };
-      }
-
-      // Insert version row (cap-gated; the body was already written above, but
-      // we reject past the cap rather than silently dropping version history).
       if (count >= SKILL_VERSION_MAX) {
         return {
           ok: false as const,
           code: 'invalid_body' as const,
-          error: `version limit reached (${SKILL_VERSION_MAX}) — rollback to free space`,
+          error: `version limit reached (${SKILL_VERSION_MAX}) — delete the skill or raise the cap`,
         };
       }
-      await db.insert(userSkillVersions).values({
-        skillId: pid,
-        body: clean,
-        label: '',
+
+      // Body write + version insert are atomic (adversarial-review L1/L6): a
+      // version-insert failure rolls back the body UPDATE so the live body and
+      // the version timeline never diverge.
+      return await db.transaction(async (tx) => {
+        const updated = await tx
+          .update(userSkills)
+          .set({ body: clean, updatedAt: new Date() })
+          .where(
+            and(
+              eq(userSkills.id, pid),
+              eq(userSkills.userId, uid),
+              eq(userSkills.tenantId, tid.value),
+            ),
+          )
+          .returning({ id: userSkills.id });
+        if (!updated[0]) {
+          return { ok: false as const, code: 'not_found' as const, error: 'skill not found' };
+        }
+
+        await tx.insert(userSkillVersions).values({
+          skillId: pid,
+          body: clean,
+          label: '',
+        });
+        return { ok: true as const, value: { id: pid } };
       });
-      return { ok: true, value: { id: pid } };
     });
   } catch (err) {
     if (isUndefinedTable(err)) {
@@ -784,7 +795,9 @@ export async function rollbackSkill(
       }
       const body = ver[0].body;
 
-      // Version count gate.
+      // Version count gate BEFORE any write (adversarial-review L1): a rollback
+      // at the cap must not mutate the body either. Rollback inserts a version
+      // row, so it never frees a slot — fail closed with an honest message.
       const countRows = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(userSkillVersions)
@@ -794,30 +807,32 @@ export async function rollbackSkill(
         return {
           ok: false as const,
           code: 'invalid_body' as const,
-          error: `version limit reached (${SKILL_VERSION_MAX}) — rollback to free space`,
+          error: `version limit reached (${SKILL_VERSION_MAX}) — delete the skill or raise the cap`,
         };
       }
 
-      // Update the skill body.
-      await db
-        .update(userSkills)
-        .set({ body, updatedAt: new Date() })
-        .where(
-          and(
-            eq(userSkills.id, sid),
-            eq(userSkills.userId, uid),
-            eq(userSkills.tenantId, tid.value),
-          ),
-        );
+      // Body update + rollback version insert are atomic (adversarial-review L1).
+      return await db.transaction(async (tx) => {
+        await tx
+          .update(userSkills)
+          .set({ body, updatedAt: new Date() })
+          .where(
+            and(
+              eq(userSkills.id, sid),
+              eq(userSkills.userId, uid),
+              eq(userSkills.tenantId, tid.value),
+            ),
+          );
 
-      // Insert a new version row recording the rollback.
-      await db.insert(userSkillVersions).values({
-        skillId: sid,
-        body,
-        label: '',
+        // Insert a new version row recording the rollback.
+        await tx.insert(userSkillVersions).values({
+          skillId: sid,
+          body,
+          label: '',
+        });
+
+        return { ok: true as const, value: { id: sid } };
       });
-
-      return { ok: true, value: { id: sid } };
     });
   } catch (err) {
     if (isUndefinedTable(err)) {
