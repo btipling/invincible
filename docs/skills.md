@@ -50,9 +50,13 @@ version timeline is visible inside each skill card in Settings → Skills:
    row — rollback is itself versioned and counts against the 100-version cap.
 5. Deleting a skill cascade-deletes its entire version history (FK `ON DELETE
    CASCADE`).
-6. When a skill hits the 100-version cap, further body edits are rejected
-   (`invalid_body` with a hint). Roll back to a past version (which creates a
-   new version row) to free space under the cap.
+6. When a skill hits the 100-version cap, further body edits **and** further
+   rollbacks are rejected (`invalid_body` with a hint). **Rolling back does not
+   free a slot** — it copies a past body and inserts a *new* version row, so it
+   counts against the cap just like an edit. To keep editing past the cap, you
+   must either **delete the skill** (which cascade-deletes its version history)
+   or **raise `SKILL_VERSION_MAX`** (a deliberate ops decision — done in code,
+   then `db-migrate` is not needed since it is not a schema change).
 
 ### Slug derivation
 

@@ -457,6 +457,13 @@ function SkillCard({ row }: { row: SkillListItem }) {
     setBodySaving(false);
     if (r.ok) {
       setBodyMessage('Body saved.');
+      // The timeline now has a stale **now** (the just-saved body isn't shown).
+      // Invalidate it (same as rollback does) so the operator re-pulls a fresh
+      // list on Show — otherwise a Restore on the stale "previous" version
+      // could silently rewind the save they just made (adversarial-review L9).
+      setVersions(null);
+      setDiffVersionId(null);
+      setDiffBody(null);
     } else {
       setBodyError(r.error ?? 'Could not save body.');
     }
