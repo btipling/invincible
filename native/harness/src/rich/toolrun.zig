@@ -351,7 +351,8 @@ test "ui id packing is unique for a full group and across rows" {
     // reviewer-requested cheap guard that MAX_ITEMS items never alias.
     const item_stride: usize = 1024;
     const row_step: usize = 1000003;
-    const slot_max: usize = 4;
+    // Highest extra in `ui/toolrun.zig` paintToolRun: +9 static L1 label.
+    const slot_max: usize = 9;
 
     // Within one row: every (item, slot) pair maps to a distinct widget id.
     var seen = std.AutoHashMap(u64, void).init(std.testing.allocator);

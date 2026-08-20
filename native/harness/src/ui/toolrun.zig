@@ -193,16 +193,18 @@ pub fn paintToolRun(
             const l2_key: dvui.Id = @enumFromInt(l1_raw *% 31 + it.id);
             // `it.id` is 1-based per group with up to MAX_ITEMS items. Each item
             // owns a 1024-wide namespace (`it_id *% 1024`) under this message's
-            // id_base, holding up to 5 widget slots, so every (item, widget)
+            // id_base, holding slots `+0..+9`, so every (item, widget)
             // pair is unique within the row even for a full 200-item group;
             // 1000003 > 200·1024 keeps distinct rows disjoint. Matches the
             // rich/paint.zig `msg_index *% …` discipline (id = src + id_extra,
             // not a parent chain).
             const it_id: usize = it.id;
             // Widget slots inside the item's 1024-wide namespace:
-            //   +0 item box · +1 status glyph · +2 expander / static label
+            //   +0 item box · +1 status glyph · +2 expander (has-detail)
             //   +3 detail box · +4 status (str_replace) / detail body
             //   +5 old box · +6 old tl · +7 new box · +8 new tl (str_replace sides)
+            //   +9 static L1 label (no-detail) — distinct from +2 so a running
+            //      row that later gains detail does not reuse expander persist
             const item_base: usize = id_base + it_id *% 1024;
             const has_detail = it.detail.len > 0;
             const pin_l2 = rich_toolrun.strReplaceL2PinnedOpen(is_active, it.name, has_detail, false);
@@ -272,7 +274,7 @@ pub fn paintToolRun(
                     // `itemLabel` already chose brief (real error/path one-liner)
                     // or `name` (host status fallback). Glyph is the status channel.
                     var tl = dvui.textLayout(src, .{}, .{
-                        .id_extra = item_base + 2, // expander slot — mutually exclusive
+                        .id_extra = item_base + 9, // not +2 — expander persist is distinct
                         .expand = .horizontal,
                         .color_text = palette.teal_text,
                         .gravity_y = 0.5,
