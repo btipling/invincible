@@ -23,12 +23,23 @@ pub const Status = enum(u8) {
     fail = 2,
 };
 
+/// L2 preview sides for a successful `str_replace` audit block.
+/// Slices point into `detail` (no allocation).
+pub const StrReplaceSides = struct {
+    status: []const u8,
+    old: []const u8,
+    new: []const u8,
+};
+
 pub const Item = struct {
     id: u32,
     status: Status,
     name: []const u8,
     brief: []const u8,
     detail: []const u8,
+    /// Set at decode when `name == "str_replace"` and the detail has the L2
+    /// sentinel shape. Slices point into `detail` (no extra alloc).
+    str_replace_sides: ?StrReplaceSides = null,
 };
 
 /// L1 item label.
@@ -52,14 +63,6 @@ fn isHostStatusFallback(brief: []const u8, name: []const u8) bool {
         std.mem.eql(u8, rest, " · ok") or
         std.mem.eql(u8, rest, " · failed");
 }
-
-/// L2 preview sides for a successful `str_replace` audit block.
-/// Slices point into `detail` (no allocation).
-pub const StrReplaceSides = struct {
-    status: []const u8,
-    old: []const u8,
-    new: []const u8,
-};
 
 const STR_REPLACE_OLD_SENTINEL = "-old_string";
 const STR_REPLACE_NEW_SENTINEL = "+new_string";
@@ -92,6 +95,19 @@ pub fn splitStrReplaceDetail(detail: []const u8) ?StrReplaceSides {
         line_start = i + 1;
     }
     return null;
+}
+
+/// L0 expander pin: open while the Busy turn is active if this group contains
+/// a `str_replace` item (detail optional — so the row is visible while running).
+pub fn toolRunL0PinnedOpen(is_active_turn: bool, has_str_replace: bool, operator_open: bool) bool {
+    return operator_open or (is_active_turn and has_str_replace);
+}
+
+/// L2 expander pin: open while the Busy turn is active for a `str_replace`
+/// that already has detail (bands need the payload). Operator-open wins too.
+pub fn strReplaceL2PinnedOpen(is_active_turn: bool, name: []const u8, has_detail: bool, operator_open: bool) bool {
+    if (operator_open) return true;
+    return is_active_turn and has_detail and std.mem.eql(u8, name, "str_replace");
 }
 
 pub const ToolRun = struct {
@@ -198,12 +214,14 @@ pub fn decode(alloc: std.mem.Allocator, text: []const u8) ?Decoded {
         const name = unescape(alloc, name_s) catch continue;
         const brief = unescape(alloc, brief_s) catch continue;
         const detail = unescape(alloc, detail_s) catch continue;
+        const sides = if (std.mem.eql(u8, name, "str_replace")) splitStrReplaceDetail(detail) else null;
         items.append(alloc, .{
             .id = id,
             .status = status,
             .name = name,
             .brief = brief,
             .detail = detail,
+            .str_replace_sides = sides,
         }) catch return null;
     }
     // Recount statuses from the kept items so the UI header can never disagree
@@ -471,3 +489,46 @@ test "splitStrReplaceDetail empty old with both sentinels is empty body not null
     try std.testing.expectEqualStrings("", sides.old);
     try std.testing.expectEqualStrings("new", sides.new);
 }
+
+test "decode str_replace encoded line stores sides; exec stays null" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const text =
+        "toolrun\t1\t1/0/1\n" ++
+        "1\tok\tstr_replace\tstr_replace lib/foo.ts: ok replacements=1 bytes=12\t" ++
+        "str_replace lib/foo.ts: ok replacements=1 bytes=12\\n-old_string\\nold line\\n+new_string\\nnew line\n" ++
+        "2\trunning\texec\texec · running…\t";
+    var d = decode(a, text) orelse return error.ExpectedDecode;
+    defer d.deinit();
+    try std.testing.expectEqual(@as(usize, 2), d.run.items.len);
+
+    const sr = d.run.items[0];
+    try std.testing.expectEqualStrings("str_replace", sr.name);
+    const sides = sr.str_replace_sides orelse return error.ExpectedSides;
+    try std.testing.expectEqualStrings("str_replace lib/foo.ts: ok replacements=1 bytes=12", sides.status);
+    try std.testing.expectEqualStrings("old line", sides.old);
+    try std.testing.expectEqualStrings("new line", sides.new);
+
+    try std.testing.expectEqualStrings("exec", d.run.items[1].name);
+    try std.testing.expect(d.run.items[1].str_replace_sides == null);
+}
+
+test "toolRunL0PinnedOpen pins on name during active turn even without detail" {
+    try std.testing.expect(toolRunL0PinnedOpen(true, true, false));
+    try std.testing.expect(!toolRunL0PinnedOpen(true, false, false));
+    try std.testing.expect(toolRunL0PinnedOpen(true, false, true));
+    try std.testing.expect(!toolRunL0PinnedOpen(false, true, false));
+    try std.testing.expect(toolRunL0PinnedOpen(false, true, true));
+}
+
+test "strReplaceL2PinnedOpen requires active turn + str_replace + detail" {
+    try std.testing.expect(strReplaceL2PinnedOpen(true, "str_replace", true, false));
+    try std.testing.expect(!strReplaceL2PinnedOpen(true, "str_replace", false, false));
+    try std.testing.expect(!strReplaceL2PinnedOpen(true, "exec", true, false));
+    try std.testing.expect(!strReplaceL2PinnedOpen(false, "str_replace", true, false));
+    try std.testing.expect(strReplaceL2PinnedOpen(false, "str_replace", true, true));
+    try std.testing.expect(strReplaceL2PinnedOpen(false, "exec", true, true));
+}
+
