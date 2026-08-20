@@ -13,6 +13,7 @@ import {
   inputStyle,
   panelStyle,
 } from '../ui';
+import { SKILL_VERSION_MAX } from '../../../lib/sessionCloudCaps';
 import {
   deleteSkillAction,
   updateSkillDetailsAction,
@@ -367,7 +368,8 @@ function SkillCard({ row }: { row: SkillListItem }) {
   const [versions, setVersions] = useState<SkillVersionSummary[] | null>(null);
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [versionsError, setVersionsError] = useState<string | null>(null);
-  // Diff view: selected version id → its raw body.
+  // Body view: selected version id → its raw body text (NOT a computed diff;
+  // the label is honest about that — adversarial-review L8 round 2).
   const [diffVersionId, setDiffVersionId] = useState<string | null>(null);
   const [diffBody, setDiffBody] = useState<string | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
@@ -379,6 +381,32 @@ function SkillCard({ row }: { row: SkillListItem }) {
     message?: string;
     error?: string;
   }>({});
+
+  // Copy-state for the per-version "Copy body" affordance. Rollback inserts a
+  // new version row, so at the cap a Restore is a one-way door (count 99 → 100,
+  // then both edits and Restores are rejected). Without adding a blocking
+  // confirm (product stance: no user-confirmation gates), the copy affordance
+  // lets the operator keep the exact body they might need to restore
+  // (adversarial-review L9 round 2).
+  const [copiedVersionId, setCopiedVersionId] = useState<string | null>(null);
+
+  async function copyVersionBody(versionId: string) {
+    const r = await getVersionBody(row.id, versionId);
+    if (!r.ok || r.body === undefined) {
+      setRollbackFeedback({ ok: false, error: r.error ?? 'Could not load version body.' });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(r.body);
+      setCopiedVersionId(versionId);
+      setRollbackFeedback({});
+    } catch {
+      setRollbackFeedback({
+        ok: false,
+        error: 'Could not copy — select the inline body text manually.',
+      });
+    }
+  }
 
   async function loadVersions() {
     setVersionsLoading(true);
@@ -594,6 +622,21 @@ function SkillCard({ row }: { row: SkillListItem }) {
             {versionsError}
           </p>
         ) : null}
+        {versions && versions.length >= SKILL_VERSION_MAX ? (
+          <p
+            role="alert"
+            style={{ color: ember.accent, fontSize: 12, margin: '0 0 8px' }}
+          >
+            At the {SKILL_VERSION_MAX}-version cap — further body edits and
+            Restores are rejected. Restore here is a one-way last slot, so copy
+            the body you may need first.
+          </p>
+        ) : versions && versions.length >= SKILL_VERSION_MAX - 1 ? (
+          <p style={{ color: warm.accent, fontSize: 12, margin: '0 0 8px' }}>
+            {versions.length} of {SKILL_VERSION_MAX} versions — one Restore away
+            from the cap (edits and Restores then lock).
+          </p>
+        ) : null}
         {versions && versions.length === 0 ? (
           <p style={{ color: teal.muted, fontSize: 13, margin: 0 }}>
             No versions yet — the first edit creates version history.
@@ -631,16 +674,24 @@ function SkillCard({ row }: { row: SkillListItem }) {
                     ) : null}
                     <button
                       type="button"
+                      onClick={() => void copyVersionBody(v.id)}
+                      style={{ ...buttonGhostStyle(), fontSize: 11, padding: '2px 6px' }}
+                    >
+                      {copiedVersionId === v.id ? 'Copied' : 'Copy body'}
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => void showDiff(v.id)}
                       style={{ ...buttonGhostStyle(), fontSize: 11, padding: '2px 6px' }}
                     >
-                      {isDiffing ? 'Hide diff' : 'Diff'}
+                      {isDiffing ? 'Hide body' : 'View body'}
                     </button>
                     {i > 0 ? (
                       <button
                         type="button"
                         onClick={() => void doRollback(v.id)}
                         disabled={rollbackPending}
+                        aria-label={`Restore this skill body to ${v.label || `v${versions.length - i}`} (${versionDate(v.createdAt)})`}
                         style={{
                           ...buttonGhostStyle(),
                           fontSize: 11,
@@ -654,7 +705,7 @@ function SkillCard({ row }: { row: SkillListItem }) {
                   </div>
                   {isDiffing && diffLoading ? (
                     <div style={{ color: teal.muted, fontSize: 12, padding: '0 8px 8px' }}>
-                      Loading diff…
+                      Loading body…
                     </div>
                   ) : isDiffing && diffError ? (
                     <p

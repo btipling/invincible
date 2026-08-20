@@ -30,8 +30,10 @@ Open **Settings → Skills** (from the Settings sidebar, or `/settings/skills`).
 - **Delete:** removes the skill from your account (cascade-deletes its version
   history).
 - **Version history:** every body edit creates a new version row. The Settings
-  skill card includes a **Version history** section where you can **Diff** (view
-  any past version's body) and **Restore** (roll back the current body to that
+  skill card includes a **Version history** section where you can **View body**
+  (see any past version's full raw body text — displayed inline, not a computed
+  diff), **Copy body** (copy a version's text to the clipboard, handy before a
+  last-slot Restore), and **Restore** (roll the current body back to that
   version). Rollback creates a fresh version row so it is itself versioned.
   Each skill can hold up to 100 versions.
 
@@ -44,7 +46,9 @@ version timeline is visible inside each skill card in Settings → Skills:
 1. Click **Show** on the "Version history" header to load the timeline.
 2. The timeline lists versions newest-first (the current body is labeled
    **now**).
-3. Click **Diff** on a version to view its full body inline (raw text).
+3. Click **View body** on a version to see its full body inline (raw text, not
+   a computed diff). Use **Copy body** to copy that version's text to the
+   clipboard, especially before a last-slot Restore.
 4. Click **Restore** on a past version to roll the skill body back. This copies
    the version's body into the live `body` field **and** inserts a new version
    row — rollback is itself versioned and counts against the 100-version cap.

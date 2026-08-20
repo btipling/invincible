@@ -372,6 +372,47 @@ export async function updateUserSkillBody(
       // version-insert failure rolls back the body UPDATE so the live body and
       // the version timeline never diverge.
       return await db.transaction(async (tx) => {
+        // Owner-gated read of the current live body BEFORE the UPDATE so a
+        // legacy/drifted row's pre-edit body can be snapshotted below. If the
+        // goal is a skill the user does not own we fail closed (not_found).
+        const current = await tx
+          .select({ body: userSkills.body })
+          .from(userSkills)
+          .where(
+            and(
+              eq(userSkills.id, pid),
+              eq(userSkills.userId, uid),
+              eq(userSkills.tenantId, tid.value),
+            ),
+          )
+          .limit(1);
+        if (!current[0]) {
+          return { ok: false as const, code: 'not_found' as const, error: 'skill not found' };
+        }
+        const prevBody = current[0].body;
+
+        // Pre-edit snapshot (adversarial-review L1, round 2): the timeline must
+        // always hold a restorable copy of the PRE-EDIT body. create/rollback
+        // keep the live body equal to the newest version row, so normally no
+        // extra snapshot is needed. But a legacy pre-0012 skill (count === 0 —
+        // the production population at the 0012 cutover, no GHA backfill) or any
+        // drifted row has a live body that is NOT already a version: snapshot it
+        // BEFORE the new version so Undo stays intact. This is the write-path
+        // equivalent of createUserSkill's initial row — not a data backfill.
+        const newest = await tx
+          .select({ body: userSkillVersions.body })
+          .from(userSkillVersions)
+          .where(eq(userSkillVersions.skillId, pid))
+          .orderBy(desc(userSkillVersions.createdAt))
+          .limit(1);
+        if (newest.length === 0 || newest[0].body !== prevBody) {
+          await tx.insert(userSkillVersions).values({
+            skillId: pid,
+            body: prevBody,
+            label: '',
+          });
+        }
+
         const updated = await tx
           .update(userSkills)
           .set({ body: clean, updatedAt: new Date() })

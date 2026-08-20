@@ -606,6 +606,93 @@ describe('skill version history (plan #711 phase 1)', () => {
     expect(await countVersions(id)).toBe(SKILL_VERSION_MAX);
   });
 
+  it('at the cap, rollbackSkill rejects AND leaves the live body unchanged', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'v1' },
+      { db: db as never },
+    );
+    const id = created.ok ? created.value.id : '';
+    if (!created.ok) throw new Error('expected ok');
+    await updateUserSkillBody(userId, id, 'v2', { db: db as never });
+
+    // Find the v1 version row to attempt a rollback to.
+    const rows = await db
+      .select()
+      .from(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, id));
+    const v1Row = rows.find((r) => r.body === 'v1');
+    if (!v1Row) throw new Error('expected v1 version row');
+
+    // Seed to exactly SKILL_VERSION_MAX rows (create added 1, update added 1).
+    for (let i = 0; i < SKILL_VERSION_MAX - 2; i++) {
+      await db.insert(schema.userSkillVersions).values({
+        skillId: id,
+        body: `seed-${i}`,
+        label: '',
+      });
+    }
+    expect(await countVersions(id)).toBe(SKILL_VERSION_MAX);
+
+    // At the cap, rollback (which would INSERT a row) must be rejected WITHOUT
+    // mutating the live body (adversarial-review L6 round 2: untested branch).
+    const rejected = await rollbackSkill(userId, id, v1Row.id, { db: db as never });
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.code).toBe('invalid_body');
+
+    const bySlug = await getSkillBySlug(userId, 'a', { db: db as never });
+    expect(bySlug.ok).toBe(true);
+    if (!bySlug.ok) throw new Error('expected ok');
+    // Body is still v2 — the cap reject never committed a write.
+    expect(bySlug.value?.body).toBe('v2');
+
+    // No version row was added for the rejected rollback.
+    expect(await countVersions(id)).toBe(SKILL_VERSION_MAX);
+  });
+
+  it('first edit of a legacy pre-0012 skill (count === 0) snapshots the ORIGINAL body so Restore can reach it', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'legacy' },
+      { db: db as never },
+    );
+    const id = created.ok ? created.value.id : '';
+    if (!created.ok) throw new Error('expected ok');
+    // Simulate a pre-0012 skill (schema-only cutover, no backfill): the skill
+    // exists but has NO version history yet (adversarial-review L1 round 2).
+    await db
+      .delete(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, id));
+    expect(await countVersions(id)).toBe(0);
+
+    const updated = await updateUserSkillBody(userId, id, 'edited', {
+      db: db as never,
+    });
+    expect(updated.ok).toBe(true);
+
+    // Two rows now: the ORIGINAL pre-edit body + the new edited body. The
+    // original was snapshotted BEFORE the update so the timeline exposes a
+    // Restore target for the previous playbook (not just the new text).
+    const rows = await db
+      .select()
+      .from(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, id));
+    expect(rows).toHaveLength(2);
+    const bodies = rows.map((r) => r.body);
+    expect(bodies).toContain('legacy');
+    expect(bodies).toContain('edited');
+
+    // Restore to the snapshotted original works.
+    const origRow = rows.find((r) => r.body === 'legacy');
+    if (!origRow) throw new Error('expected original snapshot row');
+    const rolled = await rollbackSkill(userId, id, origRow.id, { db: db as never });
+    expect(rolled.ok).toBe(true);
+    const bySlug = await getSkillBySlug(userId, 'a', { db: db as never });
+    expect(bySlug.ok).toBe(true);
+    if (!bySlug.ok) throw new Error('expected ok');
+    expect(bySlug.value?.body).toBe('legacy');
+  });
+
   it('deleting a skill cascade-deletes its version history (FK ON DELETE CASCADE)', async () => {
     const { userId } = await seedUser('t1', 'u@example.com');
     const created = await createUserSkill(
