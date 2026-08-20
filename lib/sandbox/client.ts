@@ -5,6 +5,7 @@ import {
   type ReadFileResult,
   type SandboxClientOptions,
   type StatResult,
+  type StrReplaceErrorWindow,
   type WriteFileResult,
   type StrReplaceResult,
 } from './types';
@@ -296,6 +297,52 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
     return (await fetchHealth(init)).version;
   }
 
+  /**
+   * Parse additive `window` / `windows` fields from a str_replace error body.
+   * Normalizes both single-window (not-found) and multi-window (multi-match)
+   * into a single `StrReplaceErrorWindow[]` array. Returns undefined when
+   * neither field is present (non-str_replace errors, old daemons).
+   */
+  function parseStrReplaceWindows(
+    data: Record<string, unknown>,
+  ): StrReplaceErrorWindow[] | undefined {
+    const windowsRaw = data['windows'];
+    if (Array.isArray(windowsRaw)) {
+      // Return whatever the daemon sent — even an empty array (defensive;
+      // with the indexOf-based daemon match loop this should not happen, but
+      // a daemon bug must not cause the client to fall through to the `window`
+      // key and silently drop the windows).
+      return windowsRaw
+        .filter(
+          (w): w is Record<string, unknown> =>
+            w != null && typeof w === 'object' && typeof (w as Record<string, unknown>).content === 'string',
+        )
+        .map((w) => ({
+          content: String(w.content),
+          ...(typeof w.offset === 'number' ? { offset: w.offset } : {}),
+          ...(typeof w.line === 'number' ? { line: w.line } : {}),
+          ...(typeof w.truncated === 'boolean' ? { truncated: w.truncated } : {}),
+          ...(typeof w.size === 'number' ? { size: w.size } : {}),
+        }));
+    }
+    const windowRaw = data['window'];
+    if (windowRaw != null && typeof windowRaw === 'object') {
+      const w = windowRaw as Record<string, unknown>;
+      if (typeof w.content === 'string') {
+        return [
+          {
+            content: String(w.content),
+            ...(typeof w.offset === 'number' ? { offset: w.offset } : {}),
+            ...(typeof w.line === 'number' ? { line: w.line } : {}),
+            ...(typeof w.truncated === 'boolean' ? { truncated: w.truncated } : {}),
+            ...(typeof w.size === 'number' ? { size: w.size } : {}),
+          },
+        ];
+      }
+    }
+    return undefined;
+  }
+
   async function postJson<T>(
     path: string,
     body: unknown,
@@ -363,8 +410,17 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
           typeof rec.error === 'string'
             ? rec.error
             : `Sandbox request failed (${res.status})`;
+        // Parse additive window/windows fields from error body (str_replace excerpt).
+        const strReplaceWindows = parseStrReplaceWindows(
+          (data ?? {}) as Record<string, unknown>,
+        );
         // Never include token in thrown message
-        throw new SandboxHttpError(redactedMessage(errMsg), res.status);
+        throw new SandboxHttpError(
+          redactedMessage(errMsg),
+          res.status,
+          'SANDBOX_HTTP',
+          strReplaceWindows,
+        );
       }
 
       return data as T;
