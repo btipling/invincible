@@ -228,7 +228,7 @@ export function createSandboxServer(opts) {
         return;
       }
       if (err instanceof ToolError) {
-        sendError(res, err.status, err.message);
+        sendJson(res, err.status, { error: err.message, ...(err.extra ?? {}) });
         return;
       }
       console.error('[sandbox] unhandled', err);

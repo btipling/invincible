@@ -64,16 +64,38 @@ export type SandboxClientOptions = {
   expectedDaemonVersion?: number;
 };
 
+/** Window into a file excerpt returned on str_replace errors. */
+export type StrReplaceErrorWindow = {
+  /** Excerpt content, capped at STR_REPLACE_EXCERPT_MAX_BYTES. */
+  content: string;
+  /** 1-based line of the first line in the excerpt. */
+  offset?: number;
+  /** 1-based line of the match (multi-match windows only). */
+  line?: number;
+  /** True when the excerpt (or window content) was truncated. */
+  truncated?: boolean;
+  /** Byte length of the full file (not-found head excerpt only). */
+  size?: number;
+};
+
 export type SandboxHttpErrorCode = 'SANDBOX_HTTP' | 'SANDBOX_DAEMON_OUT_OF_DATE';
 
 export class SandboxHttpError extends Error {
   readonly status: number;
   readonly code: SandboxHttpErrorCode;
+  /** Windows from a str_replace error response (undefined when absent / not a str_replace error). */
+  readonly strReplaceWindows?: StrReplaceErrorWindow[];
 
-  constructor(message: string, status: number, code: SandboxHttpErrorCode = 'SANDBOX_HTTP') {
+  constructor(
+    message: string,
+    status: number,
+    code: SandboxHttpErrorCode = 'SANDBOX_HTTP',
+    strReplaceWindows?: StrReplaceErrorWindow[],
+  ) {
     super(message);
     this.name = 'SandboxHttpError';
     this.status = status;
     this.code = code;
+    this.strReplaceWindows = strReplaceWindows;
   }
 }

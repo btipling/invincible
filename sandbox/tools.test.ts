@@ -522,3 +522,182 @@ describe('sandbox tools fingerprints + stat', () => {
     await expect(statTool(ws, { path: '../escape' })).rejects.toThrow(JailError);
   });
 });
+
+describe('str_replace excerpt windows', () => {
+  let tmp: string;
+
+  afterEach(async () => {
+    if (tmp) await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  async function mkWorkspace(): Promise<string> {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'sandbox-sr-win-'));
+    return tmp;
+  }
+
+  it('not-found → error includes file head excerpt', async () => {
+    const ws = await mkWorkspace();
+    await writeFileTool(ws, { path: 'f.ts', content: 'line A\nline B\nline C\n' });
+    try {
+      await strReplaceTool(ws, { path: 'f.ts', old_string: 'nope', new_string: 'x' });
+      expect.fail('expected ToolError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ToolError);
+      const te = err as ToolError;
+      expect(te.status).toBe(400);
+      expect(te.message).toBe('old_string not found in file');
+      expect(te.extra).toBeDefined();
+      expect(te.extra!.window).toBeDefined();
+      expect(te.extra!.window.content).toContain('line A');
+      expect(te.extra!.window.offset).toBe(1);
+      expect(te.extra!.window.truncated).toBe(false);
+      expect(te.extra!.window.size).toBeGreaterThan(0);
+    }
+  });
+
+  it('multi-match → error includes match windows with ±3 lines and > prefix', async () => {
+    const ws = await mkWorkspace();
+    const content = [
+      '// line 1',
+      '// line 2',
+      '// line 3',
+      'const x = TARGET;',
+      '// line 5',
+      '// line 6',
+      '// line 7',
+      '// line 8',
+      '// line 9',
+      'const y = TARGET;',
+      '// line 11',
+      '// line 12',
+      '// line 13',
+    ].join('\n');
+    await writeFileTool(ws, { path: 'g.ts', content });
+    try {
+      await strReplaceTool(ws, { path: 'g.ts', old_string: 'TARGET', new_string: 'REPLACED' });
+      expect.fail('expected ToolError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ToolError);
+      const te = err as ToolError;
+      expect(te.status).toBe(409);
+      expect(te.message).toContain('matched 2 times');
+      expect(te.extra).toBeDefined();
+      expect(te.extra!.windows).toBeDefined();
+      expect(te.extra!.windows!.length).toBe(2);
+
+      // First match at line 4
+      const w0 = te.extra!.windows![0];
+      expect(w0.line).toBe(4);
+      expect(w0.offset).toBe(1);
+      expect(w0.content).toContain('> const x = TARGET;');
+      expect(w0.content).toContain('  // line 3');
+      expect(w0.content).toContain('  // line 5');
+
+      // Second match at line 10
+      const w1 = te.extra!.windows![1];
+      expect(w1.line).toBe(10);
+      expect(w1.offset).toBe(7);
+      expect(w1.content).toContain('> const y = TARGET;');
+      expect(w1.content).toContain('  // line 9');
+      expect(w1.content).toContain('  // line 11');
+    }
+  });
+
+  it('many matches → windows capped at STR_REPLACE_EXCERPT_MAX_MATCHES', async () => {
+    const ws = await mkWorkspace();
+    // 100 lines each containing TARGET
+    const lines = Array.from({ length: 100 }, (_, i) => `line ${i + 1}: TARGET`);
+    const content = lines.join('\n');
+    await writeFileTool(ws, { path: 'h.ts', content });
+    try {
+      await strReplaceTool(ws, { path: 'h.ts', old_string: 'TARGET', new_string: 'X' });
+      expect.fail('expected ToolError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ToolError);
+      const te = err as ToolError;
+      expect(te.status).toBe(409);
+      expect(te.message).toContain('matched 100 times');
+      expect(te.extra!.windows).toBeDefined();
+      // Capped at 5 (STR_REPLACE_EXCERPT_MAX_MATCHES)
+      expect(te.extra!.windows!.length).toBeLessThanOrEqual(5);
+    }
+  });
+
+  it('file head truncated when larger than EXCERPT_MAX_BYTES', async () => {
+    const ws = await mkWorkspace();
+    // Create a file larger than 2048 bytes
+    const bigLine = 'x'.repeat(100) + '\n';
+    const bigContent = bigLine.repeat(30); // ~3 KiB
+    await writeFileTool(ws, { path: 'big.ts', content: bigContent });
+    try {
+      await strReplaceTool(ws, { path: 'big.ts', old_string: 'nope', new_string: 'x' });
+      expect.fail('expected ToolError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ToolError);
+      const te = err as ToolError;
+      expect(te.extra!.window.truncated).toBe(true);
+      // Content should be capped at ~2048 bytes
+      expect(Buffer.byteLength(te.extra!.window.content, 'utf8')).toBeLessThanOrEqual(2200);
+    }
+  });
+
+  it('match windows capped at 2 when under max (all shown)', async () => {
+    const ws = await mkWorkspace();
+    const content = [
+      'first: TARGET',
+      '',
+      'second: TARGET',
+      '',
+      'third: not-a-match',
+    ].join('\n');
+    await writeFileTool(ws, { path: 'under.ts', content });
+    try {
+      await strReplaceTool(ws, { path: 'under.ts', old_string: 'TARGET', new_string: 'X' });
+      expect.fail('expected ToolError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ToolError);
+      const te = err as ToolError;
+      expect(te.extra!.windows!.length).toBe(2);
+    }
+  });
+
+  it('match windows preserve > prefix on match line only', async () => {
+    const ws = await mkWorkspace();
+    // Two matches so we get the multi-match error (409) with windows
+    const content = [
+      '// pre1',
+      '// pre2',
+      '// pre3',
+      'const found = TARGET; // first match',
+      '// post1',
+      '// post2',
+      '',
+      '// gap1',
+      '// gap2',
+      'const other = TARGET; // second match',
+      '// post3',
+      '// post4',
+      '// post5',
+    ].join('\n');
+    await writeFileTool(ws, { path: 'prefix.ts', content });
+    try {
+      await strReplaceTool(ws, { path: 'prefix.ts', old_string: 'TARGET', new_string: 'X' });
+      expect.fail('expected ToolError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ToolError);
+      const te = err as ToolError;
+      expect(te.status).toBe(409);
+      const w = te.extra!.windows![0];
+      const lines = w.content.split('\n');
+      // Find the match line
+      const matchLine = lines.find((l: string) => l.startsWith('> '));
+      expect(matchLine).toBeDefined();
+      expect(matchLine).toContain('TARGET');
+      // Other lines should NOT have > prefix
+      const nonMatchLines = lines.filter((l: string) => !l.startsWith('> '));
+      for (const nl of nonMatchLines) {
+        expect(nl.startsWith('  ')).toBe(true);
+      }
+    }
+  });
+});

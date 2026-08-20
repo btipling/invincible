@@ -54,4 +54,10 @@ export const MAX_STDIO_BYTES = 4 * 1024 * 1024; // 4 MiB
 /** Max JSON request body (must fit large write_file content). */
 export const MAX_JSON_BODY_BYTES = 20 * 1024 * 1024; // 20 MiB
 
+/** str_replace error excerpt window: max bytes for file-head / match-window content. */
+export const STR_REPLACE_EXCERPT_MAX_BYTES = 2048; // 2 KiB
+
+/** str_replace multi-match error: max match windows to return. */
+export const STR_REPLACE_EXCERPT_MAX_MATCHES = 5;
+
 export const DEFAULT_LISTEN = '127.0.0.1:8787';
