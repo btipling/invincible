@@ -55,6 +55,11 @@ BYOK tables):
 2. Actions → **db-migrate** → Run workflow with `confirm` = `migrate`.
 3. Optional `dry_run` = true validates secret presence only (no mutate).
 
+The workflow (and `npm run db:migrate` / `npm test`) runs
+`scripts/drizzle-journal-gate.mjs` **before** `drizzle-kit migrate`. SQL files
+under `db/migrations/` that are missing from `meta/_journal.json` fail the job
+instead of a silent no-op (#735).
+
 Workflow: [`.github/workflows/db-migrate.yml`](../.github/workflows/db-migrate.yml)
 
 This is the schema-only path; the tenancy bootstrap is the app's first-run
