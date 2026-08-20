@@ -89,6 +89,13 @@ pub fn paintToolRun(
 
     if (total == 0) return false;
 
+    // Turn-membership, not thinking-specific: `thinking_collapse_state.isActiveTurnFull`
+    // answers "does physical ring slot `s` fall inside the current Busy turn's
+    // written range [active_turn_start_slot, ring_head)?" — a general predicate the
+    // thinking rows also use. We reuse it to pin a tool-run group open while its
+    // turn is active. The helper lives in the thinking_collapse module for history
+    // reasons; it is NOT a thinking-only concept. Do not rename/relocate it as a
+    // layering cleanup — the name is Plan #715-locked.
     const is_active = if (slot) |s|
         state.thinking_collapse_state.isActiveTurnFull(s, bridge.messageHead(), bridge.RING_CAP)
     else
