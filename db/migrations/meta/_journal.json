@@ -85,6 +85,27 @@
       "when": 1786020000000,
       "tag": "0011_user_skills",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1786040000000,
+      "tag": "0012_user_skill_versions",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1786060000000,
+      "tag": "0013_always_on_skills",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1786080000000,
+      "tag": "0014_recommended_skills",
+      "breakpoints": true
     }
   ]
 }
