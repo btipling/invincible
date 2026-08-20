@@ -126,7 +126,10 @@ export function formatLineWindow(
   return { body, returned: selected.length, totalLines };
 }
 
-/** Full-file edit grant: offset 1, not byte-truncated, window reached content EOF. */
+/**
+ * Full-file edit grant: offset 1 + daemon returned full content (not byte-truncated).
+ * Line-window limits (totalLines/returned) are display-only and do NOT block the grant.
+ */
 export function isFullFileReadGrant(opts: {
   offset: number;
   returned: number;
@@ -134,7 +137,7 @@ export function isFullFileReadGrant(opts: {
   byteTruncated: boolean;
 }): boolean {
   if (opts.offset !== 1 || opts.byteTruncated) return false;
-  return opts.offset - 1 + opts.returned >= opts.totalLines;
+  return true;
 }
 
 function parsePositiveInt(n: unknown, fallback: number): number {

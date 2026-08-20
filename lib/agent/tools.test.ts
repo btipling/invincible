@@ -1507,6 +1507,7 @@ describe('read_file line window (plan #689)', () => {
         byteTruncated: false,
       }),
     ).toBe(true);
+    // window clipped by display limit but daemon returned full content → grant
     expect(
       isFullFileReadGrant({
         offset: 1,
@@ -1514,7 +1515,7 @@ describe('read_file line window (plan #689)', () => {
         totalLines: 1400,
         byteTruncated: false,
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       isFullFileReadGrant({
         offset: 1,
@@ -1563,11 +1564,18 @@ describe('read_file line window (plan #689)', () => {
     )) as string;
     expect(edit).toMatch(/^str_replace a\.txt: ok/);
   });
-
-  it('defaults: 1400-line file is truncated and does not grant', async () => {
+  it('defaults: 1400-line file with default limit grants edit (window is display-only)', async () => {
     const client = mockClient({
       readFile: vi.fn(async () => ({
         content: nLines(1400),
+        mtimeMs: 1,
+        size: 10_000,
+      })),
+      strReplace: vi.fn(async () => ({
+        ok: true as const,
+        path: 'big.txt',
+        replacements: 1,
+        bytes: 2,
         mtimeMs: 1,
         size: 10_000,
       })),
@@ -1583,17 +1591,20 @@ describe('read_file line window (plan #689)', () => {
       freshness: createRunFileFreshness(),
     });
     const out = (await tools.read_file.execute!({ path: 'big.txt' }, execCtx)) as string;
+    // window still shows 1000/1400 but no (truncated) — daemon returned full content
     expect(out).toMatch(
-      /^read_file big\.txt offset=1 limit=1000 lines=1000\/1400 \(truncated\):/,
+      /^read_file big\.txt offset=1 limit=1000 lines=1000\/1400:/,
     );
+    expect(out).not.toContain('(truncated)');
     expect(out).toContain('1→L1');
     expect(out).toContain('1000→L1000');
     expect(out).not.toContain('1001→');
+    // edit should succeed — grant is based on offset=1 + no byte trunc, not line window
     const edit = (await tools.str_replace.execute!(
       { path: 'big.txt', old_string: 'L1', new_string: 'X' },
       execCtx,
     )) as string;
-    expect(edit).toMatch(/truncated read_file/);
+    expect(edit).toMatch(/^str_replace big\.txt: ok/);
   });
 
   it('defaults: exactly 1000 lines grants', async () => {
@@ -1669,10 +1680,18 @@ describe('read_file line window (plan #689)', () => {
     expect(edit).toMatch(/truncated read_file/);
   });
 
-  it('offset=1 limit=20 on 50-line file does not grant', async () => {
+  it('offset=1 limit=20 on 50-line file grants edit (window is display-only)', async () => {
     const client = mockClient({
       readFile: vi.fn(async () => ({
         content: nLines(50),
+        mtimeMs: 1,
+        size: 100,
+      })),
+      strReplace: vi.fn(async () => ({
+        ok: true as const,
+        path: 'a.txt',
+        replacements: 1,
+        bytes: 2,
         mtimeMs: 1,
         size: 100,
       })),
@@ -1691,14 +1710,14 @@ describe('read_file line window (plan #689)', () => {
       { path: 'a.txt', offset: 1, limit: 20 },
       execCtx,
     )) as string;
-    expect(out).toMatch(/lines=20\/50 \(truncated\)/);
+    // line window is 20/50 but offset=1 + no byte trunc → full grant
+    expect(out).not.toContain('(truncated)');
     const edit = (await tools.str_replace.execute!(
       { path: 'a.txt', old_string: 'L1', new_string: 'X' },
       execCtx,
     )) as string;
-    expect(edit).toMatch(/truncated read_file/);
+    expect(edit).toMatch(/^str_replace a\.txt: ok/);
   });
-
   it('offset past EOF is empty + truncated', async () => {
     const client = mockClient({
       readFile: vi.fn(async () => ({ content: nLines(10), mtimeMs: 1, size: 20 })),
@@ -1821,11 +1840,19 @@ describe('read_file line window (plan #689)', () => {
     expect(edit).toMatch(/^str_replace a\.txt: ok/);
   });
 
-  it('trailing-newline 1000-line file is truncated at default limit', async () => {
+  it('trailing-newline 1000-line file grants edit at default limit (window is display-only)', async () => {
     const content = nLines(READ_FILE_DEFAULT_LIMIT) + '\n'; // POSIX trailing newline
     const client = mockClient({
       readFile: vi.fn(async () => ({
         content,
+        mtimeMs: 1,
+        size: 4000,
+      })),
+      strReplace: vi.fn(async () => ({
+        ok: true as const,
+        path: 't.txt',
+        replacements: 1,
+        bytes: 2,
         mtimeMs: 1,
         size: 4000,
       })),
@@ -1841,13 +1868,13 @@ describe('read_file line window (plan #689)', () => {
       freshness: createRunFileFreshness(),
     });
     const out = (await tools.read_file.execute!({ path: 't.txt' }, execCtx)) as string;
-    // trailing \n adds an empty 1001st line → default limit 1000 misses it
-    expect(out).toMatch(/lines=1000\/1001 \(truncated\)/);
+    // trailing \n makes 1001 lines, default limit clips to 1000 — but offset=1 + no byte trunc = grant
+    expect(out).not.toContain('(truncated)');
     const edit = (await tools.str_replace.execute!(
       { path: 't.txt', old_string: 'L1', new_string: 'X' },
       execCtx,
     )) as string;
-    expect(edit).toMatch(/truncated read_file/);
+    expect(edit).toMatch(/^str_replace t\.txt: ok/);
   });
 
   it('trailing-newline 1000-line file grants with limit=1001', async () => {

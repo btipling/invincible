@@ -711,9 +711,9 @@ Agent filesystem tools enforce **read-before-edit** on the shared sandbox jail:
 
 | Rule | Behavior |
 |------|----------|
-| Edit existing file | A successful **full** **`read_file`** of that path is required **in this agent run** before **`str_replace`** or overwriting with **`write_file`**. Full means `offset` 1 and the window reached the end of the returned content, not clipped by `limit` or `maxBytes` |
+| Edit existing file | A successful **full** **`read_file`** of that path is required **in this agent run** before **`str_replace`** or overwriting with **`write_file`**. Full means `offset` 1 and the daemon returned the full file (not byte-truncated by `maxBytes`). Line-window limits (default 1000) are display-only and do NOT block the edit grant |
 | Create new file | **`write_file`** to a path that does not exist yet does **not** require a prior read. Existence is decided only when **`stat` reports true path-missing** (e.g. ENOENT / daemon `Path not found`) — not on bare HTTP 404 or generic `Not found` from a missing route |
-| Truncated read | Does **not** authorize edit — including a default 1000-line window on a longer file, any `offset` other than 1, or a `maxBytes` prefix. Re-read the full file (`offset` 1 and a `limit` that covers every line) first |
+| Truncated read | Does **not** authorize edit when `offset` is other than 1, or the daemon returned a byte-truncated (`maxBytes`) prefix. A default 1000-line window on a longer file authorizes edit — the line window is display-only |
 | Concurrent change | Before each mutate, tools **re-stat** the path. If mtime/size changed since the last observation (another browser tab, device, agent run, **`exec`**, or human on the same workspace), the tool soft-fails and the model must **`read_file` again** |
 | Soft fail | Tools return `ERROR write_file:` / `ERROR str_replace:` strings — they do not throw |
 | Unknown existence | If pre-mutate **`stat` fails** for a reason other than path-missing (including a daemon that does not implement **`POST /v1/stat`** yet), tools **fail closed** — they do **not** treat the path as create-new and do **not** overwrite |
