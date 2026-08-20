@@ -127,11 +127,10 @@ export function formatLineWindow(
 }
 
 /**
- * Full-file edit grant: offset 1 + daemon returned full content (not byte-truncated).
- * Line-window limits (totalLines/returned) are display-only and do NOT block the
- * grant. When the window clips the file, the read_file output still shows
- * `(truncated)` with a hint to increase limit — the model must re-read with
- * `limit>=totalLines` before editing to confirm it has seen every line.
+ * Full-file edit grant: offset 1, daemon returned full content (not byte-truncated),
+ * AND the model saw every line (line-window not clipped by limit). When the window
+ * clips, read_file shows `(truncated) — use limit>=N to read all lines` so the
+ * model can re-read with a larger limit and achieve a grant.
  */
 export function isFullFileReadGrant(opts: {
   offset: number;
@@ -140,7 +139,7 @@ export function isFullFileReadGrant(opts: {
   byteTruncated: boolean;
 }): boolean {
   if (opts.offset !== 1 || opts.byteTruncated) return false;
-  return true;
+  return opts.returned >= opts.totalLines;
 }
 
 function parsePositiveInt(n: unknown, fallback: number): number {
@@ -408,7 +407,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const read_file = tool({
     description:
-      'Read a text file from the sandbox workspace (max 16 MiB). Optional offset (1-based start line, default 1) and limit (max lines, default 1000) return a line-numbered window (N→content). A successful full read — offset 1 covering every line of the returned content, not clipped by limit or maxBytes — authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. The grant is given when offset=1 and the daemon returned the full file (not byte-truncated). When the default limit clips the window, the result shows (truncated) with a hint — increase limit to the total line count for a full view. Path is relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
+      'Read a text file from the sandbox workspace (max 16 MiB). Optional offset (1-based start line, default 1) and limit (max lines, default 1000) return a line-numbered window (N→content). A successful full read — offset 1 covering every line of the returned content, not clipped by limit or maxBytes — authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. When the default limit clips the window, the result shows (truncated) — use limit>=N to read all lines — and the edit grant is denied until the model re-reads with a larger limit. Path is relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
     inputSchema: jsonSchema<{
       path: string;
       maxBytes?: number;
@@ -473,9 +472,9 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         } else {
           freshness.recordRead(path, { truncated: true });
         }
-        // Show (truncated) when the line window clips the file (even when
-        // the edit grant is given — the model still hasn't seen those lines)
-        // or when the daemon byte-truncated the result.
+        // Show (truncated) when the line window clips the file (grant is
+        // denied — the model hasn't seen every line) or when the daemon
+        // byte-truncated the result.
         const truncated = byteTruncated || windowClipped;
         const flag = truncated ? ' (truncated)' : '';
         // When offset=1 and the limit clips the window, tell the model to
