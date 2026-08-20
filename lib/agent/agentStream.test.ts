@@ -388,6 +388,37 @@ describe('salientToolBits cwd tools', () => {
   });
 });
 
+describe('salientToolBits search', () => {
+  it('0 hits → search · 0 hits', () => {
+    const bits = salientToolBits('search', 'search src: 0 hits');
+    expect(bits).toBe('search · 0 hits');
+  });
+
+  it('1 hit (singular no trailing s — grammar fix)', () => {
+    const bits = salientToolBits('search', 'search src: 1 hit');
+    expect(bits).toBe('search · 1 hit');
+  });
+
+  it('N hits', () => {
+    const bits = salientToolBits('search', 'search src: 42 hits');
+    expect(bits).toBe('search · 42 hits');
+  });
+
+  it('N hits + truncated', () => {
+    const bits = salientToolBits(
+      'search',
+      'search src: 200 hits\ntruncated, 350 more\npath.ts:1:match\n...',
+    );
+    expect(bits).toBe('search · 200 hits · +350 more');
+  });
+
+  it('name fallback (no header match) uses raw first line', () => {
+    const bits = salientToolBits('search', 'search src: no matches found');
+    expect(bits).toBe('search src: no matches found');
+    expect(bits).not.toContain('0 hits');
+  });
+});
+
 describe('salientToolBits sandbox_info', () => {
   it('shows backend · cwd · env count, not PATH or values', () => {
     const raw = [
