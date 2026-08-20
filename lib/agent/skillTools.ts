@@ -21,6 +21,7 @@
  */
 import { jsonSchema, tool } from 'ai';
 import { SKILL_FETCH_MAX_RETURN_BYTES, SKILL_FIND_RESULT_MAX } from '../sessionCloudCaps';
+import { SKILL_SLUG_RE } from '../sessionCloudCaps';
 
 /** System-prompt addendum shown whenever the skill tools are on the tool surface. */
 export const SKILL_TOOLS_SYSTEM_ADDENDUM =
@@ -51,9 +52,22 @@ export type UserSkillsLike = {
   getSkillBySlug: (userId: string, slug: string) => Promise<FetchSkillResult>;
 };
 
+export type PersonasLike = {
+  getPersonaById: (
+    userId: string,
+    id: string,
+  ) => Promise<
+    | { ok: true; value: { recommendedSkillSlugs: string[] } | null }
+    | { ok: false; code: string; error: string }
+  >;
+};
+
 export type CreateSkillToolsOptions = {
   userId: string;
   userSkills: UserSkillsLike;
+  /** Optional persona-lookup seam (plan #720 phase 3). When set, `find_skill`
+   *  accepts an optional `personaId` that boosts persona-recommended skills. */
+  userPersonas?: PersonasLike;
 };
 
 function summarize(result: ListSkillsResult): string {
@@ -80,18 +94,23 @@ function boundBody(slug: string, body: string): string {
 }
 
 export function createSkillTools(opts: CreateSkillToolsOptions) {
-  const { userId, userSkills } = opts;
+  const { userId, userSkills, userPersonas } = opts;
 
   const findSkill = tool({
     description:
-      'Find the user\'s skills whose slug, name, or description match a query. Returns user-scoped summaries (slug, name, description) — never bodies. Use find_skill to locate the user\'s skills (search / catch typos) and fetch_skill to read the full body of one of the user\'s skills by slug.',
-    inputSchema: jsonSchema<{ query?: string }>({
+      'Find the user\'s skills whose slug, name, or description match a query. Returns user-scoped summaries (slug, name, description) — never bodies. Use find_skill to locate the user\'s skills (search / catch typos) and fetch_skill to read the full body of one of the user\'s skills by slug. Optionally pass personaId to boost persona-recommended skills to the top.',
+    inputSchema: jsonSchema<{ query?: string; personaId?: string }>({
       type: 'object',
       properties: {
         query: {
           type: 'string',
           description:
             'Case-insensitive substring to match against the skill slug, name, or description. Omit or leave empty to list your skills (bounded).',
+        },
+        personaId: {
+          type: 'string',
+          description:
+            'Optional persona id to boost its recommended skill slugs to the top of the results.',
         },
       },
       additionalProperties: false,
@@ -105,12 +124,60 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
         if (!result.ok) {
           return `ERROR find_skill: ${result.error}`;
         }
-        const matched = query
+        let matched = query
           ? result.value.filter((s) => {
               const hay = `${s.slug} ${s.name} ${s.description ?? ''}`.toLowerCase();
               return hay.includes(query);
             })
           : result.value;
+
+        // Phase 3 (#720): persona boost — resolve personaId against the caller's
+        // own personas. A foreign/unknown/other-user personaId → no boost.
+        if (userPersonas && input?.personaId) {
+          const personaId = String(input.personaId).trim();
+          if (personaId) {
+            try {
+              const pres = await userPersonas.getPersonaById(userId, personaId);
+              if (pres.ok && pres.value && Array.isArray(pres.value.recommendedSkillSlugs)) {
+                const recSet = new Set<string>();
+                for (const s of pres.value.recommendedSkillSlugs) {
+                  if (typeof s === 'string' && SKILL_SLUG_RE.test(s)) {
+                    recSet.add(s);
+                  }
+                }
+                if (recSet.size > 0) {
+                  // Stable sort: recommended slugs first (order in the rec array is
+                  // preserved), then the rest in original order.
+                  const recSlugs = pres.value.recommendedSkillSlugs.filter(
+                    (s: unknown) => typeof s === 'string' && recSet.has(s),
+                  );
+                  const rec: typeof matched = [];
+                  const rest: typeof matched = [];
+                  const seen = new Set<string>();
+                  for (const slug of recSlugs) {
+                    const s = matched.find(
+                      (m) => m.slug === slug && !seen.has(m.slug),
+                    );
+                    if (s) {
+                      seen.add(s.slug);
+                      rec.push(s);
+                    }
+                  }
+                  for (const m of matched) {
+                    if (!seen.has(m.slug)) {
+                      seen.add(m.slug);
+                      rest.push(m);
+                    }
+                  }
+                  matched = [...rec, ...rest];
+                }
+              }
+            } catch {
+              // Foreign/unknown personaId → no boost (never error).
+            }
+          }
+        }
+
         const bounded = matched.slice(0, SKILL_FIND_RESULT_MAX);
         const body = summarize({ ok: true as const, value: bounded });
         const over = matched.length - bounded.length;

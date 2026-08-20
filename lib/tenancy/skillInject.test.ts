@@ -436,3 +436,97 @@ describe('resolveSkillPreamble — inject byte budget (adversarial-review L5 + "
     expect(store.upserts[0]!.meta?.attachedSkills).toBe('["big","small"]');
   });
 });
+
+describe('resolveSkillPreamble — always-on auto-attach (plan #720 phase 2)', () => {
+  it('always-on slugs are prepended before sticky set, never persisted to meta', async () => {
+    const store = new FakeStore(
+      makeEnvelope({ attachedSkills: '["sticky"]' }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'none' },
+      sessionStore: store,
+      sessionKey: KEY,
+      alwaysOnSlugs: ['always-slug'],
+      userSkills: readerOf({
+        'always-slug': { body: 'always-on body' },
+        sticky: { body: 'sticky body' },
+      }),
+    });
+
+    // Both are injected, always-on first in preamble order.
+    expect(res.preamble).toContain('### Skill attached: always-slug');
+    expect(res.preamble).toContain('### Skill attached: sticky');
+    const alwaysIdx = res.preamble!.indexOf('always-slug');
+    const stickyIdx = res.preamble!.indexOf('sticky');
+    expect(alwaysIdx).toBeLessThan(stickyIdx);
+
+    // Both are in attachedSlugs (resolved set).
+    expect(res.attachedSlugs).toContain('always-slug');
+    expect(res.attachedSlugs).toContain('sticky');
+
+    // Persisted sticky set does NOT include the always-on slug.
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('["sticky"]');
+  });
+
+  it('always-on slugs are de-duplicated against sticky set', async () => {
+    const store = new FakeStore(
+      makeEnvelope({ attachedSkills: '["shared"]' }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'none' },
+      sessionStore: store,
+      sessionKey: KEY,
+      alwaysOnSlugs: ['shared'],
+      userSkills: readerOf({ shared: { body: 'shared body' } }),
+    });
+
+    // Injected exactly once (de-duped).
+    const blocks =
+      res.preamble?.match(/### Skill attached: shared/g) ?? [];
+    expect(blocks).toHaveLength(1);
+
+    // attachedSlugs has it once.
+    expect(res.attachedSlugs.filter((s) => s === 'shared')).toHaveLength(1);
+
+    // Persisted set is empty (shared is always-on, not sticky).
+    expect(store.upserts[0]!.meta?.attachedSkills).toBe('[]');
+  });
+
+  it('/unskill cannot detach an always-on slug', async () => {
+    const store = new FakeStore(
+      makeEnvelope({}),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'detach', slug: 'always-slug', rest: '' },
+      sessionStore: store,
+      sessionKey: KEY,
+      alwaysOnSlugs: ['always-slug'],
+      userSkills: readerOf({ 'always-slug': { body: 'always-on body' } }),
+    });
+
+    // always-slug still injected (cannot be detached).
+    expect(res.preamble).toContain('### Skill attached: always-slug');
+
+    // Detach event reports not_attached because the slug was not in the
+    // detachable (sticky) set.
+    const detachEv = res.events.find(
+      (e) => e.action === 'detach' && e.slug === 'always-slug',
+    );
+    expect(detachEv?.ok).toBe(false);
+  });
+
+  it('dangling always-on slug (skill deleted) is silently skipped', async () => {
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'none' },
+      alwaysOnSlugs: ['deleted-slug'],
+      userSkills: readerOf({}), // skill does not exist
+    });
+
+    expect(res.preamble).toBeUndefined();
+    expect(res.attachedSlugs).toEqual([]);
+  });
+});

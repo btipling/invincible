@@ -240,7 +240,7 @@ export async function POST(req: Request): Promise<Response> {
     // — they call only listUserSkills / getSkillBySlug, never a write path.
     extraTools = {
       ...extraTools,
-      ...createSkillTools({ userId, userSkills: services.userSkills }),
+      ...createSkillTools({ userId, userSkills: services.userSkills, userPersonas: services.userPersonas }),
     };
 
     // Phase 1 (#531): first-party persona + skill AUTHORING tools
@@ -332,7 +332,21 @@ export async function POST(req: Request): Promise<Response> {
     // The store is narrowed to the phase-0 ENVELOPE seam (adversarial-review
     // H2): the agent mirror writes `readEnvelope`/`upsertEnvelope` so it lands on
     // the same `harness:envelope:*` key the host writes, never legacy `get`/`put`.
-    if (skillCommand.type !== 'none' || parsed.sessionId) {
+    //
+    // Phase 2 (#720) — also resolve the always-on skill set (user-global toggle,
+    // re-resolved from DB every turn). Always-on slugs are prepended to the
+    // candidate set before sticky re-resolution and de-duplicated.
+    let alwaysOnSlugs: string[] | undefined;
+    try {
+      const aores = await services.userSkills.listAlwaysOnSkills(userId);
+      if (aores.ok) {
+        alwaysOnSlugs = aores.value.length > 0 ? aores.value : undefined;
+      }
+    } catch {
+      alwaysOnSlugs = undefined;
+    }
+
+    if (skillCommand.type !== 'none' || parsed.sessionId || alwaysOnSlugs) {
       try {
         const tenantRes = await services.harnessSessionsRedis.resolveTenantIdForUser(
           userId,
@@ -347,6 +361,7 @@ export async function POST(req: Request): Promise<Response> {
             userId,
             command: skillCommand,
             userSkills: services.userSkills,
+            alwaysOnSlugs,
             ...(sessionStore && parsed.sessionId
               ? {
                   sessionStore,

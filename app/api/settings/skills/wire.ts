@@ -89,6 +89,8 @@ export function skillErrorMessage(code: UserSkillsErrorCode): string {
       return 'Skill not found.';
     case 'no_membership':
       return 'No tenant membership found.';
+    case 'limit_reached':
+      return 'You have reached the maximum number of always-on skills.';
     case 'unavailable':
       return 'Skills are unavailable. If this is a new environment, run GitHub Actions workflow db-migrate (confirm=migrate).';
     default:

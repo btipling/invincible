@@ -15,6 +15,10 @@ import {
 } from '../../db';
 import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { loadSoleMembership } from './soleMembership';
+import {
+  SKILL_SLUG_RE,
+  PERSONA_RECOMMENDED_SKILLS_MAX,
+} from '../sessionCloudCaps';
 
 /** Display name limits. */
 export const PERSONA_NAME_MIN = 1;
@@ -44,7 +48,8 @@ export type UserPersonasErrorCode =
   | 'duplicate_slug'
   | 'not_found'
   | 'no_membership'
-  | 'unavailable';
+  | 'unavailable'
+  | 'limit_reached';
 
 export type UserPersonasResult<T> =
   | { ok: true; value: T }
@@ -56,6 +61,8 @@ export type UserPersonaSummary = {
   name: string;
   slug: string;
   isDefault: boolean;
+  /** Recommended skill slugs (plan #720 phase 3). Never validated on save. */
+  recommendedSkillSlugs: string[];
   updatedAt: Date;
 };
 
@@ -129,12 +136,24 @@ function validateBody(body: string): string | null {
   return b;
 }
 
+function parseRecommendedSlugs(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const s of value) {
+    if (typeof s === 'string' && SKILL_SLUG_RE.test(s) && !out.includes(s)) {
+      out.push(s);
+    }
+  }
+  return out;
+}
+
 function toSummary(
   row: {
     id: string;
     name: string;
     slug: string;
     isDefault: boolean;
+    recommendedSkillSlugs: unknown;
     updatedAt: Date;
   },
 ): UserPersonaSummary {
@@ -143,6 +162,7 @@ function toSummary(
     name: row.name,
     slug: row.slug,
     isDefault: row.isDefault,
+    recommendedSkillSlugs: parseRecommendedSlugs(row.recommendedSkillSlugs),
     updatedAt: row.updatedAt,
   };
 }
@@ -154,6 +174,8 @@ export type CreateUserPersonaInput = {
   body: string;
   /** Optional: mark as the single default. When omitted, existing default kept. */
   isDefault?: boolean;
+  /** Optional recommended skill slugs (plan #720 phase 3). Max PERSONA_RECOMMENDED_SKILLS_MAX. */
+  recommendedSkillSlugs?: string[];
 };
 
 export async function createUserPersona(
@@ -188,6 +210,24 @@ export async function createUserPersona(
       error: `body is required and must be ≤ ${PERSONA_BODY_MAX_BYTES} bytes`,
     };
   }
+  // Validate recommended skill slugs (plan #720 phase 3). Slugs are NOT
+  // validated against the user_skills table (a stale slug from a deleted skill
+  // stays until next persona edit). Only cap and slug charset are enforced.
+  const recSlugs = input.recommendedSkillSlugs ?? [];
+  if (recSlugs.length > PERSONA_RECOMMENDED_SKILLS_MAX) {
+    return {
+      ok: false,
+      code: 'limit_reached',
+      error: `recommended skills max ${PERSONA_RECOMMENDED_SKILLS_MAX}`,
+    };
+  }
+  const validRecSlugs: string[] = [];
+  for (const s of recSlugs) {
+    if (typeof s === 'string' && SKILL_SLUG_RE.test(s) && !validRecSlugs.includes(s)) {
+      validRecSlugs.push(s);
+    }
+  }
+  const recommendedSkillSlugs = JSON.stringify(validRecSlugs);
 
   try {
     const tid = await resolveTenantId(userId, deps);
@@ -221,6 +261,7 @@ export async function createUserPersona(
                 slug,
                 body,
                 isDefault: true,
+                recommendedSkillSlugs: recommendedSkillSlugs as never,
               })
               .returning({ id: userPersonas.id });
             return r;
@@ -235,6 +276,7 @@ export async function createUserPersona(
               slug,
               body,
               isDefault: false,
+              recommendedSkillSlugs: recommendedSkillSlugs as never,
             })
             .returning({ id: userPersonas.id });
           row = r;
@@ -415,6 +457,7 @@ export async function getPersonaById(
   slug: string;
   body: string;
   isDefault: boolean;
+  recommendedSkillSlugs: string[];
 } | null>> {
   const uid = userId?.trim();
   const pid = id?.trim();
@@ -449,6 +492,7 @@ export async function getPersonaById(
           slug: row.slug,
           body: row.body,
           isDefault: row.isDefault,
+          recommendedSkillSlugs: parseRecommendedSlugs(row.recommendedSkillSlugs),
         },
       };
     });
@@ -457,6 +501,69 @@ export async function getPersonaById(
       return { ok: false, code: 'unavailable', error: 'user_personas unavailable' };
     }
     return { ok: false, code: 'unavailable', error: 'could not load persona' };
+  }
+}
+
+/**
+ * Update a persona's recommended skill slugs (plan #720 phase 3).
+ * Replaces the entire array. Enforces PERSONA_RECOMMENDED_SKILLS_MAX cap
+ * and slug charset validation; does NOT validate against user_skills table.
+ */
+export async function updateRecommendedSlugs(
+  userId: string,
+  id: string,
+  slugs: string[],
+  deps: UserPersonasDeps = {},
+): Promise<UserPersonasResult<{ id: string }>> {
+  const uid = userId?.trim();
+  const pid = id?.trim();
+  if (!uid || !pid) {
+    return { ok: false, code: 'not_found', error: 'persona not found' };
+  }
+  if (slugs.length > PERSONA_RECOMMENDED_SKILLS_MAX) {
+    return {
+      ok: false,
+      code: 'limit_reached',
+      error: `recommended skills max ${PERSONA_RECOMMENDED_SKILLS_MAX}`,
+    };
+  }
+  const valid: string[] = [];
+  for (const s of slugs) {
+    if (typeof s === 'string' && SKILL_SLUG_RE.test(s) && !valid.includes(s)) {
+      valid.push(s);
+    }
+  }
+  const value = JSON.stringify(valid);
+
+  const tid = await resolveTenantId(uid, deps);
+  if (!tid.ok) return tid;
+
+  try {
+    return await withDb(deps, async (db) => {
+      const updated = await db
+        .update(userPersonas)
+        .set({
+          recommendedSkillSlugs: value as never,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(userPersonas.id, pid),
+            eq(userPersonas.userId, uid),
+            eq(userPersonas.tenantId, tid.value),
+          ),
+        )
+        .returning({ id: userPersonas.id });
+      if (!updated[0]) {
+        return { ok: false as const, code: 'not_found' as const, error: 'persona not found' };
+      }
+      return { ok: true, value: { id: pid } };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'user_personas unavailable' };
+    }
+    return { ok: false, code: 'unavailable', error: 'could not update recommended slugs' };
   }
 }
 
@@ -478,6 +585,7 @@ export async function listUserPersonas(
           name: userPersonas.name,
           slug: userPersonas.slug,
           isDefault: userPersonas.isDefault,
+          recommendedSkillSlugs: userPersonas.recommendedSkillSlugs,
           updatedAt: userPersonas.updatedAt,
         })
         .from(userPersonas)
@@ -513,6 +621,7 @@ export async function resolveDefaultPersona(
           name: userPersonas.name,
           slug: userPersonas.slug,
           isDefault: userPersonas.isDefault,
+          recommendedSkillSlugs: userPersonas.recommendedSkillSlugs,
           updatedAt: userPersonas.updatedAt,
         })
         .from(userPersonas)
@@ -665,5 +774,7 @@ export function createUserPersonas(deps: UserPersonasDeps = {}) {
       setDefaultPersona(userId, id, { ...deps, ...o }),
     clearDefaultPersona: (userId: string, o?: UserPersonasDeps) =>
       clearDefaultPersona(userId, { ...deps, ...o }),
+    updateRecommendedSlugs: (userId: string, id: string, slugs: string[], o?: UserPersonasDeps) =>
+      updateRecommendedSlugs(userId, id, slugs, { ...deps, ...o }),
   };
 }

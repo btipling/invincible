@@ -12,7 +12,9 @@ import {
   resolveDefaultPersona,
   setDefaultPersona,
   updateUserPersonaBody,
+  updateRecommendedSlugs,
 } from './userPersonas';
+import { PERSONA_RECOMMENDED_SKILLS_MAX } from '../sessionCloudCaps';
 import { getSharedDb, resetTenantTables } from './test/shared';
 
 let db!: ReturnType<typeof drizzle<typeof schema>>;
@@ -74,6 +76,7 @@ describe('userPersonas', () => {
       name: 'Frontend',
       slug: 'frontend',
       isDefault: false,
+      recommendedSkillSlugs: [],
       updatedAt: expect.any(Date),
     });
     expect('body' in (listed.value[0] as Record<string, unknown>)).toBe(false);
@@ -384,5 +387,112 @@ describe('userPersonas', () => {
     if (!ownDef.ok) throw new Error('expected ok');
     expect(ownDef.value).toBeNull();
     void aId;
+  });
+
+  // Plan #720 phase 3 — jsonb round-trip (adversarial-review L6).
+  it('create with recommendedSkillSlugs → getPersonaById → slugs are preserved (jsonb round-trip)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserPersona(
+      {
+        userId,
+        name: 'Rec',
+        slug: 'rec',
+        body: 'test',
+        recommendedSkillSlugs: ['create-plan', 'plan_review'],
+      },
+      { db: db as never },
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error('expected ok');
+
+    const full = await getPersonaById(userId, created.value.id, { db: db as never });
+    expect(full.ok).toBe(true);
+    if (!full.ok) throw new Error('expected ok');
+    expect(full.value?.recommendedSkillSlugs).toEqual(['create-plan', 'plan_review']);
+
+    // Summary projection also preserves the slugs.
+    const listed = await listUserPersonas(userId, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect(listed.value[0].recommendedSkillSlugs).toEqual(['create-plan', 'plan_review']);
+  });
+
+  it('updateRecommendedSlugs replaces and round-trips through getPersonaById', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserPersona(
+      {
+        userId,
+        name: 'Rec',
+        slug: 'rec',
+        body: 'test',
+        recommendedSkillSlugs: ['slug-a'],
+      },
+      { db: db as never },
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error('expected ok');
+    const id = created.value.id;
+
+    // Update replaces the entire array.
+    const upd = await updateRecommendedSlugs(userId, id, ['slug-b', 'slug-c'], { db: db as never });
+    expect(upd.ok).toBe(true);
+
+    const full = await getPersonaById(userId, id, { db: db as never });
+    expect(full.ok).toBe(true);
+    if (!full.ok) throw new Error('expected ok');
+    expect(full.value?.recommendedSkillSlugs).toEqual(['slug-b', 'slug-c']);
+  });
+
+  it('recommendedSkillSlugs are capped at PERSONA_RECOMMENDED_SKILLS_MAX', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const slugs = Array.from({ length: PERSONA_RECOMMENDED_SKILLS_MAX + 1 }, (_, i) => `s_${i}`);
+    const created = await createUserPersona(
+      {
+        userId,
+        name: 'Cap',
+        slug: 'cap',
+        body: 'x',
+        recommendedSkillSlugs: slugs,
+      },
+      { db: db as never },
+    );
+    expect(created.ok).toBe(false);
+    if (!created.ok) {
+      expect(created.code).toBe('limit_reached');
+      expect(created.error).toContain(`recommended skills max ${PERSONA_RECOMMENDED_SKILLS_MAX}`);
+    }
+
+    // updateRecommendedSlugs also enforces the cap.
+    const ok = await createUserPersona(
+      { userId, name: 'Cap', slug: 'cap2', body: 'x' },
+      { db: db as never },
+    );
+    expect(ok.ok).toBe(true);
+    if (!ok.ok) throw new Error('expected ok');
+    const upd = await updateRecommendedSlugs(userId, ok.value.id, slugs, { db: db as never });
+    expect(upd.ok).toBe(false);
+    if (!upd.ok) expect(upd.code).toBe('limit_reached');
+  });
+
+  it('recommendedSkillSlugs: invalid/malformed slugs are silently dropped on write', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserPersona(
+      {
+        userId,
+        name: 'Clean',
+        slug: 'clean',
+        body: 'x',
+        recommendedSkillSlugs: ['valid-slug', 'NOT_A_SLUG', '', 'also-valid'],
+      },
+      { db: db as never },
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error('expected ok');
+
+    const full = await getPersonaById(userId, created.value.id, { db: db as never });
+    expect(full.ok).toBe(true);
+    if (!full.ok) throw new Error('expected ok');
+    // Only valid slugs survive; duplicates are de-duplicated.
+    expect(full.value?.recommendedSkillSlugs).toEqual(['valid-slug', 'also-valid']);
   });
 });

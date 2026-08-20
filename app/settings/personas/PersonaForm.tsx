@@ -15,6 +15,7 @@ import {
   renamePersonaAction,
   setDefaultPersonaAction,
   updatePersonaBodyAction,
+  updatePersonaRecommendedSlugsAction,
   type PersonaActionState,
 } from './actions';
 
@@ -25,6 +26,8 @@ export type PersonaListItem = {
   /** Owner-visible body (server-component store read); never a client summary. */
   body: string;
   isDefault: boolean;
+  /** Recommended skill slugs (plan #720 phase 3). */
+  recommendedSkillSlugs: string[];
 };
 
 const initial: PersonaActionState = {};
@@ -134,7 +137,7 @@ function CreateForm() {
   );
 }
 
-function PersonaCard({ row, hasDefault }: { row: PersonaListItem; hasDefault: boolean }) {
+function PersonaCard({ row, hasDefault, skillSlugs }: { row: PersonaListItem; hasDefault: boolean; skillSlugs: string[] }) {
   const [renameState, renameAction, renamePending] = useActionState(
     renamePersonaAction,
     initial,
@@ -149,6 +152,10 @@ function PersonaCard({ row, hasDefault }: { row: PersonaListItem; hasDefault: bo
   );
   const [delState, delAction, delPending] = useActionState(
     deletePersonaAction,
+    initial,
+  );
+  const [recState, recAction, recPending] = useActionState(
+    updatePersonaRecommendedSlugsAction,
     initial,
   );
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -217,6 +224,57 @@ function PersonaCard({ row, hasDefault }: { row: PersonaListItem; hasDefault: bo
         <ActionFeedback state={bodyState} />
       </form>
 
+      {/* Recommended skills (plan #720 phase 3) */}
+      {skillSlugs.length > 0 ? (
+        <form action={recAction} style={{ marginBottom: 12 }}>
+          <input type="hidden" name="id" value={row.id} />
+          <Field label="Recommended skills" hint="Select skills to boost when this persona is used with find_skill. These are discovery hints only — they never auto-attach.">
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 4,
+                marginTop: 4,
+              }}
+            >
+              {skillSlugs.map((slug) => {
+                const checked = row.recommendedSkillSlugs.includes(slug);
+                return (
+                  <label
+                    key={slug}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 3,
+                      padding: '3px 8px',
+                      fontSize: 12,
+                      color: checked ? warm.accent : teal.muted,
+                      border: `1px solid ${checked ? warm.border : teal.border}`,
+                      borderRadius: 999,
+                      background: checked ? 'rgba(199,119,62,0.08)' : 'transparent',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      name="slug"
+                      value={slug}
+                      defaultChecked={checked}
+                      style={{ margin: 0, accentColor: warm.accent }}
+                    />
+                    {slug}
+                  </label>
+                );
+              })}
+            </div>
+          </Field>
+          <button type="submit" disabled={recPending} style={buttonGhostStyle()}>
+            {recPending ? 'Saving…' : 'Save recommended skills'}
+          </button>
+          <ActionFeedback state={recState} />
+        </form>
+      ) : null}
+
       <div
         style={{
           display: 'flex',
@@ -273,7 +331,7 @@ function PersonaCard({ row, hasDefault }: { row: PersonaListItem; hasDefault: bo
   );
 }
 
-export function PersonaForms({ personas }: { personas: PersonaListItem[] }) {
+export function PersonaForms({ personas, skillSlugs }: { personas: PersonaListItem[]; skillSlugs: string[] }) {
   const [clearState, clearAction, clearPending] = useActionState(
     clearDefaultPersonaAction,
     initial,
@@ -299,7 +357,7 @@ export function PersonaForms({ personas }: { personas: PersonaListItem[] }) {
         </p>
       ) : (
         personas.map((row) => (
-          <PersonaCard key={row.id} row={row} hasDefault={hasDefault} />
+          <PersonaCard key={row.id} row={row} hasDefault={hasDefault} skillSlugs={skillSlugs} />
         ))
       )}
     </div>

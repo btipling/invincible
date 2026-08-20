@@ -356,6 +356,13 @@ export const userPersonas = pgTable(
     body: text('body').notNull(),
     /** App-side single-default per user; boolean column, not a separate table. */
     isDefault: boolean('is_default').notNull().default(false),
+    /**
+     * Recommended skill slugs for this persona (plan #720 phase 3).
+     * JSON array of slugs, max PERSONA_RECOMMENDED_SKILLS_MAX entries.
+     * Recommended slugs are NOT validated on save (stale slug from deleted skill
+     * stays until next edit). Discovery-only; never auto-attach.
+     */
+    recommendedSkillSlugs: jsonb('recommended_skill_slugs').notNull().default(sql`'[]'::jsonb`),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -410,6 +417,11 @@ export const userSkills = pgTable(
     slug: text('slug').notNull(),
     /** Plaintext non-secret skill body. */
     body: text('body').notNull(),
+    /**
+     * Auto-attach to every new session (plan #720 phase 2).
+     * User-global toggle; enforced at USER_ALWAYS_ON_SKILLS_MAX when setting true.
+     */
+    isAlwaysOn: boolean('is_always_on').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

@@ -185,6 +185,91 @@ describe('createSkillTools', () => {
     expect(us.listUserSkills).toHaveBeenCalled();
     expect(us.getSkillBySlug).toHaveBeenCalled();
   });
+
+  // Plan #720 phase 3 — personaId boost (adversarial-review L6).
+  it('find_skill: personaId boosts recommended slugs to the top', async () => {
+    const us = makeUserSkills();
+    const userPersonas = {
+      getPersonaById: vi.fn(async (_uid: string, _id: string) => ({
+        ok: true as const,
+        value: { recommendedSkillSlugs: ['review-pr', 'create-plan'] },
+      })),
+    };
+    const { find_skill } = createSkillTools({
+      userId: 'user-1',
+      userSkills: us,
+      userPersonas,
+    });
+
+    // Pass personaId. 'review-pr' should come first, then 'create-plan',
+    // then unmoved 'fetch-http'.
+    const out = String(await find_skill.execute!(
+      { query: '', personaId: 'p1' },
+      execOpts,
+    ));
+    const lines = out.split('\n').filter((l) => /^[a-z]/.test(l));
+    expect(lines[0]).toContain('review-pr');
+    expect(lines[1]).toContain('create-plan');
+    expect(lines[2]).toContain('fetch-http');
+    expect(userPersonas.getPersonaById).toHaveBeenCalledWith('user-1', 'p1');
+  });
+
+  it('find_skill: foreign/unknown personaId → no boost, no error, no existence leak', async () => {
+    const us = makeUserSkills();
+    const spy = vi.fn();
+    const userPersonas = {
+      getPersonaById: vi.fn(async () => {
+        spy();
+        // Simulate a foreign-persona lookup: ok but null (no row for this user).
+        return { ok: true as const, value: null };
+      }),
+    };
+    const { find_skill } = createSkillTools({
+      userId: 'user-1',
+      userSkills: us,
+      userPersonas,
+    });
+
+    const out = String(await find_skill.execute!(
+      { query: '', personaId: 'foreign-id' },
+      execOpts,
+    ));
+    // No crash, no error — just the normal listing.
+    expect(out).toContain('create-plan');
+    expect(userPersonas.getPersonaById).toHaveBeenCalledWith('user-1', 'foreign-id');
+
+    // personaId is all-whitespace → no call at all.
+    const out2 = String(await find_skill.execute!(
+      { query: '', personaId: '   ' },
+      execOpts,
+    ));
+    expect(out2).toContain('create-plan');
+    // Only one call to getPersonaById (for the non-whitespace one).
+    expect(userPersonas.getPersonaById).toHaveBeenCalledTimes(1);
+  });
+
+  it('find_skill: personaId store error → no boost, returns normal listing', async () => {
+    const us = makeUserSkills();
+    const userPersonas = {
+      getPersonaById: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unavailable',
+        error: 'db down',
+      })),
+    };
+    const { find_skill } = createSkillTools({
+      userId: 'user-1',
+      userSkills: us,
+      userPersonas,
+    });
+
+    // Store down → no boost, listing still works.
+    const out = String(await find_skill.execute!(
+      { query: '', personaId: 'p1' },
+      execOpts,
+    ));
+    expect(out).toContain('create-plan');
+  });
 });
 
 describe('skill tool system prompts (phase 3 #516)', () => {

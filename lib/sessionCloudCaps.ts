@@ -127,6 +127,22 @@ export const META_SKILL_FRAGMENT_MAX_BYTES = 64 * 1024;
 export const SKILL_VERSION_MAX = 100;
 
 /**
+ * Max number of skills a user may set as always-on (plan #720 phase 2).
+ * Always-on skills auto-attach to every new session regardless of persona.
+ * NEW generous cap — 8 × ≤ 256 KiB inject budget fits inside the existing
+ * `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` (256 KiB) total inject budget.
+ * No existing cap changed.
+ */
+export const USER_ALWAYS_ON_SKILLS_MAX = 8;
+
+/**
+ * Max number of recommended skill slugs a persona may carry (plan #720 phase 3).
+ * Persists as a JSON array column on `user_personas`. NEW generous cap — a
+ * trivial ~500 bytes under the 1 MiB whole-meta cap. No existing cap changed.
+ */
+export const PERSONA_RECOMMENDED_SKILLS_MAX = 16;
+
+/**
  * Parse a stored `meta.attachedSkills` (a JSON-array string of skill slugs) into a
  * slug list. Client-safe single source shared by the host session repository
  * (`cloudMetaFor` / `parseCloudSessionSnapshot`), the server `skillInject`, and the

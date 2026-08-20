@@ -16,6 +16,7 @@ import {
 import { SKILL_VERSION_MAX } from '../../../lib/sessionCloudCaps';
 import {
   deleteSkillAction,
+  toggleAlwaysOnAction,
   updateSkillDetailsAction,
   type SkillActionState,
 } from './actions';
@@ -26,6 +27,8 @@ export type SkillListItem = {
   slug: string;
   /** Short summary (discovery surface shows name/slug/description only). */
   description: string;
+  /** Always-on auto-attach (plan #720 phase 2). */
+  isAlwaysOn: boolean;
   /** Owner-own body; the edit form loads it on demand via a measured GET route. */
   body: string;
 };
@@ -353,6 +356,10 @@ function SkillCard({ row }: { row: SkillListItem }) {
     deleteSkillAction,
     initial,
   );
+  const [alwaysOnState, alwaysOnAction, alwaysOnPending] = useActionState(
+    toggleAlwaysOnAction,
+    initial,
+  );
   const [confirmDelete, setConfirmDelete] = useState(false);
   // Skill bodies live server-side and are NOT inlined into the SSR page. Each card
   // loads its own body on demand via the measured `GET /api/settings/skills/:id/body`
@@ -510,6 +517,32 @@ function SkillCard({ row }: { row: SkillListItem }) {
       >
         <h2 style={{ margin: 0, fontSize: 16 }}>{row.name}</h2>
         <code style={{ color: warm.accent, fontSize: 12 }}>/{row.slug}</code>
+      </div>
+      {/* Always-on toggle (plan #720 phase 2) */}
+      <div style={{ marginBottom: 12 }}>
+        <form action={alwaysOnAction} style={{ display: 'inline' }}>
+          <input type="hidden" name="id" value={row.id} />
+          <input type="hidden" name="value" value={row.isAlwaysOn ? 'off' : 'on'} />
+          <button
+            type="submit"
+            disabled={alwaysOnPending}
+            style={{
+              ...buttonGhostStyle(),
+              fontSize: 12,
+              padding: '3px 10px',
+              color: row.isAlwaysOn ? warm.accent : teal.muted,
+              borderColor: row.isAlwaysOn ? warm.accent : teal.border,
+              background: row.isAlwaysOn ? 'rgba(199,119,62,0.12)' : 'transparent',
+            }}
+          >
+            {alwaysOnPending
+              ? '…'
+              : row.isAlwaysOn
+                ? '★ Always on'
+                : '☆ Not always on'}
+          </button>
+        </form>
+        <ActionFeedback state={alwaysOnState} />
       </div>
       {row.description ? (
         <p style={{ color: teal.muted, fontSize: 13, margin: '0 0 12px' }}>

@@ -40,6 +40,9 @@ async function PersonasPageBody({ userId }: { userId: string }) {
     );
   }
 
+  // Skill slugs for the recommended-skills multi-select (Phase 3, plan #720).
+  const skillsListed = await services.userSkills.listUserSkills(userId);
+
   const personas: PersonaListItem[] = [];
   for (const s of listed.value) {
     const full = await services.userPersonas.getPersonaById(userId, s.id);
@@ -49,8 +52,13 @@ async function PersonasPageBody({ userId }: { userId: string }) {
       slug: s.slug,
       body: full.ok && full.value ? full.value.body : '',
       isDefault: s.isDefault,
+      recommendedSkillSlugs: full.ok && full.value ? full.value.recommendedSkillSlugs : [],
     });
   }
 
-  return <PersonaForms personas={personas} />;
+  const skillSlugs: string[] = skillsListed.ok
+    ? skillsListed.value.map((sk) => sk.slug)
+    : [];
+
+  return <PersonaForms personas={personas} skillSlugs={skillSlugs} />;
 }

@@ -40,6 +40,8 @@ const MIGRATIONS = [
   '0010_user_personas.sql',
   '0011_user_skills.sql',
   '0012_user_skill_versions.sql',
+  '0013_always_on_skills.sql',
+  '0014_recommended_skills.sql',
 ];
 
 /**

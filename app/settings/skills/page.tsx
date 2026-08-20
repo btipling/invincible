@@ -54,6 +54,7 @@ async function SkillsPageBody({ userId }: { userId: string }) {
     name: s.name,
     slug: s.slug,
     description: s.description,
+    isAlwaysOn: s.isAlwaysOn,
     body: '',
   }));
 

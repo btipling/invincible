@@ -54,6 +54,7 @@ function makePersonaFake(initial: PRow[] = []) {
             name: r.name,
             slug: r.slug,
             isDefault: r.isDefault,
+            recommendedSkillSlugs: [] as string[],
             updatedAt: r.updatedAt,
           })),
       };
@@ -140,6 +141,7 @@ function makeSkillFake(initial: SRow[] = []) {
             name: r.name,
             slug: r.slug,
             description: r.description,
+            isAlwaysOn: false,
             updatedAt: r.updatedAt,
           })),
       };
