@@ -916,6 +916,12 @@ export async function rollbackSkill(
  * `USER_ALWAYS_ON_SKILLS_MAX` when setting `true` — rejects at the cap so a
  * tight loop can never flip more than the cap onto the always-on set. Setting
  * `false` (clearing) is always ok.
+ *
+ * The cap check + update run inside a single `db.transaction` to eliminate the
+ * TOCTOU window between count and write (adversarial-review #722 L1). When
+ * toggling `true` on a skill that is ALREADY always-on, the call is idempotent
+ * — the cap counts OTHER always-on skills (excludes self), and a re-toggle at
+ * the cap succeeds rather than locking a Settings checkbox.
  */
 export async function setAlwaysOn(
   userId: string,
@@ -933,43 +939,70 @@ export async function setAlwaysOn(
 
   try {
     return await withDb(deps, async (db) => {
-      // When setting true: count current always-on skills and enforce cap.
-      if (value) {
-        const counts = await db
-          .select({ count: sql<number>`count(*)::int` })
-          .from(userSkills)
+      // Cap check + update in a single transaction (TOCTOU safety).
+      return await db.transaction(async (tx) => {
+        // When setting true: read current state, count OTHER always-on skills,
+        // and enforce cap only when the target is NOT already true.
+        if (value) {
+          const row = await tx
+            .select({ isAlwaysOn: userSkills.isAlwaysOn })
+            .from(userSkills)
+            .where(
+              and(
+                eq(userSkills.id, pid),
+                eq(userSkills.userId, uid),
+                eq(userSkills.tenantId, tid.value),
+              ),
+            )
+            .limit(1);
+
+          if (!row[0]) {
+            return { ok: false as const, code: 'not_found' as const, error: 'skill not found' };
+          }
+
+          // Already true → idempotent (re-toggle at cap succeeds).
+          if (row[0].isAlwaysOn) {
+            return { ok: true, value: { id: pid } };
+          }
+
+          // Count OTHER always-on skills (exclude self).
+          const counts = await tx
+            .select({ count: sql<number>`count(*)::int` })
+            .from(userSkills)
+            .where(
+              and(
+                eq(userSkills.userId, uid),
+                eq(userSkills.tenantId, tid.value),
+                eq(userSkills.isAlwaysOn, true),
+                sql`${userSkills.id} <> ${pid}`,
+              ),
+            );
+          const current = Number(counts[0]?.count ?? 0);
+          if (current >= USER_ALWAYS_ON_SKILLS_MAX) {
+            return {
+              ok: false as const,
+              code: 'invalid_body' as const,
+              error: `always-on limit reached (${USER_ALWAYS_ON_SKILLS_MAX})`,
+            };
+          }
+        }
+
+        const updated = await tx
+          .update(userSkills)
+          .set({ isAlwaysOn: value, updatedAt: new Date() })
           .where(
             and(
+              eq(userSkills.id, pid),
               eq(userSkills.userId, uid),
               eq(userSkills.tenantId, tid.value),
-              eq(userSkills.isAlwaysOn, true),
             ),
-          );
-        const current = Number(counts[0]?.count ?? 0);
-        if (current >= USER_ALWAYS_ON_SKILLS_MAX) {
-          return {
-            ok: false as const,
-            code: 'invalid_body' as const,
-            error: `always-on limit reached (${USER_ALWAYS_ON_SKILLS_MAX})`,
-          };
+          )
+          .returning({ id: userSkills.id });
+        if (!updated[0]) {
+          return { ok: false as const, code: 'not_found' as const, error: 'skill not found' };
         }
-      }
-
-      const updated = await db
-        .update(userSkills)
-        .set({ isAlwaysOn: value, updatedAt: new Date() })
-        .where(
-          and(
-            eq(userSkills.id, pid),
-            eq(userSkills.userId, uid),
-            eq(userSkills.tenantId, tid.value),
-          ),
-        )
-        .returning({ id: userSkills.id });
-      if (!updated[0]) {
-        return { ok: false as const, code: 'not_found' as const, error: 'skill not found' };
-      }
-      return { ok: true, value: { id: pid } };
+        return { ok: true, value: { id: pid } };
+      });
     });
   } catch (err) {
     if (isUndefinedTable(err)) {

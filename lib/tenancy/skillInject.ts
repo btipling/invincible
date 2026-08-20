@@ -263,10 +263,10 @@ export async function resolveSkillPreamble(
     }
   } else if (command.type === 'detach') {
     // Always-on slugs cannot be detached: they are user-global, not session
-    // state. Report as not_attached even though the slug is in the candidate
-    // set (it was prepended from alwaysOnSlugs, not sticky).
+    // state. Report as always-on so the operator sees WHY detach was refused
+    // (the slug IS in this turn's preamble, just from alwaysOnSlugs, not sticky).
     if (alwaysOnSet.has(command.slug)) {
-      events.push({ action: 'detach', slug: command.slug, ok: false, reason: 'not attached' });
+      events.push({ action: 'detach', slug: command.slug, ok: false, reason: 'always-on' });
     } else if (hasSlug(command.slug)) {
       removeSlug(command.slug);
       events.push({ action: 'detach', slug: command.slug, ok: true });
