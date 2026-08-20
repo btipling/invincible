@@ -618,8 +618,8 @@ describe('str_replace excerpt windows', () => {
       expect(te.status).toBe(409);
       expect(te.message).toContain('matched 100 times');
       expect(te.extra!.windows).toBeDefined();
-      // Capped at 5 (STR_REPLACE_EXCERPT_MAX_MATCHES)
-      expect(te.extra!.windows!.length).toBeLessThanOrEqual(5);
+      // Capped at exactly 5 (STR_REPLACE_EXCERPT_MAX_MATCHES)
+      expect(te.extra!.windows!.length).toBe(5);
     }
   });
 
@@ -698,6 +698,83 @@ describe('str_replace excerpt windows', () => {
       for (const nl of nonMatchLines) {
         expect(nl.startsWith('  ')).toBe(true);
       }
+    }
+  });
+
+  it('multi-match with multiline old_string produces correct windows', async () => {
+    const ws = await mkWorkspace();
+    // Two identical two-line blocks — old line-by-line indexOf would produce
+    // empty windows because no single line contains the full old_string.
+    const content = [
+      '// header 1',
+      'const x = HELLO;',
+      '// footer line A',
+      '// footer line B',
+      '',
+      '// header 2',
+      'const y = HELLO;',
+      '// footer line A',
+      '// footer line C',
+    ].join('\n');
+    await writeFileTool(ws, { path: 'ml.ts', content });
+    try {
+      await strReplaceTool(ws, {
+        path: 'ml.ts',
+        old_string: 'HELLO;\n// footer',
+        new_string: 'REPLACED',
+      });
+      expect.fail('expected ToolError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ToolError);
+      const te = err as ToolError;
+      expect(te.status).toBe(409);
+      expect(te.message).toContain('matched 2 times');
+      expect(te.extra!.windows).toBeDefined();
+      expect(te.extra!.windows!.length).toBe(2);
+      // First match should be on the line containing "const x = HELLO;"
+      const w0 = te.extra!.windows![0];
+      expect(w0.content).toContain('> const x = HELLO;');
+      // Second match should be on the line containing "const y = HELLO;"
+      const w1 = te.extra!.windows![1];
+      expect(w1.content).toContain('> const y = HELLO;');
+    }
+  });
+
+  it('multi-match with two hits on one line finds both', async () => {
+    const ws = await mkWorkspace();
+    // Two TARGET occurrences on a single line — old line-by-line indexOf
+    // would find only the first and skip to the next line, showing count=2
+    // but only 1 window.
+    const content = [
+      '// line 1',
+      '// line 2',
+      '// line 3',
+      'const pair = TARGET + " " + TARGET; // two hits',
+      '// line 5',
+      '// line 6',
+      '// line 7',
+    ].join('\n');
+    await writeFileTool(ws, { path: 'two-in-one.ts', content });
+    try {
+      await strReplaceTool(ws, {
+        path: 'two-in-one.ts',
+        old_string: 'TARGET',
+        new_string: 'REPLACED',
+      });
+      expect.fail('expected ToolError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ToolError);
+      const te = err as ToolError;
+      expect(te.status).toBe(409);
+      expect(te.message).toContain('matched 2 times');
+      expect(te.extra!.windows).toBeDefined();
+      expect(te.extra!.windows!.length).toBe(2);
+      // Both windows should point to the same line (line 4)
+      expect(te.extra!.windows![0].line).toBe(4);
+      expect(te.extra!.windows![1].line).toBe(4);
+      // Both windows should show the match line with > prefix
+      expect(te.extra!.windows![0].content).toContain('> const pair = TARGET');
+      expect(te.extra!.windows![1].content).toContain('> const pair = TARGET');
     }
   });
 });

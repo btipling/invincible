@@ -278,6 +278,8 @@ function extractFileHead(content, maxBytes) {
 
 /**
  * Find all non-overlapping match positions and extract ±3-line windows around each.
+ * Uses the same `content.indexOf(oldStr, from)` loop as the count so multiline
+ * old_string and multiple matches on a single line are handled correctly.
  * Capped at `maxMatches` windows; each window is capped at `maxBytes` UTF-8 bytes.
  * @param {string} content
  * @param {string} oldStr
@@ -287,24 +289,48 @@ function extractFileHead(content, maxBytes) {
  */
 function buildMatchWindows(content, oldStr, maxMatches, maxBytes) {
   const lines = content.split('\n');
+
+  // Precompute byte offset of each line start for O(log lines) byte→line lookups
+  /** @type {number[]} */
+  const lineOffsets = [0];
+  for (let i = 0; i < lines.length - 1; i++) {
+    lineOffsets.push(lineOffsets[i] + lines[i].length + 1); // +1 for '\n'
+  }
+
+  /**
+   * Map a byte offset into `content` to a 0-based line index (binary search).
+   * @param {number} byteOffset
+   * @returns {number}
+   */
+  function byteToLine(byteOffset) {
+    let lo = 0;
+    let hi = lineOffsets.length - 1;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (lineOffsets[mid] <= byteOffset) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  }
+
   /** @type {{ content: string, line: number, offset: number, truncated: boolean }[]} */
   const windows = [];
+  let from = 0;
 
-  for (let i = 0; i < lines.length && windows.length < maxMatches; i++) {
-    const line = lines[i];
-    const col = line.indexOf(oldStr);
-    if (col === -1) continue;
+  while (from <= content.length && windows.length < maxMatches) {
+    const idx = content.indexOf(oldStr, from);
+    if (idx === -1) break;
 
-    // One-based line number of the match
-    const matchLine = i + 1;
+    const matchLineIdx = byteToLine(idx);
+    const matchLine = matchLineIdx + 1; // 1-based
 
     // ±3 surrounding lines
-    const ctxStart = Math.max(0, i - 3);
-    const ctxEnd = Math.min(lines.length - 1, i + 3);
+    const ctxStart = Math.max(0, matchLineIdx - 3);
+    const ctxEnd = Math.min(lines.length - 1, matchLineIdx + 3);
     /** @type {string[]} */
     const ctxLines = [];
     for (let ci = ctxStart; ci <= ctxEnd; ci++) {
-      const prefix = ci === i ? '> ' : '  ';
+      const prefix = ci === matchLineIdx ? '> ' : '  ';
       ctxLines.push(prefix + lines[ci]);
     }
     const ctxText = ctxLines.join('\n');
@@ -321,9 +347,8 @@ function buildMatchWindows(content, oldStr, maxMatches, maxBytes) {
       truncated,
     });
 
-    // Advance past this match (non-overlapping within the same line)
-    const skip = i + (oldStr.length > 0 ? 1 : 0);
-    i = Math.max(i, skip - 1); // loop increment will advance to skip
+    from = idx + oldStr.length;
+    if (oldStr.length === 0) break;
   }
 
   return windows;

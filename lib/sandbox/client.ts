@@ -307,7 +307,11 @@ export function createSandboxClient(opts: SandboxClientOptions): SandboxClient {
     data: Record<string, unknown>,
   ): StrReplaceErrorWindow[] | undefined {
     const windowsRaw = data['windows'];
-    if (Array.isArray(windowsRaw) && windowsRaw.length > 0) {
+    if (Array.isArray(windowsRaw)) {
+      // Return whatever the daemon sent — even an empty array (defensive;
+      // with the indexOf-based daemon match loop this should not happen, but
+      // a daemon bug must not cause the client to fall through to the `window`
+      // key and silently drop the windows).
       return windowsRaw
         .filter(
           (w): w is Record<string, unknown> =>
