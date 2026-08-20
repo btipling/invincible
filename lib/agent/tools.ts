@@ -853,13 +853,13 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         for (const g of globs) {
           args.push('-g', g);
         }
-        args.push(input.pattern, searchPath);
+        args.push('-e', input.pattern, '--', searchPath);
 
         const result = await client.exec(
           {
             cmd: 'rg',
             args,
-            cwd: cwdSnap,
+            cwd: '.',
             timeoutMs: SEARCH_TIMEOUT_MS,
           },
           { signal },
@@ -923,29 +923,10 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           byteTotal += hitBytes;
         }
 
-        // In case we counted the hit-line that overflowed, run a final pass through the
-        // remaining lines for an accurate skipped count.
-        let remainingSkipped = skipped;
-        if (remainingSkipped === 0 && hits.length >= cap) {
-          // We may have stopped because of the cap without incrementing skipped.
-          // Count remaining non-empty lines.
-          let hitCount = 0;
-          let remaining = 0;
-          for (const rawLine of lines) {
-            const trimmed = rawLine.trim();
-            if (!trimmed) continue;
-            if (hitCount < hits.length) {
-              hitCount += 1;
-              continue;
-            }
-            remaining += 1;
-          }
-          remainingSkipped = remaining;
-        }
-
-        const header = `search ${searchPath}${formatCwdAnnotation(cwdSnap)}: ${hits.length} hits`;
+        const label = hits.length === 1 ? 'hit' : 'hits';
+        const header = `search ${searchPath}${formatCwdAnnotation(cwdSnap)}: ${hits.length} ${label}`;
         const body = hits.join('\n');
-        const truncated = remainingSkipped > 0 ? `\n(truncated, ${remainingSkipped} more)` : '';
+        const truncated = skipped > 0 ? `\n(truncated, ${skipped} more)` : '';
         return finalize(`${header}\n${body}${truncated}`, secrets);
       } catch (err) {
         // rg missing / non-zero crash → soft-fail with guidance

@@ -2062,7 +2062,7 @@ describe('createAgentTools search', () => {
       cmd: 'rg',
       args: expect.arrayContaining([
         '-n', '--no-heading', '--max-count', '20', '--max-filesize', '1M',
-        '-S', '-g', '*.ts', 'hello', 'src',
+        '-S', '-g', '*.ts', '-e', 'hello', '--', 'src',
       ]),
     }), expect.anything());
     expect(out).toContain('search src: 2 hits');
@@ -2091,7 +2091,7 @@ describe('createAgentTools search', () => {
       permissions: { canRead: true, canWrite: false },
     });
     const out = (await tools.search.execute!({ pattern: 'match' }, ectx)) as string;
-    expect(out).toContain('search .: 1 hits');
+    expect(out).toContain('search .: 1 hit');
     expect(exec).toHaveBeenCalledTimes(1);
   });
 
@@ -2123,7 +2123,7 @@ describe('createAgentTools search', () => {
     const client = mockClient({ exec });
     const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
     const out = (await tools.search.execute!({ pattern: 'x' }, ectx)) as string;
-    expect(out).toContain('search .: 1 hits');
+    expect(out).toContain('search .: 1 hit');
     // The line text should be clipped (≤ SEARCH_LINE_MAX_BYTES + '…')
     const bodyLine = out.split('\n').find((l) => l.startsWith('a.ts:1:'));
     expect(bodyLine).toBeDefined();
@@ -2139,13 +2139,13 @@ describe('createAgentTools search', () => {
 
     // relative
     const r = (await tools.search.execute!({ pattern: 'hi', path: 'src' }, ectx)) as string;
-    expect(r).toContain('search src: 1 hits');
+    expect(r).toContain('search src: 1 hit');
     expect(exec).toHaveBeenCalledWith(expect.objectContaining({ args: expect.arrayContaining(['src']) }), expect.anything());
 
     // in-jail-abs
     vi.clearAllMocks();
     const a = (await tools.search.execute!({ pattern: 'hi', path: '/ws/src' }, ectx)) as string;
-    expect(a).toContain('search src: 1 hits');
+    expect(a).toContain('search src: 1 hit');
 
     // out-of-jail
     const o = (await tools.search.execute!({ pattern: 'hi', path: '/etc' }, ectx)) as string;
@@ -2220,6 +2220,51 @@ describe('createAgentTools search', () => {
     const out = (await tools.search.execute!({ pattern: 'line', max_results: 10 }, ectx)) as string;
     expect(out).toContain('search .: 10 hits');
     expect(out).toContain('(truncated, 40 more)');
+  });
+
+  it('pattern is always passed after -e and path after -- (flag injection prevention)', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+
+    // A model-supplied pattern that looks like an rg flag
+    await tools.search.execute!({ pattern: '--pre=/bin/sh' }, ectx);
+
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(exec).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cmd: 'rg',
+        args: expect.arrayContaining(['-e', '--pre=/bin/sh', '--']),
+      }),
+      expect.anything(),
+    );
+    // Verify ordering: -e before pattern, -- before path
+    const args = (exec.mock.calls[0] as unknown as [{ args: string[] }])[0].args;
+    const eIdx = args.indexOf('-e');
+    const dashDashIdx = args.indexOf('--');
+    expect(eIdx).toBeGreaterThan(0);
+    expect(dashDashIdx).toBeGreaterThan(eIdx);
+    expect(args[eIdx + 1]).toBe('--pre=/bin/sh');
+    expect(args[dashDashIdx + 1]).toBe('.');
+  });
+
+  it('cwd is jail root (.) not logical cwd (no double-join)', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: 'f.ts:1:x\n', stderr: '' }));
+    const client = mockClient({ exec });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+      cwdState: { current: 'lib' },
+    });
+
+    const out = (await tools.search.execute!({ pattern: 'x' }, ectx)) as string;
+    expect(out).toContain('search lib cwd=lib: 1 hit');
+
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(exec).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: '.', args: expect.arrayContaining(['lib']) }),
+      expect.anything(),
+    );
   });
 });
 
