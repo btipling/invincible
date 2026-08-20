@@ -260,3 +260,168 @@ describe('skill-body wire-math lock (review #525 plan)', () => {
     );
   });
 });
+
+// Plan #711 phase 1 — version history / rollback endpoint tests (addresses
+// adversarial-review L6: the three new routes get 401 / not-owner / happy rows).
+describe('GET /api/settings/skills/:id/versions (list summaries)', () => {
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) });
+
+  it('unauthenticated → 401', async () => {
+    mockSession({
+      ok: false,
+      response: Response.json({ error: 'Authentication required.' }, { status: 401 }),
+    });
+    mockDi({});
+    const { GET } = await import('./[id]/versions/route');
+    const res = await GET(new Request('http://localhost/api/versions'), ctx('sk1'));
+    expect(res.status).toBe(401);
+  });
+
+  it('happy: returns newest-first summaries', async () => {
+    const listSkillVersions = vi.fn(async () => ({
+      ok: true,
+      value: [{ id: 'ver2', label: '', createdAt: new Date() }],
+    }));
+    mockAuthed();
+    mockDi({ listSkillVersions });
+    const { GET } = await import('./[id]/versions/route');
+    const res = await GET(new Request('http://localhost/api/versions'), ctx('sk1'));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; versions: unknown[] };
+    expect(body.ok).toBe(true);
+    expect(body.versions).toHaveLength(1);
+    expect(listSkillVersions).toHaveBeenCalledWith('u1', 'sk1');
+  });
+
+  it('missing skill id → 400', async () => {
+    mockAuthed();
+    mockDi({});
+    const { GET } = await import('./[id]/versions/route');
+    const res = await GET(new Request('http://localhost/api/versions'), ctx(''));
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /api/settings/skills/:id/versions/:versionId (single version body)', () => {
+  const ctx = (id: string, versionId: string) =>
+    ({ params: Promise.resolve({ id, versionId }) });
+
+  it('unauthenticated → 401', async () => {
+    mockSession({
+      ok: false,
+      response: Response.json({ error: 'Authentication required.' }, { status: 401 }),
+    });
+    mockDi({});
+    const { GET } = await import('./[id]/versions/[versionId]/route');
+    const res = await GET(
+      new Request('http://localhost/api/versions/ver1'),
+      ctx('sk1', 'ver1'),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('not-owner / missing version → 404 (no existence leak)', async () => {
+    const getSkillVersion = vi.fn(async () => ({ ok: true, value: null }));
+    mockAuthed();
+    mockDi({ getSkillVersion });
+    const { GET } = await import('./[id]/versions/[versionId]/route');
+    const res = await GET(
+      new Request('http://localhost/api/versions/ver1'),
+      ctx('sk1', 'ver1'),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('happy: returns the version body as raw text (un-escaped wire)', async () => {
+    const getSkillVersion = vi.fn(async () => ({
+      ok: true,
+      value: { id: 'ver1', label: '', body: '# body\n"quotes" \\ slash', createdAt: new Date() },
+    }));
+    mockAuthed();
+    mockDi({ getSkillVersion });
+    const { GET } = await import('./[id]/versions/[versionId]/route');
+    const res = await GET(
+      new Request('http://localhost/api/versions/ver1'),
+      ctx('sk1', 'ver1'),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/plain');
+    expect(await res.text()).toBe('# body\n"quotes" \\ slash');
+  });
+});
+
+describe('POST /api/settings/skills/:id/rollback', () => {
+  const ctx = (id: string) => ({ params: Promise.resolve({ id }) });
+
+  it('unauthenticated → 401', async () => {
+    mockSession({
+      ok: false,
+      response: Response.json({ error: 'Authentication required.' }, { status: 401 }),
+    });
+    mockDi({});
+    const { POST } = await import('./[id]/rollback/route');
+    const res = await POST(
+      new Request('http://localhost/api/rollback', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ versionId: 'ver1' }),
+      }),
+      ctx('sk1'),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('missing versionId → 400', async () => {
+    mockAuthed();
+    mockDi({});
+    const { POST } = await import('./[id]/rollback/route');
+    const res = await POST(
+      new Request('http://localhost/api/rollback', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      }),
+      ctx('sk1'),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('not-owner skill → 404 (store not_found mapped)', async () => {
+    const rollbackSkill = vi.fn(async () => ({
+      ok: false,
+      code: 'not_found',
+      error: 'skill not found',
+    }));
+    mockAuthed();
+    mockDi({ rollbackSkill });
+    const { POST } = await import('./[id]/rollback/route');
+    const res = await POST(
+      new Request('http://localhost/api/rollback', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ versionId: 'ver1' }),
+      }),
+      ctx('sk1'),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('happy: rolls back and returns ok + id', async () => {
+    const rollbackSkill = vi.fn(async () => ({ ok: true, value: { id: 'sk1' } }));
+    mockAuthed();
+    mockDi({ rollbackSkill });
+    const { POST } = await import('./[id]/rollback/route');
+    const res = await POST(
+      new Request('http://localhost/api/rollback', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ versionId: 'ver1' }),
+      }),
+      ctx('sk1'),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; id: string };
+    expect(body).toEqual({ ok: true, id: 'sk1' });
+    expect(rollbackSkill).toHaveBeenCalledWith('u1', 'sk1', 'ver1');
+  });
+});
