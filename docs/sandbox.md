@@ -774,6 +774,7 @@ short relative paths.
 | `change_dir` | Set logical cwd for subsequent tools this turn (host persists a confirmed `change_dir` even if the turn later cancels / times out / hard-errors) |
 | `pwd` | Print current logical cwd (workspace-root-relative) |
 | `sandbox_info` | Read-only structured facts about the **active** bind: backend, name/slug/status, logical cwd, grant permissions, capabilities, daemon protocol/version (BYO) or `daemon=none` (Vercel), and a redacted env map. PATH-like values are JSON arrays rewritten **per colon-separated entry** (workspace-relative under the jail; out-of-jail OS entries such as `/usr/bin` stay). Not `exec env` / `printenv` — those still exhibit joined-line `:` truncation. Omits tokens, jail root `R`, host IPs, droplet ids, and `base_url`. Soft-fails `env: unavailable` if the internal `env` spawn fails; bind/cwd/caps still print. |
+| `search` | Code-grep (read-only, read-grant-only). Runs `rg` **argv-only** (never model `cmd`) with `--max-count`, `--max-filesize`, and timeout caps. Returns bounded `{path, line, text}` hits with `(truncated, N more)` when caps are hit. `0 hits` on no matches (success, not error). Soft-fails with guidance when `rg` is missing. Reuses cwd/path rules identical to FS tools. |
 | path tools (`list_dir`, `read_file`, `write_file`, `str_replace`, `exec`) | Resolve paths against logical cwd |
 
 Every path-accepting tool (`list_dir`, `read_file`, `write_file`, `str_replace`,

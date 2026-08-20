@@ -51,6 +51,21 @@ export function resolveAgentMaxSteps(
   return i;
 }
 
+/** Maximum total hits returned by the search tool. */
+export const SEARCH_MAX_RESULTS = 200;
+/** Per-file hit ceiling passed to rg --max-count. */
+export const SEARCH_PER_FILE_MAX_COUNT = 20;
+/** Skip files larger than this (rg --max-filesize). */
+export const SEARCH_MAX_FILESIZE = 1_048_576; // 1 MiB
+/** rg --max-filesize arg — accepts raw size or a human suffix like '1M'. */
+export const SEARCH_MAX_FILESIZE_STR = '1M';
+/** Clip a single hit's text to this many UTF-8 bytes. */
+export const SEARCH_LINE_MAX_BYTES = 200;
+/** Hard cap on the total result bytes before finalize. */
+export const SEARCH_RESULT_MAX_BYTES = 65536; // 64 KiB
+/** Bounded timeout for a single rg spawn. */
+export const SEARCH_TIMEOUT_MS = 30_000;
+
 export function clampExecTimeoutMs(timeoutMs?: number): number {
   if (timeoutMs == null || Number.isNaN(Number(timeoutMs))) {
     return DEFAULT_EXEC_TIMEOUT_MS;
