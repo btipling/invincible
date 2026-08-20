@@ -532,4 +532,3 @@ test "strReplaceL2PinnedOpen requires active turn + str_replace + detail" {
     try std.testing.expect(strReplaceL2PinnedOpen(false, "str_replace", true, true));
     try std.testing.expect(strReplaceL2PinnedOpen(false, "exec", true, true));
 }
-
