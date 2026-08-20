@@ -2058,19 +2058,13 @@ describe('createAgentTools search', () => {
     const out = (await tools.search.execute!({ pattern: 'hello', glob: ['*.ts'], path: 'src' }, ectx)) as string;
 
     expect(exec).toHaveBeenCalledTimes(1);
-    const call = exec.mock.calls[0]?.[0];
-    expect(call.cmd).toBe('rg');
-    expect(call.args).toContain('-n');
-    expect(call.args).toContain('--no-heading');
-    expect(call.args).toContain('--max-count');
-    expect(call.args).toContain('20');
-    expect(call.args).toContain('--max-filesize');
-    expect(call.args).toContain('1M');
-    expect(call.args).toContain('-S');
-    expect(call.args).toContain('-g');
-    expect(call.args).toContain('*.ts');
-    expect(call.args).toContain('hello');
-    expect(call.args).toContain('src');
+    expect(exec).toHaveBeenCalledWith(expect.objectContaining({
+      cmd: 'rg',
+      args: expect.arrayContaining([
+        '-n', '--no-heading', '--max-count', '20', '--max-filesize', '1M',
+        '-S', '-g', '*.ts', 'hello', 'src',
+      ]),
+    }), expect.anything());
     expect(out).toContain('search src: 2 hits');
     expect(out).toContain('a.ts:1:hello');
   });
@@ -2149,7 +2143,7 @@ describe('createAgentTools search', () => {
     expect(exec).toHaveBeenCalledWith(expect.objectContaining({ args: expect.arrayContaining(['src']) }), expect.anything());
 
     // in-jail-abs
-    exec.mockClear();
+    vi.clearAllMocks();
     const a = (await tools.search.execute!({ pattern: 'hi', path: '/ws/src' }, ectx)) as string;
     expect(a).toContain('search src: 1 hits');
 
