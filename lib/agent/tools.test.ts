@@ -2315,3 +2315,204 @@ describe('createAgentTools search', () => {
   });
 });
 
+// str_replace excerpt window formatting (plan #723)
+describe('str_replace excerpt windows', () => {
+  const execCtx = { toolCallId: 'sr-win-1', messages: [] } as never;
+
+  it('formats file-head excerpt on not-found (400 + single window)', async () => {
+    const windowClient = mockClient({
+      stat: vi.fn(async () => ({
+        path: 'f.ts',
+        type: 'file' as const,
+        mtimeMs: 1,
+        size: 100,
+      })),
+      strReplace: vi.fn(async () => {
+        throw new SandboxHttpError(
+          'old_string not found in file',
+          400,
+          'SANDBOX_HTTP',
+          [
+            {
+              content: 'line 1\nline 2\nline 3\n',
+              offset: 1,
+              truncated: false,
+              size: 30,
+            },
+          ],
+        );
+      }),
+    });
+    const tools = createAgentTools({
+      client: windowClient,
+      freshness: createRunFileFreshness(),
+    });
+    // Grant edit permission via a full read
+    await tools.read_file.execute!({ path: 'f.ts' }, execCtx);
+    const out = (await tools.str_replace.execute!(
+      { path: 'f.ts', old_string: 'nope', new_string: 'x' },
+      execCtx,
+    )) as string;
+
+    expect(out).toContain('ERROR str_replace f.ts: old_string not found in file');
+    expect(out).toContain('--- file head (offset 1, 30 bytes) ---');
+    expect(out).toContain('line 1');
+    expect(out).toContain('line 2');
+    expect(out).toContain('line 3');
+    expect(out).toContain('--- end excerpt ---');
+  });
+
+  it('formats multi-match excerpt with match windows (409 + windows)', async () => {
+    const windowClient = mockClient({
+      stat: vi.fn(async () => ({
+        path: 'g.ts',
+        type: 'file' as const,
+        mtimeMs: 1,
+        size: 200,
+      })),
+      strReplace: vi.fn(async () => {
+        throw new SandboxHttpError(
+          'old_string matched 2 times; pass replace_all: true or provide a unique snippet',
+          409,
+          'SANDBOX_HTTP',
+          [
+            {
+              content: '  // pre\n> const x = TARGET;\n  // post\n',
+              offset: 3,
+              line: 4,
+              truncated: false,
+            },
+            {
+              content: '  // pre2\n> const y = TARGET;\n  // post2\n',
+              offset: 9,
+              line: 10,
+              truncated: false,
+            },
+          ],
+        );
+      }),
+    });
+    const tools = createAgentTools({
+      client: windowClient,
+      freshness: createRunFileFreshness(),
+    });
+    await tools.read_file.execute!({ path: 'g.ts' }, execCtx);
+    const out = (await tools.str_replace.execute!(
+      { path: 'g.ts', old_string: 'TARGET', new_string: 'X' },
+      execCtx,
+    )) as string;
+
+    expect(out).toContain('ERROR str_replace g.ts: old_string matched 2 times');
+    expect(out).toContain('--- excerpt: 2 match location(s) ---');
+    expect(out).toContain('--- match line 4 ---');
+    expect(out).toContain('--- match line 10 ---');
+    expect(out).toContain('--- end excerpt ---');
+  });
+
+  it('degrades gracefully when no windows (old daemon / non-str_replace error)', async () => {
+    const noWindowClient = mockClient({
+      stat: vi.fn(async () => ({
+        path: 'h.ts',
+        type: 'file' as const,
+        mtimeMs: 1,
+        size: 100,
+      })),
+      strReplace: vi.fn(async () => {
+        throw new SandboxHttpError(
+          'old_string not found in file',
+          400,
+          'SANDBOX_HTTP',
+        );
+      }),
+    });
+    const tools = createAgentTools({
+      client: noWindowClient,
+      freshness: createRunFileFreshness(),
+    });
+    await tools.read_file.execute!({ path: 'h.ts' }, execCtx);
+    const out = (await tools.str_replace.execute!(
+      { path: 'h.ts', old_string: 'nope', new_string: 'x' },
+      execCtx,
+    )) as string;
+
+    expect(out).toContain('ERROR str_replace h.ts: old_string not found in file');
+    expect(out).not.toContain('--- file head');
+    expect(out).not.toContain('--- end excerpt ---');
+  });
+
+  it('redacts secrets in window content', async () => {
+    const secretWindowClient = mockClient({
+      stat: vi.fn(async () => ({
+        path: 's.ts',
+        type: 'file' as const,
+        mtimeMs: 1,
+        size: 100,
+      })),
+      strReplace: vi.fn(async () => {
+        throw new SandboxHttpError(
+          'old_string not found in file',
+          400,
+          'SANDBOX_HTTP',
+          [
+            {
+              content: 'API_KEY=sk-secret-123\nother=val\n',
+              offset: 1,
+              truncated: false,
+              size: 50,
+            },
+          ],
+        );
+      }),
+    });
+    const tools = createAgentTools({
+      client: secretWindowClient,
+      freshness: createRunFileFreshness(),
+      secrets: ['sk-secret-123'],
+    });
+    await tools.read_file.execute!({ path: 's.ts' }, execCtx);
+    const out = (await tools.str_replace.execute!(
+      { path: 's.ts', old_string: 'nope', new_string: 'x' },
+      execCtx,
+    )) as string;
+
+    expect(out).not.toContain('sk-secret-123');
+    expect(out).toContain('[redacted]');
+  });
+
+  it('labels truncated file-head excerpts', async () => {
+    const truncatedClient = mockClient({
+      stat: vi.fn(async () => ({
+        path: 'big.ts',
+        type: 'file' as const,
+        mtimeMs: 1,
+        size: 5000,
+      })),
+      strReplace: vi.fn(async () => {
+        throw new SandboxHttpError(
+          'old_string not found in file',
+          400,
+          'SANDBOX_HTTP',
+          [
+            {
+              content: 'a'.repeat(100),
+              offset: 1,
+              truncated: true,
+              size: 5000,
+            },
+          ],
+        );
+      }),
+    });
+    const tools = createAgentTools({
+      client: truncatedClient,
+      freshness: createRunFileFreshness(),
+    });
+    await tools.read_file.execute!({ path: 'big.ts' }, execCtx);
+    const out = (await tools.str_replace.execute!(
+      { path: 'big.ts', old_string: 'nope', new_string: 'x' },
+      execCtx,
+    )) as string;
+
+    expect(out).toContain('--- file head (offset 1, 5000 bytes, truncated) ---');
+  });
+});

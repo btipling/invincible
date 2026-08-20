@@ -318,7 +318,7 @@ alternate tools (MCP / builtin HTTP) gets **403** `Sandbox access denied.` (or
 | `POST` | `/v1/list_dir` | Bearer | List directory entries |
 | `POST` | `/v1/read_file` | Bearer | Read file (max 16 MiB prefix from byte 0); additive `mtimeMs` + `size` when daemon supports. The **agent** `read_file` tool then windows that prefix: `offset` (1-based line, default 1) + `limit` (default 1000) return `N→` numbered lines. Daemon request shape is still `path` + `maxBytes` |
 | `POST` | `/v1/write_file` | Bearer | Write file (max 16 MiB); post-write fingerprint when supported |
-| `POST` | `/v1/str_replace` | Bearer | Exact string replace (unique match or `replace_all`); post-write fingerprint when supported. **Unique match and `replace_all` replace literally** — `$` in `new_string` is never a `String.replace` template (`$&`/`` $` ``/`$'`/`$$` are written byte-for-byte) |
+| `POST` | `/v1/str_replace` | Bearer | Exact string replace (unique match or `replace_all`); post-write fingerprint when supported. **Unique match and `replace_all` replace literally** — `$` in `new_string` is never a `String.replace` template (`$&`/`` $` ``/`$'`/`$$` are written byte-for-byte). **Errors include additive `window`/`windows` fields:** *not-found* (400) → `window` file-head excerpt (≤ 2 KiB); *multi-match* (409) → `windows` array of ±3-line match windows (≤ 5 locations, each ≤ 2 KiB) — old daemons/clients degrade gracefully (unknown field ignored) |
 | `POST` | `/v1/stat` | Bearer | Path metadata `{ path, type, size, mtimeMs? }` — path missing: **404** with path-missing body (e.g. `Path not found`); not bare `Not found` (that is unknown-route). No file content |
 | `POST` | `/v1/exec` | Bearer | Run argv command (no shell); optional `stdin`/`heredoc` (v2+) |
 

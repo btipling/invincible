@@ -7,6 +7,8 @@ import {
   MAX_READ_WRITE_BYTES,
   MAX_STDIO_BYTES,
   MIN_EXEC_TIMEOUT_MS,
+  STR_REPLACE_EXCERPT_MAX_BYTES,
+  STR_REPLACE_EXCERPT_MAX_MATCHES,
 } from './constants.mjs';
 import { JailError, resolveJailPath } from './paths.mjs';
 
@@ -14,11 +16,13 @@ export class ToolError extends Error {
   /**
    * @param {string} message
    * @param {number} [status]
+   * @param {{ window?: any, windows?: any[] }} [extra]
    */
-  constructor(message, status = 400) {
+  constructor(message, status = 400, extra = undefined) {
     super(message);
     this.name = 'ToolError';
     this.status = status;
+    this.extra = extra;
   }
 }
 
@@ -257,6 +261,100 @@ export async function writeFileTool(workspace, body) {
 }
 
 /**
+ * Extract the file head from in-memory content, capped at `maxBytes` UTF-8 bytes.
+ * @param {string} content - full file content already in memory
+ * @param {number} maxBytes
+ * @returns {{ content: string, offset: number, truncated: boolean }}
+ */
+function extractFileHead(content, maxBytes) {
+  const buf = Buffer.from(content, 'utf8');
+  const head = buf.subarray(0, Math.min(buf.byteLength, maxBytes));
+  return {
+    content: head.toString('utf8'),
+    offset: 1,
+    truncated: buf.byteLength > maxBytes,
+  };
+}
+
+/**
+ * Find all non-overlapping match positions and extract ±3-line windows around each.
+ * Uses the same `content.indexOf(oldStr, from)` loop as the count so multiline
+ * old_string and multiple matches on a single line are handled correctly.
+ * Capped at `maxMatches` windows; each window is capped at `maxBytes` UTF-8 bytes.
+ * @param {string} content
+ * @param {string} oldStr
+ * @param {number} maxMatches
+ * @param {number} maxBytes
+ * @returns {{ content: string, line: number, offset: number, truncated: boolean }[]}
+ */
+function buildMatchWindows(content, oldStr, maxMatches, maxBytes) {
+  const lines = content.split('\n');
+
+  // Precompute byte offset of each line start for O(log lines) byte→line lookups
+  /** @type {number[]} */
+  const lineOffsets = [0];
+  for (let i = 0; i < lines.length - 1; i++) {
+    lineOffsets.push(lineOffsets[i] + lines[i].length + 1); // +1 for '\n'
+  }
+
+  /**
+   * Map a byte offset into `content` to a 0-based line index (binary search).
+   * @param {number} byteOffset
+   * @returns {number}
+   */
+  function byteToLine(byteOffset) {
+    let lo = 0;
+    let hi = lineOffsets.length - 1;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (lineOffsets[mid] <= byteOffset) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  }
+
+  /** @type {{ content: string, line: number, offset: number, truncated: boolean }[]} */
+  const windows = [];
+  let from = 0;
+
+  while (from <= content.length && windows.length < maxMatches) {
+    const idx = content.indexOf(oldStr, from);
+    if (idx === -1) break;
+
+    const matchLineIdx = byteToLine(idx);
+    const matchLine = matchLineIdx + 1; // 1-based
+
+    // ±3 surrounding lines
+    const ctxStart = Math.max(0, matchLineIdx - 3);
+    const ctxEnd = Math.min(lines.length - 1, matchLineIdx + 3);
+    /** @type {string[]} */
+    const ctxLines = [];
+    for (let ci = ctxStart; ci <= ctxEnd; ci++) {
+      const prefix = ci === matchLineIdx ? '> ' : '  ';
+      ctxLines.push(prefix + lines[ci]);
+    }
+    const ctxText = ctxLines.join('\n');
+    const buf = Buffer.from(ctxText, 'utf8');
+    const truncated = buf.byteLength > maxBytes;
+    const capped = truncated
+      ? buf.subarray(0, maxBytes).toString('utf8')
+      : ctxText;
+
+    windows.push({
+      content: capped,
+      line: matchLine,
+      offset: ctxStart + 1,
+      truncated,
+    });
+
+    from = idx + oldStr.length;
+    if (oldStr.length === 0) break;
+  }
+
+  return windows;
+}
+
+/**
  * Exact string replace in a workspace file (coding-agent search_replace semantics).
  * @param {string} workspace
  * @param {{ path?: string, old_string?: string, new_string?: string, replace_all?: boolean }} body
@@ -314,12 +412,24 @@ export async function strReplaceTool(workspace, body) {
     }
 
     if (count === 0) {
-      throw new ToolError('old_string not found in file', 400);
+      const head = extractFileHead(content, STR_REPLACE_EXCERPT_MAX_BYTES);
+      throw new ToolError(
+        'old_string not found in file',
+        400,
+        { window: { ...head, size: stat.size } },
+      );
     }
     if (count > 1 && !replaceAll) {
+      const windows = buildMatchWindows(
+        content,
+        oldStr,
+        STR_REPLACE_EXCERPT_MAX_MATCHES,
+        STR_REPLACE_EXCERPT_MAX_BYTES,
+      );
       throw new ToolError(
         `old_string matched ${count} times; pass replace_all: true or provide a unique snippet`,
         409,
+        { windows },
       );
     }
 

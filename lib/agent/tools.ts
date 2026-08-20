@@ -11,6 +11,7 @@ import {
   MIN_SANDBOX_PROTOCOL_STDIN,
 } from '../sandbox/config';
 import type { SandboxClient } from '../sandbox/client';
+import { SandboxHttpError } from '../sandbox/types';
 import { redactSecrets, truncateForModel } from './redact';
 import {
   WorkPathError,
@@ -188,6 +189,36 @@ function appendStrReplaceDiff(
 
 function strReplaceError(path: string | undefined, rest: string): string {
   return path ? `ERROR str_replace ${path}: ${rest}` : `ERROR str_replace: ${rest}`;
+}
+/**
+ * Format str_replace error excerpt windows for the model.
+ * Handles both not-found (file head excerpt) and multi-match (match windows with ±3 context).
+ */
+function formatExcerptBlock(
+  windows: Array<{ content: string; offset?: number; line?: number; truncated?: boolean; size?: number }>,
+  secrets: Array<string | undefined | null>,
+): string {
+  if (windows.length === 0) return '';
+  const first = windows[0];
+  const hasMatchLines = first.line != null && first.offset != null;
+
+  if (hasMatchLines) {
+    // Multi-match: each window has ±3 lines around a match with > prefix
+    const parts = windows.map((w) => {
+      const label = w.line != null ? `line ${w.line}` : `offset ${w.offset ?? '?'}`;
+      const suffix = w.truncated ? ' (truncated)' : '';
+      const content = redactSecrets(w.content, secrets);
+      return `--- match ${label}${suffix} ---\n${content}`;
+    });
+    return `--- excerpt: ${windows.length} match location(s) ---\n${parts.join('\n')}\n--- end excerpt ---`;
+  }
+
+  // Not-found: file head excerpt (single window)
+  const w = first;
+  const sizeStr = w.size != null ? `, ${w.size} bytes` : '';
+  const truncated = w.truncated ? ', truncated' : '';
+  const content = redactSecrets(w.content, secrets);
+  return `--- file head (offset ${w.offset ?? 1}${sizeStr}${truncated}) ---\n${content}\n--- end excerpt ---`;
 }
 
 function finalize(text: string, secrets: Array<string | undefined | null>): string {
@@ -698,7 +729,11 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           signal,
         );
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        let msg = err instanceof Error ? err.message : String(err);
+        if (err instanceof SandboxHttpError && err.strReplaceWindows && err.strReplaceWindows.length > 0) {
+          const block = formatExcerptBlock(err.strReplaceWindows, secrets);
+          msg = msg + '\n' + block;
+        }
         return finalize(strReplaceError(input.path, msg), secrets);
       }
     },
