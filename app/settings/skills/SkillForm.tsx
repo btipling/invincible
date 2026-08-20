@@ -628,13 +628,14 @@ function SkillCard({ row }: { row: SkillListItem }) {
             style={{ color: ember.accent, fontSize: 12, margin: '0 0 8px' }}
           >
             At the {SKILL_VERSION_MAX}-version cap — further body edits and
-            Restores are rejected. Restore here is a one-way last slot, so copy
-            the body you may need first.
+            Restores are rejected (Restore is disabled). Roll back only downgrades
+            if you raise `SKILL_VERSION_MAX` or delete the skill.
           </p>
         ) : versions && versions.length >= SKILL_VERSION_MAX - 1 ? (
           <p style={{ color: warm.accent, fontSize: 12, margin: '0 0 8px' }}>
-            {versions.length} of {SKILL_VERSION_MAX} versions — one Restore away
-            from the cap (edits and Restores then lock).
+            {versions.length} of {SKILL_VERSION_MAX} versions — the next Restore
+            is the last one-way slot (edits and Restores then lock), so copy the
+            body you may need first.
           </p>
         ) : null}
         {versions && versions.length === 0 ? (
@@ -690,7 +691,7 @@ function SkillCard({ row }: { row: SkillListItem }) {
                       <button
                         type="button"
                         onClick={() => void doRollback(v.id)}
-                        disabled={rollbackPending}
+                        disabled={rollbackPending || versions.length >= SKILL_VERSION_MAX}
                         aria-label={`Restore this skill body to ${v.label || `v${versions.length - i}`} (${versionDate(v.createdAt)})`}
                         style={{
                           ...buttonGhostStyle(),

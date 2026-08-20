@@ -396,20 +396,41 @@ export async function updateUserSkillBody(
         // keep the live body equal to the newest version row, so normally no
         // extra snapshot is needed. But a legacy pre-0012 skill (count === 0 —
         // the production population at the 0012 cutover, no GHA backfill) or any
-        // drifted row has a live body that is NOT already a version: snapshot it
-        // BEFORE the new version so Undo stays intact. This is the write-path
-        // equivalent of createUserSkill's initial row — not a data backfill.
-        const newest = await tx
-          .select({ body: userSkillVersions.body })
+        // drifted row has a live body that is NOT already stored as a version:
+        // snapshot it BEFORE the new version so Undo stays intact. This is the
+        // write-path equivalent of createUserSkill's initial row — not a data
+        // backfill.
+        //
+        // Round 3 (L1): the capture check is order-INDEPENDENT (`WHERE body =
+        // prevBody` — is the pre-edit body already stored as ANY version?)
+        // instead of "is the newest row's body !== prevBody". This snapshot and
+        // the new-body insert run in ONE transaction, so the Postgres `now()`
+        // they share is transaction-scoped and would give BOTH rows the SAME
+        // created_at; a newest-only tiebreak with no secondary key leaves
+        // newest-first order unspecified (the `now` label could attach to the
+        // snapshot while the live body is the edit, hiding the Restore target)
+        // and can false-trigger this snapshot on the NEXT edit — burning an
+        // extra cap slot. The WHERE-body check depends on no row ordering. To
+        // keep newest-first deterministic anyway, the two inserts share an
+        // explicit `stamped` timestamp (snapshot = stamped − 1 ms, new body =
+        // stamped), so the new body is always the newest of the pair.
+        const stamped = new Date();
+        const already = await tx
+          .select({ id: userSkillVersions.id })
           .from(userSkillVersions)
-          .where(eq(userSkillVersions.skillId, pid))
-          .orderBy(desc(userSkillVersions.createdAt))
+          .where(
+            and(
+              eq(userSkillVersions.skillId, pid),
+              eq(userSkillVersions.body, prevBody),
+            ),
+          )
           .limit(1);
-        if (newest.length === 0 || newest[0].body !== prevBody) {
+        if (already.length === 0) {
           await tx.insert(userSkillVersions).values({
             skillId: pid,
             body: prevBody,
             label: '',
+            createdAt: new Date(stamped.getTime() - 1),
           });
         }
 
@@ -428,10 +449,14 @@ export async function updateUserSkillBody(
           return { ok: false as const, code: 'not_found' as const, error: 'skill not found' };
         }
 
+        // New body row is stamped at `stamped` (strictly after any pre-edit
+        // snapshot at `stamped − 1 ms`), so eager edit pairs never tie on
+        // created_at and the live body is deterministically the **now** row.
         await tx.insert(userSkillVersions).values({
           skillId: pid,
           body: clean,
           label: '',
+          createdAt: stamped,
         });
         return { ok: true as const, value: { id: pid } };
       });

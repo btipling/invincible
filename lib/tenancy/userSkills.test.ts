@@ -693,6 +693,90 @@ describe('skill version history (plan #711 phase 1)', () => {
     expect(bySlug.value?.body).toBe('legacy');
   });
 
+  it('two-insert first edit (snapshot + new body, ONE tx) orders EDITED newest-first — no created_at tie (adversarial-review L1 round 3)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'legacy' },
+      { db: db as never },
+    );
+    const id = created.ok ? created.value.id : '';
+    if (!created.ok) throw new Error('expected ok');
+    // Legacy pre-0012 skill with no version history yet.
+    await db
+      .delete(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, id));
+    expect(await countVersions(id)).toBe(0);
+
+    const updated = await updateUserSkillBody(userId, id, 'edited', {
+      db: db as never,
+    });
+    expect(updated.ok).toBe(true);
+
+    const listed = await listSkillVersions(userId, id, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect(listed.value).toHaveLength(2);
+
+    // Resolve each listed summary to its stored body.
+    const bodiesForListed: (string | undefined)[] = [];
+    for (const s of listed.value) {
+      const row = (
+        await db
+          .select()
+          .from(schema.userSkillVersions)
+          .where(eq(schema.userSkillVersions.id, s.id))
+      )[0];
+      bodiesForListed.push(row?.body);
+    }
+    // Index 0 is the **now** row → must be the freshly-edited (live) body, NOT
+    // the snapshot, even though both rows were written in ONE transaction whose
+    // shared Postgres `now()` would otherwise give them the SAME created_at.
+    expect(bodiesForListed[0]).toBe('edited');
+    expect(bodiesForListed[1]).toBe('legacy');
+    // The snapshot's created_at is skewed strictly before the new-body row.
+    expect(new Date(listed.value[0]!.createdAt).getTime()).toBeGreaterThan(
+      new Date(listed.value[1]!.createdAt).getTime(),
+    );
+  });
+
+  it('a SECOND edit after a legacy first-edit does NOT insert a duplicate snapshot (no extra cap-slot burn)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'legacy' },
+      { db: db as never },
+    );
+    const id = created.ok ? created.value.id : '';
+    if (!created.ok) throw new Error('expected ok');
+    await db
+      .delete(schema.userSkillVersions)
+      .where(eq(schema.userSkillVersions.skillId, id));
+    expect(await countVersions(id)).toBe(0);
+
+    // First edit writes snapshot + new body (2 rows).
+    await updateUserSkillBody(userId, id, 'edited1', { db: db as never });
+    expect(await countVersions(id)).toBe(2);
+
+    // Second edit: the pre-edit body (edited1) is ALREADY stored as a version,
+    // so the order-INDEPENDENT capture check (`WHERE body = prevBody`) must
+    // NOT snapshot it again — only the new body row is added, growing the count
+    // by exactly 1 (never a duplicate snapshot that silently burns a cap slot).
+    await updateUserSkillBody(userId, id, 'edited2', { db: db as never });
+    expect(await countVersions(id)).toBe(3);
+
+    // Newest-first is still deterministic: the latest edit is the **now** row.
+    const listed = await listSkillVersions(userId, id, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect(listed.value).toHaveLength(3);
+    const firstRow = (
+      await db
+        .select()
+        .from(schema.userSkillVersions)
+        .where(eq(schema.userSkillVersions.id, listed.value[0]!.id))
+    )[0];
+    expect(firstRow.body).toBe('edited2');
+  });
+
   it('deleting a skill cascade-deletes its version history (FK ON DELETE CASCADE)', async () => {
     const { userId } = await seedUser('t1', 'u@example.com');
     const created = await createUserSkill(
