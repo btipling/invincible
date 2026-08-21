@@ -54,7 +54,8 @@ export type UserPersonasErrorCode =
   | 'not_found'
   | 'no_membership'
   | 'unavailable'
-  | 'limit_reached';
+  | 'limit_reached'
+  | 'version_limit';
 
 export type UserPersonasResult<T> =
   | { ok: true; value: T }
@@ -394,7 +395,7 @@ export async function updateUserPersonaBody(
       if (count >= PERSONA_VERSION_MAX) {
         return {
           ok: false as const,
-          code: 'invalid_body' as const,
+          code: 'version_limit' as const,
           error: `version limit reached (${PERSONA_VERSION_MAX}) — delete the persona or raise the cap`,
         };
       }
@@ -1033,7 +1034,7 @@ export async function rollbackPersona(
       if (count >= PERSONA_VERSION_MAX) {
         return {
           ok: false as const,
-          code: 'invalid_body' as const,
+          code: 'version_limit' as const,
           error: `version limit reached (${PERSONA_VERSION_MAX}) — delete the persona or raise the cap`,
         };
       }

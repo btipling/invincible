@@ -11,6 +11,7 @@
  */
 import { requireSessionUser } from '../../../../lib/tenancy/session';
 import { AUTH_REQUIRED_ERROR } from '../../../../lib/tenancy/errors';
+import { PERSONA_VERSION_MAX } from '../../../../lib/sessionCloudCaps';
 import type { UserPersonasErrorCode } from '../../../../lib/tenancy/userPersonas';
 
 /** Auth gate: a session user id, else 401 (same shape as the /api/personas surface). */
@@ -58,6 +59,8 @@ export function personaErrorMessage(code: UserPersonasErrorCode): string {
       return 'No tenant membership found.';
     case 'limit_reached':
       return 'You have reached the maximum number of personas.';
+    case 'version_limit':
+      return `Version limit reached (${PERSONA_VERSION_MAX}). Delete the persona or raise the version cap.`;
     case 'unavailable':
       return 'Personas are unavailable. If this is a new environment, run GitHub Actions workflow db-migrate (confirm=migrate).';
     default:

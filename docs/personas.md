@@ -52,9 +52,9 @@ does not rewrite a running session's locked snapshot.
 
 Personas keep an **append-only, bounded version history** of their **body** across
 every `create`, body edit, and Restore — the same pattern shipped for skills
-(`docs/skills.md` §Version history & rollback). This is the #534 escape hatch:
-if the agent (or you) miswrites a persona body, you can **restore a known-good
-prior version** instead of recreating the persona from memory.
+(`docs/skills.md` §Version history & rollback). If the agent (or you) miswrites a
+persona body, you can **restore a known-good prior version** instead of recreating
+the persona from memory.
 
 - **What is versioned:** only the **body**. Name/rename/slug/default/recommended
   skills changes are not body edits and do not create versions.

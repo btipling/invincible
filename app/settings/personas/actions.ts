@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { auth } from '../../../auth';
 import { createProdServices } from '../../../lib/di';
 import type { UserPersonasErrorCode } from '../../../lib/tenancy/userPersonas';
+import { PERSONA_VERSION_MAX } from '../../../lib/sessionCloudCaps';
 import { slugFromName } from '../mcp/slugFromName';
 
 /**
@@ -61,6 +62,8 @@ function mapError(code: UserPersonasErrorCode, fallback: string): string {
       return 'Persona not found.';
     case 'no_membership':
       return 'No tenant membership found.';
+    case 'version_limit':
+      return `Version limit reached (${PERSONA_VERSION_MAX}). Delete the persona or raise the version cap.`;
     case 'unavailable':
       return fallback || 'Personas unavailable.';
     default:

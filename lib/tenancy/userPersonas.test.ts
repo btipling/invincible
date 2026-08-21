@@ -634,7 +634,7 @@ describe('userPersonas version history + rollback', () => {
     });
     expect(upd.ok).toBe(false);
     if (!upd.ok) {
-      expect(upd.code).toBe('invalid_body');
+      expect(upd.code).toBe('version_limit');
       expect(upd.error).toContain(`version limit reached (${PERSONA_VERSION_MAX})`);
     }
 
@@ -766,7 +766,7 @@ describe('userPersonas version history + rollback', () => {
     const rb = await rollbackPersona(userId, id, earliest.id, { db: db as never });
     expect(rb.ok).toBe(false);
     if (!rb.ok) {
-      expect(rb.code).toBe('invalid_body');
+      expect(rb.code).toBe('version_limit');
       expect(rb.error).toContain(`version limit reached (${PERSONA_VERSION_MAX})`);
     }
 

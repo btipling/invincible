@@ -515,7 +515,9 @@ function PersonaCard({ row, hasDefault, skillSlugs }: { row: PersonaListItem; ha
         ) : null}
         {versions && versions.length === 0 ? (
           <p style={{ color: teal.muted, fontSize: 13, margin: 0 }}>
-            No versions yet — the first edit creates version history.
+            No versions yet — this persona predates version history; the next body
+            edit creates one. A newly-created persona already records its initial
+            body as the first version.
           </p>
         ) : versions ? (
           <div
