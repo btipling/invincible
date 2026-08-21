@@ -126,6 +126,13 @@ pub var queue_list_scroll: dvui.ScrollInfo = .{
 /// Enqueue runs after the band paints this frame (plan #699).
 pub var queue_follow: bool = false;
 
+/// Plan #742 — thinking default = collapsed preference (in-memory only, no
+/// session `meta` / protocol carrier; refresh returns to collapsed-default).
+/// Default ON: thinking rows (including the active Busy-turn load) start
+/// collapsed unless the operator expands one. OFF restores today's Busy pin.
+/// Toggled by the keymap (Leader then `t`) via `keymap_dispatch`.
+pub var thinking_default_collapsed: bool = true;
+
 /// Plan #741 — help overlay visibility (in-memory, toggled by Ctrl/Cmd+/ and
 /// leader+`?`; Esc closes). Not persisted, no session carrier.
 pub var help_overlay_open: bool = false;
@@ -175,4 +182,7 @@ pub fn resetTranscriptScroll() void {
     help_overlay_open = false;
     leader_armed = false;
     request_submit = false;
+    // Plan #742 — preference always returns to collapsed-default on a reset
+    // session surface (init / New / Clear / switch); refresh never carries it.
+    thinking_default_collapsed = true;
 }

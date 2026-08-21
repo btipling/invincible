@@ -79,9 +79,19 @@ pub fn paintThinking(
     const ring_cap = bridge.RING_CAP;
     const is_active = state.thinking_collapse_state.isActiveTurnFull(slotp, ring_head, ring_cap);
     const open_by_operator = state.thinking_open_l1.contains(key);
-    // Single policy entry point — both the active-turn pin and the operator
-    // override live inside `shouldRenderFull`.
-    const full = state.thinking_collapse_state.shouldRenderFull(slotp, ring_head, ring_cap, open_by_operator);
+    // Single policy entry point — the active-turn pin (relaxed when thinking
+    // default-collapsed is ON), the Busy pin (OFF), and the operator override
+    // all live inside `shouldRenderFull` (pure, host-tested). Threading the
+    // preference in here keeps `thinking_default_collapsed` the single source
+    // of policy truth for paint.
+    const default_collapsed = state.thinking_default_collapsed;
+    const full = state.thinking_collapse_state.shouldRenderFull(
+        slotp,
+        ring_head,
+        ring_cap,
+        open_by_operator,
+        default_collapsed,
+    );
 
     // Layout mutates `expanded` across the head + body blocks below. Starts at
     // the policy/output state; for a pinned active-turn row we re-assert `full`
@@ -108,8 +118,15 @@ pub fn paintThinking(
             .color_text = palette.warm_muted,
             .font = .theme(.heading),
         });
-        if (is_active) {
-            // Pinned; never let a click collapse the live/active-turn reasoning.
+        // Active-turn rows stay pinned FULL (not operator-collapsible) only
+        // while thinking default-collapsed is OFF — today's policy. When the
+        // preference is ON (default), even an active-row click routes through
+        // the normal toggle into `thinking_open_l1`, so the operator can open a
+        // live row mid-Busy (if it's collapsed by default) exactly like a
+        // committed one. Do NOT leave a second `if (is_active) expanded = true`
+        // that ignores the preference.
+        const pinned_active = is_active and !default_collapsed;
+        if (pinned_active) {
             expanded = true;
         } else if (open) {
             state.thinking_open_l1.put(key, {}) catch {};
