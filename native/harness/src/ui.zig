@@ -29,6 +29,8 @@ const composer = @import("ui/composer.zig");
 const composer_history = @import("ui/composer_history.zig");
 const composer_chrome = @import("ui/composer_chrome.zig");
 const queue_band = @import("ui/queue_band.zig");
+const keymap_dispatch = @import("ui/keymap_dispatch.zig");
+const help_overlay = @import("ui/help_overlay.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
 pub const BUILD_ID: []const u8 = build_options.build_id;
@@ -485,6 +487,11 @@ pub fn frame() !void {
         // New/Clear or a session switch ghosts a band and blocks promote
         // until an unmarked Escape (adversarial review #666 Major L1).
         queue_band.resetQueueEditState();
+        // Close the help overlay + disarm the leader (plan #741) — a New /
+        // Clear / session hydrate refreshes the surface; a staled overlay or
+        // armed leader would ghost chrome.
+        state.help_overlay_open = false;
+        state.leader_armed = false;
         // Drop composer arrow-key history state (plan #667) — a New /
         // Clear / session hydrate drops the ring, so ordinals are stale.
         // Only restore the saved draft when actually in history (#686 R6):
@@ -580,6 +587,25 @@ pub fn frame() !void {
         break :blk msg_y < view_top - metrics.CHIP_VISIBILITY_MARGIN;
     } else false;
 
+    // ── Help overlay (plan #741) — in-canvas TEAL panel over the transcript band.
+    // Painted after the transcript laid out (top), before the queue band / bars.
+    if (state.help_overlay_open) {
+        // Size against the FULL band (avail.w), not the leftover transcript
+        // width (avail.w - pane_w). With the left rail open (~220px) on a
+        // ~390px canvas the leftover is ~170 < HELP_OVERLAY_MIN_W and the panel
+        // silently no-ops (review L1). It's a modal in-canvas panel — centering
+        // across the whole window is correct.
+        help_overlay.paint(0, scroll_y, avail.w, scroll_h, .{
+            .composer = state.queue_editing_index == null,
+            .queue_editing = state.queue_editing_index != null,
+            .busy = busy,
+            .help_open = state.help_overlay_open,
+            .leader_pending = state.leader_armed,
+            .prompt_empty = state.prompt_buf[0] == 0,
+            .in_history = state.history_index != null,
+        });
+    }
+
     // ── Submit queue band (absolute rect — above composer, below transcript) ──
     if (queue_band_h > 0) {
         queue_band.paint(queue_band_y, queue_band_h, avail.w);
@@ -614,76 +640,13 @@ pub fn frame() !void {
         // COMPOSER_INPUT_MAX_H and then scrolls inside it — there is no second
         // action row to crush (#344), and no hint copy below the field. Plain
         // Enter inserts a newline; the send chord is Ctrl+Enter (Cmd+Enter on
-        // mac). dvui's web backend reports modifier bits on keydown, and a
-        // multiline `textEntry` ignores modifiers on Enter (it consumes Enter
-        // and inserts '\n'), so we detect the chord here in the pending event
-        // list and mark it handled — which also stops the widget from inserting
-        // a stray newline for the submit keystroke.
-        var composer_submit = false;
-        {
-            const es = dvui.events();
-            for (0..es.len) |idx| {
-                const e = &es[idx];
-                if (e.handled) continue;
-                const ke = switch (e.evt) {
-                    .key => |k| k,
-                    else => continue,
-                };
-
-                if (ke.code == .enter and (ke.mod.control() or ke.mod.command())) {
-                    // A multiline textEntry consumes Enter and inserts '\n',
-                    // ignoring the modifier (verified against pinned dvui), so
-                    // mark EVERY enter-chord event (.down and .repeat) handled
-                    // to stop it injecting a stray newline for the submit
-                    // stroke. Submit once per gesture, on the initial .down.
-                    e.handled = true;
-                    if (ke.action == .down) composer_submit = true;
-                    continue;
-                }
-
-                // ── Escape — cancel in-progress turn (plan #705) ─────────────
-                // Same path as the ■ Stop icon. Only .down fires cancel (single-
-                // fire). Gated on busy so idle Esc is not marked handled and can
-                // still close dvui menus (MenuWidget.processEventsAfter). Skip
-                // when a queue-row editor is open — queue_band owns Esc there.
-                if (busy and ke.code == .escape and ke.action == .down and
-                    state.queue_editing_index == null)
-                {
-                    e.handled = true;
-                    bridge.queueCancelFromUi();
-                    continue;
-                }
-
-                // ── Composer arrow-key history (plan #667) ───────────────────
-                // ↑ enters history when the composer is empty OR while already
-                // in history. ↓ walks history forward; outside history ↓ passes
-                // through (textEntry moves the caret). Both .down and .repeat
-                // are handled so a held arrow walks instead of also moving the
-                // caret (matching shell readline).
-                //
-                // When editing a queued item the queue-row editor owns the caret,
-                // so arrows pass through. History works during inference because
-                // historyApply is a pure in-memory read (no bridge write, no
-                // alloc, no I/O).
-                if (state.queue_editing_index == null) {
-                    if (ke.action == .down or ke.action == .repeat) {
-                        if (ke.code == .up) {
-                            const in_hist = state.history_index != null;
-                            const buf_empty = state.prompt_buf[0] == 0;
-                            if (in_hist or buf_empty) {
-                                e.handled = true;
-                                historyApply(.older);
-                            }
-                        } else if (ke.code == .down) {
-                            if (state.history_index != null) {
-                                e.handled = true;
-                                historyApply(.newer);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // mac). All key handling lives in the single dispatcher (plan #741) —
+        // it marks the chord handled before the textEntry is built (inside the
+        // extracted chrome), so the widget never injects a stray newline for
+        // the submit stroke. Submit is requested via `state.request_submit`
+        // (consumed after the chrome paint, which hands back the live prompt
+        // text + measured outer height).
+        keymap_dispatch.dispatch(.{ .history = &historyApply });
 
         // The chrome paints the field on an explicit trailing-RESERVED sub-rect
         // of width `avail.w − (TOUCH_H×n + 8)` so its reported min width (the
@@ -714,10 +677,16 @@ pub fn frame() !void {
         const content_h = @max(metrics.TOUCH_H, @min(raw_content, metrics.COMPOSER_INPUT_MAX_H));
         state.composer_last_h = @max(metrics.COMPOSER_IDLE_CHROME_H, @min(content_h + 2 * metrics.COMPOSER_HUG_PAD, metrics.COMPOSER_MAX_CHROME_H));
 
-        if (composer_submit and typed.len > 0) {
-            composer.submitOrEnqueue(typed);
-            typed = state.prompt_buf[0..0];
-            state.want_composer_focus = true;
+        // Plan #741: the dispatcher set `request_submit` on the submit chord
+        // before the textEntry was built. After the chrome paint the live prompt
+        // buffer holds the final keystrokes — submit the current text.
+        if (state.request_submit) {
+            state.request_submit = false;
+            if (typed.len > 0) {
+                composer.submitOrEnqueue(typed);
+                typed = state.prompt_buf[0..0];
+                state.want_composer_focus = true;
+            }
         }
     }
 

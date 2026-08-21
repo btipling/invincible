@@ -43,13 +43,25 @@ click/tap scrolls the transcript so the message is back in view near the top.
 
 ## Keyboard & focus
 
+All harness chords are rows of one keymap table
+(`native/harness/src/keymap.zig`) and every key event is dispatched by a single
+walk of `dvui.events()` before the composer textEntry is built
+(`native/harness/src/ui/keymap_dispatch.zig`). `ui.zig` and `queue_band.zig`
+never scan keys inline. A **reserved browser chord** (new tab, reload,
+find/devtools, copy/paste, back/forward, tab-switch) is **never marked handled**
+— the canvas yields it to the browser, even if a row name overlaps (fail
+closed).
+
 | Chord | Action |
 |-------|--------|
 | **Enter** (composer focused) | Insert a newline (composer is multi-line) |
 | **Ctrl+Enter** / **Cmd+Enter** (composer focused) | Send prompt when idle; **enqueue** a follow-up when Busy |
+| **Ctrl+Enter** / **Cmd+Enter** (queue-row editor) | **Save** the queued-item edit |
 | **↑** / **↓** (composer focused) | **↑** on an empty composer loads the newest user message; further ↑ walk older user rows. **↓** walks forward; ↓ past the newest restores the in-progress draft. Only user messages appear (assistant/thinking/tool/system/error/skill rows never load). Works while Busy. Ring window only (Load earlier for prompts that have aged out) |
-| **Escape** (harness focused, Busy) | Cancel the in-progress turn (same as ■ Stop). Queue-row editor: dismisses editor first (does not abort turn). Idle: no-op |
-| Tab | DOM nav / Clear (canvas uses pointer + dvui focus) |
+| **Escape** | Cancel the in-progress turn when Busy (same as ■ Stop); **dismisses a queue-row editor first** (does not abort the turn); **closes the help overlay** (wins over busy cancel); **disarms the leader**. Idle: no-op (textEntry / dvui menus keep it) |
+| **Ctrl+**/**Cmd+/** | Toggle the in-canvas **help overlay** (TEAL panel over the transcript band) |
+| **Ctrl+Shift+Space** | Arm the **leader** prefix (800 ms). Within the window press **`?`** to toggle help; **Escape** cancels; an unmatched key swallows (never lands in the prompt); a reserved browser chord still yields to the browser |
+| Tab / Ctrl+Left / Ctrl+Right | DOM nav / text caret (not harness chords; Ctrl+Left/Right are word-jumps, left to the textEntry) |
 | Composer focus | Requested on ready and after each send |
 
 ## Touch / mobile (~390px)
