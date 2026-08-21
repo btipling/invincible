@@ -91,6 +91,10 @@ jobs:
           node-version: "22"
           cache: npm
 
+      - name: Fail closed — SQL files match drizzle journal
+        if: ${{ !inputs.dry_run }}
+        run: node scripts/drizzle-journal-gate.mjs
+
       - name: Install app dependencies
         if: ${{ !inputs.dry_run }}
         run: npm ci

@@ -130,6 +130,10 @@ jobs:
         run: npm ci
 
       # drizzle-kit is intentionally NOT in package.json (esbuild platform bloat).
+      - name: Fail closed — SQL files match drizzle journal
+        if: ${{ !inputs.dry_run && inputs.run_migrate }}
+        run: node scripts/drizzle-journal-gate.mjs
+
       - name: Install migrator (ephemeral)
         if: ${{ !inputs.dry_run && inputs.run_migrate }}
         run: npm install --no-save --no-audit --no-fund drizzle-kit@0.31.10
