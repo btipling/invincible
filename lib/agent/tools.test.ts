@@ -841,7 +841,7 @@ describe('exec result summary + log (plan #724)', () => {
     expect(o).toContain('stdout: (2 lines, 12 bytes)\n  line1\n  line2');
     expect(o).not.toContain('truncated');
     // `log:` immediately after exit=0, before the stdout section (never truncated off)
-    expect(o).toMatch(/\nexit=0\nlog: \.invincible\/logs\/exec-[\dT-]+-\d+\.log\nstdout:/);
+    expect(o).toMatch(/\nexit=0\nlog: \.invincible\/logs\/exec-[\dT-]+-\d+\.log\nlog \(root\): \.invincible\/logs\/exec-[\dT-]+-\d+\.log\nstdout:/);
     expect(writeFile).toHaveBeenCalledTimes(1);
     // The WRITE path is workspace-root-relative; the PRINTED path (cwd `.`) matches it
     expect(writeFile).toHaveBeenCalledWith(
@@ -1038,8 +1038,14 @@ describe('exec result summary + log (plan #724)', () => {
       { initialCwd: 'invincible' },
     );
     const o = (await out) as string;
-    // printed path points at a file read_file (cwd-relative) can open from `invincible`
-    expect(o).toMatch(/\nexit=0\nlog: \.\.\/\.invincible\/logs\/exec-[\dT-]+-\d+\.log\nstdout:/);
+    // printed `log:` is cwd-relative (../) from `invincible`, and `log (root):`
+    // is the cwd-independent workspace-root form that stays readable from `.`
+    // even after a depth-changing `change_dir` (nit: cwd-stability of the path).
+    expect(o).toMatch(/\nexit=0\nlog: \.\.\/\.invincible\/logs\/exec-[\dT-]+-\d+\.log\nlog \(root\): \.invincible\/logs\/exec-[\dT-]+-\d+\.log\nstdout:/);
+    // `log (root):` is the cwd-independent workspace-root form (no `../` prefix),
+    // the recovery pointer that stays readable from `.` after any change_dir.
+    expect(o).toContain('\nlog (root): .invincible/logs/');
+    expect(o).not.toContain('../.invincible/logs/exec '); // root form never carries `../`
     // the actual write is workspace-root-relative (client.writeFile normalizes from root)
     expect(writeFile).toHaveBeenCalledWith(
       expect.stringMatching(/^\.invincible\/logs\/exec-[\dT-]+-\d+\.log$/),
@@ -1061,7 +1067,7 @@ describe('exec result summary + log (plan #724)', () => {
     expect(o).toContain(`line clipped ≥${EXEC_SUMMARY_LINE_MAX_BYTES} bytes`);
     expect(o).not.toContain('…[truncated]'); // finalize did NOT clip the result
     // `log:` still present (rode the head, and the clipped summary can't push it off).
-    expect(o).toMatch(/\nexit=0\nlog: \.invincible\/logs\/exec-[\dT-]+-\d+\.log\nstdout:/);
+    expect(o).toMatch(/\nexit=0\nlog: \.invincible\/logs\/exec-[\dT-]+-\d+\.log\nlog \(root\): \.invincible\/logs\/exec-[\dT-]+-\d+\.log\nstdout:/);
   });
 
   it('case 15: two parallel execs in the same ms get unique log filenames (counter guarantees)', async () => {
@@ -1079,16 +1085,39 @@ describe('exec result summary + log (plan #724)', () => {
     void b;
   });
 
-  it('case 16: exec tool description states the compact window + log: + read_file contract', async () => {
+  it('case 16: exec tool description states the two-pointer log contract (compact window + log: + log (root): + read_file)', async () => {
     const client = mockClient({});
     const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
     const execTool = tools.exec as unknown as { description?: string };
     const desc = execTool.description ?? '';
     expect(desc).toMatch(/COMPACT head\/tail window/);
     expect(desc).toMatch(/log: <path>/);
+    expect(desc).toMatch(/log \(root\): <root-path>/);
     expect(desc).toContain('read_file');
-    expect(desc).toMatch(/relative to the current cwd/);
+    expect(desc).toMatch(/relative to the cwd where you ran this exec/);
+    expect(desc).toContain('LIVE cwd');
     expect(desc).toMatch(/fail-soft/);
+  });
+
+  it('case 17: write_file failure — backend path in the reason is sanitized (no jail/host path), human error kept', async () => {
+    const writeFile = vi.fn(async () => {
+      throw new Error(
+        "EACCES: permission denied, open '/opt/runner/.invincible/logs/exec-2026-01-02T030405-678-0.log'",
+      );
+    });
+    const { out } = run({
+      writeFile,
+      exec: vi.fn(async () => ({ exitCode: 0, stdout: 'ok\n', stderr: '' })),
+    });
+    const o = (await out) as string;
+    expect(o).toContain('stdout: (1 lines, 3 bytes)\n  ok');
+    // Human-readable failure survives…
+    expect(o).toContain('⚠ log write failed: EACCES: permission denied, open');
+    // …but the backend/jail path is stripped (no directory leaks), and there is no
+    // `log:`/`log (root):` pointer because the log file was never written.
+    expect(o).not.toContain('/opt/runner');
+    expect(o).not.toContain('.invincible');
+    expect(o).not.toContain('log (root):');
   });
 });
 

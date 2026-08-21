@@ -261,6 +261,42 @@ export function relToRootFromCwd(cwd: string, rootRel: string): string {
   return `${up}${rootRel}`;
 }
 
+/**
+ * Byte cap for the sanitized `⚠ log write failed` reason echoed in the exec
+ * summary. Bounds a pathological backend error so a single fat reason can't
+ * push the stdout/stderr sections past `TOOL_RESULT_MAX_CHARS` in `finalize`.
+ * Internal sanitizer bound (not a product-facing cap → lives here, not config.ts).
+ */
+const EXEC_LOG_REASON_MAX_BYTES = 160;
+
+/**
+ * Sanitize a `write_file` failure reason before it is echoed into the
+ * model-visible exec summary's fail-soft `⚠` note. Backends (especially BYO
+ * daemons) can embed a jail/host filesystem path in an `Error.message`. We (1)
+ * rewrite R-anchored absolute paths to workspace-relative (matching how exec
+ * stdout/stderr are rewritten, so the workspace root R never surfaces), (2)
+ * strip any remaining absolute path-like fragment, (3) redact secrets, (4)
+ * collapse whitespace, and (5) bound the length — keeping the human-readable
+ * failure (e.g. `EACCES`, `disk full`) while hiding where on disk the write
+ * failed.
+ */
+function sanitizeExecLogReason(
+  reason: string,
+  workspaceRoot: string | null | undefined,
+  secrets: Array<string | undefined | null>,
+): string {
+  let out = rewriteExecRootToRel(workspaceRoot, reason);
+  out = redactSecrets(out, secrets);
+  const cleaned = out
+    // Drive-letter (`C:\…`) and POSIX absolute (`/var/lib/…`) path-like fragments
+    // (≥2 segments) are collapsed; a matching token is replaced with `…`.
+    .replace(/[A-Za-z]:[\\/][^\s]*|(?:\/[^\s/\\]+){2,}/g, '…')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return 'log write failed';
+  return clipUtf8Bytes(cleaned, EXEC_LOG_REASON_MAX_BYTES);
+}
+
 /** Split a stream into lines, dropping the single trailing empty element of a final newline. */
 function splitExecLines(text: string): string[] {
   if (text === '') return [];
@@ -846,7 +882,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const exec = tool({
     description:
-      'Run a command in the sandbox (argv only, no shell). Optional cwd is resolved against the logical workspace cwd (default = logical cwd). Optional stdin/heredoc feeds multi-line input on the process stdin without a shell. Default timeout 5 min, max 30 min. Absolute workspace paths in stdout/stderr are printed workspace-relative. Result is a COMPACT head/tail window (first and last 10 lines per stream with line/byte counts and a `... (N lines truncated)` marker), NOT the raw dump. On any non-empty output the FULL redacted body is written to a workspace log file and the result carries a `log: <path>` line — the path is relative to the current cwd, so `read_file log: <path>` retrieves the complete output. Empty output writes no file. A log-write failure is fail-soft (head/tail remain in the result, with a `⚠` note). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
+      'Run a command in the sandbox (argv only, no shell). Optional cwd is resolved against the logical workspace cwd (default = logical cwd). Optional stdin/heredoc feeds multi-line input on the process stdin without a shell. Default timeout 5 min, max 30 min. Absolute workspace paths in stdout/stderr are printed workspace-relative. Result is a COMPACT head/tail window (first and last 10 lines per stream with line/byte counts and a `... (N lines truncated)` marker), NOT the raw dump. On any non-empty output the FULL redacted body is written to a workspace log file and the result carries two pointers — `log: <path>` is relative to the cwd where you ran this exec (read it from there), and `log (root): <root-path>` is workspace-root-relative (read it from the workspace root, `cwd .`, i.e. `change_dir ..` up to `.` if you have since moved). read_file resolves relative paths against your LIVE cwd, so read from whichever location makes the chosen path resolve. Empty output writes no file. A log-write failure is fail-soft (head/tail remain in the result, with a `⚠` note). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
     inputSchema: jsonSchema<{
       cmd: string;
       args?: string[];
@@ -973,13 +1009,24 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           try {
             // mkdir: true — backends do not auto-create parent dirs.
             await client.writeFile(logRootRel, logContent, true, { signal });
-            logLine = `log: ${logRel}`;
+            // Two pointers so the log is reachable from anywhere: `log:` is
+            // cwd-relative to the exec-time cwd (the primary flow — read it right
+            // here), and `log (root):` is workspace-root-relative, always readable
+            // from the workspace root (`cwd .`), so a depth-changing `change_dir`
+            // in between can never strand the full output.
+            logLine = `log: ${logRel}\nlog (root): ${logRootRel}`;
           } catch (writeErr) {
             // Fail-soft: the exec itself succeeded; don't mask its output with a
-            // log-write error. The head/tail lines stay in the summary.
-            const reason =
+            // log-write error. The head/tail lines stay in the summary. The reason
+            // is sanitized so a backend/jail path (a write_file Error.message can
+            // reference the on-disk file) never surfaces in the model-visible note.
+            const raw =
               writeErr instanceof Error ? writeErr.message : String(writeErr);
-            logLine = `⚠ log write failed: ${reason}`;
+            logLine = `⚠ log write failed: ${sanitizeExecLogReason(
+              raw,
+              workspaceRoot,
+              secrets,
+            )}`;
           }
           // `log:` goes immediately after the exit/TIMED_OUT line so it rides the
           // head of the result and can never be truncated off by TOOL_RESULT_MAX_CHARS.
