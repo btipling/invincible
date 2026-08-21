@@ -150,6 +150,38 @@ test "#734 lock: a long single unbreakable line does NOT push ▶ off-canvas" {
     try t.expect(r.send.x + r.send.w <= win.w + EPS);
 }
 
+test "busy + #734 lock: a long unbreakable line during Busy keeps ▶ + ■ on-canvas" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    resetBuf();
+    // Adversarial L6: the idle-only lock doesn't prove the BUSY path. While
+    // Busy the reserve is TIGHTER (2-slot: 2×TOUCH_H + 8), so the wrap floor
+    // is lower — if the max_size_content.w clamp only held for the one-icon
+    // idle case, a pasted long unbreakable line on the enqueue path could let
+    // ■ drift off-canvas. Exercise the same 200×'A' body against the busy
+    // 2-slot reserve.
+    @memset(&T_buf, 'A');
+    T_buf[200] = 0;
+    T_busy = true;
+    T_want_focus = true;
+    const r = paintAndGetRects();
+    const win = dvui.windowRectPixels();
+    const stop = r.stop orelse @panic("busy must render ■ stop");
+
+    // Wrap still reports exactly the (busy) field_w — no overflow into the
+    // 2-slot reserve even with a full unbreakable run.
+    try t.expectApproxEqAbs(composer_chrome.fieldW(WIN_LW, true) * PX, r.wrap.w, EPS);
+    // ▶ lands exactly at the reserved post-reserve position, not drifting right.
+    try t.expectApproxEqAbs((WIN_LW - composer_chrome.iconReserveW(true)) * PX, r.send.x, EPS);
+    // Field right edge still ≤ ▶ left (field wraps one icon narrower when busy).
+    try t.expect(r.field.x + r.field.w <= r.send.x + EPS);
+    // ▶ + ■ both fully on-canvas — the #734 defect cannot return mid-inference.
+    try t.expect(r.send.x + r.send.w <= win.w + EPS);
+    try t.expect(stop.w > 0);
+    try t.expect(stop.h > 0);
+    try t.expect(stop.x + stop.w <= win.w + EPS);
+}
+
 test "multi-line prompt: measured outer height grows (dynamic hug intact through extraction)" {
     var tr = try dvui.testing.init(.{});
     defer tr.deinit();
