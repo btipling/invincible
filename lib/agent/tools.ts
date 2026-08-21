@@ -3,6 +3,7 @@ import {
   EXEC_LOG_HEAD_LINES,
   EXEC_LOG_MAX_BYTES,
   EXEC_LOG_TAIL_LINES,
+  EXEC_SUMMARY_LINE_MAX_BYTES,
   SEARCH_LINE_MAX_BYTES,
   SEARCH_MAX_FILESIZE_STR,
   SEARCH_MAX_RESULTS,
@@ -225,8 +226,9 @@ function finalize(text: string, secrets: Array<string | undefined | null>): stri
 
 /**
  * Filesystem-safe timestamp used in exec log filenames: `YYYY-MM-DDTHHmmss-SSS`
- * (no colons, so the name is valid on every platform). ms precision avoids
- * collisions between concurrent exec calls in one turn.
+ * (no colons, so the name is valid on every platform). ms precision narrows the
+ * same-tick collision window; the module-scoped `execLogSeq` counter (appended
+ * at the call site) guarantees uniqueness even for parallel execs in one ms.
  */
 export function execLogTimestamp(date: Date = new Date()): string {
   const p = (n: number, w = 2) => String(n).padStart(w, '0');
@@ -235,6 +237,28 @@ export function execLogTimestamp(date: Date = new Date()): string {
     `${p(date.getHours())}${p(date.getMinutes())}${p(date.getSeconds())}-` +
     `${p(date.getMilliseconds(), 3)}`
   );
+}
+
+/**
+ * Module-scoped monotonic counter appended to exec log filenames. `execLogTimestamp`
+ * gives ms precision, but two parallel execs in the same millisecond would
+ * otherwise collide on one filename and overwrite a log. The counter makes each
+ * log unique even at identical ms.
+ */
+let execLogSeq = 0;
+
+/**
+ * Render the on-disk exec log's workspace-root-relative path as a **cwd-relative**
+ * path so `read_file` (which resolves relative paths against the live cwd) can
+ * actually open it after a `change_dir`. e.g. cwd `.` → `.invincible/logs/…`; cwd
+ * `invincible` → `../.invincible/logs/…`. `read_file`'s `resolveAgainstCwd` then
+ * re-roots the `../` chain to the workspace root.
+ */
+export function relToRootFromCwd(cwd: string, rootRel: string): string {
+  const c = normalizeWorkspaceRel(cwd || '.');
+  if (c === '.') return rootRel;
+  const up = '../'.repeat(c.split('/').length);
+  return `${up}${rootRel}`;
 }
 
 /** Split a stream into lines, dropping the single trailing empty element of a final newline. */
@@ -246,16 +270,29 @@ function splitExecLines(text: string): string[] {
 }
 
 /**
+ * Clip a single inline summary line to a bounded byte cap so a pathological one
+ * (e.g. `exec cat huge.json` — a single 4 MiB line) can never inline the whole
+ * stream and push `log:` past `TOOL_RESULT_MAX_CHARS` in `finalize`.
+ */
+function clipExecLine(line: string, maxBytes: number): string {
+  if (Buffer.byteLength(line, 'utf8') <= maxBytes) return line;
+  return `${clipUtf8Bytes(line, maxBytes)}… (line clipped ≥${maxBytes} bytes)`;
+}
+
+/**
  * One stdout/stderr section of the exec summary with a head/tail window:
  * `label: (N lines, K bytes)` then indented head lines, a `... (M lines
- * truncated)` marker when the middle was cut, then the tail lines. Empty text →
- * `''` so the caller can omit the section entirely.
+ * truncated)` marker when the middle was cut, then the tail lines. Every shown
+ * line is byte-clipped to `lineMaxBytes` (so a huge single line is `… (line
+ * clipped)` in the summary, not "show all"). Empty text → `''` so the caller can
+ * omit the section entirely.
  */
 function formatExecStreamSection(
   label: 'stdout' | 'stderr',
   text: string,
   headN: number,
   tailN: number,
+  lineMaxBytes: number,
 ): string {
   const lines = splitExecLines(text);
   if (lines.length === 0) return '';
@@ -263,10 +300,10 @@ function formatExecStreamSection(
   const showAll = lines.length <= headN + tailN;
   const headCount = showAll ? lines.length : headN;
   const rows: string[] = [];
-  for (let i = 0; i < headCount; i++) rows.push(`  ${lines[i]}`);
+  for (let i = 0; i < headCount; i++) rows.push(`  ${clipExecLine(lines[i], lineMaxBytes)}`);
   if (!showAll) {
     rows.push(`  ... (${lines.length - headN - tailN} lines truncated)`);
-    for (let i = lines.length - tailN; i < lines.length; i++) rows.push(`  ${lines[i]}`);
+    for (let i = lines.length - tailN; i < lines.length; i++) rows.push(`  ${clipExecLine(lines[i], lineMaxBytes)}`);
   }
   return `${label}: (${lines.length} lines, ${bytes} bytes)\n${rows.join('\n')}`;
 }
@@ -809,7 +846,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const exec = tool({
     description:
-      'Run a command in the sandbox (argv only, no shell). Optional cwd is resolved against the logical workspace cwd (default = logical cwd). Optional stdin/heredoc feeds multi-line input on the process stdin without a shell. Default timeout 5 min, max 30 min. Absolute workspace paths in stdout/stderr are printed workspace-relative. Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
+      'Run a command in the sandbox (argv only, no shell). Optional cwd is resolved against the logical workspace cwd (default = logical cwd). Optional stdin/heredoc feeds multi-line input on the process stdin without a shell. Default timeout 5 min, max 30 min. Absolute workspace paths in stdout/stderr are printed workspace-relative. Result is a COMPACT head/tail window (first and last 10 lines per stream with line/byte counts and a `... (N lines truncated)` marker), NOT the raw dump. On any non-empty output the FULL redacted body is written to a workspace log file and the result carries a `log: <path>` line — the path is relative to the current cwd, so `read_file log: <path>` retrieves the complete output. Empty output writes no file. A log-write failure is fail-soft (head/tail remain in the result, with a `⚠` note). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
     inputSchema: jsonSchema<{
       cmd: string;
       args?: string[];
@@ -908,7 +945,14 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         let logLine: string | undefined;
         if (hasOutput) {
           const ts = execLogTimestamp();
-          const logRel = `.invincible/logs/exec-${ts}.log`;
+          // The WRITE is workspace-root-relative (`.invincible/logs/…`;
+          // `client.writeFile` normalizes relative to the workspace root, so a
+          // `../` path here would escape). The PRINTED `log:` line is the same
+          // file re-expressed cwd-relative, so `read_file` (which resolves
+          // against the live cwd) can open it after a `change_dir`.
+          const logRootRel = `.invincible/logs/exec-${ts}-${execLogSeq}.log`;
+          execLogSeq += 1;
+          const logRel = relToRootFromCwd(cwdSnap, logRootRel);
           const logContent = clipUtf8Bytes(
             redactSecrets(
               buildExecLogContent({
@@ -928,7 +972,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           );
           try {
             // mkdir: true — backends do not auto-create parent dirs.
-            await client.writeFile(logRel, logContent, true, { signal });
+            await client.writeFile(logRootRel, logContent, true, { signal });
             logLine = `log: ${logRel}`;
           } catch (writeErr) {
             // Fail-soft: the exec itself succeeded; don't mask its output with a
@@ -937,6 +981,9 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
               writeErr instanceof Error ? writeErr.message : String(writeErr);
             logLine = `⚠ log write failed: ${reason}`;
           }
+          // `log:` goes immediately after the exit/TIMED_OUT line so it rides the
+          // head of the result and can never be truncated off by TOOL_RESULT_MAX_CHARS.
+          parts.push(logLine);
         }
 
         const stdoutSection = formatExecStreamSection(
@@ -944,6 +991,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           stdout,
           EXEC_LOG_HEAD_LINES,
           EXEC_LOG_TAIL_LINES,
+          EXEC_SUMMARY_LINE_MAX_BYTES,
         );
         if (stdoutSection) parts.push(stdoutSection);
         const stderrSection = formatExecStreamSection(
@@ -951,11 +999,11 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
           stderr,
           EXEC_LOG_HEAD_LINES,
           EXEC_LOG_TAIL_LINES,
+          EXEC_SUMMARY_LINE_MAX_BYTES,
         );
         if (stderrSection) parts.push(stderrSection);
         if (result.stdoutTruncated) parts.push('(stdout truncated)');
         if (result.stderrTruncated) parts.push('(stderr truncated)');
-        if (logLine) parts.push(logLine);
         return finalize(parts.join('\n'), secrets);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

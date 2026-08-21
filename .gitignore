@@ -49,6 +49,9 @@ public/harness/.artifact-meta.json
 # Local sandbox workspace (dev)
 .sandbox-workspace/
 
+# Agent exec on-disk logs (written at the workspace root by the exec tool — never commit)
+/.invincible/
+
 # Zig local package extracts / caches (agent workspaces)
 native/harness/zig-pkg/
 native/harness/zig-cache/

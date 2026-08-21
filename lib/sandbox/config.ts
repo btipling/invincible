@@ -74,6 +74,13 @@ export const SEARCH_TIMEOUT_MS = 30_000;
 export const EXEC_LOG_HEAD_LINES = 10;
 export const EXEC_LOG_TAIL_LINES = 10;
 /**
+ * Cap on a single line shown inside the exec-result summary window. A
+ * pathological single stdio line (e.g. one huge minified JSON line) is clipped
+ * so the summary stays compact and — critically — never pushes the `log:`
+ * pointer past `TOOL_RESULT_MAX_CHARS` (which would truncate it off). NEW cap.
+ */
+export const EXEC_SUMMARY_LINE_MAX_BYTES = 4096;
+/**
  * Defense-in-depth ceiling for the on-disk `exec` log file. The daemon already
  * caps each stdout/stderr stream at `MAX_STDIO_BYTES` (4 MiB) so worst-case
  * combined is 8 MiB — this cap only bites if a daemon cap is raised without

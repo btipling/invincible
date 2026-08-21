@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { EXEC_LOG_HEAD_LINES, EXEC_LOG_TAIL_LINES, TOOL_RESULT_MAX_CHARS } from '../sandbox/config';
+import { EXEC_LOG_HEAD_LINES, EXEC_LOG_TAIL_LINES, EXEC_SUMMARY_LINE_MAX_BYTES, TOOL_RESULT_MAX_CHARS } from '../sandbox/config';
 import type { SandboxClient } from '../sandbox/client';
-import { createAgentTools, execLogTimestamp, formatLineWindow, formatStrReplaceDiffSide, isFullFileReadGrant, isPathMissingError, READ_FILE_DEFAULT_LIMIT, STR_REPLACE_DIFF_SIDE_MAX_BYTES } from './tools';
+import { createAgentTools, execLogTimestamp, formatLineWindow, formatStrReplaceDiffSide, isFullFileReadGrant, isPathMissingError, READ_FILE_DEFAULT_LIMIT, relToRootFromCwd, STR_REPLACE_DIFF_SIDE_MAX_BYTES } from './tools';
 import { createRunFileFreshness } from './fileFreshness';
 import { SandboxHttpError } from '../sandbox/types';
 
@@ -225,7 +225,10 @@ describe('createAgentTools', () => {
     )) as string;
     expect(out).toContain('stdout: (1 lines, 16 bytes)\n  invincible/docs');
     expect(out).toContain('stderr: (1 lines, 21 bytes)\n  invincible/error.txt');
-    expect(out).toMatch(/\nlog: \.invincible\/logs\/exec-[\dT-]+\.log$/);
+    // `log:` rides the head of the result (immediately after exit), not the tail,
+    // so a huge stream cannot truncate the pointer off.
+    expect(out).toMatch(/\nlog: \.invincible\/logs\/exec-[\dT-]+-\d+\.log\n/);
+    expect(out.indexOf('exit=0')).toBeLessThan(out.indexOf('log:'));
     expect(out).not.toContain(R);
   });
 
@@ -791,7 +794,11 @@ describe('exec result summary + log (plan #724)', () => {
 
   function run(
     overrides: Partial<SandboxClient> = {},
-    opts: { secrets?: Array<string | undefined | null> } = {},
+    opts: {
+      secrets?: Array<string | undefined | null>;
+      initialCwd?: string;
+      cwdState?: { current: string };
+    } = {},
   ): {
     out: Promise<string>;
     exec: ReturnType<typeof vi.fn>;
@@ -809,6 +816,8 @@ describe('exec result summary + log (plan #724)', () => {
       freshness: createRunFileFreshness(),
       client,
       secrets: opts.secrets,
+      initialCwd: opts.initialCwd,
+      cwdState: opts.cwdState,
     });
     return {
       out: tools.exec.execute!({ cmd: 'cmd' }, ctx) as Promise<string>,
@@ -831,10 +840,12 @@ describe('exec result summary + log (plan #724)', () => {
     const o = (await out) as string;
     expect(o).toContain('stdout: (2 lines, 12 bytes)\n  line1\n  line2');
     expect(o).not.toContain('truncated');
-    expect(o).toMatch(/\nlog: \.invincible\/logs\/exec-[\dT-]+\.log$/);
+    // `log:` immediately after exit=0, before the stdout section (never truncated off)
+    expect(o).toMatch(/\nexit=0\nlog: \.invincible\/logs\/exec-[\dT-]+-\d+\.log\nstdout:/);
     expect(writeFile).toHaveBeenCalledTimes(1);
+    // The WRITE path is workspace-root-relative; the PRINTED path (cwd `.`) matches it
     expect(writeFile).toHaveBeenCalledWith(
-      expect.stringMatching(/^\.invincible\/logs\/exec-[\dT-]+\.log$/),
+      expect.stringMatching(/^\.invincible\/logs\/exec-[\dT-]+-\d+\.log$/),
       expect.stringMatching(/\n\[stdout\]\nline1\nline2/),
       true,
       expect.anything(),
@@ -1011,6 +1022,73 @@ describe('exec result summary + log (plan #724)', () => {
     expect(logContent).toContain('S0');
     expect(logContent).toContain('S199');
     expect(logContent).toContain('err-line');
+  });
+
+  it('relToRootFromCwd: renders workspace-root log as cwd-relative so read_file can open it', () => {
+    expect(relToRootFromCwd('.', '.invincible/logs/x.log')).toBe('.invincible/logs/x.log');
+    expect(relToRootFromCwd('invincible', '.invincible/logs/x.log')).toBe('../.invincible/logs/x.log');
+    expect(relToRootFromCwd('invincible/docs', '.invincible/logs/x.log')).toBe('../../.invincible/logs/x.log');
+  });
+
+  it('case 13: nested cwd → printed log: is cwd-relative (../), WRITE stays workspace-root-relative', async () => {
+    const { out, writeFile } = run(
+      {
+        exec: vi.fn(async () => ({ exitCode: 0, stdout: 'ok\n', stderr: '' })),
+      },
+      { initialCwd: 'invincible' },
+    );
+    const o = (await out) as string;
+    // printed path points at a file read_file (cwd-relative) can open from `invincible`
+    expect(o).toMatch(/\nexit=0\nlog: \.\.\/\.invincible\/logs\/exec-[\dT-]+-\d+\.log\nstdout:/);
+    // the actual write is workspace-root-relative (client.writeFile normalizes from root)
+    expect(writeFile).toHaveBeenCalledWith(
+      expect.stringMatching(/^\.invincible\/logs\/exec-[\dT-]+-\d+\.log$/),
+      expect.stringMatching(/\n\[stdout\]\nok/),
+      true,
+      expect.anything(),
+    );
+  });
+
+  it('case 14: huge single-line output is clipped in summary but `log:` survives and is not truncated off', async () => {
+    // A single stdio line so large that, if inlined unbounded, it would blow past
+    // TOOL_RESULT_MAX_CHARS and take `log:` with it (the case this PR exists for).
+    const huge = 'x'.repeat(TOOL_RESULT_MAX_CHARS + 500);
+    const { out } = run({
+      exec: vi.fn(async () => ({ exitCode: 0, stdout: huge, stderr: '' })),
+    });
+    const o = (await out) as string;
+    // Summary line is clipped to EXEC_SUMMARY_LINE_MAX_BYTES, so the whole result stays compact.
+    expect(o).toContain(`line clipped ≥${EXEC_SUMMARY_LINE_MAX_BYTES} bytes`);
+    expect(o).not.toContain('…[truncated]'); // finalize did NOT clip the result
+    // `log:` still present (rode the head, and the clipped summary can't push it off).
+    expect(o).toMatch(/\nexit=0\nlog: \.invincible\/logs\/exec-[\dT-]+-\d+\.log\nstdout:/);
+  });
+
+  it('case 15: two parallel execs in the same ms get unique log filenames (counter guarantees)', async () => {
+    const makeExec = () =>
+      vi.fn(async () => ({ exitCode: 0, stdout: 'ok\n', stderr: '' }));
+    const write1 = vi.fn(async (_p: string) => ({ ok: true as const, bytes: 0 }));
+    const write2 = vi.fn(async (_p: string) => ({ ok: true as const, bytes: 0 }));
+    const a = await run({ exec: makeExec(), writeFile: write1 }).out;
+    const b = await run({ exec: makeExec(), writeFile: write2 }).out;
+    // Filenames differ even though both ran "now" (ms may be equal).
+    const pathA = (write1.mock.calls[0]![0] as string).match(/exec-([\dT-]+-\d+)\.log$/)![1];
+    const pathB = (write2.mock.calls[0]![0] as string).match(/exec-([\dT-]+-\d+)\.log$/)![1];
+    expect(pathA.split('-').at(-1)).not.toBe(pathB.split('-').at(-1));
+    void a;
+    void b;
+  });
+
+  it('case 16: exec tool description states the compact window + log: + read_file contract', async () => {
+    const client = mockClient({});
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    const execTool = tools.exec as unknown as { description?: string };
+    const desc = execTool.description ?? '';
+    expect(desc).toMatch(/COMPACT head\/tail window/);
+    expect(desc).toMatch(/log: <path>/);
+    expect(desc).toContain('read_file');
+    expect(desc).toMatch(/relative to the current cwd/);
+    expect(desc).toMatch(/fail-soft/);
   });
 });
 
