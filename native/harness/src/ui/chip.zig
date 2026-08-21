@@ -78,6 +78,13 @@ pub fn paintLastUserChip(
         .min_size_content = .{ .w = 120, .h = metrics.TOUCH_H },
         .color_fill = palette.teal_border,
         .color_border = palette.teal_muted,
+        // Explicit all-sides 1 px border (plan #748 / source #747): without it
+        // the unset `.border` width resolves to a 0-px default in dvui, so
+        // `color_border = teal_muted` never paints and the chip's bottom edge
+        // reads as a code-diff header or bleeds into the first message. Same
+        // shape the composer field uses (composer_chrome.zig). Paints inside
+        // the chip's own rect, so TOUCH_H / scrollArea position are unchanged.
+        .border = .{ .x = 1, .y = 1, .w = 1, .h = 1 },
         .color_text = palette.teal_text,
         .margin = dvui.Rect.all(0),
         .padding = .{ .x = 8, .y = 0, .w = 8, .h = 0 },
