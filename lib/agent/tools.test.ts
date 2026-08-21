@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { TOOL_RESULT_MAX_CHARS } from '../sandbox/config';
+import { EXEC_LOG_HEAD_LINES, EXEC_LOG_TAIL_LINES, TOOL_RESULT_MAX_CHARS } from '../sandbox/config';
 import type { SandboxClient } from '../sandbox/client';
-import { createAgentTools, formatLineWindow, formatStrReplaceDiffSide, isFullFileReadGrant, isPathMissingError, READ_FILE_DEFAULT_LIMIT, STR_REPLACE_DIFF_SIDE_MAX_BYTES } from './tools';
+import { createAgentTools, execLogTimestamp, formatLineWindow, formatStrReplaceDiffSide, isFullFileReadGrant, isPathMissingError, READ_FILE_DEFAULT_LIMIT, STR_REPLACE_DIFF_SIDE_MAX_BYTES } from './tools';
 import { createRunFileFreshness } from './fileFreshness';
 import { SandboxHttpError } from '../sandbox/types';
 
@@ -223,8 +223,9 @@ describe('createAgentTools', () => {
       { cmd: 'pwd' },
       { toolCallId: '1', messages: [] } as never,
     )) as string;
-    expect(out).toContain('stdout:\ninvincible/docs');
-    expect(out).toContain('stderr:\ninvincible/error.txt');
+    expect(out).toContain('stdout: (1 lines, 16 bytes)\n  invincible/docs');
+    expect(out).toContain('stderr: (1 lines, 21 bytes)\n  invincible/error.txt');
+    expect(out).toMatch(/\nlog: \.invincible\/logs\/exec-[\dT-]+\.log$/);
     expect(out).not.toContain(R);
   });
 
@@ -782,6 +783,234 @@ describe('exec stdin / heredoc', () => {
       expect.objectContaining({ cmd: 'cat', stdin: 'primary' }),
     );
     expect(seen).not.toHaveProperty('heredoc');
+  });
+});
+
+describe('exec result summary + log (plan #724)', () => {
+  const ctx = { toolCallId: 'x1', messages: [] } as never;
+
+  function run(
+    overrides: Partial<SandboxClient> = {},
+    opts: { secrets?: Array<string | undefined | null> } = {},
+  ): {
+    out: Promise<string>;
+    exec: ReturnType<typeof vi.fn>;
+    writeFile: ReturnType<typeof vi.fn>;
+  } {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const writeFile = vi.fn(
+      async (_path: string, _content: string, _mkdir?: boolean) => ({
+        ok: true as const,
+        bytes: 0,
+      }),
+    );
+    const client = mockClient({ exec, writeFile, ...overrides });
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client,
+      secrets: opts.secrets,
+    });
+    return {
+      out: tools.exec.execute!({ cmd: 'cmd' }, ctx) as Promise<string>,
+      exec,
+      writeFile,
+    };
+  }
+
+  it('execLogTimestamp is filesystem-safe and ms-precise (no colons)', () => {
+    expect(execLogTimestamp(new Date(2026, 0, 2, 3, 4, 5, 678))).toBe(
+      '2026-01-02T030405-678',
+    );
+    expect(execLogTimestamp()).not.toContain(':');
+  });
+
+  it('case 1: small output fits head+tail — no marker, log path present, mkdir:true write', async () => {
+    const { out, writeFile } = run({
+      exec: vi.fn(async () => ({ exitCode: 0, stdout: 'line1\nline2\n', stderr: '' })),
+    });
+    const o = (await out) as string;
+    expect(o).toContain('stdout: (2 lines, 12 bytes)\n  line1\n  line2');
+    expect(o).not.toContain('truncated');
+    expect(o).toMatch(/\nlog: \.invincible\/logs\/exec-[\dT-]+\.log$/);
+    expect(writeFile).toHaveBeenCalledTimes(1);
+    expect(writeFile).toHaveBeenCalledWith(
+      expect.stringMatching(/^\.invincible\/logs\/exec-[\dT-]+\.log$/),
+      expect.stringMatching(/\n\[stdout\]\nline1\nline2/),
+      true,
+      expect.anything(),
+    );
+  });
+
+  it('case 2: large output (50 lines) — head+tail window with truncation marker', async () => {
+    const head = Array.from({ length: EXEC_LOG_HEAD_LINES }, (_, i) => `h${i}`);
+    const mid = Array.from({ length: 30 }, (_, i) => `m${i}`);
+    const tail = Array.from({ length: EXEC_LOG_TAIL_LINES }, (_, i) => `t${i}`);
+    const stdout = [...head, ...mid, ...tail].join('\n');
+    const { out } = run({
+      exec: vi.fn(async () => ({ exitCode: 0, stdout, stderr: '' })),
+    });
+    const o = (await out) as string;
+    expect(o).toContain('stdout: (50 lines,');
+    expect(o).toContain('  h0\n  h1');
+    expect(o).toContain('... (30 lines truncated)');
+    expect(o).toContain('  t8\n  t9');
+    expect(o).not.toContain('m0'); // middle lines are hidden
+  });
+
+  it('case 3: empty output — no log written, no stream sections, no log: line', async () => {
+    const { out, writeFile } = run();
+    const o = (await out) as string;
+    expect(o).toBe('exec cmd\nexit=0');
+    expect(o).not.toContain('stdout:');
+    expect(o).not.toContain('stderr:');
+    expect(o).not.toContain('log:');
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('case 4: stdout only — stderr section omitted', async () => {
+    const { out } = run({
+      exec: vi.fn(async () => ({ exitCode: 0, stdout: 'ok\n', stderr: '' })),
+    });
+    const o = (await out) as string;
+    expect(o).toContain('stdout: (1 lines, 3 bytes)\n  ok');
+    expect(o).not.toContain('stderr:');
+  });
+
+  it('case 5: stderr only — stdout section omitted', async () => {
+    const { out } = run({
+      exec: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: 'boom\n' })),
+    });
+    const o = (await out) as string;
+    expect(o).toContain('stderr: (1 lines, 5 bytes)\n  boom');
+    expect(o).not.toContain('stdout:');
+  });
+
+  it('case 6: TIMED_OUT with partial output — label + log written with captured bytes', async () => {
+    const { out, writeFile } = run({
+      exec: vi.fn(async () => ({
+        exitCode: null,
+        stdout: 'partial\n',
+        stderr: '',
+        timedOut: true,
+      })),
+    });
+    const o = (await out) as string;
+    expect(o).toContain('TIMED_OUT');
+    expect(o).toContain('stdout: (1 lines, 8 bytes)\n  partial');
+    expect(writeFile).toHaveBeenCalledTimes(1);
+    expect(writeFile.mock.calls[0]![1] as string).toContain('# exit: TIMED_OUT');
+  });
+
+  it('case 7: write_file failure — fail-soft warning, head/tail still present', async () => {
+    const writeFile = vi.fn(async () => {
+      throw new Error('disk full');
+    });
+    const { out } = run({
+      writeFile,
+      exec: vi.fn(async () => ({ exitCode: 0, stdout: 'ok\n', stderr: '' })),
+    });
+    const o = (await out) as string;
+    expect(o).toContain('stdout: (1 lines, 3 bytes)\n  ok');
+    expect(o).toContain('⚠ log write failed: disk full');
+    expect(o).not.toContain('log: .invincible');
+  });
+
+  it('case 8: secrets redacted in summary AND log file', async () => {
+    const secret = 'ghp_secret_xyz_abc';
+    const writeFile = vi.fn(
+      async (_path: string, _content: string, _mkdir?: boolean) => ({
+        ok: true as const,
+        bytes: 0,
+      }),
+    );
+    const { out } = run(
+      {
+        writeFile,
+        exec: vi.fn(async () => ({
+          exitCode: 0,
+          stdout: `GITHUB_TOKEN=${secret}\n`,
+          stderr: '',
+        })),
+      },
+      { secrets: [secret] },
+    );
+    const o = (await out) as string;
+    expect(o).not.toContain(secret);
+    const logContent = writeFile.mock.calls[0]![1] as string;
+    expect(logContent).not.toContain(secret);
+    expect(logContent).toContain('[redacted]');
+  });
+
+  it('case 9: very long single line (no newlines) — shown once, no marker, log has full line', async () => {
+    const long = 'x'.repeat(100);
+    const writeFile = vi.fn(
+      async (_path: string, _content: string, _mkdir?: boolean) => ({
+        ok: true as const,
+        bytes: 0,
+      }),
+    );
+    const { out } = run({
+      writeFile,
+      exec: vi.fn(async () => ({ exitCode: 0, stdout: long, stderr: '' })),
+    });
+    const o = (await out) as string;
+    expect(o).toContain('stdout: (1 lines, 100 bytes)');
+    expect(o).not.toContain('truncated');
+    expect(writeFile.mock.calls.length).toBe(1);
+    expect(writeFile.mock.calls[0]![1] as string).toContain(long);
+  });
+
+  it('case 10: stdin provided — header includes size, log notes stdin bytes', async () => {
+    const writeFile = vi.fn(
+      async (_path: string, _content: string, _mkdir?: boolean) => ({
+        ok: true as const,
+        bytes: 0,
+      }),
+    );
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: 'ok', stderr: '' }));
+    const client = mockClient({ exec, writeFile });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    const out = (await tools.exec.execute!({ cmd: 'cat', stdin: 'hello' }, ctx)) as string;
+    expect(out).toContain('exec cat stdin=5B');
+    expect(out).toContain('exit=0');
+    expect(writeFile.mock.calls[0]![1] as string).toContain('# stdin: 5B');
+  });
+
+  it('case 11: summary line-count regression — 200-line output stays compact', async () => {
+    const stdout = Array.from({ length: 200 }, (_, i) => `L${i}`).join('\n');
+    const { out } = run({
+      exec: vi.fn(async () => ({ exitCode: 0, stdout, stderr: '' })),
+    });
+    const o = (await out) as string;
+    expect(o).toContain('... (180 lines truncated)');
+    expect(o.split('\n').length).toBeLessThanOrEqual(30);
+  });
+
+  it('case 12: log file content holds the complete (rewritten) stdout+stderr', async () => {
+    const writeFile = vi.fn(
+      async (_path: string, _content: string, _mkdir?: boolean) => ({
+        ok: true as const,
+        bytes: 0,
+      }),
+    );
+    const stdout = Array.from({ length: 200 }, (_, i) => `S${i}\n`).join('');
+    const { out } = run({
+      writeFile,
+      exec: vi.fn(async () => ({
+        exitCode: 0,
+        stdout,
+        stderr: 'err-line\n',
+      })),
+    });
+    const o = (await out) as string;
+    // summary is compact (head+tail only)…
+    expect(o).toContain('... (180 lines truncated)');
+    expect(o).not.toContain('S150');
+    // …but the log holds the full output
+    const logContent = writeFile.mock.calls[0]![1] as string;
+    expect(logContent).toContain('S0');
+    expect(logContent).toContain('S199');
+    expect(logContent).toContain('err-line');
   });
 });
 

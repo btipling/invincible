@@ -1,5 +1,8 @@
 import { jsonSchema, tool } from 'ai';
 import {
+  EXEC_LOG_HEAD_LINES,
+  EXEC_LOG_MAX_BYTES,
+  EXEC_LOG_TAIL_LINES,
   SEARCH_LINE_MAX_BYTES,
   SEARCH_MAX_FILESIZE_STR,
   SEARCH_MAX_RESULTS,
@@ -218,6 +221,77 @@ function formatExcerptBlock(
 
 function finalize(text: string, secrets: Array<string | undefined | null>): string {
   return truncateForModel(redactSecrets(text, secrets), TOOL_RESULT_MAX_CHARS);
+}
+
+/**
+ * Filesystem-safe timestamp used in exec log filenames: `YYYY-MM-DDTHHmmss-SSS`
+ * (no colons, so the name is valid on every platform). ms precision avoids
+ * collisions between concurrent exec calls in one turn.
+ */
+export function execLogTimestamp(date: Date = new Date()): string {
+  const p = (n: number, w = 2) => String(n).padStart(w, '0');
+  return (
+    `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())}T` +
+    `${p(date.getHours())}${p(date.getMinutes())}${p(date.getSeconds())}-` +
+    `${p(date.getMilliseconds(), 3)}`
+  );
+}
+
+/** Split a stream into lines, dropping the single trailing empty element of a final newline. */
+function splitExecLines(text: string): string[] {
+  if (text === '') return [];
+  const lines = text.split('\n');
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+/**
+ * One stdout/stderr section of the exec summary with a head/tail window:
+ * `label: (N lines, K bytes)` then indented head lines, a `... (M lines
+ * truncated)` marker when the middle was cut, then the tail lines. Empty text →
+ * `''` so the caller can omit the section entirely.
+ */
+function formatExecStreamSection(
+  label: 'stdout' | 'stderr',
+  text: string,
+  headN: number,
+  tailN: number,
+): string {
+  const lines = splitExecLines(text);
+  if (lines.length === 0) return '';
+  const bytes = Buffer.byteLength(text, 'utf8');
+  const showAll = lines.length <= headN + tailN;
+  const headCount = showAll ? lines.length : headN;
+  const rows: string[] = [];
+  for (let i = 0; i < headCount; i++) rows.push(`  ${lines[i]}`);
+  if (!showAll) {
+    rows.push(`  ... (${lines.length - headN - tailN} lines truncated)`);
+    for (let i = lines.length - tailN; i < lines.length; i++) rows.push(`  ${lines[i]}`);
+  }
+  return `${label}: (${lines.length} lines, ${bytes} bytes)\n${rows.join('\n')}`;
+}
+
+/** Build the on-disk exec log file body (still to be redacted + capped by caller). */
+function buildExecLogContent(opts: {
+  cmd: string;
+  cwd: string;
+  exitLabel: string;
+  stdinBytes?: number;
+  stdout: string;
+  stderr: string;
+  ts: string;
+}): string {
+  const header = [
+    `# exec log — ${opts.cmd}`,
+    `# cwd: ${opts.cwd}`,
+    `# exit: ${opts.exitLabel}`,
+    `# ts: ${opts.ts}`,
+  ];
+  if (opts.stdinBytes) header.push(`# stdin: ${opts.stdinBytes}B`);
+  const parts = [...header, ''];
+  if (opts.stdout) parts.push('[stdout]', opts.stdout, '');
+  if (opts.stderr) parts.push('[stderr]', opts.stderr, '');
+  return parts.join('\n');
 }
 
 function deny(toolName: string, need: 'read' | 'write', secrets: Array<string | undefined | null>) {
@@ -820,14 +894,68 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
             : `exec ${input.cmd}`;
         const stdout = rewriteExecRootToRel(workspaceRoot, result.stdout);
         const stderr = rewriteExecRootToRel(workspaceRoot, result.stderr);
+        const exitLabel = result.timedOut ? 'TIMED_OUT' : String(result.exitCode);
+
         const parts = [
           head,
           result.timedOut ? 'TIMED_OUT' : `exit=${result.exitCode}`,
         ];
-        if (stdout) parts.push(`stdout:\n${stdout}`);
-        if (stderr) parts.push(`stderr:\n${stderr}`);
+
+        // Persist full output to a workspace log file (redacted, capped) whenever
+        // either stream is non-empty. Empty execs (`exec true`) write nothing.
+        const hasOutput =
+          (result.stdout?.length ?? 0) > 0 || (result.stderr?.length ?? 0) > 0;
+        let logLine: string | undefined;
+        if (hasOutput) {
+          const ts = execLogTimestamp();
+          const logRel = `.invincible/logs/exec-${ts}.log`;
+          const logContent = clipUtf8Bytes(
+            redactSecrets(
+              buildExecLogContent({
+                cmd: input.cmd,
+                cwd: execCwd,
+                exitLabel,
+                ...(stdin !== undefined
+                  ? { stdinBytes: Buffer.byteLength(stdin, 'utf8') }
+                  : {}),
+                stdout,
+                stderr,
+                ts,
+              }),
+              secrets,
+            ),
+            EXEC_LOG_MAX_BYTES,
+          );
+          try {
+            // mkdir: true — backends do not auto-create parent dirs.
+            await client.writeFile(logRel, logContent, true, { signal });
+            logLine = `log: ${logRel}`;
+          } catch (writeErr) {
+            // Fail-soft: the exec itself succeeded; don't mask its output with a
+            // log-write error. The head/tail lines stay in the summary.
+            const reason =
+              writeErr instanceof Error ? writeErr.message : String(writeErr);
+            logLine = `⚠ log write failed: ${reason}`;
+          }
+        }
+
+        const stdoutSection = formatExecStreamSection(
+          'stdout',
+          stdout,
+          EXEC_LOG_HEAD_LINES,
+          EXEC_LOG_TAIL_LINES,
+        );
+        if (stdoutSection) parts.push(stdoutSection);
+        const stderrSection = formatExecStreamSection(
+          'stderr',
+          stderr,
+          EXEC_LOG_HEAD_LINES,
+          EXEC_LOG_TAIL_LINES,
+        );
+        if (stderrSection) parts.push(stderrSection);
         if (result.stdoutTruncated) parts.push('(stdout truncated)');
         if (result.stderrTruncated) parts.push('(stderr truncated)');
+        if (logLine) parts.push(logLine);
         return finalize(parts.join('\n'), secrets);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
