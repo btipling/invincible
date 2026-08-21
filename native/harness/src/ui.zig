@@ -27,6 +27,7 @@ const status = @import("ui/status.zig");
 const skill = @import("ui/skill.zig");
 const composer = @import("ui/composer.zig");
 const composer_history = @import("ui/composer_history.zig");
+const composer_chrome = @import("ui/composer_chrome.zig");
 const queue_band = @import("ui/queue_band.zig");
 
 /// Baked at compile time (`-Dbuild-id=…`); shown in header to detect stale wasm.
@@ -590,20 +591,26 @@ pub fn frame() !void {
     // [COMPOSER_IDLE_CHROME_H, COMPOSER_MAX_CHROME_H]. At idle the band is ~44 px
     // (Send sits on the field baseline); multi-line paste grows the rect up to
     // 124 px over one frame settle (adversarial review #584 Round 2 Major L1+L9).
+    // ── Submit / Stop action callbacks bound to the extracted chrome. ──────
+    // The chrome module stays free of `composer`/`bridge`/`state` so the host
+    // test can paint the real surface; these closures (frame-owned) carry the
+    // submit/cancel dispatch, exactly as the old inline button handlers did.
+    const on_send = struct {
+        fn run(text: []const u8) void {
+            composer.submitOrEnqueue(text);
+            state.want_composer_focus = true;
+        }
+    }.run;
+    const on_stop = struct {
+        fn run() void {
+            bridge.queueCancelFromUi();
+        }
+    }.run;
+
     var typed: []const u8 = state.prompt_buf[0..0];
     {
-        var composer_chrome = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .rect = .{ .x = 0, .y = composer_y, .w = 0, .h = composer_h },
-            .expand = .horizontal,
-            .background = true,
-            .color_fill = palette.teal_bg,
-            .color_border = palette.teal_border,
-            .padding = .{ .x = 0, .y = metrics.COMPOSER_HUG_PAD, .w = 0, .h = metrics.COMPOSER_HUG_PAD },
-        });
-        defer composer_chrome.deinit();
-
         // Single-row composer (plan #457): the multi-line field and ONE trailing
-        // icon button pack horizontally, so a tall paste grows the field up to
+        // icon pack lay out horizontally, so a tall paste grows the field up to
         // COMPOSER_INPUT_MAX_H and then scrolls inside it — there is no second
         // action row to crush (#344), and no hint copy below the field. Plain
         // Enter inserts a newline; the send chord is Ctrl+Enter (Cmd+Enter on
@@ -677,113 +684,40 @@ pub fn frame() !void {
                 }
             }
         }
-        {
-            var te = dvui.textEntry(@src(), .{
-                .text = .{ .buffer = state.prompt_buf[0..] },
-                .placeholder = "Message the model…",
-                .multiline = true,
-                .break_lines = true,
-                .scroll_horizontal = false,
-            }, .{
-                .expand = .horizontal,
-                .gravity_y = 0.5,
-                // TE_PAD is baked into min/max by TextEntryWidget.init — pass
-                // the well size minus 2×pad so the named TOUCH_H / 120 caps
-                // (and 44/124 chrome) survive the bake. Width max is
-                // max_float_safe (not 0): a 0 width + 2×TE_PAD bake would
-                // cap the internal layout at 10 px. Long-line wrapping comes
-                // from scroll_horizontal = false, which gives the inner
-                // TextLayout a finite viewport width via ScrollContainerWidget
-                // (horizontal = .none → child gets viewport.w).
-                .min_size_content = .{ .w = 120, .h = metrics.TOUCH_H - 2 * metrics.COMPOSER_TE_PAD },
-                .max_size_content = .{ .w = dvui.max_float_safe, .h = metrics.COMPOSER_INPUT_MAX_H - 2 * metrics.COMPOSER_TE_PAD },
-                .color_fill = palette.teal_surface,
-                .color_text = palette.teal_text,
-                .color_border = if (busy) palette.teal_border else palette.teal_accent,
-                .margin = .{ .x = 0, .y = 0, .w = 8, .h = 0 },
-                .padding = .{ .x = metrics.COMPOSER_TE_PAD, .y = metrics.COMPOSER_TE_PAD, .w = metrics.COMPOSER_TE_PAD, .h = metrics.COMPOSER_TE_PAD },
-                .border = .{ .x = 1, .y = 1, .w = 1, .h = 1 },
-            });
-            typed = te.getText();
-            if (state.want_composer_focus) {
-                dvui.focusWidget(te.data().id, null, null);
-                state.want_composer_focus = false;
-            }
-            // Capture the textEntry's natural wrapped height for next frame's
-            // dynamic hug. `te.data().min_size` is the OPTIONS seed (re-seeded
-            // each frame from min_size_content), NOT the computed wrapped
-            // height. The textEntry's draw() computes the real wrap height but
-            // that value only reaches dvui.minSizeGet(id) AFTER te.deinit()
-            // (its children report back during deinit). We sample the OUTER
-            // height (content + border only — dvui bakes padding into
-            // min_size_content and nulls it, so minSizeGet adds border = 2).
-            // min/max_size_content are passed *minus* 2×COMPOSER_TE_PAD so the
-            // bake restores the named 40/120 wells. Convert to content
-            // (subtract TE_OVERHEAD = 2), then pad for the chrome box.
-            // Clamped to [IDLE, MAX] so the band hugs the field and never
-            // collapses (adversarial review #584 Round 4 Blocker L1
-            // + Major L1: `dvui.minSizeGet` returns `?Size`, and
-            // `TextEntryWidget.deinit` ends in `defer self.* = undefined`, so
-            // the lookup Id must be captured BEFORE deinit — reading
-            // `te.data().id` after would be use-after-undefined. If the queried
-            // id has no stored size this frame, fall back to the previous
-            // frame's measured height instead of collapsing (never a zero shot)).
-            const te_id = te.data().id;
-            te.deinit();
-            const outer_h = if (dvui.minSizeGet(te_id)) |ms| ms.h else state.composer_last_h;
-            const raw_content = @max(0.0, outer_h - metrics.TE_OVERHEAD);
-            const content_h = @max(metrics.TOUCH_H, @min(raw_content, metrics.COMPOSER_INPUT_MAX_H));
-            state.composer_last_h = @max(metrics.COMPOSER_IDLE_CHROME_H, @min(content_h + 2 * metrics.COMPOSER_HUG_PAD, metrics.COMPOSER_MAX_CHROME_H));
-            if (composer_submit and typed.len > 0) {
-                composer.submitOrEnqueue(typed);
-                typed = state.prompt_buf[0..0];
-                state.want_composer_focus = true;
-            }
-        }
 
-        // Single square icon-only action button, same row as the field (no
-        // labelled Stop/Send pill; the hints `busy… Stop to cancel` /
-        // `Ctrl/Cmd+Enter to send` are gone — that state lives on the host
-        // top-bar Busy chip). Idle ▶ = Send (submit when non-empty); Busy ■ =
-        // Stop/cancel (protocol v9 pending cancel → host abort). Glyphs come
-        // from the embedded DejaVu Sans Symbols face so they never tofu.
-        // Idle ▶ = Send. Busy ▶ = enqueue + ■ Stop (protocol v9).
-        if (busy) {
-            if (dvui.button(@src(), "▶", .{}, .{
-                .gravity_y = 1.0,
-                .style = .highlight,
-                .font = chrome.composerIconFont(),
-                .min_size_content = .{ .w = metrics.TOUCH_H, .h = metrics.TOUCH_H },
-                .corners = .round(8),
-            })) {
-                if (typed.len > 0) {
-                    composer.submitOrEnqueue(typed);
-                    state.want_composer_focus = true;
-                }
-            }
-            if (dvui.button(@src(), "■", .{}, .{
-                .gravity_y = 1.0,
-                .style = .content,
-                .font = chrome.composerIconFont(),
-                .min_size_content = .{ .w = metrics.TOUCH_H, .h = metrics.TOUCH_H },
-                .corners = .round(8),
-                .color_fill = palette.warm_bg,
-                .color_text = palette.warm_accent,
-                .color_border = palette.ember_border,
-            })) {
-                bridge.queueCancelFromUi();
-            }
-        } else if (dvui.button(@src(), "▶", .{}, .{
-            .gravity_y = 1.0,
-            .style = .highlight,
-            .font = chrome.composerIconFont(),
-            .min_size_content = .{ .w = metrics.TOUCH_H, .h = metrics.TOUCH_H },
-            .corners = .round(8),
-        })) {
-            if (typed.len > 0) {
-                composer.submitOrEnqueue(typed);
-                state.want_composer_focus = true;
-            }
+        // The chrome paints the field on an explicit trailing-RESERVED sub-rect
+        // of width `avail.w − (TOUCH_H×n + 8)` so its reported min width (the
+        // unwrapped line) can never squeeze the ▶/■ icons off-canvas (plan #737,
+        // source #734). It returns the current field text + measured outer
+        // height; the dynamic-hug clamp and the Enter-chord submit stay here.
+        const res = composer_chrome.paintComposerChrome(.{
+            .busy = busy,
+            .avail_w = avail.w,
+            .y = composer_y,
+            .h = composer_h,
+            .prompt_buf = &state.prompt_buf,
+            .want_focus = &state.want_composer_focus,
+            .actions = .{ .on_send = &on_send, .on_stop = &on_stop },
+        });
+        typed = res.typed;
+
+        // Capture the field's natural wrapped height for next frame's dynamic
+        // hug. paintComposerChrome measures it via `dvui.minSizeGet(field_id)`
+        // AFTER the textEntry deinit (its children report back during deinit).
+        // Convert outer→content (subtract TE_OVERHEAD = 2), then pad for the
+        // chrome box, clamping to [IDLE, MAX] so the band hugs the field and
+        // never collapses (adversarial review #584 Round 4 Blocker L1). If the
+        // queried id has no stored size this frame (first frame), fall back to
+        // the previous frame's measured height instead of collapsing.
+        const outer_h = res.measured_h orelse state.composer_last_h;
+        const raw_content = @max(0.0, outer_h - metrics.TE_OVERHEAD);
+        const content_h = @max(metrics.TOUCH_H, @min(raw_content, metrics.COMPOSER_INPUT_MAX_H));
+        state.composer_last_h = @max(metrics.COMPOSER_IDLE_CHROME_H, @min(content_h + 2 * metrics.COMPOSER_HUG_PAD, metrics.COMPOSER_MAX_CHROME_H));
+
+        if (composer_submit and typed.len > 0) {
+            composer.submitOrEnqueue(typed);
+            typed = state.prompt_buf[0..0];
+            state.want_composer_focus = true;
         }
     }
 

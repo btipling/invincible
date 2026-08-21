@@ -633,6 +633,32 @@ pub fn build(b: *std.Build) void {
         test_rich.dependOn(&b.addRunArtifact(busy_row_layout_tests).step);
     }
 
+    // Host dvui testing-backend layout-rect tests for composer_chrome.zig
+    // (plan #737, source #734). Drives the REAL extracted `paintComposerChrome`
+    // and locks the trailing-reserved icon-pack geometry: the field is
+    // width-bounded to `avail_w − (TOUCH_H×n + 8)` so a long unbreakable line
+    // can never squeeze the ▶/■ icons off-canvas. composer_chrome imports
+    // chrome → rich/toolrun → bridge.zig, so the test needs BOTH dvui
+    // (dvui_testing) and the web-backend stub (mirrors queue_band_tests /
+    // composer_tests wiring).
+    {
+        const composer_layout_tests = b.addTest(.{
+            .name = "composer_layout",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/composer_layout.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        composer_layout_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
+        composer_layout_tests.root_module.addImport("web-backend", b.createModule(.{
+            .root_source_file = b.path("src/test_web_backend_stub.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }));
+        test_rich.dependOn(&b.addRunArtifact(composer_layout_tests).step);
+    }
+
     // Host dvui testing-backend layout-rect tests for transcript_split.zig
     // (empty collapsible left rail). Closed 40 / open 220 widths + toggle tag.
     {
