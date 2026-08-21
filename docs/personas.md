@@ -48,6 +48,42 @@ returned to the model only on an explicit `*_read` and never reach the
 client/Wasm. The snapshot policy above is unaffected — authoring your personas
 does not rewrite a running session's locked snapshot.
 
+## Version history & rollback
+
+Personas keep an **append-only, bounded version history** of their **body** across
+every `create`, body edit, and Restore — the same pattern shipped for skills
+(`docs/skills.md` §Version history & rollback). This is the #534 escape hatch:
+if the agent (or you) miswrites a persona body, you can **restore a known-good
+prior version** instead of recreating the persona from memory.
+
+- **What is versioned:** only the **body**. Name/rename/slug/default/recommended
+  skills changes are not body edits and do not create versions.
+- **On create:** the initial body is stored as the first version row.
+- **On every body edit:** the new body is stored as a new version row (newest
+  first). After a normal create→edit the pre-edit body is already stored, so no
+  redundant snapshot is added; a drifted/legacy row (e.g. one created before
+  this feature shipped) snapshots its pre-edit body too so Restore stays
+  complete.
+- **Restore (rollback):** Settings → Persona card → **Version history** → Show →
+  **Restore** on a prior version. The chosen body is copied back into the live
+  persona, and the rollback itself is recorded as a **new** version row — the
+  timeline stays complete and a rolled-back state is itself restorable.
+  Restore is disabled for the newest ("now") row and while a rollback is pending.
+
+The version list also offers **Copy body** and **View body** (inline raw text,
+un-escaped) per version.
+
+- **Version cap:** `PERSONA_VERSION_MAX` = **100** versions per persona (a new
+  generous cap; personas hold ≤ 16 KiB bodies, so ~1.6 MiB/persona even at cap —
+  trivial Postgres). At the cap, further body edits and Restores are rejected
+  until you raise the cap or delete the persona; the panel shows a warning
+  approaching the cap.
+- **Delete is final:** version rows cascade-delete with the persona (same as
+  skills) — deleting a persona permanently drops its history. Restoring a
+  deleted persona is not supported.
+- **Deletion/rollback of a persona's version history** never rewrites a running
+  session's locked persona snapshot.
+
 ## How a new session uses a persona
 
 Starting a **New session**:

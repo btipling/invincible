@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pglite';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import * as schema from '../../db/schema';
@@ -7,14 +7,17 @@ import {
   createUserPersona,
   deleteUserPersona,
   getPersonaById,
+  getPersonaVersion,
+  listPersonaVersions,
   listUserPersonas,
   renameUserPersona,
   resolveDefaultPersona,
+  rollbackPersona,
   setDefaultPersona,
-  updateUserPersonaBody,
   updateRecommendedSlugs,
+  updateUserPersonaBody,
 } from './userPersonas';
-import { PERSONA_RECOMMENDED_SKILLS_MAX } from '../sessionCloudCaps';
+import { PERSONA_RECOMMENDED_SKILLS_MAX, PERSONA_VERSION_MAX } from '../sessionCloudCaps';
 import { getSharedDb, resetTenantTables } from './test/shared';
 
 let db!: ReturnType<typeof drizzle<typeof schema>>;
@@ -496,3 +499,294 @@ describe('userPersonas', () => {
     expect(full.value?.recommendedSkillSlugs).toEqual(['valid-slug', 'also-valid']);
   });
 });
+
+// Plan #726 (source #534) — persona version history + rollback (mirrors skills #711).
+describe('userPersonas version history + rollback', () => {
+  beforeAll(async () => {
+    db = await getSharedDb();
+  });
+
+  beforeEach(async () => {
+    await resetTenantTables();
+  });
+
+  /** Count version rows for a persona directly. */
+  async function versionCount(personaId: string): Promise<number> {
+    const rows = await db
+      .select()
+      .from(schema.userPersonaVersions)
+      .where(eq(schema.userPersonaVersions.personaId, personaId));
+    return rows.length;
+  }
+
+  /** Read a persona's live body directly. */
+  async function liveBody(userId: string, personaId: string): Promise<string> {
+    const rows = await db
+      .select({ body: schema.userPersonas.body })
+      .from(schema.userPersonas)
+      .where(eq(schema.userPersonas.id, personaId));
+    return rows[0]?.body ?? '';
+  }
+
+  it('create inserts an initial version row atomically (normal + isDefault branches)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+
+    // Normal branch.
+    const normal = await createUserPersona(
+      { userId, name: 'A', slug: 'a', body: 'v1 body' },
+      { db: db as never },
+    );
+    expect(normal.ok).toBe(true);
+    if (!normal.ok) throw new Error('expected ok');
+
+    // isDefault branch.
+    const def = await createUserPersona(
+      { userId, name: 'B', slug: 'b', body: 'default-v1 body', isDefault: true },
+      { db: db as never },
+    );
+    expect(def.ok).toBe(true);
+    if (!def.ok) throw new Error('expected ok');
+
+    expect(await versionCount(normal.value.id)).toBe(1);
+    expect(await versionCount(def.value.id)).toBe(1);
+
+    const rows = await db
+      .select({ body: schema.userPersonaVersions.body })
+      .from(schema.userPersonaVersions)
+      .where(eq(schema.userPersonaVersions.personaId, normal.value.id));
+    expect(rows[0].body).toBe('v1 body');
+  });
+
+  it('update after a normal create captures ONLY the new body (1 row — pre-edit already stored)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserPersona(
+      { userId, name: 'A', slug: 'a', body: 'v1 body' },
+      { db: db as never },
+    );
+    if (!created.ok) throw new Error('expected ok');
+    const id = created.value.id;
+
+    const upd = await updateUserPersonaBody(userId, id, 'v2 body', { db: db as never });
+    expect(upd.ok).toBe(true);
+
+    // Pre-edit 'v1 body' already stored from create → the WHERE body check
+    // finds it, so only the new body is inserted (1 extra row → 2 total).
+    expect(await versionCount(id)).toBe(2);
+    expect(await liveBody(userId, id)).toBe('v2 body');
+  });
+
+  it('update on a drifted/legacy row captures BOTH pre-edit snapshot + new body (2 rows, newest-first deterministic)', async () => {
+    const { userId, tenantId } = await seedUser('t1', 'u@example.com');
+    // Insert a persona directly bypassing the store — a drifted/legacy row
+    // whose live body is NOT stored as a version (simulates a pre-0015 persona).
+    const [inserted] = await db
+      .insert(schema.userPersonas)
+      .values({
+        tenantId,
+        userId,
+        name: 'Drift',
+        slug: 'drift',
+        body: 'legacy body',
+        isDefault: false,
+      })
+      .returning({ id: schema.userPersonas.id });
+
+    const upd = await updateUserPersonaBody(userId, inserted.id, 'new body', {
+      db: db as never,
+    });
+    expect(upd.ok).toBe(true);
+
+    expect(await versionCount(inserted.id)).toBe(2);
+    expect(await liveBody(userId, inserted.id)).toBe('new body');
+
+    // Newest-first: the new body (stamped) rows above the pre-edit snapshot
+    // (stamped − 1 ms), so the newest row is the live body.
+    const rows = await db
+      .select({ body: schema.userPersonaVersions.body, createdAt: schema.userPersonaVersions.createdAt })
+      .from(schema.userPersonaVersions)
+      .where(eq(schema.userPersonaVersions.personaId, inserted.id))
+      .orderBy(desc(schema.userPersonaVersions.createdAt));
+    expect(rows[0].body).toBe('new body');
+    expect(rows[1].body).toBe('legacy body');
+  });
+
+  it('update at the version cap → rejected, body unchanged', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserPersona(
+      { userId, name: 'A', slug: 'a', body: 'v1 body' },
+      { db: db as never },
+    );
+    if (!created.ok) throw new Error('expected ok');
+    const id = created.value.id;
+
+    // Fill to the cap with direct inserts (cap = 100).
+    for (let i = 0; i < PERSONA_VERSION_MAX - 1; i++) {
+      await db.insert(schema.userPersonaVersions).values({
+        personaId: id,
+        body: `filler-${i}`,
+        label: '',
+      });
+    }
+    expect(await versionCount(id)).toBe(PERSONA_VERSION_MAX);
+
+    const upd = await updateUserPersonaBody(userId, id, 'over-cap body', {
+      db: db as never,
+    });
+    expect(upd.ok).toBe(false);
+    if (!upd.ok) {
+      expect(upd.code).toBe('invalid_body');
+      expect(upd.error).toContain(`version limit reached (${PERSONA_VERSION_MAX})`);
+    }
+
+    // Body unchanged; no extra version row.
+    expect(await liveBody(userId, id)).toBe('v1 body');
+    expect(await versionCount(id)).toBe(PERSONA_VERSION_MAX);
+  });
+
+  it('listPersonaVersions returns newest-first summaries (no body), ownership-gated (non-owner → [])', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserPersona(
+      { userId, name: 'A', slug: 'a', body: 'v1' },
+      { db: db as never },
+    );
+    if (!created.ok) throw new Error('expected ok');
+    const id = created.value.id;
+    await updateUserPersonaBody(userId, id, 'v2', { db: db as never });
+    await updateUserPersonaBody(userId, id, 'v3', { db: db as never });
+
+    const listed = await listPersonaVersions(userId, id, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect(listed.value).toHaveLength(3);
+    // Newest first.
+    expect(listed.value[0].createdAt.getTime()).toBeGreaterThanOrEqual(
+      listed.value[2].createdAt.getTime(),
+    );
+    // No body field in the summary.
+    expect('body' in (listed.value[0] as Record<string, unknown>)).toBe(false);
+
+    // Non-owner → empty (no existence leak).
+    const { userId: otherId } = await seedUser('t2', 'other@example.com');
+    const cross = await listPersonaVersions(otherId, id, { db: db as never });
+    expect(cross.ok).toBe(true);
+    if (!cross.ok) throw new Error('expected ok');
+    expect(cross.value).toEqual([]);
+  });
+
+  it('getPersonaVersion returns body by version id, ownership-gated, no-existence-leak (null)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserPersona(
+      { userId, name: 'A', slug: 'a', body: 'v1' },
+      { db: db as never },
+    );
+    if (!created.ok) throw new Error('expected ok');
+    const id = created.value.id;
+    await updateUserPersonaBody(userId, id, 'v2', { db: db as never });
+
+    const versions = await listPersonaVersions(userId, id, { db: db as never });
+    if (!versions.ok || !versions.value[0]) throw new Error('expected version');
+    const target = versions.value[0];
+
+    const got = await getPersonaVersion(userId, id, target.id, { db: db as never });
+    expect(got.ok).toBe(true);
+    if (!got.ok) throw new Error('expected ok');
+    expect(got.value?.body).toBe('v2');
+
+    // Non-owner → null.
+    const { userId: otherId } = await seedUser('t2', 'other@example.com');
+    const cross = await getPersonaVersion(otherId, id, target.id, { db: db as never });
+    expect(cross.ok).toBe(true);
+    if (!cross.ok) throw new Error('expected ok');
+    expect(cross.value).toBeNull();
+
+    // Missing version id → null (no existence leak).
+    const missing = await getPersonaVersion(userId, id, '00000000-0000-0000-0000-000000000000', { db: db as never });
+    expect(missing.ok).toBe(true);
+    if (!missing.ok) throw new Error('expected ok');
+    expect(missing.value).toBeNull();
+  });
+
+  it('rollback copies version body → live row + inserts a new version row (atomic)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserPersona(
+      { userId, name: 'A', slug: 'a', body: 'v1' },
+      { db: db as never },
+    );
+    if (!created.ok) throw new Error('expected ok');
+    const id = created.value.id;
+    await updateUserPersonaBody(userId, id, 'v2', { db: db as never });
+    await updateUserPersonaBody(userId, id, 'v3', { db: db as never });
+
+    // Find the v1 version row (oldest) and roll back to it.
+    const versions = await listPersonaVersions(userId, id, { db: db as never });
+    if (!versions.ok) throw new Error('expected ok');
+    const oldest = versions.value[versions.value.length - 1];
+
+    const before = await versionCount(id);
+    const rb = await rollbackPersona(userId, id, oldest.id, { db: db as never });
+    expect(rb.ok).toBe(true);
+
+    // Live body restored to v1 body; one new version row (rollback IS versioned).
+    expect(await liveBody(userId, id)).toBe('v1');
+    expect(await versionCount(id)).toBe(before + 1);
+
+    // Newest version row is the restored body (either from rollback insert).
+    const rows = await db
+      .select({ body: schema.userPersonaVersions.body })
+      .from(schema.userPersonaVersions)
+      .where(eq(schema.userPersonaVersions.personaId, id))
+      .orderBy(desc(schema.userPersonaVersions.createdAt));
+    expect(rows[0].body).toBe('v1');
+  });
+
+  it('rollback at the version cap → rejected, body unchanged', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserPersona(
+      { userId, name: 'A', slug: 'a', body: 'v1' },
+      { db: db as never },
+    );
+    if (!created.ok) throw new Error('expected ok');
+    const id = created.value.id;
+    await updateUserPersonaBody(userId, id, 'v2', { db: db as never });
+
+    // Fill to the cap.
+    for (let i = 0; i < PERSONA_VERSION_MAX - 2; i++) {
+      await db.insert(schema.userPersonaVersions).values({
+        personaId: id,
+        body: `filler-${i}`,
+        label: '',
+      });
+    }
+    expect(await versionCount(id)).toBe(PERSONA_VERSION_MAX);
+
+    const versions = await listPersonaVersions(userId, id, { db: db as never });
+    if (!versions.ok) throw new Error('expected ok');
+    const earliest = versions.value[versions.value.length - 1];
+
+    const rb = await rollbackPersona(userId, id, earliest.id, { db: db as never });
+    expect(rb.ok).toBe(false);
+    if (!rb.ok) {
+      expect(rb.code).toBe('invalid_body');
+      expect(rb.error).toContain(`version limit reached (${PERSONA_VERSION_MAX})`);
+    }
+
+    expect(await liveBody(userId, id)).toBe('v2');
+    expect(await versionCount(id)).toBe(PERSONA_VERSION_MAX);
+  });
+
+  it('version rows cascade-delete with the persona', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserPersona(
+      { userId, name: 'A', slug: 'a', body: 'v1' },
+      { db: db as never },
+    );
+    if (!created.ok) throw new Error('expected ok');
+    const id = created.value.id;
+    await updateUserPersonaBody(userId, id, 'v2', { db: db as never });
+    expect(await versionCount(id)).toBe(2);
+
+    await deleteUserPersona(userId, id, { db: db as never });
+    expect(await versionCount(id)).toBe(0);
+  });
+});
+

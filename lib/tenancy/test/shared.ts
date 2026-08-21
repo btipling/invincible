@@ -42,6 +42,7 @@ const MIGRATIONS = [
   '0012_user_skill_versions.sql',
   '0013_always_on_skills.sql',
   '0014_recommended_skills.sql',
+  '0015_user_persona_versions.sql',
 ];
 
 /**
@@ -106,6 +107,7 @@ export async function getSharedClient(): Promise<PGlite> {
  */
 export const RESET_TABLES = [
   schema.harnessSessions,
+  schema.userPersonaVersions,
   schema.userPersonas,
   schema.userSkillVersions,
   schema.userSkills,

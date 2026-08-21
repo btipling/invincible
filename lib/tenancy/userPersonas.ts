@@ -8,9 +8,10 @@
  * Every query filters tenantId + userId so a persona can never leak to another
  * user/tenant, and getById returns null for another-user rows (no existence leak).
  */
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import {
   userPersonas,
+  userPersonaVersions,
   type Db,
 } from '../../db';
 import { withConnection, type TenancyConnection } from '../di/withConnection';
@@ -18,6 +19,7 @@ import { loadSoleMembership } from './soleMembership';
 import {
   SKILL_SLUG_RE,
   PERSONA_RECOMMENDED_SKILLS_MAX,
+  PERSONA_VERSION_MAX,
 } from '../sessionCloudCaps';
 
 /** Display name limits. */
@@ -34,6 +36,9 @@ export const PERSONA_SLUG_RE = /^[a-z][a-z0-9_]{0,63}$/;
  * is snapshot-able under `meta.personaSnapshot`.
  */
 export const PERSONA_BODY_MAX_BYTES = 16 * 1024;
+
+/** UUID id shape (personas rows keyed by uuid primary key). Fail-closed on read. */
+const PERSONA_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type UserPersonasDeps = {
   db?: Db;
@@ -235,14 +240,19 @@ export async function createUserPersona(
 
     return await withDb(deps, async (db) => {
       try {
-        let row: { id: string };
-        if (input.isDefault === true) {
-          // Create-as-default goes through the same clear-then-set transaction as
-          // setDefaultPersona (adversarial review #489 major): clear every sibling
-          // (tenant+user scoped) inside the same tx, so exactly one default row can
-          // ever exist for the user. A persistent partial unique index
-          // (user_personas_single_default_unique) enforces this at the DB too.
-          row = await db.transaction(async (tx) => {
+        // Persona INSERT + initial version row are atomic (plan #726, review
+        // finding #2): both branches — isDefault and the common non-default path
+        // (which was previously a bare `db.insert` with no transaction) — run
+        // inside ONE db.transaction mirroring createUserSkill, so a version-insert
+        // failure rolls back the persona insert and a persona is never left with
+        // no version snapshot.
+        const row = await db.transaction(async (tx) => {
+          if (input.isDefault === true) {
+            // Create-as-default goes through the same clear-then-set transaction as
+            // setDefaultPersona (adversarial review #489 major): clear every sibling
+            // (tenant+user scoped) inside the same tx, so exactly one default row can
+            // ever exist for the user. A persistent partial unique index
+            // (user_personas_single_default_unique) enforces this at the DB too.
             await tx
               .update(userPersonas)
               .set({ isDefault: false, updatedAt: new Date() })
@@ -252,22 +262,8 @@ export async function createUserPersona(
                   eq(userPersonas.tenantId, tid.value),
                 ),
               );
-            const [r] = await tx
-              .insert(userPersonas)
-              .values({
-                tenantId: tid.value,
-                userId,
-                name,
-                slug,
-                body,
-                isDefault: true,
-                recommendedSkillSlugs: recommendedSkillSlugs as never,
-              })
-              .returning({ id: userPersonas.id });
-            return r;
-          });
-        } else {
-          const [r] = await db
+          }
+          const [r] = await tx
             .insert(userPersonas)
             .values({
               tenantId: tid.value,
@@ -275,12 +271,17 @@ export async function createUserPersona(
               name,
               slug,
               body,
-              isDefault: false,
+              isDefault: input.isDefault === true,
               recommendedSkillSlugs: recommendedSkillSlugs as never,
             })
             .returning({ id: userPersonas.id });
-          row = r;
-        }
+          await tx.insert(userPersonaVersions).values({
+            personaId: r.id,
+            body,
+            label: '',
+          });
+          return r;
+        });
         return { ok: true as const, value: { id: row.id } };
       } catch (err) {
         if (isUniqueViolation(err)) {
@@ -379,21 +380,111 @@ export async function updateUserPersonaBody(
 
   try {
     return await withDb(deps, async (db) => {
-      const updated = await db
-        .update(userPersonas)
-        .set({ body: clean, updatedAt: new Date() })
-        .where(
-          and(
-            eq(userPersonas.id, pid),
-            eq(userPersonas.userId, uid),
-            eq(userPersonas.tenantId, tid.value),
-          ),
-        )
-        .returning({ id: userPersonas.id });
-      if (!updated[0]) {
-        return { ok: false as const, code: 'not_found' as const, error: 'persona not found' };
+      // Version count gate — plan #726 (mirrors skills #711 phase 1). Counts all
+      // rows for this persona, not just those visible in an incomplete listing.
+      // The gate runs BEFORE any write (review #722 L1 pattern): a cap reject
+      // must never touch the live body, and rollback does NOT free a slot (it
+      // inserts a row), so at the cap we fail closed with an honest recovery
+      // message rather than silently committing the body and dropping history.
+      const versions = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(userPersonaVersions)
+        .where(eq(userPersonaVersions.personaId, pid));
+      const count = Number(versions[0]?.count ?? 0);
+      if (count >= PERSONA_VERSION_MAX) {
+        return {
+          ok: false as const,
+          code: 'invalid_body' as const,
+          error: `version limit reached (${PERSONA_VERSION_MAX}) — delete the persona or raise the cap`,
+        };
       }
-      return { ok: true, value: { id: pid } };
+
+      // Body write + version insert are atomic (review #722 L1 pattern): a
+      // version-insert failure rolls back the body UPDATE so the live body and
+      // the version timeline never diverge.
+      return await db.transaction(async (tx) => {
+        // Owner-gated read of the current live body BEFORE the UPDATE so a
+        // legacy/drifted row's pre-edit body can be snapshotted below. If the
+        // target is a persona the user does not own we fail closed (not_found).
+        const current = await tx
+          .select({ body: userPersonas.body })
+          .from(userPersonas)
+          .where(
+            and(
+              eq(userPersonas.id, pid),
+              eq(userPersonas.userId, uid),
+              eq(userPersonas.tenantId, tid.value),
+            ),
+          )
+          .limit(1);
+        if (!current[0]) {
+          return { ok: false as const, code: 'not_found' as const, error: 'persona not found' };
+        }
+        const prevBody = current[0].body;
+
+        // Pre-edit snapshot (mirrors skills updateUserSkillBody): the timeline
+        // must always hold a restorable copy of the PRE-EDIT body. create keeps
+        // the live body equal to the newest version row, so normally no extra
+        // snapshot is needed. But a legacy pre-0015 persona or any drifted row
+        // has a live body NOT already stored as a version: snapshot it BEFORE
+        // the new version so Restore stays intact (write-path equivalent of
+        // createUserPersona's initial row — not a data backfill).
+        //
+        // The capture check is order-INDEPENDENT (`WHERE body = prevBody` — is
+        // the pre-edit body already stored as ANY version?) instead of "is the
+        // newest row's body !== prevBody". Both inserts share one transaction,
+        // so Postgres `now()` would give BOTH rows the SAME created_at; a
+        // newest-only tiebreak with no secondary key leaves newest-first order
+        // unspecified. The two inserts share an explicit `stamped` timestamp
+        // (snapshot = stamped − 1 ms, new body = stamped) so the new body is
+        // always the newest of the pair — no eager-edit false-trigger, no
+        // burned cap slot (test #2 vs #3 split).
+        const stamped = new Date();
+        const already = await tx
+          .select({ id: userPersonaVersions.id })
+          .from(userPersonaVersions)
+          .where(
+            and(
+              eq(userPersonaVersions.personaId, pid),
+              eq(userPersonaVersions.body, prevBody),
+            ),
+          )
+          .limit(1);
+        if (already.length === 0) {
+          await tx.insert(userPersonaVersions).values({
+            personaId: pid,
+            body: prevBody,
+            label: '',
+            createdAt: new Date(stamped.getTime() - 1),
+          });
+        }
+
+        const updated = await tx
+          .update(userPersonas)
+          .set({ body: clean, updatedAt: new Date() })
+          .where(
+            and(
+              eq(userPersonas.id, pid),
+              eq(userPersonas.userId, uid),
+              eq(userPersonas.tenantId, tid.value),
+            ),
+          )
+          .returning({ id: userPersonas.id });
+        if (!updated[0]) {
+          return { ok: false as const, code: 'not_found' as const, error: 'persona not found' };
+        }
+
+        // New body row is stamped at `stamped` (strictly after any pre-edit
+        // snapshot at `stamped − 1 ms`), so eager edit pairs never tie on
+        // created_at and the live body is deterministically the **now** row.
+        await tx.insert(userPersonaVersions).values({
+          personaId: pid,
+          body: clean,
+          label: '',
+          createdAt: stamped,
+        });
+        return { ok: true as const, value: { id: pid } };
+      });
     });
   } catch (err) {
     if (isUndefinedTable(err)) {
@@ -753,6 +844,231 @@ export async function clearDefaultPersona(
   }
 }
 
+/** Version summary projection (no body). */
+export type PersonaVersionSummary = {
+  id: string;
+  label: string;
+  createdAt: Date;
+};
+
+/** Full version row including body. */
+export type PersonaVersion = PersonaVersionSummary & { body: string };
+
+/**
+ * List version summaries (no body) for a persona, newest first.
+ * Ownership-tenancy inside the persona lookup itself.
+ */
+export async function listPersonaVersions(
+  userId: string,
+  personaId: string,
+  deps: UserPersonasDeps = {},
+): Promise<UserPersonasResult<PersonaVersionSummary[]>> {
+  const uid = userId?.trim();
+  const pid = personaId?.trim();
+  if (!uid || !pid || !PERSONA_ID_RE.test(pid)) {
+    return { ok: true, value: [] };
+  }
+  const tid = await resolveTenantId(uid, deps);
+  if (!tid.ok) return tid;
+
+  try {
+    return await withDb(deps, async (db) => {
+      // Ownership gate: only list versions of personas the user owns.
+      const own = await db
+        .select({ id: userPersonas.id })
+        .from(userPersonas)
+        .where(
+          and(
+            eq(userPersonas.id, pid),
+            eq(userPersonas.userId, uid),
+            eq(userPersonas.tenantId, tid.value),
+          ),
+        )
+        .limit(1);
+      if (!own[0]) return { ok: true as const, value: [] };
+
+      const rows = await db
+        .select({
+          id: userPersonaVersions.id,
+          label: userPersonaVersions.label,
+          createdAt: userPersonaVersions.createdAt,
+        })
+        .from(userPersonaVersions)
+        .where(eq(userPersonaVersions.personaId, pid))
+        .orderBy(desc(userPersonaVersions.createdAt))
+        .limit(PERSONA_VERSION_MAX);
+      return { ok: true as const, value: rows.map((r) => ({ ...r })) };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'user_persona_versions unavailable' };
+    }
+    return { ok: false, code: 'unavailable', error: 'could not list versions' };
+  }
+}
+
+/**
+ * Get a single version with body, by version id. Ownership-tenancy gated.
+ */
+export async function getPersonaVersion(
+  userId: string,
+  personaId: string,
+  versionId: string,
+  deps: UserPersonasDeps = {},
+): Promise<UserPersonasResult<PersonaVersion | null>> {
+  const uid = userId?.trim();
+  const pid = personaId?.trim();
+  const vid = versionId?.trim();
+  if (!uid || !pid || !vid || !PERSONA_ID_RE.test(pid) || !PERSONA_ID_RE.test(vid)) {
+    return { ok: true, value: null };
+  }
+  const tid = await resolveTenantId(uid, deps);
+  if (!tid.ok) return tid;
+
+  try {
+    return await withDb(deps, async (db) => {
+      // Ownership gate on the persona.
+      const own = await db
+        .select({ id: userPersonas.id })
+        .from(userPersonas)
+        .where(
+          and(
+            eq(userPersonas.id, pid),
+            eq(userPersonas.userId, uid),
+            eq(userPersonas.tenantId, tid.value),
+          ),
+        )
+        .limit(1);
+      if (!own[0]) return { ok: true as const, value: null };
+
+      const rows = await db
+        .select({
+          id: userPersonaVersions.id,
+          label: userPersonaVersions.label,
+          body: userPersonaVersions.body,
+          createdAt: userPersonaVersions.createdAt,
+        })
+        .from(userPersonaVersions)
+        .where(
+          and(
+            eq(userPersonaVersions.id, vid),
+            eq(userPersonaVersions.personaId, pid),
+          ),
+        )
+        .limit(1);
+      const row = rows[0];
+      if (!row) return { ok: true as const, value: null };
+      return { ok: true as const, value: { ...row } };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'user_persona_versions unavailable' };
+    }
+    return { ok: false, code: 'unavailable', error: 'could not load version' };
+  }
+}
+
+/**
+ * Rollback a persona to a specific version. Copies the version's body into
+ * user_personas.body + inserts a NEW version row (rollback itself IS versioned).
+ * Ownership-tenancy gated; counts against PERSONA_VERSION_MAX.
+ */
+export async function rollbackPersona(
+  userId: string,
+  personaId: string,
+  versionId: string,
+  deps: UserPersonasDeps = {},
+): Promise<UserPersonasResult<{ id: string }>> {
+  const uid = userId?.trim();
+  const pid = personaId?.trim();
+  const vid = versionId?.trim();
+  if (!uid || !pid || !vid || !PERSONA_ID_RE.test(pid) || !PERSONA_ID_RE.test(vid)) {
+    return { ok: false, code: 'not_found', error: 'persona or version not found' };
+  }
+  const tid = await resolveTenantId(uid, deps);
+  if (!tid.ok) return tid;
+
+  try {
+    return await withDb(deps, async (db) => {
+      // Ownership gate on the persona.
+      const own = await db
+        .select({ id: userPersonas.id })
+        .from(userPersonas)
+        .where(
+          and(
+            eq(userPersonas.id, pid),
+            eq(userPersonas.userId, uid),
+            eq(userPersonas.tenantId, tid.value),
+          ),
+        )
+        .limit(1);
+      if (!own[0]) {
+        return { ok: false as const, code: 'not_found' as const, error: 'persona not found' };
+      }
+
+      // Fetch the target version body.
+      const ver = await db
+        .select({ body: userPersonaVersions.body })
+        .from(userPersonaVersions)
+        .where(
+          and(
+            eq(userPersonaVersions.id, vid),
+            eq(userPersonaVersions.personaId, pid),
+          ),
+        )
+        .limit(1);
+      if (!ver[0]) {
+        return { ok: false as const, code: 'not_found' as const, error: 'version not found' };
+      }
+      const body = ver[0].body;
+
+      // Version count gate BEFORE any write (review #722 L1 pattern): a rollback
+      // at the cap must not mutate the body either. Rollback inserts a version
+      // row, so it never frees a slot — fail closed with an honest message.
+      const countRows = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(userPersonaVersions)
+        .where(eq(userPersonaVersions.personaId, pid));
+      const count = Number(countRows[0]?.count ?? 0);
+      if (count >= PERSONA_VERSION_MAX) {
+        return {
+          ok: false as const,
+          code: 'invalid_body' as const,
+          error: `version limit reached (${PERSONA_VERSION_MAX}) — delete the persona or raise the cap`,
+        };
+      }
+
+      // Body update + rollback version insert are atomic (review #722 L1 pattern).
+      return await db.transaction(async (tx) => {
+        await tx
+          .update(userPersonas)
+          .set({ body, updatedAt: new Date() })
+          .where(
+            and(
+              eq(userPersonas.id, pid),
+              eq(userPersonas.userId, uid),
+              eq(userPersonas.tenantId, tid.value),
+            ),
+          );
+
+        // Insert a new version row recording the rollback.
+        await tx.insert(userPersonaVersions).values({
+          personaId: pid,
+          body,
+          label: '',
+        });
+
+        return { ok: true as const, value: { id: pid } };
+      });
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'user_persona_versions unavailable' };
+    }
+    return { ok: false, code: 'unavailable', error: 'could not roll back persona' };
+  }
+}
+
 /** Factory (DI): binds a fixed deps closure for composition-root wiring. */
 export function createUserPersonas(deps: UserPersonasDeps = {}) {
   return {
@@ -776,5 +1092,11 @@ export function createUserPersonas(deps: UserPersonasDeps = {}) {
       clearDefaultPersona(userId, { ...deps, ...o }),
     updateRecommendedSlugs: (userId: string, id: string, slugs: string[], o?: UserPersonasDeps) =>
       updateRecommendedSlugs(userId, id, slugs, { ...deps, ...o }),
+    listPersonaVersions: (userId: string, personaId: string, o?: UserPersonasDeps) =>
+      listPersonaVersions(userId, personaId, { ...deps, ...o }),
+    getPersonaVersion: (userId: string, personaId: string, versionId: string, o?: UserPersonasDeps) =>
+      getPersonaVersion(userId, personaId, versionId, { ...deps, ...o }),
+    rollbackPersona: (userId: string, personaId: string, versionId: string, o?: UserPersonasDeps) =>
+      rollbackPersona(userId, personaId, versionId, { ...deps, ...o }),
   };
 }

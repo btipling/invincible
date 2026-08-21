@@ -127,6 +127,17 @@ export const META_SKILL_FRAGMENT_MAX_BYTES = 64 * 1024;
 export const SKILL_VERSION_MAX = 100;
 
 /**
+ * Max version rows per persona (plan #726, source #534). Append-only version
+ * history caps the number of stored full-body copies so a tight loop of edits
+ * cannot produce unbounded rows per persona. Rollback inserts a new version
+ * (itself versioned) and counts toward this cap. NEW generous cap — mirrors
+ * `SKILL_VERSION_MAX`; personas hold ≤ 16 KiB bodies (smaller than skills'
+ * 4 MiB), so ~1.6 MiB/persona even at cap (~80 MiB/user at
+ * `META_USER_PERSONAS_MAX` = 50) — trivial Postgres. No existing cap changed.
+ */
+export const PERSONA_VERSION_MAX = 100;
+
+/**
  * Max number of skills a user may set as always-on (plan #720 phase 2).
  * Always-on skills auto-attach to every new session regardless of persona.
  * NEW generous cap — 8 × ≤ 256 KiB inject budget fits inside the existing
