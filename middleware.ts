@@ -12,6 +12,10 @@ function isApiProtected(pathname: string): boolean {
   if (pathname === '/api/settings/skills' || pathname.startsWith('/api/settings/skills/')) {
     return true;
   }
+  // persona version-history surface (plan #726): exact collection + any `:id` child.
+  if (pathname === '/api/settings/personas' || pathname.startsWith('/api/settings/personas/')) {
+    return true;
+  }
   return (
     pathname === '/api/chat' ||
     pathname === '/api/agent' ||
@@ -112,6 +116,8 @@ export const config = {
     '/api/harness/status',
     '/api/settings/skills',
     '/api/settings/skills/:path*',
+    '/api/settings/personas',
+    '/api/settings/personas/:path*',
     '/api/sessions',
     '/api/sessions/:path*',
   ],

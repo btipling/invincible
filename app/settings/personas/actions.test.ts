@@ -163,6 +163,30 @@ describe('settings personas actions', () => {
     expect(r.error).toMatch(/Body is required/);
   });
 
+  it('updatePersonaBody maps a version-limit cap honestly (not the 16 KiB sentence)', async () => {
+    tenancyOn();
+    vi.resetModules();
+    vi.doMock('next/cache', () => ({ revalidatePath: vi.fn() }));
+    mockDi();
+    mockAuth({ id: 'u1' });
+    mockMembership({ ok: true, tenantId: 't1', role: 'owner' });
+    personaStore({
+      updateUserPersonaBody: vi.fn(async () => ({
+        ok: false as const,
+        code: 'version_limit' as const,
+        error: 'version limit reached (100) — delete the persona or raise the cap',
+      })),
+    });
+
+    const { updatePersonaBodyAction } = await import('./actions');
+    const fd = new FormData();
+    fd.set('id', 'p1');
+    fd.set('body', 'over-cap body');
+    const r = await updatePersonaBodyAction({}, fd);
+    expect(r.error).toMatch(/Version limit reached/);
+    expect(r.error).not.toMatch(/Body is required/);
+  });
+
   it('rename + updateBody + delete + setDefault + clearDefault route through the store', async () => {
     tenancyOn();
     vi.resetModules();
