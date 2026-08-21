@@ -362,16 +362,29 @@ pub fn match(key: Key, action: KeyAction, mods: Mods, ctx: Context) Match {
     // the dispatcher likewise arms the leader on .down only).
     if (action == .up) return .{ .outcome = .none };
 
+    // Leader window: while `leader_pending`, the prefix swallows EVERYTHING
+    // except its own command chords — `?` toggles help, Escape cancels, and
+    // the leader chord itself re-arms. A recognized product row does NOT fire
+    // during the window (the first key after the prefix is either the command
+    // or it cancels/disarms the leader).
+    if (ctx.leader_pending) {
+        if (key == .slash and modsMatch(mods, .shift)) {
+            return .{ .outcome = .action, .action = .help_toggle_leader };
+        }
+        if (key == .escape) return .{ .outcome = .action, .action = .leader_cancel };
+        if (key == .space and modsMatch(mods, .ctrl_shift)) {
+            return .{ .outcome = .action, .action = .leader }; // re-arm
+        }
+        // Unmatched key while leader pending: swallow (handled, disarmed) so it
+        // never lands in the prompt (fail closed).
+        return .{ .outcome = .swallow_leader };
+    }
+
     for (KEY_TABLE) |row| {
         if (rowMatches(row, key, mods, ctx)) {
             return .{ .outcome = .action, .action = row.action };
         }
     }
-
-    // Leader pending and no row matched (and not a reserved browser): swallow
-    // (handled, disarmed) so the key never lands in the prompt (fail closed).
-    if (ctx.leader_pending) return .{ .outcome = .swallow_leader };
-
     return .{ .outcome = .none };
 }
 
@@ -531,6 +544,15 @@ test "keymap: leader + reserved browser chord → disarm browser (test 9)" {
     // dispatcher disarms. The deny-list runs before leader handling.
     const m = match(.t, .down, .{ .control = true }, .{ .leader_pending = true });
     try std.testing.expectEqual(Outcome.browser, m.outcome);
+}
+
+test "keymap: leader pending swallows a recognized chord (Ctrl+Enter is not submit during the window)" {
+    // While a leader is pending, a recognized product chord (Ctrl+Enter submit)
+    // does NOT fire — the leader prefix swallows the first key + disarms. Only
+    // the leader's own command chords (`?`, Escape, re-arm) have an action.
+    const m = match(.enter, .down, .{ .control = true }, .{ .leader_pending = true });
+    try std.testing.expectEqual(Outcome.swallow_leader, m.outcome);
+    try std.testing.expect(m.action == null);
 }
 
 test "keymap: leaderTimedOut — armed within window, expired after" {
