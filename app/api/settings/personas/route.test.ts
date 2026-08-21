@@ -195,10 +195,13 @@ describe('POST /api/settings/personas/:id/rollback', () => {
     expect(res.status).toBe(404);
   });
 
-  it('at the version cap → 400', async () => {
+  it('at the version cap → 400 with VERSION_LIMIT (production code)', async () => {
+    // Production store returns `version_limit` for the cap (not `invalid_body`).
+    // personaErrorResponse uppercases it, so the JSON code must be VERSION_LIMIT
+    // (locks the wire so a later route change can't map it to a 500 default).
     const rollbackPersona = vi.fn(async () => ({
       ok: false,
-      code: 'invalid_body',
+      code: 'version_limit',
       error: 'version limit reached (100) — delete the persona or raise the cap',
     }));
     mockAuthed();
@@ -213,6 +216,9 @@ describe('POST /api/settings/personas/:id/rollback', () => {
       ctx('p1'),
     );
     expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string; error: string };
+    expect(body.code).toBe('VERSION_LIMIT');
+    expect(body.error).toMatch(/version limit reached/);
   });
 
   it('happy: rolls back and returns ok + id', async () => {
