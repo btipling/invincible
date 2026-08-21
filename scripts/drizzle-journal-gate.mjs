@@ -9,13 +9,18 @@
  *
  * Run from `npm test`, `npm run db:migrate`, and GHA db-migrate / DEK-backfill
  * before `drizzle-kit migrate`.
+ *
+ * `DRIZZLE_JOURNAL_MIGRATIONS_DIR` (optional) overrides the migrations dir so
+ * the gate can be exercised against a fixture (used by the vitest tempdir
+ * spawn tests); it defaults to the repo `db/migrations`.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const migrationsDir = join(root, 'db/migrations');
+const migrationsDir =
+  process.env.DRIZZLE_JOURNAL_MIGRATIONS_DIR || join(root, 'db/migrations');
 const journalPath = join(migrationsDir, 'meta/_journal.json');
 
 const sqlFiles = readdirSync(migrationsDir)

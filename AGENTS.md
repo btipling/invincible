@@ -392,9 +392,10 @@ See create-plan / plan-review **layer** rules when planning features.
 - **Harness frame budget:** app code in `dvui_update` → `ui.frame()` must not GPA-allocate or do host I/O. Parse / decode / texture belong on the **bridge write** (`inv_push_message` / `inv_update_last` / `inv_*_cache_put`), not paint. Contract + current exceptions: [docs/harness-limits.md](docs/harness-limits.md) · Frame budget.
 - **Tests are run directly with vitest — no script wrappers allowed.** Never
   introduce or use a wrapper script around vitest, and do not re-add one if it was
-  removed. Run the suite with `npm test` (= `node scripts/di-gate.mjs && vitest run` —
-  the di-gate runs first so in-body `createDbConnection(`/`new PGlite(`/sandbox/http/
-  redis I/O construction all fail before vitest) or invoke vitest through the **local** binary directly
+  removed. Run the suite with `npm test` (= `node scripts/di-gate.mjs && node scripts/drizzle-journal-gate.mjs && vitest run` —
+  di-gate and drizzle-journal-gate each run first so in-body `createDbConnection(`/`new
+  PGlite(`/sandbox/http/redis I/O construction and a `db/migrations` SQL↔journal
+  mismatch each fail before vitest) or invoke vitest through the **local** binary directly
   (`node_modules/vitest/vitest.mjs run`, never `npx`)
   with an explicit exec timeout (`timeoutMs ≈ 600000`) — a long run can drop over
   the transport but still complete. For a fast mechanical gate that only tests files
