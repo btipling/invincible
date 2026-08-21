@@ -213,6 +213,20 @@ pub fn build(b: *std.Build) void {
         test_rich.dependOn(&b.addRunArtifact(composer_history_tests).step);
     }
 
+    // Host unit tests for keymap.zig (plan #741): the single chord table +
+    // reserved-browser deny-list + leader machine. Pure, no dvui, no bridge.
+    {
+        const keymap_tests = b.addTest(.{
+            .name = "keymap",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/keymap.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(keymap_tests).step);
+    }
+
     // Host unit tests for cwd_slot.zig (plan #579, adversarial review #584
     // Minor L6): the "."-hidden predicate. Pure, no dvui.
     {
