@@ -122,6 +122,12 @@ fn historyApply(dir: composer_history.Step) void {
     }
 }
 
+/// Plan #742 — leader command `t` seam: flip the thinking default-collapsed
+/// preference. The dispatcher closes the leader after invoking this.
+fn toggleThinkingDefault() void {
+    state.thinking_default_collapsed = !state.thinking_default_collapsed;
+}
+
 pub fn onInit() void {
     bridge.reset();
     @memset(&state.prompt_buf, 0);
@@ -492,6 +498,9 @@ pub fn frame() !void {
         // armed leader would ghost chrome.
         state.help_overlay_open = false;
         state.leader_armed = false;
+        // Plan #742 — a fresh surface resets the thinking preference to its
+        // collapsed-default (same reset site as help_overlay_open / leader_armed).
+        state.thinking_default_collapsed = true;
         // Drop composer arrow-key history state (plan #667) — a New /
         // Clear / session hydrate drops the ring, so ordinals are stale.
         // Only restore the saved draft when actually in history (#686 R6):
@@ -646,7 +655,7 @@ pub fn frame() !void {
         // the submit stroke. Submit is requested via `state.request_submit`
         // (consumed after the chrome paint, which hands back the live prompt
         // text + measured outer height).
-        keymap_dispatch.dispatch(.{ .history = &historyApply });
+        keymap_dispatch.dispatch(.{ .history = &historyApply, .toggleThinkingDefault = &toggleThinkingDefault });
 
         // The chrome paints the field on an explicit trailing-RESERVED sub-rect
         // of width `avail.w − (TOUCH_H×n + 8)` so its reported min width (the

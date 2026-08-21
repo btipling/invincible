@@ -107,6 +107,9 @@ pub const Action = enum {
     leader,
     /// Escape while leader pending — disarm (no insert, no product action).
     leader_cancel,
+    /// Leader then `t` — flip the thinking default-collapsed preference
+    /// (`state.thinking_default_collapsed`) and close the leader (#742).
+    thinking_default_toggle,
 };
 
 /// Frame context bits the `when` gating reads. `leader_pending` is managed by
@@ -287,6 +290,15 @@ pub const KEY_TABLE = [_]Row{
         .action = .help_toggle_leader,
         .help = "Toggle help (leader)",
     },
+    // ── leader command: t (thinking default-collapsed, plan #742) ─────────
+    .{
+        .id = "thinking_default_toggle",
+        .key = .t,
+        .prereq = .none,
+        .when_true = .{ .leader_pending = true },
+        .action = .thinking_default_toggle,
+        .help = "Thinking default collapsed",
+    },
 };
 
 /// Reserved-browser deny-list — (key, prereq) pairs never marked handled.
@@ -387,6 +399,12 @@ pub fn match(key: Key, action: KeyAction, mods: Mods, ctx: Context) Match {
         }
         if (key == .space and modsMatch(mods, .ctrl_shift)) {
             return .{ .outcome = .action, .action = .leader }; // re-arm
+        }
+        // Leader command `t`: flip thinking default-collapsed (#742). Mirrors
+        // the `?` arm — handled, disarms (the dispatcher closes the leader),
+        // and never inserts `t` into the prompt.
+        if (key == .t and modsMatch(mods, .none)) {
+            return .{ .outcome = .action, .action = .thinking_default_toggle };
         }
         // Unmatched key while leader pending: swallow (handled, disarmed) so it
         // never lands in the prompt (fail closed).
@@ -539,6 +557,33 @@ test "keymap: leader + ? within window → help_toggle_leader (row 7)" {
     const m = match(.slash, .down, .{ .shift = true }, .{ .leader_pending = true });
     try std.testing.expectEqual(Outcome.action, m.outcome);
     try std.testing.expectEqual(Action.help_toggle_leader, m.action.?);
+}
+
+test "keymap: leader + t → thinking_default_toggle (plan #742 test 5)" {
+    const m = match(.t, .down, .{}, .{ .leader_pending = true });
+    try std.testing.expectEqual(Outcome.action, m.outcome);
+    try std.testing.expectEqual(Action.thinking_default_toggle, m.action.?);
+}
+
+test "keymap: leader + t disarms the leader and never inserts t (plan #742 test 5b)" {
+    // The arm returns an `.action` (handled) with no swallow ambiguity — the
+    // dispatcher marks it handled (no `t` in the prompt) and closes the leader.
+    const m = match(.t, .down, .{}, .{ .leader_pending = true });
+    try std.testing.expectEqual(Outcome.action, m.outcome);
+    try std.testing.expectEqual(Action.thinking_default_toggle, m.action.?);
+    // A plain `t` (no leader) is NOT a command — it must flow through (.none).
+    try std.testing.expectEqual(Outcome.none, match(.t, .down, .{}, .{ .composer = true }).outcome);
+    // Ctrl+T stays reserved (browser new-tab) — never the thinking toggle.
+    try std.testing.expectEqual(Outcome.browser, match(.t, .down, .{ .control = true }, .{ .leader_pending = true }).outcome);
+}
+
+test "keymap: table is within KEYMAP_MAX with the thinking toggle row present" {
+    try std.testing.expect(tableLen() <= KEYMAP_MAX);
+    var found = false;
+    for (KEY_TABLE) |row| {
+        if (std.mem.eql(u8, row.id, "thinking_default_toggle")) found = true;
+    }
+    try std.testing.expect(found);
 }
 
 test "keymap: leader + Esc → leader_cancel (not turn cancel)" {

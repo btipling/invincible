@@ -28,9 +28,12 @@ const composer_history = @import("composer_history.zig");
 const LEADER_TIMER_ID: dvui.Id = @enumFromInt(0x7410_0000_0000_0001);
 
 /// Product seams that live in `ui.zig` (which imports this module) — passed in
-/// to avoid an import cycle: `history` calls ui.zig's `historyApply`.
+/// to avoid an import cycle: `history` calls ui.zig's `historyApply`, and
+/// `toggleThinkingDefault` flips the thinking default-collapsed preference
+/// (plan #742, Leader then `t`).
 pub const Handlers = struct {
     history: *const fn (composer_history.Step) void,
+    toggleThinkingDefault: *const fn () void,
 };
 
 /// Convert dvui's `enums.Key` to the keymap `Key` subset.
@@ -178,6 +181,12 @@ fn runAction(action: keymap.Action, down: bool, handlers: Handlers) void {
         },
         .leader_cancel => {
             if (!down) return;
+            disarmLeader();
+        },
+        .thinking_default_toggle => {
+            if (!down) return;
+            // Flip the preference and close the leader (leader command `t`).
+            handlers.toggleThinkingDefault();
             disarmLeader();
         },
     }

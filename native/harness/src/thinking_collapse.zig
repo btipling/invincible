@@ -3,14 +3,19 @@
 //! Host-unit-tested (no dvui / wasm frame), mirroring `composer_text.zig` /
 //! `ring_slot.zig` seams. The rule locked here:
 //!
-//!   - While the harness is **Busy**, every thinking row that belongs to the
-//!     current turn renders the FULL monologue — the operator is still reading
-//!     the active turn's chain of thought, including the live `update_last`
-//!     newest slot.
+//!   - The product default is "thinking default = **collapsed**": while the
+//!     harness is **Busy**, an active-turn thinking row renders the compact
+//!     expandable control unless the operator explicitly opened it — live
+//!     reasoning starts out collapsed too.
+//!   - When the "thinking default collapsed" preference is **OFF**, the today
+//!     Busy pin is restored: every thinking row that belongs to the current turn
+//!     renders the FULL monologue (the operator is reading the active turn's
+//!     chain of thought, including the live `update_last` newest slot).
 //!   - When a turn **completes** (Busy -> ready/err), every committed thinking
-//!     row collapses to the compact expandable control. Re-clicking a row opens
-//!     it (operator set lives in `ui/state.zig`, in-memory only — thinking is
-//!     ephemeral and never survives refresh).
+//!     row collapses to the compact expandable control regardless of the
+//!     preference. Re-clicking a row opens it (operator set lives in
+//!     `ui/state.zig`, in-memory only — thinking is ephemeral and never
+//!     survives refresh).
 //!
 //! Turn membership is decided by **physical ring-slot contiguity**, not by a
 //! logical visible-index threshold. The Busy turn occupies the physical slots
@@ -88,13 +93,32 @@ pub const State = struct {
     }
 
     /// Whether a thinking row in physical ring slot `slot` should render the FULL
-    /// monologue: True when it is part of the current Busy turn OR the operator
-    /// explicitly opened it. Otherwise it renders collapsed. Operator-open rows
-    /// (committed, outside the active turn) can be toggled back off; active-turn
-    /// rows stay pinned full regardless of the operator set. This is THE policy
-    /// API — callers render full iff it returns true.
-    pub fn shouldRenderFull(self: *const State, slot: usize, head: usize, cap: usize, operator_open: bool) bool {
-        return self.isActiveTurnFull(slot, head, cap) or operator_open;
+    /// monologue: True when the operator explicitly opened it, OR (when thinking
+    /// is NOT default-collapsed) it is part of the current Busy turn. Otherwise
+    /// it renders collapsed.
+    ///
+    /// `default_collapsed` is the "thinking default = collapsed" preference
+    /// (plan #742): when ON (the default), even active-turn rows render
+    /// collapsed unless the operator opened them — the Busy pin is relaxed so
+    /// live reasoning starts out collapsed too. When OFF, the today-Busy pin is
+    /// restored: active-turn rows stay full regardless of the operator set.
+    ///
+    /// This is THE policy API — callers render full iff it returns true. The
+    /// preference is threaded as an explicit boolean parameter — the module
+    /// stays PURE (imports nothing), so the host unit suite can exercise both
+    /// preference values without a dvui/bridge frame. Callers pass the live
+    /// `state.thinking_default_collapsed` (product default `true`). Operator-
+    /// open rows (committed, outside the active turn) can be toggled back off;
+    /// a pinned-active row (preference OFF) stays full regardless.
+    pub fn shouldRenderFull(
+        self: *const State,
+        slot: usize,
+        head: usize,
+        cap: usize,
+        operator_open: bool,
+        default_collapsed: bool,
+    ) bool {
+        return operator_open or (!default_collapsed and self.isActiveTurnFull(slot, head, cap));
     }
 };
 
@@ -148,14 +172,14 @@ test "after turn completion everything collapses unless operator_open" {
     s.onLifecycleTransition(.busy, .ready, 204);
     try std.testing.expect(!s.isActiveTurnFull(100, 204, cap));
     try std.testing.expect(!s.isActiveTurnFull(203, 204, cap));
-    // operator override still re-expands a row.
-    try std.testing.expect(s.shouldRenderFull(100, 204, cap, true));
+    // operator override still re-expands a row (true regardless of preference).
+    try std.testing.expect(s.shouldRenderFull(100, 204, cap, true, true));
 }
 
 test "operator_open overrides even during an active turn" {
     var s: State = .{}; // no busy start: fully idle.
     const cap: usize = 2048;
-    try std.testing.expect(s.shouldRenderFull(0, 1, cap, true));
+    try std.testing.expect(s.shouldRenderFull(0, 1, cap, true, true));
 }
 
 test "reset clears busy_start_slot" {
@@ -198,16 +222,50 @@ test "ring wrap keeps the busy turn full and stale prior turn collapsed" {
     try std.testing.expect(!s.isActiveTurnFull(3, 3, cap));
 }
 
-test "shouldRenderFull is the single policy API and honors operator_open" {
+test "shouldRenderFull is the single policy API: default (collapsed ON) relaxes the busy pin" {
+    // Plan #742 test 1 — default `default_collapsed = true`: a Busy-turn thinking
+    // row renders COLLAPSED (not full) unless the operator opened it. Today's
+    // always-pin is now gated behind the OFF preference value.
     var s: State = .{};
     const cap: usize = 2048;
     s.onLifecycleTransition(.ready, .busy, 0);
-    try std.testing.expect(s.shouldRenderFull(0, 4, cap, false)); // active turn
-    try std.testing.expect(!s.shouldRenderFull(cap - 1, 4, cap, false)); // pre-turn
-    // operator_open re-expands a committed (pre-turn) row.
-    try std.testing.expect(s.shouldRenderFull(cap - 1, 4, cap, true));
+    // Active-turn row is NOT rendered full by default anymore.
+    try std.testing.expect(!s.shouldRenderFull(0, 4, cap, false, true));
+    try std.testing.expect(!s.shouldRenderFull(1, 4, cap, false, true));
+    // operator_open still expands an active-turn row (expander works mid-Busy).
+    try std.testing.expect(s.shouldRenderFull(0, 4, cap, true, true));
+    // Pre-turn (older) row stays collapsed under both open states.
+    try std.testing.expect(!s.shouldRenderFull(cap - 1, 4, cap, false, true));
+}
+
+test "shouldRenderFull: preference OFF restores the busy-turn pin (today)" {
+    // Plan #742 test 2 — `default_collapsed = false`: Busy-turn thinking stays
+    // full even when operator_open is false (unchanged today behavior).
+    var s: State = .{};
+    const cap: usize = 2048;
+    s.onLifecycleTransition(.ready, .busy, 0);
+    try std.testing.expect(s.shouldRenderFull(0, 4, cap, false, false));
+    try std.testing.expect(s.shouldRenderFull(1, 4, cap, false, false));
+    // Pre-turn (older) row still collapses unless opened.
+    try std.testing.expect(!s.shouldRenderFull(cap - 1, 4, cap, false, false));
+    try std.testing.expect(s.shouldRenderFull(cap - 1, 4, cap, true, false));
     // After turn completion, operator_open is the only path to full.
     s.onLifecycleTransition(.busy, .ready, 4);
-    try std.testing.expect(!s.shouldRenderFull(0, 4, cap, false));
-    try std.testing.expect(s.shouldRenderFull(0, 4, cap, true));
+    try std.testing.expect(!s.shouldRenderFull(0, 4, cap, false, false));
+    try std.testing.expect(s.shouldRenderFull(0, 4, cap, true, false));
+}
+
+test "shouldRenderFull: committed rows are collapsed unless operator_open under both preference values" {
+    // Plan #742 test 3 — after the turn completes, committed thinking collapses
+    // regardless of the preference; only operator_open re-expands.
+    var s: State = .{};
+    const cap: usize = 2048;
+    s.onLifecycleTransition(.ready, .busy, 100);
+    s.onLifecycleTransition(.busy, .ready, 204);
+    for ([_]bool{ true, false }) |def| {
+        try std.testing.expect(!s.shouldRenderFull(100, 204, cap, false, def));
+        try std.testing.expect(!s.shouldRenderFull(203, 204, cap, false, def));
+        // operator override still re-expands a committed row.
+        try std.testing.expect(s.shouldRenderFull(100, 204, cap, true, def));
+    }
 }
