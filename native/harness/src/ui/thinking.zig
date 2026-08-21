@@ -140,8 +140,13 @@ pub fn paintThinking(
             });
             // Plan #732: preview via addTextMixed — symbols/emoji paint their
             // DejaVu/OpenMoji faces (not Noto .notdef tofu). `{}` opts preserve
-            // the layout's teal_muted ink.
-            mixed_text.addTextMixed(tl, preview, .theme(.body), .{});
+            // the layout's teal_muted ink. Seam switch read here, so a flip to
+            // `.plain` genuinely reproduces the face-blind tofu path (and the
+            // toolrun.test.zig seam test fails).
+            switch (thinkingPreviewTextPainter) {
+                .mixed => mixed_text.addTextMixed(tl, preview, .theme(.body), .{}),
+                .plain => tl.addText(preview, .{}),
+            }
             tl.deinit();
         }
         // Copy button (full source → clipboard), same chrome as tool-run header.

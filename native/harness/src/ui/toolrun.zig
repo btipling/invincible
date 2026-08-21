@@ -351,7 +351,13 @@ pub fn paintToolRun(
                         // Plan #732: old band via addTextMixed — symbols/emoji
                         // paint their DejaVu/OpenMoji faces (not Vera .notdef). `{}`
                         // opts preserve the layout's ember_text ink (paintSlice).
-                        mixed_text.addTextMixed(otl, s.old, mono, .{});
+                        // Seam switch read here, so a flip to `.plain` genuinely
+                        // reproduces the face-blind tofu path (and the
+                        // toolrun.test.zig seam test fails).
+                        switch (strReplaceTextPainter) {
+                            .mixed => mixed_text.addTextMixed(otl, s.old, mono, .{}),
+                            .plain => otl.addText(s.old, .{}),
+                        }
                         otl.deinit();
                     }
 
@@ -377,7 +383,10 @@ pub fn paintToolRun(
                         });
                         // Plan #732: new band via addTextMixed (Vera .notdef fix).
                         // `{}` opts preserve the layout's teal_text ink.
-                        mixed_text.addTextMixed(ntl, s.new, mono, .{});
+                        switch (strReplaceTextPainter) {
+                            .mixed => mixed_text.addTextMixed(ntl, s.new, mono, .{}),
+                            .plain => ntl.addText(s.new, .{}),
+                        }
                         ntl.deinit();
                     }
                 } else {
