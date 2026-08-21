@@ -3,14 +3,19 @@
 //! Host-unit-tested (no dvui / wasm frame), mirroring `composer_text.zig` /
 //! `ring_slot.zig` seams. The rule locked here:
 //!
-//!   - While the harness is **Busy**, every thinking row that belongs to the
-//!     current turn renders the FULL monologue — the operator is still reading
-//!     the active turn's chain of thought, including the live `update_last`
-//!     newest slot.
+//!   - The product default is "thinking default = **collapsed**": while the
+//!     harness is **Busy**, an active-turn thinking row renders the compact
+//!     expandable control unless the operator explicitly opened it — live
+//!     reasoning starts out collapsed too.
+//!   - When the "thinking default collapsed" preference is **OFF**, the today
+//!     Busy pin is restored: every thinking row that belongs to the current turn
+//!     renders the FULL monologue (the operator is reading the active turn's
+//!     chain of thought, including the live `update_last` newest slot).
 //!   - When a turn **completes** (Busy -> ready/err), every committed thinking
-//!     row collapses to the compact expandable control. Re-clicking a row opens
-//!     it (operator set lives in `ui/state.zig`, in-memory only — thinking is
-//!     ephemeral and never survives refresh).
+//!     row collapses to the compact expandable control regardless of the
+//!     preference. Re-clicking a row opens it (operator set lives in
+//!     `ui/state.zig`, in-memory only — thinking is ephemeral and never
+//!     survives refresh).
 //!
 //! Turn membership is decided by **physical ring-slot contiguity**, not by a
 //! logical visible-index threshold. The Busy turn occupies the physical slots
