@@ -1993,8 +1993,14 @@ describe('read_file line window (plan #689)', () => {
       freshness: createRunFileFreshness(),
     });
     const out = (await tools.read_file.execute!({ path: 't.txt' }, execCtx)) as string;
-    // trailing \n adds an empty 1001st line → default limit 1000 misses it
-    expect(out).toMatch(/lines=1000\/1001 \(truncated\)/);
+    // trailing \n adds an empty 1001st line → default limit 1000 misses it.
+    // Lock the hint on this totalLines===limit+1 phantom-empty-line clip too, so
+    // a later edit cannot drop it for the real Unix default-clip (#745 L6).
+    expect(out).toMatch(
+      /lines=1000\/1001 \(truncated\) — use limit>=1001 to read all lines/,
+    );
+    expect((out.match(/use limit>=/g) ?? []).length).toBe(1);
+    expect(out).not.toContain('use offset=');
     const edit = (await tools.str_replace.execute!(
       { path: 't.txt', old_string: 'L1', new_string: 'X' },
       execCtx,
