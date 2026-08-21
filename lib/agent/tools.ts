@@ -433,7 +433,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
 
   const read_file = tool({
     description:
-      'Read a text file from the sandbox workspace (max 16 MiB). Optional offset (1-based start line, default 1) and limit (max lines, default 1000) return a line-numbered window (N→content). A successful full read — offset 1 covering every line of the returned content, not clipped by limit or maxBytes — authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. Path is relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
+      'Read a text file from the sandbox workspace (max 16 MiB). Optional offset (1-based start line, default 1) and limit (max lines, default 1000) return a line-numbered window (N→content). A successful full read — offset 1 covering every line of the returned content, not clipped by limit or maxBytes — authorizes later str_replace / overwrite of that path in this agent run until the on-disk file changes. When a line-window clip cuts the file (default limit=1000 on a longer file), the status line prints (truncated) — use limit>=N to read all lines; re-read with limit>=totalLines at offset 1 to reach the full-read grant. Byte-truncated and mid-file (offset>1) reads never grant edit. Path is relative to logical cwd, already workspace-root-relative under it, or an in-jail absolute path under the sandbox root (same file as the relative form). Never use /tmp or other host temp dirs — they are outside the workspace and will fail or vanish.',
     inputSchema: jsonSchema<{
       path: string;
       maxBytes?: number;
@@ -480,6 +480,10 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         const result = await client.readFile(path, input.maxBytes, { signal });
         const window = formatLineWindow(result.content, offset, limit);
         const byteTruncated = result.truncated === true;
+        // Line-window clip: default limit (1000) cut a longer file short, so the
+        // model only saw a prefix of the lines even though the byte tail is intact.
+        const windowClipped = window.returned < window.totalLines;
+        const truncated = byteTruncated || windowClipped;
         const fullGrant = isFullFileReadGrant({
           offset,
           returned: window.returned,
@@ -497,10 +501,17 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         } else {
           freshness.recordRead(path, { truncated: true });
         }
-        const flag = fullGrant ? '' : ' (truncated)';
+        // Escape hint: only an offset=1 line-window clip is re-readable with a
+        // larger limit to reach EOF (and so grant edit). Byte truncation cannot be
+        // escaped via `limit`, and mid-file offsets never grant — hide the hint there.
+        const hint =
+          offset === 1 && windowClipped && !byteTruncated
+            ? ` — use limit>=${window.totalLines} to read all lines`
+            : '';
+        const flag = truncated ? ' (truncated)' : '';
         const ann = formatCwdAnnotation(cwdSnap);
         return finalize(
-          `read_file ${path} offset=${offset} limit=${limit} lines=${window.returned}/${window.totalLines}${flag}${ann}:\n${window.body}`,
+          `read_file ${path} offset=${offset} limit=${limit} lines=${window.returned}/${window.totalLines}${flag}${hint}${ann}:\n${window.body}`,
           secrets,
         );
       } catch (err) {
