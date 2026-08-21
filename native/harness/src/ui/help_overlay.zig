@@ -30,6 +30,7 @@ fn rowChord(row: keymap.Row) []const u8 {
         .help_toggle_leader => "Leader Space, then ?",
         .leader => "Ctrl+Shift+Space",
         .leader_cancel => "Esc (leader)",
+        .thinking_default_toggle => "Leader Space, then t",
     };
 }
 
