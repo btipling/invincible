@@ -126,6 +126,20 @@ pub var queue_list_scroll: dvui.ScrollInfo = .{
 /// Enqueue runs after the band paints this frame (plan #699).
 pub var queue_follow: bool = false;
 
+/// Plan #741 — help overlay visibility (in-memory, toggled by Ctrl/Cmd+/ and
+/// leader+`?`; Esc closes). Not persisted, no session carrier.
+pub var help_overlay_open: bool = false;
+
+/// Plan #741 — leader prefix armed (within the LEADER_WINDOW_MS window).
+/// Driven by `keymap_dispatch` (dvui.timer expiry). `currentCtx().leader_pending`
+/// reads this so the pure `keymap.match` sees it on the next key event.
+pub var leader_armed: bool = false;
+
+/// Plan #741 — a submit chord was handled by the dispatcher before the composer
+/// textEntry was built. `ui.zig` consumes it after `te.deinit` (reads the live
+/// prompt buffer) and calls `composer.submitOrEnqueue`.
+pub var request_submit: bool = false;
+
 pub fn resetTranscriptScroll() void {
     transcript_scroll = .{
         .vertical = .auto,
@@ -158,4 +172,7 @@ pub fn resetTranscriptScroll() void {
         .horizontal = .none,
     };
     queue_follow = false;
+    help_overlay_open = false;
+    leader_armed = false;
+    request_submit = false;
 }

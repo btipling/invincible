@@ -134,7 +134,9 @@ pub fn paint(band_y: f32, band_h: f32, avail_w: f32) void {
     }
 
     if (state.queue_editing_index != null) {
-        handleEscape();
+        // Key handling (Escape dismiss + Ctrl/Cmd+Enter save) moved to the
+        // single keymap dispatcher (`ui/keymap_dispatch.zig`, plan #741) —
+        // this painter reads no keys. The blur-save below is mouse-focus-only.
         // Blur-save: if the queue-row textEntry lost focus this frame
         // (e.g. operator clicked the composer), save the edit and close
         // so promote isn't stalled behind a ghost edit (plan #664, review
@@ -200,9 +202,8 @@ fn paintRow(src: std.builtin.SourceLocation, i: u32) void {
             if (fid == te.data().id) state.queue_edit_seen_focused = true;
         }
         te.deinit();
-        if (submitChord()) {
-            saveEdit(i, typed);
-        }
+        // Ctrl/Cmd+Enter save-edit is handled by the keymap dispatcher
+        // (`queue_save` row, plan #741) — `submitChord` inline scan removed.
     } else {
         var preview_buf: [queue_preview.QUEUE_PREVIEW_MAX_BYTES + 1]u8 = undefined;
         const raw = bridge.queuedItemAt(i) orelse "";
@@ -288,37 +289,10 @@ pub fn closeEdit() void {
     state.queue_closed_edit = true;
 }
 
-fn submitChord() bool {
-    const es = dvui.events();
-    var hit = false;
-    for (0..es.len) |idx| {
-        const e = &es[idx];
-        if (e.handled) continue;
-        const ke = switch (e.evt) {
-            .key => |k| k,
-            else => continue,
-        };
-        if (ke.code == .enter and (ke.mod.control() or ke.mod.command())) {
-            e.handled = true;
-            if (ke.action == .down) hit = true;
-        }
-    }
-    return hit;
-}
-
-fn handleEscape() void {
-    const es = dvui.events();
-    for (0..es.len) |idx| {
-        const e = &es[idx];
-        if (e.handled) continue;
-        const ke = switch (e.evt) {
-            .key => |k| k,
-            else => continue,
-        };
-        if (ke.code == .escape and ke.action == .down) {
-            e.handled = true;
-            cancelEdit();
-            return;
-        }
-    }
+/// Plan #741 — queue-row Escape dismiss, called by the keymap dispatcher's
+/// `cancel_queue_edit` action. Same semantics as the removed `handleEscape`
+/// inline scan (dismiss the editor, not the turn). Pub so the dispatcher can
+/// reach it without calling the private `cancelEdit`.
+pub fn cancelEditFromUi() void {
+    if (state.queue_editing_index != null) cancelEdit();
 }
