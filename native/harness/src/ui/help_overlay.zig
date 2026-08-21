@@ -11,28 +11,25 @@ const dvui = @import("dvui");
 const keymap = @import("../keymap.zig");
 const palette = @import("../palette.zig");
 const metrics = @import("metrics.zig");
-
-const RowLabel = struct {
-    help: []const u8,
-    chord: []const u8,
-};
+const mixed_text = @import("../rich/mixed_text.zig");
 
 /// Chord glyph for each shipped row, derived from the table's key+prereq.
 /// `leader` is the prefix itself; `help_toggle_leader` is shown under the
-/// leader family (`?`). Order mirrors KEY_TABLE (deduped by row id).
-fn rowLabel(row: keymap.Row) RowLabel {
+/// leader family (`?`). Help copy comes from the table's `row.help` (the
+/// overlay IS the table — keymap.zig owns the strings). Order mirrors KEY_TABLE.
+fn rowChord(row: keymap.Row) []const u8 {
     return switch (row.action) {
-        .submit => .{ .help = "Send (enqueue when busy)", .chord = "Ctrl/Cmd+Enter" },
-        .queue_save => .{ .help = "Save queued item", .chord = "Ctrl/Cmd+Enter" },
-        .history_older => .{ .help = "Older message", .chord = "↑" },
-        .history_newer => .{ .help = "Newer message", .chord = "↓" },
-        .cancel_turn => .{ .help = "Stop the turn", .chord = "Esc" },
-        .cancel_queue_edit => .{ .help = "Discard queued item edit", .chord = "Esc" },
-        .help_close => .{ .help = "Close help", .chord = "Esc" },
-        .help_toggle => .{ .help = "Toggle help", .chord = "Ctrl/Cmd+/" },
-        .help_toggle_leader => .{ .help = "Toggle help (leader)", .chord = "Leader Space, then ?" },
-        .leader => .{ .help = "Leader", .chord = "Ctrl+Shift+Space" },
-        .leader_cancel => .{ .help = "Cancel leader", .chord = "Esc (leader)" },
+        .submit => "Ctrl/Cmd+Enter",
+        .queue_save => "Ctrl/Cmd+Enter",
+        .history_older => "↑",
+        .history_newer => "↓",
+        .cancel_turn => "Esc",
+        .cancel_queue_edit => "Esc",
+        .help_close => "Esc",
+        .help_toggle => "Ctrl/Cmd+/",
+        .help_toggle_leader => "Leader Space, then ?",
+        .leader => "Ctrl+Shift+Space",
+        .leader_cancel => "Esc (leader)",
     };
 }
 
@@ -106,9 +103,16 @@ pub fn paint(x: f32, y: f32, w: f32, h: f32, ctx: keymap.Context) void {
     });
     defer scroll_area.deinit();
 
+    var prev_action: ?keymap.Action = null;
     for (keymap.KEY_TABLE) |row| {
+        // The overlay is the table: two rows (`history_older` and
+        // `history_older_in`) share a single action but differ only in `when`
+        // context — present each distinct action once (L8).
+        if (prev_action == row.action) continue;
+        prev_action = row.action;
+
         const active = rowActive(row, ctx);
-        const label = rowLabel(row);
+        const chord_str = rowChord(row);
         var line = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .expand = .horizontal,
             .min_size_content = .{ .w = 40, .h = metrics.TOUCH_H - 6 },
@@ -121,14 +125,19 @@ pub fn paint(x: f32, y: f32, w: f32, h: f32, ctx: keymap.Context) void {
             .font = .theme(.mono),
             .gravity_y = 0.5,
         });
-        chord.addText(label.chord, .{});
+        // addTextMixed routes `↑`/`↓` (Arrows block) to the DejaVu symbols
+        // face — Noto + Vera (mono) have no Arrows glyphs (L9, same tofu class
+        // as #732). ASCII chords keep the mono face.
+        mixed_text.addTextMixed(chord, chord_str, .theme(.mono), .{
+            .color_text = if (active) palette.teal_accent else palette.warm_muted,
+        });
         chord.deinit();
 
         var help = dvui.textLayout(@src(), .{}, .{
             .color_text = if (active) palette.teal_text else palette.warm_muted,
             .gravity_y = 0.5,
         });
-        help.addText(label.help, .{});
+        help.addText(row.help, .{});
         help.deinit();
     }
 }

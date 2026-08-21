@@ -33,9 +33,21 @@ pub const Handlers = struct {
     history: *const fn (composer_history.Step) void,
 };
 
-/// Convert dvui's `enums.Key` to the keymap `Key` subset. Keys the harness
-/// doesn't recognize (`unknown`, kp_*, function keys beyond f5) return null and
-/// are passed through untouched (Goal 3: never consume what we don't own).
+/// Convert dvui's `enums.Key` to the keymap `Key` subset.
+///
+/// Pure modifier / lock keys (`left_shift`/`right_shift`/`left_control`/
+/// `right_control`/`left_alt`/`right_alt`/`left_command`/`right_command`,
+/// `menu`, `num_lock`, `caps_lock`, `print`, `scroll_lock`, `pause` and dvui's
+/// own `unknown`) return null — the dispatcher passes them through untouched
+/// (Goal 3) and they NEVER disarm the leader: releasing Ctrl/Shift after
+/// arming (`Ctrl+Shift+Space`) or pressing Shift again for the `?` command must
+/// not kill the window.
+///
+/// Every OTHER unrecognized key (letters outside the subset, digits,
+/// punctuation, Backspace, function keys beyond f5, navigation) maps to
+/// `.unknown` and flows through `keymap.match` like any key: while a leader is
+/// pending that makes it `.swallow_leader` (handled + disarmed) so it never
+/// lands in the prompt; otherwise `.none` (pass-through).
 fn fromDvui(code: anytype) ?keymap.Key {
     return switch (code) {
         .enter => .enter,
@@ -63,7 +75,12 @@ fn fromDvui(code: anytype) ?keymap.Key {
         .p => .p,
         .i => .i,
         .j => .j,
-        else => null,
+        // Pure modifiers / locks — pass through, never disarm the leader.
+        .left_shift, .right_shift, .left_control, .right_control, .left_alt, .right_alt, .left_command, .right_command => null,
+        .menu, .num_lock, .caps_lock, .print, .scroll_lock, .pause, .unknown => null,
+        // Everything else: route to the keymap so `match` can swallow it during
+        // the leader window (and pass through otherwise).
+        else => .unknown,
     };
 }
 

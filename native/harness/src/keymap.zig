@@ -47,6 +47,12 @@ pub const Key = enum {
     p,
     i,
     j,
+    /// Any other key the harness doesn't recognize by name (b, digits,
+    /// punctuation, Backspace, function keys beyond f5, etc.). Dispatched into
+    /// `match` like any key: while a leader is pending an unmatched `.unknown`
+    /// is swallowed (handled + disarmed) so it never lands in the prompt; with
+    /// no leader it passes through (`.none`) to the textEntry / browser.
+    unknown,
 };
 
 /// Key action reported by the browser/dvui.
@@ -371,7 +377,14 @@ pub fn match(key: Key, action: KeyAction, mods: Mods, ctx: Context) Match {
         if (key == .slash and modsMatch(mods, .shift)) {
             return .{ .outcome = .action, .action = .help_toggle_leader };
         }
-        if (key == .escape) return .{ .outcome = .action, .action = .leader_cancel };
+        if (key == .escape) {
+            // Help wins over the leader: with the overlay already open, Esc
+            // closes it (one Esc), per docs/harness-limits ("closes the help
+            // overlay ...; disarms the leader"). Otherwise Escape disarms the
+            // pending leader.
+            if (ctx.help_open) return .{ .outcome = .action, .action = .help_close };
+            return .{ .outcome = .action, .action = .leader_cancel };
+        }
         if (key == .space and modsMatch(mods, .ctrl_shift)) {
             return .{ .outcome = .action, .action = .leader }; // re-arm
         }
@@ -537,6 +550,47 @@ test "keymap: leader + Esc → leader_cancel (not turn cancel)" {
 test "keymap: leader + unmatched printable → swallow (never inserts)" {
     const m = match(.a, .down, .{}, .{ .leader_pending = true });
     try std.testing.expectEqual(Outcome.swallow_leader, m.outcome);
+}
+
+test "keymap: leader + .unknown key (letters outside subset, digits, etc.) → swallow + disarm (never inserts)" {
+    // The Major L1 fix: an unrecognized key (e.g. `h`, `1`, Backspace) routed
+    // as `.unknown` must be swallowed (handled + disarmed), never land in the
+    // prompt, never leave the leader armed. Previously these never reached
+    // `match` at all (`fromDvui(...) orelse continue`).
+    const m = match(.unknown, .down, .{}, .{ .leader_pending = true });
+    try std.testing.expectEqual(Outcome.swallow_leader, m.outcome);
+    try std.testing.expect(m.action == null);
+}
+
+test "keymap: .unknown with no leader → none (pass through to textEntry)" {
+    // Unrecognized key outside the leader window must pass through.
+    const m = match(.unknown, .down, .{}, .{ .composer = true });
+    try std.testing.expectEqual(Outcome.none, m.outcome);
+    try std.testing.expect(m.action == null);
+}
+
+test "keymap: .unknown repeat with leader → swallow (held key does not re-insert)" {
+    const m = match(.unknown, .repeat, .{}, .{ .leader_pending = true });
+    try std.testing.expectEqual(Outcome.swallow_leader, m.outcome);
+}
+
+test "keymap: .unknown key-up while leader pending → none (release never disarms/swallows)" {
+    // `.up` early-returns `.none` before leader handling; a modifier or
+    // unrecognized key *release* must never disarm the leader on its own.
+    const m = match(.unknown, .up, .{}, .{ .leader_pending = true });
+    try std.testing.expectEqual(Outcome.none, m.outcome);
+}
+
+test "keymap: leader + Esc with help open → help_close (help wins, one Esc, L8)" {
+    const m = match(.escape, .down, .{}, .{ .leader_pending = true, .help_open = true });
+    try std.testing.expectEqual(Outcome.action, m.outcome);
+    try std.testing.expectEqual(Action.help_close, m.action.?);
+}
+
+test "keymap: leader + Esc without help → leader_cancel (unchanged)" {
+    const m = match(.escape, .down, .{}, .{ .leader_pending = true, .help_open = false });
+    try std.testing.expectEqual(Outcome.action, m.outcome);
+    try std.testing.expectEqual(Action.leader_cancel, m.action.?);
 }
 
 test "keymap: leader + reserved browser chord → disarm browser (test 9)" {

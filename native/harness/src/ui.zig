@@ -589,7 +589,12 @@ pub fn frame() !void {
     // ── Help overlay (plan #741) — in-canvas TEAL panel over the transcript band.
     // Painted after the transcript laid out (top), before the queue band / bars.
     if (state.help_overlay_open) {
-        help_overlay.paint(pane_w, scroll_y, @max(0, avail.w - pane_w), scroll_h, .{
+        // Size against the FULL band (avail.w), not the leftover transcript
+        // width (avail.w - pane_w). With the left rail open (~220px) on a
+        // ~390px canvas the leftover is ~170 < HELP_OVERLAY_MIN_W and the panel
+        // silently no-ops (review L1). It's a modal in-canvas panel — centering
+        // across the whole window is correct.
+        help_overlay.paint(0, scroll_y, avail.w, scroll_h, .{
             .composer = state.queue_editing_index == null,
             .queue_editing = state.queue_editing_index != null,
             .busy = busy,
