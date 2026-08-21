@@ -13,7 +13,7 @@
  * `getSharedDb()` and reset via `resetTenantTables()` (or, for the documented
  * rotateTenantDek DROP-TABLE carve-out, `createIsolatedTestDb()`).
  *
- * All migrations 0000–0009 are applied once so every table exists regardless
+ * All migrations (0000–0015) are applied once so every table exists regardless
  * of which tenancy module a given test file exercises.
  */
 import { readFileSync } from 'node:fs';
@@ -42,6 +42,7 @@ const MIGRATIONS = [
   '0012_user_skill_versions.sql',
   '0013_always_on_skills.sql',
   '0014_recommended_skills.sql',
+  '0015_user_persona_versions.sql',
 ];
 
 /**
@@ -102,10 +103,11 @@ export async function getSharedClient(): Promise<PGlite> {
 /**
  * Clear every tenancy table in FK order (children before parents) so no
  * cross-file bleed is possible on the single shared engine. The order covers
- * all tables from migrations 0000–0012.
+ * all tables from migrations 0000–0015.
  */
 export const RESET_TABLES = [
   schema.harnessSessions,
+  schema.userPersonaVersions,
   schema.userPersonas,
   schema.userSkillVersions,
   schema.userSkills,

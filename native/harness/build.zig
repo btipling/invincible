@@ -171,7 +171,7 @@ pub fn build(b: *std.Build) void {
     test_parse.dependOn(&run_parse_tests.step);
 
     // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
-    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, link_click, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + composer_history + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + text_wave (#655) + rect_spinner (#651) + busy_spinner + elapsed_clock + model_catalog + session_catalog + submit_queue + queue_preview + queue_band + composer + paint_diff");
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, link_click, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + composer_history + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + text_wave (#655) + rect_spinner (#651) + busy_spinner + elapsed_clock + model_catalog + session_catalog + submit_queue + queue_preview + queue_band + composer + paint_diff + toolrun (#732 tofu seams)");
     test_rich.dependOn(&run_parse_tests.step);
 
     const cache_tests = b.addTest(.{
@@ -647,6 +647,32 @@ pub fn build(b: *std.Build) void {
         test_rich.dependOn(&b.addRunArtifact(busy_row_layout_tests).step);
     }
 
+    // Host dvui testing-backend layout-rect tests for composer_chrome.zig
+    // (plan #737, source #734). Drives the REAL extracted `paintComposerChrome`
+    // and locks the trailing-reserved icon-pack geometry: the field is
+    // width-bounded to `avail_w − (TOUCH_H×n + 8)` so a long unbreakable line
+    // can never squeeze the ▶/■ icons off-canvas. composer_chrome imports
+    // chrome → rich/toolrun → bridge.zig, so the test needs BOTH dvui
+    // (dvui_testing) and the web-backend stub (mirrors queue_band_tests /
+    // composer_tests wiring).
+    {
+        const composer_layout_tests = b.addTest(.{
+            .name = "composer_layout",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/composer_layout.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        composer_layout_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
+        composer_layout_tests.root_module.addImport("web-backend", b.createModule(.{
+            .root_source_file = b.path("src/test_web_backend_stub.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }));
+        test_rich.dependOn(&b.addRunArtifact(composer_layout_tests).step);
+    }
+
     // Host dvui testing-backend layout-rect tests for transcript_split.zig
     // (empty collapsible left rail). Closed 40 / open 220 widths + toggle tag.
     {
@@ -712,6 +738,31 @@ pub fn build(b: *std.Build) void {
         paint_diff_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
         paint_diff_tests.root_module.addImport("zmd", zmd_host.module("zmd"));
         test_rich.dependOn(&b.addRunArtifact(paint_diff_tests).step);
+    }
+
+    // Plan #732 (tofu fix): seam constants pinning that the str_replace L2
+    // old/new bands (toolrun.zig) and the collapsed thinking preview
+    // (thinking.zig) use addTextMixed — same seam pattern as paint_diff.zig's
+    // diffTextPainter. toolrun.test.zig transitively imports bridge.zig (Wasm
+    // web-backend, provided via the stub like queue_band/composer) + rich/parse
+    // (zmd), so wire all three module imports.
+    {
+        const toolrun_seam_tests = b.addTest(.{
+            .name = "toolrun",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/toolrun.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        toolrun_seam_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
+        toolrun_seam_tests.root_module.addImport("web-backend", b.createModule(.{
+            .root_source_file = b.path("src/test_web_backend_stub.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }));
+        toolrun_seam_tests.root_module.addImport("zmd", zmd_host.module("zmd"));
+        test_rich.dependOn(&b.addRunArtifact(toolrun_seam_tests).step);
     }
 }
 

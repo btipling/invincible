@@ -1117,6 +1117,158 @@ describe('read-before-edit gates', () => {
   });
 });
 
+describe('read_file truncation hint (plan #738)', () => {
+  const execCtx = { toolCallId: 'hint1', messages: [] } as never;
+
+  /** content of exactly `n` lines (no trailing newline) */
+  function nLines(n: number, prefix = 'L'): string {
+    return Array.from({ length: n }, (_, i) => `${prefix}${i + 1}`).join('\n');
+  }
+
+  function lineClient(
+    content: string,
+    extra: Partial<SandboxClient> = {},
+  ): SandboxClient {
+    const size = Buffer.byteLength(content, 'utf8');
+    return mockClient({
+      readFile: vi.fn(async () => ({ content, mtimeMs: 1, size })),
+      stat: vi.fn(async () => ({
+        path: 'a.txt',
+        type: 'file' as const,
+        mtimeMs: 1,
+        size,
+      })),
+      strReplace: vi.fn(async () => ({
+        ok: true as const,
+        path: 'a.txt',
+        replacements: 1,
+        bytes: size,
+        mtimeMs: 1,
+        size,
+      })),
+      ...extra,
+    });
+  }
+
+  it('default limit on a >1000-line file prints (truncated) + the use limit>=N hint (single hint)', async () => {
+    const total = READ_FILE_DEFAULT_LIMIT + 1;
+    const client = lineClient(nLines(total));
+    const tools = createAgentTools({ client, freshness: createRunFileFreshness() });
+    const out = (await tools.read_file.execute!({ path: 'a.txt' }, execCtx)) as string;
+    expect(out).toContain(
+      `lines=${READ_FILE_DEFAULT_LIMIT}/${total} (truncated) — use limit>=${total} to read all lines`,
+    );
+    // single-hint lock: exactly one limit escape format, no offset-pagination format
+    expect((out.match(/use limit>=/g) ?? []).length).toBe(1);
+    expect(out).not.toContain('use offset=');
+    expect(out).not.toContain('File continues beyond line');
+  });
+
+  it('re-read with limit>=totalLines reaches the EOF grant and str_replace succeeds', async () => {
+    const total = READ_FILE_DEFAULT_LIMIT + 1;
+    const client = lineClient(nLines(total));
+    const tools = createAgentTools({ client, freshness: createRunFileFreshness() });
+    const clip = (await tools.read_file.execute!({ path: 'a.txt' }, execCtx)) as string;
+    expect(clip).toContain('(truncated)');
+    expect(clip).toContain(`use limit>=${total}`);
+    // explicit limit covering the file → full read, grant, no hint
+    const full = (await tools.read_file.execute!(
+      { path: 'a.txt', limit: total },
+      execCtx,
+    )) as string;
+    expect(full).toContain(`lines=${total}/${total}`);
+    expect(full).not.toContain('(truncated)');
+    const edit = (await tools.str_replace.execute!(
+      { path: 'a.txt', old_string: 'L1', new_string: 'X' },
+      execCtx,
+    )) as string;
+    expect(edit).toMatch(/^str_replace a\.txt/);
+    expect(client.strReplace).toHaveBeenCalled();
+  });
+
+  it('clipped default read does NOT grant edit (str_replace denied)', async () => {
+    const total = READ_FILE_DEFAULT_LIMIT + 1;
+    const client = lineClient(nLines(total));
+    const tools = createAgentTools({ client, freshness: createRunFileFreshness() });
+    await tools.read_file.execute!({ path: 'a.txt' }, execCtx);
+    const edit = (await tools.str_replace.execute!(
+      { path: 'a.txt', old_string: 'L1', new_string: 'X' },
+      execCtx,
+    )) as string;
+    expect(edit).toMatch(/truncated read_file/);
+    expect(client.strReplace).not.toHaveBeenCalled();
+  });
+
+  it('byte-truncated read shows (truncated) but no use limit>=N hint and no grant', async () => {
+    const client = mockClient({
+      readFile: vi.fn(async () => ({
+        content: 'abcd',
+        truncated: true,
+        mtimeMs: 1,
+        size: 100,
+      })),
+      stat: vi.fn(async () => ({
+        path: 'big.txt',
+        type: 'file' as const,
+        mtimeMs: 1,
+        size: 100,
+      })),
+    });
+    const tools = createAgentTools({ client, freshness: createRunFileFreshness() });
+    const out = (await tools.read_file.execute!({ path: 'big.txt' }, execCtx)) as string;
+    expect(out).toContain('(truncated)');
+    expect(out).not.toContain('use limit>=');
+    const edit = (await tools.str_replace.execute!(
+      { path: 'big.txt', old_string: 'a', new_string: 'b' },
+      execCtx,
+    )) as string;
+    expect(edit).toMatch(/truncated read_file/);
+  });
+
+  it('offset>1 clipped read shows (truncated) but no hint (mid-file pages never grant)', async () => {
+    const client = lineClient(nLines(50));
+    const tools = createAgentTools({ client, freshness: createRunFileFreshness() });
+    const out = (await tools.read_file.execute!(
+      { path: 'a.txt', offset: 40, limit: 20 },
+      execCtx,
+    )) as string;
+    expect(out).toContain('(truncated)');
+    expect(out).not.toContain('use limit>=');
+    const edit = (await tools.str_replace.execute!(
+      { path: 'a.txt', old_string: 'L40', new_string: 'X' },
+      execCtx,
+    )) as string;
+    expect(edit).toMatch(/truncated read_file/);
+  });
+
+  it('exactly-limit-line and empty files show no hint and no false (truncated)', async () => {
+    // exactly READ_FILE_DEFAULT_LIMIT lines at default limit → not clipped
+    const exactContent = nLines(READ_FILE_DEFAULT_LIMIT);
+    const exactClient = lineClient(exactContent);
+    const tools = createAgentTools({
+      client: exactClient,
+      freshness: createRunFileFreshness(),
+    });
+    const exact = (await tools.read_file.execute!({ path: 'a.txt' }, execCtx)) as string;
+    expect(exact).toContain(`lines=${READ_FILE_DEFAULT_LIMIT}/${READ_FILE_DEFAULT_LIMIT}`);
+    expect(exact).not.toContain('(truncated)');
+    expect(exact).not.toContain('use limit>=');
+
+    // empty file → totalLines=1, returned=1, not clipped
+    const emptyClient = mockClient({
+      readFile: vi.fn(async () => ({ content: '', mtimeMs: 1, size: 0 })),
+    });
+    const emptyTools = createAgentTools({
+      client: emptyClient,
+      freshness: createRunFileFreshness(),
+    });
+    const empty = (await emptyTools.read_file.execute!({ path: 'a.txt' }, execCtx)) as string;
+    expect(empty).toContain('lines=1/1');
+    expect(empty).not.toContain('(truncated)');
+    expect(empty).not.toContain('use limit>=');
+  });
+});
+
 describe('createAgentTools in-jail absolute paths', () => {
   const ROOT = '/vercel/workspace';
   const ectx = { toolCallId: '1', messages: [] } as never;
@@ -1584,7 +1736,7 @@ describe('read_file line window (plan #689)', () => {
     });
     const out = (await tools.read_file.execute!({ path: 'big.txt' }, execCtx)) as string;
     expect(out).toMatch(
-      /^read_file big\.txt offset=1 limit=1000 lines=1000\/1400 \(truncated\):/,
+      /^read_file big\.txt offset=1 limit=1000 lines=1000\/1400 \(truncated\) — use limit>=1400 to read all lines:/,
     );
     expect(out).toContain('1→L1');
     expect(out).toContain('1000→L1000');
@@ -1841,8 +1993,14 @@ describe('read_file line window (plan #689)', () => {
       freshness: createRunFileFreshness(),
     });
     const out = (await tools.read_file.execute!({ path: 't.txt' }, execCtx)) as string;
-    // trailing \n adds an empty 1001st line → default limit 1000 misses it
-    expect(out).toMatch(/lines=1000\/1001 \(truncated\)/);
+    // trailing \n adds an empty 1001st line → default limit 1000 misses it.
+    // Lock the hint on this totalLines===limit+1 phantom-empty-line clip too, so
+    // a later edit cannot drop it for the real Unix default-clip (#745 L6).
+    expect(out).toMatch(
+      /lines=1000\/1001 \(truncated\) — use limit>=1001 to read all lines/,
+    );
+    expect((out.match(/use limit>=/g) ?? []).length).toBe(1);
+    expect(out).not.toContain('use offset=');
     const edit = (await tools.str_replace.execute!(
       { path: 't.txt', old_string: 'L1', new_string: 'X' },
       execCtx,

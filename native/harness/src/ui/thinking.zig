@@ -1,9 +1,17 @@
 //! Thinking-row paint: expandable control + full GFM monologue (#424).
+//! Test seam: ThinkingPreviewTextPainter / thinkingPreviewTextPainter pins that
+//! the collapsed thinking preview uses addTextMixed (face-aware), not the
+//! face-blind addText (Noto .notdef tofu for symbols/emoji). A revert must flip
+//! this constant; toolrun.test.zig fails if it does.
+pub const ThinkingPreviewTextPainter = enum { mixed, plain };
+pub const thinkingPreviewTextPainter: ThinkingPreviewTextPainter = .mixed;
+
 const std = @import("std");
 const dvui = @import("dvui");
 const bridge = @import("../bridge.zig");
 const palette = @import("../palette.zig");
 const chip_preview = @import("../chip_preview.zig");
+const mixed_text = @import("../rich/mixed_text.zig");
 const rich = @import("../rich/root.zig");
 const state = @import("state.zig");
 const metrics = @import("metrics.zig");
@@ -130,7 +138,15 @@ pub fn paintThinking(
                 .font = .theme(.body),
                 .margin = .{ .x = 0, .y = 0, .w = 6, .h = 0 },
             });
-            tl.addText(preview, .{});
+            // Plan #732: preview via addTextMixed — symbols/emoji paint their
+            // DejaVu/OpenMoji faces (not Noto .notdef tofu). `{}` opts preserve
+            // the layout's teal_muted ink. Seam switch read here, so a flip to
+            // `.plain` genuinely reproduces the face-blind tofu path (and the
+            // toolrun.test.zig seam test fails).
+            switch (thinkingPreviewTextPainter) {
+                .mixed => mixed_text.addTextMixed(tl, preview, .theme(.body), .{}),
+                .plain => tl.addText(preview, .{}),
+            }
             tl.deinit();
         }
         // Copy button (full source → clipboard), same chrome as tool-run header.

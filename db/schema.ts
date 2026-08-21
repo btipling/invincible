@@ -388,6 +388,35 @@ export type UserPersona = typeof userPersonas.$inferSelect;
 export type UserPersonaInsert = typeof userPersonas.$inferInsert;
 
 /**
+ * Per-persona append-only version history (plan #726, source #534 — personas
+ * side of the shipped skill versioning). Each row is a full body copy at a point
+ * in time; FK cascades on persona delete (deletion is final — no version-row
+ * survival, same as skills). Every `create` / `update_body` / `rollback`
+ * captures a restorable known-good body snapshot. Rollback copies an old
+ * version's body into user_personas.body + inserts a NEW version row (rollback
+ * itself IS versioned) and counts toward PERSONA_VERSION_MAX.
+ */
+export const userPersonaVersions = pgTable(
+  'user_persona_versions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    personaId: uuid('persona_id')
+      .notNull()
+      .references(() => userPersonas.id, { onDelete: 'cascade' }),
+    body: text('body').notNull(),
+    /** Optional human tag e.g. "v1". */
+    label: text('label').notNull().default(''),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('user_persona_versions_persona_id_idx').on(t.personaId),
+  ],
+);
+
+export type UserPersonaVersion = typeof userPersonaVersions.$inferSelect;
+export type UserPersonaVersionInsert = typeof userPersonaVersions.$inferInsert;
+
+/**
  * Per-user agent skills (parent #331 / phase 1 #498).
  * Bodies are non-secret user content (playbooks / AGENTS-style instruction
  * docs) — deliberately NOT DEK-encrypted (same policy as personas). Attached
