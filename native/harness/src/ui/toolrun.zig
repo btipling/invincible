@@ -2,6 +2,13 @@
 //! Level 0: header + count chips. Level 1: one-liners. Level 2: inline detail.
 //! Import convention: decode is `../rich/toolrun.zig` (aliased `rich_toolrun`),
 //! NOT `toolrun.zig` (which would be this file itself).
+//! Test seam: StrReplaceTextPainter / strReplaceTextPainter pins that the
+//! str_replace L2 old/new bands use addTextMixed (face-aware — DejaVu symbols
+//! + OpenMoji emoji paint their faces), not the face-blind addText (Vera
+//! .notdef tofu). A revert must flip this constant; toolrun.test.zig fails.
+pub const StrReplaceTextPainter = enum { mixed, plain };
+pub const strReplaceTextPainter: StrReplaceTextPainter = .mixed;
+
 const std = @import("std");
 const dvui = @import("dvui");
 const palette = @import("../palette.zig");
@@ -341,7 +348,16 @@ pub fn paintToolRun(
                             .color_text = palette.ember_text,
                             .font = mono,
                         });
-                        otl.addText(s.old, .{});
+                        // Plan #732: old band via addTextMixed — symbols/emoji
+                        // paint their DejaVu/OpenMoji faces (not Vera .notdef). `{}`
+                        // opts preserve the layout's ember_text ink (paintSlice).
+                        // Seam switch read here, so a flip to `.plain` genuinely
+                        // reproduces the face-blind tofu path (and the
+                        // toolrun.test.zig seam test fails).
+                        switch (strReplaceTextPainter) {
+                            .mixed => mixed_text.addTextMixed(otl, s.old, mono, .{}),
+                            .plain => otl.addText(s.old, .{}),
+                        }
                         otl.deinit();
                     }
 
@@ -365,7 +381,12 @@ pub fn paintToolRun(
                             .color_text = palette.teal_text,
                             .font = mono,
                         });
-                        ntl.addText(s.new, .{});
+                        // Plan #732: new band via addTextMixed (Vera .notdef fix).
+                        // `{}` opts preserve the layout's teal_text ink.
+                        switch (strReplaceTextPainter) {
+                            .mixed => mixed_text.addTextMixed(ntl, s.new, mono, .{}),
+                            .plain => ntl.addText(s.new, .{}),
+                        }
                         ntl.deinit();
                     }
                 } else {
