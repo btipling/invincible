@@ -12,7 +12,9 @@
  *
  * `DRIZZLE_JOURNAL_MIGRATIONS_DIR` (optional) overrides the migrations dir so
  * the gate can be exercised against a fixture (used by the vitest tempdir
- * spawn tests); it defaults to the repo `db/migrations`.
+ * spawn tests); it defaults to the repo `db/migrations`. The override is honored
+ * **only when `VITEST` is set** so a leftover export can never desync the gate
+ * from `drizzle-kit migrate` (which always uses `drizzle.config.ts` `out`).
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -20,7 +22,9 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const migrationsDir =
-  process.env.DRIZZLE_JOURNAL_MIGRATIONS_DIR || join(root, 'db/migrations');
+  process.env.VITEST && process.env.DRIZZLE_JOURNAL_MIGRATIONS_DIR
+    ? process.env.DRIZZLE_JOURNAL_MIGRATIONS_DIR
+    : join(root, 'db/migrations');
 const journalPath = join(migrationsDir, 'meta/_journal.json');
 
 const sqlFiles = readdirSync(migrationsDir)

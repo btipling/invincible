@@ -34,6 +34,23 @@ function runGate(migrationsDir) {
   });
 }
 
+// Runs the gate with the override set but WITHOUT vitest's VITEST env var —
+// the reviewer #736 re-review Nit: a leftover DRIZZLE_JOURNAL_MIGRATIONS_DIR
+// export must never desync the gate from `drizzle-kit migrate` (which always
+// uses drizzle.config.ts `out`). The fixture is deliberately broken (orphan SQL
+// missing from its journal) so the gate exits 1 only if it wrongly honors the
+// override; under a non-vitest env it must ignore the override and hit the
+// real repo db/migrations (in sync → exit 0).
+function runGateProdEnv(migrationsDir) {
+  const env = { ...process.env };
+  delete env.VITEST;
+  env.DRIZZLE_JOURNAL_MIGRATIONS_DIR = migrationsDir;
+  return execFileSync(process.execPath, [scriptPath], {
+    env,
+    encoding: 'utf8',
+  });
+}
+
 describe('drizzle-journal-gate fail-closed directions', () => {
   it('exits 0 when every SQL file has a journal tag (happy path)', () => {
     const dir = makeFixture({
@@ -68,6 +85,27 @@ describe('drizzle-journal-gate fail-closed directions', () => {
     }
     expect(code).toBe(1);
     expect(err).toContain('0003_orphan.sql is not in _journal.json');
+  });
+
+  it('defers to the real db/migrations when a leftover override is set without VITEST (prod guard)', () => {
+    const dir = makeFixture({
+      sqlTags: ['0001_x', '0009_orphan'],
+      entries: [{ idx: 0, tag: '0001_x' }],
+    });
+    let err = '';
+    let code = 0;
+    try {
+      runGateProdEnv(dir);
+    } catch (e) {
+      err = String(e?.stderr ?? e);
+      code = e?.status;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    // The override is ignored under a non-vitest env, so the gate checks the
+    // real (in-sync) repo db/migrations and succeeds — never the broken fixture.
+    expect(code).toBe(0);
+    expect(err).not.toContain('0009_orphan');
   });
 
   it('fails: journal tag has no matching SQL file', () => {
