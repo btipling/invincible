@@ -499,8 +499,18 @@ export function createAgentTools(opts: CreateAgentToolsOptions) {
         }
         const flag = fullGrant ? '' : ' (truncated)';
         const ann = formatCwdAnnotation(cwdSnap);
+        let body = window.body;
+        if (!byteTruncated && offset - 1 + window.returned < window.totalLines) {
+          // Line window clipped the file (not a byte cap) with unshown lines
+          // still after the returned slice (offset-1+returned is the 1-based
+          // last line returned; when it is below totalLines more lines remain).
+          // Offer the offset pagination pattern so the model can finish reading.
+          const nextLine = offset + window.returned; // 1-based first unshown line
+          const remaining = window.totalLines - nextLine + 1;
+          body += `\n[File continues beyond line ${offset + window.returned - 1} — ${nextLine}..${window.totalLines}: use offset=${nextLine} to read the remaining ${remaining} line${remaining === 1 ? '' : 's'}]`;
+        }
         return finalize(
-          `read_file ${path} offset=${offset} limit=${limit} lines=${window.returned}/${window.totalLines}${flag}${ann}:\n${window.body}`,
+          `read_file ${path} offset=${offset} limit=${limit} lines=${window.returned}/${window.totalLines}${flag}${ann}:\n${body}`,
           secrets,
         );
       } catch (err) {

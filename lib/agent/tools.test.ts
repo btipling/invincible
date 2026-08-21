@@ -483,6 +483,100 @@ describe('str_replace audit diff (plan #665)', () => {
   });
 });
 
+describe('read_file continuation hint (plan #731)', () => {
+  const execCtx = { toolCallId: '1', messages: [] } as never;
+
+  function nLines(n: number, prefix = 'L'): string {
+    return Array.from({ length: n }, (_, i) => `${prefix}${i + 1}`).join('\n');
+  }
+
+  it('hints offset pagination when the line window clips a longer file', async () => {
+    const client = mockClient({
+      readFile: vi.fn(async () => ({ content: nLines(100), mtimeMs: 1, size: 200 })),
+    });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    const out = (await tools.read_file.execute!(
+      { path: 'a.txt', offset: 1, limit: 50 },
+      execCtx,
+    )) as string;
+    expect(out).toContain(
+      '[File continues beyond line 50 — 51..100: use offset=51 to read the remaining 50 lines]',
+    );
+  });
+
+  it('shows no hint when the window reached the end of the file', async () => {
+    const client = mockClient({
+      readFile: vi.fn(async () => ({ content: nLines(50), mtimeMs: 1, size: 100 })),
+    });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    const out = (await tools.read_file.execute!(
+      { path: 'a.txt', offset: 1, limit: 50 },
+      execCtx,
+    )) as string;
+    expect(out).not.toContain('[File continues beyond line');
+  });
+
+  it('uses singular line when exactly one remains', async () => {
+    const client = mockClient({
+      readFile: vi.fn(async () => ({ content: nLines(51), mtimeMs: 1, size: 120 })),
+    });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    const out = (await tools.read_file.execute!(
+      { path: 'a.txt', offset: 1, limit: 50 },
+      execCtx,
+    )) as string;
+    expect(out).toContain(
+      '[File continues beyond line 50 — 51..51: use offset=51 to read the remaining 1 line]',
+    );
+  });
+
+  it('shows no hint under byte truncation (maxBytes is the limiting factor)', async () => {
+    const client = mockClient({
+      readFile: vi.fn(async () => ({
+        content: nLines(100),
+        truncated: true,
+        mtimeMs: 1,
+        size: 9999,
+      })),
+    });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    const out = (await tools.read_file.execute!(
+      { path: 'a.txt', offset: 1, limit: 50 },
+      execCtx,
+    )) as string;
+    expect(out).not.toContain('[File continues beyond line');
+    expect(out).toContain('(truncated)');
+  });
+
+  it('hints from a mid-file offset when more lines follow', async () => {
+    const client = mockClient({
+      readFile: vi.fn(async () => ({ content: nLines(700), mtimeMs: 1, size: 1400 })),
+    });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    const out = (await tools.read_file.execute!(
+      { path: 'a.txt', offset: 500, limit: 100 },
+      execCtx,
+    )) as string;
+    expect(out).toContain(
+      '[File continues beyond line 599 — 600..700: use offset=600 to read the remaining 101 lines]',
+    );
+  });
+
+  it('does not hint a mid-file window that already reached EOF', async () => {
+    const client = mockClient({
+      readFile: vi.fn(async () => ({ content: nLines(50), mtimeMs: 1, size: 100 })),
+    });
+    const tools = createAgentTools({ freshness: createRunFileFreshness(), client });
+    const out = (await tools.read_file.execute!(
+      { path: 'a.txt', offset: 40, limit: 20 },
+      execCtx,
+    )) as string;
+    // window returns lines 40..50 (11 lines) and has no more content → no hint
+    expect(out).not.toContain('[File continues beyond line');
+    expect(out).toContain('lines=11/50 (truncated)');
+  });
+});
+
 describe('createAgentTools cwd', () => {
   it('change_dir then read_file joins path for client', async () => {
     const listDir = vi.fn(async (path?: string) => {
