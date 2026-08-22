@@ -14,14 +14,15 @@
 //! icons slide/crush off-canvas before the chrome grows up. Fix: give the field
 //! an explicit trailing-*reserved* sub-rect of width `fieldW(avail_w, busy) =
 //! avail_w − (n × iconCellW + TE_MARGIN_RIGHT)` so its own reported min width
-//! can never push past the reserved icon columns. Plan #779 made `iconCellW`
+//! can never push past the reserved icon columns. Plan #782 made `iconCellW`
 //! the FULL button footprint (`TOUCH_H + 2·(padding + margin)`), because the
 //! reserve counting only `TOUCH_H` per icon let the real tag rects overrun the
 //! row and dvui crushed the trailing ■ flush into the right edge at ~390 px.
 //! The reserved field wrapper
 //! reports exactly that fixed width to the outer box (`max_size_content.w =
 //! field_w` clamps its reported min in `WidgetData.minSizeSetAndRefresh`), so
-//! the icons always land post-reserve at `TOUCH_H` and never leave the viewport.
+//! the icons always land post-reserve at their full `iconCellW()` cell and
+//! never leave the viewport.
 //!
 //! The wrapper stays a *packed* child: default `gravity.x = 0` is NOT
 //! `child_positioned` (BoxWidget only overlays when `gravity.x` is strictly
@@ -42,7 +43,7 @@ pub const TE_MARGIN_RIGHT: f32 = 8;
 /// content square: dvui default ButtonWidget padding (6) + default margin (4).
 /// A button's FULL tag-rect width — the thing every goal asserts stays on-canvas
 /// ("tag rects include the widget's margin") — is `TOUCH_H + 2·ICON_EDGE_W`,
-/// NOT `TOUCH_H`. Plan #779 definite root cause: the pre-#779 reserve counted
+/// NOT `TOUCH_H`. Plan #782 definite root cause: the pre-#779 reserve counted
 /// only `TOUCH_H` per icon, so the real `TOUCH_H + 20` footprint overran the
 /// row and dvui's compactor crushed the trailing ■ flush into the right edge at
 /// ~390 px (Stop un-hittable). We reserve the FULL footprint and pin the button
@@ -103,7 +104,7 @@ pub fn iconCellW() f32 {
 
 /// Width of the trailing icon pack (n = 1 idle, 2 busy) in FULL button
 /// footprints — the reserve must cover the real tag rects, not just the
-/// TOUCH_H content square (plan #779 root cause).
+/// TOUCH_H content square (plan #782 root cause).
 pub fn iconPackW(busy: bool) f32 {
     return (if (busy) @as(f32, 2) else @as(f32, 1)) * iconCellW();
 }
@@ -152,7 +153,7 @@ pub fn paintComposerChrome(opts: struct {
         // (min=max=field_w — max_size_content caps the reported min in
         // WidgetData.minSizeSetAndRefresh), so the box's leftover math can
         // never give the field more than `avail_w − icon_reserve_w` and the
-        // icons always land post-reserve at TOUCH_H. The wrapper must stay a
+        // icons always land post-reserve at their full cell. The wrapper must stay a
         // PACKED child (gravity.x = 0, not centered) or BoxWidget treats it as
         // an overlay and overlaps the icons instead of compacting.
         {
@@ -216,7 +217,7 @@ pub fn paintComposerChrome(opts: struct {
                 .style = .highlight,
                 .font = chrome.composerIconFont(),
                 .min_size_content = .{ .w = metrics.TOUCH_H, .h = metrics.TOUCH_H },
-                // Full-footprint reserve (plan #779): pin each button's
+                // Full-footprint reserve (plan #782): pin each button's
                 // padding/margin to ICON_PAD/ICON_MARGIN so the trailing icon
                 // cell is EXACTLY `TOUCH_H + 2*ICON_EDGE_W` — the same value
                 // iconCellW() reserves. Without this the real (default) button
@@ -236,7 +237,7 @@ pub fn paintComposerChrome(opts: struct {
                 .style = .content,
                 .font = chrome.composerIconFont(),
                 .min_size_content = .{ .w = metrics.TOUCH_H, .h = metrics.TOUCH_H },
-                // Full-footprint reserve (plan #779): pin each button's
+                // Full-footprint reserve (plan #782): pin each button's
                 // padding/margin to ICON_PAD/ICON_MARGIN so the trailing icon
                 // cell is EXACTLY `TOUCH_H + 2*ICON_EDGE_W` — the same value
                 // iconCellW() reserves. Without this the real (default) button
@@ -257,7 +258,7 @@ pub fn paintComposerChrome(opts: struct {
             .style = .highlight,
             .font = chrome.composerIconFont(),
             .min_size_content = .{ .w = metrics.TOUCH_H, .h = metrics.TOUCH_H },
-            // Full-footprint reserve (plan #779) — see the busy branches: the
+            // Full-footprint reserve (plan #782) — see the busy branches: the
             // trailing icon cell is TOUCH_H + 2*ICON_EDGE_W, never TOUCH_H.
             .padding = .{ .x = ICON_PAD, .y = ICON_PAD, .w = ICON_PAD, .h = ICON_PAD },
             .margin = .{ .x = ICON_MARGIN, .y = ICON_MARGIN, .w = ICON_MARGIN, .h = ICON_MARGIN },

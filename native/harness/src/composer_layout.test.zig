@@ -1,7 +1,7 @@
 //! Host dvui testing-backend layout-rect tests for `composer_chrome.zig`
 //! (plan #737, source #734). Lock the width-reservation geometry from the REAL
 //! painted widget tree — the field lives on an explicit trailing-*reserved*
-//! sub-rect `field_w = avail_w − (TOUCH_H×n + 8)`, so a long unbreakable line's
+//! sub-rect `field_w = avail_w − (n × iconCellW() + 8)`, so a long unbreakable line's
 //! reported min width can never squeeze the ▶/■ icon pack off-canvas (mirrors
 //! the `busy_row_layout.test.zig` pattern — drives `paintComposerChrome` the
 //! same way that test drives `paintBusyRow`).
@@ -59,7 +59,7 @@ fn paintAndGetRects() FieldRects {
     return paintAndGetRectsW(WIN_LW);
 }
 
-/// Width-parameterized variant (plan #779 — the #734/#737 lock was only ever
+/// Width-parameterized variant (plan #782 — the #734/#737 lock was only ever
 /// proven at WIN_LW=600; a ~390 px canvas row would silently slip ■ past the
 /// viewport). `avail_w` is the logical composer row width handed to the paint.
 fn paintAndGetRectsW(avail_w: f32) FieldRects {
@@ -235,7 +235,7 @@ test "busy + #734 lock: a long unbreakable line during Busy keeps ▶ + ■ on-c
     try t.expect(stop.x + stop.w <= win.w + EPS);
 }
 
-// ── Plan #779 — ~390 px canvas row (operator report: Busy ■ Stop crushed /
+// ── Plan #782 — ~390 px canvas row (operator report: Busy ■ Stop crushed /
 // ── off the right edge). The #734/#737 lock was only ever proven at
 // WIN_LW=600; on a phone width the FULL button footprint (TOUCH_H + 2·(pad +
 // margin)) overran a TOUCH_H-only reserve and dvui squeezed the trailing ■ to
@@ -245,7 +245,7 @@ test "busy + #734 lock: a long unbreakable line during Busy keeps ▶ + ■ on-c
 const WIN_NARROW: f32 = 390;
 
 /// Paint busy chrome at `avail_w` and assert every success-predicate from the
-/// plan #779 goals: ■ and ▶ fully on-canvas, ▶ left of ■, and the field kept
+/// plan #782 goals: ■ and ▶ fully on-canvas, ▶ left of ■, and the field kept
 /// left of the icons. Returns whether ■ had a comfortable right gutter.
 fn assertBusyOnCanvasW(avail_w: f32) !void {
     const r = paintAndGetRectsW(avail_w);
@@ -267,10 +267,15 @@ fn assertBusyOnCanvasW(avail_w: f32) !void {
     const cell_w = composer_chrome.iconCellW();
     const gap = win.w - (stop.x + stop.w);
     try t.expect(gap >= (2 * EPS)); // strictly on-canvas, not flush
-    try t.expect(stop.w >= cell_w * PX * 0.8); // not crushed below ~80% cell
+    // Not crushed below ~90% of the full cell (physical px). The pre-#779
+    // crush collapsed stop.w to ~28 logical (~47% cell); 0.9 still catches a
+    // 10% shrink while leaving room for dvui's subpixel/font fudge — a tighter
+    // lock than 0.8 without risking a false fail on rounding. (`gap >= 2*EPS`
+    // above is the real "not flush" assertion; this guards the cell width.)
+    try t.expect(stop.w >= cell_w * PX * 0.9);
 }
 
-test "plan #779: busy at ~390 px, empty queue → ■ fully on-canvas with slack" {
+test "plan #782: busy at ~390 px, empty queue → ■ fully on-canvas with slack" {
     var tr = try dvui.testing.init(.{ .window_size = .{ .w = WIN_NARROW, .h = 400 } });
     defer tr.deinit();
     resetBuf();
@@ -279,7 +284,7 @@ test "plan #779: busy at ~390 px, empty queue → ■ fully on-canvas with slack
     try assertBusyOnCanvasW(WIN_NARROW);
 }
 
-test "plan #779: idle at ~390 px → ▶ fully on-canvas (no #737 regression)" {
+test "plan #782: idle at ~390 px → ▶ fully on-canvas (no #737 regression)" {
     var tr = try dvui.testing.init(.{ .window_size = .{ .w = WIN_NARROW, .h = 400 } });
     defer tr.deinit();
     resetBuf();
@@ -293,7 +298,7 @@ test "plan #779: idle at ~390 px → ▶ fully on-canvas (no #737 regression)" {
     try t.expect(r.field.x + r.field.w <= r.send.x + EPS);
 }
 
-test "plan #779: busy at ~390 px keeps ■ on-canvas even pasted an unbreakable line" {
+test "plan #782: busy at ~390 px keeps ■ on-canvas even pasted an unbreakable line" {
     var tr = try dvui.testing.init(.{ .window_size = .{ .w = WIN_NARROW, .h = 400 } });
     defer tr.deinit();
     resetBuf();
