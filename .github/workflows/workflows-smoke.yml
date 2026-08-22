@@ -1,0 +1,134 @@
+# Vercel Workflows smoke (backend-agents D, plan #785 / source issue #767).
+#
+# Operator: Actions → workflows-smoke → Run workflow
+#   inputs: confirm=smoke (required); environment=preview|production;
+#           url=optional deployed-URL health probe (never hardcoded host).
+#
+# Proves Vercel Workflows is ENABLED + usable on the chosen environment by
+# driving start → getRun → completed for the trivial fixture, against the
+# Vercel Workflows API via the SDK's Vercel World using the EXISTING repo
+# secrets (VERCEL_TOKEN / VERCEL_PROJECT_ID / VERCEL_TEAM_ID — dual-stored for
+# sandbox). NO new secret. A server-side GHA has no browser session cookie, so
+# it must NOT call the authed /api/workflows/smoke route (that route stays the
+# human/dashboard surface — plan-review lock on #785).
+#
+# Fail closed: confirm mismatch aborts; any required secret missing aborts;
+# start/getRun throw → non-zero; run 'completed' is the only zero exit. NEVER a
+# fallback to the tab-owned /api/agent POST (the #710 lie). Pending at the poll
+# budget = non-zero ("run still pending", re-dispatch) — never a silent pass.
+#
+# Safety: workflow_dispatch only; ubuntu-latest only; never self-hosted;
+# never echo secret values.
+
+name: workflows-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Must equal "smoke" to run (misclick guard)'
+        required: true
+        type: string
+      environment:
+        description: 'Vercel environment to smoke: preview (default) or production'
+        required: false
+        type: choice
+        options:
+          - preview
+          - production
+        default: preview
+      url:
+        description: 'Optional deployed-URL to health-probe first (preview-not-yet-deployed guard). Empty = skip. Never hardcoded.'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workflows-smoke-${{ github.repository }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: workflows smoke (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Guard confirm input & environment
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.confirm }}" != "smoke" ]; then
+            echo "::error::confirm input must equal 'smoke'. Aborting with no mutate."
+            exit 1
+          fi
+          if [ "${{ inputs.environment }}" != "preview" ] && [ "${{ inputs.environment }}" != "production" ]; then
+            echo "::error::environment must be 'preview' or 'production'."
+            exit 1
+          fi
+
+      - name: Fail closed — required secrets present
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          trim() {
+            local s="$1"
+            s="${s#"${s%%[![:space:]]*}"}"
+            s="${s%"${s##*[![:space:]]}"}"
+            printf '%s' "$s"
+          }
+          for name in VERCEL_TOKEN VERCEL_PROJECT_ID VERCEL_TEAM_ID; do
+            eval "val=\$(trim \"\${$name:-}\")"
+            if [ -z "${val}" ]; then
+              echo "::error::${name} is missing or empty (set repository secret; never commit values)"
+              exit 1
+            fi
+            echo "${name} present (value not printed)."
+          done
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Optional deployment reachability probe
+        if: ${{ inputs.url != '' }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 15 -o /dev/null "${{ inputs.url }}"
+          echo "Deployment reachable at provided url."
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install app dependencies
+        run: npm ci
+
+      - name: Run Vercel Workflows fixture smoke
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          SMOKE_ENV: ${{ inputs.environment }}
+          # NEW smoke caps (plan #785 Caps table): bounded poll budget + interval.
+          WORKFLOWS_SMOKE_POLL_TIMEOUT_MS: "120000"
+          WORKFLOWS_SMOKE_POLL_INTERVAL_MS: "2000"
+        run: |
+          set -euo pipefail
+          npx tsx scripts/workflows-smoke.ts
+
+      - name: Job summary
+        if: ${{ always() && inputs.confirm == 'smoke' }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### workflows-smoke (${{ inputs.environment }})"
+            echo "- result: ${{ job.status }}"
+            echo "- verify: Vercel → Observability → Workflows shows the fixture run + step, status completed."
+            echo "- note: requires Workflows ENABLED on Vercel + Observability on (hosted-UI toggles); never falls back to /api/agent."
+          } >> "${GITHUB_STEP_SUMMARY}"

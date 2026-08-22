@@ -221,6 +221,7 @@ ops inventory).
 | Optional OIDC (`AUTH_OIDC_ISSUER` / `AUTH_OIDC_CLIENT_ID` / `AUTH_OIDC_CLIENT_SECRET` / `AUTH_OIDC_LABEL?`) | **Not Done** | Generic SSO — configure when operator wants IdP login; callback `{origin}/api/auth/callback/oidc`; BYO: [docs/bring-your-own.md](docs/bring-your-own.md) §4b |
 | Optional SCIM (`SCIM_BEARER_TOKEN`) | **Not Done** | SCIM 2.0 Users at `/api/scim/v2` — set only when directory provisioning is intended; fail-closed 404 when unset |
 | Blob transcript store (`BLOB_READ_WRITE_TOKEN`, phase 0 #515) | **Not Done** (documented seam only) | Vercel Blob (or BYO S3/R2 behind the same seam) for the session **transcript**; Redis keeps the small envelope. Server-minted short-lived scoped upload URLs; client→Blob uploads; legacy full-record GET stays for roll-forward while old blobs stay small. Configure in Vercel/env-manager, never a laptop ritual; no migrate/backfill/seed. Docs: [docs/bring-your-own.md](docs/bring-your-own.md), [docs/session-model.md](docs/session-model.md). When unset the app runs an in-memory transcript store (dev/tests only) |
+| Vercel Workflows (backend-agents) | **Done (code)** | Workflow SDK wired (`workflow` dep + `withWorkflow` in `next.config.js`), authed smoke route (`app/api/workflows/smoke`), dispatch GHA **`workflows-smoke`** (default `environment=preview`; run vs `production` to verify). **Platform enable on origin Production** (hosted-UI Workflows toggle) + **Observability → Workflows** ON + first smoke remain the **operator step** — a GHA cannot toggle a project feature; verify the deployed instance with `workflows-smoke`. Never the tab-owned `/api/agent` as the smoke path. Ops: [docs/feature-divide.md](docs/feature-divide.md) |
 
 
 **Agent behavior (origin):**
@@ -253,7 +254,35 @@ ops inventory).
   “enable SSO” as a forgotten secret. When configuring: follow
   [docs/bring-your-own.md](docs/bring-your-own.md) §4b; never put
   `AUTH_OIDC_CLIENT_SECRET` or `SCIM_BEARER_TOKEN` in client/Wasm or git.
+- **Vercel Workflows** runs/steps live **server-side** (Vercel Functions +
+  Queues), never in Wasm/DOM. Workflows is a **Vercel project toggle** (hosted-UI
+  on the dashboard), **not an app env flag** — no in-app path to enable. Verify
+  enablement + a completed run via the **`workflows-smoke`** dispatch
+  (`confirm=smoke`, `environment=production`); a disabled/unready project fails
+  the smoke (**fail closed**, non-zero) and is never a silent fallback to the
+  tab-owned `/api/agent`. Run/step traces: Vercel → Observability → Workflows.
 
+### Vercel Workflows (backend-agents)
+
+- **Wiring ships by Git deploy:** `workflow` dependency + `withWorkflow(nextConfig)`
+  in `next.config.js`; `"use workflow"` fixtures/xhr live server-side
+  (`lib/workflows/*`, `app/api/workflows/smoke`).
+- **Enable** is a Vercel **dashboard toggle** (Project → Workflows → Enable) on the
+  target environment (origin Production) — a GHA cannot click a project feature.
+  Turn on **Observability → Workflows** too so run/step traces are dashboard-visible.
+- **Verify:** Actions → **`workflows-smoke`** → Run workflow (`confirm=smoke`,
+  `environment=preview|production`). It drives `start`→`getRun`→`completed` for the
+  trivial fixture through the Vercel Workflows API (SDK Vercel World) using the
+  existing `VERCEL_TOKEN` / `VERCEL_PROJECT_ID` / `VERCEL_TEAM_ID` (no new secret)
+  and exits 0 only on `completed`. Disabled/unready → non-zero; never a silent
+  fallback to the tab-owned `/api/agent` POST.
+- **Authed human surface:** `POST /api/workflows/smoke` (start → `{runId}`) +
+  `GET /api/workflows/smoke?runId=` (poll → `{status}`), cookie-gated
+  `requireSessionUser()`. A server-side GHA has no browser cookie, so it does not
+  route through this route (plan-review lock).
+- **Caps:** step `maxDuration` = 1800 s (Fluid Function ceiling, unchanged);
+  smoke poll budget `WORKFLOWS_SMOKE_POLL_TIMEOUT` 120 s / interval 2 s (±0.5 s
+  jitter) — bounded, generous, NEW caps in the plan's Caps table.
 
 IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
 BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).  

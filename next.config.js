@@ -1,5 +1,8 @@
 /** @type {import('next').NextConfig} */
 const path = require('path');
+// Vercel Workflow SDK (backend-agents D, plan #785): transforms `"use workflow"`
+// / `"use step"` directives for this app. CJS subpath resolves to dist/next.cjs.
+const { withWorkflow } = require('workflow/next');
 
 const nextConfig = {
   // Repo lives under monorepo-style /workspace; pin tracing to this app.
@@ -46,4 +49,4 @@ const nextConfig = {
   },
 };
 
-module.exports = nextConfig;
+module.exports = withWorkflow(nextConfig);
