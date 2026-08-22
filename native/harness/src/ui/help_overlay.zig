@@ -17,7 +17,12 @@ const mixed_text = @import("../rich/mixed_text.zig");
 /// `leader` is the prefix itself; `help_toggle_leader` is shown under the
 /// leader family (`?`). Help copy comes from the table's `row.help` (the
 /// overlay IS the table — keymap.zig owns the strings). Order mirrors KEY_TABLE.
-fn rowChord(row: keymap.Row) []const u8 {
+///
+/// `pub` so the host unit test (help_overlay.test.zig) can pin the leader
+/// chord glyphs — `rowChord` is a hardcoded parallel map (not derived from the
+/// table), so without a test a revert to stale "Leader Space" strings would
+/// ship while keymap.zig tests stay green (plan #761 Nit L6).
+pub fn rowChord(row: keymap.Row) []const u8 {
     return switch (row.action) {
         .submit => "Ctrl/Cmd+Enter",
         .queue_save => "Ctrl/Cmd+Enter",
