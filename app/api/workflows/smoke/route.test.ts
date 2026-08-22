@@ -263,5 +263,62 @@ describe('fail-closed no-/api/agent fallback (plan #785 goal 6 / #710 lie)', () 
     expect(importSpecifiers.some((s) => /agent/.test(s))).toBe(false);
     // The route's only reachable failure mode is the fail-closed 503.
     expect(ROUTE_SOURCE).toContain('status: 503');
+    // A dynamic `fetch('/api/agent')` fallback would slip past the static import
+    // scan — the route must never call the tab-owned agent turn POST on ANY
+    // path. It performs no client fetch at all (start/getRun go via the SDK).
+    expect(ROUTE_SOURCE).not.toMatch(/fetch\(\s*[`"']/);
+    expect(ROUTE_SOURCE).not.toMatch(/fetch\([^)]*\/api\/agent/i);
+  });
+});
+
+describe('POST /api/workflows/smoke — per-process start rate limit (PR #786 Minor L5+L2)', () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+    vi.resetModules();
+    vi.doUnmock('workflow/api');
+    vi.doUnmock('../../../../lib/tenancy/session');
+    vi.doUnmock('../../../../lib/workflows/fixtureWorkflow');
+  });
+
+  it('a second POST within the min interval → 429; the first succeeds', async () => {
+    vi.resetModules();
+    vi.doMock('../../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({ ok: true, user: { id: 'u1' } })),
+    }));
+    vi.doMock('workflow/api', () => ({
+      start: vi.fn(async () => ({ runId: 'wf_1' })),
+    }));
+    vi.doMock('../../../../lib/workflows/fixtureWorkflow', () => ({
+      fixtureWorkflow: vi.fn(async () => ({ status: 'completed' })),
+    }));
+    const { POST } = await import('./route');
+    const first = await POST(new Request('https://x/api/workflows/smoke'));
+    expect(first.status).toBe(200);
+    const second = await POST(new Request('https://x/api/workflows/smoke'));
+    expect(second.status).toBe(429);
+  });
+
+  it('does not rate-limit the GET poll (only the start hammer vector)', async () => {
+    vi.resetModules();
+    vi.doMock('../../../../lib/tenancy/session', () => ({
+      requireSessionUser: vi.fn(async () => ({ ok: true, user: { id: 'u1' } })),
+    }));
+    vi.doMock('workflow/api', () => ({
+      getRun: () => ({
+        exists: Promise.resolve(true),
+        status: Promise.resolve('running'),
+        returnValue: Promise.resolve(null),
+      }),
+    }));
+    vi.doMock('../../../../lib/workflows/fixtureWorkflow', () => ({
+      fixtureWorkflow: vi.fn(async () => ({ status: 'completed' })),
+    }));
+    const { GET } = await import('./route');
+    const a = await GET(new Request('https://x/api/workflows/smoke?runId=wf_1'));
+    expect(a.status).toBe(200);
+    const b = await GET(new Request('https://x/api/workflows/smoke?runId=wf_1'));
+    expect(b.status).toBe(200);
   });
 });

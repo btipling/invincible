@@ -28,6 +28,15 @@ function failClosed(err: unknown): string {
   return `Vercel Workflows smoke failed (fail closed): ${msg}`;
 }
 
+// Bounded per-process minimum interval between POST starts (adversarial review
+// PR #786 Minor L5+L2: any signed-in tenant member could otherwise hammer this
+// route and burn the project's SHARED Workflows quota). ONE start per window.
+// This is intentionally defense-in-depth at the human/dashboard surface, not a
+// global limiter — serverless cold starts reset it (documented in living docs).
+// NEW smoke cap (plan #785 Caps table style): WORKFLOWS_SMOKE_POST_MIN_INTERVAL_MS = 15000.
+const WORKFLOWS_SMOKE_POST_MIN_INTERVAL_MS = 15_000;
+let lastStartAtMs = 0;
+
 /** POST /api/workflows/smoke → start the fixture, return { runId }. */
 export async function POST(_req: Request): Promise<Response> {
   const sessionGate = await requireSessionUser();
@@ -36,6 +45,16 @@ export async function POST(_req: Request): Promise<Response> {
     const { AUTH_REQUIRED_ERROR } = await import('../../../../lib/tenancy/errors');
     return Response.json({ error: AUTH_REQUIRED_ERROR }, { status: 401 });
   }
+  const now = Date.now();
+  if (now - lastStartAtMs < WORKFLOWS_SMOKE_POST_MIN_INTERVAL_MS) {
+    return Response.json(
+      {
+        error: `Workflows smoke rate limit: wait a moment before starting another run (min ${WORKFLOWS_SMOKE_POST_MIN_INTERVAL_MS}ms).`,
+      },
+      { status: 429 },
+    );
+  }
+  lastStartAtMs = now;
   try {
     const run = await start(fixtureWorkflow, []);
     return Response.json({ runId: run.runId });
