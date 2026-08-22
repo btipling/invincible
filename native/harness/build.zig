@@ -1081,7 +1081,13 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             // 9. release handler — a Shift+click must never count toward the word/line
             //    double-click counter (it already zeroed click_num at press), so the
             //    follow-on plain click stays a caret-move + clear. Stock web does not
-            //    count Shift+clicks toward double-clicks.
+            //    count Shift+clicks toward double-clicks. Gate on the press-state
+            //    (`sel_move` is still `.shift_click` at release — selMovePre zeroes
+            //    down_pt but not the variant tag, and addText has not run yet within
+            //    this processEvents batch), NOT the live modifier: a user who lets go
+            //    of Shift before mouseup would otherwise make `!me.mod.shift()` true
+            //    and reseed the double-click counter, so the next plain click would
+            //    word-select instead of caret-move + clear (review round-2 Nit).
             .needle =
             \\                        if (me.button.pointer()) {
             \\                            self.click_num += 1;
@@ -1092,7 +1098,7 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             \\
             ,
             .replacement =
-            \\                        if (me.button.pointer() and !me.mod.shift()) {
+            \\                        if (me.button.pointer() and self.sel_move != .shift_click) {
             \\                            self.click_num += 1;
             \\                            self.click_num_pt = me.p;
             \\                            if (self.click_num >= 3) {
