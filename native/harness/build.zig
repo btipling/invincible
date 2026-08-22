@@ -835,7 +835,11 @@ fn applyInvincibleRightClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
 /// Shift+clicks (A,B,C → [A,C]) and after a drag-select ([5,20] then Shift+click
 /// 30 → [5,30]). A Shift+click also zeros `click_num` and is excluded from the
 /// release double-click counter, so the next plain click stays a caret-move +
-/// clear (stock web never counts Shift+clicks toward double-clicks).
+/// clear (stock web never counts Shift+clicks toward double-clicks). Exclusion
+/// is detected three ways at release (see needle 9): same-frame `.shift_click`,
+/// live `me.mod.shift()`, and — the last adversarial Nit — a persisted
+/// `_shift_click_press` flag that survives a two-frame click where Shift is
+/// released before mouseup.
 ///
 /// The click point → byte resolution lives in `selMovePre`/`lineBreak` (during
 /// `addText`, the only place text rects exist), so the variant rides the same
@@ -1057,6 +1061,15 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             \\                    // click toward the next word/line double-click (stock web).
             \\                    if (me.mod.shift()) {
             \\                        self.click_num = 0;
+            \\                        // persist that this press was a Shift+click so its release —
+            \\                        // even a two-frame web click where Shift is released before
+            \\                        // mouseup (adversarial round-4 Nit L1) — is never counted
+            \\                        // toward the next word/line double-click. The `.shift_click`
+            \\                        // variant is frame-local (re-inits to .none each frame), so
+            \\                        // this store flag crosses the press→release frame gap, the
+            \\                        // same way `.mouse.byte` persists while captured. Consumed
+            \\                        // (dataRemove) at the release handler (needle 9).
+            \\                        dvui.dataSet(null, self.data().id, "_shift_click_press", true);
             \\                        self.sel_move = .{ .shift_click = .{} };
             \\                        self.sel_move.shift_click.down_pt = self.data().contentRectScale().pointFromPhysical(me.p);
             \\                        self.scroll_to_cursor = true;
@@ -1081,17 +1094,25 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             // 9. release handler — a Shift+click must never count toward the word/line
             //    double-click counter (it already zeroed click_num at press), so the
             //    follow-on plain click stays a caret-move + clear. Stock web does not
-            //    count Shift+clicks toward double-clicks. UNION gate (review round-3
-            //    CONCERNS L1): skip the increment if the press-state shows a shift-click
-            //    (`self.sel_move == .shift_click` — true only when press and release
-            //    land in the same event batch) **or** the live modifier still has Shift
-            //    (`me.mod.shift()` — the common path, since `sel_move` is frame-local
-            //    and re-inits to `.none` at the start of every frame, so on a normal
-            //    two-frame web click the release frame does not retain `.shift_click`).
+            //    count Shift+clicks toward double-clicks. THREE-WAY gate (adversarial
+            //    round-3 CONCERNS L1 + round-4 Nit L1): skip the increment when this
+            //    press was a Shift+click, detected by ANY of:
+            //      (a) `self.sel_move == .shift_click` — press and release in the same
+            //          event batch, so the variant is still set at release;
+            //      (b) `me.mod.shift()` — Shift still held at mouseup (the common
+            //          two-frame web click: `sel_move` is frame-local and re-inits to
+            //          `.none` each frame, so the release frame does not retain
+            //          `.shift_click`);
+            //      (c) persisted `_shift_click_press` — set by the press handler
+            //          (needle 8) and read here, closing the two-frame click where Shift
+            //          was released before mouseup (round-4 Nit). It mirrors how
+            //          `.mouse.byte` persists across captured frames; consumed here via
+            //          dataRemove so it never suppresses a later plain click's count.
             //    Round 2 gated only on `!me.mod.shift()` (PASS; Nit about the shift-
             //    released-before-mouseup hyper-edge). Round 3 swapped it for only
             //    `self.sel_move != .shift_click`, which broke the common path — see
-            //    the gate below for why both must be OR'd together.
+            //    the gate below for why (a) and (b) must be OR'd together, and (c)
+            //    for the round-4 gap.
             .needle =
             \\                        if (me.button.pointer()) {
             \\                            self.click_num += 1;
@@ -1103,12 +1124,24 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             ,
             .replacement =
             \\                        // invincible: never count a Shift+click toward the next word/line
-            \\                        // double-click (it already zeroed click_num at press). Union gate:
-            \\                        // skip when the press-state is .shift_click (same-frame press+release)
-            \\                        // OR Shift is still held at mouseup (common two-frame web click — the
-            \\                        // frame-local .shift_click variant re-inits to .none every frame, so
-            \\                        // round 3's single `sel_move != .shift_click` gate failed to skip).
-            \\                        if (me.button.pointer() and self.sel_move != .shift_click and !me.mod.shift()) {
+            \\                        // double-click (it already zeroed click_num at press). THREE-WAY
+            \\                        // detection that this press was a Shift+click:
+            \\                        //   (a) still-captured same-frame release (`sel_move == .shift_click`);
+            \\                        //   (b) common two-frame click with Shift still held at mouseup
+            \\                        //       (`me.mod.shift()` — the frame-local .shift_click variant
+            \\                        //       re-inits to .none every frame, so a single
+            \\                        //       `sel_move != .shift_click` gate failed in round 3);
+            \\                        //   (c) two-frame click where Shift was released before mouseup
+            \\                        //       (round-4 race): the `_shift_click_press` flag persisted by
+            \\                        //       the press handler crosses the frame gap (like `.mouse.byte`).
+            \\                        // The flag is consumed (removed) here so it never suppresses a
+            \\                        // later plain click's double-click count.
+            \\                        const shift_click_release =
+            \\                            self.sel_move == .shift_click or
+            \\                            me.mod.shift() or
+            \\                            (dvui.dataGet(null, self.data().id, "_shift_click_press", bool) orelse false);
+            \\                        dvui.dataRemove(null, self.data().id, "_shift_click_press");
+            \\                        if (me.button.pointer() and !shift_click_release) {
             \\                            self.click_num += 1;
             \\                            self.click_num_pt = me.p;
             \\                            if (self.click_num >= 3) {
