@@ -143,6 +143,17 @@ var queue: submit_queue.Q = .{};
 /// surfaces re-arm the default). Wasm only READS this on the terminal edge; the
 /// host rewrites it every terminal.
 var queue_promote_allowed: bool = true;
+/// Plan #777 — operator pause latch (in-canvas submit-queue hold). When set,
+/// every promote path (auto-promote on a successful Ready, idle empty-▶ Play,
+/// empty Ctrl+Enter) is blocked via `submit_queue.canPromote.paused`, so the
+/// next turn reads from the composer; the FIFO contents, the typed-send path
+/// (`queueSubmitFromUi`), and enqueue/edit/remove/Clear are untouched. Wasm-
+/// internal (no cast export, no protocol bump, no build.zig whitelist change).
+/// Wasm-ephemeral, mirroring the queue's lifetime: reset on `reset()` and
+/// `inv_clear_messages` (fresh surfaces), and auto-cleared when the FIFO empties
+/// (ui.zig empty-queue guard) so a stale pause can never silently block later
+/// promotes. Default **false** = promote re-armed (legacy behavior).
+var queue_paused: bool = false;
 /// Host sets when SessionStore has messages older than the current ring window.
 var can_load_earlier: bool = false;
 var has_pending_load_earlier: bool = false;
@@ -275,6 +286,23 @@ pub fn hasQueuePromoteAllowed() bool {
     return queue_promote_allowed;
 }
 
+/// Plan #777 — current operator pause state. Read by the in-canvas queue-band
+/// toggle (to paint `· paused`) and by the ui.zig empty-queue auto-clear guard.
+/// Wasm-internal; no cast export / protocol bump.
+pub fn isQueuePaused() bool {
+    return queue_paused;
+}
+
+/// Plan #777 — set the operator pause latch from the in-canvas queue-band
+/// toggle (Pause ↔ Resume). `Pause` blocks every promote path; `Resume` clears
+/// the latch so parked items drain by the existing rules on the next terminal.
+/// `refresh()` so the paused paint shows/hides immediately.
+pub fn setQueuePausedFromUi(v: bool) void {
+    if (queue_paused == v) return;
+    queue_paused = v;
+    refresh();
+}
+
 /// Plan #760 promote-gate predicate (adversarial #763 L6). Whether a turn edge
 /// MAY auto-promote the queue head. Folds BOTH wasm triggers — the turn-ended
 /// edge (`prev` busy → `cur` ready) AND the queue-edit-closed edge (`edit_closed`
@@ -307,6 +335,7 @@ pub fn tryPromoteQueued(editing: bool) bool {
         .has_pending_submit = has_pending_submit,
         .has_pending_load_earlier = has_pending_load_earlier,
         .count = submit_queue.count(&queue),
+        .paused = queue_paused, // plan #777 — operator pause holds every promote path
     })) return false;
     return submit_queue.promoteIf(&queue, promoteSubmit);
 }
@@ -383,6 +412,7 @@ pub fn reset() void {
     has_pending_cancel = false;
     has_pending_model_change = false;
     queue_promote_allowed = true; // fresh surface re-arms the legacy default (plan #760)
+    queue_paused = false; // plan #777 — pause latch is Wasm-ephemeral like the queue
     has_pending_front_insert = false;
     session_catalog.reset();
     suppress_refresh = false;
@@ -611,6 +641,7 @@ pub export fn inv_clear_messages() void {
     submit_queue.clear(&queue);
     // Clear / New also re-arm the promote gate (fresh surface, plan #760).
     queue_promote_allowed = true;
+    queue_paused = false; // plan #777 — pause latch clears with the queue
     image_cache.clear();
     math_cache.clear();
     refresh();

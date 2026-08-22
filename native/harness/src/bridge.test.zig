@@ -193,3 +193,96 @@ test "gate e2e: empty FIFO — Play with allowed=true still stays depth 0 (no-op
     try t.expect(!promoted);
     try t.expectEqual(@as(u32, 0), bridge.queuedCount());
 }
+
+// ── plan #777 — operator pause latch (submit-queue hold) ─────────────────
+// The pause is gatewayed on `submit_queue.canPromote.paused` via
+// `tryPromoteQueued`, so one guard blocks ALL promote paths (auto-promote on
+// a successful Ready, idle empty-▶ Play, empty Ctrl+Enter) while leaving
+// enqueue/edit/remove/Clear and the typed-send path untouched.
+
+test "pause: defaults unpaused (promote armed — legacy behavior)" {
+    bridge.reset();
+    try t.expect(!bridge.isQueuePaused());
+}
+
+test "pause: set/read round-trip via setQueuePausedFromUi" {
+    bridge.reset();
+    bridge.setQueuePausedFromUi(true);
+    try t.expect(bridge.isQueuePaused());
+    bridge.setQueuePausedFromUi(false);
+    try t.expect(!bridge.isQueuePaused());
+}
+
+test "pause: tryPromoteQueued blocked while paused (non-empty queue, all gates otherwise met)" {
+    bridge.reset();
+    _ = try bridge.enqueueFromUi("one");
+    _ = try bridge.enqueueFromUi("two");
+    bridge.inv_set_queue_promote_allowed(1); // a prior success armed auto-promote
+    bridge.setQueuePausedFromUi(true); // operator paused the queue
+    // Explicit Play (idle ▶ / empty Ctrl+Enter converge on tryPromoteQueued):
+    // the pause guard alone refuses promotion — depth unchanged.
+    const promoted = bridge.tryPromoteQueued(false);
+    try t.expect(!promoted);
+    try t.expectEqual(@as(u32, 2), bridge.queuedCount());
+}
+
+test "pause: auto-promote held after a successful Ready (goal 3)" {
+    bridge.reset();
+    _ = try bridge.enqueueFromUi("one");
+    bridge.inv_set_queue_promote_allowed(1); // successful Ready armed the scalar true
+    bridge.setQueuePausedFromUi(true); // operator paused
+    // The ui.zig terminal gate decides auto_promote via shouldAutoPromote, then
+    // calls tryPromoteQueued — the pause guard in canPromote must refuse the pop.
+    const prev: bridge.Lifecycle = .busy;
+    const cur: bridge.Lifecycle = .ready;
+    const editing = false;
+    const edit_closed = false;
+    const auto = bridge.shouldAutoPromote(prev, cur, editing, bridge.hasQueuePromoteAllowed(), edit_closed);
+    try t.expect(auto); // the gate itself fires (turn ended, allowed)
+    const promoted = bridge.tryPromoteQueued(editing);
+    try t.expect(!promoted); // ...but the pause latch inside canPromote holds it
+    try t.expectEqual(@as(u32, 1), bridge.queuedCount()); // depth unchanged
+    try t.expectEqualStrings("one", bridge.queuedItemAt(0).?);
+}
+
+test "pause: unpause restores drain by existing rules (goal 4)" {
+    bridge.reset();
+    _ = try bridge.enqueueFromUi("one");
+    bridge.inv_set_queue_promote_allowed(1);
+    bridge.setQueuePausedFromUi(true);
+    // Paused: explicit Play holds.
+    try t.expect(!bridge.tryPromoteQueued(false));
+    try t.expectEqual(@as(u32, 1), bridge.queuedCount());
+    // Unpause: the next successful Ready / explicit Play drains the head.
+    bridge.setQueuePausedFromUi(false);
+    const promoted = bridge.tryPromoteQueued(false);
+    try t.expect(promoted);
+    try t.expectEqual(@as(u32, 0), bridge.queuedCount());
+}
+
+test "pause: enqueue/edit/remove/Clear keep working while paused (goal 6)" {
+    bridge.reset();
+    bridge.setQueuePausedFromUi(true); // pause the queue
+    // Enqueue still appends (FIFO ops never consult the latch).
+    _ = try bridge.enqueueFromUi("A");
+    _ = try bridge.enqueueFromUi("B");
+    try t.expectEqual(@as(u32, 2), bridge.queuedCount());
+    _ = bridge.replaceQueuedAt(0, "A2");
+    try t.expectEqualStrings("A2", bridge.queuedItemAt(0).?);
+    bridge.removeQueuedAt(1);
+    try t.expectEqual(@as(u32, 1), bridge.queuedCount());
+    bridge.clearSubmitQueue();
+    try t.expectEqual(@as(u32, 0), bridge.queuedCount());
+}
+
+test "pause: reset() and inv_clear_messages clear the latch (Wasm-ephemeral, non-goal)" {
+    bridge.reset();
+    bridge.setQueuePausedFromUi(true);
+    try t.expect(bridge.isQueuePaused());
+    bridge.reset(); // New / session (re-)init — fresh surface
+    try t.expect(!bridge.isQueuePaused());
+
+    bridge.setQueuePausedFromUi(true);
+    bridge.inv_clear_messages(); // Clear / New — clears with the queue
+    try t.expect(!bridge.isQueuePaused());
+}

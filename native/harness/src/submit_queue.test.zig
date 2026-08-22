@@ -152,6 +152,29 @@ test "ITEM_BYTES matches the live Send cap" {
     try t.expectEqual(@as(usize, 262144), sq.ITEM_BYTES);
 }
 
+// ── plan #777 — paused guard (operator submit-queue hold) ─────────────────
+
+test "canPromote: paused holds promote even when every other gate is met (plan #777)" {
+    // All other guards pass (not editing, not busy, no pending submit/load,
+    // non-empty queue) — the pause latch alone must refuse promotion.
+    try t.expect(!sq.canPromote(.{
+        .editing = false,
+        .busy = false,
+        .has_pending_submit = false,
+        .has_pending_load_earlier = false,
+        .count = 1,
+        .paused = true,
+    }));
+    // Unpausing (default false) re-arms promote for the same otherwise-ready state.
+    try t.expect(sq.canPromote(.{
+        .editing = false,
+        .busy = false,
+        .has_pending_submit = false,
+        .has_pending_load_earlier = false,
+        .count = 1,
+    }));
+}
+
 // ── plan #759 — insertFront (Continue-the-current-turn head) ──────────────
 
 test "insertFront puts the new item at head, shifting existing items down one" {
