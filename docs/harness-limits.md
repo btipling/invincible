@@ -70,7 +70,7 @@ closed).
 
 Opened by **Ctrl+/**/**Cmd+/** (or **Ctrl+I** leader then `?`); closed by **Esc**
 (wins over busy cancel), **Ctrl+/**/**Cmd+/** (toggle), New/Clear, or a **backdrop
-click-outside** (NEW — it is a modal). A **modal in-canvas `floatingWindow`**
+click-outside** (it is a modal). It is a **modal in-canvas `floatingWindow`**
 subwindow that fills most of the transcript band (`HELP_OVERLAY_W_FRACTION` /
 `HELP_OVERLAY_H_FRACTION` + `_MIN_*` / `_FLOOR_*` floors; the old fixed 460×320
 `HELP_OVERLAY_W/H` cap is retired). It is a real **two-column table**: a fixed
@@ -80,8 +80,12 @@ action in `KEY_TABLE` order; context-off rows stay grey (**WARM-muted**, never
 EMBER). **Wheel / trackpad over the panel scrolls the help list** inside the
 panel (`ctx_scroll`) — the modal captures it, so the transcript's
 `state.transcript_scroll` never moves while it is open. Every looping widget uses
-a loop-unique `id_extra` (no duplicate-id red outlines). ~390 px stays on-canvas
-with internal scroll (matches the repo no-h-scroll policy).
+a loop-unique `id_extra` (no duplicate-id red outlines). **Reopening resumes at
+the top**: `ctx_scroll` resets on every close path (Esc, backdrop, toggle, and
+New/Clear). Help copy wraps to the leftover column width (no per-row height cap,
+so a long help string on a ~390 px band is *shown wrapped*, never clipped/one
+line). ~390 px stays on-canvas with internal scroll (matches the repo no-h-scroll
+policy).
 
 ## Touch / mobile (~390px)
 

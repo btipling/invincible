@@ -85,12 +85,15 @@ const Frame = struct {
     };
     /// Goal-2c instrumentation: when `record_keys` is set, Frame.paint scans the
     /// frame's events after the overlay modal has processed them and records
-    /// whether ANY key event was marked handled. A floatingWindow subwindow only
-    /// routes pointer/wheel, so Esc / Ctrl+/ / leader-? must survive unhandled
-    /// for keymap_dispatch (which runs after paint in ui.zig) — keys reach the
-    /// dispatcher THROUGH the open modal.
+    /// whether ANY key event was present, and whether any was marked handled. A
+    /// floatingWindow subwindow only routes pointer/wheel, so Esc / Ctrl+/ /
+    /// leader-? must survive unhandled for keymap_dispatch (which runs after
+    /// paint in ui.zig) — keys reach the dispatcher THROUGH the open modal.
+    /// Asserting presence too closes the vacuous case (an empty event list would
+    /// otherwise satisfy "none handled" — review #783 round-3 Nit L6).
     var record_keys: bool = false;
     var any_key_handled: bool = false;
+    var any_key_present: bool = false;
 
     fn paint() !dvui.App.Result {
         // Transcript stand-in: a scroll container over the same band, painted
@@ -128,8 +131,12 @@ const Frame = struct {
         // ui.zig) would never receive them.
         if (record_keys) {
             any_key_handled = false;
+            any_key_present = false;
             for (dvui.events()) |*e| {
-                if (e.evt == .key and e.handled) any_key_handled = true;
+                if (e.evt == .key) {
+                    any_key_present = true;
+                    if (e.handled) any_key_handled = true;
+                }
             }
         }
         return .ok;
@@ -255,6 +262,7 @@ test "Esc / Ctrl+/ / leader-? key events survive the open modal for the dispatch
     Frame.band_w = 600;
     Frame.band_h = 300;
     Frame.record_keys = true;
+    Frame.any_key_present = false;
     settleOverlay();
 
     // With the modal open, inject the exact chords the overlay dispatches on
@@ -269,11 +277,14 @@ test "Esc / Ctrl+/ / leader-? key events survive the open modal for the dispatch
     try dvui.testing.pressKey(.slash, .lshift);
     _ = try dvui.testing.step(Frame.paint);
 
+    // The injected key events were really IN this frame (not an empty event list
+    // vacuously satisfying "none handled"), and the modal left them unhandled.
+    try t.expect(Frame.any_key_present);
     try t.expect(!Frame.any_key_handled);
     Frame.record_keys = false;
 }
 
-test "middle-drag on the panel is neither grabbed nor moves the panel (Minor L1)" {
+test "left-drag on the panel padding is neither grabbed nor moves the panel (Minor L1)" {
     var tr = try dvui.testing.init(.{ .window_size = .{ .w = 640, .h = 480 } });
     defer tr.deinit();
     Frame.band_w = 640;
@@ -282,19 +293,21 @@ test "middle-drag on the panel is neither grabbed nor moves the panel (Minor L1)
 
     const before = (try dvui.testing.tagGet("overlay-scroll-area")).rect;
 
-    // Middle-press in the panel's LEFT PADDING ring: nothing sits there (the
+    // LEFT-press in the panel's LEFT PADDING ring: nothing sits there (the
     // scroll area starts at panel interior), so no child can grab the press and
-    // it reaches the floating window's middle-drag handler. With `.resize =
-    // .none` dvui's DEFAULT drag_area is the FULL panel, so the old behavior
-    // translated the centered panel then snapped it back next frame (rect_store
-    // recomputes). The empty drag_area must leave it stationary THIS frame —
-    // measured right after the single step, before any recenter.
-    const px = before.x - 8; // interior-left minus padding → .middle-drag zone
+    // it reaches the floating window's drag handler (`Button.pointer()` is
+    // left-or-touch only — an injected `.middle` press is invisible to
+    // processEventsAfter, which made the pre-round-3 test vacuous). With
+    // `.resize = .none` dvui's DEFAULT drag_area is the FULL panel, so the old
+    // behavior translated the centered panel then snapped it back next frame
+    // (rect_store recomputes). The empty drag_area must leave it stationary
+    // THIS frame — measured right after the single step, before any recenter.
+    const px = before.x - 8; // interior-left minus padding → left-drag zone
     const py = before.y + before.h / 2;
     _ = try dvui.currentWindow().addEventMouseMotion(.{ .pt = .{ .x = px, .y = py } });
-    _ = try dvui.currentWindow().addEventMouseButton(.middle, .press);
+    _ = try dvui.currentWindow().addEventMouseButton(.left, .press);
     _ = try dvui.currentWindow().addEventMouseMotion(.{ .pt = .{ .x = px + 12 * PX, .y = py + 6 * PX } });
-    _ = try dvui.currentWindow().addEventMouseButton(.middle, .release);
+    _ = try dvui.currentWindow().addEventMouseButton(.left, .release);
     _ = try dvui.testing.step(Frame.paint);
 
     const after = (try dvui.testing.tagGet("overlay-scroll-area")).rect;
@@ -343,4 +356,31 @@ test "help column wraps long and short copy to the same leftover width (wrap, no
     const hw0 = (try dvui.testing.tagGet("overlay-help-0")).rect.w;
     const hw4 = (try dvui.testing.tagGet("overlay-help-4")).rect.w;
     try t.expectApproxEqAbs(hw0, hw4, 6.0);
+}
+
+test "help column on a ~390 band wraps long copy TALLER than one line (wrap, not clip — round-3 Minor L1+L6)" {
+    // First measure the SAME long string at a wide band where the help column
+    // easily fits it on one line (row 0 "Send (enqueue when busy)", 800 px band).
+    var tr = try dvui.testing.init(.{ .window_size = .{ .w = 800, .h = 600 } });
+    defer tr.deinit();
+    Frame.band_w = 800;
+    Frame.band_h = 600;
+    settleOverlay();
+    const one_line_h = (try dvui.testing.tagGet("overlay-help-0")).rect.h;
+
+    // Now the same help string at ~390 where the leftover column is narrow — it
+    // must wrap to MORE than one line. The pre-round-3 code set
+    // `max_size_content.h = TOUCH_H - 6`, which clamped the widget's min via
+    // `WidgetData.init/minSizeSetAndRefresh`, clipping wrapped lines inside a
+    // one-line well regardless of width. With the height cap dropped (width
+    // ceiling kept through `MaxSize.width`), the textLayout reports its wrapped
+    // height, so a ~390 band renders the copy TALLER than the wide-band one-line
+    // height — proving wrap is engaged, not clipped. Comparing the SAME string's
+    // two heights (not an absolute px bound) makes the assertion robust to the
+    // testing backend's fallback font metrics.
+    Frame.band_w = 390;
+    Frame.band_h = 420;
+    settleOverlay();
+    const narrow_h = (try dvui.testing.tagGet("overlay-help-0")).rect.h;
+    try t.expect(narrow_h > one_line_h + PX);
 }

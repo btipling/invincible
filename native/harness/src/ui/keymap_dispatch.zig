@@ -171,10 +171,15 @@ fn runAction(action: keymap.Action, down: bool, handlers: Handlers) void {
         .help_toggle => {
             if (!down) return;
             state.help_overlay_open = !state.help_overlay_open;
+            // Reopen resumes at the top the same way Esc/backdrop close resets the
+            // list (review #783 round-3 Minor L1) — on closing via the primary
+            // toggle AND on a fresh open, never carry a stale mid-table offset.
+            help_overlay.resetScroll();
         },
         .help_toggle_leader => {
             if (!down) return;
             state.help_overlay_open = !state.help_overlay_open;
+            help_overlay.resetScroll();
             disarmLeader();
         },
         .leader => {

@@ -516,9 +516,13 @@ pub fn frame() !void {
         queue_band.resetQueueEditState();
         // Close the help overlay + disarm the leader (plan #741) — a New /
         // Clear / session hydrate refreshes the surface; a staled overlay or
-        // armed leader would ghost chrome.
+        // armed leader would ghost chrome. Reset the list to the top too: a
+        // mid-table `ctx_scroll` offset must not survive a reopen (review #783
+        // round-3 Minor L1 — New/Clear previously skipped the reset that
+        // Esc/backdrop help_close already applied).
         state.help_overlay_open = false;
         state.leader_armed = false;
+        help_overlay.resetScroll();
         // Plan #742 — a fresh surface resets the thinking preference to its
         // collapsed-default (same reset site as help_overlay_open / leader_armed).
         state.thinking_default_collapsed = true;

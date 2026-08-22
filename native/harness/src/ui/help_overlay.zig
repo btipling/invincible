@@ -53,6 +53,12 @@ pub fn rowChord(row: keymap.Row) []const u8 {
     };
 }
 
+/// Panel horizontal padding and row-box horizontal padding, shared by the
+/// widget `Options.padding` below AND the `help_max_w` wrap-ceiling arithmetic so
+/// the two can never drift (review #783 round-3 Nit L8).
+const PANEL_PAD_X: f32 = 12;
+const ROW_PAD_X: f32 = 4;
+
 /// Is the row's product action currently available in the live context? Used
 /// to grey rows whose `when` is false (WARM-muted instead of EMBER).
 fn rowActive(row: keymap.Row, ctx: keymap.Context) bool {
@@ -121,7 +127,7 @@ pub fn paint(x: f32, y: f32, w: f32, h: f32, ctx: keymap.Context) bool {
     // scrollbar is showing, the row box is allocated the narrower client width
     // and `.expand = .horizontal` wraps to that instead — this value is a safe
     // ceiling, never wider than the panel.
-    const help_max_w = panel_w - 2 * 12 - 2 * 4 - metrics.HELP_OVERLAY_CHORD_COL_W;
+    const help_max_w = panel_w - 2 * PANEL_PAD_X - 2 * ROW_PAD_X - metrics.HELP_OVERLAY_CHORD_COL_W;
 
     // Scratch rect the floatingWindow reads every frame (`init_options.rect`) so
     // the panel follows the band on a resize (not just on its first frame).
@@ -136,7 +142,7 @@ pub fn paint(x: f32, y: f32, w: f32, h: f32, ctx: keymap.Context) bool {
         .color_fill = palette.teal_surface,
         .color_border = palette.teal_accent,
         .border = .all(1),
-        .padding = .{ .x = 12, .y = 10, .w = 12, .h = 10 },
+        .padding = .{ .x = PANEL_PAD_X, .y = 10, .w = PANEL_PAD_X, .h = 10 },
     });
 
     // The panel is centered and never meant to be dragged. With `.resize =
@@ -204,7 +210,7 @@ pub fn paint(x: f32, y: f32, w: f32, h: f32, ctx: keymap.Context) bool {
                 .id_extra = id_row,
                 .expand = .horizontal,
                 .min_size_content = .{ .w = 40, .h = metrics.TOUCH_H - 6 },
-                .padding = .{ .x = 4, .y = 2, .w = 4, .h = 2 },
+                .padding = .{ .x = ROW_PAD_X, .y = 2, .w = ROW_PAD_X, .h = 2 },
             });
             defer line.deinit();
 
@@ -234,9 +240,14 @@ pub fn paint(x: f32, y: f32, w: f32, h: f32, ctx: keymap.Context) bool {
                 // Wrap the help column to the leftover row width (`expand` lets
                 // the row box allocate the remaining width after the fixed chord
                 // column; `max_size_content.w` is the ceiling so long copy never
-                // clips at a ~390 band — review #783 Minor L1).
+                // clips past the panel at a ~390 band). There is NO height cap:
+                // `WidgetData.init`/`minSizeSetAndRefresh` clamps min_size to
+                // max_sizeGet(), so a wrapped two-line string under a TOUCH_H-high
+                // max would report a clipped one-line min — dropping max.h lets
+                // the row grow tall enough to show wrapped lines (review #783
+                // round-3 Minor L1+L6).
                 .expand = .horizontal,
-                .max_size_content = .{ .w = help_max_w, .h = metrics.TOUCH_H - 6 },
+                .max_size_content = .width(help_max_w),
                 .min_size_content = .{ .h = metrics.TOUCH_H - 6 },
             });
             help.addText(row.help, .{});
