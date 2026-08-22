@@ -829,8 +829,13 @@ fn applyInvincibleRightClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
 /// plan #752 — dedicate a Shift+click selection-extend path in the vendored
 /// `TextLayoutWidget`. Stock dvui treats a left press as a plain caret move
 /// (`selection.moveCursor(hit, false)`, no extend). This patch adds a
-/// `sel_move.shift_click` variant: anchor = the pre-press cursor, and on
-/// Shift+LMB the selection becomes `[min(anchor, hit), max(anchor, hit)]`.
+/// `sel_move.shift_click` variant that extends the selection to the click point
+/// using the widget's own stock extend (`selection.moveCursor(hit, true)`, the
+/// same path as Shift+arrow), so the anchor edge stays fixed across repeated
+/// Shift+clicks (A,B,C → [A,C]) and after a drag-select ([5,20] then Shift+click
+/// 30 → [5,30]). A Shift+click also zeros `click_num` and is excluded from the
+/// release double-click counter, so the next plain click stays a caret-move +
+/// clear (stock web never counts Shift+clicks toward double-clicks).
 ///
 /// The click point → byte resolution lives in `selMovePre`/`lineBreak` (during
 /// `addText`, the only place text rects exist), so the variant rides the same
@@ -873,10 +878,11 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             \\        drag_pt: ?Point = null, // point of current mouse drag
             \\    },
             \\
-            \\    // invincible: dedicated shift-click (plan #752) — select [anchor, click].
-            \\    // anchor = pre-press cursor (byte); click point resolved during addText.
+            \\    // invincible: dedicated shift-click (plan #752) — extend the selection to the
+            \\    // click point via the widget's own stock extend (moveCursor(hit, true), the
+            \\    // same path as Shift+arrow), so the anchor edge stays fixed across repeated
+            \\    // Shift+clicks. Click point resolved to a byte during addText.
             \\    shift_click: struct {
-            \\        anchor: usize, // selection anchor (pre-press cursor byte)
             \\        down_pt: ?Point = null, // click point, resolved to a byte during addText
             \\        byte: ?usize = null, // resolved byte index of the click point
             \\    },
@@ -899,17 +905,15 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             \\            if (sc.down_pt) |p| {
             \\                if (self.findPoint(p, text_rect, self.bytes_seen, text_line, options)) |ba| {
             \\                    sc.byte = ba.byte;
-            \\                    self.selection.cursor = ba.byte;
-            \\                    self.selection.start = @min(sc.anchor, ba.byte);
-            \\                    self.selection.end = @max(sc.anchor, ba.byte);
+            \\                    // stock extend: keeps the fixed (anchor) edge, moves only the
+            \\                    // active end — matches Shift+arrow; fixes repeated Shift+clicks
+            \\                    // (A,B,C -> [A,C]) and drag-then-Shift+click ([5,20]+30 -> [5,30]).
+            \\                    self.selection.moveCursor(ba.byte, true);
             \\                    self.selection.affinity = ba.affinity;
             \\                    sc.down_pt = null;
             \\                } else {
             \\                    // haven't found it yet, keep cursor at end to not trigger cursor_seen
-            \\                    self.selection.cursor = self.bytes_seen + end;
-            \\                    self.selection.start = @min(sc.anchor, self.selection.cursor);
-            \\                    self.selection.end = @max(sc.anchor, self.selection.cursor);
-            \\                    self.selection.affinity = .after;
+            \\                    self.selection.moveCursor(self.bytes_seen + end, true);
             \\                }
             \\            }
             \\        },
@@ -936,9 +940,7 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             \\                if (p.y < self.insert_pt.y) {
             \\                    // point was right of previous line, no newline
             \\                    sc.byte = self.bytes_seen;
-            \\                    self.selection.cursor = self.bytes_seen;
-            \\                    self.selection.start = @min(sc.anchor, self.bytes_seen);
-            \\                    self.selection.end = @max(sc.anchor, self.bytes_seen);
+            \\                    self.selection.moveCursor(self.bytes_seen, true);
             \\                    self.selection.affinity = .before;
             \\                    sc.down_pt = null;
             \\                    self.cursorSeen();
@@ -1020,11 +1022,9 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             \\        },
             \\        .shift_click => |*sc| {
             \\            if (sc.down_pt) |_| {
-            \\                // click point never resolved to a text rect — select [anchor, end-of-text]
+            \\                // click point never resolved to a text rect — extend to end-of-text
             \\                sc.byte = self.bytes_seen;
-            \\                self.selection.cursor = self.bytes_seen;
-            \\                self.selection.start = @min(sc.anchor, self.bytes_seen);
-            \\                self.selection.end = @max(sc.anchor, self.bytes_seen);
+            \\                self.selection.moveCursor(self.bytes_seen, true);
             \\                sc.down_pt = null;
             \\            }
             \\        },
@@ -1052,10 +1052,12 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             .replacement =
             \\                } else if (me.button.pointer()) {
             \\                    // invincible: dedicated shift-click (plan #752) — if shift is
-            \\                    // held, extend selection from the pre-press caret to the click
-            \\                    // point; never fall through to the plain caret-move / drag path.
+            \\                    // held, extend selection to the click point; never fall through
+            \\                    // to the plain caret-move / drag path, and never count this as a
+            \\                    // click toward the next word/line double-click (stock web).
             \\                    if (me.mod.shift()) {
-            \\                        self.sel_move = .{ .shift_click = .{ .anchor = self.selection.cursor } };
+            \\                        self.click_num = 0;
+            \\                        self.sel_move = .{ .shift_click = .{} };
             \\                        self.sel_move.shift_click.down_pt = self.data().contentRectScale().pointFromPhysical(me.p);
             \\                        self.scroll_to_cursor = true;
             \\                    } else {
@@ -1073,6 +1075,30 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             \\                        }
             \\                    }
             \\                }
+            ,
+        },
+        .{
+            // 9. release handler — a Shift+click must never count toward the word/line
+            //    double-click counter (it already zeroed click_num at press), so the
+            //    follow-on plain click stays a caret-move + clear. Stock web does not
+            //    count Shift+clicks toward double-clicks.
+            .needle =
+            \\                        if (me.button.pointer()) {
+            \\                            self.click_num += 1;
+            \\                            self.click_num_pt = me.p;
+            \\                            if (self.click_num >= 3) {
+            \\                                self.click_num = 0;
+            \\                            }
+            \\
+            ,
+            .replacement =
+            \\                        if (me.button.pointer() and !me.mod.shift()) {
+            \\                            self.click_num += 1;
+            \\                            self.click_num_pt = me.p;
+            \\                            if (self.click_num >= 3) {
+            \\                                self.click_num = 0;
+            \\                            }
+            \\
             ,
         },
     };
