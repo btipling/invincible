@@ -46,27 +46,50 @@ test "inv_clear_messages restores promote gate to true (Clear / New surface)" {
 // so goal 1 (a Stop / Esc / error / timeout Ready never drains the queue) is a
 // real failing-before / passing-after test — not just host-arming coverage.
 
-test "shouldAutoPromote: Stop / error terminal never auto-promotes (allowed=false)" {
+test "shouldAutoPromote: Stop (allowed=false) never auto-promotes" {
     bridge.reset();
     // Busy → ready with host armed false (Stop / timeout / validation Ready).
-    try t.expect(!bridge.shouldAutoPromote(.busy, .ready, false, false));
-    // Busy → err terminal likewise never drains.
-    try t.expect(!bridge.shouldAutoPromote(.busy, .err, false, false));
+    try t.expect(!bridge.shouldAutoPromote(.busy, .ready, false, false, false));
+}
+
+test "shouldAutoPromote: error terminal never auto-promotes even when allowed=true (round-2 Nit L1)" {
+    bridge.reset();
+    // err is NOT a success terminal for promotion: a failed turn must never
+    // drain the queue regardless of the host-armed scalar. (The round-1 test
+    // only passed because it passed allowed=false — this pins the real reason,
+    // aligning with sibling #774's err-is-not-terminal-for-promotion intent.)
+    try t.expect(!bridge.shouldAutoPromote(.busy, .err, false, true, false));
+    try t.expect(!bridge.shouldAutoPromote(.busy, .err, false, true, true));
 }
 
 test "shouldAutoPromote: successful ready auto-promotes only when not mid-edit" {
     bridge.reset();
     // Successful turn: busy → ready, host armed true, operator not mid-edit.
-    try t.expect(bridge.shouldAutoPromote(.busy, .ready, false, true));
+    try t.expect(bridge.shouldAutoPromote(.busy, .ready, false, true, false));
     // Even a successful ready must NOT promote while the operator is mid-edit.
-    try t.expect(!bridge.shouldAutoPromote(.busy, .ready, true, true));
+    try t.expect(!bridge.shouldAutoPromote(.busy, .ready, true, true, false));
+}
+
+test "shouldAutoPromote: trigger B (edit-closed) promotes only on ready + not mid-edit + allowed (round-2 Nit L6)" {
+    bridge.reset();
+    // Edit-close on a ready terminal, host armed true, not mid-edit → promote.
+    try t.expect(bridge.shouldAutoPromote(.ready, .ready, false, true, true));
+    // ...but never while the operator is still mid-edit.
+    try t.expect(!bridge.shouldAutoPromote(.ready, .ready, true, true, true));
+    // ...and never after Stop (allowed=false) — the plan #760 named drain.
+    try t.expect(!bridge.shouldAutoPromote(.ready, .ready, false, false, true));
+    // ...and never on an err terminal (still not a success).
+    try t.expect(!bridge.shouldAutoPromote(.ready, .err, false, true, true));
+    // No edit closed this frame → trigger B does not fire (idle→idle stays).
+    try t.expect(!bridge.shouldAutoPromote(.ready, .ready, false, true, false));
 }
 
 test "shouldAutoPromote: non-terminal transition never promotes" {
     bridge.reset();
-    try t.expect(!bridge.shouldAutoPromote(.busy, .busy, false, true)); // still busy
-    try t.expect(!bridge.shouldAutoPromote(.ready, .ready, false, true)); // idle→idle
-    try t.expect(!bridge.shouldAutoPromote(.boot, .ready, false, true)); // boot→ready
+    try t.expect(!bridge.shouldAutoPromote(.busy, .busy, false, true, false)); // still busy
+    try t.expect(!bridge.shouldAutoPromote(.boot, .ready, false, true, false)); // boot→ready
+    // trigger B alone cannot turn a still-busy turn into a promotion.
+    try t.expect(!bridge.shouldAutoPromote(.busy, .busy, false, true, true));
 }
 
 // ── Gate end-to-end over the real FIFO (adversarial #763 L6) ───────────────
@@ -81,11 +104,12 @@ test "gate e2e: Stop (allowed=false) + non-empty queue keeps depth unchanged" {
     try t.expectEqual(@as(u32, 2), bridge.queuedCount());
     // Host Stop terminal armed the scalar false.
     bridge.inv_set_queue_promote_allowed(0);
-    // The ui.zig gate: turn-ended && !editing && hasQueuePromoteAllowed().
+    // The ui.zig gate: (turn-ended || edit-closed) && !editing && allowed.
     const prev: bridge.Lifecycle = .busy;
     const cur: bridge.Lifecycle = .ready;
     const editing = false;
-    if (bridge.shouldAutoPromote(prev, cur, editing, bridge.hasQueuePromoteAllowed())) {
+    const edit_closed = false;
+    if (bridge.shouldAutoPromote(prev, cur, editing, bridge.hasQueuePromoteAllowed(), edit_closed)) {
         _ = bridge.tryPromoteQueued(editing);
     }
     // Depth unchanged — the gate refused, so nothing was promoted.
@@ -101,11 +125,51 @@ test "gate e2e: success (allowed=true) + non-empty queue pops the head" {
     const prev: bridge.Lifecycle = .busy;
     const cur: bridge.Lifecycle = .ready;
     const editing = false;
-    if (bridge.shouldAutoPromote(prev, cur, editing, bridge.hasQueuePromoteAllowed())) {
+    const edit_closed = false;
+    if (bridge.shouldAutoPromote(prev, cur, editing, bridge.hasQueuePromoteAllowed(), edit_closed)) {
         _ = bridge.tryPromoteQueued(editing);
     }
     // Head promoted + popped; one remains. (tryPromoteQueued no-ops on empty,
     // so success auto-promote exactly mirrors the terminal gate.)
+    try t.expectEqual(@as(u32, 1), bridge.queuedCount());
+}
+
+test "gate e2e: trigger B after Stop (allowed=false) never pops (round-2 Nit L6)" {
+    bridge.reset();
+    _ = try bridge.enqueueFromUi("one");
+    _ = try bridge.enqueueFromUi("two");
+    try t.expectEqual(@as(u32, 2), bridge.queuedCount());
+    // Host Stop armed the scalar false.
+    bridge.inv_set_queue_promote_allowed(0);
+    // Simulate trigger B: a queue edit just closed this frame on a ready
+    // terminal. The ui.zig gate folds it in under the SAME `!editing && allowed`
+    // guards — with allowed=false it must refuse and the head stays.
+    const prev: bridge.Lifecycle = .ready;
+    const cur: bridge.Lifecycle = .ready;
+    const editing = false;
+    const edit_closed = true;
+    if (bridge.shouldAutoPromote(prev, cur, editing, bridge.hasQueuePromoteAllowed(), edit_closed)) {
+        _ = bridge.tryPromoteQueued(editing);
+    }
+    // Depth unchanged — the guard OR inside the predicate refused the pop.
+    try t.expectEqual(@as(u32, 2), bridge.queuedCount());
+}
+
+test "gate e2e: trigger B on success (allowed=true) pops the head (round-2 Nit L6)" {
+    bridge.reset();
+    _ = try bridge.enqueueFromUi("one");
+    _ = try bridge.enqueueFromUi("two");
+    // Successful Ready armed the scalar true.
+    bridge.inv_set_queue_promote_allowed(1);
+    // A queue edit closing this frame on a ready terminal is a promote trigger.
+    const prev: bridge.Lifecycle = .ready;
+    const cur: bridge.Lifecycle = .ready;
+    const editing = false;
+    const edit_closed = true;
+    if (bridge.shouldAutoPromote(prev, cur, editing, bridge.hasQueuePromoteAllowed(), edit_closed)) {
+        _ = bridge.tryPromoteQueued(editing);
+    }
+    // Head promoted + popped; one remains.
     try t.expectEqual(@as(u32, 1), bridge.queuedCount());
 }
 

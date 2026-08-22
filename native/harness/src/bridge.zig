@@ -263,19 +263,27 @@ pub fn hasQueuePromoteAllowed() bool {
     return queue_promote_allowed;
 }
 
-/// Plan #760 promote-gate predicate (adversarial #763 L6). Whether a busy→terminal
-/// lifecycle transition (a turn just ended: `prev` busy → `cur` ready/err) MAY
-/// auto-promote the queue head. Folds the turn-ended trigger with the two gate
-/// guards — not mid-edit (`editing`) AND the host-armed scalar (`allowed`) — into
-/// one pure, host-unit-testable seam (no dvui frame / no ui state needed), so
-/// goal 1 (a Stop / Esc / error / timeout Ready does not drain) is a real
-/// failing-before / passing-after test, not just host-arming / chrome-dispatch
-/// coverage. The queue-edit-close trigger is folded in separately at the call
-/// site (it needs Wasm ui state) under the SAME `!editing && allowed` guards.
-pub fn shouldAutoPromote(prev: Lifecycle, cur: Lifecycle, editing: bool, allowed: bool) bool {
-    const terminal = cur == .ready or cur == .err;
+/// Plan #760 promote-gate predicate (adversarial #763 L6). Whether a turn edge
+/// MAY auto-promote the queue head. Folds BOTH wasm triggers — the turn-ended
+/// edge (`prev` busy → `cur` ready) AND the queue-edit-closed edge (`edit_closed`
+/// on a ready terminal, the "trigger B" the pre-round-2 call site ORed in under
+/// duplicate guards) — together with the two gate guards (not mid-edit
+/// `editing`, and the host-armed scalar `allowed`) into ONE pure,
+/// host-unit-testable seam (no dvui frame / no ui state needed). Goal 1 (a Stop
+/// / Esc / error / timeout Ready never drains) is a real failing-before /
+/// passing-after test with FIFO e2e coverage, and the gate-guard OR can no longer
+/// be dropped at the call site.
+///
+/// Only a SUCCESSFUL terminal (`cur == .ready`) can auto-promote: `err` is a
+/// terminal for lifecycle/collapse purposes but NOT a success — a failed turn
+/// must never drain the queue regardless of `allowed` (the round-1 `.busy→.err`
+/// test only passed because it passed `allowed=false`; sibling #774 likewise
+/// treats err as non-terminal for promotion).
+pub fn shouldAutoPromote(prev: Lifecycle, cur: Lifecycle, editing: bool, allowed: bool, edit_closed: bool) bool {
+    const terminal = cur == .ready;
     const turn_ended = prev == .busy and terminal;
-    return turn_ended and !editing and allowed;
+    const edit_closed_terminal = edit_closed and terminal;
+    return (turn_ended or edit_closed_terminal) and !editing and allowed;
 }
 
 /// Promote the queue head into `queueSubmitFromUi` when the turn is terminal

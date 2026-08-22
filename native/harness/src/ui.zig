@@ -224,28 +224,32 @@ pub fn frame() !void {
         const prev_lc = state.prev_lifecycle;
         state.thinking_collapse_state.onLifecycleTransition(prev_lc, cur_lc, bridge.messageHead());
         state.prev_lifecycle = cur_lc;
-        const terminal = cur_lc == .ready or cur_lc == .err;
-        // Trigger B: a queue edit just closed this frame on a terminal lifecycle.
-        // Folded here (needs Wasm ui state) but under the SAME `!editing &&
-        // allowed` guards as the turn-ended trigger, so it can never bypass the gate.
-        const trigger_b = state.queue_closed_edit and terminal;
-        state.queue_closed_edit = false;
         const editing = state.queue_editing_index != null;
+        // Trigger B: a queue edit just closed this frame. The predicate needs
+        // Wasm ui state only to KNOW it closed; capture the raw latch BEFORE
+        // clearing, then fold it into the single host-testable seam.
+        const edit_closed = state.queue_closed_edit;
+        state.queue_closed_edit = false;
         // Protocol v19 promote gate (plan #760): the host arms a one-shot scalar
         // on every terminal — true on a SUCCESSFUL Ready (auto-promote stays,
         // unchanged), false on Stop / Esc / error / timeout / validation Ready.
-        // `bridge.shouldAutoPromote` is the host-unit-testable turn-ended gate
-        // (goal 1: a Stop / error Ready can never drain the queue); trigger B ORs
-        // in under identical guards. When the gate is false this block can never
-        // pop a queued head; only an explicit idle ▶ / Ctrl+Enter with an empty
-        // composer + non-empty queue promotes. Both triggers pass the LIVE edit
-        // lock into `tryPromoteQueued` so nothing drains mid-edit.
+        // `bridge.shouldAutoPromote` is the host-unit-testable seam that folds
+        // BOTH triggers — the turn-ended edge (prev busy → cur ready) and the
+        // edit-closed trigger B — under the same `!editing && allowed` guards
+        // (adversarial #763 L6 round 2: the old call site ORed trigger B in as
+        // `trigger_b and !editing and allowed`, a duplicated-guard OR that this
+        // predicate now owns). `err` is NOT a promotable terminal, so a failed
+        // turn can never drain the queue. When the gate is false this block can
+        // never pop a queued head; only an explicit idle ▶ / Ctrl+Enter with an
+        // empty composer + non-empty queue promotes. Both triggers pass the LIVE
+        // edit lock into `tryPromoteQueued` so nothing drains mid-edit.
         const auto_promote = bridge.shouldAutoPromote(
             @enumFromInt(@intFromEnum(prev_lc)),
             @enumFromInt(@intFromEnum(cur_lc)),
             editing,
             bridge.hasQueuePromoteAllowed(),
-        ) or (trigger_b and !editing and bridge.hasQueuePromoteAllowed());
+            edit_closed,
+        );
         if (auto_promote) {
             if (bridge.tryPromoteQueued(editing)) {
                 busy = true;
