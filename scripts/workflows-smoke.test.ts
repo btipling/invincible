@@ -118,8 +118,15 @@ describe('scripts/workflows-smoke (GHA smoke subject)', () => {
     // SDK's namespaced `workflow//{filepath}//{fn}` form the SWC transform
     // stamps — the short function name is NOT in the Vercel registry and the
     // api.vercel.com lookup would 4xx/fail closed (gate never proves enablement).
-    expect(FIXTURE_WORKFLOW_ID).toMatch(/^workflow\/\//);
-    expect(FIXTURE_WORKFLOW_ID).toMatch(/\/\/fixtureWorkflow$/);
+    //
+    // Adversarial review PR #786 (round 3) Nit L6 / merge Optional: pin the FULL
+    // SDK-stamped string (exact match PLUS the `./`-prefixed fixture middle),
+    // not merely the prefix/suffix regex shape — so a dropped `./` or a
+    // renamed/relocated fixture file fails here locally instead of staying green
+    // and 4xx'ing (fail-closed) only at dispatch. File-move drift stays a local
+    // red, not a silent pass or a late dispatch failure.
+    expect(FIXTURE_WORKFLOW_ID).toBe('workflow//./lib/workflows/fixtureWorkflow//fixtureWorkflow');
+    expect(FIXTURE_WORKFLOW_ID).toMatch(/\/\/\.\/lib\/workflows\/fixtureWorkflow\/\//);
     expect(FIXTURE_WORKFLOW_ID).not.toBe('fixtureWorkflow');
   });
 
