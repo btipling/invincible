@@ -105,7 +105,7 @@ Every harness turn paints a final line:
 |---------|------|
 | Model finished | `Turn ended · model finished` (System) |
 | User Stop | `Turn ended · you stopped` (System) |
-| Error / timeout / empty | `Turn ended · error · …` / timed out / empty (Error). A retryable error retries the **same** turn up to **5 attempts** with bounded backoff before give-up; on give-up the host sets the turn lifecycle to **Error** (so a queued head is never drained) and, if the operator queue is non-empty, inserts `Continue the current turn` as the new head. Permanent failures (401/403/validation/4xx) give up after a single attempt |
+| Error / timeout / empty | `Turn ended · error · …` / timed out / empty (Error). A retryable error retries the **same** turn up to **5 attempts** with bounded backoff before give-up; on give-up the host sets the turn lifecycle to **Error** (so a queued head is never drained) and, if the operator queue is non-empty, inserts `Continue the current turn` as the new head. Permanent failures (the `PERMANENT_TURN_STATUS` whitelist — 400/401/403/404/413/422) give up after a single attempt; **408/429/5xx and timeout/empty stay retryable** (retry the same turn up to 5 attempts) |
 | Standalone chat (`/api/chat`) | `Turn ended · chat finished` (System) — kept helper only; a failed agent turn does **not** fall back here |
 
 These markers are **not** folded as tools into the next prompt.
