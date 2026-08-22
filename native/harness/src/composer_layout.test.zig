@@ -33,6 +33,7 @@ const WIN_LW: f32 = 600;
 /// Fields shared between the frame closure and each test (Zig has no closures,
 /// so the test body stages these before stepping the frame).
 var T_buf: [512]u8 = [_]u8{0} ** 512;
+var T_avail_w: f32 = WIN_LW;
 var T_busy: bool = false;
 var T_want_focus: bool = true;
 var T_last_res: composer_chrome.Result = .{};
@@ -55,11 +56,19 @@ const FieldRects = struct {
 /// Paint TWO frames of the real `paintComposerChrome` and return the tag rects
 /// from the second frame. `T_last_res` holds the second frame's Result.
 fn paintAndGetRects() FieldRects {
+    return paintAndGetRectsW(WIN_LW);
+}
+
+/// Width-parameterized variant (plan #779 — the #734/#737 lock was only ever
+/// proven at WIN_LW=600; a ~390 px canvas row would silently slip ■ past the
+/// viewport). `avail_w` is the logical composer row width handed to the paint.
+fn paintAndGetRectsW(avail_w: f32) FieldRects {
+    T_avail_w = avail_w;
     const frame = struct {
         fn paint() !dvui.App.Result {
             T_last_res = composer_chrome.paintComposerChrome(.{
                 .busy = T_busy,
-                .avail_w = WIN_LW,
+                .avail_w = T_avail_w,
                 .y = 0,
                 .h = metrics.COMPOSER_IDLE_CHROME_H,
                 .prompt_buf = &T_buf,
@@ -224,6 +233,77 @@ test "busy + #734 lock: a long unbreakable line during Busy keeps ▶ + ■ on-c
     try t.expect(stop.w > 0);
     try t.expect(stop.h > 0);
     try t.expect(stop.x + stop.w <= win.w + EPS);
+}
+
+// ── Plan #779 — ~390 px canvas row (operator report: Busy ■ Stop crushed /
+// ── off the right edge). The #734/#737 lock was only ever proven at
+// WIN_LW=600; on a phone width the FULL button footprint (TOUCH_H + 2·(pad +
+// margin)) overran a TOUCH_H-only reserve and dvui squeezed the trailing ■ to
+// zero slack at the viewport edge. These tests run the REAL paint at ~390 px
+// and assert the full tag rects (margin-included, physical px) stay on-canvas
+// with real slack — the exact rows goals 1–4 name.
+const WIN_NARROW: f32 = 390;
+
+/// Paint busy chrome at `avail_w` and assert every success-predicate from the
+/// plan #779 goals: ■ and ▶ fully on-canvas, ▶ left of ■, and the field kept
+/// left of the icons. Returns whether ■ had a comfortable right gutter.
+fn assertBusyOnCanvasW(avail_w: f32) !void {
+    const r = paintAndGetRectsW(avail_w);
+    const win = dvui.windowRectPixels();
+    const stop = r.stop orelse @panic("busy must render ■ stop");
+    // Goal 1 — ■ fully inside the visible canvas (physical px, margin-incl).
+    try t.expect(stop.x >= 0);
+    try t.expect(stop.x + stop.w <= win.w);
+    // Goal 2 — ▶ on-canvas too, and ▶ left of ■ (no overlap, distinct cells).
+    try t.expect(r.send.x >= 0);
+    try t.expect(r.send.x + r.send.w <= win.w + EPS);
+    try t.expect(stop.x >= r.send.x + r.send.w - EPS);
+    // Field kept left of the icon cell (no horizontal gutter / crush).
+    try t.expect(r.field.x + r.field.w <= r.send.x + EPS);
+    // The SMOKE-SIGNAL: the trailing ■ takes its FULL touch cell (TOUCH_H + 2·10)
+    // — the pre-#779 crush made stop.w collapse to ~28 logical and stopRight
+    // land exactly ON win.w. Now it must hold the whole ≥TOUCH_H content cell
+    // AND keep a real gutter off the right edge (never flush).
+    const cell_w = composer_chrome.iconCellW();
+    const gap = win.w - (stop.x + stop.w);
+    try t.expect(gap >= (2 * EPS)); // strictly on-canvas, not flush
+    try t.expect(stop.w >= cell_w * PX * 0.8); // not crushed below ~80% cell
+}
+
+test "plan #779: busy at ~390 px, empty queue → ■ fully on-canvas with slack" {
+    var tr = try dvui.testing.init(.{ .window_size = .{ .w = WIN_NARROW, .h = 400 } });
+    defer tr.deinit();
+    resetBuf();
+    T_busy = true;
+    T_want_focus = true;
+    try assertBusyOnCanvasW(WIN_NARROW);
+}
+
+test "plan #779: idle at ~390 px → ▶ fully on-canvas (no #737 regression)" {
+    var tr = try dvui.testing.init(.{ .window_size = .{ .w = WIN_NARROW, .h = 400 } });
+    defer tr.deinit();
+    resetBuf();
+    T_busy = false;
+    T_want_focus = true;
+    const r = paintAndGetRectsW(WIN_NARROW);
+    const win = dvui.windowRectPixels();
+    // Goals 3 — idle ▶ stays on-canvas at phone width + keeps a real gutter.
+    try t.expect(r.send.x + r.send.w <= win.w);
+    try t.expect((win.w - (r.send.x + r.send.w)) >= 2 * EPS);
+    try t.expect(r.field.x + r.field.w <= r.send.x + EPS);
+}
+
+test "plan #779: busy at ~390 px keeps ■ on-canvas even pasted an unbreakable line" {
+    var tr = try dvui.testing.init(.{ .window_size = .{ .w = WIN_NARROW, .h = 400 } });
+    defer tr.deinit();
+    resetBuf();
+    // Adversarial mirror of the #734 test at phone width: a 200×'A' run with no
+    // spaces must not slide ■ off-canvas even when the field is maxed.
+    @memset(&T_buf, 'A');
+    T_buf[200] = 0;
+    T_busy = true;
+    T_want_focus = true;
+    try assertBusyOnCanvasW(WIN_NARROW);
 }
 
 test "multi-line prompt: measured outer height grows (dynamic hug intact through extraction)" {

@@ -13,8 +13,12 @@
 //! that to the field and the trailing ▶/■ icon pack gets leftover ≈ 0 — the
 //! icons slide/crush off-canvas before the chrome grows up. Fix: give the field
 //! an explicit trailing-*reserved* sub-rect of width `fieldW(avail_w, busy) =
-//! avail_w − (TOUCH_H×n + TE_MARGIN_RIGHT)` so its own reported min width can
-//! never push past the reserved icon columns. The reserved field wrapper
+//! avail_w − (n × iconCellW + TE_MARGIN_RIGHT)` so its own reported min width
+//! can never push past the reserved icon columns. Plan #779 made `iconCellW`
+//! the FULL button footprint (`TOUCH_H + 2·(padding + margin)`), because the
+//! reserve counting only `TOUCH_H` per icon let the real tag rects overrun the
+//! row and dvui crushed the trailing ■ flush into the right edge at ~390 px.
+//! The reserved field wrapper
 //! reports exactly that fixed width to the outer box (`max_size_content.w =
 //! field_w` clamps its reported min in `WidgetData.minSizeSetAndRefresh`), so
 //! the icons always land post-reserve at `TOUCH_H` and never leave the viewport.
@@ -31,8 +35,23 @@ const chrome = @import("chrome.zig");
 
 /// Right margin on the composer textEntry field (`.margin.w = 8`). Folded into
 /// the reserved trailing icon-pack width so the reserve exactly fits
-/// `field + margin + TOUCH_H×n` and the icons get their full square.
+/// `field + margin + icon-footprint×n` and the icons get their full cell.
 pub const TE_MARGIN_RIGHT: f32 = 8;
+
+/// Per-side chrome on each trailing ▶/■ button that boxes in the TOUCH_H
+/// content square: dvui default ButtonWidget padding (6) + default margin (4).
+/// A button's FULL tag-rect width — the thing every goal asserts stays on-canvas
+/// ("tag rects include the widget's margin") — is `TOUCH_H + 2·ICON_EDGE_W`,
+/// NOT `TOUCH_H`. Plan #779 definite root cause: the pre-#779 reserve counted
+/// only `TOUCH_H` per icon, so the real `TOUCH_H + 20` footprint overran the
+/// row and dvui's compactor crushed the trailing ■ flush into the right edge at
+/// ~390 px (Stop un-hittable). We reserve the FULL footprint and pin the button
+/// padding/margin to these constants below so the arithmetic and the widget
+/// options can never drift apart.
+pub const ICON_PAD: f32 = 6;
+pub const ICON_MARGIN: f32 = 4;
+/// One side of a button's chrome (padding + margin) added on each edge.
+pub const ICON_EDGE_W: f32 = ICON_PAD + ICON_MARGIN;
 
 // id namespace for the composer chrome widgets — never aliases message-loop
 // rows or other ui/* widgets (see busy_row.zig / rect_spinner.zig for the same
@@ -75,13 +94,22 @@ pub const Result = struct {
     focused: bool = false,
 };
 
-/// Width of the trailing icon squares themselves (n = 1 idle, 2 busy).
-pub fn iconPackW(busy: bool) f32 {
-    return (if (busy) @as(f32, 2) else @as(f32, 1)) * metrics.TOUCH_H;
+/// Full footprint of ONE trailing icon button = content square + both-side
+/// button chrome (default padding 6 + margin 4 each edge). This is the width
+/// that actually lands in the row and which every on-canvas goal measures.
+pub fn iconCellW() f32 {
+    return metrics.TOUCH_H + 2 * ICON_EDGE_W;
 }
 
-/// Reserved trailing icon-pack width = icon squares + the field's 8 px right
-/// margin. This is what the field must never exceed.
+/// Width of the trailing icon pack (n = 1 idle, 2 busy) in FULL button
+/// footprints — the reserve must cover the real tag rects, not just the
+/// TOUCH_H content square (plan #779 root cause).
+pub fn iconPackW(busy: bool) f32 {
+    return (if (busy) @as(f32, 2) else @as(f32, 1)) * iconCellW();
+}
+
+/// Reserved trailing icon-pack width = full button footprints + the field's
+/// 8 px right margin. This is what the field must never exceed.
 pub fn iconReserveW(busy: bool) f32 {
     return iconPackW(busy) + TE_MARGIN_RIGHT;
 }
@@ -188,6 +216,13 @@ pub fn paintComposerChrome(opts: struct {
                 .style = .highlight,
                 .font = chrome.composerIconFont(),
                 .min_size_content = .{ .w = metrics.TOUCH_H, .h = metrics.TOUCH_H },
+                // Full-footprint reserve (plan #779): pin each button's
+                // padding/margin to ICON_PAD/ICON_MARGIN so the trailing icon
+                // cell is EXACTLY `TOUCH_H + 2*ICON_EDGE_W` — the same value
+                // iconCellW() reserves. Without this the real (default) button
+                // footprint overran the reserve and crushed ■ off-canvas.
+                .padding = .{ .x = ICON_PAD, .y = ICON_PAD, .w = ICON_PAD, .h = ICON_PAD },
+                .margin = .{ .x = ICON_MARGIN, .y = ICON_MARGIN, .w = ICON_MARGIN, .h = ICON_MARGIN },
                 .corners = .round(8),
             })) {
                 if (res.typed.len > 0) {
@@ -201,6 +236,13 @@ pub fn paintComposerChrome(opts: struct {
                 .style = .content,
                 .font = chrome.composerIconFont(),
                 .min_size_content = .{ .w = metrics.TOUCH_H, .h = metrics.TOUCH_H },
+                // Full-footprint reserve (plan #779): pin each button's
+                // padding/margin to ICON_PAD/ICON_MARGIN so the trailing icon
+                // cell is EXACTLY `TOUCH_H + 2*ICON_EDGE_W` — the same value
+                // iconCellW() reserves. Without this the real (default) button
+                // footprint overran the reserve and crushed ■ off-canvas.
+                .padding = .{ .x = ICON_PAD, .y = ICON_PAD, .w = ICON_PAD, .h = ICON_PAD },
+                .margin = .{ .x = ICON_MARGIN, .y = ICON_MARGIN, .w = ICON_MARGIN, .h = ICON_MARGIN },
                 .corners = .round(8),
                 .color_fill = palette.warm_bg,
                 .color_text = palette.warm_accent,
@@ -215,6 +257,10 @@ pub fn paintComposerChrome(opts: struct {
             .style = .highlight,
             .font = chrome.composerIconFont(),
             .min_size_content = .{ .w = metrics.TOUCH_H, .h = metrics.TOUCH_H },
+            // Full-footprint reserve (plan #779) — see the busy branches: the
+            // trailing icon cell is TOUCH_H + 2*ICON_EDGE_W, never TOUCH_H.
+            .padding = .{ .x = ICON_PAD, .y = ICON_PAD, .w = ICON_PAD, .h = ICON_PAD },
+            .margin = .{ .x = ICON_MARGIN, .y = ICON_MARGIN, .w = ICON_MARGIN, .h = ICON_MARGIN },
             .corners = .round(8),
         })) {
             if (res.typed.len > 0) {
