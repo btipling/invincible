@@ -35,7 +35,10 @@ import {
 // one-shot per-terminal scalar so a Stop / Esc / error / timeout Ready never
 // drains the queue; only idle ▶ / Ctrl+Enter with an empty composer + non-empty
 // queue promotes). Additive, now REQUIRED.
-export const HARNESS_PROTOCOL_VERSION = 19 as const;
+// v20 (plan #759): submit-queue insert-at-front — `inv_queued_insert_front`
+// (host inserts `Continue the current turn` as the new queue head on give-up
+// with a non-empty queue). Additive, now REQUIRED.
+export const HARNESS_PROTOCOL_VERSION = 20 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -155,6 +158,8 @@ export type HarnessBridgeExports = {
   // timeout / validation Ready so the Wasm terminal-promote block never drains
   // a queued head after a non-success.
   inv_set_queue_promote_allowed: (v: number) => void;
+  // Protocol v20 (plan #759) — insert operator text as the new queue head.
+  inv_queued_insert_front: (ptr: number, len: number) => number;
   inv_set_can_load_earlier: (v: number) => void;
   inv_has_pending_load_earlier: () => number;
   inv_ack_pending_load_earlier: () => void;
@@ -239,6 +244,7 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_ack_pending_submit',
   'inv_queued_count',
   'inv_set_queue_promote_allowed',
+  'inv_queued_insert_front',
   'inv_set_can_load_earlier',
   'inv_has_pending_load_earlier',
   'inv_ack_pending_load_earlier',
@@ -586,6 +592,20 @@ export class HarnessBridge {
    */
   setQueuePromoteAllowed(allowed: boolean): void {
     this.exports.inv_set_queue_promote_allowed(allowed ? 1 : 0);
+  }
+
+  /**
+   * Protocol v20 (plan #759) — insert `text` as the NEW queue head, shifting
+   * existing operator items down one (never pops). Returns true on accept;
+   * false when the queue is full or the text is blank (fail closed — no drop).
+   */
+  queuedInsertFront(text: string): boolean {
+    const { ptr, len } = this.writeUtf8(text);
+    try {
+      return this.exports.inv_queued_insert_front(ptr, len) !== 0;
+    } finally {
+      if (len > 0) this.exports.gpa_free(ptr, len);
+    }
   }
 
   /** Read + ack pending Wasm→JS submit, or null if none. */

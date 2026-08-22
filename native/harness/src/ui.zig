@@ -563,6 +563,12 @@ pub fn frame() !void {
     if (queue_band.shouldDropEditOnEmptyQueue()) {
         queue_band.resetQueueEditState();
     }
+    // Plan #759 / adversarial-review Major — a HOST front-insert (the give-up
+    // `Continue` head) shifts every queued slot down one. An open queue-row edit
+    // must follow the row it was on (bump to e+1) so blur/Ctrl+Enter saveEdit
+    // targets the row being edited — not the new neighbor that slid into `e`.
+    // No-op when no front-insert is pending and/or no edit is open.
+    queue_band.reconcileFrontInsert();
     // Drop composer arrow-key history when the newest user row's identity
     // changed since entry (plan #667, adversarial review #686 R2).
     // This fingerprint check catches session hydrate (same-or-different-count

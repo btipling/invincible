@@ -151,3 +151,68 @@ test "promoteIf pops only after accept" {
 test "ITEM_BYTES matches the live Send cap" {
     try t.expectEqual(@as(usize, 262144), sq.ITEM_BYTES);
 }
+
+// ── plan #759 — insertFront (Continue-the-current-turn head) ──────────────
+
+test "insertFront puts the new item at head, shifting existing items down one" {
+    var q: sq.Q = .{};
+    try sq.push(&q, "three");
+    try sq.push(&q, "two");
+    try sq.push(&q, "one"); // FIFO from head: three, two, one
+    try sq.insertFront(&q, "zero");
+    try t.expectEqual(@as(u32, 4), sq.count(&q));
+    try t.expectEqualStrings("zero", sq.item(&q, 0).?);
+    try t.expectEqualStrings("three", sq.item(&q, 1).?);
+    try t.expectEqualStrings("two", sq.item(&q, 2).?);
+    try t.expectEqualStrings("one", sq.item(&q, 3).?);
+    // Previous head (three) is preserved at index 1 — nothing dropped.
+}
+
+test "insertFront normalizes (CRLF) and rejects blank, leaving the queue intact" {
+    var q: sq.Q = .{};
+    try sq.push(&q, "a");
+    try t.expectError(error.Blank, sq.insertFront(&q, "   \n\t"));
+    try t.expectError(error.Blank, sq.insertFront(&q, ""));
+    try t.expectEqual(@as(u32, 1), sq.count(&q));
+    try t.expectEqualStrings("a", sq.peek(&q).?);
+    try sq.insertFront(&q, "b\r\nc");
+    try t.expectEqualStrings("b\nc", sq.item(&q, 0).?);
+}
+
+test "insertFront is rejected at full capacity — no pop, no drop, no insert" {
+    var q: sq.Q = .{};
+    var i: usize = 0;
+    while (i < sq.MAX_ITEMS) : (i += 1) {
+        try sq.push(&q, "x");
+    }
+    try t.expectError(error.Full, sq.insertFront(&q, "overflow"));
+    try t.expectEqual(@as(u32, sq.MAX_ITEMS), sq.count(&q));
+    // Head is unchanged — the rejected insert never touched the FIFO.
+    try t.expectEqualStrings("x", sq.peek(&q).?);
+}
+
+test "insertFront on a wrapped queue (head wraps) shifts across the wrap boundary" {
+    var q: sq.Q = .{};
+    // Fill + pop so head advances and later inserts wrap the physical array.
+    try sq.push(&q, "a");
+    try sq.push(&q, "b");
+    sq.pop(&q); // head now index 1
+    sq.pop(&q); // head now index 2
+    try sq.push(&q, "keep1");
+    try sq.push(&q, "keep2");
+    try sq.insertFront(&q, "newhead");
+    try t.expectEqual(@as(u32, 3), sq.count(&q));
+    try t.expectEqualStrings("newhead", sq.item(&q, 0).?);
+    try t.expectEqualStrings("keep1", sq.item(&q, 1).?);
+    try t.expectEqualStrings("keep2", sq.item(&q, 2).?);
+}
+
+test "pending promote: insertFront then promoteIf pops the NEW head (not the old)" {
+    var q: sq.Q = .{};
+    try sq.push(&q, "old-head");
+    try sq.insertFront(&q, "continue");
+    g_accept = true;
+    try t.expect(sq.promoteIf(&q, acceptSubmit));
+    try t.expectEqualStrings("old-head", sq.peek(&q).?); // continue already consumed
+    try t.expectEqual(@as(u32, 1), sq.count(&q));
+}

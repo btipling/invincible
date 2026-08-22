@@ -270,6 +270,13 @@ export type TransientRetryOptions = {
   signal?: AbortSignal;
   /** Called after the last retryable attempt failed (e.g. invalidate latch). */
   onExhaustedRetryable?: (err: unknown) => void;
+  /**
+   * Additive classifier seam (plan #759): Optional predicate deciding whether a
+   * thrown error is retryable. Defaults to `classifyVercelError` so existing
+   * sandbox callers are untouched. A domain (e.g. harness-turn) caller passes a
+   * narrow classifier that must NOT conflate with the sandbox SDK domain.
+   */
+  classify?: (err: unknown) => VercelErrorClass;
 };
 
 /**
@@ -288,6 +295,7 @@ export async function withTransientRetry<T>(
     jitterMs = baseMs,
     signal,
     onExhaustedRetryable,
+    classify = classifyVercelError,
   } = opts;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -295,7 +303,7 @@ export async function withTransientRetry<T>(
     try {
       return await fn();
     } catch (err) {
-      const cls = classifyVercelError(err);
+      const cls = classify(err);
       if (cls.kind !== 'retryable') {
         // Permanent, or SDK-owned pass_through — never app-retry.
         throw err;

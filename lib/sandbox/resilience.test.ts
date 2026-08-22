@@ -263,6 +263,36 @@ describe('withTransientRetry', () => {
     await expect(p).rejects.toMatchObject({ name: 'AbortError' });
     expect(calls).toBe(1);
   });
+
+  it('plan #759 test 11 — NO `classify` still uses classifyVercelError (sandbox back-compat)', async () => {
+    // The additive classifier seam must NOT change sandbox behavior: with no
+    // `classify`, a 503 APIError is still retryable (classifyVercelError's rule).
+    let n = 0;
+    const fn = vi.fn(async () => {
+      n += 1;
+      if (n <= 2) throw apiError(503);
+      return 'ok';
+    });
+    await expect(
+      withTransientRetry(fn, { baseMs: 2, capMs: 10, jitterMs: 0 }),
+    ).resolves.toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(3); // retried via classifyVercelError default
+  });
+
+  it('plan #759 test 11 — passing a `classify` override uses it (not classifyVercelError)', async () => {
+    // A domain caller injects its own classifier; the sandbox default must be
+    // bypassed entirely — here a 503 is declared permanent (0 retries) by the
+    // narrow injectable predicate, proving the seam route was taken.
+    const classify = vi.fn(() => ({ kind: 'permanent' as const, status: 503 }));
+    const fn = vi.fn(async () => {
+      throw apiError(503);
+    });
+    await expect(
+      withTransientRetry(fn, { baseMs: 2, capMs: 10, jitterMs: 0, classify }),
+    ).rejects.toMatchObject({});
+    expect(classify).toHaveBeenCalledTimes(1); // only the first attempt classified
+    expect(fn).toHaveBeenCalledTimes(1); // permanent → no retry
+  });
 });
 
 describe('EXTEND_THROTTLE_MS constant', () => {

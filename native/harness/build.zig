@@ -90,6 +90,7 @@ pub fn build(b: *std.Build) void {
         "inv_ack_pending_submit",
         "inv_queued_count",
         "inv_set_queue_promote_allowed",
+        "inv_queued_insert_front",
         "inv_set_can_load_earlier",
         "inv_has_pending_load_earlier",
         "inv_ack_pending_load_earlier",

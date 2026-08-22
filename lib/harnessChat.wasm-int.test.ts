@@ -114,9 +114,9 @@ describe('real-Wasm live tool increment (implements #433)', () => {
     expect(typeof bridge.exports.inv_message_kind_at).toBe('function');
   });
 
-  it('real Wasm is protocol v19 and rides the promote-gate export (plan #760)', async () => {
+  it('real Wasm rides the promote-gate export at the current protocol (plan #760)', async () => {
     const bridge = await loadBridge();
-    // Protocol v19 parity — Wasm `PROTOCOL_VERSION` must equal the host
+    // Protocol parity — Wasm `PROTOCOL_VERSION` must equal the host
     // `HARNESS_PROTOCOL_VERSION` (assertRoundTrip also checks it; pin it here).
     expect(bridge.protocolVersion()).toBe(HARNESS_PROTOCOL_VERSION);
     // REQUIRED_FNS already proves `inv_set_queue_promote_allowed` reached the
@@ -387,6 +387,35 @@ describe('real-Wasm live tool increment (implements #433)', () => {
     // Real ring is capped (session may grow, mind the display window), and the
     // bridge is still queryable via readback (no crash / OOB on the seam).
     expect(bridge.messageCount()).toBeLessThanOrEqual(HARNESS_RING_MAX);
+  });
+});
+
+describe('real-Wasm protocol v20 (plan #759 — queued insert-at-front)', () => {
+  it('the built wasm carries protocol v20 + inv_queued_insert_front (REQUIRED_FNS + build.zig whitelist)', async () => {
+    const bridge = await loadBridge();
+    // loadBridge already fails closed if a REQUIRED export is missing; the
+    // build.zig export_symbol_names entry is what keeps it in the artifact.
+    // Plan #760 took v19 (promote gate), so this (later) sibling's insert-at-front
+    // rides v20 and keeps BOTH exports — Wasm PROTOCOL_VERSION must match TS.
+    expect(bridge.protocolVersion()).toBe(HARNESS_PROTOCOL_VERSION);
+    expect(typeof bridge.exports.inv_queued_insert_front).toBe('function');
+  });
+
+  it('queuedInsertFront round-trips a real Continue head on the ephemeral queue', async () => {
+    const bridge = await loadBridge();
+    // Fresh wasm instance per loadBridge — the ephemeral queue starts empty.
+    expect(bridge.queuedCount()).toBe(0);
+    expect(bridge.queuedInsertFront('Continue the current turn')).toBe(true);
+    expect(bridge.queuedCount()).toBe(1);
+    // Inserting a second head shifts the first down one (head stays newest).
+    expect(bridge.queuedInsertFront('operator item')).toBe(true);
+    expect(bridge.queuedCount()).toBe(2);
+  });
+
+  it('queuedInsertFront rejects a blank head — queue untouched (fail closed)', async () => {
+    const bridge = await loadBridge();
+    expect(bridge.queuedInsertFront('   ')).toBe(false);
+    expect(bridge.queuedCount()).toBe(0);
   });
 });
 

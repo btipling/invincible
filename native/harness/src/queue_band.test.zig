@@ -268,6 +268,64 @@ test "cancel glyph is U+2715 (DejaVu subset)" {
     try t.expectEqual(@as(u21, 0x2715), cp);
 }
 
+// ── reconcileFrontInsert (plan #759 adversarial-review Major L1) ─────────
+
+test "reconcileFrontInsert: host front-insert bumps an open edit index by one" {
+    bridge.reset();
+    _ = bridge.enqueueFromUi("A") catch @panic("enqueue failed");
+    _ = bridge.enqueueFromUi("B") catch @panic("enqueue failed");
+    // Operator is editing row B (index 1). The turn gives up → the host inserts
+    // `Continue` at the head → [Continue, A, B]. B is now at index 2; the edit
+    // must follow it (1→2), else blur/Ctrl+Enter saveEdit would overwrite A.
+    queue_band.beginEdit(1);
+    try t.expectEqual(@as(usize, 1), state.queue_editing_index.?);
+
+    try t.expect(bridge.insertQueuedFront("Continue the current turn"));
+    try t.expectEqual(@as(u32, 3), bridge.queuedCount());
+
+    queue_band.reconcileFrontInsert();
+
+    try t.expect(state.queue_editing_index != null);
+    try t.expectEqual(@as(usize, 2), state.queue_editing_index.?);
+    // The row still under the cursor is B, not A.
+    const target = bridge.queuedItemAt(@intCast(state.queue_editing_index.?)).?;
+    try t.expect(std.mem.eql(u8, "B", target));
+}
+
+test "reconcileFrontInsert: no-op when latch not armed (no host insert)" {
+    bridge.reset();
+    _ = bridge.enqueueFromUi("A") catch @panic("enqueue failed");
+    queue_band.beginEdit(0);
+
+    // No front-insert happened — the reconcile must leave the edit untouched.
+    queue_band.reconcileFrontInsert();
+    try t.expectEqual(@as(usize, 0), state.queue_editing_index.?);
+}
+
+test "reconcileFrontInsert: no-op when no edit open even if latch armed" {
+    bridge.reset();
+    _ = bridge.enqueueFromUi("A") catch @panic("enqueue failed");
+    state.queue_editing_index = null;
+
+    try t.expect(bridge.insertQueuedFront("Continue the current turn"));
+    queue_band.reconcileFrontInsert();
+
+    // No open edit → nothing to bump; the latch is consumed so it can't fire later.
+    try t.expect(state.queue_editing_index == null);
+    queue_band.reconcileFrontInsert();
+    try t.expect(state.queue_editing_index == null);
+}
+
+test "reconcileFrontInsert: latch is consumed on bridge reset/clear" {
+    bridge.reset();
+    // A stale latch must not survive a reset (fresh session).
+    _ = bridge.insertQueuedFront("Continue the current turn");
+    bridge.reset();
+    queue_band.reconcileFrontInsert();
+    // reset() cleared the latch; reconcile clears nothing more and edits are null.
+    try t.expect(state.queue_editing_index == null);
+}
+
 // ── enqueue follow (plan #699) ───────────────────────────────────────────
 
 test "followIfRequested: no-op when flag false" {
@@ -289,4 +347,3 @@ test "followIfRequested: snaps to bottom and clears flag" {
     try t.expectEqual(@as(f32, 280), state.queue_list_scroll.viewport.y);
     try t.expect(!state.queue_follow);
 }
-
