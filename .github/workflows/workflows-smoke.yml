@@ -1,7 +1,7 @@
 # Vercel Workflows smoke (backend-agents D, plan #785 / source issue #767).
 #
 # Operator: Actions → workflows-smoke → Run workflow
-#   inputs: confirm=smoke (required); environment=preview|production;
+#   inputs: confirm=smoke (required); environment=preview|production (default production);
 #           url=optional deployed-URL health probe (never hardcoded host).
 #
 # Proves Vercel Workflows is ENABLED + usable on the chosen environment by
@@ -34,13 +34,13 @@ on:
         required: true
         type: string
       environment:
-        description: 'Vercel environment to smoke: preview (default) or production'
+        description: 'Vercel environment to smoke: production (default) or preview'
         required: false
         type: choice
         options:
-          - preview
           - production
-        default: preview
+          - preview
+        default: production
       url:
         description: 'Optional deployed-URL to health-probe first (preview-not-yet-deployed guard). Empty = skip. Never hardcoded.'
         required: false
