@@ -235,8 +235,12 @@ pub fn build(b: *std.Build) void {
     // against stale "Space" copy. `rowChord` is a hardcoded parallel switch —
     // not derived from the keymap table — so without a test a revert to the
     // pre-#761 "Leader Space" strings would ship while keymap.zig tests stay
-    // green. help_overlay imports dvui (via mixed_text), so wire dvui_testing
-    // (no frame, and no web-backend: the module's imports stop at
+    // green. Since #781 the suite also drives the overlay modal `floatingWindow`
+    // through the dvui TESTING backend (`dvui.testing.init/.settle/.step/paint`)
+    // to lock the wide two-column table, wheel-stays-in-panel, backdrop-close,
+    // and key-through-modal behavior — the frame mounts a transcript stand-in
+    // exactly as ui.zig does. help_overlay imports dvui (via mixed_text), so
+    // wire dvui_testing (still no web-backend: the module's imports stop at
     // mixed_text/unicode_face, which are bridge-free).
     {
         const help_overlay_tests = b.addTest(.{

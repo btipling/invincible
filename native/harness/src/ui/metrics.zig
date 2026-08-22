@@ -66,15 +66,31 @@ pub const CHIP_VISIBILITY_MARGIN: f32 = 8;
 /// Submit-queue band (plan #664): header + up to this many visible rows.
 pub const QUEUE_BAND_MAX_ROWS: u32 = 3;
 
-/// Help overlay (plan #741): fixed panel size centered over the transcript band.
-pub const HELP_OVERLAY_W: f32 = 460;
-pub const HELP_OVERLAY_H: f32 = 320;
+/// Help overlay (plan #741 → #781): a modal in-canvas subwindow that fills most
+/// of the transcript band. The fixed 460×320 cap (`HELP_OVERLAY_W/H`) is
+/// retired (human-approved cap change 2026-08-22) in favor of named band
+/// fractions + small absolute floors. Pure visual-paint metric — no wire or
+/// transport ceiling (the panel never exceeds the band rect; a scrollArea
+/// handles internal overflow).
+///
+/// Panel size (width-first): `min(max(fraction·band, floor), band − 2·margin)`.
+/// The floor keeps a ~390 px canvas on-canvas with no horizontal overflow; it is
+/// clamped away when the band sits near the MIN gate (matches the repo no-h-scroll
+/// policy already applied to composer chrome).
+pub const HELP_OVERLAY_W_FRACTION: f32 = 0.92;
+pub const HELP_OVERLAY_H_FRACTION: f32 = 0.86;
 /// Min band size under which the overlay is not painted.
 pub const HELP_OVERLAY_MIN_W: f32 = 300;
 pub const HELP_OVERLAY_MIN_H: f32 = 200;
+/// Absolute floor so a ~390 px canvas still gets a usable on-canvas panel.
+pub const HELP_OVERLAY_FLOOR_W: f32 = 360;
+pub const HELP_OVERLAY_FLOOR_H: f32 = 240;
 /// Margin from the transcript band edges (keeps the panel off the rail / bars).
 pub const HELP_OVERLAY_MARGIN_X: f32 = 16;
 pub const HELP_OVERLAY_MARGIN_Y: f32 = 16;
+/// Fixed (min) width of the chord column in the two-column help table. Every
+/// chord textLayout gets this min width so every help string starts on a stable x.
+pub const HELP_OVERLAY_CHORD_COL_W: f32 = 140;
 
 /// Gap (px) added to each slot's measured text width — matches the `margin.w`
 /// on each slot textLayout below, so the budget math equals the paint exactly.

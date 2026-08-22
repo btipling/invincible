@@ -133,6 +133,13 @@ pub fn onInit() void {
     @memset(&state.prompt_buf, 0);
     state.want_composer_focus = true;
     state.resetTranscriptScroll();
+    // `state.resetTranscriptScroll` also closes the help overlay
+    // (`help_overlay_open = false`) but does NOT reset its list scroll — an
+    // in-process re-init (wasm reload / host re-mount, see the comment below)
+    // would otherwise leave `ctx_scroll` mid-table, so the next open resumes
+    // mid-list (review #783 round-4 Nit L1). Reset the overlay surface here,
+    // the authoritative re-init site; `state.zig` stays free of ui paint imports.
+    help_overlay.resetScroll();
     rich.clearCache();
     // Reset the previous-frame hug to idle: an in-process re-init (wasm reload
     // / host re-mount) must not keep a stale multi-line 124 px band until the
@@ -516,9 +523,13 @@ pub fn frame() !void {
         queue_band.resetQueueEditState();
         // Close the help overlay + disarm the leader (plan #741) — a New /
         // Clear / session hydrate refreshes the surface; a staled overlay or
-        // armed leader would ghost chrome.
+        // armed leader would ghost chrome. Reset the list to the top too: a
+        // mid-table `ctx_scroll` offset must not survive a reopen (review #783
+        // round-3 Minor L1 — New/Clear previously skipped the reset that
+        // Esc/backdrop help_close already applied).
         state.help_overlay_open = false;
         state.leader_armed = false;
+        help_overlay.resetScroll();
         // Plan #742 — a fresh surface resets the thinking preference to its
         // collapsed-default (same reset site as help_overlay_open / leader_armed).
         state.thinking_default_collapsed = true;
@@ -631,15 +642,18 @@ pub fn frame() !void {
         break :blk msg_y < view_top - metrics.CHIP_VISIBILITY_MARGIN;
     } else false;
 
-    // ── Help overlay (plan #741) — in-canvas TEAL panel over the transcript band.
-    // Painted after the transcript laid out (top), before the queue band / bars.
+    // ── Help overlay (plan #741 → #781) — modal in-canvas floatingWindow over
+    // the transcript band. Painted after the transcript laid out (top). It
+    // captures pointer + wheel (scrolling stays in the panel, never the
+    // transcript), fills most of the band, and closes on a backdrop
+    // click-outside (paint returns true → close).
     if (state.help_overlay_open) {
-        // Size against the FULL band (avail.w), not the leftover transcript
-        // width (avail.w - pane_w). With the left rail open (~220px) on a
-        // ~390px canvas the leftover is ~170 < HELP_OVERLAY_MIN_W and the panel
-        // silently no-ops (review L1). It's a modal in-canvas panel — centering
-        // across the whole window is correct.
-        help_overlay.paint(0, scroll_y, avail.w, scroll_h, .{
+        // Modal subwindow sized against the FULL band (avail.w), not the leftover
+        // transcript width — it fills the band minus margins regardless of the
+        // left rail (plan #781 Goal 3). Esc / Ctrl+//leader still reach the keymap
+        // dispatcher below (a floatingWindow only routes mouse events), so the
+        // overlay toggles off exactly as before.
+        if (help_overlay.paint(0, scroll_y, avail.w, scroll_h, .{
             .composer = state.queue_editing_index == null,
             .queue_editing = state.queue_editing_index != null,
             .busy = busy,
@@ -647,7 +661,13 @@ pub fn frame() !void {
             .leader_pending = state.leader_armed,
             .prompt_empty = state.prompt_buf[0] == 0,
             .in_history = state.history_index != null,
-        });
+        })) {
+            // Backdrop click-outside closes (mirror help_close: also disarm leader
+            // and reset the list to the top so a reopen resumes at the top).
+            state.help_overlay_open = false;
+            state.leader_armed = false;
+            help_overlay.resetScroll();
+        }
     }
 
     // ── Submit queue band (absolute rect — above composer, below transcript) ──
