@@ -18,6 +18,7 @@ pub fn build(b: *std.Build) void {
     // zig-pkg is extracted by b.dependency; compile steps created below see the
     // patched file. Idempotent (marker comment).
     applyInvincibleRightClickPatch(b, dvui_dep);
+    applyInvincibleShiftClickPatch(b, dvui_dep);
 
     // Phase 1 rich transcript (#143): zmd (MIT) markdown parser, freestanding.
     const zmd_dep = b.dependency("zmd", .{
@@ -867,6 +868,404 @@ fn applyInvincibleRightClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
     file.writeStreamingAll(io, new_src) catch |err| {
         std.debug.panic("plan #647: writeStreamingAll {s} failed: {}", .{ widget, err });
     };
+}
+
+/// plan #752 — dedicate a Shift+click selection-extend path in the vendored
+/// `TextLayoutWidget`. Stock dvui treats a left press as a plain caret move
+/// (`selection.moveCursor(hit, false)`, no extend). This patch adds a
+/// `sel_move.shift_click` variant that extends the selection to the click point
+/// using the widget's own stock extend (`selection.moveCursor(hit, true)`, the
+/// same path as Shift+arrow), so the anchor edge stays fixed across repeated
+/// Shift+clicks (A,B,C → [A,C]) and after a drag-select ([5,20] then Shift+click
+/// 30 → [5,30]). A Shift+click also zeros `click_num` and is excluded from the
+/// release double-click counter, so the next plain click stays a caret-move +
+/// clear (stock web never counts Shift+clicks toward double-clicks). Exclusion
+/// is detected three ways at release (see needle 9): same-frame `.shift_click`,
+/// live `me.mod.shift()`, and — the last two adversarial Nits (rounds 4 and 5) —
+/// a persisted `_shift_click_press` flag that survives a two-frame click where
+/// Shift is released before mouseup and is consumed once per release (needle 10),
+/// so a Shift+press that became a drag cannot leave a stale flag.
+///
+/// The click point → byte resolution lives in `selMovePre`/`lineBreak` (during
+/// `addText`, the only place text rects exist), so the variant rides the same
+/// async `sel_move` machine the plan's #647 split forbids overloading. The
+/// plain left-click move-caret path is untouched; `.right`/`.middle` are
+/// untouched (no #647 regression); copy is handled by `TextEntryWidget.copy()`
+/// on the reserved chord (kept browser-reserved, handled inside the widget).
+///
+/// Runs at build-file eval, after the #647 right-click patch. Idempotent via
+/// the `invincible: dedicated shift-click` marker. Fail-closed: every needle
+/// must match exactly once or the build panics.
+fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency) void {
+    const io = b.graph.io;
+    const widget = resolveDvuiWidgetPath(b, io, dvui_dep) orelse {
+        @panic("plan #752: TextLayoutWidget.zig not found — shift-click patch cannot be applied (fail-closed)");
+    };
+    const widget_dirname = std.fs.path.dirname(widget) orelse
+        @panic("plan #752: cannot resolve parent dir of TextLayoutWidget.zig path");
+    const widget_basename = std.fs.path.basename(widget);
+
+    var widget_parent_dir = std.Io.Dir.openDirAbsolute(io, widget_dirname, .{}) catch |err| {
+        std.debug.panic("plan #752: openDirAbsolute({s}) failed: {}", .{ widget_dirname, err });
+    };
+    defer widget_parent_dir.close(io);
+
+    const src = std.Io.Dir.readFileAlloc(widget_parent_dir, io, widget_basename, b.allocator, .limited(4 * 1024 * 1024)) catch |err| {
+        std.debug.panic("plan #752: read {s} failed: {}", .{ widget, err });
+    };
+    if (std.mem.indexOf(u8, src, "invincible: dedicated shift-click") != null) return;
+
+    const Patch = struct { needle: []const u8, replacement: []const u8 };
+    const patches = [_]Patch{
+        .{
+            // 1. union variant after the `.mouse` struct.
+            .needle =
+            \\        drag_pt: ?Point = null, // point of current mouse drag
+            \\    },
+            ,
+            .replacement =
+            \\        drag_pt: ?Point = null, // point of current mouse drag
+            \\    },
+            \\
+            \\    // invincible: dedicated shift-click (plan #752) — extend the selection to the
+            \\    // click point via the widget's own stock extend (moveCursor(hit, true), the
+            \\    // same path as Shift+arrow), so the anchor edge stays fixed across repeated
+            \\    // Shift+clicks. Click point resolved to a byte during addText.
+            \\    shift_click: struct {
+            \\        down_pt: ?Point = null, // click point, resolved to a byte during addText
+            \\        byte: ?usize = null, // resolved byte index of the click point
+            \\    },
+            ,
+        },
+        .{
+            // 2. selMovePre — resolve the click point, extend from anchor.
+            .needle =
+            \\            }
+            \\        },
+            \\        .expand_pt => |*ep| {
+            \\            if (ep.pt) |p| {
+            \\                if (self.findPoint(p, text_rect, self.bytes_seen, text_line, options)) |ba| {
+            \\                    self.selection.moveCursor(ba.byte, false);
+            ,
+            .replacement =
+            \\            }
+            \\        },
+            \\        .shift_click => |*sc| {
+            \\            if (sc.down_pt) |p| {
+            \\                if (self.findPoint(p, text_rect, self.bytes_seen, text_line, options)) |ba| {
+            \\                    sc.byte = ba.byte;
+            \\                    // stock extend: keeps the fixed (anchor) edge, moves only the
+            \\                    // active end — matches Shift+arrow; fixes repeated Shift+clicks
+            \\                    // (A,B,C -> [A,C]) and drag-then-Shift+click ([5,20]+30 -> [5,30]).
+            \\                    self.selection.moveCursor(ba.byte, true);
+            \\                    self.selection.affinity = ba.affinity;
+            \\                    sc.down_pt = null;
+            \\                } else {
+            \\                    // haven't found it yet, keep cursor at end to not trigger cursor_seen
+            \\                    self.selection.moveCursor(self.bytes_seen + end, true);
+            \\                }
+            \\            }
+            \\        },
+            \\        .expand_pt => |*ep| {
+            \\            if (ep.pt) |p| {
+            \\                if (self.findPoint(p, text_rect, self.bytes_seen, text_line, options)) |ba| {
+            \\                    self.selection.moveCursor(ba.byte, false);
+            ,
+        },
+        .{
+            // 3. lineBreak — extend when the click point sits past a wrapped line end.
+            .needle =
+            \\            }
+            \\        },
+            \\        .expand_pt => |*ep| {
+            \\            if (ep.pt) |p| {
+            \\                if (p.y < self.insert_pt.y) {
+            ,
+            .replacement =
+            \\            }
+            \\        },
+            \\        .shift_click => |*sc| {
+            \\            if (sc.down_pt) |p| {
+            \\                if (p.y < self.insert_pt.y) {
+            \\                    // point was right of previous line, no newline
+            \\                    sc.byte = self.bytes_seen;
+            \\                    self.selection.moveCursor(self.bytes_seen, true);
+            \\                    self.selection.affinity = .before;
+            \\                    sc.down_pt = null;
+            \\                    self.cursorSeen();
+            \\                }
+            \\            }
+            \\        },
+            \\        .expand_pt => |*ep| {
+            \\            if (ep.pt) |p| {
+            \\                if (p.y < self.insert_pt.y) {
+            ,
+        },
+        .{
+            // 4. selMoveText — no-op arm (selection already set in selMovePre).
+            .needle =
+            \\        .none => {},
+            \\        .mouse => {},
+            \\        .expand_pt => |*ep| {
+            \\            if (!ep.done) {
+            \\                const search = if (ep.which == .word) word_breaks else "\n";
+            ,
+            .replacement =
+            \\        .none => {},
+            \\        .mouse => {},
+            \\        .shift_click => {},
+            \\        .expand_pt => |*ep| {
+            \\            if (!ep.done) {
+            \\                const search = if (ep.which == .word) word_breaks else "\n";
+            ,
+        },
+        .{
+            // 5. cursorSeen — no-op arm.
+            .needle =
+            \\        .none => {},
+            \\        .mouse => {},
+            \\        .expand_pt => |*ep| {
+            \\            if (!ep.done) {
+            \\                switch (ep.which) {
+            ,
+            .replacement =
+            \\        .none => {},
+            \\        .mouse => {},
+            \\        .shift_click => {},
+            \\        .expand_pt => |*ep| {
+            \\            if (!ep.done) {
+            \\                switch (ep.which) {
+            ,
+        },
+        .{
+            // 6. bytesNeeded — no-op arm (anchor is in the visible region like mouse).
+            .needle =
+            \\        .mouse => {}, // all in visible region, excepted below
+            \\        .expand_pt => |*ep| {
+            ,
+            .replacement =
+            \\        .mouse => {}, // all in visible region, excepted below
+            \\        .shift_click => {}, // all in visible region like mouse
+            \\        .expand_pt => |*ep| {
+            ,
+        },
+        .{
+            // 7. addTextDone fallback — resolve an unresolved click to end-of-text.
+            .needle =
+            \\            if (m.drag_pt) |_| {
+            \\                self.selection.cursor = self.bytes_seen;
+            \\                self.selection.start = @min(m.byte.?, self.bytes_seen);
+            \\                self.selection.end = @max(m.byte.?, self.bytes_seen);
+            \\                m.drag_pt = null;
+            \\            }
+            \\        },
+            \\        .expand_pt => |*ep| {
+            ,
+            .replacement =
+            \\            if (m.drag_pt) |_| {
+            \\                self.selection.cursor = self.bytes_seen;
+            \\                self.selection.start = @min(m.byte.?, self.bytes_seen);
+            \\                self.selection.end = @max(m.byte.?, self.bytes_seen);
+            \\                m.drag_pt = null;
+            \\            }
+            \\        },
+            \\        .shift_click => |*sc| {
+            \\            if (sc.down_pt) |_| {
+            \\                // click point never resolved to a text rect — extend to end-of-text
+            \\                sc.byte = self.bytes_seen;
+            \\                self.selection.moveCursor(self.bytes_seen, true);
+            \\                sc.down_pt = null;
+            \\            }
+            \\        },
+            \\        .expand_pt => |*ep| {
+            ,
+        },
+        .{
+            // 8. press handler — Shift+pointer press picks .shift_click; plain click untouched.
+            .needle =
+            \\                } else if (me.button.pointer()) {
+            \\                    // a click always sets sel_move - has the highest priority
+            \\                    const p = self.data().contentRectScale().pointFromPhysical(me.p);
+            \\                    self.sel_move = .{ .mouse = .{ .down_pt = p } };
+            \\                    self.scroll_to_cursor = true;
+            \\
+            \\                    if (self.click_num == 1) {
+            \\                        // select word we touched
+            \\                        self.sel_move = .{ .expand_pt = .{ .which = .word, .pt = p } };
+            \\                    } else if (self.click_num == 2) {
+            \\                        // select line we touched
+            \\                        self.sel_move = .{ .expand_pt = .{ .which = .line, .pt = p } };
+            \\                    }
+            \\                }
+            ,
+            .replacement =
+            \\                } else if (me.button.pointer()) {
+            \\                    // invincible: dedicated shift-click (plan #752) — if shift is
+            \\                    // held, extend selection to the click point; never fall through
+            \\                    // to the plain caret-move / drag path, and never count this as a
+            \\                    // click toward the next word/line double-click (stock web).
+            \\                    if (me.mod.shift()) {
+            \\                        self.click_num = 0;
+            \\                        // persist that this press was a Shift+click so its release —
+            \\                        // even a two-frame web click where Shift is released before
+            \\                        // mouseup (adversarial round-4 Nit L1) — is never counted
+            \\                        // toward the next word/line double-click. The `.shift_click`
+            \\                        // variant is frame-local (re-inits to .none each frame), so
+            \\                        // this store flag crosses the press→release frame gap, the
+            \\                        // same way `.mouse.byte` persists while captured. Consumed
+            \\                        // (dataRemove) at the release cleanup (needle 10), which runs on any
+            \\                        // pointer/middle release — click and drag alike.
+            \\                        dvui.dataSet(null, self.data().id, "_shift_click_press", true);
+            \\                        self.sel_move = .{ .shift_click = .{} };
+            \\                        self.sel_move.shift_click.down_pt = self.data().contentRectScale().pointFromPhysical(me.p);
+            \\                        self.scroll_to_cursor = true;
+            \\                    } else {
+            \\                        // a click always sets sel_move - has the highest priority
+            \\                        const p = self.data().contentRectScale().pointFromPhysical(me.p);
+            \\                        self.sel_move = .{ .mouse = .{ .down_pt = p } };
+            \\                        self.scroll_to_cursor = true;
+            \\
+            \\                        if (self.click_num == 1) {
+            \\                            // select word we touched
+            \\                            self.sel_move = .{ .expand_pt = .{ .which = .word, .pt = p } };
+            \\                        } else if (self.click_num == 2) {
+            \\                            // select line we touched
+            \\                            self.sel_move = .{ .expand_pt = .{ .which = .line, .pt = p } };
+            \\                        }
+            \\                    }
+            \\                }
+            ,
+        },
+        .{
+            // 9. release handler — a Shift+click must never count toward the word/line
+            //    double-click counter (it already zeroed click_num at press), so the
+            //    follow-on plain click stays a caret-move + clear. Stock web does not
+            //    count Shift+clicks toward double-clicks. THREE-WAY gate (adversarial
+            //    round-3 CONCERNS L1 + round-4 Nit L1): skip the increment when this
+            //    press was a Shift+click, detected by ANY of:
+            //      (a) `self.sel_move == .shift_click` — press and release in the same
+            //          event batch, so the variant is still set at release;
+            //      (b) `me.mod.shift()` — Shift still held at mouseup (the common
+            //          two-frame web click: `sel_move` is frame-local and re-inits to
+            //          `.none` each frame, so the release frame does not retain
+            //          `.shift_click`);
+            //      (c) persisted `_shift_click_press` — set by the press handler
+            //          (needle 8) and read here, closing the two-frame click where Shift
+            //          was released before mouseup (round-4 Nit). It mirrors how
+            //          `.mouse.byte` persists across captured frames; it is read here and
+            //          consumed at the release cleanup (needle 10), so a Shift+press that
+            //          became a drag cannot leave a stale flag that would suppress a later
+            //          plain click's count (adversarial round-5 Nit L1).
+            //    Round 2 gated only on `!me.mod.shift()` (PASS; Nit about the shift-
+            //    released-before-mouseup hyper-edge). Round 3 swapped it for only
+            //    `self.sel_move != .shift_click`, which broke the common path — see
+            //    the gate below for why (a) and (b) must be OR'd together, and (c)
+            //    for the round-4 gap.
+            .needle =
+            \\                        if (me.button.pointer()) {
+            \\                            self.click_num += 1;
+            \\                            self.click_num_pt = me.p;
+            \\                            if (self.click_num >= 3) {
+            \\                                self.click_num = 0;
+            \\                            }
+            \\
+            ,
+            .replacement =
+            \\                        // invincible: never count a Shift+click toward the next word/line
+            \\                        // double-click (it already zeroed click_num at press). THREE-WAY
+            \\                        // detection that this press was a Shift+click:
+            \\                        //   (a) still-captured same-frame release (`sel_move == .shift_click`);
+            \\                        //   (b) common two-frame click with Shift still held at mouseup
+            \\                        //       (`me.mod.shift()` — the frame-local .shift_click variant
+            \\                        //       re-inits to .none every frame, so a single
+            \\                        //       `sel_move != .shift_click` gate failed in round 3);
+            \\                        //   (c) two-frame click where Shift was released before mouseup
+            \\                        //       (round-4 race): the `_shift_click_press` flag persisted by
+            \\                        //       the press handler crosses the frame gap (like `.mouse.byte`).
+            \\                        // Read here (single consumer, the click-without-drag arm); the
+            \\                        // flag is consumed exactly once per release at the release cleanup
+            \\                        // (needle 10), so a Shift+press that became a drag cannot leave a
+            \\                        // stale flag suppressing a later plain click's double-click count.
+            \\                        const shift_click_release =
+            \\                            self.sel_move == .shift_click or
+            \\                            me.mod.shift() or
+            \\                            (dvui.dataGet(null, self.data().id, "_shift_click_press", bool) orelse false);
+            \\                        if (me.button.pointer() and !shift_click_release) {
+            \\                            self.click_num += 1;
+            \\                            self.click_num_pt = me.p;
+            \\                            if (self.click_num >= 3) {
+            \\                                self.click_num = 0;
+            \\                            }
+            \\
+            ,
+        },
+        .{
+            // 10. release cleanup — consume the persisted `_shift_click_press` flag here on
+            //     ANY pointer/middle release that ends the capture, not just the
+            //     click-without-drag arm (needle 9). A Shift+press that became a drag never
+            //     enters needle 9's arm, so without this the flag would persist and suppress
+            //     the next plain click's double-click count exactly once (adversarial round-5
+            //     Nit L1). The read for suppression lives in needle 9 (the click arm); this
+            //     consumption runs after it and on every other release too. dataRemove on an
+            //     absent key is a no-op, so it is safe when the press was never a Shift+click.
+            .needle =
+            \\                        dvui.refresh(null, @src(), self.data().id);
+            \\                    }
+            \\
+            \\                    dvui.captureMouse(null, e.num);
+            \\                    dvui.dragEnd();
+            \\                }
+            \\
+            ,
+            .replacement =
+            \\                        dvui.refresh(null, @src(), self.data().id);
+            \\                    }
+            \\
+            \\                    // invincible: consume the `_shift_click_press` flag on ANY release that
+            \\                    // ends the capture. The click-without-drag arm (needle 9) already read
+            \\                    // it for suppression; a drag release never entered that arm. Without
+            \\                    // this consume, a Shift+press that became a drag would leave a stale flag
+            \\                    // that suppresses the next plain click's double-click count exactly once
+            \\                    // (adversarial round-5 Nit L1). dataRemove on an absent key is a no-op,
+            \\                    // so this is safe when the press was never a Shift+click.
+            \\                    dvui.dataRemove(null, self.data().id, "_shift_click_press");
+            \\                    dvui.captureMouse(null, e.num);
+            \\                    dvui.dragEnd();
+            \\                }
+            \\
+        },
+    };
+
+    var new_src = src;
+    for (patches) |patch| {
+        const occurrences = countOccurrences(new_src, patch.needle);
+        if (occurrences != 1) {
+            @panic("plan #752: shift-click needle must match exactly once in TextLayoutWidget.zig — dvui pin may have drifted; update applyInvincibleShiftClickPatch");
+        }
+        const idx = std.mem.indexOf(u8, new_src, patch.needle) orelse unreachable;
+        new_src = std.mem.concat(b.allocator, u8, &.{ new_src[0..idx], patch.replacement, new_src[idx + patch.needle.len ..] }) catch
+            @panic("plan #752: OOM concatenating shift-click patch");
+    }
+
+    var file = widget_parent_dir.createFile(io, widget_basename, .{}) catch |err| {
+        std.debug.panic("plan #752: createFile {s} failed: {}", .{ widget, err });
+    };
+    defer file.close(io);
+    file.writeStreamingAll(io, new_src) catch |err| {
+        std.debug.panic("plan #752: writeStreamingAll {s} failed: {}", .{ widget, err });
+    };
+}
+
+/// Count non-overlapping occurrences of `needle` in `haystack`.
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    if (needle.len == 0) return 0;
+    var count: usize = 0;
+    var rest = haystack;
+    while (std.mem.indexOf(u8, rest, needle)) |idx| {
+        count += 1;
+        rest = rest[idx + needle.len ..];
+    }
+    return count;
 }
 
 fn resolveDvuiWidgetPath(b: *std.Build, io: std.Io, dvui_dep: *std.Build.Dependency) ?[]const u8 {
