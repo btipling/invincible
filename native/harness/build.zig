@@ -1081,13 +1081,17 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             // 9. release handler — a Shift+click must never count toward the word/line
             //    double-click counter (it already zeroed click_num at press), so the
             //    follow-on plain click stays a caret-move + clear. Stock web does not
-            //    count Shift+clicks toward double-clicks. Gate on the press-state
-            //    (`sel_move` is still `.shift_click` at release — selMovePre zeroes
-            //    down_pt but not the variant tag, and addText has not run yet within
-            //    this processEvents batch), NOT the live modifier: a user who lets go
-            //    of Shift before mouseup would otherwise make `!me.mod.shift()` true
-            //    and reseed the double-click counter, so the next plain click would
-            //    word-select instead of caret-move + clear (review round-2 Nit).
+            //    count Shift+clicks toward double-clicks. UNION gate (review round-3
+            //    CONCERNS L1): skip the increment if the press-state shows a shift-click
+            //    (`self.sel_move == .shift_click` — true only when press and release
+            //    land in the same event batch) **or** the live modifier still has Shift
+            //    (`me.mod.shift()` — the common path, since `sel_move` is frame-local
+            //    and re-inits to `.none` at the start of every frame, so on a normal
+            //    two-frame web click the release frame does not retain `.shift_click`).
+            //    Round 2 gated only on `!me.mod.shift()` (PASS; Nit about the shift-
+            //    released-before-mouseup hyper-edge). Round 3 swapped it for only
+            //    `self.sel_move != .shift_click`, which broke the common path — see
+            //    the gate below for why both must be OR'd together.
             .needle =
             \\                        if (me.button.pointer()) {
             \\                            self.click_num += 1;
@@ -1098,7 +1102,13 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             \\
             ,
             .replacement =
-            \\                        if (me.button.pointer() and self.sel_move != .shift_click) {
+            \\                        // invincible: never count a Shift+click toward the next word/line
+            \\                        // double-click (it already zeroed click_num at press). Union gate:
+            \\                        // skip when the press-state is .shift_click (same-frame press+release)
+            \\                        // OR Shift is still held at mouseup (common two-frame web click — the
+            \\                        // frame-local .shift_click variant re-inits to .none every frame, so
+            \\                        // round 3's single `sel_move != .shift_click` gate failed to skip).
+            \\                        if (me.button.pointer() and self.sel_move != .shift_click and !me.mod.shift()) {
             \\                            self.click_num += 1;
             \\                            self.click_num_pt = me.p;
             \\                            if (self.click_num >= 3) {
