@@ -232,6 +232,30 @@ test "shouldDropEditOnEmptyQueue: false when editing + queue non-empty" {
     try t.expect(!queue_band.shouldDropEditOnEmptyQueue());
 }
 
+// ── shouldDropPauseOnEmptyQueue predicate (plan #777) ─────────────────────
+
+test "shouldDropPauseOnEmptyQueue: true when paused + queue empty" {
+    bridge.reset();
+    bridge.setQueuePausedFromUi(true);
+    // FIFO is empty after reset and the latch is set → must return true.
+    try t.expect(queue_band.shouldDropPauseOnEmptyQueue());
+}
+
+test "shouldDropPauseOnEmptyQueue: false when not paused" {
+    bridge.reset();
+    bridge.setQueuePausedFromUi(false);
+    // FIFO empty but not paused → nothing to auto-clear.
+    try t.expect(!queue_band.shouldDropPauseOnEmptyQueue());
+}
+
+test "shouldDropPauseOnEmptyQueue: false when paused + queue non-empty" {
+    bridge.reset();
+    _ = bridge.enqueueFromUi("x") catch @panic("enqueue failed");
+    bridge.setQueuePausedFromUi(true);
+    // Paused but the queue still holds an item → a pause is meaningful; keep it.
+    try t.expect(!queue_band.shouldDropPauseOnEmptyQueue());
+}
+
 test "resetTranscriptScroll clears new flags" {
     state.queue_want_editor_focus = true;
     state.queue_edit_seen_focused = true;

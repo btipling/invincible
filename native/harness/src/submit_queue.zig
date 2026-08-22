@@ -129,9 +129,13 @@ pub fn canPromote(args: struct {
     has_pending_submit: bool,
     has_pending_load_earlier: bool,
     count: u32,
+    /// Plan #777 — operator pause latch (in-canvas submit-queue hold). Blocks
+    /// ALL promote paths (auto-promote + idle empty-▶ Play) while keeping the
+    /// FIFO contents and the typed-send path (`queueSubmitFromUi`) untouched.
+    paused: bool = false,
 }) bool {
     return !args.editing and !args.busy and !args.has_pending_submit and
-        !args.has_pending_load_earlier and args.count > 0;
+        !args.has_pending_load_earlier and !args.paused and args.count > 0;
 }
 
 /// If `submit` returns true, pop the head. Used by `bridge.tryPromoteQueued`.

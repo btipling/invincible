@@ -563,6 +563,14 @@ pub fn frame() !void {
     if (queue_band.shouldDropEditOnEmptyQueue()) {
         queue_band.resetQueueEditState();
     }
+    // Plan #777 — drop the pause latch when the FIFO empties (drain / Clear /
+    // remove). With nothing to hold, a stale pause would silently block later
+    // promotes (auto-promote / idle ▶). Mirrors the edit-latch guard above, so
+    // goal 4 (unpause → drain by existing rules) stays intuitive even when the
+    // operator never taps Resume.
+    if (queue_band.shouldDropPauseOnEmptyQueue()) {
+        bridge.setQueuePausedFromUi(false);
+    }
     // Plan #759 / adversarial-review Major — a HOST front-insert (the give-up
     // `Continue` head) shifts every queued slot down one. An open queue-row edit
     // must follow the row it was on (bump to e+1) so blur/Ctrl+Enter saveEdit

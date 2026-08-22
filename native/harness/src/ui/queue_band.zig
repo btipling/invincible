@@ -47,6 +47,16 @@ pub fn shouldDropEditOnEmptyQueue() bool {
     return state.queue_editing_index != null and bridge.queuedCount() == 0;
 }
 
+/// Plan #777 — predicate extracted from the `ui.zig` empty-FIFO guard so a
+/// host-target unit test can prove the condition. When the submit queue has
+/// nothing to hold, a stale `paused` latch would silently block later promotes
+/// (auto-promote / idle ▶) after all items drain. Mirroring
+/// `shouldDropEditOnEmptyQueue`, ui.zig clears `queue_paused` the frame the FIFO
+/// empties, keeping promote re-armed (goal 4 stays intuitive).
+pub fn shouldDropPauseOnEmptyQueue() bool {
+    return bridge.isQueuePaused() and bridge.queuedCount() == 0;
+}
+
 /// Plan #759 / adversarial-review Major — reconcile the queue-row edit latch
 /// after a HOST front-insert (the give-up `Continue` head). `submit_queue.insertFront`
 /// shifts every queued slot down one but can't touch `state.queue_editing_index`
@@ -113,6 +123,31 @@ pub fn paint(band_y: f32, band_h: f32, avail_w: f32) void {
             });
         }
         if (n > 0) {
+            // Plan #777 — visible paused state + Pause/Resume toggle on the
+            // queue-band header (in-canvas chrome; no DOM control). An active
+            // pause shows the TEAL-accent label so the operator always knows
+            // promotion is held (risk #1 mitigation). EMBER is never used —
+            // pause is a hold, not an error.
+            if (bridge.isQueuePaused()) {
+                dvui.labelNoFmt(@src(), "· paused", .{}, .{
+                    .gravity_y = 0.5,
+                    .color_text = palette.teal_accent,
+                });
+            }
+            const paused = bridge.isQueuePaused();
+            if (dvui.button(@src(), if (paused) "Resume" else "Pause", .{}, .{
+                .gravity_y = 0.5,
+                .style = .content,
+                .min_size_content = .{ .w = 64, .h = metrics.TOUCH_H },
+                .color_fill = palette.teal_surface,
+                .color_text = if (paused) palette.teal_accent else palette.teal_text,
+                .color_border = palette.teal_border,
+            })) {
+                // Pause is a queue hold — it does NOT cancel an in-flight turn
+                // or a row edit. Flip the latch only; enqueue/edit partner state
+                // (queue_editing_index) is untouched.
+                bridge.setQueuePausedFromUi(!paused); // flip pause ↔ resume
+            }
             if (dvui.button(@src(), "Clear", .{}, .{
                 .gravity_y = 0.5,
                 .style = .content,
