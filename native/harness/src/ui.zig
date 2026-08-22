@@ -225,17 +225,29 @@ pub fn frame() !void {
         state.thinking_collapse_state.onLifecycleTransition(prev_lc, cur_lc, bridge.messageHead());
         state.prev_lifecycle = cur_lc;
         const terminal = cur_lc == .ready or cur_lc == .err;
-        const trigger_a = prev_lc == .busy and terminal;
+        // Trigger B: a queue edit just closed this frame on a terminal lifecycle.
+        // Folded here (needs Wasm ui state) but under the SAME `!editing &&
+        // allowed` guards as the turn-ended trigger, so it can never bypass the gate.
         const trigger_b = state.queue_closed_edit and terminal;
         state.queue_closed_edit = false;
         const editing = state.queue_editing_index != null;
         // Protocol v19 promote gate (plan #760): the host arms a one-shot scalar
         // on every terminal — true on a SUCCESSFUL Ready (auto-promote stays,
         // unchanged), false on Stop / Esc / error / timeout / validation Ready.
-        // When false, this block can never drain a queued head; only an explicit
-        // idle ▶ / Ctrl+Enter with an empty composer + non-empty queue promotes.
-        if ((trigger_a or trigger_b) and !editing and bridge.hasQueuePromoteAllowed()) {
-            if (bridge.tryPromoteQueued(false)) {
+        // `bridge.shouldAutoPromote` is the host-unit-testable turn-ended gate
+        // (goal 1: a Stop / error Ready can never drain the queue); trigger B ORs
+        // in under identical guards. When the gate is false this block can never
+        // pop a queued head; only an explicit idle ▶ / Ctrl+Enter with an empty
+        // composer + non-empty queue promotes. Both triggers pass the LIVE edit
+        // lock into `tryPromoteQueued` so nothing drains mid-edit.
+        const auto_promote = bridge.shouldAutoPromote(
+            @enumFromInt(@intFromEnum(prev_lc)),
+            @enumFromInt(@intFromEnum(cur_lc)),
+            editing,
+            bridge.hasQueuePromoteAllowed(),
+        ) or (trigger_b and !editing and bridge.hasQueuePromoteAllowed());
+        if (auto_promote) {
+            if (bridge.tryPromoteQueued(editing)) {
                 busy = true;
             }
         }
@@ -651,9 +663,13 @@ pub fn frame() !void {
     // promoted head is a normal user send (pending submit → host starts a turn).
     // `busy` becomes true on the next frame once the host polls the pending
     // submit (mirrors on_send, which also doesn't mutate this frame's busy).
+    // Adversarial #763 L1: pass the LIVE queue-edit lock so a mouse ▶ click while
+    // a row's editor is open (queue_editing_index != null) cannot punch through
+    // the edit lock and discard the unsaved buffer. `tryPromoteQueued(editing=true)`
+    // → `canPromote` returns false, so Play is held exactly like the terminal gate.
     const on_promote = struct {
         fn run() void {
-            _ = bridge.tryPromoteQueued(false);
+            _ = bridge.tryPromoteQueued(state.queue_editing_index != null);
         }
     }.run;
 
@@ -714,8 +730,11 @@ pub fn frame() !void {
                 // Plan #760 — Ctrl/Cmd+Enter with an EMPTY composer + non-empty
                 // queue promotes the head (goal 2, mirroring the idle ▶ click).
                 // tryPromoteQueued no-ops when the queue is empty, so goal 4
-                // (empty+empty → no-op) needs no extra guard.
-                if (bridge.tryPromoteQueued(false)) {
+                // (empty+empty → no-op) needs no extra guard. Adversarial #763 L1:
+                // honor the live queue-edit lock too — pass
+                // `state.queue_editing_index != null` so an open row editor can
+                // never be discarded by this chord.
+                if (bridge.tryPromoteQueued(state.queue_editing_index != null)) {
                     busy = true;
                 }
             }

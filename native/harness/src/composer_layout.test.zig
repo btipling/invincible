@@ -305,21 +305,33 @@ test "idle ▶ + typed composer → on_send fires with the text, never on_promot
     try t.expect(std.mem.eql(u8, "hello", T_send_text));
 }
 
-test "idle ▶ + empty composer + empty queue (no on_promote) → no-op" {
+test "idle ▶ + empty composer + empty queue → on_promote fires; no-op is tryPromoteQueued's" {
     var tr = try dvui.testing.init(.{});
     defer tr.deinit();
     resetBuf(); // empty field
     T_busy = false;
     T_want_focus = true;
-    // Caller binds on_promote only when it has a queue head to promote; when
-    // the queue is empty it is null (goal 4) → the ▶ click must be a no-op.
+    // Adversarial #763 Nit: production `ui.zig` ALWAYS binds on_promote (it
+    // does not know the queue depth here) and relies on
+    // `bridge.tryPromoteQueued` no-oping when the FIFO is empty. This chrome
+    // test must mirror that prod wiring — bind on_promote and confirm the ▶
+    // click dispatches it (never on_send); the EMPTY-QUEUE refusal is the
+    // bridge's job, asserted in `bridge.test.zig` (gate e2e: empty queue keeps
+    // depth 0), not a null-callback fixture here.
+    const promote_cb = struct {
+        fn run() void {
+            T_promote_count += 1;
+        }
+    }.run;
     const send_cb = struct {
         fn run(_: []const u8) void {
             T_send_count += 1;
         }
     }.run;
-    T_actions = .{ .on_send = &send_cb };
+    T_actions = .{ .on_promote = &promote_cb, .on_send = &send_cb };
     try paintAndClickSend(true);
-    try t.expectEqual(@as(usize, 0), T_promote_count);
+    // Empty field → on_promote fires (never on_send). With an empty FIFO the
+    // tryPromoteQueued call is a no-op at the bridge (goal 4).
+    try t.expectEqual(@as(usize, 1), T_promote_count);
     try t.expectEqual(@as(usize, 0), T_send_count);
 }

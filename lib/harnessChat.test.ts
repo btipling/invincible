@@ -359,8 +359,14 @@ describe('protocol v19 promote gate arming (plan #760)', () => {
   it('runHarnessTurn validation arms promote_allowed=false then Ready', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
-    const result = await runHarnessChat(bridge, '   ');
+    // Actually route through runHarnessTurn (adversarial #763 Nit: the old test
+    // called runHarnessChat, so the runHarnessTurn validatePrompt branch was
+    // untested under its own name). A blank prompt fails validation BEFORE any
+    // agent/chat send, armor false, and land on Ready.
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({ ok: true, text: 'NOPE' }));
+    const { result } = await runHarnessTurn(bridge, createEmptySession(), '   ', { sendAgent });
     expect(result.ok).toBe(false);
+    expect(sendAgent).not.toHaveBeenCalled(); // validatePrompt short-circuits before any send
     expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
     expect(exp.__promoteAllowed()).toBe(false);
   });

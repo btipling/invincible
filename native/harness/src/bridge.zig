@@ -263,6 +263,21 @@ pub fn hasQueuePromoteAllowed() bool {
     return queue_promote_allowed;
 }
 
+/// Plan #760 promote-gate predicate (adversarial #763 L6). Whether a busy→terminal
+/// lifecycle transition (a turn just ended: `prev` busy → `cur` ready/err) MAY
+/// auto-promote the queue head. Folds the turn-ended trigger with the two gate
+/// guards — not mid-edit (`editing`) AND the host-armed scalar (`allowed`) — into
+/// one pure, host-unit-testable seam (no dvui frame / no ui state needed), so
+/// goal 1 (a Stop / Esc / error / timeout Ready does not drain) is a real
+/// failing-before / passing-after test, not just host-arming / chrome-dispatch
+/// coverage. The queue-edit-close trigger is folded in separately at the call
+/// site (it needs Wasm ui state) under the SAME `!editing && allowed` guards.
+pub fn shouldAutoPromote(prev: Lifecycle, cur: Lifecycle, editing: bool, allowed: bool) bool {
+    const terminal = cur == .ready or cur == .err;
+    const turn_ended = prev == .busy and terminal;
+    return turn_ended and !editing and allowed;
+}
+
 /// Promote the queue head into `queueSubmitFromUi` when the turn is terminal
 /// and the operator is not mid-edit. Peek → submit → pop only if accepted.
 pub fn tryPromoteQueued(editing: bool) bool {
