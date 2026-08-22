@@ -24,7 +24,19 @@ const SCAN_ROOTS = ['app', 'lib', 'scripts', 'sandbox'];
 
 function walkSourceFiles(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
-    if (name === 'node_modules' || name === '.git' || name === 'dist') continue;
+    // Skip dependency/version-control/build trees AND generated SDK scaffolding:
+    // the `workflow` SDK (wired in app via withWorkflow) emits a fully-gitignored
+    // `app/.well-known/workflow/` route tree at build/runtime whose vendored
+    // server code mentions `.getOrCreate(` — that is generated output, not the
+    // product source this invariant scans (same rationale as `dist`).
+    if (
+      name === 'node_modules' ||
+      name === '.git' ||
+      name === 'dist' ||
+      name === '.well-known'
+    ) {
+      continue;
+    }
     const full = join(dir, name);
     const st = statSync(full);
     if (st.isDirectory()) {
