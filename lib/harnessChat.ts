@@ -490,6 +490,20 @@ export async function refreshGitStatusSlot(
 }
 
 /**
+ * Protocol v19 (plan #760) — host terminal: arm the one-shot promote gate then
+ * set Ready. The host is the SOLE lifecycle writer and the only observer of the
+ * outcome (`classifyTurnFailure`), so every Ready path must go through this
+ * helper or a Stop/error Ready could silently drain the queue. `promoteAllowed`
+ * is true on a SUCCESSFUL turn (auto-promote stays, unchanged) and false on
+ * Stop / Esc / error / timeout / validation (the Wasm terminal-promote block
+ * never drains after a non-success; only idle ▶ / Ctrl+Enter explicit Play does).
+ */
+function completeTurn(bridge: HarnessBridge, promoteAllowed: boolean): void {
+  bridge.setQueuePromoteAllowed(promoteAllowed);
+  bridge.setLifecycle(Lifecycle.Ready);
+}
+
+/**
  * Run one prompt → Gateway → transcript update.
  * Sets lifecycle busy → ready (soft API errors leave ready for retry).
  */
@@ -501,7 +515,7 @@ export async function runHarnessChat(
   const validation = validatePrompt(rawPrompt);
   if (validation) {
     bridge.pushMessage(MessageKind.Error, validation);
-    bridge.setLifecycle(Lifecycle.Ready);
+    completeTurn(bridge, false); // validation — no auto-promote
     return { ok: false, error: validation };
   }
 
@@ -546,7 +560,7 @@ export async function runHarnessChat(
       );
     }
     bridge.pushMessage(MessageKind.System, describeTurnEnd('chat'));
-    bridge.setLifecycle(Lifecycle.Ready);
+    completeTurn(bridge, true); // success — auto-promote allowed
     return result;
   }
 
@@ -555,7 +569,7 @@ export async function runHarnessChat(
     fail.kind === 'stop' ? MessageKind.System : MessageKind.Error,
     describeTurnEnd(fail.kind, fail.detail),
   );
-  bridge.setLifecycle(Lifecycle.Ready);
+  completeTurn(bridge, false); // stop / error / timeout / empty — no auto-promote
   return result;
 }
 
@@ -810,7 +824,7 @@ export async function runHarnessTurn(
   if (validation) {
     bridge.pushMessage(MessageKind.Error, describeTurnEnd('validation', validation));
     const next = appendMessage(session, 'error', describeTurnEnd('validation', validation));
-    bridge.setLifecycle(Lifecycle.Ready);
+    completeTurn(bridge, false); // validation — no auto-promote
     return { result: { ok: false, error: validation }, session: next };
   }
 
@@ -1382,7 +1396,7 @@ export async function runHarnessTurn(
       // slot right after the fold instead of waiting for the cadence tick.
       // Fail-soft; server rate-limited; never blocks the turn return.
       void refreshGitStatusSlot(bridge, next, opts?.signal);
-      bridge.setLifecycle(Lifecycle.Ready);
+      completeTurn(bridge, true); // success — auto-promote allowed
       return {
         result: { ok: true, text: agentResult.text || assistantAcc },
         session: next,
@@ -1489,7 +1503,7 @@ export async function runHarnessTurn(
       // repaint on cancel). The unscoped fetch is bounded by the fail-soft
       // catch; it only repaints one slot once.
       void refreshGitStatusSlot(bridge, failedSession);
-      bridge.setLifecycle(Lifecycle.Ready);
+      completeTurn(bridge, false); // stop / error / timeout / empty — no auto-promote
       return {
         result: {
           ok: false,

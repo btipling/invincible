@@ -51,6 +51,12 @@ pub const Actions = struct {
     on_send: ?*const fn ([]const u8) void = null,
     /// Cancel the in-flight turn on the ■ Stop click (busy only).
     on_stop: ?*const fn () void = null,
+    /// Plan #760 — idle ▶ clicked with an EMPTY field + non-empty queue:
+    /// promote the queue head (explicit Play). Invoked only when the field is
+    /// empty on the idle ▶ (the busy row's ▶ keeps enqueuing typed text). No-op
+    /// in the caller when the queue is empty (goal 4). Bridge-free: the caller
+    /// binds it to `tryPromoteQueued`.
+    on_promote: ?*const fn () void = null,
 };
 
 /// What the chrome observed this frame, handed back so `frame()` can keep the
@@ -213,6 +219,11 @@ pub fn paintComposerChrome(opts: struct {
         })) {
             if (res.typed.len > 0) {
                 if (opts.actions.on_send) |cb| cb(res.typed);
+            } else if (opts.actions.on_promote) |cb| {
+                // Plan #760 — idle ▶ with an EMPTY field falls back to an
+                // explicit Play of the queue head (goal 2). The caller no-ops
+                // when the queue is empty (goal 4) — no blank row is created.
+                cb();
             }
         }
     }

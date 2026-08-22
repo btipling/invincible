@@ -229,7 +229,12 @@ pub fn frame() !void {
         const trigger_b = state.queue_closed_edit and terminal;
         state.queue_closed_edit = false;
         const editing = state.queue_editing_index != null;
-        if ((trigger_a or trigger_b) and !editing) {
+        // Protocol v19 promote gate (plan #760): the host arms a one-shot scalar
+        // on every terminal — true on a SUCCESSFUL Ready (auto-promote stays,
+        // unchanged), false on Stop / Esc / error / timeout / validation Ready.
+        // When false, this block can never drain a queued head; only an explicit
+        // idle ▶ / Ctrl+Enter with an empty composer + non-empty queue promotes.
+        if ((trigger_a or trigger_b) and !editing and bridge.hasQueuePromoteAllowed()) {
             if (bridge.tryPromoteQueued(false)) {
                 busy = true;
             }
@@ -641,6 +646,16 @@ pub fn frame() !void {
             bridge.queueCancelFromUi();
         }
     }.run;
+    // Plan #760 — idle ▶ with an EMPTY composer + non-empty queue promotes the
+    // head (goal 2). Same seam as the terminal gate (`tryPromoteQueued`), so a
+    // promoted head is a normal user send (pending submit → host starts a turn).
+    // `busy` becomes true on the next frame once the host polls the pending
+    // submit (mirrors on_send, which also doesn't mutate this frame's busy).
+    const on_promote = struct {
+        fn run() void {
+            _ = bridge.tryPromoteQueued(false);
+        }
+    }.run;
 
     var typed: []const u8 = state.prompt_buf[0..0];
     {
@@ -669,7 +684,7 @@ pub fn frame() !void {
             .h = composer_h,
             .prompt_buf = &state.prompt_buf,
             .want_focus = &state.want_composer_focus,
-            .actions = .{ .on_send = &on_send, .on_stop = &on_stop },
+            .actions = .{ .on_send = &on_send, .on_stop = &on_stop, .on_promote = &on_promote },
         });
         typed = res.typed;
 
@@ -695,6 +710,14 @@ pub fn frame() !void {
                 composer.submitOrEnqueue(typed);
                 typed = state.prompt_buf[0..0];
                 state.want_composer_focus = true;
+            } else if (bridge.queuedCount() > 0) {
+                // Plan #760 — Ctrl/Cmd+Enter with an EMPTY composer + non-empty
+                // queue promotes the head (goal 2, mirroring the idle ▶ click).
+                // tryPromoteQueued no-ops when the queue is empty, so goal 4
+                // (empty+empty → no-op) needs no extra guard.
+                if (bridge.tryPromoteQueued(false)) {
+                    busy = true;
+                }
             }
         }
     }

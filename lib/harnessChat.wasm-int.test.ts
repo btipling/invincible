@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { runHarnessTurn } from './harnessChat';
 import {
+  HARNESS_PROTOCOL_VERSION,
   HarnessBridge,
   Lifecycle,
   MessageKind,
@@ -111,6 +112,20 @@ describe('real-Wasm live tool increment (implements #433)', () => {
     // suite fails (never it.skip). A conforming v11 wasm round-trips the seam.
     expect(bridge.protocolVersion()).toBeGreaterThanOrEqual(11);
     expect(typeof bridge.exports.inv_message_kind_at).toBe('function');
+  });
+
+  it('real Wasm is protocol v19 and rides the promote-gate export (plan #760)', async () => {
+    const bridge = await loadBridge();
+    // Protocol v19 parity — Wasm `PROTOCOL_VERSION` must equal the host
+    // `HARNESS_PROTOCOL_VERSION` (assertRoundTrip also checks it; pin it here).
+    expect(bridge.protocolVersion()).toBe(HARNESS_PROTOCOL_VERSION);
+    // REQUIRED_FNS already proves `inv_set_queue_promote_allowed` reached the
+    // real Wasm (a stale artifact without it fails loadBridge → this suite
+    // fails, never it.skip). Round-trip the scalar — arm false (Stop/error
+    // Ready: no auto-promote) then true (successful Ready): no throw.
+    bridge.setQueuePromoteAllowed(false);
+    bridge.setQueuePromoteAllowed(true);
+    expect(bridge.protocolVersion()).toBe(HARNESS_PROTOCOL_VERSION);
   });
 
   it('real Wasm carries the additive 2×4 spinner export (plan #574) and accepts tick pushes', async () => {

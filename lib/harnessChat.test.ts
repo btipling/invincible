@@ -56,6 +56,7 @@ function makeMockExports(): HarnessBridgeExports & {
   __lifecycle: () => Lifecycle;
   __canLoadEarlier: () => number;
   __statusSlots: (string | undefined)[];
+  __promoteAllowed: () => boolean;
 } {
   let buf = new ArrayBuffer(64 * 1024);
   const memory = {
@@ -66,6 +67,9 @@ function makeMockExports(): HarnessBridgeExports & {
   let nextPtr = 1024;
   let lifecycle = Lifecycle.Boot;
   let canLoadEarlier = 0;
+  // Protocol v19 (plan #760) — mirrors the Wasm scalar: default true (legacy
+  // auto-promote) until the host arms it false on a Stop/error Ready.
+  let promoteAllowed = true;
   const messages: { kind: number; text: string }[] = [];
   const statusSlots: (string | undefined)[] = new Array(8).fill(undefined);
 
@@ -128,6 +132,9 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_pending_submit_copy: () => 0,
     inv_ack_pending_submit: () => {},
     inv_queued_count: () => 0,
+    inv_set_queue_promote_allowed: (v: number) => {
+      promoteAllowed = v !== 0;
+    },
     inv_set_can_load_earlier: (v: number) => {
       canLoadEarlier = v ? 1 : 0;
     },
@@ -182,6 +189,7 @@ function makeMockExports(): HarnessBridgeExports & {
     __lifecycle: () => lifecycle,
     __canLoadEarlier: () => canLoadEarlier,
     __statusSlots: statusSlots,
+    __promoteAllowed: () => promoteAllowed,
   };
 }
 
@@ -295,6 +303,66 @@ describe('runHarnessChat', () => {
     expect(result.ok).toBe(false);
     expect(send).not.toHaveBeenCalled();
     expect(exp.__messages[0]?.kind).toBe(MessageKind.Error);
+  });
+});
+
+describe('protocol v19 promote gate arming (plan #760)', () => {
+  it('runHarnessChat success arms promote_allowed=true then Ready', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const send = vi.fn(async (): Promise<ChatResult> => ({ ok: true, text: 'PONG' }));
+    await runHarnessChat(bridge, 'hi', { send });
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(exp.__promoteAllowed()).toBe(true); // success → auto-promote stays
+  });
+
+  it('runHarnessChat failure (agent error) arms promote_allowed=false then Ready', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const send = vi.fn(async (): Promise<ChatResult> => ({
+      ok: false,
+      error: 'AI_GATEWAY_API_KEY is not configured.',
+      status: 503,
+    }));
+    await runHarnessChat(bridge, 'hello', { send });
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(exp.__promoteAllowed()).toBe(false); // failure / stop → never drain
+  });
+
+  it('runHarnessTurn agent success arms promote_allowed=true then Ready', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({ ok: true, text: 'PONG' }));
+    await runHarnessTurn(bridge, createEmptySession(), 'hi', { sendAgent });
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(exp.__promoteAllowed()).toBe(true); // success → auto-promote stays
+  });
+
+  it('runHarnessTurn Stop (Request cancelled.) arms promote_allowed=false then Ready — no queue drain', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      error: 'Request cancelled.',
+      status: 499,
+    }));
+    const { result } = await runHarnessTurn(bridge, createEmptySession(), 'x', {
+      sendAgent,
+    });
+    expect(result.ok).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    // A user Stop must never drain a queued head — the Wasm terminal-promote
+    // block is gated on this scalar.
+    expect(exp.__promoteAllowed()).toBe(false);
+  });
+
+  it('runHarnessTurn validation arms promote_allowed=false then Ready', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const result = await runHarnessChat(bridge, '   ');
+    expect(result.ok).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(exp.__promoteAllowed()).toBe(false);
   });
 });
 

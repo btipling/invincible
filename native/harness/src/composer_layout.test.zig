@@ -36,6 +36,14 @@ var T_buf: [512]u8 = [_]u8{0} ** 512;
 var T_busy: bool = false;
 var T_want_focus: bool = true;
 var T_last_res: composer_chrome.Result = .{};
+// Staged action callbacks (Zig has no closures into test fns — same pattern as
+// T_buf / T_busy). Set per test before `paintAndClickSend`.
+var T_actions: composer_chrome.Actions = .{};
+// Plan #760 — idle ▶ promote-fallback dispatch capture. The test injects
+// callbacks and records which one the paint dispatched (or neither).
+var T_promote_count: usize = 0;
+var T_send_count: usize = 0;
+var T_send_text: []const u8 = "unset";
 
 const FieldRects = struct {
     wrap: dvui.Rect.Physical,
@@ -74,6 +82,42 @@ fn paintAndGetRects() FieldRects {
 /// Zero the shared prompt buffer.
 fn resetBuf() void {
     @memset(&T_buf, 0);
+}
+
+/// Reset the plan-#760 dispatch captures for one test.
+fn resetDispatch() void {
+    T_promote_count = 0;
+    T_send_count = 0;
+    T_send_text = "unset";
+}
+
+/// Paint TWO frames passing the STAGED `T_actions` callbacks (plan #760 idle-▶
+/// dispatch test), then move the mouse onto the send ▶ and click it. Two
+/// frames are needed so the tag rect exists before the click lands.
+fn paintAndClickSend(expect_click: bool) !void {
+    resetDispatch();
+    const frame = struct {
+        fn paint() !dvui.App.Result {
+            T_last_res = composer_chrome.paintComposerChrome(.{
+                .busy = T_busy,
+                .avail_w = WIN_LW,
+                .y = 0,
+                .h = metrics.COMPOSER_IDLE_CHROME_H,
+                .prompt_buf = &T_buf,
+                .want_focus = &T_want_focus,
+                .actions = T_actions,
+            });
+            return .ok;
+        }
+    }.paint;
+
+    _ = dvui.testing.step(frame) catch @panic("step 1 failed");
+    _ = dvui.testing.step(frame) catch @panic("step 2 failed");
+    if (expect_click) {
+        try dvui.testing.moveTo("composer-send");
+        try dvui.testing.click(.left);
+        _ = dvui.testing.step(frame) catch @panic("step 3 failed");
+    }
 }
 
 test "idle: field on reserved sub-rect, ▶ lands post-reserve, field right ≤ ▶ left" {
@@ -205,4 +249,77 @@ test "multi-line prompt: measured outer height grows (dynamic hug intact through
     // 4-line prompt reports a taller field than a single blank line. (Host
     // build includes freetype, so wrapped textLayout heights are real.)
     try t.expect(multi_h > single_h + EPS);
+}
+
+// ── Plan #760 — idle ▶ promote-fallback dispatch (goals 2/3/4) ─────────────
+
+test "idle ▶ + empty composer → on_promote fires (explicit Play of the head)" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    resetBuf(); // empty field
+    T_busy = false;
+    T_want_focus = true;
+    const promote_cb = struct {
+        fn run() void {
+            T_promote_count += 1;
+        }
+    }.run;
+    const send_cb = struct {
+        fn run(_: []const u8) void {
+            T_send_count += 1;
+        }
+    }.run;
+    T_actions = .{ .on_promote = &promote_cb, .on_send = &send_cb };
+    try paintAndClickSend(true);
+    // Goal 2: idle ▶ with an EMPTY field promotes — on_promote, never on_send.
+    try t.expectEqual(@as(usize, 1), T_promote_count);
+    try t.expectEqual(@as(usize, 0), T_send_count);
+}
+
+test "idle ▶ + typed composer → on_send fires with the text, never on_promote" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    resetBuf();
+    const text = "hello";
+    @memcpy(T_buf[0..text.len], text);
+    T_buf[text.len] = 0;
+    T_busy = false;
+    T_want_focus = true;
+    const promote_cb = struct {
+        fn run() void {
+            T_promote_count += 1;
+        }
+    }.run;
+    const send_cb = struct {
+        fn run(txt: []const u8) void {
+            T_send_count += 1;
+            T_send_text = txt;
+        }
+    }.run;
+    T_actions = .{ .on_promote = &promote_cb, .on_send = &send_cb };
+    try paintAndClickSend(true);
+    // Goal 3: idle ▶ with TEXT sends that text (queue untouched here); the head
+    // is not promoted.
+    try t.expectEqual(@as(usize, 0), T_promote_count);
+    try t.expectEqual(@as(usize, 1), T_send_count);
+    try t.expect(std.mem.eql(u8, "hello", T_send_text));
+}
+
+test "idle ▶ + empty composer + empty queue (no on_promote) → no-op" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    resetBuf(); // empty field
+    T_busy = false;
+    T_want_focus = true;
+    // Caller binds on_promote only when it has a queue head to promote; when
+    // the queue is empty it is null (goal 4) → the ▶ click must be a no-op.
+    const send_cb = struct {
+        fn run(_: []const u8) void {
+            T_send_count += 1;
+        }
+    }.run;
+    T_actions = .{ .on_send = &send_cb };
+    try paintAndClickSend(true);
+    try t.expectEqual(@as(usize, 0), T_promote_count);
+    try t.expectEqual(@as(usize, 0), T_send_count);
 }

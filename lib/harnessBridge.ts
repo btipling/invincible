@@ -31,7 +31,11 @@ import {
 // `inv_push_session_catalog_entry`, `inv_set_current_session`,
 // `inv_has_pending_session_switch` / len / copy / ack. Additive, now REQUIRED.
 // v18: submit-queue count — `inv_queued_count` (Wasm-ephemeral FIFO). Additive, now REQUIRED.
-export const HARNESS_PROTOCOL_VERSION = 18 as const;
+// v19 (plan #760): promote gate — `inv_set_queue_promote_allowed` (host arms a
+// one-shot per-terminal scalar so a Stop / Esc / error / timeout Ready never
+// drains the queue; only idle ▶ / Ctrl+Enter with an empty composer + non-empty
+// queue promotes). Additive, now REQUIRED.
+export const HARNESS_PROTOCOL_VERSION = 19 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -146,6 +150,11 @@ export type HarnessBridgeExports = {
   inv_pending_submit_copy: (outPtr: number, maxLen: number) => number;
   inv_ack_pending_submit: () => void;
   inv_queued_count: () => number;
+  // Protocol v19 (plan #760) — host arms the one-shot promote gate: true on a
+  // successful turn's Ready (auto-promote stays), false on Stop / Esc / error /
+  // timeout / validation Ready so the Wasm terminal-promote block never drains
+  // a queued head after a non-success.
+  inv_set_queue_promote_allowed: (v: number) => void;
   inv_set_can_load_earlier: (v: number) => void;
   inv_has_pending_load_earlier: () => number;
   inv_ack_pending_load_earlier: () => void;
@@ -229,6 +238,7 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_pending_submit_copy',
   'inv_ack_pending_submit',
   'inv_queued_count',
+  'inv_set_queue_promote_allowed',
   'inv_set_can_load_earlier',
   'inv_has_pending_load_earlier',
   'inv_ack_pending_load_earlier',
@@ -564,6 +574,18 @@ export class HarnessBridge {
   /** Protocol v18 — Wasm-ephemeral follow-up queue depth. */
   queuedCount(): number {
     return this.exports.inv_queued_count();
+  }
+
+  /**
+   * Protocol v19 (plan #760) — arm the one-shot promote gate for the NEXT
+   * terminal. Host sets true on a SUCCESSFUL turn's Ready (auto-promote stays,
+   * unchanged) and false on a Stop / Esc / error / timeout / validation Ready
+   * so the Wasm terminal-promote block cannot drain a queued head after a
+   * non-success. The idle ▶ / Ctrl+Enter explicit-Play path is unchanged (it
+   * promotes regardless of this scalar).
+   */
+  setQueuePromoteAllowed(allowed: boolean): void {
+    this.exports.inv_set_queue_promote_allowed(allowed ? 1 : 0);
   }
 
   /** Read + ack pending Wasm→JS submit, or null if none. */
