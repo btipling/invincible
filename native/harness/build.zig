@@ -18,6 +18,7 @@ pub fn build(b: *std.Build) void {
     // zig-pkg is extracted by b.dependency; compile steps created below see the
     // patched file. Idempotent (marker comment).
     applyInvincibleRightClickPatch(b, dvui_dep);
+    applyInvincibleShiftClickPatch(b, dvui_dep);
 
     // Phase 1 rich transcript (#143): zmd (MIT) markdown parser, freestanding.
     const zmd_dep = b.dependency("zmd", .{
@@ -823,6 +824,289 @@ fn applyInvincibleRightClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
     file.writeStreamingAll(io, new_src) catch |err| {
         std.debug.panic("plan #647: writeStreamingAll {s} failed: {}", .{ widget, err });
     };
+}
+
+/// plan #752 — dedicate a Shift+click selection-extend path in the vendored
+/// `TextLayoutWidget`. Stock dvui treats a left press as a plain caret move
+/// (`selection.moveCursor(hit, false)`, no extend). This patch adds a
+/// `sel_move.shift_click` variant: anchor = the pre-press cursor, and on
+/// Shift+LMB the selection becomes `[min(anchor, hit), max(anchor, hit)]`.
+///
+/// The click point → byte resolution lives in `selMovePre`/`lineBreak` (during
+/// `addText`, the only place text rects exist), so the variant rides the same
+/// async `sel_move` machine the plan's #647 split forbids overloading. The
+/// plain left-click move-caret path is untouched; `.right`/`.middle` are
+/// untouched (no #647 regression); copy is handled by `TextEntryWidget.copy()`
+/// on the reserved chord (kept browser-reserved, handled inside the widget).
+///
+/// Runs at build-file eval, after the #647 right-click patch. Idempotent via
+/// the `invincible: dedicated shift-click` marker. Fail-closed: every needle
+/// must match exactly once or the build panics.
+fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency) void {
+    const io = b.graph.io;
+    const widget = resolveDvuiWidgetPath(b, io, dvui_dep) orelse {
+        @panic("plan #752: TextLayoutWidget.zig not found — shift-click patch cannot be applied (fail-closed)");
+    };
+    const widget_dirname = std.fs.path.dirname(widget) orelse
+        @panic("plan #752: cannot resolve parent dir of TextLayoutWidget.zig path");
+    const widget_basename = std.fs.path.basename(widget);
+
+    var widget_parent_dir = std.Io.Dir.openDirAbsolute(io, widget_dirname, .{}) catch |err| {
+        std.debug.panic("plan #752: openDirAbsolute({s}) failed: {}", .{ widget_dirname, err });
+    };
+    defer widget_parent_dir.close(io);
+
+    const src = std.Io.Dir.readFileAlloc(widget_parent_dir, io, widget_basename, b.allocator, .limited(4 * 1024 * 1024)) catch |err| {
+        std.debug.panic("plan #752: read {s} failed: {}", .{ widget, err });
+    };
+    if (std.mem.indexOf(u8, src, "invincible: dedicated shift-click") != null) return;
+
+    const Patch = struct { needle: []const u8, replacement: []const u8 };
+    const patches = [_]Patch{
+        .{
+            // 1. union variant after the `.mouse` struct.
+            .needle =
+            \\        drag_pt: ?Point = null, // point of current mouse drag
+            \\    },
+            ,
+            .replacement =
+            \\        drag_pt: ?Point = null, // point of current mouse drag
+            \\    },
+            \\
+            \\    // invincible: dedicated shift-click (plan #752) — select [anchor, click].
+            \\    // anchor = pre-press cursor (byte); click point resolved during addText.
+            \\    shift_click: struct {
+            \\        anchor: usize, // selection anchor (pre-press cursor byte)
+            \\        down_pt: ?Point = null, // click point, resolved to a byte during addText
+            \\        byte: ?usize = null, // resolved byte index of the click point
+            \\    },
+            ,
+        },
+        .{
+            // 2. selMovePre — resolve the click point, extend from anchor.
+            .needle =
+            \\            }
+            \\        },
+            \\        .expand_pt => |*ep| {
+            \\            if (ep.pt) |p| {
+            \\                if (self.findPoint(p, text_rect, self.bytes_seen, text_line, options)) |ba| {
+            \\                    self.selection.moveCursor(ba.byte, false);
+            ,
+            .replacement =
+            \\            }
+            \\        },
+            \\        .shift_click => |*sc| {
+            \\            if (sc.down_pt) |p| {
+            \\                if (self.findPoint(p, text_rect, self.bytes_seen, text_line, options)) |ba| {
+            \\                    sc.byte = ba.byte;
+            \\                    self.selection.cursor = ba.byte;
+            \\                    self.selection.start = @min(sc.anchor, ba.byte);
+            \\                    self.selection.end = @max(sc.anchor, ba.byte);
+            \\                    self.selection.affinity = ba.affinity;
+            \\                    sc.down_pt = null;
+            \\                } else {
+            \\                    // haven't found it yet, keep cursor at end to not trigger cursor_seen
+            \\                    self.selection.cursor = self.bytes_seen + end;
+            \\                    self.selection.start = @min(sc.anchor, self.selection.cursor);
+            \\                    self.selection.end = @max(sc.anchor, self.selection.cursor);
+            \\                    self.selection.affinity = .after;
+            \\                }
+            \\            }
+            \\        },
+            \\        .expand_pt => |*ep| {
+            \\            if (ep.pt) |p| {
+            \\                if (self.findPoint(p, text_rect, self.bytes_seen, text_line, options)) |ba| {
+            \\                    self.selection.moveCursor(ba.byte, false);
+            ,
+        },
+        .{
+            // 3. lineBreak — extend when the click point sits past a wrapped line end.
+            .needle =
+            \\            }
+            \\        },
+            \\        .expand_pt => |*ep| {
+            \\            if (ep.pt) |p| {
+            \\                if (p.y < self.insert_pt.y) {
+            ,
+            .replacement =
+            \\            }
+            \\        },
+            \\        .shift_click => |*sc| {
+            \\            if (sc.down_pt) |p| {
+            \\                if (p.y < self.insert_pt.y) {
+            \\                    // point was right of previous line, no newline
+            \\                    sc.byte = self.bytes_seen;
+            \\                    self.selection.cursor = self.bytes_seen;
+            \\                    self.selection.start = @min(sc.anchor, self.bytes_seen);
+            \\                    self.selection.end = @max(sc.anchor, self.bytes_seen);
+            \\                    self.selection.affinity = .before;
+            \\                    sc.down_pt = null;
+            \\                    self.cursorSeen();
+            \\                }
+            \\            }
+            \\        },
+            \\        .expand_pt => |*ep| {
+            \\            if (ep.pt) |p| {
+            \\                if (p.y < self.insert_pt.y) {
+            ,
+        },
+        .{
+            // 4. selMoveText — no-op arm (selection already set in selMovePre).
+            .needle =
+            \\        .none => {},
+            \\        .mouse => {},
+            \\        .expand_pt => |*ep| {
+            \\            if (!ep.done) {
+            \\                const search = if (ep.which == .word) word_breaks else "\n";
+            ,
+            .replacement =
+            \\        .none => {},
+            \\        .mouse => {},
+            \\        .shift_click => {},
+            \\        .expand_pt => |*ep| {
+            \\            if (!ep.done) {
+            \\                const search = if (ep.which == .word) word_breaks else "\n";
+            ,
+        },
+        .{
+            // 5. cursorSeen — no-op arm.
+            .needle =
+            \\        .none => {},
+            \\        .mouse => {},
+            \\        .expand_pt => |*ep| {
+            \\            if (!ep.done) {
+            \\                switch (ep.which) {
+            ,
+            .replacement =
+            \\        .none => {},
+            \\        .mouse => {},
+            \\        .shift_click => {},
+            \\        .expand_pt => |*ep| {
+            \\            if (!ep.done) {
+            \\                switch (ep.which) {
+            ,
+        },
+        .{
+            // 6. bytesNeeded — no-op arm (anchor is in the visible region like mouse).
+            .needle =
+            \\        .mouse => {}, // all in visible region, excepted below
+            \\        .expand_pt => |*ep| {
+            ,
+            .replacement =
+            \\        .mouse => {}, // all in visible region, excepted below
+            \\        .shift_click => {}, // all in visible region like mouse
+            \\        .expand_pt => |*ep| {
+            ,
+        },
+        .{
+            // 7. addTextDone fallback — resolve an unresolved click to end-of-text.
+            .needle =
+            \\            if (m.drag_pt) |_| {
+            \\                self.selection.cursor = self.bytes_seen;
+            \\                self.selection.start = @min(m.byte.?, self.bytes_seen);
+            \\                self.selection.end = @max(m.byte.?, self.bytes_seen);
+            \\                m.drag_pt = null;
+            \\            }
+            \\        },
+            \\        .expand_pt => |*ep| {
+            ,
+            .replacement =
+            \\            if (m.drag_pt) |_| {
+            \\                self.selection.cursor = self.bytes_seen;
+            \\                self.selection.start = @min(m.byte.?, self.bytes_seen);
+            \\                self.selection.end = @max(m.byte.?, self.bytes_seen);
+            \\                m.drag_pt = null;
+            \\            }
+            \\        },
+            \\        .shift_click => |*sc| {
+            \\            if (sc.down_pt) |_| {
+            \\                // click point never resolved to a text rect — select [anchor, end-of-text]
+            \\                sc.byte = self.bytes_seen;
+            \\                self.selection.cursor = self.bytes_seen;
+            \\                self.selection.start = @min(sc.anchor, self.bytes_seen);
+            \\                self.selection.end = @max(sc.anchor, self.bytes_seen);
+            \\                sc.down_pt = null;
+            \\            }
+            \\        },
+            \\        .expand_pt => |*ep| {
+            ,
+        },
+        .{
+            // 8. press handler — Shift+pointer press picks .shift_click; plain click untouched.
+            .needle =
+            \\                } else if (me.button.pointer()) {
+            \\                    // a click always sets sel_move - has the highest priority
+            \\                    const p = self.data().contentRectScale().pointFromPhysical(me.p);
+            \\                    self.sel_move = .{ .mouse = .{ .down_pt = p } };
+            \\                    self.scroll_to_cursor = true;
+            \\
+            \\                    if (self.click_num == 1) {
+            \\                        // select word we touched
+            \\                        self.sel_move = .{ .expand_pt = .{ .which = .word, .pt = p } };
+            \\                    } else if (self.click_num == 2) {
+            \\                        // select line we touched
+            \\                        self.sel_move = .{ .expand_pt = .{ .which = .line, .pt = p } };
+            \\                    }
+            \\                }
+            ,
+            .replacement =
+            \\                } else if (me.button.pointer()) {
+            \\                    // invincible: dedicated shift-click (plan #752) — if shift is
+            \\                    // held, extend selection from the pre-press caret to the click
+            \\                    // point; never fall through to the plain caret-move / drag path.
+            \\                    if (me.mod.shift()) {
+            \\                        self.sel_move = .{ .shift_click = .{ .anchor = self.selection.cursor } };
+            \\                        self.sel_move.shift_click.down_pt = self.data().contentRectScale().pointFromPhysical(me.p);
+            \\                        self.scroll_to_cursor = true;
+            \\                    } else {
+            \\                        // a click always sets sel_move - has the highest priority
+            \\                        const p = self.data().contentRectScale().pointFromPhysical(me.p);
+            \\                        self.sel_move = .{ .mouse = .{ .down_pt = p } };
+            \\                        self.scroll_to_cursor = true;
+            \\
+            \\                        if (self.click_num == 1) {
+            \\                            // select word we touched
+            \\                            self.sel_move = .{ .expand_pt = .{ .which = .word, .pt = p } };
+            \\                        } else if (self.click_num == 2) {
+            \\                            // select line we touched
+            \\                            self.sel_move = .{ .expand_pt = .{ .which = .line, .pt = p } };
+            \\                        }
+            \\                    }
+            \\                }
+            ,
+        },
+    };
+
+    var new_src = src;
+    for (patches) |patch| {
+        const occurrences = countOccurrences(new_src, patch.needle);
+        if (occurrences != 1) {
+            @panic("plan #752: shift-click needle must match exactly once in TextLayoutWidget.zig — dvui pin may have drifted; update applyInvincibleShiftClickPatch");
+        }
+        const idx = std.mem.indexOf(u8, new_src, patch.needle) orelse unreachable;
+        new_src = std.mem.concat(b.allocator, u8, &.{ new_src[0..idx], patch.replacement, new_src[idx + patch.needle.len ..] }) catch
+            @panic("plan #752: OOM concatenating shift-click patch");
+    }
+
+    var file = widget_parent_dir.createFile(io, widget_basename, .{}) catch |err| {
+        std.debug.panic("plan #752: createFile {s} failed: {}", .{ widget, err });
+    };
+    defer file.close(io);
+    file.writeStreamingAll(io, new_src) catch |err| {
+        std.debug.panic("plan #752: writeStreamingAll {s} failed: {}", .{ widget, err });
+    };
+}
+
+/// Count non-overlapping occurrences of `needle` in `haystack`.
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    if (needle.len == 0) return 0;
+    var count: usize = 0;
+    var rest = haystack;
+    while (std.mem.indexOf(u8, rest, needle)) |idx| {
+        count += 1;
+        rest = rest[idx + needle.len ..];
+    }
+    return count;
 }
 
 fn resolveDvuiWidgetPath(b: *std.Build, io: std.Io, dvui_dep: *std.Build.Dependency) ?[]const u8 {
