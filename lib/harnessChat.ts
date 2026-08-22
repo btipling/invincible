@@ -625,8 +625,11 @@ function completeTurn(bridge: HarnessBridge, promoteAllowed: boolean): void {
 }
 
 /**
- * Run one prompt → Gateway → transcript update.
- * Sets lifecycle busy → ready (soft API errors leave ready for retry).
+ * Run one prompt → Gateway → transcript update (standalone chat path, no agent
+ * tools). Sets lifecycle busy → Ready on success; on failure it gives up to
+ * Error (or stays Ready on an operator Stop) — the chat path does NOT retry.
+ * Client-side validation is rejected PRE-Busy: it pushes the error line and
+ * returns Ready without ever inserting a Continue prompt (nothing drained).
  */
 export async function runHarnessChat(
   bridge: HarnessBridge,
@@ -1014,6 +1017,19 @@ export async function runHarnessTurn(
     let thinkingSegment = '';
     let thinkingSegmentOpen = false;
     let sawStreamTerminal = false;
+    /**
+     * plan #759 / adversarial-review Major — once the LIVE stream has painted
+     * ANY ring content past the user line (a tool card, assistant text, a
+     * thinking row, a skill row), a later failure is NOT retryable: replaying
+     * the same prompt onto the SAME ring would re-run tools (side-effect
+     * duplication) and push duplicate bubbles. Monotonic — set once, never
+     * reset within the turn, so any post-paint failure fails closed to
+     * permanent single-attempt. A failure BEFORE anything painted (immediate
+     * 5xx / network drop) stays cleanly retryable. JSON tests run the
+     * non-stream path where `onStreamEvent` never fires, so this flag stays
+     * false and the 5× loop is unchanged there.
+     */
+    let streamPainted = false;
     // Last confirmed-successful `change_dir` cwd this turn (phase 2 of #464 /
     // plan #465): recorded from live tool events (stream) or the JSON toolTrace,
     // applied on non-success terminals and as a success fallback so an aborted
@@ -1336,6 +1352,19 @@ export async function runHarnessTurn(
     // becomes an AgentRetryError so the narrow classifier can map retryable vs
     // permanent from HTTP status + classifyTurnFailure kind.
     const onStreamEvent = async (ev: AgentStreamEvent) => {
+      // Fail-closed retry gate (plan #759 adversarial-review Major): any event
+      // that PAINTS the ring past the user line arms `streamPainted`, so a
+      // retryable-looking failure after it becomes permanent single-attempt
+      // (never replay tools/duplicate bubbles onto the same ring).
+      if (
+        ev.type === 'tool_start' ||
+        ev.type === 'tool_result' ||
+        ev.type === 'reasoning_delta' ||
+        ev.type === 'text_delta' ||
+        ev.type === 'skill_attached'
+      ) {
+        streamPainted = true;
+      }
       if (ev.type === 'tool_start' || ev.type === 'tool_result') {
         handleToolEvent(ev);
         return;
@@ -1425,7 +1454,13 @@ export async function runHarnessTurn(
           baseMs: TURN_RETRY_BASE_MS,
           capMs: TURN_RETRY_CAP_MS,
           signal: opts?.signal,
-          classify: classifyTurnRetry,
+          // Fail-closed gate (adversarial-review Major): once `streamPainted`,
+          // no failure is retryable — replaying the same prompt onto the SAME
+          // ring would re-run just-painted tools (side-effect duplication) and
+          // push duplicate assistant bubbles. `classifyTurnRetry` still owns
+          // the status/stop mapping for the clean (never-painted) cases.
+          classify: (err) =>
+            streamPainted ? { kind: 'permanent' } : classifyTurnRetry(err),
         },
       );
     } catch (err) {

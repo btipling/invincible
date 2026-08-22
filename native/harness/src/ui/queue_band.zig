@@ -47,6 +47,22 @@ pub fn shouldDropEditOnEmptyQueue() bool {
     return state.queue_editing_index != null and bridge.queuedCount() == 0;
 }
 
+/// Plan #759 / adversarial-review Major — reconcile the queue-row edit latch
+/// after a HOST front-insert (the give-up `Continue` head). `submit_queue.insertFront`
+/// shifts every queued slot down one but can't touch `state.queue_editing_index`
+/// (UI-owned; bridge is lower). Consuming `bridge.takeFrontInsertSignal()` tells
+/// us a front-insert happened; bump the open edit index by one so blur/Ctrl+Enter
+/// `saveEdit` targets the row the operator was actually editing — not the new row
+/// that slid into the old slot (which would be overwritten/lost). No-op when no
+/// front-insert is pending and/or no edit is open. Exported so host tests can
+/// drive the same production path (`queue_band.test.zig`).
+pub fn reconcileFrontInsert() void {
+    if (!bridge.takeFrontInsertSignal()) return;
+    if (state.queue_editing_index) |e| {
+        state.queue_editing_index = e + 1;
+    }
+}
+
 pub fn desiredHeight() f32 {
     const n = bridge.queuedCount();
     const editing = state.queue_editing_index != null;

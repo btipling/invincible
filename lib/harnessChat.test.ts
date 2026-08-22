@@ -36,6 +36,7 @@ import {
 } from './harnessBridge';
 import type { ChatResult } from './chatApi';
 import type { AgentResult } from './agentApi';
+import type { AgentStreamEvent } from './agent/agentStream';
 import {
   TOOL_RUN_ITEMS_MAX,
   addToolResult,
@@ -930,6 +931,68 @@ describe('plan #759 — turn errors retry the current turn, never drain the queu
     // closed to permanent — the turn never loops on something it can't classify.
     expect(classifyTurnRetry(new Error('x')).kind).toBe('permanent');
     expect(classifyTurnRetry('string').kind).toBe('permanent');
+  });
+
+  it('a LIVE stream that painted then fails is NOT retried (single attempt, no tool/bubble duplication) [adversarial-review Major L1]', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    exp.__queue.push('op item A');
+    let calls = 0;
+    // Production path is `streamAgent: true` (SSE). Attempt 1 emits a tool card
+    // + a text delta (both PAINT to the ring), then returns a retryable 500.
+    // Because content already painted, retrying the SAME prompt onto the SAME
+    // ring would re-run the tool (side-effect duplication) and push a duplicate
+    // assistant bubble. The failure must classify PERMANENT → exactly 1 send.
+    const sendAgentStream = vi.fn(
+      async (
+        _prompt: string,
+        init?: { onEvent?: (event: AgentStreamEvent) => void | Promise<void> },
+      ): Promise<AgentResult> => {
+        calls += 1;
+        await init?.onEvent?.({ type: 'tool_start', name: 'exec' });
+        await init?.onEvent?.({ type: 'text_delta', text: 'partial reply' });
+        return { ok: false, status: 500, error: 'flaked after paint' };
+      },
+    );
+    const { result } = await runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+      sendAgentStream,
+      pushUser: false,
+      streamAgent: true,
+    });
+    expect(result.ok).toBe(false);
+    expect(sendAgentStream).toHaveBeenCalledTimes(1); // painted → permanent, no retry
+    expect(calls).toBe(1);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+    // Give-up with non-empty queue inserts Continue at head; no attempt 2.
+    expect(exp.__queue[0]).toBe(CONTINUE_TURN_PROMPT);
+    // Exactly ONE tool card + ONE assistant bubble — the re-send never happened.
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.ToolRun)).toHaveLength(1);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.Assistant)).toHaveLength(1);
+  });
+
+  it('a live stream that fails BEFORE painting anything still retries (5 attempts) [adversarial-review Minor L6]', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    exp.__queue.push('op item A');
+    let calls = 0;
+    // Stream that NEVER emits a ring-painting event before failing with a
+    // retryable 503 (gateway not ready, nothing painted) → cleanly retryable.
+    const sendAgentStream = vi.fn(async (): Promise<AgentResult> => {
+      calls += 1;
+      return { ok: false, status: 503, error: 'gateway not ready' };
+    });
+    const { result } = await runRetry(() =>
+      runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+        sendAgentStream,
+        pushUser: false,
+        streamAgent: true,
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(sendAgentStream).toHaveBeenCalledTimes(5); // nothing painted → retry loop preserved
+    expect(calls).toBe(5);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+    expect(exp.__queue[0]).toBe(CONTINUE_TURN_PROMPT);
   });
 });
 

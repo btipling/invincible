@@ -154,6 +154,15 @@ var has_pending_cancel: bool = false;
 /// polls this flag, folds the live selection into the session snapshot, persists,
 /// then acks it.
 var has_pending_model_change: bool = false;
+/// Plan #759 / adversarial-review Major — set when a HOST front-insert
+/// (`inv_queued_insert_front`, the give-up `Continue` head) successfully shifts
+/// every queued slot down one. `submit_queue.insertFront` moves the rows but the
+/// operator's open queue-row edit lives in `ui/state.zig (queue_editing_index)`;
+/// bridge cannot import state (state imports bridge), so it latches here and the
+/// UI layer consumes it on the next frame to bump the edit index (`queue_band.reconcileFrontInsert`).
+/// Without this, blur/Ctrl+Enter `saveEdit` on the stale index would overwrite
+/// the NEW row that slid into the old slot (losing the row the operator was editing).
+var has_pending_front_insert: bool = false;
 var suppress_refresh: bool = false;
 
 const CatalogEntry = struct {
@@ -312,11 +321,24 @@ pub fn queuedCount() u32 {
 }
 
 /// Insert `text` as the new queue head (plan #759). Never pops; returns false
-/// when the queue is full (`Full`) or the text is blank (`Blank`).
+/// when the queue is full (`Full`) or the text is blank (`Blank`). On success
+/// arms `has_pending_front_insert` so the UI layer bumps an open queue-row edit
+/// index on its next frame (the insert shifts every slot down one).
 pub fn insertQueuedFront(text: []const u8) bool {
     submit_queue.insertFront(&queue, text) catch return false;
+    has_pending_front_insert = true;
     refresh();
     return true;
+}
+
+/// Consume-and-clear the front-insert latch (see `has_pending_front_insert`).
+/// Returns whether a host front-insert happened since the last frame. Called by
+/// `queue_band.reconcileFrontInsert` so the queue-row edit latch follows the
+/// shifted row instead of re-anchoring to the neighbor.
+pub fn takeFrontInsertSignal() bool {
+    const v = has_pending_front_insert;
+    has_pending_front_insert = false;
+    return v;
 }
 
 pub fn queuedItemAt(i: u32) ?[]const u8 {
@@ -361,6 +383,7 @@ pub fn reset() void {
     has_pending_cancel = false;
     has_pending_model_change = false;
     queue_promote_allowed = true; // fresh surface re-arms the legacy default (plan #760)
+    has_pending_front_insert = false;
     session_catalog.reset();
     suppress_refresh = false;
     catalog_count = 0;
@@ -584,6 +607,7 @@ pub export fn inv_clear_messages() void {
     // Hydrate / New must not leave a queued Send from the previous session.
     has_pending_submit = false;
     pending_submit_len = 0;
+    has_pending_front_insert = false;
     submit_queue.clear(&queue);
     // Clear / New also re-arm the promote gate (fresh surface, plan #760).
     queue_promote_allowed = true;
