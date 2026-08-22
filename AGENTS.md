@@ -278,11 +278,16 @@ ops inventory).
   fallback to the tab-owned `/api/agent` POST.
 - **Authed human surface:** `POST /api/workflows/smoke` (start → `{runId}`) +
   `GET /api/workflows/smoke?runId=` (poll → `{status}`), cookie-gated
-  `requireSessionUser()`. A server-side GHA has no browser cookie, so it does not
-  route through this route (plan-review lock).
+  `requireSessionUser()` — meets unauth with **401** (not 403), `start` disabled
+  → **503** fail-closed, and back-to-back `POST`s within the per-process window
+  → **429**. A server-side GHA has no browser cookie, so it does not route
+  through this route (plan-review lock).
 - **Caps:** step `maxDuration` = 1800 s (Fluid Function ceiling, unchanged);
-  smoke poll budget `WORKFLOWS_SMOKE_POLL_TIMEOUT` 120 s / interval 2 s (±0.5 s
-  jitter) — bounded, generous, NEW caps in the plan's Caps table.
+  smoke poll budget `WORKFLOWS_SMOKE_POLL_TIMEOUT_MS` 120000 / interval
+  `WORKFLOWS_SMOKE_POLL_INTERVAL_MS` 2000 (±0.5 s jitter); per-process
+  `POST` start guard `WORKFLOWS_SMOKE_POST_MIN_INTERVAL_MS` = 15000 (429) —
+  bounded, generous, NEW caps in the plan's Caps table. `maxDuration` stays as
+  the plan pinned; a LOWER ceiling would be a human-gated cap change.
 
 IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
 BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).  
