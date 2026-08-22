@@ -27,10 +27,10 @@ fn rowChord(row: keymap.Row) []const u8 {
         .cancel_queue_edit => "Esc",
         .help_close => "Esc",
         .help_toggle => "Ctrl/Cmd+/",
-        .help_toggle_leader => "Leader Space, then ?",
-        .leader => "Ctrl+Shift+Space",
+        .help_toggle_leader => "Leader I, then ?",
+        .leader => "Ctrl+I",
         .leader_cancel => "Esc (leader)",
-        .thinking_default_toggle => "Leader Space, then t",
+        .thinking_default_toggle => "Leader I, then t",
     };
 }
 

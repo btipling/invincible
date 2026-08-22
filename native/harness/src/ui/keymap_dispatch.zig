@@ -43,8 +43,8 @@ pub const Handlers = struct {
 /// `menu`, `num_lock`, `caps_lock`, `print`, `scroll_lock`, `pause` and dvui's
 /// own `unknown`) return null — the dispatcher passes them through untouched
 /// (Goal 3) and they NEVER disarm the leader: releasing Ctrl/Shift after
-/// arming (`Ctrl+Shift+Space`) or pressing Shift again for the `?` command must
-/// not kill the window.
+/// arming (`Ctrl+I`) or pressing Shift again for the `?` command must not
+/// kill the window.
 ///
 /// Every OTHER unrecognized key (letters outside the subset, digits,
 /// punctuation, Backspace, function keys beyond f5, navigation) maps to

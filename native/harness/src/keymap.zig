@@ -14,7 +14,7 @@ const std = @import("std");
 /// Static-table cap (generous for follow-up chords; not a wire; plan-only cap).
 pub const KEYMAP_MAX: usize = 64;
 
-/// Leader prefix window (ms) between Ctrl+Shift+Space and the command key.
+/// Leader prefix window (ms) between Ctrl+I and the command key.
 pub const LEADER_WINDOW_MS: u64 = 800;
 
 /// Logical key codes the harness interprets (self-contained subset of
@@ -73,8 +73,11 @@ pub const ModPrereq = enum {
     none,
     /// Control OR Command (submit / queue_save / help_toggle).
     ctrl_or_cmd,
-    /// Control AND Shift, and NOT Command (leader prefix — Control both platforms).
+    /// Control AND Shift, and NOT Command (Ctrl+Shift+I reserved Inspect).
     ctrl_shift,
+    /// Control only (and NOT Command/Shift/Alt) — the leader prefix, Control
+    /// both platforms. Strict so Cmd+I, Ctrl+Shift+I, and Ctrl+Space never arm.
+    control,
     /// Shift only (leader `?` = Shift+/).
     shift,
     /// Alt only (browser back/forward Alt+Left / Alt+Right).
@@ -86,6 +89,7 @@ fn modsMatch(mods: Mods, prereq: ModPrereq) bool {
         .none => !mods.control and !mods.command and !mods.shift and !mods.alt,
         .ctrl_or_cmd => !mods.shift and !mods.alt and (mods.control or mods.command),
         .ctrl_shift => mods.control and mods.shift and !mods.command and !mods.alt,
+        .control => mods.control and !mods.command and !mods.shift and !mods.alt,
         .shift => mods.shift and !mods.control and !mods.command and !mods.alt,
         .alt => mods.alt and !mods.control and !mods.command and !mods.shift,
     };
@@ -103,7 +107,7 @@ pub const Action = enum {
     help_close,
     help_toggle,
     help_toggle_leader,
-    /// Ctrl+Shift+Space — arm the leader window (dispatcher).
+    /// Ctrl+I — arm the leader window (dispatcher).
     leader,
     /// Escape while leader pending — disarm (no insert, no product action).
     leader_cancel,
@@ -266,11 +270,11 @@ pub const KEY_TABLE = [_]Row{
     // ── leader prefix (global) ─────────────────────────────────────────────
     .{
         .id = "leader",
-        .key = .space,
-        .prereq = .ctrl_shift,
+        .key = .i,
+        .prereq = .control,
         .when_true = .{},
         .action = .leader,
-        .help = "Leader: Ctrl+Shift+Space",
+        .help = "Leader: Ctrl+I",
     },
     // ── help toggle (direct Ctrl/Cmd+/) ───────────────────────────────────
     .{
@@ -303,9 +307,9 @@ pub const KEY_TABLE = [_]Row{
 
 /// Reserved-browser deny-list — (key, prereq) pairs never marked handled.
 /// From the plan: Ctrl/Cmd+T N W R L P S F, Ctrl+Shift+T, Ctrl+Tab /
-/// Ctrl+Shift+Tab, Alt+Left/Right, F5 / Ctrl+R, Ctrl+Shift+C I J (devtools
-/// family), Ctrl/Cmd+C V X A Z (editing — leave to textEntry / browser).
-/// Ctrl+/ and Ctrl+Shift+Space are NOT reserved.
+/// Ctrl+Shift+Tab, Alt+Left/Right, F5 / Ctrl+R, Ctrl/Cmd+C V X A Z (editing —
+/// leave to textEntry / browser), Ctrl+Shift+I (Inspect — devtools).
+/// NOT reserved: Ctrl+/ and Ctrl+I (Ctrl+I is the leader prefix).
 const RESERVED = [_]struct { key: Key, prereq: ModPrereq }{
     .{ .key = .t, .prereq = .ctrl_or_cmd },
     .{ .key = .n, .prereq = .ctrl_or_cmd },
@@ -320,8 +324,10 @@ const RESERVED = [_]struct { key: Key, prereq: ModPrereq }{
     .{ .key = .x, .prereq = .ctrl_or_cmd },
     .{ .key = .a, .prereq = .ctrl_or_cmd },
     .{ .key = .z, .prereq = .ctrl_or_cmd },
-    .{ .key = .i, .prereq = .ctrl_or_cmd },
     .{ .key = .j, .prereq = .ctrl_or_cmd },
+    // Ctrl+Shift+I = browser Inspect. Crucially reserved (never handled) even
+    // while a leader is pending, so devtools is never swallowed.
+    .{ .key = .i, .prereq = .ctrl_shift },
     .{ .key = .tab, .prereq = .ctrl_or_cmd },
     .{ .key = .f5, .prereq = .none },
     // Alt+Left / Alt+Right (browser back/forward) — notice Ctrl+Left/Right are
@@ -363,7 +369,7 @@ fn ctxIntersects(forbidden: Context, ctx: Context) bool {
 
 /// Dispatch one key event through the table. Pure: no dvui, no bridge, no I/O.
 ///
-/// Leader handling is table-driven: the `leader` row (space+ctrl_shift) fires
+/// Leader handling is table-driven: the `leader` row (i+control) fires
 /// the `.leader` action (the dispatcher arms on `.down` only); while
 /// `ctx.leader_pending` the `help_toggle_leader` (`?`) and `leader_cancel`
 /// (Escape) rows have product actions; any other key that no row matches
@@ -397,7 +403,7 @@ pub fn match(key: Key, action: KeyAction, mods: Mods, ctx: Context) Match {
             if (ctx.help_open) return .{ .outcome = .action, .action = .help_close };
             return .{ .outcome = .action, .action = .leader_cancel };
         }
-        if (key == .space and modsMatch(mods, .ctrl_shift)) {
+        if (key == .i and modsMatch(mods, .control)) {
             return .{ .outcome = .action, .action = .leader }; // re-arm
         }
         // Leader command `t`: flip thinking default-collapsed (#742). Mirrors
@@ -542,10 +548,35 @@ test "keymap: bare / is not help (printable slash in composer)" {
     try std.testing.expectEqual(Outcome.none, m.outcome);
 }
 
-test "keymap: leader arms on Ctrl+Shift+Space (row 7)" {
-    const m = match(.space, .down, .{ .control = true, .shift = true }, .{ .composer = true });
+test "keymap: leader arms on Ctrl+I (row leader, plan #761 test 1)" {
+    const m = match(.i, .down, .{ .control = true }, .{ .composer = true });
     try std.testing.expectEqual(Outcome.action, m.outcome);
     try std.testing.expectEqual(Action.leader, m.action.?);
+}
+
+test "keymap: Ctrl+Shift+Space no longer arms (plan #761 test 4)" {
+    // Normal context: `.none` (no row matches — no longer the leader prefix).
+    try std.testing.expectEqual(Outcome.none, match(.space, .down, .{ .control = true, .shift = true }, .{ .composer = true }).outcome);
+    // Leader pending: unmatched chord is swallowed (never lands in the prompt);
+    // it does NOT re-arm (the old Space+ctrl_shift re-arm is gone).
+    try std.testing.expectEqual(Outcome.swallow_leader, match(.space, .down, .{ .control = true, .shift = true }, .{ .leader_pending = true }).outcome);
+}
+
+test "keymap: Cmd+I does NOT arm (Mac italic / Get Info — plan #761 test 2)" {
+    // `.control` is strict: control only, NOT command. Cmd+I in the normal
+    // context flows through `.none` (leave to the browser/app), never `.leader`
+    // and never `.browser`.
+    try std.testing.expectEqual(Outcome.none, match(.i, .down, .{ .command = true }, .{ .composer = true }).outcome);
+    // While a leader is pending, an unmatched chord (Cmd+I is not `.i`+`.control`)
+    // is swallowed+disarmed — it must NOT re-arm the leader.
+    const m = match(.i, .down, .{ .command = true }, .{ .leader_pending = true });
+    try std.testing.expectEqual(Outcome.swallow_leader, m.outcome);
+    try std.testing.expect(m.action == null);
+}
+
+test "keymap: Ctrl+Shift+I is reserved Inspect — browser, even while leader pending (plan #761 test 3)" {
+    try std.testing.expectEqual(Outcome.browser, match(.i, .down, .{ .control = true, .shift = true }, .{ .composer = true }).outcome);
+    try std.testing.expectEqual(Outcome.browser, match(.i, .down, .{ .control = true, .shift = true }, .{ .leader_pending = true }).outcome);
 }
 
 test "keymap: Ctrl+Space (IME) and Cmd+Space (Spotlight) do NOT arm" {
@@ -643,6 +674,39 @@ test "keymap: leader + reserved browser chord → disarm browser (test 9)" {
     // dispatcher disarms. The deny-list runs before leader handling.
     const m = match(.t, .down, .{ .control = true }, .{ .leader_pending = true });
     try std.testing.expectEqual(Outcome.browser, m.outcome);
+}
+
+test "keymap: leader + Ctrl+I re-arms (plan #761 test 6)" {
+    // While a leader is pending, pressing the leader prefix again re-arms —
+    // identical to the old Space+ctrl_shift re-arm behaviour, just on Ctrl+I.
+    const m = match(.i, .down, .{ .control = true }, .{ .leader_pending = true });
+    try std.testing.expectEqual(Outcome.action, m.outcome);
+    try std.testing.expectEqual(Action.leader, m.action.?);
+    // Bare i (`.control` strict fails) while leader pending → swallow (no
+    // insert), not re-arm.
+    try std.testing.expectEqual(Outcome.swallow_leader, match(.i, .down, .{}, .{ .leader_pending = true }).outcome);
+}
+
+test "keymap: Ctrl+I is not Outcome.browser after RESERVED .i removal (plan #761 test 8)" {
+    // Regression: the old RESERVED `{ .i, .ctrl_or_cmd }` would have made
+    // Ctrl+I `.browser` (never handled) and the leader could never fire.
+    try std.testing.expectEqual(Outcome.action, match(.i, .down, .{ .control = true }, .{ .composer = true }).outcome);
+    // Cmd+I is `.none` (not reserved, not a row) — no browser throw.
+    try std.testing.expectEqual(Outcome.none, match(.i, .down, .{ .command = true }, .{ .composer = true }).outcome);
+}
+
+test "keymap: bare i (no modifier) types the letter — none (plan #761 test 9)" {
+    try std.testing.expectEqual(Outcome.none, match(.i, .down, .{}, .{ .composer = true }).outcome);
+}
+
+test "keymap: ModPrereq.control is strict — only control, Cmd/Alt/Shift excluded (plan #761 test 10)" {
+    try std.testing.expect(modsMatch(.{ .control = true }, .control));
+    try std.testing.expect(!modsMatch(.{ .command = true }, .control));
+    try std.testing.expect(!modsMatch(.{ .alt = true }, .control));
+    try std.testing.expect(!modsMatch(.{ .shift = true }, .control));
+    try std.testing.expect(modsMatch(.{ .control = true, .command = true }, .control) == false);
+    try std.testing.expect(modsMatch(.{ .control = true, .shift = true }, .control) == false);
+    try std.testing.expect(modsMatch(.{ .control = true, .alt = true }, .control) == false);
 }
 
 test "keymap: leader pending swallows a recognized chord (Ctrl+Enter is not submit during the window)" {
