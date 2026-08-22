@@ -23,7 +23,16 @@
  * the SDK's Vercel World explicitly with the existing secrets and hand it to the
  * runtime via `setWorld()`. `start()` requires `workflow.workflowId` (normally
  * stamped by `withWorkflow`'s SWC transform — absent under `tsx`), so we pass the
- * public `{ workflowId }` metadata form matching the deployed fixture's name.
+ * public `{ workflowId }` metadata form.
+ *
+ * The workflowId MUST be the SDK's namespaced `workflow//{filepath}//{fn}` form
+ * the SWC client transform stamps (short "fixtureWorkflow" is NOT in the registry
+ * and api.vercel.com lookup would 4xx/fail closed). The exact string is the
+ * real SWC output read from a built `.next` (workflow/v1/flow/route.js):
+ * `workflow//./lib/workflows/fixtureWorkflow//fixtureWorkflow` — `./` prefix,
+ * NO `.ts` extension (getRelativeFilenameForSwc relative path, extension
+ * stripped by the transform). A GHA job does not run the Next build (no manifest
+ * to read), so the value is pinned to match the deployed fixture's stamp.
  *
  * Exit 0 ONLY when the fixture run reaches 'completed'. Any other outcome
  * (start throws / run not found / 'failed' / 'cancelled' / still pending at the
@@ -35,7 +44,10 @@ import { getRun, start } from 'workflow/api';
 import { setWorld } from 'workflow/runtime';
 import { createVercelWorld } from '@workflow/world-vercel';
 
-export const FIXTURE_WORKFLOW_ID = 'fixtureWorkflow';
+// SDK-namespaced workflowId matching the deployed fixture's SWC stamp (see the
+// header comment). Not the short function name — the Vercel registry keys the
+// workflow by `workflow//{filepath}//{fn}`.
+export const FIXTURE_WORKFLOW_ID = 'workflow//./lib/workflows/fixtureWorkflow//fixtureWorkflow';
 
 const POLL_TIMEOUT_MS = Number(
   process.env.WORKFLOWS_SMOKE_POLL_TIMEOUT_MS ?? '120000',

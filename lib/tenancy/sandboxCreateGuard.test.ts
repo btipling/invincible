@@ -22,24 +22,34 @@ const CREATE_PATTERNS = [
 /** Product trees that must not introduce create/getOrCreate outside the allowlist. */
 const SCAN_ROOTS = ['app', 'lib', 'scripts', 'sandbox'];
 
+// The `workflow` SDK (wired in app via withWorkflow) emits a fully-gitignored
+// `app/.well-known/workflow/` route tree at build/runtime whose vendored server
+// code mentions `.getOrCreate(` — that is generated SDK output, not product
+// source (same rationale as `dist`). We skip ONLY that exact tree, never any
+// `.well-known` directory: a future product file under `app/.well-known/` with
+// `.getOrCreate(` must still be caught by the #298 allowlist (PR #786 round 2
+// Nit L6). The relative-path predicate is applied at the dir-walk level below.
+const SKIP_REL_PREFIX = 'app/.well-known/workflow';
+export function shouldSkipDir(abs: string): boolean {
+  const rel = relative(ROOT, abs).replace(/\\/g, '/');
+  return rel === SKIP_REL_PREFIX || rel.startsWith(`${SKIP_REL_PREFIX}/`);
+}
+
 function walkSourceFiles(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
-    // Skip dependency/version-control/build trees AND generated SDK scaffolding:
-    // the `workflow` SDK (wired in app via withWorkflow) emits a fully-gitignored
-    // `app/.well-known/workflow/` route tree at build/runtime whose vendored
-    // server code mentions `.getOrCreate(` — that is generated output, not the
-    // product source this invariant scans (same rationale as `dist`).
-    if (
-      name === 'node_modules' ||
-      name === '.git' ||
-      name === 'dist' ||
-      name === '.well-known'
-    ) {
-      continue;
-    }
     const full = join(dir, name);
     const st = statSync(full);
     if (st.isDirectory()) {
+      // Skip dependency/version-control/build trees AND only the generated
+      // `app/.well-known/workflow/` SDK scaffolding (see shouldSkipDir).
+      if (
+        name === 'node_modules' ||
+        name === '.git' ||
+        name === 'dist' ||
+        shouldSkipDir(full)
+      ) {
+        continue;
+      }
       walkSourceFiles(full, out);
       continue;
     }
@@ -114,5 +124,24 @@ describe('sandbox create/getOrCreate allowlist (#298)', () => {
     const sandboxFiles = walkSourceFiles(join(ROOT, 'sandbox')).map(relFromRoot);
     expect(scriptFiles).toContain('scripts/sandbox-orphan-cleanup.mjs');
     expect(sandboxFiles.length).toBeGreaterThan(0);
+  });
+
+  it('skips ONLY the generated app/.well-known/workflow/ tree, not any .well-known dir (PR #786 round 2 Nit L6)', () => {
+    // The SDK scaffolding tree is skipped so its vendored `.getOrCreate(` doesn't
+    // false-flag — but a NON-workflow `.well-known` directory must NOT be skipped:
+    // a future product file under `app/.well-known/` with `.getOrCreate(` still
+    // has to be caught by the #298 allowlist. The predicate is pure path math
+    // (no statSync), so it holds whether or not the gitignored build-generated
+    // tree is present in this checkout.
+    const genFlow = shouldSkipDir(join(ROOT, 'app/.well-known/workflow'));
+    const genChild = shouldSkipDir(join(ROOT, 'app/.well-known/workflow/v1/flow'));
+    const otherWk = shouldSkipDir(join(ROOT, 'app/.well-known/other'));
+    const rootWk = shouldSkipDir(join(ROOT, '.well-known/workflow'));
+    const ordinary = shouldSkipDir(join(ROOT, 'lib/tenancy'));
+    expect(genFlow).toBe(true);
+    expect(genChild).toBe(true);
+    expect(otherWk).toBe(false);
+    expect(rootWk).toBe(false);
+    expect(ordinary).toBe(false);
   });
 });

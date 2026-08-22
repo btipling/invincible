@@ -107,14 +107,20 @@ describe('scripts/workflows-smoke (GHA smoke subject)', () => {
     expect((d.setWorldCalls[0][0] as { injected: boolean }).injected).toBe(true);
   });
 
-  it('passes an explicit workflowId metadata to start() — never a bare untransformed function', async () => {
+  it('passes an explicit SDK-namespaced workflowId to start() — never a bare untransformed function', async () => {
     const d = deps();
     const res = await runSmoke(d);
     expect(res.code).toBe(0);
     expect(d.startCalls).toHaveLength(1);
     const workflowArg = d.startCalls[0][0] as { workflowId?: string };
     expect(workflowArg.workflowId).toBe(FIXTURE_WORKFLOW_ID);
-    expect(workflowArg.workflowId).toBe('fixtureWorkflow');
+    // Adversarial review PR #786 (round 2) Major L1+L6: the value must be the
+    // SDK's namespaced `workflow//{filepath}//{fn}` form the SWC transform
+    // stamps — the short function name is NOT in the Vercel registry and the
+    // api.vercel.com lookup would 4xx/fail closed (gate never proves enablement).
+    expect(FIXTURE_WORKFLOW_ID).toMatch(/^workflow\/\//);
+    expect(FIXTURE_WORKFLOW_ID).toMatch(/\/\/fixtureWorkflow$/);
+    expect(FIXTURE_WORKFLOW_ID).not.toBe('fixtureWorkflow');
   });
 
   it('fails closed (code 1) when start() throws (Workflows disabled / start rejected)', async () => {

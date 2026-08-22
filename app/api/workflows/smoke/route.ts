@@ -32,7 +32,16 @@ function failClosed(err: unknown): string {
 // PR #786 Minor L5+L2: any signed-in tenant member could otherwise hammer this
 // route and burn the project's SHARED Workflows quota). ONE start per window.
 // This is intentionally defense-in-depth at the human/dashboard surface, not a
-// global limiter — serverless cold starts reset it (documented in living docs).
+// global limiter.
+//
+// ADMITTED RESIDUAL (PR #786 round 2 Minor L5, explicitly deferred): cold starts
+// and N concurrent isolates each hold their own `lastStartAtMs = 0`, so parallel
+// POSTs across isolates/starts are not serialized — the hammer vector is not
+// fully closed. A real cross-isolate limiter needs shared KV/Upstash state,
+// which is NEW infra surface this lightweight dashboard probe intentionally does
+// not ship; the adversarial merge guidance marks it not-merge-blocking. The
+// fixture is a 2s no-op and the human/dashboard route is the only caller, so the
+// practical quota cost of a burst is bounded.
 // NEW smoke cap (plan #785 Caps table style): WORKFLOWS_SMOKE_POST_MIN_INTERVAL_MS = 15000.
 const WORKFLOWS_SMOKE_POST_MIN_INTERVAL_MS = 15_000;
 let lastStartAtMs = 0;
