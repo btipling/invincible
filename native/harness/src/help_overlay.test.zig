@@ -83,6 +83,14 @@ const Frame = struct {
         .vertical = .auto,
         .horizontal = .none,
     };
+    /// Goal-2c instrumentation: when `record_keys` is set, Frame.paint scans the
+    /// frame's events after the overlay modal has processed them and records
+    /// whether ANY key event was marked handled. A floatingWindow subwindow only
+    /// routes pointer/wheel, so Esc / Ctrl+/ / leader-? must survive unhandled
+    /// for keymap_dispatch (which runs after paint in ui.zig) — keys reach the
+    /// dispatcher THROUGH the open modal.
+    var record_keys: bool = false;
+    var any_key_handled: bool = false;
 
     fn paint() !dvui.App.Result {
         // Transcript stand-in: a scroll container over the same band, painted
@@ -112,6 +120,18 @@ const Frame = struct {
         }
 
         got_close = help.paint(0, 0, band_w, band_h, .{ .composer = true });
+
+        // Goal-2c instrumentation: the overlay modal has now processed this
+        // frame's events (its deinit ran processEventsAfter), so the handled
+        // flags are final. The modal routes pointer/wheel only, so keys must stay
+        // unhandled — otherwise keymap_dispatch (which runs after paint in
+        // ui.zig) would never receive them.
+        if (record_keys) {
+            any_key_handled = false;
+            for (dvui.events()) |*e| {
+                if (e.evt == .key and e.handled) any_key_handled = true;
+            }
+        }
         return .ok;
     }
 };
@@ -227,4 +247,100 @@ test "backdrop click-outside closes; click inside the panel does not (2b)" {
     _ = try dvui.currentWindow().addEventMouseButton(.left, .release);
     _ = try dvui.testing.step(Frame.paint);
     try t.expect(Frame.got_close);
+}
+
+test "Esc / Ctrl+/ / leader-? key events survive the open modal for the dispatcher (plan test 2c)" {
+    var tr = try dvui.testing.init(.{ .window_size = .{ .w = 600, .h = 300 } });
+    defer tr.deinit();
+    Frame.band_w = 600;
+    Frame.band_h = 300;
+    Frame.record_keys = true;
+    settleOverlay();
+
+    // With the modal open, inject the exact chords the overlay dispatches on
+    // (Esc closes, Ctrl+/ toggles, leader `?` = shift+slash closes once armed).
+    // A floatingWindow subwindow routes pointer/wheel only — none of these key
+    // events may be marked handled by the modal, or keymap_dispatch (which runs
+    // after the overlay paint in ui.zig) would never receive them. The old
+    // pre-#781 absolute `dvui.box` overlay was not a subwindow either, so it too
+    // left keys alone; a future subwindow that starts swallowing keys fails here.
+    try dvui.testing.pressKey(.escape, .none);
+    try dvui.testing.pressKey(.slash, .lcontrol);
+    try dvui.testing.pressKey(.slash, .lshift);
+    _ = try dvui.testing.step(Frame.paint);
+
+    try t.expect(!Frame.any_key_handled);
+    Frame.record_keys = false;
+}
+
+test "middle-drag on the panel is neither grabbed nor moves the panel (Minor L1)" {
+    var tr = try dvui.testing.init(.{ .window_size = .{ .w = 640, .h = 480 } });
+    defer tr.deinit();
+    Frame.band_w = 640;
+    Frame.band_h = 480;
+    settleOverlay();
+
+    const before = (try dvui.testing.tagGet("overlay-scroll-area")).rect;
+
+    // Middle-press in the panel's LEFT PADDING ring: nothing sits there (the
+    // scroll area starts at panel interior), so no child can grab the press and
+    // it reaches the floating window's middle-drag handler. With `.resize =
+    // .none` dvui's DEFAULT drag_area is the FULL panel, so the old behavior
+    // translated the centered panel then snapped it back next frame (rect_store
+    // recomputes). The empty drag_area must leave it stationary THIS frame —
+    // measured right after the single step, before any recenter.
+    const px = before.x - 8; // interior-left minus padding → .middle-drag zone
+    const py = before.y + before.h / 2;
+    _ = try dvui.currentWindow().addEventMouseMotion(.{ .pt = .{ .x = px, .y = py } });
+    _ = try dvui.currentWindow().addEventMouseButton(.middle, .press);
+    _ = try dvui.currentWindow().addEventMouseMotion(.{ .pt = .{ .x = px + 12 * PX, .y = py + 6 * PX } });
+    _ = try dvui.currentWindow().addEventMouseButton(.middle, .release);
+    _ = try dvui.testing.step(Frame.paint);
+
+    const after = (try dvui.testing.tagGet("overlay-scroll-area")).rect;
+    try t.expectApproxEqAbs(before.x, after.x, COL_EPS);
+    try t.expectApproxEqAbs(before.y, after.y, COL_EPS);
+}
+
+test "two-column x-lock holds across a long vs short chord (hard case, Minor L6)" {
+    var tr = try dvui.testing.init(.{ .window_size = .{ .w = 800, .h = 600 } });
+    defer tr.deinit();
+    Frame.band_w = 800;
+    Frame.band_h = 600;
+    settleOverlay();
+
+    // The fixed chord column keeps the LONGEST chord ("Ctrl/Cmd+Enter", row 0 =
+    // submit) and the SHORTEST chord ("↑", row 2 = history_older) on the same x,
+    // and both help columns too. The pair above (chord-0/1) was the weak case —
+    // queue_save shares submit's identical long chord, so it never separated the
+    // short-vs-long asymmetry this lock exists to catch.
+    const chord_long = try dvui.testing.tagGet("overlay-chord-0"); // "Ctrl/Cmd+Enter"
+    const chord_short = try dvui.testing.tagGet("overlay-chord-2"); // "↑"
+    const help_long = try dvui.testing.tagGet("overlay-help-0"); // "Send (enqueue when busy)"
+    const help_short = try dvui.testing.tagGet("overlay-help-2"); // "Older message"
+
+    try t.expectApproxEqAbs(chord_long.rect.x, chord_short.rect.x, COL_EPS);
+    try t.expectApproxEqAbs(help_long.rect.x, help_short.rect.x, COL_EPS);
+    // Help column is still right of the fixed chord column.
+    try t.expect(help_short.rect.x > chord_short.rect.x);
+}
+
+test "help column wraps long and short copy to the same leftover width (wrap, not clip — Minor L1)" {
+    var tr = try dvui.testing.init(.{ .window_size = .{ .w = 800, .h = 600 } });
+    defer tr.deinit();
+    Frame.band_w = 800;
+    Frame.band_h = 600;
+    settleOverlay();
+
+    // A very long help string ("Send (enqueue when busy)", row 0) and a very
+    // short one ("Close help", row 4) differ dram-atically in natural text
+    // length. `.expand = .horizontal` forces BOTH help textLayouts to the SAME
+    // leftover column width — a revert to an unwrapped textLayout sizes each to
+    // its natural text width (differing), so this is a direct probe that the
+    // wrap constraint is engaged (long copy wraps to the column instead of
+    // clipping past it). The ~390 px band test separately pins no horizontal
+    // overflow.
+    const hw0 = (try dvui.testing.tagGet("overlay-help-0")).rect.w;
+    const hw4 = (try dvui.testing.tagGet("overlay-help-4")).rect.w;
+    try t.expectApproxEqAbs(hw0, hw4, 6.0);
 }

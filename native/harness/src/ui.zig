@@ -651,9 +651,11 @@ pub fn frame() !void {
             .prompt_empty = state.prompt_buf[0] == 0,
             .in_history = state.history_index != null,
         })) {
-            // Backdrop click-outside closes (mirror help_close: also disarm leader).
+            // Backdrop click-outside closes (mirror help_close: also disarm leader
+            // and reset the list to the top so a reopen resumes at the top).
             state.help_overlay_open = false;
             state.leader_armed = false;
+            help_overlay.resetScroll();
         }
     }
 

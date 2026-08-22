@@ -114,6 +114,15 @@ pub fn paint(x: f32, y: f32, w: f32, h: f32, ctx: keymap.Context) bool {
     const px = x + (w - panel_w) / 2;
     const py = y + (h - panel_h) / 2;
 
+    // Remaining-width bound for the help column: the panel interior (minus the
+    // panel's horizontal padding 2·12 and the row box's 2·4) less the fixed
+    // chord column. Long help strings wrap to this line width instead of
+    // clipping on a narrow ~390 band (review #783 Minor L1). When the vertical
+    // scrollbar is showing, the row box is allocated the narrower client width
+    // and `.expand = .horizontal` wraps to that instead — this value is a safe
+    // ceiling, never wider than the panel.
+    const help_max_w = panel_w - 2 * 12 - 2 * 4 - metrics.HELP_OVERLAY_CHORD_COL_W;
+
     // Scratch rect the floatingWindow reads every frame (`init_options.rect`) so
     // the panel follows the band on a resize (not just on its first frame).
     var rect_store: dvui.Rect = .{ .x = px, .y = py, .w = panel_w, .h = panel_h };
@@ -129,6 +138,13 @@ pub fn paint(x: f32, y: f32, w: f32, h: f32, ctx: keymap.Context) bool {
         .border = .all(1),
         .padding = .{ .x = 12, .y = 10, .w = 12, .h = 10 },
     });
+
+    // The panel is centered and never meant to be dragged. With `.resize =
+    // .none`, dvui's default `drag_area` is the FULL panel rect, so an unhandled
+    // middle-drag press on a row would translate the panel then snap it back
+    // next frame (review #783 Minor L1). Zero the drag area so no press can
+    // start a panel drag.
+    fw.dragAreaSet(.{});
 
     {
         var tl = dvui.textLayout(@src(), .{}, .{
@@ -215,6 +231,12 @@ pub fn paint(x: f32, y: f32, w: f32, h: f32, ctx: keymap.Context) bool {
                 .tag = copy_tag,
                 .color_text = if (active) palette.teal_text else palette.warm_muted,
                 .gravity_y = 0.5,
+                // Wrap the help column to the leftover row width (`expand` lets
+                // the row box allocate the remaining width after the fixed chord
+                // column; `max_size_content.w` is the ceiling so long copy never
+                // clips at a ~390 band — review #783 Minor L1).
+                .expand = .horizontal,
+                .max_size_content = .{ .w = help_max_w, .h = metrics.TOUCH_H - 6 },
                 .min_size_content = .{ .h = metrics.TOUCH_H - 6 },
             });
             help.addText(row.help, .{});
@@ -239,3 +261,12 @@ pub var ctx_scroll: dvui.ScrollInfo = .{
     .vertical = .auto,
     .horizontal = .none,
 };
+
+/// Reset the overlay list back to the top when the overlay closes (both the
+/// Esc `help_close` in keymap_dispatch and the backdrop click-outside in ui.zig
+/// call this), so a reopen resumes at the top rather than mid-table
+/// (review #783 Nit L1). Re-initializing the ScrollInfo also drops any
+/// stale viewport/offset from the previous open.
+pub fn resetScroll() void {
+    ctx_scroll = .{ .vertical = .auto, .horizontal = .none };
+}
