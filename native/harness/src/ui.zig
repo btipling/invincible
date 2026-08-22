@@ -631,15 +631,18 @@ pub fn frame() !void {
         break :blk msg_y < view_top - metrics.CHIP_VISIBILITY_MARGIN;
     } else false;
 
-    // ── Help overlay (plan #741) — in-canvas TEAL panel over the transcript band.
-    // Painted after the transcript laid out (top), before the queue band / bars.
+    // ── Help overlay (plan #741 → #781) — modal in-canvas floatingWindow over
+    // the transcript band. Painted after the transcript laid out (top). It
+    // captures pointer + wheel (scrolling stays in the panel, never the
+    // transcript), fills most of the band, and closes on a backdrop
+    // click-outside (paint returns true → close).
     if (state.help_overlay_open) {
-        // Size against the FULL band (avail.w), not the leftover transcript
-        // width (avail.w - pane_w). With the left rail open (~220px) on a
-        // ~390px canvas the leftover is ~170 < HELP_OVERLAY_MIN_W and the panel
-        // silently no-ops (review L1). It's a modal in-canvas panel — centering
-        // across the whole window is correct.
-        help_overlay.paint(0, scroll_y, avail.w, scroll_h, .{
+        // Modal subwindow sized against the FULL band (avail.w), not the leftover
+        // transcript width — it fills the band minus margins regardless of the
+        // left rail (plan #781 Goal 3). Esc / Ctrl+//leader still reach the keymap
+        // dispatcher below (a floatingWindow only routes mouse events), so the
+        // overlay toggles off exactly as before.
+        if (help_overlay.paint(0, scroll_y, avail.w, scroll_h, .{
             .composer = state.queue_editing_index == null,
             .queue_editing = state.queue_editing_index != null,
             .busy = busy,
@@ -647,7 +650,11 @@ pub fn frame() !void {
             .leader_pending = state.leader_armed,
             .prompt_empty = state.prompt_buf[0] == 0,
             .in_history = state.history_index != null,
-        });
+        })) {
+            // Backdrop click-outside closes (mirror help_close: also disarm leader).
+            state.help_overlay_open = false;
+            state.leader_armed = false;
+        }
     }
 
     // ── Submit queue band (absolute rect — above composer, below transcript) ──

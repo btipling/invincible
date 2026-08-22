@@ -59,12 +59,29 @@ closed).
 | **Ctrl+Enter** / **Cmd+Enter** (queue-row editor) | **Save** the queued-item edit |
 | **↑** / **↓** (composer focused) | **↑** on an empty composer loads the newest user message; further ↑ walk older user rows. **↓** walks forward; ↓ past the newest restores the in-progress draft. Only user messages appear (assistant/thinking/tool/system/error/skill rows never load). Works while Busy. Ring window only (Load earlier for prompts that have aged out) |
 | **Escape** | Cancel the in-progress turn when Busy (same as ■ Stop); **dismisses a queue-row editor first** (does not abort the turn); **closes the help overlay** (wins over busy cancel); **disarms the leader**. A Busy cancel **consumes nothing** — the submit queue stays exactly as-is (no promote on the Stop terminal; only an explicit idle ▶ / Ctrl+Enter with an empty composer + non-empty queue starts the next item). Idle: no-op (textEntry / dvui menus keep it) |
-| **Ctrl+**/**Cmd+/** | Toggle the in-canvas **help overlay** (TEAL panel over the transcript band) |
+| **Ctrl+**/**Cmd+/** | Toggle the in-canvas **help overlay** — a modal **wide two-column table** over the transcript band. See **Help overlay** below |
 | **Ctrl+I** | Arm the **leader** prefix (800 ms). Within the window press **`?`** to toggle help; **Ctrl+I** re-arms (a bare `i` does **not** — it swallows and disarms); **`t`** toggles **thinking default-collapsed** (collapse thinking by default, including the active Busy turn; in-memory only, resets to on on reload/New/Clear); **Escape** cancels; an unmatched key swallows (never lands in the prompt); a reserved browser chord (Ctrl+Shift+I Inspect) still yields to the browser |
 | Tab / Ctrl+Left / Ctrl+Right | DOM nav / text caret (not harness chords; Ctrl+Left/Right are word-jumps, left to the textEntry) |
 | **Shift+click** (composer / queue-row editor focused; desktop only) | **Range-selects** the text in that `textEntry` field — a stock web behavior the canvas was missing. Click to place the caret (or drag-select a base range), then **Shift+click** to extend the selection from an anchor edge to the clicked point; further Shift+clicks keep extending from the same anchor edge, and a Shift+click never counts toward the next word/line double-click. The range uses the **existing TEAL `text_select` fill** (no new hex). **Ctrl/Cmd+C** then copies that substring to the system clipboard (the chord stays browser-reserved). A **plain** (non-shift) click still moves the caret and clears the range. Touch/mobile has no shift key — **📋** stays the reliable copy path and canvas Shift+click is documented desktop-only |
 | **Shift+click** (read-only body text; desktop only) | **Range-selects** text inside a single **read-only** `textLayout` (transcript rich-MD bodies, fenced code, thinking/preview/skill rows, tool-run detail): a plain click anchors, **Shift+click** extends the highlighted range from that anchor, and **Ctrl/Cmd+C** copies the active slice. **A link is still a link first** — a **Shift+click (or plain click) on a link inside a body navigates / copies per the **Links** row and does *not* extend the range**; Shift+click range-selection is for non-link body text (use 📋 for reliable body copy). Selection never spans two `textLayout`s / messages. See Transcript copy / paste → Read-only body text Shift+click |
 | Composer focus | Requested on ready and after each send |
+
+### Help overlay
+
+Opened by **Ctrl+/**/**Cmd+/** (or **Ctrl+I** leader then `?`); closed by **Esc**
+(wins over busy cancel), **Ctrl+/**/**Cmd+/** (toggle), New/Clear, or a **backdrop
+click-outside** (NEW — it is a modal). A **modal in-canvas `floatingWindow`**
+subwindow that fills most of the transcript band (`HELP_OVERLAY_W_FRACTION` /
+`HELP_OVERLAY_H_FRACTION` + `_MIN_*` / `_FLOOR_*` floors; the old fixed 460×320
+`HELP_OVERLAY_W/H` cap is retired). It is a real **two-column table**: a fixed
+chord column (`HELP_OVERLAY_CHORD_COL_W`) plus a remaining-width help column, so
+every chord and every help string starts on a stable x. One row per distinct
+action in `KEY_TABLE` order; context-off rows stay grey (**WARM-muted**, never
+EMBER). **Wheel / trackpad over the panel scrolls the help list** inside the
+panel (`ctx_scroll`) — the modal captures it, so the transcript's
+`state.transcript_scroll` never moves while it is open. Every looping widget uses
+a loop-unique `id_extra` (no duplicate-id red outlines). ~390 px stays on-canvas
+with internal scroll (matches the repo no-h-scroll policy).
 
 ## Touch / mobile (~390px)
 
