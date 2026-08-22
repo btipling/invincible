@@ -37,6 +37,7 @@ optional login chrome).
 | Per-user MCP tools (connect + execute) | **Vercel backend** | `lib/mcp/*`; keys under tenant DEK; never Wasm/client |
 | `search` code-grep tool | **Vercel backend** | Read-grant-only; runs `rg` argv-only in the sandbox jail; no Wasm/bridge change | 
 | Builtin HTTPS fetch (`http_get`) | **Vercel backend** | Always-available when a running HTTP instance exists; attach-only (Settings Create HTTP instance); see [builtin-http.md](builtin-http.md) |
+| Workflow run/step (backend-agents) | **Vercel backend** | Server-only fixtures (`lib/workflows/*`, `"use workflow"` orchestration via the `workflow` SDK + `withWorkflow` in `next.config.js`), authed smoke (`app/api/workflows/smoke`), Vercel Workflows platform (Functions + Queues, dashboard-visible Observability). Never Wasm/DOM; never the tab-owned `/api/agent` as the smoke path. Verify via GHA `workflows-smoke` |
 | **Transcript (read messages)** | **Wasm** | Primary UX; rich MD + images + math + diff/patch fence paint in-canvas (`rich/*`) — no DOM markdown |
 | Transcript left rail (collapsible session list) | **Wasm** | Inside the transcript band only (canvas top → composer). Default closed: 40 px icon strip. Open: 220 px TEAL column with the session list (scroll). Host pushes summaries (`GET /api/sessions`); Wasm paints and raises a pending switch; host hydrates. New session / Persona / Clear stay in DOM `AppNav`. No host CSS sidebar. |
 | Image bytes (fetch/decode) | **DOM host** | Browser fetch → RGBA → `inv_image_cache_put`; paint stays Wasm |

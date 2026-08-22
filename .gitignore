@@ -58,3 +58,4 @@ native/harness/zig-cache/
 native/harness/.zig-cache/
 native/harness/zig-out/
 native/dist/
+/.swc
