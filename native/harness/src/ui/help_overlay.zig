@@ -147,9 +147,11 @@ pub fn paint(x: f32, y: f32, w: f32, h: f32, ctx: keymap.Context) bool {
 
     // The panel is centered and never meant to be dragged. With `.resize =
     // .none`, dvui's default `drag_area` is the FULL panel rect, so an unhandled
-    // middle-drag press on a row would translate the panel then snap it back
-    // next frame (review #783 Minor L1). Zero the drag area so no press can
-    // start a panel drag.
+    // press on interior chrome (rows handle their own presses) would translate
+    // the panel then snap it back next frame (review #783 Minor L1). Zero the
+    // drag area so no press can start a panel drag. The drag test drives a
+    // LEFT press (`.middle` could never reach the handler — `enums.Button.
+    // pointer()` is left/touch only).
     fw.dragAreaSet(.{});
 
     {

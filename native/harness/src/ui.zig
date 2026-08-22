@@ -133,6 +133,13 @@ pub fn onInit() void {
     @memset(&state.prompt_buf, 0);
     state.want_composer_focus = true;
     state.resetTranscriptScroll();
+    // `state.resetTranscriptScroll` also closes the help overlay
+    // (`help_overlay_open = false`) but does NOT reset its list scroll — an
+    // in-process re-init (wasm reload / host re-mount, see the comment below)
+    // would otherwise leave `ctx_scroll` mid-table, so the next open resumes
+    // mid-list (review #783 round-4 Nit L1). Reset the overlay surface here,
+    // the authoritative re-init site; `state.zig` stays free of ui paint imports.
+    help_overlay.resetScroll();
     rich.clearCache();
     // Reset the previous-frame hug to idle: an in-process re-init (wasm reload
     // / host re-mount) must not keep a stale multi-line 124 px band until the
