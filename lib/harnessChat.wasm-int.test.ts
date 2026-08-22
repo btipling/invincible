@@ -114,9 +114,9 @@ describe('real-Wasm live tool increment (implements #433)', () => {
     expect(typeof bridge.exports.inv_message_kind_at).toBe('function');
   });
 
-  it('real Wasm is protocol v19 and rides the promote-gate export (plan #760)', async () => {
+  it('real Wasm rides the promote-gate export at the current protocol (plan #760)', async () => {
     const bridge = await loadBridge();
-    // Protocol v19 parity — Wasm `PROTOCOL_VERSION` must equal the host
+    // Protocol parity — Wasm `PROTOCOL_VERSION` must equal the host
     // `HARNESS_PROTOCOL_VERSION` (assertRoundTrip also checks it; pin it here).
     expect(bridge.protocolVersion()).toBe(HARNESS_PROTOCOL_VERSION);
     // REQUIRED_FNS already proves `inv_set_queue_promote_allowed` reached the
@@ -390,12 +390,14 @@ describe('real-Wasm live tool increment (implements #433)', () => {
   });
 });
 
-describe('real-Wasm protocol v19 (plan #759 — queued insert-at-front)', () => {
-  it('the built wasm carries protocol v19 + inv_queued_insert_front (REQUIRED_FNS + build.zig whitelist)', async () => {
+describe('real-Wasm protocol v20 (plan #759 — queued insert-at-front)', () => {
+  it('the built wasm carries protocol v20 + inv_queued_insert_front (REQUIRED_FNS + build.zig whitelist)', async () => {
     const bridge = await loadBridge();
     // loadBridge already fails closed if a REQUIRED export is missing; the
     // build.zig export_symbol_names entry is what keeps it in the artifact.
-    expect(bridge.protocolVersion()).toBe(19);
+    // Plan #760 took v19 (promote gate), so this (later) sibling's insert-at-front
+    // rides v20 and keeps BOTH exports — Wasm PROTOCOL_VERSION must match TS.
+    expect(bridge.protocolVersion()).toBe(HARNESS_PROTOCOL_VERSION);
     expect(typeof bridge.exports.inv_queued_insert_front).toBe('function');
   });
 
