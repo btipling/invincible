@@ -227,6 +227,27 @@ pub fn build(b: *std.Build) void {
         test_rich.dependOn(&b.addRunArtifact(keymap_tests).step);
     }
 
+    // Host unit tests for help_overlay.zig (plan #761 Nit L6): pin the leader
+    // chord glyphs (Ctrl+I / "Leader I, then ?" / "Leader I, then t") and guard
+    // against stale "Space" copy. `rowChord` is a hardcoded parallel switch —
+    // not derived from the keymap table — so without a test a revert to the
+    // pre-#761 "Leader Space" strings would ship while keymap.zig tests stay
+    // green. help_overlay imports dvui (via mixed_text), so wire dvui_testing
+    // (no frame, and no web-backend: the module's imports stop at
+    // mixed_text/unicode_face, which are bridge-free).
+    {
+        const help_overlay_tests = b.addTest(.{
+            .name = "help_overlay",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/help_overlay.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        help_overlay_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
+        test_rich.dependOn(&b.addRunArtifact(help_overlay_tests).step);
+    }
+
     // Host unit tests for cwd_slot.zig (plan #579, adversarial review #584
     // Minor L6): the "."-hidden predicate. Pure, no dvui.
     {
