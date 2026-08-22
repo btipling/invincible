@@ -390,5 +390,32 @@ describe('real-Wasm live tool increment (implements #433)', () => {
   });
 });
 
+describe('real-Wasm protocol v19 (plan #759 — queued insert-at-front)', () => {
+  it('the built wasm carries protocol v19 + inv_queued_insert_front (REQUIRED_FNS + build.zig whitelist)', async () => {
+    const bridge = await loadBridge();
+    // loadBridge already fails closed if a REQUIRED export is missing; the
+    // build.zig export_symbol_names entry is what keeps it in the artifact.
+    expect(bridge.protocolVersion()).toBe(19);
+    expect(typeof bridge.exports.inv_queued_insert_front).toBe('function');
+  });
+
+  it('queuedInsertFront round-trips a real Continue head on the ephemeral queue', async () => {
+    const bridge = await loadBridge();
+    // Fresh wasm instance per loadBridge — the ephemeral queue starts empty.
+    expect(bridge.queuedCount()).toBe(0);
+    expect(bridge.queuedInsertFront('Continue the current turn')).toBe(true);
+    expect(bridge.queuedCount()).toBe(1);
+    // Inserting a second head shifts the first down one (head stays newest).
+    expect(bridge.queuedInsertFront('operator item')).toBe(true);
+    expect(bridge.queuedCount()).toBe(2);
+  });
+
+  it('queuedInsertFront rejects a blank head — queue untouched (fail closed)', async () => {
+    const bridge = await loadBridge();
+    expect(bridge.queuedInsertFront('   ')).toBe(false);
+    expect(bridge.queuedCount()).toBe(0);
+  });
+});
+
 // Declared to silence an unused-import guard; the helper is exercised above.
 void Lifecycle;

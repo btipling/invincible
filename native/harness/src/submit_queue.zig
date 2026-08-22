@@ -59,6 +59,30 @@ pub fn pop(q: *Q) void {
     q.len -= 1;
 }
 
+/// Insert `text` at the head (index 0), shifting every existing item down one
+/// (plan #759 — `Continue the current turn` on give-up with a non-empty queue).
+/// Never pops; fails `Full` at `MAX_ITEMS` and `Blank` on a blank/whitespace
+/// input. Normalizes via the same `composer_text.normalizeInto` path as `push`,
+/// so an index-0 head behaves exactly like a normal enqueued row.
+pub fn insertFront(q: *Q, text: []const u8) error{ Blank, Full }!void {
+    if (q.len >= MAX_ITEMS) return error.Full;
+    // Normalize into a scratch first so a Blank input never mutates the queue.
+    var tmp: [ITEM_BYTES]u8 = undefined;
+    const norm = composer_text.normalizeInto(text, tmp[0..], ITEM_BYTES);
+    if (norm.is_blank) return error.Blank;
+    // Shift existing items up one physical slot (tail-1 → tail … head → head+1).
+    var j: usize = q.len;
+    while (j > 0) : (j -= 1) {
+        const dst_i = (q.head + j) % MAX_ITEMS;
+        const src_i = (q.head + j - 1) % MAX_ITEMS;
+        copySlot(&q.slots[dst_i], &q.slots[src_i]);
+    }
+    const head = &q.slots[q.head];
+    @memcpy(head.data[0..norm.text.len], norm.text);
+    head.len = @intCast(norm.text.len);
+    q.len += 1;
+}
+
 fn copySlot(dst: *Slot, src: *const Slot) void {
     dst.len = src.len;
     if (src.len > 0) {

@@ -38,7 +38,10 @@ const submit_queue = @import("submit_queue.zig");
 /// per-terminal scalar so a Stop / Esc / error / timeout Ready never drains the
 /// queue; only idle ▶ / Ctrl+Enter with an empty composer + non-empty queue does).
 /// Additive, now REQUIRED.
-pub const PROTOCOL_VERSION: u32 = 19;
+/// v20: submit-queue insert-at-front — `inv_queued_insert_front` (plan #759:
+/// host inserts `Continue the current turn` as the new head on give-up with a
+/// non-empty queue). Additive, now REQUIRED.
+pub const PROTOCOL_VERSION: u32 = 20;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -306,6 +309,14 @@ fn promoteSubmit(text: []const u8) bool {
 
 pub fn queuedCount() u32 {
     return submit_queue.count(&queue);
+}
+
+/// Insert `text` as the new queue head (plan #759). Never pops; returns false
+/// when the queue is full (`Full`) or the text is blank (`Blank`).
+pub fn insertQueuedFront(text: []const u8) bool {
+    submit_queue.insertFront(&queue, text) catch return false;
+    refresh();
+    return true;
 }
 
 pub fn queuedItemAt(i: u32) ?[]const u8 {
@@ -636,6 +647,12 @@ pub export fn inv_set_queue_promote_allowed(v: u8) void {
     if (queue_promote_allowed == next) return;
     queue_promote_allowed = next;
     refresh();
+}
+
+/// Protocol v20 — insert `text` as the new queue head (plan #759). Returns 1 on
+/// accept, 0 when full or blank (never pops, never drops operator items).
+export fn inv_queued_insert_front(ptr: [*]const u8, len: usize) u8 {
+    return if (insertQueuedFront(ptr[0..len])) 1 else 0;
 }
 
 export fn inv_set_can_load_earlier(v: u8) void {

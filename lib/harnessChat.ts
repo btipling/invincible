@@ -12,6 +12,7 @@ import {
 import {
   sendAgent,
   sendAgentStream,
+  type AgentFailure,
   type AgentResult,
   type SendAgentFn,
   type SendAgentStreamFn,
@@ -21,6 +22,10 @@ import { type AgentStreamEvent } from './agent/agentStream';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
 } from './sandbox/config';
+import {
+  withTransientRetry,
+  type VercelErrorClass,
+} from './sandbox/resilience';
 import {
   isRedisSafeOpaqueId,
   normalizeSessionCwd,
@@ -95,6 +100,122 @@ export const THINKING_COLLAPSED_MAX = THINKING_DISPLAY_MAX;
  * @deprecated No host toolTrace line cap. Kept as Infinity for import stability.
  */
 export const TOOL_TRACE_MAX_LINES = Number.POSITIVE_INFINITY;
+
+// ── plan #759 — retryable turn errors retry the current turn, never drain ──
+/** Max attempts (1 send + 4 retries) for a retryable agent-turn failure. NEW cap. */
+export const TURN_RETRY_ATTEMPTS = 5;
+/** Backoff base (ms) between attempts — matches `withTransientRetry` defaults. */
+export const TURN_RETRY_BASE_MS = 250;
+/** Hard backoff cap (ms). */
+export const TURN_RETRY_CAP_MS = 4000;
+/** Wasm `MAX_ITEMS` mirror (`submit_queue.zig`) — host fails closed at this depth. */
+export const HARNESS_QUEUE_MAX_ITEMS = 16;
+/** Inserted as the new queue HEAD on give-up with a non-empty queue (plan #759). */
+export const CONTINUE_TURN_PROMPT = 'Continue the current turn';
+
+/**
+ * HTTP statuses the turn treats as PERMANENT (no 5× backoff loop): 4xx client
+ * errors are the operator/request's fault (auth 401/403, validation 400/422,
+ * not-found 404, too-large 413). 408/429/5xx and timeout/empty stay retryable.
+ */
+const PERMANENT_TURN_STATUS = new Set([400, 401, 403, 404, 413, 422]);
+
+/**
+ * Thrown by the retry wrapper for a FAILED agent attempt so `withTransientRetry`
+ * (via the narrow classifier) can decide retryable vs permanent from the HTTP
+ * status + `classifyTurnFailure` kind — the turn classifier keys on both because
+ * `classifyTurnFailure` does NOT return distinct 401/403/validation kinds.
+ */
+class AgentRetryError extends Error {
+  readonly status: number | undefined;
+  readonly turnKind: TurnEndKind;
+  /** Session-sticky attached-skills set from the failed AgentFailure — must
+   *  survive the throw/catch round-trip or fold-before-persist (plan #517)
+   *  would silently drop the sticky set on a give-up turn. */
+  readonly attachedSlugs?: string[];
+  constructor(
+    error: string,
+    status: number | undefined,
+    turnKind: TurnEndKind,
+    attachedSlugs?: string[],
+  ) {
+    super(error);
+    this.name = 'AgentRetryError';
+    this.status = status;
+    this.turnKind = turnKind;
+    this.attachedSlugs = attachedSlugs;
+  }
+}
+
+/**
+ * Narrow classifier for the in-flight turn (passed to the `classify` seam in
+ * `withTransientRetry`). Deliberately NOT `classifyVercelError` — a turn failure
+ * is its own domain, not the sandbox SDK's. stop / 401 / 403 / other permanent
+ * statuses → permanent (single attempt, straight to give-up); timeout / empty /
+ * generic 5xx / network → retryable.
+ */
+export function classifyTurnRetry(err: unknown): VercelErrorClass {
+  if (err instanceof AgentRetryError) {
+    if (err.turnKind === 'stop') return { kind: 'permanent', status: err.status };
+    if (err.status !== undefined && PERMANENT_TURN_STATUS.has(err.status)) {
+      return { kind: 'permanent', status: err.status };
+    }
+    return { kind: 'retryable', status: err.status };
+  }
+  // Anything else (incl. withTransientRetry's own AbortError mid-backoff) can't
+  // be re-classified in the turn domain — fail closed to permanent.
+  return { kind: 'permanent' };
+}
+
+/** Rebuild an AgentFailure from a classifier-thrown value (post-retry give-up). */
+function agentFailureFromRetry(err: unknown): AgentFailure {
+  if (err instanceof AgentRetryError) {
+    return {
+      ok: false,
+      error: err.message,
+      ...(err.status != null ? { status: err.status } : {}),
+      ...(err.attachedSlugs !== undefined
+        ? { attachedSlugs: err.attachedSlugs }
+        : {}),
+    };
+  }
+  if (err instanceof Error && err.name === 'AbortError') {
+    return { ok: false, error: 'Request cancelled.' };
+  }
+  return { ok: false, error: err instanceof Error ? err.message : 'Turn failed.' };
+}
+
+/**
+ * plan #759 — on give-up with a non-empty queue, insert `Continue the current
+ * turn` as the new HEAD (never pops operator items). Fails closed when the
+ * queue is full: no insert, no drop.
+ */
+export function insertContinueTurnPrompt(bridge: HarnessBridge): void {
+  const count = bridge.queuedCount();
+  if (count === 0) return;
+  if (count >= HARNESS_QUEUE_MAX_ITEMS) return; // fail closed — no drop
+  bridge.queuedInsertFront(CONTINUE_TURN_PROMPT);
+}
+
+/**
+ * Lifecycle to land on after a FAILED turn: Ready on operator Stop (queue
+ * untouched, drains only on a later success — unchanged), and Error on give-up
+ * (plan #759 — `err` is NOT terminal for the Wasm promote gate, so a failed
+ * turn never consumes a queued operator item; Continue is inserted at head).
+ */
+function setFailLifecycle(bridge: HarnessBridge, kind: TurnEndKind): void {
+  // plan #760 — a non-success terminal must never auto-drain: arm the one-shot
+  // promote gate false (a Stop lands on Ready; without the gate FALSE that Ready
+  // would drain a queued head). Harmless on the give-up Error path (err is not
+  // terminal for the promote gate), but the Ready-on-Stop case REQUIRES it.
+  bridge.setQueuePromoteAllowed(false);
+  if (kind === 'stop') {
+    bridge.setLifecycle(Lifecycle.Ready);
+  } else {
+    bridge.setLifecycle(Lifecycle.Error);
+    insertContinueTurnPrompt(bridge);
+  }
+}
 
 export type RunHarnessChatOptions = {
   signal?: AbortSignal;
@@ -569,7 +690,9 @@ export async function runHarnessChat(
     fail.kind === 'stop' ? MessageKind.System : MessageKind.Error,
     describeTurnEnd(fail.kind, fail.detail),
   );
-  completeTurn(bridge, false); // stop / error / timeout / empty — no auto-promote
+  // plan #759 — arms the promote gate false (plan #760) then lands Stop on Ready
+  // (queue untouched) or give-up on Error + Continue-at-head never drains.
+  setFailLifecycle(bridge, fail.kind);
   return result;
 }
 
@@ -1205,80 +1328,109 @@ export async function runHarnessTurn(
         ? session.personaId
         : undefined;
 
-    if (streamAgent) {
-      agentResult = await sendAgentStreamFn(apiPrompt, {
-        signal: opts?.signal,
-        modelId: opts?.modelId,
-        cwd: sessionCwd,
-        ...(sessionId ? { sessionId } : {}),
-        ...(boundPersonaId ? { personaId: boundPersonaId } : {}),
-        ...(sessionSandboxId ? { sandboxId: sessionSandboxId } : {}),
-        onEvent: async (ev: AgentStreamEvent) => {
-          if (ev.type === 'tool_start' || ev.type === 'tool_result') {
-            handleToolEvent(ev);
-            return;
+    // plan #759 — a retryable turn failure retries the SAME send up to
+    // TURN_RETRY_ATTEMPTS (5) with bounded exponential backoff, reusing
+    // `withTransientRetry` via its additive `classify` seam. The user line is
+    // already on the ring; nothing re-promotes or sets Ready between attempts —
+    // the lifecycle stays Busy for the whole retry window. A non-ok AgentResult
+    // becomes an AgentRetryError so the narrow classifier can map retryable vs
+    // permanent from HTTP status + classifyTurnFailure kind.
+    const onStreamEvent = async (ev: AgentStreamEvent) => {
+      if (ev.type === 'tool_start' || ev.type === 'tool_result') {
+        handleToolEvent(ev);
+        return;
+      }
+      if (ev.type === 'reasoning_delta') {
+        growThinking(ev.text);
+        return;
+      }
+      if (ev.type === 'text_delta') {
+        growAssistant(ev.text);
+        return;
+      }
+      if (ev.type === 'skill_attached') {
+        // Server sends skill_attached events at the START of the turn (before
+        // the model). Push the display-only row live; it is a non-tool
+        // separator for the tool-run predicate.
+        lastRingRowIsToolRun = false;
+        lastUiKind = 'assistant';
+        next = pushSkillRow(bridge, next, ev);
+        // Phase 2 (#517 / adversarial-review Blocker + "fold-before-persist
+        // incl. fail/cancel"): every skill_attached event carries the SAME
+        // final set, so last-writes-wins here never clears across events, and
+        // it is applied BEFORE the model runs — so a success, a 502, or a
+        // user Stop/cancel still ends with the host persisting the sticky set
+        // as `meta.attachedSkills` (omitted field = leave untouched; `[]` =
+        // explicit detach-all).
+        if (Array.isArray(ev.attachedSlugs)) {
+          next = { ...next, attachedSlugs: [...ev.attachedSlugs] };
+        }
+        return;
+      }
+      if (ev.type === 'usage') {
+        // Phase 3 (plan #628) — live provider usage mid-stream: fold the
+        // context slot immediately so the operator sees token counts before
+        // the turn completes. `done.usage` is the final reconcile.
+        const liveUsage = sanitizeUsageSummary(ev.usage);
+        if (liveUsage) {
+          next = { ...next, usage: liveUsage };
+          foldStatusSlots(bridge, next);
+          opts?.onSessionPatch?.(next);
+        }
+        return;
+      }
+      if (ev.type === 'done') {
+        sawStreamTerminal = true;
+        closeThinkingSegment();
+        finalizeAssistant(ev.text ?? assistantAcc);
+        // Do not re-push toolTrace — live lines already shown.
+        return;
+      }
+      if (ev.type === 'error') {
+        sawStreamTerminal = true;
+        closeThinkingSegment();
+      }
+    };
+
+    try {
+      agentResult = await withTransientRetry(
+        async () => {
+          const r = streamAgent
+            ? await sendAgentStreamFn(apiPrompt, {
+                signal: opts?.signal,
+                modelId: opts?.modelId,
+                cwd: sessionCwd,
+                ...(sessionId ? { sessionId } : {}),
+                ...(boundPersonaId ? { personaId: boundPersonaId } : {}),
+                ...(sessionSandboxId ? { sandboxId: sessionSandboxId } : {}),
+                onEvent: onStreamEvent,
+              })
+            : await sendAgentFn(apiPrompt, {
+                signal: opts?.signal,
+                modelId: opts?.modelId,
+                cwd: sessionCwd,
+                ...(sessionId ? { sessionId } : {}),
+                ...(boundPersonaId ? { personaId: boundPersonaId } : {}),
+                ...(sessionSandboxId ? { sandboxId: sessionSandboxId } : {}),
+              });
+          if (!r.ok) {
+            const kind = classifyTurnFailure(r.error, r.status, opts?.signal).kind;
+            throw new AgentRetryError(r.error, r.status, kind, r.attachedSlugs);
           }
-          if (ev.type === 'reasoning_delta') {
-            growThinking(ev.text);
-            return;
-          }
-          if (ev.type === 'text_delta') {
-            growAssistant(ev.text);
-            return;
-          }
-          if (ev.type === 'skill_attached') {
-            // Server sends skill_attached events at the START of the turn (before
-            // the model). Push the display-only row live; it is a non-tool
-            // separator for the tool-run predicate.
-            lastRingRowIsToolRun = false;
-            lastUiKind = 'assistant';
-            next = pushSkillRow(bridge, next, ev);
-            // Phase 2 (#517 / adversarial-review Blocker + "fold-before-persist
-            // incl. fail/cancel"): every skill_attached event carries the SAME
-            // final set, so last-writes-wins here never clears across events, and
-            // it is applied BEFORE the model runs — so a success, a 502, or a
-            // user Stop/cancel still ends with the host persisting the sticky set
-            // as `meta.attachedSkills` (omitted field = leave untouched; `[]` =
-            // explicit detach-all).
-            if (Array.isArray(ev.attachedSlugs)) {
-              next = { ...next, attachedSlugs: [...ev.attachedSlugs] };
-            }
-            return;
-          }
-          if (ev.type === 'usage') {
-            // Phase 3 (plan #628) — live provider usage mid-stream: fold the
-            // context slot immediately so the operator sees token counts before
-            // the turn completes. `done.usage` is the final reconcile.
-            const liveUsage = sanitizeUsageSummary(ev.usage);
-            if (liveUsage) {
-              next = { ...next, usage: liveUsage };
-              foldStatusSlots(bridge, next);
-              opts?.onSessionPatch?.(next);
-            }
-            return;
-          }
-          if (ev.type === 'done') {
-            sawStreamTerminal = true;
-            closeThinkingSegment();
-            finalizeAssistant(ev.text ?? assistantAcc);
-            // Do not re-push toolTrace — live lines already shown.
-            return;
-          }
-          if (ev.type === 'error') {
-            sawStreamTerminal = true;
-            closeThinkingSegment();
-          }
+          return r;
         },
-      });
-    } else {
-      agentResult = await sendAgentFn(apiPrompt, {
-        signal: opts?.signal,
-        modelId: opts?.modelId,
-        cwd: sessionCwd,
-        ...(sessionId ? { sessionId } : {}),
-        ...(boundPersonaId ? { personaId: boundPersonaId } : {}),
-        ...(sessionSandboxId ? { sandboxId: sessionSandboxId } : {}),
-      });
+        {
+          // 5 attempts total = 1 initial send + 4 retries (plan #759 TURN_RETRY_ATTEMPTS).
+          retries: TURN_RETRY_ATTEMPTS - 1,
+          baseMs: TURN_RETRY_BASE_MS,
+          capMs: TURN_RETRY_CAP_MS,
+          signal: opts?.signal,
+          classify: classifyTurnRetry,
+        },
+      );
+    } catch (err) {
+      // Permanent status / Stop / exhausted retryable / abort during backoff.
+      agentResult = agentFailureFromRetry(err);
     }
 
     // Safety net: collapse open thinking when the stream ends without a terminal
@@ -1503,7 +1655,11 @@ export async function runHarnessTurn(
       // repaint on cancel). The unscoped fetch is bounded by the fail-soft
       // catch; it only repaints one slot once.
       void refreshGitStatusSlot(bridge, failedSession);
-      completeTurn(bridge, false); // stop / error / timeout / empty — no auto-promote
+      // plan #759 — arms the promote gate false (plan #760) then lands give-up
+      // on Error (never consumes the queue head; Continue inserted at head when
+      // non-empty) unless this was an operator Stop, which stays Ready (queue
+      // untouched, drains only on a later success).
+      setFailLifecycle(bridge, fail.kind);
       return {
         result: {
           ok: false,

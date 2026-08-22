@@ -139,6 +139,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_set_queue_promote_allowed: (v: number) => {
       promoteAllowed = v !== 0;
     },
+    inv_queued_insert_front: () => 1,
     inv_set_can_load_earlier: (v: number) => {
       canLoad = v ? 1 : 0;
       if (!canLoad) loadEarlier = false;
@@ -816,7 +817,7 @@ describe('skill_attached kind (protocol v12)', () => {
     // Distinct from the protocol version (13) — a hardcoded kind 13 would be an
     // unknown kind to the Wasm painter.
     expect(MessageKind.SkillAttached).not.toBe(HARNESS_PROTOCOL_VERSION);
-    expect(HARNESS_PROTOCOL_VERSION).toBe(19);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(20);
   });
 
   it('push/readback round-trips a skill_attached row', () => {
@@ -845,8 +846,8 @@ describe('setTurnElapsed (protocol v14)', () => {
     expect(exp.__turnElapsed()).toBe(0);
   });
 
-  it('version bumped to 19 and the export is REQUIRED (fail-closed when missing)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(19);
+  it('version bumped to 20 and the export is REQUIRED (fail-closed when missing)', () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe(20);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     // A rebuilt Wasm that omits inv_set_turn_elapsed fails bridge-load closed,
@@ -915,7 +916,7 @@ describe('status-slot pack (protocol v13)', () => {
 
 describe('queuedCount (protocol v18)', () => {
   it('reads inv_queued_count and fails closed when the export is missing', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(19);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(20);
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     expect(bridge.queuedCount()).toBe(0);
@@ -937,11 +938,40 @@ describe('setQueuePromoteAllowed (protocol v19, plan #760)', () => {
   });
 
   it('export is REQUIRED (fail-closed when missing from the wasm)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(19);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(20);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     const record = exp as unknown as Record<string, unknown>;
     delete record.inv_set_queue_promote_allowed;
+    expect(isHarnessBridgeExports(record as WebAssembly.Exports)).toBe(false);
+  });
+});
+
+describe('queuedInsertFront (protocol v20, plan #759)', () => {
+  it('writes the new head via inv_queued_insert_front', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    let inserted = '';
+    exp.inv_queued_insert_front = (ptr: number, len: number) => {
+      inserted = new TextDecoder().decode(new Uint8Array(exp.memory.buffer, ptr, len));
+      return 1;
+    };
+    expect(bridge.queuedInsertFront('Continue the current turn')).toBe(true);
+    expect(inserted).toBe('Continue the current turn');
+  });
+
+  it('reports failure when the export rejects (full queue)', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    exp.inv_queued_insert_front = () => 0;
+    expect(bridge.queuedInsertFront('x')).toBe(false);
+  });
+
+  it('inv_queued_insert_front is REQUIRED (fail-closed when missing)', () => {
+    const exp = makeMockExports() as unknown as WebAssembly.Exports;
+    expect(isHarnessBridgeExports(exp)).toBe(true);
+    const record = exp as unknown as Record<string, unknown>;
+    delete record.inv_queued_insert_front;
     expect(isHarnessBridgeExports(record as WebAssembly.Exports)).toBe(false);
   });
 });

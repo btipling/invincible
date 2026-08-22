@@ -40,7 +40,7 @@ Each SSE block is one `data: <json>\n\n` line:
 | `text_delta` | `text` (chunk) | Grow Assistant bubble(s) |
 | `usage` | `usage` | **Live mid-stream** provider token summary from a `finish` part (aggregate only). `finish-step` never emits this. The host folds the context slot immediately; `done.usage` is the final reconcile. Absent when the part carried no usable counts — never a clear/flicker |
 | `done` | `text`, optional `toolTrace`, optional `cwd`, optional `usage` | Collapse open thinking; finalize session; apply `cwd` on success only; fold bounded provider `usage` (Phase 3 #628 — `done.usage` is the conclusive reconcile); Ready |
-| `error` | `error`, optional `status` | Collapse open thinking; Error message; Ready |
+| `error` | `error`, optional `status` | Collapse open thinking; a host **retryable** failure retries the same turn up to 5 attempts before give-up; give-up paints the Error message and the turn lands on **Error** — never consuming the operator queue |
 
 Unknown types are ignored (forward-compatible). String fields are redacted server-side with the same secret list as JSON responses.
 
@@ -105,7 +105,7 @@ Every harness turn paints a final line:
 |---------|------|
 | Model finished | `Turn ended · model finished` (System) |
 | User Stop | `Turn ended · you stopped` (System) |
-| Error / timeout / empty | `Turn ended · error · …` / timed out / empty (Error) |
+| Error / timeout / empty | `Turn ended · error · …` / timed out / empty (Error). A retryable error retries the **same** turn up to **5 attempts** with bounded backoff before give-up; on give-up the host sets the turn lifecycle to **Error** (so a queued head is never drained) and, if the operator queue is non-empty, inserts `Continue the current turn` as the new head. Permanent failures (401/403/validation/4xx) give up after a single attempt |
 | Standalone chat (`/api/chat`) | `Turn ended · chat finished` (System) — kept helper only; a failed agent turn does **not** fall back here |
 
 These markers are **not** folded as tools into the next prompt.

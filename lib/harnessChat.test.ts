@@ -3,9 +3,12 @@ import {
   coalesceToolRunMessages,
   collapseThinkingDisplay,
   classifyTurnFailure,
+  classifyTurnRetry,
+  CONTINUE_TURN_PROMPT,
   describeTurnEnd,
   foldStatusSlots,
   getSessionCwd,
+  HARNESS_QUEUE_MAX_ITEMS,
   isTurnEndLine,
   parseChangeDirCwd,
   pushSessionToBridge,
@@ -57,6 +60,7 @@ function makeMockExports(): HarnessBridgeExports & {
   __canLoadEarlier: () => number;
   __statusSlots: (string | undefined)[];
   __promoteAllowed: () => boolean;
+  __queue: string[];
 } {
   let buf = new ArrayBuffer(64 * 1024);
   const memory = {
@@ -72,6 +76,8 @@ function makeMockExports(): HarnessBridgeExports & {
   let promoteAllowed = true;
   const messages: { kind: number; text: string }[] = [];
   const statusSlots: (string | undefined)[] = new Array(8).fill(undefined);
+  // plan #759 — operator follow-up FIFO mirror (inv_queued_insert_front unshifts).
+  const queue: string[] = [];
 
   const gpa_u8 = (len: number) => {
     if (len <= 0) return 0;
@@ -131,9 +137,13 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_pending_submit_len: () => 0,
     inv_pending_submit_copy: () => 0,
     inv_ack_pending_submit: () => {},
-    inv_queued_count: () => 0,
+    inv_queued_count: () => queue.length,
     inv_set_queue_promote_allowed: (v: number) => {
       promoteAllowed = v !== 0;
+    },
+    inv_queued_insert_front: (ptr: number, len: number) => {
+      queue.unshift(len === 0 ? '' : read(ptr, len));
+      return 1;
     },
     inv_set_can_load_earlier: (v: number) => {
       canLoadEarlier = v ? 1 : 0;
@@ -190,6 +200,7 @@ function makeMockExports(): HarnessBridgeExports & {
     __canLoadEarlier: () => canLoadEarlier,
     __statusSlots: statusSlots,
     __promoteAllowed: () => promoteAllowed,
+    __queue: queue,
   };
 }
 
@@ -271,7 +282,7 @@ describe('runHarnessChat', () => {
     expect(sent).toContain('User: again');
   });
 
-  it('pushes ember error message and stays ready for retry', async () => {
+  it('pushes ember error message and lands on Error on give-up (plan #759)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const send = vi.fn(async (): Promise<ChatResult> => ({
@@ -290,7 +301,11 @@ describe('runHarnessChat', () => {
         text: describeTurnEnd('error', 'AI_GATEWAY_API_KEY is not configured.'),
       },
     ]);
-    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    // plan #759 — a failed turn lands on Error (give-up), never Ready, so the
+    // Wasm promote gate (Ready-only) never consumes a queued item. The operator
+    // can still re-send (Error is not Busy).
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+    expect(exp.__queue).toHaveLength(0); // empty queue → no Continue insert
   });
 
   it('rejects empty prompt without calling send', async () => {
@@ -316,7 +331,7 @@ describe('protocol v19 promote gate arming (plan #760)', () => {
     expect(exp.__promoteAllowed()).toBe(true); // success → auto-promote stays
   });
 
-  it('runHarnessChat failure (agent error) arms promote_allowed=false then Ready', async () => {
+  it('runHarnessChat give-up (agent error) arms promote_allowed=false then lands Error (plan #759 supersedes #760)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const send = vi.fn(async (): Promise<ChatResult> => ({
@@ -325,7 +340,10 @@ describe('protocol v19 promote gate arming (plan #760)', () => {
       status: 503,
     }));
     await runHarnessChat(bridge, 'hello', { send });
-    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    // A non-stop failure is a give-up → Error (never terminal for the promote
+    // gate, so a queued head is never drained). The gate is STILL armed false
+    // (plan #760) so a later Stop→Ready also cannot auto-drain.
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
     expect(exp.__promoteAllowed()).toBe(false); // failure / stop → never drain
   });
 
@@ -436,12 +454,14 @@ describe('runHarnessTurn', () => {
     ]);
   });
 
-  it('503 agent failure does NOT fall back to chat (hard-fail, phase 3 #476)', async () => {
+  it('agent hard failure does NOT fall back to chat (hard-fail, phase 3 #476)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
+    // plan #759 — permanent 422 so this terminal/no-fallback test stays
+    // single-attempt (retryable 5xx would retry TURN_RETRY_ATTEMPTS times).
     const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
       ok: false,
-      status: 503,
+      status: 422,
       error: 'Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.',
     }));
     const send = vi.fn(async (): Promise<ChatResult> => ({ ok: true, text: 'PONG' }));
@@ -460,12 +480,13 @@ describe('runHarnessTurn', () => {
     expect(exp.__messages.some((m) => m.kind === MessageKind.Error)).toBe(true);
   });
 
-  it('agent 500 does not call chat', async () => {
+  it('agent hard failure does not call chat', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
+    // plan #759 — permanent 422 (terminal); 5xx is retryable and would loop.
     const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
       ok: false,
-      status: 500,
+      status: 422,
       error: 'boom',
     }));
     const send = vi.fn(async (): Promise<ChatResult> => ({ ok: true, text: 'nope' }));
@@ -483,14 +504,14 @@ describe('runHarnessTurn', () => {
     expect(exp.__messages.some((m) => m.kind === MessageKind.Error)).toBe(true);
   });
 
-  it('503 with non-exact body does not call chat', async () => {
+  it('hard failure with non-exact body does not call chat', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
-    // Any failed agent turn hard-fails (phase 3 #476) — no 503 → /api/chat
-    // fallback, regardless of the 503 body shape.
+    // Any failed agent turn hard-fails (phase 3 #476) — no fallback, regardless
+    // of the error body shape. plan #759: permanent 422 (terminal; 5xx would retry).
     const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
       ok: false,
-      status: 503,
+      status: 422,
       error: 'Upstream overloaded',
     }));
     const send = vi.fn(async (): Promise<ChatResult> => ({ ok: true, text: 'nope' }));
@@ -504,7 +525,7 @@ describe('runHarnessTurn', () => {
 
     expect(send).not.toHaveBeenCalled();
     expect(result.ok).toBe(false);
-    expect(result).toMatchObject({ error: 'Upstream overloaded', status: 503 });
+    expect(result).toMatchObject({ error: 'Upstream overloaded', status: 422 });
     expect(next.messages.map((m) => m.role)).toEqual(['user', 'error']);
     expect(exp.__messages.some((m) => m.kind === MessageKind.Error)).toBe(true);
   });
@@ -593,6 +614,7 @@ describe('runHarnessTurn', () => {
     const bridge = new HarnessBridge(exp);
     const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
       ok: false,
+      status: 422, // plan #759 — permanent (terminal); generic/5xx would retry
       error: 'down',
     }));
 
@@ -723,6 +745,191 @@ describe('runHarnessTurn', () => {
       expect.objectContaining({ modelId: 'anthropic/claude-a' }),
     );
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe('plan #759 — turn errors retry the current turn, never drain the queue', () => {
+  /** Run a retry-looping turn under deterministic fake timers (the real
+   *  250ms–4s bounded backoff would breach the 5 s vitest default per-test
+   *  timeout while the loop runs). Always advances well past the total backoff. */
+  async function runRetry<T>(fn: () => Promise<T>): Promise<T> {
+    vi.useFakeTimers();
+    try {
+      const pending = fn();
+      await vi.advanceTimersByTimeAsync(60_000);
+      return await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('retries a retryable 500 then succeeds on attempt 3 (no user re-push; queue untouched until success)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    exp.__queue.push('queued follow-up');
+    let n = 0;
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => {
+      n += 1;
+      if (n < 3) return { ok: false, status: 500, error: 'Gateway upstream flaked' };
+      return { ok: true, text: 'finished' };
+    });
+    const { result, session: next } = await runRetry(() =>
+      runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+        sendAgent,
+        pushUser: false,
+        streamAgent: false,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(sendAgent).toHaveBeenCalledTimes(3); // 1 + 2 retries before success
+    // Retries never re-push the user line (single user row in the session).
+    expect(next.messages.filter((m) => m.role === 'user')).toHaveLength(1);
+    // The queue is NEVER consumed by a failure — intact until a successful Ready.
+    expect(exp.__queue).toEqual(['queued follow-up']);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready); // success → Ready
+    expect(next.messages.at(-1)!.text).toBe(describeTurnEnd('model'));
+  });
+
+  it('gives up after 5 retryable failures: Error lifecycle + Continue inserted at QUEUE HEAD (never pops)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    exp.__queue.push('op item A');
+    exp.__queue.push('op item B');
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      status: 500,
+      error: 'flaked',
+    }));
+    const { result, session: next } = await runRetry(() =>
+      runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+        sendAgent,
+        pushUser: false,
+        streamAgent: false,
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(sendAgent).toHaveBeenCalledTimes(5); // 1 + 4 retries
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error); // give-up is NOT Ready
+    // Queue depth unchanged (no pop) + Continue unshifted as the new head.
+    expect(exp.__queue).toEqual([
+      CONTINUE_TURN_PROMPT,
+      'op item A',
+      'op item B',
+    ]);
+    expect(next.messages.some((m) => m.role === 'error')).toBe(true);
+    expect(next.messages.at(-1)!.text).toBe(describeTurnEnd('error', 'flaked'));
+  });
+
+  it('gives up after 5 retries with an EMPTY queue: stop, no Continue insert', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      status: 503,
+      error: 'flaked',
+    }));
+    const { result } = await runRetry(() =>
+      runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+        sendAgent,
+        pushUser: false,
+        streamAgent: false,
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(sendAgent).toHaveBeenCalledTimes(5);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+    expect(exp.__queue).toEqual([]); // empty queue → no Continue row
+  });
+
+  it('queue FULL (16) at give-up: no insert, no pop — operator items untouched (fail closed)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    for (let i = 0; i < HARNESS_QUEUE_MAX_ITEMS; i++) exp.__queue.push(`item ${i}`);
+    const before = [...exp.__queue];
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      status: 500,
+      error: 'flaked',
+    }));
+    await runRetry(() =>
+      runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+        sendAgent,
+        pushUser: false,
+        streamAgent: false,
+      }),
+    );
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+    expect(exp.__queue).toEqual(before); // no insert, no pop, no drop
+    expect(exp.__queue[0]).not.toBe(CONTINUE_TURN_PROMPT);
+  });
+
+  it('operator Stop on attempt 1: no retry, no Continue, queue intact, Ready (unchanged)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    exp.__queue.push('queued item');
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      error: 'Request cancelled.',
+      status: 499,
+    }));
+    const { result } = await runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(result.ok).toBe(false);
+    expect(sendAgent).toHaveBeenCalledTimes(1); // Stop never retries
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready); // Stop keeps Ready as today
+    expect(exp.__queue).toEqual(['queued item']); // untouched, no Continue
+  });
+
+  it('permanent 401/403: single attempt, straight to give-up (no 5× loop) + Continue-if-queued', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    exp.__queue.push('op');
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      status: 401,
+      error: 'unauthorized',
+    }));
+    const { result } = await runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+      sendAgent,
+      pushUser: false,
+      streamAgent: false,
+    });
+    expect(result.ok).toBe(false);
+    expect(sendAgent).toHaveBeenCalledTimes(1); // no 5× loop on permanent auth
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+    expect(exp.__queue[0]).toBe(CONTINUE_TURN_PROMPT); // give-up + non-empty queue
+  });
+
+  it('a retryable TIMEOUT (408) also retries then gives up with Continue (timeout is not permanent)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    exp.__queue.push('op');
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      status: 408,
+      error: 'Gateway timeout',
+    }));
+    const { result } = await runRetry(() =>
+      runHarnessTurn(bridge, createEmptySession('s'), 'hi', {
+        sendAgent,
+        pushUser: false,
+        streamAgent: false,
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(sendAgent).toHaveBeenCalledTimes(5);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+    expect(exp.__queue[0]).toBe(CONTINUE_TURN_PROMPT);
+  });
+
+  it('classifyTurnRetry is the narrow turn predicate (permanent vs retryable statuses)', () => {
+    // Non-AgentRetryError input (e.g. withTransientRetry's own abort) fails
+    // closed to permanent — the turn never loops on something it can't classify.
+    expect(classifyTurnRetry(new Error('x')).kind).toBe('permanent');
+    expect(classifyTurnRetry('string').kind).toBe('permanent');
   });
 });
 
@@ -1325,7 +1532,7 @@ describe('runHarnessTurn session cwd', () => {
     const sendAgent = vi.fn(async () => ({
       ok: false as const,
       error: 'boom',
-      status: 500,
+      status: 422, // plan #759 — permanent (terminal); 5xx would retry
     }));
     const session = { ...createEmptySession('s'), cwd: 'keep-me' };
     const { session: next } = await runHarnessTurn(bridge, session, 'hi', {
@@ -1445,12 +1652,12 @@ describe('runHarnessTurn session cwd', () => {
     expect(next.cwd).toBe('prior');
   });
 
-  it('hard-failed agent turn (503) still keeps the prior known cwd', async () => {
+  it('hard-failed agent turn still keeps the prior known cwd', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
       ok: false,
-      status: 503,
+      status: 422, // plan #759 — permanent (terminal); 5xx would retry
       error: 'Sandbox not configured. Set SANDBOX_URL and SANDBOX_TOKEN.',
     }));
     const send = vi.fn(async (): Promise<ChatResult> => ({ ok: true, text: 'chat ok' }));
@@ -1558,7 +1765,9 @@ describe('runHarnessTurn session cwd', () => {
           changeDirCwd: 'invincible/sub',
         });
         await init?.onEvent?.({ type: 'error', error: 'Gateway timeout' });
-        return { ok: false, error: 'Gateway timeout', status: 504 };
+        // status 422 keeps the timeout kind (message match) but is PERMANENT
+        // (plan #759 — a 4xx never backoff-loops a terminal turn).
+        return { ok: false, error: 'Gateway timeout', status: 422 };
       },
     });
     expect(result.ok).toBe(false);
@@ -1580,7 +1789,7 @@ describe('runHarnessTurn session cwd', () => {
           ok: false,
           summary: 'change_dir · ✗ failed · ERROR change_dir: no such dir',
         });
-        return { ok: false, error: 'boom' };
+        return { ok: false, error: 'boom', status: 422 }; // plan #759 — terminal
       },
     });
     expect(result.ok).toBe(false);
@@ -2370,7 +2579,7 @@ describe('runHarnessTurn session activeSandboxId bind', () => {
       streamAgent: false,
       sendAgent: async () => ({
         ok: false,
-        status: 500,
+        status: 422, // plan #759 — permanent (terminal); 5xx would retry
         error: 'inference down',
       }),
     });
@@ -2659,7 +2868,7 @@ describe('skill attach display (phase 2 #517)', () => {
     const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
       ok: false,
       error: 'model boom',
-      status: 502,
+      status: 422, // plan #759 — permanent (terminal); 5xx would retry
       attachedSlugs: ['create-plan'],
     }));
     const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'go', {
@@ -3319,7 +3528,7 @@ describe('context/usage slot (phase 3, plan #539 / #327)', () => {
     };
     const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
       ok: false,
-      status: 502,
+      status: 422, // plan #759 — permanent (terminal); 5xx would retry
       error: 'boom',
     }));
     const { result, session: next } = await runHarnessTurn(bridge, session, 'hi', {
