@@ -837,9 +837,10 @@ fn applyInvincibleRightClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
 /// release double-click counter, so the next plain click stays a caret-move +
 /// clear (stock web never counts Shift+clicks toward double-clicks). Exclusion
 /// is detected three ways at release (see needle 9): same-frame `.shift_click`,
-/// live `me.mod.shift()`, and — the last adversarial Nit — a persisted
-/// `_shift_click_press` flag that survives a two-frame click where Shift is
-/// released before mouseup.
+/// live `me.mod.shift()`, and — the last two adversarial Nits (rounds 4 and 5) —
+/// a persisted `_shift_click_press` flag that survives a two-frame click where
+/// Shift is released before mouseup and is consumed once per release (needle 10),
+/// so a Shift+press that became a drag cannot leave a stale flag.
 ///
 /// The click point → byte resolution lives in `selMovePre`/`lineBreak` (during
 /// `addText`, the only place text rects exist), so the variant rides the same
@@ -1068,7 +1069,8 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             \\                        // variant is frame-local (re-inits to .none each frame), so
             \\                        // this store flag crosses the press→release frame gap, the
             \\                        // same way `.mouse.byte` persists while captured. Consumed
-            \\                        // (dataRemove) at the release handler (needle 9).
+            \\                        // (dataRemove) at the release cleanup (needle 10), which runs on any
+            \\                        // pointer/middle release — click and drag alike.
             \\                        dvui.dataSet(null, self.data().id, "_shift_click_press", true);
             \\                        self.sel_move = .{ .shift_click = .{} };
             \\                        self.sel_move.shift_click.down_pt = self.data().contentRectScale().pointFromPhysical(me.p);
@@ -1106,8 +1108,10 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             //      (c) persisted `_shift_click_press` — set by the press handler
             //          (needle 8) and read here, closing the two-frame click where Shift
             //          was released before mouseup (round-4 Nit). It mirrors how
-            //          `.mouse.byte` persists across captured frames; consumed here via
-            //          dataRemove so it never suppresses a later plain click's count.
+            //          `.mouse.byte` persists across captured frames; it is read here and
+            //          consumed at the release cleanup (needle 10), so a Shift+press that
+            //          became a drag cannot leave a stale flag that would suppress a later
+            //          plain click's count (adversarial round-5 Nit L1).
             //    Round 2 gated only on `!me.mod.shift()` (PASS; Nit about the shift-
             //    released-before-mouseup hyper-edge). Round 3 swapped it for only
             //    `self.sel_move != .shift_click`, which broke the common path — see
@@ -1134,13 +1138,14 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             \\                        //   (c) two-frame click where Shift was released before mouseup
             \\                        //       (round-4 race): the `_shift_click_press` flag persisted by
             \\                        //       the press handler crosses the frame gap (like `.mouse.byte`).
-            \\                        // The flag is consumed (removed) here so it never suppresses a
-            \\                        // later plain click's double-click count.
+            \\                        // Read here (single consumer, the click-without-drag arm); the
+            \\                        // flag is consumed exactly once per release at the release cleanup
+            \\                        // (needle 10), so a Shift+press that became a drag cannot leave a
+            \\                        // stale flag suppressing a later plain click's double-click count.
             \\                        const shift_click_release =
             \\                            self.sel_move == .shift_click or
             \\                            me.mod.shift() or
             \\                            (dvui.dataGet(null, self.data().id, "_shift_click_press", bool) orelse false);
-            \\                        dvui.dataRemove(null, self.data().id, "_shift_click_press");
             \\                        if (me.button.pointer() and !shift_click_release) {
             \\                            self.click_num += 1;
             \\                            self.click_num_pt = me.p;
@@ -1149,6 +1154,41 @@ fn applyInvincibleShiftClickPatch(b: *std.Build, dvui_dep: *std.Build.Dependency
             \\                            }
             \\
             ,
+        },
+        .{
+            // 10. release cleanup — consume the persisted `_shift_click_press` flag here on
+            //     ANY pointer/middle release that ends the capture, not just the
+            //     click-without-drag arm (needle 9). A Shift+press that became a drag never
+            //     enters needle 9's arm, so without this the flag would persist and suppress
+            //     the next plain click's double-click count exactly once (adversarial round-5
+            //     Nit L1). The read for suppression lives in needle 9 (the click arm); this
+            //     consumption runs after it and on every other release too. dataRemove on an
+            //     absent key is a no-op, so it is safe when the press was never a Shift+click.
+            .needle =
+            \\                        dvui.refresh(null, @src(), self.data().id);
+            \\                    }
+            \\
+            \\                    dvui.captureMouse(null, e.num);
+            \\                    dvui.dragEnd();
+            \\                }
+            \\
+            ,
+            .replacement =
+            \\                        dvui.refresh(null, @src(), self.data().id);
+            \\                    }
+            \\
+            \\                    // invincible: consume the `_shift_click_press` flag on ANY release that
+            \\                    // ends the capture. The click-without-drag arm (needle 9) already read
+            \\                    // it for suppression; a drag release never entered that arm. Without
+            \\                    // this consume, a Shift+press that became a drag would leave a stale flag
+            \\                    // that suppresses the next plain click's double-click count exactly once
+            \\                    // (adversarial round-5 Nit L1). dataRemove on an absent key is a no-op,
+            \\                    // so this is safe when the press was never a Shift+click.
+            \\                    dvui.dataRemove(null, self.data().id, "_shift_click_press");
+            \\                    dvui.captureMouse(null, e.num);
+            \\                    dvui.dragEnd();
+            \\                }
+            \\
         },
     };
 
