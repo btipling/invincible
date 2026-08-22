@@ -17,8 +17,12 @@
 # fallback to the tab-owned /api/agent POST (the #710 lie). Pending at the poll
 # budget = non-zero ("run still pending", re-dispatch) — never a silent pass.
 #
-# Safety: workflow_dispatch only; ubuntu-latest only; never self-hosted;
-# never echo secret values.
+# Safety: workflow_dispatch only; ubuntu-latest only; never self-hosted; never
+# echo secret values. GitHub expression substitution (`${{ inputs.* }}`) is NOT
+# shell-escaped, so dispatch inputs are never interpolated into a `run:` script
+# body — they are passed through `env:` (expression context, not shell) and
+# referenced as quoted `"$VAR"` inside scripts. `${{ }}` appears only in
+# `if:`/`name:`/`env:` positions (checked by scripts/workflows-smoke.gha.test.ts).
 
 name: workflows-smoke
 
@@ -55,15 +59,21 @@ jobs:
     name: workflows smoke (${{ inputs.environment }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Dispatch inputs are mapped into env (expression context — NOT shell).
+    # Scripts reference the quoted env vars below, never `${{ inputs.* }}`.
+    env:
+      SMOKE_CONFIRM: ${{ inputs.confirm }}
+      SMOKE_ENV: ${{ inputs.environment }}
+      SMOKE_URL: ${{ inputs.url }}
     steps:
       - name: Guard confirm input & environment
         run: |
           set -euo pipefail
-          if [ "${{ inputs.confirm }}" != "smoke" ]; then
+          if [ "$SMOKE_CONFIRM" != "smoke" ]; then
             echo "::error::confirm input must equal 'smoke'. Aborting with no mutate."
             exit 1
           fi
-          if [ "${{ inputs.environment }}" != "preview" ] && [ "${{ inputs.environment }}" != "production" ]; then
+          if [ "$SMOKE_ENV" != "preview" ] && [ "$SMOKE_ENV" != "production" ]; then
             echo "::error::environment must be 'preview' or 'production'."
             exit 1
           fi
@@ -97,7 +107,7 @@ jobs:
         if: ${{ inputs.url != '' }}
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --max-time 15 -o /dev/null "${{ inputs.url }}"
+          curl --fail --silent --show-error --max-time 15 -o /dev/null "$SMOKE_URL"
           echo "Deployment reachable at provided url."
 
       - name: Setup Node.js 22
@@ -127,7 +137,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "### workflows-smoke (${{ inputs.environment }})"
+            echo "### workflows-smoke ($SMOKE_ENV)"
             echo "- result: ${{ job.status }}"
             echo "- verify: Vercel → Observability → Workflows shows the fixture run + step, status completed."
             echo "- note: requires Workflows ENABLED on Vercel + Observability on (hosted-UI toggles); never falls back to /api/agent."
