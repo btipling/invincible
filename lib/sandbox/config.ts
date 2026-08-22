@@ -66,6 +66,28 @@ export const SEARCH_RESULT_MAX_BYTES = 65536; // 64 KiB
 /** Bounded timeout for a single rg spawn. */
 export const SEARCH_TIMEOUT_MS = 30_000;
 
+/**
+ * Exec result summary window: first N lines of each stdout/stderr stream shown
+ * in the model-visible result. NEW cap. Matches the `read_file` default limit
+ * pattern as a "window into more".
+ */
+export const EXEC_LOG_HEAD_LINES = 10;
+export const EXEC_LOG_TAIL_LINES = 10;
+/**
+ * Cap on a single line shown inside the exec-result summary window. A
+ * pathological single stdio line (e.g. one huge minified JSON line) is clipped
+ * so the summary stays compact and — critically — never pushes the `log:`
+ * pointer past `TOOL_RESULT_MAX_CHARS` (which would truncate it off). NEW cap.
+ */
+export const EXEC_SUMMARY_LINE_MAX_BYTES = 4096;
+/**
+ * Defense-in-depth ceiling for the on-disk `exec` log file. The daemon already
+ * caps each stdout/stderr stream at `MAX_STDIO_BYTES` (4 MiB) so worst-case
+ * combined is 8 MiB — this cap only bites if a daemon cap is raised without
+ * updating this one. Under `MAX_READ_WRITE_BYTES` (16 MiB). NEW cap.
+ */
+export const EXEC_LOG_MAX_BYTES = 8_388_608; // 8 MiB
+
 export function clampExecTimeoutMs(timeoutMs?: number): number {
   if (timeoutMs == null || Number.isNaN(Number(timeoutMs))) {
     return DEFAULT_EXEC_TIMEOUT_MS;

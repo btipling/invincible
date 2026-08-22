@@ -438,6 +438,36 @@ longer than 45 s completes, and the daemon's own timeout kill surfaces as
 `TIMED_OUT` rather than a client 504. Non-exec calls keep the fast 45 s abort;
 agent turn-cancel (Stop) still aborts immediately.
 
+**Compact result + on-disk log:** the agent `exec` tool returns the model a
+**compact summary**, not a raw stdout/stderr dump. For each non-empty stream it
+shows the first `EXEC_LOG_HEAD_LINES` (10) and last `EXEC_LOG_TAIL_LINES` (10)
+lines with line/byte counts and an explicit `... (N lines truncated)` marker for
+the hidden middle. Whenever either stream is non-empty, the **full** redacted
+output (same `redactSecrets` as every tool result) is written to
+`<workspace>/.invincible/logs/exec-<ts>-<seq>.log` (`.invincible` is a brand-new
+hidden workspace dir created on first exec — the log write passes `mkdir: true`,
+since backends never auto-create parent dirs; the `-<seq>` monotonic counter
+keeps two parallel execs in the same millisecond from overwriting one another).
+`.invincible/` is covered by the repo `.gitignore`, so logs are never committed.
+The summary carries two pointers the model can `read_file` for the complete
+output. `log: <rel path>` is **cwd-relative** (e.g. from cwd `invincible` it
+renders `../.invincible/logs/…`, so `read_file` — which resolves relative paths
+against the live cwd — opens it right after the exec at that cwd). `log (root):
+<root path>` is **workspace-root-relative** (`.invincible/logs/…`), always
+readable from the workspace root (`cwd .` — walk up with `change_dir ..`), so a
+depth-changing `change_dir` in between can never strand the full output. The
+underlying `write` is always at the **workspace root** and neither form leaks the
+jail root `R`. The two pointers are emitted **immediately after**
+`exit=`/`TIMED_OUT`, so a huge stream can never truncate them off. Each shown
+summary line is byte-clipped (`EXEC_SUMMARY_LINE_MAX_BYTES`), so a single fat
+stdio line can't inline the whole stream. An empty output (`exec true`) writes no
+file and the summary is just `exec <cmd>\nexit=<code>`. A log-write failure is
+**fail-soft**: the summary keeps its head/tail lines and notes `⚠ log write
+failed: <reason>` — with the reason **sanitized** so a backend/jail filesystem
+path (which a `write_file` error can reference) never surfaces to the model. Log
+content is additionally capped at `EXEC_LOG_MAX_BYTES` (8 MiB) — a
+defense-in-depth ceiling under the daemon's per-stream 4 MiB caps.
+
 Full contract, jail rules, and exec shape: [`sandbox/README.md`](../sandbox/README.md).
 
 ---
@@ -624,6 +654,9 @@ picked up the v2 change; repeat steps 3–5 above.
 | exec `timeoutMs` | 300_000 (5 min) | max 1_800_000 (30 min) |
 | read/write maxBytes | 16 MiB | |
 | stdout/stderr/stdin per exec | 4 MiB each | truncated / rejected |
+| exec result summary window | head/tail 10 lines each | compact — hides the middle, `... (N lines truncated)` |
+| exec summary line clip | 4096 bytes/line | `EXEC_SUMMARY_LINE_MAX_BYTES` — a single fat stdio line is `… (line clipped)` in the summary |
+| exec log file | 8 MiB | `.invincible/logs/exec-<ts>-<seq>.log` — full redacted output; written on non-empty exec and reported as both `log:` (cwd-relative) and `log (root):` (workspace-root) pointers, `read_file`-able; write-fail `⚠` reason sanitized; gitignored |
 | tool result to model | 8_192 chars | |
 | toolTrace lines to Wasm | unbounded | no host product cap |
 | toolTrace summary chars | 240 | host + server |
