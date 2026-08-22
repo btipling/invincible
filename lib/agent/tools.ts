@@ -288,9 +288,11 @@ function sanitizeExecLogReason(
   let out = rewriteExecRootToRel(workspaceRoot, reason);
   out = redactSecrets(out, secrets);
   const cleaned = out
-    // Drive-letter (`C:\…`) and POSIX absolute (`/var/lib/…`) path-like fragments
-    // (≥2 segments) are collapsed; a matching token is replaced with `…`.
-    .replace(/[A-Za-z]:[\\/][^\s]*|(?:\/[^\s/\\]+){2,}/g, '…')
+    // Drive-letter (`C:\…`) and POSIX absolute (`/var/lib/…` or a bare `/tmp`)
+    // path-like fragments (≥1 segment — a single-segment absolute is just as
+    // much a leak as a multi-segment one) are collapsed; a matching token is
+    // replaced with `…`.
+    .replace(/[A-Za-z]:[\\/][^\s]*|(?:\/[^\s/\\]+){1,}/g, '…')
     .replace(/\s+/g, ' ')
     .trim();
   if (!cleaned) return 'log write failed';

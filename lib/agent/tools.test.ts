@@ -1119,6 +1119,24 @@ describe('exec result summary + log (plan #724)', () => {
     expect(o).not.toContain('.invincible');
     expect(o).not.toContain('log (root):');
   });
+
+  it('case 18: single-segment absolute fragment (/tmp) in the write-failure reason is also collapsed (nit: POSIX branch must not require ≥2 segments)', async () => {
+    const writeFile = vi.fn(async () => {
+      throw new Error("EACCES: permission denied, mkdir '/tmp'");
+    });
+    const { out } = run({
+      writeFile,
+      exec: vi.fn(async () => ({ exitCode: 0, stdout: 'ok\n', stderr: '' })),
+    });
+    const o = (await out) as string;
+    // Human-readable failure survives…
+    expect(o).toContain('⚠ log write failed: EACCES: permission denied, mkdir');
+    // …but a bare single-segment absolute path is collapsed too — `/tmp` must
+    // never surface (the pre-fix regex `(?:\/[^\s/\\]+){2,}` only matched ≥2
+    // segments, so a lone `/tmp` leaked through).
+    expect(o).not.toContain('/tmp');
+    expect(o).not.toContain('log (root):');
+  });
 });
 
 describe('read-before-edit gates', () => {
