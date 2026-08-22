@@ -88,6 +88,7 @@ pub fn build(b: *std.Build) void {
         "inv_pending_submit_copy",
         "inv_ack_pending_submit",
         "inv_queued_count",
+        "inv_set_queue_promote_allowed",
         "inv_set_can_load_earlier",
         "inv_has_pending_load_earlier",
         "inv_ack_pending_load_earlier",
@@ -275,6 +276,28 @@ pub fn build(b: *std.Build) void {
             }),
         });
         test_rich.dependOn(&b.addRunArtifact(chip_preview_tests).step);
+    }
+
+    // Host unit tests for bridge.zig protocol-v19 promote gate (plan #760):
+    // default-true legacy auto-promote, host set/read round-trip, and reset() /
+    // inv_clear_messages re-arming on fresh surfaces. Imports bridge.zig which
+    // needs the web-backend stub (mirrors queue_band_tests wiring).
+    {
+        const bridge_tests = b.addTest(.{
+            .name = "bridge",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/bridge.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        bridge_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
+        bridge_tests.root_module.addImport("web-backend", b.createModule(.{
+            .root_source_file = b.path("src/test_web_backend_stub.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }));
+        test_rich.dependOn(&b.addRunArtifact(bridge_tests).step);
     }
 
     // Host unit tests for submit_queue.zig + queue_preview.zig (plan #664).

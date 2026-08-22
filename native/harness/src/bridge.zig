@@ -34,7 +34,11 @@ const submit_queue = @import("submit_queue.zig");
 /// `inv_has_pending_session_switch` / len / copy / ack. Additive, now REQUIRED.
 /// v18: submit-queue count — `inv_queued_count` (Wasm-ephemeral FIFO; host
 /// auto-continue must wait for 0). Additive, now REQUIRED.
-pub const PROTOCOL_VERSION: u32 = 18;
+/// v19: promote gate — `inv_set_queue_promote_allowed` (host arms a one-shot
+/// per-terminal scalar so a Stop / Esc / error / timeout Ready never drains the
+/// queue; only idle ▶ / Ctrl+Enter with an empty composer + non-empty queue does).
+/// Additive, now REQUIRED.
+pub const PROTOCOL_VERSION: u32 = 19;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -127,6 +131,15 @@ var pending_submit_len: u32 = 0;
 var has_pending_submit: bool = false;
 /// Wasm-ephemeral operator follow-up FIFO (protocol v18).
 var queue: submit_queue.Q = .{};
+/// Protocol v19 — promote gate (plan #760). The host arms a one-shot per-
+/// terminal scalar: **true** on a successful turn's Ready (auto-promote stays,
+/// unchanged), **false** on Stop / Esc / error / timeout / validation Ready so
+/// the Wasm terminal-promote block can NEVER drain the queue after a non-success.
+/// Default **true** keeps a legacy host (that never writes it) on today's
+/// success auto-promote. Reset on `reset()` and `inv_clear_messages` (fresh
+/// surfaces re-arm the default). Wasm only READS this on the terminal edge; the
+/// host rewrites it every terminal.
+var queue_promote_allowed: bool = true;
 /// Host sets when SessionStore has messages older than the current ring window.
 var can_load_earlier: bool = false;
 var has_pending_load_earlier: bool = false;
@@ -242,6 +255,37 @@ pub fn enqueueFromUi(text: []const u8) error{ Blank, Full }!void {
     refresh();
 }
 
+/// Protocol v19 — current promote gate (plan #760). Wasm reads this on the
+/// terminal edge (busy→ready) so a Stop / error terminal cannot drain the queue
+/// when the host has armed it false. It is NOT consumed here — the host rewrites
+/// it on every terminal, and `reset()`/`inv_clear_messages` restore the default.
+pub fn hasQueuePromoteAllowed() bool {
+    return queue_promote_allowed;
+}
+
+/// Plan #760 promote-gate predicate (adversarial #763 L6). Whether a turn edge
+/// MAY auto-promote the queue head. Folds BOTH wasm triggers — the turn-ended
+/// edge (`prev` busy → `cur` ready) AND the queue-edit-closed edge (`edit_closed`
+/// on a ready terminal, the "trigger B" the pre-round-2 call site ORed in under
+/// duplicate guards) — together with the two gate guards (not mid-edit
+/// `editing`, and the host-armed scalar `allowed`) into ONE pure,
+/// host-unit-testable seam (no dvui frame / no ui state needed). Goal 1 (a Stop
+/// / Esc / error / timeout Ready never drains) is a real failing-before /
+/// passing-after test with FIFO e2e coverage, and the gate-guard OR can no longer
+/// be dropped at the call site.
+///
+/// Only a SUCCESSFUL terminal (`cur == .ready`) can auto-promote: `err` is a
+/// terminal for lifecycle/collapse purposes but NOT a success — a failed turn
+/// must never drain the queue regardless of `allowed` (the round-1 `.busy→.err`
+/// test only passed because it passed `allowed=false`; sibling #774 likewise
+/// treats err as non-terminal for promotion).
+pub fn shouldAutoPromote(prev: Lifecycle, cur: Lifecycle, editing: bool, allowed: bool, edit_closed: bool) bool {
+    const terminal = cur == .ready;
+    const turn_ended = prev == .busy and terminal;
+    const edit_closed_terminal = edit_closed and terminal;
+    return (turn_ended or edit_closed_terminal) and !editing and allowed;
+}
+
 /// Promote the queue head into `queueSubmitFromUi` when the turn is terminal
 /// and the operator is not mid-edit. Peek → submit → pop only if accepted.
 pub fn tryPromoteQueued(editing: bool) bool {
@@ -305,6 +349,7 @@ pub fn reset() void {
     has_pending_load_earlier = false;
     has_pending_cancel = false;
     has_pending_model_change = false;
+    queue_promote_allowed = true; // fresh surface re-arms the legacy default (plan #760)
     session_catalog.reset();
     suppress_refresh = false;
     catalog_count = 0;
@@ -521,7 +566,7 @@ export fn inv_update_last_message(kind: u8, ptr: [*]const u8, len: usize) u8 {
     return 1;
 }
 
-export fn inv_clear_messages() void {
+pub export fn inv_clear_messages() void {
     msg_head = 0;
     msg_count = 0;
     has_pending_cancel = false;
@@ -529,6 +574,8 @@ export fn inv_clear_messages() void {
     has_pending_submit = false;
     pending_submit_len = 0;
     submit_queue.clear(&queue);
+    // Clear / New also re-arm the promote gate (fresh surface, plan #760).
+    queue_promote_allowed = true;
     image_cache.clear();
     math_cache.clear();
     refresh();
@@ -575,6 +622,20 @@ export fn inv_ack_pending_submit() void {
 /// Protocol v18 — host / future auto-continue reads the ephemeral queue depth.
 export fn inv_queued_count() u32 {
     return submit_queue.count(&queue);
+}
+
+/// Protocol v19 — host arms the one-shot promote gate for the NEXT terminal
+/// (plan #760). `v != 0` re-enables auto-promote for the terminal that follows;
+/// `0` makes a Stop / error / timeout Ready drain nothing. Takes effect on the
+/// next Wasm terminal edge (busy→ready / edit-close), not retroactively on the
+/// current transition. `refresh()` so the canvas re-paints.
+/// `pub` so the host-target unit test (`bridge.test.zig`) can call it directly
+/// on the compiled module; the Wasm ABI export still roots via build.zig.
+pub export fn inv_set_queue_promote_allowed(v: u8) void {
+    const next = v != 0;
+    if (queue_promote_allowed == next) return;
+    queue_promote_allowed = next;
+    refresh();
 }
 
 export fn inv_set_can_load_earlier(v: u8) void {

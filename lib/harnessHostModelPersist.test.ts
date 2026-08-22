@@ -110,6 +110,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_pending_submit_copy: () => 0,
     inv_ack_pending_submit: () => {},
     inv_queued_count: () => 0,
+    inv_set_queue_promote_allowed: () => {},
     inv_set_can_load_earlier: () => {},
     inv_has_pending_load_earlier: () => 0,
     inv_ack_pending_load_earlier: () => {},
