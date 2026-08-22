@@ -65,12 +65,52 @@ test "help_overlay: row.help copy carries no stale Space chord (plan #761 Nit L6
 
 /// Drives `help_overlay.paint` over a full-window band. `got_close` records the
 /// paint's backdrop-close return so tests can assert click-outside behavior.
+///
+/// The frame paints a TRANSCRIPT STAND-IN scroll container BEFORE the overlay
+/// modal — the same order `ui.zig` builds `state.transcript_scroll`'s container
+/// (ui.zig:639 paints the overlay only after the transcript laid out). This is
+/// what makes the Goal-2 wheel-isolation test able to FAIL: if the overlay
+/// regresses to the pre-#781 absolute `dvui.box` (no subwindow), a wheel over
+/// the panel is routed to the transcript's container (`windowFor` returns the
+/// base window), the transcript offset moves, and the test catches the leak it
+/// exists to prevent (adversarial review #783 Major L6).
 const Frame = struct {
     var band_w: f32 = 640;
     var band_h: f32 = 400;
     var got_close: bool = false;
+    /// ScrollInfo for the transcript stand-in (mirrors `state.transcript_scroll`).
+    var transcript_scroll: dvui.ScrollInfo = .{
+        .vertical = .auto,
+        .horizontal = .none,
+    };
 
     fn paint() !dvui.App.Result {
+        // Transcript stand-in: a scroll container over the same band, painted
+        // before the overlay so its `processEvents` runs ahead of the modal.
+        // Overflow pseudo-rows give it a non-zero scrollMax so a leaked wheel
+        // would measurably move its offset (the break scenario).
+        {
+            var ts = dvui.scrollArea(@src(), .{
+                .scroll_info = &Frame.transcript_scroll,
+                .vertical_bar = .auto,
+            }, .{
+                .expand = .both,
+                .padding = .all(0),
+                .tag = "transcript-scroll",
+            });
+            defer ts.deinit();
+            var i: usize = 0;
+            while (i < 40) : (i += 1) {
+                // Loop-unique id so the stand-in never paints duplicate-id red
+                // outlines either (same Goal-1 rule as the overlay rows).
+                var row = dvui.box(@src(), .{}, .{
+                    .id_extra = @intCast(i),
+                    .min_size_content = .{ .w = Frame.band_w * PX, .h = 40 * PX },
+                });
+                row.deinit();
+            }
+        }
+
         got_close = help.paint(0, 0, band_w, band_h, .{ .composer = true });
         return .ok;
     }
@@ -138,23 +178,31 @@ test "wheel over the panel scrolls the overlay list, not the transcript (Goal 2)
     Frame.band_w = 600;
     Frame.band_h = 300;
     Frame.got_close = false;
+    Frame.transcript_scroll = .{ .vertical = .auto, .horizontal = .none };
     settleOverlay();
 
-    // The list must overflow its viewport for a wheel to move anything.
+    // BOTH containers must have room to scroll, so the wheel *could* move either.
     try t.expect(help.ctx_scroll.scrollMax(.vertical) > 0);
+    try t.expect(Frame.transcript_scroll.scrollMax(.vertical) > 0);
 
     const before = help.ctx_scroll.offset(.vertical);
+    const t_before = Frame.transcript_scroll.offset(.vertical);
     // The modal subwindow owns `overlay-scroll-area`: wheel over it is routed to
-    // the overlay's own ScrollInfo (never the transcript, which is not in this
-    // frame at all — the offset moving proves the wheel was captured here).
+    // the overlay's own ScrollInfo (never the transcript stand-in painted below
+    // in the same frame). Negative wheel_y scrolls content DOWN (offset increases;
+    // ScrollContainer does `scrollByOffset(.vertical, -wheel_y)`), moving away
+    // from the top clamp — asserted against BOTH infos so the transcript is
+    // proven untouched (adversarial review #783 Major L6).
     try dvui.testing.moveTo("overlay-scroll-area");
-    // Negative wheel_y scrolls the content DOWN (offset increases; ScrollContainer
-    // does `scrollByOffset(.vertical, -wheel_y)`), so it moves away from the top
-    // clamp and we can assert the overlay's own list scrolled.
     _ = try dvui.currentWindow().addEventMouseWheel(-6.0, .vertical, null);
     _ = try dvui.testing.step(Frame.paint);
+
+    // Overlay list scrolled (offset moved).
     const after = help.ctx_scroll.offset(.vertical);
     try t.expect(after > before);
+    // Transcript offset did NOT move — the wheel stayed in the panel.
+    const t_after = Frame.transcript_scroll.offset(.vertical);
+    try t.expectApproxEqAbs(t_after, t_before, 0.001);
 }
 
 test "backdrop click-outside closes; click inside the panel does not (2b)" {
