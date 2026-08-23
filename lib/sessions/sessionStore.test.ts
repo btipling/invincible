@@ -174,6 +174,7 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'usage',
       'turnRunId',
       'turnStatus',
+      'turnStreamCursor',
     ]);
     for (const k of RESERVED_META_KEYS) {
       // `attachedSkills` is a JSON-encoded string; `usage` is a JSON UsageSummary
@@ -387,6 +388,93 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
     const env = validateSessionEnvelope({ ...makeRecord(), meta: { turnStatus: ' FINISHED ' } });
     expect(env.ok).toBe(true);
     if (env.ok) expect('turnStatus' in env.value.meta).toBe(false);
+  });
+
+  it('plan #797 — accepts a valid non-negative meta.turnStreamCursor (incl. offset 0) and DROPS poison to unset (never 400)', () => {
+    // 0 is a legit first-attach offset — pinned at the record level (non-vacuous).
+    const zero = validateSessionRecord(
+      makeRecord({ meta: { turnStreamCursor: 0 } as HarnessSessionRecord['meta'] }),
+    );
+    expect(zero.ok).toBe(true);
+    if (zero.ok) expect(zero.value.meta.turnStreamCursor).toBe(0);
+
+    const mid = validateSessionRecord(
+      makeRecord({ meta: { turnStreamCursor: 12345 } as HarnessSessionRecord['meta'] }),
+    );
+    expect(mid.ok).toBe(true);
+    if (mid.ok) expect(mid.value.meta.turnStreamCursor).toBe(12345);
+
+    // Poisoned (negative / NaN / Infinity / non-integer / >cap / string / non-number)
+    // are DROPPED to unset (the key is omitted) — the record still validates, never 400s.
+    for (const bad of [
+      -1,
+      -0.5,
+      NaN,
+      Infinity,
+      0.5,
+      1_000_000_001, // > TURN_STREAM_CURSOR_MAX
+      '42' as unknown,
+      '0' as unknown,
+      '' as unknown,
+      null as unknown,
+      undefined as unknown,
+      true as unknown,
+    ]) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { turnStreamCursor: bad } as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true); // drop-to-unset, not a 400
+      if (res.ok) {
+        expect('turnStreamCursor' in res.value.meta).toBe(false);
+        expect(res.value.meta.turnStreamCursor).toBeUndefined();
+      }
+    }
+
+    // The reserved-key contract is intact: unknown keys are STILL rejected.
+    expect(
+      validateSessionRecord(makeRecord({ meta: { notReserved: 1 } as HarnessSessionRecord['meta'] })).ok,
+    ).toBe(false);
+  });
+
+  it('plan #797 — validateMeta round-trips turnStreamCursor and omits poison (reserved-key + cap intact)', () => {
+    const ok = validateMeta({ turnStreamCursor: 12345 });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.turnStreamCursor).toBe(12345);
+    const zero = validateMeta({ turnStreamCursor: 0 });
+    expect(zero.ok).toBe(true);
+    if (zero.ok) expect('turnStreamCursor' in zero.value).toBe(true);
+    // Poisoned / negative / over-cap / string → `meta` is ok but the key is omitted.
+    const poison = validateMeta({ turnStreamCursor: 1_000_000_001 });
+    expect(poison.ok).toBe(true);
+    if (poison.ok) expect('turnStreamCursor' in poison.value).toBe(false);
+    const negative = validateMeta({ turnStreamCursor: -1 });
+    expect(negative.ok).toBe(true);
+    if (negative.ok) expect('turnStreamCursor' in negative.value).toBe(false);
+    const nan = validateMeta({ turnStreamCursor: NaN });
+    expect(nan.ok).toBe(true);
+    if (nan.ok) expect('turnStreamCursor' in nan.value).toBe(false);
+    const str = validateMeta({ turnStreamCursor: '42' });
+    expect(str.ok).toBe(true);
+    if (str.ok) expect('turnStreamCursor' in str.value).toBe(false);
+    // Envelope path shares the same drop-to-unset.
+    const env = validateSessionEnvelope({ ...makeRecord(), meta: { turnStreamCursor: Infinity } });
+    expect(env.ok).toBe(true);
+    if (env.ok) expect('turnStreamCursor' in env.value.meta).toBe(false);
+  });
+
+  it('plan #797 — turnStreamCursor coexists with turnRunId as a DISTINCT reserved key (never folded into turnRunId)', () => {
+    const res = validateSessionRecord(
+      makeRecord({
+        meta: { turnRunId: 'run_abc-123', turnStreamCursor: 7 } as HarnessSessionRecord['meta'],
+      }),
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.value.meta.turnRunId).toBe('run_abc-123');
+      expect(res.value.meta.turnStreamCursor).toBe(7);
+      // Distinct keys — the cursor is never folded into the run id.
+      expect('turnStreamCursor' in res.value.meta).toBe(true);
+    }
   });
 });
 

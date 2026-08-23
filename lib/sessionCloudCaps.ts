@@ -325,6 +325,34 @@ export function sanitizeTurnStatus(value: unknown): TurnStatus | undefined {
 }
 
 /**
+ * Max value of a reserved `meta.turnStreamCursor` (plan #797, backend-agents A3).
+ * A monotonic **attach/replay offset** for the later `GET .../stream?startIndex=C`
+ * (C16 #810) and attach handshake that uses the cursor (E19 #813). **NEW generous
+ * cap** far above the parent's 2k-event slow-replay line per turn (see cost lock):
+ * 1e9 is ~6 orders of magnitude of headroom while riding the tiny session envelope
+ * far below the 1 MiB whole-meta budget (`HARNESS_SESSION_MAX_META_BYTES`) and the
+ * 4.5 MB Function wire. **NEW cap; no existing cap value changed → no human gate.**
+ */
+export const TURN_STREAM_CURSOR_MAX = 1_000_000_000;
+
+/**
+ * Client-safe predicate for a reserved `meta.turnStreamCursor` (plan #797,
+ * backend-agents A3). Accepts **only** a number that is a **non-negative integer**
+ * `≤ TURN_STREAM_CURSOR_MAX` — that excludes negative, `NaN`, `Infinity`/non-finite,
+ * non-integer (`0.5`), over-cap, and any non-`number` value (string/number-like,
+ * object, `null`, `undefined`). Fail-closed → `undefined`. Shared by the server
+ * validator, which DROPS a poisoned `turnStreamCursor` to unset — never a 400 (same
+ * drop-to-unset decision as `selectedModel` / `usage` / `turnRunId` / `turnStatus`).
+ */
+export function sanitizeTurnStreamCursor(value: unknown): number | undefined {
+  if (typeof value !== 'number') return undefined;
+  if (!Number.isInteger(value)) return undefined;
+  if (value < 0) return undefined;
+  if (value > TURN_STREAM_CURSOR_MAX) return undefined;
+  return value;
+}
+
+/**
  * Max UTF-8 byte length of a model id carried as the session carrier
  * `meta.selectedModel` (plan #616 / source #610). Single TS source shared by the
  * host trim/parse (`lib/sessionRepository.ts`, `lib/sessionStore.ts`) and server
