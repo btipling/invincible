@@ -75,6 +75,27 @@ export type SessionSnapshot = {
    * poisoned value never sticks or bricks the session.
    */
   selectedModel?: string;
+  /**
+   * Plan #795 (backend-agents A1) — the Workflow **run id** carrier, mirrored on
+   * the local session as the reserved `meta.turnRunId`. Omitted = no run id on the
+   * session. Sanitized with `sanitizeTurnRunId` on read (drop-to-unset on poison)
+   * so a poisoned value never sticks or bricks the session.
+   */
+  turnRunId?: string;
+  /**
+   * Plan #796 (backend-agents A2) — the turn-status enum carrier, mirrored on the
+   * local session as the reserved `meta.turnStatus`. `completed` is a **first-class
+   * terminal member**, preserved exactly (never dropped as poison) so the later C15
+   * 409 stays live-only (A2 lock). Sanitized with `sanitizeTurnStatus` on read.
+   */
+  turnStatus?: import('./sessionCloudCaps').TurnStatus;
+  /**
+   * Plan #797 (backend-agents A3) — the attach/replay **stream cursor** carrier,
+   * mirrored on the local session as the reserved `meta.turnStreamCursor`. Omitted
+   * = no cursor. Sanitized with `sanitizeTurnStreamCursor` on read (drop-to-unset
+   * on poison; `0` is a valid value, preserved).
+   */
+  turnStreamCursor?: number;
 };
 
 import {
@@ -83,6 +104,9 @@ import {
   isRedisSafeOpaqueId,
   sanitizeModelId,
   sanitizeSessionCwd,
+  sanitizeTurnRunId,
+  sanitizeTurnStatus,
+  sanitizeTurnStreamCursor,
 } from './sessionCloudCaps';
 import { sanitizeUsageSummary } from './agent/usageSummary';
 export { MAX_MODEL_ID_LEN, isRedisSafeOpaqueId, sanitizeSessionCwd } from './sessionCloudCaps';
@@ -182,6 +206,9 @@ export class LocalStorageSessionStore implements SessionStore {
         attachedSlugs?: unknown;
         usage?: unknown;
         selectedModel?: unknown;
+        turnRunId?: unknown;
+        turnStatus?: unknown;
+        turnStreamCursor?: unknown;
       };
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) return null;
       // Tolerant: keep only safe workspace-relative cwd strings (parent #270 / phase 2),
@@ -200,6 +227,9 @@ export class LocalStorageSessionStore implements SessionStore {
         attachedSlugs: rawAttachedSlugs,
         usage: rawUsage,
         selectedModel: rawSelectedModel,
+        turnRunId: rawTurnRunId,
+        turnStatus: rawTurnStatus,
+        turnStreamCursor: rawTurnStreamCursor,
         ...rest
       } = data;
       const cwd = sanitizeSessionCwd(rawCwd);
@@ -214,6 +244,13 @@ export class LocalStorageSessionStore implements SessionStore {
       const attachedSlugs = sanitizeAttachedSlugs(rawAttachedSlugs);
       const usage = sanitizeUsageSummary(rawUsage);
       const selectedModel = sanitizeModelId(rawSelectedModel);
+      // backend-agents A1–A3: the three turn carriers mirror the reserved meta keys
+      // and are re-sanitized on local load (drop-to-unset on poison) so a stale/
+      // hand-edited localStorage value never sticks. `turnStatus='completed'` is a
+      // first-class terminal member, preserved; `turnStreamCursor=0` is valid.
+      const turnRunId = sanitizeTurnRunId(rawTurnRunId);
+      const turnStatus = sanitizeTurnStatus(rawTurnStatus);
+      const turnStreamCursor = sanitizeTurnStreamCursor(rawTurnStreamCursor);
       const out: SessionSnapshot = { ...rest } as SessionSnapshot;
       if (cwd !== undefined) out.cwd = cwd;
       if (activeSandboxId !== undefined) out.activeSandboxId = activeSandboxId;
@@ -224,6 +261,12 @@ export class LocalStorageSessionStore implements SessionStore {
       else delete out.usage;
       if (selectedModel !== undefined) out.selectedModel = selectedModel;
       else delete out.selectedModel;
+      if (turnRunId !== undefined) out.turnRunId = turnRunId;
+      else delete out.turnRunId;
+      if (turnStatus !== undefined) out.turnStatus = turnStatus;
+      else delete out.turnStatus;
+      if (turnStreamCursor !== undefined) out.turnStreamCursor = turnStreamCursor;
+      else delete out.turnStreamCursor;
       return out;
     } catch {
       return null;

@@ -20,6 +20,9 @@ import {
   normalizeSessionCwd,
   parseAttachedSkills,
   sanitizeModelId,
+  sanitizeTurnRunId,
+  sanitizeTurnStatus,
+  sanitizeTurnStreamCursor,
   serializeAttachedSkills,
 } from './sessionCloudCaps';
 import type { SessionMessage, SessionRole, SessionSnapshot } from './sessionStore';
@@ -225,6 +228,9 @@ export function parseCloudSessionSnapshot(
   let activeSandboxId: string | undefined;
   let personaId: string | undefined;
   let selectedModel: string | undefined;
+  let turnRunId: string | undefined;
+  let turnStatus: import('./sessionCloudCaps').TurnStatus | undefined;
+  let turnStreamCursor: number | undefined;
   if (o.meta !== null && typeof o.meta === 'object' && !Array.isArray(o.meta)) {
     const meta = o.meta as Record<string, unknown>;
     cwd = normalizeSessionCwd(meta.logicalCwd);
@@ -244,6 +250,14 @@ export function parseCloudSessionSnapshot(
     // session's pick by id. `sanitizeModelId` drops a poisoned / invalid value
     // to unset (restore falls back to the default first-granted model).
     selectedModel = sanitizeModelId(meta.selectedModel);
+    // backend-agents A1–A3: restore the three turn carriers from the reserved meta
+    // keys through the shared client-safe predicates so a poisoned / side-channel
+    // value drops to unset instead of becoming a sticky 400. `turnStatus='completed'`
+    // is a first-class terminal member (`sanitizeTurnStatus` preserves it) so C15's
+    // 409 stays live-only; `turnStreamCursor=0` is a valid value (`0` preserved).
+    turnRunId = sanitizeTurnRunId(meta.turnRunId);
+    turnStatus = sanitizeTurnStatus(meta.turnStatus);
+    turnStreamCursor = sanitizeTurnStreamCursor(meta.turnStreamCursor);
   }
   const snapshot: SessionSnapshot = {
     id: o.id,
@@ -254,6 +268,9 @@ export function parseCloudSessionSnapshot(
   if (activeSandboxId !== undefined) snapshot.activeSandboxId = activeSandboxId;
   if (personaId !== undefined) snapshot.personaId = personaId;
   if (selectedModel !== undefined) snapshot.selectedModel = selectedModel;
+  if (turnRunId !== undefined) snapshot.turnRunId = turnRunId;
+  if (turnStatus !== undefined) snapshot.turnStatus = turnStatus;
+  if (turnStreamCursor !== undefined) snapshot.turnStreamCursor = turnStreamCursor;
   // Phase 2 (#517): restore the sticky attached-skill set from the reserved
   // `meta.attachedSkills` JSON-array string (fail-closed → [] on any malformed /
   // foreign value; never a sticky poison). `[]` restore means detach-all.
@@ -316,6 +333,22 @@ export function overlayEnvelopeMeta(
   } else {
     delete out.personaId;
   }
+
+  // backend-agents A1–A3: overlay the three turn carriers from the envelope meta.
+  // Same reserved-meta replace contract as PUT/GET: a valid value wins; **absent or
+  // poison clears** the transcript field. `completed` is preserved (first-class
+  // terminal, so C15's 409 stays live-only); `turnStreamCursor=0` is preserved.
+  const turnRunId = sanitizeTurnRunId(envMeta.turnRunId);
+  if (turnRunId !== undefined) out.turnRunId = turnRunId;
+  else delete out.turnRunId;
+
+  const turnStatus = sanitizeTurnStatus(envMeta.turnStatus);
+  if (turnStatus !== undefined) out.turnStatus = turnStatus;
+  else delete out.turnStatus;
+
+  const turnStreamCursor = sanitizeTurnStreamCursor(envMeta.turnStreamCursor);
+  if (turnStreamCursor !== undefined) out.turnStreamCursor = turnStreamCursor;
+  else delete out.turnStreamCursor;
 
   return out;
 }
@@ -385,6 +418,22 @@ export type CloudPutBody = {
      */
     selectedModel?: string;
     /**
+     * backend-agents A1 (#795): the Workflow run id, folded from
+     * `snapshot.turnRunId` via `sanitizeTurnRunId`. Absent = clear.
+     */
+    turnRunId?: string;
+    /**
+     * backend-agents A2 (#796): the turn-status enum, folded from
+     * `snapshot.turnStatus` via `sanitizeTurnStatus`. Absent = clear. `completed`
+     * is a first-class terminal member (preserved).
+     */
+    turnStatus?: string;
+    /**
+     * backend-agents A3 (#797): the attach/replay stream cursor, folded from
+     * `snapshot.turnStreamCursor` via `sanitizeTurnStreamCursor`. Absent = clear.
+     */
+    turnStreamCursor?: number;
+    /**
      * Last-completed provider usage as a JSON string of a sanitized
      * UsageSummary. Absent = clear (hide the context slot).
      */
@@ -443,6 +492,17 @@ export function cloudMetaFor(
     ? sanitizeModelId(snapshot.selectedModel)
     : undefined;
   if (selectedModel !== undefined) meta.selectedModel = selectedModel;
+  // backend-agents A1–A3: fold the three turn carriers from the snapshot through
+  // the shared client-safe predicates (drop-to-unset on poison — never a sticky
+  // 400; absent = clear, RESERVED_META_KEYS replace contract). `completed` is a
+  // first-class terminal member (preserved via `sanitizeTurnStatus`); `turnStreamCursor=0`
+  // is a valid value (preserved).
+  const turnRunId = sanitizeTurnRunId(snapshot.turnRunId);
+  if (turnRunId !== undefined) meta.turnRunId = turnRunId;
+  const turnStatus = sanitizeTurnStatus(snapshot.turnStatus);
+  if (turnStatus !== undefined) meta.turnStatus = turnStatus;
+  const turnStreamCursor = sanitizeTurnStreamCursor(snapshot.turnStreamCursor);
+  if (turnStreamCursor !== undefined) meta.turnStreamCursor = turnStreamCursor;
   const usage = encodeUsageMetaString(snapshot.usage);
   if (usage !== undefined) meta.usage = usage;
   return meta.logicalCwd === undefined &&
@@ -450,6 +510,9 @@ export function cloudMetaFor(
     meta.personaId === undefined &&
     meta.attachedSkills === undefined &&
     meta.selectedModel === undefined &&
+    meta.turnRunId === undefined &&
+    meta.turnStatus === undefined &&
+    meta.turnStreamCursor === undefined &&
     meta.usage === undefined
     ? undefined
     : meta;
