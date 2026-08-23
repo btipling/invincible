@@ -284,6 +284,47 @@ export function sanitizeTurnRunId(value: unknown): string | undefined {
 }
 
 /**
+ * Reserved `meta.turnStatus` enum members (plan #796, backend-agents A2). Single
+ * TS source shared by the server validator (`lib/sessions/sessionStore.ts`) and any
+ * host trim/parse — no second string set, so validator and carrier can never drift.
+ * `completed` is a **first-class terminal member** (NOT special-cased in the
+ * predicate, NOT omitted): writing it is what re-allows the next prompt under the
+ * later C15 live-only 409 (#809), so the carrier must accept and preserve it exactly
+ * like the other three.
+ */
+export const TURN_STATUS_VALUES = ['idle', 'running', 'cancelling', 'completed'] as const;
+export type TurnStatus = (typeof TURN_STATUS_VALUES)[number];
+
+/**
+ * Max length (chars) of a reserved `meta.turnStatus` value (plan #796, backend-agents
+ * A2). The status is a fixed enum string; the longest member today is `cancelling`
+ * (10 chars). 64 is a **generous NEW ceiling** that constrains a reasonably-sized
+ * future enum member while riding the tiny session envelope far below the 1 MiB
+ * whole-meta budget (`HARNESS_SESSION_MAX_META_BYTES`) and the 4.5 MB Function wire.
+ * The exact-enum check is the primary guard; this byte cap is belt-and-suspenders so
+ * a future member can never silently become an oversized carrier. **NEW cap; no
+ * existing cap value changed → no human gate.**
+ */
+export const TURN_STATUS_MAX_BYTES = 64;
+
+/**
+ * Client-safe predicate for a reserved `meta.turnStatus` (plan #796, backend-agents
+ * A2). Accepts **only** one of the exact enum strings in `TURN_STATUS_VALUES` — no
+ * trimming into a member, no case-folding (a padded or `'Running'` value is poison,
+ * dropped to unset). Anything else (non-string, empty, uppercase, unknown enum,
+ * over-length) → `undefined`. Fail-closed. `completed` is accepted and preserved
+ * like the other members. Shared by the server validator, which DROPS a poisoned
+ * `turnStatus` to unset — never a 400 (same drop-to-unset decision as `selectedModel`
+ * / `usage` / `turnRunId`).
+ */
+export function sanitizeTurnStatus(value: unknown): TurnStatus | undefined {
+  if (typeof value !== 'string') return undefined;
+  if (!(TURN_STATUS_VALUES as readonly string[]).includes(value)) return undefined;
+  if (value.length > TURN_STATUS_MAX_BYTES) return undefined;
+  return value as TurnStatus;
+}
+
+/**
  * Max UTF-8 byte length of a model id carried as the session carrier
  * `meta.selectedModel` (plan #616 / source #610). Single TS source shared by the
  * host trim/parse (`lib/sessionRepository.ts`, `lib/sessionStore.ts`) and server

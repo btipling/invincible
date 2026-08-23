@@ -173,6 +173,7 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'selectedModel',
       'usage',
       'turnRunId',
+      'turnStatus',
     ]);
     for (const k of RESERVED_META_KEYS) {
       // `attachedSkills` is a JSON-encoded string; `usage` is a JSON UsageSummary
@@ -320,6 +321,72 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
     const env = validateSessionEnvelope({ ...makeRecord(), meta: { turnRunId: 'a\x00b' } });
     expect(env.ok).toBe(true);
     if (env.ok) expect('turnRunId' in env.value.meta).toBe(false);
+  });
+
+  it('plan #796 — accepts a valid meta.turnStatus member (incl. terminal completed) and DROPS poison to unset (never 400)', () => {
+    // Every member is a valid, preservable carrier — `completed` is a first-class
+    // terminal value, NOT special-cased/rejected (later C15 live-only 409 needs it).
+    for (const member of ['idle', 'running', 'cancelling', 'completed']) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { turnStatus: member } as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.value.meta.turnStatus).toBe(member);
+    }
+    // Record-level: completed is pinned to the exact stored value (non-vacuous).
+    const done = validateSessionRecord(
+      makeRecord({ meta: { turnStatus: 'completed' } as HarnessSessionRecord['meta'] }),
+    );
+    expect(done.ok).toBe(true);
+    if (done.ok) expect(done.value.meta.turnStatus).toBe('completed');
+
+    // Poisoned / case-folded / unknown / non-member / over-length values are DROPPED
+    // to unset (the key is omitted) — the record still validates, never 400s.
+    for (const bad of [
+      'done',
+      'pending',
+      'RUNNING',
+      'Running',
+      ' finished ',
+      'x'.repeat(65),
+      '' as unknown,
+      42 as unknown,
+      undefined as unknown,
+    ]) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { turnStatus: bad } as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true); // drop-to-unset, not a 400
+      if (res.ok) {
+        expect('turnStatus' in res.value.meta).toBe(false);
+        expect(res.value.meta.turnStatus).toBeUndefined();
+      }
+    }
+
+    // The reserved-key contract is intact: unknown keys are STILL rejected.
+    expect(
+      validateSessionRecord(makeRecord({ meta: { notReserved: 1 } as HarnessSessionRecord['meta'] })).ok,
+    ).toBe(false);
+  });
+
+  it('plan #796 — validateMeta round-trips turnStatus and omits poison (reserved-key + cap intact)', () => {
+    const ok = validateMeta({ turnStatus: 'completed' });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.turnStatus).toBe('completed');
+    // Poisoned / unknown / case-folded → `meta` is ok but the key is omitted.
+    const poison = validateMeta({ turnStatus: 'x'.repeat(65) });
+    expect(poison.ok).toBe(true);
+    if (poison.ok) expect('turnStatus' in poison.value).toBe(false);
+    const unknown = validateMeta({ turnStatus: 'pending' });
+    expect(unknown.ok).toBe(true);
+    if (unknown.ok) expect('turnStatus' in unknown.value).toBe(false);
+    const folded = validateMeta({ turnStatus: 'Running' });
+    expect(folded.ok).toBe(true);
+    if (folded.ok) expect('turnStatus' in folded.value).toBe(false);
+    // Envelope path shares the same drop-to-unset.
+    const env = validateSessionEnvelope({ ...makeRecord(), meta: { turnStatus: ' FINISHED ' } });
+    expect(env.ok).toBe(true);
+    if (env.ok) expect('turnStatus' in env.value.meta).toBe(false);
   });
 });
 
