@@ -421,6 +421,62 @@ describe('parseCloudSessionSnapshot', () => {
     expect(bare?.selectedModel).toBeUndefined();
   });
 
+  it('backend-agents A1–A3 — restores turnRunId/turnStatus/turnStreamCursor from meta; poison → unset', () => {
+    const out = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { turnRunId: 'run_abc_123', turnStatus: 'running', turnStreamCursor: 42 },
+    });
+    expect(out?.turnRunId).toBe('run_abc_123');
+    expect(out?.turnStatus).toBe('running');
+    expect(out?.turnStreamCursor).toBe(42);
+
+    // `completed` is a first-class terminal member — preserved (C15's 409 stays live-only).
+    const completed = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      meta: { turnStatus: 'completed' },
+    });
+    expect(completed?.turnStatus).toBe('completed');
+
+    // `turnStreamCursor=0` is a valid value — preserved (non-vacuous).
+    const zero = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      meta: { turnStreamCursor: 0 },
+    });
+    expect(zero?.turnStreamCursor).toBe(0);
+
+    // Poisoned values (non-opaque run id / unknown enum / NaN / negative / over-cap)
+    // drop to unset — never a sticky poison / 400.
+    const bad = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      meta: { turnRunId: 'not opaque!', turnStatus: 'RUNNING', turnStreamCursor: -1 },
+    });
+    expect(bad?.turnRunId).toBeUndefined();
+    expect(bad?.turnStatus).toBeUndefined();
+    expect(bad?.turnStreamCursor).toBeUndefined();
+
+    const nan = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      meta: { turnStreamCursor: Number.NaN },
+    });
+    expect(nan?.turnStreamCursor).toBeUndefined();
+
+    // Omitted meta keys → fields stay undefined.
+    const bare = parseCloudSessionSnapshot({ id: 's', updatedAt: 1, messages: [] });
+    expect(bare?.turnRunId).toBeUndefined();
+    expect(bare?.turnStatus).toBeUndefined();
+    expect(bare?.turnStreamCursor).toBeUndefined();
+  });
+
   it('restores the sticky attachedSlugs from reserved meta.attachedSkills (fail-closed on poison)', () => {
     const out = parseCloudSessionSnapshot({
       id: 'sess_x',
@@ -537,6 +593,50 @@ describe('cloudMetaFor usage fold', () => {
       usage: JSON.stringify(usage),
     });
   });
+
+  it('backend-agents A1–A3 — folds the three turn carriers; omits when poison; completed + 0 preserved', () => {
+    const meta = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      turnRunId: 'run_1',
+      turnStatus: 'running',
+      turnStreamCursor: 7,
+    } as SessionSnapshot);
+    expect(meta).toEqual({ turnRunId: 'run_1', turnStatus: 'running', turnStreamCursor: 7 });
+
+    // Carrier fields ride in meta, not at the top level (cloud PUT wire shape).
+    expect('turnRunId' in (cloudMetaFor({ id: 's', updatedAt: 1, messages: [], turnRunId: 'r_1' }) ?? {}))
+      .toBe(true);
+
+    // `completed` is a first-class terminal member (preserved); cursor 0 is valid.
+    const terminal = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      turnStatus: 'completed',
+      turnStreamCursor: 0,
+    } as SessionSnapshot);
+    expect(terminal).toEqual({ turnStatus: 'completed', turnStreamCursor: 0 });
+
+    // A carrier unset → that key omitted (absent = clear contract intact).
+    const partial = cloudMetaFor({ id: 's', updatedAt: 1, messages: [], turnRunId: 'run_2' });
+    expect(partial).toEqual({ turnRunId: 'run_2' });
+
+    // Poisoned carrier values drop-to-unset and are omitted (never a sticky 400).
+    const poisoned = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      turnRunId: 'not opaque!',
+      turnStatus: 'RUNNING',
+      turnStreamCursor: -5,
+    } as unknown as SessionSnapshot);
+    expect(poisoned).toBeUndefined();
+
+    // No carriers set → no meta.
+    expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [] })).toBeUndefined();
+  });
 });
 
 describe('overlayEnvelopeMeta', () => {
@@ -574,6 +674,85 @@ describe('overlayEnvelopeMeta', () => {
     expect(cleared.selectedModel).toBeUndefined();
     expect(cleared.attachedSlugs).toBeUndefined();
     expect(cleared.personaId).toBeUndefined();
+  });
+
+  it('backend-agents A1–A3 — overlays the three turn carriers; absent/poison clears', () => {
+    const transcript: SessionSnapshot = {
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      turnRunId: 'run_old',
+      turnStatus: 'running',
+      turnStreamCursor: 5,
+    };
+    // A valid envelope meta wins on all three carriers.
+    const over = overlayEnvelopeMeta(transcript, {
+      turnRunId: 'run_new',
+      turnStatus: 'completed',
+      turnStreamCursor: 9,
+    });
+    expect(over.turnRunId).toBe('run_new');
+    expect(over.turnStatus).toBe('completed');
+    expect(over.turnStreamCursor).toBe(9);
+
+    // Absent envelope key clears the field (RESERVED_META_KEYS replace contract).
+    const cleared = overlayEnvelopeMeta(transcript, { transcriptPointer: 'tx_1' });
+    expect(cleared.turnRunId).toBeUndefined();
+    expect(cleared.turnStatus).toBeUndefined();
+    expect(cleared.turnStreamCursor).toBeUndefined();
+
+    // Poison envelope values also clear.
+    const poison = overlayEnvelopeMeta(transcript, {
+      turnRunId: 'bad:id',
+      turnStatus: 'Running',
+      turnStreamCursor: -1,
+    });
+    expect(poison.turnRunId).toBeUndefined();
+    expect(poison.turnStatus).toBeUndefined();
+    expect(poison.turnStreamCursor).toBeUndefined();
+
+    // Mid-turn one-key update: a writer that copies the prior meta forward keeps the
+    // unchanged siblings (copy-then-override, so one-key meta cannot clear them).
+    const sibling = overlayEnvelopeMeta(transcript, {
+      turnRunId: 'run_old',
+      turnStatus: 'cancelling',
+      turnStreamCursor: 5,
+    });
+    expect(sibling.turnRunId).toBe('run_old');
+    expect(sibling.turnStatus).toBe('cancelling');
+    expect(sibling.turnStreamCursor).toBe(5);
+  });
+
+  it('backend-agents A4 — fold → parse → overlay round-trips all three carriers; poison never sticks', () => {
+    const snap: SessionSnapshot = {
+      id: 's',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      turnRunId: 'run_abc',
+      turnStatus: 'completed',
+      turnStreamCursor: 12,
+    };
+    // Fold → the reserved meta the envelope PUT carries.
+    const meta = cloudMetaFor(snap);
+    expect(meta).toEqual({ turnRunId: 'run_abc', turnStatus: 'completed', turnStreamCursor: 12 });
+
+    // Restore from the transcript body (parse) then overlay the envelope meta — the
+    // same two-step the envelope read does (getEnvelope → parse + overlay).
+    const parsed = parseCloudSessionSnapshot({ ...snap, meta });
+    const round = overlayEnvelopeMeta(parsed!, meta);
+    expect(round.turnRunId).toBe('run_abc');
+    expect(round.turnStatus).toBe('completed');
+    expect(round.turnStreamCursor).toBe(12);
+
+    // A poisoned envelope meta can never stick a carrier through the round trip.
+    const poisonedEnv = overlayEnvelopeMeta(round, {
+      turnRunId: 'bad:id',
+      turnStatus: 'Running',
+      turnStreamCursor: Number.POSITIVE_INFINITY,
+    });
+    expect(poisonedEnv.turnRunId).toBeUndefined();
+    expect(poisonedEnv.turnStatus).toBeUndefined();
+    expect(poisonedEnv.turnStreamCursor).toBeUndefined();
   });
 });
 
@@ -1031,6 +1210,54 @@ describe('createHttpSessionRepository — envelope carrier (phase 0 #515)', () =
       expect(res.snapshot.activeSandboxId).toBe('sbx_env');
       expect(res.snapshot.cwd).toBe('from/envelope');
       expect(res.snapshot.usage).toEqual(usage);
+    }
+  });
+
+  it('backend-agents A4 — get() on the envelope carrier restores all three turn carriers (put → pull)', async () => {
+    // Matrix row 12: the envelope Redis round-trip. A snapshot folded via cloudMetaFor
+    // lands in the envelope meta; the envelope read (parse transcript + overlay meta)
+    // must restore all three carriers, and poison never sticks.
+    const blobUrl = `${UPLOAD_URL}/read?obj=tx_obj1`;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && u.endsWith('/envelope')) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 30,
+            meta: {
+              transcriptPointer: 'tx_obj1',
+              turnRunId: 'run_env_2',
+              turnStatus: 'completed',
+              turnStreamCursor: 9,
+            },
+            transcriptReadUrl: blobUrl,
+          },
+          { status: 200 },
+        );
+      }
+      if (u === blobUrl) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 30,
+            messages: [{ id: 'm', role: 'user', text: 'hi', at: 1 }],
+            meta: { turnRunId: 'run_tx_1', turnStatus: 'running', turnStreamCursor: 3 },
+          },
+          { status: 200 },
+        );
+      }
+      return new Response(null, { status: 204 });
+    });
+    const repo = createHttpSessionRepository({ fetchImpl, carrier: 'envelope' });
+    const res = await repo.get(idA);
+    expect(res.action).toBe('ok');
+    if (res.action === 'ok') {
+      // Envelope (last full desired set) wins over the transcript-body meta.
+      expect(res.snapshot.turnRunId).toBe('run_env_2');
+      expect(res.snapshot.turnStatus).toBe('completed');
+      expect(res.snapshot.turnStreamCursor).toBe(9);
     }
   });
 

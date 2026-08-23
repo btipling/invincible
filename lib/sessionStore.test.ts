@@ -416,3 +416,100 @@ describe('selectedModel local sanitize (plan #616)', () => {
   });
 });
 
+describe('backend-agents A1–A3 — turn-carrier local mirror sanitize', () => {
+  function installMemoryLocalStorage() {
+    const map = new Map<string, string>();
+    const ls = {
+      getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+      setItem: (k: string, v: string) => {
+        map.set(k, String(v));
+      },
+      removeItem: (k: string) => {
+        map.delete(k);
+      },
+      clear: () => {
+        map.clear();
+      },
+    };
+    vi.stubGlobal('localStorage', ls);
+    return ls;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('LocalStorage load keeps valid turnRunId/turnStatus/turnStreamCursor; drop-to-unset on poison (mirror of reserved meta)', () => {
+    installMemoryLocalStorage();
+    const key = 'test-turn-carriers-key';
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        id: 's',
+        messages: [],
+        updatedAt: 1,
+        turnRunId: 'run_abc_123',
+        turnStatus: 'running',
+        turnStreamCursor: 7,
+      }),
+    );
+    const store = new LocalStorageSessionStore(key);
+    expect(store.load()?.turnRunId).toBe('run_abc_123');
+    expect(store.load()?.turnStatus).toBe('running');
+    expect(store.load()?.turnStreamCursor).toBe(7);
+
+    // `completed` is a first-class terminal member — preserved (C15 409 stays live-only).
+    localStorage.setItem(
+      key,
+      JSON.stringify({ id: 's', messages: [], updatedAt: 1, turnStatus: 'completed' }),
+    );
+    expect(store.load()?.turnStatus).toBe('completed');
+
+    // `turnStreamCursor=0` is valid — preserved (non-vacuous).
+    localStorage.setItem(
+      key,
+      JSON.stringify({ id: 's', messages: [], updatedAt: 1, turnStreamCursor: 0 }),
+    );
+    expect(store.load()?.turnStreamCursor).toBe(0);
+
+    // Poisoned values drop to unset (never a sticky local mirror).
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        id: 's',
+        messages: [],
+        updatedAt: 1,
+        turnRunId: 'not opaque!',
+        turnStatus: 'RUNNING',
+        turnStreamCursor: -1,
+      }),
+    );
+    const loaded = store.load();
+    expect(loaded).not.toBeNull();
+    expect(loaded?.turnRunId).toBeUndefined();
+    expect(loaded?.turnStatus).toBeUndefined();
+    expect(loaded?.turnStreamCursor).toBeUndefined();
+  });
+
+  it('MemorySessionStore round-trips the three turn carriers', () => {
+    const store = new MemorySessionStore();
+    store.save({
+      ...createEmptySession('z'),
+      turnRunId: 'run_1',
+      turnStatus: 'completed',
+      turnStreamCursor: 3,
+    });
+    const loaded = store.load();
+    expect(loaded?.turnRunId).toBe('run_1');
+    expect(loaded?.turnStatus).toBe('completed');
+    expect(loaded?.turnStreamCursor).toBe(3);
+  });
+
+  it('createEmptySession omits all three turn carriers', () => {
+    const s = createEmptySession();
+    expect(s.turnRunId).toBeUndefined();
+    expect(s.turnStatus).toBeUndefined();
+    expect(s.turnStreamCursor).toBeUndefined();
+  });
+});
+
