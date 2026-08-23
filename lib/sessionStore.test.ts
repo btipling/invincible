@@ -416,3 +416,87 @@ describe('selectedModel local sanitize (plan #616)', () => {
   });
 });
 
+describe('turn carriers local sanitize (plan #789, source #766)', () => {
+  function installMemoryLocalStorage() {
+    const map = new Map<string, string>();
+    const ls = {
+      getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+      setItem: (k: string, v: string) => {
+        map.set(k, String(v));
+      },
+      removeItem: (k: string) => {
+        map.delete(k);
+      },
+      clear: () => {
+        map.clear();
+      },
+    };
+    vi.stubGlobal('localStorage', ls);
+    return ls;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('LocalStorage load keeps a valid turnRunId + turnStatus; drops poison to unset', () => {
+    installMemoryLocalStorage();
+    const key = 'test-turn-key';
+    // Valid Redis-safe run id + valid enum status round-trip.
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        id: 's',
+        messages: [],
+        updatedAt: 1,
+        turnRunId: 'wf_run_9ax2k',
+        turnStatus: 'running',
+      }),
+    );
+    const store = new LocalStorageSessionStore(key);
+    expect(store.load()?.turnRunId).toBe('wf_run_9ax2k');
+    expect(store.load()?.turnStatus).toBe('running');
+
+    // Poisoned turnRunId → undefined (drop-to-unset), never sticks.
+    const poisonedIds = ['has space', 'a:b', '*', 'x'.repeat(513), 42];
+    for (const bad of poisonedIds) {
+      localStorage.setItem(
+        key,
+        JSON.stringify({ id: 's', messages: [], updatedAt: 1, turnRunId: bad }),
+      );
+      const loaded = store.load();
+      expect(loaded).not.toBeNull();
+      expect(loaded?.turnRunId).toBeUndefined();
+    }
+
+    // Poisoned turnStatus → undefined (drop-to-unset); valid enum values survive.
+    for (const bad of ['paused', 'runningg', 7]) {
+      localStorage.setItem(
+        key,
+        JSON.stringify({ id: 's', messages: [], updatedAt: 1, turnStatus: bad }),
+      );
+      expect(store.load()?.turnStatus).toBeUndefined();
+    }
+    for (const v of ['idle', 'running', 'cancelling']) {
+      localStorage.setItem(
+        key,
+        JSON.stringify({ id: 's', messages: [], updatedAt: 1, turnStatus: v }),
+      );
+      expect(store.load()?.turnStatus).toBe(v);
+    }
+  });
+
+  it('MemorySessionStore round-trips turn carriers; createEmptySession omits them', () => {
+    const store = new MemorySessionStore();
+    store.save({
+      ...createEmptySession('z'),
+      turnRunId: 'wf_run_a',
+      turnStatus: 'cancelling',
+    });
+    expect(store.load()?.turnRunId).toBe('wf_run_a');
+    expect(store.load()?.turnStatus).toBe('cancelling');
+    expect(createEmptySession().turnRunId).toBeUndefined();
+    expect(createEmptySession().turnStatus).toBeUndefined();
+  });
+});
+

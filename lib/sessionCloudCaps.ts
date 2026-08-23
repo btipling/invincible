@@ -5,6 +5,13 @@
  */
 import { parseInitialCwd } from './agent/workPath';
 
+const textEncoder = new TextEncoder();
+
+/** UTF-8 byte length of a string (client-safe; no Node `Buffer` in this seam). */
+function utf8ByteLength(s: string): number {
+  return textEncoder.encode(s).length;
+}
+
 /** Align with bridge MAX_MSG_LEN (UTF-8 bytes) — native/harness/src/bridge.zig. */
 export const HARNESS_SESSION_MAX_MSG_BYTES = 262_144;
 
@@ -306,6 +313,62 @@ export function sanitizeModelId(value: unknown): string | undefined {
     if (c < 0x21 || c > 0x7e) return undefined; // printable ASCII only
   }
   return s;
+}
+
+/**
+ * Optional `meta.turnStatus` enum (plan #789, source #766 — backend-agents C).
+ * A **cached hint only**: `getRun(runId)` is the source of truth when
+ * `meta.turnRunId` is present; this value is never treated as authoritative (the
+ * tab can detach and nothing polls it). Mirrors `sanitizeTurnRunId`'s
+ * drop-to-unset discipline so a poisoned value omits instead of sticking.
+ */
+export type TurnStatus = 'idle' | 'running' | 'cancelling';
+
+/**
+ * Max UTF-8 byte length of the reserved `meta.turnStatus` value (plan #789
+ * Caps table). NEW generous cap — the enum literals are ≤ ~10 bytes; 32 stays
+ * well below any wire budget and keeps the enum future-proof. No existing cap
+ * raised/lowered (a fixed-enum value rides the existing 1 MiB whole-meta budget
+ * and the 4.5 MB Function ceiling).
+ */
+export const TURN_STATUS_MAX_BYTES = 32;
+
+/**
+ * Client-safe predicate for the reserved session carrier `meta.turnRunId`
+ * (plan #789). The Workflow/SDK run id is an opaque Redis-safe token, so this
+ * wraps the existing `isRedisSafeOpaqueId` rule (`^[A-Za-z0-9_-]{1,512}$` via
+ * `REDIS_SAFE_OPAQUE_ID_MAX`=512) — one bounded rule, no invented charset, and
+ * it is client-safe (`lib/sessionCloudCaps.ts`). Trims; poison (non-string,
+ * empty, non-Redis-safe, oversize) → `undefined` (drop-to-unset — never a 400,
+ * mirroring `sanitizeModelId` / `meta.selectedModel` plan #616).
+ */
+export function sanitizeTurnRunId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const s = value.trim();
+  if (!s) return undefined;
+  if (!isRedisSafeOpaqueId(s)) return undefined;
+  return s;
+}
+
+/**
+ * Client-safe predicate for the optional reserved `meta.turnStatus` hint
+ * (plan #789). Exact accept-set `idle | running | cancelling`; anything else
+ * (non-string, misspelled, over the `TURN_STATUS_MAX_BYTES` byte cap, poisoned)
+ * → `undefined`. `getRun` is the authority when a `turnRunId` is present; this
+ * is a cached hint only. Drop-to-unset, never a 400.
+ */
+export function sanitizeTurnStatus(value: unknown): TurnStatus | undefined {
+  if (
+    value === 'idle' ||
+    value === 'running' ||
+    value === 'cancelling'
+  ) {
+    // The fixed enum literals are far under the byte cap (≤ ~10 bytes); the
+    // guard is structural so a future longer status can never blow the budget.
+    if (utf8ByteLength(value) > TURN_STATUS_MAX_BYTES) return undefined;
+    return value;
+  }
+  return undefined;
 }
 
 /**

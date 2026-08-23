@@ -31,6 +31,7 @@ import {
   type IdSessionRepository,
   type SessionSummary,
 } from '../../lib/sessionRepository';
+import { decideDetach } from '../../lib/detachTurn';
 import {
   bootCloudSession,
   readUrlSessionId,
@@ -357,6 +358,34 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     },
     [writeLocalSession],
   );
+
+  /**
+   * Host **detach** seam (plan #789, source #766 — backend-agents slice C).
+   *
+   * Closing a viewport (unmount, session switch, New/Clear, logout) is NOT "the
+   * turn is over" — only a user Stop/Esc cancels. The decision is driven by the
+   * active session's `meta.turnRunId` via the pure `decideDetach` helper:
+   *   - Durable run (id present, post-E): close this viewport's reader only —
+   *     never abort the run, never a server cancel. At slice C there is no
+   *     separate reader object, so this is the seam that stops consuming the
+   *     socially-owned run without cancelling it (slice F wires the real reader
+   *     detach).
+   *   - Legacy tab-owned turn (no id, the slice-C reality): abort the attached
+   *     fetch so a detached busy tab never leaves the 1800s Function running
+   *     with no persisting writer (the host is the only Blob/envelope writer).
+   * The abort here is the client AbortController for the /api/agent fetch — the
+   * dedicated `takePendingCancel` path (Stop/Esc) is unchanged and remains the
+   * only explicit cancel; no server cancel is ever sent on detach.
+   */
+  const detachTurn = useCallback(() => {
+    const turnRunId = sessionRef.current?.turnRunId;
+    const decision = decideDetach(turnRunId);
+    if (decision.kind === 'abort') {
+      abortRef.current?.abort();
+    }
+    // `close-reader`: no-op at slice C (no durable Workflow reader exists yet);
+    // slice E/F consume the run identity carried on the envelope.
+  }, []);
 
   const runPrompt = useCallback(
     async (prompt: string, opts?: { pushUser?: boolean }) => {
@@ -704,7 +733,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     return () => {
       cancelled = true;
       canvas.removeEventListener('contextmenu', onCanvasContextMenu);
-      abortRef.current?.abort();
+      // Plan #789 (source #766): unmount detaches, not "the turn is over". Only
+      // aborts the fetch for a legacy tab-owned turn (no turnRunId) so nothing
+      // burns unpersisted; a durable run (post-E) closes the reader only.
+      detachTurn();
       if (pollRef.current != null) {
         clearTimeout(pollRef.current);
         pollRef.current = null;
@@ -725,6 +757,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     setUrlSessionId,
     applySessionModel,
     foldPendingModelChange,
+    detachTurn,
   ]);
 
   /**
@@ -796,7 +829,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
 
   const onClear = useCallback(() => {
     if (inflightRef.current || switchInFlightRef.current) return;
-    abortRef.current?.abort();
+    // Plan #789 (source #766): Clear/New detaches the previous session's turn
+    // rather than declaring it over (abort only the legacy no-run-id fetch).
+    detachTurn();
     const repo = repoRef.current;
     const bridge = bridgeRef.current;
     const clearedId = sessionRef.current.id;
@@ -869,7 +904,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       }
       void refreshSessions();
     })();
-  }, [writeLocalSession, refreshSessions, setUrlSessionId, resolveNewPersona]);
+  }, [writeLocalSession, refreshSessions, setUrlSessionId, resolveNewPersona, detachTurn]);
 
   const onNewSession = useCallback(() => {
     const repo = repoRef.current;
@@ -877,7 +912,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     // Adversarial #642: ack any stale session-switch pending synchronously at
     // click before the async repo.create + activateSession.
     bridgeRef.current?.takePendingSessionSwitch();
-    abortRef.current?.abort();
+    // Plan #789 (source #766): New detaches (abort only the legacy turn).
+    detachTurn();
     void (async () => {
       const created = await repo.create();
       if (created.action !== 'ok') return; // stay on the current session
@@ -891,7 +927,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       setUrlSessionId(created.snapshot.id);
       repo.put(created.snapshot.id, empty);
     })();
-  }, [activateSession, setUrlSessionId, resolveNewPersona]);
+  }, [activateSession, setUrlSessionId, resolveNewPersona, detachTurn]);
 
   const onSwitchSession = useCallback(
     (id: string) => {
@@ -900,7 +936,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       if (!repo || !repo.enabled || !bridge || inflightRef.current) return;
       if (switchInFlightRef.current) return; // another switch already in-flight
       if (id === sessionRef.current.id) return;
-      abortRef.current?.abort();
+      // Plan #789 (source #766): switching away detaches this viewport's turn
+      // (abort only a legacy no-run-id fetch; a durable run keeps running).
+      detachTurn();
       const sourceId = sessionRef.current.id; // generation token — guard against stale get
       switchInFlightRef.current = true;
       void (async () => {
@@ -918,7 +956,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         }
       })();
     },
-    [activateSession, setUrlSessionId],
+    [activateSession, setUrlSessionId, detachTurn],
   );
   onSwitchSessionRef.current = onSwitchSession;
 
