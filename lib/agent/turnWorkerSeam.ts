@@ -9,7 +9,7 @@
  * composition root (`createProdServices`) BEFORE each `runAgentStream` call and
  * closes every transport it opened before returning.
  *
- * THIS module is the production seam factory: `createTurnWorkerSeam(services)`
+ * THIS module is the production seam factory: `createTurnWorkerSeam(services?)`
  * returns the `TurnStepRunSeam` whose `resolveRunParams(args, freshness)` reproduces
  * the route's resolution — BYOK, server secrets, per-user GitHub PAT, session-owned
  * sandbox bind, MCP tools, builtin HTTP, skills (always-on + sticky + command),
@@ -22,6 +22,17 @@
  * workflow resolves INSIDE the step (never via serializable `start()` args — the
  * #710 lie is not re-introduced).
  *
+ * WORKFLOW-BUNDLE SAFETY (adversary stretch-review Major #1, the deploy block):
+ * modules whose graphs reach Node-only code (the DI root `../di` → postgres +
+ * blobStore `node:crypto`; `../mcp/client` → `urlPolicy` `node:dns`;
+ * `../tenancy/harnessSessionsRedis` and `../sessions/sessionStore`) MUST NOT be
+ * statically imported at THIS module's top scope. Even though `turnWorkflow.ts`
+ * dynamic-imports THIS module inside the model step, the Vercel Workflows bundler
+ * traces a dynamically-imported module's OWN top-level imports into the workflow
+ * bundle and hard-fails ("workflow-node-module-error"). So those four seams are
+ * `await import()`ed INSIDE `resolveRunParams` (a step-body Function), where Node
+ * modules are allowed. Only pure tool-factory / type imports stay static here.
+ *
  * Fail closed: any resolve rejection throws (the step maps it to an `error` event +
  * a run end); there is NO silent `/api/agent` fallback. Secrets/BYOK are resolved in
  * the step process and never written to Workflow state or args.
@@ -33,15 +44,10 @@ import type {
 } from './turnWorkflow';
 import type { RunFileFreshness } from './fileFreshness';
 import type { RunAgentParams } from './runAgent';
-import { createProdServices, type ServerSecrets } from '../di';
-import { resolveSessionStore, sessionKeyFor } from '../tenancy/harnessSessionsRedis';
-import { isEnvelopeStore } from '../sessions/sessionStore';
-import { buildUserMcpTools } from '../mcp/client';
+import type { ServerSecrets } from '../di';
 import { resolveBuiltinHttpConfig } from './builtinHttpConfig';
-import { createHttpFetchTools } from './httpFetchTools';
 import { createSkillTools } from './skillTools';
-import { createMetaPersonaSkillTools, isMetaToolName } from './metaTools';
-import { createMetaSandboxTools } from './metaSandboxTools';
+import { createMetaPersonaSkillTools } from './metaTools';
 import { resolvePersonaPreamble } from '../tenancy/personaInject';
 import {
   parseSkillCommand,
@@ -63,14 +69,35 @@ function baseRedact(serverSecrets: ServerSecrets, byokSecrets: string[]): string
  * Build the production `TurnStepRunSeam`. `services` is the composition root the
  * route / entry already constructed; the seam re-resolves through IT (the same
  * factories `/api/agent` uses) so grants/BYOK/sandbox/MCP/http are all fresh per step.
+ * When omitted (never from serialized args — the started workflow resolves it), the
+ * DI root is `await import()`ed INSIDE the step body below.
  */
 export function createTurnWorkerSeam(
-  services: ReturnType<typeof createProdServices> = createProdServices(),
+  services?: Awaited<ReturnType<typeof import('../di').createProdServices>>,
 ): TurnStepRunSeam {
   return {
     async resolveRunParams(args: TurnWorkflowArgs, freshness: RunFileFreshness) {
+      // Node-only seams are pulled in HERE, inside this step Function body, via
+      // dynamic import — never at this module's top scope — so the Workflows
+      // bundler does NOT trace postgres / node:crypto / node:dns into the
+      // workflow bundle (deploy block, adversary Major #1). Every carrier that
+      // transitively reaches a Node builtin (the DI root → db/postgres +
+      // blobStore/node:crypto, the session/tenancy stores, `../mcp/client` →
+      // urlPolicy/node:dns, and the tool factories that themselves import those
+      // graphs: `httpFetchTools` → net/publicUrlPolicy → urlPolicy, and
+      // `metaSandboxTools` → userPreferredSandbox → db) is resolved here.
+      const svc =
+        services ?? (await import('../di')).createProdServices();
+      const { resolveSessionStore, sessionKeyFor } = await import(
+        '../tenancy/harnessSessionsRedis'
+      );
+      const { isEnvelopeStore } = await import('../sessions/sessionStore');
+      const { buildUserMcpTools } = await import('../mcp/client');
+      const { createHttpFetchTools } = await import('./httpFetchTools');
+      const { createMetaSandboxTools } = await import('./metaSandboxTools');
+
       const { userId, sessionId, initialCwd, modelId: bodyModelId, tenantId } = args;
-      const serverSecrets = services.serverSecrets;
+      const serverSecrets = svc.serverSecrets;
       const httpRunnerClose: Array<() => Promise<void>> = [];
 
       // Resolve tenant → session key once; envelope reads (activeSandboxId bind,
@@ -87,7 +114,7 @@ export function createTurnWorkerSeam(
           : undefined;
 
       // 1. BYOK → modelId + providerOptions + secrets to redact.
-      const byok = await services.resolveInferenceForRequest.resolveByokForRequest(
+      const byok = await svc.resolveInferenceForRequest.resolveByokForRequest(
         userId,
         bodyModelId,
       );
@@ -104,7 +131,7 @@ export function createTurnWorkerSeam(
 
       // 2. Per-user GitHub PAT → sandbox exec env (server-owned, never from the tool).
       let execEnv: Record<string, string> | undefined;
-      const gh = await services.userGithubToken.decryptUserGithubTokenForServer(userId);
+      const gh = await svc.userGithubToken.decryptUserGithubTokenForServer(userId);
       if (gh.ok && gh.value) {
         redactList = [...redactList, gh.value];
         execEnv = { GH_TOKEN: gh.value, GITHUB_TOKEN: gh.value };
@@ -125,7 +152,7 @@ export function createTurnWorkerSeam(
       // 4. Resolve the sandbox (grants + client + jail root). Route soft-path on
       //    softContinue / selectionRequired keeps the worker honest: it can still run
       //    with MCP/http/meta tools; a HARD denial throws (fail closed).
-      const sandboxRes = await services.resolveSandbox.resolveAgentSandbox(
+      const sandboxRes = await svc.resolveSandbox.resolveAgentSandbox(
         userId,
         { ...(execEnv ? { execEnv } : {}) },
         {
@@ -168,8 +195,8 @@ export function createTurnWorkerSeam(
 
       // 5. MCP tools (always reconnect per step).
       const mcp = await buildUserMcpTools(userId, {
-        loadSecrets: services.userMcpServers.loadEnabledUserMcpSecrets,
-        setLastError: services.userMcpServers.setUserMcpServerLastError,
+        loadSecrets: svc.userMcpServers.loadEnabledUserMcpSecrets,
+        setLastError: svc.userMcpServers.setUserMcpServerLastError,
       });
       redactList.push(...mcp.secretsToRedact);
       if (mcp.close) httpRunnerClose.push(mcp.close);
@@ -181,22 +208,22 @@ export function createTurnWorkerSeam(
         ...extraTools,
         ...createSkillTools({
           userId,
-          userSkills: services.userSkills,
-          userPersonas: services.userPersonas,
+          userSkills: svc.userSkills,
+          userPersonas: svc.userPersonas,
         }),
         ...createMetaPersonaSkillTools({
           userId,
-          userPersonas: services.userPersonas,
-          userSkills: services.userSkills,
+          userPersonas: svc.userPersonas,
+          userSkills: svc.userSkills,
         }),
         ...createMetaSandboxTools({
           userId,
           sessionId,
-          userPreferredSandbox: services.userPreferredSandbox,
+          userPreferredSandbox: svc.userPreferredSandbox,
           sessionStoreSeam: {
             resolveSessionStore: () => resolveSessionStore(),
             resolveTenantIdForUser: (uid: string) =>
-              services.harnessSessionsRedis.resolveTenantIdForUser(uid),
+              svc.harnessSessionsRedis.resolveTenantIdForUser(uid),
           },
         }),
       };
@@ -204,7 +231,7 @@ export function createTurnWorkerSeam(
       // 7. Builtin HTTP runner when the user has a running Settings instance.
       let httpAttachName: string | null = null;
       try {
-        const loaded = await services.userSandboxInstance.loadInstance(userId, 'http');
+        const loaded = await svc.userSandboxInstance.loadInstance(userId, 'http');
         if (loaded.ok && loaded.value && loaded.value.status === 'running')
           httpAttachName = loaded.value.vercelName?.trim() ?? null;
       } catch {
@@ -212,7 +239,7 @@ export function createTurnWorkerSeam(
       }
       if (httpAttachName) {
         const builtinHttp = resolveBuiltinHttpConfig();
-        const httpRunner = services.createHttpRunner({ name: httpAttachName });
+        const httpRunner = svc.createHttpRunner({ name: httpAttachName });
         httpRunnerClose.push(httpRunner.close ? () => httpRunner.close() : async () => {});
         extraTools = {
           ...extraTools,
@@ -235,7 +262,7 @@ export function createTurnWorkerSeam(
             sessionId,
             sessionStore,
             sessionKey,
-            userPersonas: services.userPersonas,
+            userPersonas: svc.userPersonas,
           });
         }
       } catch {
@@ -247,7 +274,7 @@ export function createTurnWorkerSeam(
       let attachedSkills: string | undefined;
       try {
         let alwaysOnSlugs: string[] | undefined;
-        const aores = await services.userSkills.listAlwaysOnSkills(userId);
+        const aores = await svc.userSkills.listAlwaysOnSkills(userId);
         if (aores.ok) alwaysOnSlugs = aores.value.length > 0 ? aores.value : undefined;
         const pathSlug = parseSkillCommand(args.prompt);
         let skills: ResolveSkillResult | undefined;
@@ -255,7 +282,7 @@ export function createTurnWorkerSeam(
           skills = await resolveSkillPreamble({
             userId,
             command: pathSlug,
-            userSkills: services.userSkills,
+            userSkills: svc.userSkills,
             alwaysOnSlugs,
             ...(sessionStore && sessionKey ? { sessionStore, sessionKey } : {}),
           });
@@ -296,7 +323,6 @@ export function createTurnWorkerSeam(
           } catch {
             /* ignore */
           }
-          for (const _ of [] as unknown[]) void _; // (no-op for lint determinism)
         },
       };
     },

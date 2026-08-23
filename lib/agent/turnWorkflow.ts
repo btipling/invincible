@@ -190,18 +190,6 @@ export type RunAgentStreamFn = (
   handlers: { onEvent: (event: AgentStreamEvent) => void | Promise<void> },
 ) => Promise<unknown>;
 
-async function defaultRunAgentStream(
-  params: RunAgentParams,
-  handlers: { onEvent: (event: AgentStreamEvent) => void | Promise<void> },
-): Promise<unknown> {
-  // `runAgentStream`'s graph reaches the di root (db/postgres, sandbox, mcp
-  // urlPolicy → `node:*`, bcrypt) — a Vercel Workflow module may NOT statically
-  // import it (workflows bundler node-module error). Resolve it dynamically
-  // INSIDE the model step's Function/isolate, where Node modules are allowed.
-  const { runAgentStream } = await import('./runAgent');
-  return runAgentStream(params, handlers);
-}
-
 /**
  * The model step body — factored out of the `"use step"` shell so it is
  * unit-testable (mock seam + mock writable + no real sandbox/MCP/Blob). It:
@@ -212,12 +200,20 @@ async function defaultRunAgentStream(
  *  - snapshots the ledger + a structured `response.messages` checkpoint.
  * Fail closed: any resolve/run rejection propagates (the caller maps it to an
  * `error` event + a run end) — never a silent `/api/agent` fallback.
+ *
+ * `runAgentStreamImpl` is REQUIRED and comes from the `'use step'` shell, which
+ * `await import('./runAgent')`s it INSIDE the step's isolated Function. It MUST
+ * NOT be defaulted to a module-scope importer of `./runAgent` here: that would
+ * leave a module-scope reference to the whole di/db/postgres + blobStore +
+ * mcp/urlPolicy graph in the workflow module, which the Vercel workflows
+ * bundler's node-module-error plugin traces into the workflow bundle and
+ * hard-fails (deploy block, adversary Major #1).
  */
 export async function runModelTurnStep(
   seam: TurnStepRunSeam,
   args: TurnWorkflowArgs,
   writable: WritableStream<string>,
-  runAgentStreamImpl: RunAgentStreamFn = defaultRunAgentStream,
+  runAgentStreamImpl: RunAgentStreamFn,
 ): Promise<TurnModelStepResult> {
   const freshness = hydrateOrSeedFreshness(args.serializedFreshness);
   // Re-resolve EVERY transport this step uses (fresh Function — no cached handle).
@@ -338,10 +334,18 @@ export async function runWorkerPersistStep(
 async function modelTurnStep(args: TurnWorkflowArgs): Promise<TurnModelStepResult> {
   'use step';
 
+  // CAREFUL (deploy block, adversary Major #1): every Node-only seam must be
+  // resolved HERE, lexically INSIDE the `'use step'` body — never as a
+  // module-scope import/default in the workflow module, or the workflows
+  // bundler traces it into the workflow bundle and hard-fails. `runAgent`'s
+  // graph reaches the di root (db/postgres, blobStore `node:crypto`,
+  // mcp urlPolicy `node:dns`, bcrypt). It is imported dynamically inside the
+  // step's isolated Function and passed to the (module-scope, pure) runner.
   const { createTurnWorkerSeam } = await import('./turnWorkerSeam');
+  const { runAgentStream } = await import('./runAgent');
   const seam = createTurnWorkerSeam();
   const writable = getWritable<string>();
-  return runModelTurnStep(seam, args, writable);
+  return runModelTurnStep(seam, args, writable, runAgentStream);
 }
 
 /**
@@ -359,7 +363,37 @@ async function workerPersistStep(
 ): Promise<'persisted'> {
   'use step';
 
-  const stores = await createProductionTurnStores(args);
+  // CAREFUL (deploy block, adversary Major #1): all store/Blob resolution MUST
+  // live HERE, lexically INSIDE the `'use step'` body. Vercel's
+  // node-module-error plugin traces the WHOLE workflow-module graph — any
+  // dynamic import inside a module-scope helper (e.g. a top-level
+  // `createProductionTurnStores`) is bundled into the workflow bundle and
+  // hard-fails on Node-only deps (postgres/`node:crypto`/`node:dns`). So the
+  // seam resolves the session + blob stores inline (fresh per step — no cached
+  // handle, parent decision B) and creates the persist seam here.
+  const { resolveSessionStore, sessionKeyFor, resolveBlobStore } = await import(
+    '../tenancy/harnessSessionsRedis'
+  );
+  const { isEnvelopeStore } = await import('../sessions/sessionStore');
+  const storeRes = await resolveSessionStore();
+  if (!storeRes.ok) {
+    throw new Error(`turn worker session store unavailable: ${storeRes.code}`);
+  }
+  if (!isEnvelopeStore(storeRes.value)) {
+    throw new Error('turn worker session store is not envelope-backed');
+  }
+  const blobRes = await resolveBlobStore();
+  if (!blobRes.ok) {
+    throw new Error(`turn worker blob store unavailable: ${blobRes.code}`);
+  }
+  const { createTurnWorkerPersist } = await import('./turnWorkerPersist');
+  const stores = {
+    persist: createTurnWorkerPersist({
+      blobStore: blobRes.value,
+      envelopeStore: storeRes.value,
+    }),
+    key: sessionKeyFor(args.tenantId, args.userId, args.sessionId),
+  };
   return runWorkerPersistStep(
     stores,
     modelResult,
@@ -412,49 +446,9 @@ export async function runTurnWorkflow(
   return { status: 'completed' };
 }
 
-/**
- * Resolve the production store/stores a worker-persist step binds to, from the
- * DI-seam environment the running Function sees. `start(args)` cannot carry
- * closures, so the started workflow resolves its own Blob + envelope stores here
- * (inside the workflow Function, never in the serialized args). Fail closed:
- * store resolve is a wiring error surfaced by the step (`persistSegment` /
- * `persistMessageCheckpoint` return `ok:false`), never a silent fallback.
- */
-export async function createProductionTurnStores(
-  args: TurnWorkflowArgs,
-): Promise<{
-  persist: ReturnType<typeof createTurnWorkerPersist>;
-  key: SessionRecordKey;
-}> {
-  const { resolveSessionStore, sessionKeyFor } = await import(
-    '../tenancy/harnessSessionsRedis'
-  );
-  const { resolveBlobStore } = await import('../tenancy/harnessSessionsRedis');
-  const { isEnvelopeStore } = await import('../sessions/sessionStore');
-
-  const storeRes = await resolveSessionStore();
-  if (!storeRes.ok) {
-    throw new Error(`turn worker session store unavailable: ${storeRes.code}`);
-  }
-  if (!isEnvelopeStore(storeRes.value)) {
-    throw new Error('turn worker session store is not envelope-backed');
-  }
-  const blobRes = await resolveBlobStore();
-  if (!blobRes.ok) {
-    throw new Error(`turn worker blob store unavailable: ${blobRes.code}`);
-  }
-  const { createTurnWorkerPersist } = await import('./turnWorkerPersist');
-  return {
-    persist: createTurnWorkerPersist({
-      blobStore: blobRes.value,
-      envelopeStore: storeRes.value,
-    }),
-    key: sessionKeyFor(args.tenantId, args.userId, args.sessionId),
-  };
-}
-
-// Re-export the store/blob + key types the caller (and the start route) needs for
-// the single `runTurnWorkflow` orchestrator + `createProductionTurnStores`.
+// Re-export the store/blob + key types the start route needs for the single
+// `runTurnWorkflow` orchestrator (type-only — erased, never bundled by the
+// workflows node-module-error gate).
 export type {
   BlobTranscriptStore,
   ServerSessionStore,
