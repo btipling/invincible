@@ -65,16 +65,38 @@ function truncateUtf8Safe(s: string, budget: number): string {
 }
 
 /**
- * Fit a single oversize row into `maxBytes` by truncating its `content`
- * UTF-8-safely to the byte budget. Returns the fitted row, or `null` when even a
- * content-less version of the row cannot fit (the serialized scaffolding alone
- * exceeds `maxBytes`) → the caller drops it deterministically. Never throws.
+ * Fit a single oversize row into `maxBytes` so that its *serialized* form — after
+ * `JSON.stringify` escapes `"`, `\`, and control chars (each control char expands
+ * to `\uXXXX`, up to 6× its raw UTF-8 footprint) — stays within the cap. The raw
+ * `content` byte budget is binary-searched (whole-UTF-8-rune, so no mid-rune
+ * split) to the largest prefix whose serialized JSON of the row fits `maxBytes`.
+ *
+ * Returns the fitted row, or `null` when even a content-less version cannot fit
+ * (the serialized scaffolding alone exceeds `maxBytes`) → the caller drops it
+ * deterministically. Never throws.
  */
 function fitSingleRow(row: CheckpointRow, maxBytes: number): CheckpointRow | null {
-  const base = utf8Bytes(JSON.stringify([{ role: row.role, content: '' }]));
-  const contentBudget = maxBytes - base;
-  if (contentBudget <= 0) return null;
-  return { role: row.role, content: truncateUtf8Safe(row.content, contentBudget) };
+  const scaffold = utf8Bytes(JSON.stringify([{ role: row.role, content: '' }]));
+  if (scaffold > maxBytes) return null;
+  // Search the raw-content byte budget; serialized size is monotonic non-decreasing
+  // in the raw prefix length, so a binary search is exact and always terminates
+  // (best starts at 0, and the empty content serializes to `scaffold <= maxBytes`).
+  const totalContent = utf8Bytes(row.content);
+  let lo = 0;
+  let hi = totalContent;
+  let best = 0;
+  while (lo <= hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    const fitted = truncateUtf8Safe(row.content, mid);
+    const serialized = utf8Bytes(JSON.stringify([{ role: row.role, content: fitted }]));
+    if (serialized <= maxBytes) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return { role: row.role, content: truncateUtf8Safe(row.content, best) };
 }
 
 /**

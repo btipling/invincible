@@ -86,6 +86,29 @@ describe('truncateMessageCheckpoint (plan #800, backend-agents B6)', () => {
     }
   });
 
+  it('matrix 4 — JSON-escaping expansion is budgeted (quote/backslash/control chars never blow the serialized cap)', () => {
+    // Unlike 'x'/emoji, these need JSON escaping: each '"' or '\\' serializes to
+    // 2 bytes, each control char (e.g. \u0000) to 6 bytes — 2–6× their raw UTF-8
+    // footprint. The lone oversize path must budget the *serialized* size, or the
+    // returned projection could exceed maxBytes (the review's L8 break scenario).
+    const escapingCases: string[] = [
+      '"'.repeat(500),
+      '\\'.repeat(500),
+      '\u0000'.repeat(200),
+      ('"\u0000\\'.repeat(300)),
+    ];
+    for (const content of escapingCases) {
+      const out = truncateMessageCheckpoint([{ role: 'user', content }], { maxBytes: 40 });
+      expect(out.truncated).toBe(true);
+      // the projection always fits the cap (never a lie), regardless of escaping
+      expect(Buffer.byteLength(JSON.stringify(out.rows), 'utf8')).toBeLessThanOrEqual(40);
+      if (out.rows.length === 1) {
+        // the oversized content was actually truncated for the escaping overhead
+        expect(out.rows[0].content.length).toBeLessThan(content.length);
+      }
+    }
+  });
+
   it('matrix 5 — malformed rows fail closed (dropped, never throw)', () => {
     // Missing role / missing content / wrong types / bare primitives / arrays.
     const malformed = [
