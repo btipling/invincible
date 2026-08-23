@@ -37,11 +37,19 @@
  */
 
 import { getWritable } from 'workflow';
-import { runAgentStream, type RunAgentParams } from './runAgent';
-import {
-  encodeSseData,
-  type AgentStreamEvent,
-} from './agentStream';
+// A Vercel Workflow module must NOT statically import any module whose graph
+// reaches Node.js-only code / node-module server deps (postgres, `node:*`,
+// bcrypt, the di root → db, sandbox vercelClient → `node:path`, mcp urlPolicy →
+// `node:dns`, blobStore → `node:crypto`, tenancy credentials/DEKs/password). The
+// Workflows bundler statically traces imports and hard-rejects those
+// ("Move this function into a step function") — adversary Major L1+L6. So
+// everything that touches that graph is reached ONLY via a dynamic import INSIDE
+// a `'use step'` body (a fresh Function/isolate): `runAgentStream` (the model
+// step) and the store+Blob seams / `createTurnWorkerPersist` (the persist step,
+// via `createProductionTurnStores`). Only pure / SSE-wire / type imports stay
+// static here.
+import type { RunAgentParams } from './runAgent';
+import { encodeSseData, type AgentStreamEvent } from './agentStream';
 import {
   createRunFileFreshness,
   hydrateRunFileFreshness,
@@ -49,17 +57,9 @@ import {
   type FreshnessLedgerProjection,
   type RunFileFreshness,
 } from './fileFreshness';
-import {
-  createTurnWorkerPersist,
-  type TurnWorkerMetaPatch,
-} from './turnWorkerPersist';
-import type {
-  BlobTranscriptStore,
-} from '../sessions/blobStore';
-import type {
-  ServerSessionStore,
-  SessionRecordKey,
-} from '../sessions/sessionStore';
+import type { createTurnWorkerPersist, TurnWorkerMetaPatch } from './turnWorkerPersist';
+import type { BlobTranscriptStore } from '../sessions/blobStore';
+import type { ServerSessionStore, SessionRecordKey } from '../sessions/sessionStore';
 
 /**
  * NEW additive caps (plan #791 caps table — backend-agents E). A single prompt's
@@ -194,6 +194,11 @@ async function defaultRunAgentStream(
   params: RunAgentParams,
   handlers: { onEvent: (event: AgentStreamEvent) => void | Promise<void> },
 ): Promise<unknown> {
+  // `runAgentStream`'s graph reaches the di root (db/postgres, sandbox, mcp
+  // urlPolicy → `node:*`, bcrypt) — a Vercel Workflow module may NOT statically
+  // import it (workflows bundler node-module error). Resolve it dynamically
+  // INSIDE the model step's Function/isolate, where Node modules are allowed.
+  const { runAgentStream } = await import('./runAgent');
   return runAgentStream(params, handlers);
 }
 
@@ -246,15 +251,25 @@ export async function runModelTurnStep(
         },
       );
     } finally {
-      writer.releaseLock();
       await resolved.close();
     }
+    // Signal end-of-stream to the SSE consumer (adversary Minor #4 parity with
+    // the B fixture's explicit close step). `writer.close()` releases the lock
+    // and closes the underlying `getWritable()` — an un-closed writable would
+    // keep the `Accept` pipe / GET …/stream waiting until maxDuration.
+    await writer.close();
     return {
       serializedFreshness: serializeRunFileFreshness(freshness),
       checkpoint: truncateMessageCheckpoint(messages),
     };
   } catch (err) {
-    // Always close transports on a reject too.
+    // Always close the writer (abort — signal a broken stream, never a hang)
+    // + transports on a reject too.
+    try {
+      await writer.abort();
+    } catch {
+      /* ignore writer abort errors (already closed) */
+    }
     try {
       await resolved.close();
     } catch {
@@ -313,30 +328,29 @@ export async function runWorkerPersistStep(
 }
 
 /**
- * Model step `"use step"` shell. Written outside the injected seam so the Workflows
- * runtime owns the stream; the substantive work is delegated to `runModelTurnStep`.
+ * Model step `"use step"` shell. Resolves the production seam FROM INSIDE the
+ * step Function (a fresh isolate — no closure/handle survives the step boundary;
+ * the B/D fixtures' zero-arg serialization contract, adversary Major L1+L6).
+ * Only serializable `TurnWorkflowArgs` cross in; the seam + its transports are
+ * created and closed inside this step. The substantive work is delegated to
+ * `runModelTurnStep` (the tested body).
  */
-async function modelTurnStep(
-  seam: TurnStepRunSeam,
-  args: TurnWorkflowArgs,
-): Promise<TurnModelStepResult> {
+async function modelTurnStep(args: TurnWorkflowArgs): Promise<TurnModelStepResult> {
   'use step';
 
+  const { createTurnWorkerSeam } = await import('./turnWorkerSeam');
+  const seam = createTurnWorkerSeam();
   const writable = getWritable<string>();
   return runModelTurnStep(seam, args, writable);
 }
 
 /**
- * Persist step `"use step"` shell. Delegates to `runWorkerPersistStep` against the
- * fresh store/Blob seams (resolved here inside the step, never cached from context).
+ * Persist step `"use step"` shell. Resolves the production store/Blob seams FROM
+ * INSIDE the step Function (a fresh isolate — no closure/handle crosses the
+ * boundary; the B/D zero-arg serialization contract, adversary Major L1+L6).
+ * Only serializable args + the serializable step result cross in/out.
  */
 async function workerPersistStep(
-  deps: {
-    resolveStores: () => Promise<{
-      persist: ReturnType<typeof createTurnWorkerPersist>;
-      key: SessionRecordKey;
-    }>;
-  },
   args: TurnWorkflowArgs,
   modelResult: TurnModelStepResult,
   segmentBody: unknown,
@@ -345,7 +359,7 @@ async function workerPersistStep(
 ): Promise<'persisted'> {
   'use step';
 
-  const stores = await deps.resolveStores();
+  const stores = await createProductionTurnStores(args);
   return runWorkerPersistStep(
     stores,
     modelResult,
@@ -354,26 +368,21 @@ async function workerPersistStep(
 }
 
 /**
- * `"use workflow"` orchestrator — one prompt as one durable run. Thin: it only
- * sequences the two steps (the Workflows runtime re-runs steps on retry; the
+ * `"use workflow"` orchestrator — one prompt as one durable run; the SINGLE
+ * `'use workflow'` the route passes to `start()` (so there is NO nested workflow
+ * and NO function/handle in any step argument — adversary Major L1+L6). Thin: it
+ * only sequences the two steps (the Workflows runtime re-runs steps on retry; the
  * serializable freshness ledger is threaded through args so a retried step
  * re-hydrates read-before-edit grants). Returns a `{ status: 'completed' }`
  * marker the reconnect proof polls `getRun` for (B pattern). NEVER a server
  * cancel (H), never a `/api/agent` fallback, no queue drain (G).
  */
-export async function turnWorkflow(
-  seam: TurnStepRunSeam,
-  deps: {
-    resolveStores: () => Promise<{
-      persist: ReturnType<typeof createTurnWorkerPersist>;
-      key: SessionRecordKey;
-    }>;
-  },
+export async function runTurnWorkflow(
   args: TurnWorkflowArgs,
 ): Promise<{ status: 'completed' }> {
   'use workflow';
 
-  const modelResult = await modelTurnStep(seam, args);
+  const modelResult = await modelTurnStep(args);
 
   // Persist one append-only transcript segment with the worker meta patch +
   // the structured message checkpoint (its own Blob object). The segment body is
@@ -381,7 +390,6 @@ export async function turnWorkflow(
   // lives in the checkpoint object). `updatedAt` is monotonic-ish; the store
   // enforces LWW across the host PUT path.
   await workerPersistStep(
-    deps,
     args,
     modelResult,
     {
@@ -396,7 +404,7 @@ export async function turnWorkflow(
       activeSandboxId: undefined,
       usage: undefined,
       attachedSkills: undefined,
-      turnRunId: args.sessionId, // carrier reserved by slice C; E populates it
+      turnRunId: args.sessionId, // carrier reserved by slice C; E populates it (adversary #2 reworks this)
       turnStatus: 'running',
     },
   );
@@ -445,26 +453,8 @@ export async function createProductionTurnStores(
   };
 }
 
-/**
- * PRODUCTION start-able facade — the function `POST /api/turns` passes to
- * `start()`. `start()` only serializes its ARGS (`TurnWorkflowArgs` — JSON-safe,
- * no secrets/closures), so this facade re-resolves its closure seam + stores
- * FROM INSIDE the Workflow Function via the DI root (the #710-lie ban: no
- * `/api/agent` fallback, no cached handle). Thin over `turnWorkflow`; unit tests
- * drive the step bodies directly with an injected seam.
- */
-export async function runTurnWorkflow(
-  args: TurnWorkflowArgs,
-): Promise<{ status: 'completed' }> {
-  'use workflow';
-
-  const { createTurnWorkerSeam } = await import('./turnWorkerSeam');
-  const seam = createTurnWorkerSeam();
-  return turnWorkflow(seam, { resolveStores: () => createProductionTurnStores(args) }, args);
-}
-
-// Re-export the store/blob + key types the caller (and the start route) needs to
-// wire `resolveStores` into `turnWorkflow`.
+// Re-export the store/blob + key types the caller (and the start route) needs for
+// the single `runTurnWorkflow` orchestrator + `createProductionTurnStores`.
 export type {
   BlobTranscriptStore,
   ServerSessionStore,

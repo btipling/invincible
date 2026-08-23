@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  turnWorkflow,
+  runTurnWorkflow,
   runModelTurnStep,
   runWorkerPersistStep,
   truncateMessageCheckpoint,
@@ -49,8 +49,13 @@ const ARGS: TurnWorkflowArgs = {
   initialCwd: '.',
 };
 
-function makeWritable(): { writable: WritableStream<string>; chunks: string[] } {
+function makeWritable(): {
+  writable: WritableStream<string>;
+  chunks: string[];
+  state: { closed: boolean; aborted: boolean };
+} {
   const chunks: string[] = [];
+  const state = { closed: false, aborted: false };
   const encoder = new TextEncoder();
   const writable = new WritableStream<string>({
     write(chunk: string) {
@@ -59,8 +64,14 @@ function makeWritable(): { writable: WritableStream<string>; chunks: string[] } 
       void encoder.encode(chunk);
       chunks.push(chunk);
     },
+    close() {
+      state.closed = true;
+    },
+    abort() {
+      state.aborted = true;
+    },
   });
-  return { writable, chunks };
+  return { writable, chunks, state };
 }
 
 function makeSeam(): {
@@ -92,7 +103,7 @@ function makeSeam(): {
 describe('runModelTurnStep (row 3/4/5)', () => {
   it('re-resolves the seam once per run and closes the runner', async () => {
     const { seam, resolveSpy } = makeSeam();
-    const { writable, chunks } = makeWritable();
+    const { writable, chunks, state } = makeWritable();
     const events: AgentStreamEvent[] = [];
     const runStream = vi.fn(async (
       params: unknown,
@@ -123,6 +134,12 @@ describe('runModelTurnStep (row 3/4/5)', () => {
     // truncation marker absent).
     expect(result.serializedFreshness.paths).toEqual([]);
     expect(result.serializedFreshness.truncated).toBe(false);
+
+    // The writable is CLOSED (not merely released) on success — signals
+    // end-of-stream to the SSE consumer (adversary Minor #4 parity with the B
+    // fixture's explicit close step), never left streaming to maxDuration.
+    expect(state.closed).toBe(true);
+    expect(state.aborted).toBe(false);
   });
 
   it('hydrates a carried serialized freshness seed (row 5: ledger survives steps)', async () => {
@@ -151,7 +168,7 @@ describe('runModelTurnStep (row 3/4/5)', () => {
 
   it('a model-stream error event fails closed (no silent /api/agent fallback)', async () => {
     const { seam } = makeSeam();
-    const { writable } = makeWritable();
+    const { writable, state } = makeWritable();
     const runStream = vi.fn(async (
       _params: unknown,
       handlers: { onEvent: (ev: AgentStreamEvent) => void | Promise<void> },
@@ -159,6 +176,10 @@ describe('runModelTurnStep (row 3/4/5)', () => {
       await handlers.onEvent({ type: 'error', error: 'provider boom', status: 502 });
     });
     await expect(runModelTurnStep(seam, ARGS, writable, runStream)).rejects.toThrow(/agent stream error/);
+    // On error the writable is ABORTED (signals a broken stream, never a hang;
+    // adversary Minor #4 — unlike the success path which closes).
+    expect(state.aborted).toBe(true);
+    expect(state.closed).toBe(false);
   });
 });
 
@@ -258,7 +279,8 @@ describe('turnWorkflow seam wiring (thin over the two step bodies)', () => {
     const envNow = await env.readEnvelope(KEY);
     expect(envNow?.meta.transcriptPointer).toBeDefined();
 
-    // The orchestrator is present + returns the completed marker contract.
-    expect(typeof turnWorkflow).toBe('function');
+    // The SINGLE orchestrator the route starts is present — `start(runTurnWorkflow,
+    // [args])` (one `'use workflow'`, no nested workflow — adversary Major L1+L6).
+    expect(typeof runTurnWorkflow).toBe('function');
   });
 });
