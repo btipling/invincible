@@ -41,6 +41,7 @@ import {
   sanitizeSessionCwd,
   sanitizeTurnRunId,
   sanitizeTurnStatus,
+  sanitizeTurnStreamCursor,
 } from '../sessionCloudCaps';
 export { isRedisSafeOpaqueId } from '../sessionCloudCaps';
 import { decodeUsageMetaString } from '../agent/usageSummary';
@@ -75,6 +76,7 @@ export const RESERVED_META_KEYS = [
   'usage',
   'turnRunId',
   'turnStatus',
+  'turnStreamCursor',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -433,6 +435,17 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
       // so the later C15 live-only 409 (#809) can re-allow the next prompt on completion.
       const cleaned = sanitizeTurnStatus(v);
       if (cleaned !== undefined) meta.turnStatus = cleaned;
+      continue;
+    }
+    if (key === 'turnStreamCursor') {
+      // Plan #797 (backend-agents A3): a reserved monotonic attach/replay cursor
+      // carrier. Non-critical — a poisoned (negative / `NaN` / non-finite /
+      // non-integer / over-cap / non-`number`) value DROPS to unset (omitted), never
+      // 400s the record (same drop-to-unset decision as `selectedModel` / `usage` /
+      // `turnRunId` / `turnStatus`). A distinct reserved key — the cursor is NEVER
+      // folded into `turnRunId` (parent Architecture lock).
+      const cleaned = sanitizeTurnStreamCursor(v);
+      if (cleaned !== undefined) meta.turnStreamCursor = cleaned;
       continue;
     }
     if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {

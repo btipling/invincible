@@ -6,11 +6,13 @@ import {
   REDIS_SAFE_OPAQUE_ID_MAX,
   STATUS_SLOT_MAX_BYTES,
   TURN_RUN_ID_MAX,
+  TURN_STREAM_CURSOR_MAX,
   TURN_STATUS_MAX_BYTES,
   TURN_STATUS_VALUES,
   sanitizeModelId,
   sanitizeTurnRunId,
   sanitizeTurnStatus,
+  sanitizeTurnStreamCursor,
 } from './sessionCloudCaps';
 import { MAX_MODEL_ID_LEN as BRIDGE_MAX_MODEL_ID_LEN, MAX_STATUS_SLOT_LEN } from './harnessBridge';
 
@@ -206,5 +208,52 @@ describe('sanitizeTurnStatus + TURN_STATUS_MAX_BYTES (plan #796 — turn-status 
   it('drops over-length values (TURN_STATUS_MAX_BYTES + 1)', () => {
     expect(sanitizeTurnStatus('a'.repeat(TURN_STATUS_MAX_BYTES))).toBeUndefined(); // not a member
     expect(sanitizeTurnStatus('x'.repeat(TURN_STATUS_MAX_BYTES + 1))).toBeUndefined();
+  });
+});
+
+// Plan #797 (backend-agents A3): reserved `meta.turnStreamCursor` is a monotonic
+// attach/replay offset. NEW cap (`TURN_STREAM_CURSOR_MAX` = 1e9) riding a tiny
+// envelope value — no existing cap changed (no human gate). Distinct reserved key;
+// the cursor is never folded into `turnRunId` (parent Architecture lock).
+describe('sanitizeTurnStreamCursor + TURN_STREAM_CURSOR_MAX (plan #797 — turn-stream cursor carrier)', () => {
+  it('TURN_STREAM_CURSOR_MAX is a NEW generous cap (~6 orders above the 2k replay line) riding the tiny envelope', () => {
+    expect(TURN_STREAM_CURSOR_MAX).toBe(1_000_000_000);
+    // Generous vs the parent's 2k-event slow-replay line per turn (cost lock). The
+    // wire footprint of a cursor is its decimal serialization (10 digits, a handful
+    // of bytes), not the numeric magnitude — so it rides the tiny session envelope
+    // far below the 1 MiB whole-meta budget and the 4.5 MB Function wire.
+    expect(TURN_STREAM_CURSOR_MAX).toBeGreaterThanOrEqual(2000);
+    expect(String(TURN_STREAM_CURSOR_MAX)).toHaveLength(10);
+    expect(String(TURN_STREAM_CURSOR_MAX).length).toBeLessThan(1024 * 1024);
+    expect(String(TURN_STREAM_CURSOR_MAX).length).toBeLessThan(4.5 * 1024 * 1024);
+  });
+
+  it('accepts any non-negative integer ≤ cap — including the first-attach offset 0 (non-vacuous)', () => {
+    expect(sanitizeTurnStreamCursor(0)).toBe(0);
+    expect(sanitizeTurnStreamCursor(12345)).toBe(12345);
+    expect(sanitizeTurnStreamCursor(TURN_STREAM_CURSOR_MAX)).toBe(TURN_STREAM_CURSOR_MAX); // == cap preserved
+  });
+
+  it('drops over-cap, negative, NaN, Infinity, non-integer, and non-number (drop-to-unset)', () => {
+    expect(sanitizeTurnStreamCursor(TURN_STREAM_CURSOR_MAX + 1)).toBeUndefined(); // > cap
+    expect(sanitizeTurnStreamCursor(-1)).toBeUndefined();
+    expect(sanitizeTurnStreamCursor(-0.5)).toBeUndefined();
+    expect(sanitizeTurnStreamCursor(NaN)).toBeUndefined();
+    expect(sanitizeTurnStreamCursor(Infinity)).toBeUndefined();
+    expect(sanitizeTurnStreamCursor(-Infinity)).toBeUndefined();
+    expect(sanitizeTurnStreamCursor(0.5)).toBeUndefined(); // non-integer
+    expect(sanitizeTurnStreamCursor(1.5)).toBeUndefined();
+  });
+
+  it('drops non-`number` values — no string/number-like coercion (strict numeric type)', () => {
+    expect(sanitizeTurnStreamCursor('42')).toBeUndefined();
+    expect(sanitizeTurnStreamCursor('0')).toBeUndefined();
+    expect(sanitizeTurnStreamCursor('12345')).toBeUndefined();
+    expect(sanitizeTurnStreamCursor('abc')).toBeUndefined();
+    expect(sanitizeTurnStreamCursor(null)).toBeUndefined();
+    expect(sanitizeTurnStreamCursor(undefined)).toBeUndefined();
+    expect(sanitizeTurnStreamCursor({})).toBeUndefined();
+    expect(sanitizeTurnStreamCursor([])).toBeUndefined();
+    expect(sanitizeTurnStreamCursor(true)).toBeUndefined();
   });
 });
