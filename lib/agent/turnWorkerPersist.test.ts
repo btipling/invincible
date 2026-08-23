@@ -71,7 +71,58 @@ describe('persistTranscriptSegment', () => {
     expect(await blob.read(res.objectId)).toBe('{"delta":"hello"}');
   });
 
-  it('matrix 2 — PUT failure (store throws) → pointer NOT advanced, envelope unmodified', async () => {
+  it('matrix 2 — sibling reserved-meta keys survive a persist (copy-forward is load-bearing)', async () => {
+    const blob = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const key: SessionRecordKey = {
+      tenantId: scope.tenantId,
+      userId: scope.userId,
+      sessionId: scope.sessionId,
+    };
+    // Seed an envelope whose `meta` carries the full reserved sibling set. The
+    // Memory store's upsert replaces the WHOLE meta object, so a persist that
+    // dropped the copy-forward spread would CLEAR every one of these siblings
+    // (omit = clear) on the first B13 write.
+    const siblings = {
+      turnRunId: 'wr_0000_0000000000000000000000',
+      turnStatus: 'running',
+      turnStreamCursor: 7,
+      checkpointPointer: 'ckpt_0000_0000000000000000000000',
+      selectedModel: 'harness-default',
+      usage: 12,
+      attachedSkills: JSON.stringify(['plan-review']),
+    };
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { ...siblings, transcriptPointer: 't_old_ptr_0000' },
+    });
+
+    const res = await persistTranscriptSegment({
+      store: blob,
+      envelopeStore,
+      scope,
+      segment: { content: '{}' },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const env = await envelopeStore.readEnvelope(key);
+    // Pointer advanced to the new object id...
+    expect(env?.meta?.transcriptPointer).toBe(res.objectId);
+    // ...and every sibling reserved key survived (copy-forward, then override).
+    expect(env?.meta?.turnRunId).toBe(siblings.turnRunId);
+    expect(env?.meta?.turnStatus).toBe(siblings.turnStatus);
+    expect(env?.meta?.turnStreamCursor).toBe(siblings.turnStreamCursor);
+    expect(env?.meta?.checkpointPointer).toBe(siblings.checkpointPointer);
+    expect(env?.meta?.selectedModel).toBe(siblings.selectedModel);
+    expect(env?.meta?.usage).toBe(siblings.usage);
+    expect(env?.meta?.attachedSkills).toEqual(siblings.attachedSkills);
+    expect(env?.updatedAt).toBe(1000); // worker preserved the stored clock (LWW)
+  });
+
+  it('matrix 3 — PUT failure (store throws) → pointer NOT advanced, envelope unmodified', async () => {
     const blob = new ThrowingBlobStore();
     const envelopeStore = new MemorySessionStore();
     const res = await persistTranscriptSegment({
