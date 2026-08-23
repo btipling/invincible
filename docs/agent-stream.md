@@ -125,27 +125,33 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | `tool_run` group payload | **≤ 262 144 B** (`TOOL_RUN_MSG_HARD_MAX`) | Host clips/omits memorized previews (explicit `…` or static label) rather than overflowing the ring/cloud per-msg cap |
 | JSON end-of-turn toolTrace lines | **none** | All entries shown; level-2 detail stays the one-line `summary` (parity) |
 
-## Workflow turn probe (slice B spike)
+## Workflow turn probe → durable turn owner (slices B → E)
 
-A preview/spike-only probe (plan #787, `backend-agents` B) proves the *reconnect
-primitive* for a future Workflow turn owner without cutting `/api/agent` over:
+Slice B was a preview/spike probe (plan #787) proving the *reconnect primitive*
+before any production turn moved to a Workflow. **Slice E (plan #791) keeps the
+same wire contract** but the route now starts the **real turn Workflow**; the
+reconnect route is unchanged and reusable for F later:
 
-- `POST /api/turns` → starts the fixture Workflow and returns
-  `x-workflow-run-id` + `{ runId }` (SSE-pipes `run.readable` when the client
-  sends `Accept: text/event-stream`).
+- `POST /api/turns` → starts the turn Workflow (`runTurnWorkflow`, one prompt =
+  one run) and returns `x-workflow-run-id` + `{ runId }` (SSE-pipes
+  `run.readable` when the client sends `Accept: text/event-stream`). The
+  orchestration's model stream + tool steps re-resolve grants/BYOK/sandbox/MCP/
+  http per step and emit the **same `AgentStreamEvent`s described in this file**;
+  the worker persist step saves Blob transcript + envelope meta LWW.
 - `GET /api/turns/:runId/stream?startIndex=N` → resumes the run's stream from
-  the Nth SSE chunk (`startIndex` default 0 = full history; the spike only uses
-  non-negative 0/mid indices — negative values are tail-relative per the SDK and
-  out of scope for this probe).
+  the Nth SSE chunk (`startIndex` default 0 = full history; only non-negative
+  0/mid indices are used — negative values are tail-relative per the SDK and
+  out of scope).
 
-These routes are **preview/spike-only** — they are **not** the production turn
-owner (`POST /api/agent` still owns every real turn until slice E swaps in) and
-are explicitly labeled as such. Fixture: `lib/workflows/turnsFixtureWorkflow.ts`
-(emits the current `AgentStreamEvent`s to `getWritable()`). Durable
-attach/detach turn-owner design lives in the parent turn-owner plan (#764 / slice
-I #772), not here. Vercel stream routes keep billing after a client disconnect
-unless `supportsCancellation` is set in `vercel.json` — the real turn owner
-(E/G) adds that; the spike notes it only.
+Fixture (`lib/workflows/turnsFixtureWorkflow.ts` in `lib/workflows/*`) still
+emits these events for the legacy/reconnect probe; the real orchestration lives
+in `lib/agent/turnWorkflow.ts`. At slice E the Workflow is the durable turn owner
+**for the E path only** — `POST /api/agent` is not yet cut over, and F owns the
+open-UI host ("attach") consumer, so this file does **not** describe a full
+re-attach/poll as shipped. Durable cancel is slice H, not here. Vercel stream
+routes keep billing after a client disconnect unless `supportsCancellation` is
+set in `vercel.json` — the real turn owner (E/G) adds that; the spike notes it
+only.
 
 ## Deferred (not in stream contract yet)
 
@@ -159,7 +165,7 @@ unless `supportsCancellation` is set in `vercel.json` — the real turn owner
 | Event map / tool summary | `lib/agent/agentStream.ts` |
 | streamText + reasoning option | `lib/agent/runAgent.ts`, `lib/agent/reasoningConfig.ts` |
 | Route SSE vs JSON | `app/api/agent/route.ts` |
-| Workflow turn probe (spike-only) | `app/api/turns/*`, `lib/workflows/turnsFixtureWorkflow.ts` |
+| Workflow turn owner (durable E path) | `lib/agent/turnWorkflow.ts`, `lib/agent/turnWorkerSeam.ts`, `lib/agent/turnWorkerPersist.ts`, `app/api/turns/route.ts` (+ probe fixture `lib/workflows/turnsFixtureWorkflow.ts`) |
 | Logical cwd parse / default | `lib/agent/agentBody.ts`, `lib/sandbox/config.ts`, `lib/agent/workPath.ts` |
 | Host consumer + collapse/caps | `lib/harnessChat.ts`, `lib/agentApi.ts` |
 | Thinking paint | `native/harness/src/ui/thinking.zig` (protocol v8 kind) |
