@@ -353,6 +353,26 @@ export function sanitizeTurnStreamCursor(value: unknown): number | undefined {
 }
 
 /**
+ * Row cap for a message checkpoint (plan #800, backend-agents B6). The checkpoint
+ * Blob is a multi-turn `{role, content}` projection; bounding its row count keeps a
+ * replay/entity footprint bounded (same order as `TURN_FRESHLEDGER_MAX_GRANTS`,
+ * under the parent's 2k-event/slow-replay concern). **NEW generous cap**; no
+ * existing cap value changed → **no human gate**. Governs
+ * `truncateMessageCheckpoint` in `lib/agent/messageCheckpoint.ts`.
+ */
+export const TURN_MSG_CHECKPOINT_MAX_ROWS = 4096;
+
+/**
+ * Byte cap for a message checkpoint (plan #800, backend-agents B6). The checkpoint
+ * is its **own Blob object** — **never the 1 MiB envelope `meta` body**
+ * (`HARNESS_SESSION_MAX_META_BYTES`) — so this may exceed that whole-meta budget:
+ * 8 MiB aligns with the Redis record body ceiling and is far above any realistic
+ * transcript checkpoint. **NEW generous cap**; no existing cap value changed →
+ * **no human gate**. Governs `truncateMessageCheckpoint` in `lib/agent/messageCheckpoint.ts`.
+ */
+export const TURN_MSG_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
  * Max UTF-8 byte length of a model id carried as the session carrier
  * `meta.selectedModel` (plan #616 / source #610). Single TS source shared by the
  * host trim/parse (`lib/sessionRepository.ts`, `lib/sessionStore.ts`) and server

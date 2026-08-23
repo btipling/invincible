@@ -71,6 +71,7 @@ export const RESERVED_META_KEYS = [
   'personaId',
   'personaSnapshot',
   'transcriptPointer',
+  'checkpointPointer',
   'attachedSkills',
   'selectedModel',
   'usage',
@@ -446,6 +447,16 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
       // folded into `turnRunId` (parent Architecture lock).
       const cleaned = sanitizeTurnStreamCursor(v);
       if (cleaned !== undefined) meta.turnStreamCursor = cleaned;
+      continue;
+    }
+    if (key === 'checkpointPointer') {
+      // Plan #800 (backend-agents B6): the reserved Blob-checkpoint pointer,
+      // a **sibling** of `transcriptPointer` (same Redis-safe opaque rule, but a distinct
+      // key — the transcript and the checkpoint are separate Blob surfaces, never folded
+      // together). The checkpoint BODY never rides in `meta`; only the object id does.
+      // Non-critical — a poisoned/non-opaque value DROPS to unset (omitted), never 400s
+      // the record (same drop-to-unset decision as the A1–A3 turn carriers).
+      if (isRedisSafeOpaqueId(v)) meta.checkpointPointer = v;
       continue;
     }
     if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {

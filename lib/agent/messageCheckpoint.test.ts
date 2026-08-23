@@ -1,0 +1,152 @@
+import { describe, expect, it } from 'vitest';
+import {
+  type CheckpointRow,
+  truncateMessageCheckpoint,
+} from './messageCheckpoint';
+import {
+  TURN_MSG_CHECKPOINT_MAX_BYTES,
+  TURN_MSG_CHECKPOINT_MAX_ROWS,
+} from '../sessionCloudCaps';
+
+function rows(n: number, content = 'm'): CheckpointRow[] {
+  return Array.from({ length: n }, (_, i) => ({ role: 'user', content: `${content}${i}` }));
+}
+
+describe('truncateMessageCheckpoint (plan #800, backend-agents B6)', () => {
+  it('matrix 10 — empty input yields an empty projection, truncated=false, no throw', () => {
+    const out = truncateMessageCheckpoint([]);
+    expect(out.rows).toEqual([]);
+    expect(out.truncated).toBe(false);
+  });
+
+  it('matrix 1 — well-formed rows under both caps are preserved, truncated=false', () => {
+    const input: CheckpointRow[] = [
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'reply' },
+      { role: 'user', content: 'next' },
+    ];
+    const out = truncateMessageCheckpoint(input);
+    expect(out.truncated).toBe(false);
+    expect(out.rows).toEqual(input);
+  });
+
+  it('matrix 2 — row count > maxRows keeps the HEAD rows, truncated=true', () => {
+    const out = truncateMessageCheckpoint(rows(5), { maxRows: 3 });
+    expect(out.truncated).toBe(true);
+    expect(out.rows.map((r) => r.content)).toEqual(['m0', 'm1', 'm2']);
+  });
+
+  it('matrix 3 — total bytes > maxBytes keeps head rows that fit, truncated=true', () => {
+    const input: CheckpointRow[] = [
+      { role: 'user', content: 'aaaa' },
+      { role: 'assistant', content: 'bbbb' },
+      { role: 'user', content: 'cccc' },
+      { role: 'assistant', content: 'dddd' },
+    ];
+    const out = truncateMessageCheckpoint(input, { maxBytes: 40 });
+    expect(out.truncated).toBe(true);
+    // head-kept: the oldest row survives, later rows dropped once the byte cap bites
+    expect(out.rows[0].content).toBe('aaaa');
+    expect(out.rows.length).toBeLessThan(input.length);
+    // the projection always fits the cap (never a lie)
+    expect(Buffer.byteLength(JSON.stringify(out.rows), 'utf8')).toBeLessThanOrEqual(40);
+  });
+
+  it('matrix 4 — a single row alone > maxBytes never throws; content is truncated deterministically', () => {
+    const walk = truncateMessageCheckpoint(
+      [{ role: 'user', content: 'x'.repeat(500) }],
+      { maxBytes: 40 },
+    );
+    expect(walk.truncated).toBe(true);
+    expect(walk.rows.length).toBe(1);
+    expect(walk.rows[0].content.length).toBeLessThan(500);
+    expect(Buffer.byteLength(JSON.stringify(walk.rows), 'utf8')).toBeLessThanOrEqual(40);
+
+    // Even a content-less row cannot fit an impossibly small cap → dropped, truncated=true.
+    const dropped = truncateMessageCheckpoint([{ role: 'user', content: 'big' }], {
+      maxBytes: 1,
+    });
+    expect(dropped.truncated).toBe(true);
+    expect(dropped.rows).toEqual([]);
+  });
+
+  it('matrix 4 — oversize-row truncation is UTF-8 safe (never splits a multi-byte rune)', () => {
+    // Each emoji is 4 UTF-8 bytes; a budget that lands mid-rune must not emit a broken half.
+    const out = truncateMessageCheckpoint(
+      [{ role: 'user', content: '😀'.repeat(100) }],
+      { maxBytes: 50 },
+    );
+    expect(out.truncated).toBe(true);
+    expect(out.rows.length).toBe(1);
+    if (out.rows.length === 1) {
+      // 50 - scaffolding; content budget must be a whole number of 4-byte runes (or truncate).
+      const contentBytes = Buffer.byteLength(out.rows[0].content, 'utf8');
+      expect(contentBytes % 4).toBe(0);
+      expect(Buffer.byteLength(JSON.stringify(out.rows), 'utf8')).toBeLessThanOrEqual(50);
+    }
+  });
+
+  it('matrix 5 — malformed rows fail closed (dropped, never throw)', () => {
+    // Missing role / missing content / wrong types / bare primitives / arrays.
+    const malformed = [
+      null,
+      undefined,
+      42,
+      'role',
+      [],
+      {},
+      { role: '' },
+      { role: 'user' },
+      { content: 'only-content' },
+      { role: 7, content: 'x' },
+      { role: 'user', content: 42 },
+      { role: null, content: 'x' },
+    ];
+    for (const bad of malformed) {
+      expect(() => truncateMessageCheckpoint([{ role: 'user', content: 'ok' }, bad])).not.toThrow();
+      const out = truncateMessageCheckpoint([{ role: 'user', content: 'ok' }, bad]);
+      expect(out.rows[0].content).toBe('ok'); // valid head preserved
+      expect(out.truncated).toBe(true); // malformed dropped → marked
+    }
+    // Fully malformed input → empty + truncated (never throws).
+    expect(() => truncateMessageCheckpoint([null as unknown])).not.toThrow();
+    const onlyBad = truncateMessageCheckpoint([null as unknown]);
+    expect(onlyBad.rows).toEqual([]);
+    expect(onlyBad.truncated).toBe(true);
+  });
+
+  it('matrix 5 — non-array input (undefined / object / number) fails closed, never throws', () => {
+    for (const bad of [undefined, null, {}, 'string', 7]) {
+      expect(() => truncateMessageCheckpoint(bad)).not.toThrow();
+      const out = truncateMessageCheckpoint(bad);
+      expect(out.rows).toEqual([]);
+      expect(out.truncated).toBe(true);
+    }
+  });
+
+  it('default caps are the locked NEW plan #800 values (4096 rows / 8 MiB)', () => {
+    expect(TURN_MSG_CHECKPOINT_MAX_ROWS).toBe(4096);
+    expect(TURN_MSG_CHECKPOINT_MAX_BYTES).toBe(8 * 1024 * 1024);
+  });
+
+  it('default run preserves a large-but-under-cap checkpoint and matches the caps', () => {
+    // Well under both default caps: passes through unchanged, truncated=false.
+    const many = rows(TURN_MSG_CHECKPOINT_MAX_ROWS - 1);
+    const out = truncateMessageCheckpoint(many);
+    expect(out.truncated).toBe(false);
+    expect(out.rows.length).toBe(TURN_MSG_CHECKPOINT_MAX_ROWS - 1);
+
+    // At the default row cap exactly → no truncation.
+    const atCap = truncateMessageCheckpoint(rows(TURN_MSG_CHECKPOINT_MAX_ROWS));
+    expect(atCap.truncated).toBe(false);
+    expect(atCap.rows.length).toBe(TURN_MSG_CHECKPOINT_MAX_ROWS);
+  });
+
+  it('content is normalized to { role, content } only (extra fields stripped)', () => {
+    const out = truncateMessageCheckpoint([
+      { role: 'user', content: 'hi', extra: 'dropped' } as unknown as CheckpointRow,
+    ]);
+    expect(out.truncated).toBe(false);
+    expect(out.rows).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+});
