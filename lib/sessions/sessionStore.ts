@@ -39,6 +39,7 @@ import {
   isRedisSafeOpaqueId,
   sanitizeModelId,
   sanitizeSessionCwd,
+  sanitizeTurnRunId,
 } from '../sessionCloudCaps';
 export { isRedisSafeOpaqueId } from '../sessionCloudCaps';
 import { decodeUsageMetaString } from '../agent/usageSummary';
@@ -71,6 +72,7 @@ export const RESERVED_META_KEYS = [
   'attachedSkills',
   'selectedModel',
   'usage',
+  'turnRunId',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -411,6 +413,14 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
     if (key === 'usage') {
       const cleaned = decodeUsageMetaString(v);
       if (cleaned !== undefined) meta.usage = JSON.stringify(cleaned);
+      continue;
+    }
+    if (key === 'turnRunId') {
+      // Plan #795 (backend-agents A1): a Workflow run id carrier. Non-critical —
+      // a poisoned/oversized/non-opaque value DROPS to unset (omitted), never 400s
+      // the record (same drop-to-unset decision as `selectedModel` / `usage`).
+      const cleaned = sanitizeTurnRunId(v);
+      if (cleaned !== undefined) meta.turnRunId = cleaned;
       continue;
     }
     if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {

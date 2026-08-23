@@ -3,8 +3,11 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   MAX_MODEL_ID_LEN,
+  REDIS_SAFE_OPAQUE_ID_MAX,
   STATUS_SLOT_MAX_BYTES,
+  TURN_RUN_ID_MAX,
   sanitizeModelId,
+  sanitizeTurnRunId,
 } from './sessionCloudCaps';
 import { MAX_MODEL_ID_LEN as BRIDGE_MAX_MODEL_ID_LEN, MAX_STATUS_SLOT_LEN } from './harnessBridge';
 
@@ -115,5 +118,42 @@ describe('sanitizeModelId (plan #616 — selected-model carrier predicate + cap)
     // A 128-char printable id is accepted; 129 rejected.
     expect(sanitizeModelId('a'.repeat(MAX_MODEL_ID_LEN))).toBe('a'.repeat(MAX_MODEL_ID_LEN));
     expect(sanitizeModelId('a'.repeat(MAX_MODEL_ID_LEN + 1))).toBeUndefined();
+  });
+});
+
+// Plan #795 (backend-agents A1): reserved `meta.turnRunId` is a Workflow run id
+// carried in the tiny session envelope. A NEW cap that reuses the existing
+// Redis-safe opaque ceiling — no existing cap value changed (no human gate).
+describe('sanitizeTurnRunId + TURN_RUN_ID_MAX (plan #795 — Workflow run-id carrier)', () => {
+  it('TURN_RUN_ID_MAX is a NEW cap that reuses the existing opaque ceiling exactly', () => {
+    // NEW cap = the existing REDIS_SAFE_OPAQUE_ID_MAX by reference (not a new tight
+    // number, not a change to the existing cap). Far below the 1 MiB meta budget.
+    expect(TURN_RUN_ID_MAX).toBe(REDIS_SAFE_OPAQUE_ID_MAX);
+    expect(TURN_RUN_ID_MAX).toBe(512);
+    expect(TURN_RUN_ID_MAX).toBeLessThan(1024 * 1024);
+    expect(TURN_RUN_ID_MAX).toBeLessThan(4.5 * 1024 * 1024);
+  });
+
+  it('accepts a trimmed Redis-safe opaque run id (charset [A-Za-z0-9_-], ≤ 512)', () => {
+    expect(sanitizeTurnRunId('run_abc-123DEF')).toBe('run_abc-123DEF');
+    expect(sanitizeTurnRunId('run_abc')).toBe('run_abc');
+    expect(sanitizeTurnRunId('  2cvk_f1l0p9heqtzB7cX  ')).toBe('2cvk_f1l0p9heqtzB7cX');
+    // at the exact cap length is accepted
+    expect(sanitizeTurnRunId('a'.repeat(TURN_RUN_ID_MAX))).toBe('a'.repeat(TURN_RUN_ID_MAX));
+  });
+
+  it('drops non-string / empty / whitespace / over-length (drop-to-unset)', () => {
+    expect(sanitizeTurnRunId(undefined)).toBeUndefined();
+    expect(sanitizeTurnRunId(42)).toBeUndefined();
+    expect(sanitizeTurnRunId(null)).toBeUndefined();
+    expect(sanitizeTurnRunId('')).toBeUndefined();
+    expect(sanitizeTurnRunId('   ')).toBeUndefined();
+    expect(sanitizeTurnRunId('x'.repeat(TURN_RUN_ID_MAX + 1))).toBeUndefined();
+  });
+
+  it('drops non-opaque values (glob / `:` / space / `.` / `/` / `?` — Redis-safe opaque enforced)', () => {
+    for (const bad of ['*', '?', 'a:b', 'has space', 'a.b', 'a/b', 'a[b', 'a]b', 'a|b', 'a,b']) {
+      expect(sanitizeTurnRunId(bad)).toBeUndefined();
+    }
   });
 });

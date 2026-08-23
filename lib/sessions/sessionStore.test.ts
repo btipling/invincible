@@ -172,6 +172,7 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'attachedSkills',
       'selectedModel',
       'usage',
+      'turnRunId',
     ]);
     for (const k of RESERVED_META_KEYS) {
       // `attachedSkills` is a JSON-encoded string; `usage` is a JSON UsageSummary
@@ -256,6 +257,62 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       expect('selectedModel' in res.value.meta).toBe(false);
       expect(res.value.meta.selectedModel).toBeUndefined();
     }
+  });
+
+  it('plan #795 — accepts a valid Redis-safe meta.turnRunId and DROPS a poisoned one to unset (never 400)', () => {
+    // A Workflow run id is Redis-safe opaque (`[A-Za-z0-9_-]{1,512}`); trimmed + preserved.
+    const ok = validateSessionRecord(
+      makeRecord({ meta: { turnRunId: 'run_abc-123DEF' } as HarnessSessionRecord['meta'] }),
+    );
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.meta.turnRunId).toBe('run_abc-123DEF');
+    expect(validateSessionRecord(makeRecord({ meta: { turnRunId: '  run_abc  ' } as HarnessSessionRecord['meta'] })).ok).toBe(true);
+
+    // Poisoned values (non-string, empty, non-opaque chars, over-length, glob / `:` /
+    // space / `?`) are DROPPED to unset (the key is omitted) — the record still
+    // validates, never 400s. A Workflow run id is never a session id (parent lock).
+    for (const bad of [
+      'run a:b',
+      '*',
+      'a?b',
+      'has space',
+      'a.b',
+      'run/abc',
+      'x'.repeat(513),
+      42 as unknown,
+      undefined as unknown,
+    ]) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { turnRunId: bad } as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true); // drop-to-unset, not a 400
+      if (res.ok) {
+        expect('turnRunId' in res.value.meta).toBe(false);
+        expect(res.value.meta.turnRunId).toBeUndefined();
+      }
+    }
+
+    // The reserved-key contract is intact: unknown keys are STILL rejected.
+    expect(
+      validateSessionRecord(makeRecord({ meta: { notReserved: 1 } as HarnessSessionRecord['meta'] })).ok,
+    ).toBe(false);
+  });
+
+  it('plan #795 — validateMeta round-trips turnRunId and omits poison (reserved-key + cap intact)', () => {
+    const res = validateMeta({ turnRunId: 'run_abc123-def' });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.value.turnRunId).toBe('run_abc123-def');
+    // Poisoned / oversized / non-opaque → `meta` is ok but the key is omitted.
+    const poison = validateMeta({ turnRunId: 'x'.repeat(513) });
+    expect(poison.ok).toBe(true);
+    if (poison.ok) expect('turnRunId' in poison.value).toBe(false);
+    const nonOpaque = validateMeta({ turnRunId: 'a:b' });
+    expect(nonOpaque.ok).toBe(true);
+    if (nonOpaque.ok) expect('turnRunId' in nonOpaque.value).toBe(false);
+    // Envelope path shares the same drop-to-unset.
+    const env = validateSessionEnvelope({ ...makeRecord(), meta: { turnRunId: 'a\x00b' } });
+    expect(env.ok).toBe(true);
+    if (env.ok) expect('turnRunId' in env.value.meta).toBe(false);
   });
 });
 
