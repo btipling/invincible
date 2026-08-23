@@ -141,6 +141,33 @@ describe('trimForCloudPut', () => {
     expect(bare.meta).toBeUndefined();
   });
 
+  it('plan #789 — folds turnRunId + turnStatus into meta; drops poison (emit when set, omit = clear)', () => {
+    const out = trimForCloudPut({
+      id: 'sess_a',
+      updatedAt: 7,
+      messages: [],
+      turnRunId: 'wf_run_9ax2k',
+      turnStatus: 'running',
+    });
+    expect(out.meta).toEqual({ turnRunId: 'wf_run_9ax2k', turnStatus: 'running' });
+    expect('turnRunId' in out).toBe(false); // carrier carries in meta, not top-level
+    expect('turnStatus' in out).toBe(false);
+
+    // Poisoned carriers sanitize to undefined → meta omitted entirely (never a 400).
+    const bad = trimForCloudPut({
+      id: 'sess_b',
+      updatedAt: 7,
+      messages: [],
+      turnRunId: 'a:b',
+      turnStatus: 'paused' as never,
+    });
+    expect(bad.meta).toBeUndefined();
+
+    // Omitted → no turn carriers in meta.
+    const bare = trimForCloudPut({ id: 'sess_c', updatedAt: 7, messages: [] });
+    expect(bare.meta).toBeUndefined();
+  });
+
   it('normalizes escaping `..` out of meta so a record can never diverge from the request cwd (review #453 residual)', () => {
     // A P1-legal-on-record `..` is normalized before it is persisted: it drops out
     // instead of round-tripping `..` into Redis (request sends `.` on any device).
@@ -421,6 +448,32 @@ describe('parseCloudSessionSnapshot', () => {
     expect(bare?.selectedModel).toBeUndefined();
   });
 
+  it('plan #789 — restores turnRunId + turnStatus from meta; drops poison to unset', () => {
+    const out = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { turnRunId: 'wf_run_9ax2k', turnStatus: 'cancelling' },
+    });
+    expect(out?.turnRunId).toBe('wf_run_9ax2k');
+    expect(out?.turnStatus).toBe('cancelling');
+
+    // Poisoned / invalid → dropped to unset (never a sticky 400).
+    const bad = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { turnRunId: 'a:b', turnStatus: 'paused' },
+    });
+    expect(bad?.turnRunId).toBeUndefined();
+    expect(bad?.turnStatus).toBeUndefined();
+
+    // Omitted meta.turnRunId/turnStatus → fields stay undefined (idle today).
+    const bare = parseCloudSessionSnapshot({ id: 's', updatedAt: 1, messages: [] });
+    expect(bare?.turnRunId).toBeUndefined();
+    expect(bare?.turnStatus).toBeUndefined();
+  });
+
   it('restores the sticky attachedSlugs from reserved meta.attachedSkills (fail-closed on poison)', () => {
     const out = parseCloudSessionSnapshot({
       id: 'sess_x',
@@ -574,6 +627,36 @@ describe('overlayEnvelopeMeta', () => {
     expect(cleared.selectedModel).toBeUndefined();
     expect(cleared.attachedSlugs).toBeUndefined();
     expect(cleared.personaId).toBeUndefined();
+  });
+
+  it('plan #789 — overlays turnRunId/turnStatus from envelope meta; absent/poison clears', () => {
+    const transcript: SessionSnapshot = {
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      turnRunId: 'wf_run_old',
+      turnStatus: 'running',
+    };
+    // Envelope wins when it carries valid values.
+    const over = overlayEnvelopeMeta(transcript, {
+      turnRunId: 'wf_run_new',
+      turnStatus: 'cancelling',
+    });
+    expect(over.turnRunId).toBe('wf_run_new');
+    expect(over.turnStatus).toBe('cancelling');
+
+    // Absent envelope keys clear the transcript fields (reserved-meta replace).
+    const cleared = overlayEnvelopeMeta(transcript, { transcriptPointer: 'tx_1' });
+    expect(cleared.turnRunId).toBeUndefined();
+    expect(cleared.turnStatus).toBeUndefined();
+
+    // Poison envelope values clear (drop-to-unset), never sticky.
+    const poisoned = overlayEnvelopeMeta(transcript, {
+      turnRunId: 'a:b',
+      turnStatus: 'paused',
+    });
+    expect(poisoned.turnRunId).toBeUndefined();
+    expect(poisoned.turnStatus).toBeUndefined();
   });
 });
 

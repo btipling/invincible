@@ -75,6 +75,24 @@ export type SessionSnapshot = {
    * poisoned value never sticks or bricks the session.
    */
   selectedModel?: string;
+  /**
+   * Plan #789 (source #766, backend-agents C) — the durable turn **run id** for
+   * this session (a Redis-safe opaque token; slice E populates it once the
+   * Workflow turn owner ships). Absent = no durable run / idle (today's Ready).
+   * At slice C nothing populates it yet; the host `detachTurn` seam uses its
+   * **presence** to decide abort-vs-close-reader on tear-down (a legacy
+   * tab-owned turn with no run id must still abort so no unpersisted inference
+   * burns). Sanitized with `sanitizeTurnRunId` on read (drop-to-unset).
+   */
+  turnRunId?: string;
+  /**
+   * Plan #789 (source #766) — an optional cached hint of the turn status
+   * (`idle | running | cancelling`). **Hint only**: `getRun(runId)` is the
+   * source of truth when a `turnRunId` is present (the tab can detach and
+   * nothing polls it). Absent = unclear/clear. Sanitized with `sanitizeTurnStatus`
+   * on read (drop-to-unset).
+   */
+  turnStatus?: import('./sessionCloudCaps').TurnStatus;
 };
 
 import {
@@ -83,6 +101,8 @@ import {
   isRedisSafeOpaqueId,
   sanitizeModelId,
   sanitizeSessionCwd,
+  sanitizeTurnRunId,
+  sanitizeTurnStatus,
 } from './sessionCloudCaps';
 import { sanitizeUsageSummary } from './agent/usageSummary';
 export { MAX_MODEL_ID_LEN, isRedisSafeOpaqueId, sanitizeSessionCwd } from './sessionCloudCaps';
@@ -182,6 +202,8 @@ export class LocalStorageSessionStore implements SessionStore {
         attachedSlugs?: unknown;
         usage?: unknown;
         selectedModel?: unknown;
+        turnRunId?: unknown;
+        turnStatus?: unknown;
       };
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) return null;
       // Tolerant: keep only safe workspace-relative cwd strings (parent #270 / phase 2),
@@ -200,6 +222,8 @@ export class LocalStorageSessionStore implements SessionStore {
         attachedSlugs: rawAttachedSlugs,
         usage: rawUsage,
         selectedModel: rawSelectedModel,
+        turnRunId: rawTurnRunId,
+        turnStatus: rawTurnStatus,
         ...rest
       } = data;
       const cwd = sanitizeSessionCwd(rawCwd);
@@ -214,6 +238,11 @@ export class LocalStorageSessionStore implements SessionStore {
       const attachedSlugs = sanitizeAttachedSlugs(rawAttachedSlugs);
       const usage = sanitizeUsageSummary(rawUsage);
       const selectedModel = sanitizeModelId(rawSelectedModel);
+      // Plan #789 (source #766): turn carriers sanitize on load — a poisoned
+      // `turnRunId`/`turnStatus` drops to unset so they never stick or brick the
+      // session (mirroring `selectedModel`/`usage`).
+      const turnRunId = sanitizeTurnRunId(rawTurnRunId);
+      const turnStatus = sanitizeTurnStatus(rawTurnStatus);
       const out: SessionSnapshot = { ...rest } as SessionSnapshot;
       if (cwd !== undefined) out.cwd = cwd;
       if (activeSandboxId !== undefined) out.activeSandboxId = activeSandboxId;
@@ -224,6 +253,10 @@ export class LocalStorageSessionStore implements SessionStore {
       else delete out.usage;
       if (selectedModel !== undefined) out.selectedModel = selectedModel;
       else delete out.selectedModel;
+      if (turnRunId !== undefined) out.turnRunId = turnRunId;
+      else delete out.turnRunId;
+      if (turnStatus !== undefined) out.turnStatus = turnStatus;
+      else delete out.turnStatus;
       return out;
     } catch {
       return null;

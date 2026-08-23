@@ -39,6 +39,8 @@ import {
   isRedisSafeOpaqueId,
   sanitizeModelId,
   sanitizeSessionCwd,
+  sanitizeTurnRunId,
+  sanitizeTurnStatus,
 } from '../sessionCloudCaps';
 export { isRedisSafeOpaqueId } from '../sessionCloudCaps';
 import { decodeUsageMetaString } from '../agent/usageSummary';
@@ -71,6 +73,8 @@ export const RESERVED_META_KEYS = [
   'attachedSkills',
   'selectedModel',
   'usage',
+  'turnRunId',
+  'turnStatus',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -411,6 +415,23 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
     if (key === 'usage') {
       const cleaned = decodeUsageMetaString(v);
       if (cleaned !== undefined) meta.usage = JSON.stringify(cleaned);
+      continue;
+    }
+    // Plan #789 (source #766, backend-agents C): turn carriers are non-critical
+    // UX/dispatch hints — poison drops to unset (omit), NEVER 400s the record
+    // (same discipline as `selectedModel`/`usage`). A present-but-poisoned
+    // `turnRunId`/`turnStatus` must NOT fall through to the STRICT scalar branch
+    // nor hit the reserved-key STRICT unknown path. `sanitizeTurnRunId` reuses
+    // the Redis-safe opaque rule (`^[A-Za-z0-9_-]{1,512}$`); `sanitizeTurnStatus`
+    // accepts the exact enum `idle|running|cancelling` (a cached hint only).
+    if (key === 'turnRunId') {
+      const cleaned = sanitizeTurnRunId(v);
+      if (cleaned !== undefined) meta.turnRunId = cleaned;
+      continue;
+    }
+    if (key === 'turnStatus') {
+      const cleaned = sanitizeTurnStatus(v);
+      if (cleaned !== undefined) meta.turnStatus = cleaned;
       continue;
     }
     if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {

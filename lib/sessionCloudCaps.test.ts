@@ -4,7 +4,10 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_MODEL_ID_LEN,
   STATUS_SLOT_MAX_BYTES,
+  TURN_STATUS_MAX_BYTES,
   sanitizeModelId,
+  sanitizeTurnRunId,
+  sanitizeTurnStatus,
 } from './sessionCloudCaps';
 import { MAX_MODEL_ID_LEN as BRIDGE_MAX_MODEL_ID_LEN, MAX_STATUS_SLOT_LEN } from './harnessBridge';
 
@@ -115,5 +118,63 @@ describe('sanitizeModelId (plan #616 — selected-model carrier predicate + cap)
     // A 128-char printable id is accepted; 129 rejected.
     expect(sanitizeModelId('a'.repeat(MAX_MODEL_ID_LEN))).toBe('a'.repeat(MAX_MODEL_ID_LEN));
     expect(sanitizeModelId('a'.repeat(MAX_MODEL_ID_LEN + 1))).toBeUndefined();
+  });
+});
+
+describe('turn carriers (plan #789, source #766 — backend-agents C)', () => {
+  it('sanitizeTurnRunId keeps a valid Redis-safe opaque run id and trims whitespace', () => {
+    expect(sanitizeTurnRunId('wf_run_9ax2k')).toBe('wf_run_9ax2k');
+    expect(sanitizeTurnRunId('  wf_run_1  ')).toBe('wf_run_1'); // trims
+    expect(sanitizeTurnRunId('a'.repeat(512))).toBe('a'.repeat(512)); // cap-bound accepted
+  });
+
+  it('sanitizeTurnRunId drops poison to undefined (drop-to-unset, never a 400)', () => {
+    for (const bad of [
+      undefined,
+      42,
+      '',
+      '   ',
+      'has space',
+      'a:b',
+      '*',
+      'a?b',
+      'a/b',
+      'a.b',
+      'x'.repeat(513), // over REDIS_SAFE_OPAQUE_ID_MAX
+    ]) {
+      expect(sanitizeTurnRunId(bad)).toBeUndefined();
+    }
+    // reuses the existing Redis-safe opaque rule — 512-char accepted, 513 rejected
+    expect(sanitizeTurnRunId('a'.repeat(512))).toBeTruthy();
+    expect(sanitizeTurnRunId('a'.repeat(513))).toBeUndefined();
+  });
+
+  it('sanitizeTurnStatus accepts exactly idle | running | cancelling', () => {
+    expect(sanitizeTurnStatus('idle')).toBe('idle');
+    expect(sanitizeTurnStatus('running')).toBe('running');
+    expect(sanitizeTurnStatus('cancelling')).toBe('cancelling');
+  });
+
+  it('sanitizeTurnStatus drops anything else to undefined (drop-to-unset)', () => {
+    for (const bad of [
+      undefined,
+      42,
+      '',
+      'paused',
+      'runningg',
+      'IDLE',
+      'running ',
+      'cancelled',
+      'x'.repeat(TURN_STATUS_MAX_BYTES + 1),
+    ]) {
+      expect(sanitizeTurnStatus(bad)).toBeUndefined();
+    }
+  });
+
+  it('TURN_STATUS_MAX_BYTES is a NEW generous cap far below any wire/meta budget', () => {
+    expect(TURN_STATUS_MAX_BYTES).toBe(32);
+    // The fixed enum literals are ≤ ~10 bytes; the 32-byte ceiling never constrains them.
+    expect(TURN_STATUS_MAX_BYTES).toBeLessThan(1024 * 1024);
+    expect(TURN_STATUS_MAX_BYTES).toBeLessThan(4.5 * 1024 * 1024);
   });
 });

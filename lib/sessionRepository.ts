@@ -20,8 +20,11 @@ import {
   normalizeSessionCwd,
   parseAttachedSkills,
   sanitizeModelId,
+  sanitizeTurnRunId,
+  sanitizeTurnStatus,
   serializeAttachedSkills,
 } from './sessionCloudCaps';
+import type { TurnStatus } from './sessionCloudCaps';
 import type { SessionMessage, SessionRole, SessionSnapshot } from './sessionStore';
 import {
   decodeUsageMetaString,
@@ -225,6 +228,8 @@ export function parseCloudSessionSnapshot(
   let activeSandboxId: string | undefined;
   let personaId: string | undefined;
   let selectedModel: string | undefined;
+  let turnRunId: string | undefined;
+  let turnStatus: TurnStatus | undefined;
   if (o.meta !== null && typeof o.meta === 'object' && !Array.isArray(o.meta)) {
     const meta = o.meta as Record<string, unknown>;
     cwd = normalizeSessionCwd(meta.logicalCwd);
@@ -244,6 +249,12 @@ export function parseCloudSessionSnapshot(
     // session's pick by id. `sanitizeModelId` drops a poisoned / invalid value
     // to unset (restore falls back to the default first-granted model).
     selectedModel = sanitizeModelId(meta.selectedModel);
+    // Plan #789 (source #766, backend-agents C): restore the durable turn run
+    // id + optional status hint from the reserved `meta.{turnRunId,turnStatus}`
+    // so a reload / device-switch / adopt rebuilds the session's turn identity.
+    // Poison drops to unset (never a sticky 400 / never bricks the session).
+    turnRunId = sanitizeTurnRunId(meta.turnRunId);
+    turnStatus = sanitizeTurnStatus(meta.turnStatus);
   }
   const snapshot: SessionSnapshot = {
     id: o.id,
@@ -254,6 +265,8 @@ export function parseCloudSessionSnapshot(
   if (activeSandboxId !== undefined) snapshot.activeSandboxId = activeSandboxId;
   if (personaId !== undefined) snapshot.personaId = personaId;
   if (selectedModel !== undefined) snapshot.selectedModel = selectedModel;
+  if (turnRunId !== undefined) snapshot.turnRunId = turnRunId;
+  if (turnStatus !== undefined) snapshot.turnStatus = turnStatus;
   // Phase 2 (#517): restore the sticky attached-skill set from the reserved
   // `meta.attachedSkills` JSON-array string (fail-closed → [] on any malformed /
   // foreign value; never a sticky poison). `[]` restore means detach-all.
@@ -316,6 +329,17 @@ export function overlayEnvelopeMeta(
   } else {
     delete out.personaId;
   }
+
+  // Plan #789 (source #766, backend-agents C): overlay the durable turn run id +
+  // optional status hint from the envelope meta. Same reserved-meta replace
+  // contract — absent or poison clears the transcript field (a valid envelope
+  // value always wins).
+  const turnRunId = sanitizeTurnRunId(envMeta.turnRunId);
+  if (turnRunId !== undefined) out.turnRunId = turnRunId;
+  else delete out.turnRunId;
+  const turnStatus = sanitizeTurnStatus(envMeta.turnStatus);
+  if (turnStatus !== undefined) out.turnStatus = turnStatus;
+  else delete out.turnStatus;
 
   return out;
 }
@@ -389,6 +413,20 @@ export type CloudPutBody = {
      * UsageSummary. Absent = clear (hide the context slot).
      */
     usage?: string;
+    /**
+     * Plan #789 (source #766, backend-agents C): the durable turn run id
+     * (Redis-safe opaque token; slice E populates it). Folded from
+     * `snapshot.turnRunId` via `sanitizeTurnRunId` (drop-to-unset). Absent =
+     * clear (no durable run / idle).
+     */
+    turnRunId?: string;
+    /**
+     * Plan #789 (source #766): an optional cached hint of the turn status
+     * (`idle | running | cancelling`). Hint only — `getRun` is the authority
+     * when a `turnRunId` is present. Folded via `sanitizeTurnStatus`.
+     * Absent = clear.
+     */
+    turnStatus?: TurnStatus;
   };
 };
 
@@ -445,12 +483,23 @@ export function cloudMetaFor(
   if (selectedModel !== undefined) meta.selectedModel = selectedModel;
   const usage = encodeUsageMetaString(snapshot.usage);
   if (usage !== undefined) meta.usage = usage;
+  // Plan #789 (source #766, backend-agents C): the durable turn run id + its
+  // optional status hint ride the reserved `meta.{turnRunId,turnStatus}` so a
+  // reload / device-switch / adopt rebuilds the session's turn identity.
+  // Sanitized via the shared client-safe predicates (drop-to-unset on poison —
+  // never a sticky 400). Absent = clear.
+  const turnRunId = sanitizeTurnRunId(snapshot.turnRunId);
+  if (turnRunId !== undefined) meta.turnRunId = turnRunId;
+  const turnStatus = sanitizeTurnStatus(snapshot.turnStatus);
+  if (turnStatus !== undefined) meta.turnStatus = turnStatus;
   return meta.logicalCwd === undefined &&
     meta.activeSandboxId === undefined &&
     meta.personaId === undefined &&
     meta.attachedSkills === undefined &&
     meta.selectedModel === undefined &&
-    meta.usage === undefined
+    meta.usage === undefined &&
+    meta.turnRunId === undefined &&
+    meta.turnStatus === undefined
     ? undefined
     : meta;
 }

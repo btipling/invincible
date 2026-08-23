@@ -172,17 +172,27 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'attachedSkills',
       'selectedModel',
       'usage',
+      // Plan #789 (source #766, backend-agents C): durable turn carriers.
+      'turnRunId',
+      'turnStatus',
     ]);
     for (const k of RESERVED_META_KEYS) {
       // `attachedSkills` is a JSON-encoded string; `usage` is a JSON UsageSummary
-      // string. Use a valid value so the reserved-key acceptance loop passes.
+      // string. Plan #789 turn carriers use their OWN valid values (a Redis-safe
+      // run id / a real enum literal) so the reserved-key acceptance loop passes
+      // and also proves those carriers are accepted (a generic 'x' would drop
+      // turnStatus to unset).
       const rawMeta: unknown = {
         [k]:
           k === 'attachedSkills'
             ? '[]'
             : k === 'usage'
               ? JSON.stringify({ source: 'provider', prompt: 1, completion: 1, total: 2 })
-              : 'x',
+              : k === 'turnRunId'
+                ? 'wf_run_123'
+                : k === 'turnStatus'
+                  ? 'running'
+                  : 'x',
       };
       const res = validateSessionRecord(
         makeRecord({ meta: rawMeta as HarnessSessionRecord['meta'] }),
@@ -255,6 +265,95 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
     if (res.ok) {
       expect('selectedModel' in res.value.meta).toBe(false);
       expect(res.value.meta.selectedModel).toBeUndefined();
+    }
+  });
+
+  it('plan #789 — turn carriers accept valid values and DROP poison to unset (never 400)', () => {
+    // Valid Redis-safe run id + valid enum status survive; trim applied to id.
+    const ok = validateSessionRecord(
+      makeRecord({
+        meta: { turnRunId: 'wf_run_9ax2k', turnStatus: 'cancelling' } as unknown as HarnessSessionRecord['meta'],
+      }),
+    );
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.value.meta.turnRunId).toBe('wf_run_9ax2k');
+      expect(ok.value.meta.turnStatus).toBe('cancelling');
+    }
+    // Trimming: whitespace around a valid Redis-safe id is accepted (sanitize trims).
+    const trimmed = validateSessionRecord(
+      makeRecord({ meta: { turnRunId: '  wf_run_1   ' } as unknown as HarnessSessionRecord['meta'] }),
+    );
+    expect(trimmed.ok).toBe(true);
+    if (trimmed.ok) expect(trimmed.value.meta.turnRunId).toBe('wf_run_1');
+
+    // Poisoned turnRunId (non-string, non-Redis-safe chars, empty, oversize) drops to unset.
+    for (const bad of [
+      'has space',
+      'a:b',
+      '*',
+      'x'.repeat(513),
+      42 as unknown,
+      '' as unknown,
+      undefined as unknown,
+    ]) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { turnRunId: bad } as unknown as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true); // drop-to-unset, not a 400
+      if (res.ok) {
+        expect('turnRunId' in res.value.meta).toBe(false);
+        expect(res.value.meta.turnRunId).toBeUndefined();
+      }
+    }
+
+    // Poisoned turnStatus (misspelled, non-string, over-length) drops to unset.
+    for (const bad of ['runningg', 'paused', 7 as unknown, 'x'.repeat(33)]) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { turnStatus: bad } as unknown as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true); // drop-to-unset, not a 400
+      if (res.ok) {
+        expect('turnStatus' in res.value.meta).toBe(false);
+        expect(res.value.meta.turnStatus).toBeUndefined();
+      }
+    }
+
+    // All three enum values are accepted.
+    for (const v of ['idle', 'running', 'cancelling']) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { turnStatus: v } as unknown as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.value.meta.turnStatus).toBe(v);
+    }
+
+    // Unknown keys are STILL rejected (reserved-key contract intact; a poisoned
+    // carrier never leaks into the STRICT unknown-key 400 path).
+    expect(
+      validateSessionRecord(
+        makeRecord({ meta: { notReserved: 1 } as HarnessSessionRecord['meta'] }),
+      ).ok,
+    ).toBe(false);
+
+    // Envelope surface accepts/drops the carriers identically (drop-to-unset).
+    const envOk = validateSessionEnvelope({
+      ...makeRecord(),
+      meta: { turnRunId: 'wf_run_ok', turnStatus: 'running' },
+    });
+    expect(envOk.ok).toBe(true);
+    if (envOk.ok) {
+      expect(envOk.value.meta.turnRunId).toBe('wf_run_ok');
+      expect(envOk.value.meta.turnStatus).toBe('running');
+    }
+    const envBad = validateSessionEnvelope({
+      ...makeRecord(),
+      meta: { turnRunId: 'a:b', turnStatus: 'paused' },
+    });
+    expect(envBad.ok).toBe(true);
+    if (envBad.ok) {
+      expect('turnRunId' in envBad.value.meta).toBe(false);
+      expect('turnStatus' in envBad.value.meta).toBe(false);
     }
   });
 });
