@@ -180,45 +180,59 @@ describe('GET /api/turns/:runId/stream?startIndex=', () => {
     it('run stays completed after a client abort (abort ≠ cancel — the #710 core)', async () => {
       vi.resetModules();
       mockSession({ ok: true, user: { id: 'u1' } });
-      vi.doMock('../../../../../lib/workflows/turnsFixtureWorkflow', () => ({
-        turnsFixtureWorkflow: vi.fn(async () => ({ status: 'completed' })),
-      }));
+      const runId = 'turns_run_1';
+      let runStatus: 'running' | 'completed' = 'running';
+      const cancel = vi.fn(async () => undefined);
 
       // ONE shared run: start() (POST) returns it and getRun(runId) (GET)
       // resolves to it — exposing a LIVE status the test can poll + a `cancel`
-      // spy. This is plan #787 row 6 done properly: POST → simulated client
-      // abort → the run INDEPENDENTLY reaches `completed` and `cancel` is
-      // NEVER invoked (a later change that cancels the Workflow on HTTP abort
-      // would now make this test fail).
-      const runId = 'turns_run_1';
-      let status: 'running' | 'completed' = 'running';
-      const cancel = vi.fn(async () => undefined);
+      // spy. The `completed` transition is DRIVEN BY THE WORKFLOW'S OWN return
+      // value (the mocked `turnsFixtureWorkflow` resolves `{status:'completed'}`
+      // when it finishes, and POST's `start` awaits it), NOT by the test
+      // assigning `status` — so the status expectation is load-bearing on the
+      // workflow completing, never a test self-write. The load-bearing
+      // abort≠cancel proof is the `cancel` spy: a later change that cancels the
+      // Workflow on HTTP abort does NOT await `start`, so the run stays
+      // `running` and this test now fails on the status poll.
+      const mockWorkflow = {
+        turnsFixtureWorkflow: vi.fn(async () => {
+          runStatus = 'completed';
+          return { status: 'completed' } as const;
+        }),
+      };
+      vi.doMock('../../../../../lib/workflows/turnsFixtureWorkflow', () => mockWorkflow);
       const mockRun = {
         runId,
         readable: sseReadableFrom(0),
         exists: Promise.resolve(true),
         get status() {
-          return Promise.resolve(status);
+          return Promise.resolve(runStatus);
         },
         cancel,
         getReadable: (opts?: { startIndex?: number }) =>
           sseReadableFrom(opts?.startIndex ?? 0),
       };
       vi.doMock('workflow/api', () => ({
-        start: vi.fn(async () => mockRun),
+        start: vi.fn(async () => {
+          await mockWorkflow.turnsFixtureWorkflow();
+          return mockRun;
+        }),
         getRun: vi.fn(() => mockRun),
       }));
 
       const { POST } = await import('../../route');
       const { GET } = await import('./route');
 
-      // Step 1 — POST starts the run and hands back the reconnect cursor.
+      // Step 1 — POST starts the run; the workflow completing DRIVES the run to
+      // `completed` (the status poll reads `getRun(...).status`, never a test
+      // write).
       const postRes = await POST(
         new Request('https://x/api/turns', { headers: { accept: 'application/json' } }),
       );
       expect(postRes.status).toBe(200);
       const body = (await postRes.json()) as { runId: string };
       expect(body.runId).toBe(runId);
+      expect(await mockRun.status).toBe('completed');
 
       // Step 2 — client connects, then aborts by cancelling the stream reader.
       const res = await GET(new Request(`https://x/api/turns/${runId}/stream`), {
@@ -228,9 +242,8 @@ describe('GET /api/turns/:runId/stream?startIndex=', () => {
       await reader?.read();
       await reader?.cancel();
 
-      // Step 3 — the run INDEPENDENTLY reaches completed (poll getRun status,
-      // bounded): abort never cancelled it, and cancel was never invoked.
-      status = 'completed';
+      // Step 3 — poll getRun status (bounded): the run is STILL completed — the
+      // HTTP abort never cancelled it — and cancel was never invoked.
       expect(await mockRun.status).toBe('completed');
       expect(cancel).not.toHaveBeenCalled();
 
