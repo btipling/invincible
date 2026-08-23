@@ -11,7 +11,6 @@
  *   VERCEL_TOKEN          — long-lived Vercel bearer (existing repo secret)
  *   VERCEL_PROJECT_ID     — Vercel project id (existing repo secret)
  *   VERCEL_TEAM_ID        — Vercel team id (existing repo secret)
- *   SMOKE_ENV             — 'production' (default) | 'preview'
  *   WORKFLOWS_SMOKE_POLL_TIMEOUT_MS  — bounded poll budget (default 120000)
  *   WORKFLOWS_SMOKE_POLL_INTERVAL_MS — poll interval (default 2000)
  *
@@ -69,6 +68,7 @@ export type SmokeDeps = {
   sleep?: (ms: number) => Promise<void>;
   setWorldImpl?: typeof setWorld;
   createVercelWorldImpl?: typeof createVercelWorld;
+  resolveDeploymentIdImpl?: typeof resolveLatestProductionDeploymentId;
   startImpl?: typeof start;
   getRunImpl?: typeof getRun;
 };
@@ -91,6 +91,48 @@ function checkEnv(env: SmokeEnv): SmokeResult | null {
   return null;
 }
 
+/**
+ * Resolve the latest READY Production deployment id from the Vercel API using
+ * the EXISTING repo secrets (VERCEL_TOKEN / VERCEL_PROJECT_ID / VERCEL_TEAM_ID).
+ *
+ * The SDK's Vercel world derives the run's deployment from
+ * `VERCEL_DEPLOYMENT_ID` — a Vercel-runtime-only env var read unconditionally
+ * by `world.getDeploymentId()` and again by `resolveLatestDeploymentId` for
+ * `'latest'`. A GHA runner has neither, and there is NO deployment-id secret
+ * to configure. So we self-resolve: `start()` still needs a concrete
+ * production deployment to route its queue message to, but the id is fetched
+ * from production itself via the Vercel API — the operator sets nothing new and
+ * no `VERCEL_DEPLOYMENT_ID` is required anywhere.
+ */
+export async function resolveLatestProductionDeploymentId(opts: {
+  token: string;
+  projectId: string;
+  teamId: string;
+  environment: string;
+}): Promise<string> {
+  const url = new URL('https://api.vercel.com/v6/deployments');
+  url.searchParams.set('projectId', opts.projectId);
+  url.searchParams.set('limit', '1');
+  url.searchParams.set('target', opts.environment);
+  url.searchParams.set('state', 'READY');
+  if (opts.teamId) url.searchParams.set('teamId', opts.teamId);
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${opts.token}` },
+  });
+  if (!res.ok) {
+    throw new Error(`list production deployments failed: HTTP ${res.status}`);
+  }
+  const body = (await res.json()) as {
+    deployments?: Array<{ uid?: string; id?: string }>;
+  };
+  const dep = body?.deployments?.[0];
+  const deploymentId = dep?.uid ?? dep?.id;
+  if (!deploymentId) {
+    throw new Error('no READY production deployment found for this project');
+  }
+  return deploymentId;
+}
+
 export async function runSmoke(deps: SmokeDeps = {}): Promise<SmokeResult> {
   const env = deps.env ?? process.env;
   const now = deps.now ?? Date.now;
@@ -106,29 +148,59 @@ export async function runSmoke(deps: SmokeDeps = {}): Promise<SmokeResult> {
   const token = env.VERCEL_TOKEN ?? '';
   const projectId = env.VERCEL_PROJECT_ID ?? '';
   const teamId = env.VERCEL_TEAM_ID ?? '';
-  const targetEnv = env.SMOKE_ENV === 'preview' ? 'preview' : 'production';
+  // Smoke ALWAYS targets Vercel Production — we do not use or build a preview
+  // environment, so there is no preview branch (removed with the dispatch input).
+  const targetEnv = 'production';
+
+  // The SDK's Vercel world derives the run's deployment from
+  // `VERCEL_DEPLOYMENT_ID` (read unconditionally by `world.getDeploymentId()`,
+  // and again by `resolveLatestDeploymentId` for `'latest'`). A GHA runner has
+  // none and there is NO deployment-id secret to configure — so resolve the
+  // latest READY production deployment from the Vercel API itself via the
+  // existing VERCEL_TOKEN. The operator sets nothing new.
+  const doResolve =
+    deps.resolveDeploymentIdImpl ?? resolveLatestProductionDeploymentId;
+  let deploymentId: string;
+  try {
+    deploymentId = await doResolve({
+      token,
+      projectId,
+      teamId,
+      environment: targetEnv,
+    });
+  } catch (err) {
+    return {
+      code: 1,
+      reason: `workflows-smoke: could not resolve the latest production deployment: ${errMsg(err)}`,
+    };
+  }
 
   // Inject the SDK's Vercel World explicitly (plan-review lock: the GHA talks to
   // api.vercel.com/v1/workflow through the Vercel World). Without this the world
   // resolution would be `local` on a GHA runner and the smoke would silently pass.
-  doSetWorld(
-    doCreateWorld({
-      token,
-      projectConfig: { projectId, teamId, environment: targetEnv },
-    }),
-  );
+  const world = doCreateWorld({
+    token,
+    projectConfig: { projectId, teamId, environment: targetEnv },
+  });
+  // Pin the world's deployment getter to the resolved id so the SDK's
+  // unconditional `world.getDeploymentId()` and its queue routing use that id —
+  // no `VERCEL_DEPLOYMENT_ID` env var anywhere.
+  world.getDeploymentId = async () => deploymentId;
+  doSetWorld(world);
 
   // start() reads `workflow.workflowId` (stamped by withWorkflow's SWC transform
   // — absent under `tsx`), so pass the public metadata form explicitly, matching
-  // the deployed fixture's function name. `deploymentId: 'latest'` lets the
-  // Vercel world resolve the current environment deployment itself via
-  // resolveLatestDeploymentId (token + projectId come from its config) — no
-  // deployment-id env var is needed.
+  // the deployed fixture's function name. We pass the resolved deployment id
+  // EXPLICITLY (never `'latest'`): `'latest'` would round-trip through the
+  // world's resolveLatestDeploymentId, which re-reads `VERCEL_DEPLOYMENT_ID`
+  // and throws on a runner.
   let run;
   try {
-    run = await doStart({ workflowId: FIXTURE_WORKFLOW_ID }, [], {
-      deploymentId: 'latest',
-    });
+    run = await doStart(
+      { workflowId: FIXTURE_WORKFLOW_ID },
+      [],
+      { deploymentId },
+    );
   } catch (err) {
     return {
       code: 1,

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   FIXTURE_WORKFLOW_ID,
+  resolveLatestProductionDeploymentId,
   runSmoke,
   type SmokeDeps,
   type SmokeResult,
@@ -28,7 +29,6 @@ const SECRETS_ENV: Record<string, string> = {
   VERCEL_TOKEN: 'tok_prod',
   VERCEL_PROJECT_ID: 'prj_x',
   VERCEL_TEAM_ID: 'team_y',
-  SMOKE_ENV: 'production',
 };
 
 /** Narrow the SmokeResult union after asserting `res.code === 1`. */
@@ -80,6 +80,10 @@ function deps(overrides: Partial<SmokeDeps> = {}): SmokeDeps & {
       createWorldCalls.push([config]);
       return { injected: true };
     }) as unknown as SmokeDeps['createVercelWorldImpl'],
+    // A GHA runner has no VERCEL_DEPLOYMENT_ID; the smoke self-resolves the
+    // latest production deployment from the Vercel API. Inject a fixed stub for
+    // the unit subject (the real resolver is exercised separately).
+    resolveDeploymentIdImpl: (async () => 'dpl_prod') as unknown as SmokeDeps['resolveDeploymentIdImpl'],
     startCalls,
     setWorldCalls,
     createWorldCalls,
@@ -128,6 +132,37 @@ describe('scripts/workflows-smoke (GHA smoke subject)', () => {
     expect(FIXTURE_WORKFLOW_ID).toBe('workflow//./lib/workflows/fixtureWorkflow//fixtureWorkflow');
     expect(FIXTURE_WORKFLOW_ID).toMatch(/\/\/\.\/lib\/workflows\/fixtureWorkflow\/\//);
     expect(FIXTURE_WORKFLOW_ID).not.toBe('fixtureWorkflow');
+  });
+
+  it('self-resolves the production deployment, pins world.getDeploymentId, and passes it explicitly (never latest)', async () => {
+    const d = deps();
+    const res = await runSmoke(d);
+    expect(res.code).toBe(0);
+    // start() receives the resolved production deployment id explicitly, NOT
+    // 'latest' (which would round-trip through resolveLatestDeploymentId and
+    // re-read the absent VERCEL_DEPLOYMENT_ID).
+    const startOpts = d.startCalls[0][2] as { deploymentId?: string };
+    expect(startOpts).toBeDefined();
+    expect(startOpts.deploymentId).toBe('dpl_prod');
+    expect(startOpts.deploymentId).not.toBe('latest');
+    // The injected world's getDeploymentId is pinned to the resolved id so the
+    // SDK's unconditional read never looks at a VERCEL_DEPLOYMENT_ID env var.
+    const world = d.setWorldCalls[0][0] as {
+      getDeploymentId: () => Promise<string>;
+    };
+    await expect(world.getDeploymentId()).resolves.toBe('dpl_prod');
+  });
+
+  it('fails closed (code 1) when the production deployment cannot be resolved — never calls start', async () => {
+    const d = deps({
+      resolveDeploymentIdImpl: (async () => {
+        throw new Error('no READY production deployment found');
+      }) as unknown as SmokeDeps['resolveDeploymentIdImpl'],
+    });
+    const res = await runSmoke(d);
+    expect(res.code).toBe(1);
+    expect(failureReason(res)).toMatch(/production deployment/);
+    expect(d.startCalls).toHaveLength(0);
   });
 
   it('fails closed (code 1) when start() throws (Workflows disabled / start rejected)', async () => {
@@ -212,5 +247,83 @@ describe('scripts/workflows-smoke (GHA smoke subject)', () => {
     const d = deps();
     const res = await runSmoke(d);
     expect(res).toEqual({ code: 0, runId: 'wrun_1' });
+  });
+});
+
+describe('resolveLatestProductionDeploymentId', () => {
+  it('calls /v6/deployments with production filters and returns the latest READY deployment uid', async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const mockFetch = vi.fn(async (input: unknown, init?: RequestInit) => {
+      seen.push({ url: String(input), init: init ?? {} });
+      return new Response(
+        JSON.stringify({
+          deployments: [{ uid: 'dpl_abc', id: 'dpl_abc' }],
+          pagination: { count: 1, next: null, prev: null },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', mockFetch);
+    try {
+      const id = await resolveLatestProductionDeploymentId({
+        token: 'tok_prod',
+        projectId: 'prj_x',
+        teamId: 'team_y',
+        environment: 'production',
+      });
+      expect(id).toBe('dpl_abc');
+      expect(seen).toHaveLength(1);
+      const url = new URL(seen[0].url);
+      expect(`${url.origin}${url.pathname}`).toBe(
+        'https://api.vercel.com/v6/deployments',
+      );
+      expect(url.searchParams.get('projectId')).toBe('prj_x');
+      expect(url.searchParams.get('teamId')).toBe('team_y');
+      expect(url.searchParams.get('target')).toBe('production');
+      expect(url.searchParams.get('state')).toBe('READY');
+      expect(url.searchParams.get('limit')).toBe('1');
+      expect(seen[0].init.headers).toEqual({
+        Authorization: 'Bearer tok_prod',
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('fails closed on non-OK responses', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 404 })));
+    try {
+      await expect(
+        resolveLatestProductionDeploymentId({
+          token: 't',
+          projectId: 'p',
+          teamId: 'c',
+          environment: 'production',
+        }),
+      ).rejects.toThrow(/HTTP 404/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('fails closed when no READY production deployment is returned', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ deployments: [] }), { status: 200 }),
+      ),
+    );
+    try {
+      await expect(
+        resolveLatestProductionDeploymentId({
+          token: 't',
+          projectId: 'p',
+          teamId: 'c',
+          environment: 'production',
+        }),
+      ).rejects.toThrow(/no READY production deployment/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

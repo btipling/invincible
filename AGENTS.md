@@ -221,7 +221,7 @@ ops inventory).
 | Optional OIDC (`AUTH_OIDC_ISSUER` / `AUTH_OIDC_CLIENT_ID` / `AUTH_OIDC_CLIENT_SECRET` / `AUTH_OIDC_LABEL?`) | **Not Done** | Generic SSO — configure when operator wants IdP login; callback `{origin}/api/auth/callback/oidc`; BYO: [docs/bring-your-own.md](docs/bring-your-own.md) §4b |
 | Optional SCIM (`SCIM_BEARER_TOKEN`) | **Not Done** | SCIM 2.0 Users at `/api/scim/v2` — set only when directory provisioning is intended; fail-closed 404 when unset |
 | Blob transcript store (`BLOB_READ_WRITE_TOKEN`, phase 0 #515) | **Not Done** (documented seam only) | Vercel Blob (or BYO S3/R2 behind the same seam) for the session **transcript**; Redis keeps the small envelope. Server-minted short-lived scoped upload URLs; client→Blob uploads; legacy full-record GET stays for roll-forward while old blobs stay small. Configure in Vercel/env-manager, never a laptop ritual; no migrate/backfill/seed. Docs: [docs/bring-your-own.md](docs/bring-your-own.md), [docs/session-model.md](docs/session-model.md). When unset the app runs an in-memory transcript store (dev/tests only) |
-| Vercel Workflows (backend-agents) | **Done (code)** | Workflow SDK wired (`workflow` dep + `withWorkflow` in `next.config.js`), authed smoke route (`app/api/workflows/smoke`), dispatch GHA **`workflows-smoke`** (default `environment=production`). Workflows **activates automatically when you deploy with the SDK** — there is no dashboard enable button; the operator step is **deploy to Production** then dispatch **`workflows-smoke`** (`confirm=smoke`, `environment=production`). Never the tab-owned `/api/agent` as the smoke path. Ops: [docs/feature-divide.md](docs/feature-divide.md) |
+| Vercel Workflows (backend-agents) | **Done (code)** | Workflow SDK wired (`workflow` dep + `withWorkflow` in `next.config.js`), authed smoke route (`app/api/workflows/smoke`), dispatch GHA **`workflows-smoke`** (always targets Production; no preview env is built). Workflows **activates automatically when you deploy with the SDK** — there is no dashboard enable button; the operator step is **deploy to Production** then dispatch **`workflows-smoke`** (`confirm=smoke`). Never the tab-owned `/api/agent` as the smoke path. Ops: [docs/feature-divide.md](docs/feature-divide.md) |
 
 
 **Agent behavior (origin):**
@@ -259,7 +259,9 @@ ops inventory).
   env flag — it **activates automatically once you deploy with the SDK**
   (`workflow` dep + `withWorkflow`); there is no enable button to hunt for.
   Verify enablement + a completed run via the **`workflows-smoke`** dispatch
-  (`confirm=smoke`, `environment=production`); an unready project fails
+  (`confirm=smoke`; always targets **production** — no preview env is built, and
+  the target deployment is self-resolved from the Vercel API, so no
+  `VERCEL_DEPLOYMENT_ID` is configured); an unready project fails
   the smoke (**fail closed**, non-zero) and is never a silent fallback to the
   tab-owned `/api/agent`. Run/step traces: Vercel → Observability → Workflows.
 
@@ -273,7 +275,9 @@ ops inventory).
   Workflows toggle. **Observability → Workflows** is a *view* (run/step traces),
   not a control — runs record automatically once deployed.
 - **Verify:** dispatch Actions → **`workflows-smoke`** → Run workflow
-  (`confirm=smoke`, `environment` **defaults to `production`**) after deploying.
+  (`confirm=smoke`; **always targets production** — no preview env is built, and
+  the target deployment is **self-resolved** from the Vercel API, so no
+  `VERCEL_DEPLOYMENT_ID`) after deploying.
   It drives `start`→`getRun`→`completed` for the
   trivial fixture through the Vercel Workflows API (SDK Vercel World) using the
   existing `VERCEL_TOKEN` / `VERCEL_PROJECT_ID` / `VERCEL_TEAM_ID` (no new secret)

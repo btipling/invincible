@@ -57,16 +57,21 @@ describe('workflows-smoke.yml — no expression→shell injection', () => {
   });
 
   it('still passes dispatch inputs through env (expression context), not the shell', () => {
-    // The three dispatch inputs must be surfaced via an `env:` mapping so the
-    // `run:` scripts can reference quoted env vars instead of interpolating.
+    // The dispatch inputs must be surfaced via an `env:` mapping so the `run:`
+    // scripts can reference quoted env vars instead of interpolating. Smoke
+    // always targets Production, so there is NO environment input to wire here.
     expect(WORKFLOW).toContain('SMOKE_CONFIRM: ${{ inputs.confirm }}');
-    expect(WORKFLOW).toContain('SMOKE_ENV: ${{ inputs.environment }}');
     expect(WORKFLOW).toContain('SMOKE_URL: ${{ inputs.url }}');
+    // Regression: the production/preview choice was removed — no `environment`
+    // dispatch input should ever come back.
+    expect(WORKFLOW).not.toContain('inputs.environment');
+    expect(WORKFLOW).not.toContain('SMOKE_ENV');
   });
 
   it('confirms the shell guard/probe/summary reference the env vars, not the inputs', () => {
     expect(WORKFLOW).toMatch(/"\$SMOKE_CONFIRM"/);
-    expect(WORKFLOW).toMatch(/"\$SMOKE_ENV"/);
     expect(WORKFLOW).toMatch(/"\$SMOKE_URL"/);
+    // The summary is static-production now (no SMOKE_ENV var).
+    expect(WORKFLOW).toContain('echo "### workflows-smoke (production)"');
   });
 });
