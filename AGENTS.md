@@ -294,7 +294,9 @@ ops inventory).
   smoke poll budget `WORKFLOWS_SMOKE_POLL_TIMEOUT_MS` 120000 / interval
   `WORKFLOWS_SMOKE_POLL_INTERVAL_MS` 2000 (±0.5 s jitter); per-process
   `POST` start guard `WORKFLOWS_SMOKE_POST_MIN_INTERVAL_MS` = 15000 (429) —
-  bounded, generous, NEW caps in the plan's Caps table. `maxDuration` stays as
+  bounded, generous, NEW caps in the plan's Caps table. The `/api/turns` spike
+  POST carries its own sibling guard `TURNS_POST_MIN_INTERVAL_MS` = 15000 (429,
+  NEW spike cap in plan #787 Caps table style). `maxDuration` stays as
   the plan pinned; a LOWER ceiling would be a human-gated cap change.
 
 IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  

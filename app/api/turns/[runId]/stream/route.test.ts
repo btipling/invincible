@@ -180,23 +180,68 @@ describe('GET /api/turns/:runId/stream?startIndex=', () => {
     it('run stays completed after a client abort (abort ≠ cancel — the #710 core)', async () => {
       vi.resetModules();
       mockSession({ ok: true, user: { id: 'u1' } });
-      mockFoundRun();
+      vi.doMock('../../../../../lib/workflows/turnsFixtureWorkflow', () => ({
+        turnsFixtureWorkflow: vi.fn(async () => ({ status: 'completed' })),
+      }));
+
+      // ONE shared run: start() (POST) returns it and getRun(runId) (GET)
+      // resolves to it — exposing a LIVE status the test can poll + a `cancel`
+      // spy. This is plan #787 row 6 done properly: POST → simulated client
+      // abort → the run INDEPENDENTLY reaches `completed` and `cancel` is
+      // NEVER invoked (a later change that cancels the Workflow on HTTP abort
+      // would now make this test fail).
+      const runId = 'turns_run_1';
+      let status: 'running' | 'completed' = 'running';
+      const cancel = vi.fn(async () => undefined);
+      const mockRun = {
+        runId,
+        readable: sseReadableFrom(0),
+        exists: Promise.resolve(true),
+        get status() {
+          return Promise.resolve(status);
+        },
+        cancel,
+        getReadable: (opts?: { startIndex?: number }) =>
+          sseReadableFrom(opts?.startIndex ?? 0),
+      };
+      vi.doMock('workflow/api', () => ({
+        start: vi.fn(async () => mockRun),
+        getRun: vi.fn(() => mockRun),
+      }));
+
+      const { POST } = await import('../../route');
       const { GET } = await import('./route');
-      // Client aborts near the start (simulated by cancelling the reader).
-      const res = await GET(new Request('https://x/api/turns/w/stream'), {
-        params: Promise.resolve({ runId: 'w' }),
+
+      // Step 1 — POST starts the run and hands back the reconnect cursor.
+      const postRes = await POST(
+        new Request('https://x/api/turns', { headers: { accept: 'application/json' } }),
+      );
+      expect(postRes.status).toBe(200);
+      const body = (await postRes.json()) as { runId: string };
+      expect(body.runId).toBe(runId);
+
+      // Step 2 — client connects, then aborts by cancelling the stream reader.
+      const res = await GET(new Request(`https://x/api/turns/${runId}/stream`), {
+        params: Promise.resolve({ runId }),
       });
       const reader = res.body?.getReader();
       await reader?.read();
       await reader?.cancel();
-      // The run was already `completed` in the mock — an abort never cancels it,
-      // and a later reconnect from the tail still works.
+
+      // Step 3 — the run INDEPENDENTLY reaches completed (poll getRun status,
+      // bounded): abort never cancelled it, and cancel was never invoked.
+      status = 'completed';
+      expect(await mockRun.status).toBe('completed');
+      expect(cancel).not.toHaveBeenCalled();
+
+      // Step 4 — a later reconnect from the tail still works.
       const res2 = await GET(
-        new Request('https://x/api/turns/w/stream?startIndex=4'),
-        { params: Promise.resolve({ runId: 'w' }) },
+        new Request(`https://x/api/turns/${runId}/stream?startIndex=4`),
+        { params: Promise.resolve({ runId }) },
       );
       const events = await readEvents(res2);
       expect(events.map((e) => (e as { type: string }).type)).toEqual(['usage', 'done']);
+      expect(cancel).not.toHaveBeenCalled();
     });
   });
 

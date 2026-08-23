@@ -123,6 +123,60 @@ describe('POST /api/turns', () => {
     const body = await res.json();
     expect(body.error).toMatch(/Vercel Workflows turns spike failed/i);
   });
+
+  it('a second POST within the per-process start-interval window → 429, start not called', async () => {
+    vi.resetModules();
+    mockSession({ ok: true, user: { id: 'u1', email: 'a@t.com' } });
+    mockFixture();
+    const startSpy = vi.fn(async () => ({
+      runId: 'turns_run_1',
+      readable: new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('data: {"type":"done"}\n\n'));
+          c.close();
+        },
+      }),
+    }));
+    mockWorkflowApi({ start: startSpy });
+    const { POST } = await import('./route');
+
+    const first = await POST(new Request('https://x/api/turns', { headers: { accept: 'application/json' } }));
+    expect(first.status).toBe(200);
+    expect(startSpy).toHaveBeenCalledTimes(1);
+
+    const second = await POST(new Request('https://x/api/turns', { headers: { accept: 'application/json' } }));
+    expect(second.status).toBe(429);
+    const body = await second.json();
+    expect(body.error).toMatch(/turns spike rate limit/i);
+    expect(startSpy).toHaveBeenCalledTimes(1); // never started the second run
+  });
+
+  it('the 429 guard is bypassed for an unauthenticated POST (auth gate wins first)', async () => {
+    vi.resetModules();
+    mockSession({
+      ok: false,
+      response: Response.json({ error: 'Authentication required.' }, { status: 401 }),
+    });
+    mockFixture();
+    const startSpy = vi.fn(async () => ({
+      runId: 'turns_run_1',
+      readable: new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('data: {"type":"done"}\n\n'));
+          c.close();
+        },
+      }),
+    }));
+    mockWorkflowApi({ start: startSpy });
+    const { POST } = await import('./route');
+    // Two back-to-back unauth POSTs: neither reaches start, and neither is
+    // throttled (the per-process window only counts authed starts).
+    for (let i = 0; i < 2; i += 1) {
+      const res = await POST(new Request('https://x/api/turns'));
+      expect(res.status).toBe(401);
+    }
+    expect(startSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('fail-closed no-/api/agent fallback (plan #787 / #710 lie)', () => {
