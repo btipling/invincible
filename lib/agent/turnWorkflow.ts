@@ -404,6 +404,65 @@ export async function turnWorkflow(
   return { status: 'completed' };
 }
 
+/**
+ * Resolve the production store/stores a worker-persist step binds to, from the
+ * DI-seam environment the running Function sees. `start(args)` cannot carry
+ * closures, so the started workflow resolves its own Blob + envelope stores here
+ * (inside the workflow Function, never in the serialized args). Fail closed:
+ * store resolve is a wiring error surfaced by the step (`persistSegment` /
+ * `persistMessageCheckpoint` return `ok:false`), never a silent fallback.
+ */
+export async function createProductionTurnStores(
+  args: TurnWorkflowArgs,
+): Promise<{
+  persist: ReturnType<typeof createTurnWorkerPersist>;
+  key: SessionRecordKey;
+}> {
+  const { resolveSessionStore, sessionKeyFor } = await import(
+    '../tenancy/harnessSessionsRedis'
+  );
+  const { resolveBlobStore } = await import('../tenancy/harnessSessionsRedis');
+  const { isEnvelopeStore } = await import('../sessions/sessionStore');
+
+  const storeRes = await resolveSessionStore();
+  if (!storeRes.ok) {
+    throw new Error(`turn worker session store unavailable: ${storeRes.code}`);
+  }
+  if (!isEnvelopeStore(storeRes.value)) {
+    throw new Error('turn worker session store is not envelope-backed');
+  }
+  const blobRes = await resolveBlobStore();
+  if (!blobRes.ok) {
+    throw new Error(`turn worker blob store unavailable: ${blobRes.code}`);
+  }
+  const { createTurnWorkerPersist } = await import('./turnWorkerPersist');
+  return {
+    persist: createTurnWorkerPersist({
+      blobStore: blobRes.value,
+      envelopeStore: storeRes.value,
+    }),
+    key: sessionKeyFor(args.tenantId, args.userId, args.sessionId),
+  };
+}
+
+/**
+ * PRODUCTION start-able facade — the function `POST /api/turns` passes to
+ * `start()`. `start()` only serializes its ARGS (`TurnWorkflowArgs` — JSON-safe,
+ * no secrets/closures), so this facade re-resolves its closure seam + stores
+ * FROM INSIDE the Workflow Function via the DI root (the #710-lie ban: no
+ * `/api/agent` fallback, no cached handle). Thin over `turnWorkflow`; unit tests
+ * drive the step bodies directly with an injected seam.
+ */
+export async function runTurnWorkflow(
+  args: TurnWorkflowArgs,
+): Promise<{ status: 'completed' }> {
+  'use workflow';
+
+  const { createTurnWorkerSeam } = await import('./turnWorkerSeam');
+  const seam = createTurnWorkerSeam();
+  return turnWorkflow(seam, { resolveStores: () => createProductionTurnStores(args) }, args);
+}
+
 // Re-export the store/blob + key types the caller (and the start route) needs to
 // wire `resolveStores` into `turnWorkflow`.
 export type {

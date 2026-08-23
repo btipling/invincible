@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AGENT_STREAM_CONTENT_TYPE } from '../../../../../lib/agent/agentStream';
 import { TURNS_FIXTURE_SSE } from '../../../../../lib/workflows/turnsFixtureEvents';
+import { setSessionStoreForTests } from '../../../../../lib/tenancy/harnessSessionsRedis';
 
 /**
  * backend-agents B spike (plan #787): unit tests for the resumable GET
@@ -36,6 +37,8 @@ describe('GET /api/turns/:runId/stream?startIndex=', () => {
     vi.resetModules();
     vi.doUnmock('workflow/api');
     vi.doUnmock('../../../../../lib/tenancy/session');
+    vi.doUnmock('../../../../../lib/di');
+    setSessionStoreForTests(null);
   });
 
   function mockSession(
@@ -220,6 +223,24 @@ describe('GET /api/turns/:runId/stream?startIndex=', () => {
         getRun: vi.fn(() => mockRun),
       }));
 
+      // The DURABLE POST surface (route.ts) persists the turnRunId carrier and
+      // requires a session-bound body + a resolved tenant + an envelope store.
+      const { MemorySessionStore } = await import(
+        '../../../../../lib/sessions/memorySessionStore'
+      );
+      const { setSessionStoreForTests } = await import(
+        '../../../../../lib/tenancy/harnessSessionsRedis'
+      );
+      setSessionStoreForTests(new MemorySessionStore());
+      vi.doMock('../../../../../lib/di', () => ({
+        createProdServices: () => ({
+          harnessSessionsRedis: {
+            resolveTenantIdForUser: vi.fn(async () => ({ ok: true as const, value: 't1' })),
+          },
+        }),
+        createScriptConnection: vi.fn(),
+      }));
+
       const { POST } = await import('../../route');
       const { GET } = await import('./route');
 
@@ -227,7 +248,11 @@ describe('GET /api/turns/:runId/stream?startIndex=', () => {
       // `completed` (the status poll reads `getRun(...).status`, never a test
       // write).
       const postRes = await POST(
-        new Request('https://x/api/turns', { headers: { accept: 'application/json' } }),
+        new Request('https://x/api/turns', {
+          method: 'POST',
+          headers: { accept: 'application/json' },
+          body: JSON.stringify({ prompt: 'reconnect proof', sessionId: 'sess-1' }),
+        }),
       );
       expect(postRes.status).toBe(200);
       const body = (await postRes.json()) as { runId: string };
