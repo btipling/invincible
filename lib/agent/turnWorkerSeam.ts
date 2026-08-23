@@ -312,6 +312,10 @@ export function createTurnWorkerSeam(
 
       return {
         params: base,
+        // The resolved attached-skills JSON-encoded slug array (never undefined
+        // when skills resolved) — threaded to the worker so it persists REAL
+        // supported-skill state on the envelope (adversary Major #2).
+        ...(attachedSkills ? { attachedSkills } : {}),
         async close() {
           await Promise.allSettled(
             httpRunnerClose.map((f) => Promise.resolve().then(f)),

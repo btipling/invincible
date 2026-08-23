@@ -265,6 +265,37 @@ describe('POST /api/turns (real start surface)', () => {
     expect(body.turnRunId).toBe('live-run');
     expect(startSpy).not.toHaveBeenCalled();
   });
+
+  it('a 409 duplicate does NOT consume the per-process start window (adversary Minor #5)', async () => {
+    vi.resetModules();
+    mockSession({ ok: true, user: { id: 'u1', email: 'a@t.com' } });
+    mockTenant({ ok: true, tenantId: 't1' });
+    const startSpy = vi.fn(async () => startResult());
+    mockWorkflowApi({ start: startSpy });
+    // Seed a live turnRunId for sess-1 so THAT POST 409s (a duplicate — NOT a
+    // start, so it must NOT advance the window clock).
+    const store = new MemorySessionStore();
+    await store.upsertEnvelope(
+      { tenantId: 't1', userId: 'u1', sessionId: 'sess-1' },
+      { id: 'sess-1', tenantId: 't1', userId: 'u1', updatedAt: Date.now(), meta: { turnRunId: 'live-run' } },
+    );
+    setSessionStoreForTests(store);
+    const { POST } = await import('./route');
+    const dup = await POST(
+      new Request('https://x/api/turns', { method: 'POST', body: AGENT_BODY }),
+    );
+    expect(dup.status).toBe(409);
+    // Same isolate, immediately: a DIFFERENT session (no carrier) must be allowed
+    // to start — the 409 did NOT burn the window (start clock untouched).
+    const fresh = await POST(
+      new Request('https://x/api/turns', {
+        method: 'POST',
+        body: JSON.stringify({ sessionId: 'sess-2', prompt: 'p2' }),
+      }),
+    );
+    expect(fresh.status).toBe(200);
+    expect(startSpy).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('step Function maxDuration + fail-closed no-/api/agent fallback', () => {

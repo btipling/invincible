@@ -142,6 +142,31 @@ describe('turnWorkerPersist', () => {
     expect((await env.readEnvelope(KEY))?.meta.turnStatus).toBe('done');
   });
 
+  it('persistEnvelopeMeta CLEARS the run carrier on completion (absent = clear, adversary Major #2)', async () => {
+    const { seam, env } = await makeSeam();
+    // Seed a live carrier (as the route sets it at start).
+    await env.upsertEnvelope(KEY, {
+      id: KEY.sessionId,
+      tenantId: KEY.tenantId,
+      userId: KEY.userId,
+      updatedAt: 2500,
+      meta: { title: 't', logicalCwd: 'host-cwd', turnRunId: 'run_123', turnStatus: 'running' },
+    });
+    const patch: TurnWorkerMetaPatch = {
+      logicalCwd: 'worker-cwd',
+      clearKeys: ['turnRunId', 'turnStatus'],
+    };
+    const res = await seam.persistEnvelopeMeta(KEY, { updatedAt: 2800, patch });
+    expect(res.ok).toBe(true);
+    const envNow = await env.readEnvelope(KEY);
+    // Carrier released (409 lock cleared) so the next prompt can run.
+    expect(Object.prototype.hasOwnProperty.call(envNow?.meta ?? {}, 'turnRunId')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(envNow?.meta ?? {}, 'turnStatus')).toBe(false);
+    // Non-worker side effects preserved + real worker values applied.
+    expect(envNow?.meta.title).toBe('t');
+    expect(envNow?.meta.logicalCwd).toBe('worker-cwd');
+  });
+
   it('persistMessageCheckpoint stores the checkpoint as its OWN Blob object and NEVER touches envelope meta', async () => {
     const { seam, uploaded, env } = await makeSeam();
     const checkpoint = {

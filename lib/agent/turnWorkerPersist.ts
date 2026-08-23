@@ -85,12 +85,20 @@ export type TurnWorkerMetaPatch = {
   attachedSkills?: string;
   turnRunId?: string;
   turnStatus?: string;
+  /**
+   * Reserved-meta keys to CLEAR (delete) on this patch — the worker calls the
+   * envelope's "absent key = clear" contract to release the single-run lock on
+   * completion (`turnRunId`/`turnStatus`, adversary Major #2). A key listed
+   * here is removed from the meta (and takes precedence over any set value).
+   */
+  clearKeys?: Array<keyof HarnessSessionMeta>;
 };
 
-/** No-op when every patch field is undefined. */
+/** No-op when every patch field is undefined AND no key is cleared. */
 function isNoopPatch(patch: TurnWorkerMetaPatch | undefined): boolean {
   if (!patch) return true;
-  return !Object.values(patch).some((v) => v !== undefined);
+  if (patch.clearKeys && patch.clearKeys.length > 0) return false;
+  return !Object.values(patch).some((v) => v !== undefined && !Array.isArray(v));
 }
 
 /** Overlay the caller's worker meta patch onto an existing envelope's meta. */
@@ -100,6 +108,10 @@ function overlayWorkerMeta(
 ): HarnessSessionMeta {
   const meta: HarnessSessionMeta = { ...(existingMeta ?? {}) };
   if (!patch) return meta;
+  // Clear-first (absent key = clear); a key in clearKeys wins over any set value.
+  if (patch.clearKeys && patch.clearKeys.length > 0) {
+    for (const k of patch.clearKeys) delete meta[k];
+  }
   if (patch.logicalCwd !== undefined) meta.logicalCwd = patch.logicalCwd;
   if (patch.activeSandboxId !== undefined) meta.activeSandboxId = patch.activeSandboxId;
   if (patch.usage !== undefined) {

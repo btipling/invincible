@@ -74,7 +74,7 @@ function makeWritable(): {
   return { writable, chunks, state };
 }
 
-function makeSeam(): {
+function makeSeam(extra?: { attachedSkills?: string }): {
   seam: TurnStepRunSeam;
   resolveSpy: ReturnType<typeof vi.fn>;
   closed: boolean;
@@ -85,6 +85,7 @@ function makeSeam(): {
       modelId: 'm1',
       signal: undefined,
     },
+    ...(extra?.attachedSkills ? { attachedSkills: extra.attachedSkills } : {}),
     async close() {
       closed = true;
     },
@@ -102,7 +103,7 @@ function makeSeam(): {
 
 describe('runModelTurnStep (row 3/4/5)', () => {
   it('re-resolves the seam once per run and closes the runner', async () => {
-    const { seam, resolveSpy } = makeSeam();
+    const { seam, resolveSpy } = makeSeam({ attachedSkills: '["create-plan"]' });
     const { writable, chunks, state } = makeWritable();
     const events: AgentStreamEvent[] = [];
     const runStream = vi.fn(async (
@@ -114,7 +115,13 @@ describe('runModelTurnStep (row 3/4/5)', () => {
       await handlers.onEvent({ type: 'usage', usage: { source: 'provider', prompt: 3, completion: 1, total: 4 } });
       await handlers.onEvent({ type: 'done', text: 'hello world' });
       events.push = events.push; // no-op
-      return {};
+      return {
+        text: 'hello world',
+        toolTrace: [],
+        cwd: 'src',
+        activeSandboxId: 'sand_1',
+        usage: { source: 'provider' as const, prompt: 3, completion: 1, total: 4 },
+      };
     });
 
     const result = await runModelTurnStep(seam, ARGS, writable, runStream);
@@ -134,6 +141,14 @@ describe('runModelTurnStep (row 3/4/5)', () => {
     // truncation marker absent).
     expect(result.serializedFreshness.paths).toEqual([]);
     expect(result.serializedFreshness.truncated).toBe(false);
+
+    // REAL post-turn carrier state is captured off the runAgentStream result +
+    // the seam (adversary Major #2: cwd/activeSandboxId/usage/attachedSkills are
+    // persisted, never `undefined`).
+    expect(result.cwd).toBe('src');
+    expect(result.activeSandboxId).toBe('sand_1');
+    expect(result.usage?.total).toBe(4);
+    expect(result.attachedSkills).toBe('["create-plan"]');
 
     // The writable is CLOSED (not merely released) on success — signals
     // end-of-stream to the SSE consumer (adversary Minor #4 parity with the B
@@ -160,6 +175,7 @@ describe('runModelTurnStep (row 3/4/5)', () => {
       handlers: { onEvent: (ev: AgentStreamEvent) => void | Promise<void> },
     ) => {
       await handlers.onEvent({ type: 'done', text: 'ok' });
+      return { text: 'ok', toolTrace: [] };
     });
     const result = await runModelTurnStep(seam, { ...ARGS, serializedFreshness: seed }, writable, runStream);
     // Snapshot is carried forward (paths preserved) — the ledger crossed steps.
@@ -174,6 +190,7 @@ describe('runModelTurnStep (row 3/4/5)', () => {
       handlers: { onEvent: (ev: AgentStreamEvent) => void | Promise<void> },
     ) => {
       await handlers.onEvent({ type: 'error', error: 'provider boom', status: 502 });
+      return { text: '', toolTrace: [] };
     });
     await expect(runModelTurnStep(seam, ARGS, writable, runStream)).rejects.toThrow(/agent stream error/);
     // On error the writable is ABORTED (signals a broken stream, never a hang;
@@ -239,7 +256,10 @@ describe('runWorkerPersistStep (row 7 — checkpoint as its OWN Blob, never enve
       modelResult,
       { kind: 'transcript', updatedAt: 2000, body: { rows: ['assistant text'] } },
     );
-    expect(out).toBe('persisted');
+    expect(out.status).toBe('persisted');
+    // The checkpoint objectId is threaded into the segment so it is ADDRESSABLE
+    // (adversary Major #2 — the checkpoint was write-only before).
+    expect(out.checkpointObjectId).toBeDefined();
 
     // The checkpoint was persisted as its OWN Blob object; NEITHER a transcript
     // object NOR the envelope meta carries a `checkpoint` field (the plan-review
@@ -267,6 +287,7 @@ describe('turnWorkflow seam wiring (thin over the two step bodies)', () => {
     ) => {
       await handlers.onEvent({ type: 'text_delta', text: 'plan' });
       await handlers.onEvent({ type: 'done', text: 'plan' });
+      return { text: 'plan', toolTrace: [] };
     });
     const model = await runModelTurnStep(seam, ARGS, writable, runStream);
     expect(chunks.length).toBe(2);

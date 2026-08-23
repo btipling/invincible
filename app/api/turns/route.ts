@@ -106,9 +106,6 @@ export async function POST(req: Request): Promise<Response> {
       { status: 429 },
     );
   }
-  // One start per window (per-process). A 429-throttled POST does NOT advance the
-  // clock; an accepted start does.
-  lastStartAtMs = now;
 
   // Tenant + session key (server-derived, never client).
   const tenantRes = await services.harnessSessionsRedis.resolveTenantIdForUser(userId);
@@ -144,6 +141,11 @@ export async function POST(req: Request): Promise<Response> {
       { status: 409 },
     );
   }
+  // Advance the per-process start clock ONLY on an accepted start (adversary
+  // Minor #5): moving it before a 429/409/4xx return would burn the window for
+  // a rejected POST (a 409 duplicate was NOT a start, so another session on the
+  // same isolate must be allowed to start).
+  lastStartAtMs = now;
 
   // Serialize the durable turn args (JSON-safe — never secrets/closures).
   const args: TurnWorkflowArgs = {

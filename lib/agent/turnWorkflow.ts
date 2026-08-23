@@ -48,7 +48,8 @@ import { getWritable } from 'workflow';
 // step) and the store+Blob seams / `createTurnWorkerPersist` (the persist step,
 // via `createProductionTurnStores`). Only pure / SSE-wire / type imports stay
 // static here.
-import type { RunAgentParams } from './runAgent';
+import type { RunAgentParams, RunAgentResult } from './runAgent';
+import type { UsageSummary } from './usageSummary';
 import { encodeSseData, type AgentStreamEvent } from './agentStream';
 import {
   createRunFileFreshness,
@@ -173,6 +174,12 @@ export type TurnStepRunSeam = {
     freshness: RunFileFreshness,
   ): Promise<{
     params: Omit<RunAgentParams, 'prompt' | 'freshness'>;
+    /**
+     * The resolved `attachedSkills` (JSON-encoded slug-array string, the exact
+     * reserved-meta string format) so the worker persists REAL supported-skill
+     * state on the envelope, not `undefined` (adversary Major #2).
+     */
+    attachedSkills?: string;
     /** Close every transport THIS cascade opened (sandbox/MCP/http runner). */
     close(): Promise<void>;
   }>;
@@ -182,13 +189,21 @@ export type TurnModelStepResult = {
   serializedFreshness: FreshnessLedgerProjection;
   /** Durable structured message checkpoint (worker persists it as its own Blob). */
   checkpoint: TurnMessageCheckpoint;
+  /** Effective turn cwd (workspace-root-relative), from the runAgentStream result. */
+  cwd?: string;
+  /** Post-turn EFFECTIVE active sandbox bind (switch target wins), off the result. */
+  activeSandboxId?: string;
+  /** Bounded provider usage off the final result (absent when provider reported none). */
+  usage?: UsageSummary;
+  /** Resolved attached skills (JSON-encoded slug array), from the seam. */
+  attachedSkills?: string;
 };
 
 /** The `runAgentStream` binding the model step calls (injectable for tests). */
 export type RunAgentStreamFn = (
   params: RunAgentParams,
   handlers: { onEvent: (event: AgentStreamEvent) => void | Promise<void> },
-) => Promise<unknown>;
+) => Promise<RunAgentResult>;
 
 /**
  * The model step body — factored out of the `"use step"` shell so it is
@@ -223,8 +238,9 @@ export async function runModelTurnStep(
     { role: 'user', content: args.prompt },
   ];
   try {
+    let result: RunAgentResult | undefined;
     try {
-      await runAgentStreamImpl(
+      result = await runAgentStreamImpl(
         { ...resolved.params, prompt: args.prompt, freshness },
         {
           onEvent: async (ev: AgentStreamEvent) => {
@@ -254,9 +270,16 @@ export async function runModelTurnStep(
     // and closes the underlying `getWritable()` — an un-closed writable would
     // keep the `Accept` pipe / GET …/stream waiting until maxDuration.
     await writer.close();
+    // Carry the REAL post-turn state off the `runAgentStream` result + the seam's
+    // resolved skills so the worker persists genuine values on the envelope —
+    // never `undefined` (adversary Major #2: cwd/activeSandboxId/usage/skills).
     return {
       serializedFreshness: serializeRunFileFreshness(freshness),
       checkpoint: truncateMessageCheckpoint(messages),
+      ...(result?.cwd ? { cwd: result.cwd } : {}),
+      ...(result?.activeSandboxId ? { activeSandboxId: result.activeSandboxId } : {}),
+      ...(result?.usage ? { usage: result.usage } : {}),
+      ...(resolved.attachedSkills ? { attachedSkills: resolved.attachedSkills } : {}),
     };
   } catch (err) {
     // Always close the writer (abort — signal a broken stream, never a hang)
@@ -301,18 +324,11 @@ export async function runWorkerPersistStep(
   },
   modelResult: TurnModelStepResult,
   segment: { kind: 'transcript'; updatedAt: number; body: unknown; metaPatch?: TurnWorkerMetaPatch },
-): Promise<'persisted'> {
-  // 1. Append-only transcript segment + envelope meta (pointer advanced only on
-  //    a successful PUT; LWW on `updatedAt`).
-  const seg = await deps.persist.persistTranscriptSegment(deps.key, {
-    updatedAt: segment.updatedAt,
-    segment: segment.body,
-    metaPatch: segment.metaPatch,
-  });
-  if (!seg.ok) {
-    throw new Error(`worker transcript persist failed: ${seg.code} ${seg.message}`);
-  }
-  // 2. Structured message checkpoint as its OWN Blob object (never envelope meta).
+): Promise<{ status: 'persisted'; checkpointObjectId?: string }> {
+  // 1. Structured message checkpoint FIRST (its own Blob object — never envelope
+  //    meta), so its objectId can be threaded into the transcript segment below
+  //    and REACHED by following `meta.transcriptPointer` (adversary Major #2:
+  //    the checkpoint was write-only / unaddressable).
   const ckpt = await deps.persist.persistMessageCheckpoint(deps.key, {
     updatedAt: segment.updatedAt,
     checkpoint: modelResult.checkpoint,
@@ -320,7 +336,21 @@ export async function runWorkerPersistStep(
   if (!ckpt.ok) {
     throw new Error(`worker message-checkpoint persist failed: ${ckpt.code} ${ckpt.message}`);
   }
-  return 'persisted';
+  // 2. Append-only transcript segment + envelope meta (pointer advanced only on
+  //    a successful PUT; LWW on `updatedAt`). Embed the checkpoint objectId so the
+  //    addressed segment is the address-thread to the durable model context.
+  const seg = await deps.persist.persistTranscriptSegment(deps.key, {
+    updatedAt: segment.updatedAt,
+    segment: {
+      ...(typeof segment.body === 'object' && segment.body !== null ? segment.body : {}),
+      ...(ckpt.objectId ? { checkpointObjectId: ckpt.objectId } : {}),
+    },
+    metaPatch: segment.metaPatch,
+  });
+  if (!seg.ok) {
+    throw new Error(`worker transcript persist failed: ${seg.code} ${seg.message}`);
+  }
+  return { status: 'persisted', checkpointObjectId: ckpt.objectId };
 }
 
 /**
@@ -360,7 +390,7 @@ async function workerPersistStep(
   segmentBody: unknown,
   updatedAt: number,
   metaPatch: TurnWorkerMetaPatch,
-): Promise<'persisted'> {
+): Promise<{ status: 'persisted'; checkpointObjectId?: string }> {
   'use step';
 
   // CAREFUL (deploy block, adversary Major #1): all store/Blob resolution MUST
@@ -423,6 +453,13 @@ export async function runTurnWorkflow(
   // the JSON-safe run summary (text/events are on the stream; the durable context
   // lives in the checkpoint object). `updatedAt` is monotonic-ish; the store
   // enforces LWW across the host PUT path.
+  // Persist one append-only transcript segment seeded with the REAL post-turn
+  // worker meta (adversary Major #2): cwd/activeSandboxId/usage/attachedSkills
+  // captured off the model result — never `undefined`, and never clobbering the
+  // route's `turnRunId = run.runId`. On completion CLEAR the carrier
+  // (`turnRunId` + `turnStatus`, reserved-meta "absent = clear") so the
+  // single-run-per-prompt 409 lock RELEASES for the next prompt, honoring the
+  // docs' "closes turnRunId on completion".
   await workerPersistStep(
     args,
     modelResult,
@@ -434,12 +471,11 @@ export async function runTurnWorkflow(
     },
     Date.now(),
     {
-      logicalCwd: args.initialCwd ? String(args.initialCwd) : undefined,
-      activeSandboxId: undefined,
-      usage: undefined,
-      attachedSkills: undefined,
-      turnRunId: args.sessionId, // carrier reserved by slice C; E populates it (adversary #2 reworks this)
-      turnStatus: 'running',
+      logicalCwd: modelResult.cwd ?? (args.initialCwd ? String(args.initialCwd) : undefined),
+      activeSandboxId: modelResult.activeSandboxId,
+      usage: modelResult.usage,
+      attachedSkills: modelResult.attachedSkills,
+      clearKeys: ['turnRunId', 'turnStatus'],
     },
   );
 
