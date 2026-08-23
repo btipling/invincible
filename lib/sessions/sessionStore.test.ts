@@ -169,6 +169,7 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'personaId',
       'personaSnapshot',
       'transcriptPointer',
+      'checkpointPointer',
       'attachedSkills',
       'selectedModel',
       'usage',
@@ -872,6 +873,90 @@ describe('envelope carrier (phase 0 #515)', () => {
     if (res.ok) expect(res.value.meta.transcriptPointer).toBe('tx_abc123');
   });
 
+  it('plan #800 (B6) — accepts a valid Redis-safe meta.checkpointPointer and DROPS a poisoned one to unset (never 400)', () => {
+    // The checkpoint pointer is the sibling of `transcriptPointer` (same Redis-safe
+    // opaque rule) but a DISTINCT reserved key — the checkpoint is its own Blob
+    // surface, never folded into the transcript pointer. The BODY never rides in meta.
+    const ok = validateSessionRecord(
+      makeRecord({ meta: { checkpointPointer: 'cp_abc-123DEF' } as HarnessSessionRecord['meta'] }),
+    );
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.meta.checkpointPointer).toBe('cp_abc-123DEF');
+    expect(validateMeta({ checkpointPointer: 'cp_abc123' }).ok).toBe(true);
+
+    // Poisoned / null / non-opaque (glob, `:`, space, `.`, `/`, over-length, non-string)
+    // are DROPPED to unset (the key is omitted) — the record still validates, never 400s
+    // (same drop-to-unset decision as the A1–A3 turn carriers).
+    for (const bad of [
+      'cp a:b',
+      '*',
+      'a?b',
+      'has space',
+      'a.b',
+      'cp/abc',
+      'x'.repeat(513),
+      42 as unknown,
+      undefined as unknown,
+      null as unknown,
+    ]) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { checkpointPointer: bad } as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true); // drop-to-unset, not a 400
+      if (res.ok) {
+        expect('checkpointPointer' in res.value.meta).toBe(false);
+        expect(res.value.meta.checkpointPointer).toBeUndefined();
+      }
+    }
+
+    // The reserved-key contract is intact: unknown keys are STILL rejected.
+    expect(
+      validateSessionRecord(makeRecord({ meta: { notReserved: 1 } as HarnessSessionRecord['meta'] })).ok,
+    ).toBe(false);
+  });
+
+  it('plan #800 (B6) — validateMeta round-trips checkpointPointer and omits poison; distinct from transcriptPointer', () => {
+    const ok = validateMeta({ checkpointPointer: 'cp_abc123-def' });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.checkpointPointer).toBe('cp_abc123-def');
+
+    // Poisoned / oversized / non-opaque → `meta` is ok but the key is omitted.
+    const poison = validateMeta({ checkpointPointer: 'x'.repeat(513) });
+    expect(poison.ok).toBe(true);
+    if (poison.ok) expect('checkpointPointer' in poison.value).toBe(false);
+    const nonOpaque = validateMeta({ checkpointPointer: 'a:b' });
+    expect(nonOpaque.ok).toBe(true);
+    if (nonOpaque.ok) expect('checkpointPointer' in nonOpaque.value).toBe(false);
+
+    // Envelope path shares the same drop-to-unset, never a 400.
+    const env = validateSessionEnvelope({ ...makeRecord(), meta: { checkpointPointer: 'a b' } });
+    expect(env.ok).toBe(true);
+    if (env.ok) expect('checkpointPointer' in env.value.meta).toBe(false);
+
+    // Sibling keys coexist independently — the checkpoint pointer is distinct from the
+    // transcript pointer, and a poisoned checkpoint pointer never disturbs a valid one.
+    const both = validateSessionRecord(
+      makeRecord({
+        meta: { transcriptPointer: 'tx_1', checkpointPointer: 'cp_1' } as HarnessSessionRecord['meta'],
+      }),
+    );
+    expect(both.ok).toBe(true);
+    if (both.ok) {
+      expect(both.value.meta.transcriptPointer).toBe('tx_1');
+      expect(both.value.meta.checkpointPointer).toBe('cp_1');
+    }
+    const mixed = validateSessionRecord(
+      makeRecord({
+        meta: { transcriptPointer: 'tx_1', checkpointPointer: 'a:b' } as HarnessSessionRecord['meta'],
+      }),
+    );
+    expect(mixed.ok).toBe(true);
+    if (mixed.ok) {
+      expect(mixed.value.meta.transcriptPointer).toBe('tx_1');
+      expect('checkpointPointer' in mixed.value.meta).toBe(false);
+    }
+  });
+
   it('meta.accepts attachedSkills as a JSON-encoded string of slugs (#514)', () => {
     expect(validateMeta({ attachedSkills: ["create-plan"] }).ok).toBe(false);
     expect(validateMeta({ attachedSkills: '["create-plan","v11"]' }).ok).toBe(true);
@@ -959,6 +1044,34 @@ describe('envelope carrier (phase 0 #515)', () => {
     ).toBe(false);
     // invalid updatedAt rejected
     expect(validateSessionEnvelope({ ...makeRecord(), updatedAt: -1 }).ok).toBe(false);
+  });
+
+  it('plan #800 (B6) — MemorySessionStore: envelope round-trips meta.checkpointPointer (stored, read back; body never in meta)', async () => {
+    const s = new MemorySessionStore();
+    const up = await s.upsertEnvelope(key, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 100,
+      meta: { transcriptPointer: 'tx_a', checkpointPointer: 'cp_obj1' },
+    });
+    expect(up.status).toBe('stored');
+    const read = await s.readEnvelope(key);
+    expect(read?.meta.checkpointPointer).toBe('cp_obj1');
+    expect(read?.meta.transcriptPointer).toBe('tx_a');
+    // The checkpoint BODY never rides in the envelope `meta` — only the object id does.
+    expect((read?.meta as Record<string, unknown>).checkpointBody).toBeUndefined();
+    expect(JSON.stringify(read)).not.toContain('{role:'); // no checkpoint body smuggled in
+    // A stale write can't clobber the stored pointer via an older LWW.
+    const stale = await s.upsertEnvelope(key, {
+      id: 's1',
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      updatedAt: 50,
+      meta: { checkpointPointer: 'cp_stale' },
+    });
+    expect(stale.status).toBe('conflict');
+    if (stale.status === 'conflict') expect(stale.server.meta.checkpointPointer).toBe('cp_obj1');
   });
 
   it('Memory/Redis implement the additive envelope seam (isEnvelopeStore)', async () => {
