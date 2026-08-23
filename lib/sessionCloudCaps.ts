@@ -257,6 +257,33 @@ export function isRedisSafeOpaqueId(s: unknown): s is string {
 }
 
 /**
+ * Max length (chars) of a reserved `meta.turnRunId` value (plan #795, backend-agents
+ * A1). A Workflow **run id** carried as a session-carrier header is a Redis-safe
+ * opaque scalar in the tiny session envelope. **NEW cap** reusing the existing opaque
+ * ceiling (`REDIS_SAFE_OPAQUE_ID_MAX`) — no existing cap value changed, no human gate.
+ * Far below the 1 MiB whole-meta budget and the 4.5 MB Function wire.
+ */
+export const TURN_RUN_ID_MAX = REDIS_SAFE_OPAQUE_ID_MAX;
+
+/**
+ * Client-safe predicate for a reserved `meta.turnRunId` (plan #795). Accepts only a
+ * trimmed string ≤ `TURN_RUN_ID_MAX` that passes `isRedisSafeOpaqueId`
+ * (charset `^[A-Za-z0-9_-]{1,512}$`) — a Workflow run id lives in Redis Keyspace
+ * segments, so glob/metachars and `:` are rejected through the shared opaque
+ * predicate. Fail-closed: returns `undefined` for a non-string, empty/whitespace,
+ * over-length, or non-opaque value. Shared by the server validator, which DROPS a
+ * poisoned `turnRunId` to unset — never a 400 (same drop-to-unset decision as
+ * `selectedModel` / `usage`).
+ */
+export function sanitizeTurnRunId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const s = value.trim();
+  if (!s) return undefined;
+  if (s.length > TURN_RUN_ID_MAX) return undefined;
+  return isRedisSafeOpaqueId(s) ? s : undefined;
+}
+
+/**
  * Max UTF-8 byte length of a model id carried as the session carrier
  * `meta.selectedModel` (plan #616 / source #610). Single TS source shared by the
  * host trim/parse (`lib/sessionRepository.ts`, `lib/sessionStore.ts`) and server
