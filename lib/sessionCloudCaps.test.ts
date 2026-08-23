@@ -6,8 +6,11 @@ import {
   REDIS_SAFE_OPAQUE_ID_MAX,
   STATUS_SLOT_MAX_BYTES,
   TURN_RUN_ID_MAX,
+  TURN_STATUS_MAX_BYTES,
+  TURN_STATUS_VALUES,
   sanitizeModelId,
   sanitizeTurnRunId,
+  sanitizeTurnStatus,
 } from './sessionCloudCaps';
 import { MAX_MODEL_ID_LEN as BRIDGE_MAX_MODEL_ID_LEN, MAX_STATUS_SLOT_LEN } from './harnessBridge';
 
@@ -155,5 +158,53 @@ describe('sanitizeTurnRunId + TURN_RUN_ID_MAX (plan #795 — Workflow run-id car
     for (const bad of ['*', '?', 'a:b', 'has space', 'a.b', 'a/b', 'a[b', 'a]b', 'a|b', 'a,b']) {
       expect(sanitizeTurnRunId(bad)).toBeUndefined();
     }
+  });
+});
+
+// Plan #796 (backend-agents A2): reserved `meta.turnStatus` is a fixed enum
+// carrier (`idle | running | cancelling | completed`). NEW cap
+// (`TURN_STATUS_MAX_BYTES`) riding a tiny envelope value — no existing cap
+// changed (no human gate). `completed` is a first-class terminal member, not
+// special-cased.
+describe('sanitizeTurnStatus + TURN_STATUS_MAX_BYTES (plan #796 — turn-status carrier)', () => {
+  it('TURN_STATUS_MAX_BYTES is a NEW generous cap (longest member `cancelling` = 10) riding the tiny envelope', () => {
+    expect(TURN_STATUS_MAX_BYTES).toBe(64);
+    // Generous vs the longest real member, far below the 1 MiB whole-meta budget
+    // and the 4.5 MB Function wire — belt-and-suspenders over the exact-enum check.
+    expect(TURN_STATUS_MAX_BYTES).toBeGreaterThanOrEqual(10);
+    expect(TURN_STATUS_MAX_BYTES).toBeLessThan(1024 * 1024);
+    expect(TURN_STATUS_MAX_BYTES).toBeLessThan(4.5 * 1024 * 1024);
+  });
+
+  it('single-source enum exposes exactly the four members (shared validator + host source)', () => {
+    expect(TURN_STATUS_VALUES).toEqual(['idle', 'running', 'cancelling', 'completed']);
+  });
+
+  it('accepts each member — including the terminal `completed` — preserved exactly', () => {
+    for (const member of TURN_STATUS_VALUES) {
+      expect(sanitizeTurnStatus(member)).toBe(member);
+    }
+    expect(sanitizeTurnStatus('completed')).toBe('completed');
+  });
+
+  it('drops non-string / empty / whitespace-padded members (no trim-into-member, no case-fold)', () => {
+    expect(sanitizeTurnStatus(undefined)).toBeUndefined();
+    expect(sanitizeTurnStatus(42)).toBeUndefined();
+    expect(sanitizeTurnStatus(null)).toBeUndefined();
+    expect(sanitizeTurnStatus('')).toBeUndefined();
+    expect(sanitizeTurnStatus('   ')).toBeUndefined();
+    // padded member is poison here — the value is checked against exact members only
+    expect(sanitizeTurnStatus('  idle  ')).toBeUndefined();
+  });
+
+  it('drops case-folded and unknown enum values (drop-to-unset)', () => {
+    for (const bad of ['Running', 'RUNNING', 'Cancelling', 'done', 'pending', 'paused', 'awaiting']) {
+      expect(sanitizeTurnStatus(bad)).toBeUndefined();
+    }
+  });
+
+  it('drops over-length values (TURN_STATUS_MAX_BYTES + 1)', () => {
+    expect(sanitizeTurnStatus('a'.repeat(TURN_STATUS_MAX_BYTES))).toBeUndefined(); // not a member
+    expect(sanitizeTurnStatus('x'.repeat(TURN_STATUS_MAX_BYTES + 1))).toBeUndefined();
   });
 });

@@ -40,6 +40,7 @@ import {
   sanitizeModelId,
   sanitizeSessionCwd,
   sanitizeTurnRunId,
+  sanitizeTurnStatus,
 } from '../sessionCloudCaps';
 export { isRedisSafeOpaqueId } from '../sessionCloudCaps';
 import { decodeUsageMetaString } from '../agent/usageSummary';
@@ -73,6 +74,7 @@ export const RESERVED_META_KEYS = [
   'selectedModel',
   'usage',
   'turnRunId',
+  'turnStatus',
 ] as const;
 export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 
@@ -421,6 +423,16 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
       // the record (same drop-to-unset decision as `selectedModel` / `usage`).
       const cleaned = sanitizeTurnRunId(v);
       if (cleaned !== undefined) meta.turnRunId = cleaned;
+      continue;
+    }
+    if (key === 'turnStatus') {
+      // Plan #796 (backend-agents A2): a reserved turn-status carrier. Non-critical —
+      // a poisoned/unknown/case-folded/oversized value DROPS to unset (omitted), never
+      // 400s the record (same drop-to-unset decision as `selectedModel` / `usage` /
+      // `turnRunId`). `completed` is a valid first-class terminal member, preserved as-is
+      // so the later C15 live-only 409 (#809) can re-allow the next prompt on completion.
+      const cleaned = sanitizeTurnStatus(v);
+      if (cleaned !== undefined) meta.turnStatus = cleaned;
       continue;
     }
     if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {
