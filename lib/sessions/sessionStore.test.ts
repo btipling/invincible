@@ -266,7 +266,14 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
     );
     expect(ok.ok).toBe(true);
     if (ok.ok) expect(ok.value.meta.turnRunId).toBe('run_abc-123DEF');
-    expect(validateSessionRecord(makeRecord({ meta: { turnRunId: '  run_abc  ' } as HarnessSessionRecord['meta'] })).ok).toBe(true);
+    // Whitespace is trimmed by `sanitizeTurnRunId`; the STORED value is the trimmed
+    // id, not the raw padded string — pinned at the record level so a future
+    // raw-`v` regression is caught (adversarial-review PR #820 Nit L6).
+    const trimmed = validateSessionRecord(
+      makeRecord({ meta: { turnRunId: '  run_abc  ' } as HarnessSessionRecord['meta'] }),
+    );
+    expect(trimmed.ok).toBe(true);
+    if (trimmed.ok) expect(trimmed.value.meta.turnRunId).toBe('run_abc');
 
     // Poisoned values (non-string, empty, non-opaque chars, over-length, glob / `:` /
     // space / `?`) are DROPPED to unset (the key is omitted) — the record still
