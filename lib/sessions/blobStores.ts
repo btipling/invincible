@@ -14,6 +14,7 @@
 import {
   issueSignedToken,
   presignUrl,
+  put as blobPut,
 } from '@vercel/blob';
 import type {
   BlobTranscriptStore,
@@ -69,6 +70,38 @@ export class MemoryBlobTranscriptStore implements BlobTranscriptStore {
   async readUrl(objectId: TranscriptObjectId): Promise<string | null> {
     if (!isTranscriptObjectId(objectId)) return null;
     return this.objects.has(objectId) ? `memory://transcript/${objectId}` : null;
+  }
+
+  /**
+   * B7 server-side write: stores the real body so a test-injected memory double
+   * round-trips the segment (read-after-write). Fail-closed on an invalid object
+   * id or an oversize segment (never stores, never returns success).
+   */
+  async writeSegment(options: {
+    objectId: TranscriptObjectId;
+    content: string;
+    contentType?: string;
+    maxBytes: number;
+  }): Promise<void> {
+    if (!options?.content || typeof options.content !== 'string') {
+      throw new TypeError('writeSegment requires a content string');
+    }
+    if (typeof options.objectId !== 'string' || !isTranscriptObjectId(options.objectId)) {
+      throw new TypeError('writeSegment requires a Redis-safe opaque transcript object id');
+    }
+    if (
+      !Number.isInteger(options.maxBytes) ||
+      !Number.isFinite(options.maxBytes) ||
+      options.maxBytes < 1
+    ) {
+      throw new TypeError('writeSegment requires a positive integer maxBytes ceiling');
+    }
+    if (Buffer.byteLength(options.content, 'utf8') > options.maxBytes) {
+      throw new Error('transcript segment exceeds the object byte ceiling (oversize)');
+    }
+    // Object id already prefixed by `t_` (only the binding prefix is reserved);
+    // the write keeps prior objects intact (append-only — never a rewrite here).
+    this.objects.set(options.objectId, options.content);
   }
 }
 
@@ -175,5 +208,48 @@ export class VercelBlobTranscriptStore implements BlobTranscriptStore {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * B7 server-side write: performs a **server-side** put of the append-only
+   * segment directly to Blob via the SDK (`put`), using the store's injected
+   * credential — no presigned URL, no client. `addRandomSuffix: false` keeps the
+   * Blob pathname EXACTLY equal to the Redis-safe object id (the id IS the
+   * pathname AND the `meta.transcriptPointer`), and `allowOverwrite: false`
+   * makes an accidental rewrite of an existing segment fail closed (append-only).
+   *
+   * Oversize (content > `maxBytes`) is rejected here before any network I/O
+   * (fail-closed), mirroring the mint-upload ceiling so a server write can never
+   * produce an over-ceiling object.
+   */
+  async writeSegment(options: {
+    objectId: TranscriptObjectId;
+    content: string;
+    contentType?: string;
+    maxBytes: number;
+  }): Promise<void> {
+    if (!options?.content || typeof options.content !== 'string') {
+      throw new TypeError('writeSegment requires a content string');
+    }
+    if (typeof options.objectId !== 'string' || !isTranscriptObjectId(options.objectId)) {
+      throw new TypeError('writeSegment requires a Redis-safe opaque transcript object id');
+    }
+    if (
+      !Number.isInteger(options.maxBytes) ||
+      !Number.isFinite(options.maxBytes) ||
+      options.maxBytes < 1
+    ) {
+      throw new TypeError('writeSegment requires a positive integer maxBytes ceiling');
+    }
+    if (Buffer.byteLength(options.content, 'utf8') > options.maxBytes) {
+      throw new Error('transcript segment exceeds the object byte ceiling (oversize)');
+    }
+    await blobPut(options.objectId, options.content, {
+      token: this.opts.token,
+      access: 'private',
+      contentType: options.contentType,
+      addRandomSuffix: false,
+      allowOverwrite: false,
+    });
   }
 }

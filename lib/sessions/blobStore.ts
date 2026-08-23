@@ -132,6 +132,31 @@ export interface BlobTranscriptStore {
   read(objectId: TranscriptObjectId): Promise<string | null>;
   /** Server-side preview URL for an object (signed). Optional. */
   readUrl(objectId: TranscriptObjectId): Promise<string | null>;
+  /**
+   * Server-side **write** of an append-only transcript segment object
+   * (backend-agents B7). This is the seam surface the worker persist step needs:
+   * a server-owned write that mints no presigned URL and never rides the 1 MiB
+   * envelope `meta` body — the segment body goes straight to Blob, exactly like
+   * the client→Blob `mintUpload` path but from the server.
+   *
+   * `maxBytes` is REQUIRED (never defaulted) and is the transcript-object byte
+   * ceiling (`HARNESS_SESSION_MAX_BODY_BYTES`). A segment whose content exceeds
+   * it is REJECTED before any write (fail-closed, oversize never lands).
+   *
+   * Server-only; the store holds the credential (`BLOB_READ_WRITE_TOKEN`, or BYO
+   * bucket creds) and performs a server-side put. The object id is the same
+   * Redis-safe opaque string as the envelope `meta.transcriptPointer` (the id IS
+   * the Blob pathname AND the pointer), so `persistTranscriptSegment` advances
+   * the pointer only after this resolves successfully.
+   */
+  writeSegment(options: {
+    objectId: TranscriptObjectId;
+    /** The append-only segment body (JSON/delta/seed). Never a secret. */
+    content: string;
+    contentType?: string;
+    /** Required byte ceiling — the transcript-object cap. */
+    maxBytes: number;
+  }): Promise<void>;
 }
 
 /** Redis-safe object-id charset re-exported. */
