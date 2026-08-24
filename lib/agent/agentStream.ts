@@ -7,6 +7,7 @@ import type { ToolTraceEntry } from './runAgent';
 import { mapProviderUsage, type UsageSummary } from './usageSummary';
 import { flattenToolResultText } from './toolResultText';
 import { redactSecrets, truncateSummary } from './redact';
+import { changeDirSuccessCwd, metaSandboxSwitchActiveId } from './toolResultParsers';
 
 export type AgentStreamEvent =
   | { type: 'tool_start'; name: string; id?: string }
@@ -429,41 +430,15 @@ export function salientToolBits(name: string, resultText: string): string {
 }
 
 /**
- * Extract the confirmed workspace-relative cwd from the RAW `change_dir` tool
- * result, only from a strict success marker. The tool emits
- * `change_dir <path>: ok cwd=<path>` on success and `ERROR change_dir: …` on
- * failure; any other shape → `undefined`. This is the structured carrier used to
- * attach the typed `tool_result.changeDirCwd` (stream) and `ToolTraceEntry.cwd`
- * (JSON) so host persistence never depends on the truncated display summary
- * (adversarial review #470 Major).
+ * Pure tool-result parser for a successful `change_dir`→ cwd (and
+ * `meta_sandbox_switch` → active sandbox id), extracted to the dependency-free
+ * `./toolResultParsers` module (backend-agents B13 / adversarial round-2 L1) so
+ * the directive-free turn-loop core can import them WITHOUT dragging in
+ * `agentStream.ts`'s closure. The host stream path and the JSON-path parsers
+ * still consume the identical functions (imported above for internal use and
+ * re-exported here for back-compat with prior importers).
  */
-export function changeDirSuccessCwd(raw: string | undefined): string | undefined {
-  const t = (raw ?? '').trim();
-  if (!t || /^ERROR\b/i.test(t)) return undefined;
-  const m = t.match(/^change_dir\s+(\S+):\s*ok\s+cwd=(\S+)\s*$/i);
-  if (!m) return undefined;
-  return m[2];
-}
-
-/**
- * Parse a successful `meta_sandbox_switch` tool RESULT TEXT to the switched-to
- * id. The tool emits `switched active sandbox to id=<id> tools=[...]` only on a
- * persisted write; `undefined` on ERROR / any other shape.
- *
- * Defined here (pure, no server deps) so the client-side `agentStream.ts`
- * `mapFullStreamPart` can extract the typed `activeSandboxId` for the
- * `tool_result` event. `metaSandboxTools.ts` re-imports it for the JSON-path
- * step-result parser (`metaSandboxSwitchTargetId`).
- */
-export function metaSandboxSwitchActiveId(
-  raw: string | undefined,
-): string | undefined {
-  const t = (raw ?? '').trim();
-  if (!t || /^ERROR\b/i.test(t)) return undefined;
-  const m = t.match(/^switched active sandbox to id=(\S+)\s+tools=/i);
-  if (!m) return undefined;
-  return m[1];
-}
+export { changeDirSuccessCwd, metaSandboxSwitchActiveId };
 
 export function summarizeToolLine(
   name: string,
