@@ -41,10 +41,11 @@ import {
   type ModelStepFn,
   type TurnWritable,
   type TurnLoopResult,
+  type PersistRunBind,
 } from './turnLoop';
 import { modelGenerateStep } from './modelGenerateStep';
 import { toolExecuteStep } from './toolExecuteStep';
-import { persistStep, type PersistStepFold } from './persistStep';
+import { persistStep } from './persistStep';
 
 /** `'use workflow'` run args — plain serializable values only. */
 export interface TurnWorkflowArgs {
@@ -54,12 +55,13 @@ export interface TurnWorkflowArgs {
   tools: Record<string, any>;
   modelId: string;
   /**
-   * Run final-state fold (B13): cwd/usage/activeSandboxId + the bounded
-   * checkpoint projection, threaded to the terminal persist step. Plain
-   * serializable values only. Supplied by the engine (C14) from the run's last
-   * generate/tool deltas.
+   * Pre-run sandbox **bind** state (B13): `cwd` + `activeSandboxId`. Supplied by
+   * the engine (C14) at `start()` — this is sandbox bind known before the run,
+   * NOT "last deltas" (those do not exist at start). The per-turn checkpoint +
+   * usage projections are **derived** in-loop at persist time (adversarial L1).
+   * Plain serializable values only.
    */
-  persistFold?: PersistStepFold;
+  persistRunBind?: PersistRunBind;
 }
 
 /**
@@ -96,8 +98,10 @@ export async function turnWorkflow(
       freshnessSeed,
     });
   };
-  const persistStepFn: PersistStepFn = async ({ turnRunId, deltas }) => {
-    return persistStep({ turnRunId, deltas });
+  // Forward EVERYTHING the loop passes including the derived `fold` — a
+  // destructure that drops it would silently no-op DoD rows 3/5 (adversarial L1).
+  const persistStepFn: PersistStepFn = async ({ turnRunId, deltas, fold }) => {
+    return persistStep({ turnRunId, deltas, ...(fold !== undefined ? { fold } : {}) });
   };
 
   return runTurnLoop(
@@ -107,7 +111,7 @@ export async function turnWorkflow(
       persistStep: persistStepFn,
       writable: loopWritable,
       turnRunId: args.turnRunId,
-      ...(args.persistFold !== undefined ? { persistFold: args.persistFold } : {}),
+      ...(args.persistRunBind !== undefined ? { persistRunBind: args.persistRunBind } : {}),
     },
     { userMessage: args.userMessage },
   );

@@ -280,7 +280,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(closed()).toBe(1);
   });
 
-  it('B13 integration: real B7/B8/B6 seam wired via resolver — a completed run folds terminal state into the envelope', async () => {
+  it('B13 integration: real B7/B8/B6 seam wired via resolver — a completed run derives the fold AT PERSIST TIME (usage/checkpoint from THIS run; run-bind from start)', async () => {
     const blobStore = new MemoryBlobTranscriptStore();
     const envelopeStore = new MemorySessionStore();
     const sscope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's1' };
@@ -289,23 +289,22 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     setPersistSeamResolver(() =>
       createTurnPersistSeam({ blobStore, envelopeStore, scope: sscope }),
     );
+    // The model DELTA carries the usage (B9 `OneRoundDelta.usage`); the loop
+    // must derive the fold from it at persist time — NOT from a start arg
+    // (adversarial L1: the last deltas do not exist at `start()` only here).
     const modelStep = vi.fn(async () => ({
       ok: true as const,
-      delta: { text: 'done', toolCalls: [] },
+      delta: { text: 'done', toolCalls: [], usage: { source: 'provider', total: 5 } },
     }));
-    const fold = {
-      cwd: 'lib',
-      activeSandboxId: 'sb_x',
-      usage: { source: 'provider', total: 5 } as const,
-      checkpoint: [{ role: 'assistant', content: 'done' }],
-    };
     const result = await runTurnLoop(
       {
         ...deps,
         modelStep,
         toolStep: vi.fn(),
         turnRunId: 'wr_0000_real',
-        persistFold: fold,
+        // Only the PRE-RUN sandbox bind is a start arg (persistRunBind) —
+        // per-turn checkpoint + usage are derived in-loop at the persist call.
+        persistRunBind: { cwd: 'lib', activeSandboxId: 'sb_x' },
       },
       { userMessage: 'go' },
     );
@@ -318,11 +317,23 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     // Terminal worker keys folded via the real seam (B8)…
     expect(env?.meta?.turnStatus).toBe('completed');
     expect(env?.meta?.turnRunId).toBe('wr_0000_real');
+    // …pre-run sandbox bind (start arg) folded…
     expect(env?.meta?.logicalCwd).toBe('lib');
     expect(env?.meta?.activeSandboxId).toBe('sb_x');
+    // …usage DERIVED from THIS run's last model delta (encoded by B8)…
+    expect(JSON.parse(env?.meta?.usage as string)).toEqual({ source: 'provider', total: 5 });
     // …checkpoint pointer (B6) and transcript pointer (B7) both present, pointers only.
     expect(env?.meta?.checkpointPointer).toBeDefined();
     expect(env?.meta?.transcriptPointer).toBeDefined();
+    // The checkpoint BODY is the derived this-run projection (`go` user + `done`
+    // assistant) — prove the fold was NOT a start arg and was NOT dropped.
+    const ckptPointer = env?.meta?.checkpointPointer;
+    const ckptBody =
+      typeof ckptPointer === 'string' ? JSON.parse((await blobStore.read(ckptPointer)) ?? 'null') : [];
+    expect(ckptBody).toEqual([
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: 'done' },
+    ]);
     // The interrupted `deps.toolStep` default was a no-op; the writable still closed once.
     expect(closed()).toBe(1);
   });

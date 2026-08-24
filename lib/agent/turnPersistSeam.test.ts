@@ -211,8 +211,8 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(env).toBeNull();
   });
 
-  it('matrix 7 — B8 LWW conflict (stale/equal injected clock) surfaces as {ok:false, code:lww_conflict}, no partial terminal write', async () => {
-    const { seam, envelopeStore } = await makeSeam({
+  it('matrix 7 — B8 LWW conflict (stale/equal injected clock) surfaces as {ok:false, code:lww_conflict}; terminal keys NOT applied (honest partial-commit scope)', async () => {
+    const { seam, envelopeStore, blobStore } = await makeSeam({
       // Pre-seed a NEWER envelope; the injected overlay clock is stale/equal → B8 conflicts.
       overlayClock: () => 1000,
       seed: { updatedAt: 2000, meta: { transcriptPointer: 't_old_ptr_0000' } },
@@ -221,11 +221,31 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.code).toBe('lww_conflict');
-    // No partial terminal write: turnStatus/checkpoint/logicalCwd are NOT applied.
+    // NO partial TERMINAL write: turnStatus/checkpointPointer/logicalCwd are NOT applied.
     const env = await envelopeStore.readEnvelope(key);
     expect(env?.meta?.turnStatus).toBeUndefined();
     expect(env?.meta?.checkpointPointer).toBeUndefined();
     expect(env?.meta?.logicalCwd).toBeUndefined();
+    // HONEST partial-commit scope (adversarial L1): the seam composes TWO
+    // envelope writes — B7 advances `meta.transcriptPointer` on its OWN upsert
+    // (fail-closed) BEFORE B8's terminal overlay runs. With the injected stale
+    // clock, B7's pointer write SUCCEEDS (equal clock is not < stored, so LWW
+    // accepts it) and the B8 conflict does NOT roll it back. So claiming "no
+    // partial write" is false: on a B8 LWW conflict the transcriptPointer IS
+    // already advanced and the checkpoint blob IS written but unpointed
+    // (orphaned, recoverable — the pre-existing concurrent-host LWW residual of
+    // composing two already-shipped writes). The DEFAULT clock
+    // (`max(now, stored+1)`) is what prevents B7→B8 from ever self-conflicting
+    // on a real run. We assert the true state rather than over-claim.
+    expect(env?.updatedAt).toBe(2000); // B7's pointer upsert accepted (2000 !< 2000)
+    expect(env?.meta?.transcriptPointer).toBeDefined();
+    expect(env?.meta?.transcriptPointer).not.toBe('t_old_ptr_0000'); // advanced past seed
+    // The checkpoint blob was written (B6) BEFORE the B7 pointer write and is now
+    // ORPHANED — present in the blob store but never pointed to in meta. That
+    // orphan is append-only (immune to corruption) and recoverable; it is the
+    // honest footprint of a B8-conflict path, not silently hidden.
+    expect(env?.meta?.checkpointPointer).toBeUndefined();
+    void blobStore;
   });
 
   it('produces a bound, Redis-safe checkpoint pointer when a checkpoint is written', async () => {

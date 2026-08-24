@@ -77,9 +77,19 @@ export interface TurnPersistSeamDeps {
   /**
    * Optional envelope-clock source for the terminal B8 overlay (LWW). Defaults
    * to a strictly-newer auto-bump (`max(now, stored+1)`) so the B7→B8 double
-   * write can NEVER self-conflict on a real run. Tests may inject a fixed
-   * (stale/equal) clock to prove the seam surfaces an underlying B8 `lww_conflict`
-   * as a `{ok:false}` value with no partial terminal write (plan matrix 7).
+   * write can NEVER **self**-conflict on a real run. Tests may inject a fixed
+   * (stale/equal) clock to prove the seam surfaces an underlying B8
+   * `lww_conflict` as a `{ok:false}` value with no partial **terminal** write
+   * (plan matrix 7).
+   *
+   * **Partial-commit scope (honest, adversarial L1):** B7 and B8 are TWO stored
+   * envelope upserts. On the B8-conflict path, B7's `meta.transcriptPointer`
+   * advance (and a B6 checkpoint blob write) have ALREADY committed and are NOT
+   * rolled back — the B8 conflict returns `{ok:false, code:'lww_conflict'}` with
+   * the terminal worker keys unapplied but the pointer advanced + checkpoint
+   * possibly orphaned. This is the pre-existing concurrent-host LWW residual of
+   * composing two shipped writes (the default clock prevents the seam's own
+   * B7→B8 from conflicting); we never claim atomicity across the pair.
    */
   overlayClock?: OverlayClock;
 }
@@ -161,7 +171,9 @@ export function createTurnPersistSeam(
 
       // 2. Transcript (B7): write the appended segment + advance transcriptPointer
       //    only on a successful PUT (fail-closed, LWW). A failure here returns a
-      //    value; the pointer is never advanced on a partial write.
+      //    value; the pointer is never advanced on a partial write. NOTE (honest
+      //    partial-commit scope, adversarial L1): this is a SEPARATE committed
+      //    envelope upsert that B8's later overlay conflict does NOT roll back.
       const seg = await persistTranscriptSegment({
         store: blobStore,
         envelopeStore,
