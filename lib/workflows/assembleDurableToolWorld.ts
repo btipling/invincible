@@ -163,64 +163,86 @@ export async function assembleDurableToolWorld(
     // Fail-open: no HTTP instance → no HTTP tools.
   }
 
-  // 4. Assemble the non-FS tool world (C14a).
-  const { buildUserMcpTools } = await import('../mcp/client');
-  const { resolveSessionStore } = await import(
-    '../tenancy/harnessSessionsRedis'
-  );
+  // Wrap assembly in try/catch: if buildToolWorld connects MCP/HTTP and then
+  // createAgentTools throws, the handles leaked — they were never returned to
+  // the caller and never closed. Close everything on the error path and
+  // re-throw so the caller (modelGenerateStep / toolExecuteStep) can handle it.
+  let world: Awaited<ReturnType<typeof buildToolWorld>> | undefined;
+  try {
+    // 4. Assemble the non-FS tool world (C14a).
+    const { buildUserMcpTools } = await import('../mcp/client');
+    const { resolveSessionStore } = await import(
+      '../tenancy/harnessSessionsRedis'
+    );
 
-  const world = await buildToolWorld({
-    userId,
-    sessionId,
-    signal,
-    serverSecrets: services.serverSecrets,
-    services: {
-      userSkills: services.userSkills,
-      userPersonas: services.userPersonas,
-      userPreferredSandbox: services.userPreferredSandbox,
-      userMcpServers: services.userMcpServers,
-      createHttpRunner: services.createHttpRunner,
-    },
-    sessionStoreSeam: {
-      resolveSessionStore: () => resolveSessionStore(),
-      resolveTenantIdForUser: (uid: string) =>
-        services.harnessSessionsRedis.resolveTenantIdForUser(uid),
-    },
-    buildUserMcpTools,
-    byokSecretsToRedact: [],
-    ghSecrets,
-    ...(sandboxClient
-      ? { sandbox: { client: sandboxClient, secrets: sandboxSecrets } }
-      : {}),
-    httpAttachName,
-  });
-
-  // 5. Merge FS sandbox tools into the registry. Always merge when a sandbox
-  //    client exists + permissions are known — NEVER skip on null workspaceRoot
-  //    (BYO probe fault must not drop the tools; absolute paths fail closed,
-  //    same as /api/agent).
-  let registry = world.registry;
-  if (sandboxClient && permissions) {
-    const initialCwd = args.persistRunBind?.cwd;
-    const fsTools = createAgentTools({
-      client: sandboxClient,
-      freshness,
-      permissions,
-      workspaceRoot: workspaceRoot ?? null,
-      ...(initialCwd ? { initialCwd } : {}),
-      secrets: world.secrets,
+    world = await buildToolWorld({
+      userId,
+      sessionId,
       signal,
+      serverSecrets: services.serverSecrets,
+      services: {
+        userSkills: services.userSkills,
+        userPersonas: services.userPersonas,
+        userPreferredSandbox: services.userPreferredSandbox,
+        userMcpServers: services.userMcpServers,
+        createHttpRunner: services.createHttpRunner,
+      },
+      sessionStoreSeam: {
+        resolveSessionStore: () => resolveSessionStore(),
+        resolveTenantIdForUser: (uid: string) =>
+          services.harnessSessionsRedis.resolveTenantIdForUser(uid),
+      },
+      buildUserMcpTools,
+      byokSecretsToRedact: [],
+      ghSecrets,
+      ...(sandboxClient
+        ? { sandbox: { client: sandboxClient, secrets: sandboxSecrets } }
+        : {}),
+      httpAttachName,
     });
-    registry = { ...registry, ...fsTools };
-  }
 
-  return {
-    registry,
-    secrets: world.secrets,
-    signal: world.signal,
-    freshness,
-    mcpClose: world.mcpClose,
-    httpRunner: world.httpRunner,
-    sandboxClientClose,
-  };
+    // 5. Merge FS sandbox tools into the registry. Always merge when a sandbox
+    //    client exists + permissions are known — NEVER skip on null workspaceRoot
+    //    (BYO probe fault must not drop the tools; absolute paths fail closed,
+    //    same as /api/agent).
+    let registry = world.registry;
+    if (sandboxClient && permissions) {
+      const initialCwd = args.persistRunBind?.cwd;
+      const fsTools = createAgentTools({
+        client: sandboxClient,
+        freshness,
+        permissions,
+        workspaceRoot: workspaceRoot ?? null,
+        ...(initialCwd ? { initialCwd } : {}),
+        secrets: world.secrets,
+        signal,
+      });
+      registry = { ...registry, ...fsTools };
+    }
+
+    return {
+      registry,
+      secrets: world.secrets,
+      signal: world.signal,
+      freshness,
+      mcpClose: world.mcpClose,
+      httpRunner: world.httpRunner,
+      sandboxClientClose,
+    };
+  } catch (err) {
+    // Close any handles that were opened before the throw.
+    // buildToolWorld may have connected MCP / opened HTTP before throwing;
+    // createAgentTools may have thrown after buildToolWorld succeeded.
+    if (world?.mcpClose) {
+      try { await world.mcpClose(); } catch { /* ignore MCP close errors on the error path */ }
+    }
+    if (world?.httpRunner) {
+      try { await world.httpRunner.close(); } catch { /* ignore HTTP runner close errors on the error path */ }
+    }
+    // Sandbox client was opened before buildToolWorld — close it too.
+    if (sandboxClientClose) {
+      try { await sandboxClientClose(); } catch { /* ignore sandbox close errors on the error path */ }
+    }
+    throw err;
+  }
 }

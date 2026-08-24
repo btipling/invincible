@@ -119,18 +119,23 @@ export async function modelGenerateStep(
     scope: args.scope,
     persistRunBind: args.persistRunBind,
   });
-  const toolSchemas = toolsWithoutExecutors(world.registry);
 
-  // Close lifecycle handles — the model step only needed schemas.
-  // Best-effort; ignore close errors.
-  if (world.mcpClose) {
-    try { await world.mcpClose(); } catch { /* ignore */ }
-  }
-  if (world.httpRunner) {
-    try { await world.httpRunner.close(); } catch { /* ignore */ }
-  }
-  if (world.sandboxClientClose) {
-    try { await world.sandboxClientClose(); } catch { /* ignore */ }
+  let toolSchemas: ReturnType<typeof toolsWithoutExecutors>;
+  try {
+    toolSchemas = toolsWithoutExecutors(world.registry);
+  } finally {
+    // Close lifecycle handles — the model step only needed schemas.
+    // Always close, even if toolsWithoutExecutors throws (e.g. malformed tool
+    // object in the registry). Best-effort; ignore close errors.
+    if (world.mcpClose) {
+      try { await world.mcpClose(); } catch { /* ignore */ }
+    }
+    if (world.httpRunner) {
+      try { await world.httpRunner.close(); } catch { /* ignore */ }
+    }
+    if (world.sandboxClientClose) {
+      try { await world.sandboxClientClose(); } catch { /* ignore */ }
+    }
   }
 
   const input: GenerateOneRoundInput = {
