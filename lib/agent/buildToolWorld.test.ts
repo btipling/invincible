@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildToolWorld, type BuildToolWorldScope } from './buildToolWorld';
 import type { SandboxClient } from '../sandbox/client';
 import type { HarnessSessionRecord } from '../sessions/sessionStore';
@@ -12,7 +12,7 @@ vi.mock('./httpFetchTools', () => ({
     if (throwInCreateHttpFetchTools()) {
       throw new Error('createHttpFetchTools exploded');
     }
-    return {};
+    return { http_get: { execute: vi.fn() } };
   },
 }));
 
@@ -140,6 +140,10 @@ function baseScope(
 }
 
 describe('buildToolWorld', () => {
+  afterEach(() => {
+    throwInCreateHttpFetchTools.mockReturnValue(false);
+  });
+
   it('always assembles skill + meta-persona + meta-sandbox tools (case 1)', async () => {
     const world = await buildToolWorld(baseScope());
     expect(world.registry.find_skill).toBeTruthy();
@@ -195,6 +199,8 @@ describe('buildToolWorld', () => {
     );
     // MCP tool merged into the registry.
     expect(world.registry.mcp_demo_ping).toBeTruthy();
+    // HTTP fetch tools merged into the registry (not lost to the empty mock).
+    expect(world.registry.http_get).toBeTruthy();
     // Builtin-HTTP runner owned for later close.
     expect(world.httpRunner).toBeTruthy();
     const createRunner = world.httpRunner;
@@ -295,9 +301,6 @@ describe('buildToolWorld', () => {
     // Both handles were closed on the error path.
     expect(mcpClose).toHaveBeenCalledTimes(1);
     expect(httpClose).toHaveBeenCalledTimes(1);
-
-    // Reset for subsequent tests.
-    throwInCreateHttpFetchTools.mockReturnValue(false);
   });
 
   it('injects the request signal into the world (settled by toolExecuteStep resolver)', async () => {
