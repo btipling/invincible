@@ -285,6 +285,44 @@ describe('middleware auth gate', () => {
     expect(config.matcher).toContain('/api/harness/status');
   });
 
+  it('401 JSON on unauth POST /api/turns when tenancy on', async () => {
+    process.env.DATABASE_URL = 'postgres://x';
+    process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = 'key-material';
+    vi.resetModules();
+    vi.doMock('next-auth/jwt', () => ({
+      getToken: vi.fn(async () => null),
+    }));
+    const { middleware } = await loadMw();
+    const res = await middleware(
+      new Request('http://localhost/api/turns', { method: 'POST' }) as never,
+    );
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe(AUTH_REQUIRED_ERROR);
+  });
+
+  it('allows POST /api/turns when JWT sub present', async () => {
+    process.env.DATABASE_URL = 'postgres://x';
+    process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';
+    process.env.CREDENTIALS_ENCRYPTION_KEY = 'key-material';
+    vi.resetModules();
+    vi.doMock('next-auth/jwt', () => ({
+      getToken: vi.fn(async () => ({ sub: 'user-uuid' })),
+    }));
+    const { middleware } = await loadMw();
+    const res = await middleware(
+      new Request('http://localhost/api/turns', { method: 'POST' }) as never,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('/api/turns is on the middleware API-protected matcher (dual gate)', async () => {
+    vi.resetModules();
+    const { config } = await import('./middleware');
+    expect(config.matcher).toContain('/api/turns');
+  });
+
   it('allows GET /api/skills when JWT sub present', async () => {
     process.env.DATABASE_URL = 'postgres://x';
     process.env.AUTH_SECRET = 'test-secret-value-for-jwt-middleware!!';

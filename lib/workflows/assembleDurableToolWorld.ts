@@ -125,7 +125,7 @@ export async function assembleDurableToolWorld(
   try {
     const resolved = await services.resolveSandbox.resolveAgentSandbox(
       userId,
-      { execEnv: ghToken ? { GH_TOKEN: ghToken } : undefined },
+      { execEnv: ghToken ? { GH_TOKEN: ghToken, GITHUB_TOKEN: ghToken } : undefined },
       { signal, requestedSandboxId },
     );
     if (resolved.ok) {

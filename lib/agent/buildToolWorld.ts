@@ -211,34 +211,49 @@ export async function buildToolWorld(
     loadSecrets: services.userMcpServers.loadEnabledUserMcpSecrets,
     setLastError: services.userMcpServers.setUserMcpServerLastError,
   });
-  extraTools = { ...extraTools, ...mcp.tools };
-  redactList.push(...mcp.secretsToRedact);
-  const secrets = [...secretsBase, ...mcp.secretsToRedact];
 
-  // --- builtin HTTP (only when a running Settings HTTP instance attaches) ----
-
+  // Wrap the post-MCP assembly in try/catch: if we connected MCP and then
+  // a later line throws (e.g. resolveBuiltinHttpConfig or createHttpRunner),
+  // the MCP handle leaks — it was never returned to the caller. Close MCP +
+  // HTTP on the error path and re-throw.
   let httpRunner: HttpFetchRunner | undefined;
-  if (httpAttachName) {
-    const builtinHttp = resolveBuiltinHttpConfig();
-    // Constructed via the route's composition root (phase-2 DI), request-scoped.
-    httpRunner = services.createHttpRunner({ name: httpAttachName });
-    const httpTools = createHttpFetchTools({
-      runner: httpRunner,
-      secrets,
-      serverSecrets,
-      signal,
-      maxBytes: builtinHttp.maxBytes,
-      timeoutMs: builtinHttp.timeoutMs,
-    });
-    extraTools = { ...extraTools, ...httpTools };
-  }
+  try {
+    extraTools = { ...extraTools, ...mcp.tools };
+    redactList.push(...mcp.secretsToRedact);
+    const secrets = [...secretsBase, ...mcp.secretsToRedact];
 
-  return {
-    registry: extraTools,
-    secrets,
-    redactList,
-    signal,
-    mcpClose: mcp.close,
-    ...(httpRunner ? { httpRunner } : {}),
-  };
+    // --- builtin HTTP (only when a running Settings HTTP instance attaches)
+
+    if (httpAttachName) {
+      const builtinHttp = resolveBuiltinHttpConfig();
+      // Constructed via the route's composition root (phase-2 DI), request-scoped.
+      httpRunner = services.createHttpRunner({ name: httpAttachName });
+      const httpTools = createHttpFetchTools({
+        runner: httpRunner,
+        secrets,
+        serverSecrets,
+        signal,
+        maxBytes: builtinHttp.maxBytes,
+        timeoutMs: builtinHttp.timeoutMs,
+      });
+      extraTools = { ...extraTools, ...httpTools };
+    }
+
+    return {
+      registry: extraTools,
+      secrets,
+      redactList,
+      signal,
+      mcpClose: mcp.close,
+      ...(httpRunner ? { httpRunner } : {}),
+    };
+  } catch (err) {
+    // Close MCP handle if we connected before throwing.
+    try { await mcp.close(); } catch { /* ignore MCP close errors on the error path */ }
+    // Close HTTP runner if it was created before the throw.
+    if (httpRunner) {
+      try { await httpRunner.close(); } catch { /* ignore HTTP runner close errors on the error path */ }
+    }
+    throw err;
+  }
 }

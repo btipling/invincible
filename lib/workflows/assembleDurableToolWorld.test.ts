@@ -148,6 +148,7 @@ describe('assembleDurableToolWorld (prod path)', () => {
     ];
     expect(sandboxCall[0]).toBe('u1'); // userId
     expect(sandboxCall[1]?.execEnv?.GH_TOKEN).toBe('gh_token_test');
+    expect(sandboxCall[1]?.execEnv?.GITHUB_TOKEN).toBe('gh_token_test');
     expect(sandboxCall[2]?.requestedSandboxId).toBe('sb_xyz');
 
     // The returned registry includes both skill/meta from buildToolWorld AND
