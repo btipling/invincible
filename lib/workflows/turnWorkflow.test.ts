@@ -22,6 +22,9 @@ vi.mock('workflow', () => ({
   getWritable: () => ({
     getWriter: () => ({ write: vi.fn(async () => {}), close: vi.fn(async () => {}) }),
   }),
+  // C14b (#835): turnRunId is DERIVED in-workflow (never a start() arg), so the
+  // entry reads it from getWorkflowMetadata().workflowRunId.
+  getWorkflowMetadata: () => ({ workflowRunId: 'wr_0000_meta' }),
 }));
 
 vi.mock('../agent/generateOneRound', () => ({
@@ -46,7 +49,6 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
     setPersistSeamResolver(() => createTurnPersistSeam({ blobStore, envelopeStore, scope }));
 
     const result = await turnWorkflow({
-      turnRunId: 'wr_0000_adapter',
       userMessage: 'go adapter',
       tools: {},
       modelId: 'mock-model',
@@ -68,5 +70,9 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
     ]);
     expect(env?.meta?.turnStatus).toBe('completed');
     expect(env?.meta?.transcriptPointer).toBeDefined();
+    // C14b matrix row 8: the terminal persist's turnRunId is the workflow-run
+    // id derived in-workflow (must equal the route-side run.runId, never the
+    // session id 's1').
+    expect(env?.meta?.turnRunId).toBe('wr_0000_meta');
   });
 });

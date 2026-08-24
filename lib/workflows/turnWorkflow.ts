@@ -22,7 +22,7 @@
  * in one step. `turnRunId` = the Workflow run id, never session id.
  *
  * **Serializable-only args (adversarial L1):** the entry takes plain serializable
- * values only (`turnRunId`, `userMessage`, tool SCHEMAS, `modelId`) — the tool
+ * values only (`userMessage`, tool SCHEMAS, `modelId`) — the tool
  * world (registry/secrets/signal) and the persist seam are resolved INSIDE the
  * steps from their module-level resolvers, which the engine (C14) / B13 wires at
  * the boundary before `start()`. No closures / AbortSignal / functions are ever
@@ -33,7 +33,7 @@
  * request-scoped model/registry resolution are the engine rows (C14+).
  */
 
-import { getWritable } from 'workflow';
+import { getWritable, getWorkflowMetadata } from 'workflow';
 import {
   runTurnLoop,
   type PersistStepFn,
@@ -47,9 +47,15 @@ import { modelGenerateStep } from './modelGenerateStep';
 import { toolExecuteStep } from './toolExecuteStep';
 import { persistStep } from './persistStep';
 
-/** `'use workflow'` run args — plain serializable values only. */
+/**
+ * `'use workflow'` run args — plain serializable values only.
+ *
+ * `turnRunId` is intentionally NOT an arg: `start()` returns the run id only
+ * after it is enqueued, so `turnRunId` cannot be supplied from the boundary.
+ * The entry derives it in-workflow from `getWorkflowMetadata().workflowRunId`
+ * (= the route-side `run.runId`, never the session id).
+ */
 export interface TurnWorkflowArgs {
-  turnRunId: string;
   userMessage: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   tools: Record<string, any>;
@@ -73,6 +79,12 @@ export async function turnWorkflow(
   args: TurnWorkflowArgs,
 ): Promise<TurnLoopResult> {
   'use workflow';
+
+  // `turnRunId` is DERIVED in-workflow: `start()` returns the run id only after
+  // enqueue, so it can never be a `start()` arg. Thread the workflow's own run
+  // id to the loop → terminal persist, so the persist seam's `turnRunId` equals
+  // the route-side `run.runId` (never the session id).
+  const { workflowRunId } = getWorkflowMetadata();
 
   // ONE getWritable() handle for the run — the SSE wire (tokens = Data Written).
   // The SDK returns a stream (web `WritableStream`); looping writes await its
@@ -110,7 +122,7 @@ export async function turnWorkflow(
       toolStep,
       persistStep: persistStepFn,
       writable: loopWritable,
-      turnRunId: args.turnRunId,
+      turnRunId: workflowRunId,
       ...(args.persistRunBind !== undefined ? { persistRunBind: args.persistRunBind } : {}),
     },
     { userMessage: args.userMessage },
