@@ -3,21 +3,22 @@
  * turn loop, as one `'use step'` boundary.
  *
  * Thin shell over the B7/B8 worker persist seam (`persistTranscriptSegment` +
- * envelope meta overlay, `lib/agent/turnWorkerPersist.ts`). Per plan #806
- * non-goals, the *real* B7/B8 wiring (Blob PUT + `meta.transcriptPointer` LWW
- * advance + envelope overlay) lands in **B13** ("persist wiring is B13").
- * This B12 step establishes the step boundary + terminal-status contract and
- * ships an **in-memory persists seam for tests** (matrix case 7), keeping the
- * file's static closure FREE of the banned Blob-store surface so the
- * `'use workflow'` entry importing it stays inside the B11 deploy-gate lock
- * (regression: `lib/workflows/staticGraph.test.ts`).
+ * envelope meta overlay, `lib/agent/turnWorkerPersist.ts`). In **production**
+ * the seam is constructed IN-STEP from the serializable `scope` arg (the route
+ * MUST NOT wire the module-level resolver — Vercel step VMs don't share the
+ * route's module state). `setPersistSeamResolver` is a TEST-ONLY override: when
+ * set (tests), it wins; when unset (prod), the step constructs the real
+ * Blob+envelope seam from `scope`.
+ *
+ * The B11 walker treats `'use step'` files as leaves, so this file's imports
+ * (including `lib/di` / Blob-store surface) do NOT pollute the workflow entry's
+ * closure — the deploy-gate lock stays intact (regression:
+ * `lib/workflows/staticGraph.test.ts`).
  *
  * **Zero non-serializable step args** (plan lock + adversarial L1): the step
  * receives plain serializable values only (`turnRunId` = the Workflow run id,
  * **never** session id, plan lock + the serialized delta log for replay). No
- * closures / seams are passed as args — the persist store is re-resolved
- * *inside* the step from the module-level resolver (`setPersistSeamResolver`),
- * which the engine/entry wires to the real B7/B8 seam at B13.
+ * closures / seams are passed as args.
  *
  * Business errors are values: a persist failure returns `{ok:false, code, error}`
  * (the loop terminates cleanly; the writable is still closed).
@@ -75,6 +76,13 @@ export interface PersistStepArgs {
   deltas: ReadonlyArray<unknown>;
   /** Run final-state fold (B13) — plain serializable values only. */
   fold?: PersistStepFold;
+  /**
+   * Serializable session scope for in-step seam construction (prod path).
+   * When the module-level resolver is unset (production — the route must NOT
+   * wire it), the step constructs the real Blob+envelope seam from this scope.
+   * Plain serializable values only.
+   */
+  scope?: { tenantId: string; userId: string; sessionId: string };
 }
 
 /** Fail-closed step result (terminal status). */
@@ -100,7 +108,27 @@ export async function persistStep(
 ): Promise<PersistStepResult> {
   'use step';
 
-  const seam = resolvePersistSeam();
+  // Resolve the persist seam: tests wire it via setPersistSeamResolver (the
+  // resolver is set → no throw → test seam wins). In production the resolver
+  // is UNSET (the route MUST NOT wire it — Vercel step VMs don't share the
+  // route's module state), so we fall through to construct the real
+  // Blob+envelope seam from the serializable scope.
+  let seam: PersistStepSeam;
+  try {
+    seam = resolvePersistSeam();
+  } catch {
+    if (!args.scope) {
+      throw new Error(
+        'persistStep: no persist seam wired and no scope provided — the route must pass scope on start() args.',
+      );
+    }
+    // Production path: construct the real B7/B8/B6 seam in-step. The DI root
+    // import is a 'use step' leaf (the B11 walker does not follow it), so the
+    // workflow entry's closure stays clean.
+    const { createProdServices } = await import('../di/index');
+    seam = createProdServices().createPersistStepSeam(args.scope);
+  }
+
   const content = JSON.stringify({ deltas: args.deltas });
   const result = await seam.persist({
     turnRunId: args.turnRunId,

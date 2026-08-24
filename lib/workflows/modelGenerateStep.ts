@@ -7,11 +7,17 @@
  * `execute`), returning the normalized DELTA `{text, toolCalls, usage,
  * finishReason}` — not the full transcript.
  *
+ * In **production** BYOK is re-resolved IN-STEP: the route passes only
+ * serializable `{ userId, modelId }` (never api keys). Inside the step,
+ * `resolveByokForRequest(userId, modelId)` resolves the tenant BYOK and
+ * attaches `providerOptions.gateway.{only,byok}` + the redact list onto
+ * `generateOneRound`. On BYOK fail the step returns `{ok:false,
+ * code:'model_error'}` — it NEVER calls `streamText` with a bare `modelId`.
+ *
  * **Zero non-serializable step args** (plan #806 lock): the only args this step
  * may legally receive are plain serializable values (the messages array + tool
- * SCHEMA dict + a model id string). No closures / bound runners / seams cross
- * the step boundary. Everything durable is re-resolved *inside* the step
- * (model/BYOK), never smuggled in as args.
+ * SCHEMA dict + model id + user id). No closures / bound runners / seams cross
+ * the step boundary.
  *
  * The step returns the delta; the loop core writes the SSE lines from that delta
  * (`write SSE (text / reasoning / tool_start)`), so this wrapper does NOT open
@@ -44,6 +50,11 @@ export interface ModelGenerateStepArgs {
   tools: Record<string, any>;
   /** Server-resolved model id string (request-scoped BYOK). */
   modelId: string;
+  /**
+   * User id for in-step BYOK re-resolution (prod path). The route passes this
+   * as a plain serializable value — never api keys or provider options.
+   */
+  userId: string;
 }
 
 /** Fail-closed step result (same shape as the B9 core). */
@@ -52,14 +63,34 @@ export type ModelGenerateStepResult =
   | { ok: false; code: 'model_error' | 'write_error' | 'cancelled'; error: string };
 
 /**
- * Run exactly ONE model round as a workflow step. Calls the B9 core, returning
- * the delta as a value. The B9 `onEvent` sink is a no-op: the loop writes the
- * SSE from the returned delta (single SSE owner).
+ * Run exactly ONE model round as a workflow step. In production, re-resolves
+ * BYOK in-step (tenant BYOK always; never host env-model) and attaches
+ * `providerOptions.gateway.{only,byok}` + the redact list. On BYOK fail
+ * returns `{ok:false}` — never calls `streamText` with a bare `modelId`.
+ * Calls the B9 core, returning the delta as a value.
  */
 export async function modelGenerateStep(
   args: ModelGenerateStepArgs,
 ): Promise<ModelGenerateStepResult> {
   'use step';
+
+  // Re-resolve BYOK in-step from serializable { userId, modelId }.
+  // Tenant BYOK always — never host env-model (SECURITY.md). On failure
+  // return {ok:false} — do NOT call streamText with a bare modelId.
+  const { createProdServices } = await import('../di/index');
+  const services = createProdServices();
+  const byok = await services.resolveInferenceForRequest.resolveByokForRequest(
+    args.userId,
+    args.modelId,
+  );
+
+  if (!byok.ok) {
+    return {
+      ok: false,
+      code: 'model_error',
+      error: `BYOK resolve failed: ${byok.reason}`,
+    };
+  }
 
   const input: GenerateOneRoundInput = {
     messages: args.messages,
@@ -69,7 +100,19 @@ export async function modelGenerateStep(
     },
   };
 
-  const result = await generateOneRound({ modelId: args.modelId }, input);
+  const result = await generateOneRound(
+    {
+      modelId: byok.modelId,
+      providerOptions: {
+        gateway: {
+          only: byok.only,
+          byok: byok.byok,
+        },
+      },
+      secrets: byok.secretsToRedact,
+    },
+    input,
+  );
   if (result.ok) return { ok: true, delta: result.delta };
   return { ok: false, code: result.code, error: result.error };
 }

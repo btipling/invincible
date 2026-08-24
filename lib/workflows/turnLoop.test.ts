@@ -442,7 +442,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
 });
 
 describe('step wrappers (matrix 4–7)', () => {
-  it('matrix 4 + 5: modelGenerateStep is a thin shell — delegates generateOneRound, serializable args', async () => {
+  it('matrix 4 + 5: modelGenerateStep is a thin shell — delegates generateOneRound, re-resolves BYOK in-step, serializable args', async () => {
     // Mock generateOneRound to prove the wrapper delegates and forwards plain
     // serializable args. (The schemas-only stripping is B9's job, pinned in
     // generateOneRound.test.ts; the wrapper must not invent/deny that invariant.)
@@ -452,11 +452,30 @@ describe('step wrappers (matrix 4–7)', () => {
       return { ok: true as const, delta: { text: 'm', toolCalls: [] } };
     });
     vi.doMock('../agent/generateOneRound', () => ({ generateOneRound: m1 }));
+    // Mock the DI root so the in-step BYOK re-resolution returns a stub success.
+    // In production the step imports the real DI root; tests inject a stub.
+    vi.doMock('../di/index', () => ({
+      createProdServices: () => ({
+        resolveInferenceForRequest: {
+          resolveByokForRequest: async () => ({
+            ok: true as const,
+            modelId: 'byok-resolved',
+            provider: 'anthropic',
+            credentials: { apiKey: 'sk-test' },
+            only: ['anthropic'] as [string],
+            byok: { anthropic: [{ apiKey: 'sk-test' }] },
+            secretId: 'sec-1',
+            secretsToRedact: ['sk-test'],
+          }),
+        },
+      }),
+    }));
     const mod = await import('./modelGenerateStep');
     const stepArgs = {
       messages: [{ role: 'user', content: 'hi' }],
       modelId: 'm',
       tools: { list_dir: { description: 'd' } },
+      userId: 'u1',
     };
     // Adversarial L1: every step arg must be JSON-serializable (Vercel
     // serializes ALL args to a `'use step'` fn — closures become nothing).
@@ -466,10 +485,16 @@ describe('step wrappers (matrix 4–7)', () => {
     expect(m1).toHaveBeenCalledTimes(1);
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.delta.text).toBe('m');
-    // Wrapper forwards the caller's modelId verbatim (no in-body resolution).
-    const argDeps = m1.mock.calls[0]?.[0] as { modelId?: string };
-    expect(argDeps.modelId).toBe('m');
+    // BYOK re-resolved IN-STEP: providerOptions.gateway must be present on the
+    // generateOneRound deps, not a bare modelId.
+    const argDeps = m1.mock.calls[0]?.[0] as { modelId?: string; providerOptions?: unknown; secrets?: unknown };
+    expect(argDeps.modelId).toBe('byok-resolved');
+    expect(argDeps.providerOptions).toEqual({
+      gateway: { only: ['anthropic'], byok: { anthropic: [{ apiKey: 'sk-test' }] } },
+    });
+    expect(argDeps.secrets).toEqual(['sk-test']);
     vi.doUnmock('../agent/generateOneRound');
+    vi.doUnmock('../di/index');
   });
 
   it('matrix 6: toolExecuteStep thin shell → delegates executeTool; business error is a value', async () => {

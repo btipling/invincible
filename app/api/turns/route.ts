@@ -2,21 +2,24 @@
  * backend-agents C14b (#835) — `POST /api/turns`: the durable-turn START surface.
  *
  * Starts a Workflows `turnWorkflow` (B12 loop) run for one prompt and streams
- * its live SSE (or returns its `runId`), with the two step seams wired INSIDE
- * the boundary BEFORE `start()` so the B12/B13 steps fail closed if unwired:
+ * its live SSE (or returns its `runId`). The route is a thin auth+body gate
+ * that passes ONLY serializable values to `start()` — never closures, api keys,
+ * or module-level resolver wiring (Vercel step VMs don't share the route's
+ * module state).
  *
- *  1. Persist seam — `setPersistSeamResolver(() => createPersistStepSeam(scope))`
- *     (B13 real B7/B8/B6 Blob + envelope terminal persist → `turnStatus='completed'`),
- *     `scope = { tenantId, userId, sessionId }`.
- *  2. Tool world — `setToolWorldResolver(… buildToolWorld(scope) …)` (C14a:
- *     registry + secrets + signal).
- *  3. Request-scoped model/BYOK resolution feeding `modelGenerateStep`'s
- *     serializable `modelId` (mirrors the `/api/agent` DI root).
+ * Step seams are re-resolved INSIDE each `'use step'` body from the serializable
+ * `scope` arg. This is the production path — the route MUST NOT call
+ * `setPersistSeamResolver` / `setToolWorldResolver` (those are test overrides).
+ *
+ * Pre-`start()` gates (fail closed, never enqueue a doomed run):
+ *  1. Auth (`requireSessionUser`) → 401
+ *  2. `sessionId` required → 400
+ *  3. Tenant resolve → 503
+ *  4. BYOK resolve → 4xx
  *
  * `turnRunId` is DERIVED in-workflow (`getWorkflowMetadata().workflowRunId`), so
  * the terminal persist's `turnRunId` equals the route-side `run.runId` (never
- * session id). C14b wires the seams + start/stream; the separate post-start
- * `running` PATCH is C14d (out of scope — not built here).
+ * session id).
  *
  * Fail closed: `start` throw → 503, never a `/api/agent` fallback (source lock).
  * `maxDuration = 1800` reuses the `/api/agent` constant verbatim (no cap change).
@@ -27,14 +30,13 @@ import {
   AGENT_STREAM_CONTENT_TYPE,
   wantsAgentStream,
 } from '../../../lib/agent/agentStream';
-import { buildToolWorld } from '../../../lib/agent/buildToolWorld';
 import { mapByokResolveFailure } from '../../../lib/chatServer';
 import { createProdServices } from '../../../lib/di';
-import { buildUserMcpTools } from '../../../lib/mcp/client';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 import { resolveSessionStore } from '../../../lib/tenancy/harnessSessionsRedis';
-import { setPersistSeamResolver } from '../../../lib/workflows/persistStep';
-import { setToolWorldResolver } from '../../../lib/workflows/toolExecuteStep';
+import { isEnvelopeStore } from '../../../lib/sessions/sessionStore';
+import { sessionKeyFor } from '../../../lib/tenancy/harnessSessionsRedis';
+import { toolsWithoutExecutors } from '../../../lib/agent/generateOneRound';
 import { turnWorkflow } from '../../../lib/workflows/turnWorkflow';
 
 export const runtime = 'nodejs';
@@ -59,6 +61,10 @@ function failClosed(err: unknown): string {
  * - SSE (`Accept: text/event-stream`) → pipe `run.getReadable()` + header.
  * - else → JSON `{ runId }` + `x-workflow-run-id` header.
  * - `start` throw → 503 fail-closed, no `/api/agent` fallback.
+ *
+ * The route passes ONLY serializable values to `start()`: `scope`, `tools`
+ * (schema-only via `toolsWithoutExecutors`), `modelId`, `userMessage`, and
+ * optional `persistRunBind`. Step seams are re-resolved in-step from `scope`.
  */
 export async function POST(req: Request): Promise<Response> {
   // Auth gate FIRST (mirrors app/api/agent/route.ts POST gate) — before any
@@ -110,12 +116,7 @@ export async function POST(req: Request): Promise<Response> {
     }
     const scope = { tenantId: tenantRes.value, userId, sessionId };
 
-    // 1. BOUNDARY WIRE: persist seam (B13) — installs BEFORE start() so the
-    //    terminal persist step never fails closed.
-    setPersistSeamResolver(() => services.createPersistStepSeam(scope));
-
-    // 3. Request-scoped model/BYOK resolution → serializable `modelId` for the
-    //    model step (mirrors the /api/agent DI root).
+    // 1. BYOK resolve — fail closed BEFORE start (never enqueue a doomed run).
     const byok = await services.resolveInferenceForRequest.resolveByokForRequest(
       userId,
       parsed.modelId,
@@ -125,42 +126,40 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json({ error }, { status });
     }
 
-    // 2. BOUNDARY WIRE: C14a tool world (registry + secrets + signal). The
-    //    in-step resolver (`toolExecuteStep`) is SYNCHRONOUS, so the (async)
-    //    world is assembled here at the boundary and the resolver projects the
-    //    fields the step needs — resolved in-step, never a serialized step arg.
-    const world = await buildToolWorld({
-      userId,
-      sessionId,
-      signal: req.signal,
-      serverSecrets: services.serverSecrets,
-      services: {
-        userSkills: services.userSkills,
-        userPersonas: services.userPersonas,
-        userPreferredSandbox: services.userPreferredSandbox,
-        userMcpServers: services.userMcpServers,
-        createHttpRunner: services.createHttpRunner,
-      },
-      sessionStoreSeam: {
-        resolveSessionStore: () => resolveSessionStore(),
-        resolveTenantIdForUser: (uid: string) =>
-          services.harnessSessionsRedis.resolveTenantIdForUser(uid),
-      },
-      buildUserMcpTools,
-      byokSecretsToRedact: byok.secretsToRedact,
-      ghSecrets: [],
-      httpAttachName: null,
-    });
-    setToolWorldResolver(() => ({
-      registry: world.registry,
-      secrets: world.secrets,
-      signal: world.signal,
-    }));
+    // 2. Read envelope `logicalCwd` / `activeSandboxId` for persistRunBind
+    //    (B13 fallback). Best-effort: a store read error never 4xx's the turn.
+    let persistRunBind: { cwd?: string; activeSandboxId?: string } | undefined;
+    try {
+      const storeRes = await resolveSessionStore();
+      if (storeRes.ok && isEnvelopeStore(storeRes.value)) {
+        const envelope = await storeRes.value.readEnvelope(
+          sessionKeyFor(tenantRes.value, userId, sessionId),
+        );
+        if (envelope) {
+          if (typeof envelope.meta?.logicalCwd === 'string' && envelope.meta.logicalCwd) {
+            persistRunBind = { ...persistRunBind, cwd: envelope.meta.logicalCwd };
+          }
+          if (typeof envelope.meta?.activeSandboxId === 'string' && envelope.meta.activeSandboxId) {
+            persistRunBind = { ...persistRunBind, activeSandboxId: envelope.meta.activeSandboxId };
+          }
+        }
+      }
+    } catch {
+      // Fail-open: no bind → steps use defaults.
+    }
 
     // The single durable loop entry. `turnRunId` is derived in-workflow from
     // getWorkflowMetadata().workflowRunId — never passed as a start() arg.
+    // `tools` = SCHEMAS only (via toolsWithoutExecutors) — never a live registry
+    // with `execute` closures. The tool world is assembled IN-STEP from `scope`.
     const run = await start(turnWorkflow, [
-      { userMessage: parsed.prompt, tools: world.registry, modelId: byok.modelId },
+      {
+        userMessage: parsed.prompt,
+        tools: toolsWithoutExecutors({ find_skill: {}, fetch_skill: {} }),
+        modelId: byok.modelId,
+        scope,
+        ...(persistRunBind ? { persistRunBind } : {}),
+      },
     ]);
 
     const runHeaders: Record<string, string> = {

@@ -60,6 +60,8 @@ export interface TurnWorkflowArgs {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   tools: Record<string, any>;
   modelId: string;
+  /** Serializable session scope for in-step seam construction (prod path). */
+  scope: { tenantId: string; userId: string; sessionId: string };
   /**
    * Pre-run sandbox **bind** state (B13): `cwd` + `activeSandboxId`. Supplied by
    * the engine (C14) at `start()` — this is sandbox bind known before the run,
@@ -101,6 +103,7 @@ export async function turnWorkflow(
       messages,
       tools: args.tools,
       modelId: args.modelId,
+      userId: args.scope.userId,
     });
   };
   const toolStep: ToolStepFn = async ({ toolName, toolCallId, callArgs, freshnessSeed }) => {
@@ -108,12 +111,18 @@ export async function turnWorkflow(
       toolName,
       callArgs,
       freshnessSeed,
+      scope: args.scope,
     });
   };
   // Forward EVERYTHING the loop passes including the derived `fold` — a
   // destructure that drops it would silently no-op DoD rows 3/5 (adversarial L1).
   const persistStepFn: PersistStepFn = async ({ turnRunId, deltas, fold }) => {
-    return persistStep({ turnRunId, deltas, ...(fold !== undefined ? { fold } : {}) });
+    return persistStep({
+      turnRunId,
+      deltas,
+      ...(fold !== undefined ? { fold } : {}),
+      scope: args.scope,
+    });
   };
 
   return runTurnLoop(

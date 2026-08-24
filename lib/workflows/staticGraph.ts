@@ -235,6 +235,19 @@ export function reachableImports(entry: string, options: StaticGraphOptions = {}
     } catch {
       return;
     }
+    // 'use step' files are leaves — their bodies are a different bundle
+    // (Vercel Workflows step VM). Record the file but do NOT follow its
+    // imports, exactly as the B11 comment prescribes. Without this gate,
+    // in-step re-resolve cannot import Blob/DI without breaking the
+    // workflow-entry deploy-gate lock.
+    //
+    // Guard: only skip when depth > 0 (a dependency, not the entry itself).
+    // A 'use workflow' entry may define its own local 'use step' function
+    // (e.g. staticWorkflowFixture) — skipping the entry's own imports would
+    // break reachability. The directive is only a leaf-gate for IMPORTED
+    // step modules.
+    if (depth > 0 && src.includes("'use step'")) return;
+
     for (const spec of extractImports(src)) {
       const value = resolveImport(spec, file, root);
       reachable.add(value);

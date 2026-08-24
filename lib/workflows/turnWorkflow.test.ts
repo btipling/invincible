@@ -34,6 +34,25 @@ vi.mock('../agent/generateOneRound', () => ({
   }),
 }));
 
+// modelGenerateStep re-resolves BYOK in-step via a dynamic import of the DI
+// root. Mock it so the entry test doesn't try to open a real DB connection.
+vi.mock('../di/index', () => ({
+  createProdServices: () => ({
+    resolveInferenceForRequest: {
+      resolveByokForRequest: async () => ({
+        ok: true as const,
+        modelId: 'mock-model',
+        provider: 'mock',
+        credentials: {},
+        only: ['mock'] as [string],
+        byok: { mock: [{}] },
+        secretId: 'sec-mock',
+        secretsToRedact: [],
+      }),
+    },
+  }),
+}));
+
 import { turnWorkflow } from './turnWorkflow';
 import { setPersistSeamResolver } from './persistStep';
 import { createTurnPersistSeam } from '../agent/turnPersistSeam';
@@ -52,6 +71,7 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
       userMessage: 'go adapter',
       tools: {},
       modelId: 'mock-model',
+      scope: { tenantId: 't', userId: 'u', sessionId: 's1' },
       persistRunBind: { cwd: 'app', activeSandboxId: 'sb_adapter' },
     });
     expect(result.status).toBe('completed');

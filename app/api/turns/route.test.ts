@@ -3,11 +3,17 @@ import { AUTH_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
 
 /**
  * Route tests for backend-agents C14b (#835) — `POST /api/turns` durable-turn
- * start surface. Mocks the SDK `start`, the DI root, `buildToolWorld`, and the
- * workflow entry so the route never enqueues a real Workflow run, opens a DB/
- * Redis connection, or constructs a real persist seam. Covers the matrix rows 1,
- * 2, 3, 5, 6, 7 (row 8 — in-workflow turnRunId derivation — lives in
- * `lib/workflows/turnWorkflow.test.ts`). No real `createDbConnection` / PGlite —
+ * start surface. Mocks the SDK `start`, the DI root, and the workflow entry
+ * so the route never enqueues a real Workflow run, opens a DB/Redis connection,
+ * or constructs a real persist seam. Covers the matrix rows 1, 2, 3, 5, 6, 7
+ * (row 8 — in-workflow turnRunId derivation — lives in
+ * `lib/workflows/turnWorkflow.test.ts`).
+ *
+ * The route passes ONLY serializable values to `start()` — `scope`, `tools`
+ * (schema-only via `toolsWithoutExecutors`), `modelId`, `userMessage`, and
+ * optional `persistRunBind`. Step seams are re-resolved in-step from `scope`.
+ * The route MUST NOT call `setPersistSeamResolver` / `setToolWorldResolver`
+ * (those are test overrides). No real `createDbConnection` / PGlite —
  * everything is injected through the mocked composition root (DI/cost gate).
  */
 describe('POST /api/turns', () => {
@@ -17,33 +23,19 @@ describe('POST /api/turns', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let startMock: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let persistSeamWireMock: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let toolWorldWireMock: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let turnWorkflowMock: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let buildToolWorldMock: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let parseAgentBodyMock: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let resolveSessionStoreMock: any;
 
   function resetServiceState() {
-    delete servicesState.createPersistStepSeam;
     delete servicesState.harnessSessionsRedis;
     delete servicesState.resolveInferenceForRequest;
-    delete servicesState.serverSecrets;
-    delete servicesState.userSkills;
-    delete servicesState.userPersonas;
-    delete servicesState.userPreferredSandbox;
-    delete servicesState.userMcpServers;
-    delete servicesState.createHttpRunner;
   }
 
   function mockDi() {
     resetServiceState();
-    servicesState.createPersistStepSeam = vi.fn(() => ({
-      persist: vi.fn(async () => ({ ok: true as const, status: 'completed' as const })),
-    }));
     servicesState.harnessSessionsRedis = {
       resolveTenantIdForUser: vi.fn(async () => ({ ok: true as const, value: 't1' })),
     };
@@ -59,54 +51,20 @@ describe('POST /api/turns', () => {
         secretsToRedact: ['sk-test'],
       })),
     };
-    servicesState.serverSecrets = { gatewayKey: undefined };
-    servicesState.userSkills = {};
-    servicesState.userPersonas = {};
-    servicesState.userPreferredSandbox = {};
-    servicesState.userMcpServers = {
-      loadEnabledUserMcpSecrets: vi.fn(async () => ({ ok: true as const, value: [] })),
-      setUserMcpServerLastError: vi.fn(),
-    };
-    servicesState.createHttpRunner = vi.fn();
     vi.doMock('../../../lib/di', () => ({
       createProdServices: () => servicesState,
       createScriptConnection: vi.fn(),
     }));
   }
 
-  function mockBoundary() {
-    persistSeamWireMock = vi.fn();
-    toolWorldWireMock = vi.fn();
-    vi.doMock('../../../lib/workflows/persistStep', () => ({
-      setPersistSeamResolver: persistSeamWireMock,
-    }));
-    vi.doMock('../../../lib/workflows/toolExecuteStep', () => ({
-      setToolWorldResolver: toolWorldWireMock,
-    }));
+  function mockWorkflowEntry() {
     turnWorkflowMock = vi.fn(async () => ({ status: 'completed' }));
     vi.doMock('../../../lib/workflows/turnWorkflow', () => ({
       turnWorkflow: turnWorkflowMock,
     }));
   }
 
-  function mockWorld() {
-    const signal = new AbortController().signal;
-    buildToolWorldMock = vi.fn(async () => ({
-      registry: { find_skill: {} },
-      secrets: [] as Array<string | undefined | null>,
-      redactList: [] as string[],
-      signal,
-      mcpClose: undefined,
-    }));
-    vi.doMock('../../../lib/agent/buildToolWorld', () => ({
-      buildToolWorld: buildToolWorldMock,
-    }));
-  }
-
   function mockMisc() {
-    // parseAgentBody is mocked so the route test controls the optional
-    // `sessionId` (the real one imports parseChatBody from lib/chatServer — the
-    // route guard is what rejects an absent sessionId, so we drive it directly).
     parseAgentBodyMock = vi.fn(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (body: any) => {
@@ -129,17 +87,27 @@ describe('POST /api/turns', () => {
         error: 'Inference access denied.',
       }),
     }));
-    vi.doMock('../../../lib/mcp/client', () => ({
-      buildUserMcpTools: vi.fn(async () => ({
-        tools: {},
-        secretsToRedact: [] as string[],
-        close: vi.fn(async () => {}),
-        connectedSlugs: [] as string[],
-        skipped: [] as Array<{ slug: string; reason: string }>,
-      })),
+    // Mock resolveSessionStore to return a usable envelope store (for persistRunBind read).
+    resolveSessionStoreMock = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        readEnvelope: vi.fn(async () => ({
+          meta: {
+            logicalCwd: 'app',
+            activeSandboxId: 'sb_bind',
+          },
+        })),
+      },
     }));
     vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
-      resolveSessionStore: vi.fn(),
+      resolveSessionStore: resolveSessionStoreMock,
+      sessionKeyFor: () => ({ tenantId: '', userId: '', sessionId: '' }),
+    }));
+    vi.doMock('../../../lib/sessions/sessionStore', () => ({
+      isEnvelopeStore: () => true,
+    }));
+    vi.doMock('../../../lib/agent/generateOneRound', () => ({
+      toolsWithoutExecutors: (t: Record<string, unknown>) => t,
     }));
   }
 
@@ -176,8 +144,7 @@ describe('POST /api/turns', () => {
 
   function standardHarness() {
     mockDi();
-    mockBoundary();
-    mockWorld();
+    mockWorkflowEntry();
     mockMisc();
   }
 
@@ -202,36 +169,19 @@ describe('POST /api/turns', () => {
     vi.doUnmock('../../../lib/di');
     vi.doUnmock('../../../lib/agent/agentBody');
     vi.doUnmock('../../../lib/tenancy/session');
-    vi.doUnmock('../../../lib/agent/buildToolWorld');
-    vi.doUnmock('../../../lib/workflows/persistStep');
-    vi.doUnmock('../../../lib/workflows/toolExecuteStep');
     vi.doUnmock('../../../lib/workflows/turnWorkflow');
     vi.doUnmock('../../../lib/chatServer');
-    vi.doUnmock('../../../lib/mcp/client');
     vi.doUnmock('../../../lib/tenancy/harnessSessionsRedis');
+    vi.doUnmock('../../../lib/sessions/sessionStore');
+    vi.doUnmock('../../../lib/agent/generateOneRound');
     vi.doUnmock('workflow/api');
     resetServiceState();
   });
 
-  it('row 1 — authed valid sessionId+prompt → start called; returns {runId} + x-workflow-run-id', async () => {
+  it('row 1 — authed valid sessionId+prompt → start called with serializable-only args (scope, tools schemas-only, modelId); returns {runId} + x-workflow-run-id', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
-
-    // Record the exact call order so we can prove both step-seam resolvers are
-    // INSTALLED before the run is enqueued (boundary wiring before start()).
-    const order: string[] = [];
-    persistSeamWireMock.mockImplementation(() => {
-      order.push('persist-seam-wire');
-    });
-    toolWorldWireMock.mockImplementation(() => {
-      order.push('tool-world-wire');
-    });
-    startMock.mockImplementation(async () => {
-      order.push('start');
-      return { runId: 'wf_turn_123', getReadable: vi.fn(() => new ReadableStream()) };
-    });
-
     ({ POST } = await import('./route'));
 
     const res = await postJson({ prompt: 'hi', sessionId: 's1' });
@@ -241,25 +191,20 @@ describe('POST /api/turns', () => {
     expect(await res.json()).toEqual({ runId: 'wf_turn_123' });
 
     expect(startMock).toHaveBeenCalledTimes(1);
-    const [wf, args] = startMock.mock.calls[0];
+    const [wf, argsArr] = startMock.mock.calls[0];
     expect(wf).toBe(turnWorkflowMock);
-    expect(args).toEqual([
-      { userMessage: 'hi', tools: { find_skill: {} }, modelId: 'anthropic/claude-a' },
-    ]);
 
-    // The persist seam is wired BEFORE start() with the session scope.
-    expect(persistSeamWireMock).toHaveBeenCalledTimes(1);
-    const seamResolver = persistSeamWireMock.mock.calls[0][0];
-    expect(servicesState.createPersistStepSeam).not.toHaveBeenCalled();
-    seamResolver();
-    expect(servicesState.createPersistStepSeam).toHaveBeenCalledWith({
-      tenantId: 't1',
-      userId: 'u1',
-      sessionId: 's1',
-    });
-
-    // Both resolvers are installed before the run is enqueued.
-    expect(order).toEqual(['persist-seam-wire', 'tool-world-wire', 'start']);
+    // start() args = exactly ONE TurnWorkflowArgs object
+    const startArgs = argsArr[0];
+    expect(startArgs.userMessage).toBe('hi');
+    expect(startArgs.modelId).toBe('anthropic/claude-a');
+    // scope must be present (serializable, no closures)
+    expect(startArgs.scope).toEqual({ tenantId: 't1', userId: 'u1', sessionId: 's1' });
+    // tools = schemas ONLY (never a live registry with `execute` closures)
+    expect(typeof startArgs.tools).toBe('object');
+    expect(startArgs.tools).toEqual({ find_skill: {}, fetch_skill: {} });
+    // persistRunBind optionally present from envelope meta
+    expect(startArgs.persistRunBind).toEqual({ cwd: 'app', activeSandboxId: 'sb_bind' });
   });
 
   it('row 2 — missing sessionId → 400 (parseAgentBody would pass; route guard rejects), no start', async () => {
@@ -274,8 +219,6 @@ describe('POST /api/turns', () => {
     const body = (await res.json()) as { error: string };
     expect(body.error).toMatch(/sessionId is required/i);
     expect(startMock).not.toHaveBeenCalled();
-    expect(toolWorldWireMock).not.toHaveBeenCalled();
-    expect(persistSeamWireMock).not.toHaveBeenCalled();
   });
 
   it('row 3 — start throws → 503 fail-closed, no /api/agent fallback path reached', async () => {
@@ -336,8 +279,31 @@ describe('POST /api/turns', () => {
 
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: AUTH_REQUIRED_ERROR });
-    expect(persistSeamWireMock).not.toHaveBeenCalled();
-    expect(toolWorldWireMock).not.toHaveBeenCalled();
     expect(startMock).not.toHaveBeenCalled();
+  });
+
+  it('start() args carry NO functions/execute closures — tools are schema-only; scope is plain values', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    ({ POST } = await import('./route'));
+
+    await postJson({ prompt: 'hi', sessionId: 's1' });
+
+    expect(startMock).toHaveBeenCalledTimes(1);
+    const startArgs = startMock.mock.calls[0][1][0];
+
+    // Deep-verify no functions anywhere in start args (adversarial L1).
+    const json = JSON.stringify(startArgs);
+    const parsed = JSON.parse(json);
+    expect(parsed).toEqual(startArgs);
+
+    // scope is plain serializable values only.
+    expect(parsed.scope).toEqual({ tenantId: 't1', userId: 'u1', sessionId: 's1' });
+
+    // tools dict contains no `execute` property.
+    for (const v of Object.values(parsed.tools as Record<string, unknown>)) {
+      expect(v && typeof v === 'object' && 'execute' in (v as object)).toBe(false);
+    }
   });
 });
