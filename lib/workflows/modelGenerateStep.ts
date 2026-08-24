@@ -46,6 +46,7 @@ import {
   type OneRoundDelta,
 } from '../agent/generateOneRound';
 import { toolsWithoutExecutors } from '../agent/generateOneRound';
+import { toModelMessages } from './toModelMessages';
 import type { PersistRunBind } from './turnLoop';
 
 /** Serialized `modelGenerateStep` step args — plain values only. */
@@ -152,7 +153,12 @@ export async function modelGenerateStep(
   }
 
   const input: GenerateOneRoundInput = {
-    messages: args.messages,
+    // Convert orchestrator-local messages (delta-carrying shape) to AI SDK 7
+    // ModelMessage[] before passing to streamText. The loop stores compact
+    // { role:'assistant', delta:{text,toolCalls} } / { role:'tool', toolName,
+    // toolCallId, result } rows; streamText requires proper content parts
+    // (ToolCallPart / ToolResultPart) linked by toolCallId.
+    messages: toModelMessages(args.messages),
     tools: toolSchemas,
     onEvent: async () => {
       /* The delta is the authoritative carrier; the loop emits SSE from it. */

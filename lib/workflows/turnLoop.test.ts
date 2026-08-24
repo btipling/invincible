@@ -601,6 +601,53 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     // deltas replay log is non-empty and ordered (model-first)
     expect(result.deltas.length).toBeGreaterThan(0);
   });
+
+  it('round-9 BLOCK: after a tool-ok, the reconstructed tool row includes toolCallId from the model delta', async () => {
+    const { deps, closed } = wiredDeps();
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'tooling',
+            toolCalls: [
+              { toolName: 'read_file', toolCallId: 'tc_a', args: { path: 'a.ts' } },
+              { toolName: 'list_dir', toolCallId: 'tc_b', args: { path: '.' } },
+            ],
+          },
+        };
+      }
+      return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(async (a: { toolName: string }) => ({
+      ok: true as const,
+      result: `result of ${a.toolName}`,
+      freshnessDelta: '[]',
+    }));
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep, turnRunId: 'wr_tcid' },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    // Messages: user, assistant(delta), tool(read_file), tool(list_dir), assistant(no tools), persist
+    const toolRows = result.messages.filter(
+      (m) => (m as { role?: string }).role === 'tool',
+    ) as Array<{ role: string; toolName: string; toolCallId?: string; result?: string }>;
+    expect(toolRows).toHaveLength(2);
+    expect(toolRows[0]).toMatchObject({
+      toolName: 'read_file',
+      toolCallId: 'tc_a',
+      result: 'result of read_file',
+    });
+    expect(toolRows[1]).toMatchObject({
+      toolName: 'list_dir',
+      toolCallId: 'tc_b',
+      result: 'result of list_dir',
+    });
+    expect(closed()).toBe(1);
+  });
 });
 
 describe('step wrappers (matrix 4–7)', () => {
@@ -738,6 +785,107 @@ describe('step wrappers (matrix 4–7)', () => {
     }
     // generateOneRound must NOT have been called — no bare modelId fallthrough.
     expect(m1).not.toHaveBeenCalled();
+    vi.doUnmock('../agent/generateOneRound');
+    vi.doUnmock('../di/index');
+    vi.doUnmock('./assembleDurableToolWorld');
+  });
+
+  it('matrix 5c (round-9 BLOCK): modelGenerateStep converts orchestrator-local messages (delta + tool rows) to ModelMessage[] before passing to generateOneRound', async () => {
+    // Reset module cache so vi.doMock for the same specifiers as prior tests
+    // (matrix 4+5, 5b) takes effect on a fresh import of modelGenerateStep.
+    vi.resetModules();
+    const m1 = vi.fn(async (_deps: unknown, input: unknown) => {
+      const i = input as { messages: unknown[] };
+      // Verify the messages array is not empty and has proper ModelMessage shape.
+      expect(Array.isArray(i.messages)).toBe(true);
+      expect(i.messages.length).toBeGreaterThan(0);
+      // The user message should pass through (role: 'user', content: string).
+      const userMsg = i.messages[0] as { role?: string; content?: unknown };
+      expect(userMsg.role).toBe('user');
+      // The assistant message should have content array with tool-call parts.
+      const asstMsg = i.messages[1] as { role?: string; content?: unknown[] };
+      expect(asstMsg.role).toBe('assistant');
+      expect(Array.isArray(asstMsg.content)).toBe(true);
+      // At least one tool-call part with a toolCallId.
+      const toolCallPart = (asstMsg.content as unknown[]).find(
+        (p) => (p as { type?: string }).type === 'tool-call',
+      ) as { type: string; toolCallId: string; toolName: string } | undefined;
+      expect(toolCallPart).toBeDefined();
+      expect(toolCallPart!.toolCallId).toBe('tc_a');
+      // The tool message should have content array with a tool-result part,
+      // linked by the same toolCallId.
+      const toolMsg = i.messages[2] as { role?: string; content?: unknown[] };
+      expect(toolMsg.role).toBe('tool');
+      expect(Array.isArray(toolMsg.content)).toBe(true);
+      const toolResultPart = (toolMsg.content as unknown[])[0] as {
+        type: string;
+        toolCallId: string;
+        output: { type: string; value: string };
+      };
+      expect(toolResultPart.type).toBe('tool-result');
+      expect(toolResultPart.toolCallId).toBe('tc_a');
+      expect(toolResultPart.output.value).toBe('file content');
+      return { ok: true as const, delta: { text: 'm', toolCalls: [] } };
+    });
+    vi.doMock('../agent/generateOneRound', () => ({
+      generateOneRound: m1,
+      toolsWithoutExecutors: (t: Record<string, unknown>) => t,
+    }));
+    vi.doMock('../di/index', () => ({
+      createProdServices: () => ({
+        resolveInferenceForRequest: {
+          resolveByokForRequest: async () => ({
+            ok: true as const,
+            modelId: 'byok-resolved',
+            provider: 'anthropic',
+            credentials: { apiKey: 'sk-test' },
+            only: ['anthropic'] as [string],
+            byok: { anthropic: [{ apiKey: 'sk-test' }] },
+            secretId: 'sec-1',
+            secretsToRedact: ['sk-test'],
+          }),
+        },
+      }),
+    }));
+    vi.doMock('./assembleDurableToolWorld', () => ({
+      assembleDurableToolWorld: async () => ({
+        ok: true as const,
+        world: {
+          registry: {
+            read_file: { description: 'Read a file' },
+            list_dir: { description: 'List directory contents' },
+          },
+          secrets: [],
+          signal: new AbortController().signal,
+          freshness: {},
+          mcpClose: async () => {},
+          httpRunner: undefined,
+          sandboxClientClose: undefined,
+        },
+      }),
+    }));
+    const mod = await import('./modelGenerateStep');
+    // Orchestrator-local messages as the loop stores them: user + assistant delta
+    // (with toolCalls) + tool result — NOT ModelMessage[] shape.
+    const loopMessages = [
+      { role: 'user', content: 'read x.ts' },
+      {
+        role: 'assistant',
+        delta: {
+          text: 'reading',
+          toolCalls: [{ toolName: 'read_file', toolCallId: 'tc_a', args: { path: 'x.ts' } }],
+        },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'tc_a', result: 'file content' },
+    ];
+    const result = await mod.modelGenerateStep({
+      messages: loopMessages,
+      modelId: 'm',
+      userId: 'u1',
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+    });
+    expect(result.ok).toBe(true);
+    expect(m1).toHaveBeenCalledTimes(1);
     vi.doUnmock('../agent/generateOneRound');
     vi.doUnmock('../di/index');
     vi.doUnmock('./assembleDurableToolWorld');

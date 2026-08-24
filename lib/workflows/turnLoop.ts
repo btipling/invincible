@@ -452,7 +452,7 @@ export async function runTurnLoop(
         if (tool.ok) {
           freshness = tool.freshnessDelta;
           deltas.push(tool);
-          messages.push({ role: 'tool', toolName: call.toolName, result: tool.result });
+          messages.push({ role: 'tool', toolName: call.toolName, toolCallId: call.toolCallId, result: tool.result });
           // Overlay the running bind from this tool's result — last successful
           // `change_dir` / `meta_sandbox_switch` wins (adversarial round-3 BLOCK).
           // The NEXT tool/model step will see the updated cwd/sandbox id.
@@ -472,7 +472,7 @@ export async function runTurnLoop(
             sse({ type: 'tool_result', toolName: call.toolName, ok: false, result: tool.error }),
           );
           deltas.push(tool);
-          messages.push({ role: 'tool', toolName: call.toolName, ok: false, error: tool.error });
+          messages.push({ role: 'tool', toolName: call.toolName, toolCallId: call.toolCallId, ok: false, error: tool.error });
           await writable.close();
           return {
             status: 'completed',
