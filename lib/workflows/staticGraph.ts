@@ -149,23 +149,55 @@ function stripComments(src: string): string {
 }
 
 /**
- * Extract the static specifiers in a source file: every `import … from 'x'` /
- * `export … from 'x'`, side-effect `import 'x'`, dynamic `import('x')`, and
- * CommonJS `require('x')`.
+ * True when an import/export clause (the text between `import|export` and the
+ * trailing `from`) is **type-only**, i.e. adds no runtime value to the bundle:
+ * - `type Foo`, `type { A }`, `type * as ns` (leading `type` keyword);
+ * - `{ type A, type B }` (every braced member is inline `type`-qualified).
+ * A mixed clause (`{ a, type B }`) is a runtime dep — the bare `a` ships.
+ */
+function isTypeOnlyImportClause(clause: string): boolean {
+  const c = clause.trim();
+  if (/^type\b/.test(c)) return true;
+  if (!c.startsWith('{')) return false;
+  const inner = c.slice(c.indexOf('{') + 1, c.lastIndexOf('}'));
+  const members = inner
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (members.length === 0) return false;
+  return members.every((s) => /^type\b/.test(s));
+}
+
+/**
+ * Extract the **runtime** static specifiers in a source file — the closure the
+ * Workflows bundle actually transports: every `import … from 'x'` /
+ * `export … from 'x'` that is NOT type-only, side-effect `import 'x'`, dynamic
+ * `import('x')`, and CommonJS `require('x')`.
+ *
+ * Type-only imports (`import type { T } from 'x'`, inline `{ type T }`) are
+ * erased at compile time and never appear in the canvas bundle, so the deploy
+ * gate must NOT track them — following them false-flags any module that merely
+ * type-imports a heavy barrel (plan #805 lock correctness; B12 entry closure).
  */
 export function extractImports(src: string): string[] {
   const clean = stripComments(src);
   const out = new Set<string>();
-  const patterns: RegExp[] = [
-    // named/default/namespace/type import-from and export-from
-    /(?:from|import\s*\(|require\s*)\(?\s*['"]([^'"]+)['"]/g,
-    // side-effect import 'x' (no `from`)
-    /(?:^|[;\n])\s*import\s+['"]([^'"]+)['"]/g,
-  ];
-  for (const re of patterns) {
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(clean)) !== null) out.add(m[1]);
+
+  // Dynamic import('x') and CommonJS require('x') — always runtime deps.
+  let m: RegExpExecArray | null;
+  const dynamicRe = /\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+  while ((m = dynamicRe.exec(clean)) !== null) out.add(m[1]);
+
+  // Side-effect `import 'x'` (no clause, no `from`) — runtime dep.
+  const sideRe = /(?:^|[;\n])\s*import\s+['"]([^'"]+)['"]/g;
+  while ((m = sideRe.exec(clean)) !== null) out.add(m[1]);
+
+  // `import|export <clause> from 'x'` — runtime unless the clause is type-only.
+  const fromRe = /\b(?:import|export)\s+([a-zA-Z0-9_$*{},\s:]+?)\s+from\s+['"]([^'"]+)['"]/g;
+  while ((m = fromRe.exec(clean)) !== null) {
+    if (!isTypeOnlyImportClause(m[1])) out.add(m[2]);
   }
+
   return [...out];
 }
 

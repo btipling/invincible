@@ -21,7 +21,7 @@ import type { AgentStreamEvent } from './agentStream';
 import { mapFullStreamPart } from './agentStream';
 import { mapProviderUsage, type UsageSummary } from './usageSummary';
 import { redactSecrets } from './redact';
-import { resolveAgentStopWhen } from './runAgent';
+import { resolveAgentStopWhen } from './stopWhen';
 
 /** One captured tool-call delta (schemas only — never executed here). */
 export type ToolCallDelta = {

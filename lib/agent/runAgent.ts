@@ -1,4 +1,4 @@
-import { generateText, streamText, stepCountIs, isLoopFinished } from 'ai';
+import { generateText, streamText } from 'ai';
 import {
   changeDirSuccessCwd,
   mapFullStreamPart,
@@ -25,6 +25,7 @@ import { HTTP_ONLY_SYSTEM } from './httpFetchTools';
 import { SKILL_TOOLS_ONLY_SYSTEM } from './skillTools';
 import { SKILL_META_ONLY_SYSTEM } from './metaTools';
 import { metaSandboxSwitchTargetId } from './metaSandboxTools';
+import { resolveAgentStopWhen } from './stopWhen';
 
 export type ToolTraceEntry = {
   name: string;
@@ -222,15 +223,10 @@ function resolveSystem(
   return parts.join('\n\n');
 }
 
-/** Model-ended loop, or stepCountIs when an optional ceiling is set. */
-export function resolveAgentStopWhen(
-  maxSteps: number | null | undefined,
-): ReturnType<typeof stepCountIs> | ReturnType<typeof isLoopFinished> {
-  if (maxSteps != null && Number.isFinite(maxSteps) && maxSteps >= 1) {
-    return stepCountIs(Math.floor(maxSteps));
-  }
-  return isLoopFinished();
-}
+// Re-export so existing consumers/tests importing `resolveAgentStopWhen` from
+// `runAgent` keep working. The definition now lives in `./stopWhen` (hoisted to
+// keep B9 `generateOneRound`'s static closure free of `runAgent` → B12 lock).
+export { resolveAgentStopWhen } from './stopWhen';
 
 
 function makeCwdState(initialCwd?: string): CwdState {
