@@ -51,6 +51,32 @@ describe('POST /api/turns', () => {
         secretsToRedact: ['sk-test'],
       })),
     };
+    // resolveSandbox: mocked for pre-start hard-deny gate (default: ok).
+    servicesState.resolveSandbox = {
+      resolveAgentSandbox: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          client: { close: async () => {} },
+          secrets: [],
+          permissions: { canRead: true, canWrite: true },
+          workspaceRoot: '/workspace',
+          backend: 'byo' as const,
+          sandboxId: 'sb_ok',
+          name: 'Sandbox',
+          slug: 'sandbox',
+          status: 'active',
+          resolvedImage: null,
+        },
+      })),
+    };
+    // userGithubToken: default decrypt succeeds.
+    servicesState.userGithubToken = {
+      decryptUserGithubTokenForServer: vi.fn(async () => ({ ok: true as const, value: 'gh_pat' })),
+    };
+    // userSandboxInstance: default loadInstance returns no HTTP instance.
+    servicesState.userSandboxInstance = {
+      loadInstance: vi.fn(async () => ({ ok: true as const, value: null })),
+    };
     vi.doMock('../../../lib/di', () => ({
       createProdServices: () => servicesState,
       createScriptConnection: vi.fn(),
@@ -275,6 +301,43 @@ describe('POST /api/turns', () => {
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: AUTH_REQUIRED_ERROR });
     expect(startMock).not.toHaveBeenCalled();
+  });
+
+  it('pre-start hard 403: resolveAgentSandbox {ok:false} without soft flags + no HTTP → 403 before start()', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // Override the default resolveAgentSandbox in servicesState to return
+    // a hard deny (no softContinue, no selectionRequired).
+    servicesState.resolveSandbox.resolveAgentSandbox = vi.fn(async () => ({
+      ok: false as const,
+      response: Response.json({ error: 'Forbidden' }, { status: 403 }),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+
+    expect(res.status).toBe(403);
+    // start was NOT called — doomed run never enqueued.
+    expect(startMock).not.toHaveBeenCalled();
+  });
+
+  it('pre-start soft: selectionRequired → start is called (soft-path gate passes)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    servicesState.resolveSandbox.resolveAgentSandbox = vi.fn(async () => ({
+      ok: false as const,
+      selectionRequired: true as const,
+      response: Response.json({ error: 'Selection required' }, { status: 403 }),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+
+    // Soft-path: selectionRequired → proceed. 200 (or SSE), not 403.
+    expect(res.status).toBe(200);
+    expect(startMock).toHaveBeenCalledTimes(1);
   });
 
   it('start() args carry NO functions/execute closures — no tools key; scope + persistRunBind are plain values only', async () => {

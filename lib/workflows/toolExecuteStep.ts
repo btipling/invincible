@@ -162,11 +162,24 @@ export async function toolExecuteStep(
     const { assembleDurableToolWorld } = await import(
       './assembleDurableToolWorld'
     );
-    const world = await assembleDurableToolWorld({
+    const assembled = await assembleDurableToolWorld({
       scope: args.scope,
       persistRunBind: args.persistRunBind,
       freshnessSeed: args.freshnessSeed,
     });
+
+    // Hard deny (sandbox_forbidden) → map to sandbox_error so the loop
+    // terminates cleanly. No handles were opened on this path (sandbox didn't
+    // resolve ok, and buildToolWorld was never called).
+    if (!assembled.ok) {
+      return {
+        ok: false,
+        code: 'sandbox_error',
+        error: assembled.error,
+      };
+    }
+
+    const { world } = assembled;
     registry = world.registry;
     secrets = world.secrets;
     signal = world.signal;

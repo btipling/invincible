@@ -641,18 +641,21 @@ describe('step wrappers (matrix 4–7)', () => {
     // (the model step will see these tools schemas-only).
     vi.doMock('./assembleDurableToolWorld', () => ({
       assembleDurableToolWorld: async () => ({
-        registry: {
-          list_dir: { description: 'List directory contents' },
-          read_file: { description: 'Read a file' },
-          find_skill: { description: 'Find skills' },
-          fetch_skill: { description: 'Fetch a skill' },
+        ok: true as const,
+        world: {
+          registry: {
+            list_dir: { description: 'List directory contents' },
+            read_file: { description: 'Read a file' },
+            find_skill: { description: 'Find skills' },
+            fetch_skill: { description: 'Fetch a skill' },
+          },
+          secrets: [],
+          signal: new AbortController().signal,
+          freshness: {},
+          mcpClose: async () => {},
+          httpRunner: undefined,
+          sandboxClientClose: undefined,
         },
-        secrets: [],
-        signal: new AbortController().signal,
-        freshness: {},
-        mcpClose: async () => {},
-        httpRunner: undefined,
-        sandboxClientClose: undefined,
       }),
     }));
     const mod = await import('./modelGenerateStep');
@@ -709,13 +712,16 @@ describe('step wrappers (matrix 4–7)', () => {
     }));
     vi.doMock('./assembleDurableToolWorld', () => ({
       assembleDurableToolWorld: async () => ({
-        registry: {},
-        secrets: [],
-        signal: new AbortController().signal,
-        freshness: {},
-        mcpClose: undefined,
-        httpRunner: undefined,
-        sandboxClientClose: undefined,
+        ok: true as const,
+        world: {
+          registry: {},
+          secrets: [],
+          signal: new AbortController().signal,
+          freshness: {},
+          mcpClose: undefined,
+          httpRunner: undefined,
+          sandboxClientClose: undefined,
+        },
       }),
     }));
     const mod = await import('./modelGenerateStep');

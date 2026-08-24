@@ -151,6 +151,66 @@ export async function POST(req: Request): Promise<Response> {
       // Fail-open: no bind → steps use defaults.
     }
 
+    // 3. Pre-start sandbox hard-deny gate — match `/api/agent`'s fail-closed-
+    //    before-enqueue pattern (same as BYOK above). Resolve the sandbox from
+    //    the envelope bind and fail 403 on hard deny BEFORE `start()`, so a
+    //    doomed run is never enqueued. Soft-path (softContinue / selectionRequired
+    //    / HTTP attach running) still proceeds.
+    let ghToken: string | undefined;
+    try {
+      const gh = await services.userGithubToken.decryptUserGithubTokenForServer(
+        userId,
+      );
+      if (gh.ok && gh.value) {
+        ghToken = gh.value;
+      }
+    } catch {
+      // Fail-open: no GH token → no exec env.
+    }
+
+    let httpAttachName: string | null = null;
+    try {
+      const loaded = await services.userSandboxInstance.loadInstance(
+        userId,
+        'http',
+      );
+      if (
+        loaded.ok &&
+        loaded.value &&
+        loaded.value.status === 'running' &&
+        loaded.value.vercelName?.trim()
+      ) {
+        httpAttachName = loaded.value.vercelName.trim();
+      }
+    } catch {
+      // Fail-open: no HTTP instance → no HTTP tools.
+    }
+
+    const sandboxResolved =
+      await services.resolveSandbox.resolveAgentSandbox(
+        userId,
+        {
+          ...(ghToken
+            ? { execEnv: { GH_TOKEN: ghToken, GITHUB_TOKEN: ghToken } }
+            : {}),
+        },
+        {
+          ...(persistRunBind?.activeSandboxId
+            ? { requestedSandboxId: persistRunBind.activeSandboxId }
+            : {}),
+        },
+      );
+
+    if (
+      !sandboxResolved.ok &&
+      !sandboxResolved.softContinue &&
+      !sandboxResolved.selectionRequired &&
+      !httpAttachName
+    ) {
+      // Hard deny: no soft-path surface → 403 before enqueue.
+      return sandboxResolved.response;
+    }
+
     // The single durable loop entry. `turnRunId` is derived in-workflow from
     // getWorkflowMetadata().workflowRunId — never passed as a start() arg.
     // NO `tools` dict — tool schemas are assembled in-step via the shared

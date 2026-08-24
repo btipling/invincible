@@ -61,13 +61,16 @@ vi.mock('../di/index', () => ({
 // In tests, mock it to return a minimal world — no real sandbox/MCP/HTTP.
 vi.mock('./assembleDurableToolWorld', () => ({
   assembleDurableToolWorld: async () => ({
-    registry: {},
-    secrets: [],
-    signal: new AbortController().signal,
-    freshness: {},
-    mcpClose: undefined,
-    httpRunner: undefined,
-    sandboxClientClose: undefined,
+    ok: true as const,
+    world: {
+      registry: {},
+      secrets: [],
+      signal: new AbortController().signal,
+      freshness: {},
+      mcpClose: undefined,
+      httpRunner: undefined,
+      sandboxClientClose: undefined,
+    },
   }),
 }));
 

@@ -115,10 +115,23 @@ export async function modelGenerateStep(
   const { assembleDurableToolWorld } = await import(
     './assembleDurableToolWorld'
   );
-  const world = await assembleDurableToolWorld({
+  const assembled = await assembleDurableToolWorld({
     scope: args.scope,
     persistRunBind: args.persistRunBind,
   });
+
+  // Hard deny (sandbox_forbidden) → map to model_error so the loop terminates
+  // cleanly. No handles were opened on this path (sandbox didn't resolve ok,
+  // and we haven't called buildToolWorld).
+  if (!assembled.ok) {
+    return {
+      ok: false,
+      code: 'model_error',
+      error: assembled.error,
+    };
+  }
+
+  const { world } = assembled;
 
   let toolSchemas: ReturnType<typeof toolsWithoutExecutors>;
   try {

@@ -7,6 +7,10 @@
  * `createDbConnection` — all seams injected/mocked.
  *
  * Matrix:
+ *  - Hard deny: {ok:false} no flags, no HTTP → {ok:false, code:'sandbox_forbidden'}
+ *  - Soft path: selectionRequired / softContinue → {ok:true}, no FS merge
+ *  - Soft path: HTTP attach running → overrides hard-deny sandbox
+ *  - {ok:true}: createAgentTools receives bind with sandboxId/backend/name/slug/status
  *  - resolveAgentSandbox receives requestedSandboxId + execEnv.GH_TOKEN
  *  - createAgentTools gets the SAME freshness object (identity)
  *  - initialCwd from bind; workspaceRoot:null still merges FS tools
@@ -17,13 +21,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // vi.mock factories are hoisted above const declarations — use vi.hoisted()
 // so the spies and mock values are available when the hoisted factories run.
-const { mockFreshness, resolveAgentSandboxSpy, createAgentToolsSpy, mockMcpClose, mockHttpClose, mockSandboxClose } = vi.hoisted(() => ({
+const { mockFreshness, resolveAgentSandboxSpy, createAgentToolsSpy, mockMcpClose, mockHttpClose, mockSandboxClose, loadInstanceSpy } = vi.hoisted(() => ({
   mockFreshness: { _tag: 'RunFileFreshness', _id: 'shared-freshness' },
   resolveAgentSandboxSpy: vi.fn(),
   createAgentToolsSpy: vi.fn(),
   mockMcpClose: vi.fn(),
   mockHttpClose: vi.fn(),
   mockSandboxClose: vi.fn(),
+  loadInstanceSpy: vi.fn(),
 }));
 
 vi.mock('../di/index', () => ({
@@ -36,8 +41,7 @@ vi.mock('../di/index', () => ({
       resolveAgentSandbox: resolveAgentSandboxSpy,
     },
     userSandboxInstance: {
-      loadInstance: async (_userId: string, _kind: string) =>
-        ({ ok: true as const, value: { status: 'running', vercelName: 'http-attach-42' } }),
+      loadInstance: loadInstanceSpy,
     },
     serverSecrets: {},
     userSkills: {},
@@ -97,6 +101,7 @@ describe('assembleDurableToolWorld (prod path)', () => {
   beforeEach(() => {
     resolveAgentSandboxSpy.mockReset();
     createAgentToolsSpy.mockReset();
+    loadInstanceSpy.mockReset();
     // Reset close spies but restore their default async impls so existing
     // tests that .resolves on them don't break (mockReset clears everything).
     mockMcpClose.mockReset();
@@ -113,10 +118,102 @@ describe('assembleDurableToolWorld (prod path)', () => {
       mcpClose: mockMcpClose,
       httpRunner: { close: mockHttpClose },
     });
+    // Default: HTTP instance running (used by most tests).
+    loadInstanceSpy.mockResolvedValue({ ok: true as const, value: { status: 'running', vercelName: 'http-attach-42' } });
   });
 
-  it('resolveAgentSandbox receives requestedSandboxId from persistRunBind.activeSandboxId and execEnv.GH_TOKEN', async () => {
-    resolveAgentSandboxSpy.mockReset();
+  // ── Hard/soft deny tests ──────────────────────────────────────────────
+
+  it('{ok:false} no flags, no HTTP attach → returns {ok:false, code:sandbox_forbidden}; createAgentTools not called', async () => {
+    // HTTP NOT running for this test — so no soft surface exists.
+    loadInstanceSpy.mockReset();
+    loadInstanceSpy.mockResolvedValue({ ok: true as const, value: null });
+    resolveAgentSandboxSpy.mockResolvedValue({
+      ok: false as const,
+      response: Response.json({ error: 'Forbidden' }, { status: 403 }),
+      // No softContinue, no selectionRequired.
+    });
+
+    const result = await assembleDurableToolWorld({
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('sandbox_forbidden');
+      expect(result.error).toMatch(/not available/i);
+    }
+    // createAgentTools was NOT called (no FS merge on hard deny).
+    expect(createAgentToolsSpy).not.toHaveBeenCalled();
+  });
+
+  it('{ok:false, selectionRequired:true} → {ok:true}, no FS merge, skill/meta still present', async () => {
+    resolveAgentSandboxSpy.mockResolvedValue({
+      ok: false as const,
+      selectionRequired: true as const,
+      response: Response.json({ error: 'Selection required' }, { status: 403 }),
+    });
+
+    const result = await assembleDurableToolWorld({
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Skill/meta tools present (from buildToolWorld).
+      expect(Object.keys(result.world.registry)).toContain('find_skill');
+      expect(Object.keys(result.world.registry)).toContain('fetch_skill');
+      // FS tools NOT merged (no sandbox client).
+      expect(createAgentToolsSpy).not.toHaveBeenCalled();
+      // sandboxClientClose is undefined (no client).
+      expect(result.world.sandboxClientClose).toBeUndefined();
+    }
+  });
+
+  it('{ok:false, softContinue:true} → {ok:true}, no FS merge, skill/meta still present', async () => {
+    resolveAgentSandboxSpy.mockResolvedValue({
+      ok: false as const,
+      softContinue: true as const,
+      response: Response.json({ error: 'Workspace not running' }, { status: 403 }),
+    });
+
+    const result = await assembleDurableToolWorld({
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(Object.keys(result.world.registry)).toContain('find_skill');
+      expect(createAgentToolsSpy).not.toHaveBeenCalled();
+      expect(result.world.sandboxClientClose).toBeUndefined();
+    }
+  });
+
+  it('{ok:false} + HTTP attach running → {ok:true}, no FS, HTTP tools still assembled', async () => {
+    // HTTP IS running (default in beforeEach), so even a hard-deny sandbox
+    // resolve is overridden by the HTTP attach soft surface.
+    resolveAgentSandboxSpy.mockResolvedValue({
+      ok: false as const,
+      response: Response.json({ error: 'Forbidden' }, { status: 403 }),
+      // No softContinue, no selectionRequired — but HTTP attach is running.
+    });
+
+    const result = await assembleDurableToolWorld({
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(Object.keys(result.world.registry)).toContain('find_skill');
+      expect(createAgentToolsSpy).not.toHaveBeenCalled();
+      // buildToolWorld received the HTTP attach name.
+      expect(result.world.httpRunner).toBeDefined();
+    }
+  });
+
+  // ── Bind projection test ──────────────────────────────────────────────
+
+  it('{ok:true} → createAgentTools receives bind with sandboxId/backend/name/slug/status', async () => {
     resolveAgentSandboxSpy.mockResolvedValue({
       ok: true as const,
       value: {
@@ -124,20 +221,67 @@ describe('assembleDurableToolWorld (prod path)', () => {
         secrets: ['sandbox-secret'],
         permissions: { canRead: true, canWrite: true },
         workspaceRoot: '/workspace',
+        backend: 'vercel' as const,
+        sandboxId: 'sb_123',
+        name: 'My Sandbox',
+        slug: 'my-sandbox',
+        status: 'active',
+        resolvedImage: 'img:v1',
       },
     });
-    createAgentToolsSpy.mockReset();
+    createAgentToolsSpy.mockReturnValue({ list_dir: {}, read_file: {} });
+
+    const result = await assembleDurableToolWorld({
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(createAgentToolsSpy).toHaveBeenCalledTimes(1);
+    const toolsCall = (createAgentToolsSpy.mock.calls[0] as unknown[])?.[0] as {
+      bind?: { backend: string; sandboxId: string; name: string; slug: string; status: string; image?: string | null };
+    } | undefined;
+    expect(toolsCall?.bind).toEqual({
+      backend: 'vercel',
+      sandboxId: 'sb_123',
+      name: 'My Sandbox',
+      slug: 'my-sandbox',
+      status: 'active',
+      image: 'img:v1',
+    });
+  });
+
+  // ── Existing tests (updated for {ok, world} wrapper) ──────────────────
+
+  it('resolveAgentSandbox receives requestedSandboxId from persistRunBind.activeSandboxId and execEnv.GH_TOKEN', async () => {
+    resolveAgentSandboxSpy.mockResolvedValue({
+      ok: true as const,
+      value: {
+        client: { close: async () => {} },
+        secrets: ['sandbox-secret'],
+        permissions: { canRead: true, canWrite: true },
+        workspaceRoot: '/workspace',
+        backend: 'byo' as const,
+        sandboxId: 'sb_xyz',
+        name: 'Box',
+        slug: 'box',
+        status: 'active',
+        resolvedImage: null,
+      },
+    });
     createAgentToolsSpy.mockReturnValue({ list_dir: {}, read_file: {} });
 
     const scope = { tenantId: 't1', userId: 'u1', sessionId: 's1' };
     const bind = { activeSandboxId: 'sb_xyz', cwd: 'app/src' };
     const signal = new AbortController().signal;
 
-    const world = await assembleDurableToolWorld({
+    const result = await assembleDurableToolWorld({
       scope,
       persistRunBind: bind,
       signal,
     });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    const world = result.world;
 
     // resolveAgentSandbox was called with the right args.
     expect(resolveAgentSandboxSpy).toHaveBeenCalledTimes(1);
@@ -163,7 +307,6 @@ describe('assembleDurableToolWorld (prod path)', () => {
   });
 
   it('createAgentTools gets the SAME freshness object returned by the helper (identity)', async () => {
-    resolveAgentSandboxSpy.mockReset();
     resolveAgentSandboxSpy.mockResolvedValue({
       ok: true as const,
       value: {
@@ -171,15 +314,23 @@ describe('assembleDurableToolWorld (prod path)', () => {
         secrets: [],
         permissions: { canRead: true, canWrite: false },
         workspaceRoot: null,
+        backend: 'byo' as const,
+        sandboxId: 'sb',
+        name: 'b',
+        slug: 'b',
+        status: 'active',
+        resolvedImage: null,
       },
     });
-    createAgentToolsSpy.mockReset();
     createAgentToolsSpy.mockReturnValue({ read_file: {}, write_file: {} });
 
-    const world = await assembleDurableToolWorld({
+    const result = await assembleDurableToolWorld({
       scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
       freshnessSeed: 'some-seed',
     });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    const world = result.world;
 
     expect(createAgentToolsSpy).toHaveBeenCalledTimes(1);
     const toolsCall = (createAgentToolsSpy.mock.calls[0] as unknown[])?.[0] as {
@@ -195,7 +346,6 @@ describe('assembleDurableToolWorld (prod path)', () => {
   });
 
   it('initialCwd from bind; workspaceRoot:null still merges FS tools when client+permissions exist', async () => {
-    resolveAgentSandboxSpy.mockReset();
     resolveAgentSandboxSpy.mockResolvedValue({
       ok: true as const,
       value: {
@@ -203,15 +353,21 @@ describe('assembleDurableToolWorld (prod path)', () => {
         secrets: [],
         permissions: { canRead: true, canWrite: true },
         workspaceRoot: null,
+        backend: 'byo' as const,
+        sandboxId: 'sb',
+        name: 'b',
+        slug: 'b',
+        status: 'active',
+        resolvedImage: null,
       },
     });
-    createAgentToolsSpy.mockReset();
     createAgentToolsSpy.mockReturnValue({});
 
-    await assembleDurableToolWorld({
+    const result = await assembleDurableToolWorld({
       scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
       persistRunBind: { cwd: 'lib/subdir' },
     });
+    expect(result.ok).toBe(true);
 
     expect(createAgentToolsSpy).toHaveBeenCalledTimes(1);
     const toolsCall = (createAgentToolsSpy.mock.calls[0] as unknown[])?.[0] as {
@@ -230,13 +386,15 @@ describe('assembleDurableToolWorld (prod path)', () => {
   });
 
   it('soft-path: sandbox throw → registry still has skill/meta tools (no throw out of the helper)', async () => {
-    resolveAgentSandboxSpy.mockReset();
     resolveAgentSandboxSpy.mockRejectedValue(new Error('sandbox unavailable'));
     createAgentToolsSpy.mockReset();
 
-    const world = await assembleDurableToolWorld({
+    const result = await assembleDurableToolWorld({
       scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
     });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    const world = result.world;
 
     // No throw — the helper catches and returns a world with non-FS tools only.
     expect(world.registry).toBeDefined();
@@ -252,7 +410,6 @@ describe('assembleDurableToolWorld (prod path)', () => {
   });
 
   it('returned close handles are the exact handles from the mocked world', async () => {
-    resolveAgentSandboxSpy.mockReset();
     resolveAgentSandboxSpy.mockResolvedValue({
       ok: true as const,
       value: {
@@ -260,14 +417,22 @@ describe('assembleDurableToolWorld (prod path)', () => {
         secrets: [],
         permissions: { canRead: true, canWrite: true },
         workspaceRoot: '/ws',
+        backend: 'byo' as const,
+        sandboxId: 'sb',
+        name: 'b',
+        slug: 'b',
+        status: 'active',
+        resolvedImage: null,
       },
     });
-    createAgentToolsSpy.mockReset();
     createAgentToolsSpy.mockReturnValue({});
 
-    const world = await assembleDurableToolWorld({
+    const result = await assembleDurableToolWorld({
       scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
     });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    const world = result.world;
 
     // The close handles are functions (the steps call them in finally).
     expect(typeof world.mcpClose).toBe('function');
@@ -280,7 +445,6 @@ describe('assembleDurableToolWorld (prod path)', () => {
   });
 
   it('createAgentTools throws after buildToolWorld succeeded → MCP, HTTP, and sandbox handles are closed before re-throw', async () => {
-    resolveAgentSandboxSpy.mockReset();
     resolveAgentSandboxSpy.mockResolvedValue({
       ok: true as const,
       value: {
@@ -288,12 +452,17 @@ describe('assembleDurableToolWorld (prod path)', () => {
         secrets: [],
         permissions: { canRead: true, canWrite: true },
         workspaceRoot: '/ws',
+        backend: 'byo' as const,
+        sandboxId: 'sb',
+        name: 'b',
+        slug: 'b',
+        status: 'active',
+        resolvedImage: null,
       },
     });
 
     // createAgentTools throws — simulating e.g. a malformed tool or
     // permission gate panic after MCP/HTTP are already connected.
-    createAgentToolsSpy.mockReset();
     createAgentToolsSpy.mockImplementation(() => {
       throw new Error('createAgentTools exploded');
     });
@@ -311,7 +480,6 @@ describe('assembleDurableToolWorld (prod path)', () => {
   });
 
   it('buildToolWorld throws after sandbox opened → sandbox handle is closed before re-throw', async () => {
-    resolveAgentSandboxSpy.mockReset();
     resolveAgentSandboxSpy.mockResolvedValue({
       ok: true as const,
       value: {
@@ -319,6 +487,12 @@ describe('assembleDurableToolWorld (prod path)', () => {
         secrets: [],
         permissions: { canRead: true, canWrite: true },
         workspaceRoot: '/ws',
+        backend: 'byo' as const,
+        sandboxId: 'sb',
+        name: 'b',
+        slug: 'b',
+        status: 'active',
+        resolvedImage: null,
       },
     });
 
