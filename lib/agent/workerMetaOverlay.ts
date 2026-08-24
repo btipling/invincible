@@ -20,9 +20,11 @@
  * clobber a host value.
  *
  * **Never write `turnRunId: sessionId`.** A worker PATCH value for `turnRunId`
- * is a real Workflow run id, validated through `sanitizeTurnRunId`, and it is
- * additionally rejected/dropped when it equals the scope's `sessionId` (a
- * session-id-shaped attempt can never land on the run-id carrier).
+ * is a real Workflow run id, validated through `sanitizeTurnRunId`, and a
+ * session-id-shaped attempt (cleaned value equal to the scope's `sessionId`)
+ * is **skipped, not applied** — the previously stored real run id (if any) is
+ * kept, and the key drops to unset only when there was none. A session-id-shaped
+ * PATCH must never clear a valid run id (C15's live lock depends on it).
  *
  * Every worker value is sanitized through the shared A1–A3 / reserved-meta
  * predicates (drop-to-unset on poison — never a clear of a sibling, never a 400).
@@ -155,8 +157,9 @@ export function patchWorkerMeta(
  * caller's `updatedAt` is strictly newer than the stored envelope's (or there is
  * no envelope yet). A stale or equal `updatedAt` → `{ ok:false, code:'lww_conflict' }`
  * with nothing written (no silent clobber, no regress). Never throws: every
- * failure path returns `{ ok:false }`. The `turnRunId` value is additionally
- * dropped to unset when it equals the scope's `sessionId`.
+ * failure path returns `{ ok:false }`. A `turnRunId` value equal to the scope's
+ * `sessionId` is additionally SKIPPED (never applied), keeping the previous real
+ * run id; it drops to unset only when there was none.
  */
 export async function overlayWorkerMeta(
   input: OverlayWorkerMetaInput,
@@ -211,9 +214,17 @@ export async function overlayWorkerMeta(
 
   // Copy-forward, then override only worker-owned keys. Host keys always survive.
   const meta = patchWorkerMeta(envelope?.meta, input.patch);
-  // Never write `turnRunId: sessionId` — a session-id-shaped attempt is dropped.
+  // Never write `turnRunId: sessionId`: a session-id-shaped PATCH value is
+  // SKIPPED (costs the override), keeping the previously stored real run id —
+  // a session-id attempt must never clear a valid run id. When there is no
+  // previous run id, the key drops to unset.
   if (meta.turnRunId === sessionId) {
-    delete meta.turnRunId;
+    const prev = envelope?.meta?.turnRunId;
+    if (prev === undefined) {
+      delete meta.turnRunId;
+    } else {
+      meta.turnRunId = prev; // restore the previously stored real run id
+    }
   }
 
   const envInput: SessionEnvelopeInput = {

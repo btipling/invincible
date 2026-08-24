@@ -169,7 +169,7 @@ describe('overlayWorkerMeta (LWW copy-forward PATCH)', () => {
     expect(res.meta.personaId).toBe('p_1'); // host preserved through the worker PATCH
   });
 
-  it('matrix 4 — NEVER write turnRunId: sessionId; a sessionId-shaped attempt is dropped', async () => {
+  it('matrix 4 — NEVER write turnRunId: sessionId; a sessionId-shaped attempt (no prior run id) drops to unset', async () => {
     const store = new MemorySessionStore();
     await seed(store, { turnStatus: 'running', personaId: 'p_1' }, 1000);
     // Attempt to plant the session id onto the run-id carrier.
@@ -181,7 +181,23 @@ describe('overlayWorkerMeta (LWW copy-forward PATCH)', () => {
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.meta.turnRunId).toBeUndefined(); // dropped, never the session id
+    expect(res.meta.turnRunId).toBeUndefined(); // no prior run id → drops to unset
+    expect(res.meta.turnStatus).toBe('running'); // sibling preserved
+    expect(res.meta.personaId).toBe('p_1'); // host preserved
+  });
+
+  it('matrix 4b — sessionId-shaped turnRunId PATCH does NOT clear a previously stored real run id (PR #827 Nit L1)', async () => {
+    const store = new MemorySessionStore();
+    await seed(store, { turnRunId: '2cvk_real', turnStatus: 'running', personaId: 'p_1' }, 1000);
+    const res = await overlayWorkerMeta({
+      envelopeStore: store,
+      key,
+      patch: { turnRunId: key.sessionId }, // session-id-shaped attempt
+      updatedAt: 2000,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.meta.turnRunId).toBe('2cvk_real'); // previous real run id survives
     expect(res.meta.turnStatus).toBe('running'); // sibling preserved
     expect(res.meta.personaId).toBe('p_1'); // host preserved
   });
