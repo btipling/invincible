@@ -52,10 +52,14 @@ export type TurnToolCallDelta = {
 
 /**
  * NEW workflow-scoped cap (plan #806 Caps table): max workflow **steps** per
- * prompt run. `256*2 (model+tool) + persist ≪ 2k-event slow-replay line`
- * (Vercel: 25k events/run, 2 GB entity). Addressable under `MAX_AGENT_MAX_STEPS`
+ * prompt run, where EVERY step boundary counts ONE (each model round + each
+ * tool execution + each persist). This is a STEP bound, not a round bound
+ * (adversarial L6): a per-round tool fanout cannot exceed the budget.
+ * `256*2 (model+tool) + persist ≪ 2k-event slow-replay line` (Vercel: 25k
+ * events/run, 2 GB entity). Addressable under `MAX_AGENT_MAX_STEPS`
  * (`lib/sandbox/config.ts`, 1_000_000, unchanged — no existing-cap change, no
- * human gate). The parent locked 256 as the NEW workflow cap.
+ * human gate). The parent locked 256 as the NEW workflow cap value; this PR
+ * fixes its counting unit to steps (not rounds).
  */
 export const MAX_WORKFLOW_STEPS = 256;
 
@@ -71,7 +75,7 @@ export type TurnSseLine =
   | { type: 'reasoning'; text?: string }
   | { type: 'tool_start'; toolName: string; toolCallId?: string }
   | { type: 'tool_result'; toolName: string; ok: boolean; result?: string }
-  | { type: 'done'; finishReason?: string; rounds: number }
+  | { type: 'done'; finishReason?: string; rounds: number; steps: number }
   | { type: 'error'; message: string };
 
 /** Model-step wrapper contract (eventually `modelGenerateStep`). */
@@ -90,6 +94,12 @@ export interface ToolStepFn {
     toolName: string;
     toolCallId?: string;
     callArgs?: unknown;
+    /**
+     * B5-serialized file-freshness ledger seed from the prior tool step(s) in
+     * this run — threaded so read-before-edit grants survive across steps and
+     * rounds (adversarial L1). A plain string, never a closure.
+     */
+    freshnessSeed?: string;
   }): Promise<
     | { ok: true; result: string; freshnessDelta: string }
     | {
@@ -145,6 +155,12 @@ export interface TurnLoopResult {
   /** Reconstructed `[user, *assistant/tool deltas]` on replay. */
   messages: unknown[];
   rounds: number;
+  /**
+   * Total workflow steps executed (model + each tool + persist, each == 1).
+   * Bounded by {@link MAX_WORKFLOW_STEPS} — the cap counts STEPS, not rounds
+   * (adversarial L6), so a per-round tool fanout cannot blow the budget.
+   */
+  steps: number;
   error?: string;
 }
 
@@ -180,18 +196,15 @@ export async function runTurnLoop(
   deps: TurnLoopDeps,
   input: TurnLoopInput,
 ): Promise<TurnLoopResult> {
-  const cap = deps.maxSteps ?? MAX_WORKFLOW_STEPS;
+  const cap = Math.max(0, Math.floor(deps.maxSteps ?? MAX_WORKFLOW_STEPS));
   const writable = onceWritable(deps.writable);
-  // The lock's loop pseudocode caps ITERATIONS (`rounds < cap`); 256 iterations
-  // already covers 256*(model+≤tools)+persist steps well under the 2k slow-replay
-  // line (parent #794 cost-lock math). The cap is a rounds/iteration bound.
-  const maxRounds = Math.max(0, Math.floor(cap));
   const deltas: unknown[] = [];
   const messages: unknown[] = [{ role: 'user', content: input.userMessage }];
 
   const fail = async (
     status: TurnLoopResult['status'],
     round: number,
+    steps: number,
     error?: string,
   ): Promise<TurnLoopResult> => {
     if (error) await writable.write(sse({ type: 'error', message: error }));
@@ -201,18 +214,26 @@ export async function runTurnLoop(
       deltas,
       messages,
       rounds: round,
+      steps,
       ...(error !== undefined ? { error } : {}),
     };
   };
 
   let round = 0;
+  let steps = 0;
+  // Thread the B5 file-freshness ledger across tool steps — and across rounds.
+  // Every tool step seeds from the accumulated serialized ledger and returns the
+  // advanced delta, so read-before-edit grants survive the durable loop
+  // (adversarial L1). A plain string, never a closure.
+  let freshness: string | undefined;
   try {
-    while (round < maxRounds) {
+    while (steps < cap) {
       round += 1;
+      steps += 1; // this model round = one step boundary
       // ONE model round — schemas only, never execute (B9 core). Delta return.
       const gen = await deps.modelStep({ messages });
       if (!gen.ok) {
-        return fail(gen.code === 'cancelled' ? 'cancelled' : 'failed', round, gen.error);
+        return fail(gen.code === 'cancelled' ? 'cancelled' : 'failed', round, steps, gen.error);
       }
       deltas.push(gen.delta);
       if (gen.delta.text) {
@@ -220,26 +241,31 @@ export async function runTurnLoop(
       }
       messages.push({ role: 'assistant', delta: gen.delta });
 
-      // No tool calls → next round would be pure model work; the Architecture
-      // lock says the model step emits schemas and the loop decides the break.
+      // No tool calls → this model round is terminal; persist and close.
       const calls: TurnToolCallDelta[] = gen.delta.toolCalls ?? [];
       if (calls.length === 0) {
         await writable.write(
-          sse({ type: 'done', finishReason: gen.delta.finishReason, rounds: round }),
+          sse({ type: 'done', finishReason: gen.delta.finishReason, rounds: round, steps }),
         );
+        steps += 1; // the persist step
         const persisted = await deps.persistStep({ turnRunId: deps.turnRunId, deltas });
         if (!persisted.ok) {
-          return fail('failed', round, persisted.error);
+          return fail('failed', round, steps, persisted.error);
         }
         deltas.push(persisted);
         messages.push({ role: 'persist', status: persisted.status });
-        await writable.write(sse({ type: 'done', rounds: round }));
+        await writable.write(sse({ type: 'done', rounds: round, steps }));
         await writable.close();
-        return { status: 'completed', deltas, messages, rounds: round };
+        return { status: 'completed', deltas, messages, rounds: round, steps };
       }
 
-      // Each tool call is its OWN step — re-resolve + run THE named tool.
+      // Each tool call is its OWN step — re-resolve + run THE named tool, seeded
+      // with the run's accumulated file-freshness ledger. The cap counts every
+      // step (model + each tool + persist), so a per-round tool fanout cannot
+      // blow the workflow budget (adversarial L6).
       for (const call of calls) {
+        if (steps >= cap) break; // no remaining step budget → capped
+        steps += 1; // this tool execution = one step boundary
         await writable.write(
           sse({ type: 'tool_start', toolName: call.toolName, toolCallId: call.toolCallId }),
         );
@@ -247,8 +273,10 @@ export async function runTurnLoop(
           toolName: call.toolName,
           toolCallId: call.toolCallId,
           callArgs: call.args,
+          freshnessSeed: freshness,
         });
         if (tool.ok) {
+          freshness = tool.freshnessDelta;
           deltas.push(tool);
           messages.push({ role: 'tool', toolName: call.toolName, result: tool.result });
           await writable.write(
@@ -257,7 +285,7 @@ export async function runTurnLoop(
         } else {
           // Business error as a VALUE — never a throw; terminate cleanly.
           if (tool.code === 'cancelled') {
-            return fail('cancelled', round, tool.error);
+            return fail('cancelled', round, steps, tool.error);
           }
           await writable.write(
             sse({ type: 'tool_result', toolName: call.toolName, ok: false, result: tool.error }),
@@ -265,23 +293,32 @@ export async function runTurnLoop(
           deltas.push(tool);
           messages.push({ role: 'tool', toolName: call.toolName, ok: false, error: tool.error });
           await writable.close();
-          return { status: 'completed', deltas, messages, rounds: round, error: tool.error };
+          return {
+            status: 'completed',
+            deltas,
+            messages,
+            rounds: round,
+            steps,
+            error: tool.error,
+          };
         }
       }
     }
 
-    // Cap reached: never infinite. Terminal state + close.
+    // Step budget exhausted (model + tool step count hit the cap): never
+    // infinite. Terminal state + close.
     const capped: TurnLoopResult = {
       status: 'capped',
       deltas,
       messages,
       rounds: round,
+      steps,
     };
-    await writable.write(sse({ type: 'done', rounds: round }));
+    await writable.write(sse({ type: 'done', rounds: round, steps }));
     await writable.close();
     return capped;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return fail('failed', round, message);
+    return fail('failed', round, steps, message);
   }
 }

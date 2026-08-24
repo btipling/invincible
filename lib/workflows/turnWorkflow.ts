@@ -8,7 +8,7 @@
  *  - composes the three `'use step'` wrappers (`modelGenerateStep`,
  *    `toolExecuteStep`, `persistStep`) into the loop core's step-fn contracts;
  *  - runs the orchestrator while-loop (`runTurnLoop`) per the umbrella #794
- *    Architecture lock, with the 256-step cap and writeable close on every
+ *    Architecture lock, with the 256-step cap and writable close on every
  *    terminal path;
  *  - returns the terminal turn status as a plain value.
  *
@@ -21,10 +21,16 @@
  * **No `/api/agent` fallback**, no wrapping `runAgentStream`/`streamText`+`execute`
  * in one step. `turnRunId` = the Workflow run id, never session id.
  *
+ * **Serializable-only args (adversarial L1):** the entry takes plain serializable
+ * values only (`turnRunId`, `userMessage`, tool SCHEMAS, `modelId`) — the tool
+ * world (registry/secrets/signal) and the persist seam are resolved INSIDE the
+ * steps from their module-level resolvers, which the engine (C14) / B13 wires at
+ * the boundary before `start()`. No closures / AbortSignal / functions are ever
+ * passed into a `'use step'` function.
+ *
  * Wiring note (B13/C14): this B12 row ships the directive-composed loop shape;
  * the production `start(runTurnWorkflow, [args])` route + real B7/B8 Blob seam +
- * request-scoped model/registry resolution are the engine rows (C14+). The deps
- * are injected so the entry's logic is testable and stays layer-faithful.
+ * request-scoped model/registry resolution are the engine rows (C14+).
  */
 
 import { getWritable } from 'workflow';
@@ -38,16 +44,7 @@ import {
 } from './turnLoop';
 import { modelGenerateStep } from './modelGenerateStep';
 import { toolExecuteStep } from './toolExecuteStep';
-import { persistStep, type PersistStepSeam } from './persistStep';
-
-/** Leaf deps the entry wires into the loop (seams injected; wrappers re-resolve). */
-export interface TurnWorkflowDeps {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  registry?: Record<string, any>;
-  persistSeam: PersistStepSeam;
-  /** Cap override for tests (defaults to MAX_WORKFLOW_STEPS). */
-  maxSteps?: number;
-}
+import { persistStep } from './persistStep';
 
 /** `'use workflow'` run args — plain serializable values only. */
 export interface TurnWorkflowArgs {
@@ -64,7 +61,6 @@ export interface TurnWorkflowArgs {
  * returns the terminal status.
  */
 export async function turnWorkflow(
-  deps: TurnWorkflowDeps,
   args: TurnWorkflowArgs,
 ): Promise<TurnLoopResult> {
   'use workflow';
@@ -80,23 +76,21 @@ export async function turnWorkflow(
   };
 
   const modelStep: ModelStepFn = async ({ messages }) => {
-    const r = await modelGenerateStep({
+    return modelGenerateStep({
       messages,
       tools: args.tools,
       modelId: args.modelId,
     });
-    return r;
   };
-  const toolStep: ToolStepFn = async ({ toolName, toolCallId, callArgs }) => {
-    const r = await toolExecuteStep(
-      { registry: deps.registry ?? {}, secrets: [], signal: undefined },
-      { toolName, callArgs },
-    );
-    return r;
+  const toolStep: ToolStepFn = async ({ toolName, toolCallId, callArgs, freshnessSeed }) => {
+    return toolExecuteStep({
+      toolName,
+      callArgs,
+      freshnessSeed,
+    });
   };
   const persistStepFn: PersistStepFn = async ({ turnRunId, deltas }) => {
-    const r = await persistStep({ persist: deps.persistSeam }, { turnRunId, deltas });
-    return r;
+    return persistStep({ turnRunId, deltas });
   };
 
   return runTurnLoop(
@@ -105,7 +99,6 @@ export async function turnWorkflow(
       toolStep,
       persistStep: persistStepFn,
       writable: loopWritable,
-      maxSteps: deps.maxSteps,
       turnRunId: args.turnRunId,
     },
     { userMessage: args.userMessage },

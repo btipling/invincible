@@ -26,9 +26,7 @@ import {
   type TurnWritable,
   type TurnLoopDeps,
 } from './turnLoop';
-import { modelGenerateStep } from './modelGenerateStep';
-import { toolExecuteStep } from './toolExecuteStep';
-import { persistStep, createInMemoryPersistSeam } from './persistStep';
+import { persistStep, setPersistSeamResolver, createInMemoryPersistSeam } from './persistStep';
 import { reachableImports } from './staticGraph';
 
 function fakeWritable(onClose?: () => void): { w: TurnWritable; lines: string[]; closed: number } {
@@ -63,12 +61,16 @@ function wiredDeps(overrides: {
 } {
   const fake = fakeWritable();
   const seam = createInMemoryPersistSeam();
+  // The persist seam is a module-level resolver (adversarial L1: never a step
+  // arg). wiring it here means the REAL persistStep, when the loop hits the
+  // terminal persist path, re-resolves the seam in-step.
+  setPersistSeamResolver(() => seam.seam);
   const persistFail = overrides.persistFail ?? false;
   const base = {
     persistStep: persistFail
       ? async () => ({ ok: false as const, code: 'write_failed', error: 'boom' })
       : async (p: { turnRunId: string; deltas: ReadonlyArray<unknown> }) =>
-          persistStep({ persist: seam.seam }, { turnRunId: p.turnRunId, deltas: p.deltas }),
+          persistStep({ turnRunId: p.turnRunId, deltas: p.deltas }),
     // Default no-op toolStep; loop tests that fan tools override it. modelStep is
     // always injected per test (matrix 1/8/9/10 stop after the model round).
     toolStep: async (): Promise<{ ok: false; code: 'tool_not_found'; error: string }> => ({
@@ -149,9 +151,78 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       { userMessage: 'loop' },
     );
     expect(result.status).toBe('capped');
-    // cap = 2 iterations: after round 1 returns toolCalls, the while-loop refills
-    // and runs round 2, then stops at ≥ cap — must never be infinite.
-    expect(result.rounds).toBeLessThanOrEqual(2);
+    // cap = TOTAL STEPS (adversarial L6): round 1 consumes 1 model step + 1 tool
+    // step = 2, budget exhausted → capped. Must never be infinite.
+    expect(result.steps).toBe(2);
+    expect(result.rounds).toBe(1);
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    expect(closed()).toBe(1);
+  });
+
+  it('matrix 3b (L6): cap counts steps, so a per-round tool fanout is bounded', async () => {
+    const { deps, w, closed } = wiredDeps({ maxSteps: 3 });
+    // One round emits FOUR tool calls. cap=3 steps → 1 model + 2 tool steps only;
+    // the remaining tool calls must NOT run (the budget bounds the fanout).
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: {
+        text: 'fan',
+        toolCalls: [0, 1, 2, 3].map((n) => ({
+          toolName: 'read_file',
+          toolCallId: `tc${n}`,
+          args: { path: `f${n}` },
+        })),
+      },
+    }));
+    const toolStep = vi.fn(async () => ({ ok: true as const, result: 'r', freshnessDelta: '[]' }));
+    const result = await runTurnLoop(
+      { ...deps, maxSteps: 3, modelStep, toolStep },
+      { userMessage: 'fan' },
+    );
+    expect(result.status).toBe('capped');
+    // 1 model + 2 tools = 3 steps; the 3rd/4th tool calls never run.
+    expect(result.steps).toBe(3);
+    expect(toolStep).toHaveBeenCalledTimes(2);
+    expect(closed()).toBe(1);
+  });
+
+  it('freshness (adversarial L1): freshnessDelta threads into the NEXT tool seed across rounds', async () => {
+    const { deps, w, closed } = wiredDeps();
+    // Round 1 → tool `read` advances the ledger to 'LEDGER-R1'; round 2 → tool
+    // `write` must receive that ledger as its `freshnessSeed` (read-before-edit
+    // survives across rounds); round 3 → model returns no tools → completed.
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1)
+        return {
+          ok: true as const,
+          delta: { text: 'r1', toolCalls: [{ toolName: 'read_file', toolCallId: 'a', args: {} }] },
+        };
+      if (round === 2)
+        return {
+          ok: true as const,
+          delta: { text: 'r2', toolCalls: [{ toolName: 'write_file', toolCallId: 'b', args: {} }] },
+        };
+      return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(async (a: { toolName: string; freshnessSeed?: string }) =>
+      a.toolName === 'read_file'
+        ? { ok: true as const, result: 'R', freshnessDelta: 'LEDGER-R1' }
+        : {
+            // write_file must see the round-1 ledger threaded in
+            ok: true as const,
+            result: `W:${a.freshnessSeed ?? '(none)'}`,
+            freshnessDelta: 'LEDGER-R2',
+          },
+    );
+    const result = await runTurnLoop({ ...deps, modelStep, toolStep }, { userMessage: 'g' });
+    expect(result.status).toBe('completed');
+    expect(result.rounds).toBe(3);
+    // The write tool (2nd call) received the round-1 ledger as its seed.
+    expect(toolStep).toHaveBeenCalledTimes(2);
+    const writeCall = toolStep.mock.calls[1]?.[0] as { toolName: string; freshnessSeed?: string };
+    expect(writeCall.freshnessSeed).toBe('LEDGER-R1');
     expect(closed()).toBe(1);
   });
 
@@ -220,11 +291,16 @@ describe('step wrappers (matrix 4–7)', () => {
     });
     vi.doMock('../agent/generateOneRound', () => ({ generateOneRound: m1 }));
     const mod = await import('./modelGenerateStep');
-    const result = await mod.modelGenerateStep({
+    const stepArgs = {
       messages: [{ role: 'user', content: 'hi' }],
       modelId: 'm',
       tools: { list_dir: { description: 'd' } },
-    });
+    };
+    // Adversarial L1: every step arg must be JSON-serializable (Vercel
+    // serializes ALL args to a `'use step'` fn — closures become nothing).
+    const roundtrip = JSON.parse(JSON.stringify(stepArgs));
+    expect(roundtrip).toEqual(stepArgs);
+    const result = await mod.modelGenerateStep(stepArgs);
     expect(m1).toHaveBeenCalledTimes(1);
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.delta.text).toBe('m');
@@ -246,10 +322,13 @@ describe('step wrappers (matrix 4–7)', () => {
       createRunFileFreshness: () => undefined,
     }));
     const mod = await import('./toolExecuteStep');
-    const result = await mod.toolExecuteStep(
-      { registry: {}, secrets: [], signal: undefined },
-      { toolName: 'nope', callArgs: {} },
-    );
+    // The tool world (registry) is resolved IN-STEP from the module resolver —
+    // never passed as a serialized step arg (adversarial L1).
+    mod.setToolWorldResolver(() => ({ registry: {}, secrets: [], signal: undefined }));
+    const stepArgs = { toolName: 'nope', callArgs: {} };
+    // Step args must be plain serializable values.
+    expect(JSON.parse(JSON.stringify(stepArgs))).toEqual(stepArgs);
+    const result = await mod.toolExecuteStep(stepArgs);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.code).toBe('tool_not_found');
@@ -261,7 +340,10 @@ describe('step wrappers (matrix 4–7)', () => {
 
   it('matrix 7: persistStep thin shell → persists via seam (in-memory); returns terminal status', async () => {
     const { seam, persisted } = createInMemoryPersistSeam();
-    const result = await persistStep({ persist: seam }, { turnRunId: 'run_1', deltas: [{ d: 1 }] });
+    // The persist seam is a `'use step'`-unsafe function → resolved IN-STEP from
+    // the module resolver, never passed as an arg (adversarial L1).
+    setPersistSeamResolver(() => seam);
+    const result = await persistStep({ turnRunId: 'run_1', deltas: [{ d: 1 }] });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.status).toBe('completed');
@@ -273,8 +355,12 @@ describe('step wrappers (matrix 4–7)', () => {
   });
 
   it('matrix 7b: persist seam {ok:false} → value, not throw', async () => {
-    const seam = { persist: async () => ({ ok: false as const, code: 'invalid_scope' as const, error: 'no scope' }) };
-    const result = await persistStep({ persist: seam }, { turnRunId: 'r', deltas: [] });
+    const seam = {
+      persist: async () =>
+        ({ ok: false as const, code: 'invalid_scope' as const, error: 'no scope' }),
+    };
+    setPersistSeamResolver(() => seam);
+    const result = await persistStep({ turnRunId: 'r', deltas: [] });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe('invalid_scope');
   });

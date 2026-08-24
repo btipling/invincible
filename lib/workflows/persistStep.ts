@@ -12,11 +12,12 @@
  * `'use workflow'` entry importing it stays inside the B11 deploy-gate lock
  * (regression: `lib/workflows/staticGraph.test.ts`).
  *
- * **Zero non-serializable step args**: the step receives plain values only
- * (`turnRunId` = the Workflow run id, **never** session id, plan lock + the
- * serialized delta log for replay). No closures / seams cross the boundary; the
- * persist store is re-resolved *inside* the step via the injected seam
- * (`deps.persist`) — the engine/entry wires the real B7/B8 seam at B13.
+ * **Zero non-serializable step args** (plan lock + adversarial L1): the step
+ * receives plain serializable values only (`turnRunId` = the Workflow run id,
+ * **never** session id, plan lock + the serialized delta log for replay). No
+ * closures / seams are passed as args — the persist store is re-resolved
+ * *inside* the step from the module-level resolver (`setPersistSeamResolver`),
+ * which the engine/entry wires to the real B7/B8 seam at B13.
  *
  * Business errors are values: a persist failure returns `{ok:false, code, error}`
  * (the loop terminates cleanly; the writable is still closed).
@@ -48,11 +49,6 @@ export interface PersistStepArgs {
   deltas: ReadonlyArray<unknown>;
 }
 
-/** Injected step deps — the seam (tests: in-memory; B13: real B7/B8 blob). */
-export interface PersistStepDeps {
-  persist: PersistStepSeam;
-}
-
 /** Fail-closed step result (terminal status). */
 export type PersistStepResult =
   | { ok: true; status: 'completed'; turnRunId: string }
@@ -60,22 +56,42 @@ export type PersistStepResult =
 
 /**
  * Run the persist terminal as a workflow step: re-resolves the persist seam
- * in-step and returns terminal status as a value.
+ * in-step (from the module-level resolver) and returns terminal status as a
+ * value. The step takes ONLY serializable args (`turnRunId`, `deltas`) — the
+ * seam is a `'use step'`-unsafe function, so it is resolved inside the step via
+ * {@link setPersistSeamResolver}, never passed as an arg (adversarial L1).
  */
 export async function persistStep(
-  deps: PersistStepDeps,
   args: PersistStepArgs,
 ): Promise<PersistStepResult> {
   'use step';
 
+  const seam = resolvePersistSeam();
   const content = JSON.stringify({ deltas: args.deltas });
-  const result = await deps.persist.persist({
+  const result = await seam.persist({
     turnRunId: args.turnRunId,
     deltas: args.deltas,
     content,
   });
   if (!result.ok) return { ok: false, code: result.code, error: result.error };
   return { ok: true, status: 'completed', turnRunId: args.turnRunId };
+}
+
+/**
+ * Module-level injectable seam for the persist store (mirror of the tool-world
+ * resolver). Wired once per run by the engine/entry at the boundary; read
+ * in-step. Default FAILS CLOSED so a real run cannot silently no-op persist —
+ * tests and the engine (B13/C14) wire the real/in-memory seam.
+ */
+let resolvePersistSeam: () => PersistStepSeam = () => {
+  throw new Error(
+    'persistStep: no persist seam wired — call setPersistSeamResolver (B13 wires the real B7/B8 Blob seam).',
+  );
+};
+
+/** Wire the run-scoped persist-seam resolver (engine/entry boundary; tests inject too). */
+export function setPersistSeamResolver(fn: () => PersistStepSeam): void {
+  resolvePersistSeam = fn;
 }
 
 /** An in-memory persist seam for tests / non-production (B13 replaces the seam). */
