@@ -11,6 +11,10 @@
  * `scope` arg. This is the production path — the route MUST NOT call
  * `setPersistSeamResolver` / `setToolWorldResolver` (those are test overrides).
  *
+ * Tool schemas are assembled IN-STEP via the shared `assembleDurableToolWorld`
+ * helper (same path for model + tool steps). The route MUST NOT pass a `tools`
+ * dict — the model must see the same tools the execute step can run.
+ *
  * Pre-`start()` gates (fail closed, never enqueue a doomed run):
  *  1. Auth (`requireSessionUser`) → 401
  *  2. `sessionId` required → 400
@@ -36,7 +40,6 @@ import { requireSessionUser } from '../../../lib/tenancy/session';
 import { resolveSessionStore } from '../../../lib/tenancy/harnessSessionsRedis';
 import { isEnvelopeStore } from '../../../lib/sessions/sessionStore';
 import { sessionKeyFor } from '../../../lib/tenancy/harnessSessionsRedis';
-import { toolsWithoutExecutors } from '../../../lib/agent/generateOneRound';
 import { turnWorkflow } from '../../../lib/workflows/turnWorkflow';
 
 export const runtime = 'nodejs';
@@ -62,9 +65,9 @@ function failClosed(err: unknown): string {
  * - else → JSON `{ runId }` + `x-workflow-run-id` header.
  * - `start` throw → 503 fail-closed, no `/api/agent` fallback.
  *
- * The route passes ONLY serializable values to `start()`: `scope`, `tools`
- * (schema-only via `toolsWithoutExecutors`), `modelId`, `userMessage`, and
- * optional `persistRunBind`. Step seams are re-resolved in-step from `scope`.
+ * The route passes ONLY serializable values to `start()`: `scope`, `modelId`,
+ * `userMessage`, and optional `persistRunBind`. NO `tools` dict — tool schemas
+ * are assembled in-step via the shared `assembleDurableToolWorld` helper.
  */
 export async function POST(req: Request): Promise<Response> {
   // Auth gate FIRST (mirrors app/api/agent/route.ts POST gate) — before any
@@ -150,12 +153,12 @@ export async function POST(req: Request): Promise<Response> {
 
     // The single durable loop entry. `turnRunId` is derived in-workflow from
     // getWorkflowMetadata().workflowRunId — never passed as a start() arg.
-    // `tools` = SCHEMAS only (via toolsWithoutExecutors) — never a live registry
-    // with `execute` closures. The tool world is assembled IN-STEP from `scope`.
+    // NO `tools` dict — tool schemas are assembled in-step via the shared
+    // `assembleDurableToolWorld` helper, so the model sees the same tools
+    // the execute step can run.
     const run = await start(turnWorkflow, [
       {
         userMessage: parsed.prompt,
-        tools: toolsWithoutExecutors({ find_skill: {}, fetch_skill: {} }),
         modelId: byok.modelId,
         scope,
         ...(persistRunBind ? { persistRunBind } : {}),

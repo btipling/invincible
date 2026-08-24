@@ -6,7 +6,7 @@
  *  2. Loop: model returns N tool calls → each runs once via toolExecuteStep; loop continues
  *  3. Loop: rounds reach the 256 cap → terminates (never infinite); writable closed
  *  4. Step args serializable (no closures/seams/bound runners cross a boundary)
- *  5. modelGenerateStep thin shell → delegates generateOneRound (delta; tool schemas only)
+ *  5. modelGenerateStep thin shell → delegates generateOneRound (delta; FULL tool schemas via shared helper)
  *  6. toolExecuteStep thin shell → delegates executeTool ({result,freshnessDelta}); business error is a value
  *  7. persistStep thin shell → persists via seam (in-memory); returns terminal status
  *  8. Step returns {ok:false} → value, not throw; loop terminates cleanly; writable closed
@@ -442,18 +442,23 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
 });
 
 describe('step wrappers (matrix 4–7)', () => {
-  it('matrix 4 + 5: modelGenerateStep is a thin shell — delegates generateOneRound, re-resolves BYOK in-step, serializable args', async () => {
+  it('matrix 4 + 5: modelGenerateStep is a thin shell — delegates generateOneRound, re-resolves BYOK in-step, assembles FULL tool schemas via shared helper, serializable args', async () => {
     // Mock generateOneRound to prove the wrapper delegates and forwards plain
-    // serializable args. (The schemas-only stripping is B9's job, pinned in
-    // generateOneRound.test.ts; the wrapper must not invent/deny that invariant.)
+    // serializable args with the FULL registry (schemas-only).
     const m1 = vi.fn(async (_deps: unknown, input: unknown) => {
-      const i = input as { messages: unknown[]; modelId?: string };
+      const i = input as { messages: unknown[]; tools?: Record<string, unknown> };
       expect(Array.isArray(i.messages)).toBe(true);
+      // The tools dict must be the stripped FULL durable surface
+      // (at minimum list_dir + skill tools), not the old stub.
+      expect(typeof i.tools).toBe('object');
+      expect(i.tools).toBeDefined();
       return { ok: true as const, delta: { text: 'm', toolCalls: [] } };
     });
-    vi.doMock('../agent/generateOneRound', () => ({ generateOneRound: m1 }));
+    vi.doMock('../agent/generateOneRound', () => ({
+      generateOneRound: m1,
+      toolsWithoutExecutors: (t: Record<string, unknown>) => t,
+    }));
     // Mock the DI root so the in-step BYOK re-resolution returns a stub success.
-    // In production the step imports the real DI root; tests inject a stub.
     vi.doMock('../di/index', () => ({
       createProdServices: () => ({
         resolveInferenceForRequest: {
@@ -470,12 +475,30 @@ describe('step wrappers (matrix 4–7)', () => {
         },
       }),
     }));
+    // Mock the shared durable-tool-world helper to return a minimal registry
+    // (the model step will see these tools schemas-only).
+    vi.doMock('./assembleDurableToolWorld', () => ({
+      assembleDurableToolWorld: async () => ({
+        registry: {
+          list_dir: { description: 'List directory contents' },
+          read_file: { description: 'Read a file' },
+          find_skill: { description: 'Find skills' },
+          fetch_skill: { description: 'Fetch a skill' },
+        },
+        secrets: [],
+        signal: new AbortController().signal,
+        freshness: {},
+        mcpClose: async () => {},
+        httpRunner: undefined,
+        sandboxClientClose: undefined,
+      }),
+    }));
     const mod = await import('./modelGenerateStep');
     const stepArgs = {
       messages: [{ role: 'user', content: 'hi' }],
       modelId: 'm',
-      tools: { list_dir: { description: 'd' } },
       userId: 'u1',
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
     };
     // Adversarial L1: every step arg must be JSON-serializable (Vercel
     // serializes ALL args to a `'use step'` fn — closures become nothing).
@@ -493,8 +516,63 @@ describe('step wrappers (matrix 4–7)', () => {
       gateway: { only: ['anthropic'], byok: { anthropic: [{ apiKey: 'sk-test' }] } },
     });
     expect(argDeps.secrets).toEqual(['sk-test']);
+    // The tools passed to generateOneRound must be the FULL stripped registry
+    // (not the old stub { find_skill: {}, fetch_skill: {} }).
+    const inputTools = (m1.mock.calls[0]?.[1] as { tools?: Record<string, unknown> })?.tools;
+    expect(inputTools).toBeDefined();
+    expect(Object.keys(inputTools as object)).toContain('list_dir');
+    expect(Object.keys(inputTools as object)).toContain('find_skill');
     vi.doUnmock('../agent/generateOneRound');
     vi.doUnmock('../di/index');
+    vi.doUnmock('./assembleDurableToolWorld');
+  });
+
+  it('matrix 5b: modelGenerateStep BYOK fail returns {ok:false} — does NOT call streamText with bare modelId', async () => {
+    // Mock generateOneRound — must NOT be called.
+    const m1 = vi.fn(async () => ({ ok: true as const, delta: { text: 'x', toolCalls: [] } }));
+    vi.doMock('../agent/generateOneRound', () => ({
+      generateOneRound: m1,
+      toolsWithoutExecutors: (t: Record<string, unknown>) => t,
+    }));
+    // BYOK resolution FAILS.
+    vi.doMock('../di/index', () => ({
+      createProdServices: () => ({
+        resolveInferenceForRequest: {
+          resolveByokForRequest: async () => ({
+            ok: false as const,
+            reason: 'no_active_key',
+          }),
+        },
+      }),
+    }));
+    vi.doMock('./assembleDurableToolWorld', () => ({
+      assembleDurableToolWorld: async () => ({
+        registry: {},
+        secrets: [],
+        signal: new AbortController().signal,
+        freshness: {},
+        mcpClose: undefined,
+        httpRunner: undefined,
+        sandboxClientClose: undefined,
+      }),
+    }));
+    const mod = await import('./modelGenerateStep');
+    const result = await mod.modelGenerateStep({
+      messages: [{ role: 'user', content: 'hi' }],
+      modelId: 'm',
+      userId: 'u1',
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('model_error');
+      expect(result.error).toMatch(/BYOK resolve failed/);
+    }
+    // generateOneRound must NOT have been called — no bare modelId fallthrough.
+    expect(m1).not.toHaveBeenCalled();
+    vi.doUnmock('../agent/generateOneRound');
+    vi.doUnmock('../di/index');
+    vi.doUnmock('./assembleDurableToolWorld');
   });
 
   it('matrix 6: toolExecuteStep thin shell → delegates executeTool; business error is a value', async () => {
@@ -505,13 +583,13 @@ describe('step wrappers (matrix 4–7)', () => {
     }));
     vi.doMock('../agent/executeTool', () => ({ executeTool: m }));
     vi.doMock('../agent/fileFreshness', () => ({
-      hydrateRunFileFreshness: (s: string | undefined) => undefined,
-      createRunFileFreshness: () => undefined,
+      hydrateRunFileFreshness: (_s: string | undefined) => ({}),
+      createRunFileFreshness: () => ({}),
     }));
     const mod = await import('./toolExecuteStep');
     // The tool world (registry) is resolved IN-STEP from the module resolver —
     // never passed as a serialized step arg (adversarial L1).
-    mod.setToolWorldResolver(() => ({ registry: {}, secrets: [], signal: undefined }));
+    mod.setToolWorldResolver(() => ({ registry: {}, secrets: [], signal: undefined, freshness: {} }));
     const stepArgs = { toolName: 'nope', callArgs: {} };
     // Step args must be plain serializable values.
     expect(JSON.parse(JSON.stringify(stepArgs))).toEqual(stepArgs);
@@ -523,6 +601,42 @@ describe('step wrappers (matrix 4–7)', () => {
     }
     vi.doUnmock('../agent/executeTool');
     vi.doUnmock('../agent/fileFreshness');
+  });
+
+  it('matrix 6b (B5 freshness fix): toolExecuteStep with resolver set directly → SAME freshness object identity for createAgentTools (inside shared helper) and executeTool', async () => {
+    // The resolver is set directly to return a world with a marked freshness
+    // object. This avoids the fragile "resolver throws → dynamic import path"
+    // approach. The freshness the resolver returns must be the SAME object
+    // reference that executeTool receives (identity, not just equality).
+    const freshnessMarker = { _id: 'shared-freshness-for-this-step' };
+    const execMock = vi.fn(async (deps: unknown) => {
+      const d = deps as { freshness?: unknown };
+      // The freshness passed to executeTool must be the SAME object the
+      // resolver returned (identity check).
+      expect(d.freshness).toBe(freshnessMarker);
+      return { ok: true as const, result: 'ok', freshnessDelta: '[]' };
+    });
+    // Reset modules so the vi.doMock for executeTool takes effect on a fresh
+    // import of toolExecuteStep (the module may be cached from a prior test
+    // with a different mock resolution).
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    const mod = await import('./toolExecuteStep');
+    // Resolver SET → test path. Pass the marked freshness directly.
+    mod.setToolWorldResolver(() => ({
+      registry: { test_tool: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: freshnessMarker,
+    }));
+    const result = await mod.toolExecuteStep({
+      toolName: 'test_tool',
+      callArgs: {},
+      freshnessSeed: 'seed',
+    });
+    expect(result.ok).toBe(true);
+    expect(execMock).toHaveBeenCalledTimes(1);
+    vi.doUnmock('../agent/executeTool');
   });
 
   it('matrix 7: persistStep thin shell → persists via seam (in-memory); returns terminal status', async () => {

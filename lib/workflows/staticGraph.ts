@@ -246,7 +246,16 @@ export function reachableImports(entry: string, options: StaticGraphOptions = {}
     // (e.g. staticWorkflowFixture) — skipping the entry's own imports would
     // break reachability. The directive is only a leaf-gate for IMPORTED
     // step modules.
-    if (depth > 0 && src.includes("'use step'")) return;
+    //
+    // STRIP COMMENTS FIRST: a `'use step'` / `"use step"` string inside a
+    // comment (doc-body, line-comment) must NOT leaf-trim. Otherwise a helper
+    // like `turnLoop.ts` whose doc-comment mentions `'use step'` gets treated
+    // as a step leaf, and its banned imports are silently ignored (deploy-gate
+    // fail-open). Comment-stripping mirrors extractImports.
+    const stepLeafSrc = stripComments(src);
+    const hasRealStepDirective =
+      stepLeafSrc.includes("'use step'") || stepLeafSrc.includes('"use step"');
+    if (depth > 0 && hasRealStepDirective) return;
 
     for (const spec of extractImports(src)) {
       const value = resolveImport(spec, file, root);

@@ -7,6 +7,12 @@
  * `execute`), returning the normalized DELTA `{text, toolCalls, usage,
  * finishReason}` — not the full transcript.
  *
+ * The tool surface is assembled IN-STEP via the shared `assembleDurableToolWorld`
+ * helper (same path as `toolExecuteStep`), then stripped to schemas-only via
+ * `toolsWithoutExecutors`. The model MUST see the same tools the execute step
+ * can run — otherwise the model cannot call FS/MCP/HTTP/skill tools and a
+ * durable coding turn is a dead letter.
+ *
  * In **production** BYOK is re-resolved IN-STEP: the route passes only
  * serializable `{ userId, modelId }` (never api keys). Inside the step,
  * `resolveByokForRequest(userId, modelId)` resolves the tenant BYOK and
@@ -15,9 +21,9 @@
  * code:'model_error'}` — it NEVER calls `streamText` with a bare `modelId`.
  *
  * **Zero non-serializable step args** (plan #806 lock): the only args this step
- * may legally receive are plain serializable values (the messages array + tool
- * SCHEMA dict + model id + user id). No closures / bound runners / seams cross
- * the step boundary.
+ * may legally receive are plain serializable values (the messages array + model
+ * id + user id + scope + optional persistRunBind). No closures / bound runners /
+ * seams cross the step boundary.
  *
  * The step returns the delta; the loop core writes the SSE lines from that delta
  * (`write SSE (text / reasoning / tool_start)`), so this wrapper does NOT open
@@ -39,15 +45,14 @@ import {
   type GenerateOneRoundInput,
   type OneRoundDelta,
 } from '../agent/generateOneRound';
+import { toolsWithoutExecutors } from '../agent/generateOneRound';
+import type { PersistRunBind } from './turnLoop';
 
 /** Serialized `modelGenerateStep` step args — plain values only. */
 export interface ModelGenerateStepArgs {
   /** Messages for this single round (reconstructed on replay from deltas). */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   messages: ReadonlyArray<any>;
-  /** Tool schemas ONLY (names/bodies, never `execute`). */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  tools: Record<string, any>;
   /** Server-resolved model id string (request-scoped BYOK). */
   modelId: string;
   /**
@@ -55,6 +60,18 @@ export interface ModelGenerateStepArgs {
    * as a plain serializable value — never api keys or provider options.
    */
   userId: string;
+  /**
+   * Serializable session scope for in-step tool-world assembly.
+   * The model must see the FULL durable tool surface (FS + skill/meta + MCP +
+   * HTTP), assembled via the shared `assembleDurableToolWorld` helper — same
+   * path as `toolExecuteStep` so the worlds cannot drift.
+   */
+  scope: { tenantId: string; userId: string; sessionId: string };
+  /**
+   * Pre-run sandbox bind (cwd, activeSandboxId) — passed to the shared helper
+   * for FS tool assembly.
+   */
+  persistRunBind?: PersistRunBind;
 }
 
 /** Fail-closed step result (same shape as the B9 core). */
@@ -64,10 +81,9 @@ export type ModelGenerateStepResult =
 
 /**
  * Run exactly ONE model round as a workflow step. In production, re-resolves
- * BYOK in-step (tenant BYOK always; never host env-model) and attaches
- * `providerOptions.gateway.{only,byok}` + the redact list. On BYOK fail
- * returns `{ok:false}` — never calls `streamText` with a bare `modelId`.
- * Calls the B9 core, returning the delta as a value.
+ * BYOK in-step (tenant BYOK always; never host env-model) and assembles the
+ * FULL durable tool surface (shared `assembleDurableToolWorld`) then strips to
+ * schemas-only via `toolsWithoutExecutors`. Returns the delta as a value.
  */
 export async function modelGenerateStep(
   args: ModelGenerateStepArgs,
@@ -92,9 +108,34 @@ export async function modelGenerateStep(
     };
   }
 
+  // Assemble the FULL durable tool world in-step — same shared helper as
+  // toolExecuteStep so the worlds cannot drift. The model must see every tool
+  // the execute step can run (FS + skill/meta + MCP + HTTP), stripped to
+  // schemas-only via toolsWithoutExecutors.
+  const { assembleDurableToolWorld } = await import(
+    './assembleDurableToolWorld'
+  );
+  const world = await assembleDurableToolWorld({
+    scope: args.scope,
+    persistRunBind: args.persistRunBind,
+  });
+  const toolSchemas = toolsWithoutExecutors(world.registry);
+
+  // Close lifecycle handles — the model step only needed schemas.
+  // Best-effort; ignore close errors.
+  if (world.mcpClose) {
+    try { await world.mcpClose(); } catch { /* ignore */ }
+  }
+  if (world.httpRunner) {
+    try { await world.httpRunner.close(); } catch { /* ignore */ }
+  }
+  if (world.sandboxClientClose) {
+    try { await world.sandboxClientClose(); } catch { /* ignore */ }
+  }
+
   const input: GenerateOneRoundInput = {
     messages: args.messages,
-    tools: args.tools,
+    tools: toolSchemas,
     onEvent: async () => {
       /* The delta is the authoritative carrier; the loop emits SSE from it. */
     },

@@ -22,11 +22,12 @@
  * in one step. `turnRunId` = the Workflow run id, never session id.
  *
  * **Serializable-only args (adversarial L1):** the entry takes plain serializable
- * values only (`userMessage`, tool SCHEMAS, `modelId`) — the tool
- * world (registry/secrets/signal) and the persist seam are resolved INSIDE the
- * steps from their module-level resolvers, which the engine (C14) / B13 wires at
- * the boundary before `start()`. No closures / AbortSignal / functions are ever
- * passed into a `'use step'` function.
+ * values only (`userMessage`, `modelId`, `scope`, optional `persistRunBind`) —
+ * the tool world (registry/secrets/signal) and the persist seam are resolved
+ * INSIDE the steps. No closures / AbortSignal / functions are ever passed into
+ * a `'use step'` function. The route MUST NOT pass a `tools` dict — tool schemas
+ * are assembled in-step via the shared `assembleDurableToolWorld` helper so the
+ * model sees the same tools the execute step can run.
  *
  * Wiring note (B13/C14): this B12 row ships the directive-composed loop shape;
  * the production `start(runTurnWorkflow, [args])` route + real B7/B8 Blob seam +
@@ -54,11 +55,13 @@ import { persistStep } from './persistStep';
  * after it is enqueued, so `turnRunId` cannot be supplied from the boundary.
  * The entry derives it in-workflow from `getWorkflowMetadata().workflowRunId`
  * (= the route-side `run.runId`, never the session id).
+ *
+ * `tools` is intentionally REMOVED: the route MUST NOT pass a tools dict.
+ * Tool schemas are assembled in-step via the shared `assembleDurableToolWorld`
+ * helper — the model must see the same tools the execute step can run.
  */
 export interface TurnWorkflowArgs {
   userMessage: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  tools: Record<string, any>;
   modelId: string;
   /** Serializable session scope for in-step seam construction (prod path). */
   scope: { tenantId: string; userId: string; sessionId: string };
@@ -101,9 +104,10 @@ export async function turnWorkflow(
   const modelStep: ModelStepFn = async ({ messages }) => {
     return modelGenerateStep({
       messages,
-      tools: args.tools,
       modelId: args.modelId,
       userId: args.scope.userId,
+      scope: args.scope,
+      persistRunBind: args.persistRunBind,
     });
   };
   const toolStep: ToolStepFn = async ({ toolName, toolCallId, callArgs, freshnessSeed }) => {
@@ -112,6 +116,7 @@ export async function turnWorkflow(
       callArgs,
       freshnessSeed,
       scope: args.scope,
+      persistRunBind: args.persistRunBind,
     });
   };
   // Forward EVERYTHING the loop passes including the derived `fold` — a

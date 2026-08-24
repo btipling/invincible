@@ -9,9 +9,9 @@ import { AUTH_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
  * (row 8 — in-workflow turnRunId derivation — lives in
  * `lib/workflows/turnWorkflow.test.ts`).
  *
- * The route passes ONLY serializable values to `start()` — `scope`, `tools`
- * (schema-only via `toolsWithoutExecutors`), `modelId`, `userMessage`, and
- * optional `persistRunBind`. Step seams are re-resolved in-step from `scope`.
+ * The route passes ONLY serializable values to `start()` — `scope`, `modelId`,
+ * `userMessage`, and optional `persistRunBind`. NO `tools` dict — tool schemas
+ * are assembled in-step via the shared `assembleDurableToolWorld` helper.
  * The route MUST NOT call `setPersistSeamResolver` / `setToolWorldResolver`
  * (those are test overrides). No real `createDbConnection` / PGlite —
  * everything is injected through the mocked composition root (DI/cost gate).
@@ -106,9 +106,6 @@ describe('POST /api/turns', () => {
     vi.doMock('../../../lib/sessions/sessionStore', () => ({
       isEnvelopeStore: () => true,
     }));
-    vi.doMock('../../../lib/agent/generateOneRound', () => ({
-      toolsWithoutExecutors: (t: Record<string, unknown>) => t,
-    }));
   }
 
   function mockStart(overrides: Record<string, unknown> = {}) {
@@ -173,12 +170,11 @@ describe('POST /api/turns', () => {
     vi.doUnmock('../../../lib/chatServer');
     vi.doUnmock('../../../lib/tenancy/harnessSessionsRedis');
     vi.doUnmock('../../../lib/sessions/sessionStore');
-    vi.doUnmock('../../../lib/agent/generateOneRound');
     vi.doUnmock('workflow/api');
     resetServiceState();
   });
 
-  it('row 1 — authed valid sessionId+prompt → start called with serializable-only args (scope, tools schemas-only, modelId); returns {runId} + x-workflow-run-id', async () => {
+  it('row 1 — authed valid sessionId+prompt → start called with serializable-only args (scope, modelId, userMessage, persistRunBind); NO tools key; returns {runId} + x-workflow-run-id', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
@@ -200,9 +196,8 @@ describe('POST /api/turns', () => {
     expect(startArgs.modelId).toBe('anthropic/claude-a');
     // scope must be present (serializable, no closures)
     expect(startArgs.scope).toEqual({ tenantId: 't1', userId: 'u1', sessionId: 's1' });
-    // tools = schemas ONLY (never a live registry with `execute` closures)
-    expect(typeof startArgs.tools).toBe('object');
-    expect(startArgs.tools).toEqual({ find_skill: {}, fetch_skill: {} });
+    // NO tools key — tool schemas are assembled in-step via the shared helper
+    expect(startArgs.tools).toBeUndefined();
     // persistRunBind optionally present from envelope meta
     expect(startArgs.persistRunBind).toEqual({ cwd: 'app', activeSandboxId: 'sb_bind' });
   });
@@ -282,7 +277,7 @@ describe('POST /api/turns', () => {
     expect(startMock).not.toHaveBeenCalled();
   });
 
-  it('start() args carry NO functions/execute closures — tools are schema-only; scope is plain values', async () => {
+  it('start() args carry NO functions/execute closures — no tools key; scope + persistRunBind are plain values only', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
@@ -298,12 +293,10 @@ describe('POST /api/turns', () => {
     const parsed = JSON.parse(json);
     expect(parsed).toEqual(startArgs);
 
+    // NO tools key — tool schemas are assembled in-step.
+    expect(parsed.tools).toBeUndefined();
+
     // scope is plain serializable values only.
     expect(parsed.scope).toEqual({ tenantId: 't1', userId: 'u1', sessionId: 's1' });
-
-    // tools dict contains no `execute` property.
-    for (const v of Object.values(parsed.tools as Record<string, unknown>)) {
-      expect(v && typeof v === 'object' && 'execute' in (v as object)).toBe(false);
-    }
   });
 });

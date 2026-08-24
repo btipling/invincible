@@ -7,12 +7,11 @@
  * named tool in the assembled registry → run **that** tool's `execute` →
  * `{result, freshnessDelta}`.
  *
- * In **production** the tool world is assembled IN-STEP from the serializable
- * `scope` arg (the route MUST NOT wire the module-level resolver — Vercel step
- * VMs don't share the route's module state). `setToolWorldResolver` is a
- * TEST-ONLY override: when set (tests), it wins; when unset (prod), the step
- * constructs the full tool world (sandbox + MCP + HTTP + skill/meta tools) from
- * `scope` plus the DI root — same assembly as `/api/agent`.
+ * In **production** the tool world is assembled IN-STEP via the shared
+ * `assembleDurableToolWorld` helper (same path as `modelGenerateStep`). The
+ * route MUST NOT wire the module-level resolver — Vercel step VMs don't share
+ * the route's module state. `setToolWorldResolver` is a TEST-ONLY override:
+ * when set (tests), it wins; when unset (prod), the step uses the shared helper.
  *
  * The B11 walker treats `'use step'` files as leaves, so this file's imports
  * (including `lib/di` / sandbox / MCP surface) do NOT pollute the workflow
@@ -21,6 +20,12 @@
  * **Zero non-serializable step args:** the ONLY args are plain serializable
  * values. Closures / AbortSignal / bound runners can never pass the step
  * boundary. MCP/HTTP/sandbox handles are closed in a `finally` block.
+ *
+ * **B5 freshness fix:** the SAME `RunFileFreshness` object goes into both
+ * `createAgentTools` (FS tools record reads) and `executeTool` (freshnessDelta
+ * serialized from the same ledger). Previously a NEW ledger was created for
+ * tools while a seed-based ledger was used for executeTool — read-before-edit
+ * grants were lost across the step boundary.
  *
  * Business errors are **values**, not throws (mirrors the B10 core): a tool that
  * soft-fails returns its string as `result`; `tool_not_found` / `cancelled` are
@@ -32,11 +37,8 @@ import {
   executeTool,
   type ExecuteToolDeps,
 } from '../agent/executeTool';
-import {
-  createRunFileFreshness,
-  hydrateRunFileFreshness,
-} from '../agent/fileFreshness';
 import type { HttpFetchRunner } from '../agent/httpFetchTypes';
+import type { PersistRunBind } from './turnLoop';
 
 /** Serialized `toolExecuteStep` step args — plain values only. */
 export interface ToolExecuteStepArgs {
@@ -49,9 +51,15 @@ export interface ToolExecuteStepArgs {
   /**
    * Serializable session scope for in-step world construction (prod path).
    * When the module-level resolver is unset (production), the step assembles
-   * the full tool world from this scope. Plain serializable values only.
+   * the full tool world from this scope via the shared helper.
+   * Plain serializable values only.
    */
   scope?: { tenantId: string; userId: string; sessionId: string };
+  /**
+   * Pre-run sandbox bind (cwd, activeSandboxId) — passed to the shared helper
+   * for FS tool assembly + sandbox resolution.
+   */
+  persistRunBind?: PersistRunBind;
 }
 
 /** Fail-closed step result (mirror B10 `ExecuteToolResult`). */
@@ -72,27 +80,32 @@ export type ToolExecuteStepResult =
 /**
  * Resolves the run-scoped tool **world** in-step: the assembled tool registry
  * (sandbox `createAgentTools(...)` merged with skill/meta/MCP/HTTP tools),
- * the redaction secret list, the cancellation signal, and optional lifecycle
- * handles (MCP close, HTTP runner). Injected by the engine (C14) at the
- * workflow boundary for tests; in production the step constructs the world
- * itself from the serializable `scope` arg.
+ * the redaction secret list, the cancellation signal, the shared B5 freshness
+ * ledger, and optional lifecycle handles (MCP close, HTTP runner, sandbox close).
+ * Injected by the engine (C14) at the workflow boundary for TESTS; in production
+ * the step constructs the world itself from the serializable `scope` arg via the
+ * shared `assembleDurableToolWorld` helper.
  */
 export type ToolWorldResolver = (args: ToolExecuteStepArgs) => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   registry: Record<string, any>;
   secrets?: Array<string | undefined | null>;
   signal?: AbortSignal;
+  /** Run-scoped file-freshness ledger — shared between tools and execute. */
+  freshness?: unknown;
   /** MCP close handle — called in the step's `finally` (prod + test). */
   mcpClose?: () => Promise<void>;
   /** Builtin-HTTP runner — closed in the step's `finally` (prod + test). */
   httpRunner?: HttpFetchRunner;
+  /** Sandbox client close — closed in the step's `finally`. */
+  sandboxClientClose?: () => Promise<void>;
 };
 
 /**
  * Module-level injectable seam for the tool world (mirror of the persist seam).
  * Wired once per run by the engine/entry for TESTS; read in-step. Default
  * FAILS CLOSED so an unwired real run falls through to the production path
- * (in-step assembly from `scope`).
+ * (in-step assembly from `scope` via the shared helper).
  */
 let resolveToolWorld: ToolWorldResolver = () => {
   throw new Error(
@@ -106,174 +119,73 @@ export function setToolWorldResolver(fn: ToolWorldResolver): void {
 }
 
 /**
- * Resolve the tool world: tests win via the injected resolver; production falls
- * through to in-step assembly from the serializable `scope`.
- */
-async function resolveWorld(
-  args: ToolExecuteStepArgs,
-): Promise<{
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  registry: Record<string, any>;
-  secrets: Array<string | undefined | null>;
-  signal: AbortSignal;
-  mcpClose?: () => Promise<void>;
-  httpRunner?: HttpFetchRunner;
-}> {
-  // Test path: resolver is set → no throw → test world wins.
-  try {
-    const w = resolveToolWorld(args);
-    return {
-      registry: w.registry ?? {},
-      secrets: w.secrets ?? [],
-      signal: w.signal ?? new AbortController().signal,
-      mcpClose: w.mcpClose,
-      httpRunner: w.httpRunner,
-    };
-  } catch {
-    // Production path: resolver unset → assemble the world in-step.
-  }
-
-  if (!args.scope) {
-    throw new Error(
-      'toolExecuteStep: no tool-world resolver wired and no scope provided — the route must pass scope on start() args.',
-    );
-  }
-
-  const { userId, sessionId } = args.scope;
-  const { createProdServices } = await import('../di/index');
-  const services = createProdServices();
-  const { buildToolWorld } = await import('../agent/buildToolWorld');
-  const { buildUserMcpTools } = await import('../mcp/client');
-  const { createAgentTools } = await import('../agent/tools');
-  const { createRunFileFreshness } = await import('../agent/fileFreshness');
-  const { resolveSessionStore } = await import('../tenancy/harnessSessionsRedis');
-
-  const signal = new AbortController().signal;
-
-  // Resolve sandbox (FS client + permissions + secrets) — same as /api/agent.
-  let sandbox:
-    | { client: import('../sandbox/client').SandboxClient; secrets: string[] }
-    | undefined;
-  let permissions: { canRead: boolean; canWrite: boolean } | undefined;
-  let workspaceRoot: string | undefined;
-  try {
-    const resolved = await services.resolveSandbox.resolveAgentSandbox(
-      userId,
-      {},
-      { signal },
-    );
-    if (resolved.ok) {
-      sandbox = {
-        client: resolved.value.client,
-        secrets: resolved.value.secrets,
-      };
-      permissions = resolved.value.permissions;
-      workspaceRoot = resolved.value.workspaceRoot ?? undefined;
-    }
-  } catch {
-    // Sandbox unavailable — soft-path (no FS tools). The turn still has
-    // skill/meta/MCP/HTTP tools.
-  }
-
-  // Resolve GitHub PAT for sandbox exec env.
-  let ghSecrets: string[] = [];
-  try {
-    const gh = await services.userGithubToken.decryptUserGithubTokenForServer(userId);
-    if (gh.ok && gh.value) {
-      ghSecrets.push(gh.value);
-    }
-  } catch {
-    // Fail-open: no GH token → no exec env.
-  }
-
-  // Resolve HTTP attach name.
-  let httpAttachName: string | null = null;
-  try {
-    const loaded = await services.userSandboxInstance.loadInstance(userId, 'http');
-    if (
-      loaded.ok &&
-      loaded.value &&
-      loaded.value.status === 'running' &&
-      loaded.value.vercelName?.trim()
-    ) {
-      httpAttachName = loaded.value.vercelName.trim();
-    }
-  } catch {
-    // Fail-open: no HTTP instance → no HTTP tools.
-  }
-
-  // Assemble the non-FS tool world (C14a).
-  const world = await buildToolWorld({
-    userId,
-    sessionId,
-    signal,
-    serverSecrets: services.serverSecrets,
-    services: {
-      userSkills: services.userSkills,
-      userPersonas: services.userPersonas,
-      userPreferredSandbox: services.userPreferredSandbox,
-      userMcpServers: services.userMcpServers,
-      createHttpRunner: services.createHttpRunner,
-    },
-    sessionStoreSeam: {
-      resolveSessionStore: () => resolveSessionStore(),
-      resolveTenantIdForUser: (uid: string) =>
-        services.harnessSessionsRedis.resolveTenantIdForUser(uid),
-    },
-    buildUserMcpTools,
-    byokSecretsToRedact: [],
-    ghSecrets,
-    ...(sandbox ? { sandbox } : {}),
-    httpAttachName,
-  });
-
-  // Merge FS sandbox tools into the registry.
-  let registry = world.registry;
-  if (sandbox && permissions && workspaceRoot) {
-    const fsTools = createAgentTools({
-      client: sandbox.client,
-      freshness: createRunFileFreshness(),
-      permissions,
-      workspaceRoot,
-    });
-    registry = { ...registry, ...fsTools };
-  }
-
-  return {
-    registry,
-    secrets: world.secrets,
-    signal: world.signal,
-    mcpClose: world.mcpClose,
-    httpRunner: world.httpRunner,
-  };
-}
-
-/**
  * Run exactly ONE tool as a workflow step. The step takes ONLY serializable
- * args; the tool world is resolved in-step (test resolver or prod in-step
- * assembly). Hydrates the B5 file-freshness ledger from the serialized seed
- * arg, calls the B10 core, and returns the result as a value.
+ * args; the tool world is resolved in-step (test resolver or prod shared
+ * helper assembly). The B5 file-freshness ledger is hydrated ONCE and shared
+ * between `createAgentTools` and `executeTool`.
  *
- * MCP/HTTP handles are closed in a `finally` block — the route today never
- * calls `world.mcpClose`, so the step owns the lifecycle.
+ * MCP/HTTP/sandbox handles are closed in a `finally` block — the route today
+ * never calls `world.mcpClose`, so the step owns the lifecycle.
  */
 export async function toolExecuteStep(
   args: ToolExecuteStepArgs,
 ): Promise<ToolExecuteStepResult> {
   'use step';
 
-  const world = await resolveWorld(args);
-  let mcpClose = world.mcpClose;
-  let httpRunner = world.httpRunner;
+  // Resolve the world: tests win via the injected resolver; production falls
+  // through to the shared `assembleDurableToolWorld` helper.
+  let registry: Record<string, unknown>;
+  let secrets: Array<string | undefined | null>;
+  let signal: AbortSignal;
+  let freshness: unknown;
+  let mcpClose: (() => Promise<void>) | undefined;
+  let httpRunner: HttpFetchRunner | undefined;
+  let sandboxClientClose: (() => Promise<void>) | undefined;
+
+  try {
+    const w = resolveToolWorld(args);
+    registry = w.registry ?? {};
+    secrets = w.secrets ?? [];
+    signal = w.signal ?? new AbortController().signal;
+    freshness = w.freshness;
+    mcpClose = w.mcpClose;
+    httpRunner = w.httpRunner;
+    sandboxClientClose = w.sandboxClientClose;
+  } catch {
+    // Production path: resolver unset → assemble the world in-step via the
+    // shared helper (same path as modelGenerateStep → worlds cannot drift).
+    if (!args.scope) {
+      throw new Error(
+        'toolExecuteStep: no tool-world resolver wired and no scope provided — the route must pass scope on start() args.',
+      );
+    }
+    const { assembleDurableToolWorld } = await import(
+      './assembleDurableToolWorld'
+    );
+    const world = await assembleDurableToolWorld({
+      scope: args.scope,
+      persistRunBind: args.persistRunBind,
+      freshnessSeed: args.freshnessSeed,
+    });
+    registry = world.registry;
+    secrets = world.secrets;
+    signal = world.signal;
+    freshness = world.freshness;
+    mcpClose = world.mcpClose;
+    httpRunner = world.httpRunner;
+    sandboxClientClose = world.sandboxClientClose;
+  }
 
   try {
     const executeDeps: ExecuteToolDeps = {
-      registry: world.registry ?? {},
-      freshness: args.freshnessSeed
-        ? hydrateRunFileFreshness(args.freshnessSeed)
-        : createRunFileFreshness(),
-      secrets: world.secrets,
-      signal: world.signal,
+      registry: registry ?? {},
+      // B5 fix: use the world's shared freshness (from the resolver, or from
+      // the shared helper which hydrates ONCE from the seed). This is the
+      // SAME object createAgentTools received, so read-before-edit grants
+      // survive across the step boundary.
+      freshness: (freshness as ExecuteToolDeps['freshness']) ?? undefined,
+      secrets,
+      signal,
     };
     const result = await executeTool(executeDeps, {
       toolName: args.toolName,
@@ -281,20 +193,16 @@ export async function toolExecuteStep(
     });
     return result;
   } finally {
-    // Close MCP/HTTP handles — the route never does (the step owns lifecycle).
+    // Close MCP/HTTP/sandbox handles — the route never does (the step owns
+    // lifecycle). Ignore close errors; best-effort.
     if (mcpClose) {
-      try {
-        await mcpClose();
-      } catch {
-        // ignore MCP close errors
-      }
+      try { await mcpClose(); } catch { /* ignore MCP close errors */ }
     }
     if (httpRunner) {
-      try {
-        await httpRunner.close();
-      } catch {
-        // ignore HTTP runner close errors
-      }
+      try { await httpRunner.close(); } catch { /* ignore HTTP runner close errors */ }
+    }
+    if (sandboxClientClose) {
+      try { await sandboxClientClose(); } catch { /* ignore sandbox close errors */ }
     }
   }
 }

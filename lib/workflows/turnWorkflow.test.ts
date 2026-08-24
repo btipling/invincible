@@ -32,10 +32,14 @@ vi.mock('../agent/generateOneRound', () => ({
     ok: true as const,
     delta: { text: 'adapter-done', toolCalls: [], usage: { source: 'provider', total: 2 } },
   }),
+  // toolsWithoutExecutors: strip execute closures for serialization across the
+  // step boundary. In tests the registry is empty, so this returns empty.
+  toolsWithoutExecutors: (t: Record<string, unknown>) => t,
 }));
 
 // modelGenerateStep re-resolves BYOK in-step via a dynamic import of the DI
-// root. Mock it so the entry test doesn't try to open a real DB connection.
+// root, and assembles the tool world via assembleDurableToolWorld. Mock both
+// so the entry test doesn't try to open a real DB connection.
 vi.mock('../di/index', () => ({
   createProdServices: () => ({
     resolveInferenceForRequest: {
@@ -53,6 +57,20 @@ vi.mock('../di/index', () => ({
   }),
 }));
 
+// The shared durable-tool-world helper is called by modelGenerateStep in prod.
+// In tests, mock it to return a minimal world — no real sandbox/MCP/HTTP.
+vi.mock('./assembleDurableToolWorld', () => ({
+  assembleDurableToolWorld: async () => ({
+    registry: {},
+    secrets: [],
+    signal: new AbortController().signal,
+    freshness: {},
+    mcpClose: undefined,
+    httpRunner: undefined,
+    sandboxClientClose: undefined,
+  }),
+}));
+
 import { turnWorkflow } from './turnWorkflow';
 import { setPersistSeamResolver } from './persistStep';
 import { createTurnPersistSeam } from '../agent/turnPersistSeam';
@@ -67,9 +85,9 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
     const scope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's1' };
     setPersistSeamResolver(() => createTurnPersistSeam({ blobStore, envelopeStore, scope }));
 
+    // NO tools key — tool schemas are assembled in-step via the shared helper.
     const result = await turnWorkflow({
       userMessage: 'go adapter',
-      tools: {},
       modelId: 'mock-model',
       scope: { tenantId: 't', userId: 'u', sessionId: 's1' },
       persistRunBind: { cwd: 'app', activeSandboxId: 'sb_adapter' },
