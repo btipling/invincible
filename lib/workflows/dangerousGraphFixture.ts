@@ -19,11 +19,19 @@ import { createHash } from 'node:crypto';
  * the regression. The locked mechanism (explicit-root closure walk + ban set)
  * is unchanged.
  *
+ * ADVERSARIAL L4 fix (2026-08-24): this fixture deliberately carries **no
+ * `'use workflow'` directive**. `withWorkflow()` (next.config.js) discovers and
+ * bundles workflow entries *by that directive*, so marking the fixture here would
+ * ship `node:crypto` in the real Workflows bundle — the exact leak this lock
+ * exists to prevent. The walker reads source only and needs no directive, so a
+ * plain `.ts` `'use workflow'`-free file is still a valid positive control.
+ *
  * Never dispatched — the regression reads it as source only.
  */
 export async function dangerousGraphFixture(): Promise<{ status: 'leaky' }> {
-  'use workflow';
-  // A real crypto call site — the closure walk must see `node:crypto`.
+  // No 'use workflow' directive (adversarial L4 fix): withWorkflow() bundles
+  // directive-marked entries, which would ship node:crypto in the Workflows
+  // bundle. The walker reads source, so the closure still sees `node:crypto`.
   void createHash('sha256').update('leak').digest('hex');
   return { status: 'leaky' };
 }

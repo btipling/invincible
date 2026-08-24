@@ -24,10 +24,25 @@ import {
 
 const REPO_ROOT = process.cwd();
 
-/** Banned surface, grounded on the actual repo (plan #805 lock + corrections). */
+/**
+ * Banned surface, grounded on the actual repo (plan #805 lock + corrections).
+ *
+ * Adversarial L8 (2026-08-24): the ban set must **prefix-match** the crypto/dns
+ * families, not exact-match single spellings. The walker records a bare specifier
+ * verbatim (`crypto`, `dns`) or a `node:`-prefixed subpath (`node:crypto`,
+ * `node:crypto/webcrypto`, `node:dns/promises`), so an exact-match filter can be
+ * escaped by `import { createHash } from 'crypto'` (legal Node) or
+ * `node:crypto/promises`. Matching the family root with a path/`startsWith` bound
+ * keeps each of those spellings (and any sibling subpath) fail-closed.
+ */
 function bannedReach(reachable: Set<string>): string[] {
   return [...reachable].filter((v) => {
-    if (['pg', 'postgres', 'node:crypto', 'node:dns'].includes(v)) return true;
+    // Bare DB-driver + builtin families: prefix-match family roots so unprefixed
+    // `crypto`/`dns`, `node:` subpaths, and driver sibling subitems all fail closed.
+    if (v === 'pg' || v === 'postgres') return true;
+    if (v.startsWith('crypto') || v.startsWith('dns')) return true;
+    // node: pseudo-module subpaths (e.g. `node:crypto/webcrypto`, `node:dns/promises`).
+    if (v.startsWith('node:crypto') || v.startsWith('node:dns')) return true;
     if (v === 'lib/sessions/blobStore' || v === 'lib/sessions/blobStores') return true;
     return v.startsWith('db/') || v.startsWith('lib/db/') || v.startsWith('lib/mcp/');
   });
@@ -115,6 +130,29 @@ describe('staticGraph — closure walk (matrix 1,2,8,9,10,11,12,13)', () => {
     });
     expect(reachable.has('lib/workflows/dangerousGraphFixture')).toBe(true);
     expect(bannedReach(reachable)).toContain('node:crypto');
+  });
+
+  it('ban set prefix-matches the crypto/dns families: unprefixed and node: subpaths all fail closed (case 2b, adversarial L8)', () => {
+    const g = tmpGraph({
+      'crypto.ts': "import { createHash } from 'crypto';\nexport const h = createHash('sha256').update('x').digest('hex');",
+      'webcrypto.ts': "import { webcrypto } from 'node:crypto/webcrypto';\nexport const w = webcrypto;",
+      'dnspromises.ts': "import { promises as dns } from 'node:dns/promises';\nexport const r = dns;",
+    });
+    try {
+      // Unprefixed `crypto` (legal Node builtin) must be a banned reach.
+      const unprefixed = reachableImports('crypto.ts', { root: g.root });
+      expect(unprefixed.has('crypto')).toBe(true);
+      expect(bannedReach(unprefixed)).toContain('crypto');
+      // `node:crypto/webcrypto` and `node:dns/promises` subpaths must be banned.
+      const subpathCrypto = reachableImports('webcrypto.ts', { root: g.root });
+      expect(subpathCrypto.has('node:crypto/webcrypto')).toBe(true);
+      expect(bannedReach(subpathCrypto)).toContain('node:crypto/webcrypto');
+      const subpathDns = reachableImports('dnspromises.ts', { root: g.root });
+      expect(subpathDns.has('node:dns/promises')).toBe(true);
+      expect(bannedReach(subpathDns)).toContain('node:dns/promises');
+    } finally {
+      g.close();
+    }
   });
 
   it('mutual cycle across two files terminates the walk (case 8)', () => {
