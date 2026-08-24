@@ -147,7 +147,14 @@ export async function generateOneRound(
           toolName: typeof part.toolName === 'string' ? part.toolName : 'tool',
         };
         if (part.toolCallId != null) call.toolCallId = String(part.toolCallId);
-        if (part.args !== undefined) call.args = part.args;
+        // AI SDK 7.0.52 `TextStreamToolCallPart` uses `input`, not `args`.
+        // Prefer `input`; fall back to `args` for older SDK shapes / test mocks.
+        const input = (part as { input?: unknown }).input;
+        if (input !== undefined) {
+          call.args = input;
+        } else if (part.args !== undefined) {
+          call.args = part.args;
+        }
         toolCalls.push(call);
       }
       if (part && typeof part === 'object' && part.type === 'finish') {

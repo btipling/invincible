@@ -130,6 +130,31 @@ describe('generateOneRound (backend-agents B9)', () => {
     expect(args.tools['read_file'].execute).toBeUndefined();
   });
 
+  it('matrix 3b: AI SDK 7.0.52 shape — part.input (no args key) captured as delta.args', async () => {
+    const execute = vi.fn();
+    const stream = makeStream({
+      parts: [
+        // SDK 7.0.52 `TextStreamToolCallPart` has `input`, NOT `args`.
+        { type: 'tool-call', toolName: 'read_file', toolCallId: 'c3', input: { path: 'src' } },
+      ],
+    });
+    const streamTextImpl = vi.fn(stream);
+    const result = await generateOneRound(
+      { ...deps, streamTextImpl },
+      {
+        messages: [{ role: 'user', content: 'read src' }],
+        tools: { read_file: { execute } },
+        onEvent: async () => {},
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.delta.toolCalls).toEqual([
+      { toolName: 'read_file', toolCallId: 'c3', args: { path: 'src' } },
+    ]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('matrix 4: empty text — delta text matches round text', async () => {
     const streamTextImpl = makeStream({ text: '' });
     const result = await generateOneRound(
