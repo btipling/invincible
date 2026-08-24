@@ -155,6 +155,27 @@ describe('staticGraph — closure walk (matrix 1,2,8,9,10,11,12,13)', () => {
     }
   });
 
+  it('type-only imports are NOT runtime deps of the bundle: `import type` from a banned module is not a banned reach, but a mixed import is (case 2c, B12 lock correctness)', () => {
+    const g = tmpGraph({
+      'typeonly.ts':
+        "import type { T } from 'db/index';\nexport let t: T | undefined;",
+      // Inline `{ a, type T }`: the bare `a` is a runtime value → the module ships.
+      'mixed.ts':
+        "import { a, type T } from 'db/index';\nexport const x = a;",
+    });
+    try {
+      const typeOnly = reachableImports('typeonly.ts', { root: g.root });
+      expect(typeOnly.has('typeonly')).toBe(true);
+      // The type-only `db/index` specifier must NOT enter the closure.
+      expect(bannedReach(typeOnly)).toEqual([]);
+      const mixed = reachableImports('mixed.ts', { root: g.root });
+      expect(mixed.has('db/index')).toBe(true);
+      expect(bannedReach(mixed)).toContain('db/index');
+    } finally {
+      g.close();
+    }
+  });
+
   it('mutual cycle across two files terminates the walk (case 8)', () => {
     const g = tmpGraph({
       'a.ts': "import { b } from './b';\nexport const a = b;",
