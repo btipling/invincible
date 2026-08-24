@@ -22,6 +22,15 @@ import {
   hydrateRunFileFreshness,
   serializeRunFileFreshness,
 } from './fileFreshness';
+import { TOOL_RESULT_MAX_CHARS } from '../sandbox/config';
+
+/**
+ * `truncateForModel` appends this marker when a result is over the cap, so the
+ * effective wired bound is `TOOL_RESULT_MAX_CHARS + marker.length`. The cap test
+ * pins THIS bound (not the raw input length), so removing the cap wrap would
+ * fail the test.
+ */
+const TRUNCATED_MARKER = '\n…[truncated]';
 
 /** Build a fake AI-SDK tool closure. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -227,15 +236,24 @@ describe('executeTool (backend-agents B10)', () => {
     expect(result.result).toContain('[redacted]');
   });
 
-  it('result is bounded to TOOL_RESULT_MAX_CHARS', async () => {
+  it('result is bounded to TOOL_RESULT_MAX_CHARS (pins the cap, not the input)', async () => {
     const registry = {
-      list_dir: fakeTool(async () => 'x'.repeat(2_000_100)),
+      list_dir: fakeTool(async () => 'x'.repeat(TOOL_RESULT_MAX_CHARS + 100)),
     };
     const result = await executeTool(
       { registry, freshness: createRunFileFreshness() },
       { toolName: 'list_dir', args: {} },
     );
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.result.length).toBeLessThanOrEqual(2_000_100);
+    if (!result.ok) return;
+    // The result must be reduced to the cap plus the truncateForModel marker —
+    // never the (larger) raw input length. Deleting the cap wrap fails this.
+    expect(result.result.length).toBeLessThanOrEqual(
+      TOOL_RESULT_MAX_CHARS + TRUNCATED_MARKER.length,
+    );
+    expect(result.result.substring(0, TOOL_RESULT_MAX_CHARS).length).toBe(
+      TOOL_RESULT_MAX_CHARS,
+    );
+    expect(result.result.endsWith(TRUNCATED_MARKER)).toBe(true);
   });
 });
