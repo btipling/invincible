@@ -113,7 +113,12 @@ export async function generateOneRound(
     model: deps.modelId,
     system: deps.system,
     messages: input.messages,
-    tools: input.tools,
+    // Schemas ONLY — strip any `execute` executors before the SDK boundary. A
+    // real `ai` `streamText` with `stopWhen: stepCountIs(1)` would otherwise run
+    // tool `execute` as part of the single step (the exact `streamText`+`execute`
+    // in one step the umbrella #794 architecture lock forbids). The caller may
+    // pass a tool dict carrying executors; this helper must NOT forward them.
+    tools: toolsWithoutExecutors(input.tools),
     stopWhen: resolveAgentStopWhen(1),
     abortSignal: deps.signal,
   };
@@ -199,6 +204,26 @@ export async function generateOneRound(
       ...(finishReason !== undefined ? { finishReason } : {}),
     },
   };
+}
+
+/**
+ * Deep-ish clone of the tool schema dict WITHOUT any `execute` executor, so the
+ * SDK never runs a tool as part of the single model round. Schema fields
+ * (`description`, `parameters`, `inputSchema`, etc.) are preserved verbatim;
+ * `execute` is always dropped. Unknown tool entries (non-objects) pass through.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function toolsWithoutExecutors(tools: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [name, tool] of Object.entries(tools)) {
+    if (tool && typeof tool === 'object') {
+      const { execute: _dropped, ...schema } = tool as { execute?: unknown };
+      out[name] = schema;
+    } else {
+      out[name] = tool;
+    }
+  }
+  return out;
 }
 
 function isAbortErr(err: unknown): boolean {

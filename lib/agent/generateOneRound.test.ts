@@ -69,9 +69,16 @@ describe('generateOneRound (backend-agents B9)', () => {
     expect(result.delta.text).toBe('hello world');
     expect(result.delta.finishReason).toBeUndefined();
     expect(execute).not.toHaveBeenCalled();
-    const args = streamTextImpl.mock.calls[0]![0];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const args = streamTextImpl.mock.calls[0]![0] as Record<string, any>;
     expect(args.messages).toEqual([{ role: 'user', content: 'list dir' }]);
-    expect(args.tools).toBe(tools);
+    // Schemas-only invariant: `execute` is stripped before the SDK boundary,
+    // so a real `streamText` can never run a tool inside the single model round.
+    expect(args.tools).not.toBe(tools);
+    expect(args.tools['list_dir'].execute).toBeUndefined();
+    expect(args.tools['list_dir'].description).toBe('List a directory');
+    expect(args.tools['list_dir'].parameters).toEqual({});
+    expect(args.tools['list_dir'].execute).toBeUndefined();
     expect(args.stopWhen).toBeDefined();
     expect(args.model).toBe('anthropic/claude-sonnet-4');
   });
@@ -94,12 +101,13 @@ describe('generateOneRound (backend-agents B9)', () => {
 
   it('matrix 3: multiple toolCalls in one round — all captured, none executed', async () => {
     const execute = vi.fn();
-    const streamTextImpl = makeStream({
+    const stream = makeStream({
       parts: [
         { type: 'tool-call', toolName: 'list_dir', toolCallId: 'c1', args: { path: '.' } },
         { type: 'tool-call', toolName: 'read_file', toolCallId: 'c2', args: { path: 'AGENTS.md' } },
       ],
     });
+    const streamTextImpl = vi.fn(stream);
     const result = await generateOneRound(
       { ...deps, streamTextImpl },
       {
@@ -115,6 +123,11 @@ describe('generateOneRound (backend-agents B9)', () => {
       { toolName: 'read_file', toolCallId: 'c2', args: { path: 'AGENTS.md' } },
     ]);
     expect(execute).not.toHaveBeenCalled();
+    // Schemas-only boundary holds across a multi-tool dict carrying executors.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const args = streamTextImpl.mock.calls[0]![0] as Record<string, any>;
+    expect(args.tools['list_dir'].execute).toBeUndefined();
+    expect(args.tools['read_file'].execute).toBeUndefined();
   });
 
   it('matrix 4: empty text — delta text matches round text', async () => {
