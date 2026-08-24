@@ -101,22 +101,26 @@ export async function turnWorkflow(
     close: () => writer.close(),
   };
 
-  const modelStep: ModelStepFn = async ({ messages }) => {
+  const modelStep: ModelStepFn = async ({ messages, persistRunBind }) => {
     return modelGenerateStep({
       messages,
       modelId: args.modelId,
       userId: args.scope.userId,
       scope: args.scope,
-      persistRunBind: args.persistRunBind,
+      // Use the RUNNING bind from the loop (updated after each successful
+      // change_dir/meta_sandbox_switch), NOT the stale start snapshot. The
+      // model must see FS tools for the CURRENT sandbox + cwd.
+      persistRunBind: persistRunBind ?? args.persistRunBind,
     });
   };
-  const toolStep: ToolStepFn = async ({ toolName, toolCallId, callArgs, freshnessSeed }) => {
+  const toolStep: ToolStepFn = async ({ toolName, toolCallId, callArgs, freshnessSeed, persistRunBind }) => {
     return toolExecuteStep({
       toolName,
       callArgs,
       freshnessSeed,
       scope: args.scope,
-      persistRunBind: args.persistRunBind,
+      // Use the RUNNING bind from the loop, NOT the stale start snapshot.
+      persistRunBind: persistRunBind ?? args.persistRunBind,
     });
   };
   // Forward EVERYTHING the loop passes including the derived `fold` — a

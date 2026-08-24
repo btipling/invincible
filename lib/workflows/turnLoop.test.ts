@@ -425,6 +425,168 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(closed()).toBe(1);
   });
 
+  it('round-3 BLOCK: change_dir result cwd=lib → next toolStep call persistRunBind.cwd === lib (not start app)', async () => {
+    const { deps, closed } = wiredDeps();
+    let round = 0;
+    // Round 1: change_dir; round 2: list_dir; round 3: no tools → terminal.
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'cd',
+            toolCalls: [{ toolName: 'change_dir', toolCallId: 'c1', args: { path: 'lib' } }],
+          },
+        };
+      }
+      if (round === 2) {
+        return {
+          ok: true as const,
+          delta: { text: 'list', toolCalls: [{ toolName: 'list_dir', toolCallId: 'c2', args: {} }] },
+        };
+      }
+      return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(async (a: { toolName: string; persistRunBind?: { cwd?: string; activeSandboxId?: string } }) => {
+      if (a.toolName === 'change_dir') {
+        return { ok: true as const, result: 'change_dir lib: ok cwd=lib', freshnessDelta: '[]' };
+      }
+      // list_dir: capture what cwd the loop passed to THIS tool step.
+      return { ok: true as const, result: `cwd=${a.persistRunBind?.cwd ?? '(none)'}`, freshnessDelta: '[]' };
+    });
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep, turnRunId: 'wr_bind', persistRunBind: { cwd: 'app' } },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    // Two tool calls: change_dir then list_dir.
+    expect(toolStep).toHaveBeenCalledTimes(2);
+    // First tool (change_dir) still sees start bind.
+    const firstCall = toolStep.mock.calls[0]?.[0] as { toolName: string; persistRunBind?: { cwd?: string } };
+    expect(firstCall.toolName).toBe('change_dir');
+    expect(firstCall.persistRunBind?.cwd).toBe('app');
+    // Second tool (list_dir) MUST see the UPDATED cwd from change_dir.
+    const secondCall = toolStep.mock.calls[1]?.[0] as { toolName: string; persistRunBind?: { cwd?: string } };
+    expect(secondCall.toolName).toBe('list_dir');
+    expect(secondCall.persistRunBind?.cwd).toBe('lib');
+    expect(closed()).toBe(1);
+  });
+
+  it('round-3 BLOCK: meta_sandbox_switch result id=sb_b → next tool persistRunBind.activeSandboxId === sb_b', async () => {
+    const { deps, closed } = wiredDeps();
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'switch',
+            toolCalls: [{ toolName: 'meta_sandbox_switch', toolCallId: 's1', args: { id: 'sb_b' } }],
+          },
+        };
+      }
+      return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(async (a: { toolName: string; persistRunBind?: { activeSandboxId?: string } }) => {
+      if (a.toolName === 'meta_sandbox_switch') {
+        return { ok: true as const, result: 'switched active sandbox to id=sb_b tools=[]', freshnessDelta: '[]' };
+      }
+      return { ok: true as const, result: 'ok', freshnessDelta: '[]' };
+    });
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep, turnRunId: 'wr_switch2', persistRunBind: { activeSandboxId: 'sb_a' } },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    // The switch tool itself still sees the start bind (sb_a).
+    const firstCall = toolStep.mock.calls[0]?.[0] as { toolName: string; persistRunBind?: { activeSandboxId?: string } };
+    expect(firstCall.toolName).toBe('meta_sandbox_switch');
+    expect(firstCall.persistRunBind?.activeSandboxId).toBe('sb_a');
+    // After switch, the bind is updated → the next model step (round 2) should
+    // get the new sandbox id. modelStep was called twice.
+    expect(modelStep).toHaveBeenCalledTimes(2);
+    const modelRound2 = (modelStep.mock.calls[1] as unknown[])?.[0] as { persistRunBind?: { activeSandboxId?: string } } | undefined;
+    expect(modelRound2?.persistRunBind?.activeSandboxId).toBe('sb_b');
+    expect(closed()).toBe(1);
+  });
+
+  it('round-3 BLOCK: failed tool does NOT overlay bind', async () => {
+    const { deps, closed } = wiredDeps();
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'cd',
+            toolCalls: [{ toolName: 'change_dir', toolCallId: 'c1', args: { path: 'nonexistent' } }],
+          },
+        };
+      }
+      return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(async (a: { toolName: string; persistRunBind?: { cwd?: string } }) => {
+      // change_dir FAILS — the bind must NOT be overwritten.
+      return { ok: false as const, code: 'sandbox_error' as const, error: 'no such dir' };
+    });
+    // The first tool call fails → loop terminates with a tool error value.
+    // But the loop writes tool_result with error and returns completed, not
+    // failed — per the existing "business error as value" convention.
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep, turnRunId: 'wr_failbind', persistRunBind: { cwd: 'app' } },
+      { userMessage: 'go' },
+    );
+    // A failed tool terminates the loop cleanly (business error is a value).
+    expect(result.status).toBe('completed');
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    const call = toolStep.mock.calls[0]?.[0] as { toolName: string; persistRunBind?: { cwd?: string } };
+    expect(call.persistRunBind?.cwd).toBe('app'); // start bind, unchanged
+    // modelStep was called once (the tool error terminates before round 2).
+    expect(modelStep).toHaveBeenCalledTimes(1);
+    expect(closed()).toBe(1);
+  });
+
+  it('round-3 BLOCK: first tool still sees start persistRunBind', async () => {
+    const { deps, closed } = wiredDeps();
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: { text: 'go', toolCalls: [{ toolName: 'read_file', toolCallId: 'r1', args: { path: 'x' } }] },
+        };
+      }
+      return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(async (a: { toolName: string; persistRunBind?: { cwd?: string; activeSandboxId?: string } }) => ({
+      ok: true as const,
+      result: `read cwd=${a.persistRunBind?.cwd} sandbox=${a.persistRunBind?.activeSandboxId}`,
+      freshnessDelta: '[]',
+    }));
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        toolStep,
+        turnRunId: 'wr_first',
+        persistRunBind: { cwd: 'myapp', activeSandboxId: 'sb_start' },
+      },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    const first = toolStep.mock.calls[0]?.[0] as { toolName: string; persistRunBind?: { cwd?: string; activeSandboxId?: string } };
+    expect(first.toolName).toBe('read_file');
+    expect(first.persistRunBind?.cwd).toBe('myapp');
+    expect(first.persistRunBind?.activeSandboxId).toBe('sb_start');
+    expect(closed()).toBe(1);
+  });
+
   it('matrix 10: messages reconstructed from step deltas on replay (roundtrip)', async () => {
     const { deps, w, closed } = wiredDeps();
     const modelStep = vi.fn(async () => ({
