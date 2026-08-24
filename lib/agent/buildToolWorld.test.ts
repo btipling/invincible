@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildToolWorld, type BuildToolWorldScope } from './buildToolWorld';
+import type { SandboxClient } from '../sandbox/client';
+import type { HarnessSessionRecord } from '../sessions/sessionStore';
 
 /**
  * C14a (#834) — `buildToolWorld` shared-cap seam unit tests.
@@ -44,6 +46,11 @@ function baseScope(
     setDefaultPersona: vi.fn(),
     clearDefaultPersona: vi.fn(),
     deleteUserPersona: vi.fn(),
+    resolveDefaultPersona: vi.fn(),
+    updateRecommendedSlugs: vi.fn(),
+    listPersonaVersions: vi.fn(),
+    getPersonaVersion: vi.fn(),
+    rollbackPersona: vi.fn(),
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const skillStore: any = {
@@ -85,6 +92,21 @@ function baseScope(
       resolveSessionStore: vi.fn(async () => ({
         ok: true as const,
         value: {
+          get: vi.fn(async () => null),
+          put: vi.fn(async () => ({
+            status: 'stored' as const,
+            record: {
+              id: 'sess_1',
+              userId: 'user-1',
+              tenantId: 'tenant-1',
+              createdAt: 0,
+              updatedAt: 0,
+              messages: [],
+              meta: { sync: {} },
+            } as HarnessSessionRecord,
+          })),
+          list: vi.fn(async () => []),
+          remove: vi.fn(async () => true),
           readEnvelope: vi.fn(async () => null),
           upsertEnvelope: vi.fn(async () => ({ status: 'stored' as const })),
         },
@@ -145,7 +167,15 @@ describe('buildToolWorld', () => {
         buildUserMcpTools,
         httpAttachName: 'inv-http-1',
         sandbox: {
-          client: { close: vi.fn(async () => {}) },
+          client: {
+            listDir: vi.fn(),
+            readFile: vi.fn(),
+            writeFile: vi.fn(),
+            strReplace: vi.fn(),
+            stat: vi.fn(),
+            exec: vi.fn(),
+            close: vi.fn(async () => {}),
+          } as SandboxClient,
           secrets: ['sandbox-secret'],
         },
       }),
