@@ -44,7 +44,7 @@ import {
 } from './turnLoop';
 import { modelGenerateStep } from './modelGenerateStep';
 import { toolExecuteStep } from './toolExecuteStep';
-import { persistStep } from './persistStep';
+import { persistStep, type PersistStepFold } from './persistStep';
 
 /** `'use workflow'` run args — plain serializable values only. */
 export interface TurnWorkflowArgs {
@@ -53,6 +53,13 @@ export interface TurnWorkflowArgs {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   tools: Record<string, any>;
   modelId: string;
+  /**
+   * Run final-state fold (B13): cwd/usage/activeSandboxId + the bounded
+   * checkpoint projection, threaded to the terminal persist step. Plain
+   * serializable values only. Supplied by the engine (C14) from the run's last
+   * generate/tool deltas.
+   */
+  persistFold?: PersistStepFold;
 }
 
 /**
@@ -100,6 +107,7 @@ export async function turnWorkflow(
       persistStep: persistStepFn,
       writable: loopWritable,
       turnRunId: args.turnRunId,
+      ...(args.persistFold !== undefined ? { persistFold: args.persistFold } : {}),
     },
     { userMessage: args.userMessage },
   );

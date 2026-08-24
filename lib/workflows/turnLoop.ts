@@ -30,6 +30,8 @@
  * allowed to keep — never the full transcript, which is Blob; see B13).
  */
 
+import type { PersistStepFold } from './persistStep';
+
 /**
  * Local structural model-round delta. Defined here (NOT imported from
  * `generateOneRound`) so this directive-free core carries zero static coupling
@@ -121,6 +123,8 @@ export interface PersistStepFn {
   (args: {
     turnRunId: string;
     deltas: ReadonlyArray<unknown>;
+    /** Run final-state fold (B13) — plain serializable values only. */
+    fold?: PersistStepFold;
   }): Promise<
     | { ok: true; status: 'completed'; turnRunId: string }
     | { ok: false; code: string; error: string }
@@ -137,6 +141,13 @@ export interface TurnLoopDeps {
   maxSteps?: number;
   /** Workflow run id — NEVER a session id (plan lock). */
   turnRunId: string;
+  /**
+   * Run final-state fold (B13): cwd/usage/activeSandboxId + the bounded
+   * checkpoint projection, threaded to the terminal persist step as plain
+   * serializable values. Supplied by the engine (C14) from the run's last
+   * generate/tool deltas; optional for tests/in-memory seams.
+   */
+  persistFold?: PersistStepFold;
 }
 
 /** Loop input: the user turn (orchestrator-local starting message). */
@@ -248,7 +259,11 @@ export async function runTurnLoop(
           sse({ type: 'done', finishReason: gen.delta.finishReason, rounds: round, steps }),
         );
         steps += 1; // the persist step
-        const persisted = await deps.persistStep({ turnRunId: deps.turnRunId, deltas });
+        const persisted = await deps.persistStep({
+          turnRunId: deps.turnRunId,
+          deltas,
+          ...(deps.persistFold !== undefined ? { fold: deps.persistFold } : {}),
+        });
         if (!persisted.ok) {
           return fail('failed', round, steps, persisted.error);
         }

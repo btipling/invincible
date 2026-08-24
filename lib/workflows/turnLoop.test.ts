@@ -26,8 +26,17 @@ import {
   type TurnWritable,
   type TurnLoopDeps,
 } from './turnLoop';
-import { persistStep, setPersistSeamResolver, createInMemoryPersistSeam } from './persistStep';
+import {
+  persistStep,
+  setPersistSeamResolver,
+  createInMemoryPersistSeam,
+  type PersistStepFold,
+} from './persistStep';
 import { reachableImports } from './staticGraph';
+import { createTurnPersistSeam } from '../agent/turnPersistSeam';
+import { MemoryBlobTranscriptStore } from '../sessions/blobStores';
+import { MemorySessionStore } from '../sessions/memorySessionStore';
+import type { ObjectScope } from '../sessions/blobStore';
 
 function fakeWritable(onClose?: () => void): { w: TurnWritable; lines: string[]; closed: number } {
   const lines: string[] = [];
@@ -69,8 +78,16 @@ function wiredDeps(overrides: {
   const base = {
     persistStep: persistFail
       ? async () => ({ ok: false as const, code: 'write_failed', error: 'boom' })
-      : async (p: { turnRunId: string; deltas: ReadonlyArray<unknown> }) =>
-          persistStep({ turnRunId: p.turnRunId, deltas: p.deltas }),
+      : async (p: {
+          turnRunId: string;
+          deltas: ReadonlyArray<unknown>;
+          fold?: PersistStepFold;
+        }) =>
+          persistStep({
+            turnRunId: p.turnRunId,
+            deltas: p.deltas,
+            ...(p.fold !== undefined ? { fold: p.fold } : {}),
+          }),
     // Default no-op toolStep; loop tests that fan tools override it. modelStep is
     // always injected per test (matrix 1/8/9/10 stop after the model round).
     toolStep: async (): Promise<{ ok: false; code: 'tool_not_found'; error: string }> => ({
@@ -260,6 +277,53 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     const result = await runTurnLoop({ ...deps, modelStep }, { userMessage: 'x' });
     expect(result.status).toBe('failed');
     expect(result.error).toBe('boom');
+    expect(closed()).toBe(1);
+  });
+
+  it('B13 integration: real B7/B8/B6 seam wired via resolver — a completed run folds terminal state into the envelope', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const sscope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's1' };
+    const { deps, closed } = wiredDeps();
+    // Wire the REAL seam AFTER wiredDeps (which installs its in-memory resolver).
+    setPersistSeamResolver(() =>
+      createTurnPersistSeam({ blobStore, envelopeStore, scope: sscope }),
+    );
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'done', toolCalls: [] },
+    }));
+    const fold = {
+      cwd: 'lib',
+      activeSandboxId: 'sb_x',
+      usage: { source: 'provider', total: 5 } as const,
+      checkpoint: [{ role: 'assistant', content: 'done' }],
+    };
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        toolStep: vi.fn(),
+        turnRunId: 'wr_0000_real',
+        persistFold: fold,
+      },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    const env = await envelopeStore.readEnvelope({
+      tenantId: 't',
+      userId: 'u',
+      sessionId: 's1',
+    });
+    // Terminal worker keys folded via the real seam (B8)…
+    expect(env?.meta?.turnStatus).toBe('completed');
+    expect(env?.meta?.turnRunId).toBe('wr_0000_real');
+    expect(env?.meta?.logicalCwd).toBe('lib');
+    expect(env?.meta?.activeSandboxId).toBe('sb_x');
+    // …checkpoint pointer (B6) and transcript pointer (B7) both present, pointers only.
+    expect(env?.meta?.checkpointPointer).toBeDefined();
+    expect(env?.meta?.transcriptPointer).toBeDefined();
+    // The interrupted `deps.toolStep` default was a no-op; the writable still closed once.
     expect(closed()).toBe(1);
   });
 
