@@ -18,9 +18,8 @@ import { createProdServices } from '../../../lib/di';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 import { redactSecrets } from '../../../lib/agent/redact';
 import { buildUserMcpTools } from '../../../lib/mcp/client';
-import { resolveBuiltinHttpConfig } from '../../../lib/agent/builtinHttpConfig';
-import { createHttpFetchTools } from '../../../lib/agent/httpFetchTools';
 import type { HttpFetchRunner } from '../../../lib/agent/httpFetchTypes';
+import { buildToolWorld } from '../../../lib/agent/buildToolWorld';
 import {
   resolveSessionStore,
   sessionKeyFor,
@@ -32,12 +31,7 @@ import {
   type ResolveSkillResult,
 } from '../../../lib/tenancy/skillInject';
 import { isEnvelopeStore } from '../../../lib/sessions/sessionStore';
-import { createSkillTools } from '../../../lib/agent/skillTools';
-import {
-  createMetaPersonaSkillTools,
-  isMetaToolName,
-} from '../../../lib/agent/metaTools';
-import { createMetaSandboxTools } from '../../../lib/agent/metaSandboxTools';
+import { isMetaToolName } from '../../../lib/agent/metaTools';
 
 export const runtime = 'nodejs';
 // Vercel Pro/Enterprise Fluid extended max is 1800s (30m). 3600s is not offered.
@@ -179,13 +173,15 @@ export async function POST(req: Request): Promise<Response> {
   let runnersOwnedByStream = false;
 
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let extraTools: Record<string, any> = {};
     // Accumulates request fields + resolved tool wiring; modelId is only known
     // after `resolveByokForRequest` returns, so it is added later (guarded below).
     type RunParamsAcc = Omit<Parameters<typeof runAgent>[0], 'modelId'> & {
       modelId?: string;
     };
+    // The merged non-FS tool registry; assigned from `buildToolWorld` (C14a) and
+    // read by the soft-path guard below. Declared here for the guard's scope.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let extraTools: Record<string, any> = {};
     let runParams: RunParamsAcc = {
       prompt: modelPrompt,
       signal: req.signal,
@@ -232,51 +228,6 @@ export async function POST(req: Request): Promise<Response> {
         httpAttachName = loaded.value.vercelName.trim();
       }
     }
-
-    // Phase 3 (#516): read-only agent skill tools (`find_skill` / `fetch_skill`)
-    // — always available, independent of sandbox/MCP/http state (so they work on
-    // the soft/MCP path too). Bound identity: each tool is closed over this
-    // route-resolved `userId`; any identity a model passes is ignored. Read-only
-    // — they call only listUserSkills / getSkillBySlug, never a write path.
-    extraTools = {
-      ...extraTools,
-      ...createSkillTools({ userId, userSkills: services.userSkills, userPersonas: services.userPersonas }),
-    };
-
-    // Phase 1 (#531): first-party persona + skill AUTHORING tools
-    // (`meta_persona_*` / `meta_skill_*`) — always available, independent of
-    // sandbox state (like the read-only skill tools). Bound identity: each tool
-    // is closed over this route-resolved `userId`; any identity a model passes
-    // is ignored. Author-as-user (same grants as Settings); bodies returned
-    // only on an explicit read, capped; no secrets.
-    extraTools = {
-      ...extraTools,
-      ...createMetaPersonaSkillTools({
-        userId,
-        userPersonas: services.userPersonas,
-        userSkills: services.userSkills,
-      }),
-    };
-
-    // Phase 2 (#532): first-party SANDBOX meta tools (`meta_sandbox_list` /
-    // `meta_sandbox_active` / `meta_sandbox_switch`) — always available. Bound
-    // identity: each tool is closed over this route-resolved `userId`; switch
-    // persistence writes ONLY the caller's own `sessionId` (`parsed.sessionId`)
-    // via the session-store envelope seam (fail-closed on an unusable grant or
-    // unavailable store — never a partial write). No secrets in any result.
-    extraTools = {
-      ...extraTools,
-      ...createMetaSandboxTools({
-        userId,
-        sessionId: parsed.sessionId,
-        userPreferredSandbox: services.userPreferredSandbox,
-        sessionStoreSeam: {
-          resolveSessionStore: () => resolveSessionStore(),
-          resolveTenantIdForUser: (uid: string) =>
-            services.harnessSessionsRedis.resolveTenantIdForUser(uid),
-        },
-      }),
-    };
 
     // Persona injection (phase 3, #488): resolve the persona preamble for the
     // first agent turn from a locked `meta.personaSnapshot` (via the optional
@@ -434,11 +385,6 @@ export async function POST(req: Request): Promise<Response> {
         { status },
       );
     }
-    redactList = [
-      ...byok.secretsToRedact,
-      serverSecrets.gatewayKey,
-    ].filter(Boolean) as string[];
-
     // Per-user GitHub PAT → sandbox exec env (client options only; never tool schema).
     const gh = await services.userGithubToken.decryptUserGithubTokenForServer(
       userId,
@@ -449,7 +395,6 @@ export async function POST(req: Request): Promise<Response> {
       ghSecrets.push(gh.value);
       execEnv = { GH_TOKEN: gh.value, GITHUB_TOKEN: gh.value };
     }
-    redactList = [...redactList, ...ghSecrets];
 
     // Phase 2 (#532 / blocker B1 A1): server-authoritative bind seed. The switch
     // tool persists `meta.activeSandboxId` on the caller's envelope; the route
@@ -531,7 +476,6 @@ export async function POST(req: Request): Promise<Response> {
       }
     } else {
       sandboxClient = resolved.value.client;
-      redactList = [...redactList, ...resolved.value.secrets];
       runParams = {
         ...runParams,
         sandboxClient: resolved.value.client,
@@ -554,22 +498,49 @@ export async function POST(req: Request): Promise<Response> {
           status: resolved.value.status,
           image: resolved.value.resolvedImage,
         },
-        secrets: [
-          ...resolved.value.secrets,
-          ...byok.secretsToRedact,
-          ...ghSecrets,
-        ],
       };
     }
 
-    const mcp = await buildUserMcpTools(userId, {
+    // C14a (#834): assemble the shared one-tool world (always-on skill/meta
+    // tools + per-user MCP + builtin-HTTP + redaction list + lifecycle handles)
+    // via the dependency-injected `buildToolWorld` seam. Byte-identical to the
+    // formerly inline assembly. The FS sandbox client is folded into runAgent's
+    // own `createAgentTools` registry inside runAgent; here we fold its secrets
+    // into the world's redaction list + runParams.secrets.
+    const world = await buildToolWorld({
+      userId,
+      sessionId: parsed.sessionId,
       signal: req.signal,
-      loadSecrets: services.userMcpServers.loadEnabledUserMcpSecrets,
-      setLastError: services.userMcpServers.setUserMcpServerLastError,
+      serverSecrets,
+      services: {
+        userSkills: services.userSkills,
+        userPersonas: services.userPersonas,
+        userPreferredSandbox: services.userPreferredSandbox,
+        userMcpServers: services.userMcpServers,
+        createHttpRunner: services.createHttpRunner,
+      },
+      sessionStoreSeam: {
+        resolveSessionStore: () => resolveSessionStore(),
+        resolveTenantIdForUser: (uid: string) =>
+          services.harnessSessionsRedis.resolveTenantIdForUser(uid),
+      },
+      buildUserMcpTools,
+      byokSecretsToRedact: byok.secretsToRedact,
+      ghSecrets,
+      ...(resolved.ok
+        ? {
+            sandbox: {
+              client: resolved.value.client,
+              secrets: resolved.value.secrets,
+            },
+          }
+        : {}),
+      httpAttachName,
     });
-    mcpClose = mcp.close;
-    redactList = [...redactList, ...mcp.secretsToRedact];
-    extraTools = { ...extraTools, ...mcp.tools };
+    mcpClose = world.mcpClose;
+    httpRunner = world.httpRunner;
+    redactList = world.redactList;
+    extraTools = world.registry;
 
     runParams = {
       ...runParams,
@@ -580,26 +551,8 @@ export async function POST(req: Request): Promise<Response> {
           byok: byok.byok as JSONValue,
         },
       },
-      secrets: [
-        ...(runParams.secrets ?? []),
-        ...mcp.secretsToRedact,
-      ],
+      secrets: world.secrets,
     };
-
-    if (httpAttachName) {
-      const builtinHttp = resolveBuiltinHttpConfig();
-      // Constructed via the composition root (phase-2 DI), request-scoped.
-      httpRunner = services.createHttpRunner({ name: httpAttachName });
-      const httpTools = createHttpFetchTools({
-        runner: httpRunner,
-        secrets: runParams.secrets,
-        serverSecrets,
-        signal: req.signal,
-        maxBytes: builtinHttp.maxBytes,
-        timeoutMs: builtinHttp.timeoutMs,
-      });
-      extraTools = { ...extraTools, ...httpTools };
-    }
 
     runParams = { ...runParams, extraTools };
 
