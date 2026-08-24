@@ -26,8 +26,17 @@ import {
   type TurnWritable,
   type TurnLoopDeps,
 } from './turnLoop';
-import { persistStep, setPersistSeamResolver, createInMemoryPersistSeam } from './persistStep';
+import {
+  persistStep,
+  setPersistSeamResolver,
+  createInMemoryPersistSeam,
+  type PersistStepFold,
+} from './persistStep';
 import { reachableImports } from './staticGraph';
+import { createTurnPersistSeam } from '../agent/turnPersistSeam';
+import { MemoryBlobTranscriptStore } from '../sessions/blobStores';
+import { MemorySessionStore } from '../sessions/memorySessionStore';
+import type { ObjectScope } from '../sessions/blobStore';
 
 function fakeWritable(onClose?: () => void): { w: TurnWritable; lines: string[]; closed: number } {
   const lines: string[] = [];
@@ -69,8 +78,16 @@ function wiredDeps(overrides: {
   const base = {
     persistStep: persistFail
       ? async () => ({ ok: false as const, code: 'write_failed', error: 'boom' })
-      : async (p: { turnRunId: string; deltas: ReadonlyArray<unknown> }) =>
-          persistStep({ turnRunId: p.turnRunId, deltas: p.deltas }),
+      : async (p: {
+          turnRunId: string;
+          deltas: ReadonlyArray<unknown>;
+          fold?: PersistStepFold;
+        }) =>
+          persistStep({
+            turnRunId: p.turnRunId,
+            deltas: p.deltas,
+            ...(p.fold !== undefined ? { fold: p.fold } : {}),
+          }),
     // Default no-op toolStep; loop tests that fan tools override it. modelStep is
     // always injected per test (matrix 1/8/9/10 stop after the model round).
     toolStep: async (): Promise<{ ok: false; code: 'tool_not_found'; error: string }> => ({
@@ -260,6 +277,151 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     const result = await runTurnLoop({ ...deps, modelStep }, { userMessage: 'x' });
     expect(result.status).toBe('failed');
     expect(result.error).toBe('boom');
+    expect(closed()).toBe(1);
+  });
+
+  it('B13 integration: real B7/B8/B6 seam wired via resolver — a completed run derives the fold AT PERSIST TIME (usage/checkpoint from THIS run; run-bind from start)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const sscope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's1' };
+    const { deps, closed } = wiredDeps();
+    // Wire the REAL seam AFTER wiredDeps (which installs its in-memory resolver).
+    setPersistSeamResolver(() =>
+      createTurnPersistSeam({ blobStore, envelopeStore, scope: sscope }),
+    );
+    // The model DELTA carries the usage (B9 `OneRoundDelta.usage`); the loop
+    // must derive the fold from it at persist time — NOT from a start arg
+    // (adversarial L1: the last deltas do not exist at `start()` only here).
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'done', toolCalls: [], usage: { source: 'provider', total: 5 } },
+    }));
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        toolStep: vi.fn(),
+        turnRunId: 'wr_0000_real',
+        // Only the PRE-RUN sandbox bind is a start arg (persistRunBind) —
+        // per-turn checkpoint + usage are derived in-loop at the persist call.
+        persistRunBind: { cwd: 'lib', activeSandboxId: 'sb_x' },
+      },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    const env = await envelopeStore.readEnvelope({
+      tenantId: 't',
+      userId: 'u',
+      sessionId: 's1',
+    });
+    // Terminal worker keys folded via the real seam (B8)…
+    expect(env?.meta?.turnStatus).toBe('completed');
+    expect(env?.meta?.turnRunId).toBe('wr_0000_real');
+    // …pre-run sandbox bind (start arg) folded…
+    expect(env?.meta?.logicalCwd).toBe('lib');
+    expect(env?.meta?.activeSandboxId).toBe('sb_x');
+    // …usage DERIVED from THIS run's last model delta (encoded by B8)…
+    expect(JSON.parse(env?.meta?.usage as string)).toEqual({ source: 'provider', total: 5 });
+    // …checkpoint pointer (B6) and transcript pointer (B7) both present, pointers only.
+    expect(env?.meta?.checkpointPointer).toBeDefined();
+    expect(env?.meta?.transcriptPointer).toBeDefined();
+    // The checkpoint BODY is the derived this-run projection (`go` user + `done`
+    // assistant) — prove the fold was NOT a start arg and was NOT dropped.
+    const ckptPointer = env?.meta?.checkpointPointer;
+    const ckptBody =
+      typeof ckptPointer === 'string' ? JSON.parse((await blobStore.read(ckptPointer)) ?? 'null') : [];
+    expect(ckptBody).toEqual([
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: 'done' },
+    ]);
+    // The interrupted `deps.toolStep` default was a no-op; the writable still closed once.
+    expect(closed()).toBe(1);
+  });
+
+  it('round-2 L1 (Major): a mid-turn change_dir/meta_sandbox_switch tool write is NOT clobbered by the stale pre-run bind', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const scope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_switch' };
+    const { deps, closed } = wiredDeps();
+    setPersistSeamResolver(() => createTurnPersistSeam({ blobStore, envelopeStore, scope }));
+    // Round 1 changes cwd AND switches sandbox; round 2 returns no tools → persist.
+    let first = true;
+    const modelStep = vi.fn(async () => {
+      const f = first;
+      first = false;
+      return f
+        ? {
+            ok: true as const,
+            delta: {
+              text: 'switch',
+              toolCalls: [
+                { toolName: 'change_dir', toolCallId: 'c1', args: { path: 'lib' } },
+                { toolName: 'meta_sandbox_switch', toolCallId: 'c2', args: { id: 'sb_b' } },
+              ],
+            },
+          }
+        : { ok: true as const, delta: { text: 'done', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(async (a: { toolName: string }) =>
+      a.toolName === 'change_dir'
+        ? { ok: true as const, result: 'change_dir lib: ok cwd=lib', freshnessDelta: '[]' }
+        : { ok: true as const, result: 'switched active sandbox to id=sb_b tools=[]', freshnessDelta: '[]' },
+    );
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        toolStep,
+        turnRunId: 'wr_switch',
+        // Stale PRE-RUN bind — the run then switched away from it.
+        persistRunBind: { cwd: 'app', activeSandboxId: 'sb_a' },
+      },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    const env = await envelopeStore.readEnvelope({ tenantId: 't', userId: 'u', sessionId: 's_switch' });
+    // The terminal fold must reflect THIS run's tool write, NOT the stale bind
+    // (adversarial round-2 L1 — overlaying the start snapshot would clobber the
+    // envelope write the switch/change_dir just made).
+    expect(env?.meta?.logicalCwd).toBe('lib');
+    expect(env?.meta?.activeSandboxId).toBe('sb_b');
+    expect(closed()).toBe(1);
+  });
+
+  it('round-2 L1 (Minor): fold.usage is the ACCUMULATED turn total, not the last round', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const scope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_usage' };
+    const { deps, closed } = wiredDeps();
+    setPersistSeamResolver(() => createTurnPersistSeam({ blobStore, envelopeStore, scope }));
+    // Round 1 reports usage 100 + calls a tool; round 2 reports usage 40, no tools → persist.
+    let first = true;
+    const modelStep = vi.fn(async () => {
+      const f = first;
+      first = false;
+      return f
+        ? {
+            ok: true as const,
+            delta: {
+              text: 'r1',
+              toolCalls: [{ toolName: 'read_file', toolCallId: 'a', args: {} }],
+              usage: { source: 'provider', total: 100 },
+            },
+          }
+        : {
+            ok: true as const,
+            delta: { text: 'done', toolCalls: [], usage: { source: 'provider', total: 40 } },
+          };
+    });
+    const toolStep = vi.fn(async () => ({ ok: true as const, result: 'r', freshnessDelta: '[]' }));
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep, turnRunId: 'wr_usage' },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    const env = await envelopeStore.readEnvelope({ tenantId: 't', userId: 'u', sessionId: 's_usage' });
+    // 100 + 40 = 140 — NOT the last round's 40 (adversarial round-2 L1).
+    expect(JSON.parse(env?.meta?.usage as string)).toEqual({ source: 'provider', total: 140 });
     expect(closed()).toBe(1);
   });
 

@@ -30,6 +30,12 @@
  * allowed to keep — never the full transcript, which is Blob; see B13).
  */
 
+import type { PersistStepFold } from './persistStep';
+// Pure, dependency-free tool-result parsers (extracted from `agentStream.ts` so
+// this directive-free core can derive cwd / activeSandboxId from THIS run's
+// tool rows without dragging in that module's closure — adversarial round-2 L1).
+import { changeDirSuccessCwd, metaSandboxSwitchActiveId } from '../agent/toolResultParsers';
+
 /**
  * Local structural model-round delta. Defined here (NOT imported from
  * `generateOneRound`) so this directive-free core carries zero static coupling
@@ -41,6 +47,8 @@
 export type TurnLoopDelta = {
   text: string;
   toolCalls: TurnToolCallDelta[];
+  /** Provider usage for this model round (B9 `OneRoundDelta.usage`, optional). */
+  usage?: unknown;
   finishReason?: string;
 };
 
@@ -121,6 +129,8 @@ export interface PersistStepFn {
   (args: {
     turnRunId: string;
     deltas: ReadonlyArray<unknown>;
+    /** Run final-state fold (B13) — plain serializable values only. */
+    fold?: PersistStepFold;
   }): Promise<
     | { ok: true; status: 'completed'; turnRunId: string }
     | { ok: false; code: string; error: string }
@@ -137,7 +147,24 @@ export interface TurnLoopDeps {
   maxSteps?: number;
   /** Workflow run id — NEVER a session id (plan lock). */
   turnRunId: string;
+  /**
+   * Run **bind** state (B13): the sandbox `activeSandboxId` + workspace cwd the
+   * run is bound to. Supplied by the engine (C14) at start — this is pre-run
+   * sandbox bind, NOT "last deltas" (those do not exist at `start()`). The
+   * per-turn projections (checkpoint + usage) are **derived** by the loop at
+   * the persist call from this run's reconstructed `messages`/last model delta.
+   * Optional for tests/in-memory seams.
+   */
+  persistRunBind?: PersistRunBind;
 }
+
+/** B13 run-bind state the engine knows at `start()` (serializable values only).
+ *  Distinct from the derived per-turn fold: cwd/activeSandboxId are sandbox bind,
+ *  checkpoint/usage are this-run projections the loop computes at persist time. */
+export type PersistRunBind = {
+  activeSandboxId?: string;
+  cwd?: string;
+};
 
 /** Loop input: the user turn (orchestrator-local starting message). */
 export interface TurnLoopInput {
@@ -183,6 +210,109 @@ export function onceWritable(writable: TurnWritable): TurnWritable {
 
 const sse = (line: TurnSseLine): string => `data: ${JSON.stringify(line)}\n\n`;
 
+/** Map a reconstructed message row to a bounded `{role, content}` checkpoint row.
+ *  The loop keeps `[user, assistant-delta, tool-result, persist]` rows; the
+ *  checkpoint projection wants plain text content per role (B6 bounds it further). */
+function checkpointRow(m: unknown): { role: string; content: string } | undefined {
+  if (!m || typeof m !== 'object') return undefined;
+  const o = m as { role?: unknown; content?: unknown; delta?: unknown; result?: unknown; error?: unknown };
+  if (typeof o.role !== 'string' || o.role.length === 0) return undefined;
+  if (typeof o.content === 'string') return { role: o.role, content: o.content };
+  if (o.role === 'assistant') {
+    const d = o.delta as { text?: unknown } | undefined;
+    if (d && typeof d.text === 'string') return { role: 'assistant', content: d.text };
+  }
+  if (o.role === 'tool') {
+    const text = typeof o.result === 'string' ? o.result : typeof o.error === 'string' ? o.error : '';
+    return { role: 'tool', content: text };
+  }
+  return undefined;
+}
+
+/**
+ * Accumulate provider usage across model rounds into a single `UsageSummary`-
+ * shaped aggregate. B9 usage is per-round (`OneRoundDelta.usage`), so the FIRST
+ * round's total must not be clobbered by the last round (adversarial round-2
+ * L1): the terminal `fold.usage` must be the TURN total, matching the host
+ * context-slot aggregate-on-finish semantics. Numeric fields are summed; a
+ * round reporting no usable usage contributes nothing. Source stays `'provider'`.
+ */
+function accumulateUsage(acc: unknown, next: unknown): unknown {
+  const asRec = (v: unknown): Record<string, number> => {
+    if (!v || typeof v !== 'object') return {};
+    const r = v as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    for (const k of ['prompt', 'completion', 'total', 'cached'] as const) {
+      const n = r[k];
+      if (typeof n === 'number' && Number.isFinite(n)) out[k] = n;
+    }
+    return out;
+  };
+  const a = asRec(acc);
+  const b = asRec(next);
+  if (Object.keys(a).length === 0 && Object.keys(b).length === 0) return undefined;
+  const sum: Record<string, number> = { ...a };
+  for (const k of Object.keys(b) as Array<keyof typeof b>) {
+    sum[k] = (sum[k] ?? 0) + b[k]!;
+  }
+  return { source: 'provider', ...sum };
+}
+
+/** Scan a reconstructed tool row for its derived cwd / activeSandboxId. */
+function toolRowBind(m: unknown): { cwd?: string; activeSandboxId?: string } {
+  if (!m || typeof m !== 'object') return {};
+  const o = m as { role?: unknown; toolName?: unknown; result?: unknown };
+  if (o.role !== 'tool' || typeof o.toolName !== 'string') return {};
+  const result = typeof o.result === 'string' ? o.result : undefined;
+  if (o.toolName === 'change_dir') {
+    const cwd = changeDirSuccessCwd(result);
+    return cwd !== undefined ? { cwd } : {};
+  }
+  if (o.toolName === 'meta_sandbox_switch') {
+    const id = metaSandboxSwitchActiveId(result);
+    return id !== undefined ? { activeSandboxId: id } : {};
+  }
+  return {};
+}
+
+/**
+ * Derive the B13 terminal persist fold **at persist time** from this run's
+ * reconstructed `messages` + accumulated usage (adversarial L1 — the fold is NOT
+ * a start-of-run arg: the last deltas do not exist at `start()`, only here).
+ *
+ * cwd / activeSandboxId come from THIS run's tool rows — the LAST successful
+ * `change_dir` / `meta_sandbox_switch` wins (adversarial round-2 L1). We NEVER
+ * overlay a pre-run `persistRunBind` snapshot over a mid-turn tool write (that
+ * would clobber the envelope write the tool just made); the bind is only a
+ * fallback for a key the run never touched. usage is the ACCUMULATED turn total
+ * (not the last round). checkpoint is this run's rebuilt `{role, content}[]`.
+ */
+export function derivePersistFold(
+  messages: ReadonlyArray<unknown>,
+  usage: unknown,
+  runBind?: PersistRunBind,
+): PersistStepFold | undefined {
+  const checkpoint: Array<{ role: string; content: string }> = [];
+  let cwd: string | undefined = runBind?.cwd;
+  let activeSandboxId: string | undefined = runBind?.activeSandboxId;
+  for (const m of messages) {
+    const row = checkpointRow(m);
+    if (row) checkpoint.push(row);
+    const bind = toolRowBind(m);
+    if (bind.cwd !== undefined) cwd = bind.cwd;
+    if (bind.activeSandboxId !== undefined) activeSandboxId = bind.activeSandboxId;
+  }
+  if (checkpoint.length === 0 && usage === undefined && cwd === undefined && activeSandboxId === undefined) {
+    return undefined;
+  }
+  return {
+    ...(cwd !== undefined ? { cwd } : {}),
+    ...(activeSandboxId !== undefined ? { activeSandboxId } : {}),
+    ...(usage !== undefined ? { usage } : {}),
+    ...(checkpoint.length > 0 ? { checkpoint } : {}),
+  };
+}
+
 /**
  * Drive one prompt run: `model · (tool)*` until the model returns no tool calls
  * or the 256-step cap is reached, writing delta-only SSE lines to the writable,
@@ -221,6 +351,12 @@ export async function runTurnLoop(
 
   let round = 0;
   let steps = 0;
+  // ACCUMULATED provider usage across all model rounds (B13) — the usage
+  // projection for the terminal fold, derived from THIS run's deltas at persist
+  // time (adversarial L1: never a start-of-run arg) AND summed across rounds so
+  // an earlier round's tokens aren't clobbered by the last (round-2 L1 — the
+  // host context-slot aggregate is turn-total, not last-round).
+  let usage: unknown;
   // Thread the B5 file-freshness ledger across tool steps — and across rounds.
   // Every tool step seeds from the accumulated serialized ledger and returns the
   // advanced delta, so read-before-edit grants survive the durable loop
@@ -236,6 +372,7 @@ export async function runTurnLoop(
         return fail(gen.code === 'cancelled' ? 'cancelled' : 'failed', round, steps, gen.error);
       }
       deltas.push(gen.delta);
+      usage = accumulateUsage(usage, gen.delta.usage);
       if (gen.delta.text) {
         await writable.write(sse({ type: 'text', text: gen.delta.text }));
       }
@@ -248,7 +385,16 @@ export async function runTurnLoop(
           sse({ type: 'done', finishReason: gen.delta.finishReason, rounds: round, steps }),
         );
         steps += 1; // the persist step
-        const persisted = await deps.persistStep({ turnRunId: deps.turnRunId, deltas });
+        // Derive the terminal fold AT PERSIST TIME from this run's messages +
+        // ACCUMULATED usage (turn total). cwd/activeSandboxId come from THIS
+        // run's LAST tool write, or the pre-run bind only when untouched. NOT a
+        // start arg (the last deltas do not exist at `start()` — only here).
+        const fold = derivePersistFold(messages, usage, deps.persistRunBind);
+        const persisted = await deps.persistStep({
+          turnRunId: deps.turnRunId,
+          deltas,
+          ...(fold !== undefined ? { fold } : {}),
+        });
         if (!persisted.ok) {
           return fail('failed', round, steps, persisted.error);
         }

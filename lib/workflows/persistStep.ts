@@ -23,20 +23,46 @@
  * (the loop terminates cleanly; the writable is still closed).
  */
 
+/**
+ * Serialized final-state fold (B13) — the run-level worker keys the terminal
+ * persist step folds onto envelope `meta` via the B8 overlay. Plain
+ * serializable values only (Vercel serializes every `'use step'` arg). Per the
+ * plan lock, the checkpoint is a bounded `{role,content}[]` projection the real
+ * seam writes as its own Blob object — only the pointer rides in `meta`.
+ */
+export interface PersistStepFold {
+  /** Workspace-relative `logicalCwd` folded from the last generate/tool deltas. */
+  cwd?: string;
+  /** `activeSandboxId` folded from the run's bind state. */
+  activeSandboxId?: string;
+  /** Provider usage summary object (B8 encodes/bounds it for `meta.usage`). */
+  usage?: unknown;
+  /** Bounded `{role,content}` checkpoint projection (discarded in-memory seams). */
+  checkpoint?: Array<{ role: string; content: string }>;
+}
+
 /** The B7/B8 persist seam surface this step shells (store-ish, serializable-safe). */
 export interface PersistStepSeam {
   /**
    * Persist one terminal turn segment server-side. Contract mirrors B7
    * (`persistTranscriptSegment`) but is deliberately store-agnostic here so this
    * file does not import the Banned Blob module. The engine/entry provides the
-   * real seam at B13; tests inject an in-memory seam.
+   * real seam at B13 (`lib/agent/turnPersistSeam.ts`); tests inject an
+   * in-memory seam. The seam returns terminal status + the persisted pointers.
    */
   persist(input: {
     turnRunId: string;
     deltas: ReadonlyArray<unknown>;
     content: string;
+    /** Run final-state fold (cwd/usage/sandbox/checkpoint) — optional. */
+    fold?: PersistStepFold;
   }): Promise<
-    | { ok: true; objectId?: string; status: 'completed' }
+    | {
+        ok: true;
+        objectId?: string;
+        checkpointPointer?: string;
+        status: 'completed';
+      }
     | { ok: false; code: string; error: string }
   >;
 }
@@ -47,11 +73,19 @@ export interface PersistStepArgs {
   turnRunId: string;
   /** Delta log (orchestrator-local) to persist for replay reconstruction. */
   deltas: ReadonlyArray<unknown>;
+  /** Run final-state fold (B13) — plain serializable values only. */
+  fold?: PersistStepFold;
 }
 
 /** Fail-closed step result (terminal status). */
 export type PersistStepResult =
-  | { ok: true; status: 'completed'; turnRunId: string }
+  | {
+      ok: true;
+      status: 'completed';
+      turnRunId: string;
+      objectId?: string;
+      checkpointPointer?: string;
+    }
   | { ok: false; code: string; error: string };
 
 /**
@@ -72,9 +106,18 @@ export async function persistStep(
     turnRunId: args.turnRunId,
     deltas: args.deltas,
     content,
+    ...(args.fold !== undefined ? { fold: args.fold } : {}),
   });
   if (!result.ok) return { ok: false, code: result.code, error: result.error };
-  return { ok: true, status: 'completed', turnRunId: args.turnRunId };
+  return {
+    ok: true,
+    status: 'completed',
+    turnRunId: args.turnRunId,
+    ...(result.objectId !== undefined ? { objectId: result.objectId } : {}),
+    ...(result.checkpointPointer !== undefined
+      ? { checkpointPointer: result.checkpointPointer }
+      : {}),
+  };
 }
 
 /**

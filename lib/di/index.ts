@@ -64,9 +64,11 @@ import {
   RedisSessionStore,
   type RedisSessionStoreOptions,
 } from '../sessions/redisSessionStore';
-import type { BlobTranscriptStore } from '../sessions/blobStore';
+import type { BlobTranscriptStore, ObjectScope } from '../sessions/blobStore';
 import { MemoryBlobTranscriptStore } from '../sessions/blobStores';
 import { VercelBlobTranscriptStore } from '../sessions/blobStores';
+import { createTurnPersistSeam } from '../agent/turnPersistSeam';
+import type { PersistStepSeam } from '../workflows/persistStep';
 
 /**
  * Server-only secrets resolved once at the root (never read from `process.env`
@@ -235,6 +237,21 @@ export function createProdServices(overrides: {
     createSessionStore,
     /** Root factory for the Blob transcript store (phase 0, #515). */
     createBlobTranscriptStore,
+    /**
+     * Root factory for the real B7/B8 persist seam (backend-agents B13, #807),
+     * scoped to a session. Constructed here (the composition root / engine
+     * boundary) from the root Blob + session stores; the C14 engine route
+     * installs it via `setPersistSeamResolver` before `start(runTurnWorkflow,
+     * …)`. Never statically imported by the `'use workflow'` entry — it enters
+     * the entry closure only as an injected VALUE, so the B11 deploy-gate lock
+     * stays intact (regression: staticGraph / turnLoop tests).
+     */
+    createPersistStepSeam: (scope: ObjectScope): PersistStepSeam =>
+      createTurnPersistSeam({
+        blobStore: createBlobTranscriptStore(),
+        envelopeStore: createSessionStore(),
+        scope,
+      }),
   };
 }
 
