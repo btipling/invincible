@@ -353,6 +353,17 @@ export function sanitizeTurnStreamCursor(value: unknown): number | undefined {
 }
 
 /**
+ * Per-process min-interval between turn starts on `POST /api/turns` (plan #809,
+ * backend-agents C15). A module-level `lastStartAtMs` advances only on a successful
+ * `start()` call — 409/503 never burn the window. This is a **soft** abuse guard
+ * (survives one Vercel Function invocation), not a durable rate limit. A hard
+ * per-user cap would need Redis — out of scope for C15. **NEW generous cap**:
+ * 1 second is an eternity for a human but an impassable wall for a loop.
+ * No existing cap value changed → **no human gate**.
+ */
+export const TURN_START_MIN_INTERVAL_MS = 1000;
+
+/**
  * Row cap for a message checkpoint (plan #800, backend-agents B6). The checkpoint
  * Blob is a multi-turn `{role, content}` projection; bounding its row count keeps a
  * replay/entity footprint bounded (same order as `TURN_FRESHLEDGER_MAX_GRANTS`,

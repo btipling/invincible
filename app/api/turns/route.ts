@@ -1,5 +1,6 @@
 /**
- * backend-agents C14b (#835) — `POST /api/turns`: the durable-turn START surface.
+ * backend-agents C14b (#835) + C15 (#809) — `POST /api/turns`: the durable-turn
+ * START surface with abuse guards.
  *
  * Starts a Workflows `turnWorkflow` (B12 loop) run for one prompt and streams
  * its live SSE (or returns its `runId`). The route is a thin auth+body gate
@@ -18,8 +19,16 @@
  * Pre-`start()` gates (fail closed, never enqueue a doomed run):
  *  1. Auth (`requireSessionUser`) → 401
  *  2. `sessionId` required → 400
- *  3. Tenant resolve → 503
- *  4. BYOK resolve → 4xx
+ *  3. 429 min-interval guard (C15) — per-process, zero-I/O, short-circuits
+ *     before BYOK
+ *  4. Tenant resolve → 503
+ *  5. BYOK resolve → 4xx
+ *  6. Envelope read → 409 duplicate-turn guard (C15) — live-only
+ *     ('running'/'cancelling'); shares the existing envelope read
+ *  7. Sandbox hard-deny → 403
+ *
+ * `lastStartAtMs` advances ONLY on a successful `start()` call — 409/503/429
+ * never burn the window.
  *
  * `turnRunId` is DERIVED in-workflow (`getWorkflowMetadata().workflowRunId`), so
  * the terminal persist's `turnRunId` equals the route-side `run.runId` (never
@@ -35,6 +44,7 @@ import {
   wantsAgentStream,
 } from '../../../lib/agent/agentStream';
 import { overlayWorkerMeta } from '../../../lib/agent/workerMetaOverlay';
+import { TURN_START_MIN_INTERVAL_MS } from '../../../lib/sessionCloudCaps';
 import { mapByokResolveFailure } from '../../../lib/chatServer';
 import { createProdServices } from '../../../lib/di';
 import { requireSessionUser } from '../../../lib/tenancy/session';
@@ -51,6 +61,13 @@ export const maxDuration = 1800;
 
 /** Composition root — all wiring constructed here, never in route body. */
 const services = createProdServices();
+
+/**
+ * C15 per-process soft abuse guard: advances ONLY on a successful `start()` call.
+ * 409/503/429/any-pre-start-gate-failure never burn the window. Survives one
+ * Vercel Function invocation — not a durable rate limit (Redis out of scope).
+ */
+let lastStartAtMs = 0;
 
 function failClosed(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -120,6 +137,20 @@ export async function POST(req: Request): Promise<Response> {
   }
   const sessionId = parsed.sessionId;
 
+  // C15 429 min-interval guard — per-process soft abuse gate, zero I/O.
+  // Short-circuits BEFORE the BYOK resolve (an expensive DB query) so a
+  // spammer gets a cheap 429 instead of a DB-backed reject.
+  const now = Date.now();
+  if (now - lastStartAtMs < TURN_START_MIN_INTERVAL_MS) {
+    return Response.json(
+      {
+        error:
+          'Too many turn start requests. Please wait before starting another turn.',
+      },
+      { status: 429 },
+    );
+  }
+
   // Pre-start sandbox probe client — closed after start() succeeds OR on throw.
   // Mirrors /api/agent closeRunners (extendTimeout + drop handle, never stop).
   // Only populated when resolveAgentSandbox returns {ok:true}. Hard-deny
@@ -171,6 +202,17 @@ export async function POST(req: Request): Promise<Response> {
         envelopeStore = storeRes.value;
         const envelope = await envelopeStore.readEnvelope(sessionKey);
         if (envelope) {
+          // C15 409 duplicate-turn guard — live-only: reject when a turn is
+          // already 'running' or 'cancelling' for this session. Shares the
+          // existing envelope read (no second network round-trip).
+          const turnStatus = envelope.meta?.turnStatus;
+          if (turnStatus === 'running' || turnStatus === 'cancelling') {
+            return Response.json(
+              { error: 'A turn is already in progress for this session.' },
+              { status: 409 },
+            );
+          }
+
           storedUpdatedAt = typeof envelope.updatedAt === 'number' ? envelope.updatedAt : 0;
           if (typeof envelope.meta?.logicalCwd === 'string' && envelope.meta.logicalCwd) {
             persistRunBind = { ...persistRunBind, cwd: envelope.meta.logicalCwd };
@@ -258,6 +300,10 @@ export async function POST(req: Request): Promise<Response> {
         ...(persistRunBind ? { persistRunBind } : {}),
       },
     ]);
+
+    // C15: advance the per-process clock ONLY on a successful start() —
+    // 409/503/429/any-pre-start-gate-failure never burn the window.
+    lastStartAtMs = Date.now();
 
     // Close the probe client now that the run is enqueued. The in-step
     // assemble helper opens its OWN client per step VM — this probe was
