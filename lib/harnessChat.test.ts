@@ -3944,3 +3944,95 @@ describe('Phase 2 mid-turn live status bar (plan #627)', () => {
     expect(patchResolved).toBe(true);
   });
 });
+
+describe('runHarnessTurn durable-turn fold (plan #811 / D17)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('success with a planted turnRunId folds completed + cursor 0 onto the session', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // JSON path (sendAgent injected) carrying a durable-turn run id.
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'PONG',
+      turnRunId: 'run_1',
+      turnWarning: 'note',
+    }));
+    const { result, session: next } = await runHarnessTurn(
+      bridge,
+      createEmptySession('s1'),
+      'hi',
+      { sendAgent },
+    );
+    expect(result.ok).toBe(true);
+    expect(next.turnRunId).toBe('run_1');
+    expect(next.turnStatus).toBe('completed');
+    expect(next.turnStreamCursor).toBe(0);
+  });
+
+  it('failure with a planted turnRunId clears the id and marks the turn completed', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      error: 'boom',
+      status: 422, // plan #759 — permanent (terminal); single attempt, no retry timers
+      turnRunId: 'run_2',
+    }));
+    const { result, session: next } = await runHarnessTurn(
+      bridge,
+      createEmptySession('s1'),
+      'hi',
+      { sendAgent },
+    );
+    expect(result.ok).toBe(false);
+    // The D17 failure fold clears the run id and marks the terminal turn
+    // completed so a stale `running` never blocks the next C15 start.
+    expect(sendAgent).toHaveBeenCalledTimes(1);
+    expect(next.turnRunId).toBeUndefined();
+    expect(next.turnStatus).toBe('completed');
+  });
+
+  it('production default stream path (sendTurnStream, no sendAgent injection) folds the run header', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    // Production default: no sendAgent/sendAgentStream injected → streamAgent
+    // true → sendTurnStream posts to /api/turns and parses durable fields.
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        const enc = new TextEncoder();
+        c.enqueue(enc.encode('data: {"type":"text_delta","text":"Hi"}\n\n'));
+        c.enqueue(enc.encode('data: {"type":"done","text":"Hi","toolTrace":[]}\n\n'));
+        c.close();
+      },
+    });
+    const fetchMock = vi.fn(async () =>
+      new Response(body, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'x-workflow-run-id': 'wr_0000_default',
+        },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const { result, session: next } = await runHarnessTurn(
+      bridge,
+      createEmptySession('s1'),
+      'hi',
+    );
+    expect(result.ok).toBe(true);
+    expect(next.turnRunId).toBe('wr_0000_default');
+    expect(next.turnStatus).toBe('completed');
+    expect(next.turnStreamCursor).toBe(0);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/turns',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Accept: 'text/event-stream' }),
+      }),
+    );
+  });
+});

@@ -134,17 +134,25 @@ class AgentRetryError extends Error {
    *  survive the throw/catch round-trip or fold-before-persist (plan #517)
    *  would silently drop the sticky set on a give-up turn. */
   readonly attachedSlugs?: string[];
+  /** Plan #811 (D17) — the Workflow run id must survive the throw/catch
+   *  round-trip too, or the D17 failure fold (clear `turnRunId` + mark the
+   *  terminal turn `completed`) can never fire: the give-up rebuild would drop
+   *  the id on every failed durable turn, leaving a stale `running` on the
+   *  session that blocks the next C15 start. */
+  readonly turnRunId?: string;
   constructor(
     error: string,
     status: number | undefined,
     turnKind: TurnEndKind,
     attachedSlugs?: string[],
+    turnRunId?: string,
   ) {
     super(error);
     this.name = 'AgentRetryError';
     this.status = status;
     this.turnKind = turnKind;
     this.attachedSlugs = attachedSlugs;
+    this.turnRunId = turnRunId;
   }
 }
 
@@ -178,6 +186,7 @@ function agentFailureFromRetry(err: unknown): AgentFailure {
       ...(err.attachedSlugs !== undefined
         ? { attachedSlugs: err.attachedSlugs }
         : {}),
+      ...(err.turnRunId !== undefined ? { turnRunId: err.turnRunId } : {}),
     };
   }
   if (err instanceof Error && err.name === 'AbortError') {
@@ -1447,7 +1456,13 @@ export async function runHarnessTurn(
               });
           if (!r.ok) {
             const kind = classifyTurnFailure(r.error, r.status, opts?.signal).kind;
-            throw new AgentRetryError(r.error, r.status, kind, r.attachedSlugs);
+            throw new AgentRetryError(
+              r.error,
+              r.status,
+              kind,
+              r.attachedSlugs,
+              r.turnRunId,
+            );
           }
           return r;
         },
