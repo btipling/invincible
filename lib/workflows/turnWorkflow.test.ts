@@ -22,12 +22,55 @@ vi.mock('workflow', () => ({
   getWritable: () => ({
     getWriter: () => ({ write: vi.fn(async () => {}), close: vi.fn(async () => {}) }),
   }),
+  // C14b (#835): turnRunId is DERIVED in-workflow (never a start() arg), so the
+  // entry reads it from getWorkflowMetadata().workflowRunId.
+  getWorkflowMetadata: () => ({ workflowRunId: 'wr_0000_meta' }),
 }));
 
 vi.mock('../agent/generateOneRound', () => ({
   generateOneRound: async () => ({
     ok: true as const,
     delta: { text: 'adapter-done', toolCalls: [], usage: { source: 'provider', total: 2 } },
+  }),
+  // toolsWithoutExecutors: strip execute closures for serialization across the
+  // step boundary. In tests the registry is empty, so this returns empty.
+  toolsWithoutExecutors: (t: Record<string, unknown>) => t,
+}));
+
+// modelGenerateStep re-resolves BYOK in-step via a dynamic import of the DI
+// root, and assembles the tool world via assembleDurableToolWorld. Mock both
+// so the entry test doesn't try to open a real DB connection.
+vi.mock('../di/index', () => ({
+  createProdServices: () => ({
+    resolveInferenceForRequest: {
+      resolveByokForRequest: async () => ({
+        ok: true as const,
+        modelId: 'mock-model',
+        provider: 'mock',
+        credentials: {},
+        only: ['mock'] as [string],
+        byok: { mock: [{}] },
+        secretId: 'sec-mock',
+        secretsToRedact: [],
+      }),
+    },
+  }),
+}));
+
+// The shared durable-tool-world helper is called by modelGenerateStep in prod.
+// In tests, mock it to return a minimal world — no real sandbox/MCP/HTTP.
+vi.mock('./assembleDurableToolWorld', () => ({
+  assembleDurableToolWorld: async () => ({
+    ok: true as const,
+    world: {
+      registry: {},
+      secrets: [],
+      signal: new AbortController().signal,
+      freshness: {},
+      mcpClose: undefined,
+      httpRunner: undefined,
+      sandboxClientClose: undefined,
+    },
   }),
 }));
 
@@ -45,11 +88,11 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
     const scope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's1' };
     setPersistSeamResolver(() => createTurnPersistSeam({ blobStore, envelopeStore, scope }));
 
+    // NO tools key — tool schemas are assembled in-step via the shared helper.
     const result = await turnWorkflow({
-      turnRunId: 'wr_0000_adapter',
       userMessage: 'go adapter',
-      tools: {},
       modelId: 'mock-model',
+      scope: { tenantId: 't', userId: 'u', sessionId: 's1' },
       persistRunBind: { cwd: 'app', activeSandboxId: 'sb_adapter' },
     });
     expect(result.status).toBe('completed');
@@ -68,5 +111,9 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
     ]);
     expect(env?.meta?.turnStatus).toBe('completed');
     expect(env?.meta?.transcriptPointer).toBeDefined();
+    // C14b matrix row 8: the terminal persist's turnRunId is the workflow-run
+    // id derived in-workflow (must equal the route-side run.runId, never the
+    // session id 's1').
+    expect(env?.meta?.turnRunId).toBe('wr_0000_meta');
   });
 });

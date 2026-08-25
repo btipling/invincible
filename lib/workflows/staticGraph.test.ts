@@ -262,6 +262,50 @@ describe('staticGraph — closure walk (matrix 1,2,8,9,10,11,12,13)', () => {
     expect(reachable.has('workflow')).toBe(true);
     expect(bannedReach(reachable)).toEqual([]);
   });
+
+  it("case 14: workflow entry imports a REAL 'use step' file that imports node:crypto + blobStore → entry bannedReach still [] (step leaf gate)", () => {
+    const g = tmpGraph({
+      'entry.ts':
+        "import { myStep } from './step';\nexport function entry() { 'use workflow'; return myStep(); }",
+      // A REAL `'use step'` body that imports banned modules. The entry closure
+      // REACHES this file (it imports it), but the walker must NOT follow its
+      // imports — the step bundle is a separate VM.
+      'step.ts':
+        "import { createHash } from 'node:crypto';\nimport { MemoryBlobTranscriptStore } from '@/lib/sessions/blobStore';\nexport async function myStep() { 'use step'; return createHash('sha256').update('x').digest('hex'); }",
+    });
+    try {
+      const reachable = reachableImports('entry.ts', { root: g.root });
+      // Entry + step are reachable…
+      expect(reachable.has('entry')).toBe(true);
+      expect(reachable.has('step')).toBe(true);
+      // …but step's banned imports (node:crypto, blobStore) are NOT in the closure.
+      expect(reachable.has('node:crypto')).toBe(false);
+      expect(bannedReach(reachable)).toEqual([]);
+    } finally {
+      g.close();
+    }
+  });
+
+  it("case 15: workflow entry imports a helper whose COMMENT contains 'use step' and whose code imports blobStore → banned MUST include blobStore (comment-stripped leaf gate)", () => {
+    const g = tmpGraph({
+      'entry.ts':
+        "import { helper } from './helper';\nexport function entry() { 'use workflow'; return helper(); }",
+      // A helper file whose doc-comment mentions `'use step'` but the file has
+      // NO real directive. The walker must NOT treat this as a step leaf —
+      // its banned imports must be tracked (the `turnLoop.ts` case).
+      'helper.ts':
+        "// This helper mentions 'use step' in a comment but is NOT a step itself.\nimport { MemoryBlobTranscriptStore } from '@/lib/sessions/blobStore';\nexport function helper() { return MemoryBlobTranscriptStore; }",
+    });
+    try {
+      const reachable = reachableImports('entry.ts', { root: g.root });
+      expect(reachable.has('entry')).toBe(true);
+      expect(reachable.has('helper')).toBe(true);
+      // The helper IS NOT a step leaf — its banned import MUST appear.
+      expect(bannedReach(reachable)).toContain('lib/sessions/blobStore');
+    } finally {
+      g.close();
+    }
+  });
 });
 
 describe('staticGraph — extractImports', () => {

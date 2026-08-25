@@ -90,6 +90,14 @@ export type TurnSseLine =
 export interface ModelStepFn {
   (args: {
     messages: ReadonlyArray<unknown>;
+    /**
+     * RUNNING sandbox bind (cwd, activeSandboxId) threaded from the loop.
+     * Initialised from `deps.persistRunBind` (start snapshot); updated after
+     * every successful `change_dir` / `meta_sandbox_switch` tool. The step
+     * passes this into `assembleDurableToolWorld` so the model sees FS tools
+     * for the CURRENT sandbox + cwd, not the stale start snapshot.
+     */
+    persistRunBind?: PersistRunBind;
   }): Promise<
     | { ok: true; delta: TurnLoopDelta }
     | { ok: false; code: 'model_error' | 'write_error' | 'cancelled'; error: string }
@@ -108,6 +116,15 @@ export interface ToolStepFn {
      * rounds (adversarial L1). A plain string, never a closure.
      */
     freshnessSeed?: string;
+    /**
+     * RUNNING sandbox bind (cwd, activeSandboxId) threaded from the loop, same
+     * pattern as `freshnessSeed`. Initialised from `deps.persistRunBind` (start
+     * snapshot); updated after every successful `change_dir` /
+     * `meta_sandbox_switch`. The step passes this into `assembleDurableToolWorld`
+     * so FS tool assembly and sandbox resolution use the CURRENT bind, not the
+     * stale start snapshot.
+     */
+    persistRunBind?: PersistRunBind;
   }): Promise<
     | { ok: true; result: string; freshnessDelta: string }
     | {
@@ -362,12 +379,22 @@ export async function runTurnLoop(
   // advanced delta, so read-before-edit grants survive the durable loop
   // (adversarial L1). A plain string, never a closure.
   let freshness: string | undefined;
+  // Thread the RUNNING sandbox bind (cwd + activeSandboxId) across tool steps
+  // (same pattern as freshness). Initialised from the start snapshot; updated
+  // after every successful `change_dir` / `meta_sandbox_switch` tool so the
+  // NEXT tool/model step gets the CURRENT bind (adversarial round-3 BLOCK).
+  // A plain serializable value, never a closure.
+  let bind: PersistRunBind | undefined = deps.persistRunBind
+    ? { ...deps.persistRunBind }
+    : undefined;
   try {
     while (steps < cap) {
       round += 1;
       steps += 1; // this model round = one step boundary
       // ONE model round — schemas only, never execute (B9 core). Delta return.
-      const gen = await deps.modelStep({ messages });
+      // Pass the running bind so the model sees FS tools for the CURRENT sandbox
+      // + cwd, not the stale start snapshot.
+      const gen = await deps.modelStep({ messages, persistRunBind: bind });
       if (!gen.ok) {
         return fail(gen.code === 'cancelled' ? 'cancelled' : 'failed', round, steps, gen.error);
       }
@@ -420,11 +447,19 @@ export async function runTurnLoop(
           toolCallId: call.toolCallId,
           callArgs: call.args,
           freshnessSeed: freshness,
+          persistRunBind: bind,
         });
         if (tool.ok) {
           freshness = tool.freshnessDelta;
           deltas.push(tool);
-          messages.push({ role: 'tool', toolName: call.toolName, result: tool.result });
+          messages.push({ role: 'tool', toolName: call.toolName, toolCallId: call.toolCallId, result: tool.result });
+          // Overlay the running bind from this tool's result — last successful
+          // `change_dir` / `meta_sandbox_switch` wins (adversarial round-3 BLOCK).
+          // The NEXT tool/model step will see the updated cwd/sandbox id.
+          const rowBind = toolRowBind(messages[messages.length - 1]);
+          if (rowBind.cwd !== undefined || rowBind.activeSandboxId !== undefined) {
+            bind = { ...bind, ...rowBind };
+          }
           await writable.write(
             sse({ type: 'tool_result', toolName: call.toolName, ok: true, result: tool.result }),
           );
@@ -437,7 +472,7 @@ export async function runTurnLoop(
             sse({ type: 'tool_result', toolName: call.toolName, ok: false, result: tool.error }),
           );
           deltas.push(tool);
-          messages.push({ role: 'tool', toolName: call.toolName, ok: false, error: tool.error });
+          messages.push({ role: 'tool', toolName: call.toolName, toolCallId: call.toolCallId, ok: false, error: tool.error });
           await writable.close();
           return {
             status: 'completed',

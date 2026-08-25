@@ -424,7 +424,7 @@ export function createResolveSandbox(deps: ResolveAgentSandboxDeps = {}) {
     resolveAgentSandbox: (
       userId: string,
       o?: ResolveAgentSandboxDeps,
-      init?: { signal?: AbortSignal },
+      init?: { signal?: AbortSignal; requestedSandboxId?: string },
     ) => resolveAgentSandbox(userId, { ...deps, ...o }, init),
   };
 }

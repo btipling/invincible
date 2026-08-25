@@ -22,18 +22,19 @@
  * in one step. `turnRunId` = the Workflow run id, never session id.
  *
  * **Serializable-only args (adversarial L1):** the entry takes plain serializable
- * values only (`turnRunId`, `userMessage`, tool SCHEMAS, `modelId`) — the tool
- * world (registry/secrets/signal) and the persist seam are resolved INSIDE the
- * steps from their module-level resolvers, which the engine (C14) / B13 wires at
- * the boundary before `start()`. No closures / AbortSignal / functions are ever
- * passed into a `'use step'` function.
+ * values only (`userMessage`, `modelId`, `scope`, optional `persistRunBind`) —
+ * the tool world (registry/secrets/signal) and the persist seam are resolved
+ * INSIDE the steps. No closures / AbortSignal / functions are ever passed into
+ * a `'use step'` function. The route MUST NOT pass a `tools` dict — tool schemas
+ * are assembled in-step via the shared `assembleDurableToolWorld` helper so the
+ * model sees the same tools the execute step can run.
  *
  * Wiring note (B13/C14): this B12 row ships the directive-composed loop shape;
  * the production `start(runTurnWorkflow, [args])` route + real B7/B8 Blob seam +
  * request-scoped model/registry resolution are the engine rows (C14+).
  */
 
-import { getWritable } from 'workflow';
+import { getWritable, getWorkflowMetadata } from 'workflow';
 import {
   runTurnLoop,
   type PersistStepFn,
@@ -47,13 +48,23 @@ import { modelGenerateStep } from './modelGenerateStep';
 import { toolExecuteStep } from './toolExecuteStep';
 import { persistStep } from './persistStep';
 
-/** `'use workflow'` run args — plain serializable values only. */
+/**
+ * `'use workflow'` run args — plain serializable values only.
+ *
+ * `turnRunId` is intentionally NOT an arg: `start()` returns the run id only
+ * after it is enqueued, so `turnRunId` cannot be supplied from the boundary.
+ * The entry derives it in-workflow from `getWorkflowMetadata().workflowRunId`
+ * (= the route-side `run.runId`, never the session id).
+ *
+ * `tools` is intentionally REMOVED: the route MUST NOT pass a tools dict.
+ * Tool schemas are assembled in-step via the shared `assembleDurableToolWorld`
+ * helper — the model must see the same tools the execute step can run.
+ */
 export interface TurnWorkflowArgs {
-  turnRunId: string;
   userMessage: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  tools: Record<string, any>;
   modelId: string;
+  /** Serializable session scope for in-step seam construction (prod path). */
+  scope: { tenantId: string; userId: string; sessionId: string };
   /**
    * Pre-run sandbox **bind** state (B13): `cwd` + `activeSandboxId`. Supplied by
    * the engine (C14) at `start()` — this is sandbox bind known before the run,
@@ -74,6 +85,12 @@ export async function turnWorkflow(
 ): Promise<TurnLoopResult> {
   'use workflow';
 
+  // `turnRunId` is DERIVED in-workflow: `start()` returns the run id only after
+  // enqueue, so it can never be a `start()` arg. Thread the workflow's own run
+  // id to the loop → terminal persist, so the persist seam's `turnRunId` equals
+  // the route-side `run.runId` (never the session id).
+  const { workflowRunId } = getWorkflowMetadata();
+
   // ONE getWritable() handle for the run — the SSE wire (tokens = Data Written).
   // The SDK returns a stream (web `WritableStream`); looping writes await its
   // writer so a closed stream rejects cleanly (the core closes it on every path).
@@ -84,24 +101,37 @@ export async function turnWorkflow(
     close: () => writer.close(),
   };
 
-  const modelStep: ModelStepFn = async ({ messages }) => {
+  const modelStep: ModelStepFn = async ({ messages, persistRunBind }) => {
     return modelGenerateStep({
       messages,
-      tools: args.tools,
       modelId: args.modelId,
+      userId: args.scope.userId,
+      scope: args.scope,
+      // Use the RUNNING bind from the loop (updated after each successful
+      // change_dir/meta_sandbox_switch), NOT the stale start snapshot. The
+      // model must see FS tools for the CURRENT sandbox + cwd.
+      persistRunBind: persistRunBind ?? args.persistRunBind,
     });
   };
-  const toolStep: ToolStepFn = async ({ toolName, toolCallId, callArgs, freshnessSeed }) => {
+  const toolStep: ToolStepFn = async ({ toolName, toolCallId, callArgs, freshnessSeed, persistRunBind }) => {
     return toolExecuteStep({
       toolName,
       callArgs,
       freshnessSeed,
+      scope: args.scope,
+      // Use the RUNNING bind from the loop, NOT the stale start snapshot.
+      persistRunBind: persistRunBind ?? args.persistRunBind,
     });
   };
   // Forward EVERYTHING the loop passes including the derived `fold` — a
   // destructure that drops it would silently no-op DoD rows 3/5 (adversarial L1).
   const persistStepFn: PersistStepFn = async ({ turnRunId, deltas, fold }) => {
-    return persistStep({ turnRunId, deltas, ...(fold !== undefined ? { fold } : {}) });
+    return persistStep({
+      turnRunId,
+      deltas,
+      ...(fold !== undefined ? { fold } : {}),
+      scope: args.scope,
+    });
   };
 
   return runTurnLoop(
@@ -110,7 +140,7 @@ export async function turnWorkflow(
       toolStep,
       persistStep: persistStepFn,
       writable: loopWritable,
-      turnRunId: args.turnRunId,
+      turnRunId: workflowRunId,
       ...(args.persistRunBind !== undefined ? { persistRunBind: args.persistRunBind } : {}),
     },
     { userMessage: args.userMessage },
