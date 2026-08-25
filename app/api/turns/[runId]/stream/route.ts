@@ -21,13 +21,12 @@
  *  - 200 + SSE stream (content-type: text/event-stream; charset=utf-8)
  *  - 400 for invalid runId/startIndex
  *  - 401 for auth failure
- *  - 404 for run not found (WorkflowRunNotFoundError)
- *  - 503 fail-closed for any other getRun throw
+ *  - 404 for run not found (`await run.exists === false`)
+ *  - 503 fail-closed for getReadable throw
  *
  * No `x-workflow-run-warning` header — this route is read-only (no PATCH).
  */
 import { getRun } from 'workflow/api';
-import { WorkflowRunNotFoundError } from '@workflow/errors';
 import {
   AGENT_STREAM_CONTENT_TYPE,
 } from '../../../../../lib/agent/agentStream';
@@ -83,29 +82,31 @@ export async function GET(
     startIndex = parsed;
   }
 
-  // Resolve the run handle. getRun throws WorkflowRunNotFoundError on a
-  // non-existent run → 404; any other throw → 503 fail-closed.
-  let run: Awaited<ReturnType<typeof getRun>>;
-  try {
-    run = getRun(cleanRunId);
-  } catch (err) {
-    if (WorkflowRunNotFoundError.is(err)) {
-      return Response.json(
-        { error: `Run not found: ${cleanRunId}` },
-        { status: 404 },
-      );
-    }
-    const msg = err instanceof Error ? err.message : String(err);
+  // Resolve the run handle. getRun(runId): Run is SYNC and does NOT throw for a
+  // missing run — it returns a handle. Not-found is `await run.exists === false`
+  // (in-repo precedent: `app/api/workflows/smoke/route.ts`).
+  const run = getRun(cleanRunId);
+
+  if (!(await run.exists)) {
     return Response.json(
-      { error: `Unable to attach to run stream (fail closed): ${msg}` },
-      { status: 503 },
+      { error: `Run not found: ${cleanRunId}` },
+      { status: 404 },
     );
   }
 
   // Pipe the readable stream. Client abort closes the reader but NEVER cancels
   // the run — abort ≠ cancel is the parent lock (C16 row). Server cancel is
   // G22 (#816).
-  const readable = run.getReadable({ startIndex });
+  let readable: ReturnType<typeof run.getReadable>;
+  try {
+    readable = run.getReadable({ startIndex });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return Response.json(
+      { error: `Unable to attach to run stream (fail closed): ${msg}` },
+      { status: 503 },
+    );
+  }
 
   const headers: Record<string, string> = {
     'content-type': AGENT_STREAM_CONTENT_TYPE,

@@ -57,36 +57,13 @@ describe('GET /api/turns/:runId/stream', () => {
   function mockGetRun(overrides: Record<string, unknown> = {}) {
     getRunMock = vi.fn(() => ({
       runId: 'wf_turn_123',
+      exists: Promise.resolve(true),
       getReadable: getReadableMock,
       ...overrides,
     }));
     vi.doMock('workflow/api', () => ({
       getRun: getRunMock,
       start: vi.fn(),
-    }));
-  }
-
-  /**
-   * Mock WorkflowRunNotFoundError so the route can catch it for row 4.
-   * The real class lives in @workflow/errors; we mock a local copy that
-   * supports `.is()` static matching.
-   */
-  function mockWorkflowRunNotFoundError() {
-    class MockNotFoundError extends Error {
-      runId: string;
-      constructor(runId: string) {
-        super(`Run not found: ${runId}`);
-        this.name = 'WorkflowRunNotFoundError';
-        this.runId = runId;
-      }
-      static is(value: unknown): value is MockNotFoundError {
-        return (
-          value instanceof Error && value.name === 'WorkflowRunNotFoundError'
-        );
-      }
-    }
-    vi.doMock('@workflow/errors', () => ({
-      WorkflowRunNotFoundError: MockNotFoundError,
     }));
   }
 
@@ -134,7 +111,6 @@ describe('GET /api/turns/:runId/stream', () => {
 
   function standardHarness() {
     mockSessionCaps();
-    mockWorkflowRunNotFoundError();
     mockGetRun();
   }
 
@@ -165,7 +141,6 @@ describe('GET /api/turns/:runId/stream', () => {
   afterEach(() => {
     vi.resetModules();
     vi.doUnmock('workflow/api');
-    vi.doUnmock('@workflow/errors');
     vi.doUnmock('../../../../../lib/sessionCloudCaps');
     vi.doUnmock('../../../../../lib/tenancy/session');
   });
@@ -225,17 +200,17 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(getReadableMock).toHaveBeenCalledWith({ startIndex: 0 });
   });
 
-  // Row 4 — Run not found (WorkflowRunNotFoundError) → 404
-  it('row 4 — getRun throws WorkflowRunNotFoundError → 404, error includes runId', async () => {
-    standardHarness();
+  // Row 4 — Run not found (`await run.exists === false`) → 404
+  it('row 4 — run.exists === false → 404, error includes runId', async () => {
+    mockSessionCaps();
     mockAuthedSession();
 
-    // getRun throws the mocked WorkflowRunNotFoundError
-    const MockedError = (await import('@workflow/errors'))
-      .WorkflowRunNotFoundError;
-    getRunMock = vi.fn(() => {
-      throw new MockedError('wf_missing');
-    });
+    // getRun returns a handle; run.exists resolves false (not-found).
+    getRunMock = vi.fn(() => ({
+      runId: 'wf_missing',
+      exists: Promise.resolve(false),
+      getReadable: getReadableMock,
+    }));
     vi.doMock('workflow/api', () => ({
       getRun: getRunMock,
       start: vi.fn(),
@@ -252,14 +227,19 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(getReadableMock).not.toHaveBeenCalled();
   });
 
-  // Row 5 — getRun throws non-404 infra error → 503 fail-closed
-  it('row 5 — getRun throws non-404 infra error → 503 fail-closed', async () => {
-    standardHarness();
+  // Row 5 — getReadable throws infra error → 503 fail-closed
+  it('row 5 — getReadable throws → 503 fail-closed', async () => {
+    mockSessionCaps();
     mockAuthedSession();
 
-    getRunMock = vi.fn(() => {
-      throw new Error('Workflows unavailable');
-    });
+    // getRun returns a handle; run.exists resolves true; getReadable throws.
+    getRunMock = vi.fn(() => ({
+      runId: 'wf_turn_123',
+      exists: Promise.resolve(true),
+      getReadable: vi.fn(() => {
+        throw new Error('Workflows unavailable');
+      }),
+    }));
     vi.doMock('workflow/api', () => ({
       getRun: getRunMock,
       start: vi.fn(),
@@ -273,14 +253,12 @@ describe('GET /api/turns/:runId/stream', () => {
     const body = (await res.json()) as { error: string };
     expect(body.error).toMatch(/Unable to attach to run stream \(fail closed\)/);
     expect(body.error).toContain('Workflows unavailable');
-    expect(getReadableMock).not.toHaveBeenCalled();
   });
 
   // Row 6 — Invalid runId (sanitizeTurnRunId → undefined) → 400
   it('row 6 — invalid runId (sanitizeTurnRunId → undefined) → 400, getRun NOT called', async () => {
     // Use sanitizeTurnRunId from caps; override to return undefined for bad input.
     // The live caps module rejects non-string/empty/metachar/over-length values.
-    mockWorkflowRunNotFoundError();
     mockGetRun();
     mockAuthedSession();
 
