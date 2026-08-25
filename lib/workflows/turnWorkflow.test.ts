@@ -17,10 +17,17 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 vi.mock('workflow', () => ({
   getWritable: () => ({
-    getWriter: () => ({ write: vi.fn(async () => {}), close: vi.fn(async () => {}) }),
+    getWriter: () => ({
+      write: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+      releaseLock: vi.fn(),
+    }),
+    close: vi.fn(async () => {}),
   }),
   // C14b (#835): turnRunId is DERIVED in-workflow (never a start() arg), so the
   // entry reads it from getWorkflowMetadata().workflowRunId.
@@ -115,5 +122,28 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
     // id derived in-workflow (must equal the route-side run.runId, never the
     // session id 's1').
     expect(env?.meta?.turnRunId).toBe('wr_0000_meta');
+  });
+
+  it('turnWorkflow.ts source does not call getWriter (plan #842 — I/O is step-only)', () => {
+    const src = readFileSync(fileURLToPath(new URL('./turnWorkflow.ts', import.meta.url)), 'utf8');
+    // Comments may name the SDK method (adversarial-review #843 Nit L8); code must not.
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(code.includes('getWriter')).toBe(false);
+    expect(src).toMatch(/writeTurnSse/);
+    expect(src).toMatch(/closeTurnSse/);
+  });
+
+  it("writeTurnSse/closeTurnSse bodies are 'use step' and own getWriter/close (plan #842 adversarial L6)", () => {
+    const src = readFileSync(fileURLToPath(new URL('./turnSseStep.ts', import.meta.url)), 'utf8');
+    const writeIdx = src.indexOf('export async function writeTurnSse');
+    const closeIdx = src.indexOf('export async function closeTurnSse');
+    expect(writeIdx).toBeGreaterThanOrEqual(0);
+    expect(closeIdx).toBeGreaterThan(writeIdx);
+    const writeFn = src.slice(writeIdx, closeIdx);
+    const closeFn = src.slice(closeIdx);
+    expect(writeFn).toMatch(/\{\s*'use step';/);
+    expect(closeFn).toMatch(/\{\s*'use step';/);
+    expect(writeFn).toMatch(/getWriter\s*\(/);
+    expect(closeFn).toMatch(/\.close\s*\(/);
   });
 });

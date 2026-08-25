@@ -118,6 +118,14 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(result.rounds).toBe(1);
     expect(closed()).toBe(1);
     expect(w.lines.some((l) => l.includes('"done"'))).toBe(true);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'text_delta')).toBe(true);
+    const done = events.find((e: { type: string }) => e.type === 'done') as {
+      type: string;
+      text: string;
+    };
+    expect(done.text).toBe('hi');
+    expect(events.some((e: { type: string }) => e.type === 'text')).toBe(false);
   });
 
   it('matrix 2: model returns N tool calls → each tool runs once via toolExecuteStep; loop continues', async () => {
@@ -152,6 +160,12 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(result.status).toBe('completed');
     expect(result.rounds).toBe(2);
     expect(closed()).toBe(1);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.filter((e: { type: string }) => e.type === 'tool_start').map((e: { name: string }) => e.name)).toEqual([
+      'list_dir',
+      'read_file',
+    ]);
+    expect(events.some((e: { type: string }) => e.type === 'tool_start' && 'toolName' in e)).toBe(false);
   });
 
   it('matrix 3: loop reaches the cap → terminates (never infinite), writable closed', async () => {
@@ -254,6 +268,14 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(result.status).toBe('failed');
     expect(result.error).toContain('provider down');
     expect(closed()).toBe(1);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.find((e: { type: string }) => e.type === 'error')).toEqual({
+      type: 'error',
+      error: 'provider down',
+    });
+    expect(events.some((e: { type: string }) => e.type === 'error' && 'message' in e)).toBe(
+      false,
+    );
   });
 
   it('matrix 9: writable closed exactly once on success (close guarded)', async () => {
@@ -278,6 +300,14 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(result.status).toBe('failed');
     expect(result.error).toBe('boom');
     expect(closed()).toBe(1);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.find((e: { type: string }) => e.type === 'error')).toEqual({
+      type: 'error',
+      error: 'boom',
+    });
+    expect(events.some((e: { type: string }) => e.type === 'error' && 'message' in e)).toBe(
+      false,
+    );
   });
 
   it('B13 integration: real B7/B8/B6 seam wired via resolver — a completed run derives the fold AT PERSIST TIME (usage/checkpoint from THIS run; run-bind from start)', async () => {

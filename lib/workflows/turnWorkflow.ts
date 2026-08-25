@@ -3,8 +3,9 @@
  * durable prompt run.
  *
  * Thin directive carrier that:
- *  - binds the SSE writable from the Workflows SDK (`getWritable()`) — tokens
- *    ride this stream (Data Written, never step events);
+ *  - adapts durable SSE write/close `'use step'` wrappers (`writeTurnSse` /
+ *    `closeTurnSse`) — tokens ride Data Written, never step events; stream I/O
+ *    is illegal in `'use workflow'` (plan #842);
  *  - composes the three `'use step'` wrappers (`modelGenerateStep`,
  *    `toolExecuteStep`, `persistStep`) into the loop core's step-fn contracts;
  *  - runs the orchestrator while-loop (`runTurnLoop`) per the umbrella #794
@@ -34,7 +35,7 @@
  * request-scoped model/registry resolution are the engine rows (C14+).
  */
 
-import { getWritable, getWorkflowMetadata } from 'workflow';
+import { getWorkflowMetadata } from 'workflow';
 import {
   runTurnLoop,
   type PersistStepFn,
@@ -47,6 +48,7 @@ import {
 import { modelGenerateStep } from './modelGenerateStep';
 import { toolExecuteStep } from './toolExecuteStep';
 import { persistStep } from './persistStep';
+import { writeTurnSse, closeTurnSse } from './turnSseStep';
 
 /**
  * `'use workflow'` run args — plain serializable values only.
@@ -91,14 +93,12 @@ export async function turnWorkflow(
   // the route-side `run.runId` (never the session id).
   const { workflowRunId } = getWorkflowMetadata();
 
-  // ONE getWritable() handle for the run — the SSE wire (tokens = Data Written).
-  // The SDK returns a stream (web `WritableStream`); looping writes await its
-  // writer so a closed stream rejects cleanly (the core closes it on every path).
-  const sink = getWritable<string>();
-  const writer = sink.getWriter();
+  // Stream I/O is `'use step'` only (plan #842). Do NOT call getWriter /
+  // write / close in this `'use workflow'` function — the Workflows VM throws
+  // `Not supported in workflow functions`. I/O lives in writeTurnSse / closeTurnSse.
   const loopWritable: TurnWritable = {
-    write: (line) => writer.write(line),
-    close: () => writer.close(),
+    write: (line) => writeTurnSse(line),
+    close: () => closeTurnSse(),
   };
 
   const modelStep: ModelStepFn = async ({ messages, persistRunBind }) => {
@@ -134,15 +134,19 @@ export async function turnWorkflow(
     });
   };
 
-  return runTurnLoop(
-    {
-      modelStep,
-      toolStep,
-      persistStep: persistStepFn,
-      writable: loopWritable,
-      turnRunId: workflowRunId,
-      ...(args.persistRunBind !== undefined ? { persistRunBind: args.persistRunBind } : {}),
-    },
-    { userMessage: args.userMessage },
-  );
+  try {
+    return await runTurnLoop(
+      {
+        modelStep,
+        toolStep,
+        persistStep: persistStepFn,
+        writable: loopWritable,
+        turnRunId: workflowRunId,
+        ...(args.persistRunBind !== undefined ? { persistRunBind: args.persistRunBind } : {}),
+      },
+      { userMessage: args.userMessage },
+    );
+  } finally {
+    await closeTurnSse();
+  }
 }

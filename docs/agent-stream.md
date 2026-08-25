@@ -3,6 +3,8 @@
 `POST /api/agent` can return a **Server-Sent Events** body when the client asks for it.
 Default remains a single JSON `{ text, toolTrace?, cwd? }` response for tests and simple clients.
 
+`POST /api/turns` (production durable-turn path) uses the **same** event types as `/api/agent`. Tokens ride the Workflows durable stream (`getWritable`). Stream **write and close run in `'use step'` functions** — a `'use workflow'` function cannot call `getWriter` / `write` / `close`.
+
 ## Negotiation
 
 | Client | Server |

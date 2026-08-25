@@ -26,8 +26,11 @@
  *  5. Tenant resolve → 503
  *  6. BYOK resolve → 4xx
  *  7. Envelope read → 409 durable-turn guard (C15) — live-only
- *     ('running'/'cancelling'); shares the existing envelope read;
- *     cross-isolate dedup (the in-flight guard above is same-isolate)
+ *     ('running'/'cancelling') **and** the bound Workflow run still exists with
+ *     a non-terminal status (plan #842: missing/failed/cancelled run is not
+ *     live — outage envelopes must not 409 forever); shares the existing
+ *     envelope read; cross-isolate dedup (the in-flight guard above is
+ *     same-isolate)
  *  8. Sandbox hard-deny → 403
  *
  * `inFlight` is set IMMEDIATELY after the `has()` check (zero-I/O, BEFORE any
@@ -44,14 +47,14 @@
  * Fail closed: `start` throw → 503, never a `/api/agent` fallback (source lock).
  * `maxDuration = 1800` reuses the `/api/agent` constant verbatim (no cap change).
  */
-import { start } from 'workflow/api';
+import { start, getRun } from 'workflow/api';
 import { parseAgentBody } from '../../../lib/agent/agentBody';
 import {
   AGENT_STREAM_CONTENT_TYPE,
   wantsAgentStream,
 } from '../../../lib/agent/agentStream';
 import { overlayWorkerMeta } from '../../../lib/agent/workerMetaOverlay';
-import { TURN_START_MIN_INTERVAL_MS } from '../../../lib/sessionCloudCaps';
+import { TURN_START_MIN_INTERVAL_MS, sanitizeTurnRunId } from '../../../lib/sessionCloudCaps';
 import { mapByokResolveFailure } from '../../../lib/chatServer';
 import { createProdServices } from '../../../lib/di';
 import { requireSessionUser } from '../../../lib/tenancy/session';
@@ -263,14 +266,37 @@ export async function POST(req: Request): Promise<Response> {
         const envelope = await envelopeStore.readEnvelope(sessionKey);
         if (envelope) {
           // C15 409 duplicate-turn guard — live-only: reject when a turn is
-          // already 'running' or 'cancelling' for this session. Shares the
-          // existing envelope read (no second network round-trip).
+          // already 'running' or 'cancelling' for this session AND the bound
+          // Workflow run still exists in a non-terminal status (plan #842).
+          // Shares the existing envelope read (no second envelope round-trip).
           const turnStatus = envelope.meta?.turnStatus;
           if (turnStatus === 'running' || turnStatus === 'cancelling') {
-            return Response.json(
-              { error: 'A turn is already in progress for this session.' },
-              { status: 409 },
-            );
+            const cleanRunId = sanitizeTurnRunId(envelope.meta?.turnRunId);
+            if (!cleanRunId) {
+              return Response.json(
+                { error: 'A turn is already in progress for this session.' },
+                { status: 409 },
+              );
+            }
+            try {
+              const prior = getRun(cleanRunId);
+              if (await prior.exists) {
+                const wfStatus = await prior.status;
+                const terminal =
+                  wfStatus === 'completed' ||
+                  wfStatus === 'failed' ||
+                  wfStatus === 'cancelled';
+                if (!terminal) {
+                  return Response.json(
+                    { error: 'A turn is already in progress for this session.' },
+                    { status: 409 },
+                  );
+                }
+              }
+              // exists === false or terminal status → not live; allow start.
+            } catch (err) {
+              return Response.json({ error: failClosed(err) }, { status: 503 });
+            }
           }
 
           storedUpdatedAt = typeof envelope.updatedAt === 'number' ? envelope.updatedAt : 0;

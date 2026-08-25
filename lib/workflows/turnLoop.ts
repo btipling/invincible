@@ -11,7 +11,7 @@
  * **Deliberately directive-free** (no `"use workflow"` / `"use step"` in this
  * file) so the whole matrix runs under plain vitest without the Vercel-Workflows
  * transform. The `'use workflow'` entry (`turnWorkflow.ts`) is the directive
- * carrier that binds `getWritable()` and calls this core.
+ * carrier that adapts `'use step'` write/close wrappers and calls this core.
  *
  * Lock discipline (B11 #805, deploy-gate):
  *  - Step I/O = **deltas** (`{text,toolCalls,usage,finishReason}` / `{result,
@@ -35,6 +35,7 @@ import type { PersistStepFold } from './persistStep';
 // this directive-free core can derive cwd / activeSandboxId from THIS run's
 // tool rows without dragging in that module's closure — adversarial round-2 L1).
 import { changeDirSuccessCwd, metaSandboxSwitchActiveId } from '../agent/toolResultParsers';
+import { formatTurnSse } from './turnSseFormat';
 
 /**
  * Local structural model-round delta. Defined here (NOT imported from
@@ -77,14 +78,21 @@ export interface TurnWritable {
   close(): void | Promise<void>;
 }
 
-/** Serialized SSE event line the loop writes per step (delta-only carriers). */
+/** Serialized SSE event — `AgentStreamEvent` field names (D17 host / plan #842). */
 export type TurnSseLine =
-  | { type: 'text'; text: string }
-  | { type: 'reasoning'; text?: string }
-  | { type: 'tool_start'; toolName: string; toolCallId?: string }
-  | { type: 'tool_result'; toolName: string; ok: boolean; result?: string }
-  | { type: 'done'; finishReason?: string; rounds: number; steps: number }
-  | { type: 'error'; message: string };
+  | { type: 'text_delta'; text: string }
+  | { type: 'reasoning_delta'; text: string }
+  | { type: 'tool_start'; name: string; id?: string }
+  | {
+      type: 'tool_result';
+      name: string;
+      ok: boolean;
+      summary: string;
+      changeDirCwd?: string;
+      activeSandboxId?: string;
+    }
+  | { type: 'done'; text: string; finishReason?: string; cwd?: string; activeSandboxId?: string }
+  | { type: 'error'; error: string };
 
 /** Model-step wrapper contract (eventually `modelGenerateStep`). */
 export interface ModelStepFn {
@@ -225,7 +233,41 @@ export function onceWritable(writable: TurnWritable): TurnWritable {
   };
 }
 
-const sse = (line: TurnSseLine): string => `data: ${JSON.stringify(line)}\n\n`;
+const sse = (line: TurnSseLine): string => formatTurnSse(line);
+
+function doneLine(
+  text: string,
+  bind: PersistRunBind | undefined,
+  finishReason?: string,
+): TurnSseLine {
+  return {
+    type: 'done',
+    text,
+    ...(finishReason ? { finishReason } : {}),
+    ...(bind?.cwd ? { cwd: bind.cwd } : {}),
+    ...(bind?.activeSandboxId ? { activeSandboxId: bind.activeSandboxId } : {}),
+  };
+}
+
+function toolResultLine(
+  toolName: string,
+  ok: boolean,
+  raw: string | undefined,
+): TurnSseLine {
+  const ev: Extract<TurnSseLine, { type: 'tool_result' }> = {
+    type: 'tool_result',
+    name: toolName,
+    ok,
+    summary: raw ?? '',
+  };
+  if (ok && raw) {
+    const cwd = changeDirSuccessCwd(raw);
+    const sandboxId = metaSandboxSwitchActiveId(raw);
+    if (cwd) ev.changeDirCwd = cwd;
+    if (sandboxId) ev.activeSandboxId = sandboxId;
+  }
+  return ev;
+}
 
 /** Map a reconstructed message row to a bounded `{role, content}` checkpoint row.
  *  The loop keeps `[user, assistant-delta, tool-result, persist]` rows; the
@@ -354,7 +396,7 @@ export async function runTurnLoop(
     steps: number,
     error?: string,
   ): Promise<TurnLoopResult> => {
-    if (error) await writable.write(sse({ type: 'error', message: error }));
+    if (error) await writable.write(sse({ type: 'error', error }));
     await writable.close();
     return {
       status,
@@ -368,6 +410,7 @@ export async function runTurnLoop(
 
   let round = 0;
   let steps = 0;
+  let assistantText = '';
   // ACCUMULATED provider usage across all model rounds (B13) — the usage
   // projection for the terminal fold, derived from THIS run's deltas at persist
   // time (adversarial L1: never a start-of-run arg) AND summed across rounds so
@@ -401,16 +444,14 @@ export async function runTurnLoop(
       deltas.push(gen.delta);
       usage = accumulateUsage(usage, gen.delta.usage);
       if (gen.delta.text) {
-        await writable.write(sse({ type: 'text', text: gen.delta.text }));
+        assistantText += gen.delta.text;
+        await writable.write(sse({ type: 'text_delta', text: gen.delta.text }));
       }
       messages.push({ role: 'assistant', delta: gen.delta });
 
       // No tool calls → this model round is terminal; persist and close.
       const calls: TurnToolCallDelta[] = gen.delta.toolCalls ?? [];
       if (calls.length === 0) {
-        await writable.write(
-          sse({ type: 'done', finishReason: gen.delta.finishReason, rounds: round, steps }),
-        );
         steps += 1; // the persist step
         // Derive the terminal fold AT PERSIST TIME from this run's messages +
         // ACCUMULATED usage (turn total). cwd/activeSandboxId come from THIS
@@ -427,7 +468,9 @@ export async function runTurnLoop(
         }
         deltas.push(persisted);
         messages.push({ role: 'persist', status: persisted.status });
-        await writable.write(sse({ type: 'done', rounds: round, steps }));
+        await writable.write(
+          sse(doneLine(assistantText, bind, gen.delta.finishReason)),
+        );
         await writable.close();
         return { status: 'completed', deltas, messages, rounds: round, steps };
       }
@@ -440,7 +483,7 @@ export async function runTurnLoop(
         if (steps >= cap) break; // no remaining step budget → capped
         steps += 1; // this tool execution = one step boundary
         await writable.write(
-          sse({ type: 'tool_start', toolName: call.toolName, toolCallId: call.toolCallId }),
+          sse({ type: 'tool_start', name: call.toolName, ...(call.toolCallId ? { id: call.toolCallId } : {}) }),
         );
         const tool = await deps.toolStep({
           toolName: call.toolName,
@@ -460,19 +503,16 @@ export async function runTurnLoop(
           if (rowBind.cwd !== undefined || rowBind.activeSandboxId !== undefined) {
             bind = { ...bind, ...rowBind };
           }
-          await writable.write(
-            sse({ type: 'tool_result', toolName: call.toolName, ok: true, result: tool.result }),
-          );
+          await writable.write(sse(toolResultLine(call.toolName, true, tool.result)));
         } else {
           // Business error as a VALUE — never a throw; terminate cleanly.
           if (tool.code === 'cancelled') {
             return fail('cancelled', round, steps, tool.error);
           }
-          await writable.write(
-            sse({ type: 'tool_result', toolName: call.toolName, ok: false, result: tool.error }),
-          );
+          await writable.write(sse(toolResultLine(call.toolName, false, tool.error)));
           deltas.push(tool);
           messages.push({ role: 'tool', toolName: call.toolName, toolCallId: call.toolCallId, ok: false, error: tool.error });
+          await writable.write(sse({ type: 'error', error: tool.error ?? 'tool failed' }));
           await writable.close();
           return {
             status: 'completed',
@@ -495,7 +535,7 @@ export async function runTurnLoop(
       rounds: round,
       steps,
     };
-    await writable.write(sse({ type: 'done', rounds: round, steps }));
+    await writable.write(sse(doneLine(assistantText, bind)));
     await writable.close();
     return capped;
   } catch (err) {
