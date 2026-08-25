@@ -268,6 +268,14 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(result.status).toBe('failed');
     expect(result.error).toContain('provider down');
     expect(closed()).toBe(1);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.find((e: { type: string }) => e.type === 'error')).toEqual({
+      type: 'error',
+      error: 'provider down',
+    });
+    expect(events.some((e: { type: string }) => e.type === 'error' && 'message' in e)).toBe(
+      false,
+    );
   });
 
   it('matrix 9: writable closed exactly once on success (close guarded)', async () => {
@@ -292,6 +300,14 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(result.status).toBe('failed');
     expect(result.error).toBe('boom');
     expect(closed()).toBe(1);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.find((e: { type: string }) => e.type === 'error')).toEqual({
+      type: 'error',
+      error: 'boom',
+    });
+    expect(events.some((e: { type: string }) => e.type === 'error' && 'message' in e)).toBe(
+      false,
+    );
   });
 
   it('B13 integration: real B7/B8/B6 seam wired via resolver — a completed run derives the fold AT PERSIST TIME (usage/checkpoint from THIS run; run-bind from start)', async () => {

@@ -93,9 +93,9 @@ export async function turnWorkflow(
   // the route-side `run.runId` (never the session id).
   const { workflowRunId } = getWorkflowMetadata();
 
-  // Stream I/O is `'use step'` only (plan #842). Do NOT acquire a stream writer
-  // in this `'use workflow'` function — the Workflows VM throws
-  // `Not supported in workflow functions`.
+  // Stream I/O is `'use step'` only (plan #842). Do NOT call getWriter /
+  // write / close in this `'use workflow'` function — the Workflows VM throws
+  // `Not supported in workflow functions`. I/O lives in writeTurnSse / closeTurnSse.
   const loopWritable: TurnWritable = {
     write: (line) => writeTurnSse(line),
     close: () => closeTurnSse(),
