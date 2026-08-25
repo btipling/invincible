@@ -28,10 +28,14 @@ describe('POST /api/turns', () => {
   let parseAgentBodyMock: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let resolveSessionStoreMock: any;
+  /** Spy on the sandbox probe client close call — asserts handle is dropped. */
+  let sandboxCloseSpy: ReturnType<typeof vi.fn>;
 
   function resetServiceState() {
     delete servicesState.harnessSessionsRedis;
     delete servicesState.resolveInferenceForRequest;
+    delete servicesState.resolveSandbox;
+    sandboxCloseSpy = vi.fn(async () => {});
   }
 
   function mockDi() {
@@ -52,11 +56,12 @@ describe('POST /api/turns', () => {
       })),
     };
     // resolveSandbox: mocked for pre-start hard-deny gate (default: ok).
+    // sandboxCloseSpy tracks the probe client's close call.
     servicesState.resolveSandbox = {
       resolveAgentSandbox: vi.fn(async () => ({
         ok: true as const,
         value: {
-          client: { close: async () => {} },
+          client: { close: sandboxCloseSpy },
           secrets: [],
           permissions: { canRead: true, canWrite: true },
           workspaceRoot: '/workspace',
@@ -226,6 +231,8 @@ describe('POST /api/turns', () => {
     expect(startArgs.tools).toBeUndefined();
     // persistRunBind optionally present from envelope meta
     expect(startArgs.persistRunBind).toEqual({ cwd: 'app', activeSandboxId: 'sb_bind' });
+    // Probe client was closed after start() succeeded (adversarial L5 Minor).
+    expect(sandboxCloseSpy).toHaveBeenCalledTimes(1);
   });
 
   it('row 2 — missing sessionId → 400 (parseAgentBody would pass; route guard rejects), no start', async () => {
@@ -256,6 +263,8 @@ describe('POST /api/turns', () => {
     expect(body.error).toMatch(/fail closed/i);
     // The run was NOT started → no SSE/JSON runId body is produced.
     expect(body.error).not.toMatch(/wf_turn_123/);
+    // Probe client was closed on the throw path (adversarial L5 Minor).
+    expect(sandboxCloseSpy).toHaveBeenCalledTimes(1);
   });
 
   it('row 5 — Accept: text/event-stream → content-type AGENT_STREAM_CONTENT_TYPE + x-workflow-run-id; body is run.getReadable()', async () => {

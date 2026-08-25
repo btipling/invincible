@@ -107,6 +107,13 @@ export async function POST(req: Request): Promise<Response> {
   }
   const sessionId = parsed.sessionId;
 
+  // Pre-start sandbox probe client — closed after start() succeeds OR on throw.
+  // Mirrors /api/agent closeRunners (extendTimeout + drop handle, never stop).
+  // Only populated when resolveAgentSandbox returns {ok:true} (the probe
+  // succeeded). Hard-deny / soft-path never opens a client so there is nothing
+  // to close.
+  let sandboxProbeClient: { close?: () => Promise<void> } | undefined;
+
   try {
     // Session scope for the persist seam + tool world (tenant resolved server-side).
     const tenantRes =
@@ -201,6 +208,11 @@ export async function POST(req: Request): Promise<Response> {
         },
       );
 
+    // Capture the probe client now — must be closed after start() or on throw.
+    if (sandboxResolved.ok) {
+      sandboxProbeClient = sandboxResolved.value.client;
+    }
+
     if (
       !sandboxResolved.ok &&
       !sandboxResolved.softContinue &&
@@ -225,6 +237,17 @@ export async function POST(req: Request): Promise<Response> {
       },
     ]);
 
+    // Close the probe client now that the run is enqueued. The in-step
+    // assemble helper opens its OWN client per step VM — this probe was
+    // only for the hard-deny gate.
+    if (sandboxProbeClient?.close) {
+      try {
+        await sandboxProbeClient.close();
+      } catch {
+        // Ignore close errors — the turn is already enqueued.
+      }
+    }
+
     const runHeaders: Record<string, string> = {
       'x-workflow-run-id': run.runId,
     };
@@ -241,6 +264,14 @@ export async function POST(req: Request): Promise<Response> {
     }
     return Response.json({ runId: run.runId }, { headers: runHeaders });
   } catch (err) {
+    // start() throw (or any gate-after-probe throw) — close the probe client.
+    if (sandboxProbeClient?.close) {
+      try {
+        await sandboxProbeClient.close();
+      } catch {
+        // Ignore close errors.
+      }
+    }
     return Response.json({ error: failClosed(err) }, { status: 503 });
   }
 }
