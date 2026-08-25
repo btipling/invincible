@@ -353,6 +353,18 @@ export function sanitizeTurnStreamCursor(value: unknown): number | undefined {
 }
 
 /**
+ * Per-session min-interval between turn starts on `POST /api/turns` (plan #809,
+ * backend-agents C15). A per-session `Map<string,number>` keyed by `sessionId`
+ * advances only on a successful `start()` call — any pre-start gate failure
+ * (429 / in-flight 409 / durable 409 / 403 / 503) never burns the window. This
+ * is a **soft** abuse guard (survives one Vercel Function invocation), not a
+ * durable rate limit. A hard per-user cap would need Redis — out of scope for
+ * C15. **NEW generous cap**: 1 second is an eternity for a human but an
+ * impassable wall for a loop. No existing cap value changed → **no human gate**.
+ */
+export const TURN_START_MIN_INTERVAL_MS = 1000;
+
+/**
  * Row cap for a message checkpoint (plan #800, backend-agents B6). The checkpoint
  * Blob is a multi-turn `{role, content}` projection; bounding its row count keeps a
  * replay/entity footprint bounded (same order as `TURN_FRESHLEDGER_MAX_GRANTS`,
