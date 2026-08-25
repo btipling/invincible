@@ -291,22 +291,35 @@ describe('POST /api/turns', () => {
     expect(overlayWorkerMetaMock).not.toHaveBeenCalled();
   });
 
-  it('row 3 — start throws → 503 fail-closed, no /api/agent fallback path reached, no running PATCH', async () => {
+  it('row 3 — start throws → 503 fail-closed; in-flight flag cleared so a retry succeeds (not 409)', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
-    startMock.mockRejectedValue(new Error('Workflow feature is not enabled for this project.'));
+    // First call: throw. Second call: succeed (proves in-flight was cleared).
+    startMock
+      .mockRejectedValueOnce(new Error('Workflow feature is not enabled for this project.'))
+      .mockResolvedValueOnce({
+        runId: 'wf_turn_456',
+        getReadable: () => new ReadableStream(),
+      });
     ({ POST } = await import('./route'));
 
-    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+    const res1 = await postJson({ prompt: 'hi', sessionId: 's1' });
 
-    expect(res.status).toBe(503);
-    const body = (await res.json()) as { error: string };
+    expect(res1.status).toBe(503);
+    const body = (await res1.json()) as { error: string };
     expect(body.error).toMatch(/fail closed/i);
     expect(body.error).not.toMatch(/wf_turn_123/);
     expect(sandboxCloseSpy).toHaveBeenCalledTimes(1);
     // start threw before the running PATCH — overlayWorkerMeta never called.
     expect(overlayWorkerMetaMock).not.toHaveBeenCalled();
+
+    // Follow-up: in-flight flag was cleared in the catch block → this request
+    // succeeds (not a stale 409 from a leaked inFlight entry).
+    const res2 = await postJson({ prompt: 'retry', sessionId: 's1' });
+    expect(res2.status).toBe(200);
+    expect(res2.headers.get('x-workflow-run-id')).toBe('wf_turn_456');
+    expect(startMock).toHaveBeenCalledTimes(2);
   });
 
   it('row 4a — running PATCH fails (overlayWorkerMeta returns {ok:false}) after start → non-500, still {runId} + warning header and body', async () => {
@@ -452,13 +465,13 @@ describe('POST /api/turns', () => {
 
   // --- C15 abuse-guard rows (plan #809) ---
 
-  it('row 8 — 429 within interval: second request inside window → 429, start not called, overlayWorkerMeta not called', async () => {
+  it('row 8 — 429 within interval: second request inside window → 429, Retry-After header present, start not called, overlayWorkerMeta not called', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
     ({ POST } = await import('./route'));
 
-    // First request: succeeds, advances lastStartAtMs.
+    // First request: succeeds, advances lastStartAtMs for session s1.
     const res1 = await postJson({ prompt: 'hi', sessionId: 's1' });
     expect(res1.status).toBe(200);
     expect(startMock).toHaveBeenCalledTimes(1);
@@ -469,11 +482,71 @@ describe('POST /api/turns', () => {
     expect(res2.status).toBe(429);
     const body2 = await res2.json();
     expect(body2.error).toMatch(/too many turn start requests/i);
+    // Retry-After header: computed from TURN_START_MIN_INTERVAL_MS (1000 ms → 1 s).
+    expect(res2.headers.get('Retry-After')).toBe('1');
 
     // start() still called only once — the 429 never enqueued a run.
     expect(startMock).toHaveBeenCalledTimes(1);
     // overlayWorkerMeta was called for the FIRST request only (running PATCH).
     expect(overlayWorkerMetaMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('row 8b — in-flight 409: concurrent same-session POSTs — second hits in-flight guard before start(), first succeeds when start resolves', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+
+    // Hang start() so the first request's in-flight flag stays set.
+    let resolveStart: (v: unknown) => void;
+    const startPromise = new Promise((r) => { resolveStart = r; });
+    startMock.mockReturnValueOnce(startPromise);
+
+    ({ POST } = await import('./route'));
+
+    // Fire the first POST without awaiting — it runs through all gates
+    // (all mocks resolve synchronously), sets inFlight via boundedSetStr,
+    // then hangs at `await start(startPromise)`.
+    const res1Promise = postJson({ prompt: 'hi', sessionId: 's1' });
+
+    // Wait a macrotask tick so POST1 definitely reaches boundedSetStr
+    // before POST2 checks inFlight. Without this, microtask interleaving
+    // can let POST2 check before POST1 sets the flag (mocks are too fast).
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Second POST for the SAME session: inFlight.has('s1') → 409.
+    const res2 = await postJson({ prompt: 'hi again', sessionId: 's1' });
+    expect(res2.status).toBe(409);
+    const body2 = await res2.json();
+    expect(body2.error).toBe('A turn is already being started for this session.');
+    // start() never called for the second request.
+    expect(startMock).toHaveBeenCalledTimes(1);
+
+    // Resolve the first start() — the first POST completes.
+    resolveStart!({
+      runId: 'wf_turn_123',
+      getReadable: () => new ReadableStream(),
+    });
+    const res1 = await res1Promise;
+    expect(res1.status).toBe(200);
+    expect(res1.headers.get('x-workflow-run-id')).toBe('wf_turn_123');
+  });
+
+  it('row 8c — per-session isolation: user A turn does NOT 429 user B on the same isolate', async () => {
+    standardHarness();
+    mockAuthedSession('u1');
+    mockStart();
+    ({ POST } = await import('./route'));
+
+    // User A (session s1) starts a turn → 200.
+    const resA = await postJson({ prompt: 'hi', sessionId: 's1' });
+    expect(resA.status).toBe(200);
+    expect(startMock).toHaveBeenCalledTimes(1);
+
+    // User B (session s2) starts immediately — must NOT be 429'd.
+    // The old process-global scalar would have 429'd every session for 1 s.
+    const resB = await postJson({ prompt: 'hi', sessionId: 's2' });
+    expect(resB.status).toBe(200);
+    expect(startMock).toHaveBeenCalledTimes(2);
   });
 
   it('row 9 — 200 after interval passes: second request outside window succeeds, lastStartAtMs advanced', async () => {
@@ -504,7 +577,7 @@ describe('POST /api/turns', () => {
     nowSpy.mockRestore();
   });
 
-  it('row 10 — 409 when turnStatus=running in envelope: start not called, lastStartAtMs unchanged', async () => {
+  it('row 10 — 409 when turnStatus=running: start not called; follow-up 200 proves lastStartAtMs NOT advanced (409 never burns the window)', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
@@ -519,17 +592,38 @@ describe('POST /api/turns', () => {
     });
     ({ POST } = await import('./route'));
 
-    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+    // Pin the clock to a known value so we can prove the 409 did NOT advance
+    // lastStartAtMs. If the 409 had called boundedSet(lastStartAtMs, 's1', CLOCK),
+    // the follow-up POST (same clock) would hit the 429 guard:
+    //   CLOCK - CLOCK = 0 < 1000 → 429.
+    const CLOCK = 100_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(CLOCK);
 
-    expect(res.status).toBe(409);
-    const body = await res.json();
-    expect(body.error).toBe('A turn is already in progress for this session.');
+    const res1 = await postJson({ prompt: 'hi', sessionId: 's1' });
+    expect(res1.status).toBe(409);
+    const body1 = await res1.json();
+    expect(body1.error).toBe('A turn is already in progress for this session.');
     expect(startMock).not.toHaveBeenCalled();
-    // overlayWorkerMeta never called (we returned before start).
     expect(overlayWorkerMetaMock).not.toHaveBeenCalled();
+
+    // Now change the envelope to completed and send a follow-up at the SAME
+    // clock value. Must be 200 — the 409 did NOT advance lastStartAtMs.
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        turnStatus: 'completed',
+      },
+    });
+    const res2 = await postJson({ prompt: 'hi again', sessionId: 's1' });
+    expect(res2.status).toBe(200);
+    expect(startMock).toHaveBeenCalledTimes(1);
+
+    nowSpy.mockRestore();
   });
 
-  it('row 11 — 409 when turnStatus=cancelling in envelope: start not called, lastStartAtMs unchanged', async () => {
+  it('row 11 — 409 when turnStatus=cancelling: start not called; follow-up 200 proves lastStartAtMs NOT advanced', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
@@ -543,13 +637,26 @@ describe('POST /api/turns', () => {
     });
     ({ POST } = await import('./route'));
 
-    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+    const CLOCK = 100_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(CLOCK);
 
-    expect(res.status).toBe(409);
-    const body = await res.json();
-    expect(body.error).toBe('A turn is already in progress for this session.');
+    const res1 = await postJson({ prompt: 'hi', sessionId: 's1' });
+    expect(res1.status).toBe(409);
     expect(startMock).not.toHaveBeenCalled();
-    expect(overlayWorkerMetaMock).not.toHaveBeenCalled();
+
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        turnStatus: 'completed',
+      },
+    });
+    const res2 = await postJson({ prompt: 'hi again', sessionId: 's1' });
+    expect(res2.status).toBe(200);
+    expect(startMock).toHaveBeenCalledTimes(1);
+
+    nowSpy.mockRestore();
   });
 
   it('row 12 — 200 when turnStatus=completed in envelope: start called (completed is non-live)', async () => {

@@ -19,16 +19,21 @@
  * Pre-`start()` gates (fail closed, never enqueue a doomed run):
  *  1. Auth (`requireSessionUser`) → 401
  *  2. `sessionId` required → 400
- *  3. 429 min-interval guard (C15) — per-process, zero-I/O, short-circuits
+ *  3. 429 min-interval guard (C15) — per-session, zero-I/O, short-circuits
  *     before BYOK
- *  4. Tenant resolve → 503
- *  5. BYOK resolve → 4xx
- *  6. Envelope read → 409 duplicate-turn guard (C15) — live-only
- *     ('running'/'cancelling'); shares the existing envelope read
- *  7. Sandbox hard-deny → 403
+ *  4. 409 in-flight guard (C15) — per-session, same-isolate dedup, zero-I/O
+ *     before BYOK
+ *  5. Tenant resolve → 503
+ *  6. BYOK resolve → 4xx
+ *  7. Envelope read → 409 durable-turn guard (C15) — live-only
+ *     ('running'/'cancelling'); shares the existing envelope read;
+ *     cross-isolate dedup (the in-flight guard above is same-isolate)
+ *  8. Sandbox hard-deny → 403
  *
- * `lastStartAtMs` advances ONLY on a successful `start()` call — 409/503/429
- * never burn the window.
+ * `inFlight` is set BEFORE `start()`, cleared on throw or success — a 503
+ * (`start()` throw) clears it so a retry can proceed. `lastStartAtMs`
+ * advances ONLY on a successful `start()` call — 429/409/503 never burn
+ * the window.
  *
  * `turnRunId` is DERIVED in-workflow (`getWorkflowMetadata().workflowRunId`), so
  * the terminal persist's `turnRunId` equals the route-side `run.runId` (never
@@ -63,11 +68,41 @@ export const maxDuration = 1800;
 const services = createProdServices();
 
 /**
- * C15 per-process soft abuse guard: advances ONLY on a successful `start()` call.
- * 409/503/429/any-pre-start-gate-failure never burn the window. Survives one
- * Vercel Function invocation — not a durable rate limit (Redis out of scope).
+ * C15 per-process soft abuse guards — per-session (`sessionId`), NOT global.
+ * Survive one Vercel Function invocation — not a durable rate limit (Redis
+ * out of scope for C15). Pattern matches `app/api/harness/status/route.ts`
+ * (per-userid:sandboxid Map + boundedSet). Keyed by `sessionId` so tenant A's
+ * turn never 429s a co-located tenant B on the same isolate.
+ *
+ * `lastStartAtMs` advances ONLY on a successful `start()` call. 409/503/429/
+ * any-pre-start-gate-failure never burn the window.
+ *
+ * `inFlight` is set BEFORE `start()`, cleared on throw or success — a
+ * same-isolate dedup that catches the actual double-click (two concurrent
+ * `fetch()` calls that both pass the 429 and durable-409 gates before the
+ * first request's `start()` or running PATCH lands).
  */
-let lastStartAtMs = 0;
+const lastStartAtMs = new Map<string, number>();
+const inFlight = new Set<string>();
+const TURN_START_CACHE_MAX = 256;
+
+function boundedSet<T>(m: Map<string, T>, key: string, value: T): Map<string, T> {
+  m.set(key, value);
+  if (m.size > TURN_START_CACHE_MAX) {
+    const oldest = m.keys().next().value;
+    if (oldest !== undefined) m.delete(oldest);
+  }
+  return m;
+}
+
+function boundedSetStr(s: Set<string>, key: string): Set<string> {
+  s.add(key);
+  if (s.size > TURN_START_CACHE_MAX) {
+    const oldest = s.values().next().value;
+    if (oldest !== undefined) s.delete(oldest);
+  }
+  return s;
+}
 
 function failClosed(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -137,17 +172,36 @@ export async function POST(req: Request): Promise<Response> {
   }
   const sessionId = parsed.sessionId;
 
-  // C15 429 min-interval guard — per-process soft abuse gate, zero I/O.
+  // C15 429 min-interval guard — per-session soft abuse gate, zero I/O.
   // Short-circuits BEFORE the BYOK resolve (an expensive DB query) so a
-  // spammer gets a cheap 429 instead of a DB-backed reject.
+  // spammer gets a cheap 429 instead of a DB-backed reject. Keyed by
+  // `sessionId` so tenant A's turn never 429s a co-located tenant B.
   const now = Date.now();
-  if (now - lastStartAtMs < TURN_START_MIN_INTERVAL_MS) {
+  const last = lastStartAtMs.get(sessionId);
+  if (last != null && now - last < TURN_START_MIN_INTERVAL_MS) {
     return Response.json(
       {
         error:
           'Too many turn start requests. Please wait before starting another turn.',
       },
-      { status: 429 },
+      {
+        status: 429,
+        headers: {
+          'Retry-After': String(Math.ceil(TURN_START_MIN_INTERVAL_MS / 1000)),
+        },
+      },
+    );
+  }
+
+  // C15 in-flight guard — per-session dedup for concurrent POSTs on the
+  // same isolate. Checked early (zero I/O) before the BYOK resolve so a
+  // double-click wastes no DB work. The durable-409 (envelope-based) below
+  // catches cross-isolate duplicates; this catches same-isolate racing
+  // `fetch()` calls that both passed the 429 gate before `start()` returned.
+  if (inFlight.has(sessionId)) {
+    return Response.json(
+      { error: 'A turn is already being started for this session.' },
+      { status: 409 },
     );
   }
 
@@ -287,6 +341,11 @@ export async function POST(req: Request): Promise<Response> {
       if (!sandboxResolved.ok) return sandboxResolved.response;
     }
 
+    // C15 in-flight flag: set BEFORE `start()` so a concurrent POST for the
+    // same session on this isolate sees it and gets 409. Cleared on throw
+    // (so a retry can proceed) and on success.
+    boundedSetStr(inFlight, sessionId);
+
     // The single durable loop entry. `turnRunId` is derived in-workflow from
     // getWorkflowMetadata().workflowRunId — never passed as a start() arg.
     // NO `tools` dict — tool schemas are assembled in-step via the shared
@@ -301,9 +360,11 @@ export async function POST(req: Request): Promise<Response> {
       },
     ]);
 
-    // C15: advance the per-process clock ONLY on a successful start() —
+    // C15: advance the per-session clock ONLY on a successful start() —
     // 409/503/429/any-pre-start-gate-failure never burn the window.
-    lastStartAtMs = Date.now();
+    // Clear the in-flight flag — the run is enqueued.
+    boundedSet(lastStartAtMs, sessionId, Date.now());
+    inFlight.delete(sessionId);
 
     // Close the probe client now that the run is enqueued. The in-step
     // assemble helper opens its OWN client per step VM — this probe was
@@ -368,7 +429,11 @@ export async function POST(req: Request): Promise<Response> {
     if (runWarning) body.warning = runWarning;
     return Response.json(body, { headers: runHeaders });
   } catch (err) {
-    // start() throw (or any gate-after-probe throw) — close the probe client.
+    // start() throw (or any gate-after-probe throw) — clear the in-flight
+    // flag so a retry for the same session can proceed.
+    inFlight.delete(sessionId);
+
+    // Close the probe client (if it was opened before the throw).
     if (sandboxProbeClient?.close) {
       try {
         await sandboxProbeClient.close();
