@@ -46,7 +46,7 @@ Each SSE block is one `data: <json>\n\n` line:
 
 Unknown types are ignored (forward-compatible). String fields are redacted server-side with the same secret list as JSON responses.
 
-On the production durable path (`POST /api/turns`) the loop emits one accumulated `reasoning_delta` per model round (same cadence as durable `text_delta`) after the model step returns. Legacy `/api/agent` token-streams those same event types as they arrive from the provider.
+On the production durable path (`POST /api/turns`), `reasoning_delta` / `text_delta` / `tool_start` token-stream from inside the model step as provider parts arrive. `tool_result` / `done` stay loop-owned after tool/persist steps. Legacy `/api/agent` token-streams those same event types as they arrive from the provider.
 
 ### Level-2 preview (`tool_result.preview`)
 

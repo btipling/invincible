@@ -6,21 +6,19 @@
  * `Not supported in workflow functions`). Tokens still ride Data Written on
  * the default stream.
  *
- * Import graph: `workflow` + nothing else. Framing lives in `turnSseFormat.ts`.
+ * `writeTurnSse` stays `'use step'` and delegates the writer lock to
+ * directive-free `writeOnDefaultStream`. Live model-step writes call that
+ * helper from `modelGenerateStep` (already a step) — they must not call these
+ * wrappers (nested `'use step'`).
  */
 
 import { getWritable } from 'workflow';
+import { writeOnDefaultStream } from './turnSseWrite';
 
 /** Write one already-framed SSE line. Does not close. Releases the writer lock. */
 export async function writeTurnSse(payload: string): Promise<void> {
   'use step';
-  const writable = getWritable<string>();
-  const writer = writable.getWriter();
-  try {
-    await writer.write(payload);
-  } finally {
-    writer.releaseLock();
-  }
+  await writeOnDefaultStream(payload);
 }
 
 /** Close the default writable. Idempotent — a second close is fail-soft. */

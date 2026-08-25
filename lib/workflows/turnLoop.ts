@@ -17,8 +17,10 @@
  *  - Step I/O = **deltas** (`{text,toolCalls,usage,finishReason,reasoning?}` /
  *    `{result, freshnessDelta}` / terminal persist status), never the full
  *    transcript.
- *  - Tokens ride `getWritable()` (this core writes SSE event lines to the
- *    injected writable); the transcript/checkpoint live in Blob (B13 persist).
+ *  - Tokens ride `getWritable()` (this core writes loop-owned SSE:
+ *    `tool_result` / `done` / `error`). Live `reasoning_delta` / `text_delta` /
+ *    `tool_start` are written inside `modelGenerateStep`. Transcript/checkpoint
+ *    live in Blob (B13 persist).
  *  - The writable is closed **exactly once** on every terminal path — success,
  *    model/tool/persist fail (`{ok:false}` value), 256-cap, or cancel. A failed
  *    terminal step never tears down the loop without closing the wire.
@@ -53,9 +55,9 @@ export type TurnLoopDelta = {
   usage?: unknown;
   finishReason?: string;
   /**
-   * Accumulated thinking for this model round. The loop copies it onto the
-   * SSE `reasoning_delta` line then **drops** it from persist/`messages`
-   * (thinking is ephemeral — never Blob / reconstructed transcript).
+   * Optional accumulated thinking from the model step. The loop **must not**
+   * copy this onto the SSE wire (live `reasoning_delta` is written inside the
+   * model step). It is also omitted from persist/`messages`.
    */
   reasoning?: string;
 };
@@ -448,8 +450,6 @@ export async function runTurnLoop(
       if (!gen.ok) {
         return fail(gen.code === 'cancelled' ? 'cancelled' : 'failed', round, steps, gen.error);
       }
-      const reasoning =
-        typeof gen.delta.reasoning === 'string' ? gen.delta.reasoning.trim() : '';
       const persistDelta: TurnLoopDelta = {
         text: gen.delta.text,
         toolCalls: gen.delta.toolCalls,
@@ -460,12 +460,10 @@ export async function runTurnLoop(
       };
       deltas.push(persistDelta);
       usage = accumulateUsage(usage, persistDelta.usage);
-      if (reasoning) {
-        await writable.write(sse({ type: 'reasoning_delta', text: reasoning }));
-      }
+      // Live reasoning_delta / text_delta / tool_start were written inside the
+      // model step. Do **not** dump them again here (would double-paint).
       if (persistDelta.text) {
         assistantText += persistDelta.text;
-        await writable.write(sse({ type: 'text_delta', text: persistDelta.text }));
       }
       messages.push({ role: 'assistant', delta: persistDelta });
 
@@ -502,9 +500,6 @@ export async function runTurnLoop(
       for (const call of calls) {
         if (steps >= cap) break; // no remaining step budget → capped
         steps += 1; // this tool execution = one step boundary
-        await writable.write(
-          sse({ type: 'tool_start', name: call.toolName, ...(call.toolCallId ? { id: call.toolCallId } : {}) }),
-        );
         const tool = await deps.toolStep({
           toolName: call.toolName,
           toolCallId: call.toolCallId,
