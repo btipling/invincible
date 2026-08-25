@@ -2,12 +2,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AUTH_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
 
 /**
- * Route tests for backend-agents C14b (#835) — `POST /api/turns` durable-turn
- * start surface. Mocks the SDK `start`, the DI root, and the workflow entry
- * so the route never enqueues a real Workflow run, opens a DB/Redis connection,
- * or constructs a real persist seam. Covers the matrix rows 1, 2, 3, 5, 6, 7
- * (row 8 — in-workflow turnRunId derivation — lives in
- * `lib/workflows/turnWorkflow.test.ts`).
+ * Distant-future `updatedAt` planted in the mock envelope for row 1, so the
+ * LWW clock assertion can prove `Math.max(Date.now(), stored+1)` is strictly
+ * newer. If the clock regresses to bare `Date.now()`, patch.updatedAt would be
+ * ~1.76e12 which is < FUTURE_UPDATED_AT + 1 → test fails.
+ */
+const FUTURE_UPDATED_AT = 9_000_000_000_000;
+
+/**
+ * Route tests for backend-agents C14b (#835) + C14d (#833) — `POST /api/turns`
+ * durable-turn start surface + durable running PATCH. Mocks the SDK `start`,
+ * the DI root, the workflow entry, and `overlayWorkerMeta` so the route never
+ * enqueues a real Workflow run, opens a DB/Redis connection, or constructs a
+ * real persist seam. Covers the matrix rows 1–7 (row 8 — in-workflow turnRunId
+ * derivation — lives in `lib/workflows/turnWorkflow.test.ts`).
  *
  * The route passes ONLY serializable values to `start()` — `scope`, `modelId`,
  * `userMessage`, and optional `persistRunBind`. NO `tools` dict — tool schemas
@@ -31,11 +39,16 @@ describe('POST /api/turns', () => {
   /** Spy on the sandbox probe client close call — asserts handle is dropped. */
   let sandboxCloseSpy: ReturnType<typeof vi.fn>;
 
+  /** Spy on overlayWorkerMeta — defaults to success; override for row 4. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let overlayWorkerMetaMock: any;
+
   function resetServiceState() {
     delete servicesState.harnessSessionsRedis;
     delete servicesState.resolveInferenceForRequest;
     delete servicesState.resolveSandbox;
     sandboxCloseSpy = vi.fn(async () => {});
+    overlayWorkerMetaMock = vi.fn(async () => ({ ok: true as const, meta: {} }));
   }
 
   function mockDi() {
@@ -123,6 +136,7 @@ describe('POST /api/turns', () => {
       ok: true as const,
       value: {
         readEnvelope: vi.fn(async () => ({
+          updatedAt: FUTURE_UPDATED_AT,
           meta: {
             logicalCwd: 'app',
             activeSandboxId: 'sb_bind',
@@ -132,10 +146,14 @@ describe('POST /api/turns', () => {
     }));
     vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
       resolveSessionStore: resolveSessionStoreMock,
-      sessionKeyFor: () => ({ tenantId: '', userId: '', sessionId: '' }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({ tenantId: t, userId: u, sessionId: s }),
     }));
     vi.doMock('../../../lib/sessions/sessionStore', () => ({
       isEnvelopeStore: () => true,
+    }));
+    // Mock overlayWorkerMeta — defaults to success via resetServiceState.
+    vi.doMock('../../../lib/agent/workerMetaOverlay', () => ({
+      overlayWorkerMeta: overlayWorkerMetaMock,
     }));
   }
 
@@ -196,6 +214,7 @@ describe('POST /api/turns', () => {
     vi.resetModules();
     vi.doUnmock('../../../lib/di');
     vi.doUnmock('../../../lib/agent/agentBody');
+    vi.doUnmock('../../../lib/agent/workerMetaOverlay');
     vi.doUnmock('../../../lib/tenancy/session');
     vi.doUnmock('../../../lib/workflows/turnWorkflow');
     vi.doUnmock('../../../lib/chatServer');
@@ -205,7 +224,7 @@ describe('POST /api/turns', () => {
     resetServiceState();
   });
 
-  it('row 1 — authed valid sessionId+prompt → start called with serializable-only args (scope, modelId, userMessage, persistRunBind); NO tools key; returns {runId} + x-workflow-run-id', async () => {
+  it('row 1 — authed valid sessionId+prompt → start called + running PATCH succeeds; returns {runId} + x-workflow-run-id, NO warning', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
@@ -215,7 +234,10 @@ describe('POST /api/turns', () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get('x-workflow-run-id')).toBe('wf_turn_123');
-    expect(await res.json()).toEqual({ runId: 'wf_turn_123' });
+    expect(res.headers.get('x-workflow-run-warning')).toBeNull();
+    const json = await res.json();
+    expect(json.runId).toBe('wf_turn_123');
+    expect(json.warning).toBeUndefined();
 
     expect(startMock).toHaveBeenCalledTimes(1);
     const [wf, argsArr] = startMock.mock.calls[0];
@@ -225,17 +247,30 @@ describe('POST /api/turns', () => {
     const startArgs = argsArr[0];
     expect(startArgs.userMessage).toBe('hi');
     expect(startArgs.modelId).toBe('anthropic/claude-a');
-    // scope must be present (serializable, no closures)
     expect(startArgs.scope).toEqual({ tenantId: 't1', userId: 'u1', sessionId: 's1' });
-    // NO tools key — tool schemas are assembled in-step via the shared helper
     expect(startArgs.tools).toBeUndefined();
-    // persistRunBind optionally present from envelope meta
     expect(startArgs.persistRunBind).toEqual({ cwd: 'app', activeSandboxId: 'sb_bind' });
-    // Probe client was closed after start() succeeded (adversarial L5 Minor).
+
+    // Probe client was closed after start() succeeded.
     expect(sandboxCloseSpy).toHaveBeenCalledTimes(1);
+
+    // C14d: overlayWorkerMeta called with running PATCH.
+    expect(overlayWorkerMetaMock).toHaveBeenCalledTimes(1);
+    const patchCall = overlayWorkerMetaMock.mock.calls[0][0];
+    expect(patchCall.patch).toEqual({ turnRunId: 'wf_turn_123', turnStatus: 'running' });
+    expect(patchCall.envelopeStore).toBeTruthy();
+    // LWW inputs: strictly-newer clock + correct scope key.
+    // The mock envelope was planted with a distant-future updatedAt; the route
+    // computes Math.max(Date.now(), stored+1). Since stored+1 (9e12+1) >
+    // Date.now() (~1.76e12), the clock MUST pick stored+1 — never Date.now().
+    // A bare Date.now() would be ~1.76e12 < 9e12+1 → this assertion fails.
+    expect(typeof patchCall.updatedAt).toBe('number');
+    expect(Number.isFinite(patchCall.updatedAt)).toBe(true);
+    expect(patchCall.updatedAt).toBeGreaterThanOrEqual(FUTURE_UPDATED_AT + 1);
+    expect(patchCall.key).toEqual({ tenantId: 't1', userId: 'u1', sessionId: 's1' });
   });
 
-  it('row 2 — missing sessionId → 400 (parseAgentBody would pass; route guard rejects), no start', async () => {
+  it('row 2 — missing sessionId → 400 (parseAgentBody would pass; route guard rejects), no start, no running PATCH', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
@@ -247,9 +282,10 @@ describe('POST /api/turns', () => {
     const body = (await res.json()) as { error: string };
     expect(body.error).toMatch(/sessionId is required/i);
     expect(startMock).not.toHaveBeenCalled();
+    expect(overlayWorkerMetaMock).not.toHaveBeenCalled();
   });
 
-  it('row 3 — start throws → 503 fail-closed, no /api/agent fallback path reached', async () => {
+  it('row 3 — start throws → 503 fail-closed, no /api/agent fallback path reached, no running PATCH', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
@@ -261,10 +297,103 @@ describe('POST /api/turns', () => {
     expect(res.status).toBe(503);
     const body = (await res.json()) as { error: string };
     expect(body.error).toMatch(/fail closed/i);
-    // The run was NOT started → no SSE/JSON runId body is produced.
     expect(body.error).not.toMatch(/wf_turn_123/);
-    // Probe client was closed on the throw path (adversarial L5 Minor).
     expect(sandboxCloseSpy).toHaveBeenCalledTimes(1);
+    // start threw before the running PATCH — overlayWorkerMeta never called.
+    expect(overlayWorkerMetaMock).not.toHaveBeenCalled();
+  });
+
+  it('row 4a — running PATCH fails (overlayWorkerMeta returns {ok:false}) after start → non-500, still {runId} + warning header and body', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    overlayWorkerMetaMock.mockResolvedValue({
+      ok: false,
+      code: 'lww_conflict',
+      error: 'worker PATCH updatedAt <= stored envelope updatedAt.',
+    });
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+
+    // Non-500 — the run IS started.
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-workflow-run-id')).toBe('wf_turn_123');
+    // Warning header is present — pinned to the exact stable string.
+    expect(res.headers.get('x-workflow-run-warning')).toBe('Running PATCH did not persist (lww_conflict)');
+    // JSON body still has runId + warning.
+    const json = await res.json();
+    expect(json.runId).toBe('wf_turn_123');
+    expect(json.warning).toBe('Running PATCH did not persist (lww_conflict)');
+    // start WAS called — the run was enqueued.
+    expect(startMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('row 4b — running PATCH throws after start → non-500, still {runId} + warning', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    overlayWorkerMetaMock.mockRejectedValue(new Error('Redis write timeout.'));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-workflow-run-id')).toBe('wf_turn_123');
+    expect(res.headers.get('x-workflow-run-warning')).toMatch(/Running PATCH failed to persist/);
+    const json = await res.json();
+    expect(json.runId).toBe('wf_turn_123');
+    expect(json.warning).toMatch(/Running PATCH failed to persist/);
+    expect(startMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('row 4c — running PATCH fails on SSE path → non-500, SSE body + warning header, NO warning in body (SSE has no JSON body)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    const { getReadable } = mockStart();
+    const fakeStream = new ReadableStream();
+    getReadable.mockReturnValue(fakeStream);
+    overlayWorkerMetaMock.mockResolvedValue({
+      ok: false,
+      code: 'read_failed',
+      error: 'failed to read the envelope.',
+    });
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' }, 'text/event-stream');
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')?.startsWith('text/event-stream')).toBe(true);
+    expect(res.headers.get('x-workflow-run-id')).toBe('wf_turn_123');
+    // Warning header on SSE response too.
+    expect(res.headers.get('x-workflow-run-warning')).toMatch(/Running PATCH did not persist/);
+    expect(res.body).toBe(fakeStream);
+    expect(startMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('row 4d — envelopeStore unavailable (resolveSessionStore fails) → 200, no warning (best-effort skip)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    // resolveSessionStore returns a non-envelope store.
+    resolveSessionStoreMock.mockResolvedValue({
+      ok: false,
+      error: 'session store unavailable.',
+    });
+    vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: resolveSessionStoreMock,
+      sessionKeyFor: (t: string, u: string, s: string) => ({ tenantId: t, userId: u, sessionId: s }),
+    }));
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-workflow-run-id')).toBe('wf_turn_123');
+    // No warning — envelopeStore was null, running PATCH skipped silently.
+    expect(res.headers.get('x-workflow-run-warning')).toBeNull();
+    expect(overlayWorkerMetaMock).not.toHaveBeenCalled();
+    expect(startMock).toHaveBeenCalledTimes(1);
   });
 
   it('row 5 — Accept: text/event-stream → content-type AGENT_STREAM_CONTENT_TYPE + x-workflow-run-id; body is run.getReadable()', async () => {
@@ -283,6 +412,8 @@ describe('POST /api/turns', () => {
     expect(getReadable).toHaveBeenCalledTimes(1);
     expect(res.body).toBe(fakeStream);
     expect(startMock).toHaveBeenCalledTimes(1);
+    // Running PATCH was attempted (succeeds by default).
+    expect(overlayWorkerMetaMock).toHaveBeenCalledTimes(1);
   });
 
   it('row 6 — Accept: application/json → JSON {runId}, not SSE content-type', async () => {
@@ -310,14 +441,13 @@ describe('POST /api/turns', () => {
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: AUTH_REQUIRED_ERROR });
     expect(startMock).not.toHaveBeenCalled();
+    expect(overlayWorkerMetaMock).not.toHaveBeenCalled();
   });
 
   it('pre-start hard 403: resolveAgentSandbox {ok:false} without soft flags + no HTTP → 403 before start()', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
-    // Override the default resolveAgentSandbox in servicesState to return
-    // a hard deny (no softContinue, no selectionRequired).
     servicesState.resolveSandbox.resolveAgentSandbox = vi.fn(async () => ({
       ok: false as const,
       response: Response.json({ error: 'Forbidden' }, { status: 403 }),
@@ -327,7 +457,6 @@ describe('POST /api/turns', () => {
     const res = await postJson({ prompt: 'hi', sessionId: 's1' });
 
     expect(res.status).toBe(403);
-    // start was NOT called — doomed run never enqueued.
     expect(startMock).not.toHaveBeenCalled();
   });
 
@@ -344,7 +473,6 @@ describe('POST /api/turns', () => {
 
     const res = await postJson({ prompt: 'hi', sessionId: 's1' });
 
-    // Soft-path: selectionRequired → proceed. 200 (or SSE), not 403.
     expect(res.status).toBe(200);
     expect(startMock).toHaveBeenCalledTimes(1);
   });

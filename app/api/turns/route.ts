@@ -34,6 +34,7 @@ import {
   AGENT_STREAM_CONTENT_TYPE,
   wantsAgentStream,
 } from '../../../lib/agent/agentStream';
+import { overlayWorkerMeta } from '../../../lib/agent/workerMetaOverlay';
 import { mapByokResolveFailure } from '../../../lib/chatServer';
 import { createProdServices } from '../../../lib/di';
 import { requireSessionUser } from '../../../lib/tenancy/session';
@@ -149,16 +150,28 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json({ error }, { status });
     }
 
-    // 2. Read envelope `logicalCwd` / `activeSandboxId` for persistRunBind
-    //    (B13 fallback). Best-effort: a store read error never 4xx's the turn.
+    // 2. Resolve the envelope store + session key once — reused for the
+    //    persistRunBind read (B13 fallback) AND the post-start running PATCH
+    //    (C14d). A store resolve error is best-effort: no bind / no PATCH, but
+    //    the turn still starts.
+    const sessionKey = sessionKeyFor(tenantRes.value, userId, sessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let envelopeStore: any = null;
     let persistRunBind: { cwd?: string; activeSandboxId?: string } | undefined;
+    // B13 strictly-newer overlayClock base: capture the stored envelope's
+    // `updatedAt` so the post-start running PATCH can compute a strictly-newer
+    // clock (`max(now, stored+1)`) — same construction as createTurnPersistSeam
+    // default (lib/agent/turnPersistSeam.ts:122-124). A bare `Date.now()` can
+    // be <= the stored clock (host PUT same-ms or browser clock ahead of server)
+    // → B8 rejects with lww_conflict → running marker never lands.
+    let storedUpdatedAt = 0;
     try {
       const storeRes = await resolveSessionStore();
       if (storeRes.ok && isEnvelopeStore(storeRes.value)) {
-        const envelope = await storeRes.value.readEnvelope(
-          sessionKeyFor(tenantRes.value, userId, sessionId),
-        );
+        envelopeStore = storeRes.value;
+        const envelope = await envelopeStore.readEnvelope(sessionKey);
         if (envelope) {
+          storedUpdatedAt = typeof envelope.updatedAt === 'number' ? envelope.updatedAt : 0;
           if (typeof envelope.meta?.logicalCwd === 'string' && envelope.meta.logicalCwd) {
             persistRunBind = { ...persistRunBind, cwd: envelope.meta.logicalCwd };
           }
@@ -168,7 +181,7 @@ export async function POST(req: Request): Promise<Response> {
         }
       }
     } catch {
-      // Fail-open: no bind → steps use defaults.
+      // Fail-open: no bind → steps use defaults; no running PATCH.
     }
 
     // 3. Pre-start sandbox hard-deny gate — match `/api/agent`'s fail-closed-
@@ -257,9 +270,43 @@ export async function POST(req: Request): Promise<Response> {
       }
     }
 
+    // C14d — post-start durable `running` marker: persist turnRunId +
+    // turnStatus='running' via the B8 overlay seam immediately after start()
+    // returns, BEFORE the route returns the stream/runId. This is a SEPARATE
+    // write from the terminal B13 seam (which writes `completed`). Clock uses
+    // the SAME strictly-newer construction as B13's createTurnPersistSeam:
+    // `max(now, storedUpdatedAt + 1)` so it can NEVER self-conflict with a
+    // host PUT in the same millisecond or a browser clock ahead of the server.
+    let runWarning: string | null = null;
+    if (envelopeStore) {
+      try {
+        const runningPatch = {
+          turnRunId: run.runId,
+          turnStatus: 'running' as const,
+        };
+        const runningRes = await overlayWorkerMeta({
+          envelopeStore,
+          key: sessionKey,
+          patch: runningPatch,
+          updatedAt: Math.max(Date.now(), storedUpdatedAt + 1),
+        });
+        if (!runningRes.ok) {
+          // Stable warning — code only, never the raw error (can carry Redis
+          // host/port/connect strings via overlayWorkerMeta's toMessage paths).
+          runWarning = `Running PATCH did not persist (${runningRes.code})`;
+        }
+      } catch (err) {
+        // Stable warning — never interpolate err.message (can carry Redis details).
+        runWarning = `Running PATCH failed to persist`;
+      }
+    }
+
     const runHeaders: Record<string, string> = {
       'x-workflow-run-id': run.runId,
     };
+    if (runWarning) {
+      runHeaders['x-workflow-run-warning'] = runWarning;
+    }
     if (wantsAgentStream(req)) {
       return new Response(run.getReadable(), {
         status: 200,
@@ -271,7 +318,9 @@ export async function POST(req: Request): Promise<Response> {
         },
       });
     }
-    return Response.json({ runId: run.runId }, { headers: runHeaders });
+    const body: { runId: string; warning?: string } = { runId: run.runId };
+    if (runWarning) body.warning = runWarning;
+    return Response.json(body, { headers: runHeaders });
   } catch (err) {
     // start() throw (or any gate-after-probe throw) — close the probe client.
     if (sandboxProbeClient?.close) {
