@@ -18,6 +18,7 @@ import {
   type SendAgentStreamFn,
   type ToolTraceEntry,
 } from './agentApi';
+import { sendTurn, sendTurnStream } from './turnApi';
 import { type AgentStreamEvent } from './agent/agentStream';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
@@ -964,8 +965,10 @@ export async function runHarnessTurn(
   scheduleMathFromMarkdown(bridge, prompt);
   const preferAgent = opts?.preferAgent !== false;
   const useHistory = opts?.useHistory !== false;
-  const sendAgentFn = opts?.sendAgent ?? sendAgent;
-  const sendAgentStreamFn = opts?.sendAgentStream ?? sendAgentStream;
+  // Plan #811 (D17): production defaults → /api/turns (durable-turn transport).
+  // Tests inject sendAgent/sendAgentStream via opts to keep the legacy /api/agent path.
+  const sendAgentFn = opts?.sendAgent ?? sendTurn;
+  const sendAgentStreamFn = opts?.sendAgentStream ?? sendTurnStream;
   // Default: stream when using production client. Tests that only inject
   // `sendAgent` keep the JSON path unless streamAgent/sendAgentStream set.
   const streamAgent =
@@ -1574,6 +1577,16 @@ export async function runHarnessTurn(
       // below deliberately does NOT touch `usage`, so an aborted/cancelled turn
       // keeps its last honest value.
       next = { ...next, usage: agentResult.usage };
+      // Plan #811 (D17) — fold durable-turn fields onto the session.
+      // `turnRunId` is populated by /api/turns (absent for /api/agent — tests).
+      if (agentResult.turnRunId !== undefined) {
+        next = {
+          ...next,
+          turnRunId: agentResult.turnRunId,
+          turnStatus: 'completed',
+          turnStreamCursor: 0,
+        };
+      }
       // Protocol v13 (plan #538/#541): after a successful turn, fold the
       // effective bind + cwd into the status-slot pack so the canvas header
       // reflects the post-turn state (incl. a `meta_sandbox_switch`).
@@ -1659,6 +1672,15 @@ export async function runHarnessTurn(
           agentResult.error === SANDBOX_FORBIDDEN_ERROR)
       ) {
         failedSession = { ...failedSession, activeSandboxId: undefined };
+      }
+      // Plan #811 (D17) — clear durable-turn fields on failure.
+      // The turn is terminal (completed) but the run is not durable.
+      if (agentResult.turnRunId !== undefined) {
+        failedSession = {
+          ...failedSession,
+          turnRunId: undefined,
+          turnStatus: 'completed',
+        };
       }
       lastUiKind =
         fail.kind === 'error' || fail.kind === 'timeout' ||
