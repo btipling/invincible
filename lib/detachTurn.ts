@@ -90,3 +90,37 @@ export function abortReasonFor(decision: DetachDecision): string | undefined {
 export function isDetachAbort(signal?: AbortSignal): boolean {
   return signal?.aborted === true && signal.reason === DETACH_ABORT_REASON;
 }
+
+/**
+ * What the host should do with a turn snapshot after a leave-turn site
+ * (adversarial #844 re-review).
+ *
+ * | Input | Action |
+ * |-------|--------|
+ * | Clear/remove discarded the started id | `drop` — never PUT (LWW upsert would resurrect) |
+ * | Still on this turn (epoch match) | `live` — writeLocal + put as today |
+ * | Detached + running + turnRunId | `preserve` — PUT onto startedId only; never clobber a switched live session |
+ * | Detached without a durable running id | `drop` — skip PUT so we cannot omit-clear C14d |
+ */
+export type DetachPersistAction = 'live' | 'preserve' | 'drop';
+
+export interface DetachPersistInput {
+  /** True when this tab left the turn (`turnEpochRef` advanced). */
+  detached: boolean;
+  /**
+   * True when the started session was Clear/remove'd. A preserve PUT would
+   * LWW-upsert the deleted row (adversarial #844 Major).
+   */
+  discarded: boolean;
+  /** Session-sticky durable run id on the snapshot being persisted. */
+  turnRunId?: string;
+  /** Session-sticky turn status on the snapshot being persisted. */
+  turnStatus?: TurnStatus;
+}
+
+export function decideDetachPersist(input: DetachPersistInput): DetachPersistAction {
+  if (input.discarded) return 'drop';
+  if (!input.detached) return 'live';
+  if (input.turnRunId && input.turnStatus === 'running') return 'preserve';
+  return 'drop';
+}

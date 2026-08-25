@@ -12,7 +12,7 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
-import { decideDetach, shouldAbortReader, abortReasonFor } from '../../lib/detachTurn';
+import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist } from '../../lib/detachTurn';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -201,6 +201,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const inflightRef = useRef(false);
   /** Bumped on detach so a late runPrompt persist cannot clobber a switched session. */
   const turnEpochRef = useRef(0);
+  /**
+   * Session ids Clear/remove'd this tab. A post-detach preserve PUT would
+   * LWW-upsert the deleted row (adversarial #844). Switch/New/unmount stay off
+   * this set so E19 can still attach.
+   */
+  const discardedSessionIdsRef = useRef(new Set<string>());
   /** True while an async switch (repo.get → activateSession) is in flight; New/Clear/poll ack-and-drop while set. */
   const switchInFlightRef = useRef(false);
   const onSwitchSessionRef = useRef<(id: string) => void>(() => {});
@@ -414,6 +420,24 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       inflightRef.current = true;
       const epoch = turnEpochRef.current;
       const startedId = sessionRef.current.id;
+      const persistTurn = (snapshot: SessionSnapshot) => {
+        const action = decideDetachPersist({
+          detached: turnEpochRef.current !== epoch,
+          discarded:
+            discardedSessionIdsRef.current.has(startedId) ||
+            discardedSessionIdsRef.current.has(snapshot.id),
+          turnRunId: snapshot.turnRunId,
+          turnStatus: snapshot.turnStatus,
+        });
+        if (action === 'drop') return;
+        if (action === 'preserve') {
+          const preserved = { ...snapshot, id: startedId };
+          repoRef.current?.put(startedId, preserved);
+          if (sessionRef.current.id === startedId) writeLocalSession(preserved);
+          return;
+        }
+        persist(snapshot);
+      };
       setBusy(true);
       setHostNote(null);
 
@@ -431,18 +455,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // Phase 2 (#627 / #625): persist every mid-turn session patch
             // (cwd change, sandbox switch) via the same persist callback the
             // turn-end path uses — local write + coalesced cloud PUT.
-            onSessionPatch: persist,
+            // Adversarial #844: late patches after detach take decideDetachPersist
+            // (never writeLocal onto a switched session; never PUT a Clear'd id).
+            onSessionPatch: persistTurn,
           },
         );
         if (turnEpochRef.current !== epoch) {
-          // Left the turn (detach). Persist running+id onto the STARTED session
-          // only — never replace a switched sessionRef. Skip PUT when we have
-          // no run id yet so we cannot omit-clear the C14d envelope.
-          if (next.turnRunId && next.turnStatus === 'running') {
-            const preserved = { ...next, id: startedId };
-            repoRef.current?.put(startedId, preserved);
-            if (sessionRef.current.id === startedId) writeLocalSession(preserved);
-          }
+          persistTurn(next);
           return;
         }
         // Plan #616 (source #610): fold the LIVE selection into the snapshot before
@@ -456,7 +475,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // Always persist — including user Stop/cancel (and late abort after a finished
         // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
         // Load earlier / refresh could wipe the cancelled turn from the ring.
-        persist(folded);
+        persistTurn(folded);
         if (!result.ok) {
           setHostNote(result.error);
         }
@@ -845,6 +864,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     const repo = repoRef.current;
     const bridge = bridgeRef.current;
     const clearedId = sessionRef.current.id;
+    // Adversarial #844: mark discarded BEFORE remove so a late persistTurn
+    // preserve PUT cannot LWW-upsert this row back into the picker.
+    discardedSessionIdsRef.current.add(clearedId);
     // INTENTIONAL ack-only (not flushPendingThenRestore). Clear deletes this
     // row. Fold-after-remove resurrects via a new-epoch PUT; fold-before-remove
     // is a wasted PUT then DELETE. New/switch flush; Clear acks. See

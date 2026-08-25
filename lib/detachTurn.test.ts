@@ -8,6 +8,9 @@
  *   - idle / no run id → `noop`
  *   - in-flight turn, no durable run id → `detach-close`
  *   - Stop / Esc → `cancel`
+ * Plus persist-after-detach (adversarial #844 re-review): Clear discarded →
+ * `drop` (never resurrect via PUT upsert); detached+running → `preserve`;
+ * live epoch → `live`.
  * Plus the source-lock that counts `decideDetach`-wired detach sites vs raw
  * `abort()` call sites in `HarnessHost.tsx`.
  */
@@ -17,6 +20,7 @@ import { describe, expect, it } from 'vitest';
 import {
   abortReasonFor,
   decideDetach,
+  decideDetachPersist,
   DETACH_ABORT_REASON,
   isDetachAbort,
   shouldAbortReader,
@@ -128,6 +132,64 @@ describe('decideDetach (plan #812 D18 contract)', () => {
   });
 });
 
+describe('decideDetachPersist (adversarial #844 Clear-vs-PUT / late persist)', () => {
+  it('Clear/remove discarded → drop even with running+id (never resurrect)', () => {
+    expect(
+      decideDetachPersist({
+        detached: true,
+        discarded: true,
+        turnRunId: 'wr_live',
+        turnStatus: 'running',
+      }),
+    ).toBe('drop');
+    expect(
+      decideDetachPersist({
+        detached: false,
+        discarded: true,
+        turnRunId: 'wr_live',
+        turnStatus: 'running',
+      }),
+    ).toBe('drop');
+  });
+
+  it('detached + running + turnRunId → preserve (Switch/New/unmount)', () => {
+    expect(
+      decideDetachPersist({
+        detached: true,
+        discarded: false,
+        turnRunId: 'wr_live',
+        turnStatus: 'running',
+      }),
+    ).toBe('preserve');
+  });
+
+  it('detached without a durable running id → drop (no omit-clear PUT)', () => {
+    expect(
+      decideDetachPersist({ detached: true, discarded: false }),
+    ).toBe('drop');
+    expect(
+      decideDetachPersist({
+        detached: true,
+        discarded: false,
+        turnRunId: 'wr_old',
+        turnStatus: 'completed',
+      }),
+    ).toBe('drop');
+  });
+
+  it('still on this turn (epoch match) → live', () => {
+    expect(
+      decideDetachPersist({
+        detached: false,
+        discarded: false,
+        turnRunId: 'wr_live',
+        turnStatus: 'running',
+      }),
+    ).toBe('live');
+    expect(decideDetachPersist({ detached: false, discarded: false })).toBe('live');
+  });
+});
+
 describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
   const host = readFileSync(resolve(process.cwd(), 'app/harness/HarnessHost.tsx'), 'utf8');
   const module = readFileSync(resolve(process.cwd(), 'lib/detachTurn.ts'), 'utf8');
@@ -136,6 +198,7 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(module).toContain('export function decideDetach');
     expect(module).toContain('export function shouldAbortReader');
     expect(module).toContain('export function abortReasonFor');
+    expect(module).toContain('export function decideDetachPersist');
     expect(module).toContain('durablePath');
   });
 
@@ -182,5 +245,25 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     );
     expect(sw).toContain('detachTurn()');
     expect(sw).not.toMatch(/inflightRef\.current\) return/);
+  });
+
+  it('Clear marks discarded id before remove so post-detach PUT cannot upsert', () => {
+    const clear = host.slice(host.indexOf('const onClear = useCallback'), host.indexOf('const onNewSession'));
+    expect(clear).toContain('discardedSessionIdsRef.current.add(clearedId)');
+    const addAt = clear.indexOf('discardedSessionIdsRef.current.add(clearedId)');
+    const removeAt = clear.indexOf('repo.remove(clearedId)');
+    expect(addAt).toBeGreaterThan(-1);
+    expect(removeAt).toBeGreaterThan(addAt);
+  });
+
+  it('runPrompt persist path uses decideDetachPersist (epoch + discarded)', () => {
+    const runStart = host.indexOf('const runPrompt = useCallback');
+    const run = host.slice(runStart, host.indexOf('useEffect(() => {', runStart));
+    expect(run).toContain('decideDetachPersist(');
+    expect(run).toContain('discardedSessionIdsRef.current.has(startedId)');
+    expect(run).toContain("action === 'preserve'");
+    expect(run).toContain("action === 'drop'");
+    // Late mid-turn patches must take the same gate (not raw persist).
+    expect(run).toContain('onSessionPatch: persistTurn');
   });
 });
