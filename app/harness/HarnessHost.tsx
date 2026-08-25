@@ -12,6 +12,7 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
+import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind } from '../../lib/detachTurn';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -198,6 +199,14 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const pollRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const inflightRef = useRef(false);
+  /** Bumped on detach so a late runPrompt persist cannot clobber a switched session. */
+  const turnEpochRef = useRef(0);
+  /**
+   * Session ids Clear/remove'd this tab. A post-detach preserve PUT would
+   * LWW-upsert the deleted row (adversarial #844). Switch/New/unmount stay off
+   * this set so E19 can still attach.
+   */
+  const discardedSessionIdsRef = useRef(new Set<string>());
   /** True while an async switch (repo.get → activateSession) is in flight; New/Clear/poll ack-and-drop while set. */
   const switchInFlightRef = useRef(false);
   const onSwitchSessionRef = useRef<(id: string) => void>(() => {});
@@ -358,6 +367,33 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     [writeLocalSession],
   );
 
+  /**
+   * Plan #812 (D18) — a DOM detach site (unmount / session switch / New /
+   * Clear): close THIS reader only, never classify the turn as stopped.
+   * Durable detach aborts with DETACH_ABORT_REASON so classifyTurnFailure
+   * returns `'detach'` (not `'stop'`) and the fail fold keeps turnRunId/running.
+   * Stop/Esc is NEVER routed here — the poll's takePendingCancel stays a raw abort.
+   */
+  const detachTurn = useCallback(() => {
+    const s = sessionRef.current;
+    const decision = decideDetach({
+      cancel: false,
+      inflight: inflightRef.current,
+      durablePath: true,
+      turnRunId: s.turnRunId,
+      turnStatus: s.turnStatus,
+    });
+    if (shouldAbortReader(decision)) {
+      abortRef.current?.abort(abortReasonFor(decision));
+    }
+    if (decision === 'detach' || decision === 'detach-close') {
+      turnEpochRef.current += 1;
+      inflightRef.current = false;
+      setBusy(false);
+    }
+    return decision;
+  }, []);
+
   const runPrompt = useCallback(
     async (prompt: string, opts?: { pushUser?: boolean }) => {
       const bridge = bridgeRef.current;
@@ -382,6 +418,41 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       const controller = new AbortController();
       abortRef.current = controller;
       inflightRef.current = true;
+      const epoch = turnEpochRef.current;
+      const startedId = sessionRef.current.id;
+      // Adversarial #844: capture the repo object NOW. Unmount cleanup nulls
+      // `repoRef` before the abort microtask reaches persistTurn/finally.
+      const repo = repoRef.current;
+      const persistTurn = (snapshot: SessionSnapshot) => {
+        const pendingMintId = pendingMintBindRef.current;
+        const action = decideDetachPersist({
+          detached: turnEpochRef.current !== epoch,
+          discarded:
+            discardedSessionIdsRef.current.has(startedId) ||
+            discardedSessionIdsRef.current.has(snapshot.id) ||
+            (pendingMintId != null && discardedSessionIdsRef.current.has(pendingMintId)),
+          turnRunId: snapshot.turnRunId,
+          turnStatus: snapshot.turnStatus,
+        });
+        if (action === 'drop') return;
+        if (action === 'preserve') {
+          // Adversarial #844: first-turn unmount must PUT the deferred mint UUID,
+          // not local sess_*. Switch must not writeLocal (generation token).
+          const { preserved } = putPreservedTurn(repo, snapshot, startedId, pendingMintId);
+          if (
+            shouldApplyMintBind({
+              sessionId: sessionRef.current.id,
+              startedId,
+              discarded: false,
+              switchInFlight: switchInFlightRef.current,
+            })
+          ) {
+            writeLocalSession(preserved);
+          }
+          return;
+        }
+        persist(snapshot);
+      };
       setBusy(true);
       setHostNote(null);
 
@@ -399,9 +470,15 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // Phase 2 (#627 / #625): persist every mid-turn session patch
             // (cwd change, sandbox switch) via the same persist callback the
             // turn-end path uses — local write + coalesced cloud PUT.
-            onSessionPatch: persist,
+            // Adversarial #844: late patches after detach take decideDetachPersist
+            // (never writeLocal onto a switched session; never PUT a Clear'd id).
+            onSessionPatch: persistTurn,
           },
         );
+        if (turnEpochRef.current !== epoch) {
+          persistTurn(next);
+          return;
+        }
         // Plan #616 (source #610): fold the LIVE selection into the snapshot before
         // persisting — a Next-cycle-then-immediate-send right before a poll tick must
         // still persist (row 12: submit still reads the live `getSelectedModel()`; this
@@ -413,30 +490,41 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // Always persist — including user Stop/cancel (and late abort after a finished
         // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
         // Load earlier / refresh could wipe the cancelled turn from the ring.
-        persist(folded);
+        persistTurn(folded);
         if (!result.ok) {
           setHostNote(result.error);
         }
       } finally {
-        inflightRef.current = false;
-        setBusy(false);
-        // Boot mint landed mid-turn (#430): the bridge was streaming so we did NOT
-        // re-hydrate the ring. Restore the transcript the turn just persisted, rebind
-        // the server UUID and URL/active id only now that the turn is done, then push
-        // the carried-over history to the real resource.
+        const detached = turnEpochRef.current !== epoch;
         const pendingId = pendingMintBindRef.current;
         if (pendingId) {
           pendingMintBindRef.current = null;
-          const bound = { ...sessionRef.current, id: pendingId };
-          // Persist the transcript under the real server-minted id NOW — not only as a
-          // fire-and-forget PUT. A reload here must restore under the id the URL advertises
-          // (#430 re-review): otherwise localStorage would still say sess_X while `?s=` says
-          // the fresh uuid, and boot's get(uuid) (the empty minted row) would adopt/wipe the
-          // first-turn dialogue instead of keeping it.
-          writeLocalSession(bound);
-          setActiveSessionId(pendingId);
-          setUrlSessionId(pendingId);
-          repoRef.current?.put(pendingId, bound);
+          const discarded =
+            discardedSessionIdsRef.current.has(startedId) ||
+            discardedSessionIdsRef.current.has(pendingId);
+          // Adversarial #844: unmount / same-session detach still binds sess_* →
+          // UUID in local store. Switch/Clear do not. Pin ?s= only on live
+          // completion — unmount must not rewrite the destination URL.
+          if (
+            shouldApplyMintBind({
+              sessionId: sessionRef.current.id,
+              startedId,
+              discarded,
+              switchInFlight: switchInFlightRef.current,
+            })
+          ) {
+            const bound = { ...sessionRef.current, id: pendingId };
+            writeLocalSession(bound);
+            repo?.put(pendingId, bound);
+            if (!detached) {
+              setActiveSessionId(pendingId);
+              setUrlSessionId(pendingId);
+            }
+          }
+        }
+        if (!detached) {
+          inflightRef.current = false;
+          setBusy(false);
         }
       }
     },
@@ -704,7 +792,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     return () => {
       cancelled = true;
       canvas.removeEventListener('contextmenu', onCanvasContextMenu);
-      abortRef.current?.abort();
+      // Plan #812 (D18): unmount detaches — close this reader only, never
+      // classify a durable turn as stopped.
+      detachTurn();
       if (pollRef.current != null) {
         clearTimeout(pollRef.current);
         pollRef.current = null;
@@ -718,6 +808,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     };
   }, [
     runPrompt,
+    detachTurn,
     hydrateRingWindow,
     adoptCloudSession,
     activateSession,
@@ -795,11 +886,16 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   }, [personaPick]);
 
   const onClear = useCallback(() => {
-    if (inflightRef.current || switchInFlightRef.current) return;
-    abortRef.current?.abort();
+    if (switchInFlightRef.current) return;
+    // Plan #812 (D18): Clear is a detach site — never a server cancel. Must
+    // run even while a turn is in flight (adversarial #844).
+    detachTurn();
     const repo = repoRef.current;
     const bridge = bridgeRef.current;
     const clearedId = sessionRef.current.id;
+    // Adversarial #844: mark discarded BEFORE remove so a late persistTurn
+    // preserve PUT cannot LWW-upsert this row back into the picker.
+    discardedSessionIdsRef.current.add(clearedId);
     // INTENTIONAL ack-only (not flushPendingThenRestore). Clear deletes this
     // row. Fold-after-remove resurrects via a new-epoch PUT; fold-before-remove
     // is a wasted PUT then DELETE. New/switch flush; Clear acks. See
@@ -869,15 +965,16 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       }
       void refreshSessions();
     })();
-  }, [writeLocalSession, refreshSessions, setUrlSessionId, resolveNewPersona]);
+  }, [detachTurn, writeLocalSession, refreshSessions, setUrlSessionId, resolveNewPersona]);
 
   const onNewSession = useCallback(() => {
     const repo = repoRef.current;
-    if (!repo || !repo.enabled || inflightRef.current || switchInFlightRef.current) return;
+    if (!repo || !repo.enabled || switchInFlightRef.current) return;
     // Adversarial #642: ack any stale session-switch pending synchronously at
     // click before the async repo.create + activateSession.
     bridgeRef.current?.takePendingSessionSwitch();
-    abortRef.current?.abort();
+    // Plan #812 (D18): New session is a detach site — never a server cancel.
+    detachTurn();
     void (async () => {
       const created = await repo.create();
       if (created.action !== 'ok') return; // stay on the current session
@@ -891,16 +988,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       setUrlSessionId(created.snapshot.id);
       repo.put(created.snapshot.id, empty);
     })();
-  }, [activateSession, setUrlSessionId, resolveNewPersona]);
+  }, [detachTurn, activateSession, setUrlSessionId, resolveNewPersona]);
 
   const onSwitchSession = useCallback(
     (id: string) => {
       const repo = repoRef.current;
       const bridge = bridgeRef.current;
-      if (!repo || !repo.enabled || !bridge || inflightRef.current) return;
+      if (!repo || !repo.enabled || !bridge) return;
       if (switchInFlightRef.current) return; // another switch already in-flight
       if (id === sessionRef.current.id) return;
-      abortRef.current?.abort();
+      // Plan #812 (D18): session switch is a detach site — never a server cancel.
+      detachTurn();
       const sourceId = sessionRef.current.id; // generation token — guard against stale get
       switchInFlightRef.current = true;
       void (async () => {
@@ -918,7 +1016,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         }
       })();
     },
-    [activateSession, setUrlSessionId],
+    [detachTurn, activateSession, setUrlSessionId],
   );
   onSwitchSessionRef.current = onSwitchSession;
 

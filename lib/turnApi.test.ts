@@ -132,7 +132,14 @@ describe('sendTurnStream (SSE path — production default)', () => {
       );
     });
     vi.stubGlobal('fetch', fetchMock);
-    const result = await sendTurnStream('list', { sessionId: 's_stream' });
+    const started: string[] = [];
+    const result = await sendTurnStream('list', {
+      sessionId: 's_stream',
+      onTurnStarted: ({ turnRunId }) => {
+        started.push(turnRunId);
+      },
+    });
+    expect(started).toEqual(['wr_0000_stream']);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.text).toBe('Hi there');
@@ -200,5 +207,57 @@ describe('sendTurnStream (SSE path — production default)', () => {
     const result = await sendTurnStream('hi');
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/Empty stream body/);
+  });
+
+  it('abort before headers omits turnRunId (adversarial #844)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new DOMException('aborted', 'AbortError');
+      }),
+    );
+    const result = await sendTurnStream('hi', { signal: new AbortController().signal });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('Request cancelled.');
+      expect(result.turnRunId).toBeUndefined();
+    }
+  });
+
+  it('abort after headers carries the parsed turnRunId (adversarial #844)', async () => {
+    const controller = new AbortController();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream<Uint8Array>({
+          start(c) {
+            controller.abort();
+            c.error(new DOMException('aborted', 'AbortError'));
+          },
+        });
+        return new Response(body, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'x-workflow-run-id': 'wr_live',
+            'x-workflow-run-warning': 'note',
+          },
+        });
+      }),
+    );
+    const started: string[] = [];
+    const result = await sendTurnStream('hi', {
+      signal: controller.signal,
+      onTurnStarted: ({ turnRunId }) => {
+        started.push(turnRunId);
+      },
+    });
+    expect(started).toEqual(['wr_live']);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('Request cancelled.');
+      expect(result.turnRunId).toBe('wr_live');
+      expect(result.turnWarning).toBe('note');
+    }
   });
 });

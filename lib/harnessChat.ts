@@ -19,6 +19,7 @@ import {
   type ToolTraceEntry,
 } from './agentApi';
 import { sendTurn, sendTurnStream } from './turnApi';
+import { isDetachAbort } from './detachTurn';
 import { type AgentStreamEvent } from './agent/agentStream';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
@@ -129,8 +130,12 @@ const PERMANENT_TURN_STATUS = new Set([400, 401, 403, 404, 409, 413, 422]);
  * (via the narrow classifier) can decide retryable vs permanent from the HTTP
  * status + `classifyTurnFailure` kind — the turn classifier keys on both because
  * `classifyTurnFailure` does NOT return distinct 401/403/validation kinds.
+ *
+ * Exported so unit tests can pin `classifyTurnRetry` against a real instance
+ * (adversarial #844 Nit: detach must be permanent, not only gated by an
+ * already-aborted signal).
  */
-class AgentRetryError extends Error {
+export class AgentRetryError extends Error {
   readonly status: number | undefined;
   readonly turnKind: TurnEndKind;
   /** Session-sticky attached-skills set from the failed AgentFailure — must
@@ -168,7 +173,9 @@ class AgentRetryError extends Error {
  */
 export function classifyTurnRetry(err: unknown): VercelErrorClass {
   if (err instanceof AgentRetryError) {
-    if (err.turnKind === 'stop') return { kind: 'permanent', status: err.status };
+    if (err.turnKind === 'stop' || err.turnKind === 'detach') {
+      return { kind: 'permanent', status: err.status };
+    }
     if (err.status !== undefined && PERMANENT_TURN_STATUS.has(err.status)) {
       return { kind: 'permanent', status: err.status };
     }
@@ -222,7 +229,7 @@ function setFailLifecycle(bridge: HarnessBridge, kind: TurnEndKind): void {
   // would drain a queued head). Harmless on the give-up Error path (err is not
   // terminal for the promote gate), but the Ready-on-Stop case REQUIRES it.
   bridge.setQueuePromoteAllowed(false);
-  if (kind === 'stop') {
+  if (kind === 'stop' || kind === 'detach') {
     bridge.setLifecycle(Lifecycle.Ready);
   } else {
     bridge.setLifecycle(Lifecycle.Error);
@@ -722,6 +729,7 @@ export function isTurnEndLine(text: string): boolean {
 export type TurnEndKind =
   | 'model'
   | 'stop'
+  | 'detach'
   | 'error'
   | 'timeout'
   | 'empty'
@@ -738,6 +746,9 @@ export function describeTurnEnd(kind: TurnEndKind, detail?: string): string {
       return `${TURN_END_PREFIX}model finished`;
     case 'stop':
       return `${TURN_END_PREFIX}you stopped`;
+    case 'detach':
+      // Never painted on the canvas (fail path skips pushTurnEnd). Exhaustiveness.
+      return `${TURN_END_PREFIX}detached`;
     case 'timeout':
       return d
         ? `${TURN_END_PREFIX}timed out · ${d}`
@@ -765,6 +776,9 @@ export function classifyTurnFailure(
   signal?: AbortSignal,
 ): { kind: TurnEndKind; detail?: string } {
   const msg = (error ?? '').trim();
+  if (isDetachAbort(signal)) {
+    return { kind: 'detach' };
+  }
   if (signal?.aborted || msg === 'Request cancelled.' || status === 499) {
     return { kind: 'stop' };
   }
@@ -1448,6 +1462,10 @@ export async function runHarnessTurn(
                 ...(boundPersonaId ? { personaId: boundPersonaId } : {}),
                 ...(sessionSandboxId ? { sandboxId: sessionSandboxId } : {}),
                 onEvent: onStreamEvent,
+                onTurnStarted: async ({ turnRunId }) => {
+                  next = { ...next, turnRunId, turnStatus: 'running' };
+                  opts?.onSessionPatch?.(next);
+                },
               })
             : await sendAgentFn(apiPrompt, {
                 signal: opts?.signal,
@@ -1656,7 +1674,9 @@ export async function runHarnessTurn(
         agentResult.status,
         opts?.signal,
       );
-      failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail);
+      if (fail.kind !== 'detach') {
+        failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail);
+      }
       // Phase 2 (#465): a cancel/timeout/hard-error turn still persists the last
       // confirmed `change_dir` cwd (before the abort) so the next turn boots where
       // the model actually worked. When no `change_dir` was confirmed, `liveCwd`
@@ -1691,9 +1711,35 @@ export async function runHarnessTurn(
       ) {
         failedSession = { ...failedSession, activeSandboxId: undefined };
       }
-      // Plan #811 (D17) — clear durable-turn fields on failure.
-      // The turn is terminal (completed) but the run is not durable.
-      if (agentResult.turnRunId !== undefined) {
+      // Plan #811 (D17) — clear durable-turn fields on failure, except a
+      // durable *detach* of *this* turn (plan #812 / adversarial #844): keep
+      // `turnRunId` + `running` so E19 can re-attach. Leftover `completed` /
+      // `cancelling` from a prior D17 turn must stay as-is — pre-headers
+      // AbortError omits `turnRunId`, and forcing `running` on the old id
+      // would LWW-resurrect a finished run.
+      // Stop/Esc after `onTurnStarted` (adversarial #844): production abort
+      // used to omit `turnRunId` even after headers, so the planted-id clear
+      // never fired and live persist left C15 `running`. Clear this-turn
+      // `running` on `'stop'` even when the result omits the id. Do not clear
+      // on generic error/timeout without a result id (network drop after
+      // headers stays attach-ready).
+      if (fail.kind === 'detach') {
+        const id =
+          agentResult.turnRunId ??
+          (failedSession.turnStatus === 'running'
+            ? failedSession.turnRunId
+            : undefined);
+        if (id !== undefined) {
+          failedSession = {
+            ...failedSession,
+            turnRunId: id,
+            turnStatus: 'running',
+          };
+        }
+      } else if (
+        agentResult.turnRunId !== undefined ||
+        (fail.kind === 'stop' && failedSession.turnStatus === 'running')
+      ) {
         failedSession = {
           ...failedSession,
           turnRunId: undefined,

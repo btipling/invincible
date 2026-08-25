@@ -15,7 +15,7 @@ import {
 import {
   parseJsonAgentBody,
   parseToolTrace,
-  type AgentResult,
+  type AgentFailure,
   type SendAgentFn,
   type SendAgentStreamFn,
 } from './agentApi';
@@ -82,6 +82,30 @@ function turnRequestBody(
   return body;
 }
 
+function isAbortError(err: unknown): boolean {
+  return (
+    (err instanceof DOMException && err.name === 'AbortError') ||
+    (err instanceof Error && err.name === 'AbortError')
+  );
+}
+
+/**
+ * AbortError failure. Pre-headers omit `turnRunId` (nothing to fold). After
+ * headers, carry the already-parsed id so Stop can clear this-turn `running`
+ * while detach still keeps it (adversarial #844).
+ */
+function cancelledFailure(extra?: {
+  turnRunId?: string;
+  turnWarning?: string;
+}): AgentFailure {
+  return {
+    ok: false,
+    error: 'Request cancelled.',
+    ...(extra?.turnRunId !== undefined ? { turnRunId: extra.turnRunId } : {}),
+    ...(extra?.turnWarning !== undefined ? { turnWarning: extra.turnWarning } : {}),
+  };
+}
+
 /**
  * POST /api/turns (JSON path). Used when `streamAgent` is false (tests that
  * inject only `sendAgentFn`). Production always streams.
@@ -99,12 +123,7 @@ export const sendTurn: SendAgentFn = async (prompt, init) => {
       signal: init?.signal,
     });
   } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
-      return { ok: false, error: 'Request cancelled.' };
-    }
-    if (err instanceof Error && err.name === 'AbortError') {
-      return { ok: false, error: 'Request cancelled.' };
-    }
+    if (isAbortError(err)) return cancelledFailure();
     return {
       ok: false,
       error: err instanceof Error ? err.message : 'Network request failed.',
@@ -119,11 +138,18 @@ export const sendTurn: SendAgentFn = async (prompt, init) => {
   if (contentType.includes('application/json')) {
     try {
       data = await res.json();
-    } catch {
+    } catch (err) {
+      if (isAbortError(err)) return cancelledFailure({ turnRunId, turnWarning });
       data = null;
     }
   } else {
-    const text = await res.text().catch(() => '');
+    let text = '';
+    try {
+      text = await res.text();
+    } catch (err) {
+      if (isAbortError(err)) return cancelledFailure({ turnRunId, turnWarning });
+      text = '';
+    }
     if (!res.ok) {
       return {
         ok: false,
@@ -175,12 +201,7 @@ export const sendTurnStream: SendAgentStreamFn = async (prompt, init) => {
       signal: init?.signal,
     });
   } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
-      return { ok: false, error: 'Request cancelled.' };
-    }
-    if (err instanceof Error && err.name === 'AbortError') {
-      return { ok: false, error: 'Request cancelled.' };
-    }
+    if (isAbortError(err)) return cancelledFailure();
     return {
       ok: false,
       error: err instanceof Error ? err.message : 'Network request failed.',
@@ -200,7 +221,8 @@ export const sendTurnStream: SendAgentStreamFn = async (prompt, init) => {
       let data: unknown = null;
       try {
         data = await res.json();
-      } catch {
+      } catch (err) {
+        if (isAbortError(err)) return cancelledFailure({ turnRunId, turnWarning });
         data = null;
       }
       const result = parseJsonAgentBody(res, data);
@@ -212,7 +234,13 @@ export const sendTurnStream: SendAgentStreamFn = async (prompt, init) => {
       }
       return result;
     }
-    const text = await res.text().catch(() => '');
+    let text = '';
+    try {
+      text = await res.text();
+    } catch (err) {
+      if (isAbortError(err)) return cancelledFailure({ turnRunId, turnWarning });
+      text = '';
+    }
     if (!res.ok) {
       return {
         ok: false,
@@ -250,6 +278,14 @@ export const sendTurnStream: SendAgentStreamFn = async (prompt, init) => {
     };
   }
 
+  if (turnRunId !== undefined) {
+    try {
+      await init?.onTurnStarted?.({ turnRunId });
+    } catch {
+      // Fold is best-effort — never fail the stream because the host patch threw.
+    }
+  }
+
   const reader = res.body.getReader();
 
   // Accumulate live usage events mid-stream (dispatched through onEvent).
@@ -264,12 +300,7 @@ export const sendTurnStream: SendAgentStreamFn = async (prompt, init) => {
       }
     });
   } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
-      return { ok: false, error: 'Request cancelled.' };
-    }
-    if (err instanceof Error && err.name === 'AbortError') {
-      return { ok: false, error: 'Request cancelled.' };
-    }
+    if (isAbortError(err)) return cancelledFailure({ turnRunId, turnWarning });
     return {
       ok: false,
       error: err instanceof Error ? err.message : 'Stream read failed.',

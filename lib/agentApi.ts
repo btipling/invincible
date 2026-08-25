@@ -146,6 +146,12 @@ export type SendAgentStreamFn = (
     /** Persona id (Redis-safe) bound for this session (first-turn resolve). */
     personaId?: string;
     onEvent?: (event: AgentStreamEvent) => void | Promise<void>;
+    /**
+     * Plan #812 / adversarial #844 — called as soon as `x-workflow-run-id` is
+     * known on a live SSE body so the host can fold `turnRunId` + `running`
+     * before the stream ends. `/api/agent` never sets the header; no-op there.
+     */
+    onTurnStarted?: (info: { turnRunId: string }) => void | Promise<void>;
   },
 ) => Promise<AgentResult>;
 

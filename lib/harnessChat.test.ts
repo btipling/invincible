@@ -4,6 +4,7 @@ import {
   collapseThinkingDisplay,
   classifyTurnFailure,
   classifyTurnRetry,
+  AgentRetryError,
   CONTINUE_TURN_PROMPT,
   describeTurnEnd,
   foldStatusSlots,
@@ -221,6 +222,14 @@ describe('describeTurnEnd / classifyTurnFailure', () => {
     expect(classifyTurnFailure('Request cancelled.', 499).kind).toBe('stop');
     expect(classifyTurnFailure('Gateway timeout', 504).kind).toBe('timeout');
     expect(classifyTurnFailure('down', 502).kind).toBe('error');
+    const detach = new AbortController();
+    detach.abort('detach');
+    expect(classifyTurnFailure('Request cancelled.', undefined, detach.signal).kind).toBe(
+      'detach',
+    );
+    const stop = new AbortController();
+    stop.abort();
+    expect(classifyTurnFailure('Request cancelled.', undefined, stop.signal).kind).toBe('stop');
   });
 });
 
@@ -931,6 +940,17 @@ describe('plan #759 — turn errors retry the current turn, never drain the queu
     // closed to permanent — the turn never loops on something it can't classify.
     expect(classifyTurnRetry(new Error('x')).kind).toBe('permanent');
     expect(classifyTurnRetry('string').kind).toBe('permanent');
+    // Adversarial #844 Nit: detach/stop are permanent even when the HTTP
+    // status is missing (pre-paint AbortError). A 5xx error stays retryable;
+    // C15 409 is permanent. Pinning AgentRetryError — not only signal.aborted.
+    expect(classifyTurnRetry(new AgentRetryError('Request cancelled.', undefined, 'detach')).kind).toBe(
+      'permanent',
+    );
+    expect(classifyTurnRetry(new AgentRetryError('Request cancelled.', undefined, 'stop')).kind).toBe(
+      'permanent',
+    );
+    expect(classifyTurnRetry(new AgentRetryError('flaked', 500, 'error')).kind).toBe('retryable');
+    expect(classifyTurnRetry(new AgentRetryError('live lock', 409, 'error')).kind).toBe('permanent');
   });
 
   it('a LIVE stream that painted then fails is NOT retried (single attempt, no tool/bubble duplication) [adversarial-review Major L1]', async () => {
@@ -1422,6 +1442,208 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     expect(
       exp.__messages.some(
         (m) => m.kind === MessageKind.System && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(true);
+  });
+
+  it('durable detach preserves turnRunId+running and does not paint you-stopped (adversarial #844)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const { runHarnessTurn } = await import('./harnessChat');
+    const { DETACH_ABORT_REASON } = await import('./detachTurn');
+    const controller = new AbortController();
+    const patches: { turnRunId?: string; turnStatus?: string }[] = [];
+    const { session: next } = await runHarnessTurn(bridge, session, 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      onSessionPatch: (s) => {
+        patches.push({ turnRunId: s.turnRunId, turnStatus: s.turnStatus });
+      },
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+        controller.abort(DETACH_ABORT_REASON);
+        // Production sendTurnStream AbortError omits turnRunId.
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('running');
+    expect(patches.some((p) => p.turnRunId === 'wr_live' && p.turnStatus === 'running')).toBe(
+      true,
+    );
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+    expect(next.messages.some((m) => m.role === 'system' && /detached/.test(m.text))).toBe(
+      false,
+    );
+  });
+
+  it('pre-headers detach must not force running on leftover completed id (adversarial #844)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      ...createEmptySession(),
+      turnRunId: 'wr_old',
+      turnStatus: 'completed' as const,
+    };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const { DETACH_ABORT_REASON } = await import('./detachTurn');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, session, 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async () => {
+        // Production sendTurnStream AbortError shape: no onTurnStarted, no
+        // turnRunId on the result (headers never arrived).
+        controller.abort(DETACH_ABORT_REASON);
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(next.turnRunId).toBe('wr_old');
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+    expect(next.messages.some((m) => m.role === 'system' && /detached/.test(m.text))).toBe(
+      false,
+    );
+  });
+
+  it('pre-headers detach must not force running on leftover cancelling id (adversarial #844)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      ...createEmptySession(),
+      turnRunId: 'wr_old',
+      turnStatus: 'cancelling' as const,
+    };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const { DETACH_ABORT_REASON } = await import('./detachTurn');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, session, 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async () => {
+        controller.abort(DETACH_ABORT_REASON);
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(next.turnRunId).toBe('wr_old');
+    expect(next.turnStatus).toBe('cancelling');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+  });
+
+  it('onTurnStarted detach keeps this turn id, not leftover completed (adversarial #844)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      ...createEmptySession(),
+      turnRunId: 'wr_old',
+      turnStatus: 'completed' as const,
+    };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const { DETACH_ABORT_REASON } = await import('./detachTurn');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, session, 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+        controller.abort(DETACH_ABORT_REASON);
+        // Production AbortError omits turnRunId; rely on the onTurnStarted fold.
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('running');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+  });
+
+  it('Stop after onTurnStarted clears this-turn running (adversarial #844)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { runHarnessTurn } = await import('./harnessChat');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+        controller.abort();
+        // Production abort-after-headers now carries turnRunId; also prove the
+        // omit shape still clears via this-turn running.
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(next.turnRunId).toBeUndefined();
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(true);
+  });
+
+  it('Stop after onTurnStarted with abort result id still clears (adversarial #844)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { runHarnessTurn } = await import('./harnessChat');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+        controller.abort();
+        return { ok: false, error: 'Request cancelled.', turnRunId: 'wr_live' };
+      },
+    });
+    expect(next.turnRunId).toBeUndefined();
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(true);
+  });
+
+  it('pre-headers Stop must not clear leftover completed id (adversarial #844)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      ...createEmptySession(),
+      turnRunId: 'wr_old',
+      turnStatus: 'completed' as const,
+    };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, session, 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async () => {
+        controller.abort();
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(next.turnRunId).toBe('wr_old');
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
       ),
     ).toBe(true);
   });
