@@ -158,12 +158,20 @@ export async function POST(req: Request): Promise<Response> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let envelopeStore: any = null;
     let persistRunBind: { cwd?: string; activeSandboxId?: string } | undefined;
+    // B13 strictly-newer overlayClock base: capture the stored envelope's
+    // `updatedAt` so the post-start running PATCH can compute a strictly-newer
+    // clock (`max(now, stored+1)`) — same construction as createTurnPersistSeam
+    // default (lib/agent/turnPersistSeam.ts:122-124). A bare `Date.now()` can
+    // be <= the stored clock (host PUT same-ms or browser clock ahead of server)
+    // → B8 rejects with lww_conflict → running marker never lands.
+    let storedUpdatedAt = 0;
     try {
       const storeRes = await resolveSessionStore();
       if (storeRes.ok && isEnvelopeStore(storeRes.value)) {
         envelopeStore = storeRes.value;
         const envelope = await envelopeStore.readEnvelope(sessionKey);
         if (envelope) {
+          storedUpdatedAt = typeof envelope.updatedAt === 'number' ? envelope.updatedAt : 0;
           if (typeof envelope.meta?.logicalCwd === 'string' && envelope.meta.logicalCwd) {
             persistRunBind = { ...persistRunBind, cwd: envelope.meta.logicalCwd };
           }
@@ -265,9 +273,10 @@ export async function POST(req: Request): Promise<Response> {
     // C14d — post-start durable `running` marker: persist turnRunId +
     // turnStatus='running' via the B8 overlay seam immediately after start()
     // returns, BEFORE the route returns the stream/runId. This is a SEPARATE
-    // write from the terminal B13 seam (which writes `completed`). LWW with a
-    // strictly-newer clock (Date.now()) so it never self-conflicts with the
-    // terminal persist.
+    // write from the terminal B13 seam (which writes `completed`). Clock uses
+    // the SAME strictly-newer construction as B13's createTurnPersistSeam:
+    // `max(now, storedUpdatedAt + 1)` so it can NEVER self-conflict with a
+    // host PUT in the same millisecond or a browser clock ahead of the server.
     let runWarning: string | null = null;
     if (envelopeStore) {
       try {
@@ -279,13 +288,16 @@ export async function POST(req: Request): Promise<Response> {
           envelopeStore,
           key: sessionKey,
           patch: runningPatch,
-          updatedAt: Date.now(),
+          updatedAt: Math.max(Date.now(), storedUpdatedAt + 1),
         });
         if (!runningRes.ok) {
-          runWarning = `Running PATCH did not persist: ${runningRes.error}`;
+          // Stable warning — code only, never the raw error (can carry Redis
+          // host/port/connect strings via overlayWorkerMeta's toMessage paths).
+          runWarning = `Running PATCH did not persist (${runningRes.code})`;
         }
       } catch (err) {
-        runWarning = `Running PATCH failed: ${err instanceof Error ? err.message : String(err)}`;
+        // Stable warning — never interpolate err.message (can carry Redis details).
+        runWarning = `Running PATCH failed to persist`;
       }
     }
 

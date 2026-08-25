@@ -137,7 +137,7 @@ describe('POST /api/turns', () => {
     }));
     vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
       resolveSessionStore: resolveSessionStoreMock,
-      sessionKeyFor: () => ({ tenantId: '', userId: '', sessionId: '' }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({ tenantId: t, userId: u, sessionId: s }),
     }));
     vi.doMock('../../../lib/sessions/sessionStore', () => ({
       isEnvelopeStore: () => true,
@@ -250,6 +250,10 @@ describe('POST /api/turns', () => {
     const patchCall = overlayWorkerMetaMock.mock.calls[0][0];
     expect(patchCall.patch).toEqual({ turnRunId: 'wf_turn_123', turnStatus: 'running' });
     expect(patchCall.envelopeStore).toBeTruthy();
+    // LWW inputs: strictly-newer clock + correct scope key.
+    expect(typeof patchCall.updatedAt).toBe('number');
+    expect(Number.isFinite(patchCall.updatedAt)).toBe(true);
+    expect(patchCall.key).toEqual({ tenantId: 't1', userId: 'u1', sessionId: 's1' });
   });
 
   it('row 2 — missing sessionId → 400 (parseAgentBody would pass; route guard rejects), no start, no running PATCH', async () => {
@@ -322,10 +326,10 @@ describe('POST /api/turns', () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get('x-workflow-run-id')).toBe('wf_turn_123');
-    expect(res.headers.get('x-workflow-run-warning')).toMatch(/Running PATCH failed: Redis write timeout/);
+    expect(res.headers.get('x-workflow-run-warning')).toMatch(/Running PATCH failed to persist/);
     const json = await res.json();
     expect(json.runId).toBe('wf_turn_123');
-    expect(json.warning).toMatch(/Running PATCH failed: Redis write timeout/);
+    expect(json.warning).toMatch(/Running PATCH failed to persist/);
     expect(startMock).toHaveBeenCalledTimes(1);
   });
 
@@ -364,7 +368,7 @@ describe('POST /api/turns', () => {
     });
     vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
       resolveSessionStore: resolveSessionStoreMock,
-      sessionKeyFor: () => ({ tenantId: '', userId: '', sessionId: '' }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({ tenantId: t, userId: u, sessionId: s }),
     }));
     ({ POST } = await import('./route'));
 
