@@ -130,8 +130,12 @@ const PERMANENT_TURN_STATUS = new Set([400, 401, 403, 404, 409, 413, 422]);
  * (via the narrow classifier) can decide retryable vs permanent from the HTTP
  * status + `classifyTurnFailure` kind — the turn classifier keys on both because
  * `classifyTurnFailure` does NOT return distinct 401/403/validation kinds.
+ *
+ * Exported so unit tests can pin `classifyTurnRetry` against a real instance
+ * (adversarial #844 Nit: detach must be permanent, not only gated by an
+ * already-aborted signal).
  */
-class AgentRetryError extends Error {
+export class AgentRetryError extends Error {
   readonly status: number | undefined;
   readonly turnKind: TurnEndKind;
   /** Session-sticky attached-skills set from the failed AgentFailure — must

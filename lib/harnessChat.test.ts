@@ -4,6 +4,7 @@ import {
   collapseThinkingDisplay,
   classifyTurnFailure,
   classifyTurnRetry,
+  AgentRetryError,
   CONTINUE_TURN_PROMPT,
   describeTurnEnd,
   foldStatusSlots,
@@ -939,6 +940,17 @@ describe('plan #759 — turn errors retry the current turn, never drain the queu
     // closed to permanent — the turn never loops on something it can't classify.
     expect(classifyTurnRetry(new Error('x')).kind).toBe('permanent');
     expect(classifyTurnRetry('string').kind).toBe('permanent');
+    // Adversarial #844 Nit: detach/stop are permanent even when the HTTP
+    // status is missing (pre-paint AbortError). A 5xx error stays retryable;
+    // C15 409 is permanent. Pinning AgentRetryError — not only signal.aborted.
+    expect(classifyTurnRetry(new AgentRetryError('Request cancelled.', undefined, 'detach')).kind).toBe(
+      'permanent',
+    );
+    expect(classifyTurnRetry(new AgentRetryError('Request cancelled.', undefined, 'stop')).kind).toBe(
+      'permanent',
+    );
+    expect(classifyTurnRetry(new AgentRetryError('flaked', 500, 'error')).kind).toBe('retryable');
+    expect(classifyTurnRetry(new AgentRetryError('live lock', 409, 'error')).kind).toBe('permanent');
   });
 
   it('a LIVE stream that painted then fails is NOT retried (single attempt, no tool/bubble duplication) [adversarial-review Major L1]', async () => {
