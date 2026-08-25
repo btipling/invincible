@@ -175,6 +175,14 @@ describe('decideDetachPersist (adversarial #844 Clear-vs-PUT / late persist)', (
         turnStatus: 'completed',
       }),
     ).toBe('drop');
+    expect(
+      decideDetachPersist({
+        detached: true,
+        discarded: false,
+        turnRunId: 'wr_old',
+        turnStatus: 'cancelling',
+      }),
+    ).toBe('drop');
   });
 
   it('still on this turn (epoch match) → live', () => {

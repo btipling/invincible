@@ -1708,11 +1708,17 @@ export async function runHarnessTurn(
         failedSession = { ...failedSession, activeSandboxId: undefined };
       }
       // Plan #811 (D17) — clear durable-turn fields on failure, except a
-      // durable *detach* (plan #812 / adversarial #844): the run is still live
-      // server-side; keep `turnRunId` + `running` so E19 can re-attach and a
-      // host PUT cannot LWW-clear the C14d envelope.
+      // durable *detach* of *this* turn (plan #812 / adversarial #844): keep
+      // `turnRunId` + `running` so E19 can re-attach. Leftover `completed` /
+      // `cancelling` from a prior D17 turn must stay as-is — production
+      // AbortError omits `turnRunId`, and forcing `running` on the old id
+      // would LWW-resurrect a finished run.
       if (fail.kind === 'detach') {
-        const id = agentResult.turnRunId ?? failedSession.turnRunId;
+        const id =
+          agentResult.turnRunId ??
+          (failedSession.turnStatus === 'running'
+            ? failedSession.turnRunId
+            : undefined);
         if (id !== undefined) {
           failedSession = {
             ...failedSession,

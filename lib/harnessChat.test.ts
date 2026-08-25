@@ -1451,7 +1451,8 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
       sendAgentStream: async (_prompt, init) => {
         await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
         controller.abort(DETACH_ABORT_REASON);
-        return { ok: false, error: 'Request cancelled.', turnRunId: 'wr_live' };
+        // Production sendTurnStream AbortError omits turnRunId.
+        return { ok: false, error: 'Request cancelled.' };
       },
     });
     expect(next.turnRunId).toBe('wr_live');
@@ -1467,6 +1468,97 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     expect(next.messages.some((m) => m.role === 'system' && /detached/.test(m.text))).toBe(
       false,
     );
+  });
+
+  it('pre-headers detach must not force running on leftover completed id (adversarial #844)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      ...createEmptySession(),
+      turnRunId: 'wr_old',
+      turnStatus: 'completed' as const,
+    };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const { DETACH_ABORT_REASON } = await import('./detachTurn');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, session, 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async () => {
+        // Production sendTurnStream AbortError shape: no onTurnStarted, no
+        // turnRunId on the result (headers never arrived).
+        controller.abort(DETACH_ABORT_REASON);
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(next.turnRunId).toBe('wr_old');
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+    expect(next.messages.some((m) => m.role === 'system' && /detached/.test(m.text))).toBe(
+      false,
+    );
+  });
+
+  it('pre-headers detach must not force running on leftover cancelling id (adversarial #844)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      ...createEmptySession(),
+      turnRunId: 'wr_old',
+      turnStatus: 'cancelling' as const,
+    };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const { DETACH_ABORT_REASON } = await import('./detachTurn');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, session, 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async () => {
+        controller.abort(DETACH_ABORT_REASON);
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(next.turnRunId).toBe('wr_old');
+    expect(next.turnStatus).toBe('cancelling');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+  });
+
+  it('onTurnStarted detach keeps this turn id, not leftover completed (adversarial #844)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      ...createEmptySession(),
+      turnRunId: 'wr_old',
+      turnStatus: 'completed' as const,
+    };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const { DETACH_ABORT_REASON } = await import('./detachTurn');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, session, 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+        controller.abort(DETACH_ABORT_REASON);
+        // Production AbortError omits turnRunId; rely on the onTurnStarted fold.
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('running');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
   });
 
   it('text then reasoning then text does not duplicate assistant segment', async () => {
