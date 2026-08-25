@@ -491,44 +491,54 @@ describe('POST /api/turns', () => {
     expect(overlayWorkerMetaMock).toHaveBeenCalledTimes(1);
   });
 
-  it('row 8b — in-flight 409: concurrent same-session POSTs — second hits in-flight guard before start(), first succeeds when start resolves', async () => {
+  it('row 8b — in-flight 409: concurrent same-session POSTs — second hits in-flight guard (flag set BEFORE BYOK await), first succeeds after gate resolves', async () => {
     standardHarness();
     mockAuthedSession();
     mockStart();
 
-    // Hang start() so the first request's in-flight flag stays set.
-    let resolveStart: (v: unknown) => void;
-    const startPromise = new Promise((r) => { resolveStart = r; });
-    startMock.mockReturnValueOnce(startPromise);
+    // Hang BYOK resolve (the first gate that awaits AFTER inFlight is set)
+    // so POST1 has the in-flight flag set but is stuck at the BYOK await.
+    // A concurrent POST2 checks inFlight.has('s1') → true → 409 BEFORE any
+    // I/O work. No artificial sleep — the in-flight flag is set synchronously
+    // before the first `await`, so POST2 always sees it.
+    let resolveByok: (v: unknown) => void;
+    const byokPromise = new Promise((r) => { resolveByok = r; });
+    servicesState.resolveInferenceForRequest.resolveByokForRequest =
+      vi.fn(() => byokPromise);
 
     ({ POST } = await import('./route'));
 
-    // Fire the first POST without awaiting — it runs through all gates
-    // (all mocks resolve synchronously), sets inFlight via boundedSetStr,
-    // then hangs at `await start(startPromise)`.
+    // Fire POST1 without awaiting — it sets inFlight synchronously,
+    // then hangs at `await resolveByokForRequest(...)`.
     const res1Promise = postJson({ prompt: 'hi', sessionId: 's1' });
 
-    // Wait a macrotask tick so POST1 definitely reaches boundedSetStr
-    // before POST2 checks inFlight. Without this, microtask interleaving
-    // can let POST2 check before POST1 sets the flag (mocks are too fast).
-    await new Promise((r) => setTimeout(r, 10));
-
     // Second POST for the SAME session: inFlight.has('s1') → 409.
+    // No sleep needed — POST1's inFlight flag was set synchronously before
+    // the first `await`, and POST2's auth `await` yields to the microtask
+    // queue; POST1's BYOK `await` is also pending → POST2 runs and sees
+    // the flag.
     const res2 = await postJson({ prompt: 'hi again', sessionId: 's1' });
     expect(res2.status).toBe(409);
     const body2 = await res2.json();
     expect(body2.error).toBe('A turn is already being started for this session.');
     // start() never called for the second request.
-    expect(startMock).toHaveBeenCalledTimes(1);
+    expect(startMock).not.toHaveBeenCalled();
 
-    // Resolve the first start() — the first POST completes.
-    resolveStart!({
-      runId: 'wf_turn_123',
-      getReadable: () => new ReadableStream(),
+    // Resolve BYOK → POST1 proceeds through remaining gates + start().
+    resolveByok!({
+      ok: true,
+      modelId: 'anthropic/claude-a',
+      provider: 'anthropic',
+      credentials: { apiKey: 'sk-test' },
+      only: ['anthropic'] as [string],
+      byok: { anthropic: [{ apiKey: 'sk-test' }] },
+      secretId: 'sec-1',
+      secretsToRedact: ['sk-test'],
     });
     const res1 = await res1Promise;
     expect(res1.status).toBe(200);
     expect(res1.headers.get('x-workflow-run-id')).toBe('wf_turn_123');
+    expect(startMock).toHaveBeenCalledTimes(1);
   });
 
   it('row 8c — per-session isolation: user A turn does NOT 429 user B on the same isolate', async () => {

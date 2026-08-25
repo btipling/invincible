@@ -30,10 +30,12 @@
  *     cross-isolate dedup (the in-flight guard above is same-isolate)
  *  8. Sandbox hard-deny → 403
  *
- * `inFlight` is set BEFORE `start()`, cleared on throw or success — a 503
- * (`start()` throw) clears it so a retry can proceed. `lastStartAtMs`
- * advances ONLY on a successful `start()` call — 429/409/503 never burn
- * the window.
+ * `inFlight` is set IMMEDIATELY after the `has()` check (zero-I/O, BEFORE any
+ * gate that may await: tenant resolve, BYOK, envelope read, sandbox probe).
+ * Cleared in a `finally` block on EVERY path (success, throw, or any early
+ * return from a pre-start gate) so a retry can always proceed — the flag
+ * never leaks. `lastStartAtMs` advances ONLY on a successful `start()` call —
+ * 429/any-pre-start-gate-failure never burn the window.
  *
  * `turnRunId` is DERIVED in-workflow (`getWorkflowMetadata().workflowRunId`), so
  * the terminal persist's `turnRunId` equals the route-side `run.runId` (never
@@ -74,13 +76,14 @@ const services = createProdServices();
  * (per-userid:sandboxid Map + boundedSet). Keyed by `sessionId` so tenant A's
  * turn never 429s a co-located tenant B on the same isolate.
  *
- * `lastStartAtMs` advances ONLY on a successful `start()` call. 409/503/429/
- * any-pre-start-gate-failure never burn the window.
+ * `lastStartAtMs` advances ONLY on a successful `start()` call — any
+ * pre-start-gate-failure never burn the window.
  *
- * `inFlight` is set BEFORE `start()`, cleared on throw or success — a
- * same-isolate dedup that catches the actual double-click (two concurrent
- * `fetch()` calls that both pass the 429 and durable-409 gates before the
- * first request's `start()` or running PATCH lands).
+ * `inFlight` is set IMMEDIATELY after the `has()` check (zero-I/O, before
+ * any gate that may await) and cleared in a `finally` block on EVERY path
+ * (success, throw, or any early return) — a same-isolate dedup that catches
+ * the actual double-click (two concurrent `fetch()` calls that both pass the
+ * 429 gate).
  */
 const lastStartAtMs = new Map<string, number>();
 const inFlight = new Set<string>();
@@ -194,16 +197,19 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   // C15 in-flight guard — per-session dedup for concurrent POSTs on the
-  // same isolate. Checked early (zero I/O) before the BYOK resolve so a
-  // double-click wastes no DB work. The durable-409 (envelope-based) below
-  // catches cross-isolate duplicates; this catches same-isolate racing
-  // `fetch()` calls that both passed the 429 gate before `start()` returned.
+  // same isolate. The flag is SET IMMEDIATELY after the `has()` check (zero
+  // I/O, before any gate that may await: tenant resolve, BYOK, envelope read,
+  // sandbox probe). A concurrent POST for the same session on this isolate
+  // sees the flag and gets 409. Cleared in a `finally` block on EVERY path
+  // (success, throw, or any early return from a pre-start gate) so a retry
+  // can always proceed — the flag never leaks.
   if (inFlight.has(sessionId)) {
     return Response.json(
       { error: 'A turn is already being started for this session.' },
       { status: 409 },
     );
   }
+  boundedSetStr(inFlight, sessionId);
 
   // Pre-start sandbox probe client — closed after start() succeeds OR on throw.
   // Mirrors /api/agent closeRunners (extendTimeout + drop handle, never stop).
@@ -341,11 +347,6 @@ export async function POST(req: Request): Promise<Response> {
       if (!sandboxResolved.ok) return sandboxResolved.response;
     }
 
-    // C15 in-flight flag: set BEFORE `start()` so a concurrent POST for the
-    // same session on this isolate sees it and gets 409. Cleared on throw
-    // (so a retry can proceed) and on success.
-    boundedSetStr(inFlight, sessionId);
-
     // The single durable loop entry. `turnRunId` is derived in-workflow from
     // getWorkflowMetadata().workflowRunId — never passed as a start() arg.
     // NO `tools` dict — tool schemas are assembled in-step via the shared
@@ -361,10 +362,8 @@ export async function POST(req: Request): Promise<Response> {
     ]);
 
     // C15: advance the per-session clock ONLY on a successful start() —
-    // 409/503/429/any-pre-start-gate-failure never burn the window.
-    // Clear the in-flight flag — the run is enqueued.
+    // any-pre-start-gate-failure never burn the window.
     boundedSet(lastStartAtMs, sessionId, Date.now());
-    inFlight.delete(sessionId);
 
     // Close the probe client now that the run is enqueued. The in-step
     // assemble helper opens its OWN client per step VM — this probe was
@@ -429,10 +428,6 @@ export async function POST(req: Request): Promise<Response> {
     if (runWarning) body.warning = runWarning;
     return Response.json(body, { headers: runHeaders });
   } catch (err) {
-    // start() throw (or any gate-after-probe throw) — clear the in-flight
-    // flag so a retry for the same session can proceed.
-    inFlight.delete(sessionId);
-
     // Close the probe client (if it was opened before the throw).
     if (sandboxProbeClient?.close) {
       try {
@@ -442,5 +437,11 @@ export async function POST(req: Request): Promise<Response> {
       }
     }
     return Response.json({ error: failClosed(err) }, { status: 503 });
+  } finally {
+    // Clear the in-flight flag on EVERY path — success, throw, or any early
+    // return from a pre-start gate (tenant 503, BYOK 4xx, durable 409,
+    // sandbox 403). The flag was set immediately after the `has()` check so
+    // no path can leak it.
+    inFlight.delete(sessionId);
   }
 }
