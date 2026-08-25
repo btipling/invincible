@@ -221,6 +221,14 @@ describe('describeTurnEnd / classifyTurnFailure', () => {
     expect(classifyTurnFailure('Request cancelled.', 499).kind).toBe('stop');
     expect(classifyTurnFailure('Gateway timeout', 504).kind).toBe('timeout');
     expect(classifyTurnFailure('down', 502).kind).toBe('error');
+    const detach = new AbortController();
+    detach.abort('detach');
+    expect(classifyTurnFailure('Request cancelled.', undefined, detach.signal).kind).toBe(
+      'detach',
+    );
+    const stop = new AbortController();
+    stop.abort();
+    expect(classifyTurnFailure('Request cancelled.', undefined, stop.signal).kind).toBe('stop');
   });
 });
 
@@ -1424,6 +1432,41 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
         (m) => m.kind === MessageKind.System && m.text === describeTurnEnd('stop'),
       ),
     ).toBe(true);
+  });
+
+  it('durable detach preserves turnRunId+running and does not paint you-stopped (adversarial #844)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = createEmptySession();
+    const { runHarnessTurn } = await import('./harnessChat');
+    const { DETACH_ABORT_REASON } = await import('./detachTurn');
+    const controller = new AbortController();
+    const patches: { turnRunId?: string; turnStatus?: string }[] = [];
+    const { session: next } = await runHarnessTurn(bridge, session, 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      onSessionPatch: (s) => {
+        patches.push({ turnRunId: s.turnRunId, turnStatus: s.turnStatus });
+      },
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+        controller.abort(DETACH_ABORT_REASON);
+        return { ok: false, error: 'Request cancelled.', turnRunId: 'wr_live' };
+      },
+    });
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('running');
+    expect(patches.some((p) => p.turnRunId === 'wr_live' && p.turnStatus === 'running')).toBe(
+      true,
+    );
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+    expect(next.messages.some((m) => m.role === 'system' && /detached/.test(m.text))).toBe(
+      false,
+    );
   });
 
   it('text then reasoning then text does not duplicate assistant segment', async () => {

@@ -250,6 +250,14 @@ export const sendTurnStream: SendAgentStreamFn = async (prompt, init) => {
     };
   }
 
+  if (turnRunId !== undefined) {
+    try {
+      await init?.onTurnStarted?.({ turnRunId });
+    } catch {
+      // Fold is best-effort — never fail the stream because the host patch threw.
+    }
+  }
+
   const reader = res.body.getReader();
 
   // Accumulate live usage events mid-stream (dispatched through onEvent).

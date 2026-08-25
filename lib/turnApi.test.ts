@@ -132,7 +132,14 @@ describe('sendTurnStream (SSE path — production default)', () => {
       );
     });
     vi.stubGlobal('fetch', fetchMock);
-    const result = await sendTurnStream('list', { sessionId: 's_stream' });
+    const started: string[] = [];
+    const result = await sendTurnStream('list', {
+      sessionId: 's_stream',
+      onTurnStarted: ({ turnRunId }) => {
+        started.push(turnRunId);
+      },
+    });
+    expect(started).toEqual(['wr_0000_stream']);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.text).toBe('Hi there');
