@@ -16,6 +16,7 @@
  * Plus unmount-nulling `repoRef` still PUTs via the captured repo object.
  * Plus the source-lock that counts `decideDetach`-wired detach sites vs raw
  * `abort()` call sites in `HarnessHost.tsx`.
+ * Plus same-tab EOF detach must not light ember `hostNote` (adversarial #853).
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -30,6 +31,7 @@ import {
   putPreservedTurn,
   shouldAbortReader,
   shouldApplyMintBind,
+  shouldSetHostTurnNote,
   type DetachTurnInput,
 } from './detachTurn';
 
@@ -310,6 +312,7 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(module).toContain('export function preserveTargetId');
     expect(module).toContain('export function putPreservedTurn');
     expect(module).toContain('export function shouldApplyMintBind');
+    expect(module).toContain('export function shouldSetHostTurnNote');
     expect(module).toContain('durablePath');
   });
 
@@ -408,4 +411,24 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     const detachedBind = bind.slice(0, bind.indexOf('if (!detached)'));
     expect(detachedBind).not.toContain('setUrlSessionId(pendingId)');
   });
+
+  it('runPrompt skips ember hostNote on same-tab running detach (adversarial #853)', () => {
+    const runStart = host.indexOf('const runPrompt = useCallback');
+    const run = host.slice(runStart, host.indexOf('useEffect(() => {', runStart));
+    expect(run).toContain('shouldSetHostTurnNote(folded.turnStatus)');
+    expect(run).not.toMatch(/if \(!result\.ok\) \{\s*setHostNote\(result\.error\);/);
+  });
 });
+
+describe('shouldSetHostTurnNote (adversarial #853 same-tab detach)', () => {
+  it('running (EOF / D18 persist) does not surface host error chrome', () => {
+    expect(shouldSetHostTurnNote('running')).toBe(false);
+  });
+
+  it('completed / cancelling / unset still surface the note', () => {
+    expect(shouldSetHostTurnNote('completed')).toBe(true);
+    expect(shouldSetHostTurnNote('cancelling')).toBe(true);
+    expect(shouldSetHostTurnNote(undefined)).toBe(true);
+  });
+});
+

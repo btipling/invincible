@@ -1898,6 +1898,44 @@ describe('durable stream EOF is detach (plan #852 / source #849)', () => {
     ).toBe(true);
     expect(exp.__lifecycle()).toBe(Lifecycle.Error);
   });
+
+  it('onTurnStarted + SSE error is error fold, not detach, and does not POST again', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgentStream = vi.fn(
+      async (
+        _prompt: string,
+        init?: {
+          onTurnStarted?: (info: { turnRunId: string }) => void | Promise<void>;
+          onEvent?: (ev: AgentStreamEvent) => void | Promise<void>;
+        },
+      ) => {
+        await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+        await init?.onEvent?.({ type: 'error', error: 'producer failed' });
+        return {
+          ok: false as const,
+          error: 'producer failed',
+          turnRunId: 'wr_live',
+        };
+      },
+    );
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'work', {
+      streamAgent: true,
+      sendAgentStream,
+    });
+    expect(sendAgentStream).toHaveBeenCalledTimes(1);
+    expect(next.turnRunId).toBeUndefined();
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'error' && m.text.startsWith('Turn ended · error'),
+      ),
+    ).toBe(true);
+    expect(next.messages.some((m) => m.role === 'system' && /detached/.test(m.text))).toBe(
+      false,
+    );
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+  });
 });
 
 describe('toolRun aggregation (protocol v10 / plan #345)', () => {
