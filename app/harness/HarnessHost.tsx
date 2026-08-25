@@ -12,6 +12,7 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
+import { decideDetach, shouldAbortReader } from '../../lib/detachTurn';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -357,6 +358,31 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     },
     [writeLocalSession],
   );
+
+  /**
+   * Plan #812 (D18) — a DOM detach site (unmount / session switch / New /
+   * Clear / logout): close THIS reader only, never classify the turn as
+   * stopped. `decideDetach` branches BEFORE any `AbortController.abort()` so a
+   * durable detach never rides the abort→`signal.aborted`→`'stop'` fold that
+   * would clear `turnRunId`/`turnStatus` and break the later E19 re-attach.
+   * `cancel` (Stop/Esc) is NEVER routed here — the poll's takePendingCancel
+   * path stays a raw abort.
+   */
+  const detachTurn = useCallback(() => {
+    const s = sessionRef.current;
+    const decision = decideDetach({
+      cancel: false,
+      inflight: inflightRef.current,
+      turnRunId: s.turnRunId,
+      turnStatus: s.turnStatus,
+    });
+    if (shouldAbortReader(decision)) {
+      // detach-close (in-flight, no durable run) and noop-abort — this reader
+      // has nothing durable to preserve, so closing it is acceptable.
+      abortRef.current?.abort();
+    }
+    return decision;
+  }, []);
 
   const runPrompt = useCallback(
     async (prompt: string, opts?: { pushUser?: boolean }) => {
@@ -704,7 +730,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     return () => {
       cancelled = true;
       canvas.removeEventListener('contextmenu', onCanvasContextMenu);
-      abortRef.current?.abort();
+      // Plan #812 (D18): unmount detaches — close this reader only, never
+      // classify a durable turn as stopped.
+      detachTurn();
       if (pollRef.current != null) {
         clearTimeout(pollRef.current);
         pollRef.current = null;
@@ -718,6 +746,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     };
   }, [
     runPrompt,
+    detachTurn,
     hydrateRingWindow,
     adoptCloudSession,
     activateSession,
@@ -796,7 +825,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
 
   const onClear = useCallback(() => {
     if (inflightRef.current || switchInFlightRef.current) return;
-    abortRef.current?.abort();
+    // Plan #812 (D18): Clear is a detach site — never a server cancel.
+    detachTurn();
     const repo = repoRef.current;
     const bridge = bridgeRef.current;
     const clearedId = sessionRef.current.id;
@@ -869,7 +899,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       }
       void refreshSessions();
     })();
-  }, [writeLocalSession, refreshSessions, setUrlSessionId, resolveNewPersona]);
+  }, [detachTurn, writeLocalSession, refreshSessions, setUrlSessionId, resolveNewPersona]);
 
   const onNewSession = useCallback(() => {
     const repo = repoRef.current;
@@ -877,7 +907,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     // Adversarial #642: ack any stale session-switch pending synchronously at
     // click before the async repo.create + activateSession.
     bridgeRef.current?.takePendingSessionSwitch();
-    abortRef.current?.abort();
+    // Plan #812 (D18): New session is a detach site — never a server cancel.
+    detachTurn();
     void (async () => {
       const created = await repo.create();
       if (created.action !== 'ok') return; // stay on the current session
@@ -891,7 +922,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       setUrlSessionId(created.snapshot.id);
       repo.put(created.snapshot.id, empty);
     })();
-  }, [activateSession, setUrlSessionId, resolveNewPersona]);
+  }, [detachTurn, activateSession, setUrlSessionId, resolveNewPersona]);
 
   const onSwitchSession = useCallback(
     (id: string) => {
@@ -900,7 +931,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       if (!repo || !repo.enabled || !bridge || inflightRef.current) return;
       if (switchInFlightRef.current) return; // another switch already in-flight
       if (id === sessionRef.current.id) return;
-      abortRef.current?.abort();
+      // Plan #812 (D18): session switch is a detach site — never a server cancel.
+      detachTurn();
       const sourceId = sessionRef.current.id; // generation token — guard against stale get
       switchInFlightRef.current = true;
       void (async () => {
@@ -918,7 +950,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         }
       })();
     },
-    [activateSession, setUrlSessionId],
+    [detachTurn, activateSession, setUrlSessionId],
   );
   onSwitchSessionRef.current = onSwitchSession;
 
