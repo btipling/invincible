@@ -4,8 +4,8 @@
  * The extractable one-round core factored out of `runAgentStream`'s multi-step
  * loop: exactly ONE LLM round with tool SCHEMAS only (never `execute`), emitting
  * the existing `AgentStreamEvent` wire to an injected writable, returning a
- * normalized DELTA `{ text, toolCalls, usage, finishReason }` — not the full
- * transcript.
+ * normalized DELTA `{ text, toolCalls, usage, finishReason, reasoning? }` — not
+ * the full transcript.
  *
  * Deliberately standalone and non-wired: `/api/agent` and `runAgentStream` stay
  * untouched this row (B12 shells over this core as `modelGenerateStep`). No
@@ -21,6 +21,7 @@ import type { AgentStreamEvent } from './agentStream';
 import { mapFullStreamPart } from './agentStream';
 import { mapProviderUsage, type UsageSummary } from './usageSummary';
 import { redactSecrets } from './redact';
+import { resolveAgentReasoning } from './reasoningConfig';
 import { resolveAgentStopWhen } from './stopWhen';
 
 /** One captured tool-call delta (schemas only — never executed here). */
@@ -33,13 +34,15 @@ export type ToolCallDelta = {
 /**
  * The normalized first-step delta. `usage` is the round's aggregate provider
  * usage after the single call (never per-`finish-step`). `finishReason` is
- * forwarded as the provider reported it.
+ * forwarded as the provider reported it. `reasoning` is the accumulated
+ * thinking text for this round (already redacted); omitted when empty.
  */
 export type OneRoundDelta = {
   text: string;
   toolCalls: ToolCallDelta[];
   usage?: UsageSummary;
   finishReason?: string;
+  reasoning?: string;
 };
 
 /**
@@ -125,6 +128,10 @@ export async function generateOneRound(
   if (deps.providerOptions !== undefined) {
     streamArgs.providerOptions = deps.providerOptions;
   }
+  const reasoningOpt = resolveAgentReasoning(deps.modelId);
+  if (reasoningOpt) {
+    streamArgs.reasoning = reasoningOpt;
+  }
 
   let result: any;
   try {
@@ -136,6 +143,7 @@ export async function generateOneRound(
 
   const toolCalls: ToolCallDelta[] = [];
   let finishReason: string | undefined;
+  let reasoningAcc = '';
 
   try {
     for await (const part of result.fullStream) {
@@ -167,6 +175,11 @@ export async function generateOneRound(
         }
       }
       for (const ev of mapFullStreamPart(part, secrets)) {
+        if (ev.type === 'reasoning_delta' && ev.text) {
+          // Concatenate mapped (already redacted) chunks as-is — do not trim
+          // per chunk (would eat leading spaces). Final trim happens at return.
+          reasoningAcc += ev.text;
+        }
         try {
           await input.onEvent(ev);
         } catch (err) {
@@ -202,6 +215,7 @@ export async function generateOneRound(
     usage = undefined;
   }
 
+  const reasoning = reasoningAcc.trim();
   return {
     ok: true,
     delta: {
@@ -209,6 +223,7 @@ export async function generateOneRound(
       toolCalls,
       ...(usage !== undefined ? { usage } : {}),
       ...(finishReason !== undefined ? { finishReason } : {}),
+      ...(reasoning ? { reasoning } : {}),
     },
   };
 }

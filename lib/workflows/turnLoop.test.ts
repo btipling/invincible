@@ -680,6 +680,95 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
   });
 });
 
+describe('runTurnLoop reasoning (plan #846)', () => {
+  function parseEvents(lines: string[]): Array<{ type: string; text?: string; name?: string }> {
+    return lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+  }
+
+  it('writes reasoning_delta before text_delta/done from delta.reasoning', async () => {
+    const { deps, w, closed } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], reasoning: 'Hmm…', finishReason: 'stop' },
+    }));
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep: vi.fn() },
+      { userMessage: 'think' },
+    );
+    expect(result.status).toBe('completed');
+    expect(closed()).toBe(1);
+    const events = parseEvents(w.lines);
+    const types = events.map((e) => e.type);
+    expect(types).toContain('reasoning_delta');
+    expect(types.indexOf('reasoning_delta')).toBeLessThan(types.indexOf('text_delta'));
+    expect(types.indexOf('text_delta')).toBeLessThan(types.indexOf('done'));
+    const reasoning = events.find((e) => e.type === 'reasoning_delta');
+    expect(reasoning?.text).toBe('Hmm…');
+  });
+
+  it('omits reasoning_delta when delta.reasoning is absent', async () => {
+    const { deps, w } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], finishReason: 'stop' },
+    }));
+    await runTurnLoop({ ...deps, modelStep, toolStep: vi.fn() }, { userMessage: 'plain' });
+    const events = parseEvents(w.lines);
+    expect(events.some((e) => e.type === 'reasoning_delta')).toBe(false);
+    expect(events.some((e) => e.type === 'text_delta')).toBe(true);
+  });
+
+  it('emits reasoning_delta before tool_start on a reasoning-only tool round', async () => {
+    const { deps, w } = wiredDeps();
+    let first = true;
+    const modelStep = vi.fn(async () => {
+      const f = first;
+      first = false;
+      return f
+        ? {
+            ok: true as const,
+            delta: {
+              text: '',
+              toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
+              reasoning: 'need tools',
+            },
+          }
+        : { ok: true as const, delta: { text: 'done', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(async () => ({
+      ok: true as const,
+      result: 'ok',
+      freshnessDelta: '[]',
+    }));
+    await runTurnLoop({ ...deps, modelStep, toolStep }, { userMessage: 'go' });
+    const events = parseEvents(w.lines);
+    const types = events.map((e) => e.type);
+    expect(types.indexOf('reasoning_delta')).toBeGreaterThanOrEqual(0);
+    expect(types.indexOf('reasoning_delta')).toBeLessThan(types.indexOf('tool_start'));
+  });
+
+  it('strips reasoning from persist deltas and reconstructed messages (3b)', async () => {
+    const { deps } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [], reasoning: 'secret think', finishReason: 'stop' },
+    }));
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep: vi.fn() },
+      { userMessage: 'think' },
+    );
+    expect(JSON.stringify(result.deltas)).not.toContain('secret think');
+    expect(JSON.stringify(result.deltas)).not.toContain('"reasoning"');
+    const assistants = result.messages.filter(
+      (m) => (m as { role?: string }).role === 'assistant',
+    ) as Array<{ delta?: Record<string, unknown> }>;
+    expect(assistants.length).toBeGreaterThan(0);
+    for (const m of assistants) {
+      expect(m.delta).not.toHaveProperty('reasoning');
+    }
+  });
+});
+
 describe('step wrappers (matrix 4–7)', () => {
   it('matrix 4 + 5: modelGenerateStep is a thin shell — delegates generateOneRound, re-resolves BYOK in-step, assembles FULL tool schemas via shared helper, serializable args', async () => {
     // Mock generateOneRound to prove the wrapper delegates and forwards plain
