@@ -40,6 +40,7 @@ import { requireSessionUser } from '../../../lib/tenancy/session';
 import { resolveSessionStore } from '../../../lib/tenancy/harnessSessionsRedis';
 import { isEnvelopeStore } from '../../../lib/sessions/sessionStore';
 import { sessionKeyFor } from '../../../lib/tenancy/harnessSessionsRedis';
+import { type ResolveAgentSandboxResult } from '../../../lib/tenancy/resolveSandbox';
 import { turnWorkflow } from '../../../lib/workflows/turnWorkflow';
 
 export const runtime = 'nodejs';
@@ -53,6 +54,17 @@ const services = createProdServices();
 function failClosed(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
   return `Unable to start durable turn (fail closed): ${msg}`;
+}
+
+/** Hard deny when resolve returned no client AND there is no soft-path fallback. */
+function isHardSandboxDeny(
+  res: ResolveAgentSandboxResult,
+  httpAttachName: string | null,
+): boolean {
+  if (res.ok) return false;
+  if (res.softContinue || res.selectionRequired) return false;
+  if (httpAttachName) return false;
+  return true;
 }
 
 /**
@@ -109,9 +121,10 @@ export async function POST(req: Request): Promise<Response> {
 
   // Pre-start sandbox probe client — closed after start() succeeds OR on throw.
   // Mirrors /api/agent closeRunners (extendTimeout + drop handle, never stop).
-  // Only populated when resolveAgentSandbox returns {ok:true} (the probe
-  // succeeded). Hard-deny / soft-path never opens a client so there is nothing
-  // to close.
+  // Only populated when resolveAgentSandbox returns {ok:true}. Hard-deny
+  // ({ok:false}) never opens a client so nothing to close there. Soft-path
+  // where {ok:true} + HTTP attach running DOES open a client — it is still
+  // captured here and closed on the success/throw paths below.
   let sandboxProbeClient: { close?: () => Promise<void> } | undefined;
 
   try {
@@ -213,14 +226,10 @@ export async function POST(req: Request): Promise<Response> {
       sandboxProbeClient = sandboxResolved.value.client;
     }
 
-    if (
-      !sandboxResolved.ok &&
-      !sandboxResolved.softContinue &&
-      !sandboxResolved.selectionRequired &&
-      !httpAttachName
-    ) {
-      // Hard deny: no soft-path surface → 403 before enqueue.
-      return sandboxResolved.response;
+    if (isHardSandboxDeny(sandboxResolved, httpAttachName)) {
+      // Hard deny: no client + no soft-path surface → 403 before enqueue.
+      // isHardSandboxDeny guarantees ok:false here — narrow for TS.
+      if (!sandboxResolved.ok) return sandboxResolved.response;
     }
 
     // The single durable loop entry. `turnRunId` is derived in-workflow from
