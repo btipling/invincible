@@ -139,7 +139,8 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Concern | Path |
 |---------|------|
 | Event map / tool summary | `lib/agent/agentStream.ts` |
-| streamText + reasoning option | `lib/agent/runAgent.ts`, `lib/agent/reasoningConfig.ts` |
+| streamText + reasoning option (production `/api/turns`) | `lib/agent/generateOneRound.ts`, `lib/agent/reasoningConfig.ts` |
+| streamText + reasoning option (legacy `/api/agent`) | `lib/agent/runAgent.ts`, `lib/agent/reasoningConfig.ts` |
 | Route SSE vs JSON | `app/api/agent/route.ts` |
 | Logical cwd parse / default | `lib/agent/agentBody.ts`, `lib/sandbox/config.ts`, `lib/agent/workPath.ts` |
 | Host consumer + collapse/caps | `lib/harnessChat.ts`, `lib/agentApi.ts` |

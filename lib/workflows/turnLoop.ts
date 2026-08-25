@@ -14,8 +14,9 @@
  * carrier that adapts `'use step'` write/close wrappers and calls this core.
  *
  * Lock discipline (B11 #805, deploy-gate):
- *  - Step I/O = **deltas** (`{text,toolCalls,usage,finishReason}` / `{result,
- *    freshnessDelta}` / terminal persist status), never the full transcript.
+ *  - Step I/O = **deltas** (`{text,toolCalls,usage,finishReason,reasoning?}` /
+ *    `{result, freshnessDelta}` / terminal persist status), never the full
+ *    transcript.
  *  - Tokens ride `getWritable()` (this core writes SSE event lines to the
  *    injected writable); the transcript/checkpoint live in Blob (B13 persist).
  *  - The writable is closed **exactly once** on every terminal path — success,
