@@ -18,6 +18,7 @@ import {
   type SendAgentStreamFn,
   type ToolTraceEntry,
 } from './agentApi';
+import { sendTurn, sendTurnStream } from './turnApi';
 import { type AgentStreamEvent } from './agent/agentStream';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
@@ -116,9 +117,12 @@ export const CONTINUE_TURN_PROMPT = 'Continue the current turn';
 /**
  * HTTP statuses the turn treats as PERMANENT (no 5× backoff loop): 4xx client
  * errors are the operator/request's fault (auth 401/403, validation 400/422,
- * not-found 404, too-large 413). 408/429/5xx and timeout/empty stay retryable.
+ * not-found 404, too-large 413, and 409 live-lock — C15's double-send guard —
+ * which is a state conflict, not a transient quota blip like 429, so it must
+ * not hammer POST while the first run is still live). 408/429/5xx and
+ * timeout/empty stay retryable.
  */
-const PERMANENT_TURN_STATUS = new Set([400, 401, 403, 404, 413, 422]);
+const PERMANENT_TURN_STATUS = new Set([400, 401, 403, 404, 409, 413, 422]);
 
 /**
  * Thrown by the retry wrapper for a FAILED agent attempt so `withTransientRetry`
@@ -133,17 +137,25 @@ class AgentRetryError extends Error {
    *  survive the throw/catch round-trip or fold-before-persist (plan #517)
    *  would silently drop the sticky set on a give-up turn. */
   readonly attachedSlugs?: string[];
+  /** Plan #811 (D17) — the Workflow run id must survive the throw/catch
+   *  round-trip too, or the D17 failure fold (clear `turnRunId` + mark the
+   *  terminal turn `completed`) can never fire: the give-up rebuild would drop
+   *  the id on every failed durable turn, leaving a stale `running` on the
+   *  session that blocks the next C15 start. */
+  readonly turnRunId?: string;
   constructor(
     error: string,
     status: number | undefined,
     turnKind: TurnEndKind,
     attachedSlugs?: string[],
+    turnRunId?: string,
   ) {
     super(error);
     this.name = 'AgentRetryError';
     this.status = status;
     this.turnKind = turnKind;
     this.attachedSlugs = attachedSlugs;
+    this.turnRunId = turnRunId;
   }
 }
 
@@ -177,6 +189,7 @@ function agentFailureFromRetry(err: unknown): AgentFailure {
       ...(err.attachedSlugs !== undefined
         ? { attachedSlugs: err.attachedSlugs }
         : {}),
+      ...(err.turnRunId !== undefined ? { turnRunId: err.turnRunId } : {}),
     };
   }
   if (err instanceof Error && err.name === 'AbortError') {
@@ -964,8 +977,10 @@ export async function runHarnessTurn(
   scheduleMathFromMarkdown(bridge, prompt);
   const preferAgent = opts?.preferAgent !== false;
   const useHistory = opts?.useHistory !== false;
-  const sendAgentFn = opts?.sendAgent ?? sendAgent;
-  const sendAgentStreamFn = opts?.sendAgentStream ?? sendAgentStream;
+  // Plan #811 (D17): production defaults → /api/turns (durable-turn transport).
+  // Tests inject sendAgent/sendAgentStream via opts to keep the legacy /api/agent path.
+  const sendAgentFn = opts?.sendAgent ?? sendTurn;
+  const sendAgentStreamFn = opts?.sendAgentStream ?? sendTurnStream;
   // Default: stream when using production client. Tests that only inject
   // `sendAgent` keep the JSON path unless streamAgent/sendAgentStream set.
   const streamAgent =
@@ -1444,7 +1459,13 @@ export async function runHarnessTurn(
               });
           if (!r.ok) {
             const kind = classifyTurnFailure(r.error, r.status, opts?.signal).kind;
-            throw new AgentRetryError(r.error, r.status, kind, r.attachedSlugs);
+            throw new AgentRetryError(
+              r.error,
+              r.status,
+              kind,
+              r.attachedSlugs,
+              r.turnRunId,
+            );
           }
           return r;
         },
@@ -1574,6 +1595,16 @@ export async function runHarnessTurn(
       // below deliberately does NOT touch `usage`, so an aborted/cancelled turn
       // keeps its last honest value.
       next = { ...next, usage: agentResult.usage };
+      // Plan #811 (D17) — fold durable-turn fields onto the session.
+      // `turnRunId` is populated by /api/turns (absent for /api/agent — tests).
+      if (agentResult.turnRunId !== undefined) {
+        next = {
+          ...next,
+          turnRunId: agentResult.turnRunId,
+          turnStatus: 'completed',
+          turnStreamCursor: 0,
+        };
+      }
       // Protocol v13 (plan #538/#541): after a successful turn, fold the
       // effective bind + cwd into the status-slot pack so the canvas header
       // reflects the post-turn state (incl. a `meta_sandbox_switch`).
@@ -1659,6 +1690,15 @@ export async function runHarnessTurn(
           agentResult.error === SANDBOX_FORBIDDEN_ERROR)
       ) {
         failedSession = { ...failedSession, activeSandboxId: undefined };
+      }
+      // Plan #811 (D17) — clear durable-turn fields on failure.
+      // The turn is terminal (completed) but the run is not durable.
+      if (agentResult.turnRunId !== undefined) {
+        failedSession = {
+          ...failedSession,
+          turnRunId: undefined,
+          turnStatus: 'completed',
+        };
       }
       lastUiKind =
         fail.kind === 'error' || fail.kind === 'timeout' ||

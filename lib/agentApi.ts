@@ -10,6 +10,11 @@ import {
   type AgentStreamEvent,
 } from './agent/agentStream';
 import { sanitizeUsageSummary, type UsageSummary } from './agent/usageSummary';
+import {
+  parseSseChunk,
+  readAgentStream,
+  type AgentStreamResult,
+} from './agentSse';
 import { parseAttachedSkills } from './sessionCloudCaps';
 
 export type ToolTraceEntry = {
@@ -61,6 +66,17 @@ export type AgentSuccess = {
    * reported none or the wire value is invalid/non-provider — never a guess.
    */
   usage?: UsageSummary;
+  /**
+   * Plan #811 (D17) — the Workflow run id from the `x-workflow-run-id` response
+   * header (populated by `/api/turns`; absent for `/api/agent`). The caller folds
+   * this onto the session for durable-turn lifecycle.
+   */
+  turnRunId?: string;
+  /**
+   * Plan #811 (D17) — the `x-workflow-run-warning` response header (non-fatal
+   * PATCH warning). Absent on `/api/agent`.
+   */
+  turnWarning?: string;
 };
 
 export type AgentFailure = {
@@ -73,6 +89,17 @@ export type AgentFailure = {
    * bodies) so the host folds it before persisting.
    */
   attachedSlugs?: string[];
+  /**
+   * Plan #811 (D17) — the Workflow run id from the `x-workflow-run-id` response
+   * header (populated by `/api/turns`; absent for `/api/agent`). The caller folds
+   * this onto the session for durable-turn lifecycle.
+   */
+  turnRunId?: string;
+  /**
+   * Plan #811 (D17) — the `x-workflow-run-warning` response header (non-fatal
+   * PATCH warning). Absent on `/api/agent`.
+   */
+  turnWarning?: string;
 };
 
 export type AgentResult = AgentSuccess | AgentFailure;
@@ -123,7 +150,7 @@ export type SendAgentStreamFn = (
 ) => Promise<AgentResult>;
 
 /** Wire parse: accept all toolTrace entries (no host-side product cap). */
-function parseToolTrace(raw: unknown): ToolTraceEntry[] | undefined {
+export function parseToolTrace(raw: unknown): ToolTraceEntry[] | undefined {
   if (!Array.isArray(raw) || raw.length === 0) return undefined;
   const out: ToolTraceEntry[] = [];
   for (const item of raw) {
@@ -184,7 +211,7 @@ function failureFromJson(
   };
 }
 
-function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
+export function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
   const record =
     data && typeof data === 'object' ? (data as Record<string, unknown>) : null;
   const errorField = record && typeof record.error === 'string' ? record.error : null;
@@ -315,39 +342,6 @@ export const sendAgent: SendAgentFn = async (prompt, init) => {
   return parseJsonAgentBody(res, data);
 };
 
-function parseSseChunk(
-  buffer: string,
-): { events: AgentStreamEvent[]; rest: string } {
-  const events: AgentStreamEvent[] = [];
-  // Normalize CRLF so proxies that emit \r\n still frame correctly.
-  let rest = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  // SSE events separated by blank line
-  for (;;) {
-    const idx = rest.indexOf('\n\n');
-    if (idx < 0) break;
-    const block = rest.slice(0, idx);
-    rest = rest.slice(idx + 2);
-    const dataLines: string[] = [];
-    for (const line of block.split('\n')) {
-      if (line.startsWith('data:')) {
-        dataLines.push(line.slice(5).trimStart());
-      }
-    }
-    if (dataLines.length === 0) continue;
-    const raw = dataLines.join('\n').trimEnd();
-    if (!raw || raw === '[DONE]') continue;
-    try {
-      const parsed = JSON.parse(raw) as AgentStreamEvent;
-      if (parsed && typeof parsed === 'object' && typeof (parsed as { type?: unknown }).type === 'string') {
-        events.push(parsed);
-      }
-    } catch {
-      // ignore malformed chunks
-    }
-  }
-  return { events, rest };
-}
-
 /**
  * Stream agent endpoint (Accept: text/event-stream).
  * Early JSON errors (503 sandbox, 401, …) are handled like sendAgent.
@@ -419,101 +413,20 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
   }
 
   const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  let finalText = '';
-  let toolTrace: ToolTraceEntry[] | undefined;
-  let streamCwd: string | undefined;
-  let streamSandboxId: string | undefined;
-  let streamActiveSandboxId: string | undefined;
-  let streamUsage: UsageSummary | undefined;
-  let streamError: AgentFailure | null = null;
 
+  // Accumulate live usage events mid-stream (dispatched through onEvent).
+  let streamUsage: UsageSummary | undefined;
+
+  let streamResult: AgentStreamResult;
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const { events, rest } = parseSseChunk(buf);
-      buf = rest;
-      for (const ev of events) {
-        if (init?.onEvent) {
-          await init.onEvent(ev);
-        }
-        if (ev.type === 'done') {
-          // Prefer non-empty done.text; do not wipe delta accumulation with "".
-          if (typeof ev.text === 'string' && ev.text.trim()) {
-            finalText = ev.text;
-          } else if (!finalText.trim() && typeof ev.text === 'string') {
-            finalText = ev.text;
-          }
-          toolTrace = parseToolTrace(ev.toolTrace) ?? toolTrace;
-          if (typeof ev.cwd === 'string') {
-            streamCwd = ev.cwd;
-          }
-          if (typeof ev.sandboxId === 'string') {
-            streamSandboxId = ev.sandboxId;
-          }
-          if (typeof ev.activeSandboxId === 'string') {
-            streamActiveSandboxId = ev.activeSandboxId;
-          }
-          // Phase 3 (plan #539 + #628) — `done.usage` is the conclusive
-          // reconcile that REPLACES any live mid-stream value (absent → clear,
-          // the completed-turn rule; never falls back to a prior live value).
-          streamUsage = sanitizeUsageSummary(ev.usage);
-        } else if (ev.type === 'error') {
-          streamError = {
-            ok: false,
-            error: ev.error || 'Stream error.',
-            ...(typeof ev.status === 'number' ? { status: ev.status } : {}),
-          };
-        } else if (ev.type === 'usage') {
-          // Phase 3 (plan #628) — live provider usage mid-stream. Last honest
-          // wins; never step back to empty on a finish part that reported none
-          // (such parts never emit a `usage` event).
-          streamUsage =
-            sanitizeUsageSummary(ev.usage) ?? streamUsage;
-        } else if (ev.type === 'text_delta' && typeof ev.text === 'string') {
-          // Host may grow assistant; keep a fallback accumulation.
-          finalText += ev.text;
-        }
+    streamResult = await readAgentStream(reader, async (ev) => {
+      if (init?.onEvent) await init.onEvent(ev);
+      if (ev.type === 'usage') {
+        // Phase 3 (plan #628) — live provider usage mid-stream. Last honest
+        // wins; never step back to empty on a finish part that reported none.
+        streamUsage = sanitizeUsageSummary(ev.usage) ?? streamUsage;
       }
-      if (streamError) break;
-    }
-    // Flush trailing buffer
-    if (buf.trim()) {
-      const { events } = parseSseChunk(buf + '\n\n');
-      for (const ev of events) {
-        if (init?.onEvent) await init.onEvent(ev);
-        if (ev.type === 'done') {
-          if (typeof ev.text === 'string' && ev.text.trim()) {
-            finalText = ev.text;
-          } else if (!finalText.trim() && typeof ev.text === 'string') {
-            finalText = ev.text;
-          }
-          toolTrace = parseToolTrace(ev.toolTrace) ?? toolTrace;
-          if (typeof ev.cwd === 'string') {
-            streamCwd = ev.cwd;
-          }
-          if (typeof ev.sandboxId === 'string') {
-            streamSandboxId = ev.sandboxId;
-          }
-          if (typeof ev.activeSandboxId === 'string') {
-            streamActiveSandboxId = ev.activeSandboxId;
-          }
-          // Phase 3 (plan #539 + #628) — `done.usage` is the conclusive
-          // reconcile that REPLACES any live mid-stream value (absent → clear,
-          // the completed-turn rule; never falls back to a prior live value).
-          streamUsage = sanitizeUsageSummary(ev.usage);
-        } else if (ev.type === 'error') {
-          streamError = {
-            ok: false,
-            error: ev.error || 'Stream error.',
-            ...(typeof ev.status === 'number' ? { status: ev.status } : {}),
-          };
-        }
-      }
-    }
+    });
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
       return { ok: false, error: 'Request cancelled.' };
@@ -525,15 +438,27 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
       ok: false,
       error: err instanceof Error ? err.message : 'Stream read failed.',
     };
-  } finally {
-    try {
-      reader.releaseLock();
-    } catch {
-      /* ignore */
-    }
   }
 
-  if (streamError) return streamError;
+  if (streamResult.error) {
+    return {
+      ok: false,
+      error: streamResult.error.error,
+      ...(streamResult.error.status !== undefined
+        ? { status: streamResult.error.status }
+        : {}),
+    };
+  }
+
+  const finalText = streamResult.finalText;
+  const toolTrace = parseToolTrace(streamResult.toolTraceRaw);
+
+  // Phase 3 (plan #539 + #628) — `done.usage` is the conclusive
+  // reconcile that REPLACES any live mid-stream value (absent → clear,
+  // the completed-turn rule; never falls back to a prior live value).
+  const doneUsage = sanitizeUsageSummary(streamResult.usageRaw);
+  const usage = doneUsage ?? streamUsage;
+
   if (!finalText.trim()) {
     return { ok: false, status: res.status, error: 'Empty model response.' };
   }
@@ -541,11 +466,13 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
     ok: true,
     text: finalText.trim(),
     ...(toolTrace ? { toolTrace } : {}),
-    ...(streamCwd !== undefined ? { cwd: streamCwd } : {}),
-    ...(streamSandboxId !== undefined ? { sandboxId: streamSandboxId } : {}),
-    ...(streamActiveSandboxId !== undefined
-      ? { activeSandboxId: streamActiveSandboxId }
+    ...(streamResult.cwd !== undefined ? { cwd: streamResult.cwd } : {}),
+    ...(streamResult.sandboxId !== undefined
+      ? { sandboxId: streamResult.sandboxId }
       : {}),
-    ...(streamUsage ? { usage: streamUsage } : {}),
+    ...(streamResult.activeSandboxId !== undefined
+      ? { activeSandboxId: streamResult.activeSandboxId }
+      : {}),
+    ...(usage ? { usage } : {}),
   };
 };

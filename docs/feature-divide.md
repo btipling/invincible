@@ -80,13 +80,14 @@ User types in Wasm composer
   → inv_* pending submit (poll)
   → Host runHarnessTurn / SessionStore
   → formatPromptWithHistory (user/assistant only)
-  → POST /api/agent { prompt, modelId? } with Accept: text/event-stream (default host)
+  → POST /api/turns { prompt, modelId?, cwd?, sandboxId?, sessionId?, personaId? } with Accept: text/event-stream (production default host, plan #811/D17 — durable-turn transport; the response carries the Workflow run id in the `x-workflow-run-id` header)
        server requires the session user: request-scoped BYOK for the authorized modelId
        tools → sandbox (DB grants + Settings Workspace attach)
               + optional builtin http_get (attach-only durable HTTPS instance)
               + enabled per-user MCP tools (server-side only; soft-fail dead servers)
        SSE: tool_start / tool_result / reasoning_delta / text_delta / done (see docs/agent-stream.md)
        JSON fallback when Accept is not event-stream (tests / simple clients)
+       `/api/agent` remains reachable as the legacy test-inject path (`sendAgent`/`sendAgentStream`); production `runHarnessTurn` uses `/api/turns` only, with no silent agent fallback
   → Host aggregates each uninterrupted tool streak into a display-only `tool_run` message (kind 6, protocol v11) + Thinking monologue + growing Assistant (protocol v8 update-last). The `tool_run` card is **painted live**: each tool event opens (or grows) exactly ONE kind-6 card immediately — `1 tool called` → `2 tools called` → … — via `update_last` while the last ring row is a tool-run, else a NEW card at `1`. A thinking/assistant/user/error row that lands last is a physical separator (forces a new card); on reload consecutive `tool_run` rows coalesce into scannable groups (plan #365)
   → Thinking rows **collapse at turn end** into a compact expandable control (in-memory; ephemeral; not SessionStore); the active Busy turn stays fully expanded
   → Tool-run rows paint as a default-collapsed `N tools called` expandable control (counts + two-level detail); see [harness-limits.md](harness-limits.md)
