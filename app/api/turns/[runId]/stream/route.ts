@@ -12,10 +12,11 @@
  *
  * Query params:
  *  - `sessionId`: REQUIRED — the session scope for tenancy-bound ownership
- *    verification. The handler reads the session envelope and checks
- *    `meta.turnRunId === runId` before piping the stream. Without this, runIds
- *    are project-scoped UUIDs that any authed user could attach (IDOR).
- *    Mismatch → 404 (never 403 — same as other session API per SECURITY.md).
+ *    verification. Sanitized against `isRedisSafeOpaqueId` (400 on invalid).
+ *    The handler reads the session envelope and checks
+ *    `meta.turnRunId === runId` before piping the stream. Store unavailable or
+ *    read throw → 503 FAIL-CLOSED (never skip the owner check).
+ *    Mismatch → 404 (never 403).
  *  - `?startIndex=N`: optional non-negative integer ≤ TURN_STREAM_CURSOR_MAX
  *    (A3 #797), default 0 for full replay. MID resume when N > 0.
  *  - `runId`: URL path param, validated against TURN_RUN_ID_MAX (A1 #795) via
@@ -24,10 +25,10 @@
  *
  * Response:
  *  - 200 + SSE stream (content-type: text/event-stream; charset=utf-8)
- *  - 400 for invalid runId/startIndex/missing sessionId
+ *  - 400 for invalid runId/startIndex/sessionId
  *  - 401 for auth failure
  *  - 404 for run not found OR ownership mismatch (tenancy guard)
- *  - 503 fail-closed for tenant resolve / getReadable throw / infra errors
+ *  - 503 fail-closed for tenant resolve / store unavailable / getReadable throw
  *
  * No `x-workflow-run-warning` header — this route is read-only (no PATCH).
  */
@@ -37,6 +38,7 @@ import {
 } from '../../../../../lib/agent/agentStream';
 import { createProdServices } from '../../../../../lib/di';
 import {
+  isRedisSafeOpaqueId,
   sanitizeTurnRunId,
   TURN_STREAM_CURSOR_MAX,
 } from '../../../../../lib/sessionCloudCaps';
@@ -59,10 +61,12 @@ const services = createProdServices();
  * Attach or reconnect to a durable-turn SSE stream via
  * `getRun(runId).getReadable({startIndex})`. Read-only — no envelope writes.
  *
- * Tenancy-bound: `sessionId` is REQUIRED. The handler reads the session
+ * Tenancy-bound: `sessionId` is REQUIRED and sanitized against
+ * `isRedisSafeOpaqueId` (400 on invalid). The handler reads the session
  * envelope and verifies `meta.turnRunId === runId` before piping the stream.
- * Fail-open when the envelope store is unavailable (the run may still be
- * playable). Mismatch → 404 (never 403).
+ * FAIL-CLOSED on store unavailable or read throw (503) — the tenancy gate is
+ * the only owner check; skipping it would restore the r2 IDOR.
+ * Mismatch → 404 (never 403).
  */
 export async function GET(
   req: Request,
@@ -106,10 +110,16 @@ export async function GET(
     startIndex = parsed;
   }
 
-  // Parse sessionId — REQUIRED for tenancy-bound ownership verification.
-  // Without this, runIds are project-scoped UUIDs that any authed user could
-  // attach (IDOR). The handler reads the session envelope and checks
-  // meta.turnRunId === cleanRunId before piping the stream.
+  // Parse and sanitize sessionId — REQUIRED for tenancy-bound ownership
+  // verification. Without this, runIds are project-scoped UUIDs that any
+  // authed user could attach (IDOR). The handler reads the session envelope
+  // and checks meta.turnRunId === cleanRunId before piping the stream.
+  //
+  // sessionId is sanitized against `isRedisSafeOpaqueId` (^[A-Za-z0-9_-]{1,512}$)
+  // BEFORE it reaches `sessionKeyFor` / `readEnvelope`. A non-opaque id is a
+  // client error (400). Without this, an attacker-supplied `sessionId=*` would
+  // reach `RedisSessionStore.assertValidSessionRecordKey` → throw, which the
+  // old fail-open catch would silently skip (r3 Major L2).
   const rawSessionId = new URL(req.url).searchParams.get('sessionId');
   if (!rawSessionId) {
     return Response.json(
@@ -117,12 +127,23 @@ export async function GET(
       { status: 400 },
     );
   }
+  if (!isRedisSafeOpaqueId(rawSessionId)) {
+    return Response.json(
+      { error: 'Invalid sessionId.' },
+      { status: 400 },
+    );
+  }
+  const sessionId = rawSessionId; // type-narrowed by isRedisSafeOpaqueId
 
   // Tenancy check — resolve tenant for the authenticated user, read the
   // session envelope, verify envelope.meta.turnRunId matches the requested
-  // runId. Fail-open when the envelope store is unavailable (the run may
-  // still be playable). Mismatch → 404 (never 403 — same as other session
-  // API per SECURITY.md: "other user → 404, never 403").
+  // runId. FAIL-CLOSED when the envelope store is unavailable (503) or the
+  // envelope read throws (503) — the tenancy gate is the ONLY owner check;
+  // skipping it restores the r2 IDOR. SECURITY.md: store unavailable → 503,
+  // other user → 404 never 403.
+  //
+  // Only two paths reach the stream: (a) envelope turnRunId matches,
+  // (b) envelope absent → 404.
   const tenantRes =
     await services.harnessSessionsRedis.resolveTenantIdForUser(userId);
   if (!tenantRes.ok) {
@@ -131,31 +152,44 @@ export async function GET(
       { status: 503 },
     );
   }
-  const sessionKey = sessionKeyFor(tenantRes.value, userId, rawSessionId);
+  const sessionKey = sessionKeyFor(tenantRes.value, userId, sessionId);
 
+  // Resolve the envelope store — fail-closed (503) when the store is
+  // unavailable or not an envelope store. Previously fail-open skipped
+  // the ownership check entirely.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let envelopeStore: any = null;
+  let envelopeStore: any;
   try {
     const storeRes = await resolveSessionStore();
-    if (storeRes.ok && isEnvelopeStore(storeRes.value)) {
-      envelopeStore = storeRes.value;
+    if (!storeRes.ok || !isEnvelopeStore(storeRes.value)) {
+      return Response.json(
+        { error: 'Unable to attach to run stream (store unavailable).' },
+        { status: 503 },
+      );
     }
+    envelopeStore = storeRes.value;
   } catch {
-    // Fail-open: store unavailable → skip ownership check, try attach anyway.
+    return Response.json(
+      { error: 'Unable to attach to run stream (store unavailable).' },
+      { status: 503 },
+    );
   }
 
-  if (envelopeStore) {
-    try {
-      const envelope = await envelopeStore.readEnvelope(sessionKey);
-      if (!envelope || envelope.meta?.turnRunId !== cleanRunId) {
-        return Response.json(
-          { error: `Run not found: ${cleanRunId}` },
-          { status: 404 },
-        );
-      }
-    } catch {
-      // Fail-open: envelope read error → skip ownership check, try attach.
+  // Read the session envelope — fail-closed (503) on read throw, 404 on
+  // miss or turnRunId mismatch. Previously fail-open on read throw.
+  try {
+    const envelope = await envelopeStore.readEnvelope(sessionKey);
+    if (!envelope || envelope.meta?.turnRunId !== cleanRunId) {
+      return Response.json(
+        { error: `Run not found: ${cleanRunId}` },
+        { status: 404 },
+      );
     }
+  } catch {
+    return Response.json(
+      { error: 'Unable to attach to run stream (store unavailable).' },
+      { status: 503 },
+    );
   }
 
   // Attach to the run stream. getRun, exists, and getReadable are all

@@ -6,31 +6,36 @@ import { AUTH_REQUIRED_ERROR } from '../../../../../lib/tenancy/errors';
  * durable-turn stream attach/reconnect.
  *
  * Mocks `getRun`, `sanitizeTurnRunId`, `sanitizeTurnStreamCursor`,
- * `requireSessionUser`, `resolveSessionStore`, `sessionKeyFor`,
- * `isEnvelopeStore`, and `createProdServices` so the route never
- * opens a real DB/Redis connection or reaches the Workflows API.
+ * `isRedisSafeOpaqueId`, `requireSessionUser`, `resolveSessionStore`,
+ * `sessionKeyFor`, `isEnvelopeStore`, and `createProdServices` so the route
+ * never opens a real DB/Redis connection or reaches the Workflows API.
  *
- * Covers the original 14-row test matrix plus new tenancy-check rows:
+ * Covers the test matrix:
  *   1. startIndex=0 → full replay
  *   2. startIndex=N → mid-stream resume
  *   3. startIndex absent → defaults to 0
  *   4. Run not found → 404
  *   5. getReadable throws → 503 fail-closed
+ *   5b. run.exists rejects → 503 fail-closed
  *   6. Invalid runId → 400
  *   7. startIndex negative → 400
  *   8. startIndex non-integer → 400
  *   9. startIndex over cap → 400
  *  10. startIndex non-numeric → 400
  *  11. Auth failure → 401
- *  12. Client abort closes reader, does NOT cancel run
+ *  12. Client abort during stream — run.cancel() NEVER called (abort ≠ cancel)
  *  13. Completed run → 200
  *  14. Missing runId param → 400 (handler guard)
  *
  *  15. Missing sessionId → 400
+ *  15b. Invalid (non-opaque) sessionId → 400
  *  16. Tenant resolve failure → 503
  *  17. Envelope absent (miss) → 404
  *  18. Envelope turnRunId mismatch → 404
  *  19. Happy path with tenancy check → 200
+ *  20. Store resolve not-ok (store unavailable) → 503 fail-closed
+ *  20b. Store resolve throws → 503 fail-closed
+ *  21. readEnvelope throws → 503 fail-closed
  */
 describe('GET /api/turns/:runId/stream', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -41,6 +46,8 @@ describe('GET /api/turns/:runId/stream', () => {
   let sanitizeTurnRunIdMock: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let sanitizeTurnStreamCursorMock: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let isRedisSafeOpaqueIdMock: any;
 
   /** Spy on the returned readable stream's cancel method (Row 12). */
   let readableCancelSpy: ReturnType<typeof vi.fn>;
@@ -53,6 +60,8 @@ describe('GET /api/turns/:runId/stream', () => {
   let envelopePresent: boolean;
   let tenantResolveOk: boolean;
   let storeAvailable: boolean;
+  let storeResolveThrows: boolean;
+  let readEnvelopeThrows: boolean;
 
   function resetState() {
     readableCancelSpy = vi.fn(async () => {});
@@ -75,6 +84,8 @@ describe('GET /api/turns/:runId/stream', () => {
     envelopePresent = true;
     tenantResolveOk = true;
     storeAvailable = true;
+    storeResolveThrows = false;
+    readEnvelopeThrows = false;
   }
 
   function mockGetRun(overrides: Record<string, unknown> = {}) {
@@ -105,9 +116,14 @@ describe('GET /api/turns/:runId/stream', () => {
       if (v > 1_000_000_000) return undefined;
       return v;
     });
+    isRedisSafeOpaqueIdMock = vi.fn((s: unknown) => {
+      if (typeof s !== 'string') return false;
+      return /^[A-Za-z0-9_-]{1,512}$/.test(s);
+    });
     vi.doMock('../../../../../lib/sessionCloudCaps', () => ({
       sanitizeTurnRunId: sanitizeTurnRunIdMock,
       sanitizeTurnStreamCursor: sanitizeTurnStreamCursorMock,
+      isRedisSafeOpaqueId: isRedisSafeOpaqueIdMock,
       TURN_STREAM_CURSOR_MAX: 1_000_000_000,
     }));
   }
@@ -136,6 +152,11 @@ describe('GET /api/turns/:runId/stream', () => {
   /**
    * Set up the tenancy-check mocks so the route passes the ownership gate.
    * All happy-path test rows must call this BEFORE importing the route.
+   *
+   * Controls via module-scoped state flags:
+   *  - `storeAvailable`: false → resolveSessionStore returns {ok:false}
+   *  - `storeResolveThrows`: true → resolveSessionStore throws
+   *  - `readEnvelopeThrows`: true → readEnvelope throws
    */
   function mockTenancyOk(sessionId = 's1', turnRunId?: string) {
     const resolvedTurnRunId = turnRunId ?? envelopeTurnRunId;
@@ -153,20 +174,22 @@ describe('GET /api/turns/:runId/stream', () => {
     }));
 
     vi.doMock('../../../../../lib/tenancy/harnessSessionsRedis', () => ({
-      resolveSessionStore: vi.fn(async () =>
-        storeAvailable
-          ? {
-              ok: true as const,
-              value: {
-                readEnvelope: vi.fn(async () =>
-                  envelopePresent
-                    ? { meta: { turnRunId: resolvedTurnRunId }, updatedAt: Date.now() }
-                    : null,
-                ),
-              },
-            }
-          : { ok: false as const, code: 'SESSION_STORE_UNAVAILABLE' as const, error: 'down' },
-      ),
+      resolveSessionStore: vi.fn(async () => {
+        if (storeResolveThrows) throw new Error('store-resolve-crash');
+        if (!storeAvailable)
+          return { ok: false as const, code: 'SESSION_STORE_UNAVAILABLE' as const, error: 'down' };
+        return {
+          ok: true as const,
+          value: {
+            readEnvelope: vi.fn(async () => {
+              if (readEnvelopeThrows) throw new Error('read-envelope-crash');
+              return envelopePresent
+                ? { meta: { turnRunId: resolvedTurnRunId }, updatedAt: Date.now() }
+                : null;
+            }),
+          },
+        };
+      }),
       sessionKeyFor: vi.fn(
         (_tenantId: string, _userId: string, sid: string) =>
           ({ tenantId: 't1', userId: 'u1', sessionId: sid }),
@@ -370,6 +393,7 @@ describe('GET /api/turns/:runId/stream', () => {
     vi.doMock('../../../../../lib/sessionCloudCaps', () => ({
       sanitizeTurnRunId: sanitizeTurnRunIdMock,
       sanitizeTurnStreamCursor: vi.fn(),
+      isRedisSafeOpaqueId: vi.fn(() => true),
       TURN_STREAM_CURSOR_MAX: 1_000_000_000,
     }));
 
@@ -480,8 +504,25 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(getRunMock).not.toHaveBeenCalled();
   });
 
-  // ── Row 12 — Client abort closes reader, does NOT cancel run ──
-  it('row 12 — client abort closes reader, run.cancel() NEVER called', async () => {
+  // ── Row 12 — Client abort during stream, run.cancel() NEVER called ──
+  // Uses a never-closing stream so the abort fires while the stream is still
+  // active (not after handler return). Key assertion: run.cancel() is NEVER
+  // called — abort ≠ cancel per C16 parent lock.
+  it('row 12 — client abort during stream, run.cancel() NEVER called', async () => {
+    // Create a lingering stream that never closes, so the GET response body
+    // stays open while we abort mid-stream.
+    let streamController: ReadableStreamDefaultController<Uint8Array>;
+    const lingeringStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(new TextEncoder().encode('data: {"type":"text_delta","text":"a"}\n\n'));
+        // NOTE: never calls controller.close() — stream stays open
+      },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (lingeringStream as any).cancel = readableCancelSpy;
+    getReadableMock = vi.fn(() => lingeringStream);
+
     standardHarness();
     mockAuthedSession();
     ({ GET } = await import('./route'));
@@ -491,7 +532,9 @@ describe('GET /api/turns/:runId/stream', () => {
     const url = new URL('https://x/api/turns/wf_turn_123/stream');
     url.searchParams.set('sessionId', 's1');
 
-    const res = await GET(
+    // Start the GET — don't await. The response headers are sent immediately
+    // but the body streams from the never-closing ReadableStream.
+    const resPromise = GET(
       new Request(url, {
         method: 'GET',
         headers: { accept: 'text/event-stream' },
@@ -500,21 +543,18 @@ describe('GET /api/turns/:runId/stream', () => {
       { params: Promise.resolve({ runId: 'wf_turn_123' }) },
     );
 
+    // Abort during active streaming (before the stream closes).
+    controller.abort();
+
+    const res = await resPromise;
     expect(res.status).toBe(200);
     expect(getRunMock).toHaveBeenCalledTimes(1);
 
-    // Abort the client — this should close the reader (cancel spy fired on
-    // the stream) but NEVER call run.cancel().
-    controller.abort();
-
-    // The readable's cancel spy should have been called (stream cancelled by
-    // the platform when the signal fires). This is a loose assertion — in a
-    // fully simulated env the abort might not propagate through the mock —
-    // but the KEY assertion is the negative one below.
-    expect(getReadableMock).toHaveBeenCalledTimes(1);
-
-    // run.cancel() must NEVER be called — abort ≠ cancel.
+    // run.cancel() must NEVER be called — abort ≠ cancel (C16 parent lock).
     expect(runCancelSpy).not.toHaveBeenCalled();
+
+    // Cleanup the lingering stream controller.
+    streamController!.close();
   });
 
   // ── Row 13 — Completed run — stream attached → 200 ──
@@ -538,6 +578,7 @@ describe('GET /api/turns/:runId/stream', () => {
     vi.doMock('../../../../../lib/sessionCloudCaps', () => ({
       sanitizeTurnRunId: sanitizeTurnRunIdMock,
       sanitizeTurnStreamCursor: vi.fn(),
+      isRedisSafeOpaqueId: vi.fn(() => true),
       TURN_STREAM_CURSOR_MAX: 1_000_000_000,
     }));
 
@@ -586,6 +627,66 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toMatch(/sessionId/);
+  });
+
+  // ── Row 15b — Invalid (non-opaque) sessionId → 400 ──
+  it('row 15b — invalid (non-opaque) sessionId → 400', async () => {
+    mockSessionCaps();
+    mockAuthedSession();
+    mockGetRun();
+    mockTenancyOk();
+    ({ GET } = await import('./route'));
+
+    // sessionId "*" is NOT Redis-safe-opaque — isRedisSafeOpaqueId returns false.
+    const res = await getStream('wf_turn_123', '*');
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/Invalid sessionId/);
+    expect(getRunMock).not.toHaveBeenCalled();
+  });
+
+  // ── Row 15c — sessionId injectable (isRedisSafeOpaqueId overridden false) → 400 ──
+  it('row 15c — isRedisSafeOpaqueId returns false even for plausible string → 400', async () => {
+    mockAuthedSession();
+    mockGetRun();
+
+    // Mock isRedisSafeOpaqueId to reject even "s1" — proves the gate is
+    // `isRedisSafeOpaqueId`, not a simple truthiness check.
+    isRedisSafeOpaqueIdMock = vi.fn((_s: unknown) => false);
+    sanitizeTurnRunIdMock = vi.fn((v: unknown) => {
+      if (typeof v !== 'string') return undefined;
+      return /^[A-Za-z0-9_-]{1,512}$/.test(v) ? v : undefined;
+    });
+    vi.doMock('../../../../../lib/sessionCloudCaps', () => ({
+      sanitizeTurnRunId: sanitizeTurnRunIdMock,
+      sanitizeTurnStreamCursor: vi.fn(),
+      isRedisSafeOpaqueId: isRedisSafeOpaqueIdMock,
+      TURN_STREAM_CURSOR_MAX: 1_000_000_000,
+    }));
+
+    mockTenancyOk();
+    vi.doMock('../../../../../lib/di', () => ({
+      createProdServices: vi.fn(() => ({
+        harnessSessionsRedis: {
+          resolveTenantIdForUser: vi.fn(),
+        },
+      })),
+    }));
+    vi.doMock('../../../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: vi.fn(),
+      sessionKeyFor: vi.fn(),
+    }));
+    vi.doMock('../../../../../lib/sessions/sessionStore', () => ({
+      isEnvelopeStore: vi.fn(() => false),
+    }));
+
+    ({ GET } = await import('./route'));
+
+    const res = await getStream('wf_turn_123', 's1');
+
+    expect(res.status).toBe(400);
+    expect(getRunMock).not.toHaveBeenCalled();
   });
 
   // ── Row 16 — Tenant resolve failure → 503 ──
@@ -657,5 +758,62 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(res.status).toBe(200);
     expect(getRunMock).toHaveBeenCalledWith('wf_turn_123');
     expect(getReadableMock).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Row 20 — Store resolve not-ok (store unavailable) → 503 fail-closed ──
+  it('row 20 — store resolve not-ok (store unavailable) → 503 fail-closed', async () => {
+    mockSessionCaps();
+    mockAuthedSession();
+    mockGetRun();
+
+    storeAvailable = false;
+    mockTenancyOk();
+
+    ({ GET } = await import('./route'));
+
+    const res = await getStream('wf_turn_123');
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/store unavailable/);
+    expect(getRunMock).not.toHaveBeenCalled();
+  });
+
+  // ── Row 20b — Store resolve throws → 503 fail-closed ──
+  it('row 20b — store resolve throws → 503 fail-closed', async () => {
+    mockSessionCaps();
+    mockAuthedSession();
+    mockGetRun();
+
+    storeResolveThrows = true;
+    mockTenancyOk();
+
+    ({ GET } = await import('./route'));
+
+    const res = await getStream('wf_turn_123');
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/store unavailable/);
+    expect(getRunMock).not.toHaveBeenCalled();
+  });
+
+  // ── Row 21 — readEnvelope throws → 503 fail-closed ──
+  it('row 21 — readEnvelope throws → 503 fail-closed', async () => {
+    mockSessionCaps();
+    mockAuthedSession();
+    mockGetRun();
+
+    readEnvelopeThrows = true;
+    mockTenancyOk();
+
+    ({ GET } = await import('./route'));
+
+    const res = await getStream('wf_turn_123');
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/store unavailable/);
+    expect(getRunMock).not.toHaveBeenCalled();
   });
 });
