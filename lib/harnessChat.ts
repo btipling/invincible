@@ -1710,9 +1710,15 @@ export async function runHarnessTurn(
       // Plan #811 (D17) — clear durable-turn fields on failure, except a
       // durable *detach* of *this* turn (plan #812 / adversarial #844): keep
       // `turnRunId` + `running` so E19 can re-attach. Leftover `completed` /
-      // `cancelling` from a prior D17 turn must stay as-is — production
+      // `cancelling` from a prior D17 turn must stay as-is — pre-headers
       // AbortError omits `turnRunId`, and forcing `running` on the old id
       // would LWW-resurrect a finished run.
+      // Stop/Esc after `onTurnStarted` (adversarial #844): production abort
+      // used to omit `turnRunId` even after headers, so the planted-id clear
+      // never fired and live persist left C15 `running`. Clear this-turn
+      // `running` on `'stop'` even when the result omits the id. Do not clear
+      // on generic error/timeout without a result id (network drop after
+      // headers stays attach-ready).
       if (fail.kind === 'detach') {
         const id =
           agentResult.turnRunId ??
@@ -1726,7 +1732,10 @@ export async function runHarnessTurn(
             turnStatus: 'running',
           };
         }
-      } else if (agentResult.turnRunId !== undefined) {
+      } else if (
+        agentResult.turnRunId !== undefined ||
+        (fail.kind === 'stop' && failedSession.turnStatus === 'running')
+      ) {
         failedSession = {
           ...failedSession,
           turnRunId: undefined,

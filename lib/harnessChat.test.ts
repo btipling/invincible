@@ -1561,6 +1561,81 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     ).toBe(false);
   });
 
+  it('Stop after onTurnStarted clears this-turn running (adversarial #844)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { runHarnessTurn } = await import('./harnessChat');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+        controller.abort();
+        // Production abort-after-headers now carries turnRunId; also prove the
+        // omit shape still clears via this-turn running.
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(next.turnRunId).toBeUndefined();
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(true);
+  });
+
+  it('Stop after onTurnStarted with abort result id still clears (adversarial #844)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { runHarnessTurn } = await import('./harnessChat');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+        controller.abort();
+        return { ok: false, error: 'Request cancelled.', turnRunId: 'wr_live' };
+      },
+    });
+    expect(next.turnRunId).toBeUndefined();
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(true);
+  });
+
+  it('pre-headers Stop must not clear leftover completed id (adversarial #844)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      ...createEmptySession(),
+      turnRunId: 'wr_old',
+      turnStatus: 'completed' as const,
+    };
+    const { runHarnessTurn } = await import('./harnessChat');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, session, 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async () => {
+        controller.abort();
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    expect(next.turnRunId).toBe('wr_old');
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(true);
+  });
+
   it('text then reasoning then text does not duplicate assistant segment', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
