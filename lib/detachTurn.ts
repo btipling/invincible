@@ -99,7 +99,7 @@ export function isDetachAbort(signal?: AbortSignal): boolean {
  * |-------|--------|
  * | Clear/remove discarded the started id | `drop` — never PUT (LWW upsert would resurrect) |
  * | Still on this turn (epoch match) | `live` — writeLocal + put as today |
- * | Detached + running + turnRunId | `preserve` — PUT onto startedId only; never clobber a switched live session |
+ * | Detached + running + turnRunId | `preserve` — PUT onto `preserveTargetId` (pending mint UUID, else startedId); never clobber a switched live session |
  * | Detached without a durable running id | `drop` — skip PUT so we cannot omit-clear C14d |
  */
 export type DetachPersistAction = 'live' | 'preserve' | 'drop';
@@ -123,4 +123,41 @@ export function decideDetachPersist(input: DetachPersistInput): DetachPersistAct
   if (!input.detached) return 'live';
   if (input.turnRunId && input.turnStatus === 'running') return 'preserve';
   return 'drop';
+}
+
+/**
+ * Id a preserve PUT/writeLocal should target (adversarial #844 mint-bind).
+ * First-turn boot mint is deferred (`pendingMintBindRef`) until the turn ends;
+ * SPA-nav unmount must land the envelope on that UUID, not local `sess_*`.
+ */
+export function preserveTargetId(
+  startedId: string,
+  pendingMintId?: string | null,
+): string {
+  const mint = pendingMintId?.trim();
+  return mint ? mint : startedId;
+}
+
+/**
+ * Whether #430 mint bind (`sess_*` → server UUID) should rewrite local/cloud
+ * identity after this turn (adversarial #844).
+ *
+ * | Input | Apply? |
+ * |-------|--------|
+ * | Still on startedId, not discarded, not Switch | yes (live completion or unmount) |
+ * | Switch in flight (`sessionRef` still startedId until `repo.get`) | no — would abort Switch's generation token |
+ * | Clear discarded startedId | no — would upsert the deleted row onto the mint UUID |
+ * | Session already switched/New'd (`sessionId !== startedId`) | no |
+ */
+export function shouldApplyMintBind(input: {
+  sessionId: string;
+  startedId: string;
+  discarded: boolean;
+  switchInFlight: boolean;
+}): boolean {
+  return (
+    input.sessionId === input.startedId &&
+    !input.discarded &&
+    !input.switchInFlight
+  );
 }

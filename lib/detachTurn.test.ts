@@ -11,6 +11,8 @@
  * Plus persist-after-detach (adversarial #844 re-review): Clear discarded →
  * `drop` (never resurrect via PUT upsert); detached+running → `preserve`;
  * live epoch → `live`.
+ * Plus first-turn mint bind (adversarial #844): preserve targets pending mint
+ * UUID not `sess_*`; mint bind skipped on Switch/Clear; unmount still binds.
  * Plus the source-lock that counts `decideDetach`-wired detach sites vs raw
  * `abort()` call sites in `HarnessHost.tsx`.
  */
@@ -23,7 +25,9 @@ import {
   decideDetachPersist,
   DETACH_ABORT_REASON,
   isDetachAbort,
+  preserveTargetId,
   shouldAbortReader,
+  shouldApplyMintBind,
   type DetachTurnInput,
 } from './detachTurn';
 
@@ -198,6 +202,52 @@ describe('decideDetachPersist (adversarial #844 Clear-vs-PUT / late persist)', (
   });
 });
 
+describe('preserveTargetId / shouldApplyMintBind (adversarial #844 first-turn mint)', () => {
+  it('preserve PUT lands on pending mint UUID, not local sess_*', () => {
+    expect(preserveTargetId('sess_local', 'uuid-mint')).toBe('uuid-mint');
+    expect(preserveTargetId('sess_local', '  uuid-mint  ')).toBe('uuid-mint');
+    expect(preserveTargetId('sess_local', null)).toBe('sess_local');
+    expect(preserveTargetId('sess_local', undefined)).toBe('sess_local');
+    expect(preserveTargetId('sess_local', '')).toBe('sess_local');
+    expect(preserveTargetId('sess_local', '   ')).toBe('sess_local');
+  });
+
+  it('unmount / same-session applies mint bind; Switch and Clear do not', () => {
+    expect(
+      shouldApplyMintBind({
+        sessionId: 'sess_local',
+        startedId: 'sess_local',
+        discarded: false,
+        switchInFlight: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldApplyMintBind({
+        sessionId: 'sess_local',
+        startedId: 'sess_local',
+        discarded: false,
+        switchInFlight: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldApplyMintBind({
+        sessionId: 'sess_local',
+        startedId: 'sess_local',
+        discarded: true,
+        switchInFlight: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldApplyMintBind({
+        sessionId: 'other',
+        startedId: 'sess_local',
+        discarded: false,
+        switchInFlight: false,
+      }),
+    ).toBe(false);
+  });
+});
+
 describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
   const host = readFileSync(resolve(process.cwd(), 'app/harness/HarnessHost.tsx'), 'utf8');
   const module = readFileSync(resolve(process.cwd(), 'lib/detachTurn.ts'), 'utf8');
@@ -207,6 +257,8 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(module).toContain('export function shouldAbortReader');
     expect(module).toContain('export function abortReasonFor');
     expect(module).toContain('export function decideDetachPersist');
+    expect(module).toContain('export function preserveTargetId');
+    expect(module).toContain('export function shouldApplyMintBind');
     expect(module).toContain('durablePath');
   });
 
@@ -273,5 +325,25 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(run).toContain("action === 'drop'");
     // Late mid-turn patches must take the same gate (not raw persist).
     expect(run).toContain('onSessionPatch: persistTurn');
+  });
+
+  it('preserve + finally mint-bind first-turn UUID (adversarial #844)', () => {
+    const runStart = host.indexOf('const runPrompt = useCallback');
+    const run = host.slice(runStart, host.indexOf('useEffect(() => {', runStart));
+    expect(run).toContain('preserveTargetId(startedId, pendingMintId)');
+    expect(run).toContain('shouldApplyMintBind(');
+    expect(run).toContain('pendingMintBindRef.current');
+    expect(run).toContain('switchInFlightRef.current');
+    // Pin ?s= only on live completion — not after detach/unmount.
+    const bind = run.slice(run.indexOf('const pendingId = pendingMintBindRef.current'));
+    expect(bind).toContain('shouldApplyMintBind(');
+    expect(bind).toContain('writeLocalSession(bound)');
+    expect(bind).toContain('if (!detached)');
+    const pin = bind.slice(bind.indexOf('if (!detached)'));
+    expect(pin).toContain('setUrlSessionId(pendingId)');
+    expect(pin).toContain('setActiveSessionId(pendingId)');
+    // Detached bind must not fall through to setUrl (would rewrite /settings).
+    const detachedBind = bind.slice(0, bind.indexOf('if (!detached)'));
+    expect(detachedBind).not.toContain('setUrlSessionId(pendingId)');
   });
 });

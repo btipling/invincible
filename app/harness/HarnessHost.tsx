@@ -12,7 +12,7 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
-import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist } from '../../lib/detachTurn';
+import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, preserveTargetId, shouldApplyMintBind } from '../../lib/detachTurn';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -421,19 +421,33 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       const epoch = turnEpochRef.current;
       const startedId = sessionRef.current.id;
       const persistTurn = (snapshot: SessionSnapshot) => {
+        const pendingMintId = pendingMintBindRef.current;
         const action = decideDetachPersist({
           detached: turnEpochRef.current !== epoch,
           discarded:
             discardedSessionIdsRef.current.has(startedId) ||
-            discardedSessionIdsRef.current.has(snapshot.id),
+            discardedSessionIdsRef.current.has(snapshot.id) ||
+            (pendingMintId != null && discardedSessionIdsRef.current.has(pendingMintId)),
           turnRunId: snapshot.turnRunId,
           turnStatus: snapshot.turnStatus,
         });
         if (action === 'drop') return;
         if (action === 'preserve') {
-          const preserved = { ...snapshot, id: startedId };
-          repoRef.current?.put(startedId, preserved);
-          if (sessionRef.current.id === startedId) writeLocalSession(preserved);
+          // Adversarial #844: first-turn unmount must PUT the deferred mint UUID,
+          // not local sess_*. Switch must not writeLocal (generation token).
+          const targetId = preserveTargetId(startedId, pendingMintId);
+          const preserved = { ...snapshot, id: targetId };
+          repoRef.current?.put(targetId, preserved);
+          if (
+            shouldApplyMintBind({
+              sessionId: sessionRef.current.id,
+              startedId,
+              discarded: false,
+              switchInFlight: switchInFlightRef.current,
+            })
+          ) {
+            writeLocalSession(preserved);
+          }
           return;
         }
         persist(snapshot);
@@ -480,22 +494,36 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           setHostNote(result.error);
         }
       } finally {
-        if (turnEpochRef.current === epoch) {
-          inflightRef.current = false;
-          setBusy(false);
-          // Boot mint landed mid-turn (#430): the bridge was streaming so we did NOT
-          // re-hydrate the ring. Restore the transcript the turn just persisted, rebind
-          // the server UUID and URL/active id only now that the turn is done, then push
-          // the carried-over history to the real resource.
-          const pendingId = pendingMintBindRef.current;
-          if (pendingId) {
-            pendingMintBindRef.current = null;
+        const detached = turnEpochRef.current !== epoch;
+        const pendingId = pendingMintBindRef.current;
+        if (pendingId) {
+          pendingMintBindRef.current = null;
+          const discarded =
+            discardedSessionIdsRef.current.has(startedId) ||
+            discardedSessionIdsRef.current.has(pendingId);
+          // Adversarial #844: unmount / same-session detach still binds sess_* →
+          // UUID in local store. Switch/Clear do not. Pin ?s= only on live
+          // completion — unmount must not rewrite the destination URL.
+          if (
+            shouldApplyMintBind({
+              sessionId: sessionRef.current.id,
+              startedId,
+              discarded,
+              switchInFlight: switchInFlightRef.current,
+            })
+          ) {
             const bound = { ...sessionRef.current, id: pendingId };
             writeLocalSession(bound);
-            setActiveSessionId(pendingId);
-            setUrlSessionId(pendingId);
             repoRef.current?.put(pendingId, bound);
+            if (!detached) {
+              setActiveSessionId(pendingId);
+              setUrlSessionId(pendingId);
+            }
           }
+        }
+        if (!detached) {
+          inflightRef.current = false;
+          setBusy(false);
         }
       }
     },
