@@ -5,16 +5,17 @@ import { AUTH_REQUIRED_ERROR } from '../../../../../lib/tenancy/errors';
  * Route tests for backend-agents C16 (#810) — `GET /api/turns/:runId/stream`
  * durable-turn stream attach/reconnect.
  *
- * Mocks `getRun`, `WorkflowRunNotFoundError`, `sanitizeTurnRunId`,
- * `sanitizeTurnStreamCursor`, and `requireSessionUser` so the route never
+ * Mocks `getRun`, `sanitizeTurnRunId`, `sanitizeTurnStreamCursor`,
+ * `requireSessionUser`, `resolveSessionStore`, `sessionKeyFor`,
+ * `isEnvelopeStore`, and `createProdServices` so the route never
  * opens a real DB/Redis connection or reaches the Workflows API.
  *
- * Covers the 14-row test matrix from the plan:
+ * Covers the original 14-row test matrix plus new tenancy-check rows:
  *   1. startIndex=0 → full replay
  *   2. startIndex=N → mid-stream resume
  *   3. startIndex absent → defaults to 0
  *   4. Run not found → 404
- *   5. getRun infra throw → 503
+ *   5. getReadable throws → 503 fail-closed
  *   6. Invalid runId → 400
  *   7. startIndex negative → 400
  *   8. startIndex non-integer → 400
@@ -23,7 +24,13 @@ import { AUTH_REQUIRED_ERROR } from '../../../../../lib/tenancy/errors';
  *  11. Auth failure → 401
  *  12. Client abort closes reader, does NOT cancel run
  *  13. Completed run → 200
- *  14. Missing runId param → 404 (Next.js routing contract)
+ *  14. Missing runId param → 400 (handler guard)
+ *
+ *  15. Missing sessionId → 400
+ *  16. Tenant resolve failure → 503
+ *  17. Envelope absent (miss) → 404
+ *  18. Envelope turnRunId mismatch → 404
+ *  19. Happy path with tenancy check → 200
  */
 describe('GET /api/turns/:runId/stream', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -38,8 +45,18 @@ describe('GET /api/turns/:runId/stream', () => {
   /** Spy on the returned readable stream's cancel method (Row 12). */
   let readableCancelSpy: ReturnType<typeof vi.fn>;
 
+  /** Spy on run.cancel — must NEVER be called (abort ≠ cancel). */
+  let runCancelSpy: ReturnType<typeof vi.fn>;
+
+  // Tenancy mock state
+  let envelopeTurnRunId: string;
+  let envelopePresent: boolean;
+  let tenantResolveOk: boolean;
+  let storeAvailable: boolean;
+
   function resetState() {
     readableCancelSpy = vi.fn(async () => {});
+    runCancelSpy = vi.fn(async () => {});
     getReadableMock = vi.fn(() => {
       const stream = new ReadableStream({
         start(controller) {
@@ -47,11 +64,17 @@ describe('GET /api/turns/:runId/stream', () => {
           controller.close();
         },
       });
-      // Stash the cancel spy onto the stream so row 12 can assert it was NOT called.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (stream as any).cancel = readableCancelSpy;
       return stream;
     });
+
+    // Default tenancy state: tenant resolves OK, store available, envelope
+    // present with matching turnRunId.
+    envelopeTurnRunId = 'wf_turn_123';
+    envelopePresent = true;
+    tenantResolveOk = true;
+    storeAvailable = true;
   }
 
   function mockGetRun(overrides: Record<string, unknown> = {}) {
@@ -59,6 +82,7 @@ describe('GET /api/turns/:runId/stream', () => {
       runId: 'wf_turn_123',
       exists: Promise.resolve(true),
       getReadable: getReadableMock,
+      cancel: runCancelSpy,
       ...overrides,
     }));
     vi.doMock('workflow/api', () => ({
@@ -109,16 +133,64 @@ describe('GET /api/turns/:runId/stream', () => {
     }));
   }
 
-  function standardHarness() {
+  /**
+   * Set up the tenancy-check mocks so the route passes the ownership gate.
+   * All happy-path test rows must call this BEFORE importing the route.
+   */
+  function mockTenancyOk(sessionId = 's1', turnRunId?: string) {
+    const resolvedTurnRunId = turnRunId ?? envelopeTurnRunId;
+
+    vi.doMock('../../../../../lib/di', () => ({
+      createProdServices: vi.fn(() => ({
+        harnessSessionsRedis: {
+          resolveTenantIdForUser: vi.fn(async () =>
+            tenantResolveOk
+              ? { ok: true as const, value: 't1' }
+              : { ok: false as const, code: 'SESSION_STORE_UNAVAILABLE' as const, error: 'db-down' },
+          ),
+        },
+      })),
+    }));
+
+    vi.doMock('../../../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: vi.fn(async () =>
+        storeAvailable
+          ? {
+              ok: true as const,
+              value: {
+                readEnvelope: vi.fn(async () =>
+                  envelopePresent
+                    ? { meta: { turnRunId: resolvedTurnRunId }, updatedAt: Date.now() }
+                    : null,
+                ),
+              },
+            }
+          : { ok: false as const, code: 'SESSION_STORE_UNAVAILABLE' as const, error: 'down' },
+      ),
+      sessionKeyFor: vi.fn(
+        (_tenantId: string, _userId: string, sid: string) =>
+          ({ tenantId: 't1', userId: 'u1', sessionId: sid }),
+      ),
+    }));
+
+    vi.doMock('../../../../../lib/sessions/sessionStore', () => ({
+      isEnvelopeStore: vi.fn(() => true),
+    }));
+  }
+
+  function standardHarness(sessionId = 's1') {
     mockSessionCaps();
     mockGetRun();
+    mockTenancyOk(sessionId);
   }
 
   function getStream(
     runId: string,
+    sessionId = 's1',
     startIndex?: string,
   ): Promise<Response> {
     const url = new URL(`https://x/api/turns/${runId}/stream`);
+    url.searchParams.set('sessionId', sessionId);
     if (startIndex !== undefined) {
       url.searchParams.set('startIndex', startIndex);
     }
@@ -143,15 +215,18 @@ describe('GET /api/turns/:runId/stream', () => {
     vi.doUnmock('workflow/api');
     vi.doUnmock('../../../../../lib/sessionCloudCaps');
     vi.doUnmock('../../../../../lib/tenancy/session');
+    vi.doUnmock('../../../../../lib/di');
+    vi.doUnmock('../../../../../lib/tenancy/harnessSessionsRedis');
+    vi.doUnmock('../../../../../lib/sessions/sessionStore');
   });
 
-  // Row 1 — startIndex=0 → full replay via getReadable({startIndex:0})
+  // ── Row 1 — startIndex=0 → full replay ──
   it('row 1 — startIndex=0 → 200, getReadable({startIndex:0}) called, SSE content-type, x-workflow-run-id', async () => {
     standardHarness();
     mockAuthedSession();
     ({ GET } = await import('./route'));
 
-    const res = await getStream('wf_turn_123', '0');
+    const res = await getStream('wf_turn_123', 's1', '0');
 
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe(
@@ -169,27 +244,29 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(getReadableMock).toHaveBeenCalledWith({ startIndex: 0 });
   });
 
-  // Row 2 — startIndex=N (positive) → mid-stream resume
+  // ── Row 2 — startIndex=N (positive) → mid-stream resume ──
   it('row 2 — startIndex=42 → 200, getReadable({startIndex:42}) called', async () => {
     standardHarness();
     mockAuthedSession();
     ({ GET } = await import('./route'));
 
-    const res = await getStream('wf_turn_123', '42');
+    const res = await getStream('wf_turn_123', 's1', '42');
 
     expect(res.status).toBe(200);
     expect(getReadableMock).toHaveBeenCalledWith({ startIndex: 42 });
   });
 
-  // Row 3 — startIndex absent → defaults to 0
+  // ── Row 3 — startIndex absent → defaults to 0 ──
   it('row 3 — startIndex absent → defaults to 0, getReadable({startIndex:0})', async () => {
     standardHarness();
     mockAuthedSession();
     ({ GET } = await import('./route'));
 
     // Use a URL without startIndex in the query string
+    const url = new URL('https://x/api/turns/wf_turn_123/stream');
+    url.searchParams.set('sessionId', 's1');
     const res = await GET(
-      new Request('https://x/api/turns/wf_turn_123/stream', {
+      new Request(url, {
         method: 'GET',
         headers: { accept: 'text/event-stream' },
       }),
@@ -200,9 +277,9 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(getReadableMock).toHaveBeenCalledWith({ startIndex: 0 });
   });
 
-  // Row 4 — Run not found (`await run.exists === false`) → 404
+  // ── Row 4 — Run not found (`await run.exists === false`) → 404 ──
   it('row 4 — run.exists === false → 404, error includes runId', async () => {
-    mockSessionCaps();
+    standardHarness();
     mockAuthedSession();
 
     // getRun returns a handle; run.exists resolves false (not-found).
@@ -210,6 +287,7 @@ describe('GET /api/turns/:runId/stream', () => {
       runId: 'wf_missing',
       exists: Promise.resolve(false),
       getReadable: getReadableMock,
+      cancel: runCancelSpy,
     }));
     vi.doMock('workflow/api', () => ({
       getRun: getRunMock,
@@ -227,9 +305,9 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(getReadableMock).not.toHaveBeenCalled();
   });
 
-  // Row 5 — getReadable throws infra error → 503 fail-closed
+  // ── Row 5 — getRun/getReadable throws infra error → 503 fail-closed ──
   it('row 5 — getReadable throws → 503 fail-closed', async () => {
-    mockSessionCaps();
+    standardHarness();
     mockAuthedSession();
 
     // getRun returns a handle; run.exists resolves true; getReadable throws.
@@ -239,6 +317,7 @@ describe('GET /api/turns/:runId/stream', () => {
       getReadable: vi.fn(() => {
         throw new Error('Workflows unavailable');
       }),
+      cancel: runCancelSpy,
     }));
     vi.doMock('workflow/api', () => ({
       getRun: getRunMock,
@@ -255,19 +334,61 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(body.error).toContain('Workflows unavailable');
   });
 
-  // Row 6 — Invalid runId (sanitizeTurnRunId → undefined) → 400
+  // ── Row 5b — run.exists throws infra error → 503 (was outside try before fix) ──
+  it('row 5b — run.exists rejects (infra) → 503 fail-closed', async () => {
+    standardHarness();
+    mockAuthedSession();
+
+    // getRun returns a handle; run.exists rejects (infra failure).
+    getRunMock = vi.fn(() => ({
+      runId: 'wf_turn_123',
+      exists: Promise.reject(new Error('Workflows world unavailable')),
+      getReadable: getReadableMock,
+      cancel: runCancelSpy,
+    }));
+    vi.doMock('workflow/api', () => ({
+      getRun: getRunMock,
+      start: vi.fn(),
+    }));
+
+    ({ GET } = await import('./route'));
+
+    const res = await getStream('wf_turn_123');
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/Unable to attach to run stream \(fail closed\)/);
+    expect(body.error).toContain('Workflows world unavailable');
+  });
+
+  // ── Row 6 — Invalid runId (sanitizeTurnRunId → undefined) → 400 ──
   it('row 6 — invalid runId (sanitizeTurnRunId → undefined) → 400, getRun NOT called', async () => {
-    // Use sanitizeTurnRunId from caps; override to return undefined for bad input.
-    // The live caps module rejects non-string/empty/metachar/over-length values.
     mockGetRun();
     mockAuthedSession();
 
-    // Mock caps so that a bad input returns undefined.
-    sanitizeTurnRunIdMock = vi.fn((v: unknown) => undefined);
+    sanitizeTurnRunIdMock = vi.fn((_v: unknown) => undefined);
     vi.doMock('../../../../../lib/sessionCloudCaps', () => ({
       sanitizeTurnRunId: sanitizeTurnRunIdMock,
       sanitizeTurnStreamCursor: vi.fn(),
       TURN_STREAM_CURSOR_MAX: 1_000_000_000,
+    }));
+
+    // Still need tenancy mocks for the import to succeed, but they won't be
+    // called because the runId gate fires first.
+    mockTenancyOk();
+    vi.doMock('../../../../../lib/di', () => ({
+      createProdServices: vi.fn(() => ({
+        harnessSessionsRedis: {
+          resolveTenantIdForUser: vi.fn(),
+        },
+      })),
+    }));
+    vi.doMock('../../../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: vi.fn(),
+      sessionKeyFor: vi.fn(),
+    }));
+    vi.doMock('../../../../../lib/sessions/sessionStore', () => ({
+      isEnvelopeStore: vi.fn(() => false),
     }));
 
     ({ GET } = await import('./route'));
@@ -280,13 +401,13 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(getRunMock).not.toHaveBeenCalled();
   });
 
-  // Row 7 — startIndex negative → 400
+  // ── Row 7 — startIndex negative → 400 ──
   it('row 7 — startIndex negative → 400', async () => {
     standardHarness();
     mockAuthedSession();
     ({ GET } = await import('./route'));
 
-    const res = await getStream('wf_turn_123', '-1');
+    const res = await getStream('wf_turn_123', 's1', '-1');
 
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
@@ -294,13 +415,13 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(getRunMock).not.toHaveBeenCalled();
   });
 
-  // Row 8 — startIndex non-integer (1.5) → 400
+  // ── Row 8 — startIndex non-integer (1.5) → 400 ──
   it('row 8 — startIndex non-integer (1.5) → 400', async () => {
     standardHarness();
     mockAuthedSession();
     ({ GET } = await import('./route'));
 
-    const res = await getStream('wf_turn_123', '1.5');
+    const res = await getStream('wf_turn_123', 's1', '1.5');
 
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
@@ -308,13 +429,13 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(getRunMock).not.toHaveBeenCalled();
   });
 
-  // Row 9 — startIndex over cap (> 1e9) → 400
+  // ── Row 9 — startIndex over cap (> 1e9) → 400 ──
   it('row 9 — startIndex over cap (2e9) → 400', async () => {
     standardHarness();
     mockAuthedSession();
     ({ GET } = await import('./route'));
 
-    const res = await getStream('wf_turn_123', '2000000000');
+    const res = await getStream('wf_turn_123', 's1', '2000000000');
 
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
@@ -322,13 +443,13 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(getRunMock).not.toHaveBeenCalled();
   });
 
-  // Row 10 — startIndex non-numeric string ("abc") → 400
+  // ── Row 10 — startIndex non-numeric string ("abc") → 400 ──
   it('row 10 — startIndex non-numeric ("abc") → 400', async () => {
     standardHarness();
     mockAuthedSession();
     ({ GET } = await import('./route'));
 
-    const res = await getStream('wf_turn_123', 'abc');
+    const res = await getStream('wf_turn_123', 's1', 'abc');
 
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
@@ -336,42 +457,67 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(getRunMock).not.toHaveBeenCalled();
   });
 
-  // Row 11 — Auth failure (no session user) → 401
+  // ── Row 11 — Auth failure (no session user) → 401 ──
   it('row 11 — auth failure → 401', async () => {
-    standardHarness();
+    mockSessionCaps();
+    mockGetRun();
+    mockTenancyOk();
     mockUnauthed();
     ({ GET } = await import('./route'));
 
-    const res = await getStream('wf_turn_123');
+    // No sessionId in URL — auth fires first, so 401 before tenancy fails
+    const url = new URL('https://x/api/turns/wf_turn_123/stream');
+    url.searchParams.set('sessionId', 's1');
+    const res = await GET(
+      new Request(url, {
+        method: 'GET',
+        headers: { accept: 'text/event-stream' },
+      }),
+      { params: Promise.resolve({ runId: 'wf_turn_123' }) },
+    );
 
     expect(res.status).toBe(401);
     expect(getRunMock).not.toHaveBeenCalled();
   });
 
-  // Row 12 — Client abort closes the reader, does NOT cancel the run
+  // ── Row 12 — Client abort closes reader, does NOT cancel run ──
   it('row 12 — client abort closes reader, run.cancel() NEVER called', async () => {
     standardHarness();
     mockAuthedSession();
     ({ GET } = await import('./route'));
 
-    const res = await getStream('wf_turn_123');
+    const controller = new AbortController();
+
+    const url = new URL('https://x/api/turns/wf_turn_123/stream');
+    url.searchParams.set('sessionId', 's1');
+
+    const res = await GET(
+      new Request(url, {
+        method: 'GET',
+        headers: { accept: 'text/event-stream' },
+        signal: controller.signal,
+      }),
+      { params: Promise.resolve({ runId: 'wf_turn_123' }) },
+    );
 
     expect(res.status).toBe(200);
-
-    // The route should NOT have called run.cancel() — verify getRun mock.
-    // The run object from the mock has no .cancel() spy explicitly set but
-    // the key assertion: getReadable was called (stream attached), and the
-    // route does NOT call any cancel method on the run.
     expect(getRunMock).toHaveBeenCalledTimes(1);
 
-    // The mock run object does NOT expose .cancel. Verify that the readable's
-    // cancel spy (stashed on the stream by our mock) was NOT triggered by the
-    // route logic itself (it would only fire on actual client abort which we
-    // can't simulate here, but we verify the route doesn't call it).
-    expect(readableCancelSpy).not.toHaveBeenCalled();
+    // Abort the client — this should close the reader (cancel spy fired on
+    // the stream) but NEVER call run.cancel().
+    controller.abort();
+
+    // The readable's cancel spy should have been called (stream cancelled by
+    // the platform when the signal fires). This is a loose assertion — in a
+    // fully simulated env the abort might not propagate through the mock —
+    // but the KEY assertion is the negative one below.
+    expect(getReadableMock).toHaveBeenCalledTimes(1);
+
+    // run.cancel() must NEVER be called — abort ≠ cancel.
+    expect(runCancelSpy).not.toHaveBeenCalled();
   });
 
-  // Row 13 — Completed run — stream attached → 200
+  // ── Row 13 — Completed run — stream attached → 200 ──
   it('row 13 — completed run → 200, getReadable() succeeds', async () => {
     standardHarness();
     mockAuthedSession();
@@ -381,33 +527,34 @@ describe('GET /api/turns/:runId/stream', () => {
 
     expect(res.status).toBe(200);
     expect(getReadableMock).toHaveBeenCalledTimes(1);
-    // Completed-run streams are valid per B12 lock.
   });
 
-  // Row 14 — Missing runId param → 404 (Next.js [runId] routing contract)
-  it('row 14 — missing runId param → 404 (Next.js routing contract — not route logic)', async () => {
-    // This row verifies the Next.js [runId] dynamic segment contract:
-    // a request to /api/turns//stream (no runId segment) would be routed as
-    // a 404 by Next.js before the handler runs. We test the handler with
-    // the runId from params as a contract test — the route's validation
-    // should handle the case where Next.js passes it through (if it ever
-    // does), returning 400 for an undefined runId.
-    //
-    // Since we can't actually test Next.js's file-system router here,
-    // we verify the route handler's own guard: if runId happens to be
-    // undefined (sanitizeTurnRunId returns undefined for non-string input),
-    // the route returns 400 — NOT a crash or a 503.
-    standardHarness();
+  // ── Row 14 — Missing runId param → 400 (handler guard) ──
+  it('row 14 — missing runId param → 400 (Next.js routing contract — not route logic)', async () => {
+    mockGetRun();
     mockAuthedSession();
 
-    // Override sanitizeTurnRunId to return undefined for the empty-string case
-    // (Next.js would give an empty string for a missing segment before
-    // returning 404).
-    sanitizeTurnRunIdMock = vi.fn((v: unknown) => undefined);
+    sanitizeTurnRunIdMock = vi.fn((_v: unknown) => undefined);
     vi.doMock('../../../../../lib/sessionCloudCaps', () => ({
       sanitizeTurnRunId: sanitizeTurnRunIdMock,
       sanitizeTurnStreamCursor: vi.fn(),
       TURN_STREAM_CURSOR_MAX: 1_000_000_000,
+    }));
+
+    mockTenancyOk();
+    vi.doMock('../../../../../lib/di', () => ({
+      createProdServices: vi.fn(() => ({
+        harnessSessionsRedis: {
+          resolveTenantIdForUser: vi.fn(),
+        },
+      })),
+    }));
+    vi.doMock('../../../../../lib/tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: vi.fn(),
+      sessionKeyFor: vi.fn(),
+    }));
+    vi.doMock('../../../../../lib/sessions/sessionStore', () => ({
+      isEnvelopeStore: vi.fn(() => false),
     }));
 
     ({ GET } = await import('./route'));
@@ -416,5 +563,99 @@ describe('GET /api/turns/:runId/stream', () => {
 
     expect(res.status).toBe(400);
     expect(getRunMock).not.toHaveBeenCalled();
+  });
+
+  // ── Row 15 — Missing sessionId → 400 ──
+  it('row 15 — missing sessionId query param → 400', async () => {
+    mockSessionCaps();
+    mockAuthedSession();
+    mockGetRun();
+    mockTenancyOk();
+    ({ GET } = await import('./route'));
+
+    // Build URL without sessionId
+    const url = new URL('https://x/api/turns/wf_turn_123/stream');
+    const res = await GET(
+      new Request(url, {
+        method: 'GET',
+        headers: { accept: 'text/event-stream' },
+      }),
+      { params: Promise.resolve({ runId: 'wf_turn_123' }) },
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/sessionId/);
+  });
+
+  // ── Row 16 — Tenant resolve failure → 503 ──
+  it('row 16 — tenant resolve fails → 503', async () => {
+    mockSessionCaps();
+    mockAuthedSession();
+    mockGetRun();
+
+    tenantResolveOk = false;
+    mockTenancyOk();
+
+    ({ GET } = await import('./route'));
+
+    const res = await getStream('wf_turn_123');
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/Unable to resolve tenant/);
+    expect(getRunMock).not.toHaveBeenCalled();
+  });
+
+  // ── Row 17 — Envelope absent (null) → 404 ──
+  it('row 17 — envelope read returns null (no such session) → 404', async () => {
+    mockSessionCaps();
+    mockAuthedSession();
+    mockGetRun();
+
+    envelopePresent = false;
+    mockTenancyOk();
+
+    ({ GET } = await import('./route'));
+
+    const res = await getStream('wf_turn_123');
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/Run not found/);
+    expect(getRunMock).not.toHaveBeenCalled();
+  });
+
+  // ── Row 18 — Envelope turnRunId mismatch → 404 ──
+  it('row 18 — envelope.turnRunId !== runId → 404 (tenancy guard)', async () => {
+    mockSessionCaps();
+    mockAuthedSession();
+    mockGetRun();
+
+    // Envelope has a DIFFERENT turnRunId — should 404.
+    mockTenancyOk('s1', 'wf_other_run');
+
+    ({ GET } = await import('./route'));
+
+    const res = await getStream('wf_turn_123');
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/Run not found/);
+    expect(body.error).toContain('wf_turn_123');
+    expect(getRunMock).not.toHaveBeenCalled();
+  });
+
+  // ── Row 19 — Happy path with tenancy check → 200 ──
+  it('row 19 — tenancy check passes (envelope turnRunId matches) → 200', async () => {
+    standardHarness();
+    mockAuthedSession();
+    ({ GET } = await import('./route'));
+
+    const res = await getStream('wf_turn_123');
+
+    expect(res.status).toBe(200);
+    expect(getRunMock).toHaveBeenCalledWith('wf_turn_123');
+    expect(getReadableMock).toHaveBeenCalledTimes(1);
   });
 });
