@@ -3995,6 +3995,31 @@ describe('runHarnessTurn durable-turn fold (plan #811 / D17)', () => {
     expect(next.turnStatus).toBe('completed');
   });
 
+  it('409 live-lock (C15 double-send) is PERMANENT — single attempt, failure fold fires (adversarial #841 Minor L1)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    exp.__queue.push('op item');
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      status: 409, // C15: run already open — never a transient quota blip
+      error: 'run already open (C15 live-lock)',
+      turnRunId: 'run_live',
+    }));
+    const { result, session: next } = await runHarnessTurn(
+      bridge,
+      createEmptySession('s1'),
+      'hi',
+      { sendAgent },
+    );
+    expect(result.ok).toBe(false);
+    expect(sendAgent).toHaveBeenCalledTimes(1); // permanent → no 5× retry hammer
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+    expect(exp.__queue[0]).toBe(CONTINUE_TURN_PROMPT); // give-up (+ Continue, never drained)
+    // Failure fold clears the stale open run so the next start is not blocked.
+    expect(next.turnRunId).toBeUndefined();
+    expect(next.turnStatus).toBe('completed');
+  });
+
   it('production default stream path (sendTurnStream, no sendAgent injection) folds the run header', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);

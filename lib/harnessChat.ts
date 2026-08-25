@@ -117,9 +117,12 @@ export const CONTINUE_TURN_PROMPT = 'Continue the current turn';
 /**
  * HTTP statuses the turn treats as PERMANENT (no 5× backoff loop): 4xx client
  * errors are the operator/request's fault (auth 401/403, validation 400/422,
- * not-found 404, too-large 413). 408/429/5xx and timeout/empty stay retryable.
+ * not-found 404, too-large 413, and 409 live-lock — C15's double-send guard —
+ * which is a state conflict, not a transient quota blip like 429, so it must
+ * not hammer POST while the first run is still live). 408/429/5xx and
+ * timeout/empty stay retryable.
  */
-const PERMANENT_TURN_STATUS = new Set([400, 401, 403, 404, 413, 422]);
+const PERMANENT_TURN_STATUS = new Set([400, 401, 403, 404, 409, 413, 422]);
 
 /**
  * Thrown by the retry wrapper for a FAILED agent attempt so `withTransientRetry`
