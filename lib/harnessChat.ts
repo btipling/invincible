@@ -1047,6 +1047,16 @@ export async function runHarnessTurn(
     let thinkingSegmentOpen = false;
     let sawStreamTerminal = false;
     /**
+     * This-turn durable SSE start. Set only in `onTurnStarted` (headers +
+     * body accepted). Leftover completed/cancelling `turnRunId` on the session
+     * must not count — that would freeze pre-headers retries (adversarial #844)
+     * and JSON/HTTP errors that blend the run-id header never call
+     * `onTurnStarted`. Incomplete durable read (no SSE `done`/`error`) is
+     * D18 detach; retry after this flag is permanent (a second POST would
+     * start a second Workflows run).
+     */
+    let sawDurableStart = false;
+    /**
      * plan #759 / adversarial-review Major — once the LIVE stream has painted
      * ANY ring content past the user line (a tool card, assistant text, a
      * thinking row, a skill row), a later failure is NOT retryable: replaying
@@ -1463,6 +1473,7 @@ export async function runHarnessTurn(
                 ...(sessionSandboxId ? { sandboxId: sessionSandboxId } : {}),
                 onEvent: onStreamEvent,
                 onTurnStarted: async ({ turnRunId }) => {
+                  sawDurableStart = true;
                   next = { ...next, turnRunId, turnStatus: 'running' };
                   opts?.onSessionPatch?.(next);
                 },
@@ -1499,7 +1510,9 @@ export async function runHarnessTurn(
           // push duplicate assistant bubbles. `classifyTurnRetry` still owns
           // the status/stop mapping for the clean (never-painted) cases.
           classify: (err) =>
-            streamPainted ? { kind: 'permanent' } : classifyTurnRetry(err),
+            streamPainted || sawDurableStart
+              ? { kind: 'permanent' }
+              : classifyTurnRetry(err),
         },
       );
     } catch (err) {
@@ -1512,7 +1525,20 @@ export async function runHarnessTurn(
     // for tool/text/done/error; this is a no-op when the segment is already closed.
     closeThinkingSegment();
 
-    if (agentResult.ok) {
+    const stopKind = !agentResult.ok
+      ? classifyTurnFailure(
+          agentResult.error,
+          agentResult.status,
+          opts?.signal,
+        ).kind
+      : undefined;
+    const durableIncomplete =
+      streamAgent &&
+      sawDurableStart &&
+      !sawStreamTerminal &&
+      stopKind !== 'stop';
+
+    if (agentResult.ok && !durableIncomplete) {
       // Live tool cards are already painted + session-mirrored on each event;
       // this clears the live state so the JSON/toolTrace fallback below (when
       // present) is the only writer. No re-push of an already-committed card.
@@ -1669,11 +1695,13 @@ export async function runHarnessTurn(
       if (partial) {
         failedSession = appendMessage(failedSession, 'assistant', partial);
       }
-      const fail = classifyTurnFailure(
-        agentResult.error,
-        agentResult.status,
-        opts?.signal,
-      );
+      const fail = durableIncomplete
+        ? { kind: 'detach' as const, detail: undefined as string | undefined }
+        : classifyTurnFailure(
+            agentResult.ok ? 'Stream ended without a terminal event.' : agentResult.error,
+            agentResult.ok ? undefined : agentResult.status,
+            opts?.signal,
+          );
       if (fail.kind !== 'detach') {
         failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail);
       }
@@ -1704,6 +1732,7 @@ export async function runHarnessTurn(
       // NOT an unusable grant. Wiping the bind there would silently re-resolve to
       // the preferred/single grant on the next turn — a silent sandbox switch.
       if (
+        !agentResult.ok &&
         agentResult.status === 403 &&
         failedSession.activeSandboxId !== undefined &&
         (agentResult.error === SANDBOX_SELECTION_REQUIRED_ERROR ||
@@ -1784,8 +1813,10 @@ export async function runHarnessTurn(
       return {
         result: {
           ok: false,
-          error: agentResult.error,
-          status: agentResult.status,
+          error: agentResult.ok
+            ? 'Stream ended without a terminal event.'
+            : agentResult.error,
+          ...(agentResult.ok ? {} : { status: agentResult.status }),
         },
         session: failedSession,
       };

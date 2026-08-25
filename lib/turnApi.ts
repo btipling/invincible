@@ -304,6 +304,8 @@ export const sendTurnStream: SendAgentStreamFn = async (prompt, init) => {
     return {
       ok: false,
       error: err instanceof Error ? err.message : 'Stream read failed.',
+      ...(turnRunId !== undefined ? { turnRunId } : {}),
+      ...(turnWarning !== undefined ? { turnWarning } : {}),
     };
   }
 

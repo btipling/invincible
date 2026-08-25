@@ -1728,6 +1728,178 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
   });
 });
 
+describe('durable stream EOF is detach (plan #852 / source #849)', () => {
+  async function runRetry<T>(fn: () => Promise<T>): Promise<T> {
+    vi.useFakeTimers();
+    try {
+      const pending = fn();
+      await vi.advanceTimersByTimeAsync(60_000);
+      return await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('onTurnStarted + text_delta + ok:true without done is detach, not model-finished', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { session: next, result } = await runHarnessTurn(
+      bridge,
+      createEmptySession(),
+      'work',
+      {
+        streamAgent: true,
+        sendAgentStream: async (_prompt, init) => {
+          await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+          await init?.onEvent?.({ type: 'text_delta', text: 'partial' });
+          return { ok: true, text: 'partial', turnRunId: 'wr_live' };
+        },
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('running');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('model'),
+      ),
+    ).toBe(false);
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+    expect(next.messages.some((m) => m.role === 'system' && /detached/.test(m.text))).toBe(
+      false,
+    );
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+  });
+
+  it('onTurnStarted + empty model response without done is detach, not empty-complete', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { session: next, result } = await runHarnessTurn(
+      bridge,
+      createEmptySession(),
+      'work',
+      {
+        streamAgent: true,
+        sendAgentStream: async (_prompt, init) => {
+          await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+          return { ok: false, error: 'Empty model response.', turnRunId: 'wr_live' };
+        },
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('running');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'error' && m.text === describeTurnEnd('empty'),
+      ),
+    ).toBe(false);
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('model'),
+      ),
+    ).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+  });
+
+  it('onTurnStarted + SSE done still completes as model-finished', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { session: next, result } = await runHarnessTurn(
+      bridge,
+      createEmptySession(),
+      'work',
+      {
+        streamAgent: true,
+        sendAgentStream: async (_prompt, init) => {
+          await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+          await init?.onEvent?.({ type: 'text_delta', text: 'hello' });
+          await init?.onEvent?.({ type: 'done', text: 'hello' });
+          return { ok: true, text: 'hello', turnRunId: 'wr_live' };
+        },
+      },
+    );
+    expect(result.ok).toBe(true);
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('model'),
+      ),
+    ).toBe(true);
+  });
+
+  it('after onTurnStarted, empty/EOF does not POST a second turn', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const sendAgentStream = vi.fn(async (_prompt: string, init?: { onTurnStarted?: (info: { turnRunId: string }) => void | Promise<void> }) => {
+      await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+      return { ok: false as const, error: 'Empty model response.', turnRunId: 'wr_live' };
+    });
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'work', {
+      streamAgent: true,
+      sendAgentStream,
+    });
+    expect(sendAgentStream).toHaveBeenCalledTimes(1);
+    expect(next.turnStatus).toBe('running');
+    expect(next.turnRunId).toBe('wr_live');
+  });
+
+  it('leftover completed turnRunId without onTurnStarted still retries empty', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = {
+      ...createEmptySession(),
+      turnRunId: 'wr_old',
+      turnStatus: 'completed' as const,
+    };
+    const sendAgentStream = vi.fn(async () => ({
+      ok: false as const,
+      error: 'Empty model response.',
+    }));
+    const { session: next } = await runRetry(() =>
+      runHarnessTurn(bridge, session, 'work', {
+        streamAgent: true,
+        sendAgentStream,
+      }),
+    );
+    expect(sendAgentStream).toHaveBeenCalledTimes(5);
+    expect(next.turnRunId).toBe('wr_old');
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'error' && m.text === describeTurnEnd('empty'),
+      ),
+    ).toBe(true);
+  });
+
+  it('ok:false with turnRunId header without onTurnStarted is not detach', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'work', {
+      streamAgent: true,
+      sendAgentStream: async () => ({
+        ok: false,
+        status: 400,
+        error: 'bad prompt',
+        turnRunId: 'wr_hdr',
+      }),
+    });
+    expect(next.turnRunId).toBeUndefined();
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'error' && m.text.startsWith('Turn ended · error'),
+      ),
+    ).toBe(true);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+  });
+});
+
 describe('toolRun aggregation (protocol v10 / plan #345)', () => {
   it('stream streak beyond TOOL_RUN_ITEMS_MAX rolls a new tool_run group', async () => {
     const exp = makeMockExports();
