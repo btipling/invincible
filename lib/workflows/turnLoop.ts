@@ -14,8 +14,9 @@
  * carrier that adapts `'use step'` write/close wrappers and calls this core.
  *
  * Lock discipline (B11 #805, deploy-gate):
- *  - Step I/O = **deltas** (`{text,toolCalls,usage,finishReason}` / `{result,
- *    freshnessDelta}` / terminal persist status), never the full transcript.
+ *  - Step I/O = **deltas** (`{text,toolCalls,usage,finishReason,reasoning?}` /
+ *    `{result, freshnessDelta}` / terminal persist status), never the full
+ *    transcript.
  *  - Tokens ride `getWritable()` (this core writes SSE event lines to the
  *    injected writable); the transcript/checkpoint live in Blob (B13 persist).
  *  - The writable is closed **exactly once** on every terminal path — success,
@@ -51,6 +52,12 @@ export type TurnLoopDelta = {
   /** Provider usage for this model round (B9 `OneRoundDelta.usage`, optional). */
   usage?: unknown;
   finishReason?: string;
+  /**
+   * Accumulated thinking for this model round. The loop copies it onto the
+   * SSE `reasoning_delta` line then **drops** it from persist/`messages`
+   * (thinking is ephemeral — never Blob / reconstructed transcript).
+   */
+  reasoning?: string;
 };
 
 export type TurnToolCallDelta = {
@@ -441,13 +448,26 @@ export async function runTurnLoop(
       if (!gen.ok) {
         return fail(gen.code === 'cancelled' ? 'cancelled' : 'failed', round, steps, gen.error);
       }
-      deltas.push(gen.delta);
-      usage = accumulateUsage(usage, gen.delta.usage);
-      if (gen.delta.text) {
-        assistantText += gen.delta.text;
-        await writable.write(sse({ type: 'text_delta', text: gen.delta.text }));
+      const reasoning =
+        typeof gen.delta.reasoning === 'string' ? gen.delta.reasoning.trim() : '';
+      const persistDelta: TurnLoopDelta = {
+        text: gen.delta.text,
+        toolCalls: gen.delta.toolCalls,
+        ...(gen.delta.usage !== undefined ? { usage: gen.delta.usage } : {}),
+        ...(gen.delta.finishReason !== undefined
+          ? { finishReason: gen.delta.finishReason }
+          : {}),
+      };
+      deltas.push(persistDelta);
+      usage = accumulateUsage(usage, persistDelta.usage);
+      if (reasoning) {
+        await writable.write(sse({ type: 'reasoning_delta', text: reasoning }));
       }
-      messages.push({ role: 'assistant', delta: gen.delta });
+      if (persistDelta.text) {
+        assistantText += persistDelta.text;
+        await writable.write(sse({ type: 'text_delta', text: persistDelta.text }));
+      }
+      messages.push({ role: 'assistant', delta: persistDelta });
 
       // No tool calls → this model round is terminal; persist and close.
       const calls: TurnToolCallDelta[] = gen.delta.toolCalls ?? [];

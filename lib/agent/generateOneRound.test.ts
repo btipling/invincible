@@ -306,3 +306,129 @@ describe('generateOneRound (backend-agents B9)', () => {
     expect(result.delta.text).not.toContain('sk-1234');
   });
 });
+
+async function withAgentReasoningEnv<T>(
+  value: string | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prev = process.env.AGENT_REASONING;
+  try {
+    if (value === undefined) delete process.env.AGENT_REASONING;
+    else process.env.AGENT_REASONING = value;
+    return await fn();
+  } finally {
+    if (prev == null) delete process.env.AGENT_REASONING;
+    else process.env.AGENT_REASONING = prev;
+  }
+}
+
+describe('generateOneRound reasoning (plan #846)', () => {
+  it('sets streamArgs.reasoning to provider-default for a reasoning-capable model id', async () => {
+    await withAgentReasoningEnv(undefined, async () => {
+      const streamTextImpl = vi.fn(makeStream({ parts: [{ type: 'text-delta', text: 'ok' }] }));
+      const result = await generateOneRound(
+        { modelId: 'xai/grok-4.1-fast-reasoning', streamTextImpl },
+        { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+      );
+      expect(result.ok).toBe(true);
+      expect(streamTextImpl).toHaveBeenCalledTimes(1);
+      const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
+      expect(args.reasoning).toBe('provider-default');
+    });
+  });
+
+  it('omits streamArgs.reasoning for a non-reasoning model when env unset', async () => {
+    await withAgentReasoningEnv(undefined, async () => {
+      const streamTextImpl = vi.fn(makeStream({ parts: [{ type: 'text-delta', text: 'ok' }] }));
+      const result = await generateOneRound(
+        { ...deps, streamTextImpl },
+        { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+      );
+      expect(result.ok).toBe(true);
+      const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
+      expect(args).not.toHaveProperty('reasoning');
+      if (result.ok) expect(result.delta).not.toHaveProperty('reasoning');
+    });
+  });
+
+  it('sets streamArgs.reasoning to none when AGENT_REASONING=none (does not omit)', async () => {
+    await withAgentReasoningEnv('none', async () => {
+      const streamTextImpl = vi.fn(makeStream({ parts: [{ type: 'text-delta', text: 'ok' }] }));
+      const result = await generateOneRound(
+        { modelId: 'xai/grok-4.1-fast-reasoning', streamTextImpl },
+        { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+      );
+      expect(result.ok).toBe(true);
+      const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
+      expect(args.reasoning).toBe('none');
+    });
+  });
+
+  it('AGENT_REASONING=high overrides even a non-reasoning model id', async () => {
+    await withAgentReasoningEnv('high', async () => {
+      const streamTextImpl = vi.fn(makeStream({ parts: [{ type: 'text-delta', text: 'ok' }] }));
+      await generateOneRound(
+        { ...deps, streamTextImpl },
+        { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+      );
+      const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
+      expect(args.reasoning).toBe('high');
+    });
+  });
+
+  it('accumulates mapped reasoning_delta events into delta.reasoning', async () => {
+    await withAgentReasoningEnv(undefined, async () => {
+      const streamTextImpl = makeStream({
+        parts: [
+          { type: 'reasoning-delta', text: 'Hmm' },
+          { type: 'reasoning-delta', text: '…' },
+          { type: 'text-delta', text: 'hi' },
+        ],
+        text: 'hi',
+      });
+      const result = await generateOneRound(
+        { ...deps, streamTextImpl },
+        { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.delta.reasoning).toBe('Hmm…');
+    });
+  });
+
+  it('redacts secrets in accumulated reasoning', async () => {
+    await withAgentReasoningEnv(undefined, async () => {
+      const secret = 'sk-reason-secret';
+      const streamTextImpl = makeStream({
+        parts: [{ type: 'reasoning-delta', text: `see ${secret}` }],
+      });
+      const result = await generateOneRound(
+        { ...deps, streamTextImpl, secrets: [secret] },
+        { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.delta.reasoning).toBe('see [redacted]');
+      expect(result.delta.reasoning).not.toContain(secret);
+    });
+  });
+
+  it('omits delta.reasoning when no reasoning parts (or empty text)', async () => {
+    await withAgentReasoningEnv(undefined, async () => {
+      const streamTextImpl = makeStream({
+        parts: [
+          { type: 'reasoning-delta', text: '' },
+          { type: 'text-delta', text: 'hi' },
+        ],
+        text: 'hi',
+      });
+      const result = await generateOneRound(
+        { ...deps, streamTextImpl },
+        { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.delta).not.toHaveProperty('reasoning');
+    });
+  });
+});

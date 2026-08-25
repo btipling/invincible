@@ -46,6 +46,8 @@ Each SSE block is one `data: <json>\n\n` line:
 
 Unknown types are ignored (forward-compatible). String fields are redacted server-side with the same secret list as JSON responses.
 
+On the production durable path (`POST /api/turns`) the loop emits one accumulated `reasoning_delta` per model round (same cadence as durable `text_delta`) after the model step returns. Legacy `/api/agent` token-streams those same event types as they arrive from the provider.
+
 ### Level-2 preview (`tool_result.preview`)
 
 The stream `tool_result` event carries an **optional** `preview` field: a bounded,
@@ -137,7 +139,8 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Concern | Path |
 |---------|------|
 | Event map / tool summary | `lib/agent/agentStream.ts` |
-| streamText + reasoning option | `lib/agent/runAgent.ts`, `lib/agent/reasoningConfig.ts` |
+| streamText + reasoning option (production `/api/turns`) | `lib/agent/generateOneRound.ts`, `lib/agent/reasoningConfig.ts` |
+| streamText + reasoning option (legacy `/api/agent`) | `lib/agent/runAgent.ts`, `lib/agent/reasoningConfig.ts` |
 | Route SSE vs JSON | `app/api/agent/route.ts` |
 | Logical cwd parse / default | `lib/agent/agentBody.ts`, `lib/sandbox/config.ts`, `lib/agent/workPath.ts` |
 | Host consumer + collapse/caps | `lib/harnessChat.ts`, `lib/agentApi.ts` |

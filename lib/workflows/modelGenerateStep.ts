@@ -5,7 +5,7 @@
  * Thin directive shell over the merged B9 core `generateOneRound`
  * (`lib/agent/generateOneRound.ts`): ONE LLM round, tool **schemas only** (no
  * `execute`), returning the normalized DELTA `{text, toolCalls, usage,
- * finishReason}` — not the full transcript.
+ * finishReason, reasoning?}` — not the full transcript.
  *
  * The tool surface is assembled IN-STEP via the shared `assembleDurableToolWorld`
  * helper (same path as `toolExecuteStep`), then stripped to schemas-only via
