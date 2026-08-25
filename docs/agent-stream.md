@@ -103,13 +103,14 @@ When `AGENT_REASONING` is unset, the server enables `reasoning: provider-default
 
 ## End of turn
 
-Every harness turn paints a final line:
+Most harness turns paint a final line. **Detach does not** — losing the live reader (leave-site abort, or durable `/api/turns` body EOF without a producer `done` / `error`) is not “the turn ended.”
 
 | Outcome | Line |
 |---------|------|
-| Model finished | `Turn ended · model finished` (System) |
+| Model finished (SSE `done`) | `Turn ended · model finished` (System) |
 | User Stop | `Turn ended · you stopped` (System) |
-| Error / timeout / empty | `Turn ended · error · …` / timed out / empty (Error). A retryable error retries the **same** turn up to **5 attempts** with bounded backoff before give-up (**1 attempt once a ring row has been painted mid-stream**); on give-up the host sets the turn lifecycle to **Error** (so a queued head is never drained) and, if the operator queue is non-empty, inserts `Continue the current turn` as the new head. Permanent failures (the `PERMANENT_TURN_STATUS` whitelist — 400/401/403/404/413/422) give up after a single attempt; **408/429/5xx and timeout/empty stay retryable** (retry the same turn up to 5 attempts) |
+| Detach (leave-site abort, or durable reader-drop without `done`/`error` after the run id is folded) | **No** turn-end line. Session keeps `turnRunId` + `turnStatus: 'running'`. Lifecycle Ready. The workflow is not cancelled. |
+| Error / timeout / empty | `Turn ended · error · …` / timed out / empty (Error). A retryable error retries the **same** turn up to **5 attempts** with bounded backoff before give-up (**1 attempt once a ring row has been painted mid-stream**, and **1 attempt once a durable `/api/turns` run has started** — another POST would start a second workflow); on give-up the host sets the turn lifecycle to **Error** (so a queued head is never drained) and, if the operator queue is non-empty, inserts `Continue the current turn` as the new head. Permanent failures (the `PERMANENT_TURN_STATUS` whitelist — 400/401/403/404/413/422) give up after a single attempt; **408/429/5xx and timeout/empty stay retryable before durable start** (retry the same turn up to 5 attempts). After durable SSE start, empty/EOF without `done`/`error` is **detach**, not empty-complete and not a retry. |
 | Standalone chat (`/api/chat`) | `Turn ended · chat finished` (System) — kept helper only; a failed agent turn does **not** fall back here |
 
 These markers are **not** folded as tools into the next prompt.

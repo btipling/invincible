@@ -260,4 +260,38 @@ describe('sendTurnStream (SSE path — production default)', () => {
       expect(result.turnWarning).toBe('note');
     }
   });
+
+  it('non-abort stream-read throw still returns turnRunId (plan #852)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const body = new ReadableStream<Uint8Array>({
+          start(c) {
+            c.error(new TypeError('network dropped'));
+          },
+        });
+        return new Response(body, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'x-workflow-run-id': 'wr_live',
+            'x-workflow-run-warning': 'note',
+          },
+        });
+      }),
+    );
+    const started: string[] = [];
+    const result = await sendTurnStream('hi', {
+      onTurnStarted: ({ turnRunId }) => {
+        started.push(turnRunId);
+      },
+    });
+    expect(started).toEqual(['wr_live']);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/network dropped/);
+      expect(result.turnRunId).toBe('wr_live');
+      expect(result.turnWarning).toBe('note');
+    }
+  });
 });

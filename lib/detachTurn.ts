@@ -186,3 +186,18 @@ export function shouldApplyMintBind(input: {
     !input.switchInFlight
   );
 }
+
+/**
+ * Same-tab durable detach must not light ember `hostNote` (adversarial #853).
+ * Leave-site D18 already skips the note via epoch mismatch. EOF detach is
+ * same-epoch + `{ ok: false }` + `turnStatus: 'running'` — canvas Ready, run
+ * still live. A host error string would lie that the turn failed.
+ *
+ * `running` is the persist contract for detach (D18 fold). Other fail
+ * outcomes write `completed` (or leave a leftover terminal status) and
+ * still surface the note.
+ */
+export function shouldSetHostTurnNote(turnStatus?: TurnStatus): boolean {
+  return turnStatus !== 'running';
+}
+
