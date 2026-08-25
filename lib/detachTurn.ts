@@ -139,6 +139,31 @@ export function preserveTargetId(
 }
 
 /**
+ * Put surface captured from `repoRef` at `runPrompt` start so unmount cleanup
+ * (`repoRef.current = null`) cannot drop a preserve PUT (adversarial #844).
+ */
+export type DetachPersistRepo<T extends { id: string } = { id: string }> = {
+  put(id: string, snapshot: T): void;
+};
+
+/**
+ * PUT a preserve snapshot onto `preserveTargetId`. Pass the **captured** repo
+ * object, not `repoRef.current`: abort microtasks run AFTER the boot-effect
+ * cleanup nulls the ref.
+ */
+export function putPreservedTurn<T extends { id: string }>(
+  repo: DetachPersistRepo<T> | null | undefined,
+  snapshot: T,
+  startedId: string,
+  pendingMintId?: string | null,
+): { targetId: string; preserved: T } {
+  const targetId = preserveTargetId(startedId, pendingMintId);
+  const preserved = { ...snapshot, id: targetId };
+  repo?.put(targetId, preserved);
+  return { targetId, preserved };
+}
+
+/**
  * Whether #430 mint bind (`sess_*` → server UUID) should rewrite local/cloud
  * identity after this turn (adversarial #844).
  *

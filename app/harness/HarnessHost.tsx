@@ -12,7 +12,7 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
-import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, preserveTargetId, shouldApplyMintBind } from '../../lib/detachTurn';
+import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind } from '../../lib/detachTurn';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -420,6 +420,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       inflightRef.current = true;
       const epoch = turnEpochRef.current;
       const startedId = sessionRef.current.id;
+      // Adversarial #844: capture the repo object NOW. Unmount cleanup nulls
+      // `repoRef` before the abort microtask reaches persistTurn/finally.
+      const repo = repoRef.current;
       const persistTurn = (snapshot: SessionSnapshot) => {
         const pendingMintId = pendingMintBindRef.current;
         const action = decideDetachPersist({
@@ -435,9 +438,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         if (action === 'preserve') {
           // Adversarial #844: first-turn unmount must PUT the deferred mint UUID,
           // not local sess_*. Switch must not writeLocal (generation token).
-          const targetId = preserveTargetId(startedId, pendingMintId);
-          const preserved = { ...snapshot, id: targetId };
-          repoRef.current?.put(targetId, preserved);
+          const { preserved } = putPreservedTurn(repo, snapshot, startedId, pendingMintId);
           if (
             shouldApplyMintBind({
               sessionId: sessionRef.current.id,
@@ -514,7 +515,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           ) {
             const bound = { ...sessionRef.current, id: pendingId };
             writeLocalSession(bound);
-            repoRef.current?.put(pendingId, bound);
+            repo?.put(pendingId, bound);
             if (!detached) {
               setActiveSessionId(pendingId);
               setUrlSessionId(pendingId);

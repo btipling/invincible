@@ -13,6 +13,7 @@
  * live epoch → `live`.
  * Plus first-turn mint bind (adversarial #844): preserve targets pending mint
  * UUID not `sess_*`; mint bind skipped on Switch/Clear; unmount still binds.
+ * Plus unmount-nulling `repoRef` still PUTs via the captured repo object.
  * Plus the source-lock that counts `decideDetach`-wired detach sites vs raw
  * `abort()` call sites in `HarnessHost.tsx`.
  */
@@ -26,6 +27,7 @@ import {
   DETACH_ABORT_REASON,
   isDetachAbort,
   preserveTargetId,
+  putPreservedTurn,
   shouldAbortReader,
   shouldApplyMintBind,
   type DetachTurnInput,
@@ -246,6 +248,54 @@ describe('preserveTargetId / shouldApplyMintBind (adversarial #844 first-turn mi
       }),
     ).toBe(false);
   });
+
+  it('unmount-nulling the host repo ref still PUTs the captured repo (adversarial #844)', () => {
+    const puts: { id: string; snap: { id: string; turnRunId?: string; turnStatus?: string } }[] =
+      [];
+    const liveRepo = {
+      put(id: string, snap: { id: string; turnRunId?: string; turnStatus?: string }) {
+        puts.push({ id, snap });
+      },
+    };
+    let repoRef: typeof liveRepo | null = liveRepo;
+    const captured = repoRef;
+    repoRef = null;
+    const snapshot = {
+      id: 'sess_local',
+      turnRunId: 'wr_live',
+      turnStatus: 'running' as const,
+    };
+    const { targetId, preserved } = putPreservedTurn(
+      captured,
+      snapshot,
+      'sess_local',
+      'uuid-mint',
+    );
+    expect(repoRef).toBeNull();
+    expect(targetId).toBe('uuid-mint');
+    expect(preserved).toEqual({
+      id: 'uuid-mint',
+      turnRunId: 'wr_live',
+      turnStatus: 'running',
+    });
+    expect(puts).toEqual([
+      {
+        id: 'uuid-mint',
+        snap: { id: 'uuid-mint', turnRunId: 'wr_live', turnStatus: 'running' },
+      },
+    ]);
+  });
+
+  it('putPreservedTurn with a null captured repo is a no-op (no throw)', () => {
+    expect(() =>
+      putPreservedTurn(
+        null,
+        { id: 'sess_local', turnRunId: 'wr_live', turnStatus: 'running' },
+        'sess_local',
+        'uuid-mint',
+      ),
+    ).not.toThrow();
+  });
 });
 
 describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
@@ -258,6 +308,7 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(module).toContain('export function abortReasonFor');
     expect(module).toContain('export function decideDetachPersist');
     expect(module).toContain('export function preserveTargetId');
+    expect(module).toContain('export function putPreservedTurn');
     expect(module).toContain('export function shouldApplyMintBind');
     expect(module).toContain('durablePath');
   });
@@ -330,14 +381,25 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
   it('preserve + finally mint-bind first-turn UUID (adversarial #844)', () => {
     const runStart = host.indexOf('const runPrompt = useCallback');
     const run = host.slice(runStart, host.indexOf('useEffect(() => {', runStart));
-    expect(run).toContain('preserveTargetId(startedId, pendingMintId)');
+    expect(run).toContain('const repo = repoRef.current');
+    expect(run).toContain('putPreservedTurn(repo, snapshot, startedId, pendingMintId)');
     expect(run).toContain('shouldApplyMintBind(');
     expect(run).toContain('pendingMintBindRef.current');
     expect(run).toContain('switchInFlightRef.current');
+    // persistTurn preserve + finally mint-bind must use the captured repo, not
+    // repoRef.current (unmount nulls the ref before the abort microtask).
+    const persistTurn = run.slice(
+      run.indexOf('const persistTurn ='),
+      run.indexOf('setBusy(true)'),
+    );
+    expect(persistTurn).toContain('putPreservedTurn(repo,');
+    expect(persistTurn).not.toContain('repoRef.current');
     // Pin ?s= only on live completion — not after detach/unmount.
     const bind = run.slice(run.indexOf('const pendingId = pendingMintBindRef.current'));
     expect(bind).toContain('shouldApplyMintBind(');
     expect(bind).toContain('writeLocalSession(bound)');
+    expect(bind).toContain('repo?.put(pendingId, bound)');
+    expect(bind).not.toContain('repoRef.current?.put');
     expect(bind).toContain('if (!detached)');
     const pin = bind.slice(bind.indexOf('if (!detached)'));
     expect(pin).toContain('setUrlSessionId(pendingId)');
