@@ -32,6 +32,8 @@ describe('POST /api/turns', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let startMock: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let getRunMock: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let turnWorkflowMock: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let parseAgentBodyMock: any;
@@ -172,7 +174,11 @@ describe('POST /api/turns', () => {
       status: Promise.resolve('completed'),
       ...overrides,
     }));
-    vi.doMock('workflow/api', () => ({ start: startMock, getRun: vi.fn() }));
+    getRunMock = vi.fn(() => ({
+      exists: Promise.resolve(true),
+      status: Promise.resolve('running'),
+    }));
+    vi.doMock('workflow/api', () => ({ start: startMock, getRun: getRunMock }));
     return { getReadable };
   }
 
@@ -614,6 +620,7 @@ describe('POST /api/turns', () => {
     const body1 = await res1.json();
     expect(body1.error).toBe('A turn is already in progress for this session.');
     expect(startMock).not.toHaveBeenCalled();
+    expect(getRunMock).not.toHaveBeenCalled();
     expect(overlayWorkerMetaMock).not.toHaveBeenCalled();
 
     // Now change the envelope to completed and send a follow-up at the SAME
@@ -667,6 +674,98 @@ describe('POST /api/turns', () => {
     expect(startMock).toHaveBeenCalledTimes(1);
 
     nowSpy.mockRestore();
+  });
+
+  it('row 10b — running + turnRunId + exists:false → not 409 (outage envelope); start called', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    getRunMock.mockImplementation(() => ({
+      exists: Promise.resolve(false),
+      status: Promise.resolve('failed'),
+    }));
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        logicalCwd: 'app',
+        activeSandboxId: 'sb_bind',
+        turnStatus: 'running',
+        turnRunId: 'wf_dead_1',
+      },
+    });
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    expect(getRunMock).toHaveBeenCalledWith('wf_dead_1');
+    expect(startMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('row 10c — running + exists + terminal failed status → not 409; start called', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    getRunMock.mockImplementation(() => ({
+      exists: Promise.resolve(true),
+      status: Promise.resolve('failed'),
+    }));
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        turnStatus: 'running',
+        turnRunId: 'wf_failed_1',
+      },
+    });
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+    expect(res.status).toBe(200);
+    expect(startMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('row 10d — running + exists + non-terminal status → 409; start not called', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    getRunMock.mockImplementation(() => ({
+      exists: Promise.resolve(true),
+      status: Promise.resolve('running'),
+    }));
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        turnStatus: 'running',
+        turnRunId: 'wf_live_1',
+      },
+    });
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+    expect(res.status).toBe(409);
+    expect(startMock).not.toHaveBeenCalled();
+  });
+
+  it('row 10e — running + turnRunId + getRun/exists throw → 503; start not called', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    getRunMock.mockImplementation(() => {
+      throw new Error('workflows down');
+    });
+    readEnvelopeMock.mockResolvedValue({
+      updatedAt: FUTURE_UPDATED_AT,
+      meta: {
+        turnStatus: 'running',
+        turnRunId: 'wf_boom',
+      },
+    });
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.error).toMatch(/fail closed/);
+    expect(startMock).not.toHaveBeenCalled();
   });
 
   it('row 12 — 200 when turnStatus=completed in envelope: start called (completed is non-live)', async () => {

@@ -124,6 +124,17 @@ describe('staticGraph — closure walk (matrix 1,2,8,9,10,11,12,13)', () => {
     expect(bannedReach(reachable)).toEqual([]);
   });
 
+  it('turnWorkflow.ts entry closure reaches zero banned modules (plan #842 turnSseStep/format)', () => {
+    const reachable = reachableImports('lib/workflows/turnWorkflow.ts', {
+      root: REPO_ROOT,
+    });
+    expect(reachable.has('lib/workflows/turnWorkflow')).toBe(true);
+    expect(reachable.has('lib/workflows/turnSseStep')).toBe(true);
+    expect(reachable.has('lib/workflows/turnSseFormat')).toBe(true);
+    expect(bannedReach(reachable)).toEqual([]);
+    expect([...reachable].some((v) => v.includes('agentStream'))).toBe(false);
+  });
+
   it('positive control (dangerousGraphFixture) reaches a banned module → checker flags it (case 2)', () => {
     const reachable = reachableImports('lib/workflows/dangerousGraphFixture.ts', {
       root: REPO_ROOT,
