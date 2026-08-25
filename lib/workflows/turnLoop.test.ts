@@ -119,7 +119,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(closed()).toBe(1);
     expect(w.lines.some((l) => l.includes('"done"'))).toBe(true);
     const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
-    expect(events.some((e: { type: string }) => e.type === 'text_delta')).toBe(true);
+    expect(events.some((e: { type: string }) => e.type === 'text_delta')).toBe(false);
     const done = events.find((e: { type: string }) => e.type === 'done') as {
       type: string;
       text: string;
@@ -161,7 +161,8 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(result.rounds).toBe(2);
     expect(closed()).toBe(1);
     const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
-    expect(events.filter((e: { type: string }) => e.type === 'tool_start').map((e: { name: string }) => e.name)).toEqual([
+    expect(events.filter((e: { type: string }) => e.type === 'tool_start')).toEqual([]);
+    expect(events.filter((e: { type: string }) => e.type === 'tool_result').map((e: { name: string }) => e.name)).toEqual([
       'list_dir',
       'read_file',
     ]);
@@ -680,12 +681,12 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
   });
 });
 
-describe('runTurnLoop reasoning (plan #846)', () => {
+describe('runTurnLoop reasoning (plan #850 — loop must not dump)', () => {
   function parseEvents(lines: string[]): Array<{ type: string; text?: string; name?: string }> {
     return lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
   }
 
-  it('writes reasoning_delta before text_delta/done from delta.reasoning', async () => {
+  it('does not write reasoning_delta or text_delta from delta (model step owns live SSE)', async () => {
     const { deps, w, closed } = wiredDeps();
     const modelStep = vi.fn(async () => ({
       ok: true as const,
@@ -699,14 +700,14 @@ describe('runTurnLoop reasoning (plan #846)', () => {
     expect(closed()).toBe(1);
     const events = parseEvents(w.lines);
     const types = events.map((e) => e.type);
-    expect(types).toContain('reasoning_delta');
-    expect(types.indexOf('reasoning_delta')).toBeLessThan(types.indexOf('text_delta'));
-    expect(types.indexOf('text_delta')).toBeLessThan(types.indexOf('done'));
-    const reasoning = events.find((e) => e.type === 'reasoning_delta');
-    expect(reasoning?.text).toBe('Hmm…');
+    expect(types).not.toContain('reasoning_delta');
+    expect(types).not.toContain('text_delta');
+    expect(types).toContain('done');
+    const done = events.find((e) => e.type === 'done');
+    expect(done?.text).toBe('hi');
   });
 
-  it('omits reasoning_delta when delta.reasoning is absent', async () => {
+  it('does not dump text_delta when delta.reasoning is absent either', async () => {
     const { deps, w } = wiredDeps();
     const modelStep = vi.fn(async () => ({
       ok: true as const,
@@ -715,10 +716,11 @@ describe('runTurnLoop reasoning (plan #846)', () => {
     await runTurnLoop({ ...deps, modelStep, toolStep: vi.fn() }, { userMessage: 'plain' });
     const events = parseEvents(w.lines);
     expect(events.some((e) => e.type === 'reasoning_delta')).toBe(false);
-    expect(events.some((e) => e.type === 'text_delta')).toBe(true);
+    expect(events.some((e) => e.type === 'text_delta')).toBe(false);
+    expect(events.some((e) => e.type === 'done')).toBe(true);
   });
 
-  it('emits reasoning_delta before tool_start on a reasoning-only tool round', async () => {
+  it('does not write tool_start from delta.toolCalls (model step owns live SSE)', async () => {
     const { deps, w } = wiredDeps();
     let first = true;
     const modelStep = vi.fn(async () => {
@@ -743,8 +745,10 @@ describe('runTurnLoop reasoning (plan #846)', () => {
     await runTurnLoop({ ...deps, modelStep, toolStep }, { userMessage: 'go' });
     const events = parseEvents(w.lines);
     const types = events.map((e) => e.type);
-    expect(types.indexOf('reasoning_delta')).toBeGreaterThanOrEqual(0);
-    expect(types.indexOf('reasoning_delta')).toBeLessThan(types.indexOf('tool_start'));
+    expect(types).not.toContain('reasoning_delta');
+    expect(types).not.toContain('tool_start');
+    expect(types).toContain('tool_result');
+    expect(types.indexOf('tool_result')).toBeLessThan(types.indexOf('done'));
   });
 
   it('strips reasoning from persist deltas and reconstructed messages (3b)', async () => {
@@ -771,15 +775,30 @@ describe('runTurnLoop reasoning (plan #846)', () => {
 
 describe('step wrappers (matrix 4–7)', () => {
   it('matrix 4 + 5: modelGenerateStep is a thin shell — delegates generateOneRound, re-resolves BYOK in-step, assembles FULL tool schemas via shared helper, serializable args', async () => {
+    // Reset so the turnSseWrite mock is in modelGenerateStep's import graph.
+    vi.resetModules();
     // Mock generateOneRound to prove the wrapper delegates and forwards plain
-    // serializable args with the FULL registry (schemas-only).
+    // serializable args with the FULL registry (schemas-only). Also invoke
+    // input.onEvent so a no-op sink cannot hide behind leftover identifiers
+    // (adversarial L6 — live glue is behavior, not source-lock).
+    const writeOnDefaultStream = vi.fn(async () => {});
+    vi.doMock('./turnSseWrite', () => ({ writeOnDefaultStream }));
     const m1 = vi.fn(async (_deps: unknown, input: unknown) => {
-      const i = input as { messages: unknown[]; tools?: Record<string, unknown> };
+      const i = input as {
+        messages: unknown[];
+        tools?: Record<string, unknown>;
+        onEvent?: (ev: { type: string; text?: string; usage?: unknown }) => void | Promise<void>;
+      };
       expect(Array.isArray(i.messages)).toBe(true);
       // The tools dict must be the stripped FULL durable surface
       // (at minimum list_dir + skill tools), not the old stub.
       expect(typeof i.tools).toBe('object');
       expect(i.tools).toBeDefined();
+      expect(typeof i.onEvent).toBe('function');
+      await i.onEvent!({ type: 'reasoning_delta', text: 'Hmm' });
+      // Loop-owned / empty → formatLiveModelSse null → no write.
+      await i.onEvent!({ type: 'usage', usage: { total: 1 } });
+      await i.onEvent!({ type: 'reasoning_delta', text: '' });
       return { ok: true as const, delta: { text: 'm', toolCalls: [] } };
     });
     vi.doMock('../agent/generateOneRound', () => ({
@@ -853,9 +872,16 @@ describe('step wrappers (matrix 4–7)', () => {
     expect(inputTools).toBeDefined();
     expect(Object.keys(inputTools as object)).toContain('list_dir');
     expect(Object.keys(inputTools as object)).toContain('find_skill');
+    // Live glue: onEvent → formatLiveModelSse → writeOnDefaultStream. A no-op
+    // onEvent with leftover imports would fail here (one framed reasoning line).
+    expect(writeOnDefaultStream).toHaveBeenCalledTimes(1);
+    expect(writeOnDefaultStream).toHaveBeenCalledWith(
+      'data: {"type":"reasoning_delta","text":"Hmm"}\n\n',
+    );
     vi.doUnmock('../agent/generateOneRound');
     vi.doUnmock('../di/index');
     vi.doUnmock('./assembleDurableToolWorld');
+    vi.doUnmock('./turnSseWrite');
   });
 
   it('matrix 5b: modelGenerateStep BYOK fail returns {ok:false} — does NOT call streamText with bare modelId', async () => {

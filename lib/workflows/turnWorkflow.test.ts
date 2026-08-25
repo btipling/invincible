@@ -133,17 +133,51 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
     expect(src).toMatch(/closeTurnSse/);
   });
 
-  it("writeTurnSse/closeTurnSse bodies are 'use step' and own getWriter/close (plan #842 adversarial L6)", () => {
-    const src = readFileSync(fileURLToPath(new URL('./turnSseStep.ts', import.meta.url)), 'utf8');
-    const writeIdx = src.indexOf('export async function writeTurnSse');
-    const closeIdx = src.indexOf('export async function closeTurnSse');
+  it("writeTurnSse is 'use step' and delegates to writeOnDefaultStream; helper owns getWriter (plan #850)", () => {
+    const stepSrc = readFileSync(fileURLToPath(new URL('./turnSseStep.ts', import.meta.url)), 'utf8');
+    const writeSrc = readFileSync(fileURLToPath(new URL('./turnSseWrite.ts', import.meta.url)), 'utf8');
+    const writeIdx = stepSrc.indexOf('export async function writeTurnSse');
+    const closeIdx = stepSrc.indexOf('export async function closeTurnSse');
     expect(writeIdx).toBeGreaterThanOrEqual(0);
     expect(closeIdx).toBeGreaterThan(writeIdx);
-    const writeFn = src.slice(writeIdx, closeIdx);
-    const closeFn = src.slice(closeIdx);
+    const writeFn = stepSrc.slice(writeIdx, closeIdx);
+    const closeFn = stepSrc.slice(closeIdx);
+    const writeFnCode = writeFn.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    const writeHelperCode = writeSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     expect(writeFn).toMatch(/\{\s*'use step';/);
+    expect(writeFn).toMatch(/writeOnDefaultStream/);
+    expect(writeFnCode).not.toMatch(/getWriter\s*\(/);
     expect(closeFn).toMatch(/\{\s*'use step';/);
-    expect(writeFn).toMatch(/getWriter\s*\(/);
     expect(closeFn).toMatch(/\.close\s*\(/);
+    expect(writeHelperCode).not.toMatch(/['"]use step['"]/);
+    expect(writeSrc).toMatch(/export async function writeOnDefaultStream/);
+    expect(writeSrc).toMatch(/getWriter\s*\(/);
+  });
+
+  it("modelGenerateStep live-writes via writeOnDefaultStream; does not import turnSseStep (plan #850)", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL('./modelGenerateStep.ts', import.meta.url)),
+      'utf8',
+    );
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(code).toMatch(/'use step'/);
+    expect(code).toMatch(/writeOnDefaultStream/);
+    expect(code).toMatch(/formatLiveModelSse/);
+    expect(code).toMatch(/onEvent:/);
+    expect(code).not.toMatch(/from ['"]\.\/turnSseStep['"]/);
+    expect(code).not.toMatch(/\bwriteTurnSse\b/);
+    expect(code).not.toMatch(/\bcloseTurnSse\b/);
+  });
+
+  it('turnLoop/turnWorkflow do not import turnSseWrite (plan #850 static-graph leaf)', () => {
+    const loop = readFileSync(fileURLToPath(new URL('./turnLoop.ts', import.meta.url)), 'utf8');
+    const entry = readFileSync(
+      fileURLToPath(new URL('./turnWorkflow.ts', import.meta.url)),
+      'utf8',
+    );
+    const loopCode = loop.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    const entryCode = entry.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(loopCode).not.toMatch(/turnSseWrite/);
+    expect(entryCode).not.toMatch(/turnSseWrite/);
   });
 });

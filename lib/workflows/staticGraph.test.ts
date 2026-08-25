@@ -131,6 +131,7 @@ describe('staticGraph — closure walk (matrix 1,2,8,9,10,11,12,13)', () => {
     expect(reachable.has('lib/workflows/turnWorkflow')).toBe(true);
     expect(reachable.has('lib/workflows/turnSseStep')).toBe(true);
     expect(reachable.has('lib/workflows/turnSseFormat')).toBe(true);
+    expect(reachable.has('lib/workflows/turnSseWrite')).toBe(false);
     expect(bannedReach(reachable)).toEqual([]);
     expect([...reachable].some((v) => v.includes('agentStream'))).toBe(false);
   });

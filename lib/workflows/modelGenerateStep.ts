@@ -25,11 +25,12 @@
  * id + user id + scope + optional persistRunBind). No closures / bound runners /
  * seams cross the step boundary.
  *
- * The step returns the delta; the loop core writes the SSE lines from that delta
- * (`write SSE (text / reasoning / tool_start)`), so this wrapper does NOT open
- * its own `getWritable()` — the loop owns the SSE wire. The B9 `onEvent` is
- * internal (a no-op sink); the returned delta is the authoritative carrier, and
- * the loop emits the `AgentStreamEvent`-shaped SSE it needs.
+ * The step returns the delta for persist / tool dispatch. Live SSE
+ * (`reasoning_delta` / `text_delta` / `tool_start`) is written **inside this
+ * step** via `writeOnDefaultStream` (`lib/workflows/turnSseWrite.ts`, no
+ * `'use step'`) as `generateOneRound` `onEvent` fires — not dumped by the loop
+ * after return. The loop still owns `tool_result` / `done` / close. Do **not**
+ * import `turnSseStep` from this file (nested `'use step'`).
  *
  * Errors are business-error-as-value (mirrors the B9 core): a model failure
  * returns `{ok:false, code:'model_error'|'cancelled', ...}`, never an uncaught
@@ -47,6 +48,8 @@ import {
 } from '../agent/generateOneRound';
 import { toolsWithoutExecutors } from '../agent/generateOneRound';
 import { toModelMessages } from './toModelMessages';
+import { formatLiveModelSse } from './turnSseFormat';
+import { writeOnDefaultStream } from './turnSseWrite';
 import type { PersistRunBind } from './turnLoop';
 
 /** Serialized `modelGenerateStep` step args — plain values only. */
@@ -160,8 +163,9 @@ export async function modelGenerateStep(
     // (ToolCallPart / ToolResultPart) linked by toolCallId.
     messages: toModelMessages(args.messages),
     tools: toolSchemas,
-    onEvent: async () => {
-      /* The delta is the authoritative carrier; the loop emits SSE from it. */
+    onEvent: async (ev) => {
+      const line = formatLiveModelSse(ev);
+      if (line) await writeOnDefaultStream(line);
     },
   };
 
