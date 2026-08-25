@@ -2,6 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AUTH_REQUIRED_ERROR } from '../../../lib/tenancy/errors';
 
 /**
+ * Distant-future `updatedAt` planted in the mock envelope for row 1, so the
+ * LWW clock assertion can prove `Math.max(Date.now(), stored+1)` is strictly
+ * newer. If the clock regresses to bare `Date.now()`, patch.updatedAt would be
+ * ~1.76e12 which is < FUTURE_UPDATED_AT + 1 → test fails.
+ */
+const FUTURE_UPDATED_AT = 9_000_000_000_000;
+
+/**
  * Route tests for backend-agents C14b (#835) + C14d (#833) — `POST /api/turns`
  * durable-turn start surface + durable running PATCH. Mocks the SDK `start`,
  * the DI root, the workflow entry, and `overlayWorkerMeta` so the route never
@@ -128,6 +136,7 @@ describe('POST /api/turns', () => {
       ok: true as const,
       value: {
         readEnvelope: vi.fn(async () => ({
+          updatedAt: FUTURE_UPDATED_AT,
           meta: {
             logicalCwd: 'app',
             activeSandboxId: 'sb_bind',
@@ -251,8 +260,13 @@ describe('POST /api/turns', () => {
     expect(patchCall.patch).toEqual({ turnRunId: 'wf_turn_123', turnStatus: 'running' });
     expect(patchCall.envelopeStore).toBeTruthy();
     // LWW inputs: strictly-newer clock + correct scope key.
+    // The mock envelope was planted with a distant-future updatedAt; the route
+    // computes Math.max(Date.now(), stored+1). Since stored+1 (9e12+1) >
+    // Date.now() (~1.76e12), the clock MUST pick stored+1 — never Date.now().
+    // A bare Date.now() would be ~1.76e12 < 9e12+1 → this assertion fails.
     expect(typeof patchCall.updatedAt).toBe('number');
     expect(Number.isFinite(patchCall.updatedAt)).toBe(true);
+    expect(patchCall.updatedAt).toBeGreaterThanOrEqual(FUTURE_UPDATED_AT + 1);
     expect(patchCall.key).toEqual({ tenantId: 't1', userId: 'u1', sessionId: 's1' });
   });
 
@@ -305,12 +319,12 @@ describe('POST /api/turns', () => {
     // Non-500 — the run IS started.
     expect(res.status).toBe(200);
     expect(res.headers.get('x-workflow-run-id')).toBe('wf_turn_123');
-    // Warning header is present.
-    expect(res.headers.get('x-workflow-run-warning')).toMatch(/Running PATCH did not persist/);
+    // Warning header is present — pinned to the exact stable string.
+    expect(res.headers.get('x-workflow-run-warning')).toBe('Running PATCH did not persist (lww_conflict)');
     // JSON body still has runId + warning.
     const json = await res.json();
     expect(json.runId).toBe('wf_turn_123');
-    expect(json.warning).toMatch(/Running PATCH did not persist/);
+    expect(json.warning).toBe('Running PATCH did not persist (lww_conflict)');
     // start WAS called — the run was enqueued.
     expect(startMock).toHaveBeenCalledTimes(1);
   });
