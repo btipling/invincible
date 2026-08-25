@@ -131,7 +131,7 @@ export async function generateOneRound(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     result = stream(streamArgs) as any;
   } catch (err) {
-    return failClosed('model_error', err);
+    return failClosed('model_error', err, secrets);
   }
 
   const toolCalls: ToolCallDelta[] = [];
@@ -173,7 +173,7 @@ export async function generateOneRound(
           // Event-writable failure — fail-closed return, never an uncaught
           // throw into an orchestrator (the live wire is down; no reason to
           // keep pulling the model stream).
-          return failClosed('write_error', err);
+          return failClosed('write_error', err, secrets);
         }
       }
     }
@@ -183,7 +183,7 @@ export async function generateOneRound(
     }
     // Model-slice failure (provider stream / part-map). Return value, never an
     // uncaught throw.
-    return failClosed('model_error', err);
+    return failClosed('model_error', err, secrets);
   }
 
   // Final settlement of the single round (conclusive reconcile, same as
@@ -194,7 +194,7 @@ export async function generateOneRound(
   try {
     text = redactSecrets((((await result.text) ?? '') as string).trim(), secrets);
   } catch (err) {
-    return failClosed('model_error', err);
+    return failClosed('model_error', err, secrets);
   }
   try {
     usage = mapProviderUsage(await Promise.resolve(result.usage));
@@ -244,10 +244,11 @@ function isAbortErr(err: unknown): boolean {
 function failClosed(
   code: 'model_error' | 'write_error' | 'cancelled',
   err: unknown,
+  secrets: Array<string | undefined | null>,
 ):
   | { ok: false; code: 'model_error'; error: string }
   | { ok: false; code: 'write_error'; error: string }
   | { ok: false; code: 'cancelled'; error: string } {
   const msg = err instanceof Error ? err.message : String(err);
-  return { ok: false, code, error: msg };
+  return { ok: false, code, error: redactSecrets(msg, secrets) };
 }

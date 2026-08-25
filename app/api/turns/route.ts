@@ -122,9 +122,9 @@ export async function POST(req: Request): Promise<Response> {
   // Pre-start sandbox probe client — closed after start() succeeds OR on throw.
   // Mirrors /api/agent closeRunners (extendTimeout + drop handle, never stop).
   // Only populated when resolveAgentSandbox returns {ok:true}. Hard-deny
-  // ({ok:false}) never opens a client so nothing to close there. Soft-path
-  // where {ok:true} + HTTP attach running DOES open a client — it is still
-  // captured here and closed on the success/throw paths below.
+  // ({ok:false}) never opens a client so nothing to close there. Success
+  // attach ({ok:true}) DOES open a client regardless of HTTP attach — it is
+  // still captured here and closed on the success/throw paths below.
   let sandboxProbeClient: { close?: () => Promise<void> } | undefined;
 
   try {
