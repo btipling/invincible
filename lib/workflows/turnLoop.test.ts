@@ -775,15 +775,30 @@ describe('runTurnLoop reasoning (plan #850 — loop must not dump)', () => {
 
 describe('step wrappers (matrix 4–7)', () => {
   it('matrix 4 + 5: modelGenerateStep is a thin shell — delegates generateOneRound, re-resolves BYOK in-step, assembles FULL tool schemas via shared helper, serializable args', async () => {
+    // Reset so the turnSseWrite mock is in modelGenerateStep's import graph.
+    vi.resetModules();
     // Mock generateOneRound to prove the wrapper delegates and forwards plain
-    // serializable args with the FULL registry (schemas-only).
+    // serializable args with the FULL registry (schemas-only). Also invoke
+    // input.onEvent so a no-op sink cannot hide behind leftover identifiers
+    // (adversarial L6 — live glue is behavior, not source-lock).
+    const writeOnDefaultStream = vi.fn(async () => {});
+    vi.doMock('./turnSseWrite', () => ({ writeOnDefaultStream }));
     const m1 = vi.fn(async (_deps: unknown, input: unknown) => {
-      const i = input as { messages: unknown[]; tools?: Record<string, unknown> };
+      const i = input as {
+        messages: unknown[];
+        tools?: Record<string, unknown>;
+        onEvent?: (ev: { type: string; text?: string; usage?: unknown }) => void | Promise<void>;
+      };
       expect(Array.isArray(i.messages)).toBe(true);
       // The tools dict must be the stripped FULL durable surface
       // (at minimum list_dir + skill tools), not the old stub.
       expect(typeof i.tools).toBe('object');
       expect(i.tools).toBeDefined();
+      expect(typeof i.onEvent).toBe('function');
+      await i.onEvent!({ type: 'reasoning_delta', text: 'Hmm' });
+      // Loop-owned / empty → formatLiveModelSse null → no write.
+      await i.onEvent!({ type: 'usage', usage: { total: 1 } });
+      await i.onEvent!({ type: 'reasoning_delta', text: '' });
       return { ok: true as const, delta: { text: 'm', toolCalls: [] } };
     });
     vi.doMock('../agent/generateOneRound', () => ({
@@ -857,9 +872,16 @@ describe('step wrappers (matrix 4–7)', () => {
     expect(inputTools).toBeDefined();
     expect(Object.keys(inputTools as object)).toContain('list_dir');
     expect(Object.keys(inputTools as object)).toContain('find_skill');
+    // Live glue: onEvent → formatLiveModelSse → writeOnDefaultStream. A no-op
+    // onEvent with leftover imports would fail here (one framed reasoning line).
+    expect(writeOnDefaultStream).toHaveBeenCalledTimes(1);
+    expect(writeOnDefaultStream).toHaveBeenCalledWith(
+      'data: {"type":"reasoning_delta","text":"Hmm"}\n\n',
+    );
     vi.doUnmock('../agent/generateOneRound');
     vi.doUnmock('../di/index');
     vi.doUnmock('./assembleDurableToolWorld');
+    vi.doUnmock('./turnSseWrite');
   });
 
   it('matrix 5b: modelGenerateStep BYOK fail returns {ok:false} — does NOT call streamText with bare modelId', async () => {

@@ -3,7 +3,7 @@
 `POST /api/agent` can return a **Server-Sent Events** body when the client asks for it.
 Default remains a single JSON `{ text, toolTrace?, cwd? }` response for tests and simple clients.
 
-`POST /api/turns` (production durable-turn path) uses the **same** event types as `/api/agent`. Tokens ride the Workflows durable stream (`getWritable`). Stream **write and close run in `'use step'` functions** — a `'use workflow'` function cannot call `getWriter` / `write` / `close`.
+`POST /api/turns` (production durable-turn path) uses the **same** event types as `/api/agent`. Tokens ride the Workflows durable stream (`getWritable`). Stream **write and close must run on a `'use step'` stack** — a `'use workflow'` function cannot call `getWriter` / `write` / `close`. The writer helper (`lib/workflows/turnSseWrite.ts` `writeOnDefaultStream`) is **directive-free** and must not carry `'use step'` (nested-step ban); live model-step writes call it from `modelGenerateStep`, and loop-owned writes call it from `writeTurnSse`.
 
 ## Negotiation
 
