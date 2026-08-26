@@ -2034,12 +2034,16 @@ export async function runHarnessTurn(
             agentResult.ok ? undefined : agentResult.status,
             opts?.signal,
           );
-      // Adversarial #857: attach HTTP failure is two contracts, not one.
-      // 404 = run gone → Turn ended + Error lifecycle + clear `running`.
-      // 503/401/5xx/network = could not subscribe → D18-shaped persist
-      // (keep `running`, Ready, no Turn-ended line) + non-terminal EMBER.
+      // Adversarial #857: subscribe-fail is "could not open a readable"
+      // (`!sawDurableStart`), not every non-404. 404 = run gone → Turn ended
+      // + Error + clear `running`. 503/401/network before onTurnStarted →
+      // D18-shaped persist (keep `running`, Ready, no Turn-ended) +
+      // non-terminal EMBER. After onTurnStarted, producer SSE error / 5xx
+      // reuses the POST give-up fold. EOF without terminal stays D18 via
+      // durableIncomplete.
       const attachSubscribeFail =
         attaching &&
+        !sawDurableStart &&
         fail.kind !== 'stop' &&
         fail.kind !== 'detach' &&
         !isAttachRunGone(agentResult.ok ? undefined : agentResult.status);
@@ -2118,9 +2122,11 @@ export async function runHarnessTurn(
       // `running` on `'stop'` even when the result omits the id. Do not clear
       // on generic error/timeout without a result id (network drop after
       // headers stays attach-ready).
-      // Attach 503/401/network (adversarial #857): same keep-running as
-      // detach — could not subscribe ≠ the turn died. Attach 404 (run gone)
-      // falls through and clears so C15 does not 409 a dead id.
+      // Attach 503/401/network before onTurnStarted (adversarial #857): same
+      // keep-running as detach — could not subscribe ≠ the turn died. After
+      // onTurnStarted, producer SSE error reuses the POST give-up fold
+      // (clear `running`). Attach 404 (run gone) falls through and clears
+      // so C15 does not 409 a dead id.
       if (fail.kind === 'detach' || attachSubscribeFail) {
         const id =
           agentResult.turnRunId ??

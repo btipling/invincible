@@ -5292,6 +5292,78 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     expect(second.session.turnStatus).toBe('running');
   });
 
+  it('test 6g: onTurnStarted + SSE error is give-up, not subscribe-fail (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const sendAgent = vi.fn(async () => {
+      throw new Error('must not POST /api/agent');
+    });
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      sendAgent,
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({
+            type: 'error',
+            error: 'producer failed',
+            status: 502,
+          });
+          return {
+            ok: false as const,
+            error: 'producer failed',
+            status: 502,
+            turnRunId: runId,
+          };
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(sendAgent).not.toHaveBeenCalled();
+    expect(next.turnRunId).toBeUndefined();
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'error' && m.text.startsWith('Turn ended · error'),
+      ),
+    ).toBe(true);
+    expect(next.messages.some((m) => m.role === 'system' && /detached/.test(m.text))).toBe(
+      false,
+    );
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(true);
+  });
+
+  it('test 6h: 502 without onTurnStarted stays subscribe-fail (discriminator)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          status: 502,
+          error: 'Bad gateway',
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(next.turnStatus).toBe('running');
+    expect(next.turnRunId).toBe('wr_1');
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(
+      exp.__messages.some((m) => m.kind === MessageKind.Error && /Bad gateway/.test(m.text)),
+    ).toBe(true);
+  });
+
   it('test 7: dedup skips hydrated this-run assistant/tool_run, never skips reasoning, prior-turn assistant is not a skip target', async () => {
     const g = createToolRunGroup();
     addToolStart(g, 'read_file');
