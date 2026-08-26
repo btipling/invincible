@@ -1975,20 +1975,20 @@ export async function runHarnessTurn(
         fail.kind !== 'stop' &&
         fail.kind !== 'detach' &&
         !isAttachRunGone(agentResult.ok ? undefined : agentResult.status);
-      // Cold-attach strip: if this-run never rebuilt, persist the Blob suffix
-      // (do not LWW-write a user-only transcript). Restore the ring only when
-      // nothing was painted (503/404 before events) so a thinking-only detach
-      // keeps the thinking row.
-      if (coldBackup && thisRunWindow(failedSession.messages).length === 0) {
+      // Cold-attach strip: persist the Blob suffix only when nothing was
+      // painted (503/404 before events) so we do not LWW a user-only
+      // transcript. Thinking-only incomplete GET must keep the stripped
+      // prefix — thinking is not in SessionStore, so thisRunWindow stays
+      // empty and restoring the suffix would duplicate tools on the
+      // automatic hot resume at C (adversarial #857).
+      if (coldBackup && !streamPainted) {
         failedSession = { ...failedSession, messages: coldBackup };
-        if (!streamPainted) {
-          try {
-            bridge.hydrateMessages(
-              coldBackup.map((m) => ({ kind: roleToKind(m.role), text: m.text })),
-            );
-          } catch {
-            /* tests / torn-down bridge */
-          }
+        try {
+          bridge.hydrateMessages(
+            coldBackup.map((m) => ({ kind: roleToKind(m.role), text: m.text })),
+          );
+        } catch {
+          /* tests / torn-down bridge */
         }
       }
       if (attachSubscribeFail) {

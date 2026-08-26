@@ -4719,6 +4719,83 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     expect(next.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['hello']);
   });
 
+  it('test 2f: thinking-only EOF after cold strip then hot resume does not restore Blob suffix (adversarial #857)', async () => {
+    const g = createToolRunGroup();
+    addToolStart(g, 'exec');
+    const payload = encodeToolRun(g)!;
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.ToolRun, payload);
+    bridge.pushMessage(MessageKind.Assistant, 'Hello');
+    const session = runningSession([
+      ['user', 'hello'],
+      ['tool_run', payload],
+      ['assistant', 'Hello'],
+    ]);
+
+    const first = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
+          return { ok: true, text: '', turnRunId: runId };
+        },
+      },
+    });
+    expect(first.result.ok).toBe(false);
+    expect(first.session.turnStatus).toBe('running');
+    expect(first.session.turnStreamCursor).toBe(1);
+    expect(first.session.messages.some((m) => m.role === 'tool_run')).toBe(false);
+    expect(first.session.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual([
+      'hello',
+    ]);
+    expect(exp.__messages.some((m) => m.kind === MessageKind.Thinking && m.text === 'hmm')).toBe(
+      true,
+    );
+    expect(exp.__messages.some((m) => m.kind === MessageKind.ToolRun)).toBe(false);
+
+    const second = await runHarnessTurn(bridge, first.session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: first.session.turnStreamCursor ?? 1,
+        dedup: false,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'tool_start', name: 'exec' });
+          await opts.onEvent?.({
+            type: 'tool_result',
+            name: 'exec',
+            ok: true,
+            summary: 'ok',
+          });
+          await opts.onEvent?.({ type: 'text_delta', text: 'Hello world' });
+          await opts.onEvent?.({ type: 'done', text: 'Hello world' });
+          return { ok: true, text: 'Hello world', turnRunId: runId };
+        },
+      },
+    });
+    expect(second.result.ok).toBe(true);
+    const kinds = exp.__messages.map((m) => m.kind);
+    const thinkAt = kinds.indexOf(MessageKind.Thinking);
+    const toolAt = kinds.indexOf(MessageKind.ToolRun);
+    const asstAt = kinds.lastIndexOf(MessageKind.Assistant);
+    expect(thinkAt).toBeGreaterThanOrEqual(0);
+    expect(toolAt).toBeGreaterThan(thinkAt);
+    expect(asstAt).toBeGreaterThan(toolAt);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.ToolRun)).toHaveLength(1);
+    expect(
+      exp.__messages.filter((m) => m.kind === MessageKind.Assistant).map((m) => m.text),
+    ).toEqual(['Hello world']);
+    expect(second.session.messages.filter((m) => m.role === 'tool_run')).toHaveLength(1);
+    expect(second.session.messages.filter((m) => m.role === 'assistant').map((m) => m.text)).toEqual([
+      'Hello world',
+    ]);
+  });
+
   it('test 3: two cold consumers both render thinking + text once from startIndex=0 + dedup', async () => {
     const events: AgentStreamEvent[] = [
       { type: 'reasoning_delta', text: 'plan' },
