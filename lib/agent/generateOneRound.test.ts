@@ -15,7 +15,14 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import { jsonSchema, streamText, tool } from 'ai';
+import { MockLanguageModelV3 } from 'ai/test';
+import {
+  createAiSdkExecutionGuard,
+  createAiSdkExecutionLock,
+} from 'prefix-safe-json';
 import { generateOneRound, type GenerateOneRoundResult } from './generateOneRound';
+import { runTurnLoop } from '../workflows/turnLoop';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeStream(overrides: Record<string, any> = {}) {
@@ -35,6 +42,19 @@ function makeStream(overrides: Record<string, any> = {}) {
 
 const deps = { modelId: 'anthropic/claude-sonnet-4' };
 
+function rawToolCall(
+  toolName: string,
+  toolCallId: string,
+  args: unknown,
+): Array<Record<string, unknown>> {
+  return [
+    { type: 'tool-input-start', id: toolCallId, toolName },
+    { type: 'tool-input-delta', id: toolCallId, delta: JSON.stringify(args) },
+    { type: 'tool-input-end', id: toolCallId },
+    { type: 'tool-call', toolName, toolCallId, input: args },
+  ];
+}
+
 describe('generateOneRound (backend-agents B9)', () => {
   it('matrix 1: one round with tool schemas + a tool call — single round, delta toolCalls, no execute invoked', async () => {
     const execute = vi.fn();
@@ -47,7 +67,10 @@ describe('generateOneRound (backend-agents B9)', () => {
     };
     const streamTextImpl = vi.fn(
       makeStream({
-        parts: [{ type: 'tool-call', toolName: 'list_dir', toolCallId: 'c1', args: { path: '.' } }],
+        parts: [
+          ...rawToolCall('list_dir', 'c1', { path: '.' }),
+          { type: 'finish', finishReason: 'tool-calls' },
+        ],
       }),
     );
     const events: unknown[] = [];
@@ -67,7 +90,7 @@ describe('generateOneRound (backend-agents B9)', () => {
       { toolName: 'list_dir', toolCallId: 'c1', args: { path: '.' } },
     ]);
     expect(result.delta.text).toBe('hello world');
-    expect(result.delta.finishReason).toBeUndefined();
+    expect(result.delta.finishReason).toBe('tool-calls');
     expect(execute).not.toHaveBeenCalled();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const args = streamTextImpl.mock.calls[0]![0] as Record<string, any>;
@@ -79,6 +102,7 @@ describe('generateOneRound (backend-agents B9)', () => {
     expect(args.tools['list_dir'].description).toBe('List a directory');
     expect(args.tools['list_dir'].parameters).toEqual({});
     expect(args.tools['list_dir'].execute).toBeUndefined();
+    expect(args.tools['list_dir'].needsApproval).toBe(true);
     expect(args.stopWhen).toBeDefined();
     expect(args.model).toBe('anthropic/claude-sonnet-4');
   });
@@ -103,8 +127,9 @@ describe('generateOneRound (backend-agents B9)', () => {
     const execute = vi.fn();
     const stream = makeStream({
       parts: [
-        { type: 'tool-call', toolName: 'list_dir', toolCallId: 'c1', args: { path: '.' } },
-        { type: 'tool-call', toolName: 'read_file', toolCallId: 'c2', args: { path: 'AGENTS.md' } },
+        ...rawToolCall('list_dir', 'c1', { path: '.' }),
+        ...rawToolCall('read_file', 'c2', { path: 'AGENTS.md' }),
+        { type: 'finish', finishReason: 'tool-calls' },
       ],
     });
     const streamTextImpl = vi.fn(stream);
@@ -135,7 +160,8 @@ describe('generateOneRound (backend-agents B9)', () => {
     const stream = makeStream({
       parts: [
         // SDK 7.0.52 `TextStreamToolCallPart` has `input`, NOT `args`.
-        { type: 'tool-call', toolName: 'read_file', toolCallId: 'c3', input: { path: 'src' } },
+        ...rawToolCall('read_file', 'c3', { path: 'src' }),
+        { type: 'finish', finishReason: 'tool-calls' },
       ],
     });
     const streamTextImpl = vi.fn(stream);
@@ -205,8 +231,9 @@ describe('generateOneRound (backend-agents B9)', () => {
     const streamTextImpl = makeStream({
       parts: [
         { type: 'text-delta', text: 'one ' },
-        { type: 'tool-call', toolName: 'list_dir', toolCallId: 'c1', args: {} },
+        ...rawToolCall('list_dir', 'c1', {}),
         { type: 'text-delta', text: 'two' },
+        { type: 'finish', finishReason: 'tool-calls' },
       ],
     });
     const events: unknown[] = [];
@@ -430,5 +457,341 @@ describe('generateOneRound reasoning (plan #846)', () => {
       if (!result.ok) return;
       expect(result.delta).not.toHaveProperty('reasoning');
     });
+  });
+});
+
+type ExactFinishReason = 'tool-calls' | 'length';
+
+function exactAiModel(
+  rawInput: string,
+  finishReason: ExactFinishReason,
+  toolName = 'write_file',
+) {
+  const toolCallId = 'call-integrity';
+  return new MockLanguageModelV3({
+    doStream: async () => ({
+      stream: new ReadableStream({
+        start(controller) {
+          controller.enqueue({ type: 'tool-input-start', id: toolCallId, toolName });
+          controller.enqueue({ type: 'tool-input-delta', id: toolCallId, delta: rawInput });
+          controller.enqueue({ type: 'tool-input-end', id: toolCallId });
+          controller.enqueue({
+            type: 'tool-call',
+            toolCallId,
+            toolName,
+            input: rawInput,
+          });
+          controller.enqueue({
+            type: 'finish',
+            finishReason: {
+              unified: finishReason,
+              raw: finishReason === 'length' ? 'max_tokens' : 'tool_calls',
+            },
+            usage: {
+              inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+              outputTokens: { total: 1, text: 1, reasoning: 0 },
+            },
+          });
+          controller.close();
+        },
+      }),
+    }),
+  });
+}
+
+function integrityTool(calls: {
+  execute: number;
+  inputStart: number;
+  inputDelta: number;
+  inputAvailable: number;
+}) {
+  return tool({
+    description: 'Write a file',
+    inputSchema: jsonSchema({
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        content: { type: 'string' },
+      },
+      required: ['path', 'content'],
+      additionalProperties: false,
+    }),
+    onInputStart: () => {
+      calls.inputStart += 1;
+    },
+    onInputDelta: () => {
+      calls.inputDelta += 1;
+    },
+    onInputAvailable: () => {
+      calls.inputAvailable += 1;
+    },
+    execute: async () => {
+      calls.execute += 1;
+      return 'native effect';
+    },
+  });
+}
+
+async function exactRound(
+  rawInput: string,
+  finishReason: ExactFinishReason,
+  toolName = 'write_file',
+) {
+  const native = { execute: 0, inputStart: 0, inputDelta: 0, inputAvailable: 0 };
+  const model = exactAiModel(rawInput, finishReason, toolName);
+  const result = await generateOneRound(
+    {
+      modelId: 'exact-ai-7.0.52',
+      streamTextImpl: (args) => streamText({ ...args, model }),
+    },
+    {
+      messages: [{ role: 'user', content: 'write it' }],
+      tools: { write_file: integrityTool(native) },
+      onEvent: async () => {},
+    },
+  );
+  return { result, native };
+}
+
+async function runRoundThroughDurableLoop(round: GenerateOneRoundResult) {
+  const manualEffect = vi.fn(async () => ({
+    ok: true as const,
+    result: 'manual effect',
+    freshnessDelta: '{}',
+  }));
+  const modelStep = vi
+    .fn()
+    .mockResolvedValueOnce(round)
+    .mockResolvedValueOnce({
+      ok: true as const,
+      delta: { text: 'done', toolCalls: [], finishReason: 'stop' },
+    });
+  const loop = await runTurnLoop(
+    {
+      modelStep,
+      toolStep: manualEffect,
+      persistStep: async ({ turnRunId }) => ({
+        ok: true as const,
+        status: 'completed' as const,
+        turnRunId,
+      }),
+      writable: { write: () => {}, close: () => {} },
+      turnRunId: 'integrity-proof',
+      maxSteps: 8,
+    },
+    { userMessage: 'write it' },
+  );
+  return { loop, manualEffect };
+}
+
+describe('generateOneRound execution integrity (exact ai@7.0.52)', () => {
+  it('complete raw evidence disables native callbacks and authorizes one manual effect', async () => {
+    const { result, native } = await exactRound(
+      '{"path":"x","content":"complete"}',
+      'tool-calls',
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      delta: {
+        toolCalls: [
+          {
+            toolName: 'write_file',
+            toolCallId: 'call-integrity',
+            args: { path: 'x', content: 'complete' },
+          },
+        ],
+      },
+    });
+    expect(native).toEqual({
+      execute: 0,
+      inputStart: 0,
+      inputDelta: 0,
+      inputAvailable: 0,
+    });
+
+    const { loop, manualEffect } = await runRoundThroughDurableLoop(result);
+    expect(loop.status).toBe('completed');
+    expect(manualEffect).toHaveBeenCalledTimes(1);
+    expect(manualEffect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolName: 'write_file',
+        toolCallId: 'call-integrity',
+        callArgs: { path: 'x', content: 'complete' },
+      }),
+    );
+  });
+
+  it('complete-looking JSON terminated by length reaches neither native nor manual execution', async () => {
+    const { result, native } = await exactRound(
+      '{"path":"x","content":"apparently complete"}',
+      'length',
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      delta: { toolCalls: [], finishReason: 'length' },
+    });
+    expect(native).toEqual({
+      execute: 0,
+      inputStart: 0,
+      inputDelta: 0,
+      inputAvailable: 0,
+    });
+
+    const { loop, manualEffect } = await runRoundThroughDurableLoop(result);
+    expect(loop.status).toBe('completed');
+    expect(manualEffect).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['schema-invalid input', '{"path":7,"content":"x"}', 'write_file'],
+    ['malformed input', '{"path":"x"', 'write_file'],
+    ['unknown tool identity', '{"path":"x","content":"x"}', 'unknown_write'],
+  ])('%s is never handed to the manual executor', async (_case, raw, toolName) => {
+    const { result, native } = await exactRound(raw, 'tool-calls', toolName);
+    if (result.ok) expect(result.delta.toolCalls).toEqual([]);
+    expect(native).toEqual({
+      execute: 0,
+      inputStart: 0,
+      inputDelta: 0,
+      inputAvailable: 0,
+    });
+    const { manualEffect } = await runRoundThroughDurableLoop(result);
+    expect(manualEffect).not.toHaveBeenCalled();
+  });
+
+  it('projection-only, ambiguous-identity, and protocol-invalid streams fail closed', async () => {
+    for (const parts of [
+      [
+        {
+          type: 'tool-call',
+          toolName: 'write_file',
+          toolCallId: 'projection',
+          input: { path: 'x', content: 'x' },
+        },
+        { type: 'finish', finishReason: 'tool-calls' },
+      ],
+      [
+        {
+          type: 'tool-input-delta',
+          id: 'protocol',
+          delta: '{"path":"x","content":"x"}',
+        },
+        { type: 'tool-input-end', id: 'protocol' },
+        { type: 'finish', finishReason: 'tool-calls' },
+      ],
+      [
+        { type: 'tool-input-start', id: 'duplicate', toolName: 'write_file' },
+        { type: 'tool-input-start', id: 'duplicate', toolName: 'write_file' },
+        {
+          type: 'tool-input-delta',
+          id: 'duplicate',
+          delta: '{"path":"x","content":"x"}',
+        },
+        { type: 'tool-input-end', id: 'duplicate' },
+        { type: 'finish', finishReason: 'tool-calls' },
+      ],
+    ]) {
+      const result = await generateOneRound(
+        { ...deps, streamTextImpl: makeStream({ parts }) },
+        {
+          messages: [{ role: 'user', content: 'write it' }],
+          tools: {
+            write_file: integrityTool({
+              execute: 0,
+              inputStart: 0,
+              inputDelta: 0,
+              inputAvailable: 0,
+            }),
+          },
+          onEvent: async () => {},
+        },
+      );
+      expect(result).toMatchObject({ ok: true, delta: { toolCalls: [] } });
+    }
+  });
+
+  it('a conflicting SDK projection cannot override the raw argument bytes', async () => {
+    const result = await generateOneRound(
+      {
+        ...deps,
+        streamTextImpl: makeStream({
+          parts: [
+            { type: 'tool-input-start', id: 'raw-wins', toolName: 'write_file' },
+            {
+              type: 'tool-input-delta',
+              id: 'raw-wins',
+              delta: '{"path":"raw","content":"trusted"}',
+            },
+            { type: 'tool-input-end', id: 'raw-wins' },
+            {
+              type: 'tool-call',
+              toolName: 'write_file',
+              toolCallId: 'raw-wins',
+              input: { path: 'projection', content: 'must not win' },
+            },
+            { type: 'finish', finishReason: 'tool-calls' },
+          ],
+        }),
+      },
+      {
+        messages: [{ role: 'user', content: 'write it' }],
+        tools: {
+          write_file: integrityTool({
+            execute: 0,
+            inputStart: 0,
+            inputDelta: 0,
+            inputAvailable: 0,
+          }),
+        },
+        onEvent: async () => {},
+      },
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      delta: {
+        toolCalls: [
+          {
+            toolName: 'write_file',
+            toolCallId: 'raw-wins',
+            args: { path: 'raw', content: 'trusted' },
+          },
+        ],
+      },
+    });
+  });
+
+  it('the exact fullStream guard exposes each executable authority only once', async () => {
+    const model = exactAiModel('{"path":"x","content":"complete"}', 'tool-calls');
+    const schema = {
+      type: 'object',
+      properties: { path: { type: 'string' }, content: { type: 'string' } },
+      required: ['path', 'content'],
+      additionalProperties: false,
+    };
+    const guard = createAiSdkExecutionGuard({ schemas: { write_file: schema } });
+    const result = streamText({
+      model,
+      messages: [{ role: 'user', content: 'write it' }],
+      // The lock intentionally removes callback keys from the static type;
+      // streamText's ToolSet keeps them as optional picks at its boundary.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      tools: createAiSdkExecutionLock({
+        write_file: integrityTool({
+          execute: 0,
+          inputStart: 0,
+          inputDelta: 0,
+          inputAvailable: 0,
+        }),
+      }) as any,
+    });
+    for await (const part of result.fullStream) guard.push(part);
+    const final = guard.finish();
+    expect(final.decisions).toHaveLength(1);
+    const internalId = final.decisions[0]!.internalId;
+    expect(guard.takeDecision(internalId)).toMatchObject({
+      action: 'execute',
+      value: { path: 'x', content: 'complete' },
+    });
+    expect(guard.takeDecision(internalId)).toBeUndefined();
   });
 });

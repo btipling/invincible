@@ -17,6 +17,10 @@
  */
 
 import { streamText } from 'ai';
+import {
+  createAiSdkExecutionGuard,
+  createAiSdkExecutionLock,
+} from 'prefix-safe-json';
 import type { AgentStreamEvent } from './agentStream';
 import { mapFullStreamPart } from './agentStream';
 import { mapProviderUsage, type UsageSummary } from './usageSummary';
@@ -111,17 +115,27 @@ export async function generateOneRound(
   const stream = deps.streamTextImpl ?? streamText;
   const secrets = deps.secrets ?? [];
 
+  let lockedTools: Record<string, unknown>;
+  let executionGuard: ReturnType<typeof createAiSdkExecutionGuard>;
+  try {
+    lockedTools = toolsWithoutExecutors(input.tools);
+    executionGuard = createAiSdkExecutionGuard({
+      schemas: schemasForExecutionGuard(input.tools),
+    });
+  } catch (err) {
+    return failClosed('model_error', err, secrets);
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const streamArgs: any = {
     model: deps.modelId,
     system: deps.system,
     messages: input.messages,
-    // Schemas ONLY — strip any `execute` executors before the SDK boundary. A
-    // real `ai` `streamText` with `stopWhen: stepCountIs(1)` would otherwise run
-    // tool `execute` as part of the single step (the exact `streamText`+`execute`
-    // in one step the umbrella #794 architecture lock forbids). The caller may
-    // pass a tool dict carrying executors; this helper must NOT forward them.
-    tools: toolsWithoutExecutors(input.tools),
+    // Execution-locked schemas only. A real AI SDK stream would otherwise be
+    // able to invoke `execute` and input lifecycle callbacks before raw stream
+    // evidence has earned authority. Manual execution remains downstream of
+    // the one-shot guard decision below.
+    tools: lockedTools,
     stopWhen: resolveAgentStopWhen(1),
     abortSignal: deps.signal,
   };
@@ -141,30 +155,15 @@ export async function generateOneRound(
     return failClosed('model_error', err, secrets);
   }
 
-  const toolCalls: ToolCallDelta[] = [];
   let finishReason: string | undefined;
   let reasoningAcc = '';
 
   try {
     for await (const part of result.fullStream) {
-      // Captured from raw parts (authoritative regardless of `steps` presence),
-      // same `tool-call` complete parts `mapFullStreamPart` normalizes to
-      // `tool_start`. Never executed — schemas only.
-      if (part && typeof part === 'object' && part.type === 'tool-call') {
-        const call: ToolCallDelta = {
-          toolName: typeof part.toolName === 'string' ? part.toolName : 'tool',
-        };
-        if (part.toolCallId != null) call.toolCallId = String(part.toolCallId);
-        // AI SDK 7.0.52 `TextStreamToolCallPart` uses `input`, not `args`.
-        // Prefer `input`; fall back to `args` for older SDK shapes / test mocks.
-        const input = (part as { input?: unknown }).input;
-        if (input !== undefined) {
-          call.args = input;
-        } else if (part.args !== undefined) {
-          call.args = part.args;
-        }
-        toolCalls.push(call);
-      }
+      // The guard consumes the AI SDK's raw tool-input lifecycle. In
+      // particular, it never trusts the SDK's repaired `tool-call.input`
+      // projection as execution authority.
+      executionGuard.push(part);
       if (part && typeof part === 'object' && part.type === 'finish') {
         if (
           part.finishReason != null &&
@@ -216,6 +215,28 @@ export async function generateOneRound(
   }
 
   const reasoning = reasoningAcc.trim();
+  const toolCalls: ToolCallDelta[] = [];
+  const settled = executionGuard.finish();
+  for (const observed of settled.decisions) {
+    // One-shot authority: unknown/rejected/retried calls and duplicate takes
+    // all return undefined. Also require the authorized raw name to exist in
+    // this exact model-visible registry before handing it to the durable loop.
+    const authority = executionGuard.takeDecision(observed.internalId);
+    if (
+      !authority ||
+      !Object.prototype.hasOwnProperty.call(input.tools, authority.name)
+    ) {
+      continue;
+    }
+    toolCalls.push({
+      toolName: authority.name,
+      ...(authority.toolCallId !== undefined
+        ? { toolCallId: String(authority.toolCallId) }
+        : {}),
+      args: authority.value,
+    });
+  }
+
   return {
     ok: true,
     delta: {
@@ -229,23 +250,27 @@ export async function generateOneRound(
 }
 
 /**
- * Deep-ish clone of the tool schema dict WITHOUT any `execute` executor, so the
- * SDK never runs a tool as part of the single model round. Schema fields
- * (`description`, `parameters`, `inputSchema`, etc.) are preserved verbatim;
- * `execute` is always dropped. Unknown tool entries (non-objects) pass through.
+ * Lock the tool schema dict against every AI SDK-owned caller-code hook. Schema
+ * fields (`description`, `parameters`, `inputSchema`, etc.) are preserved;
+ * `execute` and input lifecycle callbacks are removed and approval is forced.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function toolsWithoutExecutors(tools: Record<string, any>): Record<string, any> {
-  const out: Record<string, any> = {};
-  for (const [name, tool] of Object.entries(tools)) {
-    if (tool && typeof tool === 'object') {
-      const { execute: _dropped, ...schema } = tool as { execute?: unknown };
-      out[name] = schema;
-    } else {
-      out[name] = tool;
-    }
+  return createAiSdkExecutionLock(tools as Record<string, object>);
+}
+
+/** Reuse the AI SDK tool definitions' concrete JSON Schemas in the guard. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function schemasForExecutionGuard(tools: Record<string, any>): Record<string, any> {
+  const schemas: Record<string, any> = {};
+  for (const [name, definition] of Object.entries(tools)) {
+    if (!definition || typeof definition !== 'object') continue;
+    // AI SDK 7 uses `inputSchema`; `parameters` supports older/internal mocks.
+    const holder = definition.inputSchema ?? definition.parameters;
+    const schema = holder?.jsonSchema ?? holder;
+    if (schema && typeof schema === 'object') schemas[name] = schema;
   }
-  return out;
+  return schemas;
 }
 
 function isAbortErr(err: unknown): boolean {
