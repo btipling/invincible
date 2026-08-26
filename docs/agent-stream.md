@@ -3,7 +3,7 @@
 `POST /api/agent` can return a **Server-Sent Events** body when the client asks for it.
 Default remains a single JSON `{ text, toolTrace?, cwd? }` response for tests and simple clients.
 
-`POST /api/turns` (production durable-turn path) uses the **same** event types as `/api/agent`. Tokens ride the Workflows durable stream (`getWritable`). Stream **write and close must run on a `'use step'` stack** — a `'use workflow'` function cannot call `getWriter` / `write` / `close`. The writer helper (`lib/workflows/turnSseWrite.ts` `writeOnDefaultStream`) is **directive-free** and must not carry `'use step'` (nested-step ban); live model-step writes call it from `modelGenerateStep`, and loop-owned writes call it from `writeTurnSse`.
+`POST /api/turns` (production durable-turn path) uses the **same** event types as `/api/agent`. Tokens ride the Workflows durable stream (`getWritable`). Stream **write and close must run on a `'use step'` stack** — a `'use workflow'` function cannot call `getWriter` / `write` / `close`. The writer helpers (`lib/workflows/turnSseWrite.ts`) are **directive-free** and must not carry `'use step'` (nested-step ban). Live model-step writes hold **one** Workflows writer for the round (`withDefaultStreamWriter` around `generateOneRound` in `modelGenerateStep`) — do **not** call `getWritable()` per token. Loop-owned lines (`tool_result` / `done` / `error`) stay one write per `writeTurnSse` step.
 
 ## Negotiation
 
@@ -46,7 +46,7 @@ Each SSE block is one `data: <json>\n\n` line:
 
 Unknown types are ignored (forward-compatible). String fields are redacted server-side with the same secret list as JSON responses.
 
-On the production durable path (`POST /api/turns`), `reasoning_delta` / `text_delta` / `tool_start` token-stream from inside the model step as provider parts arrive. `tool_result` / `done` stay loop-owned after tool/persist steps. Legacy `/api/agent` token-streams those same event types as they arrive from the provider.
+On the production durable path (`POST /api/turns`), `reasoning_delta` / `text_delta` / `tool_start` token-stream from inside the model step as provider parts arrive, on **one** held Workflows writer for that round. `tool_result` / `done` stay loop-owned after tool/persist steps (one `writeTurnSse` per line). Legacy `/api/agent` token-streams those same event types as they arrive from the provider.
 
 ### Level-2 preview (`tool_result.preview`)
 

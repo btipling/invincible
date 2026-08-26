@@ -27,9 +27,10 @@
  *
  * The step returns the delta for persist / tool dispatch. Live SSE
  * (`reasoning_delta` / `text_delta` / `tool_start`) is written **inside this
- * step** via `writeOnDefaultStream` (`lib/workflows/turnSseWrite.ts`, no
- * `'use step'`) as `generateOneRound` `onEvent` fires — not dumped by the loop
- * after return. The loop still owns `tool_result` / `done` / close. Do **not**
+ * step** via `withDefaultStreamWriter` (`lib/workflows/turnSseWrite.ts`, no
+ * `'use step'`) as `generateOneRound` `onEvent` fires — one held writer for
+ * the round, not `getWritable()` per token. Not dumped by the loop after
+ * return. The loop still owns `tool_result` / `done` / close. Do **not**
  * import `turnSseStep` from this file (nested `'use step'`).
  *
  * Errors are business-error-as-value (mirrors the B9 core): a model failure
@@ -43,13 +44,12 @@
 
 import {
   generateOneRound,
-  type GenerateOneRoundInput,
   type OneRoundDelta,
 } from '../agent/generateOneRound';
 import { toolsWithoutExecutors } from '../agent/generateOneRound';
 import { toModelMessages } from './toModelMessages';
 import { formatLiveModelSse } from './turnSseFormat';
-import { writeOnDefaultStream } from './turnSseWrite';
+import { withDefaultStreamWriter } from './turnSseWrite';
 import type { PersistRunBind } from './turnLoop';
 
 /** Serialized `modelGenerateStep` step args — plain values only. */
@@ -155,32 +155,27 @@ export async function modelGenerateStep(
     }
   }
 
-  const input: GenerateOneRoundInput = {
-    // Convert orchestrator-local messages (delta-carrying shape) to AI SDK 7
-    // ModelMessage[] before passing to streamText. The loop stores compact
-    // { role:'assistant', delta:{text,toolCalls} } / { role:'tool', toolName,
-    // toolCallId, result } rows; streamText requires proper content parts
-    // (ToolCallPart / ToolResultPart) linked by toolCallId.
-    messages: toModelMessages(args.messages),
-    tools: toolSchemas,
-    onEvent: async (ev) => {
-      const line = formatLiveModelSse(ev);
-      if (line) await writeOnDefaultStream(line);
-    },
-  };
-
-  const result = await generateOneRound(
-    {
-      modelId: byok.modelId,
-      providerOptions: {
-        gateway: {
-          only: byok.only,
-          byok: byok.byok,
+  const result = await withDefaultStreamWriter(async (write) =>
+    generateOneRound(
+      {
+        modelId: byok.modelId,
+        providerOptions: {
+          gateway: {
+            only: byok.only,
+            byok: byok.byok,
+          },
+        },
+        secrets: byok.secretsToRedact,
+      },
+      {
+        messages: toModelMessages(args.messages),
+        tools: toolSchemas,
+        onEvent: async (ev) => {
+          const line = formatLiveModelSse(ev);
+          if (line) await write(line);
         },
       },
-      secrets: byok.secretsToRedact,
-    },
-    input,
+    ),
   );
   if (result.ok) return { ok: true, delta: result.delta };
   return { ok: false, code: result.code, error: result.error };

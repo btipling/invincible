@@ -151,17 +151,19 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
     expect(closeFn).toMatch(/\.close\s*\(/);
     expect(writeHelperCode).not.toMatch(/['"]use step['"]/);
     expect(writeSrc).toMatch(/export async function writeOnDefaultStream/);
+    expect(writeSrc).toMatch(/export async function withDefaultStreamWriter/);
     expect(writeSrc).toMatch(/getWriter\s*\(/);
   });
 
-  it("modelGenerateStep live-writes via writeOnDefaultStream; does not import turnSseStep (plan #850)", () => {
+  it("modelGenerateStep live-writes via withDefaultStreamWriter; does not import turnSseStep (plan #855)", () => {
     const src = readFileSync(
       fileURLToPath(new URL('./modelGenerateStep.ts', import.meta.url)),
       'utf8',
     );
     const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     expect(code).toMatch(/'use step'/);
-    expect(code).toMatch(/writeOnDefaultStream/);
+    expect(code).toMatch(/withDefaultStreamWriter/);
+    expect(code).not.toMatch(/\bwriteOnDefaultStream\b/);
     expect(code).toMatch(/formatLiveModelSse/);
     expect(code).toMatch(/onEvent:/);
     expect(code).not.toMatch(/from ['"]\.\/turnSseStep['"]/);
