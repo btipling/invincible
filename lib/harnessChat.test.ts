@@ -5422,6 +5422,72 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     ).toBe(true);
   });
 
+  it('test 6i: attach Stop after onTurnStarted keeps running, no you-stopped (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const sendAgent = vi.fn(async () => {
+      throw new Error('must not POST /api/agent');
+    });
+    const controller = new AbortController();
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      sendAgent,
+      signal: controller.signal,
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
+          controller.abort();
+          return { ok: false as const, error: 'Request cancelled.', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(sendAgent).not.toHaveBeenCalled();
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('running');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(exp.__messages.some((m) => m.kind === MessageKind.Thinking && m.text === 'hmm')).toBe(
+      true,
+    );
+  });
+
+  it('test 6j: attach Stop before onTurnStarted keeps running, no subscribe-fail EMBER (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const controller = new AbortController();
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      signal: controller.signal,
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => {
+          controller.abort();
+          return { ok: false as const, error: 'Request cancelled.', turnRunId: 'wr_1' };
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(next.turnStatus).toBe('running');
+    expect(next.turnRunId).toBe('wr_1');
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(
+      exp.__messages.some((m) => m.kind === MessageKind.Error),
+    ).toBe(false);
+  });
+
   it('test 7: dedup skips hydrated this-run assistant/tool_run, never skips reasoning, prior-turn assistant is not a skip target', async () => {
     const g = createToolRunGroup();
     addToolStart(g, 'read_file');

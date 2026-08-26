@@ -45,6 +45,33 @@ export function shouldPaintAttachFollowUpNote(input: {
   );
 }
 
+/**
+ * After Send-while-running attach returns: POST the remapped prompt when the
+ * run is no longer live (`done` / 404 / post-start SSE error). C15 409 no
+ * longer applies. Never while `running` (EOF / 503 — note path). Never for
+ * kickColdAttach / hot-resume (empty prompt, `sendWhileRunning` false).
+ */
+export function shouldRepostAttachFollowUp(input: {
+  sendWhileRunning: boolean;
+  turnStatus?: TurnStatus;
+}): boolean {
+  return input.sendWhileRunning && input.turnStatus !== 'running';
+}
+
+/**
+ * Operator Stop/Esc during attach: do not auto hot-resume this tick.
+ * Abort is this reader only (D18); G22 owns server cancel. Raw abort (not
+ * `DETACH_ABORT_REASON`) is canvas Stop. Unmount/switch already returns on
+ * epoch before resume.
+ */
+export function shouldSkipAttachHotResume(input: {
+  attaching: boolean;
+  aborted: boolean;
+  isDetachAbort: boolean;
+}): boolean {
+  return input.attaching && input.aborted && !input.isDetachAbort;
+}
+
 export type AttachDecision =
   | { kind: 'none' }
   | { kind: 'hot'; startIndex: number }

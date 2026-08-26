@@ -2044,6 +2044,9 @@ export async function runHarnessTurn(
       // non-terminal EMBER. After onTurnStarted, producer SSE error / 5xx
       // reuses the POST give-up fold. EOF without terminal stays D18 via
       // durableIncomplete.
+      // Attach Stop/Esc: reader-only abort (D18), not G22 server cancel —
+      // keep `running`, no Turn ended · you stopped (adversarial #857).
+      const attachOperatorStop = attaching && fail.kind === 'stop';
       const attachSubscribeFail =
         attaching &&
         !sawDurableStart &&
@@ -2075,7 +2078,7 @@ export async function runHarnessTurn(
             : agentResult.error || 'Unable to attach to run stream.'
         ).trim();
         failedSession = paintSubscribeFail(bridge, failedSession, line);
-      } else if (fail.kind !== 'detach') {
+      } else if (fail.kind !== 'detach' && !attachOperatorStop) {
         failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail);
       }
       // Phase 2 (#465): a cancel/timeout/hard-error turn still persists the last
@@ -2130,7 +2133,10 @@ export async function runHarnessTurn(
       // onTurnStarted, producer SSE error reuses the POST give-up fold
       // (clear `running`). Attach 404 (run gone) falls through and clears
       // so C15 does not 409 a dead id.
-      if (fail.kind === 'detach' || attachSubscribeFail) {
+      // Attach Stop/Esc (adversarial #857): same keep-running as detach —
+      // abort closes this reader only (D18); G22 owns server cancel. POST
+      // Stop still clears (this branch is attach-only).
+      if (fail.kind === 'detach' || attachSubscribeFail || attachOperatorStop) {
         const id =
           agentResult.turnRunId ??
           (failedSession.turnStatus === 'running'
@@ -2188,7 +2194,7 @@ export async function runHarnessTurn(
       // on Error (never consumes the queue head; Continue inserted at head when
       // non-empty) unless this was an operator Stop, which stays Ready (queue
       // untouched, drains only on a later success).
-      setFailLifecycle(bridge, attachSubscribeFail ? 'detach' : fail.kind);
+      setFailLifecycle(bridge, attachSubscribeFail || attachOperatorStop ? 'detach' : fail.kind);
       return {
         result: {
           ok: false,

@@ -12,8 +12,8 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
-import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote } from '../../lib/detachTurn';
-import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, ATTACH_FOLLOW_UP_NOTE, type HeapApplied } from '../../lib/turnAttach';
+import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort } from '../../lib/detachTurn';
+import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, ATTACH_FOLLOW_UP_NOTE, type HeapApplied } from '../../lib/turnAttach';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -555,7 +555,19 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         } else {
           heapAppliedRef.current = null;
         }
-        if (!result.ok && shouldSetHostTurnNote(folded.turnStatus)) {
+        // Adversarial #857: Send-while-running that finished the run (`done` /
+        // 404 / post-start SSE error) re-POSTs the remapped prompt — C15 409
+        // no longer applies. Wasm follow-up was stripped; pushUser paints it.
+        if (
+          shouldRepostAttachFollowUp({
+            sendWhileRunning,
+            turnStatus: folded.turnStatus,
+          })
+        ) {
+          queueMicrotask(() => {
+            void runPromptRef.current(prompt, { pushUser: true });
+          });
+        } else if (!result.ok && shouldSetHostTurnNote(folded.turnStatus)) {
           setHostNote(result.error);
         } else if (
           shouldPaintAttachFollowUpNote({
@@ -574,7 +586,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // Plan #813: SSE drop while still mounted → hot resume at this-heap C.
         // Empty-EOF GET (applied == startIndex) must not reconnect (spin).
         // F5 is never this path (heapApplied was nulled; activateSession is cold).
-        if (folded.turnStatus === 'running' && folded.turnRunId) {
+        // Operator Stop during attach: skip auto-resume this tick (D18 reader
+        // close, not G22 cancel — adversarial #857).
+        if (
+          folded.turnStatus === 'running' &&
+          folded.turnRunId &&
+          !shouldSkipAttachHotResume({
+            attaching,
+            aborted: controller.signal.aborted,
+            isDetachAbort: isDetachAbort(controller.signal),
+          })
+        ) {
           const resume = decideHotResume({
             turnRunId: folded.turnRunId,
             turnStatus: folded.turnStatus,

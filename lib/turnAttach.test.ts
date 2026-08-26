@@ -12,6 +12,8 @@ import {
   lastUserText,
   ATTACH_FOLLOW_UP_NOTE,
   shouldPaintAttachFollowUpNote,
+  shouldRepostAttachFollowUp,
+  shouldSkipAttachHotResume,
   prefixThroughLastUser,
   shouldSkipToolResult,
   shouldSkipToolStart,
@@ -198,6 +200,9 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(host).toContain('sendWhileRunning');
     expect(host).toContain('ATTACH_FOLLOW_UP_NOTE');
     expect(host).toContain('shouldPaintAttachFollowUpNote(');
+    expect(host).toContain('shouldRepostAttachFollowUp(');
+    expect(host).toContain('shouldSkipAttachHotResume(');
+    expect(host).toContain('runPromptRef.current(prompt, { pushUser: true })');
     expect(host).toContain('setHostNote(ATTACH_FOLLOW_UP_NOTE)');
     expect(host).toContain('bridge.pushMessage(MessageKind.System, ATTACH_FOLLOW_UP_NOTE)');
     expect(host).not.toContain('} else if (sendWhileRunning) {');
@@ -231,6 +236,12 @@ describe('harnessChat attach hydrate source-lock (adversarial #857)', () => {
   it('patchSession stops substituting coldBackup once streamPainted (adversarial #857)', () => {
     expect(src).toContain('if (coldBackup && !streamPainted)');
     expect(src).not.toMatch(/if \(coldBackup\) \{\s*opts\?\.onSessionPatch\?\(\{ \.\.\.s, messages: coldBackup \}\)/);
+  });
+
+  it('attach Stop keep-running is D18-shaped (adversarial #857)', () => {
+    expect(src).toContain('const attachOperatorStop = attaching && fail.kind === \'stop\'');
+    expect(src).toContain('fail.kind === \'detach\' || attachSubscribeFail || attachOperatorStop');
+    expect(src).toContain('fail.kind !== \'detach\' && !attachOperatorStop');
   });
 
   it('ATTACH_FOLLOW_UP_NOTE is not a Turn-ended line (canvas System + TEAL host mirror)', () => {
@@ -276,6 +287,86 @@ describe('shouldPaintAttachFollowUpNote (adversarial #857 done-path lie)', () =>
         sendWhileRunning: false,
         resultOk: false,
         turnStatus: 'running',
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('shouldRepostAttachFollowUp (adversarial #857 remapped prompt)', () => {
+  it('re-POSTs after done / 404 / give-up (not running)', () => {
+    expect(
+      shouldRepostAttachFollowUp({
+        sendWhileRunning: true,
+        turnStatus: 'completed',
+      }),
+    ).toBe(true);
+    expect(
+      shouldRepostAttachFollowUp({
+        sendWhileRunning: true,
+        turnStatus: undefined,
+      }),
+    ).toBe(true);
+  });
+
+  it('does not re-POST while still running (EOF / 503 note path)', () => {
+    expect(
+      shouldRepostAttachFollowUp({
+        sendWhileRunning: true,
+        turnStatus: 'running',
+      }),
+    ).toBe(false);
+  });
+
+  it('does not re-POST kickColdAttach / hot-resume', () => {
+    expect(
+      shouldRepostAttachFollowUp({
+        sendWhileRunning: false,
+        turnStatus: 'completed',
+      }),
+    ).toBe(false);
+  });
+
+  it('is mutually exclusive with the follow-up note', () => {
+    const running = { sendWhileRunning: true, resultOk: false, turnStatus: 'running' as const };
+    const done = { sendWhileRunning: true, resultOk: true, turnStatus: 'completed' as const };
+    expect(shouldPaintAttachFollowUpNote(running)).toBe(true);
+    expect(shouldRepostAttachFollowUp(running)).toBe(false);
+    expect(shouldPaintAttachFollowUpNote(done)).toBe(false);
+    expect(shouldRepostAttachFollowUp(done)).toBe(true);
+  });
+});
+
+describe('shouldSkipAttachHotResume (adversarial #857 attach Stop)', () => {
+  it('skips auto-resume on operator Stop (raw abort, not detach)', () => {
+    expect(
+      shouldSkipAttachHotResume({
+        attaching: true,
+        aborted: true,
+        isDetachAbort: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('does not skip EOF / unmount detach / non-attach', () => {
+    expect(
+      shouldSkipAttachHotResume({
+        attaching: true,
+        aborted: false,
+        isDetachAbort: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldSkipAttachHotResume({
+        attaching: true,
+        aborted: true,
+        isDetachAbort: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldSkipAttachHotResume({
+        attaching: false,
+        aborted: true,
+        isDetachAbort: false,
       }),
     ).toBe(false);
   });

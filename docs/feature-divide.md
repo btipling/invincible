@@ -145,7 +145,7 @@ re-resolved each turn.
 | Theme | `native/harness/src/palette.zig` ↔ `lib/palette.ts` |
 | Export whitelist | `native/harness/build.zig` |
 
-Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **21** — 13 added the additive status-slot store; 14 the scalar turn-clock feed `inv_set_turn_elapsed`; 15 added the busy-tick `inv_set_busy_tick`; 16 added model-selection persistence `inv_set_selected_model` + pending-model-change; 17 added the session-rail catalog + pending switch; **18** adds `inv_queued_count` for the in-canvas submit queue; **19** adds `inv_set_queue_promote_allowed` — the host arms a one-shot per-terminal scalar so a Stop/Esc/error/timeout Ready never drains the queue, plan #760; **v21** adds `inv_clear_ring` — live-session ring replace that keeps the submit queue).
+Host `HARNESS_PROTOCOL_VERSION` must equal Wasm `PROTOCOL_VERSION` (currently **21** — 13 added the additive status-slot store; 14 the scalar turn-clock feed `inv_set_turn_elapsed`; 15 added the busy-tick `inv_set_busy_tick`; 16 added model-selection persistence `inv_set_selected_model` + pending-model-change; 17 added the session-rail catalog + pending switch; **18** adds `inv_queued_count` for the in-canvas submit queue; **19** adds `inv_set_queue_promote_allowed` — the host arms a one-shot per-terminal scalar so a Stop/Esc/error/timeout Ready never drains the queue, plan #760; **20** adds `inv_queued_insert_front` — turn-retry Continue-on-give-up (plan #759); **v21** adds `inv_clear_ring` — live-session ring replace that keeps the submit queue).
 Mismatch → load error; rebuild both sides. Image **bytes** enter only via bridge put; never dual DOM `<img>` product surface.
 
 ## Related
