@@ -1,5 +1,6 @@
 /**
  * Plan #811 (D17) — host client for POST /api/turns (durable-turn transport).
+ * Plan #813 (E19) — GET attach client `attachTurnStream`.
  * Replaces the legacy `/api/agent` transport for production `runPrompt`.
  * `/api/agent` stays reachable via the legacy `sendAgent`/`sendAgentStream`
  * exports — tests inject those via `RunHarnessTurnOptions`.
@@ -16,11 +17,17 @@ import {
   parseJsonAgentBody,
   parseToolTrace,
   type AgentFailure,
+  type AgentResult,
   type SendAgentFn,
   type SendAgentStreamFn,
 } from './agentApi';
 import { sanitizeUsageSummary, type UsageSummary } from './agent/usageSummary';
 import { readAgentStream, type AgentStreamResult } from './agentSse';
+import {
+  isRedisSafeOpaqueId,
+  sanitizeTurnRunId,
+  sanitizeTurnStreamCursor,
+} from './sessionCloudCaps';
 
 /**
  * Parse the `x-workflow-run-id` response header.
@@ -354,3 +361,189 @@ export const sendTurnStream: SendAgentStreamFn = async (prompt, init) => {
     ...(turnWarning !== undefined ? { turnWarning } : {}),
   };
 };
+
+export type AttachTurnStreamOpts = {
+  sessionId: string;
+  startIndex?: number;
+  signal?: AbortSignal;
+  onEvent?: (event: AgentStreamEvent) => void | Promise<void>;
+  /**
+   * Fired when the GET returns a 200 SSE body. The run id is the path param
+   * (already known); this marks “we actually opened a readable” so 4xx JSON
+   * is not classified as durable-incomplete detach.
+   */
+  onTurnStarted?: (info: { turnRunId: string }) => void | Promise<void>;
+};
+
+/**
+ * Plan #813 (E19) — GET `/api/turns/:runId/stream?sessionId=&startIndex=`.
+ * Reuses `readAgentStream`. Abort closes **this reader only** (D18: never a
+ * server cancel). Empty `done.text` is OK (cold replay may be all-dedup /
+ * thinking-only / still-running).
+ */
+export async function attachTurnStream(
+  runId: string,
+  opts: AttachTurnStreamOpts,
+): Promise<AgentResult> {
+  const cleanRunId = sanitizeTurnRunId(runId);
+  if (cleanRunId === undefined) {
+    return { ok: false, status: 400, error: 'Invalid runId' };
+  }
+  if (!isRedisSafeOpaqueId(opts.sessionId)) {
+    return { ok: false, status: 400, error: 'Invalid sessionId.' };
+  }
+  const rawIndex = opts.startIndex ?? 0;
+  const startIndex = sanitizeTurnStreamCursor(rawIndex);
+  if (startIndex === undefined) {
+    return { ok: false, status: 400, error: 'Invalid startIndex' };
+  }
+
+  const params = new URLSearchParams();
+  params.set('sessionId', opts.sessionId);
+  params.set('startIndex', String(startIndex));
+  const path = `/api/turns/${encodeURIComponent(cleanRunId)}/stream?${params.toString()}`;
+
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method: 'GET',
+      headers: { Accept: AGENT_STREAM_ACCEPT },
+      signal: opts.signal,
+    });
+  } catch (err) {
+    if (isAbortError(err)) return cancelledFailure();
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Network request failed.',
+    };
+  }
+
+  const headerRunId = parseTurnRunId(res) ?? cleanRunId;
+  const turnWarning = parseTurnWarning(res);
+  const contentType = res.headers.get('content-type') ?? '';
+
+  if (
+    contentType.includes('application/json') ||
+    !contentType.includes('text/event-stream')
+  ) {
+    if (contentType.includes('application/json')) {
+      let data: unknown = null;
+      try {
+        data = await res.json();
+      } catch (err) {
+        if (isAbortError(err)) return cancelledFailure({ turnRunId: headerRunId, turnWarning });
+        data = null;
+      }
+      const result = parseJsonAgentBody(res, data);
+      if (!result.ok) {
+        return {
+          ...result,
+          turnRunId: headerRunId,
+          ...(turnWarning !== undefined ? { turnWarning } : {}),
+        };
+      }
+      return {
+        ...result,
+        turnRunId: headerRunId,
+        ...(turnWarning !== undefined ? { turnWarning } : {}),
+      };
+    }
+    let text = '';
+    try {
+      text = await res.text();
+    } catch (err) {
+      if (isAbortError(err)) return cancelledFailure({ turnRunId: headerRunId, turnWarning });
+      text = '';
+    }
+    return {
+      ok: false,
+      status: res.status,
+      error: text.trim() || `Request failed (${res.status}).`,
+      turnRunId: headerRunId,
+      ...(turnWarning !== undefined ? { turnWarning } : {}),
+    };
+  }
+
+  if (!res.ok) {
+    return {
+      ok: false,
+      status: res.status,
+      error: `Request failed (${res.status}).`,
+      turnRunId: headerRunId,
+      ...(turnWarning !== undefined ? { turnWarning } : {}),
+    };
+  }
+
+  if (!res.body) {
+    return {
+      ok: false,
+      status: res.status,
+      error: 'Empty stream body.',
+      turnRunId: headerRunId,
+      ...(turnWarning !== undefined ? { turnWarning } : {}),
+    };
+  }
+
+  try {
+    await opts.onTurnStarted?.({ turnRunId: headerRunId });
+  } catch {
+    // Fold is best-effort.
+  }
+
+  const reader = res.body.getReader();
+  let streamUsage: UsageSummary | undefined;
+  let streamResult: AgentStreamResult;
+  try {
+    streamResult = await readAgentStream(reader, async (ev) => {
+      if (opts.onEvent) await opts.onEvent(ev);
+      if (ev.type === 'usage') {
+        streamUsage = sanitizeUsageSummary(ev.usage) ?? streamUsage;
+      }
+    });
+  } catch (err) {
+    if (isAbortError(err)) {
+      return cancelledFailure({ turnRunId: headerRunId, turnWarning });
+    }
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Stream read failed.',
+      turnRunId: headerRunId,
+      ...(turnWarning !== undefined ? { turnWarning } : {}),
+    };
+  }
+
+  if (streamResult.error) {
+    return {
+      ok: false,
+      error: streamResult.error.error,
+      ...(streamResult.error.status !== undefined
+        ? { status: streamResult.error.status }
+        : {}),
+      turnRunId: headerRunId,
+      ...(turnWarning !== undefined ? { turnWarning } : {}),
+    };
+  }
+
+  const finalText = streamResult.finalText;
+  const toolTrace = parseToolTrace(streamResult.toolTraceRaw);
+  const doneUsage = sanitizeUsageSummary(streamResult.usageRaw);
+  const usage = doneUsage ?? streamUsage;
+
+  // Attach may legitimately have empty text (thinking-only, all-dedup, or a
+  // still-running producer that EOFs). Do not map that to "Empty model response."
+  return {
+    ok: true,
+    text: (finalText ?? '').trim(),
+    ...(toolTrace ? { toolTrace } : {}),
+    ...(streamResult.cwd !== undefined ? { cwd: streamResult.cwd } : {}),
+    ...(streamResult.sandboxId !== undefined
+      ? { sandboxId: streamResult.sandboxId }
+      : {}),
+    ...(streamResult.activeSandboxId !== undefined
+      ? { activeSandboxId: streamResult.activeSandboxId }
+      : {}),
+    ...(usage ? { usage } : {}),
+    turnRunId: headerRunId,
+    ...(turnWarning !== undefined ? { turnWarning } : {}),
+  };
+}

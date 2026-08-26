@@ -18,7 +18,7 @@ import {
   type SendAgentStreamFn,
   type ToolTraceEntry,
 } from './agentApi';
-import { sendTurn, sendTurnStream } from './turnApi';
+import { sendTurn, sendTurnStream, attachTurnStream } from './turnApi';
 import { isDetachAbort } from './detachTurn';
 import { type AgentStreamEvent } from './agent/agentStream';
 import {
@@ -31,8 +31,20 @@ import {
 import {
   isRedisSafeOpaqueId,
   normalizeSessionCwd,
+  sanitizeTurnStreamCursor,
   STATUS_SLOT_MAX_BYTES,
 } from './sessionCloudCaps';
+import {
+  bumpStreamCursor,
+  foldThisRunAssistant,
+  shouldSkipToolResult,
+  shouldSkipToolStart,
+  skillAlreadyHydrated,
+  textDeltaDedup,
+  thisRunAssistantText,
+  thisRunToolItems,
+  thisRunWindow,
+} from './turnAttach';
 import {
   SANDBOX_FORBIDDEN_ERROR,
   SANDBOX_SELECTION_REQUIRED_ERROR,
@@ -279,6 +291,17 @@ export type RunHarnessTurnOptions = Omit<RunHarnessChatOptions, 'history'> & {
    * before `done`. Never awaited; wired to the existing `persist` callback.
    */
   onSessionPatch?: (s: SessionSnapshot) => void;
+  /**
+   * Plan #813 (E19) — GET-attach an existing durable run instead of POST
+   * `/api/turns`. Skips prompt validation / user push. `dedup` enables the
+   * this-run-window skip (cold attach). Not `applyTurnEvent` (E20).
+   */
+  attach?: {
+    runId: string;
+    startIndex: number;
+    dedup: boolean;
+    attachStream?: typeof attachTurnStream;
+  };
 };
 
 export type HarnessTurnResult = {
@@ -973,19 +996,24 @@ export async function runHarnessTurn(
   rawPrompt: string,
   opts?: RunHarnessTurnOptions,
 ): Promise<HarnessTurnResult> {
-  const validation = validatePrompt(rawPrompt);
-  if (validation) {
-    bridge.pushMessage(MessageKind.Error, describeTurnEnd('validation', validation));
-    const next = appendMessage(session, 'error', describeTurnEnd('validation', validation));
-    completeTurn(bridge, false); // validation — no auto-promote
-    return { result: { ok: false, error: validation }, session: next };
+  const attaching = opts?.attach != null;
+  if (!attaching) {
+    const validation = validatePrompt(rawPrompt);
+    if (validation) {
+      bridge.pushMessage(MessageKind.Error, describeTurnEnd('validation', validation));
+      const next = appendMessage(session, 'error', describeTurnEnd('validation', validation));
+      completeTurn(bridge, false); // validation — no auto-promote
+      return { result: { ok: false, error: validation }, session: next };
+    }
   }
 
-  const prompt = normalizePrompt(rawPrompt);
-  const withUser = appendMessage(session, 'user', prompt);
+  const prompt = attaching ? '' : normalizePrompt(rawPrompt);
+  const withUser = attaching ? session : appendMessage(session, 'user', prompt);
 
   // Wasm pending-submit path sets pushUser:false (user line already in canvas).
-  const pushUser = opts?.pushUser !== false;
+  // Attach (E19) never re-pushes the user line — the ring was hydrated (cold)
+  // or already has it (hot).
+  const pushUser = attaching ? false : opts?.pushUser !== false;
   // Always schedule user-body images/math (Wasm may already show the user line).
   scheduleImagesFromMarkdown(bridge, prompt);
   scheduleMathFromMarkdown(bridge, prompt);
@@ -1069,6 +1097,28 @@ export async function runHarnessTurn(
      * false and the 5× loop is unchanged there.
      */
     let streamPainted = false;
+    // Plan #813 (E19) — this-heap SSE-frame count. POST starts at 0; hot
+    // resume starts at attach.startIndex; cold starts at 0. Incremented per
+    // parsed event. Persisted only when onSessionPatch already fires (or at
+    // turn end) — never a new HTTP per token.
+    const attachOpts = opts?.attach;
+    const dedup = attachOpts?.dedup === true;
+    let heapC = attachOpts != null
+      ? (sanitizeTurnStreamCursor(attachOpts.startIndex) ?? 0)
+      : 0;
+    if (attaching && attachOpts) {
+      next = {
+        ...next,
+        turnRunId: attachOpts.runId,
+        turnStatus: next.turnStatus === 'completed' ? next.turnStatus : 'running',
+        turnStreamCursor: heapC,
+      };
+    }
+    const hydratedAssistantStart = dedup ? thisRunAssistantText(next.messages) : '';
+    let hydratedAssistant = hydratedAssistantStart;
+    const hydratedTools = dedup ? thisRunToolItems(next.messages) : [];
+    const replayedStarts: Record<string, number> = {};
+    const replayedResults: Record<string, number> = {};
     // Last confirmed-successful `change_dir` cwd this turn (phase 2 of #464 /
     // plan #465): recorded from live tool events (stream) or the JSON toolTrace,
     // applied on non-success terminals and as a success fallback so an aborted
@@ -1094,9 +1144,48 @@ export async function runHarnessTurn(
      * host is the sole ring writer, so this single boolean is the only predicate
      * needed; `updateLastMessage`'s return stays as insurance, never a decision.
      */
-    let lastRingRowIsToolRun = false;
+    let lastRingRowIsToolRun = attaching && lastUiKind === 'tool_run';
     /** Session id of the current open live tool card (patched in place on growth). */
-    let openToolRunId: string | null = null;
+    let openToolRunId: string | null = attaching && lastUiKind === 'tool_run'
+      ? (next.messages[next.messages.length - 1]?.id ?? null)
+      : null;
+
+    if (attaching && lastUiKind === 'tool_run') {
+      const last = next.messages[next.messages.length - 1];
+      if (last?.role === 'tool_run') {
+        const decoded = decodeToolRun(last.text);
+        if (decoded) {
+          toolRunGroup = {
+            items: decoded.items.map((it) => ({ ...it })),
+            detailEncUsed: 0,
+          };
+        }
+      }
+    }
+
+    // Hot resume (and cold hydrate) continue the last live ring row so a
+    // suffix `text_delta` / `reasoning_delta` grows in place instead of
+    // pushing a duplicate bubble. Cold attach still starts `assistantAcc`
+    // empty so this-run-window skip can rebuild the prefix.
+    if (attaching) {
+      const n = bridge.messageCount();
+      if (n > 0) {
+        const lastRing = bridge.messageAt(n - 1);
+        if (lastRing?.kind === MessageKind.Assistant) {
+          assistantSegment = lastRing.text;
+          assistantSegmentOpen = true;
+          assistantStarted = true;
+          lastUiKind = 'assistant';
+          lastRingRowIsToolRun = false;
+          if (!dedup) assistantAcc = lastRing.text;
+        } else if (lastRing?.kind === MessageKind.Thinking) {
+          thinkingSegment = lastRing.text;
+          thinkingSegmentOpen = true;
+          lastUiKind = 'thinking';
+          lastRingRowIsToolRun = false;
+        }
+      }
+    }
 
     const resetLiveToolStreak = () => {
       lastRingRowIsToolRun = false;
@@ -1391,6 +1480,10 @@ export async function runHarnessTurn(
     // becomes an AgentRetryError so the narrow classifier can map retryable vs
     // permanent from HTTP status + classifyTurnFailure kind.
     const onStreamEvent = async (ev: AgentStreamEvent) => {
+      // Plan #813: every parsed SSE frame advances this-heap C (including
+      // skipped-by-dedup). One producer write = one getReadable index.
+      heapC = bumpStreamCursor(heapC);
+      next = { ...next, turnStreamCursor: heapC };
       // Fail-closed retry gate (plan #759 adversarial-review Major): any event
       // that PAINTS the ring past the user line arms `streamPainted`, so a
       // retryable-looking failure after it becomes permanent single-attempt
@@ -1405,18 +1498,75 @@ export async function runHarnessTurn(
         streamPainted = true;
       }
       if (ev.type === 'tool_start' || ev.type === 'tool_result') {
+        if (ev.type === 'tool_start') {
+          replayedStarts[ev.name] = (replayedStarts[ev.name] ?? 0) + 1;
+          if (
+            shouldSkipToolStart({
+              enabled: dedup,
+              hydrated: hydratedTools,
+              name: ev.name,
+              replayedStartsOfName: replayedStarts[ev.name] ?? 1,
+            })
+          ) {
+            return;
+          }
+        } else {
+          replayedResults[ev.name] = (replayedResults[ev.name] ?? 0) + 1;
+          if (
+            shouldSkipToolResult({
+              enabled: dedup,
+              hydrated: hydratedTools,
+              name: ev.name,
+              replayedResultsOfName: replayedResults[ev.name] ?? 1,
+            })
+          ) {
+            return;
+          }
+        }
         handleToolEvent(ev);
         return;
       }
       if (ev.type === 'reasoning_delta') {
+        // Thinking is never in Blob — never skip, even on cold attach.
         growThinking(ev.text);
         return;
       }
       if (ev.type === 'text_delta') {
+        const d = textDeltaDedup({
+          enabled: dedup,
+          hydratedAssistant,
+          replayedBefore: assistantAcc,
+          chunk: ev.text,
+        });
+        if (d.action === 'skip') {
+          assistantAcc += ev.text;
+          // Hydrated this-run assistant already on the ring — do not
+          // finalize-push a duplicate at `done`.
+          if (hydratedAssistant) assistantStarted = true;
+          return;
+        }
+        if (d.action === 'grow-suffix') {
+          if (!assistantSegmentOpen && lastUiKind === 'assistant') {
+            assistantSegmentOpen = true;
+            assistantStarted = true;
+            const last = next.messages[next.messages.length - 1];
+            assistantSegment = last?.role === 'assistant' ? last.text : hydratedAssistant;
+          }
+          assistantAcc = hydratedAssistant;
+          growAssistant(d.chunk);
+          hydratedAssistant = assistantAcc;
+          return;
+        }
         growAssistant(ev.text);
         return;
       }
       if (ev.type === 'skill_attached') {
+        if (dedup && skillAlreadyHydrated(next.messages, ev)) {
+          if (Array.isArray(ev.attachedSlugs)) {
+            next = { ...next, attachedSlugs: [...ev.attachedSlugs] };
+          }
+          return;
+        }
         // Server sends skill_attached events at the START of the turn (before
         // the model). Push the display-only row live; it is a non-tool
         // separator for the tool-run predicate.
@@ -1463,6 +1613,44 @@ export async function runHarnessTurn(
     try {
       agentResult = await withTransientRetry(
         async () => {
+          if (attachOpts) {
+            const attachFn = attachOpts.attachStream ?? attachTurnStream;
+            if (!sessionId) {
+              return {
+                ok: false as const,
+                status: 400,
+                error: 'sessionId is required.',
+              };
+            }
+            const r = await attachFn(attachOpts.runId, {
+              sessionId,
+              startIndex: attachOpts.startIndex,
+              signal: opts?.signal,
+              onEvent: onStreamEvent,
+              onTurnStarted: async ({ turnRunId }) => {
+                sawDurableStart = true;
+                next = {
+                  ...next,
+                  turnRunId,
+                  turnStatus:
+                    next.turnStatus === 'completed' ? 'completed' : 'running',
+                  turnStreamCursor: heapC,
+                };
+                opts?.onSessionPatch?.(next);
+              },
+            });
+            if (!r.ok) {
+              const kind = classifyTurnFailure(r.error, r.status, opts?.signal).kind;
+              throw new AgentRetryError(
+                r.error,
+                r.status,
+                kind,
+                r.attachedSlugs,
+                r.turnRunId,
+              );
+            }
+            return r;
+          }
           const r = streamAgent
             ? await sendAgentStreamFn(apiPrompt, {
                 signal: opts?.signal,
@@ -1474,7 +1662,12 @@ export async function runHarnessTurn(
                 onEvent: onStreamEvent,
                 onTurnStarted: async ({ turnRunId }) => {
                   sawDurableStart = true;
-                  next = { ...next, turnRunId, turnStatus: 'running' };
+                  next = {
+                    ...next,
+                    turnRunId,
+                    turnStatus: 'running',
+                    turnStreamCursor: heapC,
+                  };
                   opts?.onSessionPatch?.(next);
                 },
               })
@@ -1510,7 +1703,7 @@ export async function runHarnessTurn(
           // push duplicate assistant bubbles. `classifyTurnRetry` still owns
           // the status/stop mapping for the clean (never-painted) cases.
           classify: (err) =>
-            streamPainted || sawDurableStart
+            streamPainted || sawDurableStart || attaching
               ? { kind: 'permanent' }
               : classifyTurnRetry(err),
         },
@@ -1533,7 +1726,7 @@ export async function runHarnessTurn(
         ).kind
       : undefined;
     const durableIncomplete =
-      streamAgent &&
+      (streamAgent || attaching) &&
       sawDurableStart &&
       !sawStreamTerminal &&
       stopKind !== 'stop';
@@ -1584,14 +1777,21 @@ export async function runHarnessTurn(
         scheduleImagesFromMarkdown(bridge, agentResult.text);
         assistantAcc = agentResult.text;
       }
-      next = appendMessage(next, 'assistant', agentResult.text || assistantAcc);
+      next = attaching
+        ? foldThisRunAssistant(next, agentResult.text || assistantAcc)
+        : appendMessage(next, 'assistant', agentResult.text || assistantAcc);
       scheduleMathFromTexts(
         bridge,
         next.messages
           .filter((m) => m.role === 'user' || m.role === 'assistant')
           .map((m) => m.text),
       );
-      next = pushTurnEnd(bridge, next, 'model');
+      if (
+        !attaching ||
+        !thisRunWindow(next.messages).some((m) => isTurnEndLine(m.text))
+      ) {
+        next = pushTurnEnd(bridge, next, 'model');
+      }
       lastUiKind = 'system';
       // Success-path cwd apply (parent #270 / phase 2): prefers the authoritative
       // `agentResult.cwd`. Sanitize + renormalize exactly like the send path
@@ -1693,7 +1893,9 @@ export async function runHarnessTurn(
       }
       const partial = (assistantAcc || '').trim();
       if (partial) {
-        failedSession = appendMessage(failedSession, 'assistant', partial);
+        failedSession = attaching
+          ? foldThisRunAssistant(failedSession, partial)
+          : appendMessage(failedSession, 'assistant', partial);
       }
       const fail = durableIncomplete
         ? { kind: 'detach' as const, detail: undefined as string | undefined }
@@ -1758,6 +1960,18 @@ export async function runHarnessTurn(
           (failedSession.turnStatus === 'running'
             ? failedSession.turnRunId
             : undefined);
+        if (id !== undefined) {
+          failedSession = {
+            ...failedSession,
+            turnRunId: id,
+            turnStatus: 'running',
+          };
+        }
+      } else if (attaching && fail.kind !== 'stop') {
+        // GET attach 404/503/auth is "could not subscribe", not "the turn
+        // died". Keep the live run so a later boot/F5 can retry. Never a
+        // server cancel. In-canvas EMBER is the pushTurnEnd above.
+        const id = agentResult.turnRunId ?? failedSession.turnRunId;
         if (id !== undefined) {
           failedSession = {
             ...failedSession,
