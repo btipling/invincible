@@ -559,6 +559,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           setHostNote(result.error);
         } else if (sendWhileRunning) {
           setHostNote(ATTACH_FOLLOW_UP_NOTE);
+          try {
+            bridge.pushMessage(MessageKind.System, ATTACH_FOLLOW_UP_NOTE);
+          } catch {
+            /* torn-down bridge */
+          }
         }
         // Plan #813: SSE drop while still mounted → hot resume at this-heap C.
         // Empty-EOF GET (applied == startIndex) must not reconnect (spin).
@@ -1250,7 +1255,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           style={{
             margin: '0.5rem 1rem 0',
             fontSize: '0.75rem',
-            color: ember.muted,
+            color: hostNote === ATTACH_FOLLOW_UP_NOTE ? teal.muted : ember.muted,
             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
             flexShrink: 0,
           }}

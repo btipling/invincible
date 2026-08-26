@@ -4959,6 +4959,61 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     ]);
   });
 
+  it('test 2j: cold attach usage after streamPainted persists live next, not coldBackup (adversarial #857)', async () => {
+    const g = createToolRunGroup();
+    addToolStart(g, 'exec');
+    const bootPayload = encodeToolRun(g)!;
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.ToolRun, bootPayload);
+    bridge.pushMessage(MessageKind.Assistant, 'Hello');
+    const session = runningSession([
+      ['user', 'hello'],
+      ['tool_run', bootPayload],
+      ['assistant', 'Hello'],
+    ]);
+    const patches: Array<{
+      assistant: string[];
+      toolRun: number;
+      usage?: unknown;
+    }> = [];
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
+          await opts.onEvent?.({ type: 'tool_start', name: 'exec' });
+          await opts.onEvent?.({
+            type: 'usage',
+            usage: { source: 'provider', prompt: 1, completion: 2, total: 3 },
+          });
+          return { ok: true, text: '', turnRunId: runId };
+        },
+      },
+      onSessionPatch: (s) => {
+        patches.push({
+          assistant: s.messages.filter((m) => m.role === 'assistant').map((m) => m.text),
+          toolRun: s.messages.filter((m) => m.role === 'tool_run').length,
+          usage: s.usage,
+        });
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(next.turnStatus).toBe('running');
+    const started = patches[0];
+    expect(started?.assistant).toEqual(['Hello']);
+    expect(started?.toolRun).toBe(1);
+    const usagePatch = patches.find((p) => p.usage != null);
+    expect(usagePatch).toBeTruthy();
+    expect(usagePatch!.assistant).toEqual([]);
+    expect(usagePatch!.toolRun).toBe(1);
+    expect(next.messages.some((m) => m.role === 'assistant' && m.text === 'Hello')).toBe(false);
+  });
+
   it('test 3: two cold consumers both render thinking + text once from startIndex=0 + dedup', async () => {
     const events: AgentStreamEvent[] = [
       { type: 'reasoning_delta', text: 'plan' },

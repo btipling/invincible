@@ -1238,8 +1238,11 @@ export async function runHarnessTurn(
       }
     }
     const patchSession = (s: typeof next) => {
-      // Mid-attach patches must not PUT a truncated transcript over Blob.
-      if (coldBackup) {
+      // Mid-attach patches must not PUT a truncated (prefix-only) transcript
+      // over Blob. Once this-run has painted, `s.messages` is the live rebuild
+      // — persist that, not the boot-time suffix (adversarial #857). Same gate
+      // as the fail-fold restore.
+      if (coldBackup && !streamPainted) {
         opts?.onSessionPatch?.({ ...s, messages: coldBackup });
         return;
       }

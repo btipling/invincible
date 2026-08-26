@@ -197,6 +197,10 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(host).toContain('sendWhileRunning');
     expect(host).toContain('ATTACH_FOLLOW_UP_NOTE');
     expect(host).toContain('setHostNote(ATTACH_FOLLOW_UP_NOTE)');
+    expect(host).toContain('bridge.pushMessage(MessageKind.System, ATTACH_FOLLOW_UP_NOTE)');
+    expect(host).toContain(
+      'hostNote === ATTACH_FOLLOW_UP_NOTE ? teal.muted : ember.muted',
+    );
   });
 
   it('detachTurn clears inflight so switch can cold-attach', () => {
@@ -221,7 +225,12 @@ describe('harnessChat attach hydrate source-lock (adversarial #857)', () => {
     expect(src).not.toContain('coldBackup.map((m) => ({ kind: roleToKind(m.role)');
   });
 
-  it('ATTACH_FOLLOW_UP_NOTE is host chrome, not a Turn-ended line', () => {
+  it('patchSession stops substituting coldBackup once streamPainted (adversarial #857)', () => {
+    expect(src).toContain('if (coldBackup && !streamPainted)');
+    expect(src).not.toMatch(/if \(coldBackup\) \{\s*opts\?\.onSessionPatch\?\(\{ \.\.\.s, messages: coldBackup \}\)/);
+  });
+
+  it('ATTACH_FOLLOW_UP_NOTE is not a Turn-ended line (canvas System + TEAL host mirror)', () => {
     expect(ATTACH_FOLLOW_UP_NOTE).toMatch(/Follow-up not sent/);
     expect(ATTACH_FOLLOW_UP_NOTE).not.toMatch(/Turn ended/);
   });

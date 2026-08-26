@@ -19,8 +19,9 @@ import {
 export type HeapApplied = { runId: string; count: number };
 
 /**
- * Host-chrome note when operator Send is remapped to attach (adversarial #857).
- * Not a Turn-ended line; not EMBER. Composer text was not a new turn.
+ * Host + in-canvas note when operator Send is remapped to attach
+ * (adversarial #857). Not a Turn-ended line; not EMBER. Composer text was
+ * not a new turn. Canvas is MessageKind.System; host chrome mirrors in TEAL.
  */
 export const ATTACH_FOLLOW_UP_NOTE =
   'Follow-up not sent — still attached to the live run.';
