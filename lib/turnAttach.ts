@@ -18,6 +18,13 @@ import {
 
 export type HeapApplied = { runId: string; count: number };
 
+/**
+ * Host-chrome note when operator Send is remapped to attach (adversarial #857).
+ * Not a Turn-ended line; not EMBER. Composer text was not a new turn.
+ */
+export const ATTACH_FOLLOW_UP_NOTE =
+  'Follow-up not sent — still attached to the live run.';
+
 export type AttachDecision =
   | { kind: 'none' }
   | { kind: 'hot'; startIndex: number }

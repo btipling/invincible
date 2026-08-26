@@ -13,7 +13,7 @@ import {
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
 import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote } from '../../lib/detachTurn';
-import { decideHotResume, decideSendAttach, type HeapApplied } from '../../lib/turnAttach';
+import { decideHotResume, decideSendAttach, ATTACH_FOLLOW_UP_NOTE, type HeapApplied } from '../../lib/turnAttach';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -452,6 +452,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               dedup: sendAttach.dedup,
             });
       const attaching = attach != null;
+      const sendWhileRunning =
+        opts?.attach == null && attaching && (prompt ?? '').trim().length > 0;
       const modelId = bridge.getSelectedModel();
       if (!attaching && !modelId) {
         setHostNote('No model selected — catalog empty, failed to load, or not granted.');
@@ -555,6 +557,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         }
         if (!result.ok && shouldSetHostTurnNote(folded.turnStatus)) {
           setHostNote(result.error);
+        } else if (sendWhileRunning) {
+          setHostNote(ATTACH_FOLLOW_UP_NOTE);
         }
         // Plan #813: SSE drop while still mounted → hot resume at this-heap C.
         // Empty-EOF GET (applied == startIndex) must not reconnect (spin).

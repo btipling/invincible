@@ -511,6 +511,29 @@ export function pushSessionToBridge(
 }
 
 /**
+ * Adversarial #857: hot-resume follow-up strip. Thinking has no SessionStore
+ * role, so this cannot go through `pushSessionToBridge`. Same cache contract as
+ * a canonical hydrate: reset JS `putOk`, clear+repaint the kept rows, reschedule
+ * user/assistant media. Does not coalesce (live thinking is a separator) and
+ * does not touch Load-earlier (ring window is unchanged).
+ */
+export function rebuildAttachRingFromRows(
+  bridge: HarnessBridge,
+  rows: { kind: MessageKind; text: string }[],
+  session: SessionSnapshot,
+): void {
+  resetHarnessImageSession();
+  resetHarnessMathSession();
+  bridge.hydrateMessages(rows);
+  foldStatusSlots(bridge, session);
+  const texts = rows
+    .filter((m) => m.kind === MessageKind.User || m.kind === MessageKind.Assistant)
+    .map((m) => m.text);
+  scheduleImagesFromTexts(bridge, texts);
+  scheduleMathFromTexts(bridge, texts);
+}
+
+/**
  * Host-side UTF-8-safe ellipsizer for a status-slot value (PR #543 #3). A status
  * slot holds at most `STATUS_SLOT_MAX_BYTES` UTF-8 bytes (Zig
  * `MAX_STATUS_SLOT_LEN`); `setStatusSlot` rejects anything over the cap. Without
@@ -1119,12 +1142,16 @@ export async function runHarnessTurn(
       };
     }
     /**
-     * Send-while-running (adversarial #857): Wasm already painted the follow-up
-     * user line before the host remapped Send to attach. Drop it so replay
-     * cannot sit under a prompt that was never POSTed. Empty `rawPrompt`
-     * (kickColdAttach / hot-resume microtask) leaves the originating user.
+     * Send-while-running hot resume (adversarial #857): Wasm already painted the
+     * follow-up user line before the host remapped Send to attach. Drop it so
+     * live grow cannot sit under a prompt that was never POSTed. Cold attach
+     * (dedup) rebuilds through the session last user via `pushSessionToBridge`
+     * below — do not `hydrateMessages` here (that would skip image/math reset
+     * and clear the submit queue as a surgical edit).
+     * Empty `rawPrompt` (kickColdAttach / hot-resume microtask) leaves the
+     * originating user.
      */
-    if (attaching && (rawPrompt ?? '').trim()) {
+    if (attaching && !dedup && (rawPrompt ?? '').trim()) {
       const sessionLastUser = lastUserText(next.messages);
       try {
         const n = bridge.messageCount();
@@ -1139,7 +1166,7 @@ export async function runHarnessTurn(
           sessionLastUser,
         );
         if (stripped.length !== rows.length) {
-          bridge.hydrateMessages(stripped);
+          rebuildAttachRingFromRows(bridge, stripped, next);
         }
       } catch {
         /* tests / torn-down bridge */
@@ -1149,9 +1176,11 @@ export async function runHarnessTurn(
      * Cold attach (dedup): Blob this-run suffix (`tool_run` / assistant) has no
      * thinking. Leaving it on the ring makes `reasoning_delta` append after the
      * answer (adversarial #857 Major). Rebuild this-run from the stream: keep a
-     * persist backup, hydrate the ring through the last user, and let skip see
-     * an empty this-run window. Always re-hydrate the prefix (even with no
-     * suffix) so a Wasm follow-up cannot remain as the last user.
+     * persist backup, hydrate the ring through the last user via the canonical
+     * `pushSessionToBridge` (reset image/math `putOk`, coalesce, slice, reschedule),
+     * and let skip see an empty this-run window. Always re-hydrate the prefix
+     * (even with no suffix) so a Wasm follow-up cannot remain as the last user
+     * and so boot-scheduled images are re-put after `inv_clear_messages`.
      */
     let coldBackup: typeof next.messages | null = null;
     if (attaching && dedup) {
@@ -1162,9 +1191,10 @@ export async function runHarnessTurn(
         lastUiKind = restoreLastUiKind(next.messages);
       }
       try {
-        bridge.hydrateMessages(
-          prefix.map((m) => ({ kind: roleToKind(m.role), text: m.text })),
-        );
+        pushSessionToBridge(bridge, next, {
+          clear: true,
+          windowStart: latestRingStart(next.messages.length),
+        });
       } catch {
         /* tests / torn-down bridge */
       }
@@ -1984,9 +2014,10 @@ export async function runHarnessTurn(
       if (coldBackup && !streamPainted) {
         failedSession = { ...failedSession, messages: coldBackup };
         try {
-          bridge.hydrateMessages(
-            coldBackup.map((m) => ({ kind: roleToKind(m.role), text: m.text })),
-          );
+          pushSessionToBridge(bridge, failedSession, {
+            clear: true,
+            windowStart: latestRingStart(failedSession.messages.length),
+          });
         } catch {
           /* tests / torn-down bridge */
         }

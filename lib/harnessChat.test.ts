@@ -53,6 +53,7 @@ import {
   SANDBOX_SELECTION_REQUIRED_ERROR,
   WORKSPACE_INSTANCE_REQUIRED_ERROR,
 } from './tenancy/errors';
+import { harnessImageSessionGeneration } from './harnessImages';
 import { createEmptySession, formatPromptWithHistory, appendMessage, makeMessage } from './sessionStore';
 import { TOOL_TRACE_SUMMARY_MAX_CHARS } from './sandbox/config';
 
@@ -4793,6 +4794,56 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     expect(second.session.messages.filter((m) => m.role === 'tool_run')).toHaveLength(1);
     expect(second.session.messages.filter((m) => m.role === 'assistant').map((m) => m.text)).toEqual([
       'Hello world',
+    ]);
+  });
+
+  it('test 2g: cold attach uses pushSessionToBridge — image session bump, prior-turn media kept, consecutive tool_run coalesced (adversarial #857)', async () => {
+    const g1 = createToolRunGroup();
+    addToolStart(g1, 'read_file');
+    addToolResult(g1, 'read_file', true, 'ok', undefined);
+    const p1 = encodeToolRun(g1)!;
+    const g2 = createToolRunGroup();
+    addToolStart(g2, 'exec');
+    addToolResult(g2, 'exec', true, 'ok', undefined);
+    const p2 = encodeToolRun(g2)!;
+    const priorAsst = 'see ![shot](https://example.com/a.png)';
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'first');
+    bridge.pushMessage(MessageKind.ToolRun, p1);
+    bridge.pushMessage(MessageKind.ToolRun, p2);
+    bridge.pushMessage(MessageKind.Assistant, priorAsst);
+    bridge.pushMessage(MessageKind.User, 'second');
+    let session = createEmptySession('s_attach_img');
+    session = appendMessage(session, 'user', 'first');
+    session = appendMessage(session, 'tool_run', p1);
+    session = appendMessage(session, 'tool_run', p2);
+    session = appendMessage(session, 'assistant', priorAsst);
+    session = appendMessage(session, 'user', 'second');
+    session = { ...session, turnRunId: 'wr_live', turnStatus: 'running' };
+    const gen = harnessImageSessionGeneration();
+    const { result } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: 'ok' });
+          await opts.onEvent?.({ type: 'done', text: 'ok' });
+          return { ok: true, text: 'ok', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(harnessImageSessionGeneration()).toBeGreaterThan(gen);
+    expect(
+      exp.__messages.some((m) => m.kind === MessageKind.Assistant && m.text === priorAsst),
+    ).toBe(true);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.ToolRun)).toHaveLength(1);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.User).map((m) => m.text)).toEqual([
+      'first',
+      'second',
     ]);
   });
 

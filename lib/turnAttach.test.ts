@@ -10,6 +10,7 @@ import {
   decideSendAttach,
   isAttachRunGone,
   lastUserText,
+  ATTACH_FOLLOW_UP_NOTE,
   prefixThroughLastUser,
   shouldSkipToolResult,
   shouldSkipToolStart,
@@ -193,6 +194,9 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     );
     expect(host).toContain('decideSendAttach(');
     expect(host).toContain('heapApplied: heapAppliedRef.current');
+    expect(host).toContain('sendWhileRunning');
+    expect(host).toContain('ATTACH_FOLLOW_UP_NOTE');
+    expect(host).toContain('setHostNote(ATTACH_FOLLOW_UP_NOTE)');
   });
 
   it('detachTurn clears inflight so switch can cold-attach', () => {
@@ -201,6 +205,23 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
       host.indexOf('const runPrompt = useCallback'),
     );
     expect(helper).toContain('inflightRef.current = false');
+  });
+});
+
+describe('harnessChat attach hydrate source-lock (adversarial #857)', () => {
+  const src = readFileSync(resolve(process.cwd(), 'lib/harnessChat.ts'), 'utf8');
+
+  it('cold attach and 503 restore go through pushSessionToBridge, not raw hydrateMessages', () => {
+    expect(src).toContain('pushSessionToBridge(bridge, next,');
+    expect(src).toContain('pushSessionToBridge(bridge, failedSession,');
+    expect(src).toContain('rebuildAttachRingFromRows(bridge, stripped, next)');
+    expect(src).not.toContain('bridge.hydrateMessages(\n          prefix.map');
+    expect(src).not.toContain('coldBackup.map((m) => ({ kind: roleToKind(m.role)');
+  });
+
+  it('ATTACH_FOLLOW_UP_NOTE is host chrome, not a Turn-ended line', () => {
+    expect(ATTACH_FOLLOW_UP_NOTE).toMatch(/Follow-up not sent/);
+    expect(ATTACH_FOLLOW_UP_NOTE).not.toMatch(/Turn ended/);
   });
 });
 
