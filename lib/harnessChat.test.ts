@@ -26,6 +26,7 @@ import {
   type LiveCwdSource,
 } from './harnessChat';
 import { HARNESS_RING_MAX } from './sessionWindow';
+import { ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE } from './turnAttach';
 import {
   HARNESS_PROTOCOL_VERSION,
   HarnessBridge,
@@ -53,6 +54,7 @@ import {
   SANDBOX_SELECTION_REQUIRED_ERROR,
   WORKSPACE_INSTANCE_REQUIRED_ERROR,
 } from './tenancy/errors';
+import { harnessImageSessionGeneration } from './harnessImages';
 import { createEmptySession, formatPromptWithHistory, appendMessage, makeMessage } from './sessionStore';
 import { TOOL_TRACE_SUMMARY_MAX_CHARS } from './sandbox/config';
 
@@ -130,6 +132,11 @@ function makeMockExports(): HarnessBridgeExports & {
       return 1;
     },
     inv_clear_messages: () => {
+      messages.length = 0;
+      queue.length = 0;
+      promoteAllowed = true;
+    },
+    inv_clear_ring: () => {
       messages.length = 0;
     },
     inv_echo: () => 0,
@@ -4491,5 +4498,1168 @@ describe('runHarnessTurn durable-turn fold (plan #811 / D17)', () => {
         headers: expect.objectContaining({ Accept: 'text/event-stream' }),
       }),
     );
+  });
+});
+
+describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
+  function runningSession(
+    messages: Array<[role: 'user' | 'assistant' | 'tool_run' | 'system' | 'skill_attached', text: string]> = [
+      ['user', 'hello'],
+    ],
+    extra?: Partial<ReturnType<typeof createEmptySession>>,
+  ) {
+    let s = createEmptySession('s_attach_1');
+    for (const [role, text] of messages) {
+      s = appendMessage(s, role, text);
+    }
+    return {
+      ...s,
+      turnRunId: 'wr_live',
+      turnStatus: 'running' as const,
+      ...extra,
+    };
+  }
+
+  type AttachInit = {
+    sessionId: string;
+    startIndex?: number;
+    onEvent?: (event: AgentStreamEvent) => void | Promise<void>;
+    onTurnStarted?: (info: { turnRunId: string }) => void | Promise<void>;
+  };
+
+  it('test 2: hot resume at C grows the live assistant suffix, no duplicate, no ring clear', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.Assistant, 'Hello');
+    const session = runningSession(
+      [
+        ['user', 'hello'],
+        ['assistant', 'Hello'],
+      ],
+      { turnStreamCursor: 7 },
+    );
+    const startIndexes: number[] = [];
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 7,
+        dedup: false,
+        attachStream: async (runId, opts: AttachInit) => {
+          startIndexes.push(opts.startIndex ?? 0);
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: ' world' });
+          await opts.onEvent?.({ type: 'done', text: 'Hello world' });
+          return { ok: true, text: 'Hello world', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(startIndexes).toEqual([7]);
+    const assistants = exp.__messages.filter((m) => m.kind === MessageKind.Assistant);
+    expect(assistants.map((m) => m.text)).toEqual(['Hello world']);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.User).map((m) => m.text)).toEqual([
+      'hello',
+    ]);
+    expect(next.messages.filter((m) => m.role === 'assistant').map((m) => m.text)).toEqual([
+      'Hello world',
+    ]);
+  });
+
+  it('test 2b: F5/boot of originating tab with envelope C>0 attaches at startIndex=0 + dedup, never C', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    const session = runningSession([['user', 'hello']], { turnStreamCursor: 4096 });
+    const startIndexes: number[] = [];
+    const { result } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          startIndexes.push(opts.startIndex ?? 0);
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
+          await opts.onEvent?.({ type: 'text_delta', text: 'Hi' });
+          await opts.onEvent?.({ type: 'done', text: 'Hi' });
+          return { ok: true, text: 'Hi', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(startIndexes).toEqual([0]);
+    expect(startIndexes).not.toContain(4096);
+    expect(exp.__messages.some((m) => m.kind === MessageKind.Thinking && m.text === 'hmm')).toBe(
+      true,
+    );
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.Assistant).map((m) => m.text)).toEqual(
+      ['Hi'],
+    );
+  });
+
+  it('test 2c: cold attach with Blob tool+assistant suffix replays thinking BEFORE tools (adversarial #857)', async () => {
+    const g = createToolRunGroup();
+    addToolStart(g, 'exec');
+    const payload = encodeToolRun(g)!;
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.ToolRun, payload);
+    bridge.pushMessage(MessageKind.Assistant, 'Hello');
+    const session = runningSession([
+      ['user', 'hello'],
+      ['tool_run', payload],
+      ['assistant', 'Hello'],
+    ]);
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
+          await opts.onEvent?.({ type: 'tool_start', name: 'exec' });
+          await opts.onEvent?.({
+            type: 'tool_result',
+            name: 'exec',
+            ok: true,
+            summary: 'ok',
+          });
+          await opts.onEvent?.({ type: 'text_delta', text: 'Hello' });
+          await opts.onEvent?.({ type: 'text_delta', text: ' world' });
+          await opts.onEvent?.({ type: 'done', text: 'Hello world' });
+          return { ok: true, text: 'Hello world', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    const kinds = exp.__messages.map((m) => m.kind);
+    const thinkAt = kinds.indexOf(MessageKind.Thinking);
+    const toolAt = kinds.indexOf(MessageKind.ToolRun);
+    const asstAt = kinds.lastIndexOf(MessageKind.Assistant);
+    expect(thinkAt).toBeGreaterThanOrEqual(0);
+    expect(toolAt).toBeGreaterThan(thinkAt);
+    expect(asstAt).toBeGreaterThan(toolAt);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.ToolRun)).toHaveLength(1);
+    expect(
+      exp.__messages.filter((m) => m.kind === MessageKind.Assistant).map((m) => m.text),
+    ).toEqual(['Hello world']);
+    expect(next.messages.filter((m) => m.role === 'tool_run')).toHaveLength(1);
+    expect(next.messages.filter((m) => m.role === 'assistant').map((m) => m.text)).toEqual([
+      'Hello world',
+    ]);
+  });
+
+  it('test 2d: Send-while-running follow-up user is stripped; thinking sits under the old prompt (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.User, 'follow-up');
+    const session = runningSession([['user', 'hello']]);
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'follow-up', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
+          await opts.onEvent?.({ type: 'text_delta', text: 'Hi' });
+          await opts.onEvent?.({ type: 'done', text: 'Hi' });
+          return { ok: true, text: 'Hi', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    const users = exp.__messages.filter((m) => m.kind === MessageKind.User).map((m) => m.text);
+    expect(users).toEqual(['hello']);
+    expect(users).not.toContain('follow-up');
+    const kinds = exp.__messages.map((m) => m.kind);
+    const userAt = kinds.indexOf(MessageKind.User);
+    const thinkAt = kinds.indexOf(MessageKind.Thinking);
+    const asstAt = kinds.indexOf(MessageKind.Assistant);
+    expect(userAt).toBeGreaterThanOrEqual(0);
+    expect(thinkAt).toBeGreaterThan(userAt);
+    expect(asstAt).toBeGreaterThan(thinkAt);
+    expect(next.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['hello']);
+    expect(next.messages.filter((m) => m.role === 'assistant').map((m) => m.text)).toEqual(['Hi']);
+    expect(exp.__messages.map((m) => m.text)).not.toContain(ATTACH_FOLLOW_UP_NOTE);
+  });
+
+  it('test 2e: Send-while-running hot resume drops follow-up and grows the live assistant (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.Assistant, 'Hello');
+    bridge.pushMessage(MessageKind.User, 'follow-up');
+    const session = runningSession(
+      [
+        ['user', 'hello'],
+        ['assistant', 'Hello'],
+      ],
+      { turnStreamCursor: 7 },
+    );
+    const startIndexes: number[] = [];
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'follow-up', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 7,
+        dedup: false,
+        attachStream: async (runId, opts: AttachInit) => {
+          startIndexes.push(opts.startIndex ?? 0);
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: ' world' });
+          await opts.onEvent?.({ type: 'done', text: 'Hello world' });
+          return { ok: true, text: 'Hello world', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(startIndexes).toEqual([7]);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.User).map((m) => m.text)).toEqual([
+      'hello',
+    ]);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.Assistant).map((m) => m.text)).toEqual([
+      'Hello world',
+    ]);
+    expect(next.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['hello']);
+    expect(exp.__messages.map((m) => m.text)).not.toContain(ATTACH_FOLLOW_UP_NOTE);
+  });
+
+  it('test 2d-queue: Send-while-running cold keeps the submit FIFO (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.User, 'follow-up');
+    exp.__queue.push('queued A');
+    exp.__queue.push('queued B');
+    const session = runningSession([['user', 'hello']]);
+    await runHarnessTurn(bridge, session, 'follow-up', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: 'Hi' });
+          await opts.onEvent?.({ type: 'done', text: 'Hi' });
+          return { ok: true, text: 'Hi', turnRunId: runId };
+        },
+      },
+    });
+    expect(exp.__queue).toEqual(['queued A', 'queued B']);
+    expect(exp.__promoteAllowed()).toBe(true); // success completeTurn re-arms
+  });
+
+  it('test 2e-queue: Send-while-running hot strip keeps the submit FIFO (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.Assistant, 'Hello');
+    bridge.pushMessage(MessageKind.User, 'follow-up');
+    exp.__queue.push('queued A');
+    const session = runningSession(
+      [
+        ['user', 'hello'],
+        ['assistant', 'Hello'],
+      ],
+      { turnStreamCursor: 7 },
+    );
+    await runHarnessTurn(bridge, session, 'follow-up', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 7,
+        dedup: false,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: ' world' });
+          await opts.onEvent?.({ type: 'done', text: 'Hello world' });
+          return { ok: true, text: 'Hello world', turnRunId: runId };
+        },
+      },
+    });
+    expect(exp.__queue).toEqual(['queued A']);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.User).map((m) => m.text)).toEqual([
+      'hello',
+    ]);
+  });
+
+  it('test 2h: F5 cold attach (empty prompt) still clears the submit FIFO', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    exp.__queue.push('stale from previous session');
+    const session = runningSession([['user', 'hello']]);
+    await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: 'ok' });
+          await opts.onEvent?.({ type: 'done', text: 'ok' });
+          return { ok: true, text: 'ok', turnRunId: runId };
+        },
+      },
+    });
+    expect(exp.__queue).toEqual([]);
+  });
+
+  it('test 2i: Send-while-running 503 keeps FIFO and arms promote false', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.User, 'follow-up');
+    exp.__queue.push('queued A');
+    const session = runningSession([['user', 'hello']]);
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'follow-up', {
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          status: 503,
+          error: 'Unable to attach to run stream (store unavailable).',
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(exp.__queue).toEqual(['queued A']);
+    expect(exp.__promoteAllowed()).toBe(false);
+    expect(next.turnStatus).toBe('running');
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+  });
+
+  it('test 2f: thinking-only EOF after cold strip then hot resume does not restore Blob suffix (adversarial #857)', async () => {
+    const g = createToolRunGroup();
+    addToolStart(g, 'exec');
+    const payload = encodeToolRun(g)!;
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.ToolRun, payload);
+    bridge.pushMessage(MessageKind.Assistant, 'Hello');
+    const session = runningSession([
+      ['user', 'hello'],
+      ['tool_run', payload],
+      ['assistant', 'Hello'],
+    ]);
+
+    const first = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
+          return { ok: true, text: '', turnRunId: runId };
+        },
+      },
+    });
+    expect(first.result.ok).toBe(false);
+    expect(first.session.turnStatus).toBe('running');
+    expect(first.session.turnStreamCursor).toBe(1);
+    expect(first.session.messages.some((m) => m.role === 'tool_run')).toBe(false);
+    expect(first.session.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual([
+      'hello',
+    ]);
+    expect(exp.__messages.some((m) => m.kind === MessageKind.Thinking && m.text === 'hmm')).toBe(
+      true,
+    );
+    expect(exp.__messages.some((m) => m.kind === MessageKind.ToolRun)).toBe(false);
+
+    const second = await runHarnessTurn(bridge, first.session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: first.session.turnStreamCursor ?? 1,
+        dedup: false,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'tool_start', name: 'exec' });
+          await opts.onEvent?.({
+            type: 'tool_result',
+            name: 'exec',
+            ok: true,
+            summary: 'ok',
+          });
+          await opts.onEvent?.({ type: 'text_delta', text: 'Hello world' });
+          await opts.onEvent?.({ type: 'done', text: 'Hello world' });
+          return { ok: true, text: 'Hello world', turnRunId: runId };
+        },
+      },
+    });
+    expect(second.result.ok).toBe(true);
+    const kinds = exp.__messages.map((m) => m.kind);
+    const thinkAt = kinds.indexOf(MessageKind.Thinking);
+    const toolAt = kinds.indexOf(MessageKind.ToolRun);
+    const asstAt = kinds.lastIndexOf(MessageKind.Assistant);
+    expect(thinkAt).toBeGreaterThanOrEqual(0);
+    expect(toolAt).toBeGreaterThan(thinkAt);
+    expect(asstAt).toBeGreaterThan(toolAt);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.ToolRun)).toHaveLength(1);
+    expect(
+      exp.__messages.filter((m) => m.kind === MessageKind.Assistant).map((m) => m.text),
+    ).toEqual(['Hello world']);
+    expect(second.session.messages.filter((m) => m.role === 'tool_run')).toHaveLength(1);
+    expect(second.session.messages.filter((m) => m.role === 'assistant').map((m) => m.text)).toEqual([
+      'Hello world',
+    ]);
+  });
+
+  it('test 2g: cold attach uses pushSessionToBridge — image session bump, prior-turn media kept, consecutive tool_run coalesced (adversarial #857)', async () => {
+    const g1 = createToolRunGroup();
+    addToolStart(g1, 'read_file');
+    addToolResult(g1, 'read_file', true, 'ok', undefined);
+    const p1 = encodeToolRun(g1)!;
+    const g2 = createToolRunGroup();
+    addToolStart(g2, 'exec');
+    addToolResult(g2, 'exec', true, 'ok', undefined);
+    const p2 = encodeToolRun(g2)!;
+    const priorAsst = 'see ![shot](https://example.com/a.png)';
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'first');
+    bridge.pushMessage(MessageKind.ToolRun, p1);
+    bridge.pushMessage(MessageKind.ToolRun, p2);
+    bridge.pushMessage(MessageKind.Assistant, priorAsst);
+    bridge.pushMessage(MessageKind.User, 'second');
+    let session = createEmptySession('s_attach_img');
+    session = appendMessage(session, 'user', 'first');
+    session = appendMessage(session, 'tool_run', p1);
+    session = appendMessage(session, 'tool_run', p2);
+    session = appendMessage(session, 'assistant', priorAsst);
+    session = appendMessage(session, 'user', 'second');
+    session = { ...session, turnRunId: 'wr_live', turnStatus: 'running' };
+    const gen = harnessImageSessionGeneration();
+    const { result } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: 'ok' });
+          await opts.onEvent?.({ type: 'done', text: 'ok' });
+          return { ok: true, text: 'ok', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(harnessImageSessionGeneration()).toBeGreaterThan(gen);
+    expect(
+      exp.__messages.some((m) => m.kind === MessageKind.Assistant && m.text === priorAsst),
+    ).toBe(true);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.ToolRun)).toHaveLength(1);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.User).map((m) => m.text)).toEqual([
+      'first',
+      'second',
+    ]);
+  });
+
+  it('test 2j: cold attach usage after streamPainted persists live next, not coldBackup (adversarial #857)', async () => {
+    const g = createToolRunGroup();
+    addToolStart(g, 'exec');
+    const bootPayload = encodeToolRun(g)!;
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.ToolRun, bootPayload);
+    bridge.pushMessage(MessageKind.Assistant, 'Hello');
+    const session = runningSession([
+      ['user', 'hello'],
+      ['tool_run', bootPayload],
+      ['assistant', 'Hello'],
+    ]);
+    const patches: Array<{
+      assistant: string[];
+      toolRun: number;
+      usage?: unknown;
+    }> = [];
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
+          await opts.onEvent?.({ type: 'tool_start', name: 'exec' });
+          await opts.onEvent?.({
+            type: 'usage',
+            usage: { source: 'provider', prompt: 1, completion: 2, total: 3 },
+          });
+          return { ok: true, text: '', turnRunId: runId };
+        },
+      },
+      onSessionPatch: (s) => {
+        patches.push({
+          assistant: s.messages.filter((m) => m.role === 'assistant').map((m) => m.text),
+          toolRun: s.messages.filter((m) => m.role === 'tool_run').length,
+          usage: s.usage,
+        });
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(next.turnStatus).toBe('running');
+    const started = patches[0];
+    expect(started?.assistant).toEqual(['Hello']);
+    expect(started?.toolRun).toBe(1);
+    const usagePatch = patches.find((p) => p.usage != null);
+    expect(usagePatch).toBeTruthy();
+    expect(usagePatch!.assistant).toEqual([]);
+    expect(usagePatch!.toolRun).toBe(1);
+    expect(next.messages.some((m) => m.role === 'assistant' && m.text === 'Hello')).toBe(false);
+  });
+
+  it('test 3: two cold consumers both render thinking + text once from startIndex=0 + dedup', async () => {
+    const events: AgentStreamEvent[] = [
+      { type: 'reasoning_delta', text: 'plan' },
+      { type: 'text_delta', text: 'Answer' },
+      { type: 'done', text: 'Answer' },
+    ];
+    async function oneTab() {
+      const exp = makeMockExports();
+      const bridge = new HarnessBridge(exp);
+      bridge.pushMessage(MessageKind.User, 'hello');
+      const session = runningSession([['user', 'hello']]);
+      const { result } = await runHarnessTurn(bridge, session, '', {
+        attach: {
+          runId: 'wr_live',
+          startIndex: 0,
+          dedup: true,
+          attachStream: async (runId, opts: AttachInit) => {
+            await opts.onTurnStarted?.({ turnRunId: runId });
+            for (const ev of events) await opts.onEvent?.(ev);
+            return { ok: true, text: 'Answer', turnRunId: runId };
+          },
+        },
+      });
+      return { result, exp };
+    }
+    const a = await oneTab();
+    const b = await oneTab();
+    expect(a.result.ok).toBe(true);
+    expect(b.result.ok).toBe(true);
+    for (const tab of [a, b]) {
+      expect(tab.exp.__messages.some((m) => m.kind === MessageKind.Thinking && m.text === 'plan')).toBe(
+        true,
+      );
+      expect(
+        tab.exp.__messages.filter((m) => m.kind === MessageKind.Assistant).map((m) => m.text),
+      ).toEqual(['Answer']);
+    }
+  });
+
+  it('test 4: poison/absent C while running still GET-attaches at 0 (not hydrate-only)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    const session = runningSession([['user', 'hello']]);
+    delete session.turnStreamCursor;
+    const called: number[] = [];
+    await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          called.push(opts.startIndex ?? 0);
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: 'ok' });
+          await opts.onEvent?.({ type: 'done', text: 'ok' });
+          return { ok: true, text: 'ok', turnRunId: runId };
+        },
+      },
+    });
+    expect(called).toEqual([0]);
+  });
+
+  it('test 5: attach to a completed producer replays at 0 + dedup, no cancel, not left Busy', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const end = describeTurnEnd('model');
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.Assistant, 'Hi');
+    bridge.pushMessage(MessageKind.System, end);
+    const session = runningSession(
+      [
+        ['user', 'hello'],
+        ['assistant', 'Hi'],
+        ['system', end],
+      ],
+      { turnStatus: 'completed', turnRunId: 'wr_done', turnStreamCursor: 0 },
+    );
+    const sendAgent = vi.fn(async () => {
+      throw new Error('must not cancel / POST');
+    });
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      sendAgent,
+      attach: {
+        runId: 'wr_done',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: 'Hi' });
+          await opts.onEvent?.({ type: 'done', text: 'Hi' });
+          return { ok: true, text: 'Hi', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(sendAgent).not.toHaveBeenCalled();
+    expect(next.turnStatus).toBe('completed');
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.Assistant).map((m) => m.text)).toEqual(
+      ['Hi'],
+    );
+    expect(exp.__messages.filter((m) => m.text === end)).toHaveLength(1);
+  });
+
+  it('test 6: 404 attach paints EMBER and never calls /api/agent', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const sendAgent = vi.fn(async () => {
+      throw new Error('sendAgent /api/agent');
+    });
+    const sendAgentStream = vi.fn(async () => {
+      throw new Error('sendAgentStream /api/agent');
+    });
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(String(url)).not.toMatch(/\/api\/agent/);
+      return new Response('nope', { status: 500 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+        sendAgent,
+        sendAgentStream,
+        attach: {
+          runId: 'wr_gone',
+          startIndex: 0,
+          dedup: true,
+          attachStream: async () => ({
+            ok: false as const,
+            status: 404,
+            error: 'Run not found: wr_gone',
+            turnRunId: 'wr_gone',
+          }),
+        },
+      });
+      expect(result.ok).toBe(false);
+      expect(sendAgent).not.toHaveBeenCalled();
+      expect(sendAgentStream).not.toHaveBeenCalled();
+      expect(
+        fetchMock.mock.calls.every((c) => !String(c[0]).includes('/api/agent')),
+      ).toBe(true);
+      expect(exp.__messages.some((m) => m.kind === MessageKind.Error && /Run not found/.test(m.text))).toBe(
+        true,
+      );
+      expect(
+        exp.__messages.some((m) => m.kind === MessageKind.Error && isTurnEndLine(m.text)),
+      ).toBe(true);
+      expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+      // Attach 404 is run-gone: clear so a later Send is not C15-409'd.
+      expect(next.turnStatus).toBe('completed');
+      expect(next.turnRunId).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('test 6b: 503 attach paints EMBER and never calls /api/agent', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const sendAgent = vi.fn(async () => {
+      throw new Error('sendAgent /api/agent');
+    });
+    const sendAgentStream = vi.fn(async () => {
+      throw new Error('sendAgentStream /api/agent');
+    });
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      sendAgent,
+      sendAgentStream,
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          status: 503,
+          error: 'Unable to attach to run stream (store unavailable).',
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(sendAgent).not.toHaveBeenCalled();
+    expect(sendAgentStream).not.toHaveBeenCalled();
+    expect(
+      exp.__messages.some(
+        (m) => m.kind === MessageKind.Error && /store unavailable/.test(m.text),
+      ),
+    ).toBe(true);
+    expect(
+      exp.__messages.some((m) => isTurnEndLine(m.text)),
+    ).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(next.turnStatus).toBe('running');
+    expect(next.turnRunId).toBe('wr_1');
+  });
+
+  it('test 6e: 503 after Blob this-run suffix restores the suffix (no user-only persist)', async () => {
+    const g = createToolRunGroup();
+    addToolStart(g, 'exec');
+    const payload = encodeToolRun(g)!;
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.ToolRun, payload);
+    const session = runningSession([
+      ['user', 'hello'],
+      ['tool_run', payload],
+    ]);
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          status: 503,
+          error: 'Unable to attach to run stream (store unavailable).',
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(next.messages.some((m) => m.role === 'tool_run')).toBe(true);
+    expect(exp.__messages.some((m) => m.kind === MessageKind.ToolRun)).toBe(true);
+    expect(
+      exp.__messages.some(
+        (m) => m.kind === MessageKind.Error && /store unavailable/.test(m.text),
+      ),
+    ).toBe(true);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(next.turnStatus).toBe('running');
+  });
+
+  it('test 6c: network attach fail is subscribe-fail — EMBER, Ready, keep running, no Turn ended', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          error: 'Network request failed.',
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(
+      exp.__messages.some(
+        (m) => m.kind === MessageKind.Error && /Network request failed/.test(m.text),
+      ),
+    ).toBe(true);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(next.turnStatus).toBe('running');
+    expect(next.turnRunId).toBe('wr_1');
+  });
+
+  it('test 6d: 401 attach is subscribe-fail — EMBER, Ready, keep running, no Turn ended', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          status: 401,
+          error: AUTH_REQUIRED_ERROR,
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(
+      exp.__messages.some(
+        (m) => m.kind === MessageKind.Error && m.text.includes(AUTH_REQUIRED_ERROR),
+      ),
+    ).toBe(true);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(next.turnStatus).toBe('running');
+    expect(next.turnRunId).toBe('wr_1');
+  });
+
+  it('test 6f: second attach 503 replaces the last subscribe-fail error (no stack)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const first = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          status: 503,
+          error: 'Unable to attach to run stream (store unavailable).',
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    expect(first.session.messages.filter((m) => m.role === 'error')).toHaveLength(1);
+    const second = await runHarnessTurn(bridge, first.session, '', {
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          status: 503,
+          error: 'Unable to attach to run stream (retry).',
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    const errors = second.session.messages.filter((m) => m.role === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.text).toMatch(/retry/);
+    expect(
+      exp.__messages.filter((m) => m.kind === MessageKind.Error && !isTurnEndLine(m.text)),
+    ).toHaveLength(1);
+    expect(second.session.turnStatus).toBe('running');
+  });
+
+  it('test 6g: onTurnStarted + SSE error is give-up, not subscribe-fail (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const sendAgent = vi.fn(async () => {
+      throw new Error('must not POST /api/agent');
+    });
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      sendAgent,
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({
+            type: 'error',
+            error: 'producer failed',
+            status: 502,
+          });
+          return {
+            ok: false as const,
+            error: 'producer failed',
+            status: 502,
+            turnRunId: runId,
+          };
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(sendAgent).not.toHaveBeenCalled();
+    expect(next.turnRunId).toBeUndefined();
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'error' && m.text.startsWith('Turn ended · error'),
+      ),
+    ).toBe(true);
+    expect(next.messages.some((m) => m.role === 'system' && /detached/.test(m.text))).toBe(
+      false,
+    );
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(true);
+  });
+
+  it('test 6h: 502 without onTurnStarted stays subscribe-fail (discriminator)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          status: 502,
+          error: 'Bad gateway',
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(next.turnStatus).toBe('running');
+    expect(next.turnRunId).toBe('wr_1');
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(
+      exp.__messages.some((m) => m.kind === MessageKind.Error && /Bad gateway/.test(m.text)),
+    ).toBe(true);
+  });
+
+  it('test 6i: attach Stop after onTurnStarted keeps running, no you-stopped (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const sendAgent = vi.fn(async () => {
+      throw new Error('must not POST /api/agent');
+    });
+    const controller = new AbortController();
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      sendAgent,
+      signal: controller.signal,
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
+          controller.abort();
+          return { ok: false as const, error: 'Request cancelled.', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(sendAgent).not.toHaveBeenCalled();
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('running');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(exp.__messages.some((m) => m.kind === MessageKind.Thinking && m.text === 'hmm')).toBe(
+      true,
+    );
+  });
+
+  it('test 6j: attach Stop before onTurnStarted keeps running, no subscribe-fail EMBER (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const controller = new AbortController();
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      signal: controller.signal,
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => {
+          controller.abort();
+          return { ok: false as const, error: 'Request cancelled.', turnRunId: 'wr_1' };
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(next.turnStatus).toBe('running');
+    expect(next.turnRunId).toBe('wr_1');
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(
+      exp.__messages.some((m) => m.kind === MessageKind.Error),
+    ).toBe(false);
+  });
+
+  it('test 6k: Send-while-running attach Stop keeps running, strips follow-up, no still-attached note (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.User, 'follow-up');
+    const session = runningSession([['user', 'hello']]);
+    const sendAgent = vi.fn(async () => {
+      throw new Error('must not POST /api/agent');
+    });
+    const controller = new AbortController();
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'follow-up', {
+      sendAgent,
+      signal: controller.signal,
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
+          controller.abort();
+          return { ok: false as const, error: 'Request cancelled.', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(sendAgent).not.toHaveBeenCalled();
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('running');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.User).map((m) => m.text)).toEqual([
+      'hello',
+    ]);
+    expect(exp.__messages.map((m) => m.text)).not.toContain(ATTACH_FOLLOW_UP_NOTE);
+    expect(exp.__messages.map((m) => m.text)).not.toContain(ATTACH_FOLLOW_UP_DETACH_NOTE);
+    expect(exp.__messages.some((m) => m.kind === MessageKind.Thinking && m.text === 'hmm')).toBe(
+      true,
+    );
+  });
+
+  it('test 7: dedup skips hydrated this-run assistant/tool_run, never skips reasoning, prior-turn assistant is not a skip target', async () => {
+    const g = createToolRunGroup();
+    addToolStart(g, 'read_file');
+    addToolResult(g, 'read_file', true, 'ok', undefined);
+    const payload = encodeToolRun(g)!;
+
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.ToolRun, payload);
+    bridge.pushMessage(MessageKind.Assistant, 'Hello');
+    const session = runningSession([
+      ['user', 'hello'],
+      ['tool_run', payload],
+      ['assistant', 'Hello'],
+    ]);
+    await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'tool_start', name: 'read_file' });
+          await opts.onEvent?.({
+            type: 'tool_result',
+            name: 'read_file',
+            ok: true,
+            summary: 'ok',
+          });
+          await opts.onEvent?.({ type: 'reasoning_delta', text: 'think' });
+          await opts.onEvent?.({ type: 'text_delta', text: 'Hello' });
+          await opts.onEvent?.({ type: 'text_delta', text: ' world' });
+          await opts.onEvent?.({ type: 'done', text: 'Hello world' });
+          return { ok: true, text: 'Hello world', turnRunId: runId };
+        },
+      },
+    });
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.ToolRun)).toHaveLength(1);
+    expect(
+      exp.__messages
+        .filter((m) => m.kind === MessageKind.Assistant)
+        .map((m) => m.text)
+        .join(''),
+    ).toBe('Hello world');
+    expect(exp.__messages.some((m) => m.kind === MessageKind.Thinking && m.text === 'think')).toBe(
+      true,
+    );
+
+    const exp2 = makeMockExports();
+    const bridge2 = new HarnessBridge(exp2);
+    bridge2.pushMessage(MessageKind.User, 'first');
+    bridge2.pushMessage(MessageKind.Assistant, 'OLD');
+    bridge2.pushMessage(MessageKind.User, 'second');
+    let s2 = createEmptySession('s_attach_2');
+    s2 = appendMessage(s2, 'user', 'first');
+    s2 = appendMessage(s2, 'assistant', 'OLD');
+    s2 = appendMessage(s2, 'user', 'second');
+    s2 = { ...s2, turnRunId: 'wr_live', turnStatus: 'running' };
+    await runHarnessTurn(bridge2, s2, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: 'NEW' });
+          await opts.onEvent?.({ type: 'done', text: 'NEW' });
+          return { ok: true, text: 'NEW', turnRunId: runId };
+        },
+      },
+    });
+    expect(
+      exp2.__messages.filter((m) => m.kind === MessageKind.Assistant).map((m) => m.text),
+    ).toEqual(['OLD', 'NEW']);
+  });
+
+  it('test 8: attach EOF without done/error is detach, keep running, no Turn ended', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: 'partial' });
+          return { ok: true, text: 'partial', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('running');
+    expect(next.turnStreamCursor).toBe(1);
+    expect(next.messages.some((m) => m.role === 'system' && isTurnEndLine(m.text))).toBe(false);
+    expect(next.messages.some((m) => m.role === 'error' && isTurnEndLine(m.text))).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+  });
+
+  it('test 9: POST D17 path advances C on each SSE frame; persistTurn sees C; complete zeros it', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const cursors: Array<number | undefined> = [];
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession('s1'), 'hi', {
+      streamAgent: true,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onTurnStarted?.({ turnRunId: 'wr_post' });
+        await init?.onEvent?.({ type: 'text_delta', text: 'He' });
+        await init?.onEvent?.({ type: 'text_delta', text: 'llo' });
+        await init?.onEvent?.({
+          type: 'usage',
+          usage: { source: 'provider', prompt: 1, completion: 2 },
+        });
+        await init?.onEvent?.({ type: 'done', text: 'Hello' });
+        return { ok: true, text: 'Hello', turnRunId: 'wr_post' };
+      },
+      onSessionPatch: (s) => {
+        cursors.push(s.turnStreamCursor);
+      },
+    });
+    expect(cursors.some((c) => typeof c === 'number' && c > 0)).toBe(true);
+    expect(cursors).toContain(3); // 2 text_delta + usage, patched on usage
+    expect(next.turnStreamCursor).toBe(0);
+    expect(next.turnStatus).toBe('completed');
   });
 });

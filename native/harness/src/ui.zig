@@ -503,7 +503,8 @@ pub fn frame() !void {
 
     if (n < prev_msg) {
         // Ring cleared only (count->0). No partial-truncate path: bridge's
-        // msg_count drops solely via inv_clear_messages — update_last never
+        // msg_count drops via inv_clear_messages (F5/New/switch) or
+        // inv_clear_ring (live-session surgical hydrate).
         // decreases it — so (n == 0) below is exactly the clear case. Drop the
         // parse cache (generation bump) and reset tool-run expand state so a
         // fresh window starts collapsed.

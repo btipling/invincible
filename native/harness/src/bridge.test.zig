@@ -286,3 +286,28 @@ test "pause: reset() and inv_clear_messages clear the latch (Wasm-ephemeral, non
     bridge.inv_clear_messages(); // Clear / New — clears with the queue
     try t.expect(!bridge.isQueuePaused());
 }
+
+test "inv_clear_ring keeps submit queue, pause latch, and promote gate (v21 / adversarial #857)" {
+    bridge.reset();
+    _ = try bridge.enqueueFromUi("A");
+    _ = try bridge.enqueueFromUi("B");
+    bridge.inv_set_queue_promote_allowed(0);
+    bridge.setQueuePausedFromUi(true);
+    bridge.inv_clear_ring();
+    try t.expectEqual(@as(u32, 2), bridge.queuedCount());
+    try t.expectEqualStrings("A", bridge.queuedItemAt(0).?);
+    try t.expectEqualStrings("B", bridge.queuedItemAt(1).?);
+    try t.expect(!bridge.hasQueuePromoteAllowed());
+    try t.expect(bridge.isQueuePaused());
+}
+
+test "inv_clear_messages still clears the queue (F5 / New / switch)" {
+    bridge.reset();
+    _ = try bridge.enqueueFromUi("stale");
+    bridge.inv_set_queue_promote_allowed(0);
+    bridge.setQueuePausedFromUi(true);
+    bridge.inv_clear_messages();
+    try t.expectEqual(@as(u32, 0), bridge.queuedCount());
+    try t.expect(bridge.hasQueuePromoteAllowed());
+    try t.expect(!bridge.isQueuePaused());
+}

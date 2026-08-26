@@ -102,6 +102,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     },
     inv_update_last_message: () => 0,
     inv_clear_messages: () => { messages.length = 0; },
+    inv_clear_ring: () => { messages.length = 0; },
     inv_echo: () => 0,
     inv_echo_len: () => 0,
     inv_echo_copy: () => 0,

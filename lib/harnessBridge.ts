@@ -38,7 +38,10 @@ import {
 // v20 (plan #759): submit-queue insert-at-front — `inv_queued_insert_front`
 // (host inserts `Continue the current turn` as the new queue head on give-up
 // with a non-empty queue). Additive, now REQUIRED.
-export const HARNESS_PROTOCOL_VERSION = 20 as const;
+// v21 (adversarial #857): `inv_clear_ring` — live-session ring + image/math
+// cache replace that keeps the submit queue / pause / promote gate. F5 / New /
+// switch still use `inv_clear_messages`. Additive, now REQUIRED.
+export const HARNESS_PROTOCOL_VERSION = 21 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -145,6 +148,8 @@ export type HarnessBridgeExports = {
   inv_push_message: (kind: number, ptr: number, len: number) => void;
   inv_update_last_message: (kind: number, ptr: number, len: number) => number;
   inv_clear_messages: () => void;
+  /** Protocol v21 — ring + image/math clear; submit queue / pause / promote stay. */
+  inv_clear_ring: () => void;
   inv_echo: (ptr: number, len: number) => number;
   inv_echo_len: () => number;
   inv_echo_copy: (outPtr: number, maxLen: number) => number;
@@ -235,6 +240,7 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_push_message',
   'inv_update_last_message',
   'inv_clear_messages',
+  'inv_clear_ring',
   'inv_echo',
   'inv_echo_len',
   'inv_echo_copy',
@@ -415,14 +421,19 @@ export class HarnessBridge {
   /**
    * Host → Wasm full transcript replace (session hydrate / restore).
    * Batched so dvui refreshes once.
+   *
+   * `preserveQueue: true` uses `inv_clear_ring` (protocol v21) so a live
+   * submit FIFO / pause / promote gate survives. Default false is
+   * `inv_clear_messages` (F5 / New / session switch).
    */
   hydrateMessages(
     messages: { kind: MessageKind; text: string }[],
-    opts?: { lifecycle?: Lifecycle },
+    opts?: { lifecycle?: Lifecycle; preserveQueue?: boolean },
   ): void {
     this.beginBatch();
     try {
-      this.clearMessages();
+      if (opts?.preserveQueue) this.clearRing();
+      else this.clearMessages();
       for (const m of messages) {
         this.pushMessage(m.kind, m.text);
       }
@@ -458,6 +469,14 @@ export class HarnessBridge {
 
   clearMessages(): void {
     this.exports.inv_clear_messages();
+  }
+
+  /**
+   * Protocol v21 — clear the transcript ring + image/math caches only.
+   * Submit queue, pause latch, promote gate, and pending submit stay.
+   */
+  clearRing(): void {
+    this.exports.inv_clear_ring();
   }
 
   /**

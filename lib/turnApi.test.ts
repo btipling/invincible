@@ -6,7 +6,7 @@
  * `sessionId`/`personaId`/`cwd` on the body, JSON 4xx, SSE success + failure.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { sendTurn, sendTurnStream } from './turnApi';
+import { attachTurnStream, sendTurn, sendTurnStream } from './turnApi';
 
 function sseResponse(chunks: string[], header?: { 'x-workflow-run-id': string }): Response {
   const body = new ReadableStream<Uint8Array>({
@@ -293,5 +293,167 @@ describe('sendTurnStream (SSE path — production default)', () => {
       expect(result.turnRunId).toBe('wr_live');
       expect(result.turnWarning).toBe('note');
     }
+  });
+});
+
+describe('attachTurnStream (GET attach — plan #813 E19)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('GETs /api/turns/:runId/stream?sessionId=&startIndex= and dispatches onEvent', async () => {
+    const events: string[] = [];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(init?.method).toBe('GET');
+      expect(String(url)).toBe(
+        '/api/turns/wr_attach/stream?sessionId=s_tab&startIndex=0',
+      );
+      expect((init?.headers as Record<string, string>).Accept).toBe(
+        'text/event-stream',
+      );
+      return sseResponse(
+        [
+          'data: {"type":"reasoning_delta","text":"hmm"}\n\n',
+          'data: {"type":"text_delta","text":"Hi"}\n\n',
+          'data: {"type":"done","text":"Hi"}\n\n',
+        ],
+        { 'x-workflow-run-id': 'wr_attach' },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const started: string[] = [];
+    const result = await attachTurnStream('wr_attach', {
+      sessionId: 's_tab',
+      startIndex: 0,
+      onTurnStarted: ({ turnRunId }) => {
+        started.push(turnRunId);
+      },
+      onEvent: async (ev) => {
+        events.push(ev.type);
+      },
+    });
+    expect(started).toEqual(['wr_attach']);
+    expect(events).toEqual(['reasoning_delta', 'text_delta', 'done']);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.text).toBe('Hi');
+  });
+
+  it('hot resume passes startIndex=C on the query string', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(String(url)).toContain('startIndex=42');
+      expect(String(url)).toContain('sessionId=s_hot');
+      return sseResponse(
+        ['data: {"type":"text_delta","text":"tail"}\n\n', 'data: {"type":"done","text":"tail"}\n\n'],
+        { 'x-workflow-run-id': 'wr_hot' },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await attachTurnStream('wr_hot', {
+      sessionId: 's_hot',
+      startIndex: 42,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('abort closes this reader only — GET, no cancel POST', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.method).toBe('GET');
+      throw new DOMException('aborted', 'AbortError');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await attachTurnStream('wr_1', {
+      sessionId: 's_1',
+      startIndex: 0,
+      signal: new AbortController().signal,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toBe('Request cancelled.');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain('/stream?');
+    expect((init as RequestInit).method).toBe('GET');
+  });
+
+  it('JSON 404 is a failure and does not fire onTurnStarted', async () => {
+    const started: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json(
+          { error: 'Run not found: wr_gone' },
+          { status: 404, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    const result = await attachTurnStream('wr_gone', {
+      sessionId: 's_1',
+      startIndex: 0,
+      onTurnStarted: ({ turnRunId }) => {
+        started.push(turnRunId);
+      },
+    });
+    expect(started).toEqual([]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.status).toBe(404);
+      expect(result.error).toMatch(/Run not found/);
+    }
+  });
+
+  it('JSON 503 is a failure (store unavailable)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json(
+          { error: 'Unable to attach to run stream (store unavailable).' },
+          { status: 503, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    const result = await attachTurnStream('wr_1', {
+      sessionId: 's_1',
+      startIndex: 0,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.status).toBe(503);
+  });
+
+  it('empty done.text on attach is ok (thinking-only / all-dedup)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse(
+          [
+            'data: {"type":"reasoning_delta","text":"think"}\n\n',
+            'data: {"type":"done","text":""}\n\n',
+          ],
+          { 'x-workflow-run-id': 'wr_think' },
+        ),
+      ),
+    );
+    const result = await attachTurnStream('wr_think', {
+      sessionId: 's_1',
+      startIndex: 0,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.text).toBe('');
+  });
+
+  it('invalid startIndex / sessionId fail closed before fetch', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const badIndex = await attachTurnStream('wr_1', {
+      sessionId: 's_1',
+      startIndex: -1,
+    });
+    expect(badIndex.ok).toBe(false);
+    if (!badIndex.ok) expect(badIndex.status).toBe(400);
+    const badSession = await attachTurnStream('wr_1', {
+      sessionId: 'not opaque!',
+      startIndex: 0,
+    });
+    expect(badSession.ok).toBe(false);
+    if (!badSession.ok) expect(badSession.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

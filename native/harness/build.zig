@@ -81,6 +81,7 @@ pub fn build(b: *std.Build) void {
         "inv_push_message",
         "inv_update_last_message",
         "inv_clear_messages",
+        "inv_clear_ring",
         "inv_echo",
         "inv_echo_len",
         "inv_echo_copy",

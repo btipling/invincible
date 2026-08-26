@@ -12,7 +12,8 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
-import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote } from '../../lib/detachTurn';
+import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort } from '../../lib/detachTurn';
+import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, type HeapApplied } from '../../lib/turnAttach';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -59,6 +60,9 @@ import PersonaPicker from '../components/PersonaPicker';
 import HarnessLoading from './HarnessLoading';
 
 type Phase = 'loading' | 'ready' | 'error';
+
+type RunPromptAttach = { runId: string; startIndex: number; dedup: boolean };
+type RunPromptOpts = { pushUser?: boolean; attach?: RunPromptAttach };
 
 type DvuiModule = {
   dvui: (
@@ -199,6 +203,15 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const pollRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const inflightRef = useRef(false);
+  /**
+   * Plan #813 (E19) — SSE frames **this JS heap** applied for the current
+   * `turnRunId`. Null after F5 / adopt / switch (ring rebuilt from Blob).
+   * Hot resume reads this, never envelope `C`.
+   */
+  const heapAppliedRef = useRef<HeapApplied | null>(null);
+  const runPromptRef = useRef<(prompt: string, opts?: RunPromptOpts) => Promise<void>>(
+    async () => {},
+  );
   /** Bumped on detach so a late runPrompt persist cannot clobber a switched session. */
   const turnEpochRef = useRef(0);
   /**
@@ -309,6 +322,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       if (bridge) {
         hydrateRingWindow(bridge, merged, latestRingStart(merged.messages.length));
       }
+      // Ring rebuilt from Blob/local — this heap has not applied the stream.
+      heapAppliedRef.current = null;
     },
     [writeLocalSession, hydrateRingWindow],
   );
@@ -348,14 +363,31 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     });
   }, []);
 
+  /**
+   * Plan #813 — cold attach after the ring was rebuilt from Blob/local
+   * (boot / adopt / switch-back). Always `startIndex=0` + dedup. No-ops when
+   * not `running` or a turn is already inflight.
+   */
+  const kickColdAttach = useCallback(() => {
+    if (inflightRef.current) return;
+    const s = sessionRef.current;
+    if (s.turnStatus !== 'running' || !s.turnRunId) return;
+    heapAppliedRef.current = null;
+    void runPromptRef.current('', {
+      attach: { runId: s.turnRunId, startIndex: 0, dedup: true },
+    });
+  }, []);
+
   /** Activate a session (canonical id) on local state + Wasm ring + URL + picker. */
   const activateSession = useCallback(
     (next: SessionSnapshot) => {
       adoptCloudSession(next);
       setActiveSessionId(next.id);
       void refreshSessions();
+      // Plan #813: F5/login/new tab/switch-back rebuilt the ring — cold attach.
+      queueMicrotask(kickColdAttach);
     },
-    [adoptCloudSession, refreshSessions],
+    [adoptCloudSession, refreshSessions, kickColdAttach],
   );
 
   const persist = useCallback(
@@ -395,12 +427,35 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   }, []);
 
   const runPrompt = useCallback(
-    async (prompt: string, opts?: { pushUser?: boolean }) => {
+    async (prompt: string, opts?: RunPromptOpts) => {
       const bridge = bridgeRef.current;
       if (!bridge || inflightRef.current) return;
 
+      // Adversarial #857: Send while a durable run is live (503 subscribe-fail,
+      // empty-EOF idle) must attach — never POST (C15 409 mixes Turn ended +
+      // Error with keep-running). Class follows this-heap applied frames, not a
+      // hard-coded cold-at-0 (count>0 → hot at C; else cold + dedup).
+      const live = sessionRef.current;
+      const sendAttach = decideSendAttach({
+        turnRunId: live.turnRunId,
+        turnStatus: live.turnStatus,
+        envelopeCursor: live.turnStreamCursor,
+        heapApplied: heapAppliedRef.current,
+      });
+      const attach: RunPromptAttach | undefined =
+        opts?.attach ??
+        (sendAttach.kind === 'none'
+          ? undefined
+          : {
+              runId: sendAttach.runId,
+              startIndex: sendAttach.startIndex,
+              dedup: sendAttach.dedup,
+            });
+      const attaching = attach != null;
+      const sendWhileRunning =
+        opts?.attach == null && attaching && (prompt ?? '').trim().length > 0;
       const modelId = bridge.getSelectedModel();
-      if (!modelId) {
+      if (!attaching && !modelId) {
         setHostNote('No model selected — catalog empty, failed to load, or not granted.');
         try {
           bridge.pushMessage(
@@ -465,14 +520,15 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             signal: controller.signal,
             // Default false: Wasm already painted the user line in queueSubmitFromUi.
             // true when host snapped from a historical ring window before the turn.
-            pushUser: opts?.pushUser ?? false,
-            modelId,
+            pushUser: attaching ? false : opts?.pushUser ?? false,
+            ...(modelId ? { modelId } : {}),
             // Phase 2 (#627 / #625): persist every mid-turn session patch
             // (cwd change, sandbox switch) via the same persist callback the
             // turn-end path uses — local write + coalesced cloud PUT.
             // Adversarial #844: late patches after detach take decideDetachPersist
             // (never writeLocal onto a switched session; never PUT a Clear'd id).
             onSessionPatch: persistTurn,
+            ...(attach ? { attach } : {}),
           },
         );
         if (turnEpochRef.current !== epoch) {
@@ -491,8 +547,89 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
         // Load earlier / refresh could wipe the cancelled turn from the ring.
         persistTurn(folded);
-        if (!result.ok && shouldSetHostTurnNote(folded.turnStatus)) {
+        if (folded.turnStatus === 'running' && folded.turnRunId) {
+          heapAppliedRef.current = {
+            runId: folded.turnRunId,
+            count: folded.turnStreamCursor ?? 0,
+          };
+        } else {
+          heapAppliedRef.current = null;
+        }
+        // Adversarial #857: Send-while-running that finished the run (`done` /
+        // 404 / post-start SSE error) re-POSTs the remapped prompt — C15 409
+        // no longer applies. Wasm follow-up was stripped; pushUser paints it.
+        const operatorStop = shouldSkipAttachHotResume({
+          attaching,
+          aborted: controller.signal.aborted,
+          isDetachAbort: isDetachAbort(controller.signal),
+        });
+        if (
+          shouldRepostAttachFollowUp({
+            sendWhileRunning,
+            turnStatus: folded.turnStatus,
+          })
+        ) {
+          queueMicrotask(() => {
+            void runPromptRef.current(prompt, { pushUser: true });
+          });
+        } else if (!result.ok && shouldSetHostTurnNote(folded.turnStatus)) {
           setHostNote(result.error);
+        } else if (
+          shouldPaintAttachFollowUpNote({
+            sendWhileRunning,
+            resultOk: result.ok,
+            turnStatus: folded.turnStatus,
+            operatorStop,
+          })
+        ) {
+          setHostNote(ATTACH_FOLLOW_UP_NOTE);
+          try {
+            bridge.pushMessage(MessageKind.System, ATTACH_FOLLOW_UP_NOTE);
+          } catch {
+            /* torn-down bridge */
+          }
+        } else if (
+          shouldPaintAttachFollowUpDetachNote({
+            sendWhileRunning,
+            operatorStop,
+            turnStatus: folded.turnStatus,
+          })
+        ) {
+          setHostNote(ATTACH_FOLLOW_UP_DETACH_NOTE);
+          try {
+            bridge.pushMessage(MessageKind.System, ATTACH_FOLLOW_UP_DETACH_NOTE);
+          } catch {
+            /* torn-down bridge */
+          }
+        }
+        // Plan #813: SSE drop while still mounted → hot resume at this-heap C.
+        // Empty-EOF GET (applied == startIndex) must not reconnect (spin).
+        // F5 is never this path (heapApplied was nulled; activateSession is cold).
+        // Operator Stop during attach: skip auto-resume this tick (D18 reader
+        // close, not G22 cancel — adversarial #857).
+        if (
+          folded.turnStatus === 'running' &&
+          folded.turnRunId &&
+          !operatorStop
+        ) {
+          const resume = decideHotResume({
+            turnRunId: folded.turnRunId,
+            turnStatus: folded.turnStatus,
+            envelopeCursor: folded.turnStreamCursor,
+            heapApplied: heapAppliedRef.current,
+            attachStart: attach?.startIndex,
+          });
+          if (resume.kind === 'hot') {
+            queueMicrotask(() => {
+              void runPromptRef.current('', {
+                attach: {
+                  runId: folded.turnRunId!,
+                  startIndex: resume.startIndex,
+                  dedup: false,
+                },
+              });
+            });
+          }
         }
       } finally {
         const detached = turnEpochRef.current !== epoch;
@@ -530,6 +667,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     },
     [persist, setUrlSessionId, writeLocalSession],
   );
+  runPromptRef.current = runPrompt;
 
   useEffect(() => {
     let cancelled = false;
@@ -561,6 +699,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // re-checks getLocal, but this host guard is authoritative for the active id.
             if (snap.id !== sessionRef.current.id) return;
             adoptCloudSession(snap);
+            queueMicrotask(kickColdAttach);
           },
         });
         repoRef.current = repo;
@@ -710,6 +849,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           // or refresh can recover — don't permanently strand local-only this page load.
           if (result.kind === 'local') setCloudEnabled(r.enabled);
           void refreshSessions();
+          // Plan #813: after Blob/local hydrate, cold-attach a still-running
+          // turn. activateSession also kicks; inflightRef de-dupes the pair.
+          // Do not auto-attach completed sessions (`turnStatus !== 'running'`).
+          if (!cancelled) {
+            queueMicrotask(kickColdAttach);
+          }
         })();
 
         const poll = () => {
@@ -816,6 +961,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     setUrlSessionId,
     applySessionModel,
     foldPendingModelChange,
+    kickColdAttach,
   ]);
 
   /**
@@ -1152,7 +1298,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           style={{
             margin: '0.5rem 1rem 0',
             fontSize: '0.75rem',
-            color: ember.muted,
+            color: isAttachFollowUpHostNote(hostNote) ? teal.muted : ember.muted,
             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
             flexShrink: 0,
           }}

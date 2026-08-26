@@ -18,7 +18,7 @@ import {
   type SendAgentStreamFn,
   type ToolTraceEntry,
 } from './agentApi';
-import { sendTurn, sendTurnStream } from './turnApi';
+import { sendTurn, sendTurnStream, attachTurnStream } from './turnApi';
 import { isDetachAbort } from './detachTurn';
 import { type AgentStreamEvent } from './agent/agentStream';
 import {
@@ -31,8 +31,24 @@ import {
 import {
   isRedisSafeOpaqueId,
   normalizeSessionCwd,
+  sanitizeTurnStreamCursor,
   STATUS_SLOT_MAX_BYTES,
 } from './sessionCloudCaps';
+import {
+  bumpStreamCursor,
+  foldThisRunAssistant,
+  isAttachRunGone,
+  lastUserText,
+  prefixThroughLastUser,
+  shouldSkipToolResult,
+  shouldSkipToolStart,
+  skillAlreadyHydrated,
+  textDeltaDedup,
+  thisRunAssistantText,
+  thisRunToolItems,
+  thisRunWindow,
+  withoutTrailingFollowUpUser,
+} from './turnAttach';
 import {
   SANDBOX_FORBIDDEN_ERROR,
   SANDBOX_SELECTION_REQUIRED_ERROR,
@@ -237,6 +253,30 @@ function setFailLifecycle(bridge: HarnessBridge, kind: TurnEndKind): void {
   }
 }
 
+/**
+ * Attach 503/401/network: one non-terminal EMBER row. A retry that 503s again
+ * replaces the last subscribe-fail error instead of stacking Blob rows
+ * (adversarial #857 Minor).
+ */
+function paintSubscribeFail(
+  bridge: HarnessBridge,
+  session: SessionSnapshot,
+  line: string,
+): SessionSnapshot {
+  const last = session.messages[session.messages.length - 1];
+  if (last?.role === 'error' && !isTurnEndLine(last.text)) {
+    const msgs = session.messages.slice();
+    msgs[msgs.length - 1] = { ...last, text: line, at: Date.now() };
+    const next = { ...session, messages: msgs, updatedAt: Date.now() };
+    if (!bridge.updateLastMessage(MessageKind.Error, line)) {
+      bridge.pushMessage(MessageKind.Error, line);
+    }
+    return next;
+  }
+  bridge.pushMessage(MessageKind.Error, line);
+  return appendMessage(session, 'error', line);
+}
+
 export type RunHarnessChatOptions = {
   signal?: AbortSignal;
   /** Inject for tests; defaults to sendChat. */
@@ -279,6 +319,17 @@ export type RunHarnessTurnOptions = Omit<RunHarnessChatOptions, 'history'> & {
    * before `done`. Never awaited; wired to the existing `persist` callback.
    */
   onSessionPatch?: (s: SessionSnapshot) => void;
+  /**
+   * Plan #813 (E19) — GET-attach an existing durable run instead of POST
+   * `/api/turns`. Skips prompt validation / user push. `dedup` enables the
+   * this-run-window skip (cold attach). Not `applyTurnEvent` (E20).
+   */
+  attach?: {
+    runId: string;
+    startIndex: number;
+    dedup: boolean;
+    attachStream?: typeof attachTurnStream;
+  };
 };
 
 export type HarnessTurnResult = {
@@ -444,6 +495,11 @@ export function pushSessionToBridge(
     lifecycle?: import('./harnessBridge').Lifecycle;
     /** Oldest session index to place in the ring; default = latest window. */
     windowStart?: number;
+    /**
+     * Protocol v21 — keep the Wasm submit queue / pause / promote gate.
+     * Send-while-running attach only. F5 / New / switch omit this.
+     */
+    preserveQueue?: boolean;
   },
 ): number {
   const windowStart =
@@ -462,6 +518,7 @@ export function pushSessionToBridge(
     resetHarnessMathSession();
     bridge.hydrateMessages(msgs, {
       lifecycle: opts?.lifecycle,
+      preserveQueue: opts?.preserveQueue,
     });
     foldStatusSlots(bridge, session);
     // Phase 2 (plan #540) — hydrate/turn-refresh: pull the git slot right after
@@ -481,6 +538,31 @@ export function pushSessionToBridge(
   scheduleMathFromTexts(bridge, texts);
   bridge.setCanLoadEarlier(canLoadEarlier(windowStart));
   return windowStart;
+}
+
+/**
+ * Adversarial #857: hot-resume follow-up strip. Thinking has no SessionStore
+ * role, so this cannot go through `pushSessionToBridge`. Same cache contract as
+ * a canonical hydrate: reset JS `putOk`, clear+repaint the kept rows, reschedule
+ * user/assistant media. Does not coalesce (live thinking is a separator) and
+ * does not touch Load-earlier (ring window is unchanged).
+ *
+ * Always `preserveQueue` — this is a live-session surgical edit, not F5/New.
+ */
+export function rebuildAttachRingFromRows(
+  bridge: HarnessBridge,
+  rows: { kind: MessageKind; text: string }[],
+  session: SessionSnapshot,
+): void {
+  resetHarnessImageSession();
+  resetHarnessMathSession();
+  bridge.hydrateMessages(rows, { preserveQueue: true });
+  foldStatusSlots(bridge, session);
+  const texts = rows
+    .filter((m) => m.kind === MessageKind.User || m.kind === MessageKind.Assistant)
+    .map((m) => m.text);
+  scheduleImagesFromTexts(bridge, texts);
+  scheduleMathFromTexts(bridge, texts);
 }
 
 /**
@@ -973,19 +1055,24 @@ export async function runHarnessTurn(
   rawPrompt: string,
   opts?: RunHarnessTurnOptions,
 ): Promise<HarnessTurnResult> {
-  const validation = validatePrompt(rawPrompt);
-  if (validation) {
-    bridge.pushMessage(MessageKind.Error, describeTurnEnd('validation', validation));
-    const next = appendMessage(session, 'error', describeTurnEnd('validation', validation));
-    completeTurn(bridge, false); // validation — no auto-promote
-    return { result: { ok: false, error: validation }, session: next };
+  const attaching = opts?.attach != null;
+  if (!attaching) {
+    const validation = validatePrompt(rawPrompt);
+    if (validation) {
+      bridge.pushMessage(MessageKind.Error, describeTurnEnd('validation', validation));
+      const next = appendMessage(session, 'error', describeTurnEnd('validation', validation));
+      completeTurn(bridge, false); // validation — no auto-promote
+      return { result: { ok: false, error: validation }, session: next };
+    }
   }
 
-  const prompt = normalizePrompt(rawPrompt);
-  const withUser = appendMessage(session, 'user', prompt);
+  const prompt = attaching ? '' : normalizePrompt(rawPrompt);
+  const withUser = attaching ? session : appendMessage(session, 'user', prompt);
 
   // Wasm pending-submit path sets pushUser:false (user line already in canvas).
-  const pushUser = opts?.pushUser !== false;
+  // Attach (E19) never re-pushes the user line — the ring was hydrated (cold)
+  // or already has it (hot).
+  const pushUser = attaching ? false : opts?.pushUser !== false;
   // Always schedule user-body images/math (Wasm may already show the user line).
   scheduleImagesFromMarkdown(bridge, prompt);
   scheduleMathFromMarkdown(bridge, prompt);
@@ -1069,6 +1156,103 @@ export async function runHarnessTurn(
      * false and the 5× loop is unchanged there.
      */
     let streamPainted = false;
+    // Plan #813 (E19) — this-heap SSE-frame count. POST starts at 0; hot
+    // resume starts at attach.startIndex; cold starts at 0. Incremented per
+    // parsed event. Persisted only when onSessionPatch already fires (or at
+    // turn end) — never a new HTTP per token.
+    const attachOpts = opts?.attach;
+    const dedup = attachOpts?.dedup === true;
+    // Send-while-running (non-empty composer / promoted queue head) is a live
+    // session: keep the Wasm FIFO. kickColdAttach / hot-resume microtask pass
+    // empty prompt — F5 / switch may clear the (empty) queue.
+    const preserveQueue = attaching && (rawPrompt ?? '').trim().length > 0;
+    let heapC = attachOpts != null
+      ? (sanitizeTurnStreamCursor(attachOpts.startIndex) ?? 0)
+      : 0;
+    if (attaching && attachOpts) {
+      next = {
+        ...next,
+        turnRunId: attachOpts.runId,
+        turnStatus: next.turnStatus === 'completed' ? next.turnStatus : 'running',
+        turnStreamCursor: heapC,
+      };
+    }
+    /**
+     * Send-while-running hot resume (adversarial #857): Wasm already painted the
+     * follow-up user line before the host remapped Send to attach. Drop it so
+     * live grow cannot sit under a prompt that was never POSTed. Cold attach
+     * (dedup) rebuilds through the session last user via `pushSessionToBridge`
+     * below — do not `hydrateMessages` here (that would skip image/math reset
+     * and clear the submit queue as a surgical edit).
+     * Empty `rawPrompt` (kickColdAttach / hot-resume microtask) leaves the
+     * originating user.
+     */
+    if (attaching && !dedup && (rawPrompt ?? '').trim()) {
+      const sessionLastUser = lastUserText(next.messages);
+      try {
+        const n = bridge.messageCount();
+        const rows: { kind: MessageKind; text: string }[] = [];
+        for (let i = 0; i < n; i++) {
+          const m = bridge.messageAt(i);
+          if (m) rows.push(m);
+        }
+        const stripped = withoutTrailingFollowUpUser(
+          rows,
+          (m) => m.kind === MessageKind.User,
+          sessionLastUser,
+        );
+        if (stripped.length !== rows.length) {
+          rebuildAttachRingFromRows(bridge, stripped, next);
+        }
+      } catch {
+        /* tests / torn-down bridge */
+      }
+    }
+    /**
+     * Cold attach (dedup): Blob this-run suffix (`tool_run` / assistant) has no
+     * thinking. Leaving it on the ring makes `reasoning_delta` append after the
+     * answer (adversarial #857 Major). Rebuild this-run from the stream: keep a
+     * persist backup, hydrate the ring through the last user via the canonical
+     * `pushSessionToBridge` (reset image/math `putOk`, coalesce, slice, reschedule),
+     * and let skip see an empty this-run window. Always re-hydrate the prefix
+     * (even with no suffix) so a Wasm follow-up cannot remain as the last user
+     * and so boot-scheduled images are re-put after the ring clear
+     * (`inv_clear_ring` when Send-while-running, else `inv_clear_messages`).
+     */
+    let coldBackup: typeof next.messages | null = null;
+    if (attaching && dedup) {
+      const prefix = prefixThroughLastUser(next.messages);
+      if (prefix.length < next.messages.length) {
+        coldBackup = next.messages;
+        next = { ...next, messages: prefix };
+        lastUiKind = restoreLastUiKind(next.messages);
+      }
+      try {
+        pushSessionToBridge(bridge, next, {
+          clear: true,
+          windowStart: latestRingStart(next.messages.length),
+          preserveQueue,
+        });
+      } catch {
+        /* tests / torn-down bridge */
+      }
+    }
+    const patchSession = (s: typeof next) => {
+      // Mid-attach patches must not PUT a truncated (prefix-only) transcript
+      // over Blob. Once this-run has painted, `s.messages` is the live rebuild
+      // — persist that, not the boot-time suffix (adversarial #857). Same gate
+      // as the fail-fold restore.
+      if (coldBackup && !streamPainted) {
+        opts?.onSessionPatch?.({ ...s, messages: coldBackup });
+        return;
+      }
+      opts?.onSessionPatch?.(s);
+    };
+    const hydratedAssistantStart = dedup ? thisRunAssistantText(next.messages) : '';
+    let hydratedAssistant = hydratedAssistantStart;
+    const hydratedTools = dedup ? thisRunToolItems(next.messages) : [];
+    const replayedStarts: Record<string, number> = {};
+    const replayedResults: Record<string, number> = {};
     // Last confirmed-successful `change_dir` cwd this turn (phase 2 of #464 /
     // plan #465): recorded from live tool events (stream) or the JSON toolTrace,
     // applied on non-success terminals and as a success fallback so an aborted
@@ -1094,9 +1278,47 @@ export async function runHarnessTurn(
      * host is the sole ring writer, so this single boolean is the only predicate
      * needed; `updateLastMessage`'s return stays as insurance, never a decision.
      */
-    let lastRingRowIsToolRun = false;
+    let lastRingRowIsToolRun = attaching && lastUiKind === 'tool_run';
     /** Session id of the current open live tool card (patched in place on growth). */
-    let openToolRunId: string | null = null;
+    let openToolRunId: string | null = attaching && lastUiKind === 'tool_run'
+      ? (next.messages[next.messages.length - 1]?.id ?? null)
+      : null;
+
+    if (attaching && lastUiKind === 'tool_run') {
+      const last = next.messages[next.messages.length - 1];
+      if (last?.role === 'tool_run') {
+        const decoded = decodeToolRun(last.text);
+        if (decoded) {
+          toolRunGroup = {
+            items: decoded.items.map((it) => ({ ...it })),
+            detailEncUsed: 0,
+          };
+        }
+      }
+    }
+
+    // Hot resume continues the last live ring row so a suffix `text_delta` /
+    // `reasoning_delta` grows in place. Cold attach rebuilt through the last
+    // user (above); last ring is that user line, not a hydrated assistant.
+    if (attaching) {
+      const n = bridge.messageCount();
+      if (n > 0) {
+        const lastRing = bridge.messageAt(n - 1);
+        if (lastRing?.kind === MessageKind.Assistant) {
+          assistantSegment = lastRing.text;
+          assistantSegmentOpen = true;
+          assistantStarted = true;
+          lastUiKind = 'assistant';
+          lastRingRowIsToolRun = false;
+          if (!dedup) assistantAcc = lastRing.text;
+        } else if (lastRing?.kind === MessageKind.Thinking) {
+          thinkingSegment = lastRing.text;
+          thinkingSegmentOpen = true;
+          lastUiKind = 'thinking';
+          lastRingRowIsToolRun = false;
+        }
+      }
+    }
 
     const resetLiveToolStreak = () => {
       lastRingRowIsToolRun = false;
@@ -1186,7 +1408,7 @@ export async function runHarnessTurn(
             if (cd !== undefined) {
               next = { ...next, cwd: cd };
               foldStatusSlots(bridge, next);
-              opts?.onSessionPatch?.(next);
+              patchSession(next);
             }
           }
         }
@@ -1201,7 +1423,7 @@ export async function runHarnessTurn(
             next = { ...next, activeSandboxId: id };
             foldStatusSlots(bridge, next);
             void refreshGitStatusSlot(bridge, next, opts?.signal);
-            opts?.onSessionPatch?.(next);
+            patchSession(next);
           }
         }
         // Phase 2 (#627 / #625): git refresh on any successful exec — no
@@ -1391,6 +1613,10 @@ export async function runHarnessTurn(
     // becomes an AgentRetryError so the narrow classifier can map retryable vs
     // permanent from HTTP status + classifyTurnFailure kind.
     const onStreamEvent = async (ev: AgentStreamEvent) => {
+      // Plan #813: every parsed SSE frame advances this-heap C (including
+      // skipped-by-dedup). One producer write = one getReadable index.
+      heapC = bumpStreamCursor(heapC);
+      next = { ...next, turnStreamCursor: heapC };
       // Fail-closed retry gate (plan #759 adversarial-review Major): any event
       // that PAINTS the ring past the user line arms `streamPainted`, so a
       // retryable-looking failure after it becomes permanent single-attempt
@@ -1405,18 +1631,75 @@ export async function runHarnessTurn(
         streamPainted = true;
       }
       if (ev.type === 'tool_start' || ev.type === 'tool_result') {
+        if (ev.type === 'tool_start') {
+          replayedStarts[ev.name] = (replayedStarts[ev.name] ?? 0) + 1;
+          if (
+            shouldSkipToolStart({
+              enabled: dedup,
+              hydrated: hydratedTools,
+              name: ev.name,
+              replayedStartsOfName: replayedStarts[ev.name] ?? 1,
+            })
+          ) {
+            return;
+          }
+        } else {
+          replayedResults[ev.name] = (replayedResults[ev.name] ?? 0) + 1;
+          if (
+            shouldSkipToolResult({
+              enabled: dedup,
+              hydrated: hydratedTools,
+              name: ev.name,
+              replayedResultsOfName: replayedResults[ev.name] ?? 1,
+            })
+          ) {
+            return;
+          }
+        }
         handleToolEvent(ev);
         return;
       }
       if (ev.type === 'reasoning_delta') {
+        // Thinking is never in Blob — never skip, even on cold attach.
         growThinking(ev.text);
         return;
       }
       if (ev.type === 'text_delta') {
+        const d = textDeltaDedup({
+          enabled: dedup,
+          hydratedAssistant,
+          replayedBefore: assistantAcc,
+          chunk: ev.text,
+        });
+        if (d.action === 'skip') {
+          assistantAcc += ev.text;
+          // Hydrated this-run assistant already on the ring — do not
+          // finalize-push a duplicate at `done`.
+          if (hydratedAssistant) assistantStarted = true;
+          return;
+        }
+        if (d.action === 'grow-suffix') {
+          if (!assistantSegmentOpen && lastUiKind === 'assistant') {
+            assistantSegmentOpen = true;
+            assistantStarted = true;
+            const last = next.messages[next.messages.length - 1];
+            assistantSegment = last?.role === 'assistant' ? last.text : hydratedAssistant;
+          }
+          assistantAcc = hydratedAssistant;
+          growAssistant(d.chunk);
+          hydratedAssistant = assistantAcc;
+          return;
+        }
         growAssistant(ev.text);
         return;
       }
       if (ev.type === 'skill_attached') {
+        if (dedup && skillAlreadyHydrated(next.messages, ev)) {
+          if (Array.isArray(ev.attachedSlugs)) {
+            next = { ...next, attachedSlugs: [...ev.attachedSlugs] };
+          }
+          return;
+        }
         // Server sends skill_attached events at the START of the turn (before
         // the model). Push the display-only row live; it is a non-tool
         // separator for the tool-run predicate.
@@ -1443,7 +1726,7 @@ export async function runHarnessTurn(
         if (liveUsage) {
           next = { ...next, usage: liveUsage };
           foldStatusSlots(bridge, next);
-          opts?.onSessionPatch?.(next);
+          patchSession(next);
         }
         return;
       }
@@ -1463,6 +1746,44 @@ export async function runHarnessTurn(
     try {
       agentResult = await withTransientRetry(
         async () => {
+          if (attachOpts) {
+            const attachFn = attachOpts.attachStream ?? attachTurnStream;
+            if (!sessionId) {
+              return {
+                ok: false as const,
+                status: 400,
+                error: 'sessionId is required.',
+              };
+            }
+            const r = await attachFn(attachOpts.runId, {
+              sessionId,
+              startIndex: attachOpts.startIndex,
+              signal: opts?.signal,
+              onEvent: onStreamEvent,
+              onTurnStarted: async ({ turnRunId }) => {
+                sawDurableStart = true;
+                next = {
+                  ...next,
+                  turnRunId,
+                  turnStatus:
+                    next.turnStatus === 'completed' ? 'completed' : 'running',
+                  turnStreamCursor: heapC,
+                };
+                patchSession(next);
+              },
+            });
+            if (!r.ok) {
+              const kind = classifyTurnFailure(r.error, r.status, opts?.signal).kind;
+              throw new AgentRetryError(
+                r.error,
+                r.status,
+                kind,
+                r.attachedSlugs,
+                r.turnRunId,
+              );
+            }
+            return r;
+          }
           const r = streamAgent
             ? await sendAgentStreamFn(apiPrompt, {
                 signal: opts?.signal,
@@ -1474,8 +1795,13 @@ export async function runHarnessTurn(
                 onEvent: onStreamEvent,
                 onTurnStarted: async ({ turnRunId }) => {
                   sawDurableStart = true;
-                  next = { ...next, turnRunId, turnStatus: 'running' };
-                  opts?.onSessionPatch?.(next);
+                  next = {
+                    ...next,
+                    turnRunId,
+                    turnStatus: 'running',
+                    turnStreamCursor: heapC,
+                  };
+                  patchSession(next);
                 },
               })
             : await sendAgentFn(apiPrompt, {
@@ -1510,7 +1836,7 @@ export async function runHarnessTurn(
           // push duplicate assistant bubbles. `classifyTurnRetry` still owns
           // the status/stop mapping for the clean (never-painted) cases.
           classify: (err) =>
-            streamPainted || sawDurableStart
+            streamPainted || sawDurableStart || attaching
               ? { kind: 'permanent' }
               : classifyTurnRetry(err),
         },
@@ -1533,7 +1859,7 @@ export async function runHarnessTurn(
         ).kind
       : undefined;
     const durableIncomplete =
-      streamAgent &&
+      (streamAgent || attaching) &&
       sawDurableStart &&
       !sawStreamTerminal &&
       stopKind !== 'stop';
@@ -1584,14 +1910,21 @@ export async function runHarnessTurn(
         scheduleImagesFromMarkdown(bridge, agentResult.text);
         assistantAcc = agentResult.text;
       }
-      next = appendMessage(next, 'assistant', agentResult.text || assistantAcc);
+      next = attaching
+        ? foldThisRunAssistant(next, agentResult.text || assistantAcc)
+        : appendMessage(next, 'assistant', agentResult.text || assistantAcc);
       scheduleMathFromTexts(
         bridge,
         next.messages
           .filter((m) => m.role === 'user' || m.role === 'assistant')
           .map((m) => m.text),
       );
-      next = pushTurnEnd(bridge, next, 'model');
+      if (
+        !attaching ||
+        !thisRunWindow(next.messages).some((m) => isTurnEndLine(m.text))
+      ) {
+        next = pushTurnEnd(bridge, next, 'model');
+      }
       lastUiKind = 'system';
       // Success-path cwd apply (parent #270 / phase 2): prefers the authoritative
       // `agentResult.cwd`. Sanitize + renormalize exactly like the send path
@@ -1693,7 +2026,9 @@ export async function runHarnessTurn(
       }
       const partial = (assistantAcc || '').trim();
       if (partial) {
-        failedSession = appendMessage(failedSession, 'assistant', partial);
+        failedSession = attaching
+          ? foldThisRunAssistant(failedSession, partial)
+          : appendMessage(failedSession, 'assistant', partial);
       }
       const fail = durableIncomplete
         ? { kind: 'detach' as const, detail: undefined as string | undefined }
@@ -1702,7 +2037,48 @@ export async function runHarnessTurn(
             agentResult.ok ? undefined : agentResult.status,
             opts?.signal,
           );
-      if (fail.kind !== 'detach') {
+      // Adversarial #857: subscribe-fail is "could not open a readable"
+      // (`!sawDurableStart`), not every non-404. 404 = run gone → Turn ended
+      // + Error + clear `running`. 503/401/network before onTurnStarted →
+      // D18-shaped persist (keep `running`, Ready, no Turn-ended) +
+      // non-terminal EMBER. After onTurnStarted, producer SSE error / 5xx
+      // reuses the POST give-up fold. EOF without terminal stays D18 via
+      // durableIncomplete.
+      // Attach Stop/Esc: reader-only abort (D18), not G22 server cancel —
+      // keep `running`, no Turn ended · you stopped (adversarial #857).
+      const attachOperatorStop = attaching && fail.kind === 'stop';
+      const attachSubscribeFail =
+        attaching &&
+        !sawDurableStart &&
+        fail.kind !== 'stop' &&
+        fail.kind !== 'detach' &&
+        !isAttachRunGone(agentResult.ok ? undefined : agentResult.status);
+      // Cold-attach strip: persist the Blob suffix only when nothing was
+      // painted (503/404 before events) so we do not LWW a user-only
+      // transcript. Thinking-only incomplete GET must keep the stripped
+      // prefix — thinking is not in SessionStore, so thisRunWindow stays
+      // empty and restoring the suffix would duplicate tools on the
+      // automatic hot resume at C (adversarial #857).
+      if (coldBackup && !streamPainted) {
+        failedSession = { ...failedSession, messages: coldBackup };
+        try {
+          pushSessionToBridge(bridge, failedSession, {
+            clear: true,
+            windowStart: latestRingStart(failedSession.messages.length),
+            preserveQueue,
+          });
+        } catch {
+          /* tests / torn-down bridge */
+        }
+      }
+      if (attachSubscribeFail) {
+        const line = (
+          agentResult.ok
+            ? 'Stream ended without a terminal event.'
+            : agentResult.error || 'Unable to attach to run stream.'
+        ).trim();
+        failedSession = paintSubscribeFail(bridge, failedSession, line);
+      } else if (fail.kind !== 'detach' && !attachOperatorStop) {
         failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail);
       }
       // Phase 2 (#465): a cancel/timeout/hard-error turn still persists the last
@@ -1752,7 +2128,15 @@ export async function runHarnessTurn(
       // `running` on `'stop'` even when the result omits the id. Do not clear
       // on generic error/timeout without a result id (network drop after
       // headers stays attach-ready).
-      if (fail.kind === 'detach') {
+      // Attach 503/401/network before onTurnStarted (adversarial #857): same
+      // keep-running as detach — could not subscribe ≠ the turn died. After
+      // onTurnStarted, producer SSE error reuses the POST give-up fold
+      // (clear `running`). Attach 404 (run gone) falls through and clears
+      // so C15 does not 409 a dead id.
+      // Attach Stop/Esc (adversarial #857): same keep-running as detach —
+      // abort closes this reader only (D18); G22 owns server cancel. POST
+      // Stop still clears (this branch is attach-only).
+      if (fail.kind === 'detach' || attachSubscribeFail || attachOperatorStop) {
         const id =
           agentResult.turnRunId ??
           (failedSession.turnStatus === 'running'
@@ -1776,6 +2160,7 @@ export async function runHarnessTurn(
         };
       }
       lastUiKind =
+        attachSubscribeFail ||
         fail.kind === 'error' || fail.kind === 'timeout' ||
         fail.kind === 'empty' || fail.kind === 'validation'
           ? 'error'
@@ -1809,7 +2194,7 @@ export async function runHarnessTurn(
       // on Error (never consumes the queue head; Continue inserted at head when
       // non-empty) unless this was an operator Stop, which stays Ready (queue
       // untouched, drains only on a later success).
-      setFailLifecycle(bridge, fail.kind);
+      setFailLifecycle(bridge, attachSubscribeFail || attachOperatorStop ? 'detach' : fail.kind);
       return {
         result: {
           ok: false,
