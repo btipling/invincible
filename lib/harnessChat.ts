@@ -37,6 +37,7 @@ import {
 import {
   bumpStreamCursor,
   foldThisRunAssistant,
+  isAttachRunGone,
   shouldSkipToolResult,
   shouldSkipToolStart,
   skillAlreadyHydrated,
@@ -1904,7 +1905,24 @@ export async function runHarnessTurn(
             agentResult.ok ? undefined : agentResult.status,
             opts?.signal,
           );
-      if (fail.kind !== 'detach') {
+      // Adversarial #857: attach HTTP failure is two contracts, not one.
+      // 404 = run gone → Turn ended + Error lifecycle + clear `running`.
+      // 503/401/5xx/network = could not subscribe → D18-shaped persist
+      // (keep `running`, Ready, no Turn-ended line) + non-terminal EMBER.
+      const attachSubscribeFail =
+        attaching &&
+        fail.kind !== 'stop' &&
+        fail.kind !== 'detach' &&
+        !isAttachRunGone(agentResult.ok ? undefined : agentResult.status);
+      if (attachSubscribeFail) {
+        const line = (
+          agentResult.ok
+            ? 'Stream ended without a terminal event.'
+            : agentResult.error || 'Unable to attach to run stream.'
+        ).trim();
+        bridge.pushMessage(MessageKind.Error, line);
+        failedSession = appendMessage(failedSession, 'error', line);
+      } else if (fail.kind !== 'detach') {
         failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail);
       }
       // Phase 2 (#465): a cancel/timeout/hard-error turn still persists the last
@@ -1954,24 +1972,15 @@ export async function runHarnessTurn(
       // `running` on `'stop'` even when the result omits the id. Do not clear
       // on generic error/timeout without a result id (network drop after
       // headers stays attach-ready).
-      if (fail.kind === 'detach') {
+      // Attach 503/401/network (adversarial #857): same keep-running as
+      // detach — could not subscribe ≠ the turn died. Attach 404 (run gone)
+      // falls through and clears so C15 does not 409 a dead id.
+      if (fail.kind === 'detach' || attachSubscribeFail) {
         const id =
           agentResult.turnRunId ??
           (failedSession.turnStatus === 'running'
             ? failedSession.turnRunId
             : undefined);
-        if (id !== undefined) {
-          failedSession = {
-            ...failedSession,
-            turnRunId: id,
-            turnStatus: 'running',
-          };
-        }
-      } else if (attaching && fail.kind !== 'stop') {
-        // GET attach 404/503/auth is "could not subscribe", not "the turn
-        // died". Keep the live run so a later boot/F5 can retry. Never a
-        // server cancel. In-canvas EMBER is the pushTurnEnd above.
-        const id = agentResult.turnRunId ?? failedSession.turnRunId;
         if (id !== undefined) {
           failedSession = {
             ...failedSession,
@@ -1990,6 +1999,7 @@ export async function runHarnessTurn(
         };
       }
       lastUiKind =
+        attachSubscribeFail ||
         fail.kind === 'error' || fail.kind === 'timeout' ||
         fail.kind === 'empty' || fail.kind === 'validation'
           ? 'error'
@@ -2023,7 +2033,7 @@ export async function runHarnessTurn(
       // on Error (never consumes the queue head; Continue inserted at head when
       // non-empty) unless this was an operator Stop, which stays Ready (queue
       // untouched, drains only on a later success).
-      setFailLifecycle(bridge, fail.kind);
+      setFailLifecycle(bridge, attachSubscribeFail ? 'detach' : fail.kind);
       return {
         result: {
           ok: false,

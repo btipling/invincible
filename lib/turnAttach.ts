@@ -52,6 +52,41 @@ export function decideAttachClass(input: {
 }
 
 /**
+ * C16 GET 404 = run gone or ownership mismatch. Every other attach HTTP
+ * failure (503 store, 401 auth, 5xx, network with no status) is "could not
+ * subscribe" — the workflow may still be live (adversarial #857).
+ */
+export function isAttachRunGone(status?: number): boolean {
+  return status === 404;
+}
+
+/**
+ * After a fold that left `running`, should this heap hot-resume?
+ *
+ * - POST (no `attachStart`): reconnect at heap C when same-heap hot.
+ * - GET attach: only if this heap applied frames **past** `attachStart`
+ *   (empty-EOF GET must not spin).
+ * - Cold / none → do not reconnect here (F5/boot is `kickColdAttach`).
+ */
+export function decideHotResume(input: {
+  turnRunId?: string;
+  turnStatus?: TurnStatus;
+  envelopeCursor?: number;
+  heapApplied: HeapApplied | null;
+  attachStart?: number;
+}): Extract<AttachDecision, { kind: 'hot' }> | { kind: 'none' } {
+  const cls = decideAttachClass(input);
+  if (cls.kind !== 'hot') return { kind: 'none' };
+  const attachStart = input.attachStart;
+  const applied = input.heapApplied;
+  const progressed =
+    attachStart === undefined ||
+    (applied != null && applied.count > attachStart);
+  if (!progressed) return { kind: 'none' };
+  return cls;
+}
+
+/**
  * Messages after the last `user` row — the prompt that started this `turnRunId`.
  * Historical assistant / tool_run / skill_attached before that line are never
  * skip targets.

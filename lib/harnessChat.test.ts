@@ -4736,10 +4736,13 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
       expect(exp.__messages.some((m) => m.kind === MessageKind.Error && /Run not found/.test(m.text))).toBe(
         true,
       );
+      expect(
+        exp.__messages.some((m) => m.kind === MessageKind.Error && isTurnEndLine(m.text)),
+      ).toBe(true);
       expect(exp.__lifecycle()).toBe(Lifecycle.Error);
-      // Attach 404 is "could not subscribe", not "the turn died".
-      expect(next.turnStatus).toBe('running');
-      expect(next.turnRunId).toBe('wr_gone');
+      // Attach 404 is run-gone: clear so a later Send is not C15-409'd.
+      expect(next.turnStatus).toBe('completed');
+      expect(next.turnRunId).toBeUndefined();
     } finally {
       vi.unstubAllGlobals();
     }
@@ -4778,7 +4781,67 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
         (m) => m.kind === MessageKind.Error && /store unavailable/.test(m.text),
       ),
     ).toBe(true);
-    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+    expect(
+      exp.__messages.some((m) => isTurnEndLine(m.text)),
+    ).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(next.turnStatus).toBe('running');
+    expect(next.turnRunId).toBe('wr_1');
+  });
+
+  it('test 6c: network attach fail is subscribe-fail — EMBER, Ready, keep running, no Turn ended', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          error: 'Network request failed.',
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(
+      exp.__messages.some(
+        (m) => m.kind === MessageKind.Error && /Network request failed/.test(m.text),
+      ),
+    ).toBe(true);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(next.turnStatus).toBe('running');
+    expect(next.turnRunId).toBe('wr_1');
+  });
+
+  it('test 6d: 401 attach is subscribe-fail — EMBER, Ready, keep running, no Turn ended', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          status: 401,
+          error: AUTH_REQUIRED_ERROR,
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(
+      exp.__messages.some(
+        (m) => m.kind === MessageKind.Error && m.text.includes(AUTH_REQUIRED_ERROR),
+      ),
+    ).toBe(true);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
     expect(next.turnStatus).toBe('running');
     expect(next.turnRunId).toBe('wr_1');
   });

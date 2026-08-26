@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { encodeToolRun, addToolStart, addToolResult, createToolRunGroup } from './toolRun';
 import { appendMessage, createEmptySession, makeMessage } from './sessionStore';
 import {
   bumpStreamCursor,
   decideAttachClass,
+  decideHotResume,
+  isAttachRunGone,
   shouldSkipToolResult,
   shouldSkipToolStart,
   skillAlreadyHydrated,
@@ -95,6 +99,96 @@ describe('decideAttachClass', () => {
         heapApplied: { runId: 'wr_old', count: 9 },
       }),
     ).toEqual({ kind: 'cold', startIndex: 0 });
+  });
+});
+
+describe('isAttachRunGone (adversarial #857)', () => {
+  it('only 404 is run-gone; 503/401/5xx/network stay subscribe-fail', () => {
+    expect(isAttachRunGone(404)).toBe(true);
+    expect(isAttachRunGone(503)).toBe(false);
+    expect(isAttachRunGone(401)).toBe(false);
+    expect(isAttachRunGone(400)).toBe(false);
+    expect(isAttachRunGone(500)).toBe(false);
+    expect(isAttachRunGone(undefined)).toBe(false);
+  });
+});
+
+describe('decideHotResume (adversarial #857 host glue)', () => {
+  const live = {
+    turnRunId: 'wr_1',
+    turnStatus: 'running' as const,
+    envelopeCursor: 12,
+  };
+
+  it('POST drop (no attachStart) hot-resumes at heap C', () => {
+    expect(
+      decideHotResume({
+        ...live,
+        heapApplied: { runId: 'wr_1', count: 5 },
+      }),
+    ).toEqual({ kind: 'hot', startIndex: 5 });
+  });
+
+  it('empty-EOF GET (applied == attachStart) does not reconnect', () => {
+    expect(
+      decideHotResume({
+        ...live,
+        heapApplied: { runId: 'wr_1', count: 5 },
+        attachStart: 5,
+      }),
+    ).toEqual({ kind: 'none' });
+  });
+
+  it('GET that applied frames past attachStart hot-resumes', () => {
+    expect(
+      decideHotResume({
+        ...live,
+        heapApplied: { runId: 'wr_1', count: 8 },
+        attachStart: 5,
+      }),
+    ).toEqual({ kind: 'hot', startIndex: 8 });
+  });
+
+  it('cold heap / completed fold do not hot-resume', () => {
+    expect(
+      decideHotResume({
+        ...live,
+        heapApplied: null,
+        attachStart: undefined,
+      }),
+    ).toEqual({ kind: 'none' });
+    expect(
+      decideHotResume({
+        turnRunId: 'wr_1',
+        turnStatus: 'completed',
+        heapApplied: { runId: 'wr_1', count: 5 },
+      }),
+    ).toEqual({ kind: 'none' });
+  });
+});
+
+describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)', () => {
+  const host = readFileSync(resolve(process.cwd(), 'app/harness/HarnessHost.tsx'), 'utf8');
+
+  it('boot / adopt / activateSession kick cold attach at startIndex=0 + dedup', () => {
+    expect(host).toContain('const kickColdAttach = useCallback');
+    expect(host.match(/queueMicrotask\(kickColdAttach\)/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(host).toContain('startIndex: 0, dedup: true');
+    expect(host).toContain('if (inflightRef.current) return');
+  });
+
+  it('hot resume uses decideHotResume (empty-EOF does not spin inline)', () => {
+    expect(host).toContain('decideHotResume(');
+    expect(host).not.toContain('const progressed =');
+    expect(host).toContain('dedup: false');
+  });
+
+  it('detachTurn clears inflight so switch can cold-attach', () => {
+    const helper = host.slice(
+      host.indexOf('const detachTurn = useCallback'),
+      host.indexOf('const runPrompt = useCallback'),
+    );
+    expect(helper).toContain('inflightRef.current = false');
   });
 });
 

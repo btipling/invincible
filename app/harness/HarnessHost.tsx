@@ -13,7 +13,7 @@ import {
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
 import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote } from '../../lib/detachTurn';
-import { decideAttachClass, type HeapApplied } from '../../lib/turnAttach';
+import { decideHotResume, type HeapApplied } from '../../lib/turnAttach';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -540,23 +540,19 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // Empty-EOF GET (applied == startIndex) must not reconnect (spin).
         // F5 is never this path (heapApplied was nulled; activateSession is cold).
         if (folded.turnStatus === 'running' && folded.turnRunId) {
-          const applied = heapAppliedRef.current;
-          const attachStart = opts?.attach?.startIndex;
-          const progressed =
-            attachStart === undefined ||
-            (applied != null && applied.count > attachStart);
-          const cls = decideAttachClass({
+          const resume = decideHotResume({
             turnRunId: folded.turnRunId,
             turnStatus: folded.turnStatus,
             envelopeCursor: folded.turnStreamCursor,
-            heapApplied: applied,
+            heapApplied: heapAppliedRef.current,
+            attachStart: opts?.attach?.startIndex,
           });
-          if (cls.kind === 'hot' && progressed) {
+          if (resume.kind === 'hot') {
             queueMicrotask(() => {
               void runPromptRef.current('', {
                 attach: {
                   runId: folded.turnRunId!,
-                  startIndex: cls.startIndex,
+                  startIndex: resume.startIndex,
                   dedup: false,
                 },
               });
