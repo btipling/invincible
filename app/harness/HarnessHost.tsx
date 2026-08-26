@@ -13,7 +13,7 @@ import {
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
 import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote } from '../../lib/detachTurn';
-import { decideHotResume, type HeapApplied } from '../../lib/turnAttach';
+import { decideHotResume, decideSendAttach, type HeapApplied } from '../../lib/turnAttach';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -432,14 +432,25 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       if (!bridge || inflightRef.current) return;
 
       // Adversarial #857: Send while a durable run is live (503 subscribe-fail,
-      // empty-EOF idle) must cold-reattach — never POST (C15 409 mixes Turn
-      // ended + Error with keep-running).
+      // empty-EOF idle) must attach — never POST (C15 409 mixes Turn ended +
+      // Error with keep-running). Class follows this-heap applied frames, not a
+      // hard-coded cold-at-0 (count>0 → hot at C; else cold + dedup).
       const live = sessionRef.current;
+      const sendAttach = decideSendAttach({
+        turnRunId: live.turnRunId,
+        turnStatus: live.turnStatus,
+        envelopeCursor: live.turnStreamCursor,
+        heapApplied: heapAppliedRef.current,
+      });
       const attach: RunPromptAttach | undefined =
         opts?.attach ??
-        (live.turnStatus === 'running' && live.turnRunId
-          ? { runId: live.turnRunId, startIndex: 0, dedup: true }
-          : undefined);
+        (sendAttach.kind === 'none'
+          ? undefined
+          : {
+              runId: sendAttach.runId,
+              startIndex: sendAttach.startIndex,
+              dedup: sendAttach.dedup,
+            });
       const attaching = attach != null;
       const modelId = bridge.getSelectedModel();
       if (!attaching && !modelId) {

@@ -7,7 +7,9 @@ import {
   bumpStreamCursor,
   decideAttachClass,
   decideHotResume,
+  decideSendAttach,
   isAttachRunGone,
+  lastUserText,
   prefixThroughLastUser,
   shouldSkipToolResult,
   shouldSkipToolStart,
@@ -16,6 +18,7 @@ import {
   thisRunAssistantText,
   thisRunToolItems,
   thisRunWindow,
+  withoutTrailingFollowUpUser,
 } from './turnAttach';
 import { TURN_STREAM_CURSOR_MAX } from './sessionCloudCaps';
 
@@ -184,11 +187,12 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(host).toContain('dedup: false');
   });
 
-  it('Send while running cold-reattaches (never POST / C15 409)', () => {
+  it('Send while running uses decideSendAttach (never POST / C15 409)', () => {
     expect(host).toContain(
       'Adversarial #857: Send while a durable run is live',
     );
-    expect(host).toContain('startIndex: 0, dedup: true');
+    expect(host).toContain('decideSendAttach(');
+    expect(host).toContain('heapApplied: heapAppliedRef.current');
   });
 
   it('detachTurn clears inflight so switch can cold-attach', () => {
@@ -197,6 +201,114 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
       host.indexOf('const runPrompt = useCallback'),
     );
     expect(helper).toContain('inflightRef.current = false');
+  });
+});
+
+describe('decideSendAttach (adversarial #857 Send-while-running)', () => {
+  const live = {
+    turnRunId: 'wr_1',
+    turnStatus: 'running' as const,
+    envelopeCursor: 12,
+  };
+
+  it('heap null / count 0 is cold at 0 + dedup (Blob-shaped, not hot-at-0)', () => {
+    expect(decideSendAttach({ ...live, heapApplied: null })).toEqual({
+      kind: 'cold',
+      runId: 'wr_1',
+      startIndex: 0,
+      dedup: true,
+    });
+    expect(
+      decideSendAttach({ ...live, heapApplied: { runId: 'wr_1', count: 0 } }),
+    ).toEqual({
+      kind: 'cold',
+      runId: 'wr_1',
+      startIndex: 0,
+      dedup: true,
+    });
+  });
+
+  it('heap already applied frames is hot at C without dedup', () => {
+    expect(
+      decideSendAttach({ ...live, heapApplied: { runId: 'wr_1', count: 7 } }),
+    ).toEqual({
+      kind: 'hot',
+      runId: 'wr_1',
+      startIndex: 7,
+      dedup: false,
+    });
+  });
+
+  it('different run / not running → none or cold', () => {
+    expect(
+      decideSendAttach({
+        ...live,
+        turnRunId: 'wr_new',
+        heapApplied: { runId: 'wr_old', count: 9 },
+      }),
+    ).toEqual({
+      kind: 'cold',
+      runId: 'wr_new',
+      startIndex: 0,
+      dedup: true,
+    });
+    expect(
+      decideSendAttach({
+        turnRunId: 'wr_1',
+        turnStatus: 'completed',
+        heapApplied: { runId: 'wr_1', count: 5 },
+      }),
+    ).toEqual({ kind: 'none' });
+  });
+});
+
+describe('withoutTrailingFollowUpUser', () => {
+  const isUser = (r: { role: string }) => r.role === 'user';
+
+  it('drops a follow-up user that is not the session last user', () => {
+    const rows = [
+      { role: 'user', text: 'hello' },
+      { role: 'user', text: 'follow-up' },
+    ];
+    expect(withoutTrailingFollowUpUser(rows, isUser, 'hello')).toEqual([
+      { role: 'user', text: 'hello' },
+    ]);
+  });
+
+  it('drops a duplicate follow-up with the same text as the originating user', () => {
+    const rows = [
+      { role: 'user', text: 'hello' },
+      { role: 'thinking', text: 'hmm' },
+      { role: 'user', text: 'hello' },
+    ];
+    expect(withoutTrailingFollowUpUser(rows, isUser, 'hello')).toEqual([
+      { role: 'user', text: 'hello' },
+      { role: 'thinking', text: 'hmm' },
+    ]);
+  });
+
+  it('keeps the originating last-user when it is the tail', () => {
+    const rows = [{ role: 'user', text: 'hello' }];
+    expect(withoutTrailingFollowUpUser(rows, isUser, 'hello')).toEqual(rows);
+  });
+
+  it('keeps a non-user tail (hot resume live ring)', () => {
+    const rows = [
+      { role: 'user', text: 'hello' },
+      { role: 'assistant', text: 'Hello' },
+    ];
+    expect(withoutTrailingFollowUpUser(rows, isUser, 'hello')).toEqual(rows);
+  });
+
+  it('lastUserText returns the last user row', () => {
+    expect(lastUserText([])).toBeUndefined();
+    expect(
+      lastUserText([
+        { role: 'user', text: 'a' },
+        { role: 'assistant', text: 'b' },
+        { role: 'user', text: 'c' },
+      ]),
+    ).toBe('c');
   });
 });
 

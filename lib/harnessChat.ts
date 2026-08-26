@@ -38,6 +38,7 @@ import {
   bumpStreamCursor,
   foldThisRunAssistant,
   isAttachRunGone,
+  lastUserText,
   prefixThroughLastUser,
   shouldSkipToolResult,
   shouldSkipToolStart,
@@ -46,6 +47,7 @@ import {
   thisRunAssistantText,
   thisRunToolItems,
   thisRunWindow,
+  withoutTrailingFollowUpUser,
 } from './turnAttach';
 import {
   SANDBOX_FORBIDDEN_ERROR,
@@ -1117,11 +1119,39 @@ export async function runHarnessTurn(
       };
     }
     /**
+     * Send-while-running (adversarial #857): Wasm already painted the follow-up
+     * user line before the host remapped Send to attach. Drop it so replay
+     * cannot sit under a prompt that was never POSTed. Empty `rawPrompt`
+     * (kickColdAttach / hot-resume microtask) leaves the originating user.
+     */
+    if (attaching && (rawPrompt ?? '').trim()) {
+      const sessionLastUser = lastUserText(next.messages);
+      try {
+        const n = bridge.messageCount();
+        const rows: { kind: MessageKind; text: string }[] = [];
+        for (let i = 0; i < n; i++) {
+          const m = bridge.messageAt(i);
+          if (m) rows.push(m);
+        }
+        const stripped = withoutTrailingFollowUpUser(
+          rows,
+          (m) => m.kind === MessageKind.User,
+          sessionLastUser,
+        );
+        if (stripped.length !== rows.length) {
+          bridge.hydrateMessages(stripped);
+        }
+      } catch {
+        /* tests / torn-down bridge */
+      }
+    }
+    /**
      * Cold attach (dedup): Blob this-run suffix (`tool_run` / assistant) has no
      * thinking. Leaving it on the ring makes `reasoning_delta` append after the
      * answer (adversarial #857 Major). Rebuild this-run from the stream: keep a
      * persist backup, hydrate the ring through the last user, and let skip see
-     * an empty this-run window.
+     * an empty this-run window. Always re-hydrate the prefix (even with no
+     * suffix) so a Wasm follow-up cannot remain as the last user.
      */
     let coldBackup: typeof next.messages | null = null;
     if (attaching && dedup) {
@@ -1130,13 +1160,13 @@ export async function runHarnessTurn(
         coldBackup = next.messages;
         next = { ...next, messages: prefix };
         lastUiKind = restoreLastUiKind(next.messages);
-        try {
-          bridge.hydrateMessages(
-            prefix.map((m) => ({ kind: roleToKind(m.role), text: m.text })),
-          );
-        } catch {
-          /* tests / torn-down bridge */
-        }
+      }
+      try {
+        bridge.hydrateMessages(
+          prefix.map((m) => ({ kind: roleToKind(m.role), text: m.text })),
+        );
+      } catch {
+        /* tests / torn-down bridge */
       }
     }
     const patchSession = (s: typeof next) => {

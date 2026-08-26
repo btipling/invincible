@@ -86,6 +86,80 @@ export function decideHotResume(input: {
   return cls;
 }
 
+export type SendAttachSpec =
+  | { kind: 'none' }
+  | { kind: 'hot'; runId: string; startIndex: number; dedup: false }
+  | { kind: 'cold'; runId: string; startIndex: 0; dedup: true };
+
+/**
+ * Classify operator Send while a durable run is still `running`.
+ *
+ * Never POST (C15 409 mixes Turn ended + Error with keep-running). Heap with
+ * applied frames (`count > 0`) → hot resume at `C`. Count 0 or a different /
+ * missing heap is Blob-shaped (503 before events, empty-EOF idle, F5) → cold
+ * at 0 + dedup. Hot-at-0 without dedup would replay onto a Blob suffix
+ * (adversarial #857 round 2).
+ */
+export function decideSendAttach(input: {
+  turnRunId?: string;
+  turnStatus?: TurnStatus;
+  envelopeCursor?: number;
+  heapApplied: HeapApplied | null;
+}): SendAttachSpec {
+  const cls = decideAttachClass(input);
+  const runId = input.turnRunId;
+  if (cls.kind === 'none' || !runId) return { kind: 'none' };
+  if (cls.kind === 'hot' && (input.heapApplied?.count ?? 0) > 0) {
+    return {
+      kind: 'hot',
+      runId,
+      startIndex: cls.startIndex,
+      dedup: false,
+    };
+  }
+  return { kind: 'cold', runId, startIndex: 0, dedup: true };
+}
+
+/**
+ * Last `user` text in a transcript (originating prompt for this run, or the
+ * most recent user row). Undefined when the session has no user line.
+ */
+export function lastUserText(
+  messages: { role: string; text: string }[],
+): string | undefined {
+  let text: string | undefined;
+  for (const m of messages) {
+    if (m.role === 'user') text = m.text;
+  }
+  return text;
+}
+
+/**
+ * Drop a Wasm-painted follow-up user row that is not in SessionStore.
+ *
+ * Send-while-running consumes pending submit after Wasm already pushed the
+ * line (`pushUser:false`). Attach must not treat that row as this-run's
+ * prompt. Keeps the originating last-user when it is the tail.
+ */
+export function withoutTrailingFollowUpUser<T extends { text: string }>(
+  rows: T[],
+  isUser: (row: T) => boolean,
+  sessionLastUserText: string | undefined,
+): T[] {
+  if (rows.length === 0) return rows;
+  const last = rows[rows.length - 1]!;
+  if (!isUser(last)) return rows;
+  const earlierHasSessionUser =
+    sessionLastUserText !== undefined &&
+    rows.slice(0, -1).some((row) => isUser(row) && row.text === sessionLastUserText);
+  const lastIsNotSessionUser =
+    sessionLastUserText === undefined || last.text !== sessionLastUserText;
+  if (earlierHasSessionUser || lastIsNotSessionUser) {
+    return rows.slice(0, -1);
+  }
+  return rows;
+}
+
 /**
  * Messages after the last `user` row — the prompt that started this `turnRunId`.
  * Historical assistant / tool_run / skill_attached before that line are never

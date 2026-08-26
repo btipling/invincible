@@ -4645,6 +4645,80 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     ]);
   });
 
+  it('test 2d: Send-while-running follow-up user is stripped; thinking sits under the old prompt (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.User, 'follow-up');
+    const session = runningSession([['user', 'hello']]);
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'follow-up', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
+          await opts.onEvent?.({ type: 'text_delta', text: 'Hi' });
+          await opts.onEvent?.({ type: 'done', text: 'Hi' });
+          return { ok: true, text: 'Hi', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    const users = exp.__messages.filter((m) => m.kind === MessageKind.User).map((m) => m.text);
+    expect(users).toEqual(['hello']);
+    expect(users).not.toContain('follow-up');
+    const kinds = exp.__messages.map((m) => m.kind);
+    const userAt = kinds.indexOf(MessageKind.User);
+    const thinkAt = kinds.indexOf(MessageKind.Thinking);
+    const asstAt = kinds.indexOf(MessageKind.Assistant);
+    expect(userAt).toBeGreaterThanOrEqual(0);
+    expect(thinkAt).toBeGreaterThan(userAt);
+    expect(asstAt).toBeGreaterThan(thinkAt);
+    expect(next.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['hello']);
+    expect(next.messages.filter((m) => m.role === 'assistant').map((m) => m.text)).toEqual(['Hi']);
+  });
+
+  it('test 2e: Send-while-running hot resume drops follow-up and grows the live assistant (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.Assistant, 'Hello');
+    bridge.pushMessage(MessageKind.User, 'follow-up');
+    const session = runningSession(
+      [
+        ['user', 'hello'],
+        ['assistant', 'Hello'],
+      ],
+      { turnStreamCursor: 7 },
+    );
+    const startIndexes: number[] = [];
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'follow-up', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 7,
+        dedup: false,
+        attachStream: async (runId, opts: AttachInit) => {
+          startIndexes.push(opts.startIndex ?? 0);
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: ' world' });
+          await opts.onEvent?.({ type: 'done', text: 'Hello world' });
+          return { ok: true, text: 'Hello world', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(startIndexes).toEqual([7]);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.User).map((m) => m.text)).toEqual([
+      'hello',
+    ]);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.Assistant).map((m) => m.text)).toEqual([
+      'Hello world',
+    ]);
+    expect(next.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['hello']);
+  });
+
   it('test 3: two cold consumers both render thinking + text once from startIndex=0 + dedup', async () => {
     const events: AgentStreamEvent[] = [
       { type: 'reasoning_delta', text: 'plan' },
