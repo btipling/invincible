@@ -100,6 +100,21 @@ export function thisRunWindow(messages: SessionMessage[]): SessionMessage[] {
   return messages.slice(lastUser + 1);
 }
 
+/**
+ * Messages through the last `user` row (inclusive) — prior turns plus this
+ * run's prompt. Cold attach (adversarial #857) rebuilds this-run from the
+ * stream: thinking is not in Blob, so a hydrated `tool_run` / assistant suffix
+ * cannot stay on the ring while `reasoning_delta` appends after it.
+ */
+export function prefixThroughLastUser(messages: SessionMessage[]): SessionMessage[] {
+  let lastUser = -1;
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]?.role === 'user') lastUser = i;
+  }
+  if (lastUser < 0) return messages.slice();
+  return messages.slice(0, lastUser + 1);
+}
+
 export function thisRunAssistantText(messages: SessionMessage[]): string {
   let acc = '';
   for (const m of thisRunWindow(messages)) {

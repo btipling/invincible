@@ -38,6 +38,7 @@ import {
   bumpStreamCursor,
   foldThisRunAssistant,
   isAttachRunGone,
+  prefixThroughLastUser,
   shouldSkipToolResult,
   shouldSkipToolStart,
   skillAlreadyHydrated,
@@ -1115,6 +1116,37 @@ export async function runHarnessTurn(
         turnStreamCursor: heapC,
       };
     }
+    /**
+     * Cold attach (dedup): Blob this-run suffix (`tool_run` / assistant) has no
+     * thinking. Leaving it on the ring makes `reasoning_delta` append after the
+     * answer (adversarial #857 Major). Rebuild this-run from the stream: keep a
+     * persist backup, hydrate the ring through the last user, and let skip see
+     * an empty this-run window.
+     */
+    let coldBackup: typeof next.messages | null = null;
+    if (attaching && dedup) {
+      const prefix = prefixThroughLastUser(next.messages);
+      if (prefix.length < next.messages.length) {
+        coldBackup = next.messages;
+        next = { ...next, messages: prefix };
+        lastUiKind = restoreLastUiKind(next.messages);
+        try {
+          bridge.hydrateMessages(
+            prefix.map((m) => ({ kind: roleToKind(m.role), text: m.text })),
+          );
+        } catch {
+          /* tests / torn-down bridge */
+        }
+      }
+    }
+    const patchSession = (s: typeof next) => {
+      // Mid-attach patches must not PUT a truncated transcript over Blob.
+      if (coldBackup) {
+        opts?.onSessionPatch?.({ ...s, messages: coldBackup });
+        return;
+      }
+      opts?.onSessionPatch?.(s);
+    };
     const hydratedAssistantStart = dedup ? thisRunAssistantText(next.messages) : '';
     let hydratedAssistant = hydratedAssistantStart;
     const hydratedTools = dedup ? thisRunToolItems(next.messages) : [];
@@ -1164,10 +1196,9 @@ export async function runHarnessTurn(
       }
     }
 
-    // Hot resume (and cold hydrate) continue the last live ring row so a
-    // suffix `text_delta` / `reasoning_delta` grows in place instead of
-    // pushing a duplicate bubble. Cold attach still starts `assistantAcc`
-    // empty so this-run-window skip can rebuild the prefix.
+    // Hot resume continues the last live ring row so a suffix `text_delta` /
+    // `reasoning_delta` grows in place. Cold attach rebuilt through the last
+    // user (above); last ring is that user line, not a hydrated assistant.
     if (attaching) {
       const n = bridge.messageCount();
       if (n > 0) {
@@ -1276,7 +1307,7 @@ export async function runHarnessTurn(
             if (cd !== undefined) {
               next = { ...next, cwd: cd };
               foldStatusSlots(bridge, next);
-              opts?.onSessionPatch?.(next);
+              patchSession(next);
             }
           }
         }
@@ -1291,7 +1322,7 @@ export async function runHarnessTurn(
             next = { ...next, activeSandboxId: id };
             foldStatusSlots(bridge, next);
             void refreshGitStatusSlot(bridge, next, opts?.signal);
-            opts?.onSessionPatch?.(next);
+            patchSession(next);
           }
         }
         // Phase 2 (#627 / #625): git refresh on any successful exec — no
@@ -1594,7 +1625,7 @@ export async function runHarnessTurn(
         if (liveUsage) {
           next = { ...next, usage: liveUsage };
           foldStatusSlots(bridge, next);
-          opts?.onSessionPatch?.(next);
+          patchSession(next);
         }
         return;
       }
@@ -1637,7 +1668,7 @@ export async function runHarnessTurn(
                     next.turnStatus === 'completed' ? 'completed' : 'running',
                   turnStreamCursor: heapC,
                 };
-                opts?.onSessionPatch?.(next);
+                patchSession(next);
               },
             });
             if (!r.ok) {
@@ -1669,7 +1700,7 @@ export async function runHarnessTurn(
                     turnStatus: 'running',
                     turnStreamCursor: heapC,
                   };
-                  opts?.onSessionPatch?.(next);
+                  patchSession(next);
                 },
               })
             : await sendAgentFn(apiPrompt, {
@@ -1914,6 +1945,22 @@ export async function runHarnessTurn(
         fail.kind !== 'stop' &&
         fail.kind !== 'detach' &&
         !isAttachRunGone(agentResult.ok ? undefined : agentResult.status);
+      // Cold-attach strip: if this-run never rebuilt, persist the Blob suffix
+      // (do not LWW-write a user-only transcript). Restore the ring only when
+      // nothing was painted (503/404 before events) so a thinking-only detach
+      // keeps the thinking row.
+      if (coldBackup && thisRunWindow(failedSession.messages).length === 0) {
+        failedSession = { ...failedSession, messages: coldBackup };
+        if (!streamPainted) {
+          try {
+            bridge.hydrateMessages(
+              coldBackup.map((m) => ({ kind: roleToKind(m.role), text: m.text })),
+            );
+          } catch {
+            /* tests / torn-down bridge */
+          }
+        }
+      }
       if (attachSubscribeFail) {
         const line = (
           agentResult.ok

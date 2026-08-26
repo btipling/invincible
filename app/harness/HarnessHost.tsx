@@ -431,7 +431,16 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       const bridge = bridgeRef.current;
       if (!bridge || inflightRef.current) return;
 
-      const attaching = opts?.attach != null;
+      // Adversarial #857: Send while a durable run is live (503 subscribe-fail,
+      // empty-EOF idle) must cold-reattach — never POST (C15 409 mixes Turn
+      // ended + Error with keep-running).
+      const live = sessionRef.current;
+      const attach: RunPromptAttach | undefined =
+        opts?.attach ??
+        (live.turnStatus === 'running' && live.turnRunId
+          ? { runId: live.turnRunId, startIndex: 0, dedup: true }
+          : undefined);
+      const attaching = attach != null;
       const modelId = bridge.getSelectedModel();
       if (!attaching && !modelId) {
         setHostNote('No model selected — catalog empty, failed to load, or not granted.');
@@ -506,7 +515,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // Adversarial #844: late patches after detach take decideDetachPersist
             // (never writeLocal onto a switched session; never PUT a Clear'd id).
             onSessionPatch: persistTurn,
-            ...(opts?.attach ? { attach: opts.attach } : {}),
+            ...(attach ? { attach } : {}),
           },
         );
         if (turnEpochRef.current !== epoch) {
@@ -545,7 +554,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             turnStatus: folded.turnStatus,
             envelopeCursor: folded.turnStreamCursor,
             heapApplied: heapAppliedRef.current,
-            attachStart: opts?.attach?.startIndex,
+            attachStart: attach?.startIndex,
           });
           if (resume.kind === 'hot') {
             queueMicrotask(() => {

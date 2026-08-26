@@ -4591,6 +4591,60 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     );
   });
 
+  it('test 2c: cold attach with Blob tool+assistant suffix replays thinking BEFORE tools (adversarial #857)', async () => {
+    const g = createToolRunGroup();
+    addToolStart(g, 'exec');
+    const payload = encodeToolRun(g)!;
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.ToolRun, payload);
+    bridge.pushMessage(MessageKind.Assistant, 'Hello');
+    const session = runningSession([
+      ['user', 'hello'],
+      ['tool_run', payload],
+      ['assistant', 'Hello'],
+    ]);
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
+          await opts.onEvent?.({ type: 'tool_start', name: 'exec' });
+          await opts.onEvent?.({
+            type: 'tool_result',
+            name: 'exec',
+            ok: true,
+            summary: 'ok',
+          });
+          await opts.onEvent?.({ type: 'text_delta', text: 'Hello' });
+          await opts.onEvent?.({ type: 'text_delta', text: ' world' });
+          await opts.onEvent?.({ type: 'done', text: 'Hello world' });
+          return { ok: true, text: 'Hello world', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    const kinds = exp.__messages.map((m) => m.kind);
+    const thinkAt = kinds.indexOf(MessageKind.Thinking);
+    const toolAt = kinds.indexOf(MessageKind.ToolRun);
+    const asstAt = kinds.lastIndexOf(MessageKind.Assistant);
+    expect(thinkAt).toBeGreaterThanOrEqual(0);
+    expect(toolAt).toBeGreaterThan(thinkAt);
+    expect(asstAt).toBeGreaterThan(toolAt);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.ToolRun)).toHaveLength(1);
+    expect(
+      exp.__messages.filter((m) => m.kind === MessageKind.Assistant).map((m) => m.text),
+    ).toEqual(['Hello world']);
+    expect(next.messages.filter((m) => m.role === 'tool_run')).toHaveLength(1);
+    expect(next.messages.filter((m) => m.role === 'assistant').map((m) => m.text)).toEqual([
+      'Hello world',
+    ]);
+  });
+
   it('test 3: two cold consumers both render thinking + text once from startIndex=0 + dedup', async () => {
     const events: AgentStreamEvent[] = [
       { type: 'reasoning_delta', text: 'plan' },
@@ -4787,6 +4841,44 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
     expect(next.turnStatus).toBe('running');
     expect(next.turnRunId).toBe('wr_1');
+  });
+
+  it('test 6e: 503 after Blob this-run suffix restores the suffix (no user-only persist)', async () => {
+    const g = createToolRunGroup();
+    addToolStart(g, 'exec');
+    const payload = encodeToolRun(g)!;
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.ToolRun, payload);
+    const session = runningSession([
+      ['user', 'hello'],
+      ['tool_run', payload],
+    ]);
+    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          status: 503,
+          error: 'Unable to attach to run stream (store unavailable).',
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(next.messages.some((m) => m.role === 'tool_run')).toBe(true);
+    expect(exp.__messages.some((m) => m.kind === MessageKind.ToolRun)).toBe(true);
+    expect(
+      exp.__messages.some(
+        (m) => m.kind === MessageKind.Error && /store unavailable/.test(m.text),
+      ),
+    ).toBe(true);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(next.turnStatus).toBe('running');
   });
 
   it('test 6c: network attach fail is subscribe-fail — EMBER, Ready, keep running, no Turn ended', async () => {

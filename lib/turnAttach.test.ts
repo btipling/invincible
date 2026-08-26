@@ -8,6 +8,7 @@ import {
   decideAttachClass,
   decideHotResume,
   isAttachRunGone,
+  prefixThroughLastUser,
   shouldSkipToolResult,
   shouldSkipToolStart,
   skillAlreadyHydrated,
@@ -183,6 +184,13 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(host).toContain('dedup: false');
   });
 
+  it('Send while running cold-reattaches (never POST / C15 409)', () => {
+    expect(host).toContain(
+      'Adversarial #857: Send while a durable run is live',
+    );
+    expect(host).toContain('startIndex: 0, dedup: true');
+  });
+
   it('detachTurn clears inflight so switch can cold-attach', () => {
     const helper = host.slice(
       host.indexOf('const detachTurn = useCallback'),
@@ -202,6 +210,20 @@ describe('thisRunWindow / assistant text', () => {
     const w = thisRunWindow(s.messages);
     expect(w.map((m) => m.role + ':' + m.text)).toEqual(['assistant:NEW']);
     expect(thisRunAssistantText(s.messages)).toBe('NEW');
+  });
+
+  it('prefixThroughLastUser keeps prior turns + this prompt, drops this-run suffix', () => {
+    let s = createEmptySession();
+    s = appendMessage(s, 'user', 'first');
+    s = appendMessage(s, 'assistant', 'OLD');
+    s = appendMessage(s, 'user', 'second');
+    s = appendMessage(s, 'tool_run', '1 tool');
+    s = appendMessage(s, 'assistant', 'NEW');
+    expect(prefixThroughLastUser(s.messages).map((m) => m.role + ':' + m.text)).toEqual([
+      'user:first',
+      'assistant:OLD',
+      'user:second',
+    ]);
   });
 });
 
