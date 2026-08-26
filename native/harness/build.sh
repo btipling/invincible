@@ -52,7 +52,7 @@ if command -v node >/dev/null 2>&1; then
     const fs = require("fs");
     const need = [
       "inv_protocol_version","inv_ping","inv_set_lifecycle","inv_push_message",
-      "inv_clear_messages","inv_echo","inv_echo_len","inv_echo_copy",
+      "inv_clear_messages","inv_clear_ring","inv_echo","inv_echo_len","inv_echo_copy",
       "inv_has_pending_submit","inv_pending_submit_len","inv_pending_submit_copy",
       "inv_ack_pending_submit","dvui_init","gpa_u8","memory",
     ];

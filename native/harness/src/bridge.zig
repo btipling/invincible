@@ -41,7 +41,11 @@ const submit_queue = @import("submit_queue.zig");
 /// v20: submit-queue insert-at-front — `inv_queued_insert_front` (plan #759:
 /// host inserts `Continue the current turn` as the new head on give-up with a
 /// non-empty queue). Additive, now REQUIRED.
-pub const PROTOCOL_VERSION: u32 = 20;
+/// v21: `inv_clear_ring` — replace the transcript ring + image/math caches
+/// without touching the submit queue, pause latch, promote gate, or pending
+/// submit. Live-session surgical hydrate (Send-while-running attach). F5 / New
+/// / switch keep using `inv_clear_messages`. Additive, now REQUIRED.
+pub const PROTOCOL_VERSION: u32 = 21;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -631,8 +635,7 @@ export fn inv_update_last_message(kind: u8, ptr: [*]const u8, len: usize) u8 {
 }
 
 pub export fn inv_clear_messages() void {
-    msg_head = 0;
-    msg_count = 0;
+    clearRingCaches();
     has_pending_cancel = false;
     // Hydrate / New must not leave a queued Send from the previous session.
     has_pending_submit = false;
@@ -642,9 +645,24 @@ pub export fn inv_clear_messages() void {
     // Clear / New also re-arm the promote gate (fresh surface, plan #760).
     queue_promote_allowed = true;
     queue_paused = false; // plan #777 — pause latch clears with the queue
+    refresh();
+}
+
+/// Protocol v21 — replace the transcript ring + image/math caches without
+/// touching the submit queue, pause latch, promote gate, pending submit, or
+/// pending cancel. Send-while-running attach hydrates through this so a live
+/// FIFO is not destroyed. `inv_clear_messages` remains the F5 / New / switch
+/// surface (queue must go with the previous session).
+pub export fn inv_clear_ring() void {
+    clearRingCaches();
+    refresh();
+}
+
+fn clearRingCaches() void {
+    msg_head = 0;
+    msg_count = 0;
     image_cache.clear();
     math_cache.clear();
-    refresh();
 }
 
 /// Store UTF-8 for later `inv_echo_copy`. Returns stored length (capped).

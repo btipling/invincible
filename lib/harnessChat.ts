@@ -253,6 +253,30 @@ function setFailLifecycle(bridge: HarnessBridge, kind: TurnEndKind): void {
   }
 }
 
+/**
+ * Attach 503/401/network: one non-terminal EMBER row. A retry that 503s again
+ * replaces the last subscribe-fail error instead of stacking Blob rows
+ * (adversarial #857 Minor).
+ */
+function paintSubscribeFail(
+  bridge: HarnessBridge,
+  session: SessionSnapshot,
+  line: string,
+): SessionSnapshot {
+  const last = session.messages[session.messages.length - 1];
+  if (last?.role === 'error' && !isTurnEndLine(last.text)) {
+    const msgs = session.messages.slice();
+    msgs[msgs.length - 1] = { ...last, text: line, at: Date.now() };
+    const next = { ...session, messages: msgs, updatedAt: Date.now() };
+    if (!bridge.updateLastMessage(MessageKind.Error, line)) {
+      bridge.pushMessage(MessageKind.Error, line);
+    }
+    return next;
+  }
+  bridge.pushMessage(MessageKind.Error, line);
+  return appendMessage(session, 'error', line);
+}
+
 export type RunHarnessChatOptions = {
   signal?: AbortSignal;
   /** Inject for tests; defaults to sendChat. */
@@ -471,6 +495,11 @@ export function pushSessionToBridge(
     lifecycle?: import('./harnessBridge').Lifecycle;
     /** Oldest session index to place in the ring; default = latest window. */
     windowStart?: number;
+    /**
+     * Protocol v21 — keep the Wasm submit queue / pause / promote gate.
+     * Send-while-running attach only. F5 / New / switch omit this.
+     */
+    preserveQueue?: boolean;
   },
 ): number {
   const windowStart =
@@ -489,6 +518,7 @@ export function pushSessionToBridge(
     resetHarnessMathSession();
     bridge.hydrateMessages(msgs, {
       lifecycle: opts?.lifecycle,
+      preserveQueue: opts?.preserveQueue,
     });
     foldStatusSlots(bridge, session);
     // Phase 2 (plan #540) — hydrate/turn-refresh: pull the git slot right after
@@ -516,6 +546,8 @@ export function pushSessionToBridge(
  * a canonical hydrate: reset JS `putOk`, clear+repaint the kept rows, reschedule
  * user/assistant media. Does not coalesce (live thinking is a separator) and
  * does not touch Load-earlier (ring window is unchanged).
+ *
+ * Always `preserveQueue` — this is a live-session surgical edit, not F5/New.
  */
 export function rebuildAttachRingFromRows(
   bridge: HarnessBridge,
@@ -524,7 +556,7 @@ export function rebuildAttachRingFromRows(
 ): void {
   resetHarnessImageSession();
   resetHarnessMathSession();
-  bridge.hydrateMessages(rows);
+  bridge.hydrateMessages(rows, { preserveQueue: true });
   foldStatusSlots(bridge, session);
   const texts = rows
     .filter((m) => m.kind === MessageKind.User || m.kind === MessageKind.Assistant)
@@ -1130,6 +1162,10 @@ export async function runHarnessTurn(
     // turn end) — never a new HTTP per token.
     const attachOpts = opts?.attach;
     const dedup = attachOpts?.dedup === true;
+    // Send-while-running (non-empty composer / promoted queue head) is a live
+    // session: keep the Wasm FIFO. kickColdAttach / hot-resume microtask pass
+    // empty prompt — F5 / switch may clear the (empty) queue.
+    const preserveQueue = attaching && (rawPrompt ?? '').trim().length > 0;
     let heapC = attachOpts != null
       ? (sanitizeTurnStreamCursor(attachOpts.startIndex) ?? 0)
       : 0;
@@ -1180,7 +1216,8 @@ export async function runHarnessTurn(
      * `pushSessionToBridge` (reset image/math `putOk`, coalesce, slice, reschedule),
      * and let skip see an empty this-run window. Always re-hydrate the prefix
      * (even with no suffix) so a Wasm follow-up cannot remain as the last user
-     * and so boot-scheduled images are re-put after `inv_clear_messages`.
+     * and so boot-scheduled images are re-put after the ring clear
+     * (`inv_clear_ring` when Send-while-running, else `inv_clear_messages`).
      */
     let coldBackup: typeof next.messages | null = null;
     if (attaching && dedup) {
@@ -1194,6 +1231,7 @@ export async function runHarnessTurn(
         pushSessionToBridge(bridge, next, {
           clear: true,
           windowStart: latestRingStart(next.messages.length),
+          preserveQueue,
         });
       } catch {
         /* tests / torn-down bridge */
@@ -2017,6 +2055,7 @@ export async function runHarnessTurn(
           pushSessionToBridge(bridge, failedSession, {
             clear: true,
             windowStart: latestRingStart(failedSession.messages.length),
+            preserveQueue,
           });
         } catch {
           /* tests / torn-down bridge */
@@ -2028,8 +2067,7 @@ export async function runHarnessTurn(
             ? 'Stream ended without a terminal event.'
             : agentResult.error || 'Unable to attach to run stream.'
         ).trim();
-        bridge.pushMessage(MessageKind.Error, line);
-        failedSession = appendMessage(failedSession, 'error', line);
+        failedSession = paintSubscribeFail(bridge, failedSession, line);
       } else if (fail.kind !== 'detach') {
         failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail);
       }

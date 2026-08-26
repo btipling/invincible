@@ -132,6 +132,11 @@ function makeMockExports(): HarnessBridgeExports & {
     },
     inv_clear_messages: () => {
       messages.length = 0;
+      queue.length = 0;
+      promoteAllowed = true;
+    },
+    inv_clear_ring: () => {
+      messages.length = 0;
     },
     inv_echo: () => 0,
     inv_echo_len: () => 0,
@@ -4720,6 +4725,113 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     expect(next.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['hello']);
   });
 
+  it('test 2d-queue: Send-while-running cold keeps the submit FIFO (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.User, 'follow-up');
+    exp.__queue.push('queued A');
+    exp.__queue.push('queued B');
+    const session = runningSession([['user', 'hello']]);
+    await runHarnessTurn(bridge, session, 'follow-up', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: 'Hi' });
+          await opts.onEvent?.({ type: 'done', text: 'Hi' });
+          return { ok: true, text: 'Hi', turnRunId: runId };
+        },
+      },
+    });
+    expect(exp.__queue).toEqual(['queued A', 'queued B']);
+    expect(exp.__promoteAllowed()).toBe(true); // success completeTurn re-arms
+  });
+
+  it('test 2e-queue: Send-while-running hot strip keeps the submit FIFO (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.Assistant, 'Hello');
+    bridge.pushMessage(MessageKind.User, 'follow-up');
+    exp.__queue.push('queued A');
+    const session = runningSession(
+      [
+        ['user', 'hello'],
+        ['assistant', 'Hello'],
+      ],
+      { turnStreamCursor: 7 },
+    );
+    await runHarnessTurn(bridge, session, 'follow-up', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 7,
+        dedup: false,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: ' world' });
+          await opts.onEvent?.({ type: 'done', text: 'Hello world' });
+          return { ok: true, text: 'Hello world', turnRunId: runId };
+        },
+      },
+    });
+    expect(exp.__queue).toEqual(['queued A']);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.User).map((m) => m.text)).toEqual([
+      'hello',
+    ]);
+  });
+
+  it('test 2h: F5 cold attach (empty prompt) still clears the submit FIFO', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    exp.__queue.push('stale from previous session');
+    const session = runningSession([['user', 'hello']]);
+    await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'text_delta', text: 'ok' });
+          await opts.onEvent?.({ type: 'done', text: 'ok' });
+          return { ok: true, text: 'ok', turnRunId: runId };
+        },
+      },
+    });
+    expect(exp.__queue).toEqual([]);
+  });
+
+  it('test 2i: Send-while-running 503 keeps FIFO and arms promote false', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.User, 'follow-up');
+    exp.__queue.push('queued A');
+    const session = runningSession([['user', 'hello']]);
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'follow-up', {
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          status: 503,
+          error: 'Unable to attach to run stream (store unavailable).',
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(exp.__queue).toEqual(['queued A']);
+    expect(exp.__promoteAllowed()).toBe(false);
+    expect(next.turnStatus).toBe('running');
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+  });
+
   it('test 2f: thinking-only EOF after cold strip then hot resume does not restore Blob suffix (adversarial #857)', async () => {
     const g = createToolRunGroup();
     addToolStart(g, 'exec');
@@ -5138,6 +5250,46 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
     expect(next.turnStatus).toBe('running');
     expect(next.turnRunId).toBe('wr_1');
+  });
+
+  it('test 6f: second attach 503 replaces the last subscribe-fail error (no stack)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const first = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          status: 503,
+          error: 'Unable to attach to run stream (store unavailable).',
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    expect(first.session.messages.filter((m) => m.role === 'error')).toHaveLength(1);
+    const second = await runHarnessTurn(bridge, first.session, '', {
+      attach: {
+        runId: 'wr_1',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async () => ({
+          ok: false as const,
+          status: 503,
+          error: 'Unable to attach to run stream (retry).',
+          turnRunId: 'wr_1',
+        }),
+      },
+    });
+    const errors = second.session.messages.filter((m) => m.role === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.text).toMatch(/retry/);
+    expect(
+      exp.__messages.filter((m) => m.kind === MessageKind.Error && !isTurnEndLine(m.text)),
+    ).toHaveLength(1);
+    expect(second.session.turnStatus).toBe('running');
   });
 
   it('test 7: dedup skips hydrated this-run assistant/tool_run, never skips reasoning, prior-turn assistant is not a skip target', async () => {

@@ -215,6 +215,8 @@ describe('harnessChat attach hydrate source-lock (adversarial #857)', () => {
     expect(src).toContain('pushSessionToBridge(bridge, next,');
     expect(src).toContain('pushSessionToBridge(bridge, failedSession,');
     expect(src).toContain('rebuildAttachRingFromRows(bridge, stripped, next)');
+    expect(src).toContain('preserveQueue');
+    expect(src).toContain('hydrateMessages(rows, { preserveQueue: true })');
     expect(src).not.toContain('bridge.hydrateMessages(\n          prefix.map');
     expect(src).not.toContain('coldBackup.map((m) => ({ kind: roleToKind(m.role)');
   });
