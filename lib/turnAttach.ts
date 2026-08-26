@@ -26,6 +26,25 @@ export type HeapApplied = { runId: string; count: number };
 export const ATTACH_FOLLOW_UP_NOTE =
   'Follow-up not sent — still attached to the live run.';
 
+/**
+ * After Send-while-running attach returns: paint the follow-up note only when
+ * the run is still live (D18 EOF / 503 subscribe-fail). Never after `done`
+ * (`result.ok` + `completed` + Turn ended) — "still attached to the live run"
+ * would be a lie (adversarial #857). Not at remap: a System row before GET
+ * would sit last on the ring (hot last-row snapshot / cold hydrate wipe).
+ */
+export function shouldPaintAttachFollowUpNote(input: {
+  sendWhileRunning: boolean;
+  resultOk: boolean;
+  turnStatus?: TurnStatus;
+}): boolean {
+  return (
+    input.sendWhileRunning &&
+    !input.resultOk &&
+    input.turnStatus === 'running'
+  );
+}
+
 export type AttachDecision =
   | { kind: 'none' }
   | { kind: 'hot'; startIndex: number }

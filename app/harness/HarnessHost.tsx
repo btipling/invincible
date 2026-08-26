@@ -13,7 +13,7 @@ import {
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
 import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote } from '../../lib/detachTurn';
-import { decideHotResume, decideSendAttach, ATTACH_FOLLOW_UP_NOTE, type HeapApplied } from '../../lib/turnAttach';
+import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, ATTACH_FOLLOW_UP_NOTE, type HeapApplied } from '../../lib/turnAttach';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -557,7 +557,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         }
         if (!result.ok && shouldSetHostTurnNote(folded.turnStatus)) {
           setHostNote(result.error);
-        } else if (sendWhileRunning) {
+        } else if (
+          shouldPaintAttachFollowUpNote({
+            sendWhileRunning,
+            resultOk: result.ok,
+            turnStatus: folded.turnStatus,
+          })
+        ) {
           setHostNote(ATTACH_FOLLOW_UP_NOTE);
           try {
             bridge.pushMessage(MessageKind.System, ATTACH_FOLLOW_UP_NOTE);

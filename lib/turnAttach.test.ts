@@ -11,6 +11,7 @@ import {
   isAttachRunGone,
   lastUserText,
   ATTACH_FOLLOW_UP_NOTE,
+  shouldPaintAttachFollowUpNote,
   prefixThroughLastUser,
   shouldSkipToolResult,
   shouldSkipToolStart,
@@ -196,8 +197,10 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(host).toContain('heapApplied: heapAppliedRef.current');
     expect(host).toContain('sendWhileRunning');
     expect(host).toContain('ATTACH_FOLLOW_UP_NOTE');
+    expect(host).toContain('shouldPaintAttachFollowUpNote(');
     expect(host).toContain('setHostNote(ATTACH_FOLLOW_UP_NOTE)');
     expect(host).toContain('bridge.pushMessage(MessageKind.System, ATTACH_FOLLOW_UP_NOTE)');
+    expect(host).not.toContain('} else if (sendWhileRunning) {');
     expect(host).toContain(
       'hostNote === ATTACH_FOLLOW_UP_NOTE ? teal.muted : ember.muted',
     );
@@ -233,6 +236,48 @@ describe('harnessChat attach hydrate source-lock (adversarial #857)', () => {
   it('ATTACH_FOLLOW_UP_NOTE is not a Turn-ended line (canvas System + TEAL host mirror)', () => {
     expect(ATTACH_FOLLOW_UP_NOTE).toMatch(/Follow-up not sent/);
     expect(ATTACH_FOLLOW_UP_NOTE).not.toMatch(/Turn ended/);
+  });
+});
+
+describe('shouldPaintAttachFollowUpNote (adversarial #857 done-path lie)', () => {
+  it('paints only Send-while-running + still running + not ok (EOF / 503)', () => {
+    expect(
+      shouldPaintAttachFollowUpNote({
+        sendWhileRunning: true,
+        resultOk: false,
+        turnStatus: 'running',
+      }),
+    ).toBe(true);
+  });
+
+  it('does not paint after done (ok + completed)', () => {
+    expect(
+      shouldPaintAttachFollowUpNote({
+        sendWhileRunning: true,
+        resultOk: true,
+        turnStatus: 'completed',
+      }),
+    ).toBe(false);
+  });
+
+  it('does not paint after 404 give-up (not ok + completed)', () => {
+    expect(
+      shouldPaintAttachFollowUpNote({
+        sendWhileRunning: true,
+        resultOk: false,
+        turnStatus: 'completed',
+      }),
+    ).toBe(false);
+  });
+
+  it('does not paint kickColdAttach / hot-resume (sendWhileRunning false)', () => {
+    expect(
+      shouldPaintAttachFollowUpNote({
+        sendWhileRunning: false,
+        resultOk: false,
+        turnStatus: 'running',
+      }),
+    ).toBe(false);
   });
 });
 

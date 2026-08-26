@@ -26,6 +26,7 @@ import {
   type LiveCwdSource,
 } from './harnessChat';
 import { HARNESS_RING_MAX } from './sessionWindow';
+import { ATTACH_FOLLOW_UP_NOTE } from './turnAttach';
 import {
   HARNESS_PROTOCOL_VERSION,
   HarnessBridge,
@@ -4684,6 +4685,7 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     expect(asstAt).toBeGreaterThan(thinkAt);
     expect(next.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['hello']);
     expect(next.messages.filter((m) => m.role === 'assistant').map((m) => m.text)).toEqual(['Hi']);
+    expect(exp.__messages.map((m) => m.text)).not.toContain(ATTACH_FOLLOW_UP_NOTE);
   });
 
   it('test 2e: Send-while-running hot resume drops follow-up and grows the live assistant (adversarial #857)', async () => {
@@ -4723,6 +4725,7 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
       'Hello world',
     ]);
     expect(next.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['hello']);
+    expect(exp.__messages.map((m) => m.text)).not.toContain(ATTACH_FOLLOW_UP_NOTE);
   });
 
   it('test 2d-queue: Send-while-running cold keeps the submit FIFO (adversarial #857)', async () => {
