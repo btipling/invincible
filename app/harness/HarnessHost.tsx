@@ -13,7 +13,7 @@ import {
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
 import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort } from '../../lib/detachTurn';
-import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, ATTACH_FOLLOW_UP_NOTE, type HeapApplied } from '../../lib/turnAttach';
+import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, type HeapApplied } from '../../lib/turnAttach';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -558,6 +558,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // Adversarial #857: Send-while-running that finished the run (`done` /
         // 404 / post-start SSE error) re-POSTs the remapped prompt — C15 409
         // no longer applies. Wasm follow-up was stripped; pushUser paints it.
+        const operatorStop = shouldSkipAttachHotResume({
+          attaching,
+          aborted: controller.signal.aborted,
+          isDetachAbort: isDetachAbort(controller.signal),
+        });
         if (
           shouldRepostAttachFollowUp({
             sendWhileRunning,
@@ -574,11 +579,25 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             sendWhileRunning,
             resultOk: result.ok,
             turnStatus: folded.turnStatus,
+            operatorStop,
           })
         ) {
           setHostNote(ATTACH_FOLLOW_UP_NOTE);
           try {
             bridge.pushMessage(MessageKind.System, ATTACH_FOLLOW_UP_NOTE);
+          } catch {
+            /* torn-down bridge */
+          }
+        } else if (
+          shouldPaintAttachFollowUpDetachNote({
+            sendWhileRunning,
+            operatorStop,
+            turnStatus: folded.turnStatus,
+          })
+        ) {
+          setHostNote(ATTACH_FOLLOW_UP_DETACH_NOTE);
+          try {
+            bridge.pushMessage(MessageKind.System, ATTACH_FOLLOW_UP_DETACH_NOTE);
           } catch {
             /* torn-down bridge */
           }
@@ -591,11 +610,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         if (
           folded.turnStatus === 'running' &&
           folded.turnRunId &&
-          !shouldSkipAttachHotResume({
-            attaching,
-            aborted: controller.signal.aborted,
-            isDetachAbort: isDetachAbort(controller.signal),
-          })
+          !operatorStop
         ) {
           const resume = decideHotResume({
             turnRunId: folded.turnRunId,
@@ -1283,7 +1298,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           style={{
             margin: '0.5rem 1rem 0',
             fontSize: '0.75rem',
-            color: hostNote === ATTACH_FOLLOW_UP_NOTE ? teal.muted : ember.muted,
+            color: isAttachFollowUpHostNote(hostNote) ? teal.muted : ember.muted,
             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
             flexShrink: 0,
           }}

@@ -27,20 +27,54 @@ export const ATTACH_FOLLOW_UP_NOTE =
   'Follow-up not sent — still attached to the live run.';
 
 /**
+ * Send-while-running Stop (adversarial #857): GET is closed and auto-resume
+ * is skipped this tick. Same System/TEAL channel; not "still attached" (a
+ * lie) and not Turn ended · you stopped (would clear `running` / C15 409).
+ */
+export const ATTACH_FOLLOW_UP_DETACH_NOTE =
+  'Follow-up not sent — detached from the live run.';
+
+export function isAttachFollowUpHostNote(note: string | null | undefined): boolean {
+  return (
+    note === ATTACH_FOLLOW_UP_NOTE || note === ATTACH_FOLLOW_UP_DETACH_NOTE
+  );
+}
+
+/**
  * After Send-while-running attach returns: paint the follow-up note only when
  * the run is still live (D18 EOF / 503 subscribe-fail). Never after `done`
  * (`result.ok` + `completed` + Turn ended) — "still attached to the live run"
- * would be a lie (adversarial #857). Not at remap: a System row before GET
+ * would be a lie (adversarial #857). Never on operator Stop (`operatorStop`)
+ * — the reader is closed and auto-resume is skipped; that path uses
+ * `ATTACH_FOLLOW_UP_DETACH_NOTE`. Not at remap: a System row before GET
  * would sit last on the ring (hot last-row snapshot / cold hydrate wipe).
  */
 export function shouldPaintAttachFollowUpNote(input: {
   sendWhileRunning: boolean;
   resultOk: boolean;
   turnStatus?: TurnStatus;
+  operatorStop?: boolean;
 }): boolean {
   return (
     input.sendWhileRunning &&
     !input.resultOk &&
+    input.turnStatus === 'running' &&
+    !input.operatorStop
+  );
+}
+
+/**
+ * After Send-while-running attach Stop: GET closed, keep `running`, no
+ * auto-resume this tick. Distinct from the still-attached EOF/503 note.
+ */
+export function shouldPaintAttachFollowUpDetachNote(input: {
+  sendWhileRunning: boolean;
+  operatorStop: boolean;
+  turnStatus?: TurnStatus;
+}): boolean {
+  return (
+    input.sendWhileRunning &&
+    input.operatorStop &&
     input.turnStatus === 'running'
   );
 }

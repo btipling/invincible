@@ -26,7 +26,7 @@ import {
   type LiveCwdSource,
 } from './harnessChat';
 import { HARNESS_RING_MAX } from './sessionWindow';
-import { ATTACH_FOLLOW_UP_NOTE } from './turnAttach';
+import { ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE } from './turnAttach';
 import {
   HARNESS_PROTOCOL_VERSION,
   HarnessBridge,
@@ -5486,6 +5486,52 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     expect(
       exp.__messages.some((m) => m.kind === MessageKind.Error),
     ).toBe(false);
+  });
+
+  it('test 6k: Send-while-running attach Stop keeps running, strips follow-up, no still-attached note (adversarial #857)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.pushMessage(MessageKind.User, 'hello');
+    bridge.pushMessage(MessageKind.User, 'follow-up');
+    const session = runningSession([['user', 'hello']]);
+    const sendAgent = vi.fn(async () => {
+      throw new Error('must not POST /api/agent');
+    });
+    const controller = new AbortController();
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'follow-up', {
+      sendAgent,
+      signal: controller.signal,
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
+          controller.abort();
+          return { ok: false as const, error: 'Request cancelled.', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(sendAgent).not.toHaveBeenCalled();
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('running');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+    expect(exp.__messages.some((m) => isTurnEndLine(m.text))).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.User).map((m) => m.text)).toEqual([
+      'hello',
+    ]);
+    expect(exp.__messages.map((m) => m.text)).not.toContain(ATTACH_FOLLOW_UP_NOTE);
+    expect(exp.__messages.map((m) => m.text)).not.toContain(ATTACH_FOLLOW_UP_DETACH_NOTE);
+    expect(exp.__messages.some((m) => m.kind === MessageKind.Thinking && m.text === 'hmm')).toBe(
+      true,
+    );
   });
 
   it('test 7: dedup skips hydrated this-run assistant/tool_run, never skips reasoning, prior-turn assistant is not a skip target', async () => {

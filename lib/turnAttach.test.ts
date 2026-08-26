@@ -11,7 +11,10 @@ import {
   isAttachRunGone,
   lastUserText,
   ATTACH_FOLLOW_UP_NOTE,
+  ATTACH_FOLLOW_UP_DETACH_NOTE,
+  isAttachFollowUpHostNote,
   shouldPaintAttachFollowUpNote,
+  shouldPaintAttachFollowUpDetachNote,
   shouldRepostAttachFollowUp,
   shouldSkipAttachHotResume,
   prefixThroughLastUser,
@@ -200,13 +203,20 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(host).toContain('sendWhileRunning');
     expect(host).toContain('ATTACH_FOLLOW_UP_NOTE');
     expect(host).toContain('shouldPaintAttachFollowUpNote(');
+    expect(host).toContain('shouldPaintAttachFollowUpDetachNote(');
     expect(host).toContain('shouldRepostAttachFollowUp(');
     expect(host).toContain('shouldSkipAttachHotResume(');
+    expect(host).toContain('const operatorStop = shouldSkipAttachHotResume(');
+    expect(host).toContain('operatorStop,');
     expect(host).toContain('runPromptRef.current(prompt, { pushUser: true })');
     expect(host).toContain('setHostNote(ATTACH_FOLLOW_UP_NOTE)');
     expect(host).toContain('bridge.pushMessage(MessageKind.System, ATTACH_FOLLOW_UP_NOTE)');
+    expect(host).toContain('setHostNote(ATTACH_FOLLOW_UP_DETACH_NOTE)');
+    expect(host).toContain('bridge.pushMessage(MessageKind.System, ATTACH_FOLLOW_UP_DETACH_NOTE)');
+    expect(host).toContain('!operatorStop');
     expect(host).not.toContain('} else if (sendWhileRunning) {');
-    expect(host).toContain(
+    expect(host).toContain('isAttachFollowUpHostNote(hostNote)');
+    expect(host).not.toContain(
       'hostNote === ATTACH_FOLLOW_UP_NOTE ? teal.muted : ember.muted',
     );
   });
@@ -247,6 +257,13 @@ describe('harnessChat attach hydrate source-lock (adversarial #857)', () => {
   it('ATTACH_FOLLOW_UP_NOTE is not a Turn-ended line (canvas System + TEAL host mirror)', () => {
     expect(ATTACH_FOLLOW_UP_NOTE).toMatch(/Follow-up not sent/);
     expect(ATTACH_FOLLOW_UP_NOTE).not.toMatch(/Turn ended/);
+    expect(ATTACH_FOLLOW_UP_DETACH_NOTE).toMatch(/Follow-up not sent/);
+    expect(ATTACH_FOLLOW_UP_DETACH_NOTE).toMatch(/detached/);
+    expect(ATTACH_FOLLOW_UP_DETACH_NOTE).not.toMatch(/still attached/);
+    expect(ATTACH_FOLLOW_UP_DETACH_NOTE).not.toMatch(/Turn ended/);
+    expect(isAttachFollowUpHostNote(ATTACH_FOLLOW_UP_NOTE)).toBe(true);
+    expect(isAttachFollowUpHostNote(ATTACH_FOLLOW_UP_DETACH_NOTE)).toBe(true);
+    expect(isAttachFollowUpHostNote('Request cancelled.')).toBe(false);
   });
 });
 
@@ -290,6 +307,59 @@ describe('shouldPaintAttachFollowUpNote (adversarial #857 done-path lie)', () =>
       }),
     ).toBe(false);
   });
+
+  it('does not paint the still-attached note on operator Stop (adversarial #857)', () => {
+    expect(
+      shouldPaintAttachFollowUpNote({
+        sendWhileRunning: true,
+        resultOk: false,
+        turnStatus: 'running',
+        operatorStop: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('shouldPaintAttachFollowUpDetachNote (adversarial #857 Stop lie)', () => {
+  it('paints Send-while-running + Stop while still running', () => {
+    expect(
+      shouldPaintAttachFollowUpDetachNote({
+        sendWhileRunning: true,
+        operatorStop: true,
+        turnStatus: 'running',
+      }),
+    ).toBe(true);
+  });
+
+  it('does not paint EOF / 503 (operatorStop false)', () => {
+    expect(
+      shouldPaintAttachFollowUpDetachNote({
+        sendWhileRunning: true,
+        operatorStop: false,
+        turnStatus: 'running',
+      }),
+    ).toBe(false);
+  });
+
+  it('does not paint kickColdAttach Stop (sendWhileRunning false)', () => {
+    expect(
+      shouldPaintAttachFollowUpDetachNote({
+        sendWhileRunning: false,
+        operatorStop: true,
+        turnStatus: 'running',
+      }),
+    ).toBe(false);
+  });
+
+  it('does not paint after done / 404', () => {
+    expect(
+      shouldPaintAttachFollowUpDetachNote({
+        sendWhileRunning: true,
+        operatorStop: true,
+        turnStatus: 'completed',
+      }),
+    ).toBe(false);
+  });
 });
 
 describe('shouldRepostAttachFollowUp (adversarial #857 remapped prompt)', () => {
@@ -329,10 +399,26 @@ describe('shouldRepostAttachFollowUp (adversarial #857 remapped prompt)', () => 
   it('is mutually exclusive with the follow-up note', () => {
     const running = { sendWhileRunning: true, resultOk: false, turnStatus: 'running' as const };
     const done = { sendWhileRunning: true, resultOk: true, turnStatus: 'completed' as const };
+    const stopped = {
+      sendWhileRunning: true,
+      resultOk: false,
+      turnStatus: 'running' as const,
+      operatorStop: true,
+    };
     expect(shouldPaintAttachFollowUpNote(running)).toBe(true);
     expect(shouldRepostAttachFollowUp(running)).toBe(false);
+    expect(shouldPaintAttachFollowUpDetachNote({ ...running, operatorStop: false })).toBe(false);
     expect(shouldPaintAttachFollowUpNote(done)).toBe(false);
     expect(shouldRepostAttachFollowUp(done)).toBe(true);
+    expect(shouldPaintAttachFollowUpNote(stopped)).toBe(false);
+    expect(shouldRepostAttachFollowUp(stopped)).toBe(false);
+    expect(
+      shouldPaintAttachFollowUpDetachNote({
+        sendWhileRunning: true,
+        operatorStop: true,
+        turnStatus: 'running',
+      }),
+    ).toBe(true);
   });
 });
 
