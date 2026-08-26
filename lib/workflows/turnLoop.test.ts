@@ -782,7 +782,12 @@ describe('step wrappers (matrix 4–7)', () => {
     // input.onEvent so a no-op sink cannot hide behind leftover identifiers
     // (adversarial L6 — live glue is behavior, not source-lock).
     const writeOnDefaultStream = vi.fn(async () => {});
-    vi.doMock('./turnSseWrite', () => ({ writeOnDefaultStream }));
+    vi.doMock('./turnSseWrite', () => ({
+      writeOnDefaultStream,
+      withDefaultStreamWriter: async (
+        fn: (write: (payload: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(writeOnDefaultStream),
+    }));
     const m1 = vi.fn(async (_deps: unknown, input: unknown) => {
       const i = input as {
         messages: unknown[];
@@ -872,7 +877,7 @@ describe('step wrappers (matrix 4–7)', () => {
     expect(inputTools).toBeDefined();
     expect(Object.keys(inputTools as object)).toContain('list_dir');
     expect(Object.keys(inputTools as object)).toContain('find_skill');
-    // Live glue: onEvent → formatLiveModelSse → writeOnDefaultStream. A no-op
+    // Live glue: onEvent → formatLiveModelSse → held write. A no-op
     // onEvent with leftover imports would fail here (one framed reasoning line).
     expect(writeOnDefaultStream).toHaveBeenCalledTimes(1);
     expect(writeOnDefaultStream).toHaveBeenCalledWith(
@@ -939,6 +944,13 @@ describe('step wrappers (matrix 4–7)', () => {
     // Reset module cache so vi.doMock for the same specifiers as prior tests
     // (matrix 4+5, 5b) takes effect on a fresh import of modelGenerateStep.
     vi.resetModules();
+    const writeOnDefaultStream = vi.fn(async () => {});
+    vi.doMock('./turnSseWrite', () => ({
+      writeOnDefaultStream,
+      withDefaultStreamWriter: async (
+        fn: (write: (payload: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(writeOnDefaultStream),
+    }));
     const m1 = vi.fn(async (_deps: unknown, input: unknown) => {
       const i = input as { messages: unknown[] };
       // Verify the messages array is not empty and has proper ModelMessage shape.
@@ -1034,6 +1046,7 @@ describe('step wrappers (matrix 4–7)', () => {
     vi.doUnmock('../agent/generateOneRound');
     vi.doUnmock('../di/index');
     vi.doUnmock('./assembleDurableToolWorld');
+    vi.doUnmock('./turnSseWrite');
   });
 
   it('matrix 6: toolExecuteStep thin shell → delegates executeTool; business error is a value', async () => {

@@ -7,9 +7,9 @@
  * the default stream.
  *
  * `writeTurnSse` stays `'use step'` and delegates the writer lock to
- * directive-free `writeOnDefaultStream`. Live model-step writes call that
- * helper from `modelGenerateStep` (already a step) — they must not call these
- * wrappers (nested `'use step'`).
+ * directive-free `writeOnDefaultStream` (one write per step call). Live
+ * model-step writes use `withDefaultStreamWriter` from `modelGenerateStep`
+ * (already a step) — they must not call these wrappers (nested `'use step'`).
  */
 
 import { getWritable } from 'workflow';
