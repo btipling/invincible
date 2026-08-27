@@ -33,6 +33,10 @@ jobs:
     env:
       HARNESS_WAIT_MS: "0"
       HARNESS_REQUIRE: "1"
+      # GITHUB_TOKEN is NOT a default runner env var. fetch-harness-artifact.mjs
+      # reads GH_TOKEN / GITHUB_TOKEN; without this the step fails closed
+      # under HARNESS_REQUIRE=1.
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
