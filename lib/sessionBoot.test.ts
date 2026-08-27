@@ -6,6 +6,7 @@ import {
   isServerMintedSessionId,
   readUrlSessionId,
   shouldAdoptBootServer,
+  snapshotAfterCloudGet,
   withUrlSessionId,
 } from './sessionBoot';
 import type {
@@ -163,6 +164,62 @@ describe('shouldAdoptBootServer (boot-pin LWW guard)', () => {
     const local = localWithDialogue(idY);
     const other = empty(idA);
     expect(shouldAdoptBootServer(local, other)).toBe(true);
+  });
+});
+
+describe('snapshotAfterCloudGet (host restore after repo.get)', () => {
+  const localCompleted = (): SessionSnapshot => ({
+    id: idY,
+    updatedAt: 10,
+    messages: [
+      { id: 'm1', role: 'user' as const, text: 'hi', at: 1 },
+      { id: 'm2', role: 'assistant' as const, text: 'yo', at: 2 },
+    ],
+    turnStatus: 'completed',
+  });
+
+  it('ok + newer server → server (LWW adopt)', () => {
+    const local = localCompleted();
+    const server = {
+      ...local,
+      updatedAt: 99,
+      turnStatus: 'running' as const,
+      turnRunId: 'wr_live',
+    };
+    expect(snapshotAfterCloudGet(local, { action: 'ok', snapshot: server })).toBe(server);
+  });
+
+  it('ok + empty mint (updatedAt 0) → keep local', () => {
+    const local = localCompleted();
+    const restored = snapshotAfterCloudGet(local, {
+      action: 'ok',
+      snapshot: empty(idY),
+    });
+    expect(restored).toBe(local);
+    expect(restored.turnStatus).toBe('completed');
+  });
+
+  it('error / disabled / notfound → keep local (CloudGetResult has no snapshot)', () => {
+    const local = localCompleted();
+    expect(snapshotAfterCloudGet(local, { action: 'error' })).toBe(local);
+    expect(snapshotAfterCloudGet(local, { action: 'disabled' })).toBe(local);
+    expect(snapshotAfterCloudGet(local, { action: 'notfound' })).toBe(local);
+  });
+
+  it('ignores a running snapshot on action error (getEnvelope cannot return one)', () => {
+    const local = localCompleted();
+    const poison = {
+      ...local,
+      turnStatus: 'running' as const,
+      turnRunId: 'wr_live',
+    };
+    const restored = snapshotAfterCloudGet(local, {
+      action: 'error',
+      snapshot: poison,
+    });
+    expect(restored).toBe(local);
+    expect(restored.turnStatus).toBe('completed');
+    expect(restored.turnRunId).toBeUndefined();
   });
 });
 

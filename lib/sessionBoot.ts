@@ -92,6 +92,29 @@ export function shouldAdoptBootServer(
   return true;
 }
 
+/**
+ * Snapshot `kickColdAttach` / Send remap read after a cloud GET.
+ *
+ * Matches `bootCloudSession` + `HarnessHost.onAdopt`:
+ * - `action !== 'ok'` → keep `local` (`CloudGetResult` error/disabled/notfound
+ *   has **no** snapshot; `getEnvelope` discards `bootCloudSnapshot`'s parse-fail
+ *   local). An error result's `snapshot` field is **ignored** if present.
+ * - `ok` → LWW via {@link shouldAdoptBootServer}; loser keeps `local`.
+ *
+ * Envelope-wins on an unreadable blob (overlay `running` onto stale local) is a
+ * product change **to this function** (and `getEnvelope` / `onAdopt`). Int F5
+ * rows must call this, not `bootCloudSnapshot`'s error snapshot.
+ */
+export function snapshotAfterCloudGet(
+  local: SessionSnapshot,
+  got: { action: string; snapshot?: SessionSnapshot },
+): SessionSnapshot {
+  if (got.action === 'ok' && got.snapshot && shouldAdoptBootServer(local, got.snapshot)) {
+    return got.snapshot;
+  }
+  return local;
+}
+
 export type SessionBootCallbacks = {
   /** Adopt a server session (local write + Wasm hydrate). Server snapshot owns content. */
   onAdopt: (snapshot: SessionSnapshot, id: string) => void;

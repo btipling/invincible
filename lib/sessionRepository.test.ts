@@ -814,6 +814,17 @@ describe('bootCloudSnapshot (getEnvelope two-step, today\'s semantics)', () => {
     expect(body).toContain('bootCloudSnapshot(');
     expect(body).not.toContain('parseCloudSessionSnapshot(');
     expect(body).not.toContain('overlayEnvelopeMeta(');
+    // CloudGetResult error has no snapshot — dummy local is discarded.
+    // Overlay-on-error cannot reach kickColdAttach through this return.
+    expect(body).toContain("if (boot.action === 'error')");
+    expect(body).toContain(
+      "return { action: 'error', status: 0, message: boot.message }",
+    );
+    const errIdx = body.indexOf("if (boot.action === 'error')");
+    const okIdx = body.indexOf("return { action: 'ok'", errIdx);
+    expect(okIdx).toBeGreaterThan(errIdx);
+    const errBlock = body.slice(errIdx, okIdx);
+    expect(errBlock).not.toMatch(/snapshot:/);
   });
 });
 

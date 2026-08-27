@@ -200,9 +200,18 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
   it('boot / adopt / activateSession kick cold attach at startIndex=0 + dedup', () => {
     expect(host).toContain('const kickColdAttach = useCallback');
     expect(host).toContain('coldAttachFromSnapshot(');
+    expect(host).toContain('snapshotAfterCloudGet(');
     expect(host.match(/queueMicrotask\(kickColdAttach\)/g)?.length).toBeGreaterThanOrEqual(3);
     expect(host).toContain('attach: spec');
     expect(host).toContain('if (inflightRef.current) return');
+  });
+
+  it('int F5 rows restore via snapshotAfterCloudGet, not boot.snapshot', () => {
+    const f5 = readFileSync(resolve(process.cwd(), 'int/f5-attach.int.test.ts'), 'utf8');
+    expect(f5).toContain('snapshotAfterCloudGet(');
+    expect(f5).not.toMatch(/coldAttachFromSnapshot\(\s*boot\.snapshot\s*\)/);
+    expect(f5).not.toMatch(/turnRunId:\s*boot\.snapshot\.turnRunId/);
+    expect(f5).not.toMatch(/turnStatus:\s*boot\.snapshot\.turnStatus/);
   });
 
   it('hot resume uses decideHotResume (empty-EOF does not spin inline)', () => {

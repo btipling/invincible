@@ -36,7 +36,7 @@ import {
 import {
   bootCloudSession,
   readUrlSessionId,
-  shouldAdoptBootServer,
+  snapshotAfterCloudGet,
 } from '../../lib/sessionBoot';
 import {
   canLoadEarlier as sessionCanLoadEarlier,
@@ -810,13 +810,18 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               // doesn't win LWW, keep the local transcript (it's already in the ring) and
               // push it to the cloud so a reload stops re-serving the empty mint over it.
               // bootCloudSession pins ?s=id either way.
+              // `snapshotAfterCloudGet` is the attach/Send restore seam (int F5 rows).
               const local = sessionRef.current;
-              if (!shouldAdoptBootServer(local, serverSnap)) {
+              const restored = snapshotAfterCloudGet(local, {
+                action: 'ok',
+                snapshot: serverSnap,
+              });
+              if (restored === local) {
                 setActiveSessionId(id);
                 repoRef.current?.put(id, local);
                 return;
               }
-              activateSession(mergeAdoptedUsage({ ...serverSnap, id }, local));
+              activateSession(mergeAdoptedUsage({ ...restored, id }, local));
             },
             onMint: (createdSnap, id) => {
               if (cancelled) return;

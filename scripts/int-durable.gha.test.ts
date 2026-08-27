@@ -35,6 +35,12 @@ describe('int-durable.yml — fetch-harness token + runner lock', () => {
     expect(WORKFLOW).not.toMatch(/self-hosted/);
     expect(WORKFLOW).not.toMatch(/continue-on-error/);
   });
+
+  it('skips fork PRs (same-repo head only)', () => {
+    expect(WORKFLOW).toMatch(
+      /github\.event\.pull_request\.head\.repo\.full_name\s*==\s*github\.repository/,
+    );
+  });
 });
 
 describe('package.json — int project is not in the default/changed gates', () => {
