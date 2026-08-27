@@ -54,23 +54,28 @@ describe('int quota (#859 row 5 silent localStorage)', () => {
     delete globalThis.localStorage;
   });
 
-  it.fails('#859 row 5: quota failure is not silent; boot must not trust truncated snapshot', () => {
+  function storeWithCap(): LocalStorageSessionStore {
     const cap = JSON.stringify(small).length + 10;
-    const storage = new BoundedStorage(cap);
-    globalThis.localStorage = storage;
+    globalThis.localStorage = new BoundedStorage(cap);
     const store = new LocalStorageSessionStore();
     store.save(small);
-    expect(store.load()?.turnStatus).toBe('completed');
+    return store;
+  }
 
-    let threw = false;
+  it('truncated remainder after a failed running save is the previous snapshot', () => {
+    const store = storeWithCap();
     try {
       store.save(runningTurn2);
     } catch {
-      threw = true;
+      /* product may throw; remainder still must not look like a successful running save */
     }
-    expect(threw).toBe(true);
     const loaded = store.load();
-    expect(loaded?.turnStatus).toBe('running');
-    expect(loaded?.messages.some((m) => m.text.includes('turn-2 user'))).toBe(true);
+    expect(loaded?.turnStatus).toBe('completed');
+    expect(loaded?.messages.some((m) => m.text.includes('turn-2 user'))).toBe(false);
+  });
+
+  it.fails('#859 row 5: quota failure is not silent', () => {
+    const store = storeWithCap();
+    expect(() => store.save(runningTurn2)).toThrow();
   });
 });

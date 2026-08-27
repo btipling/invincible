@@ -10,6 +10,9 @@ const WORKFLOW = readFileSync(
   new URL('../.github/workflows/int-durable.yml', import.meta.url),
   'utf8',
 );
+const PKG = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+) as { scripts: Record<string, string> };
 
 describe('int-durable.yml — fetch-harness token + runner lock', () => {
   it('wires GITHUB_TOKEN from github.token (not a default runner env var)', () => {
@@ -31,5 +34,18 @@ describe('int-durable.yml — fetch-harness token + runner lock', () => {
     expect(WORKFLOW).toMatch(/runs-on:\s*ubuntu-latest/);
     expect(WORKFLOW).not.toMatch(/self-hosted/);
     expect(WORKFLOW).not.toMatch(/continue-on-error/);
+  });
+});
+
+describe('package.json — int project is not in the default/changed gates', () => {
+  it('npm test and test:changed pass --project default --project tenancy', () => {
+    expect(PKG.scripts.test).toMatch(/vitest run --project default --project tenancy/);
+    expect(PKG.scripts['test:changed']).toMatch(
+      /vitest run --changed --project default --project tenancy/,
+    );
+  });
+
+  it('test:int is vitest --project int (no wrapper)', () => {
+    expect(PKG.scripts['test:int']).toBe('vitest run --project int');
   });
 });

@@ -373,9 +373,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     const spec = coldAttachFromSnapshot(sessionRef.current);
     if (!spec) return;
     heapAppliedRef.current = null;
-    void runPromptRef.current('', {
-      attach: { runId: spec.runId, startIndex: 0, dedup: true },
-    });
+    void runPromptRef.current('', { attach: spec });
   }, []);
 
   /** Activate a session (canonical id) on local state + Wasm ring + URL + picker. */

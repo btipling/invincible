@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { decideHotResume, decideSendAttach, coldAttachFromSnapshot } from '../lib/turnAttach';
+import { decideDetach, shouldSetHostTurnNote } from '../lib/detachTurn';
 import { makeMessage, type SessionSnapshot } from '../lib/sessionStore';
 import type { HarnessBridge } from '../lib/harnessBridge';
 import { loadBridge } from './loadBridge';
@@ -21,7 +22,7 @@ function turn1Local(): SessionSnapshot {
   };
 }
 
-describe('int F5 attach (#859 rows 2, 3, 5, 6)', () => {
+describe('int F5 attach (#859 issue-rows 3 F5, 4 stream-drop, 2 persist-hole)', () => {
   let bridge: HarnessBridge;
 
   beforeAll(async () => {
@@ -29,7 +30,7 @@ describe('int F5 attach (#859 rows 2, 3, 5, 6)', () => {
   });
 
   it.fails(
-    '#859 row 2: stale local completed + envelope running → cold attach, not none',
+    '#859 row 3: stale local completed + envelope running → cold attach, not none',
     async () => {
       const { blobStore, envelopeStore } = await persistTurn1();
       await markEnvelopeRunning(envelopeStore);
@@ -48,7 +49,7 @@ describe('int F5 attach (#859 rows 2, 3, 5, 6)', () => {
     },
   );
 
-  it.fails('#859 row 2: heap-B ring is not stuck on turn-1-only', async () => {
+  it.fails('#859 row 3: heap-B ring is not stuck on turn-1-only', async () => {
     const { blobStore, envelopeStore } = await persistTurn1();
     await markEnvelopeRunning(envelopeStore);
     const boot = await bootFromMemory({
@@ -61,7 +62,7 @@ describe('int F5 attach (#859 rows 2, 3, 5, 6)', () => {
   });
 
   it.fails(
-    '#859 row 3: Send while envelope live + local completed remaps to GET-attach',
+    '#859 C15: Send while envelope live + local completed remaps to GET-attach',
     async () => {
       const { blobStore, envelopeStore } = await persistTurn1();
       await markEnvelopeRunning(envelopeStore);
@@ -83,8 +84,14 @@ describe('int F5 attach (#859 rows 2, 3, 5, 6)', () => {
     },
   );
 
-  it('row 5 (green): mid-turn abort does not flip envelope to completed', async () => {
+  it('row 4 (green): stream-drop fixture stays envelope running; F5 is detach not cancel', async () => {
     const { envelopeStore } = await persistTurn1();
+    const afterPersist = await envelopeStore.readEnvelope({
+      tenantId: INT_SCOPE.tenantId,
+      userId: INT_SCOPE.userId,
+      sessionId: INT_SCOPE.sessionId,
+    });
+    expect(afterPersist?.meta?.turnStatus).toBe('completed');
     await markEnvelopeRunning(envelopeStore);
     const env = await envelopeStore.readEnvelope({
       tenantId: INT_SCOPE.tenantId,
@@ -93,9 +100,18 @@ describe('int F5 attach (#859 rows 2, 3, 5, 6)', () => {
     });
     expect(env?.meta?.turnStatus).toBe('running');
     expect(env?.meta?.turnRunId).toBe(TURN2_RUN_ID);
+    expect(
+      decideDetach({
+        cancel: false,
+        inflight: false,
+        turnRunId: TURN2_RUN_ID,
+        turnStatus: 'running',
+      }),
+    ).toBe('detach');
+    expect(shouldSetHostTurnNote('running')).toBe(false);
   });
 
-  it.fails('#859 row 5: stream-drop + F5 still cold-attaches; empty-EOF does not spin', async () => {
+  it.fails('#859 row 4: stream-drop + F5 still cold-attaches; empty-EOF does not spin', async () => {
     const { blobStore, envelopeStore } = await persistTurn1();
     await markEnvelopeRunning(envelopeStore);
     const boot = await bootFromMemory({
@@ -114,7 +130,7 @@ describe('int F5 attach (#859 rows 2, 3, 5, 6)', () => {
   });
 
   it.fails(
-    '#859 row 6: mid-turn persist hole — boot ring is not live interleaving',
+    '#859 row 2: mid-turn persist hole — boot ring is not live interleaving',
     async () => {
       const { blobStore, envelopeStore } = await persistTurn1();
       await markEnvelopeRunning(envelopeStore);

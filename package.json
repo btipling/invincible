@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "test": "node scripts/di-gate.mjs && node scripts/drizzle-journal-gate.mjs && vitest run --project default --project tenancy",
-    "test:changed": "vitest run --changed",
+    "test:changed": "vitest run --changed --project default --project tenancy",
     "test:int": "vitest run --project int",
     "test:di-gate": "node scripts/di-gate.mjs",
     "test:drizzle-journal": "node scripts/drizzle-journal-gate.mjs",

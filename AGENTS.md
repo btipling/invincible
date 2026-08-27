@@ -437,7 +437,7 @@ See create-plan / plan-review **layer** rules when planning features.
   (`node_modules/vitest/vitest.mjs run`, never `npx`)
   with an explicit exec timeout (`timeoutMs ≈ 600000`) — a long run can drop over
   the transport but still complete. For a fast mechanical gate that only tests files
-  changed since `HEAD`, use `npm run test:changed` (= `vitest run --changed`).
+  changed since `HEAD`, use `npm run test:changed` (= `vitest run --changed --project default --project tenancy` — same `--project` flags as `npm test`; vitest 3 runs every `test.projects` entry otherwise).
   `vitest run` **exits non-zero on any failure**; trust the exit code and the
   per-file output, never a summarized/hidden log. Run `npm run typecheck` /
   `npm run build` before claiming ready (**agent workspace or CI**; build needs

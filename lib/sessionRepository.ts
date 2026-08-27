@@ -714,14 +714,19 @@ export function createHttpSessionRepository(
           message: `Transcript fetch failed (${t.status}).`,
         };
       }
-      const parsed = parseCloudSessionSnapshot(await t.json(), id);
-      if (!parsed) {
-        return { action: 'error', status: 0, message: 'Invalid transcript body.' };
+      const blobJson = await t.json();
+      // One two-step with the int/unit extract. Dummy local is discarded on
+      // parse fail — getEnvelope still returns action error (host keeps local).
+      const boot = bootCloudSnapshot({
+        id,
+        local: { id, updatedAt: 0, messages: [] },
+        envelopeMeta: env.meta,
+        blobJson,
+      });
+      if (boot.action === 'error') {
+        return { action: 'error', status: 0, message: boot.message };
       }
-      return {
-        action: 'ok',
-        snapshot: overlayEnvelopeMeta(parsed, env.meta),
-      };
+      return { action: 'ok', snapshot: boot.snapshot };
     } catch {
       return { action: 'error', status: 0, message: 'Network error pulling session.' };
     }

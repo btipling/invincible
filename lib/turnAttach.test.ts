@@ -201,7 +201,7 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(host).toContain('const kickColdAttach = useCallback');
     expect(host).toContain('coldAttachFromSnapshot(');
     expect(host.match(/queueMicrotask\(kickColdAttach\)/g)?.length).toBeGreaterThanOrEqual(3);
-    expect(host).toContain('startIndex: 0, dedup: true');
+    expect(host).toContain('attach: spec');
     expect(host).toContain('if (inflightRef.current) return');
   });
 

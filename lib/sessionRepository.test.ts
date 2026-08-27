@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   HARNESS_SESSION_MAX_BODY_BYTES,
@@ -801,6 +802,18 @@ describe('bootCloudSnapshot (getEnvelope two-step, today\'s semantics)', () => {
     expect(result.snapshot.turnStatus).toBe('running');
     expect(result.snapshot.turnRunId).toBe('wr_live');
     expect(result.snapshot.messages.map((m) => m.text)).toEqual(['turn-1', 'turn-2']);
+  });
+
+  it('getEnvelope two-step is bootCloudSnapshot (not a second inlined parse)', () => {
+    const src = readFileSync('lib/sessionRepository.ts', 'utf8');
+    const start = src.indexOf('async function getEnvelope');
+    const end = src.indexOf('async function get(', start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const body = src.slice(start, end);
+    expect(body).toContain('bootCloudSnapshot(');
+    expect(body).not.toContain('parseCloudSessionSnapshot(');
+    expect(body).not.toContain('overlayEnvelopeMeta(');
   });
 });
 
