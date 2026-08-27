@@ -3,6 +3,7 @@ import { pushSessionToBridge } from '../lib/harnessChat';
 import {
   bootCloudSnapshot,
   cloudGetFromBoot,
+  getEnvelopeParseLocal,
   type CloudGetResult,
 } from '../lib/sessionRepository';
 import type { SessionSnapshot } from '../lib/sessionStore';
@@ -41,7 +42,7 @@ export async function bootFromMemory(opts: {
   return cloudGetFromBoot(
     bootCloudSnapshot({
       id: opts.local.id,
-      local: opts.local,
+      local: getEnvelopeParseLocal(opts.local.id),
       envelopeMeta: env?.meta,
       blobJson,
     }),

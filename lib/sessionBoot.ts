@@ -93,18 +93,15 @@ export function shouldAdoptBootServer(
 }
 
 /**
- * Snapshot `kickColdAttach` / Send remap read after a cloud GET.
+ * LWW for an **ok** cloud GET. Non-ok results never reach this helper on the
+ * host (`bootCloudSession` skips `onAdopt`). Int F5/C15 rows must use
+ * {@link snapshotAfterRepoGet} so they match that skip.
  *
- * Matches `bootCloudSession` + `HarnessHost.onAdopt`:
- * - `action !== 'ok'` → keep `local` (`CloudGetResult` error/disabled/notfound
- *   has **no** snapshot; `cloudGetFromBoot` discards `bootCloudSnapshot`'s
- *   parse-fail local). Extra `snapshot` on a non-ok result is **ignored**.
- * - `ok` → LWW via {@link shouldAdoptBootServer}; loser keeps `local`.
- *
- * Envelope-wins on an unreadable blob (overlay `running` onto stale local) is a
- * product change **to this function** and `cloudGetFromBoot` (so `getEnvelope`
- * and int `bootFromMemory` stay one mapping). Int F5 rows must call this with a
- * `CloudGetResult`, not a `BootCloudResult`.
+ * Envelope-wins on an unreadable blob is a product change to
+ * {@link snapshotAfterRepoGet} **and** `bootCloudSession` `onGetMiss` (so
+ * parse-fail actually reaches the host). Overlay-only inside
+ * `bootCloudSnapshot` cannot — `getEnvelope` passes `getEnvelopeParseLocal`
+ * (empty mint, `updatedAt: 0`) that loses LWW to a completed local.
  */
 export function snapshotAfterCloudGet(
   local: SessionSnapshot,
@@ -116,9 +113,34 @@ export function snapshotAfterCloudGet(
   return local;
 }
 
+/**
+ * Host restore after `repo.get` — every `CloudGetResult` action.
+ *
+ * Matches `bootCloudSession` + `HarnessHost`:
+ * - `action !== 'ok'` → keep `local` (`onAdopt` is not called; `onGetMiss`
+ *   runs this helper and is a no-op while the result is `local`).
+ * - `ok` → LWW via {@link snapshotAfterCloudGet}.
+ *
+ * Envelope-wins that must reach `kickColdAttach` / Send remap has to change
+ * **this** function. Teaching {@link snapshotAfterCloudGet} to overlay on
+ * error cannot: the host never passes a non-ok result there.
+ */
+export function snapshotAfterRepoGet(
+  local: SessionSnapshot,
+  got: CloudGetResult,
+): SessionSnapshot {
+  if (got.action !== 'ok') return local;
+  return snapshotAfterCloudGet(local, got);
+}
+
 export type SessionBootCallbacks = {
   /** Adopt a server session (local write + Wasm hydrate). Server snapshot owns content. */
   onAdopt: (snapshot: SessionSnapshot, id: string) => void;
+  /**
+   * Pin/adopt `repo.get` returned error or disabled. `onAdopt` is not called.
+   * Host runs {@link snapshotAfterRepoGet}; today the result is `local` (no-op).
+   */
+  onGetMiss?: (got: CloudGetResult) => void;
   /**
    * Bind a freshly minted server id (host preserves local transcript, hydrates).
    * Return `'deferred'` when the id cannot be fully bound yet — e.g. a prompt is
@@ -150,8 +172,9 @@ export async function bootCloudSession(options: {
   onAdopt?: SessionBootCallbacks['onAdopt'];
   onMint?: SessionBootCallbacks['onMint'];
   onUrlUpdate?: SessionBootCallbacks['onUrlUpdate'];
+  onGetMiss?: SessionBootCallbacks['onGetMiss'];
 }): Promise<SessionBootResult> {
-  const { repo, urlId, localId, onAdopt, onMint, onUrlUpdate } = options;
+  const { repo, urlId, localId, onAdopt, onMint, onUrlUpdate, onGetMiss } = options;
 
   if (!repo.enabled) {
     onUrlUpdate?.(null);
@@ -207,6 +230,9 @@ export async function bootCloudSession(options: {
       }
     }
     // 'disabled' / 'error' → keep local, never blank.
+    if (got.action === 'error' || got.action === 'disabled') {
+      onGetMiss?.(got);
+    }
     onUrlUpdate?.(null);
     return { kind: 'local', id: localId };
   }

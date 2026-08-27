@@ -7,6 +7,7 @@ import {
   readUrlSessionId,
   shouldAdoptBootServer,
   snapshotAfterCloudGet,
+  snapshotAfterRepoGet,
   withUrlSessionId,
 } from './sessionBoot';
 import type {
@@ -209,6 +210,44 @@ describe('snapshotAfterCloudGet (host restore after repo.get)', () => {
   });
 });
 
+describe('snapshotAfterRepoGet (host restore after repo.get, every action)', () => {
+  const localCompleted = (): SessionSnapshot => ({
+    id: idY,
+    updatedAt: 10,
+    messages: [
+      { id: 'm1', role: 'user' as const, text: 'hi', at: 1 },
+      { id: 'm2', role: 'assistant' as const, text: 'yo', at: 2 },
+    ],
+    turnStatus: 'completed',
+  });
+
+  it('ok + newer server → server (same as snapshotAfterCloudGet)', () => {
+    const local = localCompleted();
+    const server = {
+      ...local,
+      updatedAt: 99,
+      turnStatus: 'running' as const,
+      turnRunId: 'wr_live',
+    };
+    expect(snapshotAfterRepoGet(local, { action: 'ok', snapshot: server })).toBe(server);
+  });
+
+  it('error / disabled / notfound → keep local without consulting extra fields', () => {
+    const local = localCompleted();
+    const poison = {
+      action: 'error' as const,
+      status: 0,
+      message: 'Invalid transcript body.',
+      turnStatus: 'running',
+      turnRunId: 'wr_live',
+    };
+    expect(snapshotAfterRepoGet(local, poison as CloudGetResult)).toBe(local);
+    expect(snapshotAfterRepoGet(local, { action: 'disabled' })).toBe(local);
+    expect(snapshotAfterRepoGet(local, { action: 'notfound' })).toBe(local);
+    expect(snapshotAfterRepoGet(local, poison as CloudGetResult).turnStatus).toBe('completed');
+  });
+});
+
 describe('bootCloudSession', () => {
   it('mints the first session when local is unbound (fresh)', async () => {
     const { repo } = makeRepo();
@@ -362,5 +401,61 @@ describe('bootCloudSession', () => {
       onAdopt,
     });
     expect(result).toEqual({ kind: 'used', id: idA });
+  });
+
+  it('get error/disabled calls onGetMiss, not onAdopt', async () => {
+    const onAdopt = vi.fn();
+    const onGetMiss = vi.fn();
+    const { repo: errRepo } = makeRepo({
+      onGet: async () => ({ action: 'error', status: 0, message: 'Invalid transcript body.' }),
+    });
+    const err = await bootCloudSession({
+      repo: errRepo,
+      urlId: idA,
+      localId: idA,
+      onAdopt,
+      onGetMiss,
+    });
+    expect(err).toEqual({ kind: 'local', id: idA });
+    expect(onAdopt).not.toHaveBeenCalled();
+    expect(onGetMiss).toHaveBeenCalledTimes(1);
+    expect(onGetMiss.mock.calls[0][0]).toEqual({
+      action: 'error',
+      status: 0,
+      message: 'Invalid transcript body.',
+    });
+
+    onAdopt.mockClear();
+    onGetMiss.mockClear();
+    const { repo: disRepo } = makeRepo({
+      onGet: async () => ({ action: 'disabled' }),
+    });
+    const dis = await bootCloudSession({
+      repo: disRepo,
+      urlId: idA,
+      localId: idA,
+      onAdopt,
+      onGetMiss,
+    });
+    expect(dis).toEqual({ kind: 'local', id: idA });
+    expect(onAdopt).not.toHaveBeenCalled();
+    expect(onGetMiss).toHaveBeenCalledWith({ action: 'disabled' });
+  });
+
+  it('ok get does not call onGetMiss', async () => {
+    const { repo } = makeRepo({
+      onGet: async (id) => ({ action: 'ok', snapshot: empty(id) }),
+    });
+    const onGetMiss = vi.fn();
+    const onAdopt = vi.fn();
+    await bootCloudSession({
+      repo,
+      urlId: idA,
+      localId: idA,
+      onAdopt,
+      onGetMiss,
+    });
+    expect(onAdopt).toHaveBeenCalled();
+    expect(onGetMiss).not.toHaveBeenCalled();
   });
 });

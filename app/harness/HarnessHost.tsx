@@ -36,7 +36,7 @@ import {
 import {
   bootCloudSession,
   readUrlSessionId,
-  snapshotAfterCloudGet,
+  snapshotAfterRepoGet,
 } from '../../lib/sessionBoot';
 import {
   canLoadEarlier as sessionCanLoadEarlier,
@@ -810,9 +810,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               // doesn't win LWW, keep the local transcript (it's already in the ring) and
               // push it to the cloud so a reload stops re-serving the empty mint over it.
               // bootCloudSession pins ?s=id either way.
-              // `snapshotAfterCloudGet` is the attach/Send restore seam (int F5 rows).
+              // `snapshotAfterRepoGet` is the attach/Send restore seam (int F5 rows).
               const local = sessionRef.current;
-              const restored = snapshotAfterCloudGet(local, {
+              const restored = snapshotAfterRepoGet(local, {
                 action: 'ok',
                 snapshot: serverSnap,
               });
@@ -822,6 +822,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                 return;
               }
               activateSession(mergeAdoptedUsage({ ...restored, id }, local));
+            },
+            onGetMiss: (got) => {
+              if (cancelled) return;
+              if (inflightRef.current) return;
+              // Today snapshotAfterRepoGet(error) is `local` — no-op, matches skip-onAdopt.
+              // Envelope-wins that overlays running onto stale local must change
+              // snapshotAfterRepoGet so this path activates + kickColdAttach.
+              const local = sessionRef.current;
+              const restored = snapshotAfterRepoGet(local, got);
+              if (restored === local) return;
+              activateSession(mergeAdoptedUsage({ ...restored, id: local.id }, local));
             },
             onMint: (createdSnap, id) => {
               if (cancelled) return;

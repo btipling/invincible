@@ -12,6 +12,7 @@ import {
   overlayEnvelopeMeta,
   bootCloudSnapshot,
   cloudGetFromBoot,
+  getEnvelopeParseLocal,
   parseCloudSessionSnapshot,
   parseSessionSummaryList,
   shouldAdoptServer,
@@ -814,11 +815,21 @@ describe('bootCloudSnapshot (getEnvelope two-step, today\'s semantics)', () => {
     const body = src.slice(start, end);
     expect(body).toContain('bootCloudSnapshot(');
     expect(body).toContain('cloudGetFromBoot(');
+    expect(body).toContain('getEnvelopeParseLocal(');
     expect(body).not.toContain('parseCloudSessionSnapshot(');
     expect(body).not.toContain('overlayEnvelopeMeta(');
     // Mapping lives in cloudGetFromBoot — getEnvelope must not re-inline a
     // snapshot-bearing error return (that would re-open the int doppelganger).
     expect(body).not.toMatch(/action: 'error'[\s\S]*snapshot:/);
+    // Dummy local must stay the empty mint — passing a real completed local
+    // here re-opens the int overlay doppelganger (adversarial #861).
+    expect(body).not.toMatch(/local:\s*\{[^}]*updatedAt:\s*0/);
+  });
+});
+
+describe('getEnvelopeParseLocal (dummy local for bootCloudSnapshot)', () => {
+  it('is an empty mint (updatedAt 0, no messages)', () => {
+    expect(getEnvelopeParseLocal('s')).toEqual({ id: 's', updatedAt: 0, messages: [] });
   });
 });
 

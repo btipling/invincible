@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { decideHotResume, decideSendAttach, coldAttachFromSnapshot } from '../lib/turnAttach';
 import { decideDetach, shouldSetHostTurnNote } from '../lib/detachTurn';
-import { snapshotAfterCloudGet } from '../lib/sessionBoot';
+import { snapshotAfterRepoGet } from '../lib/sessionBoot';
 import { makeMessage, type SessionSnapshot } from '../lib/sessionStore';
 import type { HarnessBridge } from '../lib/harnessBridge';
 import { loadBridge } from './loadBridge';
@@ -23,12 +23,12 @@ function turn1Local(): SessionSnapshot {
   };
 }
 
-/** Host restore: CloudGetResult (cloudGetFromBoot); error has no snapshot; LWW on ok. */
+/** Host restore: `bootCloudSession` skips onAdopt on error; `snapshotAfterRepoGet` matches. */
 function restoredAfterBoot(
   local: SessionSnapshot,
   boot: Awaited<ReturnType<typeof bootFromMemory>>,
 ): SessionSnapshot {
-  return snapshotAfterCloudGet(local, boot);
+  return snapshotAfterRepoGet(local, boot);
 }
 
 describe('int F5 attach (#859 issue-rows 3 F5, 4 stream-drop, 2 persist-hole)', () => {

@@ -353,6 +353,11 @@ export function overlayEnvelopeMeta(
   return out;
 }
 
+/** Dummy local `getEnvelope` and int `bootFromMemory` pass into `bootCloudSnapshot`. */
+export function getEnvelopeParseLocal(id: string): SessionSnapshot {
+  return { id, updatedAt: 0, messages: [] };
+}
+
 /** Result of the host envelope-GET two-step without HTTP (parse blob, overlay meta). */
 export type BootCloudResult =
   | { action: 'ok'; snapshot: SessionSnapshot }
@@ -362,8 +367,8 @@ export type BootCloudResult =
  * Host GET mapping: `BootCloudResult` → `CloudGetResult`.
  *
  * Parse fail still **discards** `boot.snapshot` (dummy or real local). Envelope-wins
- * that must reach `kickColdAttach` / Send remap has to change **this** function
- * (and `snapshotAfterCloudGet`); overlay-only inside `bootCloudSnapshot` cannot.
+ * that must reach `kickColdAttach` / Send remap has to change `snapshotAfterRepoGet`
+ * (and `bootCloudSession` `onGetMiss`); overlay-only inside `bootCloudSnapshot` cannot.
  */
 export function cloudGetFromBoot(boot: BootCloudResult): CloudGetResult {
   if (boot.action === 'error') {
@@ -734,7 +739,7 @@ export function createHttpSessionRepository(
       return cloudGetFromBoot(
         bootCloudSnapshot({
           id,
-          local: { id, updatedAt: 0, messages: [] },
+          local: getEnvelopeParseLocal(id),
           envelopeMeta: env.meta,
           blobJson,
         }),
