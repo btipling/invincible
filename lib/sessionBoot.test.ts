@@ -201,25 +201,11 @@ describe('snapshotAfterCloudGet (host restore after repo.get)', () => {
 
   it('error / disabled / notfound → keep local (CloudGetResult has no snapshot)', () => {
     const local = localCompleted();
-    expect(snapshotAfterCloudGet(local, { action: 'error' })).toBe(local);
+    expect(
+      snapshotAfterCloudGet(local, { action: 'error', status: 0, message: 'Invalid transcript body.' }),
+    ).toBe(local);
     expect(snapshotAfterCloudGet(local, { action: 'disabled' })).toBe(local);
     expect(snapshotAfterCloudGet(local, { action: 'notfound' })).toBe(local);
-  });
-
-  it('ignores a running snapshot on action error (getEnvelope cannot return one)', () => {
-    const local = localCompleted();
-    const poison = {
-      ...local,
-      turnStatus: 'running' as const,
-      turnRunId: 'wr_live',
-    };
-    const restored = snapshotAfterCloudGet(local, {
-      action: 'error',
-      snapshot: poison,
-    });
-    expect(restored).toBe(local);
-    expect(restored.turnStatus).toBe('completed');
-    expect(restored.turnRunId).toBeUndefined();
   });
 });
 

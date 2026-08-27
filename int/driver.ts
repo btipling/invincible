@@ -2,7 +2,8 @@ import type { HarnessBridge } from '../lib/harnessBridge';
 import { pushSessionToBridge } from '../lib/harnessChat';
 import {
   bootCloudSnapshot,
-  type BootCloudResult,
+  cloudGetFromBoot,
+  type CloudGetResult,
 } from '../lib/sessionRepository';
 import type { SessionSnapshot } from '../lib/sessionStore';
 import type { MemoryBlobTranscriptStore } from '../lib/sessions/blobStores';
@@ -15,7 +16,7 @@ export async function bootFromMemory(opts: {
   envelopeStore: MemorySessionStore;
   blobStore: MemoryBlobTranscriptStore;
   key?: SessionRecordKey;
-}): Promise<BootCloudResult> {
+}): Promise<CloudGetResult> {
   const key = opts.key ?? {
     tenantId: INT_SCOPE.tenantId,
     userId: INT_SCOPE.userId,
@@ -37,12 +38,14 @@ export async function bootFromMemory(opts: {
       }
     }
   }
-  return bootCloudSnapshot({
-    id: opts.local.id,
-    local: opts.local,
-    envelopeMeta: env?.meta,
-    blobJson,
-  });
+  return cloudGetFromBoot(
+    bootCloudSnapshot({
+      id: opts.local.id,
+      local: opts.local,
+      envelopeMeta: env?.meta,
+      blobJson,
+    }),
+  );
 }
 
 export function hydrateRing(bridge: HarnessBridge, snapshot: SessionSnapshot): void {

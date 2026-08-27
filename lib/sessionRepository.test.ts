@@ -11,6 +11,7 @@ import {
   mergeAdoptedUsage,
   overlayEnvelopeMeta,
   bootCloudSnapshot,
+  cloudGetFromBoot,
   parseCloudSessionSnapshot,
   parseSessionSummaryList,
   shouldAdoptServer,
@@ -804,7 +805,7 @@ describe('bootCloudSnapshot (getEnvelope two-step, today\'s semantics)', () => {
     expect(result.snapshot.messages.map((m) => m.text)).toEqual(['turn-1', 'turn-2']);
   });
 
-  it('getEnvelope two-step is bootCloudSnapshot (not a second inlined parse)', () => {
+  it('getEnvelope two-step is bootCloudSnapshot + cloudGetFromBoot (not a second inlined parse)', () => {
     const src = readFileSync('lib/sessionRepository.ts', 'utf8');
     const start = src.indexOf('async function getEnvelope');
     const end = src.indexOf('async function get(', start);
@@ -812,19 +813,66 @@ describe('bootCloudSnapshot (getEnvelope two-step, today\'s semantics)', () => {
     expect(end).toBeGreaterThan(start);
     const body = src.slice(start, end);
     expect(body).toContain('bootCloudSnapshot(');
+    expect(body).toContain('cloudGetFromBoot(');
     expect(body).not.toContain('parseCloudSessionSnapshot(');
     expect(body).not.toContain('overlayEnvelopeMeta(');
-    // CloudGetResult error has no snapshot — dummy local is discarded.
-    // Overlay-on-error cannot reach kickColdAttach through this return.
-    expect(body).toContain("if (boot.action === 'error')");
-    expect(body).toContain(
-      "return { action: 'error', status: 0, message: boot.message }",
-    );
+    // Mapping lives in cloudGetFromBoot — getEnvelope must not re-inline a
+    // snapshot-bearing error return (that would re-open the int doppelganger).
+    expect(body).not.toMatch(/action: 'error'[\s\S]*snapshot:/);
+  });
+});
+
+describe('cloudGetFromBoot (host GET mapping)', () => {
+  const local: SessionSnapshot = {
+    id: 's',
+    updatedAt: 1,
+    messages: [{ id: 'm1', role: 'user', text: 'turn-1', at: 1 }],
+    turnStatus: 'completed',
+  };
+
+  it('ok passes the snapshot through', () => {
+    const snapshot: SessionSnapshot = {
+      ...local,
+      turnStatus: 'running',
+      turnRunId: 'wr_live',
+    };
+    expect(cloudGetFromBoot({ action: 'ok', snapshot })).toEqual({
+      action: 'ok',
+      snapshot,
+    });
+  });
+
+  it('error discards even a running overlay snapshot (getEnvelope cannot return one)', () => {
+    const poison: SessionSnapshot = {
+      ...local,
+      turnStatus: 'running',
+      turnRunId: 'wr_live',
+    };
+    const got = cloudGetFromBoot({
+      action: 'error',
+      message: 'Invalid transcript body.',
+      snapshot: poison,
+    });
+    expect(got).toEqual({
+      action: 'error',
+      status: 0,
+      message: 'Invalid transcript body.',
+    });
+    expect(got).not.toHaveProperty('snapshot');
+  });
+
+  it('error return has no snapshot field (source-lock)', () => {
+    const src = readFileSync('lib/sessionRepository.ts', 'utf8');
+    const start = src.indexOf('export function cloudGetFromBoot');
+    const end = src.indexOf('export function bootCloudSnapshot');
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const body = src.slice(start, end);
     const errIdx = body.indexOf("if (boot.action === 'error')");
     const okIdx = body.indexOf("return { action: 'ok'", errIdx);
+    expect(errIdx).toBeGreaterThan(0);
     expect(okIdx).toBeGreaterThan(errIdx);
-    const errBlock = body.slice(errIdx, okIdx);
-    expect(errBlock).not.toMatch(/snapshot:/);
+    expect(body.slice(errIdx, okIdx)).not.toMatch(/snapshot:/);
   });
 });
 

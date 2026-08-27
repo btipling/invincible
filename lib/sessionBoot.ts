@@ -7,7 +7,7 @@
  * server-minted session UUID; the URL `?s=`, repository key, and resource `:id` are
  * all the same id.
  */
-import { shouldAdoptServer, type IdSessionRepository } from './sessionRepository';
+import { shouldAdoptServer, type CloudGetResult, type IdSessionRepository } from './sessionRepository';
 import type { SessionSnapshot } from './sessionStore';
 
 /** Local placeholder ids minted by `createEmptySession` when never cloud-bound. */
@@ -97,19 +97,20 @@ export function shouldAdoptBootServer(
  *
  * Matches `bootCloudSession` + `HarnessHost.onAdopt`:
  * - `action !== 'ok'` → keep `local` (`CloudGetResult` error/disabled/notfound
- *   has **no** snapshot; `getEnvelope` discards `bootCloudSnapshot`'s parse-fail
- *   local). An error result's `snapshot` field is **ignored** if present.
+ *   has **no** snapshot; `cloudGetFromBoot` discards `bootCloudSnapshot`'s
+ *   parse-fail local). Extra `snapshot` on a non-ok result is **ignored**.
  * - `ok` → LWW via {@link shouldAdoptBootServer}; loser keeps `local`.
  *
  * Envelope-wins on an unreadable blob (overlay `running` onto stale local) is a
- * product change **to this function** (and `getEnvelope` / `onAdopt`). Int F5
- * rows must call this, not `bootCloudSnapshot`'s error snapshot.
+ * product change **to this function** and `cloudGetFromBoot` (so `getEnvelope`
+ * and int `bootFromMemory` stay one mapping). Int F5 rows must call this with a
+ * `CloudGetResult`, not a `BootCloudResult`.
  */
 export function snapshotAfterCloudGet(
   local: SessionSnapshot,
-  got: { action: string; snapshot?: SessionSnapshot },
+  got: CloudGetResult,
 ): SessionSnapshot {
-  if (got.action === 'ok' && got.snapshot && shouldAdoptBootServer(local, got.snapshot)) {
+  if (got.action === 'ok' && shouldAdoptBootServer(local, got.snapshot)) {
     return got.snapshot;
   }
   return local;

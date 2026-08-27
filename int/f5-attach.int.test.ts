@@ -23,7 +23,7 @@ function turn1Local(): SessionSnapshot {
   };
 }
 
-/** Host restore: CloudGetResult error has no snapshot; LWW on ok. */
+/** Host restore: CloudGetResult (cloudGetFromBoot); error has no snapshot; LWW on ok. */
 function restoredAfterBoot(
   local: SessionSnapshot,
   boot: Awaited<ReturnType<typeof bootFromMemory>>,

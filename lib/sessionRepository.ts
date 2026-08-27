@@ -359,6 +359,20 @@ export type BootCloudResult =
   | { action: 'error'; message: string; snapshot: SessionSnapshot };
 
 /**
+ * Host GET mapping: `BootCloudResult` → `CloudGetResult`.
+ *
+ * Parse fail still **discards** `boot.snapshot` (dummy or real local). Envelope-wins
+ * that must reach `kickColdAttach` / Send remap has to change **this** function
+ * (and `snapshotAfterCloudGet`); overlay-only inside `bootCloudSnapshot` cannot.
+ */
+export function cloudGetFromBoot(boot: BootCloudResult): CloudGetResult {
+  if (boot.action === 'error') {
+    return { action: 'error', status: 0, message: boot.message };
+  }
+  return { action: 'ok', snapshot: boot.snapshot };
+}
+
+/**
  * Mirror of inner `getEnvelope` (createHttpSessionRepository): parse the
  * transcript blob, then overlay envelope meta. Parse fail → keep `local`
  * and **do not** overlay (today's boot; overlay-on-error is a product fix).
@@ -717,16 +731,14 @@ export function createHttpSessionRepository(
       const blobJson = await t.json();
       // One two-step with the int/unit extract. Dummy local is discarded on
       // parse fail — getEnvelope still returns action error (host keeps local).
-      const boot = bootCloudSnapshot({
-        id,
-        local: { id, updatedAt: 0, messages: [] },
-        envelopeMeta: env.meta,
-        blobJson,
-      });
-      if (boot.action === 'error') {
-        return { action: 'error', status: 0, message: boot.message };
-      }
-      return { action: 'ok', snapshot: boot.snapshot };
+      return cloudGetFromBoot(
+        bootCloudSnapshot({
+          id,
+          local: { id, updatedAt: 0, messages: [] },
+          envelopeMeta: env.meta,
+          blobJson,
+        }),
+      );
     } catch {
       return { action: 'error', status: 0, message: 'Network error pulling session.' };
     }

@@ -212,6 +212,9 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(f5).not.toMatch(/coldAttachFromSnapshot\(\s*boot\.snapshot\s*\)/);
     expect(f5).not.toMatch(/turnRunId:\s*boot\.snapshot\.turnRunId/);
     expect(f5).not.toMatch(/turnStatus:\s*boot\.snapshot\.turnStatus/);
+    const driver = readFileSync(resolve(process.cwd(), 'int/driver.ts'), 'utf8');
+    expect(driver).toContain('cloudGetFromBoot(');
+    expect(driver).not.toMatch(/return\s+bootCloudSnapshot\(/);
   });
 
   it('hot resume uses decideHotResume (empty-EOF does not spin inline)', () => {
