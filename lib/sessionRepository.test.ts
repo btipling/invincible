@@ -9,6 +9,7 @@ import {
   isEmptyOfDialogue,
   mergeAdoptedUsage,
   overlayEnvelopeMeta,
+  bootCloudSnapshot,
   parseCloudSessionSnapshot,
   parseSessionSummaryList,
   shouldAdoptServer,
@@ -753,6 +754,53 @@ describe('overlayEnvelopeMeta', () => {
     expect(poisonedEnv.turnRunId).toBeUndefined();
     expect(poisonedEnv.turnStatus).toBeUndefined();
     expect(poisonedEnv.turnStreamCursor).toBeUndefined();
+  });
+});
+
+describe('bootCloudSnapshot (getEnvelope two-step, today\'s semantics)', () => {
+  const local: SessionSnapshot = {
+    id: 's',
+    updatedAt: 1,
+    messages: [{ id: 'm1', role: 'user', text: 'turn-1', at: 1 }],
+    turnStatus: 'completed',
+  };
+
+  it('parse fail keeps local and does not overlay envelope running', () => {
+    const result = bootCloudSnapshot({
+      id: 's',
+      local,
+      envelopeMeta: { turnStatus: 'running', turnRunId: 'wr_live' },
+      blobJson: { deltas: [{ d: 1 }] },
+    });
+    expect(result).toEqual({
+      action: 'error',
+      message: 'Invalid transcript body.',
+      snapshot: local,
+    });
+    expect(result.snapshot.turnStatus).toBe('completed');
+    expect(result.snapshot.turnRunId).toBeUndefined();
+  });
+
+  it('parse ok overlays envelope meta onto the blob snapshot', () => {
+    const blob = {
+      id: 's',
+      updatedAt: 2,
+      messages: [
+        { id: 'm1', role: 'user', text: 'turn-1', at: 1 },
+        { id: 'm2', role: 'user', text: 'turn-2', at: 2 },
+      ],
+    };
+    const result = bootCloudSnapshot({
+      id: 's',
+      local,
+      envelopeMeta: { turnStatus: 'running', turnRunId: 'wr_live' },
+      blobJson: blob,
+    });
+    expect(result.action).toBe('ok');
+    if (result.action !== 'ok') return;
+    expect(result.snapshot.turnStatus).toBe('running');
+    expect(result.snapshot.turnRunId).toBe('wr_live');
+    expect(result.snapshot.messages.map((m) => m.text)).toEqual(['turn-1', 'turn-2']);
   });
 });
 

@@ -8,6 +8,7 @@ import {
   decideAttachClass,
   decideHotResume,
   decideSendAttach,
+  coldAttachFromSnapshot,
   isAttachRunGone,
   lastUserText,
   ATTACH_FOLLOW_UP_NOTE,
@@ -113,6 +114,21 @@ describe('decideAttachClass', () => {
   });
 });
 
+describe('coldAttachFromSnapshot', () => {
+  it('null when completed / missing run id (today\'s kickColdAttach predicate)', () => {
+    expect(coldAttachFromSnapshot({ turnStatus: 'completed', turnRunId: 'wr_1' })).toBeNull();
+    expect(coldAttachFromSnapshot({ turnStatus: 'running' })).toBeNull();
+  });
+
+  it('cold spec at startIndex 0 + dedup when restored snapshot is running', () => {
+    expect(coldAttachFromSnapshot({ turnStatus: 'running', turnRunId: 'wr_1' })).toEqual({
+      runId: 'wr_1',
+      startIndex: 0,
+      dedup: true,
+    });
+  });
+});
+
 describe('isAttachRunGone (adversarial #857)', () => {
   it('only 404 is run-gone; 503/401/5xx/network stay subscribe-fail', () => {
     expect(isAttachRunGone(404)).toBe(true);
@@ -183,6 +199,7 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
 
   it('boot / adopt / activateSession kick cold attach at startIndex=0 + dedup', () => {
     expect(host).toContain('const kickColdAttach = useCallback');
+    expect(host).toContain('coldAttachFromSnapshot(');
     expect(host.match(/queueMicrotask\(kickColdAttach\)/g)?.length).toBeGreaterThanOrEqual(3);
     expect(host).toContain('startIndex: 0, dedup: true');
     expect(host).toContain('if (inflightRef.current) return');

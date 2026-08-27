@@ -13,7 +13,7 @@ import {
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
 import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort } from '../../lib/detachTurn';
-import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, type HeapApplied } from '../../lib/turnAttach';
+import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, coldAttachFromSnapshot, type HeapApplied } from '../../lib/turnAttach';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -370,11 +370,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
    */
   const kickColdAttach = useCallback(() => {
     if (inflightRef.current) return;
-    const s = sessionRef.current;
-    if (s.turnStatus !== 'running' || !s.turnRunId) return;
+    const spec = coldAttachFromSnapshot(sessionRef.current);
+    if (!spec) return;
     heapAppliedRef.current = null;
     void runPromptRef.current('', {
-      attach: { runId: s.turnRunId, startIndex: 0, dedup: true },
+      attach: { runId: spec.runId, startIndex: 0, dedup: true },
     });
   }, []);
 

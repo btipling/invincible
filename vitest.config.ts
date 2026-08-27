@@ -34,6 +34,8 @@ export default defineConfig({
             'lib/tenancy/**',
             // Runs in the tenancy project so they share the one WASM boot.
             'scripts/backfill-sessions.test.ts',
+            // Durable-turn int suite — `npm test` passes `--project default --project tenancy`.
+            'int/**',
           ],
         },
       },
@@ -52,6 +54,14 @@ export default defineConfig({
             forks: { singleFork: true },
           },
           isolate: false,
+        },
+      },
+      {
+        test: {
+          name: 'int',
+          environment: 'node',
+          include: ['int/**/*.int.test.ts'],
+          testTimeout: 30_000,
         },
       },
     ],

@@ -430,7 +430,7 @@ See create-plan / plan-review **layer** rules when planning features.
 - **Harness frame budget:** app code in `dvui_update` → `ui.frame()` must not GPA-allocate or do host I/O. Parse / decode / texture belong on the **bridge write** (`inv_push_message` / `inv_update_last` / `inv_*_cache_put`), not paint. Contract + current exceptions: [docs/harness-limits.md](docs/harness-limits.md) · Frame budget.
 - **Tests are run directly with vitest — no script wrappers allowed.** Never
   introduce or use a wrapper script around vitest, and do not re-add one if it was
-  removed. Run the suite with `npm test` (= `node scripts/di-gate.mjs && node scripts/drizzle-journal-gate.mjs && vitest run` —
+  removed. Run the suite with `npm test` (= `node scripts/di-gate.mjs && node scripts/drizzle-journal-gate.mjs && vitest run --project default --project tenancy` —
   di-gate and drizzle-journal-gate each run first so in-body `createDbConnection(`/`new
   PGlite(`/sandbox/http/redis I/O construction and a `db/migrations` SQL↔journal
   mismatch each fail before vitest) or invoke vitest through the **local** binary directly
@@ -447,7 +447,11 @@ See create-plan / plan-review **layer** rules when planning features.
   **fails closed** (throws, never `it.skip`) when the Wasm is missing or is a
   stale pre-v11 artifact — build native/harness on the runner
   (`build-harness`) and fetch via `scripts/fetch-harness-artifact.mjs` before
-  expecting those rows green.
+  expecting those rows green. The durable-turn int project (`npm run test:int` =
+  `vitest run --project int`) is **not** in `npm test` — vitest runs every
+  `test.projects` entry unless `--project` is passed. It fail-closes on missing
+  `harness.wasm` via a green load test (throw, never `it.skip`); known-broken
+  persist/boot contracts wrap only those expects in `it.fails`.
 - **Module bodies never construct I/O directly.** Server modules receive live
   handles or factory providers (DB: `db`/`connect`; sandbox: BYO/Vercel client
   factories; HTTP: runner factory; sessions: store factory) through an injection

@@ -353,6 +353,36 @@ export function overlayEnvelopeMeta(
   return out;
 }
 
+/** Result of the host envelope-GET two-step without HTTP (parse blob, overlay meta). */
+export type BootCloudResult =
+  | { action: 'ok'; snapshot: SessionSnapshot }
+  | { action: 'error'; message: string; snapshot: SessionSnapshot };
+
+/**
+ * Mirror of inner `getEnvelope` (createHttpSessionRepository): parse the
+ * transcript blob, then overlay envelope meta. Parse fail → keep `local`
+ * and **do not** overlay (today's boot; overlay-on-error is a product fix).
+ */
+export function bootCloudSnapshot(input: {
+  id: string;
+  local: SessionSnapshot;
+  envelopeMeta?: Record<string, unknown>;
+  blobJson: unknown;
+}): BootCloudResult {
+  const parsed = parseCloudSessionSnapshot(input.blobJson, input.id);
+  if (!parsed) {
+    return {
+      action: 'error',
+      message: 'Invalid transcript body.',
+      snapshot: input.local,
+    };
+  }
+  return {
+    action: 'ok',
+    snapshot: overlayEnvelopeMeta(parsed, input.envelopeMeta),
+  };
+}
+
 /**
  * Merge `usage` on same-id adopt so a server snapshot without `meta.usage`
  * (other tab on a pre-#626 bundle, or any prior persist that omitted usage)

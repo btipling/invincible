@@ -139,6 +139,22 @@ export function decideAttachClass(input: {
   return { kind: 'hot', startIndex };
 }
 
+/** Cold-attach spec used by `HarnessHost.kickColdAttach` (startIndex=0 + dedup). */
+export type ColdAttachSpec = { runId: string; startIndex: 0; dedup: true };
+
+/**
+ * Predicate of `kickColdAttach`: only a restored snapshot that is still
+ * `running` with a `turnRunId` attaches. Envelope liveness is **not** consulted
+ * here (F5-stale-local miss).
+ */
+export function coldAttachFromSnapshot(s: {
+  turnStatus?: TurnStatus;
+  turnRunId?: string;
+}): ColdAttachSpec | null {
+  if (s.turnStatus !== 'running' || !s.turnRunId) return null;
+  return { runId: s.turnRunId, startIndex: 0, dedup: true };
+}
+
 /**
  * C16 GET 404 = run gone or ownership mismatch. Every other attach HTTP
  * failure (503 store, 401 auth, 5xx, network with no status) is "could not
