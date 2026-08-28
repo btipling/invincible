@@ -533,13 +533,14 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // (never writeLocal onto a switched session; never PUT a Clear'd id).
             // Adversarial #870: do not paint the quota Error row here — it
             // becomes last and livePaintToolRun / growAssistant duplicate cards.
-            // Post-turn persistTurn still throws and paints once.
+            // persistTurn of a still-running snapshot also skips paint (helper
+            // + call site) so hot resume / Send-while-running cannot steal last.
             onSessionPatch: (s) => persistTurn(s, false),
             ...(attach ? { attach } : {}),
           },
         );
         if (turnEpochRef.current !== epoch) {
-          persistTurn(next);
+          persistTurn(next, next.turnStatus !== 'running');
           return;
         }
         // Plan #616 (source #610): fold the LIVE selection into the snapshot before
@@ -553,7 +554,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // Always persist — including user Stop/cancel (and late abort after a finished
         // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
         // Load earlier / refresh could wipe the cancelled turn from the ring.
-        persistTurn(folded);
+        persistTurn(folded, folded.turnStatus !== 'running');
         if (folded.turnStatus === 'running' && folded.turnRunId) {
           heapAppliedRef.current = {
             runId: folded.turnRunId,

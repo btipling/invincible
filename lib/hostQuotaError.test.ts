@@ -107,6 +107,21 @@ describe('tryLocalSave', () => {
     expect(warned.current).toBe(true);
   });
 
+  it('running snapshot swallows quota without pushing so a later terminal paint can still fire', () => {
+    const store = quotaStore();
+    const bridge = mockBridge();
+    const warned: QuotaWarnFlag = { current: false };
+    const running = { ...createEmptySession('s'), turnStatus: 'running' as const };
+    expect(() => tryLocalSave(store, running, bridge, warned)).not.toThrow();
+    expect(bridge.pushMessage).not.toHaveBeenCalled();
+    expect(warned.current).toBe(false);
+    const done = { ...createEmptySession('s'), turnStatus: 'completed' as const };
+    expect(() => tryLocalSave(store, done, bridge, warned)).not.toThrow();
+    expect(bridge.pushMessage).toHaveBeenCalledTimes(1);
+    expect(bridge.pushMessage).toHaveBeenCalledWith(MessageKind.Error, LOCAL_SAVE_QUOTA_ERROR);
+    expect(warned.current).toBe(true);
+  });
+
   it('non-quota throw is swallowed (save already filters these)', () => {
     const err = new Error('denied');
     err.name = 'SecurityError';
@@ -151,5 +166,10 @@ describe('HarnessHost wiring lock — quota save (#870)', () => {
 
   it('onSessionPatch persistTurn does not paint the quota Error row', () => {
     expect(src).toContain('onSessionPatch: (s) => persistTurn(s, false)');
+  });
+
+  it('post-turn persistTurn does not paint while the durable turn is still running', () => {
+    expect(src).toContain('persistTurn(folded, folded.turnStatus !== \'running\')');
+    expect(src).toContain('persistTurn(next, next.turnStatus !== \'running\')');
   });
 });
