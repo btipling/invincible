@@ -441,7 +441,7 @@ describe('mergeCheckpointOntoPrior', () => {
     const hostA2 = {
       id: 'ha2',
       role: 'assistant' as const,
-      text: 'Let me read that\nfile looks good',
+      text: 'Let me read thatfile looks good',
       at: 22,
     };
     const preamble = {
@@ -596,7 +596,7 @@ describe('mergeCheckpointOntoPrior', () => {
     const hostA2 = {
       id: 'ha2',
       role: 'assistant' as const,
-      text: 'Let me read the file\nI will run the tests\n3 passed',
+      text: 'Let me read the fileI will run the tests3 passed',
       at: 22,
     };
     const incoming = checkpointToSnapshotMessages([
@@ -697,6 +697,205 @@ describe('mergeCheckpointOntoPrior', () => {
       'exit=0',
       'wrote file',
       'edited three files',
+    ]);
+  });
+
+  it('same-user different preamble + last-round suffix of leftover appends the whole turn', () => {
+    const uA = { id: 'h1', role: 'user' as const, text: 'continue', at: 10 };
+    const tA = {
+      id: 'h2',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"}]}',
+      at: 11,
+    };
+    const aA = { id: 'h3', role: 'assistant' as const, text: 'All tests passed. OK', at: 12 };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'continue' },
+      { role: 'assistant', content: 'Let me edit the file' },
+      { role: 'tool', content: 'exit=0' },
+      { role: 'assistant', content: 'OK' },
+    ]);
+    const out = mergeCheckpointOntoPrior([uA, tA, aA], incoming);
+    expect(out.map((m) => m.text)).toEqual([
+      'continue',
+      tA.text,
+      'All tests passed. OK',
+      'continue',
+      'Let me edit the file',
+      'exit=0',
+      'OK',
+    ]);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'continue')).toHaveLength(2);
+    expect(out.filter((m) => m.role === 'tool_run')).toHaveLength(2);
+  });
+
+  it('same-user different preamble + last-round equal short OK appends the whole turn', () => {
+    const uA = { id: 'h1', role: 'user' as const, text: 'continue', at: 10 };
+    const tA = {
+      id: 'h2',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"}]}',
+      at: 11,
+    };
+    const aA = { id: 'h3', role: 'assistant' as const, text: 'OK', at: 12 };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'continue' },
+      { role: 'assistant', content: 'Let me edit the file' },
+      { role: 'tool', content: 'exit=0' },
+      { role: 'assistant', content: 'OK' },
+    ]);
+    const out = mergeCheckpointOntoPrior([uA, tA, aA], incoming);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'continue')).toHaveLength(2);
+    expect(out.map((m) => m.text)).toEqual([
+      'continue',
+      tA.text,
+      'OK',
+      'continue',
+      'Let me edit the file',
+      'exit=0',
+      'OK',
+    ]);
+  });
+
+  it('same-user different preamble + last-round Done suffix of Finished. Done appends', () => {
+    const uA = { id: 'h1', role: 'user' as const, text: 'continue', at: 10 };
+    const tA = {
+      id: 'h2',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"exec"}]}',
+      at: 11,
+    };
+    const aA = { id: 'h3', role: 'assistant' as const, text: 'Finished. Done', at: 12 };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'continue' },
+      { role: 'assistant', content: 'I will apply the patch' },
+      { role: 'tool', content: 'wrote file' },
+      { role: 'assistant', content: 'Done' },
+    ]);
+    const out = mergeCheckpointOntoPrior([uA, tA, aA], incoming);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'continue')).toHaveLength(2);
+    expect(out.map((m) => m.text)).toEqual([
+      'continue',
+      tA.text,
+      'Finished. Done',
+      'continue',
+      'I will apply the patch',
+      'wrote file',
+      'Done',
+    ]);
+  });
+
+  it('thinking-split two host cards + leftover long vs last-round OK different preamble appends', () => {
+    const uA = { id: 'h1', role: 'user' as const, text: 'continue', at: 10 };
+    const card1 = {
+      id: 'c1',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"}]}',
+      at: 11,
+    };
+    const card2 = {
+      id: 'c2',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"exec"}]}',
+      at: 12,
+    };
+    const leftover = {
+      id: 'a',
+      role: 'assistant' as const,
+      text: 'All tests passed. OK',
+      at: 13,
+    };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'continue' },
+      { role: 'assistant', content: 'Let me edit' },
+      { role: 'tool', content: 'a' },
+      { role: 'assistant', content: 'running' },
+      { role: 'tool', content: 'b' },
+      { role: 'assistant', content: 'OK' },
+    ]);
+    const out = mergeCheckpointOntoPrior([uA, card1, card2, leftover], incoming);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'continue')).toHaveLength(2);
+    expect(out.filter((m) => m.role === 'tool_run')).toHaveLength(4);
+    expect(out.map((m) => m.text)).toEqual([
+      'continue',
+      card1.text,
+      card2.text,
+      'All tests passed. OK',
+      'continue',
+      'Let me edit',
+      'a',
+      'running',
+      'b',
+      'OK',
+    ]);
+  });
+
+  it('worker 1:1 same preamble + last-round suffix of leftover appends the whole turn', () => {
+    const prior = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix it' },
+      { role: 'assistant', content: 'Let me look at the file' },
+      { role: 'tool', content: 'old result' },
+      { role: 'assistant', content: 'All tests passed. OK' },
+    ]);
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix it' },
+      { role: 'assistant', content: 'Let me look at the file' },
+      { role: 'tool', content: 'new result' },
+      { role: 'assistant', content: 'OK' },
+    ]);
+    const out = mergeCheckpointOntoPrior(prior, incoming);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'fix it')).toHaveLength(2);
+    expect(out.map((m) => m.text)).toEqual([
+      'fix it',
+      'Let me look at the file',
+      'old result',
+      'All tests passed. OK',
+      'fix it',
+      'Let me look at the file',
+      'new result',
+      'OK',
+    ]);
+  });
+
+  it('worker 1:1 exact persist retry stays no-append', () => {
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix it' },
+      { role: 'assistant', content: 'Let me look at the file' },
+      { role: 'tool', content: 'old result' },
+      { role: 'assistant', content: 'All tests passed. OK' },
+    ]);
+    const out = mergeCheckpointOntoPrior(incoming, incoming);
+    expect(out).toEqual(incoming);
+  });
+
+  it('worker interleaved same mid + last-round suffix of leftover appends', () => {
+    const prior = checkpointToSnapshotMessages([
+      { role: 'user', content: 'continue' },
+      { role: 'tool', content: 't1' },
+      { role: 'assistant', content: 'running' },
+      { role: 'tool', content: 't2' },
+      { role: 'assistant', content: 'All tests passed. OK' },
+    ]);
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'continue' },
+      { role: 'tool', content: 't1b' },
+      { role: 'assistant', content: 'running' },
+      { role: 'tool', content: 't2b' },
+      { role: 'assistant', content: 'OK' },
+    ]);
+    const out = mergeCheckpointOntoPrior(prior, incoming);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'continue')).toHaveLength(2);
+    expect(out.map((m) => m.text)).toEqual([
+      'continue',
+      't1',
+      'running',
+      't2',
+      'All tests passed. OK',
+      'continue',
+      't1b',
+      'running',
+      't2b',
+      'OK',
     ]);
   });
 
@@ -811,7 +1010,7 @@ describe('mergeCheckpointOntoPrior', () => {
     const concat = {
       id: 'ha2',
       role: 'assistant' as const,
-      text: 'Let me read the file\nI will run the tests\n3 passed',
+      text: 'Let me read the fileI will run the tests3 passed',
       at: 22,
     };
     const turnEnd = {

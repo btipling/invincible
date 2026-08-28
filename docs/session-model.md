@@ -65,7 +65,16 @@ entire this-run. A short prefix whose fold text is a suffix of leftover
 this-run assistant rows only when its text equals the checkpoint assistant or
 ends with it (concatenated `done.text` vs last-round text), not the reverse and
 not by role alone — two tool-turns that share a user prompt keep both replies,
-including a longer new reply that happens to end with a previous short ack. A leftover `{ deltas }`-only object
+including a longer new reply that happens to end with a previous short ack. After
+skip-preamble against a host tool card, that trailing cover is against `+=` of
+**all** this-run assistant texts (the same `done.text` string), not last-round
+alone: a new same-user tool-turn whose last-round is a short ack of leftover
+(`OK` / `Done`) still appends when the skipped preamble differs. After a 1:1
+assistant match (worker preamble before tools, or interleaved mid-round equal
+text), trailing leftover cover is equal-only — a longer previous last-round that
+happens to end with the new last-round (`All tests passed. OK` vs `OK`) is a new
+turn and appends. Host concat with no pre-tool assistant row still covers by
+`endsWith` last-round. A leftover `{ deltas }`-only object
 fails parse and is not merged; restore keeps the local transcript and overlays live envelope
 carriers until a later persist overwrites the pointer. A bound pointer whose object
 is missing or not JSON fails persist (pointer unchanged) rather than publishing

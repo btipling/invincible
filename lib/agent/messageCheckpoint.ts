@@ -283,9 +283,19 @@ export function snapshotMessagesFromUnknown(
  * - After a this-run tool match, a single trailing prior `assistant` covers
  *   remaining incoming `assistant` rows when its text equals the incoming
  *   text or **ends with** it (host concatenated `done.text` vs last-round
- *   checkpoint). Reverse `incoming.endsWith(prior)` is not a cover: a new
- *   reply that happens to end with a previous short ack (`OK` / `Done`)
- *   must append. Consecutive prior assistants stay 1:1.
+ *   checkpoint). When this match **skipped** an incoming assistant against a
+ *   prior `tool_run` (host card), cover is against `+=` of **all** this-run
+ *   assistant texts (`foldIncomingAssistants` / host `done.text`), not
+ *   last-round alone: a new same-user tool-turn whose last-round is a short
+ *   ack (`OK` / `Done`) of leftover must still append if the skipped
+ *   preamble differs. After a **1:1** assistant match (worker preamble
+ *   before tools, or interleaved mid-round `p.text === n.text`), leftover
+ *   is last-round not concat — cover is **equal-only**, not `endsWith`: a
+ *   new same-user tool-turn whose last-round is a short ack of leftover
+ *   (`All tests passed. OK` vs `OK`) must append. Reverse
+ *   `incoming.endsWith(prior)` is not a cover: a new reply that happens to
+ *   end with a previous short ack (`OK` / `Done`) must append. Consecutive
+ *   prior assistants stay 1:1.
  * - Host-only `skill_attached` / `system` / `error` in the prior suffix are
  *   skipped so they cannot zero overlap.
  *
@@ -427,6 +437,7 @@ function flexMatchExact(
   let ii = 0;
   let matchedTool = false;
   let skippedAssistant = false;
+  let matchedAssistantExact = false;
   while (ii < prefixLen) {
     while (
       pi < prior.length &&
@@ -454,11 +465,31 @@ function flexMatchExact(
     const afterToolAssistant =
       matchedTool && p.role === 'assistant' && n.role === 'assistant';
     if (afterToolAssistant) {
-      if (!assistantCovers(p.text, n.text)) {
+      // Skip-preamble (host card): leftover must cover the full this-run
+      // assistant fold (`+=` of skipped preambles + last-round), not
+      // last-round alone. Last-round-only `endsWith` swallows a new
+      // same-user tool-turn whose last-round is a short ack of leftover.
+      // After a 1:1 assistant match (worker preamble / interleaved mid),
+      // leftover is last-round not concat — equal-only, not endsWith.
+      // Host concat with no pre-tool assistant keeps assistantCovers.
+      if (skippedAssistant) {
+        const folded = foldIncomingAssistants(incoming.slice(0, prefixLen));
+        const foldText = folded[0]?.text ?? '';
+        if (foldText.length === 0 || !assistantCovers(p.text, foldText)) {
+          return { matched: false, skippedAssistant: false };
+        }
+      } else if (matchedAssistantExact) {
+        if (p.text !== n.text) {
+          return { matched: false, skippedAssistant: false };
+        }
+      } else if (!assistantCovers(p.text, n.text)) {
         return { matched: false, skippedAssistant: false };
       }
+      if (p.text === n.text) matchedAssistantExact = true;
     } else if (!snapshotRowOverlaps(p, n)) {
       return { matched: false, skippedAssistant: false };
+    } else if (p.role === 'assistant' && n.role === 'assistant') {
+      matchedAssistantExact = true;
     }
     pi += 1;
     ii += 1;
@@ -557,8 +588,10 @@ function hasLaterRole(
 /**
  * Trailing-assistant cover after a this-run tool match: equal, or prior text
  * ends with the incoming text (host concatenated `done.text` vs last-round
- * checkpoint). Reverse `incoming.endsWith(prior)` is not a cover — a longer
- * new reply that happens to end with a previous short ack must append.
+ * checkpoint, or vs the full this-run fold after skip-preamble). Not used
+ * after a 1:1 assistant match — that path is equal-only. Reverse
+ * `incoming.endsWith(prior)` is not a cover — a longer new reply that
+ * happens to end with a previous short ack must append.
  * Empty strings never cover — `String.prototype.endsWith('')` is true for
  * every haystack.
  */
