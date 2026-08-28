@@ -544,6 +544,47 @@ describe('mergeCheckpointOntoPrior', () => {
     );
   });
 
+  it('empty last-round vs mid-turn host card keeps skipped this-run assistant prose', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'fix the tests', at: 20 };
+    const hostCard = {
+      id: 'ht',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"},{"name":"exec"}]}',
+      at: 21,
+    };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix the tests' },
+      { role: 'assistant', content: 'Let me read the file' },
+      { role: 'tool', content: 'file content' },
+      { role: 'assistant', content: 'I will run the tests' },
+      { role: 'tool', content: 'exit=1' },
+      { role: 'assistant', content: '' },
+    ]);
+    expect(incoming.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'tool_run',
+      'assistant',
+      'tool_run',
+    ]);
+    const out = mergeCheckpointOntoPrior([u1, a1, hostU2, hostCard], incoming);
+    expect(out.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'tool_run',
+      'assistant',
+    ]);
+    expect(out.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'fix the tests',
+      hostCard.text,
+      'Let me read the fileI will run the tests',
+    ]);
+    expect(out.filter((m) => m.role === 'tool_run')).toHaveLength(1);
+  });
+
   it('interleaved per-round assistants vs trailing host concat do not duplicate the user', () => {
     const hostU2 = { id: 'hu2', role: 'user' as const, text: 'fix the tests', at: 20 };
     const hostCard = {

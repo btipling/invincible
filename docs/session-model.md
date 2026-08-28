@@ -51,7 +51,9 @@ bridge-only until concatenated `done.text`) are skipped so they cannot zero
 overlap against a host tool card; when that prior suffix still ends on the
 tool card (no covering assistant), those skipped this-run assistant texts are
 folded into the appended tail as one row (`+=` of per-round `delta.text`, the
-same concatenation host `done.text` uses). A trailing host assistant covers remaining
+same concatenation host `done.text` uses), including when the last checkpoint
+round is empty-text so the incoming prefix fully matches and there is no
+trailing remainder. A trailing host assistant covers remaining
 this-run assistant rows only when its text equals the checkpoint assistant or
 ends with it (concatenated `done.text` vs last-round text), not the reverse and
 not by role alone — two tool-turns that share a user prompt keep both replies,
@@ -59,7 +61,9 @@ including a longer new reply that happens to end with a previous short ack. A le
 fails parse and is not merged; restore keeps the local transcript and overlays live envelope
 carriers until a later persist overwrites the pointer. A bound pointer whose object
 is missing or not JSON fails persist (pointer unchanged) rather than publishing
-this-run-only under a newer clock. An empty envelope with no live turn and no blob
+this-run-only under a newer clock. An envelope read that throws fails persist the
+same way (pointer unchanged); a missing envelope (`null`) is first persist and
+starts from this run only. An empty envelope with no live turn and no blob
 still 404-mints as before.
 
 **Status bar reseed (protocol v13, plan #538/#541):** on hydrate/restore and

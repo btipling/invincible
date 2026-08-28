@@ -36,6 +36,18 @@ class ThrowingBlobStore extends MemoryBlobTranscriptStore {
   }
 }
 
+/** Next `readEnvelope` rejects once when `armThrow` is set (Redis blip). */
+class ThrowOnceEnvelopeStore extends MemorySessionStore {
+  armThrow = false;
+  override async readEnvelope(k: SessionRecordKey) {
+    if (this.armThrow) {
+      this.armThrow = false;
+      throw new Error('redis blip');
+    }
+    return super.readEnvelope(k);
+  }
+}
+
 async function makeSeam(
   opts: {
     blobStore?: BlobTranscriptStore;
@@ -786,6 +798,63 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(parsed?.messages.filter((m) => m.role === 'tool_run')).toHaveLength(1);
   });
 
+  it('empty last-round vs mid-turn host card keeps skipped this-run assistant prose', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    const encoded = '{"tools":[{"name":"read_file","ok":true},{"name":"exec","ok":true}]}';
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1000,
+        messages: [
+          { id: 'h1', role: 'user', text: 'turn-1 user', at: 10 },
+          { id: 'h2', role: 'assistant', text: 'turn-1 assistant', at: 11 },
+          { id: 'h3', role: 'user', text: 'fix the tests', at: 20 },
+          { id: 'h4', role: 'tool_run', text: encoded, at: 21 },
+        ],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'fix the tests', at: 1 },
+          { id: 'cp_1', role: 'assistant', text: 'Let me read the file', at: 2 },
+          { id: 'cp_2', role: 'tool_run', text: 'file content', at: 3 },
+          { id: 'cp_3', role: 'assistant', text: 'I will run the tests', at: 4 },
+          { id: 'cp_4', role: 'tool_run', text: 'exit=1', at: 5 },
+        ],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const parsed = parseCloudSessionSnapshot(
+      JSON.parse((await blobStore.read(res.objectId!)) ?? 'null'),
+      scope.sessionId,
+    );
+    expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'fix the tests',
+      encoded,
+      'Let me read the fileI will run the tests',
+    ]);
+    expect(parsed?.messages.filter((m) => m.role === 'tool_run')).toHaveLength(1);
+  });
+
   it('interleaved per-round assistants vs trailing host concat do not duplicate the user', async () => {
     const blobStore = new MemoryBlobTranscriptStore();
     const envelopeStore = new MemorySessionStore();
@@ -883,5 +952,46 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       'exit=0',
       'All tests passed. OK',
     ]);
+  });
+
+  it('envelope read throw fails persist (pointer unchanged, not this-run-only)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new ThrowOnceEnvelopeStore();
+    const priorId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1000,
+        messages: [
+          { id: 'h1', role: 'user', text: 'turn-1 user', at: 10 },
+          { id: 'h2', role: 'assistant', text: 'turn-1 assistant', at: 11 },
+        ],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    envelopeStore.armThrow = true;
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_0', role: 'user', text: 'turn-2 user', at: 1 }],
+      }),
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('write_failed');
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.transcriptPointer).toBe(priorId);
+    expect(env?.meta?.turnStatus).toBeUndefined();
   });
 });

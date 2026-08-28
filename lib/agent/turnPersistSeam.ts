@@ -151,8 +151,12 @@ export function createTurnPersistSeam(
       if (envelope) {
         try {
           stored = await envelope.readEnvelope(key);
-        } catch {
-          stored = null;
+        } catch (err) {
+          return {
+            ok: false,
+            code: 'write_failed',
+            error: `envelope read failed: ${toMessage(err)}`,
+          };
         }
       }
       const updatedAt = clock(stored?.updatedAt ?? 0);

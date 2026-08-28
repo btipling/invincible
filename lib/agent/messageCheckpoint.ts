@@ -265,8 +265,10 @@ export function snapshotMessagesFromUnknown(
  *   Skip is for matching only: when the prior suffix ends on a `tool_run`
  *   (no covering assistant), those skipped this-run assistant texts are
  *   folded into the appended tail as one row (`+=` of per-round `delta.text`,
- *   same as host `done.text`). A prior that already ends with a covering
- *   concat stays no-append.
+ *   same as host `done.text`) — including when the last checkpoint round is
+ *   empty-text so incoming ends on `tool_run` and overlap is the full prefix
+ *   (no remainder). A prior that already ends with a covering concat stays
+ *   no-append.
  * - After a this-run tool match, a single trailing prior `assistant` covers
  *   remaining incoming `assistant` rows when its text equals the incoming
  *   text or **ends with** it (host concatenated `done.text` vs last-round
@@ -345,9 +347,11 @@ function lastKeptRole(
 }
 
 /**
- * Mid-turn host card (prior ends on `tool_run`, remainder is trailing
- * assistants): skipped per-round assts sat inside the matched prefix and
- * would otherwise be dropped. Fold when a this-run tool was overlapped.
+ * Mid-turn host card (prior ends on `tool_run`): skipped per-round assts sat
+ * inside the matched prefix and would otherwise be dropped. Fold when a
+ * this-run tool was overlapped, including a full-prefix match with no
+ * remainder (empty last-round assistant dropped). Covering concat is
+ * excluded by `lastKeptRole !== 'tool_run'`.
  */
 function shouldFoldSkippedAssistants(
   prior: ReadonlyArray<CheckpointSnapshotMessage>,
@@ -355,7 +359,7 @@ function shouldFoldSkippedAssistants(
   overlap: number,
   appended: ReadonlyArray<CheckpointSnapshotMessage>,
 ): boolean {
-  if (overlap === 0 || appended.length === 0) return false;
+  if (overlap === 0) return false;
   if (lastKeptRole(prior) !== 'tool_run') return false;
   if (!appended.every((m) => m.role === 'assistant')) return false;
   if (!incoming.slice(0, overlap).some((m) => m.role === 'tool_run')) return false;
