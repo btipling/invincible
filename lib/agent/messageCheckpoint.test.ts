@@ -677,6 +677,103 @@ describe('mergeCheckpointOntoPrior', () => {
     expect(out.filter((m) => m.text === 'I will run the tests')).toHaveLength(1);
   });
 
+  it('empty last-round persist retry onto folded mid-turn snapshot does not append leftover tool', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'fix the tests', at: 20 };
+    const hostCard = {
+      id: 'ht',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"},{"name":"exec"}]}',
+      at: 21,
+    };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix the tests' },
+      { role: 'assistant', content: 'Let me read the file' },
+      { role: 'tool', content: 'file content' },
+      { role: 'assistant', content: 'I will run the tests' },
+      { role: 'tool', content: 'exit=1' },
+      { role: 'assistant', content: '' },
+    ]);
+    const folded = mergeCheckpointOntoPrior([u1, a1, hostU2, hostCard], incoming);
+    expect(folded.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'fix the tests',
+      hostCard.text,
+      'Let me read the fileI will run the tests',
+    ]);
+    const retry = mergeCheckpointOntoPrior(folded, incoming);
+    expect(retry.map((m) => m.text)).toEqual(folded.map((m) => m.text));
+    expect(retry.filter((m) => m.role === 'tool_run')).toHaveLength(1);
+    expect(retry.filter((m) => m.role === 'user' && m.text === 'fix the tests')).toHaveLength(1);
+  });
+
+  it('empty last-round retry onto folded snapshot keeps trailing Turn ended system', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'fix the tests', at: 20 };
+    const hostCard = {
+      id: 'ht',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"},{"name":"exec"}]}',
+      at: 21,
+    };
+    const foldedAsst = {
+      id: 'hf',
+      role: 'assistant' as const,
+      text: 'Let me read the fileI will run the tests',
+      at: 22,
+    };
+    const turnEnd = {
+      id: 'hs',
+      role: 'system' as const,
+      text: 'Turn ended · model finished',
+      at: 23,
+    };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix the tests' },
+      { role: 'assistant', content: 'Let me read the file' },
+      { role: 'tool', content: 'file content' },
+      { role: 'assistant', content: 'I will run the tests' },
+      { role: 'tool', content: 'exit=1' },
+      { role: 'assistant', content: '' },
+    ]);
+    const prior = [u1, a1, hostU2, hostCard, foldedAsst, turnEnd];
+    const out = mergeCheckpointOntoPrior(prior, incoming);
+    expect(out).toEqual(prior);
+  });
+
+  it('completed host persistTurn trailing Turn ended + nonempty last-round is not duplicated', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'fix the tests', at: 20 };
+    const hostCard = {
+      id: 'ht',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"},{"name":"exec"}]}',
+      at: 21,
+    };
+    const concat = {
+      id: 'ha2',
+      role: 'assistant' as const,
+      text: 'Let me read the file\nI will run the tests\n3 passed',
+      at: 22,
+    };
+    const turnEnd = {
+      id: 'hs',
+      role: 'system' as const,
+      text: 'Turn ended · model finished',
+      at: 23,
+    };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix the tests' },
+      { role: 'assistant', content: 'Let me read the file' },
+      { role: 'tool', content: 'file content' },
+      { role: 'assistant', content: 'I will run the tests' },
+      { role: 'tool', content: 'exit=1' },
+      { role: 'assistant', content: '3 passed' },
+    ]);
+    const prior = [u1, a1, hostU2, hostCard, concat, turnEnd];
+    const out = mergeCheckpointOntoPrior(prior, incoming);
+    expect(out).toEqual(prior);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'fix the tests')).toHaveLength(1);
+  });
+
   it('thinking-split two host cards vs interleaved tools keep one user and fold assts', () => {
     const hostU2 = { id: 'hu2', role: 'user' as const, text: 'fix the tests', at: 20 };
     const card1 = {

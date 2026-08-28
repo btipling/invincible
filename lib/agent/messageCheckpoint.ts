@@ -271,7 +271,12 @@ export function snapshotMessagesFromUnknown(
  *   incoming assistant against a prior `tool_run` (mid-turn host card). A
  *   worker 1:1 prior that already is this run (no skip) stays no-append,
  *   including empty last-round persist retry. A prior that already ends with
- *   a covering concat stays no-append.
+ *   a covering concat stays no-append. Persist retry onto that fold (B7
+ *   wrote `[…, card, foldedJoin]`, then `'use step'` retries): incoming
+ *   empty last-round ends on `tool_run` so the leftover covering assistant
+ *   is not incoming-matched; a single leftover prior `assistant` that
+ *   covers `+=` of this-run assts is skipped so the last raw tool is not
+ *   appended. Consecutive prior assistants stay 1:1.
  * - After a this-run tool match, a single trailing prior `assistant` covers
  *   remaining incoming `assistant` rows when its text equals the incoming
  *   text or **ends with** it (host concatenated `done.text` vs last-round
@@ -496,6 +501,26 @@ function flexMatchExact(
   }
   while (pi < prior.length && prior[pi] && isHostOnlyRole(prior[pi]!.role)) {
     pi += 1;
+  }
+  // Persist retry onto a covering concat / mid-turn fold: the incoming prefix
+  // is fully consumed after a this-run tool match, but prior still has the
+  // folded `done.text` assistant (empty last-round dropped it from incoming).
+  // One leftover assistant that covers `+=` of this-run assts is this run
+  // already on the pointer — skip it (and trailing host-only). Consecutive
+  // prior assistants stay 1:1 (do not consume a run). Different replies
+  // fail `assistantCovers` and still append.
+  if (ii === prefixLen && matchedTool) {
+    const leftover = prior[pi];
+    if (leftover?.role === 'assistant') {
+      const folded = foldIncomingAssistants(incoming.slice(0, prefixLen));
+      const foldText = folded[0]?.text ?? '';
+      if (foldText.length > 0 && assistantCovers(leftover.text, foldText)) {
+        pi += 1;
+        while (pi < prior.length && prior[pi] && isHostOnlyRole(prior[pi]!.role)) {
+          pi += 1;
+        }
+      }
+    }
   }
   const matched = pi === prior.length && ii === prefixLen;
   return { matched, skippedAssistant: matched && skippedAssistant };

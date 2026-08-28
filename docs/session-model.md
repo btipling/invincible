@@ -56,7 +56,10 @@ round is empty-text so the incoming prefix fully matches and there is no
 trailing remainder. Fold requires the winning match to have **skipped** an
 incoming assistant against a prior `tool_run` (mid-turn host card). A worker
 1:1 prior that already is this run (persist retry, including empty last-round)
-does not skip and stays no-append. A trailing host assistant covers remaining
+does not skip and stays no-append. Persist retry onto a successful mid-turn fold
+(pointer already ends with `+=` of this-run assistant texts) also stays no-append
+when incoming ends on `tool_run` (empty last-round dropped); the leftover covering
+assistant is this run, not a new reply. A trailing host assistant covers remaining
 this-run assistant rows only when its text equals the checkpoint assistant or
 ends with it (concatenated `done.text` vs last-round text), not the reverse and
 not by role alone — two tool-turns that share a user prompt keep both replies,
