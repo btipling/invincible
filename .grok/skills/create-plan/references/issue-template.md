@@ -80,6 +80,10 @@ N/A — no Production mutate.
 |---|------|-------|------|------------------|
 | 1 | | | | agent workspace / CI / GHA dry_run |
 
+<!-- If two producers write the same record: lock a generator table
+     (live reconstruction × other persist points → expected body).
+     N/A — single producer otherwise. Named miss: #864 / PR #868. -->
+
 ## Definition of done
 
 - [ ] 
@@ -154,6 +158,8 @@ N/A — no Production mutate.
 | # | Case | Layer | Type | Command / method |
 |---|------|-------|------|------------------|
 | 1 | | | | |
+
+<!-- Two-producer shared record → generator table, not last-finding fixtures. -->
 
 ## Definition of done
 

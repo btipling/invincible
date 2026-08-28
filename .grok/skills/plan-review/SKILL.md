@@ -16,7 +16,7 @@ description: >
   or number, "parent adherence".
 metadata:
   short-description: "Review plan issues; cloud ops + living docs; edit via gh"
-  version: "1.1"
+  version: "1.2"
   project: invincible
 ---
 
@@ -320,6 +320,25 @@ Score each 1–5. Detail: [references/rubric.md](references/rubric.md).
   as the human operator story.
 - When GHA ships: dry_run / script unit tests / throwaway DB smoke named.
 - Tests are **implementable** against the locked API.
+- **Shared-record / two-producer (when applicable):** if the work reads, writes,
+  merges, LWW-adopts, or parses a session / transcript / envelope / blob that
+  **another live producer already writes**, the matrix must lock a **generator
+  table**: this producer's **live reconstruction** (cite the function) × the
+  other producer's **live persist points** (cite the sites) → expected body.
+  Hand-built `[user, tool, assistant]` or a fixture copied from the last
+  adversarial finding is not DoD. `--changed` green on parse/clock/role-map
+  rows is not proof of merge/adopt. **N/A — single producer** with one line
+  when nothing else writes that body.
+
+**Named failure (#864 / PR #868):** plan tests proved the blob parsed and the
+overlay clock stamped once. Host already writes `encodeToolRun` cards and omits
+per-round assistants until `done`; `runTurnLoop` emits
+`[user] + per round (assistant-delta, tools)`. Five adversarial CONCERNS rounds
+invented suffix-merge one fixture at a time because the cartesian product was
+not in the plan.
+
+**Major:** two-producer persist/merge/adopt/parse in scope, tests are happy-path
+or last-finding-shaped, no generator table. Testing score **≤ 2**.
 
 ### 3.5 Cloud ops (mandatory when Production mutate / cutover in scope)
 
@@ -539,7 +558,7 @@ High-quality plan issues include:
 - Layer placement table  
 - **Cloud ops path** section (or N/A)  
 - **Living docs plan** table (AGENTS + README always considered)  
-- Testing matrix with edges  
+- Testing matrix with edges (generator table if two producers write the same body)  
 - Risks & mitigations (incl. missing-GHA risk when ops)  
 - Parent alignment + refinements (phase)  
 - Open questions empty for in-scope locks  
@@ -561,6 +580,9 @@ Missing sections that the phase needs → finding → pushed into issue under fi
 - Approving DOM dual-chat as “faster MVP” without exception  
 - Approving **script-only Production cutover** because “AGENTS says cloud”  
 - Approving docs that are **phase/issue process dumps**  
+- Approving a merge / LWW / adopt / parse of a **shared** record whose tests
+  are only happy-path or last-adversarial-review fixtures (named: #864 / PR
+  #868 — demand the live generator table)  
 - Expanding scope during review  
 - Implementing app code under the guise of review  
 
@@ -576,6 +598,7 @@ Missing sections that the phase needs → finding → pushed into issue under fi
 [ ] Baseline modules verified against live code
 [ ] Workflows verified if Production mutate
 [ ] Correctness / performance / architecture / testing scored
+[ ] Shared-record tests: generator table if two producers write the same body, else N/A single-producer
 [ ] Cloud ops scored (or N/A with reason)
 [ ] Living docs scored (or N/A with reason) — AGENTS + README considered
 [ ] Cap governance scored when the plan adds/changes caps (Caps table present; any change to an existing cap — raise or lower ⇒ BLOCK + human decision; generous default for NEW caps)

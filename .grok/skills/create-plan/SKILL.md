@@ -11,7 +11,7 @@ description: >
   Never GitHub MCP.
 metadata:
   short-description: "Write feature plans as GitHub issues (cloud ops + living docs)"
-  version: "1.1"
+  version: "1.2"
   project: invincible
 ---
 
@@ -346,6 +346,33 @@ Always include:
 - When cloud ops ships: how the workflow is validated (dry_run, unit tests for
   scripts, or documented dispatch smoke on throwaway DB)
 
+### Shared-record tests (two producers of the same body)
+
+When the work **reads, writes, merges, LWW-adopts, or parses** a session /
+transcript / envelope / blob that **another live producer already writes**,
+the Testing matrix **must** lock a **generator table** — not a single
+happy-path row, and not a fixture copied from the last adversarial finding.
+
+| Axis | What to lock | Source |
+|------|----------------|--------|
+| **This producer** | Real reconstruction of the rows/body this change writes | Cite the live function (`runTurnLoop` `messages` / `checkpointRow` — not a hand-built `[user, tool, assistant]`) |
+| **Other producer** | Each persist point that already writes the same record | Cite live sites (`onTurnStarted` user-only, `usage` / `change_dir` `patchSession`, terminal `done.text` concat, leftover unreadable `{ deltas }`) |
+| **Cells** | Expected body after the planned write / merge / adopt | Duplicate user? duplicate tool card? prior turns kept? fail-closed? |
+
+`--changed` green on parse + clock + `'tool'`→`'tool_run'` is **not** DoD for
+that surface. Those rows stay green while F5 LWW-adopts a this-run suffix.
+
+**Named failure (#864 / PR #868):** `persistStep` wrote this-run checkpoint;
+host already persists `encodeToolRun` cards and omits per-round assistants
+until `done`. Plan tests never instantiated `turnLoop`'s
+`[user] + per round (assistant-delta, tools)` against those host snapshots.
+Suffix-merge was invented in review; five CONCERNS rounds each added a
+predicate for the **last** fixture. Lock the cartesian product in the plan
+**before** implement.
+
+Mark **N/A — single producer** with one line when nothing else writes that
+body.
+
 ## Definition of done
 
 - [ ] …
@@ -444,6 +471,7 @@ Create a non-empty **Architectural decisions** table if any of:
 [ ] Living docs table filled; AGENTS + README considered
 [ ] No plan to put phase/issue process artifacts into docs/*
 [ ] Tests matrix has edge cases, not only happy path
+[ ] If two producers write the same record: Testing has a **generator table** (live reconstruction × other persist points), not last-finding fixtures — or explicit N/A single-producer
 [ ] DoD checkboxes prove the goals (including ops + docs)
 [ ] Secrets stay server-side
 [ ] Zig-only-on-runner constraint respected if harness changes
@@ -539,6 +567,7 @@ Do **not** start coding unless the user explicitly asks.
 - Phase issues with **no parent link**  
 - **Single issue containing multiple phases that ship in separate PRs** — each phase must be its own issue; a parent tracking issue is never implemented directly
 - “Add tests later” with empty matrix  
+- Testing a merge / LWW / adopt / parse of a **shared** record with only happy-path or last-adversarial-review fixtures (named: #864 / PR #868 — lock the live generator table instead)  
 - Architectural change with no decisions table  
 - DOM dual chat “just for MVP” without exception + exit criteria  
 - Secrets or Gateway calls from Wasm  

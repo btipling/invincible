@@ -44,6 +44,12 @@ the job runs — not the only operator story.
 
 **Reject:** “document npm run X” with no GHA while Production still needs the op.
 
+**Shared-record tests:** when a plan reads/writes/merges/LWW-adopts a session,
+transcript, envelope, or blob that another live producer already writes, the
+Testing matrix must lock a **generator table** (this producer's live
+reconstruction × the other's persist points) — not a happy-path row or a
+fixture from the last adversarial finding. Named miss: #864 / PR #868.
+
 ## Living docs (create-plan + plan-review)
 
 Durable guides: `docs/*`, `AGENTS.md`, `README.md`, `SECURITY.md`, `.env.example`.

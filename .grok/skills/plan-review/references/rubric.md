@@ -76,10 +76,10 @@ Companion to `plan-review/SKILL.md`. Use these prompts while scoring.
 
 | Score | Meaning |
 |-------|---------|
-| 5 | Edge-rich matrix; operator checklist if UI; commands for agent/CI; GHA dry_run if ops |
+| 5 | Edge-rich matrix; operator checklist if UI; commands for agent/CI; GHA dry_run if ops; generator table if two producers |
 | 4 | Strong unit coverage; small gaps |
 | 3 | Happy-path only or missing integration where wiring lands |
-| 2 | Vague “add tests” without cases |
+| 2 | Vague “add tests” without cases, **or** two-producer persist/merge/adopt with no generator table |
 | 1 | No test plan for non-trivial logic |
 
 ### Prompt questions
@@ -90,6 +90,18 @@ Companion to `plan-review/SKILL.md`. Use these prompts while scoring.
 - Operator path: load → send → read → multi-turn → mobile?  
 - `npm test` / typecheck / build / harness CI listed for **agent/CI**, not human laptop?  
 - If workflow ships: dry_run or script tests named?  
+- If two producers write the same session/transcript/envelope/blob: is there a **generator table** (this producer's live reconstruction × the other's live persist points → expected body), not a hand-built `[user, tool, assistant]` or last-adversarial-review fixture?  
+- Is `--changed` green on parse/clock/role-map claimed as merge/adopt DoD? (fail that claim)
+
+### Common failure modes
+
+- “Add tests later” / happy-path only  
+- Shared-record write with tests that only prove parse + clock (named: #864 / PR #868 — five CONCERNS rounds)  
+- Fixture copied from the last review finding instead of `runTurnLoop` reconstruction × host persist points  
+
+### Score cap
+
+- Two-producer persist / merge / LWW-adopt / parse in scope without a generator table: testing **≤ 2**, **Major**  
 
 ---
 
