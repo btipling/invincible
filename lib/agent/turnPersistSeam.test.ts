@@ -994,4 +994,43 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(env?.meta?.transcriptPointer).toBe(priorId);
     expect(env?.meta?.turnStatus).toBeUndefined();
   });
+
+  it('worker-to-worker empty last-round persist retry does not duplicate assts', async () => {
+    const { seam, blobStore } = await makeSeam();
+    const body = {
+      id: scope.sessionId,
+      messages: [
+        { id: 'cp_0', role: 'user' as const, text: 'fix the tests', at: 1 },
+        { id: 'cp_1', role: 'assistant' as const, text: 'Let me read the file', at: 2 },
+        { id: 'cp_2', role: 'tool_run' as const, text: 'file content', at: 3 },
+        { id: 'cp_3', role: 'assistant' as const, text: 'I will run the tests', at: 4 },
+        { id: 'cp_4', role: 'tool_run' as const, text: 'exit=1', at: 5 },
+      ],
+    };
+    const first = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify(body),
+    });
+    expect(first.ok).toBe(true);
+    const second = await seam.persist({
+      turnRunId: 'wr_0000_2a3b4c5d6e7f',
+      deltas: [],
+      content: JSON.stringify(body),
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const parsed = parseCloudSessionSnapshot(
+      JSON.parse((await blobStore.read(second.objectId!)) ?? 'null'),
+      scope.sessionId,
+    );
+    expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'fix the tests',
+      'Let me read the file',
+      'file content',
+      'I will run the tests',
+      'exit=1',
+    ]);
+    expect(parsed?.messages.filter((m) => m.role === 'assistant')).toHaveLength(2);
+  });
 });

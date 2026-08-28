@@ -653,6 +653,29 @@ describe('mergeCheckpointOntoPrior', () => {
     const out = mergeCheckpointOntoPrior(prior, incoming);
     expect(out).toEqual(prior);
   });
+
+  it('worker-to-worker empty last-round persist retry does not duplicate assts', () => {
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix the tests' },
+      { role: 'assistant', content: 'Let me read the file' },
+      { role: 'tool', content: 'file content' },
+      { role: 'assistant', content: 'I will run the tests' },
+      { role: 'tool', content: 'exit=1' },
+      { role: 'assistant', content: '' },
+    ]);
+    expect(incoming.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'tool_run',
+      'assistant',
+      'tool_run',
+    ]);
+    const prior = [u1, a1, ...incoming];
+    const out = mergeCheckpointOntoPrior(prior, incoming);
+    expect(out).toEqual(prior);
+    expect(out.filter((m) => m.text === 'Let me read the file')).toHaveLength(1);
+    expect(out.filter((m) => m.text === 'I will run the tests')).toHaveLength(1);
+  });
 });
 
 describe('snapshotMessagesFromUnknown / applyPriorMessagesToSnapshotJson', () => {

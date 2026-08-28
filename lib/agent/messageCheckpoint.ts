@@ -267,8 +267,11 @@ export function snapshotMessagesFromUnknown(
  *   folded into the appended tail as one row (`+=` of per-round `delta.text`,
  *   same as host `done.text`) — including when the last checkpoint round is
  *   empty-text so incoming ends on `tool_run` and overlap is the full prefix
- *   (no remainder). A prior that already ends with a covering concat stays
- *   no-append.
+ *   (no remainder). Fold runs only when the winning match **skipped** an
+ *   incoming assistant against a prior `tool_run` (mid-turn host card). A
+ *   worker 1:1 prior that already is this run (no skip) stays no-append,
+ *   including empty last-round persist retry. A prior that already ends with
+ *   a covering concat stays no-append.
  * - After a this-run tool match, a single trailing prior `assistant` covers
  *   remaining incoming `assistant` rows when its text equals the incoming
  *   text or **ends with** it (host concatenated `done.text` vs last-round
@@ -291,16 +294,19 @@ export function mergeCheckpointOntoPrior(
   if (prior.length === 0) return incoming.slice();
   if (incoming.length === 0) return prior.slice();
   let overlap = 0;
+  let skippedAssistant = false;
   outer: for (let k = incoming.length; k > 0; k--) {
     for (let pStart = 0; pStart < prior.length; pStart++) {
-      if (flexMatchExact(prior, pStart, incoming, k)) {
+      const hit = flexMatchExact(prior, pStart, incoming, k);
+      if (hit.matched) {
         overlap = k;
+        skippedAssistant = hit.skippedAssistant;
         break outer;
       }
     }
   }
   let appended: CheckpointSnapshotMessage[] = incoming.slice(overlap);
-  if (shouldFoldSkippedAssistants(prior, incoming, overlap, appended)) {
+  if (shouldFoldSkippedAssistants(prior, incoming, overlap, appended, skippedAssistant)) {
     appended = foldIncomingAssistants(incoming);
   }
   if (appended.length === 0) return prior.slice();
@@ -349,17 +355,22 @@ function lastKeptRole(
 /**
  * Mid-turn host card (prior ends on `tool_run`): skipped per-round assts sat
  * inside the matched prefix and would otherwise be dropped. Fold when a
- * this-run tool was overlapped, including a full-prefix match with no
- * remainder (empty last-round assistant dropped). Covering concat is
- * excluded by `lastKeptRole !== 'tool_run'`.
+ * this-run tool was overlapped AND the winning match skipped an incoming
+ * assistant against a prior `tool_run` (host card / host-card coalesce),
+ * including a full-prefix match with no remainder (empty last-round
+ * assistant dropped). A worker 1:1 prior of the same checkpoint (persist
+ * retry) does not skip, so it stays no-append. Covering concat is excluded
+ * by `lastKeptRole !== 'tool_run'`.
  */
 function shouldFoldSkippedAssistants(
   prior: ReadonlyArray<CheckpointSnapshotMessage>,
   incoming: ReadonlyArray<CheckpointSnapshotMessage>,
   overlap: number,
   appended: ReadonlyArray<CheckpointSnapshotMessage>,
+  skippedAssistant: boolean,
 ): boolean {
   if (overlap === 0) return false;
+  if (!skippedAssistant) return false;
   if (lastKeptRole(prior) !== 'tool_run') return false;
   if (!appended.every((m) => m.role === 'assistant')) return false;
   if (!incoming.slice(0, overlap).some((m) => m.role === 'tool_run')) return false;
@@ -395,16 +406,19 @@ function shouldSkipPriorRow(
 /**
  * Incoming prefix `incoming[0..prefixLen)` flex-matches `prior[pStart..end)`
  * exactly (both fully consumed, after host-only skips and coalesced tool runs).
+ * `skippedAssistant` is true only when this match skipped an incoming
+ * assistant against a prior `tool_run` (host card path).
  */
 function flexMatchExact(
   prior: ReadonlyArray<CheckpointSnapshotMessage>,
   pStart: number,
   incoming: ReadonlyArray<CheckpointSnapshotMessage>,
   prefixLen: number,
-): boolean {
+): { matched: boolean; skippedAssistant: boolean } {
   let pi = pStart;
   let ii = 0;
   let matchedTool = false;
+  let skippedAssistant = false;
   while (ii < prefixLen) {
     while (
       pi < prior.length &&
@@ -422,18 +436,21 @@ function flexMatchExact(
       incoming[ii]?.role === 'assistant' &&
       prior[pi]?.role === 'tool_run'
     ) {
+      skippedAssistant = true;
       ii += 1;
     }
     if (ii >= prefixLen) break;
     const p = prior[pi];
     const n = incoming[ii];
-    if (!p || !n) return false;
+    if (!p || !n) return { matched: false, skippedAssistant: false };
     const afterToolAssistant =
       matchedTool && p.role === 'assistant' && n.role === 'assistant';
     if (afterToolAssistant) {
-      if (!assistantCovers(p.text, n.text)) return false;
+      if (!assistantCovers(p.text, n.text)) {
+        return { matched: false, skippedAssistant: false };
+      }
     } else if (!snapshotRowOverlaps(p, n)) {
-      return false;
+      return { matched: false, skippedAssistant: false };
     }
     pi += 1;
     ii += 1;
@@ -459,6 +476,7 @@ function flexMatchExact(
               n?.role === 'assistant' &&
               hasLaterRole(incoming, ii + 1, prefixLen, 'tool_run')
             ) {
+              skippedAssistant = true;
               ii += 1;
               continue;
             }
@@ -479,7 +497,8 @@ function flexMatchExact(
   while (pi < prior.length && prior[pi] && isHostOnlyRole(prior[pi]!.role)) {
     pi += 1;
   }
-  return pi === prior.length && ii === prefixLen;
+  const matched = pi === prior.length && ii === prefixLen;
+  return { matched, skippedAssistant: matched && skippedAssistant };
 }
 
 /** Host tool cards encode a payload; worker checkpoint rows are raw results. */

@@ -53,7 +53,10 @@ tool card (no covering assistant), those skipped this-run assistant texts are
 folded into the appended tail as one row (`+=` of per-round `delta.text`, the
 same concatenation host `done.text` uses), including when the last checkpoint
 round is empty-text so the incoming prefix fully matches and there is no
-trailing remainder. A trailing host assistant covers remaining
+trailing remainder. Fold requires the winning match to have **skipped** an
+incoming assistant against a prior `tool_run` (mid-turn host card). A worker
+1:1 prior that already is this run (persist retry, including empty last-round)
+does not skip and stays no-append. A trailing host assistant covers remaining
 this-run assistant rows only when its text equals the checkpoint assistant or
 ends with it (concatenated `done.text` vs last-round text), not the reverse and
 not by role alone — two tool-turns that share a user prompt keep both replies,
