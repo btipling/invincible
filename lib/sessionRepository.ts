@@ -24,6 +24,7 @@ import {
   sanitizeTurnStatus,
   sanitizeTurnStreamCursor,
   serializeAttachedSkills,
+  type TurnStatus,
 } from './sessionCloudCaps';
 import type { SessionMessage, SessionRole, SessionSnapshot } from './sessionStore';
 import {
@@ -69,7 +70,15 @@ export type CloudGetResult =
   | { action: 'ok'; snapshot: SessionSnapshot }
   | { action: 'disabled' }
   | { action: 'notfound' }
-  | { action: 'error'; status: number; message: string };
+  | {
+      action: 'error';
+      status: number;
+      message: string;
+      /** Live-envelope carriers (parse-fail / blob-miss). Never a dummy snapshot. */
+      turnStatus?: TurnStatus;
+      turnRunId?: string;
+      turnStreamCursor?: number;
+    };
 
 export type CloudCreateResult =
   | { action: 'ok'; snapshot: SessionSnapshot }
@@ -366,21 +375,60 @@ export type BootCloudResult =
 /**
  * Host GET mapping: `BootCloudResult` → `CloudGetResult`.
  *
- * Parse fail still **discards** `boot.snapshot` (dummy or real local). Envelope-wins
- * that must reach `kickColdAttach` / Send remap has to change `snapshotAfterRepoGet`
- * (and `bootCloudSession` `onGetMiss`); overlay-only inside `bootCloudSnapshot` cannot.
+ * Parse fail still **does not** return `action: 'ok'` (dummy mint must not
+ * wipe dialogue). Turn carriers from `boot.snapshot` (envelope overlay) ride
+ * on the error result so {@link snapshotAfterRepoGet} can merge them onto
+ * the real local.
  */
 export function cloudGetFromBoot(boot: BootCloudResult): CloudGetResult {
   if (boot.action === 'error') {
-    return { action: 'error', status: 0, message: boot.message };
+    const { turnStatus, turnRunId, turnStreamCursor } = boot.snapshot;
+    return {
+      action: 'error',
+      status: 0,
+      message: boot.message,
+      ...(turnStatus !== undefined ? { turnStatus } : {}),
+      ...(turnRunId !== undefined ? { turnRunId } : {}),
+      ...(turnStreamCursor !== undefined ? { turnStreamCursor } : {}),
+    };
   }
   return { action: 'ok', snapshot: boot.snapshot };
 }
 
 /**
+ * Envelope GET after `env.meta` is in hand: parse the blob (may be `null`)
+ * and overlay envelope meta. Shared by HTTP `getEnvelope` and unit tests so
+ * the host path cannot skip the extract.
+ */
+export function cloudGetFromEnvelopeMeta(
+  id: string,
+  envelopeMeta: Record<string, unknown> | undefined,
+  blobJson: unknown,
+): CloudGetResult {
+  return cloudGetFromBoot(
+    bootCloudSnapshot({
+      id,
+      local: getEnvelopeParseLocal(id),
+      envelopeMeta,
+      blobJson,
+    }),
+  );
+}
+
+/** Envelope is a live turn (cold-attach / Send remap). */
+function envelopeMetaIsLive(meta: Record<string, unknown> | undefined): boolean {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return false;
+  return (
+    sanitizeTurnStatus(meta.turnStatus) === 'running' &&
+    sanitizeTurnRunId(meta.turnRunId) !== undefined
+  );
+}
+
+/**
  * Mirror of inner `getEnvelope` (createHttpSessionRepository): parse the
  * transcript blob, then overlay envelope meta. Parse fail → keep `local`
- * and **do not** overlay (today's boot; overlay-on-error is a product fix).
+ * messages, overlay envelope carriers onto `snapshot` for threading, stay
+ * `action: 'error'` (never `ok`).
  */
 export function bootCloudSnapshot(input: {
   id: string;
@@ -393,7 +441,7 @@ export function bootCloudSnapshot(input: {
     return {
       action: 'error',
       message: 'Invalid transcript body.',
-      snapshot: input.local,
+      snapshot: overlayEnvelopeMeta(input.local, input.envelopeMeta),
     };
   }
   return {
@@ -710,40 +758,30 @@ export function createHttpSessionRepository(
           ? env.meta.transcriptPointer
           : undefined;
       if (!readUrl || !pointer) {
-        // Envelope present but no transcript object yet (fresh/empty session).
+        // Fresh/empty session stays notfound (mint). A live envelope with no
+        // blob must not mint — thread carriers so F5 can attach.
+        if (envelopeMetaIsLive(env.meta)) {
+          return cloudGetFromEnvelopeMeta(id, env.meta, null);
+        }
         return { action: 'notfound' };
       }
-      const t = await fetchImpl(readUrl, { method: 'GET', credentials: 'omit' });
-      if (t.status === 401) {
-        // A 401 here is from the Blob object host (cross-origin, `credentials:'omit'`),
-        // e.g. a stale/expired signed URL or a Blob auth blip — NOT an Auth.js session
-        // sign-out. Disabling the whole repo on this would silently turn off every
-        // cloud read/write for the page load, so we treat it as a transient error and
-        // keep the repo enabled (reader's Minor L1).
-        return {
-          action: 'error',
-          status: t.status,
-          message: 'Transcript fetch denied (signed URL expired or object non-existent).',
-        };
+      try {
+        const t = await fetchImpl(readUrl, { method: 'GET', credentials: 'omit' });
+        if (t.status === 401 || !t.ok) {
+          // Blob 401 is the object host, not Auth.js — keep the repo enabled
+          // (reader's Minor L1) and still thread envelope carriers.
+          return cloudGetFromEnvelopeMeta(id, env.meta, null);
+        }
+        let blobJson: unknown = null;
+        try {
+          blobJson = await t.json();
+        } catch {
+          blobJson = null;
+        }
+        return cloudGetFromEnvelopeMeta(id, env.meta, blobJson);
+      } catch {
+        return cloudGetFromEnvelopeMeta(id, env.meta, null);
       }
-      if (!t.ok) {
-        return {
-          action: 'error',
-          status: t.status,
-          message: `Transcript fetch failed (${t.status}).`,
-        };
-      }
-      const blobJson = await t.json();
-      // One two-step with the int/unit extract. Dummy local is discarded on
-      // parse fail — getEnvelope still returns action error (host keeps local).
-      return cloudGetFromBoot(
-        bootCloudSnapshot({
-          id,
-          local: getEnvelopeParseLocal(id),
-          envelopeMeta: env.meta,
-          blobJson,
-        }),
-      );
     } catch {
       return { action: 'error', status: 0, message: 'Network error pulling session.' };
     }

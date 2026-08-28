@@ -32,7 +32,13 @@ is not stored in `SessionStore`, so the durable transcript after reload is
 `tool_run` + `user`/`assistant` (+ turn-end `system`/`error`). On hydrate
 (`pushSessionToBridge`) the host coalesces **consecutive** `tool_run` rows into
 scannable groups (`mergeToolRunPayloads`, rolling at `TOOL_RUN_ITEMS_MAX`) so a
-long multi-tool session is not a wall of `N×1` cards.
+long multi-tool session is not a wall of `N×1` cards. Envelope liveness is
+independent of that transcript LWW: when the Blob object is unreadable (or
+missing) but the Redis envelope is still `running` with a `turnRunId`, boot
+overlays those three turn carriers onto the kept local snapshot, keeps `?s=`
+pinned, and cold-attaches. Messages stay the local (or LWW-winning) transcript
+until attach SSE catches up. An empty envelope with no live turn and no blob
+still 404-mints as before.
 
 **Status bar reseed (protocol v13, plan #538/#541):** on hydrate/restore and
 after **every** agent turn the host folds session state into the bridge

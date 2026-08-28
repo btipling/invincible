@@ -38,7 +38,7 @@ describe('int F5 attach (#859 issue-rows 3 F5, 4 stream-drop, 2 persist-hole)', 
     bridge = await loadBridge();
   });
 
-  it.fails(
+  it(
     '#859 row 3: stale local completed + envelope running → cold attach, not none',
     async () => {
       const local = turn1Local();
@@ -72,7 +72,7 @@ describe('int F5 attach (#859 issue-rows 3 F5, 4 stream-drop, 2 persist-hole)', 
     expect(ringTexts(bridge).some((t) => t.includes(TURN2_USER))).toBe(true);
   });
 
-  it.fails(
+  it(
     '#859 C15: Send while envelope live + local completed remaps to GET-attach',
     async () => {
       const local = turn1Local();
@@ -124,7 +124,7 @@ describe('int F5 attach (#859 issue-rows 3 F5, 4 stream-drop, 2 persist-hole)', 
     expect(shouldSetHostTurnNote('running')).toBe(false);
   });
 
-  it.fails('#859 row 4: stream-drop + F5 still cold-attaches; empty-EOF does not spin', async () => {
+  it('#859 row 4: stream-drop + F5 still cold-attaches; empty-EOF does not spin', async () => {
     const local = turn1Local();
     const { blobStore, envelopeStore } = await persistTurn1();
     await markEnvelopeRunning(envelopeStore);

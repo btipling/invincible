@@ -8,6 +8,7 @@ import {
   shouldAdoptBootServer,
   snapshotAfterCloudGet,
   snapshotAfterRepoGet,
+  restoreOnGetMiss,
   withUrlSessionId,
 } from './sessionBoot';
 import type {
@@ -232,19 +233,130 @@ describe('snapshotAfterRepoGet (host restore after repo.get, every action)', () 
     expect(snapshotAfterRepoGet(local, { action: 'ok', snapshot: server })).toBe(server);
   });
 
-  it('error / disabled / notfound → keep local without consulting extra fields', () => {
+  it('error without live carriers is identity (onGetMiss stays no-op)', () => {
     const local = localCompleted();
-    const poison = {
-      action: 'error' as const,
+    expect(snapshotAfterRepoGet(local, { action: 'disabled' })).toBe(local);
+    expect(snapshotAfterRepoGet(local, { action: 'notfound' })).toBe(local);
+    expect(
+      snapshotAfterRepoGet(local, {
+        action: 'error',
+        status: 0,
+        message: 'Invalid transcript body.',
+      }),
+    ).toBe(local);
+  });
+
+  it('error + running carriers overlays onto completed local (messages stay local)', () => {
+    const local = localCompleted();
+    const restored = snapshotAfterRepoGet(local, {
+      action: 'error',
       status: 0,
       message: 'Invalid transcript body.',
       turnStatus: 'running',
       turnRunId: 'wr_live',
+      turnStreamCursor: 0,
+    });
+    expect(restored).not.toBe(local);
+    expect(restored.messages).toEqual(local.messages);
+    expect(restored.id).toBe(local.id);
+    expect(restored.turnStatus).toBe('running');
+    expect(restored.turnRunId).toBe('wr_live');
+    expect(restored.turnStreamCursor).toBe(0);
+  });
+
+  it('ok GET, LWW keeps local, server is running → kept local gains carriers', () => {
+    const local = localCompleted();
+    const server: SessionSnapshot = {
+      id: local.id,
+      updatedAt: 1, // older — LWW keeps local
+      messages: [{ id: 'm9', role: 'user', text: 'server', at: 1 }],
+      turnStatus: 'running',
+      turnRunId: 'wr_live',
     };
-    expect(snapshotAfterRepoGet(local, poison as CloudGetResult)).toBe(local);
-    expect(snapshotAfterRepoGet(local, { action: 'disabled' })).toBe(local);
-    expect(snapshotAfterRepoGet(local, { action: 'notfound' })).toBe(local);
-    expect(snapshotAfterRepoGet(local, poison as CloudGetResult).turnStatus).toBe('completed');
+    const restored = snapshotAfterRepoGet(local, { action: 'ok', snapshot: server });
+    expect(restored.messages).toEqual(local.messages);
+    expect(restored.turnStatus).toBe('running');
+    expect(restored.turnRunId).toBe('wr_live');
+  });
+
+  it('error + same live carriers as local is identity (no rehydrate)', () => {
+    const local: SessionSnapshot = {
+      ...localCompleted(),
+      turnStatus: 'running',
+      turnRunId: 'wr_live',
+      turnStreamCursor: 0,
+    };
+    expect(
+      snapshotAfterRepoGet(local, {
+        action: 'error',
+        status: 0,
+        message: 'Invalid transcript body.',
+        turnStatus: 'running',
+        turnRunId: 'wr_live',
+        turnStreamCursor: 0,
+      }),
+    ).toBe(local);
+  });
+});
+
+describe('restoreOnGetMiss (pin vs rehydrate)', () => {
+  const completed = (): SessionSnapshot => ({
+    id: idY,
+    updatedAt: 10,
+    messages: [{ id: 'm1', role: 'user' as const, text: 'hi', at: 1 }],
+    turnStatus: 'completed',
+  });
+  const liveErr = {
+    action: 'error' as const,
+    status: 0,
+    message: 'Invalid transcript body.',
+    turnStatus: 'running' as const,
+    turnRunId: 'wr_live',
+  };
+
+  it('stale completed + live error → adopt (rehydrate + pin)', () => {
+    const local = completed();
+    const d = restoreOnGetMiss(local, liveErr, local.id);
+    expect(d.kind).toBe('adopt');
+    if (d.kind !== 'adopt') return;
+    expect(d.snapshot).not.toBe(local);
+    expect(d.snapshot.turnStatus).toBe('running');
+    expect(d.snapshot.turnRunId).toBe('wr_live');
+    expect(d.snapshot.messages).toEqual(local.messages);
+  });
+
+  it('local already live + same carriers → pin (do not rehydrate, do not clear ?s=)', () => {
+    const local: SessionSnapshot = {
+      ...completed(),
+      turnStatus: 'running',
+      turnRunId: 'wr_live',
+    };
+    expect(restoreOnGetMiss(local, liveErr, local.id)).toEqual({ kind: 'pin' });
+  });
+
+  it('same-tab F5: local running+cursor, envelope live without cursor → pin identity', () => {
+    const local: SessionSnapshot = {
+      ...completed(),
+      turnStatus: 'running',
+      turnRunId: 'wr_live',
+      turnStreamCursor: 0,
+    };
+    expect(restoreOnGetMiss(local, liveErr, local.id)).toEqual({ kind: 'pin' });
+  });
+
+  it('id mismatch refuses even when GET is live', () => {
+    expect(restoreOnGetMiss(completed(), liveErr, idA)).toEqual({ kind: 'skip' });
+  });
+
+  it('error without live carriers is skip', () => {
+    const local = completed();
+    expect(
+      restoreOnGetMiss(
+        local,
+        { action: 'error', status: 0, message: 'Invalid transcript body.' },
+        local.id,
+      ),
+    ).toEqual({ kind: 'skip' });
   });
 });
 
@@ -467,6 +579,40 @@ describe('bootCloudSession', () => {
       { action: 'error', status: 0, message: 'Invalid transcript body.' },
       idA,
     );
+    expect(onUrl).toHaveBeenCalledWith(idA);
+    expect(onUrl).not.toHaveBeenCalledWith(null);
+  });
+
+  it('host restoreOnGetMiss pin (already live) still pins, does not clear ?s=', async () => {
+    const local: SessionSnapshot = {
+      id: idA,
+      updatedAt: 10,
+      messages: [],
+      turnStatus: 'running',
+      turnRunId: 'wr_live',
+    };
+    const got: CloudGetResult = {
+      action: 'error',
+      status: 0,
+      message: 'Invalid transcript body.',
+      turnStatus: 'running',
+      turnRunId: 'wr_live',
+    };
+    const onUrl = vi.fn();
+    const { repo } = makeRepo({ onGet: async () => got });
+    const result = await bootCloudSession({
+      repo,
+      urlId: idA,
+      localId: idA,
+      onGetMiss: (g, id) => {
+        const d = restoreOnGetMiss(local, g, id);
+        if (d.kind === 'skip') return;
+        return 'adopted';
+      },
+      onUrlUpdate: onUrl,
+    });
+    expect(restoreOnGetMiss(local, got, idA).kind).toBe('pin');
+    expect(result).toEqual({ kind: 'used', id: idA });
     expect(onUrl).toHaveBeenCalledWith(idA);
     expect(onUrl).not.toHaveBeenCalledWith(null);
   });

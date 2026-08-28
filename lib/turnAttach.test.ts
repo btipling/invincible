@@ -201,9 +201,18 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(host).toContain('const kickColdAttach = useCallback');
     expect(host).toContain('coldAttachFromSnapshot(');
     expect(host).toContain('snapshotAfterRepoGet(');
+    expect(host).toContain('restoreOnGetMiss(');
     expect(host).toContain('onGetMiss:');
-    expect(host).toContain('if (local.id !== id) return');
     expect(host).toContain("return 'adopted'");
+    expect(host).toContain("decision.kind === 'skip'");
+    expect(host).toContain("decision.kind === 'adopt'");
+    expect(host).toContain("decision.kind === 'pin'");
+    const miss = host.indexOf('onGetMiss:');
+    const missBlock = host.slice(miss, host.indexOf('onMint:', miss));
+    expect(miss).toBeGreaterThan(0);
+    expect(missBlock).toMatch(
+      /decision\.kind === 'pin'[\s\S]*setActiveSessionId\(id\)[\s\S]*return 'adopted'/,
+    );
     expect(host.match(/queueMicrotask\(kickColdAttach\)/g)?.length).toBeGreaterThanOrEqual(3);
     expect(host).toContain('attach: spec');
     expect(host).toContain('if (inflightRef.current) return');
@@ -217,14 +226,16 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(f5).not.toMatch(/turnRunId:\s*boot\.snapshot\.turnRunId/);
     expect(f5).not.toMatch(/turnStatus:\s*boot\.snapshot\.turnStatus/);
     const driver = readFileSync(resolve(process.cwd(), 'int/driver.ts'), 'utf8');
-    expect(driver).toContain('cloudGetFromBoot(');
-    expect(driver).toContain('getEnvelopeParseLocal(');
+    expect(driver).toContain('cloudGetFromEnvelopeMeta(');
+    expect(driver).not.toContain('cloudGetFromBoot(');
+    expect(driver).not.toContain('getEnvelopeParseLocal(');
     expect(driver).not.toMatch(/return\s+bootCloudSnapshot\(/);
     expect(driver).not.toMatch(/local:\s*opts\.local/);
     const boot = readFileSync(resolve(process.cwd(), 'lib/sessionBoot.ts'), 'utf8');
     expect(boot).toContain('onGetMiss?.(got, target.id)');
     expect(boot).toContain("=== 'adopted'");
     expect(boot).toContain('export function snapshotAfterRepoGet');
+    expect(boot).toContain('export function restoreOnGetMiss');
   });
 
   it('hot resume uses decideHotResume (empty-EOF does not spin inline)', () => {
