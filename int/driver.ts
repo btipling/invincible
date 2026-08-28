@@ -1,9 +1,7 @@
 import type { HarnessBridge } from '../lib/harnessBridge';
 import { pushSessionToBridge } from '../lib/harnessChat';
 import {
-  bootCloudSnapshot,
-  cloudGetFromBoot,
-  getEnvelopeParseLocal,
+  cloudGetFromEnvelopeMeta,
   type CloudGetResult,
 } from '../lib/sessionRepository';
 import type { SessionSnapshot } from '../lib/sessionStore';
@@ -39,14 +37,7 @@ export async function bootFromMemory(opts: {
       }
     }
   }
-  return cloudGetFromBoot(
-    bootCloudSnapshot({
-      id: opts.local.id,
-      local: getEnvelopeParseLocal(opts.local.id),
-      envelopeMeta: env?.meta,
-      blobJson,
-    }),
-  );
+  return cloudGetFromEnvelopeMeta(opts.local.id, env?.meta, blobJson);
 }
 
 export function hydrateRing(bridge: HarnessBridge, snapshot: SessionSnapshot): void {

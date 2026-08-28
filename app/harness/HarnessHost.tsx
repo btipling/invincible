@@ -37,6 +37,7 @@ import {
   bootCloudSession,
   readUrlSessionId,
   snapshotAfterRepoGet,
+  restoreOnGetMiss,
 } from '../../lib/sessionBoot';
 import {
   canLoadEarlier as sessionCanLoadEarlier,
@@ -826,15 +827,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             onGetMiss: (got, id) => {
               if (cancelled) return;
               if (inflightRef.current) return;
-              // Envelope-wins: snapshotAfterRepoGet overlays live carriers onto
-              // stale local. Same-id only — pinned ?s=A must not paint A's run
-              // onto local B. Do not repo.put the overlay (stale messages +
-              // running must not LWW-beat the worker blob).
+              // Envelope-wins: overlay live carriers onto stale local. Same-id
+              // only — pinned ?s=A must not paint A's run onto local B. Live
+              // identity (local already running) still pins; do not repo.put
+              // the overlay (stale messages + running must not LWW-beat the
+              // worker blob). Do not rehydrate when overlay is a no-op.
               const local = sessionRef.current;
-              if (local.id !== id) return;
-              const restored = snapshotAfterRepoGet(local, got);
-              if (restored === local) return;
-              activateSession(mergeAdoptedUsage({ ...restored, id }, local));
+              const decision = restoreOnGetMiss(local, got, id);
+              if (decision.kind === 'skip') return;
+              if (decision.kind === 'adopt') {
+                activateSession(mergeAdoptedUsage({ ...decision.snapshot, id }, local));
+              }
               return 'adopted';
             },
             onMint: (createdSnap, id) => {

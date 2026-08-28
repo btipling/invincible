@@ -132,7 +132,9 @@ export function snapshotAfterCloudGet(
  * the host's job (`onGetMiss` refuses `local.id !== id`).
  *
  * No-op returns the **same reference** as `local` (or the LWW-kept base) so
- * `onGetMiss` stays a no-op when there is nothing to copy.
+ * `onGetMiss` does not re-hydrate when carriers already match. Pin is a
+ * separate decision ({@link restoreOnGetMiss}): a live GET still pins `?s=`
+ * on identity overlay.
  */
 export function snapshotAfterRepoGet(
   local: SessionSnapshot,
@@ -183,16 +185,42 @@ function liveTurnCarriers(got: CloudGetResult): {
   return null;
 }
 
+/**
+ * Host `onGetMiss` policy. Same-id only.
+ *
+ * - Overlay changed → rehydrate (`adopt`) and pin.
+ * - Overlay identity but GET is live → pin only (local already has carriers;
+ *   post-boot `kickColdAttach` attaches). Must **not** skip pin: same-tab F5
+ *   during a live turn hits identity, and `bootCloudSession` clears `?s=`
+ *   unless this returns `'adopted'`.
+ * - Else skip (disabled / non-live error / id mismatch).
+ */
+export type GetMissRestore =
+  | { kind: 'skip' }
+  | { kind: 'pin' }
+  | { kind: 'adopt'; snapshot: SessionSnapshot };
+
+export function restoreOnGetMiss(
+  local: SessionSnapshot,
+  got: CloudGetResult,
+  getId: string,
+): GetMissRestore {
+  if (local.id !== getId) return { kind: 'skip' };
+  const restored = snapshotAfterRepoGet(local, got);
+  if (restored !== local) return { kind: 'adopt', snapshot: restored };
+  if (liveTurnCarriers(got)) return { kind: 'pin' };
+  return { kind: 'skip' };
+}
+
 export type SessionBootCallbacks = {
   /** Adopt a server session (local write + Wasm hydrate). Server snapshot owns content. */
   onAdopt: (snapshot: SessionSnapshot, id: string) => void;
   /**
    * Pin/adopt `repo.get` returned error or disabled. `onAdopt` is not called.
-   * Host runs {@link snapshotAfterRepoGet}; live envelope carriers overlay
-   * onto local (`'adopted'` + pin). No-op when the helper returns `local`.
+   * Host runs {@link restoreOnGetMiss}: live overlay rehydrates; live identity
+   * still returns `'adopted'` so boot pins `?s=` (does not `onUrlUpdate(null)`).
    *
-   * `id` is the GET target (`?s=` pin or bound local). Return `'adopted'` when
-   * restore changed the snapshot so boot pins `id` instead of clearing `?s=`.
+   * `id` is the GET target (`?s=` pin or bound local).
    */
   onGetMiss?: (got: CloudGetResult, id: string) => 'adopted' | void;
   /**

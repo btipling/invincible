@@ -826,6 +826,13 @@ describe('bootCloudSnapshot (getEnvelope two-step)', () => {
     const missBlock = body.slice(miss, body.indexOf('try {', miss));
     expect(missBlock).toContain('envelopeMetaIsLive');
     expect(missBlock).toContain('cloudGetFromEnvelopeMeta');
+    // Blob 401 / !ok must use the helper (not a bare error). Live signed-URL
+    // expiry is the host path; a comment-only scan of the miss block would miss it.
+    const blobFail = body.indexOf('if (t.status === 401 || !t.ok)');
+    expect(blobFail).toBeGreaterThan(0);
+    const blobFailBlock = body.slice(blobFail, body.indexOf('let blobJson', blobFail));
+    expect(blobFailBlock).toContain('cloudGetFromEnvelopeMeta');
+    expect(blobFailBlock).not.toMatch(/action:\s*'error'/);
   });
 });
 
@@ -1453,5 +1460,84 @@ describe('createHttpSessionRepository — envelope carrier (phase 0 #515)', () =
     const again = await repo.get(idA);
     expect(again.action).toBe('error');
     expect(envelopeReads).toBeGreaterThanOrEqual(2);
+  });
+
+  it('live envelope + Blob 401 → error + carriers, repo stays enabled', async () => {
+    const blobUrl = `${UPLOAD_URL}/read?obj=tx_obj1`;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && u.endsWith('/envelope')) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 30,
+            meta: {
+              transcriptPointer: 'tx_obj1',
+              turnStatus: 'running',
+              turnRunId: 'wr_live',
+            },
+            transcriptReadUrl: blobUrl,
+          },
+          { status: 200 },
+        );
+      }
+      if (u === blobUrl) return new Response(null, { status: 401 });
+      return new Response(null, { status: 204 });
+    });
+    const repo = createHttpSessionRepository({ fetchImpl, carrier: 'envelope' });
+    const res = await repo.get(idA);
+    expect(res.action).toBe('error');
+    if (res.action !== 'error') return;
+    expect(res.turnStatus).toBe('running');
+    expect(res.turnRunId).toBe('wr_live');
+    expect(res).not.toHaveProperty('snapshot');
+    expect(repo.enabled).toBe(true);
+  });
+
+  it('live envelope + missing pointer/readUrl → error + carriers, not notfound', async () => {
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && u.endsWith('/envelope')) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 30,
+            meta: { turnStatus: 'running', turnRunId: 'wr_live' },
+          },
+          { status: 200 },
+        );
+      }
+      return new Response(null, { status: 204 });
+    });
+    const repo = createHttpSessionRepository({ fetchImpl, carrier: 'envelope' });
+    const res = await repo.get(idA);
+    expect(res.action).toBe('error');
+    if (res.action !== 'error') return;
+    expect(res.turnStatus).toBe('running');
+    expect(res.turnRunId).toBe('wr_live');
+    expect(res).not.toHaveProperty('snapshot');
+  });
+
+  it('not-live envelope + missing pointer/readUrl stays notfound (empty mint)', async () => {
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && u.endsWith('/envelope')) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 30,
+            meta: { turnStatus: 'completed' },
+          },
+          { status: 200 },
+        );
+      }
+      return new Response(null, { status: 204 });
+    });
+    const repo = createHttpSessionRepository({ fetchImpl, carrier: 'envelope' });
+    const res = await repo.get(idA);
+    expect(res).toEqual({ action: 'notfound' });
   });
 });
