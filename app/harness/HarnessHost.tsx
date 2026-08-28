@@ -50,6 +50,7 @@ import {
   flushPendingThenRestore,
   discardPendingModelChange,
 } from '../../lib/harnessHostModelPersist';
+import { tryLocalSave } from '../../lib/hostQuotaError';
 import {
   buildSessionCatalogEntries,
   foldPendingSessionSwitch,
@@ -199,6 +200,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bridgeRef = useRef<HarnessBridge | null>(null);
   const storeRef = useRef<SessionStore | null>(null);
+  /** Once-per-episode flag for localStorage quota Error row (plan #865). */
+  const localSaveQuotaWarnedRef = useRef(false);
   /** Cloud multi-session repo (phase 3, #415); disabled on 401 / Redis-off. */
   const repoRef = useRef<IdSessionRepository | null>(null);
   const pollRef = useRef<number | null>(null);
@@ -262,7 +265,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
 
   const writeLocalSession = useCallback((next: SessionSnapshot) => {
     sessionRef.current = next;
-    storeRef.current?.save(next);
+    tryLocalSave(storeRef.current, next, bridgeRef.current, localSaveQuotaWarnedRef);
     // Incremental pushMessage turns keep the ring on the latest window.
     const latest = latestRingStart(next.messages.length);
     ringWindowStartRef.current = latest;
@@ -284,7 +287,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
    */
   const writeLocalSessionMeta = useCallback((next: SessionSnapshot) => {
     sessionRef.current = next;
-    storeRef.current?.save(next);
+    tryLocalSave(storeRef.current, next, bridgeRef.current, localSaveQuotaWarnedRef);
   }, []);
 
   /**
@@ -1089,7 +1092,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       writeLocalSession(empty);
       setActiveSessionId(id);
       storeRef.current?.clear();
-      storeRef.current?.save(empty);
+      tryLocalSave(storeRef.current, empty, bridge, localSaveQuotaWarnedRef);
       if (bridge) {
         resetHarnessImageSession();
         resetHarnessMathSession();

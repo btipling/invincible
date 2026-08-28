@@ -74,7 +74,7 @@ describe('int quota (#859 row 5 silent localStorage)', () => {
     expect(loaded?.messages.some((m) => m.text.includes('turn-2 user'))).toBe(false);
   });
 
-  it.fails('#859 row 5: quota failure is not silent', () => {
+  it('#859 row 5: quota failure is not silent', () => {
     const store = storeWithCap();
     expect(() => store.save(runningTurn2)).toThrow();
   });

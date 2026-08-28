@@ -188,6 +188,17 @@ export class MemorySessionStore implements SessionStore {
   }
 }
 
+/**
+ * Browser quota (`QuotaExceededError`, Safari/Firefox `code` 22 / 1014).
+ * Not `SecurityError` / private-mode denial.
+ */
+export function isQuotaExceededError(err: unknown): boolean {
+  if (err == null || typeof err !== 'object') return false;
+  const rec = err as { name?: unknown; code?: unknown };
+  if (rec.name === 'QuotaExceededError') return true;
+  return rec.code === 22 || rec.code === 1014;
+}
+
 /** Browser localStorage (UX convenience, not multi-device cloud). */
 export class LocalStorageSessionStore implements SessionStore {
   readonly kind = 'localStorage' as const;
@@ -277,8 +288,9 @@ export class LocalStorageSessionStore implements SessionStore {
     if (typeof localStorage === 'undefined') return;
     try {
       localStorage.setItem(this.key, JSON.stringify(snapshot));
-    } catch {
-      // quota / private mode — ignore
+    } catch (err) {
+      if (isQuotaExceededError(err)) throw err;
+      // private mode / SecurityError — ignore
     }
   }
 
