@@ -258,8 +258,11 @@ export function snapshotMessagesFromUnknown(
  *   `tool_run` (per-round preamble / empty rounds are not in the mid-turn
  *   host snapshot; live assistant is bridge-only until terminal `done.text`).
  * - After a this-run tool match, a single trailing prior `assistant` covers
- *   remaining incoming `assistant` rows (host concatenated `done.text` vs
- *   last-round checkpoint text). Consecutive prior assistants stay 1:1.
+ *   remaining incoming `assistant` rows when its text equals or is a
+ *   suffix/prefix of the incoming text (host concatenated `done.text` vs
+ *   last-round checkpoint). Role-only is not enough: a completed prior
+ *   tool-turn with the same user prompt must not swallow a different reply.
+ *   Consecutive prior assistants stay 1:1.
  * - Host-only `skill_attached` / `system` / `error` in the prior suffix are
  *   skipped so they cannot zero overlap.
  *
@@ -362,8 +365,11 @@ function flexMatchExact(
     if (!p || !n) return false;
     const afterToolAssistant =
       matchedTool && p.role === 'assistant' && n.role === 'assistant';
-    if (!afterToolAssistant && !snapshotRowOverlaps(p, n)) return false;
-    if (afterToolAssistant && p.role !== n.role) return false;
+    if (afterToolAssistant) {
+      if (!assistantCovers(p.text, n.text)) return false;
+    } else if (!snapshotRowOverlaps(p, n)) {
+      return false;
+    }
     pi += 1;
     ii += 1;
     if (p.role === 'tool_run') {
@@ -398,6 +404,21 @@ function snapshotRowOverlaps(
   if (prior.role !== incoming.role) return false;
   if (prior.role === 'tool_run') return true;
   return prior.text === incoming.text;
+}
+
+/**
+ * Trailing-assistant cover after a this-run tool match: equal, or one text is
+ * a suffix of the other (host concatenated `done.text` vs last-round
+ * checkpoint). Empty strings never cover — `String.prototype.endsWith('')`
+ * is true for every haystack.
+ */
+function assistantCovers(priorText: string, incomingText: string): boolean {
+  if (priorText.length === 0 || incomingText.length === 0) return false;
+  return (
+    priorText === incomingText ||
+    priorText.endsWith(incomingText) ||
+    incomingText.endsWith(priorText)
+  );
 }
 
 /**

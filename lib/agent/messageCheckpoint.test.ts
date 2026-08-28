@@ -464,6 +464,39 @@ describe('mergeCheckpointOntoPrior', () => {
     expect(out).toEqual([u1, a1, hostU2, hostCard, hostA2]);
   });
 
+  it('same user text + tools + different assistant appends the new turn', () => {
+    const uA = { id: 'h1', role: 'user' as const, text: 'continue', at: 10 };
+    const tA = {
+      id: 'h2',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"}]}',
+      at: 11,
+    };
+    const aA = {
+      id: 'h3',
+      role: 'assistant' as const,
+      text: 'here is the first analysis',
+      at: 12,
+    };
+    const uB = { id: 'cp_0', role: 'user' as const, text: 'continue', at: 1 };
+    const tB = { id: 'cp_1', role: 'tool_run' as const, text: 'exit=0', at: 2 };
+    const aB = {
+      id: 'cp_2',
+      role: 'assistant' as const,
+      text: 'now I will edit the file',
+      at: 3,
+    };
+    const out = mergeCheckpointOntoPrior([uA, tA, aA], [uB, tB, aB]);
+    expect(out.map((m) => m.text)).toEqual([
+      'continue',
+      tA.text,
+      'here is the first analysis',
+      'continue',
+      'exit=0',
+      'now I will edit the file',
+    ]);
+  });
+
   it('worker-to-worker preamble assistant stays 1:1 (not skipped)', () => {
     const wU = { id: 'cp_0', role: 'user' as const, text: 'turn-2 user', at: 1 };
     const wPre = { id: 'cp_1', role: 'assistant' as const, text: 'Let me read that', at: 2 };

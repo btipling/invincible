@@ -47,7 +47,9 @@ card covers a run of checkpoint tools; host-only `skill_attached` / `system` /
 checkpoint `assistant` rows that the host has not stored yet (live paint is
 bridge-only until concatenated `done.text`) are skipped so they cannot zero
 overlap against a host tool card; a trailing host assistant covers those
-this-run assistant rows. A leftover `{ deltas }`-only object
+this-run assistant rows only when its text equals or is a suffix/prefix of
+the checkpoint assistant (concatenated `done.text` vs last-round text), not
+by role alone — two tool-turns that share a user prompt keep both replies. A leftover `{ deltas }`-only object
 fails parse and is not merged; restore keeps the local transcript and overlays live envelope
 carriers until a later persist overwrites the pointer. A bound pointer whose object
 is missing or not JSON fails persist (pointer unchanged) rather than publishing

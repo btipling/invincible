@@ -684,4 +684,47 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     ]);
     expect(parsed?.messages.map((m) => m.id).slice(0, 4)).toEqual(['h1', 'h2', 'h3', 'h4']);
   });
+
+  it('same user text + tools + different assistant appends the new turn', async () => {
+    const { seam, blobStore } = await makeSeam();
+    const first = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'continue', at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'file content', at: 2 },
+          { id: 'cp_2', role: 'assistant', text: 'here is the first analysis', at: 3 },
+        ],
+      }),
+    });
+    expect(first.ok).toBe(true);
+    const second = await seam.persist({
+      turnRunId: 'wr_0000_2a3b4c5d6e7f',
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'continue', at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'exit=0', at: 2 },
+          { id: 'cp_2', role: 'assistant', text: 'now I will edit the file', at: 3 },
+        ],
+      }),
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const parsed = parseCloudSessionSnapshot(
+      JSON.parse((await blobStore.read(second.objectId!)) ?? 'null'),
+      scope.sessionId,
+    );
+    expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'continue',
+      'file content',
+      'here is the first analysis',
+      'continue',
+      'exit=0',
+      'now I will edit the file',
+    ]);
+  });
 });
