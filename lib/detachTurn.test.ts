@@ -378,7 +378,9 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(run).toContain("action === 'preserve'");
     expect(run).toContain("action === 'drop'");
     // Late mid-turn patches must take the same gate (not raw persist).
-    expect(run).toContain('onSessionPatch: persistTurn');
+    // Adversarial #870: paintQuota=false so a quota Error row cannot steal
+    // the live last ring row from livePaintToolRun / growAssistant.
+    expect(run).toContain('onSessionPatch: (s) => persistTurn(s, false)');
   });
 
   it('preserve + finally mint-bind first-turn UUID (adversarial #844)', () => {

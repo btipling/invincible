@@ -263,9 +263,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     [],
   );
 
-  const writeLocalSession = useCallback((next: SessionSnapshot) => {
+  const writeLocalSession = useCallback((next: SessionSnapshot, opts?: { paintQuota?: boolean }) => {
     sessionRef.current = next;
-    tryLocalSave(storeRef.current, next, bridgeRef.current, localSaveQuotaWarnedRef);
+    tryLocalSave(storeRef.current, next, bridgeRef.current, localSaveQuotaWarnedRef, {
+      paint: opts?.paintQuota !== false,
+    });
     // Incremental pushMessage turns keep the ring on the latest window.
     const latest = latestRingStart(next.messages.length);
     ringWindowStartRef.current = latest;
@@ -393,8 +395,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   );
 
   const persist = useCallback(
-    (next: SessionSnapshot) => {
-      writeLocalSession(next);
+    (next: SessionSnapshot, opts?: { paintQuota?: boolean }) => {
+      writeLocalSession(next, opts);
       // Hybrid cloud push — never blocks the turn; coalesced per session in repo.
       repoRef.current?.put(next.id, next);
     },
@@ -480,7 +482,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       // Adversarial #844: capture the repo object NOW. Unmount cleanup nulls
       // `repoRef` before the abort microtask reaches persistTurn/finally.
       const repo = repoRef.current;
-      const persistTurn = (snapshot: SessionSnapshot) => {
+      const persistTurn = (snapshot: SessionSnapshot, paintQuota = true) => {
         const pendingMintId = pendingMintBindRef.current;
         const action = decideDetachPersist({
           detached: turnEpochRef.current !== epoch,
@@ -508,7 +510,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           }
           return;
         }
-        persist(snapshot);
+        persist(snapshot, { paintQuota });
       };
       setBusy(true);
       setHostNote(null);
@@ -529,7 +531,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // turn-end path uses — local write + coalesced cloud PUT.
             // Adversarial #844: late patches after detach take decideDetachPersist
             // (never writeLocal onto a switched session; never PUT a Clear'd id).
-            onSessionPatch: persistTurn,
+            // Adversarial #870: do not paint the quota Error row here — it
+            // becomes last and livePaintToolRun / growAssistant duplicate cards.
+            // Post-turn persistTurn still throws and paints once.
+            onSessionPatch: (s) => persistTurn(s, false),
             ...(attach ? { attach } : {}),
           },
         );

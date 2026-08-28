@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { MessageKind } from './harnessBridge';
 import {
@@ -10,6 +12,19 @@ import { createEmptySession, type SessionStore } from './sessionStore';
 
 function mockBridge() {
   return { pushMessage: vi.fn() };
+}
+
+function quotaStore(): SessionStore {
+  const err = new Error('The quota has been exceeded.');
+  err.name = 'QuotaExceededError';
+  return {
+    kind: 'localStorage',
+    load: () => null,
+    save: vi.fn(() => {
+      throw err;
+    }),
+    clear: vi.fn(),
+  };
 }
 
 describe('pushHostQuotaError', () => {
@@ -68,16 +83,7 @@ describe('tryLocalSave', () => {
   });
 
   it('quota throw paints once and does not rethrow', () => {
-    const err = new Error('The quota has been exceeded.');
-    err.name = 'QuotaExceededError';
-    const store: SessionStore = {
-      kind: 'localStorage',
-      load: () => null,
-      save: vi.fn(() => {
-        throw err;
-      }),
-      clear: vi.fn(),
-    };
+    const store = quotaStore();
     const bridge = mockBridge();
     const warned: QuotaWarnFlag = { current: false };
     expect(() => tryLocalSave(store, createEmptySession('s'), bridge, warned)).not.toThrow();
@@ -85,6 +91,20 @@ describe('tryLocalSave', () => {
     expect(bridge.pushMessage).toHaveBeenCalledWith(MessageKind.Error, LOCAL_SAVE_QUOTA_ERROR);
     expect(() => tryLocalSave(store, createEmptySession('s'), bridge, warned)).not.toThrow();
     expect(bridge.pushMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('paint:false swallows quota without pushing so a later paint can still fire', () => {
+    const store = quotaStore();
+    const bridge = mockBridge();
+    const warned: QuotaWarnFlag = { current: false };
+    expect(() =>
+      tryLocalSave(store, createEmptySession('s'), bridge, warned, { paint: false }),
+    ).not.toThrow();
+    expect(bridge.pushMessage).not.toHaveBeenCalled();
+    expect(warned.current).toBe(false);
+    expect(() => tryLocalSave(store, createEmptySession('s'), bridge, warned)).not.toThrow();
+    expect(bridge.pushMessage).toHaveBeenCalledTimes(1);
+    expect(warned.current).toBe(true);
   });
 
   it('non-quota throw is swallowed (save already filters these)', () => {
@@ -110,5 +130,26 @@ describe('tryLocalSave', () => {
     const warned: QuotaWarnFlag = { current: false };
     tryLocalSave(null, createEmptySession('s'), bridge, warned);
     expect(bridge.pushMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('HarnessHost wiring lock — quota save (#870)', () => {
+  const src = readFileSync(
+    resolve(import.meta.dirname, '..', 'app/harness/HarnessHost.tsx'),
+    'utf-8',
+  );
+
+  it('three local writes go through tryLocalSave, never storeRef.save', () => {
+    expect(src).not.toMatch(/storeRef\.current\?\.save\(/);
+    expect(src).toContain(
+      'tryLocalSave(storeRef.current, next, bridgeRef.current, localSaveQuotaWarnedRef',
+    );
+    expect(src).toContain(
+      'tryLocalSave(storeRef.current, empty, bridge, localSaveQuotaWarnedRef)',
+    );
+  });
+
+  it('onSessionPatch persistTurn does not paint the quota Error row', () => {
+    expect(src).toContain('onSessionPatch: (s) => persistTurn(s, false)');
   });
 });
