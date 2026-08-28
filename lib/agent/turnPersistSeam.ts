@@ -52,6 +52,8 @@ import {
 } from '../sessions/sessionStore';
 import {
   truncateMessageCheckpoint,
+  applyPriorMessagesToSnapshotJson,
+  snapshotMessagesFromUnknown,
   type CheckpointRow,
 } from './messageCheckpoint';
 import { persistTranscriptSegment } from './turnWorkerPersist';
@@ -189,7 +191,30 @@ export function createTurnPersistSeam(
         }
       }
       const updatedAt = clock(stored?.updatedAt ?? 0);
-      const stamped = stampSnapshotUpdatedAt(input.content, updatedAt);
+
+      // This-run checkpoint is not the full session. Suffix-merge onto a
+      // parseable prior pointer so a newer overlay clock cannot LWW-wipe
+      // earlier turns. Leftover `{ deltas }` / foreign pointer → this run only.
+      let priorMessages = null;
+      const pointer = stored?.meta?.transcriptPointer;
+      if (typeof pointer === 'string' && isObjectIdBoundTo(pointer, scope)) {
+        try {
+          const raw = await blobStore.read(pointer);
+          priorMessages = snapshotMessagesFromUnknown(
+            raw ? JSON.parse(raw) : null,
+            scope.sessionId,
+          );
+        } catch {
+          priorMessages = null;
+        }
+      }
+      const merged =
+        applyPriorMessagesToSnapshotJson(
+          input.content,
+          priorMessages,
+          scope.sessionId,
+        ) ?? input.content;
+      const stamped = stampSnapshotUpdatedAt(merged, updatedAt);
       if (stamped === null) {
         return {
           ok: false,

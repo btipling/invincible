@@ -205,3 +205,119 @@ export function checkpointToSnapshotMessages(
   }
   return out;
 }
+
+/**
+ * Pull `messages` off a parseable snapshot JSON body. Returns null when the
+ * body is not `{ id, messages[] }` with SessionRole rows — leftover `{ deltas }`
+ * and other unreadable objects fail closed so the caller can start from this
+ * run only. Runtime-pure: no `sessionRepository` import.
+ */
+export function snapshotMessagesFromUnknown(
+  body: unknown,
+  expectedId: string,
+): CheckpointSnapshotMessage[] | null {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return null;
+  const o = body as Record<string, unknown>;
+  if (typeof o.id !== 'string' || !o.id) return null;
+  if (o.id !== expectedId) return null;
+  if (!Array.isArray(o.messages)) return null;
+  const out: CheckpointSnapshotMessage[] = [];
+  for (const m of o.messages) {
+    if (m === null || typeof m !== 'object' || Array.isArray(m)) return null;
+    const msg = m as Record<string, unknown>;
+    if (typeof msg.id !== 'string' || !msg.id) return null;
+    if (typeof msg.role !== 'string' || !SESSION_ROLES.has(msg.role as SessionRole)) {
+      return null;
+    }
+    if (typeof msg.text !== 'string') return null;
+    if (typeof msg.at !== 'number' || !Number.isFinite(msg.at)) return null;
+    out.push({
+      id: msg.id,
+      role: msg.role as SessionRole,
+      text: msg.text,
+      at: msg.at,
+    });
+  }
+  return out;
+}
+
+/**
+ * Suffix-merge this-run snapshot messages onto a prior readable transcript.
+ *
+ * Finds the longest prefix of `incoming` that is already a suffix of `prior`
+ * (`role`+`text`) so a host PUT that already includes this turn is not
+ * duplicated. Remainder is appended with unique `cp_*` ids and `at` values
+ * strictly after the prior max. Empty incoming keeps prior. Empty prior
+ * keeps incoming. Never throws.
+ */
+export function mergeCheckpointOntoPrior(
+  prior: ReadonlyArray<CheckpointSnapshotMessage>,
+  incoming: ReadonlyArray<CheckpointSnapshotMessage>,
+): CheckpointSnapshotMessage[] {
+  if (prior.length === 0) return incoming.slice();
+  if (incoming.length === 0) return prior.slice();
+  let overlap = 0;
+  const max = Math.min(prior.length, incoming.length);
+  for (let k = max; k > 0; k--) {
+    let ok = true;
+    for (let i = 0; i < k; i++) {
+      const p = prior[prior.length - k + i];
+      const n = incoming[i];
+      if (!p || !n || p.role !== n.role || p.text !== n.text) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) {
+      overlap = k;
+      break;
+    }
+  }
+  const appended = incoming.slice(overlap);
+  if (appended.length === 0) return prior.slice();
+  const baseAt = prior.reduce((m, x) => (x.at > m ? x.at : m), 0);
+  const used = new Set(prior.map((m) => m.id));
+  const out = prior.slice();
+  for (let i = 0; i < appended.length; i++) {
+    const row = appended[i];
+    if (!row) continue;
+    let n = out.length;
+    let id = `cp_${n}`;
+    while (used.has(id)) {
+      n += 1;
+      id = `cp_${n}`;
+    }
+    used.add(id);
+    out.push({
+      id,
+      role: row.role,
+      text: row.text,
+      at: baseAt + 1 + i,
+    });
+  }
+  return out;
+}
+
+/**
+ * If `content` is a snapshot JSON object, replace `messages` with the
+ * suffix-merge against `prior`. Non-snapshot objects (test `{delta}` bodies,
+ * leftover `{ deltas }`) return null so the caller can stamp the original.
+ * Invalid JSON returns null. No clock — the seam stamps `updatedAt` after.
+ */
+export function applyPriorMessagesToSnapshotJson(
+  content: string,
+  prior: ReadonlyArray<CheckpointSnapshotMessage> | null,
+  expectedId: string,
+): string | null {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    const incoming = snapshotMessagesFromUnknown(parsed, expectedId);
+    if (incoming === null) return null;
+    const rec = parsed as Record<string, unknown>;
+    const messages = mergeCheckpointOntoPrior(prior ?? [], incoming);
+    return JSON.stringify({ ...rec, messages });
+  } catch {
+    return null;
+  }
+}
+

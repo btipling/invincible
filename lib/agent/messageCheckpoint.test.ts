@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   type CheckpointRow,
   checkpointToSnapshotMessages,
+  mergeCheckpointOntoPrior,
+  snapshotMessagesFromUnknown,
+  applyPriorMessagesToSnapshotJson,
   truncateMessageCheckpoint,
 } from './messageCheckpoint';
 import {
@@ -221,5 +224,88 @@ describe('checkpointToSnapshotMessages', () => {
 
   it('empty checkpoint yields empty messages', () => {
     expect(checkpointToSnapshotMessages([])).toEqual([]);
+  });
+});
+
+describe('mergeCheckpointOntoPrior', () => {
+  const u1 = { id: 'h1', role: 'user' as const, text: 'turn-1 user', at: 10 };
+  const a1 = { id: 'h2', role: 'assistant' as const, text: 'turn-1 assistant', at: 11 };
+  const u2 = { id: 'cp_0', role: 'user' as const, text: 'turn-2 user', at: 1 };
+  const a2 = { id: 'cp_1', role: 'assistant' as const, text: 'turn-2 assistant', at: 2 };
+
+  it('empty prior keeps incoming', () => {
+    expect(mergeCheckpointOntoPrior([], [u2, a2])).toEqual([u2, a2]);
+  });
+
+  it('empty incoming keeps prior', () => {
+    expect(mergeCheckpointOntoPrior([u1, a1], [])).toEqual([u1, a1]);
+  });
+
+  it('appends this-run messages after a prior turn', () => {
+    const out = mergeCheckpointOntoPrior([u1, a1], [u2, a2]);
+    expect(out.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'turn-2 user',
+      'turn-2 assistant',
+    ]);
+    expect(out[2]?.id).not.toBe(u1.id);
+    expect(out[2]?.at).toBeGreaterThan(a1.at);
+  });
+
+  it('does not duplicate a host prior that already ends with this turn', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'turn-2 user', at: 20 };
+    const hostA2 = { id: 'ha2', role: 'assistant' as const, text: 'turn-2 assistant', at: 21 };
+    const out = mergeCheckpointOntoPrior([u1, a1, hostU2, hostA2], [u2, a2]);
+    expect(out).toEqual([u1, a1, hostU2, hostA2]);
+  });
+
+  it('appends only the non-overlapping tail (host already has this-run user)', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'turn-2 user', at: 20 };
+    const out = mergeCheckpointOntoPrior([u1, a1, hostU2], [u2, a2]);
+    expect(out.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'turn-2 user',
+      'turn-2 assistant',
+    ]);
+    expect(out).toHaveLength(4);
+  });
+});
+
+describe('snapshotMessagesFromUnknown / applyPriorMessagesToSnapshotJson', () => {
+  it('rejects leftover { deltas } and mismatched id', () => {
+    expect(snapshotMessagesFromUnknown({ deltas: [{ d: 1 }] }, 's1')).toBeNull();
+    expect(
+      snapshotMessagesFromUnknown(
+        { id: 'other', updatedAt: 1, messages: [] },
+        's1',
+      ),
+    ).toBeNull();
+  });
+
+  it('merges this-run JSON onto a prior snapshot without stamping a clock', () => {
+    const prior = [{ id: 'h1', role: 'user' as const, text: 't1', at: 5 }];
+    const content = JSON.stringify({
+      id: 's1',
+      messages: [{ id: 'cp_0', role: 'user', text: 't2', at: 1 }],
+      deltas: [{ d: 1 }],
+    });
+    const out = applyPriorMessagesToSnapshotJson(content, prior, 's1');
+    expect(out).not.toBeNull();
+    const body = JSON.parse(out ?? 'null') as {
+      id: string;
+      updatedAt?: number;
+      messages: Array<{ text: string }>;
+      deltas: unknown[];
+    };
+    expect(body.id).toBe('s1');
+    expect(body.updatedAt).toBeUndefined();
+    expect(body.messages.map((m) => m.text)).toEqual(['t1', 't2']);
+    expect(body.deltas).toEqual([{ d: 1 }]);
+  });
+
+  it('returns null for a non-snapshot object so the seam can stamp the original', () => {
+    expect(applyPriorMessagesToSnapshotJson('{"delta":"x"}', [], 's1')).toBeNull();
   });
 });

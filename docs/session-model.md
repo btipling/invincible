@@ -39,9 +39,11 @@ overlays those three turn carriers onto the kept local snapshot, keeps `?s=`
 pinned, and cold-attaches. Messages stay the local (or LWW-winning) transcript
 until attach SSE catches up. The Blob object at `transcriptPointer` is a session
 snapshot JSON body (`id`, `updatedAt`, `messages`) — the same shape a full-record
-GET returns. Extra keys are ignored. A legacy `{ deltas }`-only object fails parse;
-restore keeps the local transcript and overlays live envelope carriers until a later
-persist overwrites the pointer. An empty envelope with no live turn and no blob
+GET returns. Extra keys are ignored. Each worker persist suffix-merges this-run
+checkpoint rows onto a prior **readable** pointer body so a later turn cannot
+replace the accumulated transcript. A leftover `{ deltas }`-only object fails parse
+and is not merged; restore keeps the local transcript and overlays live envelope
+carriers until a later persist overwrites the pointer. An empty envelope with no live turn and no blob
 still 404-mints as before.
 
 **Status bar reseed (protocol v13, plan #538/#541):** on hydrate/restore and

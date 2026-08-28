@@ -61,6 +61,39 @@ export async function persistTurn1(opts?: {
   };
 }
 
+/** Terminal persist of turn 2 against the same world as {@link persistTurn1}. */
+export async function persistTurn2(
+  world: {
+    blobStore: MemoryBlobTranscriptStore;
+    envelopeStore: MemorySessionStore;
+  },
+  opts?: { userLine?: string; assistantLine?: string },
+): Promise<{ objectId?: string }> {
+  const seam = createTurnPersistSeam({
+    blobStore: world.blobStore,
+    envelopeStore: world.envelopeStore,
+    scope: INT_SCOPE,
+  });
+  setPersistSeamResolver(() => seam);
+  const userLine = opts?.userLine ?? 'turn-2 user';
+  const assistantLine = opts?.assistantLine ?? 'turn-2 assistant';
+  const result = await persistStep({
+    turnRunId: TURN2_RUN_ID,
+    deltas: [{ type: 'text_delta', text: assistantLine }],
+    fold: {
+      checkpoint: [
+        { role: 'user', content: userLine },
+        { role: 'assistant', content: assistantLine },
+      ],
+    },
+    scope: INT_SCOPE,
+  });
+  if (!result.ok) {
+    throw new Error(`persistTurn2 failed: ${result.code} ${result.error}`);
+  }
+  return { objectId: result.objectId };
+}
+
 /** Host-shaped turn-2 start: envelope `running` + new run id, pointer unchanged. */
 export async function markEnvelopeRunning(
   envelopeStore: MemorySessionStore,
