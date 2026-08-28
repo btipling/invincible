@@ -640,6 +640,66 @@ describe('mergeCheckpointOntoPrior', () => {
     ]);
   });
 
+  it('same-user first-round preamble that is a suffix of leftover appends the whole turn', () => {
+    const uA = { id: 'h1', role: 'user' as const, text: 'continue', at: 10 };
+    const tA = {
+      id: 'h2',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"}]}',
+      at: 11,
+    };
+    const aA = { id: 'h3', role: 'assistant' as const, text: 'All tests passed. OK', at: 12 };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'continue' },
+      { role: 'assistant', content: 'OK' },
+      { role: 'tool', content: 'exit=0' },
+      { role: 'assistant', content: 'now I will edit the file' },
+    ]);
+    const out = mergeCheckpointOntoPrior([uA, tA, aA], incoming);
+    expect(out.map((m) => m.text)).toEqual([
+      'continue',
+      tA.text,
+      'All tests passed. OK',
+      'continue',
+      'OK',
+      'exit=0',
+      'now I will edit the file',
+    ]);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'continue')).toHaveLength(2);
+    expect(out.filter((m) => m.role === 'tool_run')).toHaveLength(2);
+  });
+
+  it('same-user first-round Done suffix of leftover Finished. Done appends the whole turn', () => {
+    const uA = { id: 'h1', role: 'user' as const, text: 'go', at: 10 };
+    const tA = {
+      id: 'h2',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"exec"}]}',
+      at: 11,
+    };
+    const aA = { id: 'h3', role: 'assistant' as const, text: 'Finished. Done', at: 12 };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: 'Done' },
+      { role: 'tool', content: 'exit=0' },
+      { role: 'tool', content: 'wrote file' },
+      { role: 'assistant', content: 'edited three files' },
+    ]);
+    const out = mergeCheckpointOntoPrior([uA, tA, aA], incoming);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'go')).toHaveLength(2);
+    expect(out.filter((m) => m.role === 'tool_run')).toHaveLength(3);
+    expect(out.map((m) => m.text)).toEqual([
+      'go',
+      tA.text,
+      'Finished. Done',
+      'go',
+      'Done',
+      'exit=0',
+      'wrote file',
+      'edited three files',
+    ]);
+  });
+
   it('worker-to-worker interleaved tools stay 1:1 on persist retry', () => {
     const incoming = checkpointToSnapshotMessages([
       { role: 'user', content: 'fix the tests' },

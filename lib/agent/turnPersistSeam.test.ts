@@ -954,6 +954,53 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     ]);
   });
 
+  it('same-user first-round preamble that is a suffix of leftover appends the whole turn', async () => {
+    const { seam, blobStore } = await makeSeam();
+    const first = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'continue', at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'file content', at: 2 },
+          { id: 'cp_2', role: 'assistant', text: 'All tests passed. OK', at: 3 },
+        ],
+      }),
+    });
+    expect(first.ok).toBe(true);
+    const second = await seam.persist({
+      turnRunId: 'wr_0000_2a3b4c5d6e7f',
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'continue', at: 1 },
+          { id: 'cp_1', role: 'assistant', text: 'OK', at: 2 },
+          { id: 'cp_2', role: 'tool_run', text: 'exit=0', at: 3 },
+          { id: 'cp_3', role: 'assistant', text: 'now I will edit the file', at: 4 },
+        ],
+      }),
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const parsed = parseCloudSessionSnapshot(
+      JSON.parse((await blobStore.read(second.objectId!)) ?? 'null'),
+      scope.sessionId,
+    );
+    expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'continue',
+      'file content',
+      'All tests passed. OK',
+      'continue',
+      'OK',
+      'exit=0',
+      'now I will edit the file',
+    ]);
+    expect(parsed?.messages.filter((m) => m.role === 'user')).toHaveLength(2);
+    expect(parsed?.messages.filter((m) => m.role === 'tool_run')).toHaveLength(2);
+  });
+
   it('envelope read throw fails persist (pointer unchanged, not this-run-only)', async () => {
     const blobStore = new MemoryBlobTranscriptStore();
     const envelopeStore = new ThrowOnceEnvelopeStore();

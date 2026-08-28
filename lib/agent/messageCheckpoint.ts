@@ -276,7 +276,10 @@ export function snapshotMessagesFromUnknown(
  *   empty last-round ends on `tool_run` so the leftover covering assistant
  *   is not incoming-matched; a single leftover prior `assistant` that
  *   covers `+=` of this-run assts is skipped so the last raw tool is not
- *   appended. Consecutive prior assistants stay 1:1.
+ *   appended — **only when the incoming prefix is the entire this-run**
+ *   (empty last-round retry). A short prefix whose fold text is a suffix
+ *   of leftover (`OK` vs `All tests passed. OK`) is a new turn and must
+ *   append. Consecutive prior assistants stay 1:1.
  * - After a this-run tool match, a single trailing prior `assistant` covers
  *   remaining incoming `assistant` rows when its text equals the incoming
  *   text or **ends with** it (host concatenated `done.text` vs last-round
@@ -502,14 +505,17 @@ function flexMatchExact(
   while (pi < prior.length && prior[pi] && isHostOnlyRole(prior[pi]!.role)) {
     pi += 1;
   }
-  // Persist retry onto a covering concat / mid-turn fold: the incoming prefix
-  // is fully consumed after a this-run tool match, but prior still has the
-  // folded `done.text` assistant (empty last-round dropped it from incoming).
-  // One leftover assistant that covers `+=` of this-run assts is this run
-  // already on the pointer — skip it (and trailing host-only). Consecutive
-  // prior assistants stay 1:1 (do not consume a run). Different replies
-  // fail `assistantCovers` and still append.
-  if (ii === prefixLen && matchedTool) {
+  // Persist retry onto a covering concat / mid-turn fold: the **full**
+  // incoming prefix is consumed after a this-run tool match, but prior still
+  // has the folded `done.text` assistant (empty last-round dropped it from
+  // incoming). One leftover assistant that covers `+=` of this-run assts is
+  // this run already on the pointer — skip it (and trailing host-only).
+  // Only the full incoming (`prefixLen === incoming.length`): a short prefix
+  // whose fold text is a suffix of leftover (`OK` vs `All tests passed. OK`)
+  // must not consume the prior — that is a new same-user tool-turn, not a
+  // retry. Consecutive prior assistants stay 1:1. Different replies fail
+  // `assistantCovers` and still append.
+  if (ii === prefixLen && matchedTool && prefixLen === incoming.length) {
     const leftover = prior[pi];
     if (leftover?.role === 'assistant') {
       const folded = foldIncomingAssistants(incoming.slice(0, prefixLen));

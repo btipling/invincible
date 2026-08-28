@@ -59,7 +59,9 @@ incoming assistant against a prior `tool_run` (mid-turn host card). A worker
 does not skip and stays no-append. Persist retry onto a successful mid-turn fold
 (pointer already ends with `+=` of this-run assistant texts) also stays no-append
 when incoming ends on `tool_run` (empty last-round dropped); the leftover covering
-assistant is this run, not a new reply. A trailing host assistant covers remaining
+assistant is this run, not a new reply — only when the incoming prefix is the
+entire this-run. A short prefix whose fold text is a suffix of leftover
+(`OK` vs `All tests passed. OK`) is a new same-user tool-turn and appends. A trailing host assistant covers remaining
 this-run assistant rows only when its text equals the checkpoint assistant or
 ends with it (concatenated `done.text` vs last-round text), not the reverse and
 not by role alone — two tool-turns that share a user prompt keep both replies,
