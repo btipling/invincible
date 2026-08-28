@@ -244,11 +244,13 @@ export function snapshotMessagesFromUnknown(
 /**
  * Suffix-merge this-run snapshot messages onto a prior readable transcript.
  *
- * Finds the longest prefix of `incoming` that is already a suffix of `prior`
- * (`role`+`text`) so a host PUT that already includes this turn is not
- * duplicated. Remainder is appended with unique `cp_*` ids and `at` values
- * strictly after the prior max. Empty incoming keeps prior. Empty prior
- * keeps incoming. Never throws.
+ * Finds the longest prefix of `incoming` that is already a suffix of `prior`.
+ * `user` / `assistant` / `system` / `error` / `skill_attached` compare
+ * `role`+`text`. `tool_run` compares **role only** — host cards store
+ * `encodeToolRun` payloads while the worker checkpoint stores the raw tool
+ * `result`, so exact-text overlap would duplicate this-run on F5. Remainder is
+ * appended with unique `cp_*` ids and `at` values strictly after the prior max.
+ * Empty incoming keeps prior. Empty prior keeps incoming. Never throws.
  */
 export function mergeCheckpointOntoPrior(
   prior: ReadonlyArray<CheckpointSnapshotMessage>,
@@ -263,7 +265,7 @@ export function mergeCheckpointOntoPrior(
     for (let i = 0; i < k; i++) {
       const p = prior[prior.length - k + i];
       const n = incoming[i];
-      if (!p || !n || p.role !== n.role || p.text !== n.text) {
+      if (!p || !n || !snapshotRowOverlaps(p, n)) {
         ok = false;
         break;
       }
@@ -296,6 +298,16 @@ export function mergeCheckpointOntoPrior(
     });
   }
   return out;
+}
+
+/** Host tool cards encode a payload; worker checkpoint rows are raw results. */
+function snapshotRowOverlaps(
+  prior: CheckpointSnapshotMessage,
+  incoming: CheckpointSnapshotMessage,
+): boolean {
+  if (prior.role !== incoming.role) return false;
+  if (prior.role === 'tool_run') return true;
+  return prior.text === incoming.text;
 }
 
 /**

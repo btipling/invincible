@@ -455,4 +455,120 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     );
     expect(parsed?.messages.map((m) => m.text)).toEqual(['turn-2 user']);
   });
+
+  it('bound pointer whose blob is missing fails persist (does not this-run-only replace)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_0', role: 'user', text: 'turn-2 user', at: 1 }],
+      }),
+      fold,
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('write_failed');
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.transcriptPointer).toBe(priorId);
+    expect(env?.meta?.turnStatus).toBeUndefined();
+    expect(env?.meta?.checkpointPointer).toBeUndefined();
+  });
+
+  it('bound pointer whose body is not JSON fails persist (pointer unchanged)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: 'not-json{',
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_0', role: 'user', text: 'turn-2 user', at: 1 }],
+      }),
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.code).toBe('write_failed');
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.transcriptPointer).toBe(priorId);
+  });
+
+  it('host-encoded tool_run prior is not duplicated when checkpoint tool text differs', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    const encoded = '{"tools":[{"name":"read_file","ok":true}]}';
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1000,
+        messages: [
+          { id: 'h1', role: 'user', text: 'turn-1 user', at: 10 },
+          { id: 'h2', role: 'assistant', text: 'turn-1 assistant', at: 11 },
+          { id: 'h3', role: 'user', text: 'turn-2 user', at: 20 },
+          { id: 'h4', role: 'tool_run', text: encoded, at: 21 },
+        ],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'turn-2 user', at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'file content', at: 2 },
+          { id: 'cp_2', role: 'assistant', text: 'turn-2 assistant', at: 3 },
+        ],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const parsed = parseCloudSessionSnapshot(
+      JSON.parse((await blobStore.read(res.objectId!)) ?? 'null'),
+      scope.sessionId,
+    );
+    expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'turn-2 user',
+      encoded,
+      'turn-2 assistant',
+    ]);
+    expect(parsed?.messages.map((m) => m.id).slice(0, 4)).toEqual(['h1', 'h2', 'h3', 'h4']);
+  });
 });

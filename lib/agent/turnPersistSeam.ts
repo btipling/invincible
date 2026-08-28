@@ -141,8 +141,80 @@ export function createTurnPersistSeam(
         turnRunId: input.turnRunId,
       };
 
-      // 1. Checkpoint (B6): write the bounded `{role,content}` projection as its
-      //    OWN Blob object; only the object id rides in meta.
+      if (input.fold?.cwd !== undefined) patch.logicalCwd = input.fold.cwd;
+      if (input.fold?.activeSandboxId !== undefined) {
+        patch.activeSandboxId = input.fold.activeSandboxId;
+      }
+      if (input.fold?.usage !== undefined) patch.usage = input.fold.usage;
+
+      let stored: SessionEnvelope | null = null;
+      if (envelope) {
+        try {
+          stored = await envelope.readEnvelope(key);
+        } catch {
+          stored = null;
+        }
+      }
+      const updatedAt = clock(stored?.updatedAt ?? 0);
+
+      // This-run checkpoint is not the full session. Suffix-merge onto a
+      // parseable prior pointer so a newer overlay clock cannot LWW-wipe
+      // earlier turns. Leftover `{ deltas }` (readable JSON, unparseable
+      // snapshot) → this run only. A *bound* pointer whose object is missing
+      // or not JSON must fail closed — Vercel Blob maps timeout/non-2xx to
+      // `null`, and treating that like leftover deltas would LWW-clobber.
+      let priorMessages = null;
+      const pointer = stored?.meta?.transcriptPointer;
+      if (typeof pointer === 'string' && isObjectIdBoundTo(pointer, scope)) {
+        let raw: string | null;
+        try {
+          raw = await blobStore.read(pointer);
+        } catch (err) {
+          return {
+            ok: false,
+            code: 'write_failed',
+            error: `bound transcriptPointer read failed: ${toMessage(err)}`,
+          };
+        }
+        if (raw === null) {
+          return {
+            ok: false,
+            code: 'write_failed',
+            error:
+              'bound transcriptPointer object is missing — refusing this-run-only replace.',
+          };
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          return {
+            ok: false,
+            code: 'write_failed',
+            error:
+              'bound transcriptPointer body is not JSON — refusing this-run-only replace.',
+          };
+        }
+        priorMessages = snapshotMessagesFromUnknown(parsed, scope.sessionId);
+      }
+      const merged =
+        applyPriorMessagesToSnapshotJson(
+          input.content,
+          priorMessages,
+          scope.sessionId,
+        ) ?? input.content;
+      const stamped = stampSnapshotUpdatedAt(merged, updatedAt);
+      if (stamped === null) {
+        return {
+          ok: false,
+          code: 'write_failed',
+          error: 'persist content is not a JSON object — cannot stamp updatedAt.',
+        };
+      }
+
+      // Checkpoint (B6): write the bounded `{role,content}` projection as its
+      // OWN Blob object; only the object id rides in meta. Runs AFTER the
+      // prior-read gate so a bound-pointer miss does not orphan a checkpoint.
       let checkpointPointer: string | undefined;
       if (input.fold?.checkpoint !== undefined) {
         const bounded = truncateMessageCheckpoint(input.fold.checkpoint);
@@ -172,62 +244,11 @@ export function createTurnPersistSeam(
         }
       }
 
-      // 2. Overlay clock ONCE from the pre-B7 envelope (B7 preserves stored
-      //    `updatedAt`, so this is the same stored clock B8 would see after B7).
-      //    Stamp that number onto the snapshot JSON, then pass it to B8 — never
-      //    a second Date.now() / clock() call.
-      if (input.fold?.cwd !== undefined) patch.logicalCwd = input.fold.cwd;
-      if (input.fold?.activeSandboxId !== undefined) {
-        patch.activeSandboxId = input.fold.activeSandboxId;
-      }
-      if (input.fold?.usage !== undefined) patch.usage = input.fold.usage;
-
-      let stored: SessionEnvelope | null = null;
-      if (envelope) {
-        try {
-          stored = await envelope.readEnvelope(key);
-        } catch {
-          stored = null;
-        }
-      }
-      const updatedAt = clock(stored?.updatedAt ?? 0);
-
-      // This-run checkpoint is not the full session. Suffix-merge onto a
-      // parseable prior pointer so a newer overlay clock cannot LWW-wipe
-      // earlier turns. Leftover `{ deltas }` / foreign pointer → this run only.
-      let priorMessages = null;
-      const pointer = stored?.meta?.transcriptPointer;
-      if (typeof pointer === 'string' && isObjectIdBoundTo(pointer, scope)) {
-        try {
-          const raw = await blobStore.read(pointer);
-          priorMessages = snapshotMessagesFromUnknown(
-            raw ? JSON.parse(raw) : null,
-            scope.sessionId,
-          );
-        } catch {
-          priorMessages = null;
-        }
-      }
-      const merged =
-        applyPriorMessagesToSnapshotJson(
-          input.content,
-          priorMessages,
-          scope.sessionId,
-        ) ?? input.content;
-      const stamped = stampSnapshotUpdatedAt(merged, updatedAt);
-      if (stamped === null) {
-        return {
-          ok: false,
-          code: 'write_failed',
-          error: 'persist content is not a JSON object — cannot stamp updatedAt.',
-        };
-      }
-
-      // 3. Transcript (B7): write the stamped snapshot + advance transcriptPointer
-      //    only on a successful PUT (fail-closed, LWW). A failure here returns a
-      //    value; the pointer is never advanced on a partial write. NOTE (honest
-      //    partial-commit scope, adversarial L1): this is a SEPARATE committed
-      //    envelope upsert that B8's later overlay conflict does NOT roll back.
+      // Transcript (B7): write the stamped snapshot + advance transcriptPointer
+      // only on a successful PUT (fail-closed, LWW). A failure here returns a
+      // value; the pointer is never advanced on a partial write. NOTE (honest
+      // partial-commit scope, adversarial L1): this is a SEPARATE committed
+      // envelope upsert that B8's later overlay conflict does NOT roll back.
       const seg = await persistTranscriptSegment({
         store: blobStore,
         envelopeStore,

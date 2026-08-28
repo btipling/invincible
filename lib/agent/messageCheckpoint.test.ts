@@ -271,6 +271,46 @@ describe('mergeCheckpointOntoPrior', () => {
     ]);
     expect(out).toHaveLength(4);
   });
+
+  it('does not duplicate a host prior whose tool_run payload differs from the checkpoint', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'turn-2 user', at: 20 };
+    const hostTool = {
+      id: 'ht',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"}]}',
+      at: 21,
+    };
+    const rawTool = { id: 'cp_1', role: 'tool_run' as const, text: 'file content', at: 2 };
+    const out = mergeCheckpointOntoPrior([u1, a1, hostU2, hostTool], [u2, rawTool, a2]);
+    expect(out.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'turn-2 user',
+      hostTool.text,
+      'turn-2 assistant',
+    ]);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'turn-2 user')).toHaveLength(1);
+    expect(out[4]?.role).toBe('assistant');
+    expect(out[4]?.text).toBe('turn-2 assistant');
+    expect(out[4]?.id).not.toBe(hostU2.id);
+  });
+
+  it('keeps a host prior that already ends with this turn including encoded tool_run', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'turn-2 user', at: 20 };
+    const hostTool = {
+      id: 'ht',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"}]}',
+      at: 21,
+    };
+    const hostA2 = { id: 'ha2', role: 'assistant' as const, text: 'turn-2 assistant', at: 22 };
+    const rawTool = { id: 'cp_1', role: 'tool_run' as const, text: 'file content', at: 2 };
+    const out = mergeCheckpointOntoPrior(
+      [u1, a1, hostU2, hostTool, hostA2],
+      [u2, rawTool, a2],
+    );
+    expect(out).toEqual([u1, a1, hostU2, hostTool, hostA2]);
+  });
 });
 
 describe('snapshotMessagesFromUnknown / applyPriorMessagesToSnapshotJson', () => {

@@ -41,9 +41,12 @@ until attach SSE catches up. The Blob object at `transcriptPointer` is a session
 snapshot JSON body (`id`, `updatedAt`, `messages`) — the same shape a full-record
 GET returns. Extra keys are ignored. Each worker persist suffix-merges this-run
 checkpoint rows onto a prior **readable** pointer body so a later turn cannot
-replace the accumulated transcript. A leftover `{ deltas }`-only object fails parse
-and is not merged; restore keeps the local transcript and overlays live envelope
-carriers until a later persist overwrites the pointer. An empty envelope with no live turn and no blob
+replace the accumulated transcript (`tool_run` rows match by role so a host
+encode payload does not duplicate this-run). A leftover `{ deltas }`-only object
+fails parse and is not merged; restore keeps the local transcript and overlays live envelope
+carriers until a later persist overwrites the pointer. A bound pointer whose object
+is missing or not JSON fails persist (pointer unchanged) rather than publishing
+this-run-only under a newer clock. An empty envelope with no live turn and no blob
 still 404-mints as before.
 
 **Status bar reseed (protocol v13, plan #538/#541):** on hydrate/restore and
