@@ -41,8 +41,9 @@ until attach SSE catches up. The Blob object at `transcriptPointer` is a session
 snapshot JSON body (`id`, `updatedAt`, `messages`) — the same shape a full-record
 GET returns. Extra keys are ignored. Each worker persist suffix-merges this-run
 checkpoint rows onto a prior **readable** pointer body so a later turn cannot
-replace the accumulated transcript (`tool_run` rows match by role so a host
-encode payload does not duplicate this-run). A leftover `{ deltas }`-only object
+replace the accumulated transcript (`tool_run` matches by role; one host live-paint
+card covers a run of checkpoint tools; host-only `skill_attached` / `system` /
+`error` rows in that window are kept and do not duplicate this-run). A leftover `{ deltas }`-only object
 fails parse and is not merged; restore keeps the local transcript and overlays live envelope
 carriers until a later persist overwrites the pointer. A bound pointer whose object
 is missing or not JSON fails persist (pointer unchanged) rather than publishing

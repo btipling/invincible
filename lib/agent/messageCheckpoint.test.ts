@@ -311,6 +311,82 @@ describe('mergeCheckpointOntoPrior', () => {
     );
     expect(out).toEqual([u1, a1, hostU2, hostTool, hostA2]);
   });
+
+  it('one host tool_run card covers N checkpoint tools (does not append raw extras)', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'turn-2 user', at: 20 };
+    const hostCard = {
+      id: 'ht',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"},{"name":"exec"}]}',
+      at: 21,
+    };
+    const hostA2 = { id: 'ha2', role: 'assistant' as const, text: 'turn-2 assistant', at: 22 };
+    const t1 = { id: 'cp_1', role: 'tool_run' as const, text: 'file content', at: 2 };
+    const t2 = { id: 'cp_2', role: 'tool_run' as const, text: 'exit=0', at: 3 };
+    const out = mergeCheckpointOntoPrior(
+      [u1, a1, hostU2, hostCard, hostA2],
+      [u2, t1, t2, a2],
+    );
+    expect(out).toEqual([u1, a1, hostU2, hostCard, hostA2]);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'turn-2 user')).toHaveLength(1);
+    expect(out.filter((m) => m.role === 'assistant' && m.text === 'turn-2 assistant')).toHaveLength(
+      1,
+    );
+  });
+
+  it('mid-turn host card (no assistant yet) appends only the trailing assistant', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'turn-2 user', at: 20 };
+    const hostCard = {
+      id: 'ht',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"},{"name":"exec"}]}',
+      at: 21,
+    };
+    const t1 = { id: 'cp_1', role: 'tool_run' as const, text: 'file content', at: 2 };
+    const t2 = { id: 'cp_2', role: 'tool_run' as const, text: 'exit=0', at: 3 };
+    const out = mergeCheckpointOntoPrior([u1, a1, hostU2, hostCard], [u2, t1, t2, a2]);
+    expect(out.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'turn-2 user',
+      hostCard.text,
+      'turn-2 assistant',
+    ]);
+    expect(out.filter((m) => m.role === 'tool_run')).toHaveLength(1);
+  });
+
+  it('skill_attached in the host this-run window does not duplicate this-run', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'turn-2 user', at: 20 };
+    const skill = {
+      id: 'hs',
+      role: 'skill_attached' as const,
+      text: 'Skill attached: create-plan',
+      at: 21,
+    };
+    const hostTool = {
+      id: 'ht',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"}]}',
+      at: 22,
+    };
+    const hostA2 = { id: 'ha2', role: 'assistant' as const, text: 'turn-2 assistant', at: 23 };
+    const rawTool = { id: 'cp_1', role: 'tool_run' as const, text: 'file content', at: 2 };
+    const out = mergeCheckpointOntoPrior(
+      [u1, a1, hostU2, skill, hostTool, hostA2],
+      [u2, rawTool, a2],
+    );
+    expect(out).toEqual([u1, a1, hostU2, skill, hostTool, hostA2]);
+  });
+
+  it('worker-to-worker consecutive tool_run rows stay 1:1 (no greedy consume)', () => {
+    const wU = { id: 'cp_0', role: 'user' as const, text: 'turn-2 user', at: 1 };
+    const wT1 = { id: 'cp_1', role: 'tool_run' as const, text: 'file content', at: 2 };
+    const wT2 = { id: 'cp_2', role: 'tool_run' as const, text: 'exit=0', at: 3 };
+    const wA = { id: 'cp_3', role: 'assistant' as const, text: 'turn-2 assistant', at: 4 };
+    const prior = [u1, a1, wU, wT1, wT2, wA];
+    const out = mergeCheckpointOntoPrior(prior, [u2, wT1, wT2, a2]);
+    expect(out).toEqual(prior);
+  });
 });
 
 describe('snapshotMessagesFromUnknown / applyPriorMessagesToSnapshotJson', () => {

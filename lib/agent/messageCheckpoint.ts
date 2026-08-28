@@ -244,13 +244,18 @@ export function snapshotMessagesFromUnknown(
 /**
  * Suffix-merge this-run snapshot messages onto a prior readable transcript.
  *
- * Finds the longest prefix of `incoming` that is already a suffix of `prior`.
- * `user` / `assistant` / `system` / `error` / `skill_attached` compare
- * `role`+`text`. `tool_run` compares **role only** — host cards store
- * `encodeToolRun` payloads while the worker checkpoint stores the raw tool
- * `result`, so exact-text overlap would duplicate this-run on F5. Remainder is
- * appended with unique `cp_*` ids and `at` values strictly after the prior max.
- * Empty incoming keeps prior. Empty prior keeps incoming. Never throws.
+ * Finds the longest prefix of `incoming` that flex-matches a suffix of `prior`:
+ * - `user` / `assistant` compare `role`+`text`.
+ * - `tool_run` compares **role only**. A single prior `tool_run` covers a run
+ *   of incoming `tool_run` rows when the next prior row is not `tool_run`
+ *   (host `livePaintToolRun` grows one encodeToolRun card for N tools).
+ *   Consecutive prior `tool_run` rows stay 1:1 (worker-to-worker raw rows).
+ * - Host-only `skill_attached` / `system` / `error` in the prior suffix are
+ *   skipped so they cannot zero overlap.
+ *
+ * Remainder is appended with unique `cp_*` ids and `at` values strictly after
+ * the prior max. Empty incoming keeps prior. Empty prior keeps incoming.
+ * Never throws.
  */
 export function mergeCheckpointOntoPrior(
   prior: ReadonlyArray<CheckpointSnapshotMessage>,
@@ -259,20 +264,12 @@ export function mergeCheckpointOntoPrior(
   if (prior.length === 0) return incoming.slice();
   if (incoming.length === 0) return prior.slice();
   let overlap = 0;
-  const max = Math.min(prior.length, incoming.length);
-  for (let k = max; k > 0; k--) {
-    let ok = true;
-    for (let i = 0; i < k; i++) {
-      const p = prior[prior.length - k + i];
-      const n = incoming[i];
-      if (!p || !n || !snapshotRowOverlaps(p, n)) {
-        ok = false;
-        break;
+  outer: for (let k = incoming.length; k > 0; k--) {
+    for (let pStart = 0; pStart < prior.length; pStart++) {
+      if (flexMatchExact(prior, pStart, incoming, k)) {
+        overlap = k;
+        break outer;
       }
-    }
-    if (ok) {
-      overlap = k;
-      break;
     }
   }
   const appended = incoming.slice(overlap);
@@ -298,6 +295,64 @@ export function mergeCheckpointOntoPrior(
     });
   }
   return out;
+}
+
+/** Host-only roles that live in the DOM snapshot but not the worker checkpoint. */
+const HOST_ONLY_ROLES = new Set<SessionRole>(['skill_attached', 'system', 'error']);
+
+function isHostOnlyRole(role: SessionRole): boolean {
+  return HOST_ONLY_ROLES.has(role);
+}
+
+/** Skip a prior host-only row unless incoming is that same role+text. */
+function shouldSkipPriorRow(
+  prior: CheckpointSnapshotMessage,
+  incoming: CheckpointSnapshotMessage,
+): boolean {
+  if (!isHostOnlyRole(prior.role)) return false;
+  if (prior.role === incoming.role && prior.text === incoming.text) return false;
+  return true;
+}
+
+/**
+ * Incoming prefix `incoming[0..prefixLen)` flex-matches `prior[pStart..end)`
+ * exactly (both fully consumed, after host-only skips and coalesced tool runs).
+ */
+function flexMatchExact(
+  prior: ReadonlyArray<CheckpointSnapshotMessage>,
+  pStart: number,
+  incoming: ReadonlyArray<CheckpointSnapshotMessage>,
+  prefixLen: number,
+): boolean {
+  let pi = pStart;
+  let ii = 0;
+  while (ii < prefixLen) {
+    while (
+      pi < prior.length &&
+      prior[pi] &&
+      incoming[ii] &&
+      shouldSkipPriorRow(prior[pi]!, incoming[ii]!)
+    ) {
+      pi += 1;
+    }
+    const p = prior[pi];
+    const n = incoming[ii];
+    if (!p || !n || !snapshotRowOverlaps(p, n)) return false;
+    pi += 1;
+    ii += 1;
+    if (p.role === 'tool_run') {
+      const nextP = prior[pi];
+      if (!nextP || nextP.role !== 'tool_run') {
+        while (ii < prefixLen && incoming[ii]?.role === 'tool_run') {
+          ii += 1;
+        }
+      }
+    }
+  }
+  while (pi < prior.length && prior[pi] && isHostOnlyRole(prior[pi]!.role)) {
+    pi += 1;
+  }
+  return pi === prior.length && ii === prefixLen;
 }
 
 /** Host tool cards encode a payload; worker checkpoint rows are raw results. */
