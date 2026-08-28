@@ -27,7 +27,7 @@ export async function makePersistWorld(): Promise<{
   return { blobStore, envelopeStore, seam };
 }
 
-/** Terminal worker persist (B13) — writes `{ deltas }` onto transcriptPointer. */
+/** Terminal worker persist (B13) — writes a SessionSnapshot onto transcriptPointer. */
 export async function persistTurn1(opts?: {
   deltas?: ReadonlyArray<unknown>;
   userLine?: string;
@@ -49,6 +49,7 @@ export async function persistTurn1(opts?: {
         { role: 'assistant', content: assistantLine },
       ],
     },
+    scope: INT_SCOPE,
   });
   if (!result.ok) {
     throw new Error(`persistTurn1 failed: ${result.code} ${result.error}`);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   type CheckpointRow,
+  checkpointToSnapshotMessages,
   truncateMessageCheckpoint,
 } from './messageCheckpoint';
 import {
@@ -171,5 +172,54 @@ describe('truncateMessageCheckpoint (plan #800, backend-agents B6)', () => {
     ]);
     expect(out.truncated).toBe(false);
     expect(out.rows).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+});
+
+describe('checkpointToSnapshotMessages', () => {
+  it('maps user/assistant happy path with stable ids and finite at', () => {
+    const out = checkpointToSnapshotMessages([
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'hi there' },
+    ]);
+    expect(out).toEqual([
+      { id: 'cp_0', role: 'user', text: 'hello', at: 1 },
+      { id: 'cp_1', role: 'assistant', text: 'hi there', at: 2 },
+    ]);
+  });
+
+  it("maps checkpoint 'tool' to session 'tool_run' (not dropped)", () => {
+    const out = checkpointToSnapshotMessages([
+      { role: 'user', content: 'run' },
+      { role: 'tool', content: 'file content' },
+      { role: 'assistant', content: 'done' },
+    ]);
+    expect(out.map((m) => m.role)).toEqual(['user', 'tool_run', 'assistant']);
+    expect(out[1]).toEqual({
+      id: 'cp_1',
+      role: 'tool_run',
+      text: 'file content',
+      at: 2,
+    });
+  });
+
+  it('drops unknown roles and keeps SessionRole members', () => {
+    const out = checkpointToSnapshotMessages([
+      { role: 'user', content: 'ok' },
+      { role: 'narrator', content: 'nope' },
+      { role: 'system', content: 'note' },
+      { role: 'error', content: 'boom' },
+      { role: 'skill_attached', content: '/foo' },
+    ]);
+    expect(out.map((m) => m.role)).toEqual([
+      'user',
+      'system',
+      'error',
+      'skill_attached',
+    ]);
+    expect(out.map((m) => m.id)).toEqual(['cp_0', 'cp_2', 'cp_3', 'cp_4']);
+  });
+
+  it('empty checkpoint yields empty messages', () => {
+    expect(checkpointToSnapshotMessages([])).toEqual([]);
   });
 });

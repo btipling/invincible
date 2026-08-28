@@ -20,6 +20,7 @@ import type {
 import { createTurnPersistSeam } from './turnPersistSeam';
 import type { PersistStepSeam } from '../workflows/persistStep';
 import { reachableImports } from '../workflows/staticGraph';
+import { parseCloudSessionSnapshot } from '../sessionRepository';
 
 const scope: ObjectScope = {
   tenantId: 'tenant-1',
@@ -285,10 +286,53 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(res.checkpointPointer).toBeDefined();
     // Distinct objects: the transcript pointer != checkpoint pointer.
     expect(res.checkpointPointer).not.toBe(res.objectId);
-    // Both live in the blob store as separate objects.
-    expect(await blobStore.read(res.objectId!)).toBe('{"delta":"x"}');
+    // Both live in the blob store as separate objects. Transcript body is the
+    // stamped JSON (updatedAt overlay clock), not the raw input string.
+    const transcript = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
+      delta?: string;
+      updatedAt?: number;
+    };
+    expect(transcript.delta).toBe('x');
+    expect(Number.isFinite(transcript.updatedAt)).toBe(true);
     expect(await blobStore.read(res.checkpointPointer!)).toContain('"assistant"');
     // The namespace is flat + bound to this session.
     expect(newBlobObjectId(scope).startsWith('t_')).toBe(true);
+  });
+
+  it('blob updatedAt equals B8 envelope clock; OverlayClock invoked once', async () => {
+    let clockCalls = 0;
+    const { seam, blobStore, envelopeStore } = await makeSeam({
+      overlayClock: (stored) => {
+        clockCalls += 1;
+        return Math.max(9_000, stored + 1);
+      },
+      seed: { updatedAt: 1000, meta: { transcriptPointer: 't_old_ptr_0000' } },
+    });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_0', role: 'user', text: 'hello', at: 1 }],
+        deltas: [{ d: 1 }],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(clockCalls).toBe(1);
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.updatedAt).toBe(9_000);
+    const raw = await blobStore.read(res.objectId!);
+    const body = JSON.parse(raw ?? 'null') as {
+      id: string;
+      updatedAt: number;
+      messages: unknown[];
+      deltas: unknown[];
+    };
+    expect(body.updatedAt).toBe(env?.updatedAt);
+    expect(body.deltas).toEqual([{ d: 1 }]);
+    const parsed = parseCloudSessionSnapshot(body, scope.sessionId);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.messages.some((m) => m.role === 'user')).toBe(true);
   });
 });

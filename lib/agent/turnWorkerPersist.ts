@@ -56,6 +56,13 @@ export type PersistTranscriptSegmentInput = {
   envelopeStore: ServerSessionStore;
   scope: ObjectScope;
   segment: TranscriptSegment;
+  /**
+   * Clock for the pointer upsert when **no envelope exists yet**. A stored
+   * envelope still **preserves** its `updatedAt` (B7 never bumps). The persist
+   * seam passes `0` so the B8 overlay clock can be strictly newer on first
+   * persist without a second `Date.now()` racing the pointer write.
+   */
+  pointerUpdatedAt?: number;
 };
 
 export type PersistTranscriptSegmentResult =
@@ -137,7 +144,13 @@ export async function persistTranscriptSegment(
     // Preserve the stored `updatedAt` (never bump the host clock): the store's
     // LWW rejects an `updatedAt` lower than the stored envelope's, so a stale
     // worker bookkeeping write can never regress a newer envelope.
-    const updatedAt = envelope?.updatedAt ?? Date.now();
+    const mintClock =
+      typeof input.pointerUpdatedAt === 'number' &&
+      Number.isSafeInteger(input.pointerUpdatedAt) &&
+      input.pointerUpdatedAt >= 0
+        ? input.pointerUpdatedAt
+        : Date.now();
+    const updatedAt = envelope?.updatedAt ?? mintClock;
     const inputEnvelope: SessionEnvelopeInput = {
       id: sessionId,
       userId,

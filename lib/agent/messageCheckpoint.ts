@@ -18,12 +18,30 @@ import {
   TURN_MSG_CHECKPOINT_MAX_BYTES,
   TURN_MSG_CHECKPOINT_MAX_ROWS,
 } from '../sessionCloudCaps';
+import type { SessionRole } from '../sessionStore';
 
 /** A single `{role, content}` checkpoint row. `content` is always a string (may be empty). */
 export type CheckpointRow = { role: string; content: string };
 
 /** Overridable limits (defaults = the plan #800 NEW caps). */
 export type CheckpointLimits = { maxRows: number; maxBytes: number };
+
+/** Snapshot message the Blob transcript parser accepts (`parseCloudSessionSnapshot`). */
+export type CheckpointSnapshotMessage = {
+  id: string;
+  role: SessionRole;
+  text: string;
+  at: number;
+};
+
+const SESSION_ROLES = new Set<SessionRole>([
+  'user',
+  'assistant',
+  'system',
+  'error',
+  'tool_run',
+  'skill_attached',
+]);
 
 function utf8Bytes(s: string): number {
   return Buffer.byteLength(s, 'utf8');
@@ -159,4 +177,31 @@ export function truncateMessageCheckpoint(
   }
 
   return { rows, truncated };
+}
+
+/**
+ * Map a bounded `{role, content}` checkpoint onto `SessionSnapshot.messages`.
+ *
+ * Checkpoint `tool` (the turn-loop reconstruction role) becomes session
+ * `tool_run`. Other unknown roles are dropped so `parseCloudSessionSnapshot`
+ * cannot fail closed on the whole blob. Empty checkpoint → `[]` (valid; LWW
+ * then keeps a local-with-dialogue snapshot). Never throws.
+ */
+export function checkpointToSnapshotMessages(
+  checkpoint: ReadonlyArray<{ role: string; content: string }>,
+): CheckpointSnapshotMessage[] {
+  const out: CheckpointSnapshotMessage[] = [];
+  for (let i = 0; i < checkpoint.length; i++) {
+    const row = checkpoint[i];
+    if (!row || typeof row.role !== 'string' || typeof row.content !== 'string') continue;
+    const mapped = row.role === 'tool' ? 'tool_run' : row.role;
+    if (!SESSION_ROLES.has(mapped as SessionRole)) continue;
+    out.push({
+      id: `cp_${i}`,
+      role: mapped as SessionRole,
+      text: row.content,
+      at: 1 + i,
+    });
+  }
+  return out;
 }

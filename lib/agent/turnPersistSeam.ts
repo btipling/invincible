@@ -64,6 +64,7 @@ import type {
   PersistStepResult,
   PersistStepSeam,
 } from '../workflows/persistStep';
+import { stampSnapshotUpdatedAt } from '../workflows/persistStep';
 
 /** Worker-authored envelope clock source for the terminal B8 overlay (LWW). */
 export type OverlayClock = (storedUpdatedAt: number) => number;
@@ -169,7 +170,35 @@ export function createTurnPersistSeam(
         }
       }
 
-      // 2. Transcript (B7): write the appended segment + advance transcriptPointer
+      // 2. Overlay clock ONCE from the pre-B7 envelope (B7 preserves stored
+      //    `updatedAt`, so this is the same stored clock B8 would see after B7).
+      //    Stamp that number onto the snapshot JSON, then pass it to B8 — never
+      //    a second Date.now() / clock() call.
+      if (input.fold?.cwd !== undefined) patch.logicalCwd = input.fold.cwd;
+      if (input.fold?.activeSandboxId !== undefined) {
+        patch.activeSandboxId = input.fold.activeSandboxId;
+      }
+      if (input.fold?.usage !== undefined) patch.usage = input.fold.usage;
+
+      let stored: SessionEnvelope | null = null;
+      if (envelope) {
+        try {
+          stored = await envelope.readEnvelope(key);
+        } catch {
+          stored = null;
+        }
+      }
+      const updatedAt = clock(stored?.updatedAt ?? 0);
+      const stamped = stampSnapshotUpdatedAt(input.content, updatedAt);
+      if (stamped === null) {
+        return {
+          ok: false,
+          code: 'write_failed',
+          error: 'persist content is not a JSON object — cannot stamp updatedAt.',
+        };
+      }
+
+      // 3. Transcript (B7): write the stamped snapshot + advance transcriptPointer
       //    only on a successful PUT (fail-closed, LWW). A failure here returns a
       //    value; the pointer is never advanced on a partial write. NOTE (honest
       //    partial-commit scope, adversarial L1): this is a SEPARATE committed
@@ -179,32 +208,14 @@ export function createTurnPersistSeam(
         envelopeStore,
         scope,
         segment: {
-          content: input.content,
+          content: stamped,
           contentType: 'application/json',
         },
+        // Empty envelope: mint at 0 so B8's overlay clock is strictly newer.
+        // Stored envelopes ignore this and preserve their clock (B7).
+        pointerUpdatedAt: 0,
       });
       if (!seg.ok) return { ok: false, code: seg.code, error: seg.error };
-
-      // 3. Terminal worker overlay (B8): set the remaining worker keys from the
-      //    run's final-state fold. cwd/usage/sandbox are threaded as serializable
-      //    step args and sanitized by B8 (poison → drop THAT key to unset, never a
-      //    clear of siblings/host).
-      if (input.fold?.cwd !== undefined) patch.logicalCwd = input.fold.cwd;
-      if (input.fold?.activeSandboxId !== undefined) {
-        patch.activeSandboxId = input.fold.activeSandboxId;
-      }
-      if (input.fold?.usage !== undefined) patch.usage = input.fold.usage;
-
-      // B8 LWW guard needs a strictly-newer clock than the post-B7 envelope.
-      let fresh: SessionEnvelope | null = null;
-      if (envelope) {
-        try {
-          fresh = await envelope.readEnvelope(key);
-        } catch {
-          fresh = null;
-        }
-      }
-      const updatedAt = clock(fresh?.updatedAt ?? 0);
 
       const overlay = await overlayWorkerMeta({
         envelopeStore,

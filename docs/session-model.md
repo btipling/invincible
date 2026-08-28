@@ -37,7 +37,11 @@ independent of that transcript LWW: when the Blob object is unreadable (or
 missing) but the Redis envelope is still `running` with a `turnRunId`, boot
 overlays those three turn carriers onto the kept local snapshot, keeps `?s=`
 pinned, and cold-attaches. Messages stay the local (or LWW-winning) transcript
-until attach SSE catches up. An empty envelope with no live turn and no blob
+until attach SSE catches up. The Blob object at `transcriptPointer` is a session
+snapshot JSON body (`id`, `updatedAt`, `messages`) — the same shape a full-record
+GET returns. Extra keys are ignored. A legacy `{ deltas }`-only object fails parse;
+restore keeps the local transcript and overlays live envelope carriers until a later
+persist overwrites the pointer. An empty envelope with no live turn and no blob
 still 404-mints as before.
 
 **Status bar reseed (protocol v13, plan #538/#541):** on hydrate/restore and

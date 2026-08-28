@@ -19,7 +19,7 @@ describe('int persist-parse (#859 row 1 pointer clobber)', () => {
     expect(() => JSON.parse(raw ?? '')).not.toThrow();
   });
 
-  it.fails('#859 row 1: worker persist blob parses as SessionSnapshot', async () => {
+  it('#859 row 1: worker persist blob parses as SessionSnapshot', async () => {
     const { blobStore, envelopeStore, objectId } = await persistTurn1();
     const env = await envelopeStore.readEnvelope({
       tenantId: INT_SCOPE.tenantId,
