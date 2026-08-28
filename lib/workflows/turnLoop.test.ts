@@ -37,7 +37,9 @@ import { createTurnPersistSeam } from '../agent/turnPersistSeam';
 import { MemoryBlobTranscriptStore } from '../sessions/blobStores';
 import { MemorySessionStore } from '../sessions/memorySessionStore';
 import type { ObjectScope } from '../sessions/blobStore';
+import { parseCloudSessionSnapshot } from '../sessionRepository';
 
+const LOOP_SCOPE: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_loop' };
 function fakeWritable(onClose?: () => void): { w: TurnWritable; lines: string[]; closed: number } {
   const lines: string[] = [];
   // Keep `closed` on the returned object so `wiredDeps`'s `() => fake.closed`
@@ -63,6 +65,7 @@ function fakeWritable(onClose?: () => void): { w: TurnWritable; lines: string[];
 function wiredDeps(overrides: {
   maxSteps?: number;
   persistFail?: boolean;
+  persistScope?: ObjectScope;
 } = {}): {
   deps: Omit<TurnLoopDeps, 'modelStep'>;
   w: { writable: TurnWritable; lines: string[]; closed: number };
@@ -75,6 +78,7 @@ function wiredDeps(overrides: {
   // terminal persist path, re-resolves the seam in-step.
   setPersistSeamResolver(() => seam.seam);
   const persistFail = overrides.persistFail ?? false;
+  const persistScope = overrides.persistScope ?? LOOP_SCOPE;
   const base = {
     persistStep: persistFail
       ? async () => ({ ok: false as const, code: 'write_failed', error: 'boom' })
@@ -87,6 +91,7 @@ function wiredDeps(overrides: {
             turnRunId: p.turnRunId,
             deltas: p.deltas,
             ...(p.fold !== undefined ? { fold: p.fold } : {}),
+            scope: persistScope,
           }),
     // Default no-op toolStep; loop tests that fan tools override it. modelStep is
     // always injected per test (matrix 1/8/9/10 stop after the model round).
@@ -315,7 +320,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     const blobStore = new MemoryBlobTranscriptStore();
     const envelopeStore = new MemorySessionStore();
     const sscope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's1' };
-    const { deps, closed } = wiredDeps();
+    const { deps, closed } = wiredDeps({ persistScope: sscope });
     // Wire the REAL seam AFTER wiredDeps (which installs its in-memory resolver).
     setPersistSeamResolver(() =>
       createTurnPersistSeam({ blobStore, envelopeStore, scope: sscope }),
@@ -373,7 +378,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     const blobStore = new MemoryBlobTranscriptStore();
     const envelopeStore = new MemorySessionStore();
     const scope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_switch' };
-    const { deps, closed } = wiredDeps();
+    const { deps, closed } = wiredDeps({ persistScope: scope });
     setPersistSeamResolver(() => createTurnPersistSeam({ blobStore, envelopeStore, scope }));
     // Round 1 changes cwd AND switches sandbox; round 2 returns no tools → persist.
     let first = true;
@@ -423,7 +428,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     const blobStore = new MemoryBlobTranscriptStore();
     const envelopeStore = new MemorySessionStore();
     const scope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_usage' };
-    const { deps, closed } = wiredDeps();
+    const { deps, closed } = wiredDeps({ persistScope: scope });
     setPersistSeamResolver(() => createTurnPersistSeam({ blobStore, envelopeStore, scope }));
     // Round 1 reports usage 100 + calls a tool; round 2 reports usage 40, no tools → persist.
     let first = true;
@@ -1118,7 +1123,11 @@ describe('step wrappers (matrix 4–7)', () => {
     // The persist seam is a `'use step'`-unsafe function → resolved IN-STEP from
     // the module resolver, never passed as an arg (adversarial L1).
     setPersistSeamResolver(() => seam);
-    const result = await persistStep({ turnRunId: 'run_1', deltas: [{ d: 1 }] });
+    const result = await persistStep({
+      turnRunId: 'run_1',
+      deltas: [{ d: 1 }],
+      scope: LOOP_SCOPE,
+    });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.status).toBe('completed');
@@ -1126,21 +1135,44 @@ describe('step wrappers (matrix 4–7)', () => {
     }
     expect(persisted).toHaveLength(1);
     expect(persisted[0].turnRunId).toBe('run_1');
-    expect(JSON.parse(persisted[0].content)).toEqual({ deltas: [{ d: 1 }] });
+    const body = JSON.parse(persisted[0].content) as {
+      id: string;
+      updatedAt: number;
+      messages: unknown[];
+      deltas: unknown[];
+    };
+    expect(body.id).toBe(LOOP_SCOPE.sessionId);
+    expect(body.deltas).toEqual([{ d: 1 }]);
+    expect(body.messages).toEqual([]);
+    expect(Number.isFinite(body.updatedAt)).toBe(true);
+    const parsed = parseCloudSessionSnapshot(body, LOOP_SCOPE.sessionId);
+    expect(parsed).not.toBeNull();
+  });
+
+  it('matrix 7 missing sessionId → {ok:false}, no throw, no persist', async () => {
+    const { seam, persisted } = createInMemoryPersistSeam();
+    setPersistSeamResolver(() => seam);
+    const result = await persistStep({ turnRunId: 'r', deltas: [] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('invalid_scope');
+    expect(persisted).toHaveLength(0);
   });
 
   it('matrix 7b: persist seam {ok:false} → value, not throw', async () => {
     const seam = {
       persist: async () =>
-        ({ ok: false as const, code: 'invalid_scope' as const, error: 'no scope' }),
+        ({ ok: false as const, code: 'write_failed' as const, error: 'no scope' }),
     };
     setPersistSeamResolver(() => seam);
-    const result = await persistStep({ turnRunId: 'r', deltas: [] });
+    const result = await persistStep({
+      turnRunId: 'r',
+      deltas: [],
+      scope: LOOP_SCOPE,
+    });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.code).toBe('invalid_scope');
+    if (!result.ok) expect(result.code).toBe('write_failed');
   });
 });
-
 describe('static-graph clean-flag regression (plan #805 lock)', () => {
   it('turnWorkflow entry closure reaches zero banned Workflow-bundle modules', () => {
     const reachable = reachableImports('lib/workflows/turnWorkflow.ts', { root: process.cwd() });

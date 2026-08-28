@@ -23,6 +23,7 @@
  * Business errors are values: a persist failure returns `{ok:false, code, error}`
  * (the loop terminates cleanly; the writable is still closed).
  */
+import { checkpointToSnapshotMessages } from '../agent/messageCheckpoint';
 
 /**
  * Serialized final-state fold (B13) — the run-level worker keys the terminal
@@ -80,7 +81,7 @@ export interface PersistStepArgs {
    * Serializable session scope for in-step seam construction (prod path).
    * When the module-level resolver is unset (production — the route must NOT
    * wire it), the step constructs the real Blob+envelope seam from this scope.
-   * Plain serializable values only.
+   * Plain serializable values only. `sessionId` is also the snapshot `id`.
    */
   scope?: { tenantId: string; userId: string; sessionId: string };
 }
@@ -97,6 +98,26 @@ export type PersistStepResult =
   | { ok: false; code: string; error: string };
 
 /**
+ * Stamp `updatedAt` onto a JSON object string. Returns null when `content` is
+ * not a JSON object (array/primitive/invalid) so the caller can fail closed.
+ * persistStep never stamps a clock; the seam is the only OverlayClock site.
+ */
+export function stampSnapshotUpdatedAt(
+  content: string,
+  updatedAt: number,
+): string | null {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    return JSON.stringify({ ...(parsed as Record<string, unknown>), updatedAt });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Run the persist terminal as a workflow step: re-resolves the persist seam
  * in-step (from the module-level resolver) and returns terminal status as a
  * value. The step takes ONLY serializable args (`turnRunId`, `deltas`) — the
@@ -108,6 +129,15 @@ export async function persistStep(
 ): Promise<PersistStepResult> {
   'use step';
 
+  const sessionId = args.scope?.sessionId;
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    return {
+      ok: false,
+      code: 'invalid_scope',
+      error: 'persistStep requires scope.sessionId',
+    };
+  }
+
   // Resolve the persist seam: tests wire it via setPersistSeamResolver (the
   // resolver is set → no throw → test seam wins). In production the resolver
   // is UNSET (the route MUST NOT wire it — Vercel step VMs don't share the
@@ -118,9 +148,12 @@ export async function persistStep(
     seam = resolvePersistSeam();
   } catch {
     if (!args.scope) {
-      throw new Error(
-        'persistStep: no persist seam wired and no scope provided — the route must pass scope on start() args.',
-      );
+      return {
+        ok: false,
+        code: 'invalid_scope',
+        error:
+          'persistStep: no persist seam wired and no scope provided — the route must pass scope on start() args.',
+      };
     }
     // Production path: construct the real B7/B8/B6 seam in-step. The DI root
     // import is a 'use step' leaf (the B11 walker does not follow it), so the
@@ -129,7 +162,11 @@ export async function persistStep(
     seam = createProdServices().createPersistStepSeam(args.scope);
   }
 
-  const content = JSON.stringify({ deltas: args.deltas });
+  const content = JSON.stringify({
+    id: sessionId,
+    messages: checkpointToSnapshotMessages(args.fold?.checkpoint ?? []),
+    deltas: args.deltas,
+  });
   const result = await seam.persist({
     turnRunId: args.turnRunId,
     deltas: args.deltas,
@@ -173,7 +210,8 @@ export function createInMemoryPersistSeam(): {
   const persisted: Array<{ turnRunId: string; content: string }> = [];
   const seam: PersistStepSeam = {
     async persist(input) {
-      persisted.push({ turnRunId: input.turnRunId, content: input.content });
+      const stamped = stampSnapshotUpdatedAt(input.content, 1) ?? input.content;
+      persisted.push({ turnRunId: input.turnRunId, content: stamped });
       return { ok: true, objectId: `seg_mem_${persisted.length}`, status: 'completed' };
     },
   };

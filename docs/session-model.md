@@ -37,7 +37,50 @@ independent of that transcript LWW: when the Blob object is unreadable (or
 missing) but the Redis envelope is still `running` with a `turnRunId`, boot
 overlays those three turn carriers onto the kept local snapshot, keeps `?s=`
 pinned, and cold-attaches. Messages stay the local (or LWW-winning) transcript
-until attach SSE catches up. An empty envelope with no live turn and no blob
+until attach SSE catches up. The Blob object at `transcriptPointer` is a session
+snapshot JSON body (`id`, `updatedAt`, `messages`) — the same shape a full-record
+GET returns. Extra keys are ignored. Each worker persist suffix-merges this-run
+checkpoint rows onto a prior **readable** pointer body so a later turn cannot
+replace the accumulated transcript (`tool_run` matches by role; one host live-paint
+card covers a run of checkpoint tools, including tools separated by per-round
+checkpoint assistants — the turn loop emits an assistant delta every model round;
+host-only `skill_attached` / `system` /
+`error` rows in that window are kept and do not duplicate this-run). Per-round
+checkpoint `assistant` rows that the host has not stored yet (live paint is
+bridge-only until concatenated `done.text`) are skipped so they cannot zero
+overlap against a host tool card; when that prior suffix still ends on the
+tool card (no covering assistant), those skipped this-run assistant texts are
+folded into the appended tail as one row (`+=` of per-round `delta.text`, the
+same concatenation host `done.text` uses), including when the last checkpoint
+round is empty-text so the incoming prefix fully matches and there is no
+trailing remainder. Fold requires the winning match to have **skipped** an
+incoming assistant against a prior `tool_run` (mid-turn host card). A worker
+1:1 prior that already is this run (persist retry, including empty last-round)
+does not skip and stays no-append. Persist retry onto a successful mid-turn fold
+(pointer already ends with `+=` of this-run assistant texts) also stays no-append
+when incoming ends on `tool_run` (empty last-round dropped); the leftover covering
+assistant is this run, not a new reply — only when the incoming prefix is the
+entire this-run. A short prefix whose fold text is a suffix of leftover
+(`OK` vs `All tests passed. OK`) is a new same-user tool-turn and appends. A trailing host assistant covers remaining
+this-run assistant rows only when its text equals the checkpoint assistant or
+ends with it (concatenated `done.text` vs last-round text), not the reverse and
+not by role alone — two tool-turns that share a user prompt keep both replies,
+including a longer new reply that happens to end with a previous short ack. After
+skip-preamble against a host tool card, that trailing cover is against `+=` of
+**all** this-run assistant texts (the same `done.text` string), not last-round
+alone: a new same-user tool-turn whose last-round is a short ack of leftover
+(`OK` / `Done`) still appends when the skipped preamble differs. After a 1:1
+assistant match (worker preamble before tools, or interleaved mid-round equal
+text), trailing leftover cover is equal-only — a longer previous last-round that
+happens to end with the new last-round (`All tests passed. OK` vs `OK`) is a new
+turn and appends. Host concat with no pre-tool assistant row still covers by
+`endsWith` last-round. A leftover `{ deltas }`-only object
+fails parse and is not merged; restore keeps the local transcript and overlays live envelope
+carriers until a later persist overwrites the pointer. A bound pointer whose object
+is missing or not JSON fails persist (pointer unchanged) rather than publishing
+this-run-only under a newer clock. An envelope read that throws fails persist the
+same way (pointer unchanged); a missing envelope (`null`) is first persist and
+starts from this run only. An empty envelope with no live turn and no blob
 still 404-mints as before.
 
 **Status bar reseed (protocol v13, plan #538/#541):** on hydrate/restore and
