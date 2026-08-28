@@ -8,6 +8,7 @@ import {
   decideAttachClass,
   decideHotResume,
   decideSendAttach,
+  coldAttachFromSnapshot,
   isAttachRunGone,
   lastUserText,
   ATTACH_FOLLOW_UP_NOTE,
@@ -113,6 +114,21 @@ describe('decideAttachClass', () => {
   });
 });
 
+describe('coldAttachFromSnapshot', () => {
+  it('null when completed / missing run id (today\'s kickColdAttach predicate)', () => {
+    expect(coldAttachFromSnapshot({ turnStatus: 'completed', turnRunId: 'wr_1' })).toBeNull();
+    expect(coldAttachFromSnapshot({ turnStatus: 'running' })).toBeNull();
+  });
+
+  it('cold spec at startIndex 0 + dedup when restored snapshot is running', () => {
+    expect(coldAttachFromSnapshot({ turnStatus: 'running', turnRunId: 'wr_1' })).toEqual({
+      runId: 'wr_1',
+      startIndex: 0,
+      dedup: true,
+    });
+  });
+});
+
 describe('isAttachRunGone (adversarial #857)', () => {
   it('only 404 is run-gone; 503/401/5xx/network stay subscribe-fail', () => {
     expect(isAttachRunGone(404)).toBe(true);
@@ -183,9 +199,32 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
 
   it('boot / adopt / activateSession kick cold attach at startIndex=0 + dedup', () => {
     expect(host).toContain('const kickColdAttach = useCallback');
+    expect(host).toContain('coldAttachFromSnapshot(');
+    expect(host).toContain('snapshotAfterRepoGet(');
+    expect(host).toContain('onGetMiss:');
+    expect(host).toContain('if (local.id !== id) return');
+    expect(host).toContain("return 'adopted'");
     expect(host.match(/queueMicrotask\(kickColdAttach\)/g)?.length).toBeGreaterThanOrEqual(3);
-    expect(host).toContain('startIndex: 0, dedup: true');
+    expect(host).toContain('attach: spec');
     expect(host).toContain('if (inflightRef.current) return');
+  });
+
+  it('int F5 rows restore via snapshotAfterRepoGet, not boot.snapshot / snapshotAfterCloudGet', () => {
+    const f5 = readFileSync(resolve(process.cwd(), 'int/f5-attach.int.test.ts'), 'utf8');
+    expect(f5).toContain('snapshotAfterRepoGet(');
+    expect(f5).not.toContain('snapshotAfterCloudGet(');
+    expect(f5).not.toMatch(/coldAttachFromSnapshot\(\s*boot\.snapshot\s*\)/);
+    expect(f5).not.toMatch(/turnRunId:\s*boot\.snapshot\.turnRunId/);
+    expect(f5).not.toMatch(/turnStatus:\s*boot\.snapshot\.turnStatus/);
+    const driver = readFileSync(resolve(process.cwd(), 'int/driver.ts'), 'utf8');
+    expect(driver).toContain('cloudGetFromBoot(');
+    expect(driver).toContain('getEnvelopeParseLocal(');
+    expect(driver).not.toMatch(/return\s+bootCloudSnapshot\(/);
+    expect(driver).not.toMatch(/local:\s*opts\.local/);
+    const boot = readFileSync(resolve(process.cwd(), 'lib/sessionBoot.ts'), 'utf8');
+    expect(boot).toContain('onGetMiss?.(got, target.id)');
+    expect(boot).toContain("=== 'adopted'");
+    expect(boot).toContain('export function snapshotAfterRepoGet');
   });
 
   it('hot resume uses decideHotResume (empty-EOF does not spin inline)', () => {

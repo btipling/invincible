@@ -1,0 +1,57 @@
+# Durable-turn int suite (plan #860). Process-level persist + boot + attach lock.
+# Wasm is the assertion surface; SUT is persist/envelope/boot. ubuntu-latest only.
+#
+# Operator: Actions → int-durable (PR + main). Not a Production mutate path.
+name: int-durable
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: int-durable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  int:
+    name: durable-turn int
+    if: >
+      github.event_name == 'push' ||
+      (
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HARNESS_WAIT_MS: "0"
+      HARNESS_REQUIRE: "1"
+      # GITHUB_TOKEN is NOT a default runner env var. fetch-harness-artifact.mjs
+      # reads GH_TOKEN / GITHUB_TOKEN; without this the step fails closed
+      # under HARNESS_REQUIRE=1.
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install app dependencies
+        run: npm ci
+
+      - name: Fetch harness.wasm (latest main artifact)
+        run: npm run fetch-harness
+
+      - name: Durable-turn int suite
+        run: npm run test:int

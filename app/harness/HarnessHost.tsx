@@ -13,7 +13,7 @@ import {
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
 import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort } from '../../lib/detachTurn';
-import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, type HeapApplied } from '../../lib/turnAttach';
+import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, coldAttachFromSnapshot, type HeapApplied } from '../../lib/turnAttach';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -36,7 +36,7 @@ import {
 import {
   bootCloudSession,
   readUrlSessionId,
-  shouldAdoptBootServer,
+  snapshotAfterRepoGet,
 } from '../../lib/sessionBoot';
 import {
   canLoadEarlier as sessionCanLoadEarlier,
@@ -370,12 +370,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
    */
   const kickColdAttach = useCallback(() => {
     if (inflightRef.current) return;
-    const s = sessionRef.current;
-    if (s.turnStatus !== 'running' || !s.turnRunId) return;
+    const spec = coldAttachFromSnapshot(sessionRef.current);
+    if (!spec) return;
     heapAppliedRef.current = null;
-    void runPromptRef.current('', {
-      attach: { runId: s.turnRunId, startIndex: 0, dedup: true },
-    });
+    void runPromptRef.current('', { attach: spec });
   }, []);
 
   /** Activate a session (canonical id) on local state + Wasm ring + URL + picker. */
@@ -812,13 +810,33 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               // doesn't win LWW, keep the local transcript (it's already in the ring) and
               // push it to the cloud so a reload stops re-serving the empty mint over it.
               // bootCloudSession pins ?s=id either way.
+              // `snapshotAfterRepoGet` is the attach/Send restore seam (int F5 rows).
               const local = sessionRef.current;
-              if (!shouldAdoptBootServer(local, serverSnap)) {
+              const restored = snapshotAfterRepoGet(local, {
+                action: 'ok',
+                snapshot: serverSnap,
+              });
+              if (restored === local) {
                 setActiveSessionId(id);
                 repoRef.current?.put(id, local);
                 return;
               }
-              activateSession(mergeAdoptedUsage({ ...serverSnap, id }, local));
+              activateSession(mergeAdoptedUsage({ ...restored, id }, local));
+            },
+            onGetMiss: (got, id) => {
+              if (cancelled) return;
+              if (inflightRef.current) return;
+              // Today snapshotAfterRepoGet(error) is `local` — no-op, matches skip-onAdopt.
+              // Envelope-wins that overlays running onto stale local must change
+              // snapshotAfterRepoGet so this path activates + kickColdAttach.
+              // Refuse when the GET target is a different session than local
+              // (pinned ?s=A must not paint A's run onto local B).
+              const local = sessionRef.current;
+              if (local.id !== id) return;
+              const restored = snapshotAfterRepoGet(local, got);
+              if (restored === local) return;
+              activateSession(mergeAdoptedUsage({ ...restored, id }, local));
+              return 'adopted';
             },
             onMint: (createdSnap, id) => {
               if (cancelled) return;

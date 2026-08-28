@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   HARNESS_SESSION_MAX_BODY_BYTES,
@@ -9,6 +10,9 @@ import {
   isEmptyOfDialogue,
   mergeAdoptedUsage,
   overlayEnvelopeMeta,
+  bootCloudSnapshot,
+  cloudGetFromBoot,
+  getEnvelopeParseLocal,
   parseCloudSessionSnapshot,
   parseSessionSummaryList,
   shouldAdoptServer,
@@ -753,6 +757,133 @@ describe('overlayEnvelopeMeta', () => {
     expect(poisonedEnv.turnRunId).toBeUndefined();
     expect(poisonedEnv.turnStatus).toBeUndefined();
     expect(poisonedEnv.turnStreamCursor).toBeUndefined();
+  });
+});
+
+describe('bootCloudSnapshot (getEnvelope two-step, today\'s semantics)', () => {
+  const local: SessionSnapshot = {
+    id: 's',
+    updatedAt: 1,
+    messages: [{ id: 'm1', role: 'user', text: 'turn-1', at: 1 }],
+    turnStatus: 'completed',
+  };
+
+  it('parse fail keeps local and does not overlay envelope running', () => {
+    const result = bootCloudSnapshot({
+      id: 's',
+      local,
+      envelopeMeta: { turnStatus: 'running', turnRunId: 'wr_live' },
+      blobJson: { deltas: [{ d: 1 }] },
+    });
+    expect(result).toEqual({
+      action: 'error',
+      message: 'Invalid transcript body.',
+      snapshot: local,
+    });
+    expect(result.snapshot.turnStatus).toBe('completed');
+    expect(result.snapshot.turnRunId).toBeUndefined();
+  });
+
+  it('parse ok overlays envelope meta onto the blob snapshot', () => {
+    const blob = {
+      id: 's',
+      updatedAt: 2,
+      messages: [
+        { id: 'm1', role: 'user', text: 'turn-1', at: 1 },
+        { id: 'm2', role: 'user', text: 'turn-2', at: 2 },
+      ],
+    };
+    const result = bootCloudSnapshot({
+      id: 's',
+      local,
+      envelopeMeta: { turnStatus: 'running', turnRunId: 'wr_live' },
+      blobJson: blob,
+    });
+    expect(result.action).toBe('ok');
+    if (result.action !== 'ok') return;
+    expect(result.snapshot.turnStatus).toBe('running');
+    expect(result.snapshot.turnRunId).toBe('wr_live');
+    expect(result.snapshot.messages.map((m) => m.text)).toEqual(['turn-1', 'turn-2']);
+  });
+
+  it('getEnvelope two-step is bootCloudSnapshot + cloudGetFromBoot (not a second inlined parse)', () => {
+    const src = readFileSync('lib/sessionRepository.ts', 'utf8');
+    const start = src.indexOf('async function getEnvelope');
+    const end = src.indexOf('async function get(', start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const body = src.slice(start, end);
+    expect(body).toContain('bootCloudSnapshot(');
+    expect(body).toContain('cloudGetFromBoot(');
+    expect(body).toContain('getEnvelopeParseLocal(');
+    expect(body).not.toContain('parseCloudSessionSnapshot(');
+    expect(body).not.toContain('overlayEnvelopeMeta(');
+    // Mapping lives in cloudGetFromBoot — getEnvelope must not re-inline a
+    // snapshot-bearing error return (that would re-open the int doppelganger).
+    expect(body).not.toMatch(/action: 'error'[\s\S]*snapshot:/);
+    // Dummy local must stay the empty mint — passing a real completed local
+    // here re-opens the int overlay doppelganger (adversarial #861).
+    expect(body).not.toMatch(/local:\s*\{[^}]*updatedAt:\s*0/);
+  });
+});
+
+describe('getEnvelopeParseLocal (dummy local for bootCloudSnapshot)', () => {
+  it('is an empty mint (updatedAt 0, no messages)', () => {
+    expect(getEnvelopeParseLocal('s')).toEqual({ id: 's', updatedAt: 0, messages: [] });
+  });
+});
+
+describe('cloudGetFromBoot (host GET mapping)', () => {
+  const local: SessionSnapshot = {
+    id: 's',
+    updatedAt: 1,
+    messages: [{ id: 'm1', role: 'user', text: 'turn-1', at: 1 }],
+    turnStatus: 'completed',
+  };
+
+  it('ok passes the snapshot through', () => {
+    const snapshot: SessionSnapshot = {
+      ...local,
+      turnStatus: 'running',
+      turnRunId: 'wr_live',
+    };
+    expect(cloudGetFromBoot({ action: 'ok', snapshot })).toEqual({
+      action: 'ok',
+      snapshot,
+    });
+  });
+
+  it('error discards even a running overlay snapshot (getEnvelope cannot return one)', () => {
+    const poison: SessionSnapshot = {
+      ...local,
+      turnStatus: 'running',
+      turnRunId: 'wr_live',
+    };
+    const got = cloudGetFromBoot({
+      action: 'error',
+      message: 'Invalid transcript body.',
+      snapshot: poison,
+    });
+    expect(got).toEqual({
+      action: 'error',
+      status: 0,
+      message: 'Invalid transcript body.',
+    });
+    expect(got).not.toHaveProperty('snapshot');
+  });
+
+  it('error return has no snapshot field (source-lock)', () => {
+    const src = readFileSync('lib/sessionRepository.ts', 'utf8');
+    const start = src.indexOf('export function cloudGetFromBoot');
+    const end = src.indexOf('export function bootCloudSnapshot');
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const body = src.slice(start, end);
+    const errIdx = body.indexOf("if (boot.action === 'error')");
+    const okIdx = body.indexOf("return { action: 'ok'", errIdx);
+    expect(errIdx).toBeGreaterThan(0);
+    expect(okIdx).toBeGreaterThan(errIdx);
+    expect(body.slice(errIdx, okIdx)).not.toMatch(/snapshot:/);
   });
 });
 

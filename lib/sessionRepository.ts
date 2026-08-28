@@ -353,6 +353,55 @@ export function overlayEnvelopeMeta(
   return out;
 }
 
+/** Dummy local `getEnvelope` and int `bootFromMemory` pass into `bootCloudSnapshot`. */
+export function getEnvelopeParseLocal(id: string): SessionSnapshot {
+  return { id, updatedAt: 0, messages: [] };
+}
+
+/** Result of the host envelope-GET two-step without HTTP (parse blob, overlay meta). */
+export type BootCloudResult =
+  | { action: 'ok'; snapshot: SessionSnapshot }
+  | { action: 'error'; message: string; snapshot: SessionSnapshot };
+
+/**
+ * Host GET mapping: `BootCloudResult` → `CloudGetResult`.
+ *
+ * Parse fail still **discards** `boot.snapshot` (dummy or real local). Envelope-wins
+ * that must reach `kickColdAttach` / Send remap has to change `snapshotAfterRepoGet`
+ * (and `bootCloudSession` `onGetMiss`); overlay-only inside `bootCloudSnapshot` cannot.
+ */
+export function cloudGetFromBoot(boot: BootCloudResult): CloudGetResult {
+  if (boot.action === 'error') {
+    return { action: 'error', status: 0, message: boot.message };
+  }
+  return { action: 'ok', snapshot: boot.snapshot };
+}
+
+/**
+ * Mirror of inner `getEnvelope` (createHttpSessionRepository): parse the
+ * transcript blob, then overlay envelope meta. Parse fail → keep `local`
+ * and **do not** overlay (today's boot; overlay-on-error is a product fix).
+ */
+export function bootCloudSnapshot(input: {
+  id: string;
+  local: SessionSnapshot;
+  envelopeMeta?: Record<string, unknown>;
+  blobJson: unknown;
+}): BootCloudResult {
+  const parsed = parseCloudSessionSnapshot(input.blobJson, input.id);
+  if (!parsed) {
+    return {
+      action: 'error',
+      message: 'Invalid transcript body.',
+      snapshot: input.local,
+    };
+  }
+  return {
+    action: 'ok',
+    snapshot: overlayEnvelopeMeta(parsed, input.envelopeMeta),
+  };
+}
+
 /**
  * Merge `usage` on same-id adopt so a server snapshot without `meta.usage`
  * (other tab on a pre-#626 bundle, or any prior persist that omitted usage)
@@ -684,14 +733,17 @@ export function createHttpSessionRepository(
           message: `Transcript fetch failed (${t.status}).`,
         };
       }
-      const parsed = parseCloudSessionSnapshot(await t.json(), id);
-      if (!parsed) {
-        return { action: 'error', status: 0, message: 'Invalid transcript body.' };
-      }
-      return {
-        action: 'ok',
-        snapshot: overlayEnvelopeMeta(parsed, env.meta),
-      };
+      const blobJson = await t.json();
+      // One two-step with the int/unit extract. Dummy local is discarded on
+      // parse fail — getEnvelope still returns action error (host keeps local).
+      return cloudGetFromBoot(
+        bootCloudSnapshot({
+          id,
+          local: getEnvelopeParseLocal(id),
+          envelopeMeta: env.meta,
+          blobJson,
+        }),
+      );
     } catch {
       return { action: 'error', status: 0, message: 'Network error pulling session.' };
     }

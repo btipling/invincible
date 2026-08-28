@@ -7,7 +7,7 @@
  * server-minted session UUID; the URL `?s=`, repository key, and resource `:id` are
  * all the same id.
  */
-import { shouldAdoptServer, type IdSessionRepository } from './sessionRepository';
+import { shouldAdoptServer, type CloudGetResult, type IdSessionRepository } from './sessionRepository';
 import type { SessionSnapshot } from './sessionStore';
 
 /** Local placeholder ids minted by `createEmptySession` when never cloud-bound. */
@@ -92,9 +92,67 @@ export function shouldAdoptBootServer(
   return true;
 }
 
+/**
+ * LWW for an **ok** cloud GET. Non-ok results never reach this helper on the
+ * host (`bootCloudSession` skips `onAdopt`). Int F5/C15 rows must use
+ * {@link snapshotAfterRepoGet} so they match that skip.
+ *
+ * Envelope-wins on an unreadable blob is a product change to
+ * {@link snapshotAfterRepoGet} **and** `bootCloudSession` `onGetMiss` (so
+ * parse-fail actually reaches the host). Overlay-only inside
+ * `bootCloudSnapshot` cannot — `getEnvelope` passes `getEnvelopeParseLocal`
+ * (empty mint, `updatedAt: 0`) that loses LWW to a completed local.
+ *
+ * `onGetMiss` receives the GET target id: refuse overlay when `local.id`
+ * differs (pinned `?s=` of A must not paint A's run onto local B). Return
+ * `'adopted'` when restore actually changed the snapshot so
+ * `bootCloudSession` pins `?s=` instead of clearing it.
+ */
+export function snapshotAfterCloudGet(
+  local: SessionSnapshot,
+  got: CloudGetResult,
+): SessionSnapshot {
+  if (got.action === 'ok' && shouldAdoptBootServer(local, got.snapshot)) {
+    return got.snapshot;
+  }
+  return local;
+}
+
+/**
+ * Host restore after `repo.get` — every `CloudGetResult` action.
+ *
+ * Matches `bootCloudSession` + `HarnessHost`:
+ * - `action !== 'ok'` → keep `local` (`onAdopt` is not called; `onGetMiss`
+ *   runs this helper and is a no-op while the result is `local`).
+ * - `ok` → LWW via {@link snapshotAfterCloudGet}.
+ *
+ * Envelope-wins that must reach `kickColdAttach` / Send remap has to change
+ * **this** function. Teaching {@link snapshotAfterCloudGet} to overlay on
+ * error cannot: the host never passes a non-ok result there.
+ *
+ * Host `onGetMiss` must also (adversarial #861): (1) receive the GET id and
+ * skip when `local.id !== id`; (2) return `'adopted'` so `bootCloudSession`
+ * pins `?s=` — a successful restore must not be followed by `onUrlUpdate(null)`.
+ */
+export function snapshotAfterRepoGet(
+  local: SessionSnapshot,
+  got: CloudGetResult,
+): SessionSnapshot {
+  if (got.action !== 'ok') return local;
+  return snapshotAfterCloudGet(local, got);
+}
+
 export type SessionBootCallbacks = {
   /** Adopt a server session (local write + Wasm hydrate). Server snapshot owns content. */
   onAdopt: (snapshot: SessionSnapshot, id: string) => void;
+  /**
+   * Pin/adopt `repo.get` returned error or disabled. `onAdopt` is not called.
+   * Host runs {@link snapshotAfterRepoGet}; today the result is `local` (no-op).
+   *
+   * `id` is the GET target (`?s=` pin or bound local). Return `'adopted'` when
+   * restore changed the snapshot so boot pins `id` instead of clearing `?s=`.
+   */
+  onGetMiss?: (got: CloudGetResult, id: string) => 'adopted' | void;
   /**
    * Bind a freshly minted server id (host preserves local transcript, hydrates).
    * Return `'deferred'` when the id cannot be fully bound yet — e.g. a prompt is
@@ -126,8 +184,9 @@ export async function bootCloudSession(options: {
   onAdopt?: SessionBootCallbacks['onAdopt'];
   onMint?: SessionBootCallbacks['onMint'];
   onUrlUpdate?: SessionBootCallbacks['onUrlUpdate'];
+  onGetMiss?: SessionBootCallbacks['onGetMiss'];
 }): Promise<SessionBootResult> {
-  const { repo, urlId, localId, onAdopt, onMint, onUrlUpdate } = options;
+  const { repo, urlId, localId, onAdopt, onMint, onUrlUpdate, onGetMiss } = options;
 
   if (!repo.enabled) {
     onUrlUpdate?.(null);
@@ -182,7 +241,15 @@ export async function bootCloudSession(options: {
         return { kind: 'kept', id: localId };
       }
     }
-    // 'disabled' / 'error' → keep local, never blank.
+    // 'disabled' / 'error' → keep local, never blank — unless onGetMiss
+    // reports it adopted a restore (envelope-wins). Then pin the GET id;
+    // do not onUrlUpdate(null) after a successful restore.
+    if (got.action === 'error' || got.action === 'disabled') {
+      if (onGetMiss?.(got, target.id) === 'adopted') {
+        onUrlUpdate?.(target.id);
+        return { kind: 'used', id: target.id };
+      }
+    }
     onUrlUpdate?.(null);
     return { kind: 'local', id: localId };
   }
