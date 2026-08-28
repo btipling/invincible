@@ -424,7 +424,7 @@ describe('mergeCheckpointOntoPrior', () => {
       'turn-1 assistant',
       'turn-2 user',
       hostCard.text,
-      'turn-2 assistant',
+      'Let me read thatturn-2 assistant',
     ]);
     expect(out.filter((m) => m.role === 'user' && m.text === 'turn-2 user')).toHaveLength(1);
     expect(out.filter((m) => m.role === 'tool_run')).toHaveLength(1);
@@ -507,7 +507,7 @@ describe('mergeCheckpointOntoPrior', () => {
     expect(out).toEqual(prior);
   });
 
-  it('interleaved per-round assistants vs mid-turn host card do not duplicate tools', () => {
+  it('interleaved per-round assistants vs mid-turn host card keep all this-run assistant prose', () => {
     const hostU2 = { id: 'hu2', role: 'user' as const, text: 'fix the tests', at: 20 };
     const hostCard = {
       id: 'ht',
@@ -536,7 +536,7 @@ describe('mergeCheckpointOntoPrior', () => {
       'turn-1 assistant',
       'fix the tests',
       hostCard.text,
-      '3 passed',
+      'Let me read the fileI will run the tests3 passed',
     ]);
     expect(out.filter((m) => m.role === 'tool_run')).toHaveLength(1);
     expect(out.filter((m) => m.role === 'user' && m.text === 'fix the tests')).toHaveLength(

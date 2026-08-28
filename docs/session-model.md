@@ -48,7 +48,10 @@ host-only `skill_attached` / `system` /
 `error` rows in that window are kept and do not duplicate this-run). Per-round
 checkpoint `assistant` rows that the host has not stored yet (live paint is
 bridge-only until concatenated `done.text`) are skipped so they cannot zero
-overlap against a host tool card; a trailing host assistant covers remaining
+overlap against a host tool card; when that prior suffix still ends on the
+tool card (no covering assistant), those skipped this-run assistant texts are
+folded into the appended tail as one row (`+=` of per-round `delta.text`, the
+same concatenation host `done.text` uses). A trailing host assistant covers remaining
 this-run assistant rows only when its text equals the checkpoint assistant or
 ends with it (concatenated `done.text` vs last-round text), not the reverse and
 not by role alone — two tool-turns that share a user prompt keep both replies,

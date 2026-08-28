@@ -262,6 +262,11 @@ export function snapshotMessagesFromUnknown(
  * - Incoming `assistant` rows are skipped while the current prior row is
  *   `tool_run` (per-round preamble / empty rounds are not in the mid-turn
  *   host snapshot; live assistant is bridge-only until terminal `done.text`).
+ *   Skip is for matching only: when the prior suffix ends on a `tool_run`
+ *   (no covering assistant), those skipped this-run assistant texts are
+ *   folded into the appended tail as one row (`+=` of per-round `delta.text`,
+ *   same as host `done.text`). A prior that already ends with a covering
+ *   concat stays no-append.
  * - After a this-run tool match, a single trailing prior `assistant` covers
  *   remaining incoming `assistant` rows when its text equals the incoming
  *   text or **ends with** it (host concatenated `done.text` vs last-round
@@ -272,8 +277,10 @@ export function snapshotMessagesFromUnknown(
  *   skipped so they cannot zero overlap.
  *
  * Remainder is appended with unique `cp_*` ids and `at` values strictly after
- * the prior max. Empty incoming keeps prior. Empty prior keeps incoming.
- * Never throws.
+ * the prior max. When skip-matching left this-run assistant text unmatched
+ * against a prior that ends on a tool card, the remainder is one concatenated
+ * assistant row rather than last-round-only. Empty incoming keeps prior.
+ * Empty prior keeps incoming. Never throws.
  */
 export function mergeCheckpointOntoPrior(
   prior: ReadonlyArray<CheckpointSnapshotMessage>,
@@ -290,7 +297,10 @@ export function mergeCheckpointOntoPrior(
       }
     }
   }
-  const appended = incoming.slice(overlap);
+  let appended: CheckpointSnapshotMessage[] = incoming.slice(overlap);
+  if (shouldFoldSkippedAssistants(prior, incoming, overlap, appended)) {
+    appended = foldIncomingAssistants(incoming);
+  }
   if (appended.length === 0) return prior.slice();
   const baseAt = prior.reduce((m, x) => (x.at > m ? x.at : m), 0);
   const used = new Set(prior.map((m) => m.id));
@@ -321,6 +331,52 @@ const HOST_ONLY_ROLES = new Set<SessionRole>(['skill_attached', 'system', 'error
 function isHostOnlyRole(role: SessionRole): boolean {
   return HOST_ONLY_ROLES.has(role);
 }
+
+/** Last non-host-only role in `rows`, walking from the tail. */
+function lastKeptRole(
+  rows: ReadonlyArray<CheckpointSnapshotMessage>,
+): SessionRole | undefined {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    if (!r || isHostOnlyRole(r.role)) continue;
+    return r.role;
+  }
+  return undefined;
+}
+
+/**
+ * Mid-turn host card (prior ends on `tool_run`, remainder is trailing
+ * assistants): skipped per-round assts sat inside the matched prefix and
+ * would otherwise be dropped. Fold when a this-run tool was overlapped.
+ */
+function shouldFoldSkippedAssistants(
+  prior: ReadonlyArray<CheckpointSnapshotMessage>,
+  incoming: ReadonlyArray<CheckpointSnapshotMessage>,
+  overlap: number,
+  appended: ReadonlyArray<CheckpointSnapshotMessage>,
+): boolean {
+  if (overlap === 0 || appended.length === 0) return false;
+  if (lastKeptRole(prior) !== 'tool_run') return false;
+  if (!appended.every((m) => m.role === 'assistant')) return false;
+  if (!incoming.slice(0, overlap).some((m) => m.role === 'tool_run')) return false;
+  return incoming.some((m) => m.role === 'assistant');
+}
+
+/** One assistant row: `+=` of this-run assistant texts (host `done.text`). */
+function foldIncomingAssistants(
+  incoming: ReadonlyArray<CheckpointSnapshotMessage>,
+): CheckpointSnapshotMessage[] {
+  const texts: string[] = [];
+  let first: CheckpointSnapshotMessage | undefined;
+  for (const m of incoming) {
+    if (m.role !== 'assistant' || m.text.length === 0) continue;
+    if (!first) first = m;
+    texts.push(m.text);
+  }
+  if (!first || texts.length === 0) return [];
+  return [{ id: first.id, role: 'assistant', text: texts.join(''), at: first.at }];
+}
+
 
 /** Skip a prior host-only row unless incoming is that same role+text. */
 function shouldSkipPriorRow(

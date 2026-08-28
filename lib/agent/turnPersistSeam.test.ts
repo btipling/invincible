@@ -680,7 +680,7 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       'turn-1 assistant',
       'turn-2 user',
       encoded,
-      'file looks good',
+      'Let me read thatfile looks good',
     ]);
     expect(parsed?.messages.map((m) => m.id).slice(0, 4)).toEqual(['h1', 'h2', 'h3', 'h4']);
   });
@@ -728,7 +728,7 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     ]);
   });
 
-  it('interleaved per-round assistants vs mid-turn host card keep one tool card + trailing assistant', async () => {
+  it('interleaved per-round assistants vs mid-turn host card keep all this-run assistant prose', async () => {
     const blobStore = new MemoryBlobTranscriptStore();
     const envelopeStore = new MemorySessionStore();
     const priorId = newBlobObjectId(scope);
@@ -781,7 +781,7 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       'turn-1 assistant',
       'fix the tests',
       encoded,
-      '3 passed',
+      'Let me read the fileI will run the tests3 passed',
     ]);
     expect(parsed?.messages.filter((m) => m.role === 'tool_run')).toHaveLength(1);
   });
