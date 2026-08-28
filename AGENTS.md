@@ -452,6 +452,10 @@ See create-plan / plan-review **layer** rules when planning features.
   `test.projects` entry unless `--project` is passed. It fail-closes on missing
   `harness.wasm` via a green load test (throw, never `it.skip`); known-broken
   persist/boot contracts wrap only those expects in `it.fails`.
+  Naked `node_modules/vitest/vitest.mjs run` (merge-pr / local-binary line
+  above) collects **every** `test.projects` entry, including `int` — that is
+  extra wasm + `it.fails` on the full merge-green suite, not a second supply
+  gate (`lib/harnessChat.wasm-int.test.ts` already fail-closes without wasm).
 - **Module bodies never construct I/O directly.** Server modules receive live
   handles or factory providers (DB: `db`/`connect`; sandbox: BYO/Vercel client
   factories; HTTP: runner factory; sessions: store factory) through an injection

@@ -406,6 +406,7 @@ describe('bootCloudSession', () => {
   it('get error/disabled calls onGetMiss, not onAdopt', async () => {
     const onAdopt = vi.fn();
     const onGetMiss = vi.fn();
+    const onUrl = vi.fn();
     const { repo: errRepo } = makeRepo({
       onGet: async () => ({ action: 'error', status: 0, message: 'Invalid transcript body.' }),
     });
@@ -415,6 +416,7 @@ describe('bootCloudSession', () => {
       localId: idA,
       onAdopt,
       onGetMiss,
+      onUrlUpdate: onUrl,
     });
     expect(err).toEqual({ kind: 'local', id: idA });
     expect(onAdopt).not.toHaveBeenCalled();
@@ -424,9 +426,12 @@ describe('bootCloudSession', () => {
       status: 0,
       message: 'Invalid transcript body.',
     });
+    expect(onGetMiss.mock.calls[0][1]).toBe(idA);
+    expect(onUrl).toHaveBeenCalledWith(null);
 
     onAdopt.mockClear();
     onGetMiss.mockClear();
+    onUrl.mockClear();
     const { repo: disRepo } = makeRepo({
       onGet: async () => ({ action: 'disabled' }),
     });
@@ -436,10 +441,48 @@ describe('bootCloudSession', () => {
       localId: idA,
       onAdopt,
       onGetMiss,
+      onUrlUpdate: onUrl,
     });
     expect(dis).toEqual({ kind: 'local', id: idA });
     expect(onAdopt).not.toHaveBeenCalled();
-    expect(onGetMiss).toHaveBeenCalledWith({ action: 'disabled' });
+    expect(onGetMiss).toHaveBeenCalledWith({ action: 'disabled' }, idA);
+    expect(onUrl).toHaveBeenCalledWith(null);
+  });
+
+  it('onGetMiss adopted pins GET id (does not onUrlUpdate null)', async () => {
+    const onUrl = vi.fn();
+    const onGetMiss = vi.fn(() => 'adopted' as const);
+    const { repo } = makeRepo({
+      onGet: async () => ({ action: 'error', status: 0, message: 'Invalid transcript body.' }),
+    });
+    const result = await bootCloudSession({
+      repo,
+      urlId: idA,
+      localId: idA,
+      onGetMiss,
+      onUrlUpdate: onUrl,
+    });
+    expect(result).toEqual({ kind: 'used', id: idA });
+    expect(onGetMiss).toHaveBeenCalledWith(
+      { action: 'error', status: 0, message: 'Invalid transcript body.' },
+      idA,
+    );
+    expect(onUrl).toHaveBeenCalledWith(idA);
+    expect(onUrl).not.toHaveBeenCalledWith(null);
+  });
+
+  it('onGetMiss receives the GET target id, not localId, on a pin', async () => {
+    const onGetMiss = vi.fn();
+    const { repo } = makeRepo({
+      onGet: async () => ({ action: 'error', status: 0, message: 'Invalid transcript body.' }),
+    });
+    await bootCloudSession({
+      repo,
+      urlId: idA,
+      localId: idB,
+      onGetMiss,
+    });
+    expect(onGetMiss.mock.calls[0][1]).toBe(idA);
   });
 
   it('ok get does not call onGetMiss', async () => {

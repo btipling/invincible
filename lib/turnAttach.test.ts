@@ -202,6 +202,8 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(host).toContain('coldAttachFromSnapshot(');
     expect(host).toContain('snapshotAfterRepoGet(');
     expect(host).toContain('onGetMiss:');
+    expect(host).toContain('if (local.id !== id) return');
+    expect(host).toContain("return 'adopted'");
     expect(host.match(/queueMicrotask\(kickColdAttach\)/g)?.length).toBeGreaterThanOrEqual(3);
     expect(host).toContain('attach: spec');
     expect(host).toContain('if (inflightRef.current) return');
@@ -220,7 +222,8 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(driver).not.toMatch(/return\s+bootCloudSnapshot\(/);
     expect(driver).not.toMatch(/local:\s*opts\.local/);
     const boot = readFileSync(resolve(process.cwd(), 'lib/sessionBoot.ts'), 'utf8');
-    expect(boot).toContain('onGetMiss?.(got)');
+    expect(boot).toContain('onGetMiss?.(got, target.id)');
+    expect(boot).toContain("=== 'adopted'");
     expect(boot).toContain('export function snapshotAfterRepoGet');
   });
 

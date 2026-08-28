@@ -823,16 +823,20 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               }
               activateSession(mergeAdoptedUsage({ ...restored, id }, local));
             },
-            onGetMiss: (got) => {
+            onGetMiss: (got, id) => {
               if (cancelled) return;
               if (inflightRef.current) return;
               // Today snapshotAfterRepoGet(error) is `local` — no-op, matches skip-onAdopt.
               // Envelope-wins that overlays running onto stale local must change
               // snapshotAfterRepoGet so this path activates + kickColdAttach.
+              // Refuse when the GET target is a different session than local
+              // (pinned ?s=A must not paint A's run onto local B).
               const local = sessionRef.current;
+              if (local.id !== id) return;
               const restored = snapshotAfterRepoGet(local, got);
               if (restored === local) return;
-              activateSession(mergeAdoptedUsage({ ...restored, id: local.id }, local));
+              activateSession(mergeAdoptedUsage({ ...restored, id }, local));
+              return 'adopted';
             },
             onMint: (createdSnap, id) => {
               if (cancelled) return;

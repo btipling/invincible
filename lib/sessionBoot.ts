@@ -102,6 +102,11 @@ export function shouldAdoptBootServer(
  * parse-fail actually reaches the host). Overlay-only inside
  * `bootCloudSnapshot` cannot — `getEnvelope` passes `getEnvelopeParseLocal`
  * (empty mint, `updatedAt: 0`) that loses LWW to a completed local.
+ *
+ * `onGetMiss` receives the GET target id: refuse overlay when `local.id`
+ * differs (pinned `?s=` of A must not paint A's run onto local B). Return
+ * `'adopted'` when restore actually changed the snapshot so
+ * `bootCloudSession` pins `?s=` instead of clearing it.
  */
 export function snapshotAfterCloudGet(
   local: SessionSnapshot,
@@ -124,6 +129,10 @@ export function snapshotAfterCloudGet(
  * Envelope-wins that must reach `kickColdAttach` / Send remap has to change
  * **this** function. Teaching {@link snapshotAfterCloudGet} to overlay on
  * error cannot: the host never passes a non-ok result there.
+ *
+ * Host `onGetMiss` must also (adversarial #861): (1) receive the GET id and
+ * skip when `local.id !== id`; (2) return `'adopted'` so `bootCloudSession`
+ * pins `?s=` — a successful restore must not be followed by `onUrlUpdate(null)`.
  */
 export function snapshotAfterRepoGet(
   local: SessionSnapshot,
@@ -139,8 +148,11 @@ export type SessionBootCallbacks = {
   /**
    * Pin/adopt `repo.get` returned error or disabled. `onAdopt` is not called.
    * Host runs {@link snapshotAfterRepoGet}; today the result is `local` (no-op).
+   *
+   * `id` is the GET target (`?s=` pin or bound local). Return `'adopted'` when
+   * restore changed the snapshot so boot pins `id` instead of clearing `?s=`.
    */
-  onGetMiss?: (got: CloudGetResult) => void;
+  onGetMiss?: (got: CloudGetResult, id: string) => 'adopted' | void;
   /**
    * Bind a freshly minted server id (host preserves local transcript, hydrates).
    * Return `'deferred'` when the id cannot be fully bound yet — e.g. a prompt is
@@ -229,9 +241,14 @@ export async function bootCloudSession(options: {
         return { kind: 'kept', id: localId };
       }
     }
-    // 'disabled' / 'error' → keep local, never blank.
+    // 'disabled' / 'error' → keep local, never blank — unless onGetMiss
+    // reports it adopted a restore (envelope-wins). Then pin the GET id;
+    // do not onUrlUpdate(null) after a successful restore.
     if (got.action === 'error' || got.action === 'disabled') {
-      onGetMiss?.(got);
+      if (onGetMiss?.(got, target.id) === 'adopted') {
+        onUrlUpdate?.(target.id);
+        return { kind: 'used', id: target.id };
+      }
     }
     onUrlUpdate?.(null);
     return { kind: 'local', id: localId };
