@@ -254,15 +254,20 @@ export function snapshotMessagesFromUnknown(
  *   of incoming `tool_run` rows when the next prior row is not `tool_run`
  *   (host `livePaintToolRun` grows one encodeToolRun card for N tools).
  *   Consecutive prior `tool_run` rows stay 1:1 (worker-to-worker raw rows).
+ *   When that prior card is the last `tool_run` in the matched suffix, incoming
+ *   `assistant` rows that are still followed by a `tool_run` are skipped so
+ *   per-round checkpoint text between tools cannot zero overlap (`turnLoop`
+ *   interleaves `{role:'assistant', delta}` with tools). A later prior
+ *   `tool_run` (worker interleaved `[t1, asst, t2]`) stays 1:1 — no skip.
  * - Incoming `assistant` rows are skipped while the current prior row is
  *   `tool_run` (per-round preamble / empty rounds are not in the mid-turn
  *   host snapshot; live assistant is bridge-only until terminal `done.text`).
  * - After a this-run tool match, a single trailing prior `assistant` covers
- *   remaining incoming `assistant` rows when its text equals or is a
- *   suffix/prefix of the incoming text (host concatenated `done.text` vs
- *   last-round checkpoint). Role-only is not enough: a completed prior
- *   tool-turn with the same user prompt must not swallow a different reply.
- *   Consecutive prior assistants stay 1:1.
+ *   remaining incoming `assistant` rows when its text equals the incoming
+ *   text or **ends with** it (host concatenated `done.text` vs last-round
+ *   checkpoint). Reverse `incoming.endsWith(prior)` is not a cover: a new
+ *   reply that happens to end with a previous short ack (`OK` / `Done`)
+ *   must append. Consecutive prior assistants stay 1:1.
  * - Host-only `skill_attached` / `system` / `error` in the prior suffix are
  *   skipped so they cannot zero overlap.
  *
@@ -376,8 +381,29 @@ function flexMatchExact(
       matchedTool = true;
       const nextP = prior[pi];
       if (!nextP || nextP.role !== 'tool_run') {
-        while (ii < prefixLen && incoming[ii]?.role === 'tool_run') {
-          ii += 1;
+        // Host coalesced card (no later prior tool in this suffix): consume
+        // this-run tools, skipping interleaved per-round assistants.
+        // Worker interleaved `[t1, asst, t2]` has a later prior tool → 1:1.
+        if (hasLaterRole(prior, pi, prior.length, 'tool_run')) {
+          while (ii < prefixLen && incoming[ii]?.role === 'tool_run') {
+            ii += 1;
+          }
+        } else {
+          while (ii < prefixLen) {
+            const n = incoming[ii];
+            if (n?.role === 'tool_run') {
+              ii += 1;
+              continue;
+            }
+            if (
+              n?.role === 'assistant' &&
+              hasLaterRole(incoming, ii + 1, prefixLen, 'tool_run')
+            ) {
+              ii += 1;
+              continue;
+            }
+            break;
+          }
         }
       }
     }
@@ -406,19 +432,29 @@ function snapshotRowOverlaps(
   return prior.text === incoming.text;
 }
 
+function hasLaterRole(
+  rows: ReadonlyArray<CheckpointSnapshotMessage>,
+  from: number,
+  end: number,
+  role: SessionRole,
+): boolean {
+  for (let i = from; i < end; i++) {
+    if (rows[i]?.role === role) return true;
+  }
+  return false;
+}
+
 /**
- * Trailing-assistant cover after a this-run tool match: equal, or one text is
- * a suffix of the other (host concatenated `done.text` vs last-round
- * checkpoint). Empty strings never cover — `String.prototype.endsWith('')`
- * is true for every haystack.
+ * Trailing-assistant cover after a this-run tool match: equal, or prior text
+ * ends with the incoming text (host concatenated `done.text` vs last-round
+ * checkpoint). Reverse `incoming.endsWith(prior)` is not a cover — a longer
+ * new reply that happens to end with a previous short ack must append.
+ * Empty strings never cover — `String.prototype.endsWith('')` is true for
+ * every haystack.
  */
 function assistantCovers(priorText: string, incomingText: string): boolean {
   if (priorText.length === 0 || incomingText.length === 0) return false;
-  return (
-    priorText === incomingText ||
-    priorText.endsWith(incomingText) ||
-    incomingText.endsWith(priorText)
-  );
+  return priorText === incomingText || priorText.endsWith(incomingText);
 }
 
 /**

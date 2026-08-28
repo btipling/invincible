@@ -42,14 +42,17 @@ snapshot JSON body (`id`, `updatedAt`, `messages`) — the same shape a full-rec
 GET returns. Extra keys are ignored. Each worker persist suffix-merges this-run
 checkpoint rows onto a prior **readable** pointer body so a later turn cannot
 replace the accumulated transcript (`tool_run` matches by role; one host live-paint
-card covers a run of checkpoint tools; host-only `skill_attached` / `system` /
+card covers a run of checkpoint tools, including tools separated by per-round
+checkpoint assistants — the turn loop emits an assistant delta every model round;
+host-only `skill_attached` / `system` /
 `error` rows in that window are kept and do not duplicate this-run). Per-round
 checkpoint `assistant` rows that the host has not stored yet (live paint is
 bridge-only until concatenated `done.text`) are skipped so they cannot zero
-overlap against a host tool card; a trailing host assistant covers those
-this-run assistant rows only when its text equals or is a suffix/prefix of
-the checkpoint assistant (concatenated `done.text` vs last-round text), not
-by role alone — two tool-turns that share a user prompt keep both replies. A leftover `{ deltas }`-only object
+overlap against a host tool card; a trailing host assistant covers remaining
+this-run assistant rows only when its text equals the checkpoint assistant or
+ends with it (concatenated `done.text` vs last-round text), not the reverse and
+not by role alone — two tool-turns that share a user prompt keep both replies,
+including a longer new reply that happens to end with a previous short ack. A leftover `{ deltas }`-only object
 fails parse and is not merged; restore keeps the local transcript and overlays live envelope
 carriers until a later persist overwrites the pointer. A bound pointer whose object
 is missing or not JSON fails persist (pointer unchanged) rather than publishing

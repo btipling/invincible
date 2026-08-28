@@ -506,6 +506,112 @@ describe('mergeCheckpointOntoPrior', () => {
     const out = mergeCheckpointOntoPrior(prior, [u2, wPre, wT, wA]);
     expect(out).toEqual(prior);
   });
+
+  it('interleaved per-round assistants vs mid-turn host card do not duplicate tools', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'fix the tests', at: 20 };
+    const hostCard = {
+      id: 'ht',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"},{"name":"exec"}]}',
+      at: 21,
+    };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix the tests' },
+      { role: 'assistant', content: 'Let me read the file' },
+      { role: 'tool', content: 'file content' },
+      { role: 'assistant', content: 'I will run the tests' },
+      { role: 'tool', content: 'exit=1' },
+      { role: 'assistant', content: '3 passed' },
+    ]);
+    const out = mergeCheckpointOntoPrior([u1, a1, hostU2, hostCard], incoming);
+    expect(out.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'tool_run',
+      'assistant',
+    ]);
+    expect(out.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'fix the tests',
+      hostCard.text,
+      '3 passed',
+    ]);
+    expect(out.filter((m) => m.role === 'tool_run')).toHaveLength(1);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'fix the tests')).toHaveLength(
+      1,
+    );
+  });
+
+  it('interleaved per-round assistants vs trailing host concat do not duplicate the user', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'fix the tests', at: 20 };
+    const hostCard = {
+      id: 'ht',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"},{"name":"exec"}]}',
+      at: 21,
+    };
+    const hostA2 = {
+      id: 'ha2',
+      role: 'assistant' as const,
+      text: 'Let me read the file\nI will run the tests\n3 passed',
+      at: 22,
+    };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix the tests' },
+      { role: 'assistant', content: 'Let me read the file' },
+      { role: 'tool', content: 'file content' },
+      { role: 'assistant', content: 'I will run the tests' },
+      { role: 'tool', content: 'exit=1' },
+      { role: 'assistant', content: '3 passed' },
+    ]);
+    const prior = [u1, a1, hostU2, hostCard, hostA2];
+    const out = mergeCheckpointOntoPrior(prior, incoming);
+    expect(out).toEqual(prior);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'fix the tests')).toHaveLength(
+      1,
+    );
+  });
+
+  it('new assistant ending with a prior short ack appends (no reverse endsWith cover)', () => {
+    const uA = { id: 'h1', role: 'user' as const, text: 'continue', at: 10 };
+    const tA = {
+      id: 'h2',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"}]}',
+      at: 11,
+    };
+    const aA = { id: 'h3', role: 'assistant' as const, text: 'OK', at: 12 };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'continue' },
+      { role: 'tool', content: 'exit=0' },
+      { role: 'assistant', content: 'All tests passed. OK' },
+    ]);
+    const out = mergeCheckpointOntoPrior([uA, tA, aA], incoming);
+    expect(out.map((m) => m.text)).toEqual([
+      'continue',
+      tA.text,
+      'OK',
+      'continue',
+      'exit=0',
+      'All tests passed. OK',
+    ]);
+  });
+
+  it('worker-to-worker interleaved tools stay 1:1 on persist retry', () => {
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix the tests' },
+      { role: 'assistant', content: 'Let me read the file' },
+      { role: 'tool', content: 'file content' },
+      { role: 'assistant', content: 'I will run the tests' },
+      { role: 'tool', content: 'exit=1' },
+      { role: 'assistant', content: '3 passed' },
+    ]);
+    const prior = [u1, a1, ...incoming];
+    const out = mergeCheckpointOntoPrior(prior, incoming);
+    expect(out).toEqual(prior);
+  });
 });
 
 describe('snapshotMessagesFromUnknown / applyPriorMessagesToSnapshotJson', () => {
