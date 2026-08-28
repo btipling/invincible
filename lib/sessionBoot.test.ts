@@ -232,19 +232,50 @@ describe('snapshotAfterRepoGet (host restore after repo.get, every action)', () 
     expect(snapshotAfterRepoGet(local, { action: 'ok', snapshot: server })).toBe(server);
   });
 
-  it('error / disabled / notfound → keep local without consulting extra fields', () => {
+  it('error without live carriers is identity (onGetMiss stays no-op)', () => {
     const local = localCompleted();
-    const poison = {
-      action: 'error' as const,
+    expect(snapshotAfterRepoGet(local, { action: 'disabled' })).toBe(local);
+    expect(snapshotAfterRepoGet(local, { action: 'notfound' })).toBe(local);
+    expect(
+      snapshotAfterRepoGet(local, {
+        action: 'error',
+        status: 0,
+        message: 'Invalid transcript body.',
+      }),
+    ).toBe(local);
+  });
+
+  it('error + running carriers overlays onto completed local (messages stay local)', () => {
+    const local = localCompleted();
+    const restored = snapshotAfterRepoGet(local, {
+      action: 'error',
       status: 0,
       message: 'Invalid transcript body.',
       turnStatus: 'running',
       turnRunId: 'wr_live',
+      turnStreamCursor: 0,
+    });
+    expect(restored).not.toBe(local);
+    expect(restored.messages).toEqual(local.messages);
+    expect(restored.id).toBe(local.id);
+    expect(restored.turnStatus).toBe('running');
+    expect(restored.turnRunId).toBe('wr_live');
+    expect(restored.turnStreamCursor).toBe(0);
+  });
+
+  it('ok GET, LWW keeps local, server is running → kept local gains carriers', () => {
+    const local = localCompleted();
+    const server: SessionSnapshot = {
+      id: local.id,
+      updatedAt: 1, // older — LWW keeps local
+      messages: [{ id: 'm9', role: 'user', text: 'server', at: 1 }],
+      turnStatus: 'running',
+      turnRunId: 'wr_live',
     };
-    expect(snapshotAfterRepoGet(local, poison as CloudGetResult)).toBe(local);
-    expect(snapshotAfterRepoGet(local, { action: 'disabled' })).toBe(local);
-    expect(snapshotAfterRepoGet(local, { action: 'notfound' })).toBe(local);
-    expect(snapshotAfterRepoGet(local, poison as CloudGetResult).turnStatus).toBe('completed');
+    const restored = snapshotAfterRepoGet(local, { action: 'ok', snapshot: server });
+    expect(restored.messages).toEqual(local.messages);
+    expect(restored.turnStatus).toBe('running');
+    expect(restored.turnRunId).toBe('wr_live');
   });
 });
 

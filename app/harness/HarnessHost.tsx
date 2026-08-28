@@ -826,11 +826,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             onGetMiss: (got, id) => {
               if (cancelled) return;
               if (inflightRef.current) return;
-              // Today snapshotAfterRepoGet(error) is `local` — no-op, matches skip-onAdopt.
-              // Envelope-wins that overlays running onto stale local must change
-              // snapshotAfterRepoGet so this path activates + kickColdAttach.
-              // Refuse when the GET target is a different session than local
-              // (pinned ?s=A must not paint A's run onto local B).
+              // Envelope-wins: snapshotAfterRepoGet overlays live carriers onto
+              // stale local. Same-id only — pinned ?s=A must not paint A's run
+              // onto local B. Do not repo.put the overlay (stale messages +
+              // running must not LWW-beat the worker blob).
               const local = sessionRef.current;
               if (local.id !== id) return;
               const restored = snapshotAfterRepoGet(local, got);
