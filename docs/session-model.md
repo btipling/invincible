@@ -43,7 +43,11 @@ GET returns. Extra keys are ignored. Each worker persist suffix-merges this-run
 checkpoint rows onto a prior **readable** pointer body so a later turn cannot
 replace the accumulated transcript (`tool_run` matches by role; one host live-paint
 card covers a run of checkpoint tools; host-only `skill_attached` / `system` /
-`error` rows in that window are kept and do not duplicate this-run). A leftover `{ deltas }`-only object
+`error` rows in that window are kept and do not duplicate this-run). Per-round
+checkpoint `assistant` rows that the host has not stored yet (live paint is
+bridge-only until concatenated `done.text`) are skipped so they cannot zero
+overlap against a host tool card; a trailing host assistant covers those
+this-run assistant rows. A leftover `{ deltas }`-only object
 fails parse and is not merged; restore keeps the local transcript and overlays live envelope
 carriers until a later persist overwrites the pointer. A bound pointer whose object
 is missing or not JSON fails persist (pointer unchanged) rather than publishing

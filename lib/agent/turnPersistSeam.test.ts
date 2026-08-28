@@ -628,4 +628,60 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     ]);
     expect(parsed?.messages.map((m) => m.id)).toEqual(['h1', 'h2', 'h3', 'h4', 'h5']);
   });
+
+  it('host tool card vs checkpoint preamble+tools is not duplicated', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    const encoded = '{"tools":[{"name":"read_file","ok":true}]}';
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1000,
+        messages: [
+          { id: 'h1', role: 'user', text: 'turn-1 user', at: 10 },
+          { id: 'h2', role: 'assistant', text: 'turn-1 assistant', at: 11 },
+          { id: 'h3', role: 'user', text: 'turn-2 user', at: 20 },
+          { id: 'h4', role: 'tool_run', text: encoded, at: 21 },
+        ],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'turn-2 user', at: 1 },
+          { id: 'cp_1', role: 'assistant', text: 'Let me read that', at: 2 },
+          { id: 'cp_2', role: 'tool_run', text: 'file content', at: 3 },
+          { id: 'cp_3', role: 'assistant', text: 'file looks good', at: 4 },
+        ],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const parsed = parseCloudSessionSnapshot(
+      JSON.parse((await blobStore.read(res.objectId!)) ?? 'null'),
+      scope.sessionId,
+    );
+    expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'turn-2 user',
+      encoded,
+      'file looks good',
+    ]);
+    expect(parsed?.messages.map((m) => m.id).slice(0, 4)).toEqual(['h1', 'h2', 'h3', 'h4']);
+  });
 });

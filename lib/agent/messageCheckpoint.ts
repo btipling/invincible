@@ -183,9 +183,12 @@ export function truncateMessageCheckpoint(
  * Map a bounded `{role, content}` checkpoint onto `SessionSnapshot.messages`.
  *
  * Checkpoint `tool` (the turn-loop reconstruction role) becomes session
- * `tool_run`. Other unknown roles are dropped so `parseCloudSessionSnapshot`
- * cannot fail closed on the whole blob. Empty checkpoint → `[]` (valid; LWW
- * then keeps a local-with-dialogue snapshot). Never throws.
+ * `tool_run`. Empty-text `assistant` rows are dropped: `generateOneRound` always
+ * sets `delta.text` (including `''` for tool-only rounds) and the host never
+ * stores those rows. Other unknown roles are dropped so
+ * `parseCloudSessionSnapshot` cannot fail closed on the whole blob. Empty
+ * checkpoint → `[]` (valid; LWW then keeps a local-with-dialogue snapshot).
+ * Never throws.
  */
 export function checkpointToSnapshotMessages(
   checkpoint: ReadonlyArray<{ role: string; content: string }>,
@@ -196,6 +199,7 @@ export function checkpointToSnapshotMessages(
     if (!row || typeof row.role !== 'string' || typeof row.content !== 'string') continue;
     const mapped = row.role === 'tool' ? 'tool_run' : row.role;
     if (!SESSION_ROLES.has(mapped as SessionRole)) continue;
+    if (mapped === 'assistant' && row.content.length === 0) continue;
     out.push({
       id: `cp_${i}`,
       role: mapped as SessionRole,
@@ -250,6 +254,12 @@ export function snapshotMessagesFromUnknown(
  *   of incoming `tool_run` rows when the next prior row is not `tool_run`
  *   (host `livePaintToolRun` grows one encodeToolRun card for N tools).
  *   Consecutive prior `tool_run` rows stay 1:1 (worker-to-worker raw rows).
+ * - Incoming `assistant` rows are skipped while the current prior row is
+ *   `tool_run` (per-round preamble / empty rounds are not in the mid-turn
+ *   host snapshot; live assistant is bridge-only until terminal `done.text`).
+ * - After a this-run tool match, a single trailing prior `assistant` covers
+ *   remaining incoming `assistant` rows (host concatenated `done.text` vs
+ *   last-round checkpoint text). Consecutive prior assistants stay 1:1.
  * - Host-only `skill_attached` / `system` / `error` in the prior suffix are
  *   skipped so they cannot zero overlap.
  *
@@ -326,6 +336,7 @@ function flexMatchExact(
 ): boolean {
   let pi = pStart;
   let ii = 0;
+  let matchedTool = false;
   while (ii < prefixLen) {
     while (
       pi < prior.length &&
@@ -335,15 +346,39 @@ function flexMatchExact(
     ) {
       pi += 1;
     }
+    // Worker per-round assistants are not in the mid-turn host snapshot
+    // (bridge-only until terminal done.text). Skip them so they cannot
+    // zero overlap against a host tool card.
+    while (
+      ii < prefixLen &&
+      incoming[ii]?.role === 'assistant' &&
+      prior[pi]?.role === 'tool_run'
+    ) {
+      ii += 1;
+    }
+    if (ii >= prefixLen) break;
     const p = prior[pi];
     const n = incoming[ii];
-    if (!p || !n || !snapshotRowOverlaps(p, n)) return false;
+    if (!p || !n) return false;
+    const afterToolAssistant =
+      matchedTool && p.role === 'assistant' && n.role === 'assistant';
+    if (!afterToolAssistant && !snapshotRowOverlaps(p, n)) return false;
+    if (afterToolAssistant && p.role !== n.role) return false;
     pi += 1;
     ii += 1;
     if (p.role === 'tool_run') {
+      matchedTool = true;
       const nextP = prior[pi];
       if (!nextP || nextP.role !== 'tool_run') {
         while (ii < prefixLen && incoming[ii]?.role === 'tool_run') {
+          ii += 1;
+        }
+      }
+    }
+    if (afterToolAssistant) {
+      const nextP = prior[pi];
+      if (!nextP || nextP.role !== 'assistant') {
+        while (ii < prefixLen && incoming[ii]?.role === 'assistant') {
           ii += 1;
         }
       }
