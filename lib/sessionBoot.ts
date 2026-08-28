@@ -103,10 +103,9 @@ export function shouldAdoptBootServer(
  * passes `getEnvelopeParseLocal` (empty mint) that loses LWW to a completed
  * local.
  *
- * `onGetMiss` receives the GET target id: refuse overlay when `local.id`
- * differs (pinned `?s=` of A must not paint A's run onto local B). Return
- * `'adopted'` when restore actually changed the snapshot so
- * `bootCloudSession` pins `?s=` instead of clearing it.
+ * Pin vs rehydrate is {@link restoreOnGetMiss}: same-id only, and a live
+ * GET still returns `'adopted'` on identity so `bootCloudSession` pins
+ * `?s=` instead of clearing it.
  */
 export function snapshotAfterCloudGet(
   local: SessionSnapshot,
@@ -126,7 +125,8 @@ export function snapshotAfterCloudGet(
  *   **live** envelope carriers onto the snapshot we keep (phase-2 safety:
  *   a readable blob that loses LWW still attaches).
  * - `action !== 'ok'` → keep `local` messages; merge live carriers from the
- *   error result (`onGetMiss` activates when the merge changes the snapshot).
+ *   error result. Host `onGetMiss` uses {@link restoreOnGetMiss}: rehydrate
+ *   when the merge changes the snapshot; pin `?s=` on live identity.
  *
  * Live = `turnStatus === 'running'` and a non-empty `turnRunId`. Same-id is
  * the host's job (`onGetMiss` refuses `local.id !== id`).

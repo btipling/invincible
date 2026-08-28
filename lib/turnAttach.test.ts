@@ -206,6 +206,13 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(host).toContain("return 'adopted'");
     expect(host).toContain("decision.kind === 'skip'");
     expect(host).toContain("decision.kind === 'adopt'");
+    expect(host).toContain("decision.kind === 'pin'");
+    const miss = host.indexOf('onGetMiss:');
+    const missBlock = host.slice(miss, host.indexOf('onMint:', miss));
+    expect(miss).toBeGreaterThan(0);
+    expect(missBlock).toMatch(
+      /decision\.kind === 'pin'[\s\S]*setActiveSessionId\(id\)[\s\S]*return 'adopted'/,
+    );
     expect(host.match(/queueMicrotask\(kickColdAttach\)/g)?.length).toBeGreaterThanOrEqual(3);
     expect(host).toContain('attach: spec');
     expect(host).toContain('if (inflightRef.current) return');
