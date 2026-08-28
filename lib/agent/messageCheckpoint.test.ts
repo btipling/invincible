@@ -676,6 +676,115 @@ describe('mergeCheckpointOntoPrior', () => {
     expect(out.filter((m) => m.text === 'Let me read the file')).toHaveLength(1);
     expect(out.filter((m) => m.text === 'I will run the tests')).toHaveLength(1);
   });
+
+  it('thinking-split two host cards vs interleaved tools keep one user and fold assts', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'fix the tests', at: 20 };
+    const card1 = {
+      id: 'ht1',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"}]}',
+      at: 21,
+    };
+    const card2 = {
+      id: 'ht2',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"exec"}]}',
+      at: 22,
+    };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix the tests' },
+      { role: 'assistant', content: 'Let me read the file' },
+      { role: 'tool', content: 'file content' },
+      { role: 'assistant', content: 'I will run the tests' },
+      { role: 'tool', content: 'exit=0' },
+      { role: 'assistant', content: '3 passed' },
+    ]);
+    const out = mergeCheckpointOntoPrior([u1, a1, hostU2, card1, card2], incoming);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'fix the tests')).toHaveLength(1);
+    expect(out.filter((m) => m.role === 'tool_run')).toHaveLength(2);
+    expect(out.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'fix the tests',
+      card1.text,
+      card2.text,
+      'Let me read the fileI will run the tests3 passed',
+    ]);
+  });
+
+  it('thinking-split two host cards + empty last-round folds skipped assts', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'fix the tests', at: 20 };
+    const card1 = {
+      id: 'ht1',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"read_file"}]}',
+      at: 21,
+    };
+    const card2 = {
+      id: 'ht2',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"exec"}]}',
+      at: 22,
+    };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix the tests' },
+      { role: 'assistant', content: 'Let me read the file' },
+      { role: 'tool', content: 'file content' },
+      { role: 'assistant', content: 'I will run the tests' },
+      { role: 'tool', content: 'exit=0' },
+      { role: 'assistant', content: '' },
+    ]);
+    const out = mergeCheckpointOntoPrior([u1, a1, hostU2, card1, card2], incoming);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'fix the tests')).toHaveLength(1);
+    expect(out.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'fix the tests',
+      card1.text,
+      card2.text,
+      'Let me read the fileI will run the tests',
+    ]);
+  });
+
+  it('user-only prior (usage before first tool) appends this-run tools and assts', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'fix the tests', at: 20 };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix the tests' },
+      { role: 'assistant', content: 'Let me read the file' },
+      { role: 'tool', content: 'file content' },
+      { role: 'assistant', content: '3 passed' },
+    ]);
+    const out = mergeCheckpointOntoPrior([u1, a1, hostU2], incoming);
+    expect(out.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'fix the tests',
+      'Let me read the file',
+      'file content',
+      '3 passed',
+    ]);
+  });
+
+  it('error after mid-turn host card + empty last-round keeps error and folds assts', () => {
+    const hostU2 = { id: 'hu2', role: 'user' as const, text: 'fix the tests', at: 20 };
+    const hostCard = {
+      id: 'ht',
+      role: 'tool_run' as const,
+      text: '{"tools":[{"name":"exec"}]}',
+      at: 21,
+    };
+    const err = { id: 'he', role: 'error' as const, text: 'tool failed', at: 22 };
+    const incoming = checkpointToSnapshotMessages([
+      { role: 'user', content: 'fix the tests' },
+      { role: 'assistant', content: 'Let me run' },
+      { role: 'tool', content: 'exit=1' },
+      { role: 'assistant', content: '' },
+    ]);
+    const out = mergeCheckpointOntoPrior([u1, a1, hostU2, hostCard, err], incoming);
+    expect(out.filter((m) => m.role === 'user' && m.text === 'fix the tests')).toHaveLength(1);
+    expect(out.filter((m) => m.role === 'error')).toHaveLength(1);
+    expect(out[out.length - 1]?.text).toBe('Let me run');
+  });
 });
 
 describe('snapshotMessagesFromUnknown / applyPriorMessagesToSnapshotJson', () => {

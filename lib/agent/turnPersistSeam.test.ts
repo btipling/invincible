@@ -1033,4 +1033,66 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     ]);
     expect(parsed?.messages.filter((m) => m.role === 'assistant')).toHaveLength(2);
   });
+
+  it('thinking-split two host cards vs interleaved tools keep one user and fold assts', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    const card1 = '{"tools":[{"name":"read_file","ok":true}]}';
+    const card2 = '{"tools":[{"name":"exec","ok":true}]}';
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1000,
+        messages: [
+          { id: 'h1', role: 'user', text: 'turn-1 user', at: 10 },
+          { id: 'h2', role: 'assistant', text: 'turn-1 assistant', at: 11 },
+          { id: 'h3', role: 'user', text: 'fix the tests', at: 20 },
+          { id: 'h4', role: 'tool_run', text: card1, at: 21 },
+          { id: 'h5', role: 'tool_run', text: card2, at: 22 },
+        ],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'fix the tests', at: 1 },
+          { id: 'cp_1', role: 'assistant', text: 'Let me read the file', at: 2 },
+          { id: 'cp_2', role: 'tool_run', text: 'file content', at: 3 },
+          { id: 'cp_3', role: 'assistant', text: 'I will run the tests', at: 4 },
+          { id: 'cp_4', role: 'tool_run', text: 'exit=0', at: 5 },
+          { id: 'cp_5', role: 'assistant', text: '3 passed', at: 6 },
+        ],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const parsed = parseCloudSessionSnapshot(
+      JSON.parse((await blobStore.read(res.objectId!)) ?? 'null'),
+      scope.sessionId,
+    );
+    expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      'fix the tests',
+      card1,
+      card2,
+      'Let me read the fileI will run the tests3 passed',
+    ]);
+    expect(parsed?.messages.filter((m) => m.role === 'user')).toHaveLength(2);
+    expect(parsed?.messages.filter((m) => m.role === 'tool_run')).toHaveLength(2);
+  });
 });
