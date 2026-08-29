@@ -165,8 +165,12 @@ export interface PersistStepFn {
     deltas: ReadonlyArray<unknown>;
     /** Run final-state fold (B13) — plain serializable values only. */
     fold?: PersistStepFold;
+    /**
+     * Default true. Mid-turn writes pass false so B8 overlays `running`.
+     */
+    terminal?: boolean;
   }): Promise<
-    | { ok: true; status: 'completed'; turnRunId: string }
+    | { ok: true; status: 'completed' | 'running'; turnRunId: string }
     | { ok: false; code: string; error: string }
   >;
 }
@@ -384,7 +388,9 @@ export function derivePersistFold(
 /**
  * Drive one prompt run: `model · (tool)*` until the model returns no tool calls
  * or the 256-step cap is reached, writing delta-only SSE lines to the writable,
- * then persist the terminal state. Closes the writable on EVERY terminal path.
+ * then persist. Mid-turn persists (user-line after a model that returned tools,
+ * and after each successful tool) overlay `running`; the no-tool model round
+ * persist overlays `completed`. Closes the writable on EVERY terminal path.
  *
  * This core holds no closures that cross a step boundary: every arg passed to a
  * step is a plain serializable value (messages / tool name + args / turnRunId +
@@ -439,6 +445,27 @@ export async function runTurnLoop(
   let bind: PersistRunBind | undefined = deps.persistRunBind
     ? { ...deps.persistRunBind }
     : undefined;
+  // User-line persist fires once: after the first in-budget model delta that
+  // returned tool calls. A no-tool first round skips it — that write IS the
+  // terminal persist (`completed`).
+  let didUserLinePersist = false;
+
+  const persistNow = async (
+    terminal: boolean,
+  ): Promise<
+    | { ok: true; status: 'completed' | 'running'; turnRunId: string }
+    | { ok: false; code: string; error: string }
+  > => {
+    steps += 1;
+    const fold = derivePersistFold(messages, usage, deps.persistRunBind);
+    return deps.persistStep({
+      turnRunId: deps.turnRunId,
+      deltas,
+      ...(fold !== undefined ? { fold } : {}),
+      ...(terminal ? {} : { terminal: false }),
+    });
+  };
+
   try {
     while (steps < cap) {
       round += 1;
@@ -468,19 +495,15 @@ export async function runTurnLoop(
       messages.push({ role: 'assistant', delta: persistDelta });
 
       // No tool calls → this model round is terminal; persist and close.
+      // Skip a prior `running` write on a no-tool first round — that would
+      // double-persist running→completed on every chat turn.
       const calls: TurnToolCallDelta[] = gen.delta.toolCalls ?? [];
       if (calls.length === 0) {
-        steps += 1; // the persist step
-        // Derive the terminal fold AT PERSIST TIME from this run's messages +
+        // Derive the fold AT PERSIST TIME from this run's messages +
         // ACCUMULATED usage (turn total). cwd/activeSandboxId come from THIS
         // run's LAST tool write, or the pre-run bind only when untouched. NOT a
         // start arg (the last deltas do not exist at `start()` — only here).
-        const fold = derivePersistFold(messages, usage, deps.persistRunBind);
-        const persisted = await deps.persistStep({
-          turnRunId: deps.turnRunId,
-          deltas,
-          ...(fold !== undefined ? { fold } : {}),
-        });
+        const persisted = await persistNow(true);
         if (!persisted.ok) {
           return fail('failed', round, steps, persisted.error);
         }
@@ -491,6 +514,19 @@ export async function runTurnLoop(
         );
         await writable.close();
         return { status: 'completed', deltas, messages, rounds: round, steps };
+      }
+
+      // User-line persist: first model round that returned tools. Same "always
+      // persist after this in-budget model" pattern as terminal (may increment
+      // steps one past the cap). Once per run.
+      if (!didUserLinePersist) {
+        const persisted = await persistNow(false);
+        didUserLinePersist = true;
+        if (!persisted.ok) {
+          return fail('failed', round, steps, persisted.error);
+        }
+        deltas.push(persisted);
+        messages.push({ role: 'persist', status: persisted.status });
       }
 
       // Each tool call is its OWN step — re-resolve + run THE named tool, seeded
@@ -519,6 +555,16 @@ export async function runTurnLoop(
             bind = { ...bind, ...rowBind };
           }
           await writable.write(sse(toolResultLine(call.toolName, true, tool.result)));
+          // After each successful tool: persist `running` when budget remains
+          // (same gate as the next tool). Fail-closed like terminal.
+          if (steps < cap) {
+            const persisted = await persistNow(false);
+            if (!persisted.ok) {
+              return fail('failed', round, steps, persisted.error);
+            }
+            deltas.push(persisted);
+            messages.push({ role: 'persist', status: persisted.status });
+          }
         } else {
           // Business error as a VALUE — never a throw; terminate cleanly.
           if (tool.code === 'cancelled') {

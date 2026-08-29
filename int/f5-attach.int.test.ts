@@ -6,7 +6,7 @@ import { makeMessage, type SessionSnapshot } from '../lib/sessionStore';
 import type { HarnessBridge } from '../lib/harnessBridge';
 import { loadBridge } from './loadBridge';
 import { bootFromMemory, hydrateRing, ringTexts } from './driver';
-import { persistTurn1, markEnvelopeRunning, TURN2_RUN_ID, INT_SCOPE } from './stores';
+import { persistTurn1, persistTurn2Running, markEnvelopeRunning, TURN2_RUN_ID, INT_SCOPE } from './stores';
 
 const TURN2_USER = 'turn-2 user';
 const LIVE_ASSISTANT = 'partial live assistant';
@@ -59,10 +59,10 @@ describe('int F5 attach (#859 issue-rows 3 F5, 4 stream-drop, 2 persist-hole)', 
     },
   );
 
-  it.fails('#859 row 2: F5 ring is not turn-1-only (worker transcript, not attach)', async () => {
+  it('#859 row 2: F5 ring is not turn-1-only (worker transcript, not attach)', async () => {
     const local = turn1Local();
     const { blobStore, envelopeStore } = await persistTurn1();
-    await markEnvelopeRunning(envelopeStore);
+    await persistTurn2Running({ blobStore, envelopeStore });
     const boot = await bootFromMemory({
       local,
       envelopeStore,
@@ -144,12 +144,12 @@ describe('int F5 attach (#859 issue-rows 3 F5, 4 stream-drop, 2 persist-hole)', 
     expect(hot.kind).toBe('none');
   });
 
-  it.fails(
+  it(
     '#859 row 2: mid-turn persist hole — boot ring is not live interleaving',
     async () => {
       const local = turn1Local();
       const { blobStore, envelopeStore } = await persistTurn1();
-      await markEnvelopeRunning(envelopeStore);
+      await persistTurn2Running({ blobStore, envelopeStore });
       const boot = await bootFromMemory({
         local,
         envelopeStore,

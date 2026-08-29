@@ -125,11 +125,12 @@ export async function turnWorkflow(
   };
   // Forward EVERYTHING the loop passes including the derived `fold` — a
   // destructure that drops it would silently no-op DoD rows 3/5 (adversarial L1).
-  const persistStepFn: PersistStepFn = async ({ turnRunId, deltas, fold }) => {
+  const persistStepFn: PersistStepFn = async ({ turnRunId, deltas, fold, terminal }) => {
     return persistStep({
       turnRunId,
       deltas,
       ...(fold !== undefined ? { fold } : {}),
+      ...(terminal !== undefined ? { terminal } : {}),
       scope: args.scope,
     });
   };

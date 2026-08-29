@@ -25,13 +25,18 @@
  */
 import { checkpointToSnapshotMessages } from '../agent/messageCheckpoint';
 
-/**
- * Serialized final-state fold (B13) — the run-level worker keys the terminal
- * persist step folds onto envelope `meta` via the B8 overlay. Plain
- * serializable values only (Vercel serializes every `'use step'` arg). Per the
- * plan lock, the checkpoint is a bounded `{role,content}[]` projection the real
- * seam writes as its own Blob object — only the pointer rides in `meta`.
- */
+/** Overlay status for a persist write. Omitted/`true` stays completed (today). */
+export function persistOverlayStatus(
+  terminal?: boolean,
+): 'completed' | 'running' {
+  return terminal === false ? 'running' : 'completed';
+}
+
+/** Serialized final-state fold (B13) — the run-level worker keys the persist
+ *  step folds onto envelope `meta` via the B8 overlay. Plain serializable
+ *  values only (Vercel serializes every `'use step'` arg). Per the plan lock,
+ *  the checkpoint is a bounded `{role,content}[]` projection the real seam
+ *  writes as its own Blob object — only the pointer rides in `meta`. */
 export interface PersistStepFold {
   /** Workspace-relative `logicalCwd` folded from the last generate/tool deltas. */
   cwd?: string;
@@ -46,11 +51,12 @@ export interface PersistStepFold {
 /** The B7/B8 persist seam surface this step shells (store-ish, serializable-safe). */
 export interface PersistStepSeam {
   /**
-   * Persist one terminal turn segment server-side. Contract mirrors B7
+   * Persist one turn segment server-side. Contract mirrors B7
    * (`persistTranscriptSegment`) but is deliberately store-agnostic here so this
    * file does not import the Banned Blob module. The engine/entry provides the
    * real seam at B13 (`lib/agent/turnPersistSeam.ts`); tests inject an
-   * in-memory seam. The seam returns terminal status + the persisted pointers.
+   * in-memory seam. The seam returns completed or running status + the
+   * persisted pointers.
    */
   persist(input: {
     turnRunId: string;
@@ -58,12 +64,17 @@ export interface PersistStepSeam {
     content: string;
     /** Run final-state fold (cwd/usage/sandbox/checkpoint) — optional. */
     fold?: PersistStepFold;
+    /**
+     * Default true. Mid-turn writes pass false so B8 overlays `running`
+     * and the step result status is `running`.
+     */
+    terminal?: boolean;
   }): Promise<
     | {
         ok: true;
         objectId?: string;
         checkpointPointer?: string;
-        status: 'completed';
+        status: 'completed' | 'running';
       }
     | { ok: false; code: string; error: string }
   >;
@@ -78,6 +89,11 @@ export interface PersistStepArgs {
   /** Run final-state fold (B13) — plain serializable values only. */
   fold?: PersistStepFold;
   /**
+   * Default true. Mid-turn writes pass false so B8 overlays `running`.
+   * Omit or `true` keeps every existing single-call test completed.
+   */
+  terminal?: boolean;
+  /**
    * Serializable session scope for in-step seam construction (prod path).
    * When the module-level resolver is unset (production — the route must NOT
    * wire it), the step constructs the real Blob+envelope seam from this scope.
@@ -86,11 +102,11 @@ export interface PersistStepArgs {
   scope?: { tenantId: string; userId: string; sessionId: string };
 }
 
-/** Fail-closed step result (terminal status). */
+/** Fail-closed step result (completed or mid-turn running). */
 export type PersistStepResult =
   | {
       ok: true;
-      status: 'completed';
+      status: 'completed' | 'running';
       turnRunId: string;
       objectId?: string;
       checkpointPointer?: string;
@@ -172,11 +188,12 @@ export async function persistStep(
     deltas: args.deltas,
     content,
     ...(args.fold !== undefined ? { fold: args.fold } : {}),
+    ...(args.terminal !== undefined ? { terminal: args.terminal } : {}),
   });
   if (!result.ok) return { ok: false, code: result.code, error: result.error };
   return {
     ok: true,
-    status: 'completed',
+    status: result.status,
     turnRunId: args.turnRunId,
     ...(result.objectId !== undefined ? { objectId: result.objectId } : {}),
     ...(result.checkpointPointer !== undefined
@@ -212,7 +229,11 @@ export function createInMemoryPersistSeam(): {
     async persist(input) {
       const stamped = stampSnapshotUpdatedAt(input.content, 1) ?? input.content;
       persisted.push({ turnRunId: input.turnRunId, content: stamped });
-      return { ok: true, objectId: `seg_mem_${persisted.length}`, status: 'completed' };
+      return {
+        ok: true,
+        objectId: `seg_mem_${persisted.length}`,
+        status: persistOverlayStatus(input.terminal),
+      };
     },
   };
   return { seam, persisted };
