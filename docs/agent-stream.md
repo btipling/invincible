@@ -119,7 +119,7 @@ These markers are **not** folded as tools into the next prompt.
 
 There is **no in-repo output-token cap**. `finishReason: length` is the **provider** default max completion (not a product `maxOutputTokens`). Folding that as “the model finished” is a lie.
 
-The durable model step (`modelGenerateStep`) passes the **same** `resolveSystem()` string as `POST /api/agent` — base standing orders (including “Be concise”), plus optional persona / attached-skill blocks resolved in-step from the assembled tool registry. A missing system prompt is not an output cap; it is what used to let a provider default `max_tokens` look like a mysterious mid-sentence stop. Slash-command `/skill-name` attach still lives on `/api/agent`; the durable step re-resolves sticky and always-on skills only (`command: none`).
+The durable model step (`modelGenerateStep`) passes the **same** `resolveSystem()` string as `POST /api/agent` — base standing orders (including “Be concise”), plus optional persona / attached-skill blocks resolved in-step from the assembled tool registry. Persona inject reads and locks `meta.personaSnapshot` on the envelope (`readEnvelope` / `upsertEnvelope`, `updatedAt` unchanged), not the legacy whole-blob `get`/`put`. A missing system prompt is not an output cap; it is what used to let a provider default `max_tokens` look like a mysterious mid-sentence stop. Slash-command `/skill-name` attach still lives on `/api/agent`; the durable step re-resolves sticky and always-on skills only (`command: none`).
 
 ## Turn-end logs (Workflows)
 
