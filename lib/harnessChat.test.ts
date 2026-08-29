@@ -1943,7 +1943,9 @@ describe('durable stream EOF is detach (plan #852 / source #849)', () => {
     );
     expect(exp.__lifecycle()).toBe(Lifecycle.Error);
   });
+});
 
+describe('truncated / capped turn-end is Error, not model-finished', () => {
   it('SSE done + finishReason length is Error, not model-finished; assistant stays', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
