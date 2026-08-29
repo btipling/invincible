@@ -71,10 +71,11 @@ export type TurnToolCallDelta = {
 /**
  * NEW workflow-scoped cap (plan #806 Caps table): max workflow **steps** per
  * prompt run, where EVERY step boundary counts ONE (each model round + each
- * tool execution + each persist). This is a STEP bound, not a round bound
- * (adversarial L6): a per-round tool fanout cannot exceed the budget.
- * `256*2 (model+tool) + persist ≪ 2k-event slow-replay line` (Vercel: 25k
- * events/run, 2 GB entity). Addressable under `MAX_AGENT_MAX_STEPS`
+ * tool execution + **each persist**, mid-turn included). This is a STEP bound,
+ * not a round bound (adversarial L6): a per-round tool fanout cannot exceed the
+ * budget. Rough worst case is `model + user-line persist + n*(tool+persist) +
+ * later model + terminal` ≪ 2k-event slow-replay line (Vercel: 25k events/run,
+ * 2 GB entity). Addressable under `MAX_AGENT_MAX_STEPS`
  * (`lib/sandbox/config.ts`, 1_000_000, unchanged — no existing-cap change, no
  * human gate). The parent locked 256 as the NEW workflow cap value; this PR
  * fixes its counting unit to steps (not rounds).
