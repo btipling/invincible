@@ -9,7 +9,7 @@
  *  - composes the three `'use step'` wrappers (`modelGenerateStep`,
  *    `toolExecuteStep`, `persistStep`) into the loop core's step-fn contracts;
  *  - runs the orchestrator while-loop (`runTurnLoop`) per the umbrella #794
- *    Architecture lock, with the 256-step cap and writable close on every
+ *    Architecture lock, with the 512-step cap and writable close on every
  *    terminal path;
  *  - returns the terminal turn status as a plain value.
  *
@@ -101,7 +101,7 @@ export async function turnWorkflow(
     close: () => closeTurnSse(),
   };
 
-  const modelStep: ModelStepFn = async ({ messages, persistRunBind }) => {
+  const modelStep: ModelStepFn = async ({ messages, persistRunBind, disableTools }) => {
     return modelGenerateStep({
       messages,
       modelId: args.modelId,
@@ -111,6 +111,7 @@ export async function turnWorkflow(
       // change_dir/meta_sandbox_switch), NOT the stale start snapshot. The
       // model must see FS tools for the CURRENT sandbox + cwd.
       persistRunBind: persistRunBind ?? args.persistRunBind,
+      ...(disableTools ? { disableTools: true } : {}),
     });
   };
   const toolStep: ToolStepFn = async ({ toolName, toolCallId, callArgs, freshnessSeed, persistRunBind }) => {

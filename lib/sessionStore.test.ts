@@ -84,6 +84,17 @@ describe('formatPromptWithHistory', () => {
     expect(out).toMatch(/do not repeat/i);
   });
 
+  it('folds Turn ended error lines so the next model sees the cap', () => {
+    const history = [
+      makeMessage('user', 'do the thing'),
+      makeMessage('assistant', 'working'),
+      makeMessage('error', 'Turn ended · error · step budget exhausted'),
+    ];
+    const out = formatPromptWithHistory(history, 'Continue the current turn');
+    expect(out).toContain('Error: Turn ended · error · step budget exhausted');
+    expect(out).toContain('User: Continue the current turn');
+  });
+
   it('keeps tool history when only system lines exist after user', () => {
     const history = [
       makeMessage('user', 'explore'),

@@ -22,7 +22,7 @@
  *    `tool_start` are written inside `modelGenerateStep`. Transcript/checkpoint
  *    live in Blob (B13 persist).
  *  - The writable is closed **exactly once** on every terminal path — success,
- *    model/tool/persist fail (`{ok:false}` value), 256-cap, or cancel. A failed
+ *    model/tool/persist fail (`{ok:false}` value), step cap, or cancel. A failed
  *    terminal step never tears down the loop without closing the wire.
  *  - Tool business errors are **values**, not throws: a step returning
  *    `{ok:false}` terminates the loop cleanly (never retried 3× by the SDK).
@@ -43,6 +43,7 @@ import {
   isTruncatedFinish,
   OUTPUT_TRUNCATED_ERROR,
   STEP_BUDGET_ERROR,
+  STEP_BUDGET_WRAPUP,
 } from '../agent/modelFinish';
 
 /**
@@ -82,10 +83,10 @@ export type TurnToolCallDelta = {
  * later model + terminal` ≪ 2k-event slow-replay line (Vercel: 25k events/run,
  * 2 GB entity). Addressable under `MAX_AGENT_MAX_STEPS`
  * (`lib/sandbox/config.ts`, 1_000_000, unchanged — no existing-cap change, no
- * human gate). The parent locked 256 as the NEW workflow cap value; this PR
- * fixes its counting unit to steps (not rounds).
+ * human gate). Original lock was 256; human-approved raise to 512 (plan #878).
+ * Wrap-up after cap (tools off) is extra and not counted against this budget.
  */
-export const MAX_WORKFLOW_STEPS = 256;
+export const MAX_WORKFLOW_STEPS = 512;
 
 /** Minimal writable surface the loop needs — a `WritableStream`-like carve. */
 export interface TurnWritable {
@@ -113,6 +114,11 @@ export type TurnSseLine =
 export interface ModelStepFn {
   (args: {
     messages: ReadonlyArray<unknown>;
+    /**
+     * Cap wrap-up: no tool schemas. The model must see the error and answer,
+     * not emit more toolCalls.
+     */
+    disableTools?: boolean;
     /**
      * RUNNING sandbox bind (cwd, activeSandboxId) threaded from the loop.
      * Initialised from `deps.persistRunBind` (start snapshot); updated after
@@ -288,6 +294,50 @@ function toolResultLine(
   return ev;
 }
 
+/** Synthetic tool rows for assistant toolCalls that never ran (cap mid-fanout).
+ *  Providers reject a user message after open tool_calls — wrap-up would never
+ *  reach the model without these pairs. */
+function unpairedToolRows(messages: ReadonlyArray<unknown>): Array<{
+  role: 'tool';
+  toolName: string;
+  toolCallId: string;
+  ok: false;
+  error: string;
+}> {
+  const answered = new Set<string>();
+  for (const m of messages) {
+    if (!m || typeof m !== 'object') continue;
+    const row = m as { role?: unknown; toolCallId?: unknown };
+    if (row.role === 'tool' && typeof row.toolCallId === 'string' && row.toolCallId) {
+      answered.add(row.toolCallId);
+    }
+  }
+  const skipped: Array<{
+    role: 'tool';
+    toolName: string;
+    toolCallId: string;
+    ok: false;
+    error: string;
+  }> = [];
+  for (const m of messages) {
+    if (!m || typeof m !== 'object') continue;
+    const row = m as { role?: unknown; delta?: { toolCalls?: TurnToolCallDelta[] } };
+    if (row.role !== 'assistant') continue;
+    for (const call of row.delta?.toolCalls ?? []) {
+      if (!call.toolCallId || answered.has(call.toolCallId)) continue;
+      answered.add(call.toolCallId);
+      skipped.push({
+        role: 'tool',
+        toolName: call.toolName,
+        toolCallId: call.toolCallId,
+        ok: false,
+        error: `skipped: ${STEP_BUDGET_ERROR}`,
+      });
+    }
+  }
+  return skipped;
+}
+
 /** Map a reconstructed message row to a bounded `{role, content}` checkpoint row.
  *  The loop keeps `[user, assistant-delta, tool-result, persist]` rows; the
  *  checkpoint projection wants plain text content per role (B6 bounds it further). */
@@ -295,6 +345,9 @@ function checkpointRow(m: unknown): { role: string; content: string } | undefine
   if (!m || typeof m !== 'object') return undefined;
   const o = m as { role?: unknown; content?: unknown; delta?: unknown; result?: unknown; error?: unknown };
   if (typeof o.role !== 'string' || o.role.length === 0) return undefined;
+  // Wrap-up `{ role: 'error' }` is model-only (STEP_BUDGET_WRAPUP is not canvas
+  // copy). Persist/F5 must not paint it as an EMBER row.
+  if (o.role === 'error') return undefined;
   if (typeof o.content === 'string') return { role: o.role, content: o.content };
   if (o.role === 'assistant') {
     const d = o.delta as { text?: unknown } | undefined;
@@ -393,7 +446,7 @@ export function derivePersistFold(
 
 /**
  * Drive one prompt run: `model · (tool)*` until the model returns no tool calls
- * or the 256-step cap is reached, writing delta-only SSE lines to the writable,
+ * or the 512-step cap is reached, writing delta-only SSE lines to the writable,
  * then persist. Mid-turn persists (user-line after a model that returned tools,
  * and after each successful tool) overlay `running`; the no-tool model round
  * persist overlays `completed`. Closes the writable on EVERY terminal path.
@@ -593,8 +646,53 @@ export async function runTurnLoop(
     }
 
     // Step budget exhausted (model + tool step count hit the cap): never
-    // infinite. Terminal persist so F5 does not attach a dead run, then
-    // SSE error — not `done` / model-finished.
+    // infinite. Cap often lands with open tool_calls (mid-fanout, or the
+    // last in-budget step was the user-line persist after a tools round).
+    // Close those pairs first so the wrap-up user Error is a legal next
+    // message — otherwise the provider rejects and the model never sees
+    // the cap. A completed last tool may already have closed every pair;
+    // unpairedToolRows then returns [] and wrap-up still runs. Then one
+    // tools-off wrap-up so the model can tell the user what completed
+    // (plan #878). Then terminal persist so F5 does not attach a dead run,
+    // then SSE error — not `done` / model-finished.
+    const skipped = unpairedToolRows(messages);
+    for (const row of skipped) {
+      messages.push(row);
+      await writable.write(sse(toolResultLine(row.toolName, false, row.error)));
+    }
+    // Wrap-up Error: instruction is model-only — pass a copy, do not push it
+    // onto the loop transcript (checkpoint / Blob snapshot / F5).
+    const wrapMessages: unknown[] = [
+      ...messages,
+      { role: 'error', content: STEP_BUDGET_WRAPUP },
+    ];
+    let wrap: Awaited<ReturnType<ModelStepFn>>;
+    try {
+      wrap = await deps.modelStep({
+        messages: wrapMessages,
+        persistRunBind: bind,
+        disableTools: true,
+      });
+    } catch (err) {
+      // Same as `{ok:false}`: still terminal-persist + cap SSE. A throw must
+      // not skip persistNow and leave the envelope running (F5 attach).
+      const error = err instanceof Error ? err.message : String(err);
+      wrap = { ok: false, code: 'model_error', error };
+    }
+    if (wrap.ok) {
+      const wrapDelta: TurnLoopDelta = {
+        text: wrap.delta.text,
+        toolCalls: [], // ignore — wrap-up must not run more tools
+        ...(wrap.delta.usage !== undefined ? { usage: wrap.delta.usage } : {}),
+        ...(wrap.delta.finishReason !== undefined
+          ? { finishReason: wrap.delta.finishReason }
+          : {}),
+      };
+      deltas.push(wrapDelta);
+      usage = accumulateUsage(usage, wrapDelta.usage);
+      if (wrapDelta.text) assistantText += wrapDelta.text;
+      messages.push({ role: 'assistant', delta: wrapDelta });
+    }
     const persisted = await persistNow(true);
     if (!persisted.ok) {
       return fail('failed', round, steps, persisted.error);

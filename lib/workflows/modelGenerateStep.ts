@@ -55,6 +55,7 @@ import {
 } from '../agent/generateOneRound';
 import { toolsWithoutExecutors } from '../agent/generateOneRound';
 import { registryHasFsTools, resolveSystem } from '../agent/agentSystem';
+import { STEP_BUDGET_WRAPUP_SYSTEM } from '../agent/modelFinish';
 import { toModelMessages } from './toModelMessages';
 import { logTurnModel } from './turnLog';
 import { formatLiveModelSse } from './turnSseFormat';
@@ -90,6 +91,12 @@ export interface ModelGenerateStepArgs {
    * for FS tool assembly.
    */
   persistRunBind?: PersistRunBind;
+  /**
+   * Cap wrap-up: skip tool-world assemble, pass empty schemas, use
+   * `STEP_BUDGET_WRAPUP_SYSTEM` (never `DEFAULT_AGENT_SYSTEM`). The model
+   * must see the error and answer, not emit more toolCalls.
+   */
+  disableTools?: boolean;
 }
 
 /** Fail-closed step result (same shape as the B9 core). */
@@ -276,6 +283,43 @@ export async function modelGenerateStep(
       code: 'model_error',
       error: `BYOK resolve failed: ${byok.reason}`,
     };
+  }
+
+  if (args.disableTools) {
+    const result = await withDefaultStreamWriter(async (write) =>
+      generateOneRound(
+        {
+          modelId: byok.modelId,
+          system: STEP_BUDGET_WRAPUP_SYSTEM,
+          providerOptions: {
+            gateway: {
+              only: byok.only,
+              byok: byok.byok,
+            },
+          },
+          secrets: byok.secretsToRedact,
+        },
+        {
+          messages: toModelMessages(args.messages),
+          tools: {},
+          onEvent: async (ev) => {
+            const line = formatLiveModelSse(ev);
+            if (line) await write(line);
+          },
+        },
+      ),
+    );
+    if (result.ok) {
+      logTurnModel({
+        ok: true,
+        finishReason: result.delta.finishReason,
+        toolCallCount: result.delta.toolCalls.length,
+        textChars: result.delta.text.length,
+      });
+      return { ok: true, delta: result.delta };
+    }
+    logTurnModel({ ok: false, code: result.code });
+    return { ok: false, code: result.code, error: result.error };
   }
 
   // Assemble the FULL durable tool world in-step — same shared helper as
