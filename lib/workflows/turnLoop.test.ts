@@ -4,7 +4,7 @@
  * Covers the plan's 10-case testing matrix:
  *  1. Loop: model returns empty `toolCalls` → breaks after one round; no tools
  *  2. Loop: model returns N tool calls → each runs once via toolExecuteStep; loop continues
- *  3. Loop: rounds reach the 256 cap → terminates (never infinite); writable closed
+ *  3. Loop: rounds reach the 512 cap → terminates (never infinite); writable closed
  *  4. Step args serializable (no closures/seams/bound runners cross a boundary)
  *  5. modelGenerateStep thin shell → delegates generateOneRound (delta; FULL tool schemas via shared helper)
  *  6. toolExecuteStep thin shell → delegates executeTool ({result,freshnessDelta}); business error is a value
@@ -1902,6 +1902,72 @@ describe('step wrappers (matrix 4–7)', () => {
     vi.doUnmock('../tenancy/harnessSessionsRedis');
     vi.doUnmock('../tenancy/personaInject');
     vi.doUnmock('../tenancy/skillInject');
+  });
+
+  it('disableTools skips assemble and passes empty tools (plan #878 test 5)', async () => {
+    vi.resetModules();
+    const writeOnDefaultStream = vi.fn(async () => {});
+    vi.doMock('./turnSseWrite', () => ({
+      writeOnDefaultStream,
+      withDefaultStreamWriter: async (
+        fn: (write: (payload: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(writeOnDefaultStream),
+    }));
+    const m1 = vi.fn(async (_deps: unknown, input: unknown) => {
+      const i = input as { tools?: Record<string, unknown> };
+      expect(i.tools).toEqual({});
+      return { ok: true as const, delta: { text: 'wrap', toolCalls: [] } };
+    });
+    vi.doMock('../agent/generateOneRound', () => ({
+      generateOneRound: m1,
+      toolsWithoutExecutors: (t: Record<string, unknown>) => t,
+    }));
+    vi.doMock('../di/index', () => ({
+      createProdServices: () => ({
+        resolveInferenceForRequest: {
+          resolveByokForRequest: async () => ({
+            ok: true as const,
+            modelId: 'byok-resolved',
+            only: ['anthropic'] as [string],
+            byok: { anthropic: [{ apiKey: 'sk-test' }] },
+            secretsToRedact: ['sk-test'],
+          }),
+        },
+      }),
+    }));
+    const assembleSpy = vi.fn(async () => {
+      throw new Error('assembleDurableToolWorld must not run on disableTools');
+    });
+    vi.doMock('./assembleDurableToolWorld', () => ({
+      assembleDurableToolWorld: assembleSpy,
+    }));
+    const { STEP_BUDGET_WRAPUP_SYSTEM } = await import('../agent/modelFinish');
+    const { DEFAULT_AGENT_SYSTEM } = await import('../agent/agentSystem');
+    const mod = await import('./modelGenerateStep');
+    const result = await mod.modelGenerateStep({
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'error', content: 'Error: step budget exhausted' },
+      ],
+      modelId: 'm',
+      userId: 'u1',
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+      disableTools: true,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.delta.text).toBe('wrap');
+    expect(assembleSpy).not.toHaveBeenCalled();
+    expect(m1).toHaveBeenCalledTimes(1);
+    const inputTools = (m1.mock.calls[0]?.[1] as { tools?: Record<string, unknown> })?.tools;
+    expect(inputTools).toEqual({});
+    const argDeps = m1.mock.calls[0]?.[0] as { system?: string };
+    expect(argDeps.system).toBe(STEP_BUDGET_WRAPUP_SYSTEM);
+    expect(argDeps.system).not.toBe(DEFAULT_AGENT_SYSTEM);
+    expect(argDeps.system).not.toMatch(/Prefer tools \(list_dir/);
+    vi.doUnmock('../agent/generateOneRound');
+    vi.doUnmock('../di/index');
+    vi.doUnmock('./assembleDurableToolWorld');
+    vi.doUnmock('./turnSseWrite');
   });
 
   it('matrix 6: toolExecuteStep thin shell → delegates executeTool; business error is a value', async () => {

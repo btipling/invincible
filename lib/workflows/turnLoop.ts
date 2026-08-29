@@ -643,13 +643,15 @@ export async function runTurnLoop(
     }
 
     // Step budget exhausted (model + tool step count hit the cap): never
-    // infinite. Cap always lands with open tool_calls (that's why we didn't
-    // terminate via empty tools). Close those pairs first so the wrap-up
-    // user Error is a legal next message — otherwise the provider rejects
-    // and the model never sees the cap. Then one tools-off wrap-up so the
-    // model can tell the user what completed (plan #878). Then terminal
-    // persist so F5 does not attach a dead run, then SSE error — not `done`
-    // / model-finished.
+    // infinite. Cap often lands with open tool_calls (mid-fanout, or the
+    // last in-budget step was the user-line persist after a tools round).
+    // Close those pairs first so the wrap-up user Error is a legal next
+    // message — otherwise the provider rejects and the model never sees
+    // the cap. A completed last tool may already have closed every pair;
+    // unpairedToolRows then returns [] and wrap-up still runs. Then one
+    // tools-off wrap-up so the model can tell the user what completed
+    // (plan #878). Then terminal persist so F5 does not attach a dead run,
+    // then SSE error — not `done` / model-finished.
     const skipped = unpairedToolRows(messages);
     for (const row of skipped) {
       messages.push(row);

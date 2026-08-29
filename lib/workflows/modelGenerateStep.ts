@@ -55,6 +55,7 @@ import {
 } from '../agent/generateOneRound';
 import { toolsWithoutExecutors } from '../agent/generateOneRound';
 import { registryHasFsTools, resolveSystem } from '../agent/agentSystem';
+import { STEP_BUDGET_WRAPUP_SYSTEM } from '../agent/modelFinish';
 import { toModelMessages } from './toModelMessages';
 import { logTurnModel } from './turnLog';
 import { formatLiveModelSse } from './turnSseFormat';
@@ -91,7 +92,8 @@ export interface ModelGenerateStepArgs {
    */
   persistRunBind?: PersistRunBind;
   /**
-   * Cap wrap-up: skip tool-world assemble, pass empty schemas. The model
+   * Cap wrap-up: skip tool-world assemble, pass empty schemas, use
+   * `STEP_BUDGET_WRAPUP_SYSTEM` (never `DEFAULT_AGENT_SYSTEM`). The model
    * must see the error and answer, not emit more toolCalls.
    */
   disableTools?: boolean;
@@ -284,12 +286,11 @@ export async function modelGenerateStep(
   }
 
   if (args.disableTools) {
-    const system = resolveSystem({}, false);
     const result = await withDefaultStreamWriter(async (write) =>
       generateOneRound(
         {
           modelId: byok.modelId,
-          system,
+          system: STEP_BUDGET_WRAPUP_SYSTEM,
           providerOptions: {
             gateway: {
               only: byok.only,
