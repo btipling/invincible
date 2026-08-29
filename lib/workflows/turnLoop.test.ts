@@ -20,6 +20,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   runTurnLoop,
   MAX_WORKFLOW_STEPS,
@@ -2836,7 +2838,7 @@ describe('step wrappers (matrix 4–7)', () => {
     vi.doUnmock('./turnSseWrite');
   });
 
-  it('matrix 6g-solo: a 1-call infra throw still rethrows (SDK 3× retry)', async () => {
+  it('matrix 6g-solo: a 1-call infra throw retries in-process then rethrows (adversarial #881 round-6)', async () => {
     const execMock = vi.fn(async () => {
       throw new Error('daemon down');
     });
@@ -2858,7 +2860,94 @@ describe('step wrappers (matrix 4–7)', () => {
     await expect(
       mod.toolExecuteStep({ calls: [{ toolName: 'boom', toolCallId: '1', args: {} }] }),
     ).rejects.toThrow('daemon down');
+    // 4 attempts = Workflows' 1+3 budget, in-process so the platform cannot
+    // replay an N-call mutation set (`maxRetries = 0`).
+    expect(execMock).toHaveBeenCalledTimes(4);
     vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('matrix 6g-solo-recover: 1-call infra throw recovers on a later in-process attempt', async () => {
+    let n = 0;
+    const execMock = vi.fn(async () => {
+      n += 1;
+      if (n < 3) throw new Error('daemon down');
+      return { ok: true as const, result: 'ok', freshnessDelta: '[]' };
+    });
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: { boom: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    const result = await mod.toolExecuteStep({
+      calls: [{ toolName: 'boom', toolCallId: '1', args: {} }],
+    });
+    expect(result.ok).toBe(true);
+    expect(execMock).toHaveBeenCalledTimes(3);
+    if (result.ok) {
+      expect(result.results[0]).toMatchObject({ ok: true, result: 'ok' });
+    }
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('toolExecuteStep.maxRetries is 0 (adversarial #881 round-6: no platform replay of a mutated batch)', () => {
+    const src = readFileSync(fileURLToPath(new URL('./toolExecuteStep.ts', import.meta.url)), 'utf8');
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(code).toMatch(/maxRetries\s*=\s*0/);
+  });
+
+  it('matrix 6e-cwd: change_dir then list_dir is serial — list sees the new cwd', async () => {
+    const { createRunFileFreshness } = await import('../agent/fileFreshness');
+    const cwdState = { current: 'app' };
+    vi.resetModules();
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: {
+        change_dir: {
+          execute: async () => {
+            cwdState.current = 'lib';
+            return 'change_dir lib: ok cwd=lib';
+          },
+        },
+        list_dir: {
+          execute: async () => `cwd=${cwdState.current}`,
+        },
+      },
+      secrets: [],
+      signal: undefined,
+      freshness: createRunFileFreshness(),
+    }));
+    const result = await mod.toolExecuteStep({
+      calls: [
+        { toolName: 'change_dir', toolCallId: 'd', args: { path: 'lib' } },
+        { toolName: 'list_dir', toolCallId: 'l', args: {} },
+      ],
+      persistRunBind: { cwd: 'app' },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.results.map((r) => (r.ok ? r.result : r.error))).toEqual([
+        'change_dir lib: ok cwd=lib',
+        'cwd=lib',
+      ]);
+    }
     vi.doUnmock('./turnSseWrite');
   });
 

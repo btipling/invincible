@@ -27,9 +27,11 @@
  * boundary. MCP/HTTP/sandbox handles are closed in a `finally` block.
  *
  * Business errors are **values**, not throws. Infra/transient failures on a
- * **1-call** batch re-throw so the SDK's 3× retry still applies there. A throw
- * with a successful sibling is caught (allSettled) so Workflows cannot retry
- * the whole batch and re-apply writes. The batch freshness seed is always
+ * **1-call** batch retry in-process (4 attempts = Workflows' 1+3 budget) then
+ * re-throw. `maxRetries = 0` so a timeout/kill cannot platform-replay a
+ * batch that already mutated (adversarial #881 round-6). A throw with a
+ * successful sibling is caught (allSettled) so Workflows cannot retry the
+ * whole batch and re-apply writes. The batch freshness seed is always
  * snapshotted from the **live** ledger after the wave — never last-item-wins.
  */
 
@@ -330,22 +332,31 @@ export async function toolExecuteStep(
 
       // allSettled: a throw from one call must not reject the wave (that would
       // drop sibling results and let Workflows retry the whole batch). A 1-call
-      // batch still rethrows so the SDK's 3× retry applies to a lone infra blip.
+      // batch retries in-process (4 attempts) then rethrows so a lone daemon
+      // blip still recovers — without a platform replay of an N-call mutation
+      // set (`maxRetries = 0`, adversarial #881 round-6).
       const runOneCaught = async (
         call: TurnToolCallDelta,
       ): Promise<ToolBatchItem> => {
-        try {
-          return await runOne(call);
-        } catch (err) {
-          if (calls.length === 1) throw err;
-          const item = failItem(
-            call,
-            'sandbox_error',
-            err instanceof Error ? err.message : String(err),
-          );
-          await writeSafe(sseFor(item));
-          return item;
+        const attempts = calls.length === 1 ? 4 : 1;
+        let lastErr: unknown;
+        for (let i = 0; i < attempts; i++) {
+          try {
+            return await runOne(call);
+          } catch (err) {
+            lastErr = err;
+            if (i + 1 < attempts) continue;
+            if (calls.length === 1) throw err;
+            const item = failItem(
+              call,
+              'sandbox_error',
+              err instanceof Error ? err.message : String(err),
+            );
+            await writeSafe(sseFor(item));
+            return item;
+          }
         }
+        throw lastErr;
       };
 
       for (const wave of splitToolWaves(calls)) {
@@ -439,3 +450,11 @@ export async function toolExecuteStep(
     await closeHandles(world);
   }
 }
+
+/**
+ * Workflows retries a failed `'use step'` 3× by default. A batch that already
+ * applied serial writes must not be replayed on timeout/kill (adversarial
+ * #881 round-6). 1-call infra throws retry in-process above (4 attempts) so a
+ * lone daemon blip still recovers without a platform replay of N-call mutations.
+ */
+(toolExecuteStep as typeof toolExecuteStep & { maxRetries: number }).maxRetries = 0;
