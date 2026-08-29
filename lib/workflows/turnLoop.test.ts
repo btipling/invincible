@@ -209,7 +209,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
   it('matrix 2: model returns N tool calls → each tool runs once via toolExecuteStep; loop continues', async () => {
     const { deps, w, closed } = wiredDeps();
     // Round 1 emits 2 tool calls (both run as tools); round 2 emits none, so the
-    // loop breaks cleanly. Non-stateful mocks here would loop to the 256 cap.
+    // loop breaks cleanly. Non-stateful mocks here would loop to the 512 cap.
     let first = true;
     const modelStep = vi.fn(async () => {
       const f = first;
@@ -353,6 +353,62 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(closed()).toBe(1);
     const fanEvents = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
     expect(fanEvents.some((e: { type: string }) => e.type === 'done')).toBe(false);
+  });
+
+  it('matrix 3c: completed last tool (unpaired empty) still wrap-up [adversarial #879 Minor]', async () => {
+    const { deps, w, closed } = wiredDeps({ maxSteps: 4 });
+    // 1 model + user-line persist + 1 tool + after-tool persist = 4. All pairs
+    // already closed; unpairedToolRows returns []. Wrap-up must still run.
+    const modelStep = vi.fn(async (_args: unknown) => ({
+      ok: true as const,
+      delta: {
+        text: 'call',
+        toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
+      },
+    }));
+    const toolStep = vi.fn(async () => ({
+      ok: true as const,
+      result: 'ok',
+      freshnessDelta: '[]',
+    }));
+    const result = await runTurnLoop(
+      { ...deps, maxSteps: 4, modelStep, toolStep },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('capped');
+    expect(result.steps).toBe(5); // 4 in-budget + terminal persist; wrap-up extra
+    expect(modelStep).toHaveBeenCalledTimes(2);
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    const wrapArgs = modelStep.mock.calls[1]?.[0] as {
+      disableTools?: boolean;
+      messages: Array<{ role?: string; toolCallId?: string; ok?: boolean; error?: string }>;
+    };
+    expect(wrapArgs.disableTools).toBe(true);
+    expect(wrapArgs.messages.some((m) => m.role === 'error')).toBe(true);
+    const toolRows = wrapArgs.messages.filter((m) => m.role === 'tool' && m.toolCallId === 'c1');
+    expect(toolRows).toHaveLength(1);
+    expect(toolRows[0]?.ok).not.toBe(false);
+    expect(toolRows[0]?.error).toBeUndefined();
+    expect(
+      (result.messages as Array<{ role?: string }>).some((m) => m.role === 'error'),
+    ).toBe(false);
+    expect(closed()).toBe(1);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(false);
+    expect(
+      events.some(
+        (e: { type: string; error?: string }) =>
+          e.type === 'error' && e.error === STEP_BUDGET_ERROR,
+      ),
+    ).toBe(true);
+    expect(
+      events.filter(
+        (e: { type: string; name?: string; ok?: boolean }) =>
+          e.type === 'tool_result' && e.name === 'list_dir',
+      ),
+    ).toEqual([
+      expect.objectContaining({ type: 'tool_result', name: 'list_dir', ok: true }),
+    ]);
   });
 
   it('cap persist fold omits wrap-up Error instruction (not canvas copy) [adversarial #879 Major]', async () => {
