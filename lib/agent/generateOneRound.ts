@@ -114,7 +114,6 @@ export async function generateOneRound(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const streamArgs: any = {
     model: deps.modelId,
-    system: deps.system,
     messages: input.messages,
     // Schemas ONLY — strip any `execute` executors before the SDK boundary. A
     // real `ai` `streamText` with `stopWhen: stepCountIs(1)` would otherwise run
@@ -125,6 +124,9 @@ export async function generateOneRound(
     stopWhen: resolveAgentStopWhen(1),
     abortSignal: deps.signal,
   };
+  if (typeof deps.system === 'string') {
+    streamArgs.system = deps.system;
+  }
   if (deps.providerOptions !== undefined) {
     streamArgs.providerOptions = deps.providerOptions;
   }

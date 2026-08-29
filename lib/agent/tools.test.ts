@@ -3,6 +3,7 @@ import { EXEC_LOG_HEAD_LINES, EXEC_LOG_TAIL_LINES, EXEC_SUMMARY_LINE_MAX_BYTES, 
 import type { SandboxClient } from '../sandbox/client';
 import { createAgentTools, execLogTimestamp, formatLineWindow, formatStrReplaceDiffSide, isFullFileReadGrant, isPathMissingError, READ_FILE_DEFAULT_LIMIT, relToRootFromCwd, STR_REPLACE_DIFF_SIDE_MAX_BYTES } from './tools';
 import { createRunFileFreshness } from './fileFreshness';
+import { registryHasFsTools } from './agentSystem';
 import { SandboxHttpError } from '../sandbox/types';
 
 function mockClient(partial: Partial<SandboxClient>): SandboxClient {
@@ -52,6 +53,19 @@ describe('isPathMissingError', () => {
 });
 
 describe('createAgentTools', () => {
+  it('every return key is classified as FS by registryHasFsTools (durable system parity)', () => {
+    const tools = createAgentTools({
+      freshness: createRunFileFreshness(),
+      client: mockClient({}),
+    });
+    const names = Object.keys(tools);
+    expect(names.length).toBeGreaterThan(0);
+    expect(registryHasFsTools(names)).toBe(true);
+    for (const k of names) {
+      expect(registryHasFsTools([k])).toBe(true);
+    }
+  });
+
   it('soft-fails on client error without throwing', async () => {
     const client = mockClient({
       listDir: vi.fn(async () => {

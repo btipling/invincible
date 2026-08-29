@@ -13,6 +13,13 @@
  * can run — otherwise the model cannot call FS/MCP/HTTP/skill tools and a
  * durable coding turn is a dead letter.
  *
+ * The system prompt is resolved IN-STEP from that same registry via
+ * `resolveSystem` (`lib/agent/agentSystem.ts`) — the same helper `/api/agent`
+ * uses. Persona snapshot + sticky/always-on skills are fail-open independently
+ * (persona reads/locks via the envelope seam, never legacy `get`/`put`).
+ * Slash-command attach/detach is **not** handled here (replayable step must
+ * not write session meta or strip the user message).
+ *
  * In **production** BYOK is re-resolved IN-STEP: the route passes only
  * serializable `{ userId, modelId }` (never api keys). Inside the step,
  * `resolveByokForRequest(userId, modelId)` resolves the tenant BYOK and
@@ -47,11 +54,17 @@ import {
   type OneRoundDelta,
 } from '../agent/generateOneRound';
 import { toolsWithoutExecutors } from '../agent/generateOneRound';
+import { registryHasFsTools, resolveSystem } from '../agent/agentSystem';
 import { toModelMessages } from './toModelMessages';
 import { logTurnModel } from './turnLog';
 import { formatLiveModelSse } from './turnSseFormat';
 import { withDefaultStreamWriter } from './turnSseWrite';
 import type { PersistRunBind } from './turnLoop';
+import type {
+  SessionEnvelopeStore,
+  SessionRecordKey,
+} from '../sessions/sessionStore';
+import type { SessionStoreLite } from '../tenancy/personaInject';
 
 /** Serialized `modelGenerateStep` step args — plain values only. */
 export interface ModelGenerateStepArgs {
@@ -83,6 +96,157 @@ export interface ModelGenerateStepArgs {
 export type ModelGenerateStepResult =
   | { ok: true; delta: OneRoundDelta }
   | { ok: false; code: 'model_error' | 'write_error' | 'cancelled'; error: string };
+
+/**
+ * Envelope-backed `SessionStoreLite` for `resolvePersonaPreamble`.
+ *
+ * Production sessions live on `harness:envelope:*` (`readEnvelope` /
+ * `upsertEnvelope`). The persona helper still speaks legacy `get`/`put` on
+ * `harness:session:*`. Passing the raw store here miss-reads envelope-only
+ * sessions (fail-closed → no persona) and `mergePersonaMeta` bumps
+ * `updatedAt` on `put` (the 409-adopt race skillInject already forbids).
+ *
+ * `get` roll-forwards via `readEnvelope` (envelope key, else legacy blob).
+ * `put` locks `personaSnapshot` onto the envelope with `updatedAt` unchanged
+ * and never touches the whole-blob key.
+ */
+function envelopePersonaSeam(store: SessionEnvelopeStore): SessionStoreLite {
+  return {
+    async get(key: SessionRecordKey) {
+      const env = await store.readEnvelope(key);
+      if (!env) return null;
+      return {
+        id: env.id,
+        userId: env.userId,
+        tenantId: env.tenantId,
+        createdAt: env.createdAt,
+        updatedAt: env.updatedAt,
+        messages: [],
+        meta: env.meta,
+      };
+    },
+    async put(key: SessionRecordKey, record) {
+      const env = await store.readEnvelope(key);
+      if (!env) return { status: 'stored' as const };
+      const snap = record.meta?.personaSnapshot;
+      if (typeof snap !== 'string' || !snap.trim()) {
+        return { status: 'stored' as const };
+      }
+      const pid = record.meta?.personaId;
+      try {
+        await store.upsertEnvelope(key, {
+          id: env.id,
+          userId: env.userId,
+          tenantId: env.tenantId,
+          updatedAt: env.updatedAt,
+          meta: {
+            ...env.meta,
+            ...(typeof pid === 'string' ? { personaId: pid } : {}),
+            personaSnapshot: snap,
+          },
+        });
+      } catch {
+        /* fail-open: snapshot still injects this turn */
+      }
+      return { status: 'stored' as const };
+    },
+  };
+}
+
+/**
+ * Persona snapshot + sticky/always-on skills. Fail-open independently: a
+ * store/inject error on one preamble does not drop the other; any total
+ * failure → no preamble (the round still runs with the base system). Slash
+ * commands are `none` — attach/detach is `/api/agent` route work, not a
+ * replayable step write.
+ */
+async function resolveInStepPreambles(args: {
+  userId: string;
+  sessionId: string;
+  tenantId: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  services: any;
+}): Promise<{ personaPreamble?: string; skillsPreamble?: string }> {
+  if (!args.services.userPersonas && !args.services.userSkills) {
+    return {};
+  }
+
+  let envelopeStore: SessionEnvelopeStore | undefined;
+  let sessionKey: SessionRecordKey | undefined;
+  try {
+    const { resolveSessionStore, sessionKeyFor } = await import(
+      '../tenancy/harnessSessionsRedis'
+    );
+    const { isEnvelopeStore } = await import('../sessions/sessionStore');
+    const storeRes = await resolveSessionStore();
+    if (storeRes.ok && isEnvelopeStore(storeRes.value)) {
+      envelopeStore = storeRes.value;
+      sessionKey = sessionKeyFor(args.tenantId, args.userId, args.sessionId);
+    }
+  } catch {
+    envelopeStore = undefined;
+    sessionKey = undefined;
+  }
+
+  let personaPreamble: string | undefined;
+  if (args.services.userPersonas) {
+    try {
+      const { resolvePersonaPreamble } = await import(
+        '../tenancy/personaInject'
+      );
+      personaPreamble = await resolvePersonaPreamble({
+        userId: args.userId,
+        sessionId: args.sessionId,
+        userPersonas: args.services.userPersonas,
+        ...(envelopeStore && sessionKey
+          ? {
+              sessionStore: envelopePersonaSeam(envelopeStore),
+              sessionKey,
+            }
+          : {}),
+      });
+    } catch {
+      personaPreamble = undefined;
+    }
+  }
+
+  let skillsPreamble: string | undefined;
+  try {
+    let alwaysOnSlugs: string[] | undefined;
+    try {
+      const listed = await args.services.userSkills?.listAlwaysOnSkills?.(
+        args.userId,
+      );
+      if (listed?.ok && Array.isArray(listed.value) && listed.value.length > 0) {
+        alwaysOnSlugs = listed.value;
+      }
+    } catch {
+      alwaysOnSlugs = undefined;
+    }
+
+    if (args.services.userSkills && (envelopeStore || alwaysOnSlugs)) {
+      const { resolveSkillPreamble } = await import('../tenancy/skillInject');
+      const skills = await resolveSkillPreamble({
+        userId: args.userId,
+        command: { type: 'none' },
+        userSkills: args.services.userSkills,
+        alwaysOnSlugs,
+        ...(envelopeStore && sessionKey
+          ? { sessionStore: envelopeStore, sessionKey }
+          : {}),
+      });
+      const preamble = skills.preamble?.trim();
+      if (preamble) skillsPreamble = preamble;
+    }
+  } catch {
+    skillsPreamble = undefined;
+  }
+
+  return {
+    ...(personaPreamble ? { personaPreamble } : {}),
+    ...(skillsPreamble ? { skillsPreamble } : {}),
+  };
+}
 
 /**
  * Run exactly ONE model round as a workflow step. In production, re-resolves
@@ -158,10 +322,27 @@ export async function modelGenerateStep(
     }
   }
 
+  const toolNames = Object.keys(world.registry);
+  const { personaPreamble, skillsPreamble } = await resolveInStepPreambles({
+    userId: args.scope.userId,
+    sessionId: args.scope.sessionId,
+    tenantId: args.scope.tenantId,
+    services,
+  });
+  const system = resolveSystem(
+    {
+      extraTools: world.registry,
+      personaPreamble,
+      skillsPreamble,
+    },
+    registryHasFsTools(toolNames),
+  );
+
   const result = await withDefaultStreamWriter(async (write) =>
     generateOneRound(
       {
         modelId: byok.modelId,
+        system,
         providerOptions: {
           gateway: {
             only: byok.only,
