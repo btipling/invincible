@@ -10,7 +10,10 @@
  * and `POST /api/turns` must resolve the same string for the same tool surface.
  */
 
-/** Tool names that mean the FS sandbox surface is bound this turn. */
+/** Tool names that mean the FS sandbox surface is bound this turn.
+ *  Must match `createAgentTools` return keys (`lib/agent/tools.ts`) —
+ *  locked per-key by `tools.test.ts`.
+ */
 const FS_TOOL_NAME_SET: ReadonlySet<string> = new Set([
   'list_dir',
   'read_file',
