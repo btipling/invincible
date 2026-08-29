@@ -18,6 +18,9 @@
  * Callers that rebuild the ring after save (`hydrateMessages` / `clearMessages`)
  * must pass `{ paint: false }` and then `paintQuotaAfterRebuild` so the once-flag
  * is not spent on a row the rebuild immediately drops (adversarial #870).
+ * Load-earlier / needSnap rebuild without a save must still
+ * `paintQuotaAfterRebuild(..., warned.current)` after hydrate — F5 resets the
+ * ref, those in-page rebuilds do not.
  */
 import { MessageKind } from './harnessBridge';
 import { isQuotaExceededError, type SessionSnapshot, type SessionStore } from './sessionStore';

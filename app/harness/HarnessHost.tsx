@@ -939,6 +939,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                 const session = sessionRef.current;
                 const nextStart = earlierRingStart(ringWindowStartRef.current);
                 hydrateRingWindow(b, session, nextStart);
+                // Adversarial #870: Load-earlier `clear:true` wipes a ring-only
+                // Error; re-paint if the once-flag is still set. Do not fold
+                // this into hydrateRingWindow — adopt paints from the
+                // paint:false return value and a second clear+push would
+                // duplicate the row.
+                paintQuotaAfterRebuild(
+                  b,
+                  localSaveQuotaWarnedRef,
+                  localSaveQuotaWarnedRef.current,
+                  session,
+                );
               } else if (switched !== 'switched') {
                 const pending = b.takePendingSubmit();
                 if (pending != null && pending.length > 0) {
@@ -946,6 +957,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                   const needSnap = ringWindowStartRef.current !== latest;
                   if (needSnap) {
                     hydrateRingWindow(b, sessionRef.current, latest);
+                    paintQuotaAfterRebuild(
+                      b,
+                      localSaveQuotaWarnedRef,
+                      localSaveQuotaWarnedRef.current,
+                      sessionRef.current,
+                    );
                     void runPrompt(pending, { pushUser: true });
                   } else {
                     void runPrompt(pending);

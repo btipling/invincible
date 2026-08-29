@@ -212,4 +212,13 @@ describe('HarnessHost wiring lock — quota save (#870)', () => {
     expect(src).toContain('writeLocalSession(empty, { paintQuota: false })');
     expect(src).toContain('paintQuotaAfterRebuild(');
   });
+
+  it('Load earlier and needSnap re-paint after hydrate so a wiped row does not spend the episode', () => {
+    expect(src).toMatch(
+      /hydrateRingWindow\(b, session, nextStart\);[\s\S]{0,500}?paintQuotaAfterRebuild\(\s*b,\s*localSaveQuotaWarnedRef,\s*localSaveQuotaWarnedRef\.current,\s*session,/,
+    );
+    expect(src).toMatch(
+      /hydrateRingWindow\(b, sessionRef\.current, latest\);[\s\S]{0,400}?paintQuotaAfterRebuild\(\s*b,\s*localSaveQuotaWarnedRef,\s*localSaveQuotaWarnedRef\.current,\s*sessionRef\.current,/,
+    );
+  });
 });
