@@ -22,7 +22,7 @@
  *    `tool_start` are written inside `modelGenerateStep`. Transcript/checkpoint
  *    live in Blob (B13 persist).
  *  - The writable is closed **exactly once** on every terminal path — success,
- *    model/tool/persist fail (`{ok:false}` value), 256-cap, or cancel. A failed
+ *    model/tool/persist fail (`{ok:false}` value), step cap, or cancel. A failed
  *    terminal step never tears down the loop without closing the wire.
  *  - Tool business errors are **values**, not throws: a step returning
  *    `{ok:false}` terminates the loop cleanly (never retried 3× by the SDK).
@@ -292,6 +292,50 @@ function toolResultLine(
     if (sandboxId) ev.activeSandboxId = sandboxId;
   }
   return ev;
+}
+
+/** Synthetic tool rows for assistant toolCalls that never ran (cap mid-fanout).
+ *  Providers reject a user message after open tool_calls — wrap-up would never
+ *  reach the model without these pairs. */
+function unpairedToolRows(messages: ReadonlyArray<unknown>): Array<{
+  role: 'tool';
+  toolName: string;
+  toolCallId: string;
+  ok: false;
+  error: string;
+}> {
+  const answered = new Set<string>();
+  for (const m of messages) {
+    if (!m || typeof m !== 'object') continue;
+    const row = m as { role?: unknown; toolCallId?: unknown };
+    if (row.role === 'tool' && typeof row.toolCallId === 'string' && row.toolCallId) {
+      answered.add(row.toolCallId);
+    }
+  }
+  const skipped: Array<{
+    role: 'tool';
+    toolName: string;
+    toolCallId: string;
+    ok: false;
+    error: string;
+  }> = [];
+  for (const m of messages) {
+    if (!m || typeof m !== 'object') continue;
+    const row = m as { role?: unknown; delta?: { toolCalls?: TurnToolCallDelta[] } };
+    if (row.role !== 'assistant') continue;
+    for (const call of row.delta?.toolCalls ?? []) {
+      if (!call.toolCallId || answered.has(call.toolCallId)) continue;
+      answered.add(call.toolCallId);
+      skipped.push({
+        role: 'tool',
+        toolName: call.toolName,
+        toolCallId: call.toolCallId,
+        ok: false,
+        error: `skipped: ${STEP_BUDGET_ERROR}`,
+      });
+    }
+  }
+  return skipped;
 }
 
 /** Map a reconstructed message row to a bounded `{role, content}` checkpoint row.
@@ -599,9 +643,18 @@ export async function runTurnLoop(
     }
 
     // Step budget exhausted (model + tool step count hit the cap): never
-    // infinite. One tools-off wrap-up so the model sees the error and can
-    // tell the user what completed (plan #878). Then terminal persist so F5
-    // does not attach a dead run, then SSE error — not `done` / model-finished.
+    // infinite. Cap always lands with open tool_calls (that's why we didn't
+    // terminate via empty tools). Close those pairs first so the wrap-up
+    // user Error is a legal next message — otherwise the provider rejects
+    // and the model never sees the cap. Then one tools-off wrap-up so the
+    // model can tell the user what completed (plan #878). Then terminal
+    // persist so F5 does not attach a dead run, then SSE error — not `done`
+    // / model-finished.
+    const skipped = unpairedToolRows(messages);
+    for (const row of skipped) {
+      messages.push(row);
+      await writable.write(sse(toolResultLine(row.toolName, false, row.error)));
+    }
     messages.push({ role: 'error', content: STEP_BUDGET_WRAPUP });
     const wrap = await deps.modelStep({
       messages,

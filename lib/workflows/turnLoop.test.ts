@@ -272,6 +272,18 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     };
     expect(wrapArgs.disableTools).toBe(true);
     expect(wrapArgs.messages.some((m) => m.role === 'error')).toBe(true);
+    const wrapMsgs = wrapArgs.messages as Array<{
+      role?: string;
+      toolCallId?: string;
+      ok?: boolean;
+      error?: string;
+    }>;
+    const errIdx = wrapMsgs.findIndex((m) => m.role === 'error');
+    const skipped = wrapMsgs.filter((m) => m.role === 'tool' && m.toolCallId === 'c');
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.ok).toBe(false);
+    expect(skipped[0]?.error).toContain('step budget exhausted');
+    expect(wrapMsgs.indexOf(skipped[0]!)).toBeLessThan(errIdx);
     expect(toolStep).toHaveBeenCalledTimes(0);
     expect(closed()).toBe(1);
     const capEvents = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
@@ -280,6 +292,15 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       capEvents.some(
         (e: { type: string; error?: string }) =>
           e.type === 'error' && e.error === 'step budget exhausted',
+      ),
+    ).toBe(true);
+    expect(
+      capEvents.some(
+        (e: { type: string; name?: string; ok?: boolean; summary?: string }) =>
+          e.type === 'tool_result' &&
+          e.name === 'list_dir' &&
+          e.ok === false &&
+          (e.summary ?? '').includes('step budget exhausted'),
       ),
     ).toBe(true);
   });
@@ -311,6 +332,19 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(modelStep).toHaveBeenCalledTimes(2);
     expect((modelStep.mock.calls[1]?.[0] as { disableTools?: boolean }).disableTools).toBe(true);
     expect(toolStep).toHaveBeenCalledTimes(1);
+    const fanWrap = modelStep.mock.calls[1]?.[0] as {
+      messages: Array<{ role?: string; toolCallId?: string; ok?: boolean }>;
+    };
+    const fanTools = fanWrap.messages.filter((m) => m.role === 'tool');
+    expect(fanTools.map((m) => m.toolCallId).sort()).toEqual(['tc0', 'tc1', 'tc2', 'tc3']);
+    expect(fanTools.filter((m) => m.ok === false)).toHaveLength(3);
+    const fanErrIdx = fanWrap.messages.findIndex((m) => m.role === 'error');
+    const lastToolIdx = fanWrap.messages.reduce(
+      (acc, m, i) => (m.role === 'tool' ? i : acc),
+      -1,
+    );
+    expect(lastToolIdx).toBeGreaterThan(-1);
+    expect(lastToolIdx).toBeLessThan(fanErrIdx);
     expect(closed()).toBe(1);
     const fanEvents = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
     expect(fanEvents.some((e: { type: string }) => e.type === 'done')).toBe(false);

@@ -222,5 +222,47 @@ describe('toModelMessages', () => {
       { role: 'user', content: 'Error: step budget exhausted' },
     ]);
   });
+
+  it('wrap-up sequence: unpaired toolCalls closed then error is a legal provider transcript', () => {
+    const result = toModelMessages([
+      { role: 'user', content: 'go' },
+      {
+        role: 'assistant',
+        delta: {
+          text: 'calling',
+          toolCalls: [
+            { toolName: 'read_file', toolCallId: 'tc0', args: { path: 'a' } },
+            { toolName: 'read_file', toolCallId: 'tc1', args: { path: 'b' } },
+          ],
+        },
+      },
+      { role: 'tool', toolName: 'read_file', toolCallId: 'tc0', result: 'a' },
+      {
+        role: 'tool',
+        toolName: 'read_file',
+        toolCallId: 'tc1',
+        ok: false,
+        error: 'skipped: step budget exhausted',
+      },
+      { role: 'error', content: 'Error: step budget exhausted. Do not call tools.' },
+    ]);
+    expect(result.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'tool', 'user']);
+    const asst = result[1];
+    expect(asst.role).toBe('assistant');
+    const callIds = (asst.content as Array<{ type?: string; toolCallId?: string }>)
+      .filter((p) => p.type === 'tool-call')
+      .map((p) => p.toolCallId);
+    expect(callIds).toEqual(['tc0', 'tc1']);
+    const toolIds = result.slice(2, 4).flatMap((m) =>
+      m.role === 'tool'
+        ? (m.content as Array<{ toolCallId?: string }>).map((p) => p.toolCallId)
+        : [],
+    );
+    expect(toolIds).toEqual(callIds);
+    expect(result[4]).toEqual({
+      role: 'user',
+      content: 'Error: step budget exhausted. Do not call tools.',
+    });
+  });
 });
 
