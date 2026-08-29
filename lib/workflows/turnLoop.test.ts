@@ -2901,10 +2901,20 @@ describe('step wrappers (matrix 4–7)', () => {
     vi.doUnmock('./turnSseWrite');
   });
 
-  it('toolExecuteStep.maxRetries is 0 (adversarial #881 round-6: no platform replay of a mutated batch)', () => {
+  it('toolExecuteStep.maxRetries is 0 (adversarial #881 round-6: no platform replay of a mutated batch)', async () => {
     const src = readFileSync(fileURLToPath(new URL('./toolExecuteStep.ts', import.meta.url)), 'utf8');
     const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     expect(code).toMatch(/maxRetries\s*=\s*0/);
+    vi.resetModules();
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    expect((mod.toolExecuteStep as typeof mod.toolExecuteStep & { maxRetries: number }).maxRetries).toBe(0);
+    vi.doUnmock('./turnSseWrite');
   });
 
   it('matrix 6e-cwd: change_dir then list_dir is serial — list sees the new cwd', async () => {

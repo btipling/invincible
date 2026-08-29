@@ -10,12 +10,15 @@
  * Format (protocol v10 / TOOL_RUN_VERSION 1):
  *
  *   toolrun\t1\t{ok}/{fail}/{pending}     header: ok/fail/pending counts (total = sum)
- *   {id}\t{status}\t{name}\t{brief}\t{detail}
+ *   {id}\t{status}\t{name}\t{brief}\t{detail}[\t{callId}]
  *   ...
  *
- * `status ∈ running | ok | fail`. Fields `name`/`brief`/`detail` are escaped for
- * `\t`, `\n`, `\\`; decode fails open (returns null) on a bad header or unknown
- * version so the caller renders the raw body as plain text and never crashes.
+ * `status ∈ running | ok | fail`. Fields `name`/`brief`/`detail`/`callId` are
+ * escaped for `\t`, `\n`, `\\`; decode fails open (returns null) on a bad header
+ * or unknown version so the caller renders the raw body as plain text and never
+ * crashes. Optional 6th column is the provider tool-call id (host pairing under
+ * completion-order live writes / hot-resume restore). Wasm reads five fields and
+ * ignores the rest — not a protocol bump (adversarial #881 round-7).
  *
  * See also `native/harness/src/rich/toolrun.zig` (mirror decoder, host-tested).
  */
@@ -67,8 +70,9 @@ export interface ToolRunItem {
   detail: string;
   /**
    * Provider tool-call id from SSE `tool_start.id` / `tool_result.id`.
-   * Host-only pairing key under completion-order live writes; not encoded
-   * onto the Wasm payload (adversarial #881 round-3).
+   * Host pairing key under completion-order live writes and hot-resume
+   * restore. Optional 6th encode column; Wasm ignores extra fields
+   * (adversarial #881 round-7).
    */
   callId?: string;
 }
@@ -388,21 +392,29 @@ export function encodeToolRun(group: ToolRunGroup): string | null {
     `toolrun\t${TOOL_RUN_VERSION}\t${c.ok}/${c.fail}/${c.pending}`,
   ];
   for (const it of group.items) {
-    lines.push(
-      `${it.id}\t${it.status}\t${esc(it.name)}\t${esc(it.brief)}\t${esc(it.detail)}`,
-    );
+    const cols = [
+      String(it.id),
+      it.status,
+      esc(it.name),
+      esc(it.brief),
+      esc(it.detail),
+    ];
+    if (it.callId) cols.push(esc(it.callId));
+    lines.push(cols.join('\t'));
   }
   let out = lines.join('\n');
   // Hard backstop (adversarial review #359 Major): never emit a payload over the
   // ring/cloud cap. In normal operation the aggregation-time group detail budget
   // keeps us far under it; this only fires for pathological `name`/`brief`
   // escape bloat. It drops `detail` from trailing items in place (rows stay
-  // 5-field aligned, counts unchanged) until the payload fits — an explicit
-  // degradation, never a silent mid-payload clip.
+  // aligned — 5 fields or 6 with callId — counts unchanged) until the payload
+  // fits — an explicit degradation, never a silent mid-payload clip.
   if (out.length > TOOL_RUN_MSG_HARD_MAX) {
     for (let i = lines.length - 1; i >= 1; i--) {
       const cols = lines[i]!.split('\t');
-      if (cols.length === 5 && cols[4] !== '') {
+      // 5-field legacy rows or 6-field rows with optional callId; detail is
+      // always index 4.
+      if (cols.length >= 5 && cols[4] !== '') {
         cols[4] = '';
         lines[i] = cols.join('\t');
         out = lines.join('\n');
@@ -454,6 +466,7 @@ export function decodeToolRun(text: string): ToolRunPayload | null {
       name: unesc(p[2]),
       brief: unesc(p[3]),
       detail: unesc(p[4]),
+      ...(p[5] ? { callId: unesc(p[5]) } : {}),
     });
   }
   // Recount from the kept items so the header display can never disagree with

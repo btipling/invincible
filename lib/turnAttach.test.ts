@@ -730,6 +730,24 @@ describe('tool ordinal skip', () => {
     ).toBe(true);
   });
 
+  it('thisRunToolItems carries callId from the encoded payload (adversarial #881 round-7)', () => {
+    const g = createToolRunGroup();
+    addToolStart(g, 'read_file', 'tc_a');
+    addToolStart(g, 'read_file', 'tc_b');
+    const payload = encodeToolRun(g);
+    expect(payload).toBeTruthy();
+    let s = createEmptySession();
+    s = appendMessage(s, 'user', 'read it');
+    s = {
+      ...s,
+      messages: [...s.messages, makeMessage('tool_run', payload!)],
+    };
+    expect(thisRunToolItems(s.messages)).toEqual([
+      { name: 'read_file', status: 'running', callId: 'tc_a' },
+      { name: 'read_file', status: 'running', callId: 'tc_b' },
+    ]);
+  });
+
   it('does not skip a live suffix tool that hydrate does not have', () => {
     expect(
       shouldSkipToolStart({
@@ -748,6 +766,51 @@ describe('tool ordinal skip', () => {
         hydrated: [{ name: 'exec', status: 'running' }],
         name: 'exec',
         replayedResultsOfName: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('pairs skip by callId, not name-ordinal (adversarial #881 round-7)', () => {
+    const hydrated = [
+      { name: 'read_file', status: 'ok' as const, callId: 'tc_a' },
+      { name: 'read_file', status: 'running' as const, callId: 'tc_b' },
+    ];
+    // Completion-order remaining result is B. Name-ordinal 1 would hit A (ok)
+    // and skip — dropping B. Id match hits B (running) and must apply.
+    expect(
+      shouldSkipToolResult({
+        enabled: true,
+        hydrated,
+        name: 'read_file',
+        replayedResultsOfName: 1,
+        callId: 'tc_b',
+      }),
+    ).toBe(false);
+    expect(
+      shouldSkipToolResult({
+        enabled: true,
+        hydrated,
+        name: 'read_file',
+        replayedResultsOfName: 1,
+        callId: 'tc_a',
+      }),
+    ).toBe(true);
+    expect(
+      shouldSkipToolStart({
+        enabled: true,
+        hydrated,
+        name: 'read_file',
+        replayedStartsOfName: 1,
+        callId: 'tc_a',
+      }),
+    ).toBe(true);
+    expect(
+      shouldSkipToolStart({
+        enabled: true,
+        hydrated,
+        name: 'read_file',
+        replayedStartsOfName: 1,
+        callId: 'tc_new',
       }),
     ).toBe(false);
   });

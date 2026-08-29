@@ -1642,6 +1642,7 @@ export async function runHarnessTurn(
               hydrated: hydratedTools,
               name: ev.name,
               replayedStartsOfName: replayedStarts[ev.name] ?? 1,
+              ...(ev.id ? { callId: ev.id } : {}),
             })
           ) {
             return;
@@ -1654,6 +1655,7 @@ export async function runHarnessTurn(
               hydrated: hydratedTools,
               name: ev.name,
               replayedResultsOfName: replayedResults[ev.name] ?? 1,
+              ...(ev.id ? { callId: ev.id } : {}),
             })
           ) {
             return;
