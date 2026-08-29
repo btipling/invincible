@@ -210,4 +210,17 @@ describe('toModelMessages', () => {
     const result = toModelMessages(messages);
     expect(result).toHaveLength(2);
   });
+
+  it('maps role error to a user Error: line so the model sees the cap', () => {
+    const result = toModelMessages([
+      { role: 'user', content: 'go' },
+      { role: 'error', content: 'step budget exhausted' },
+      { role: 'persist', status: 'completed' },
+    ]);
+    expect(result).toEqual([
+      { role: 'user', content: 'go' },
+      { role: 'user', content: 'Error: step budget exhausted' },
+    ]);
+  });
 });
+

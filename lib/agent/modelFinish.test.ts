@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isTruncatedFinish } from './modelFinish';
+import { isTruncatedFinish, STEP_BUDGET_ERROR, STEP_BUDGET_WRAPUP } from './modelFinish';
 
 describe('isTruncatedFinish', () => {
   it('length / content-filter / error are truncated', () => {
@@ -14,3 +14,11 @@ describe('isTruncatedFinish', () => {
     expect(isTruncatedFinish('tool-calls')).toBe(false);
   });
 });
+
+describe('STEP_BUDGET_WRAPUP', () => {
+  it('is an Error: line that names the step-budget error', () => {
+    expect(STEP_BUDGET_WRAPUP.startsWith('Error:')).toBe(true);
+    expect(STEP_BUDGET_WRAPUP).toContain(STEP_BUDGET_ERROR);
+  });
+});
+

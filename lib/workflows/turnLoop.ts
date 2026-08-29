@@ -43,6 +43,7 @@ import {
   isTruncatedFinish,
   OUTPUT_TRUNCATED_ERROR,
   STEP_BUDGET_ERROR,
+  STEP_BUDGET_WRAPUP,
 } from '../agent/modelFinish';
 
 /**
@@ -82,10 +83,10 @@ export type TurnToolCallDelta = {
  * later model + terminal` ≪ 2k-event slow-replay line (Vercel: 25k events/run,
  * 2 GB entity). Addressable under `MAX_AGENT_MAX_STEPS`
  * (`lib/sandbox/config.ts`, 1_000_000, unchanged — no existing-cap change, no
- * human gate). The parent locked 256 as the NEW workflow cap value; this PR
- * fixes its counting unit to steps (not rounds).
+ * human gate). Original lock was 256; human-approved raise to 512 (plan #878).
+ * Wrap-up after cap (tools off) is extra and not counted against this budget.
  */
-export const MAX_WORKFLOW_STEPS = 256;
+export const MAX_WORKFLOW_STEPS = 512;
 
 /** Minimal writable surface the loop needs — a `WritableStream`-like carve. */
 export interface TurnWritable {
@@ -113,6 +114,11 @@ export type TurnSseLine =
 export interface ModelStepFn {
   (args: {
     messages: ReadonlyArray<unknown>;
+    /**
+     * Cap wrap-up: no tool schemas. The model must see the error and answer,
+     * not emit more toolCalls.
+     */
+    disableTools?: boolean;
     /**
      * RUNNING sandbox bind (cwd, activeSandboxId) threaded from the loop.
      * Initialised from `deps.persistRunBind` (start snapshot); updated after
@@ -393,7 +399,7 @@ export function derivePersistFold(
 
 /**
  * Drive one prompt run: `model · (tool)*` until the model returns no tool calls
- * or the 256-step cap is reached, writing delta-only SSE lines to the writable,
+ * or the 512-step cap is reached, writing delta-only SSE lines to the writable,
  * then persist. Mid-turn persists (user-line after a model that returned tools,
  * and after each successful tool) overlay `running`; the no-tool model round
  * persist overlays `completed`. Closes the writable on EVERY terminal path.
@@ -593,8 +599,29 @@ export async function runTurnLoop(
     }
 
     // Step budget exhausted (model + tool step count hit the cap): never
-    // infinite. Terminal persist so F5 does not attach a dead run, then
-    // SSE error — not `done` / model-finished.
+    // infinite. One tools-off wrap-up so the model sees the error and can
+    // tell the user what completed (plan #878). Then terminal persist so F5
+    // does not attach a dead run, then SSE error — not `done` / model-finished.
+    messages.push({ role: 'error', content: STEP_BUDGET_WRAPUP });
+    const wrap = await deps.modelStep({
+      messages,
+      persistRunBind: bind,
+      disableTools: true,
+    });
+    if (wrap.ok) {
+      const wrapDelta: TurnLoopDelta = {
+        text: wrap.delta.text,
+        toolCalls: [], // ignore — wrap-up must not run more tools
+        ...(wrap.delta.usage !== undefined ? { usage: wrap.delta.usage } : {}),
+        ...(wrap.delta.finishReason !== undefined
+          ? { finishReason: wrap.delta.finishReason }
+          : {}),
+      };
+      deltas.push(wrapDelta);
+      usage = accumulateUsage(usage, wrapDelta.usage);
+      if (wrapDelta.text) assistantText += wrapDelta.text;
+      messages.push({ role: 'assistant', delta: wrapDelta });
+    }
     const persisted = await persistNow(true);
     if (!persisted.ok) {
       return fail('failed', round, steps, persisted.error);

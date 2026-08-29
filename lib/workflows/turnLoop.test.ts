@@ -249,7 +249,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     const { deps, w, closed } = wiredDeps({ maxSteps: 2 });
     // Every model round keeps returning a tool call, so the loop would never stop
     // under no cap — the cap must terminate it.
-    const modelStep = vi.fn(async () => ({
+    const modelStep = vi.fn(async (_args: unknown) => ({
       ok: true as const,
       delta: { text: 'again', toolCalls: [{ toolName: 'list_dir', toolCallId: 'c', args: {} }] },
     }));
@@ -262,8 +262,16 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     // cap = TOTAL STEPS: round 1 consumes 1 model step + 1 user-line persist
     // = 2, budget exhausted before the tool gate → 0 tools. Terminal persist
     // on cap adds a third step so the envelope is not left running.
+    // Wrap-up model is extra (not counted against the working budget).
     expect(result.steps).toBe(3);
     expect(result.rounds).toBe(1);
+    expect(modelStep).toHaveBeenCalledTimes(2);
+    const wrapArgs = modelStep.mock.calls[1]?.[0] as {
+      disableTools?: boolean;
+      messages: Array<{ role?: string; content?: string }>;
+    };
+    expect(wrapArgs.disableTools).toBe(true);
+    expect(wrapArgs.messages.some((m) => m.role === 'error')).toBe(true);
     expect(toolStep).toHaveBeenCalledTimes(0);
     expect(closed()).toBe(1);
     const capEvents = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
@@ -280,7 +288,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     const { deps, w, closed } = wiredDeps({ maxSteps: 3 });
     // One round emits FOUR tool calls. cap=3 steps → 1 model + 1 user-line
     // persist + 1 tool; the remaining tool calls must NOT run.
-    const modelStep = vi.fn(async () => ({
+    const modelStep = vi.fn(async (_args: unknown) => ({
       ok: true as const,
       delta: {
         text: 'fan',
@@ -298,8 +306,10 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     );
     expect(result.status).toBe('capped');
     // 1 model + 1 user-line persist + 1 tool = 3 steps; tools 2–4 never run.
-    // Terminal persist on cap is a fourth step.
+    // Terminal persist on cap is a fourth step. Wrap-up does not run extra tools.
     expect(result.steps).toBe(4);
+    expect(modelStep).toHaveBeenCalledTimes(2);
+    expect((modelStep.mock.calls[1]?.[0] as { disableTools?: boolean }).disableTools).toBe(true);
     expect(toolStep).toHaveBeenCalledTimes(1);
     expect(closed()).toBe(1);
     const fanEvents = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
@@ -321,7 +331,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(persistSpy).toHaveBeenCalledTimes(1);
     const arg = persistSpy.mock.calls[0]?.[0] as { terminal?: boolean };
     expect(arg.terminal).toBeUndefined();
-    expect(MAX_WORKFLOW_STEPS).toBe(256);
+    expect(MAX_WORKFLOW_STEPS).toBe(512);
     expect(closed()).toBe(1);
   });
 

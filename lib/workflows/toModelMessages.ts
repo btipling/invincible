@@ -8,6 +8,7 @@
  *   { role: 'assistant', delta: { text, toolCalls } }  → AssistantModelMessage
  *   { role: 'tool', toolName, toolCallId, result }     → ToolModelMessage
  *   { role: 'tool', toolName, toolCallId, ok:false, error } → ToolModelMessage
+ *   { role: 'error', content }                         → UserModelMessage (`Error: …`)
  *   { role: 'persist', ... }                           → SKIP
  *
  * The AI SDK `streamText({ messages })` requires `ModelMessage[]` where:
@@ -66,6 +67,15 @@ export function toModelMessages(
         content: String((m as { content?: unknown }).content ?? ''),
       };
       out.push(userMsg);
+    } else if (role === 'error') {
+      // Cap wrap-up: the model must see the harness error. Mapped as user —
+      // streamText already carries the standing-order system prompt.
+      const raw = String((m as { content?: unknown }).content ?? '').trim();
+      if (raw) {
+        const content = raw.startsWith('Error:') ? raw : `Error: ${raw}`;
+        const errMsg: UserModelMessage = { role: 'user', content };
+        out.push(errMsg);
+      }
     } else if (role === 'assistant') {
       const delta = (m as { delta?: unknown }).delta as
         | { text?: unknown; toolCalls?: TurnToolCallDelta[] }
