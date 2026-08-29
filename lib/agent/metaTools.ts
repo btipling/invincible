@@ -123,8 +123,7 @@ export const META_TOOLS_SYSTEM_ADDENDUM =
   'First-party authoring tools exist under the meta_* namespace: meta_persona_* (list/read/create/update_name/update_body/set_default/clear_default/delete the user\'s own personas) and meta_skill_* (list/read/create/update_summary/update_body/str_replace/delete the user\'s own skills). meta_skill_str_replace patches a skill body by exact literal match (0 matches or ambiguous multiple matches without replace_all:true → error, no write); replacement is literal (never a template/regex), so $ and regex metacharacters in either string land verbatim. Bodies are non-secret user content returned only on an explicit read and are capped. Authoring runs as the signed-in user (no separate confirm), same as Settings. Use these to manage the user\'s persona/skill configuration; find_skill / fetch_skill remain for quick read-only reference.';
 
 /** System prompt when skill + meta tools are the ONLY non-filesystem tools available. */
-export const SKILL_META_ONLY_SYSTEM =
-  'You are the Invincible agent. Workspace filesystem tools are unavailable this turn. Use find_skill / fetch_skill to read the user\'s skills, and meta_persona_* / meta_skill_* to manage the user\'s personas and skills. Be concise.';
+export { SKILL_META_ONLY_SYSTEM } from './agentSystem';
 
 /** Prefix pick-criteria onto each tool description (moved off the system string). */
 function prefixToolDescriptions<T extends Record<string, unknown>>(

@@ -1158,12 +1158,20 @@ describe('step wrappers (matrix 4–7)', () => {
     if (result.ok) expect(result.delta.text).toBe('m');
     // BYOK re-resolved IN-STEP: providerOptions.gateway must be present on the
     // generateOneRound deps, not a bare modelId.
-    const argDeps = m1.mock.calls[0]?.[0] as { modelId?: string; providerOptions?: unknown; secrets?: unknown };
+    const argDeps = m1.mock.calls[0]?.[0] as {
+      modelId?: string;
+      providerOptions?: unknown;
+      secrets?: unknown;
+      system?: string;
+    };
     expect(argDeps.modelId).toBe('byok-resolved');
     expect(argDeps.providerOptions).toEqual({
       gateway: { only: ['anthropic'], byok: { anthropic: [{ apiKey: 'sk-test' }] } },
     });
     expect(argDeps.secrets).toEqual(['sk-test']);
+    expect(argDeps.system).toBeDefined();
+    expect(argDeps.system).toContain('You are the Invincible coding agent.');
+    expect(argDeps.system).toMatch(/Be concise/);
     // The tools passed to generateOneRound must be the FULL stripped registry
     // (not the old stub { find_skill: {}, fetch_skill: {} }).
     const inputTools = (m1.mock.calls[0]?.[1] as { tools?: Record<string, unknown> })?.tools;
@@ -1354,6 +1362,214 @@ describe('step wrappers (matrix 4–7)', () => {
     vi.doUnmock('../di/index');
     vi.doUnmock('./assembleDurableToolWorld');
     vi.doUnmock('./turnSseWrite');
+  });
+
+  it('modelGenerateStep HTTP-only registry → HTTP_ONLY_SYSTEM', async () => {
+    vi.resetModules();
+    const writeOnDefaultStream = vi.fn(async () => {});
+    vi.doMock('./turnSseWrite', () => ({
+      writeOnDefaultStream,
+      withDefaultStreamWriter: async (
+        fn: (write: (payload: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(writeOnDefaultStream),
+    }));
+    const m1 = vi.fn(async (_deps: unknown) => ({ ok: true as const, delta: { text: 'm', toolCalls: [] } }));
+    vi.doMock('../agent/generateOneRound', () => ({
+      generateOneRound: m1,
+      toolsWithoutExecutors: (t: Record<string, unknown>) => t,
+    }));
+    vi.doMock('../di/index', () => ({
+      createProdServices: () => ({
+        resolveInferenceForRequest: {
+          resolveByokForRequest: async () => ({
+            ok: true as const,
+            modelId: 'byok-resolved',
+            only: ['anthropic'] as [string],
+            byok: { anthropic: [{ apiKey: 'sk-test' }] },
+            secretsToRedact: ['sk-test'],
+          }),
+        },
+      }),
+    }));
+    vi.doMock('./assembleDurableToolWorld', () => ({
+      assembleDurableToolWorld: async () => ({
+        ok: true as const,
+        world: {
+          registry: { http_get: { description: 'GET' } },
+          secrets: [],
+          signal: new AbortController().signal,
+          freshness: {},
+        },
+      }),
+    }));
+    const { HTTP_ONLY_SYSTEM } = await import('../agent/agentSystem');
+    const mod = await import('./modelGenerateStep');
+    await mod.modelGenerateStep({
+      messages: [{ role: 'user', content: 'hi' }],
+      modelId: 'm',
+      userId: 'u1',
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+    });
+    const argDeps = m1.mock.calls[0]?.[0] as { system?: string };
+    expect(argDeps.system).toBe(HTTP_ONLY_SYSTEM);
+    vi.doUnmock('../agent/generateOneRound');
+    vi.doUnmock('../di/index');
+    vi.doUnmock('./assembleDurableToolWorld');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('modelGenerateStep folds in-step persona/skills fail-open into resolveSystem', async () => {
+    vi.resetModules();
+    const writeOnDefaultStream = vi.fn(async () => {});
+    vi.doMock('./turnSseWrite', () => ({
+      writeOnDefaultStream,
+      withDefaultStreamWriter: async (
+        fn: (write: (payload: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(writeOnDefaultStream),
+    }));
+    const m1 = vi.fn(async (_deps: unknown) => ({ ok: true as const, delta: { text: 'm', toolCalls: [] } }));
+    vi.doMock('../agent/generateOneRound', () => ({
+      generateOneRound: m1,
+      toolsWithoutExecutors: (t: Record<string, unknown>) => t,
+    }));
+    vi.doMock('../di/index', () => ({
+      createProdServices: () => ({
+        resolveInferenceForRequest: {
+          resolveByokForRequest: async () => ({
+            ok: true as const,
+            modelId: 'byok-resolved',
+            only: ['anthropic'] as [string],
+            byok: { anthropic: [{ apiKey: 'sk-test' }] },
+            secretsToRedact: ['sk-test'],
+          }),
+        },
+        userPersonas: { getPersonaById: async () => ({ ok: true, value: null }) },
+        userSkills: { listAlwaysOnSkills: async () => ({ ok: true, value: [] }) },
+      }),
+    }));
+    vi.doMock('./assembleDurableToolWorld', () => ({
+      assembleDurableToolWorld: async () => ({
+        ok: true as const,
+        world: {
+          registry: { list_dir: { description: 'List' } },
+          secrets: [],
+          signal: new AbortController().signal,
+          freshness: {},
+        },
+      }),
+    }));
+    vi.doMock('../tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: async () => ({
+        ok: true as const,
+        value: {
+          get: async () => null,
+          put: async () => ({ status: 'stored' }),
+          readEnvelope: async () => null,
+          upsertEnvelope: async () => ({ status: 'stored' }),
+        },
+      }),
+      sessionKeyFor: (t: string, u: string, s: string) => ({
+        tenantId: t,
+        userId: u,
+        sessionId: s,
+      }),
+    }));
+    vi.doMock('../tenancy/personaInject', () => ({
+      resolvePersonaPreamble: async () => 'Always use tabs.',
+    }));
+    vi.doMock('../tenancy/skillInject', () => ({
+      resolveSkillPreamble: async () => ({
+        preamble: '### Skill attached: create-plan\nPlan in YAML.',
+        attachedSlugs: ['create-plan'],
+        events: [],
+      }),
+    }));
+    const { DEFAULT_AGENT_SYSTEM } = await import('../agent/agentSystem');
+    const mod = await import('./modelGenerateStep');
+    await mod.modelGenerateStep({
+      messages: [{ role: 'user', content: 'hi' }],
+      modelId: 'm',
+      userId: 'u1',
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+    });
+    const argDeps = m1.mock.calls[0]?.[0] as { system?: string };
+    expect(argDeps.system).toContain(DEFAULT_AGENT_SYSTEM);
+    expect(argDeps.system).toContain('<persona_standing_orders>');
+    expect(argDeps.system).toContain('Always use tabs.');
+    expect(argDeps.system).toContain('<attached_skills>');
+    expect(argDeps.system).toContain('### Skill attached: create-plan');
+    vi.doUnmock('../agent/generateOneRound');
+    vi.doUnmock('../di/index');
+    vi.doUnmock('./assembleDurableToolWorld');
+    vi.doUnmock('./turnSseWrite');
+    vi.doUnmock('../tenancy/harnessSessionsRedis');
+    vi.doUnmock('../tenancy/personaInject');
+    vi.doUnmock('../tenancy/skillInject');
+  });
+
+  it('modelGenerateStep inject throw still passes the base system', async () => {
+    vi.resetModules();
+    const writeOnDefaultStream = vi.fn(async () => {});
+    vi.doMock('./turnSseWrite', () => ({
+      writeOnDefaultStream,
+      withDefaultStreamWriter: async (
+        fn: (write: (payload: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(writeOnDefaultStream),
+    }));
+    const m1 = vi.fn(async (_deps: unknown) => ({ ok: true as const, delta: { text: 'm', toolCalls: [] } }));
+    vi.doMock('../agent/generateOneRound', () => ({
+      generateOneRound: m1,
+      toolsWithoutExecutors: (t: Record<string, unknown>) => t,
+    }));
+    vi.doMock('../di/index', () => ({
+      createProdServices: () => ({
+        resolveInferenceForRequest: {
+          resolveByokForRequest: async () => ({
+            ok: true as const,
+            modelId: 'byok-resolved',
+            only: ['anthropic'] as [string],
+            byok: { anthropic: [{ apiKey: 'sk-test' }] },
+            secretsToRedact: ['sk-test'],
+          }),
+        },
+        userPersonas: { getPersonaById: async () => { throw new Error('store down'); } },
+        userSkills: {
+          listAlwaysOnSkills: async () => { throw new Error('store down'); },
+        },
+      }),
+    }));
+    vi.doMock('./assembleDurableToolWorld', () => ({
+      assembleDurableToolWorld: async () => ({
+        ok: true as const,
+        world: {
+          registry: { list_dir: { description: 'List' } },
+          secrets: [],
+          signal: new AbortController().signal,
+          freshness: {},
+        },
+      }),
+    }));
+    vi.doMock('../tenancy/harnessSessionsRedis', () => ({
+      resolveSessionStore: async () => { throw new Error('redis down'); },
+      sessionKeyFor: () => ({ tenantId: 't', userId: 'u', sessionId: 's' }),
+    }));
+    const { DEFAULT_AGENT_SYSTEM } = await import('../agent/agentSystem');
+    const mod = await import('./modelGenerateStep');
+    const result = await mod.modelGenerateStep({
+      messages: [{ role: 'user', content: 'hi' }],
+      modelId: 'm',
+      userId: 'u1',
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+    });
+    expect(result.ok).toBe(true);
+    expect(m1).toHaveBeenCalledTimes(1);
+    const argDeps = m1.mock.calls[0]?.[0] as { system?: string };
+    expect(argDeps.system).toBe(DEFAULT_AGENT_SYSTEM);
+    vi.doUnmock('../agent/generateOneRound');
+    vi.doUnmock('../di/index');
+    vi.doUnmock('./assembleDurableToolWorld');
+    vi.doUnmock('./turnSseWrite');
+    vi.doUnmock('../tenancy/harnessSessionsRedis');
   });
 
   it('matrix 6: toolExecuteStep thin shell → delegates executeTool; business error is a value', async () => {

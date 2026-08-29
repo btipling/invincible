@@ -431,4 +431,24 @@ describe('generateOneRound reasoning (plan #846)', () => {
       expect(result.delta).not.toHaveProperty('reasoning');
     });
   });
+
+  it('omits system on streamArgs when deps.system is undefined', async () => {
+    const streamTextImpl = vi.fn(makeStream({ text: 'x' }));
+    await generateOneRound(
+      { ...deps, streamTextImpl },
+      { messages: [{ role: 'user', content: 'hi' }], tools: {}, onEvent: async () => {} },
+    );
+    const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
+    expect('system' in args).toBe(false);
+  });
+
+  it('forwards system when deps.system is a string', async () => {
+    const streamTextImpl = vi.fn(makeStream({ text: 'x' }));
+    await generateOneRound(
+      { ...deps, streamTextImpl, system: 'Be concise.' },
+      { messages: [{ role: 'user', content: 'hi' }], tools: {}, onEvent: async () => {} },
+    );
+    const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
+    expect(args.system).toBe('Be concise.');
+  });
 });

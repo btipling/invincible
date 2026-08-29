@@ -13,6 +13,12 @@
  * can run — otherwise the model cannot call FS/MCP/HTTP/skill tools and a
  * durable coding turn is a dead letter.
  *
+ * The system prompt is resolved IN-STEP from that same registry via
+ * `resolveSystem` (`lib/agent/agentSystem.ts`) — the same helper `/api/agent`
+ * uses. Persona snapshot + sticky/always-on skills are fail-open. Slash-command
+ * attach/detach is **not** handled here (replayable step must not write session
+ * meta or strip the user message).
+ *
  * In **production** BYOK is re-resolved IN-STEP: the route passes only
  * serializable `{ userId, modelId }` (never api keys). Inside the step,
  * `resolveByokForRequest(userId, modelId)` resolves the tenant BYOK and
@@ -47,6 +53,7 @@ import {
   type OneRoundDelta,
 } from '../agent/generateOneRound';
 import { toolsWithoutExecutors } from '../agent/generateOneRound';
+import { registryHasFsTools, resolveSystem } from '../agent/agentSystem';
 import { toModelMessages } from './toModelMessages';
 import { logTurnModel } from './turnLog';
 import { formatLiveModelSse } from './turnSseFormat';
@@ -83,6 +90,81 @@ export interface ModelGenerateStepArgs {
 export type ModelGenerateStepResult =
   | { ok: true; delta: OneRoundDelta }
   | { ok: false; code: 'model_error' | 'write_error' | 'cancelled'; error: string };
+
+/**
+ * Persona snapshot + sticky/always-on skills. Fail-open: any store/inject
+ * error → no preamble (the round still runs with the base system). Slash
+ * commands are `none` — attach/detach is `/api/agent` route work, not a
+ * replayable step write.
+ */
+async function resolveInStepPreambles(args: {
+  userId: string;
+  sessionId: string;
+  tenantId: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  services: any;
+}): Promise<{ personaPreamble?: string; skillsPreamble?: string }> {
+  try {
+    if (!args.services.userPersonas && !args.services.userSkills) {
+      return {};
+    }
+    const { resolveSessionStore, sessionKeyFor } = await import(
+      '../tenancy/harnessSessionsRedis'
+    );
+    const { isEnvelopeStore } = await import('../sessions/sessionStore');
+    const storeRes = await resolveSessionStore();
+    const store = storeRes.ok ? storeRes.value : undefined;
+    const sessionKey = sessionKeyFor(args.tenantId, args.userId, args.sessionId);
+
+    let personaPreamble: string | undefined;
+    if (args.services.userPersonas) {
+      const { resolvePersonaPreamble } = await import(
+        '../tenancy/personaInject'
+      );
+      personaPreamble = await resolvePersonaPreamble({
+        userId: args.userId,
+        sessionId: args.sessionId,
+        userPersonas: args.services.userPersonas,
+        ...(store ? { sessionStore: store, sessionKey } : {}),
+      });
+    }
+
+    let alwaysOnSlugs: string[] | undefined;
+    try {
+      const listed = await args.services.userSkills?.listAlwaysOnSkills?.(
+        args.userId,
+      );
+      if (listed?.ok && Array.isArray(listed.value) && listed.value.length > 0) {
+        alwaysOnSlugs = listed.value;
+      }
+    } catch {
+      alwaysOnSlugs = undefined;
+    }
+
+    let skillsPreamble: string | undefined;
+    if (args.services.userSkills && (store || alwaysOnSlugs)) {
+      const { resolveSkillPreamble } = await import('../tenancy/skillInject');
+      const sessionStore =
+        store && isEnvelopeStore(store) ? store : undefined;
+      const skills = await resolveSkillPreamble({
+        userId: args.userId,
+        command: { type: 'none' },
+        userSkills: args.services.userSkills,
+        alwaysOnSlugs,
+        ...(sessionStore ? { sessionStore, sessionKey } : {}),
+      });
+      const preamble = skills.preamble?.trim();
+      if (preamble) skillsPreamble = preamble;
+    }
+
+    return {
+      ...(personaPreamble ? { personaPreamble } : {}),
+      ...(skillsPreamble ? { skillsPreamble } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
 
 /**
  * Run exactly ONE model round as a workflow step. In production, re-resolves
@@ -158,10 +240,27 @@ export async function modelGenerateStep(
     }
   }
 
+  const toolNames = Object.keys(world.registry);
+  const { personaPreamble, skillsPreamble } = await resolveInStepPreambles({
+    userId: args.scope.userId,
+    sessionId: args.scope.sessionId,
+    tenantId: args.scope.tenantId,
+    services,
+  });
+  const system = resolveSystem(
+    {
+      extraTools: world.registry,
+      personaPreamble,
+      skillsPreamble,
+    },
+    registryHasFsTools(toolNames),
+  );
+
   const result = await withDefaultStreamWriter(async (write) =>
     generateOneRound(
       {
         modelId: byok.modelId,
+        system,
         providerOptions: {
           gateway: {
             only: byok.only,

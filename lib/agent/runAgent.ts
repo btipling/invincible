@@ -21,9 +21,7 @@ import {
   flattenToolResultText,
   parseAndFlattenIfMcpEnvelope,
 } from './toolResultText';
-import { HTTP_ONLY_SYSTEM } from './httpFetchTools';
-import { SKILL_TOOLS_ONLY_SYSTEM } from './skillTools';
-import { SKILL_META_ONLY_SYSTEM } from './metaTools';
+import { resolveSystem } from './agentSystem';
 import { metaSandboxSwitchTargetId } from './metaSandboxTools';
 import { resolveAgentStopWhen } from './stopWhen';
 
@@ -162,66 +160,7 @@ export type RunAgentResult = {
   usage?: UsageSummary;
 };
 
-export const DEFAULT_AGENT_SYSTEM = [
-  'You are the Invincible coding agent.',
-  'The workspace is a remote sandbox root. Prefer tools (list_dir, read_file, write_file, str_replace, exec, change_dir, pwd, sandbox_info) for filesystem and command work. Use str_replace for surgical edits (unique old_string unless replace_all); write_file to create or fully rewrite. Use sandbox_info for active-bind facts, cwd, capabilities, and env — do not exec env, printenv, or uname to learn the sandbox. For multi-line process input prefer exec stdin (heredoc alias ok) on BYO sandboxes; if exec rejects stdin (Vercel backend), write_file the input and pass the path via args instead — never claim stdin was fed when the tool errors.',
-  'Logical cwd starts at the workspace root (or the session cwd). Prefer change_dir into the project once, then short relative paths under that cwd. Prefer change_dir as its own step before a burst of path tools. Use pwd to inspect cwd.',
-  'Must read_file a path in this agent run (with offset=1 covering every line of the returned content, not truncated by limit or maxBytes) before str_replace or overwriting an existing file with write_file. Creating a new file with write_file does not require a prior read. If tools report the file changed since your last read (another edit, command, concurrent session, or device on the same sandbox), read_file again before editing.',
-  'Tool results always show workspace-root-relative paths (and cwd= when not at root). Paths that already include the cwd prefix also work. Absolute paths are accepted when they resolve inside the sandbox root and are canonicalized to the same file as their relative form — but never invent host absolute paths outside the sandbox.',
-  'The workspace root is writable — use it. Never reach for /tmp.',
-  'Be concise in final answers; cite workspace-relative paths when useful.',
-  'If the user message includes Previous conversation with Tool: lines, those tools already ran — reuse that work; do not redo identical tool calls unless asked or the files may have changed.',
-].join(' ');
-
-function resolveSystem(
-  params: RunAgentParams,
-  hasFsTools: boolean,
-): string {
-  if (params.system != null) return params.system;
-  const extra = params.extraTools ?? {};
-  const keys = Object.keys(extra);
-  const hasMcp = keys.some((k) => k.startsWith('mcp_'));
-  const hasHttp = keys.some((k) => k === 'http_get' || k === 'http_head');
-  const hasSkill = keys.some((k) => k === 'find_skill' || k === 'fetch_skill');
-  const hasMeta = keys.some((k) => k.startsWith('meta_'));
-
-  const parts: string[] = [];
-  if (hasFsTools) {
-    parts.push(DEFAULT_AGENT_SYSTEM);
-  } else if (hasHttp || hasMcp) {
-    parts.push(HTTP_ONLY_SYSTEM);
-  } else if (hasSkill || hasMeta) {
-    // Skill + meta authoring tools are the only non-FS tools — give an honest
-    // prompt (no phantom FS instructions, no "use http_get" when http isn't
-    // present). Pick-criteria live on each tool.description.
-    parts.push(hasMeta ? SKILL_META_ONLY_SYSTEM : SKILL_TOOLS_ONLY_SYSTEM);
-  } else {
-    parts.push(DEFAULT_AGENT_SYSTEM);
-  }
-
-  const persona = params.personaPreamble?.trim();
-  if (persona) {
-    parts.push(
-      '<persona_standing_orders>\n' +
-        'The user bound this persona to the session. Its instructions are explicit standing orders for this session, carried in a locked snapshot so later turns reuse the same text. Follow these standing orders — they are mandatory and override any conflicting general guidance below (they never override the security/config non-negotiables above).\n' +
-        '---\n' +
-        persona +
-        '\n</persona_standing_orders>',
-    );
-  }
-
-  const skills = params.skillsPreamble?.trim();
-  if (skills) {
-    parts.push(
-      '<attached_skills>\n' +
-        'The user attached the following skill(s) to this session via a `/skill-name` slash command. Their bodies are explicit standing orders for THIS session (skills are staff-of-work: edits to a skill apply on the next turn). Follow them unless they conflict with the security/config non-negotiables above.\n' +
-        '---\n' +
-        skills +
-        '\n</attached_skills>',
-    );
-  }
-  return parts.join('\n\n');
-}
+export { DEFAULT_AGENT_SYSTEM } from './agentSystem';
 
 // Re-export so existing consumers/tests importing `resolveAgentStopWhen` from
 // `runAgent` keep working. The definition now lives in `./stopWhen` (hoisted to

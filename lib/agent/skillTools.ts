@@ -28,8 +28,7 @@ export const SKILL_TOOLS_SYSTEM_ADDENDUM =
   'You may use find_skill to locate the user\'s skills (search / catch typos) and fetch_skill to read the full body of one of the user\'s skills by slug. Skills are the user\'s own instructions/playbooks; prefer them for reference. Read-only — you cannot create or edit skills.';
 
 /** System prompt when skill tools are the ONLY non-filesystem tools available. */
-export const SKILL_TOOLS_ONLY_SYSTEM =
-  'You are the Invincible agent. Workspace filesystem tools are unavailable this turn. Use find_skill / fetch_skill to read the user\'s skills. Be concise.';
+export { SKILL_TOOLS_ONLY_SYSTEM } from './agentSystem';
 
 export type SkillSummary = {
   slug: string;

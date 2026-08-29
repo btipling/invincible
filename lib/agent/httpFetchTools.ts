@@ -10,8 +10,7 @@ import type {
 export const HTTP_GET_SYSTEM_ADDENDUM =
   'You may use http_get to retrieve public HTTPS pages (read-only). Prefer it for docs and references. Do not invent URLs with secrets.';
 
-export const HTTP_ONLY_SYSTEM =
-  'You are the Invincible agent. Workspace filesystem tools are unavailable this turn. Use http_get for public HTTPS information when needed. Be concise.';
+export { HTTP_ONLY_SYSTEM } from './agentSystem';
 
 /** Max hop-by-hop redirects (each Location re-checked by SSRF policy). */
 export const HTTP_FETCH_MAX_REDIRECTS = 5;
