@@ -4,9 +4,10 @@
  *
  * Thin directive shell over the B10 core `executeTool`. One model round's
  * `toolCalls` run in **this** step: assemble the tool world once, split waves
- * at serial separators (bind-mutators + FS editors), allSettled-style overlap
- * inside a wave, live-write
- * `tool_result` on one held Workflows writer. `executeTool` stays one-call.
+ * at serial separators (bind-mutators + FS editors). Independent calls
+ * `Promise.all` inside a wave; a hard `{ok:false}` skips later waves
+ * (sequential main stopped the round there). Live-write `tool_result` on one
+ * held Workflows writer. `executeTool` stays one-call.
  *
  * In **production** the tool world is assembled IN-STEP via the shared
  * `assembleDurableToolWorld` helper (same path as `modelGenerateStep`). The
@@ -356,7 +357,11 @@ export async function toolExecuteStep(
           bind = overlayBind(bind, item);
         }
         freshnessDelta = liveFreshnessDelta(world?.freshness, freshnessDelta);
-        if (results.some((i) => !i.ok && i.code === 'cancelled')) {
+        // allSettled is per-wave (in-flight siblings finish). A hard fail must
+        // not run later serial waves — sequential main stopped the round at the
+        // first `{ok:false}` (adversarial #881 round-5). Remaining calls get
+        // skip results below so hanging tool_starts close.
+        if (results.some((i) => !i.ok)) {
           break;
         }
         const only = wave.calls[0];
@@ -393,19 +398,17 @@ export async function toolExecuteStep(
         }
       }
 
-      // Close hanging tool_starts for calls that never ran (cancel / re-assemble).
+      // Close hanging tool_starts for calls that never ran (cancel /
+      // re-assemble / later-wave skip after a hard fail).
       if (results.length < calls.length) {
-        const cancelled = results.find(
-          (i): i is Extract<ToolBatchItem, { ok: false }> =>
-            !i.ok && i.code === 'cancelled',
+        const failed = results.find(
+          (i): i is Extract<ToolBatchItem, { ok: false }> => !i.ok,
         );
         const code: FailCode = assembleFail
           ? 'sandbox_error'
-          : cancelled
-            ? 'cancelled'
-            : 'sandbox_error';
+          : failed?.code ?? 'sandbox_error';
         const error =
-          assembleFail ?? cancelled?.error ?? 'tool batch stopped';
+          assembleFail ?? failed?.error ?? 'tool batch stopped';
         for (const call of calls.slice(results.length)) {
           const item = failItem(call, code, error);
           results.push(item);

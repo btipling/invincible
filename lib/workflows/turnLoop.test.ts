@@ -3125,6 +3125,113 @@ describe('step wrappers (matrix 4–7)', () => {
     vi.doUnmock('./turnSseWrite');
   });
 
+  it('matrix 6l: hard fail skips later serial waves (adversarial #881 round-5)', async () => {
+    const execMock = vi.fn(async (_deps: unknown, input: unknown) => {
+      const i = input as { toolName?: string };
+      if (i.toolName === 'boom') throw new Error('transport down');
+      return { ok: true as const, result: `out:${i.toolName}`, freshnessDelta: '[]' };
+    });
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: { boom: {}, write_file: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    const result = await mod.toolExecuteStep({
+      calls: [
+        { toolName: 'boom', toolCallId: '1', args: {} },
+        { toolName: 'write_file', toolCallId: '2', args: { path: 'new.md' } },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    expect(execMock).toHaveBeenCalledTimes(1);
+    expect(execMock.mock.calls.map((c) => (c[1] as { toolName?: string }).toolName)).toEqual([
+      'boom',
+    ]);
+    if (result.ok) {
+      expect(result.results).toHaveLength(2);
+      expect(result.results[0]).toMatchObject({
+        ok: false,
+        toolName: 'boom',
+        code: 'sandbox_error',
+        error: 'transport down',
+      });
+      expect(result.results[1]).toMatchObject({
+        ok: false,
+        toolName: 'write_file',
+        toolCallId: '2',
+        code: 'sandbox_error',
+        error: 'transport down',
+      });
+    }
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('matrix 6l-bind: tool_not_found skips later change_dir (adversarial #881 round-5)', async () => {
+    const execMock = vi.fn(async (_deps: unknown, input: unknown) => {
+      const i = input as { toolName?: string };
+      if (i.toolName === 'nope') {
+        return {
+          ok: false as const,
+          code: 'tool_not_found' as const,
+          error: 'Tool not found: nope',
+        };
+      }
+      return { ok: true as const, result: `out:${i.toolName}`, freshnessDelta: '[]' };
+    });
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: { nope: {}, change_dir: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    const result = await mod.toolExecuteStep({
+      calls: [
+        { toolName: 'nope', toolCallId: '1', args: {} },
+        { toolName: 'change_dir', toolCallId: '2', args: { path: 'lib' } },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    expect(execMock).toHaveBeenCalledTimes(1);
+    if (result.ok) {
+      expect(result.results).toHaveLength(2);
+      expect(result.results[0]).toMatchObject({
+        ok: false,
+        toolName: 'nope',
+        code: 'tool_not_found',
+        error: 'Tool not found: nope',
+      });
+      expect(result.results[1]).toMatchObject({
+        ok: false,
+        toolName: 'change_dir',
+        toolCallId: '2',
+        code: 'tool_not_found',
+        error: 'Tool not found: nope',
+      });
+    }
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
   it('matrix 7: persistStep thin shell → persists via seam (in-memory); returns terminal status', async () => {
     const { seam, persisted } = createInMemoryPersistSeam();
     // The persist seam is a `'use step'`-unsafe function → resolved IN-STEP from
