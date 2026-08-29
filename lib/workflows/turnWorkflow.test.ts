@@ -182,4 +182,13 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
     expect(loopCode).not.toMatch(/turnSseWrite/);
     expect(entryCode).not.toMatch(/turnSseWrite/);
   });
+
+  it('forwards disableTools into modelGenerateStep (adversarial #879)', () => {
+    const src = readFileSync(fileURLToPath(new URL('./turnWorkflow.ts', import.meta.url)), 'utf8');
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(code).toMatch(/disableTools/);
+    expect(code).toMatch(
+      /\.\.\.\s*\(\s*disableTools\s*\?\s*\{\s*disableTools:\s*true\s*\}\s*:\s*\{\s*\}\s*\)/,
+    );
+  });
 });

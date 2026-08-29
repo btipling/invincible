@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   runTurnLoop,
   MAX_WORKFLOW_STEPS,
+  derivePersistFold,
   type TurnWritable,
   type TurnLoopDeps,
 } from './turnLoop';
@@ -38,6 +39,7 @@ import { MemoryBlobTranscriptStore } from '../sessions/blobStores';
 import { MemorySessionStore } from '../sessions/memorySessionStore';
 import type { ObjectScope } from '../sessions/blobStore';
 import { parseCloudSessionSnapshot } from '../sessionRepository';
+import { STEP_BUDGET_WRAPUP, STEP_BUDGET_ERROR } from '../agent/modelFinish';
 
 const LOOP_SCOPE: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_loop' };
 
@@ -303,6 +305,9 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
           (e.summary ?? '').includes('step budget exhausted'),
       ),
     ).toBe(true);
+    expect(
+      (result.messages as Array<{ role?: string }>).some((m) => m.role === 'error'),
+    ).toBe(false);
   });
 
   it('matrix 3b (L6): cap counts steps, so a per-round tool fanout is bounded', async () => {
@@ -348,6 +353,146 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(closed()).toBe(1);
     const fanEvents = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
     expect(fanEvents.some((e: { type: string }) => e.type === 'done')).toBe(false);
+  });
+
+  it('cap persist fold omits wrap-up Error instruction (not canvas copy) [adversarial #879 Major]', async () => {
+    const { deps, closed } = wiredDeps({ maxSteps: 2 });
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async (args: unknown) => {
+      const a = args as { disableTools?: boolean };
+      if (a.disableTools) {
+        return { ok: true as const, delta: { text: 'wrap-summary', toolCalls: [] } };
+      }
+      return {
+        ok: true as const,
+        delta: {
+          text: 'working',
+          toolCalls: [{ toolName: 'list_dir', toolCallId: 'c', args: {} }],
+        },
+      };
+    });
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        maxSteps: 2,
+        modelStep,
+        toolStep: vi.fn(),
+        persistStep: persistSpy,
+      },
+      { userMessage: 'loop' },
+    );
+    expect(result.status).toBe('capped');
+    const terminalArg = persistSpy.mock.calls[persistSpy.mock.calls.length - 1]?.[0] as {
+      fold?: PersistStepFold;
+      terminal?: boolean;
+    };
+    expect(terminalArg.terminal).toBeUndefined();
+    const ckpt = terminalArg.fold?.checkpoint ?? [];
+    expect(ckpt.some((r) => r.role === 'error')).toBe(false);
+    expect(JSON.stringify(ckpt)).not.toContain(STEP_BUDGET_WRAPUP);
+    expect(ckpt.some((r) => r.role === 'assistant' && r.content === 'working')).toBe(true);
+    expect(ckpt.some((r) => r.role === 'assistant' && r.content === 'wrap-summary')).toBe(
+      true,
+    );
+    expect(
+      (result.messages as Array<{ role?: string }>).some((m) => m.role === 'error'),
+    ).toBe(false);
+    expect(closed()).toBe(1);
+  });
+
+  it('derivePersistFold drops wrap-up error rows', () => {
+    const fold = derivePersistFold(
+      [
+        { role: 'user', content: 'go' },
+        { role: 'assistant', delta: { text: 'working', toolCalls: [] } },
+        { role: 'error', content: STEP_BUDGET_WRAPUP },
+        { role: 'assistant', delta: { text: 'summary', toolCalls: [] } },
+      ],
+      undefined,
+    );
+    expect(fold?.checkpoint).toEqual([
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: 'working' },
+      { role: 'assistant', content: 'summary' },
+    ]);
+  });
+
+  it('wrap-up {ok:false} still terminal-persists and SSE-caps [adversarial #879 Minor]', async () => {
+    const { deps, w, closed } = wiredDeps({ maxSteps: 2 });
+    const persistSpy = vi.fn(deps.persistStep);
+    let n = 0;
+    const modelStep = vi.fn(async (_args: unknown) => {
+      n += 1;
+      if (n === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'again',
+            toolCalls: [{ toolName: 'list_dir', toolCallId: 'c', args: {} }],
+          },
+        };
+      }
+      return { ok: false as const, code: 'model_error' as const, error: 'wrap boom' };
+    });
+    const result = await runTurnLoop(
+      { ...deps, maxSteps: 2, modelStep, toolStep: vi.fn(), persistStep: persistSpy },
+      { userMessage: 'loop' },
+    );
+    expect(result.status).toBe('capped');
+    expect(result.error).toBe(STEP_BUDGET_ERROR);
+    expect(persistSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    const last = persistSpy.mock.calls[persistSpy.mock.calls.length - 1]?.[0] as {
+      terminal?: boolean;
+    };
+    expect(last.terminal).toBeUndefined();
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(false);
+    expect(
+      events.some(
+        (e: { type: string; error?: string }) =>
+          e.type === 'error' && e.error === STEP_BUDGET_ERROR,
+      ),
+    ).toBe(true);
+    expect(events.some((e: { error?: string }) => e.error === 'wrap boom')).toBe(false);
+    expect(closed()).toBe(1);
+  });
+
+  it('wrap-up throw still terminal-persists and SSE-caps [adversarial #879 Minor]', async () => {
+    const { deps, w, closed } = wiredDeps({ maxSteps: 2 });
+    const persistSpy = vi.fn(deps.persistStep);
+    let n = 0;
+    const modelStep = vi.fn(async (_args: unknown) => {
+      n += 1;
+      if (n === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'again',
+            toolCalls: [{ toolName: 'list_dir', toolCallId: 'c', args: {} }],
+          },
+        };
+      }
+      throw new Error('wrap threw');
+    });
+    const result = await runTurnLoop(
+      { ...deps, maxSteps: 2, modelStep, toolStep: vi.fn(), persistStep: persistSpy },
+      { userMessage: 'loop' },
+    );
+    expect(result.status).toBe('capped');
+    expect(result.error).toBe(STEP_BUDGET_ERROR);
+    const last = persistSpy.mock.calls[persistSpy.mock.calls.length - 1]?.[0] as {
+      terminal?: boolean;
+    };
+    expect(last.terminal).toBeUndefined();
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(
+      events.some(
+        (e: { type: string; error?: string }) =>
+          e.type === 'error' && e.error === STEP_BUDGET_ERROR,
+      ),
+    ).toBe(true);
+    expect(events.some((e: { error?: string }) => e.error === 'wrap threw')).toBe(false);
+    expect(closed()).toBe(1);
   });
 
   it('mid-turn persist: no-tool run is exactly one completed persist', async () => {

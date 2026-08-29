@@ -345,6 +345,9 @@ function checkpointRow(m: unknown): { role: string; content: string } | undefine
   if (!m || typeof m !== 'object') return undefined;
   const o = m as { role?: unknown; content?: unknown; delta?: unknown; result?: unknown; error?: unknown };
   if (typeof o.role !== 'string' || o.role.length === 0) return undefined;
+  // Wrap-up `{ role: 'error' }` is model-only (STEP_BUDGET_WRAPUP is not canvas
+  // copy). Persist/F5 must not paint it as an EMBER row.
+  if (o.role === 'error') return undefined;
   if (typeof o.content === 'string') return { role: o.role, content: o.content };
   if (o.role === 'assistant') {
     const d = o.delta as { text?: unknown } | undefined;
@@ -657,12 +660,25 @@ export async function runTurnLoop(
       messages.push(row);
       await writable.write(sse(toolResultLine(row.toolName, false, row.error)));
     }
-    messages.push({ role: 'error', content: STEP_BUDGET_WRAPUP });
-    const wrap = await deps.modelStep({
-      messages,
-      persistRunBind: bind,
-      disableTools: true,
-    });
+    // Wrap-up Error: instruction is model-only — pass a copy, do not push it
+    // onto the loop transcript (checkpoint / Blob snapshot / F5).
+    const wrapMessages: unknown[] = [
+      ...messages,
+      { role: 'error', content: STEP_BUDGET_WRAPUP },
+    ];
+    let wrap: Awaited<ReturnType<ModelStepFn>>;
+    try {
+      wrap = await deps.modelStep({
+        messages: wrapMessages,
+        persistRunBind: bind,
+        disableTools: true,
+      });
+    } catch (err) {
+      // Same as `{ok:false}`: still terminal-persist + cap SSE. A throw must
+      // not skip persistNow and leave the envelope running (F5 attach).
+      const error = err instanceof Error ? err.message : String(err);
+      wrap = { ok: false, code: 'model_error', error };
+    }
     if (wrap.ok) {
       const wrapDelta: TurnLoopDelta = {
         text: wrap.delta.text,

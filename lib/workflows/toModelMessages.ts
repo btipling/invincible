@@ -69,7 +69,7 @@ export function toModelMessages(
       out.push(userMsg);
     } else if (role === 'error') {
       // Cap wrap-up: the model must see the harness error. Mapped as user —
-      // streamText already carries the standing-order system prompt.
+      // wrap-up streamText uses STEP_BUDGET_WRAPUP_SYSTEM, not DEFAULT_AGENT_SYSTEM.
       const raw = String((m as { content?: unknown }).content ?? '').trim();
       if (raw) {
         const content = raw.startsWith('Error:') ? raw : `Error: ${raw}`;
