@@ -94,6 +94,40 @@ export async function persistTurn2(
   return { objectId: result.objectId };
 }
 
+/** Mid-turn persist of turn 2: blob contains the live user + assistant; overlay is `running`. */
+export async function persistTurn2Running(
+  world: {
+    blobStore: MemoryBlobTranscriptStore;
+    envelopeStore: MemorySessionStore;
+  },
+  opts?: { userLine?: string; assistantLine?: string },
+): Promise<{ objectId?: string }> {
+  const seam = createTurnPersistSeam({
+    blobStore: world.blobStore,
+    envelopeStore: world.envelopeStore,
+    scope: INT_SCOPE,
+  });
+  setPersistSeamResolver(() => seam);
+  const userLine = opts?.userLine ?? 'turn-2 user';
+  const assistantLine = opts?.assistantLine ?? 'partial live assistant';
+  const result = await persistStep({
+    turnRunId: TURN2_RUN_ID,
+    deltas: [{ type: 'text_delta', text: assistantLine }],
+    fold: {
+      checkpoint: [
+        { role: 'user', content: userLine },
+        { role: 'assistant', content: assistantLine },
+      ],
+    },
+    scope: INT_SCOPE,
+    terminal: false,
+  });
+  if (!result.ok) {
+    throw new Error(`persistTurn2Running failed: ${result.code} ${result.error}`);
+  }
+  return { objectId: result.objectId };
+}
+
 /** Host-shaped turn-2 start: envelope `running` + new run id, pointer unchanged. */
 export async function markEnvelopeRunning(
   envelopeStore: MemorySessionStore,

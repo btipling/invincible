@@ -66,7 +66,7 @@ import type {
   PersistStepResult,
   PersistStepSeam,
 } from '../workflows/persistStep';
-import { stampSnapshotUpdatedAt } from '../workflows/persistStep';
+import { persistOverlayStatus, stampSnapshotUpdatedAt } from '../workflows/persistStep';
 
 /** Worker-authored envelope clock source for the terminal B8 overlay (LWW). */
 export type OverlayClock = (storedUpdatedAt: number) => number;
@@ -132,12 +132,15 @@ export function createTurnPersistSeam(
       deltas: ReadonlyArray<unknown>;
       content: string;
       fold?: PersistStepFold;
+      terminal?: boolean;
     }): Promise<PersistStepResult> {
-      // 0. Terminal meta patch accumulates B7's pointer + B8's worker keys.
-      //    Start with the worker-owned terminal keys only (B8 copy-forward keeps
-      //    every host key + absent worker key byte-for-byte).
+      // 0. Worker meta patch accumulates B7's pointer + B8's worker keys.
+      //    Start with the worker-owned keys only (B8 copy-forward keeps
+      //    every host key + absent worker key byte-for-byte). Mid-turn
+      //    writes overlay `running`; omitted/`true` stays `completed`.
+      const status = persistOverlayStatus(input.terminal);
       const patch: WorkerMetaPatch = {
-        turnStatus: 'completed',
+        turnStatus: status,
         turnRunId: input.turnRunId,
       };
 
@@ -277,7 +280,7 @@ export function createTurnPersistSeam(
 
       return {
         ok: true,
-        status: 'completed',
+        status,
         turnRunId: input.turnRunId,
         objectId: seg.objectId,
         ...(checkpointPointer !== undefined ? { checkpointPointer } : {}),

@@ -104,6 +104,21 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(env?.meta?.turnRunId).toBe(realRunId);
   });
 
+  it('mid-turn persist (terminal: false) overlays turnStatus=running', async () => {
+    const { seam, envelopeStore } = await makeSeam();
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: '{"id":"session-1","messages":[]}',
+      terminal: false,
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.status).toBe('running');
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.turnStatus).toBe('running');
+    expect(env?.meta?.turnRunId).toBe(realRunId);
+  });
+
   it('matrix 3 — checkpoint pointer stored; body never in meta; transcriptPointer advanced by B7', async () => {
     const { seam, blobStore, envelopeStore } = await makeSeam();
     const res = await seam.persist({

@@ -39,7 +39,12 @@ overlays those three turn carriers onto the kept local snapshot, keeps `?s=`
 pinned, and cold-attaches. Messages stay the local (or LWW-winning) transcript
 until attach SSE catches up. The Blob object at `transcriptPointer` is a session
 snapshot JSON body (`id`, `updatedAt`, `messages`) — the same shape a full-record
-GET returns. Extra keys are ignored. Each worker persist suffix-merges this-run
+GET returns. Extra keys are ignored. The worker writes that snapshot after the
+first model delta of a turn that still has tools to run, after each successful
+tool result, and when a model round has no tools (the turn is finished). Mid-turn
+writes keep the envelope `running`; the finished write marks `completed`. Tokens
+that arrive between those writes are attach-only until the next persist. Each
+worker persist suffix-merges this-run
 checkpoint rows onto a prior **readable** pointer body so a later turn cannot
 replace the accumulated transcript (`tool_run` matches by role; one host live-paint
 card covers a run of checkpoint tools, including tools separated by per-round

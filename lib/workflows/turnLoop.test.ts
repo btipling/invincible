@@ -86,11 +86,13 @@ function wiredDeps(overrides: {
           turnRunId: string;
           deltas: ReadonlyArray<unknown>;
           fold?: PersistStepFold;
+          terminal?: boolean;
         }) =>
           persistStep({
             turnRunId: p.turnRunId,
             deltas: p.deltas,
             ...(p.fold !== undefined ? { fold: p.fold } : {}),
+            ...(p.terminal !== undefined ? { terminal: p.terminal } : {}),
             scope: persistScope,
           }),
     // Default no-op toolStep; loop tests that fan tools override it. modelStep is
@@ -188,18 +190,18 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       { userMessage: 'loop' },
     );
     expect(result.status).toBe('capped');
-    // cap = TOTAL STEPS (adversarial L6): round 1 consumes 1 model step + 1 tool
-    // step = 2, budget exhausted → capped. Must never be infinite.
+    // cap = TOTAL STEPS: round 1 consumes 1 model step + 1 user-line persist
+    // = 2, budget exhausted before the tool gate → 0 tools. Must never be infinite.
     expect(result.steps).toBe(2);
     expect(result.rounds).toBe(1);
-    expect(toolStep).toHaveBeenCalledTimes(1);
+    expect(toolStep).toHaveBeenCalledTimes(0);
     expect(closed()).toBe(1);
   });
 
   it('matrix 3b (L6): cap counts steps, so a per-round tool fanout is bounded', async () => {
     const { deps, w, closed } = wiredDeps({ maxSteps: 3 });
-    // One round emits FOUR tool calls. cap=3 steps → 1 model + 2 tool steps only;
-    // the remaining tool calls must NOT run (the budget bounds the fanout).
+    // One round emits FOUR tool calls. cap=3 steps → 1 model + 1 user-line
+    // persist + 1 tool; the remaining tool calls must NOT run.
     const modelStep = vi.fn(async () => ({
       ok: true as const,
       delta: {
@@ -217,9 +219,213 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       { userMessage: 'fan' },
     );
     expect(result.status).toBe('capped');
-    // 1 model + 2 tools = 3 steps; the 3rd/4th tool calls never run.
+    // 1 model + 1 user-line persist + 1 tool = 3 steps; tools 2–4 never run.
     expect(result.steps).toBe(3);
-    expect(toolStep).toHaveBeenCalledTimes(2);
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    expect(closed()).toBe(1);
+  });
+
+  it('mid-turn persist: no-tool run is exactly one completed persist', async () => {
+    const { deps, closed } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [] },
+    }));
+    const result = await runTurnLoop(
+      { ...deps, persistStep: persistSpy, modelStep, toolStep: vi.fn() },
+      { userMessage: 'hello' },
+    );
+    expect(result.status).toBe('completed');
+    expect(persistSpy).toHaveBeenCalledTimes(1);
+    const arg = persistSpy.mock.calls[0]?.[0] as { terminal?: boolean };
+    expect(arg.terminal).toBeUndefined();
+    expect(MAX_WORKFLOW_STEPS).toBe(256);
+    expect(closed()).toBe(1);
+  });
+
+  it('mid-turn persist: one-tool run is user-line + after-tool + terminal', async () => {
+    const { deps, closed } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    let first = true;
+    const modelStep = vi.fn(async () => {
+      const f = first;
+      first = false;
+      return f
+        ? {
+            ok: true as const,
+            delta: {
+              text: 'call',
+              toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
+            },
+          }
+        : { ok: true as const, delta: { text: 'done', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(async () => ({
+      ok: true as const,
+      result: 'ok',
+      freshnessDelta: '[]',
+    }));
+    const result = await runTurnLoop(
+      { ...deps, persistStep: persistSpy, modelStep, toolStep },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    expect(persistSpy).toHaveBeenCalledTimes(3);
+    const flags = persistSpy.mock.calls.map(
+      (c) => (c[0] as { terminal?: boolean }).terminal,
+    );
+    expect(flags).toEqual([false, false, undefined]);
+    const folds = persistSpy.mock.calls.map(
+      (c) => (c[0] as { fold?: PersistStepFold }).fold?.checkpoint,
+    );
+    expect(folds[0]).toEqual([
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: 'call' },
+    ]);
+    expect(folds[1]).toEqual([
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: 'call' },
+      { role: 'tool', content: 'ok' },
+    ]);
+    expect(folds[2]).toEqual([
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: 'call' },
+      { role: 'tool', content: 'ok' },
+      { role: 'assistant', content: 'done' },
+    ]);
+    expect(closed()).toBe(1);
+  });
+
+  it('after-tool persist blob is a parseable SessionSnapshot with tool_run', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const scope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_after_tool' };
+    const { deps, closed } = wiredDeps({ persistScope: scope });
+    setPersistSeamResolver(() =>
+      createTurnPersistSeam({ blobStore, envelopeStore, scope }),
+    );
+    let persistCount = 0;
+    const held: { snap: ReturnType<typeof parseCloudSessionSnapshot> } = {
+      snap: null,
+    };
+    const persistStepFn = async (p: {
+      turnRunId: string;
+      deltas: ReadonlyArray<unknown>;
+      fold?: PersistStepFold;
+      terminal?: boolean;
+    }) => {
+      const res = await deps.persistStep(p);
+      persistCount += 1;
+      if (persistCount === 2 && p.terminal === false) {
+        const env = await envelopeStore.readEnvelope({
+          tenantId: scope.tenantId,
+          userId: scope.userId,
+          sessionId: scope.sessionId,
+        });
+        const pointer = env?.meta?.transcriptPointer;
+        const raw =
+          typeof pointer === 'string' ? await blobStore.read(pointer) : null;
+        held.snap = parseCloudSessionSnapshot(
+          raw ? JSON.parse(raw) : null,
+          scope.sessionId,
+        );
+        expect(env?.meta?.turnStatus).toBe('running');
+      }
+      return res;
+    };
+    let first = true;
+    const modelStep = vi.fn(async () => {
+      const f = first;
+      first = false;
+      return f
+        ? {
+            ok: true as const,
+            delta: {
+              text: 'call',
+              toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
+            },
+          }
+        : { ok: true as const, delta: { text: 'done', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(async () => ({
+      ok: true as const,
+      result: 'ok',
+      freshnessDelta: '[]',
+    }));
+    const result = await runTurnLoop(
+      { ...deps, persistStep: persistStepFn, modelStep, toolStep, turnRunId: 'wr_after' },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    expect(persistCount).toBe(3);
+    const afterToolSnap = held.snap;
+    if (afterToolSnap === null) {
+      throw new Error('after-tool persist blob did not parse as SessionSnapshot');
+    }
+    expect(afterToolSnap.id).toBe(scope.sessionId);
+    expect(afterToolSnap.messages.some((m) => m.role === 'user' && m.text === 'go')).toBe(
+      true,
+    );
+    expect(
+      afterToolSnap.messages.some((m) => m.role === 'assistant' && m.text === 'call'),
+    ).toBe(true);
+    expect(
+      afterToolSnap.messages.some((m) => m.role === 'tool_run' && m.text === 'ok'),
+    ).toBe(true);
+    const env = await envelopeStore.readEnvelope({
+      tenantId: scope.tenantId,
+      userId: scope.userId,
+      sessionId: scope.sessionId,
+    });
+    expect(env?.meta?.turnStatus).toBe('completed');
+    expect(closed()).toBe(1);
+  });
+
+  it('failed tool after user-line persist does not extra-persist', async () => {
+    const { deps, closed } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: {
+        text: 'call',
+        toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
+      },
+    }));
+    const toolStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'sandbox_error' as const,
+      error: 'down',
+    }));
+    const result = await runTurnLoop(
+      { ...deps, persistStep: persistSpy, modelStep, toolStep },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    expect(result.error).toBe('down');
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    expect(persistSpy).toHaveBeenCalledTimes(1);
+    expect((persistSpy.mock.calls[0]?.[0] as { terminal?: boolean }).terminal).toBe(
+      false,
+    );
+    expect(closed()).toBe(1);
+  });
+
+  it('mid-turn persist {ok:false} fails the loop before tools run', async () => {
+    const { deps, closed } = wiredDeps({ persistFail: true });
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: {
+        text: 'call',
+        toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
+      },
+    }));
+    const toolStep = vi.fn();
+    const result = await runTurnLoop({ ...deps, modelStep, toolStep }, { userMessage: 'go' });
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('boom');
+    expect(toolStep).not.toHaveBeenCalled();
     expect(closed()).toBe(1);
   });
 
@@ -667,7 +873,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       { userMessage: 'go' },
     );
     expect(result.status).toBe('completed');
-    // Messages: user, assistant(delta), tool(read_file), tool(list_dir), assistant(no tools), persist
+    // Messages include extra mid-turn persist rows; tool rows still carry ids.
     const toolRows = result.messages.filter(
       (m) => (m as { role?: string }).role === 'tool',
     ) as Array<{ role: string; toolName: string; toolCallId?: string; result?: string }>;
@@ -1147,6 +1353,23 @@ describe('step wrappers (matrix 4–7)', () => {
     expect(Number.isFinite(body.updatedAt)).toBe(true);
     const parsed = parseCloudSessionSnapshot(body, LOOP_SCOPE.sessionId);
     expect(parsed).not.toBeNull();
+  });
+
+  it('matrix 7c: persistStep terminal:false returns running (in-memory seam)', async () => {
+    const { seam, persisted } = createInMemoryPersistSeam();
+    setPersistSeamResolver(() => seam);
+    const result = await persistStep({
+      turnRunId: 'run_mid',
+      deltas: [{ d: 1 }],
+      scope: LOOP_SCOPE,
+      terminal: false,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.status).toBe('running');
+      expect(result.turnRunId).toBe('run_mid');
+    }
+    expect(persisted).toHaveLength(1);
   });
 
   it('matrix 7 missing sessionId → {ok:false}, no throw, no persist', async () => {
