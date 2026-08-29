@@ -3,7 +3,7 @@
 `POST /api/agent` can return a **Server-Sent Events** body when the client asks for it.
 Default remains a single JSON `{ text, toolTrace?, cwd? }` response for tests and simple clients.
 
-`POST /api/turns` (production durable-turn path) uses the **same** event types as `/api/agent`. Tokens ride the Workflows durable stream (`getWritable`). Stream **write and close must run on a `'use step'` stack** — a `'use workflow'` function cannot call `getWriter` / `write` / `close`. The writer helpers (`lib/workflows/turnSseWrite.ts`) are **directive-free** and must not carry `'use step'` (nested-step ban). Live model-step writes hold **one** Workflows writer for the round (`withDefaultStreamWriter` around `generateOneRound` in `modelGenerateStep`) — do **not** call `getWritable()` per token. Loop-owned lines (`tool_result` / `done` / `error`) stay one write per `writeTurnSse` step.
+`POST /api/turns` (production durable-turn path) uses the **same** event types as `/api/agent`. Tokens ride the Workflows durable stream (`getWritable`). Stream **write and close must run on a `'use step'` stack** — a `'use workflow'` function cannot call `getWriter` / `write` / `close`. The writer helpers (`lib/workflows/turnSseWrite.ts`) are **directive-free** and must not carry `'use step'` (nested-step ban). Live model-step writes hold **one** Workflows writer for the round (`withDefaultStreamWriter` around `generateOneRound` in `modelGenerateStep`) — do **not** call `getWritable()` per token. Live `tool_result` holds **one** writer inside `toolExecuteStep` for that round’s toolCalls (one step per burst; independent calls overlap; bind-mutators and FS editors serialize). Loop-owned `done` / `error` (and wrap-up skipped-tool lines) stay one write per `writeTurnSse` step.
 
 ## Negotiation
 
@@ -37,7 +37,7 @@ Each SSE block is one `data: <json>\n\n` line:
 | `type` | Fields | Host use |
 |--------|--------|----------|
 | `tool_start` | `name`, optional `id` | **Live-paint** one display-only `tool_run` card (protocol v11 / kind 6) on this event |
-| `tool_result` | `name`, `ok`, `summary`, optional `preview`, optional `changeDirCwd`, optional `activeSandboxId` | **Grow the open `tool_run` card in place** (total increments) while the last ring row is a tool-run; else open a NEW card at `1`. `preview` is a bounded, redacted level-2 detail body (`TOOL_RUN_PREVIEW_MAX_CHARS` = 100k, head+tail `… (N more lines)`) built from flattened+redacted tool output — **not** raw MCP envelopes. `changeDirCwd` is the confirmed workspace-relative cwd from a successful `change_dir` (typed field from the raw result — never the truncated summary). `activeSandboxId` is the switched-to sandbox id from a successful `meta_sandbox_switch` (Phase 2 #627 / #625) — the host applies it live mid-turn |
+| `tool_result` | `name`, `ok`, `summary`, optional `id`, optional `preview`, optional `changeDirCwd`, optional `activeSandboxId` | **Grow the open `tool_run` card in place** (total increments) while the last ring row is a tool-run; else open a NEW card at `1`. `id` is the provider tool-call id (same value as `tool_start.id`) — the host pairs completion-order live results by this id when present, not LIFO-by-name. `preview` is a bounded, redacted level-2 detail body (`TOOL_RUN_PREVIEW_MAX_CHARS` = 100k, head+tail `… (N more lines)`) built from flattened+redacted tool output — **not** raw MCP envelopes. `changeDirCwd` is the confirmed workspace-relative cwd from a successful `change_dir` (typed field from the raw result — never the truncated summary). `activeSandboxId` is the switched-to sandbox id from a successful `meta_sandbox_switch` (Phase 2 #627 / #625) — the host applies it live mid-turn |
 | `reasoning_delta` | `text` (chunk) | Grow a **Thinking** bubble (protocol v8) |
 | `text_delta` | `text` (chunk) | Grow Assistant bubble(s) |
 | `usage` | `usage` | **Live mid-stream** provider token summary from a `finish` part (aggregate only). `finish-step` never emits this. The host folds the context slot immediately; `done.usage` is the final reconcile. Absent when the part carried no usable counts — never a clear/flicker |
@@ -46,7 +46,7 @@ Each SSE block is one `data: <json>\n\n` line:
 
 Unknown types are ignored (forward-compatible). String fields are redacted server-side with the same secret list as JSON responses.
 
-On the production durable path (`POST /api/turns`), `reasoning_delta` / `text_delta` / `tool_start` token-stream from inside the model step as provider parts arrive, on **one** held Workflows writer for that round. `tool_result` / `done` stay loop-owned after tool/persist steps (one `writeTurnSse` per line). Legacy `/api/agent` token-streams those same event types as they arrive from the provider.
+On the production durable path (`POST /api/turns`), `reasoning_delta` / `text_delta` / `tool_start` token-stream from inside the model step as provider parts arrive, on **one** held Workflows writer for that round. `tool_result` streams from inside the **tool-batch** step (`toolExecuteStep({ calls })` — one `'use step'` per model round’s toolCalls, independent calls overlap, bind-mutators and FS editors serialize) on one held writer as each call settles. `done` / `error` stay loop-owned (`writeTurnSse`). Legacy `/api/agent` token-streams those same event types as they arrive from the provider.
 
 ### Level-2 preview (`tool_result.preview`)
 
@@ -164,6 +164,7 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Logical cwd parse / default | `lib/agent/agentBody.ts`, `lib/sandbox/config.ts`, `lib/agent/workPath.ts` |
 | Host consumer + collapse/caps | `lib/harnessChat.ts`, `lib/agentApi.ts` |
 | Truncated / capped fold | `lib/agent/modelFinish.ts`, `lib/workflows/turnLoop.ts` (empty tools + truncated `finishReason` → SSE `error`, not `done`; 512-step cap same; one tools-off wrap-up so the model sees the error) |
+| Durable tool batch | `lib/workflows/toolExecuteStep.ts` (`{ calls }` — one step per model round; waves at `change_dir` / `meta_sandbox_switch` / `write_file` / `str_replace`; live `tool_result` on one held writer; `maxRetries = 0` so a timeout/kill cannot replay applied writes; 1-call infra throws retry in-process), `lib/workflows/toolWaves.ts`, `lib/workflows/turnLoop.ts` (persist once after the batch) |
 | Workflows step logs | `lib/workflows/turnLog.ts`, `lib/workflows/modelGenerateStep.ts`, `lib/workflows/persistStep.ts` |
 | Thinking paint | `native/harness/src/ui/thinking.zig` (protocol v8 kind) |
 | Feature divide | [feature-divide.md](feature-divide.md) |

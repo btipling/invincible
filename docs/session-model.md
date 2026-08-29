@@ -41,7 +41,7 @@ until attach SSE catches up. The Blob object at `transcriptPointer` is a session
 snapshot JSON body (`id`, `updatedAt`, `messages`) — the same shape a full-record
 GET returns. Extra keys are ignored. The worker writes that snapshot after the
 first model delta of a turn that still has tools to run, after each successful
-tool result, and when a model round has no tools (the turn is finished). Mid-turn
+tool **batch**, and when a model round has no tools (the turn is finished). Mid-turn
 writes keep the envelope `running`; the finished write marks `completed`. Tokens
 that arrive between those writes are attach-only until the next persist. Each
 worker persist suffix-merges this-run

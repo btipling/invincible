@@ -37,7 +37,8 @@
  * step** via `withDefaultStreamWriter` (`lib/workflows/turnSseWrite.ts`, no
  * `'use step'`) as `generateOneRound` `onEvent` fires — one held writer for
  * the round, not `getWritable()` per token. Not dumped by the loop after
- * return. The loop still owns `tool_result` / `done` / close. Do **not**
+ * return. The tool-batch step owns live `tool_result`; the loop still owns
+ * `done` / close (and wrap-up skipped-tool `tool_result`). Do **not**
  * import `turnSseStep` from this file (nested `'use step'`).
  *
  * Errors are business-error-as-value (mirrors the B9 core): a model failure

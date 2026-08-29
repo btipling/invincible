@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { formatLiveModelSse, formatTurnSse } from './turnSseFormat';
+import {
+  formatLiveModelSse,
+  formatLiveToolResultSse,
+  formatTurnSse,
+} from './turnSseFormat';
 
 describe('formatTurnSse (plan #842)', () => {
   it('frames a JSON event as one SSE data block', () => {
@@ -60,5 +64,43 @@ describe('formatLiveModelSse (plan #850)', () => {
     expect(formatLiveModelSse({ type: 'error', error: 'boom' })).toBeNull();
     expect(formatLiveModelSse({ type: 'tool_result', name: 'list_dir' })).toBeNull();
     expect(formatLiveModelSse({ type: 'skill_attached', name: 'x' })).toBeNull();
+  });
+});
+
+describe('formatLiveToolResultSse (plan #880)', () => {
+  it('frames ok result', () => {
+    expect(
+      formatLiveToolResultSse({ name: 'list_dir', ok: true, summary: 'ok' }),
+    ).toBe('data: {"type":"tool_result","name":"list_dir","ok":true,"summary":"ok"}\n\n');
+  });
+
+  it('attaches confirmed cwd / sandbox id', () => {
+    expect(
+      formatLiveToolResultSse({
+        name: 'change_dir',
+        ok: true,
+        summary: 'change_dir lib: ok cwd=lib',
+        changeDirCwd: 'lib',
+      }),
+    ).toContain('"changeDirCwd":"lib"');
+    expect(
+      formatLiveToolResultSse({
+        name: 'meta_sandbox_switch',
+        ok: true,
+        summary: 'switched',
+        activeSandboxId: 'sb_b',
+      }),
+    ).toContain('"activeSandboxId":"sb_b"');
+  });
+
+  it('attaches provider tool-call id (adversarial #881 round-3)', () => {
+    expect(
+      formatLiveToolResultSse({
+        name: 'read_file',
+        ok: true,
+        summary: 'ok',
+        id: 'tc_a',
+      }),
+    ).toContain('"id":"tc_a"');
   });
 });

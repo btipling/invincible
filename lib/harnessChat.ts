@@ -1386,7 +1386,7 @@ export async function runHarnessTurn(
         resetLiveToolStreak();
       }
       if (ev.type === 'tool_start') {
-        addToolStart(toolRunGroup, ev.name);
+        addToolStart(toolRunGroup, ev.name, ev.id);
       } else {
         addToolResult(
           toolRunGroup,
@@ -1394,6 +1394,7 @@ export async function runHarnessTurn(
           ev.ok,
           truncateToolTraceSummary(ev.summary),
           ev.preview,
+          ev.id,
         );
         // Phase 2 (#465): a successful `change_dir` is the durable-live-cwd
         // signal. Only a confirmed success records it; anything else leaves the
@@ -1641,6 +1642,7 @@ export async function runHarnessTurn(
               hydrated: hydratedTools,
               name: ev.name,
               replayedStartsOfName: replayedStarts[ev.name] ?? 1,
+              ...(ev.id ? { callId: ev.id } : {}),
             })
           ) {
             return;
@@ -1653,6 +1655,7 @@ export async function runHarnessTurn(
               hydrated: hydratedTools,
               name: ev.name,
               replayedResultsOfName: replayedResults[ev.name] ?? 1,
+              ...(ev.id ? { callId: ev.id } : {}),
             })
           ) {
             return;

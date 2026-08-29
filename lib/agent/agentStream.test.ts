@@ -68,7 +68,7 @@ describe('mapFullStreamPart', () => {
       output: 'a.txt\nb.txt',
     });
     expect(evs).toHaveLength(1);
-    expect(evs[0]).toMatchObject({ type: 'tool_result', name: 'list_dir', ok: true });
+    expect(evs[0]).toMatchObject({ type: 'tool_result', name: 'list_dir', ok: true, id: 'c1' });
     if (evs[0]!.type === 'tool_result') {
       expect(evs[0].summary).toContain('list_dir · ✓ ok');
       // #353: multi-line output carries a bounded preview → real level-2 detail.

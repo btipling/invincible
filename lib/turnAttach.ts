@@ -332,9 +332,13 @@ export function textDeltaDedup(opts: {
   return { action: 'grow', chunk: opts.chunk };
 }
 
-export type HydratedToolItem = { name: string; status: 'running' | 'ok' | 'fail' };
+export type HydratedToolItem = {
+  name: string;
+  status: 'running' | 'ok' | 'fail';
+  callId?: string;
+};
 
-/** Flatten this-run `tool_run` cards into ordinal items (name + status). */
+/** Flatten this-run `tool_run` cards into ordinal items (name + status + callId). */
 export function thisRunToolItems(messages: SessionMessage[]): HydratedToolItem[] {
   const out: HydratedToolItem[] = [];
   for (const m of thisRunWindow(messages)) {
@@ -342,7 +346,11 @@ export function thisRunToolItems(messages: SessionMessage[]): HydratedToolItem[]
     const decoded = decodeToolRun(m.text);
     if (!decoded) continue;
     for (const it of decoded.items) {
-      out.push({ name: it.name, status: it.status });
+      out.push({
+        name: it.name,
+        status: it.status,
+        ...(it.callId ? { callId: it.callId } : {}),
+      });
     }
   }
   return out;
@@ -369,7 +377,8 @@ function ordinalOf(
 
 /**
  * Skip re-push of a `tool_start` when this-run hydrate already has that call.
- * Still apply when the ordinal is missing (live suffix).
+ * Prefer provider id (completion-order live writes). Still apply when the
+ * ordinal / id is missing (live suffix).
  */
 export function shouldSkipToolStart(opts: {
   enabled: boolean;
@@ -377,14 +386,20 @@ export function shouldSkipToolStart(opts: {
   name: string;
   /** 1-based count of `tool_start`s for `name` including this event. */
   replayedStartsOfName: number;
+  /** Provider tool-call id from SSE `tool_start.id`. */
+  callId?: string;
 }): boolean {
   if (!opts.enabled) return false;
+  if (opts.callId) {
+    return opts.hydrated.some((it) => it.callId === opts.callId);
+  }
   const hit = ordinalOf(opts.hydrated, opts.name, opts.replayedStartsOfName);
   return hit !== undefined;
 }
 
 /**
- * Skip a `tool_result` only when the hydrated ordinal is already terminal.
+ * Skip a `tool_result` only when the hydrated item is already terminal.
+ * Prefer provider id (completion-order live writes under Promise.all).
  * A hydrated `running` card must still grow on the result.
  */
 export function shouldSkipToolResult(opts: {
@@ -393,8 +408,15 @@ export function shouldSkipToolResult(opts: {
   name: string;
   /** 1-based count of `tool_result`s for `name` including this event. */
   replayedResultsOfName: number;
+  /** Provider tool-call id from SSE `tool_result.id`. */
+  callId?: string;
 }): boolean {
   if (!opts.enabled) return false;
+  if (opts.callId) {
+    const hit = opts.hydrated.find((it) => it.callId === opts.callId);
+    if (!hit) return false;
+    return hit.status === 'ok' || hit.status === 'fail';
+  }
   const hit = ordinalOf(opts.hydrated, opts.name, opts.replayedResultsOfName);
   if (!hit) return false;
   return hit.status === 'ok' || hit.status === 'fail';

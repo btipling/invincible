@@ -114,10 +114,9 @@ export async function turnWorkflow(
       ...(disableTools ? { disableTools: true } : {}),
     });
   };
-  const toolStep: ToolStepFn = async ({ toolName, toolCallId, callArgs, freshnessSeed, persistRunBind }) => {
+  const toolStep: ToolStepFn = async ({ calls, freshnessSeed, persistRunBind }) => {
     return toolExecuteStep({
-      toolName,
-      callArgs,
+      calls,
       freshnessSeed,
       scope: args.scope,
       // Use the RUNNING bind from the loop, NOT the stale start snapshot.

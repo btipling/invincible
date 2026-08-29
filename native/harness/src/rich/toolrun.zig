@@ -5,13 +5,16 @@
 //! as versioned, tab/newline-delimited text:
 //!
 //!   toolrun\t1\t{ok}/{fail}/{pending}
-//!   {id}\t{status}\t{name}\t{brief}\t{detail}
+//!   {id}\t{status}\t{name}\t{brief}\t{detail}[\t{callId}]
 //!   ...
 //!
 //! `status ∈ running | ok | fail`. Fields `name`/`brief`/`detail` escape
-//! `\t`, `\n`, `\\`. A malformed header or unknown `version` **fails open**
-//! (returns null) so the caller renders the raw body as plain text and never
-//! crashes. Malformed item lines are tolerated (skipped).
+//! `\t`, `\n`, `\\`. Optional 6th column is the host-only provider tool-call
+//! id (pairing under completion-order live writes / hot-resume). This decoder
+//! reads five fields and ignores the rest — not a protocol bump
+//! (adversarial #881 round-7). A malformed header or unknown `version`
+//! **fails open** (returns null) so the caller renders the raw body as plain
+//! text and never crashes. Malformed item lines are tolerated (skipped).
 const std = @import("std");
 
 pub const TOOL_RUN_VERSION: u8 = 1;

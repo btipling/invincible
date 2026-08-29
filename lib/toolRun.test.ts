@@ -98,6 +98,52 @@ describe('toolRun grouping', () => {
     expect(hasRunningTool(g, 'exec')).toBe(false);
   });
 
+  it('pairs completion-order same-name results by callId, not LIFO-by-name (adversarial #881 round-3)', () => {
+    const g = createToolRunGroup();
+    addToolStart(g, 'read_file', 'tc_a');
+    addToolStart(g, 'read_file', 'tc_b');
+    // A finishes first while B is still running — LIFO-by-name would paint on B.
+    addToolResult(g, 'read_file', true, 'body of A', undefined, 'tc_a');
+    expect(g.items[0]!.status).toBe('ok');
+    expect(g.items[0]!.brief).toContain('body of A');
+    expect(g.items[1]!.status).toBe('running');
+    addToolResult(g, 'read_file', true, 'body of B', undefined, 'tc_b');
+    expect(g.items[1]!.status).toBe('ok');
+    expect(g.items[1]!.brief).toContain('body of B');
+  });
+
+  it('encode/decode round-trips callId so hot-resume restore still pairs by id (adversarial #881 round-7)', () => {
+    const g = createToolRunGroup();
+    addToolStart(g, 'read_file', 'tc_a');
+    addToolStart(g, 'read_file', 'tc_b');
+    const text = encodeToolRun(g);
+    expect(text).toContain('tc_a');
+    expect(text).toContain('tc_b');
+    const decoded = decodeToolRun(text!);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.items.map((it) => it.callId)).toEqual(['tc_a', 'tc_b']);
+    // Attach restore: rebuild the group from the payload (no live closures).
+    const restored = {
+      items: decoded!.items.map((it) => ({ ...it })),
+      detailEncUsed: 0,
+    };
+    addToolResult(restored, 'read_file', true, 'body of A', undefined, 'tc_a');
+    expect(restored.items[0]!.status).toBe('ok');
+    expect(restored.items[0]!.brief).toContain('body of A');
+    expect(restored.items[1]!.status).toBe('running');
+    addToolResult(restored, 'read_file', true, 'body of B', undefined, 'tc_b');
+    expect(restored.items[1]!.status).toBe('ok');
+    expect(restored.items[1]!.brief).toContain('body of B');
+  });
+
+  it('legacy 5-field rows still decode (no callId)', () => {
+    const text = `toolrun\t${TOOL_RUN_VERSION}\t0/0/1\n1\trunning\tread_file\tread_file · running…\t`;
+    const decoded = decodeToolRun(text);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.items[0]!.name).toBe('read_file');
+    expect(decoded!.items[0]!.callId).toBeUndefined();
+  });
+
   it('toolRunIsFull only at the cap', () => {
     const g = createToolRunGroup();
     for (let i = 0; i < TOOL_RUN_ITEMS_MAX - 1; i++) {
@@ -226,7 +272,7 @@ describe('buildTraceGroups (JSON/non-stream fallback)', () => {
     addToolResult(g, 'exec', true, 'exec · ✓ ok', big);
     const text = encodeToolRun(g)!;
     expect(text.length).toBeLessThanOrEqual(TOOL_RUN_MSG_HARD_MAX);
-    // Header + rows stay 5-field aligned → decodes cleanly, counts exact.
+    // Header + rows stay aligned → decodes cleanly, counts exact.
     const decoded = decodeToolRun(text);
     expect(decoded).not.toBeNull();
     expect(decoded!.items).toHaveLength(3);

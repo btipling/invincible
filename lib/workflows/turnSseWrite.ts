@@ -2,7 +2,8 @@
  * Directive-free write onto the Workflows default stream.
  *
  * No `'use step'` / `'use workflow'` — callers already on a step stack
- * (`writeTurnSse`, `modelGenerateStep`) invoke this as a plain function.
+ * (`writeTurnSse`, `modelGenerateStep`, `toolExecuteStep`) invoke this as a
+ * plain function.
  * Import graph: `workflow` only. Does not close.
  *
  * Live model-step tokens must use `withDefaultStreamWriter` (one `getWritable`

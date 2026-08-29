@@ -18,6 +18,12 @@ export type AgentStreamEvent =
       summary: string;
       preview?: string;
       /**
+       * Provider tool-call id — same value as `tool_start.id`. Host pairs
+       * completion-order live results by this id (adversarial #881 round-3).
+       * Absent on legacy `/api/agent` tool-result parts that carry no id.
+       */
+      id?: string;
+      /**
        * Confirmed `change_dir` cwd carried as a TYPED field, populated from the
        * raw (untruncated) tool result. Persistence must never re-derive this from
        * `summary`, which is hard-truncated at `TOOL_LINE_SALIENT_MAX` and would
@@ -495,6 +501,7 @@ export function mapFullStreamPart(
 
   if (type === 'tool-result') {
     const name = toolNameOf(part);
+    const id = toolIdOf(part);
     const raw =
       part.output != null
         ? part.output
@@ -515,6 +522,7 @@ export function mapFullStreamPart(
         name: redactSecrets(name, secrets),
         ok,
         summary: summarizeToolLine(name, redacted || '', ok, secrets),
+        ...(id ? { id } : {}),
         ...(changeDirCwd !== undefined ? { changeDirCwd } : {}),
         ...(activeSandboxId !== undefined ? { activeSandboxId } : {}),
         ...(preview ? { preview } : {}),
@@ -524,6 +532,7 @@ export function mapFullStreamPart(
 
   if (type === 'tool-error') {
     const name = toolNameOf(part);
+    const id = toolIdOf(part);
     const raw =
       part.error != null
         ? part.error
@@ -539,6 +548,7 @@ export function mapFullStreamPart(
         name: redactSecrets(name, secrets),
         ok: false,
         summary: summarizeToolLine(name, redacted, false, secrets),
+        ...(id ? { id } : {}),
         ...(preview ? { preview } : {}),
       },
     ];
