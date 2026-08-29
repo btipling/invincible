@@ -21,6 +21,7 @@ import {
 import { sendTurn, sendTurnStream, attachTurnStream } from './turnApi';
 import { isDetachAbort } from './detachTurn';
 import { type AgentStreamEvent } from './agent/agentStream';
+import { isTruncatedFinish, OUTPUT_TRUNCATED_ERROR } from './agent/modelFinish';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
 } from './sandbox/config';
@@ -1133,6 +1134,7 @@ export async function runHarnessTurn(
     let thinkingSegment = '';
     let thinkingSegmentOpen = false;
     let sawStreamTerminal = false;
+    let doneFinishReason: string | undefined;
     /**
      * This-turn durable SSE start. Set only in `onTurnStarted` (headers +
      * body accepted). Leftover completed/cancelling `turnRunId` on the session
@@ -1732,6 +1734,9 @@ export async function runHarnessTurn(
       }
       if (ev.type === 'done') {
         sawStreamTerminal = true;
+        if (typeof ev.finishReason === 'string') {
+          doneFinishReason = ev.finishReason;
+        }
         closeThinkingSegment();
         finalizeAssistant(ev.text ?? assistantAcc);
         // Do not re-push toolTrace — live lines already shown.
@@ -1850,6 +1855,16 @@ export async function runHarnessTurn(
     // SSE event (abort, network drop, empty body). Mid-stream closes already ran
     // for tool/text/done/error; this is a no-op when the segment is already closed.
     closeThinkingSegment();
+
+    if (agentResult.ok && isTruncatedFinish(doneFinishReason)) {
+      agentResult = {
+        ok: false,
+        error: OUTPUT_TRUNCATED_ERROR,
+        ...('turnRunId' in agentResult && agentResult.turnRunId
+          ? { turnRunId: agentResult.turnRunId }
+          : {}),
+      };
+    }
 
     const stopKind = !agentResult.ok
       ? classifyTurnFailure(

@@ -1945,6 +1945,89 @@ describe('durable stream EOF is detach (plan #852 / source #849)', () => {
   });
 });
 
+describe('truncated / capped turn-end is Error, not model-finished', () => {
+  it('SSE done + finishReason length is Error, not model-finished; assistant stays', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { session: next, result } = await runHarnessTurn(
+      bridge,
+      createEmptySession(),
+      'work',
+      {
+        streamAgent: true,
+        sendAgentStream: async (_prompt, init) => {
+          await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+          await init?.onEvent?.({ type: 'text_delta', text: 'cut off mid' });
+          await init?.onEvent?.({
+            type: 'done',
+            text: 'cut off mid',
+            finishReason: 'length',
+          });
+          return { ok: true, text: 'cut off mid', turnRunId: 'wr_live' };
+        },
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some((m) => m.role === 'assistant' && m.text === 'cut off mid'),
+    ).toBe(true);
+    expect(
+      next.messages.some(
+        (m) =>
+          m.role === 'error' &&
+          m.text === describeTurnEnd('error', 'output truncated'),
+      ),
+    ).toBe(true);
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('model'),
+      ),
+    ).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+  });
+
+  it('SSE error output truncated after text_delta is Error, not model-finished', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { session: next, result } = await runHarnessTurn(
+      bridge,
+      createEmptySession(),
+      'work',
+      {
+        streamAgent: true,
+        sendAgentStream: async (_prompt, init) => {
+          await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+          await init?.onEvent?.({ type: 'text_delta', text: 'cut off mid' });
+          await init?.onEvent?.({ type: 'error', error: 'output truncated' });
+          return {
+            ok: false as const,
+            error: 'output truncated',
+            turnRunId: 'wr_live',
+          };
+        },
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(
+      next.messages.some((m) => m.role === 'assistant' && m.text === 'cut off mid'),
+    ).toBe(true);
+    expect(
+      next.messages.some(
+        (m) =>
+          m.role === 'error' &&
+          m.text === describeTurnEnd('error', 'output truncated'),
+      ),
+    ).toBe(true);
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('model'),
+      ),
+    ).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+  });
+});
+
 describe('toolRun aggregation (protocol v10 / plan #345)', () => {
   it('stream streak beyond TOOL_RUN_ITEMS_MAX rolls a new tool_run group', async () => {
     const exp = makeMockExports();

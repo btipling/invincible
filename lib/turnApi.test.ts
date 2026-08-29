@@ -194,6 +194,63 @@ describe('sendTurnStream (SSE path — production default)', () => {
     }
   });
 
+  it('SSE done + finishReason length → ok:false output truncated (parser defense)', async () => {
+    const types: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse(
+          [
+            'data: {"type":"text_delta","text":"cut off mid"}\n\n',
+            'data: {"type":"done","text":"cut off mid","finishReason":"length"}\n\n',
+          ],
+          { 'x-workflow-run-id': 'wr_trunc' },
+        ),
+      ),
+    );
+    const result = await sendTurnStream('hi', {
+      onEvent: async (ev) => {
+        types.push(ev.type);
+      },
+    });
+    expect(types).toEqual(['text_delta', 'done']);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('output truncated');
+      expect(result.turnRunId).toBe('wr_trunc');
+    }
+  });
+
+  it('truncated done without trailing blank line still errors (flush parse site)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse(
+          ['data: {"type":"done","text":"cut","finishReason":"content-filter"}'],
+          { 'x-workflow-run-id': 'wr_flush' },
+        ),
+      ),
+    );
+    const result = await sendTurnStream('hi');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toBe('output truncated');
+  });
+
+  it('SSE done + finishReason stop stays ok:true', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse(
+          ['data: {"type":"done","text":"hi","finishReason":"stop"}\n\n'],
+          { 'x-workflow-run-id': 'wr_stop' },
+        ),
+      ),
+    );
+    const result = await sendTurnStream('hi');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.text).toBe('hi');
+  });
+
   it('fail-closed to plain failure when res.body is missing', async () => {
     vi.stubGlobal(
       'fetch',
