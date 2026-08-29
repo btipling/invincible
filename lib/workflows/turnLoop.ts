@@ -630,12 +630,14 @@ export async function runTurnLoop(
         ? batch.results
         : (batch.results ?? []);
       if (batch.ok) {
+        // Live ledger snapshot from the step — do NOT clobber with per-item
+        // serialize-at-complete times (adversarial #881 Major: last-item-wins
+        // under Promise.all drops earlier-finishing grants).
         freshness = batch.freshnessDelta;
       }
 
       for (const item of items) {
         if (item.ok) {
-          freshness = item.freshnessDelta;
           deltas.push(item);
           messages.push({
             role: 'tool',
@@ -662,23 +664,14 @@ export async function runTurnLoop(
       const cancelled =
         (!batch.ok && batch.code === 'cancelled') ||
         items.some((i) => !i.ok && i.code === 'cancelled');
-      if (cancelled) {
-        const cancelledItem = items.find(
-          (i): i is Extract<ToolBatchItem, { ok: false }> =>
-            !i.ok && i.code === 'cancelled',
-        );
-        const err =
-          !batch.ok && batch.code === 'cancelled'
-            ? batch.error
-            : cancelledItem?.error;
-        return fail('cancelled', round, steps, err);
-      }
-
       const itemFail = items.find(
         (i): i is Extract<ToolBatchItem, { ok: false }> => !i.ok,
       );
-      if (!batch.ok || itemFail) {
+      if (cancelled || !batch.ok || itemFail) {
         // Persist whatever ran so successes are not dropped, then fail.
+        // Cancel used to skip this (adversarial #881 Major) — #871 persist
+        // cadence was per-tool; the batch must persist-then-fail the same as
+        // itemFail.
         if (items.length > 0 && steps < cap) {
           const persisted = await persistNow(false);
           if (!persisted.ok) {
@@ -686,6 +679,17 @@ export async function runTurnLoop(
           }
           deltas.push(persisted);
           messages.push({ role: 'persist', status: persisted.status });
+        }
+        if (cancelled) {
+          const cancelledItem = items.find(
+            (i): i is Extract<ToolBatchItem, { ok: false }> =>
+              !i.ok && i.code === 'cancelled',
+          );
+          const err =
+            !batch.ok && batch.code === 'cancelled'
+              ? batch.error
+              : cancelledItem?.error;
+          return fail('cancelled', round, steps, err);
         }
         const err = !batch.ok ? batch.error : itemFail?.error;
         if (!batch.ok && items.length === 0) {

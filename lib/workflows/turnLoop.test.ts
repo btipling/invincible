@@ -339,6 +339,59 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(closed()).toBe(1);
   });
 
+  it('cancel persists sibling successes then fails (adversarial #881 Major)', async () => {
+    const { deps, closed } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: {
+        text: 'two',
+        toolCalls: [
+          { toolName: 'list_dir', toolCallId: 'a', args: {} },
+          { toolName: 'read_file', toolCallId: 'b', args: {} },
+        ],
+      },
+    }));
+    const toolStep = vi.fn(async (_args: ToolCallIn) => ({
+      ok: false as const,
+      code: 'cancelled' as const,
+      error: 'Request cancelled.',
+      results: [
+        {
+          ok: true as const,
+          toolName: 'list_dir',
+          toolCallId: 'a',
+          result: 'ok-dir',
+          freshnessDelta: '[]',
+        },
+        {
+          ok: false as const,
+          toolName: 'read_file',
+          toolCallId: 'b',
+          code: 'cancelled' as const,
+          error: 'Request cancelled.',
+        },
+      ],
+    }));
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep, persistStep: persistSpy },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('cancelled');
+    expect(result.error).toBe('Request cancelled.');
+    const rows = (result.messages as Array<{ role?: string; result?: string; error?: string }>)
+      .filter((m) => m.role === 'tool');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.result).toBe('ok-dir');
+    // user-line + persist of the mixed batch before fail()
+    expect(persistSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    const lastFold = persistSpy.mock.calls[persistSpy.mock.calls.length - 1]?.[0] as {
+      terminal?: boolean;
+    };
+    expect(lastFold.terminal).toBe(false);
+    expect(closed()).toBe(1);
+  });
+
   it('matrix 3: loop reaches the cap → terminates (never infinite), writable closed', async () => {
     const { deps, w, closed } = wiredDeps({ maxSteps: 2 });
     // Every model round keeps returning a tool call, so the loop would never stop
@@ -901,6 +954,75 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(toolStep).toHaveBeenCalledTimes(2);
     const writeCall = toolStep.mock.calls[1]?.[0] as ToolCallIn;
     expect(writeCall.freshnessSeed).toBe('LEDGER-R1');
+    expect(closed()).toBe(1);
+  });
+
+  it('freshness (adversarial #881): loop uses batch.freshnessDelta, not last-item snapshot', async () => {
+    const { deps, closed } = wiredDeps();
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'reads',
+            toolCalls: [
+              { toolName: 'read_file', toolCallId: 'a', args: {} },
+              { toolName: 'read_file', toolCallId: 'b', args: {} },
+            ],
+          },
+        };
+      }
+      if (round === 2) {
+        return {
+          ok: true as const,
+          delta: { text: 'w', toolCalls: [{ toolName: 'write_file', toolCallId: 'c', args: {} }] },
+        };
+      }
+      return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
+    });
+    const merged = '{"grants":[{"path":"A","kind":"fresh","fp":{}},{"path":"B","kind":"fresh","fp":{}}],"truncated":false}';
+    const onlyB = '{"grants":[{"path":"B","kind":"fresh","fp":{}}],"truncated":false}';
+    const toolStep = vi.fn(async (args: ToolCallIn) => {
+      if (args.calls.some((c) => c.toolName === 'write_file')) {
+        return {
+          ok: true as const,
+          results: args.calls.map((c) => ({
+            ok: true as const,
+            toolName: c.toolName,
+            ...(c.toolCallId ? { toolCallId: c.toolCallId } : {}),
+            result: `seed=${args.freshnessSeed ?? ''}`,
+            freshnessDelta: merged,
+          })),
+          freshnessDelta: merged,
+        };
+      }
+      return {
+        ok: true as const,
+        results: [
+          {
+            ok: true as const,
+            toolName: 'read_file',
+            toolCallId: 'a',
+            result: 'A',
+            freshnessDelta: merged,
+          },
+          {
+            ok: true as const,
+            toolName: 'read_file',
+            toolCallId: 'b',
+            result: 'B',
+            freshnessDelta: onlyB,
+          },
+        ],
+        freshnessDelta: merged,
+      };
+    });
+    const result = await runTurnLoop({ ...deps, modelStep, toolStep }, { userMessage: 'g' });
+    expect(result.status).toBe('completed');
+    const writeCall = toolStep.mock.calls[1]?.[0] as ToolCallIn;
+    expect(writeCall.freshnessSeed).toBe(merged);
     expect(closed()).toBe(1);
   });
 
@@ -2481,6 +2603,192 @@ describe('step wrappers (matrix 4–7)', () => {
       persistRunBind?: { activeSandboxId?: string };
     };
     expect(second.persistRunBind?.activeSandboxId).toBe('sb_b');
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('matrix 6f: parallel freshness seed is the live ledger, not last-finishing snapshot (adversarial #881)', async () => {
+    const { createRunFileFreshness } = await import('../agent/fileFreshness');
+    const freshness = createRunFileFreshness();
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((r) => {
+      releaseA = r;
+    });
+    vi.resetModules();
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: {
+        a: {
+          execute: async () => {
+            await gateA;
+            freshness.recordRead('A', { mtimeMs: 1, size: 1 });
+            return 'A';
+          },
+        },
+        b: {
+          execute: async () => {
+            freshness.recordRead('B', { mtimeMs: 2, size: 2 });
+            releaseA();
+            return 'B';
+          },
+        },
+      },
+      secrets: [],
+      signal: undefined,
+      freshness,
+    }));
+    const result = await mod.toolExecuteStep({
+      calls: [
+        { toolName: 'a', toolCallId: '1' },
+        { toolName: 'b', toolCallId: '2' },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const snap = JSON.parse(result.freshnessDelta) as { grants: Array<{ path: string }> };
+      expect(snap.grants.map((g) => g.path).sort()).toEqual(['A', 'B']);
+    }
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('matrix 6g: sibling throw becomes a value; successful sibling is kept (adversarial #881)', async () => {
+    const execMock = vi.fn(async (_deps: unknown, input: unknown) => {
+      const i = input as { toolName?: string };
+      if (i.toolName === 'boom') throw new Error('transport down');
+      return { ok: true as const, result: `out:${i.toolName}`, freshnessDelta: '[]' };
+    });
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: { keep: {}, boom: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    const result = await mod.toolExecuteStep({
+      calls: [
+        { toolName: 'keep', toolCallId: '1', args: {} },
+        { toolName: 'boom', toolCallId: '2', args: {} },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    expect(execMock).toHaveBeenCalledTimes(2);
+    if (result.ok) {
+      expect(result.results).toHaveLength(2);
+      expect(result.results[0]).toMatchObject({ ok: true, result: 'out:keep' });
+      expect(result.results[1]).toMatchObject({
+        ok: false,
+        code: 'sandbox_error',
+        error: 'transport down',
+      });
+    }
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('matrix 6g-solo: a 1-call infra throw still rethrows (SDK 3× retry)', async () => {
+    const execMock = vi.fn(async () => {
+      throw new Error('daemon down');
+    });
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: { boom: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    await expect(
+      mod.toolExecuteStep({ calls: [{ toolName: 'boom', toolCallId: '1', args: {} }] }),
+    ).rejects.toThrow('daemon down');
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('matrix 6h: re-assemble fail does not duplicate switch toolCallId; remaining calls get skip results', async () => {
+    const execMock = vi.fn(async (_deps: unknown, input: unknown) => {
+      const i = input as { toolName?: string };
+      if (i.toolName === 'meta_sandbox_switch') {
+        return {
+          ok: true as const,
+          result: 'switched active sandbox to id=sb_b tools=[]',
+          freshnessDelta: '[]',
+        };
+      }
+      return { ok: true as const, result: `out:${i.toolName}`, freshnessDelta: '[]' };
+    });
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    const resolve = vi.fn((_args: unknown) => ({
+      registry: { meta_sandbox_switch: {}, read_file: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    resolve
+      .mockImplementationOnce(() => ({
+        registry: { meta_sandbox_switch: {}, read_file: {} },
+        secrets: [],
+        signal: undefined,
+        freshness: {},
+      }))
+      .mockImplementationOnce(() => {
+        throw new Error('resolver unset');
+      });
+    mod.setToolWorldResolver(resolve);
+    const result = await mod.toolExecuteStep({
+      calls: [
+        { toolName: 'meta_sandbox_switch', toolCallId: 's', args: { id: 'sb_b' } },
+        { toolName: 'read_file', toolCallId: 'r', args: { path: 'x' } },
+      ],
+      persistRunBind: { activeSandboxId: 'sb_a' },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('sandbox_error');
+      expect(result.results).toHaveLength(2);
+      expect(result.results?.[0]).toMatchObject({
+        ok: true,
+        toolName: 'meta_sandbox_switch',
+        toolCallId: 's',
+      });
+      expect(result.results?.[1]).toMatchObject({
+        ok: false,
+        toolName: 'read_file',
+        toolCallId: 'r',
+        code: 'sandbox_error',
+      });
+      const ids = (result.results ?? []).map((r) => r.toolCallId);
+      expect(ids).toEqual(['s', 'r']);
+    }
+    expect(execMock).toHaveBeenCalledTimes(1);
     vi.doUnmock('../agent/executeTool');
     vi.doUnmock('./turnSseWrite');
   });

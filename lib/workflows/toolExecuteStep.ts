@@ -4,8 +4,8 @@
  *
  * Thin directive shell over the B10 core `executeTool`. One model round's
  * `toolCalls` run in **this** step: assemble the tool world once, split waves
- * at bind-mutators, `Promise.all` inside a wave, live-write `tool_result` on
- * one held Workflows writer. `executeTool` stays one-call.
+ * at bind-mutators, allSettled-style overlap inside a wave, live-write
+ * `tool_result` on one held Workflows writer. `executeTool` stays one-call.
  *
  * In **production** the tool world is assembled IN-STEP via the shared
  * `assembleDurableToolWorld` helper (same path as `modelGenerateStep`). The
@@ -21,8 +21,11 @@
  * values. Closures / AbortSignal / bound runners can never pass the step
  * boundary. MCP/HTTP/sandbox handles are closed in a `finally` block.
  *
- * Business errors are **values**, not throws. Infra/transient failures re-throw
- * so the SDK's 3× retry applies only there.
+ * Business errors are **values**, not throws. Infra/transient failures on a
+ * **1-call** batch re-throw so the SDK's 3× retry still applies there. A throw
+ * with a successful sibling is caught (allSettled) so Workflows cannot retry
+ * the whole batch and re-apply writes. The batch freshness seed is always
+ * snapshotted from the **live** ledger after the wave — never last-item-wins.
  */
 
 import {
@@ -30,6 +33,10 @@ import {
   type ExecuteToolDeps,
   type ExecuteToolResult,
 } from '../agent/executeTool';
+import {
+  serializeRunFileFreshness,
+  type RunFileFreshness,
+} from '../agent/fileFreshness';
 import type { HttpFetchRunner } from '../agent/httpFetchTypes';
 import {
   changeDirSuccessCwd,
@@ -105,6 +112,8 @@ type WorldHandles = {
   sandboxClientClose?: () => Promise<void>;
 };
 
+type FailCode = Extract<ToolBatchItem, { ok: false }>['code'];
+
 async function closeHandles(w: WorldHandles | undefined): Promise<void> {
   if (!w) return;
   if (w.mcpClose) {
@@ -118,6 +127,31 @@ async function closeHandles(w: WorldHandles | undefined): Promise<void> {
   }
 }
 
+function liveFreshnessDelta(freshness: unknown, fallback: string): string {
+  if (
+    freshness &&
+    typeof freshness === 'object' &&
+    typeof (freshness as RunFileFreshness).snapshot === 'function'
+  ) {
+    return serializeRunFileFreshness(freshness as RunFileFreshness);
+  }
+  return fallback;
+}
+
+function failItem(
+  call: TurnToolCallDelta,
+  code: FailCode,
+  error: string,
+): ToolBatchItem {
+  return {
+    ok: false,
+    toolName: call.toolName,
+    ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}),
+    code,
+    error,
+  };
+}
+
 function toItem(call: TurnToolCallDelta, r: ExecuteToolResult): ToolBatchItem {
   if (r.ok) {
     return {
@@ -128,13 +162,7 @@ function toItem(call: TurnToolCallDelta, r: ExecuteToolResult): ToolBatchItem {
       freshnessDelta: r.freshnessDelta,
     };
   }
-  return {
-    ok: false,
-    toolName: call.toolName,
-    ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}),
-    code: r.code,
-    error: r.error,
-  };
+  return failItem(call, r.code, r.error);
 }
 
 function sseFor(item: ToolBatchItem): string {
@@ -255,6 +283,7 @@ export async function toolExecuteStep(
 
     const results: ToolBatchItem[] = [];
     let freshnessDelta = args.freshnessSeed ?? '[]';
+    let assembleFail: string | undefined;
 
     await withDefaultStreamWriter(async (write) => {
       let writeChain = Promise.resolve();
@@ -283,15 +312,35 @@ export async function toolExecuteStep(
         return item;
       };
 
+      // allSettled: a throw from one call must not reject the wave (that would
+      // drop sibling results and let Workflows retry the whole batch). A 1-call
+      // batch still rethrows so the SDK's 3× retry applies to a lone infra blip.
+      const runOneCaught = async (
+        call: TurnToolCallDelta,
+      ): Promise<ToolBatchItem> => {
+        try {
+          return await runOne(call);
+        } catch (err) {
+          if (calls.length === 1) throw err;
+          const item = failItem(
+            call,
+            'sandbox_error',
+            err instanceof Error ? err.message : String(err),
+          );
+          await writeSafe(sseFor(item));
+          return item;
+        }
+      };
+
       for (const wave of splitToolWaves(calls)) {
         const ran = wave.parallel
-          ? await Promise.all(wave.calls.map((c) => runOne(c)))
-          : [await runOne(wave.calls[0]!)];
+          ? await Promise.all(wave.calls.map((c) => runOneCaught(c)))
+          : [await runOneCaught(wave.calls[0]!)];
         for (const item of ran) {
           results.push(item);
-          if (item.ok) freshnessDelta = item.freshnessDelta;
           bind = overlayBind(bind, item);
         }
+        freshnessDelta = liveFreshnessDelta(world?.freshness, freshnessDelta);
         if (results.some((i) => !i.ok && i.code === 'cancelled')) {
           break;
         }
@@ -301,21 +350,46 @@ export async function toolExecuteStep(
           only?.toolName === 'meta_sandbox_switch' &&
           ran[0]?.ok
         ) {
-          const seed = ran[0].ok ? ran[0].freshnessDelta : freshnessDelta;
+          const seed = liveFreshnessDelta(world?.freshness, freshnessDelta);
           await closeHandles(world);
           world = undefined;
-          const next = await openWorld(bind, seed);
-          if (!next.ok) {
-            results.push({
+          let next: Awaited<ReturnType<typeof openWorld>>;
+          try {
+            next = await openWorld(bind, seed);
+          } catch (err) {
+            next = {
               ok: false,
-              toolName: only.toolName,
-              ...(only.toolCallId ? { toolCallId: only.toolCallId } : {}),
               code: 'sandbox_error',
-              error: next.error,
-            });
+              error: err instanceof Error ? err.message : String(err),
+            };
+          }
+          if (!next.ok) {
+            // Do not push a second row for the same toolCallId — the switch
+            // itself succeeded; remaining calls get explicit skip results.
+            assembleFail = next.error;
             break;
           }
           world = next.world;
+        }
+      }
+
+      // Close hanging tool_starts for calls that never ran (cancel / re-assemble).
+      if (results.length < calls.length) {
+        const cancelled = results.find(
+          (i): i is Extract<ToolBatchItem, { ok: false }> =>
+            !i.ok && i.code === 'cancelled',
+        );
+        const code: FailCode = assembleFail
+          ? 'sandbox_error'
+          : cancelled
+            ? 'cancelled'
+            : 'sandbox_error';
+        const error =
+          assembleFail ?? cancelled?.error ?? 'tool batch stopped';
+        for (const call of calls.slice(results.length)) {
+          const item = failItem(call, code, error);
+          results.push(item);
+          await writeSafe(sseFor(item));
         }
       }
     });
@@ -326,6 +400,14 @@ export async function toolExecuteStep(
         ok: false,
         code: 'cancelled',
         error: cancelled.error,
+        results,
+      };
+    }
+    if (assembleFail) {
+      return {
+        ok: false,
+        code: 'sandbox_error',
+        error: assembleFail,
         results,
       };
     }
