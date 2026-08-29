@@ -41,7 +41,7 @@ Each SSE block is one `data: <json>\n\n` line:
 | `reasoning_delta` | `text` (chunk) | Grow a **Thinking** bubble (protocol v8) |
 | `text_delta` | `text` (chunk) | Grow Assistant bubble(s) |
 | `usage` | `usage` | **Live mid-stream** provider token summary from a `finish` part (aggregate only). `finish-step` never emits this. The host folds the context slot immediately; `done.usage` is the final reconcile. Absent when the part carried no usable counts — never a clear/flicker |
-| `done` | `text`, optional `finishReason`, optional `toolTrace`, optional `cwd`, optional `usage` | Collapse open thinking; finalize session; apply `cwd` on success only; fold bounded provider `usage` (Phase 3 #628 — `done.usage` is the conclusive reconcile). **`finishReason: length` / `content-filter` / `error` is not model-finished** — the durable loop sends SSE `error` (`output truncated`) instead, and the host treats a truncated `done` the same way. Real chat end is `stop` or omitted. |
+| `done` | `text`, optional `finishReason`, optional `toolTrace`, optional `cwd`, optional `usage` | Collapse open thinking; finalize session; apply `cwd` on success only; fold bounded provider `usage` (Phase 3 #628 — `done.usage` is the conclusive reconcile). **`finishReason: length` / `content-filter` / `error` is not model-finished** — the durable loop sends SSE `error` (`output truncated` / `content filtered` / `model error`) instead, and the host treats a truncated `done` the same way (same three strings). Real chat end is `stop` or omitted. |
 | `error` | `error`, optional `status` | Collapse open thinking; a host **retryable** failure retries the same turn up to 5 attempts (**1 attempt** if any ring row has already been painted mid-stream — re-painting would duplicate tools/bubbles) before give-up; give-up paints the Error message and the turn lands on **Error** — never consuming the operator queue |
 
 Unknown types are ignored (forward-compatible). String fields are redacted server-side with the same secret list as JSON responses.
@@ -99,7 +99,7 @@ submit so no ghost request is sent.
 | Model id (harness picker) | Choose a reasoning-capable granted model when desired |
 | `AGENT_REASONING` | Optional SDK effort: `provider-default` \| `none` \| `low` \| `medium` \| `high` |
 
-When `AGENT_REASONING` is unset, the server enables `reasoning: provider-default` only if the model id looks reasoning-capable (`reasoning` / `thinking` in the id, but not `non-reasoning`). Other models omit the option.
+When `AGENT_REASONING` is unset, the server enables `reasoning: provider-default` only if the model id looks reasoning-capable (`reasoning` / `thinking` in the id, but not `non-reasoning`; `glm-5*` ids also match — GLM-5.x always thinks). Other models omit the option. Thinking tokens are still provider completion.
 
 ## End of turn
 
@@ -108,7 +108,9 @@ Most harness turns paint a final line. **Detach does not** — losing the live r
 | Outcome | Line |
 |---------|------|
 | Model finished (SSE `done` with `stop`, omitted, or any non-truncated `finishReason`) | `Turn ended · model finished` (System) |
-| Output truncated (provider `finishReason: length` / `content-filter` / `error`, or SSE `error` `output truncated`) | `Turn ended · error · output truncated` (Error). Partial assistant text stays. Envelope is terminal `completed` so refresh does not attach a dead run. |
+| Output truncated (provider `finishReason: length`, or SSE `error` `output truncated`) | `Turn ended · error · output truncated` (Error). Partial assistant text stays. Envelope is terminal `completed` so refresh does not attach a dead run. |
+| Content filtered (provider `finishReason: content-filter`) | `Turn ended · error · content filtered` (Error). Same envelope rule. |
+| Model / stream fail (provider `finishReason: error`) | `Turn ended · error · model error` (Error). Same envelope rule. Not a token cap. |
 | Step budget exhausted (512 workflow steps) | `Turn ended · error · step budget exhausted` (Error). Same envelope rule. |
 | User Stop | `Turn ended · you stopped` (System) |
 | Detach (leave-site abort, or durable reader-drop without `done`/`error` after the run id is folded) | **No** turn-end line. Session keeps `turnRunId` + `turnStatus: 'running'`. Lifecycle Ready. The workflow is not cancelled. |
@@ -128,10 +130,10 @@ Durable `'use step'` bodies `console.log` one JSON line each. These show on **Ob
 
 | `tag` | When | Fields (allowlisted; never prompt/system/tool args/bodies) |
 |-------|------|--------|
-| `invincible.turn.model` | each model round (success or `{ok:false}`) | `ok`, `finishReason?`, `toolCallCount?`, `textChars?`, `code?` |
+| `invincible.turn.model` | each model round (success or `{ok:false}`) | `ok`, `finishReason?`, `toolCallCount?`, `textChars?` (assistant text only), `reasoningChars?` (UTF-16 length of accumulated redacted thinking; omitted when none), `completion?` (provider output tokens when reported), `code?` |
 | `invincible.turn.persist` | each persist (terminal or mid-turn) | `ok`, `terminal`, `status?`, `turnRunId?`, `code?` |
 
-A truncated round logs `finishReason: "length"` on the model line, then a terminal persist, then SSE `error`. A natural chat end logs `finishReason: "stop"` (or omits it) and SSE `done`.
+A truncated round logs `finishReason: "length"` (or `"content-filter"` / `"error"`) on the model line, then a terminal persist, then SSE `error` with the mapped string. A thinking-only round logs `textChars: 0` and `reasoningChars` for the CoT. A natural chat end logs `finishReason: "stop"` (or omits it) and SSE `done`.
 
 ## Caps
 
@@ -163,7 +165,7 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Route SSE vs JSON | `app/api/agent/route.ts` |
 | Logical cwd parse / default | `lib/agent/agentBody.ts`, `lib/sandbox/config.ts`, `lib/agent/workPath.ts` |
 | Host consumer + collapse/caps | `lib/harnessChat.ts`, `lib/agentApi.ts` |
-| Truncated / capped fold | `lib/agent/modelFinish.ts`, `lib/workflows/turnLoop.ts` (empty tools + truncated `finishReason` → SSE `error`, not `done`; 512-step cap same; one tools-off wrap-up so the model sees the error) |
+| Truncated / capped fold | `lib/agent/modelFinish.ts` (`truncatedFinishError`), `lib/workflows/turnLoop.ts` (empty tools + truncated `finishReason` → SSE `error` with the mapped string, not `done`; 512-step cap same; one tools-off wrap-up so the model sees the error) |
 | Durable tool batch | `lib/workflows/toolExecuteStep.ts` (`{ calls }` — one step per model round; waves at `change_dir` / `meta_sandbox_switch` / `write_file` / `str_replace`; live `tool_result` on one held writer; `maxRetries = 0` so a timeout/kill cannot replay applied writes; 1-call infra throws retry in-process), `lib/workflows/toolWaves.ts`, `lib/workflows/turnLoop.ts` (persist once after the batch) |
 | Workflows step logs | `lib/workflows/turnLog.ts`, `lib/workflows/modelGenerateStep.ts`, `lib/workflows/persistStep.ts` |
 | Thinking paint | `native/harness/src/ui/thinking.zig` (protocol v8 kind) |

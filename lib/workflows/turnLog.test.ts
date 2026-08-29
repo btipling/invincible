@@ -21,6 +21,24 @@ describe('turnLog', () => {
     expect(row.finishReason).toBe('length');
     expect(row.toolCallCount).toBe(0);
     expect(row.textChars).toBe(12);
+    expect(row.reasoningChars).toBeUndefined();
+    expect(row.completion).toBeUndefined();
+  });
+
+  it('logTurnModel includes reasoningChars and completion when passed', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    logTurnModel({
+      ok: true,
+      finishReason: 'error',
+      toolCallCount: 0,
+      textChars: 0,
+      reasoningChars: 2400,
+      completion: 1800,
+    });
+    const row = JSON.parse(String(spy.mock.calls[0]![0])) as Record<string, unknown>;
+    expect(row.reasoningChars).toBe(2400);
+    expect(row.completion).toBe(1800);
+    expect(row.textChars).toBe(0);
   });
 
   it('logTurnPersist writes one JSON line with tag', () => {

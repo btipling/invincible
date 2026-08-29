@@ -8,6 +8,8 @@ export function logTurnModel(entry: {
   finishReason?: string;
   toolCallCount?: number;
   textChars?: number;
+  reasoningChars?: number;
+  completion?: number;
   code?: string;
 }): void {
   const row: Record<string, unknown> = {
@@ -17,6 +19,8 @@ export function logTurnModel(entry: {
   if (entry.finishReason !== undefined) row.finishReason = entry.finishReason;
   if (entry.toolCallCount !== undefined) row.toolCallCount = entry.toolCallCount;
   if (entry.textChars !== undefined) row.textChars = entry.textChars;
+  if (entry.reasoningChars !== undefined) row.reasoningChars = entry.reasoningChars;
+  if (entry.completion !== undefined) row.completion = entry.completion;
   if (entry.code !== undefined) row.code = entry.code;
   console.log(JSON.stringify(row));
 }

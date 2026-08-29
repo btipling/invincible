@@ -2026,6 +2026,51 @@ describe('truncated / capped turn-end is Error, not model-finished', () => {
     ).toBe(false);
     expect(exp.__lifecycle()).toBe(Lifecycle.Error);
   });
+
+  it('SSE done + finishReason error is model error, not output truncated', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { session: next, result } = await runHarnessTurn(
+      bridge,
+      createEmptySession(),
+      'work',
+      {
+        streamAgent: true,
+        sendAgentStream: async (_prompt, init) => {
+          await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+          await init?.onEvent?.({ type: 'reasoning_delta', text: 'plan…' });
+          await init?.onEvent?.({
+            type: 'done',
+            text: '',
+            finishReason: 'error',
+          });
+          return { ok: true, text: '', turnRunId: 'wr_live' };
+        },
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) =>
+          m.role === 'error' &&
+          m.text === describeTurnEnd('error', 'model error'),
+      ),
+    ).toBe(true);
+    expect(
+      next.messages.some(
+        (m) =>
+          m.role === 'error' &&
+          m.text === describeTurnEnd('error', 'output truncated'),
+      ),
+    ).toBe(false);
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('model'),
+      ),
+    ).toBe(false);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+  });
 });
 
 describe('toolRun aggregation (protocol v10 / plan #345)', () => {
