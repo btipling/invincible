@@ -619,7 +619,8 @@ export async function runTurnLoop(
       }
 
       // One tool-batch step for this round's toolCalls (plan #880 / #872).
-      // Independent calls overlap inside the step; bind-mutators split waves.
+      // Independent calls overlap inside the step; serial separators
+      // (bind-mutators + FS editors) split waves.
       // Live tool_result SSE is written inside the step — do not dump here
       // (would reintroduce N writeTurnSse Fluid steps).
       if (steps >= cap) break;

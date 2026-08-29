@@ -4,7 +4,8 @@
  *
  * Thin directive shell over the B10 core `executeTool`. One model round's
  * `toolCalls` run in **this** step: assemble the tool world once, split waves
- * at bind-mutators, allSettled-style overlap inside a wave, live-write
+ * at serial separators (bind-mutators + FS editors), allSettled-style overlap
+ * inside a wave, live-write
  * `tool_result` on one held Workflows writer. `executeTool` stays one-call.
  *
  * In **production** the tool world is assembled IN-STEP via the shared
@@ -17,6 +18,8 @@
  * `activeSandboxId` — not a soft `ERROR …` string), the step re-assembles
  * before the next wave (FS execute closures are bound to the previous
  * sandbox client). `change_dir` mutates in-memory `cwdState` — no re-assemble.
+ * `write_file` / `str_replace` are serial separators so `assertCanEdit` sees
+ * preceding `read_file` grants (adversarial #881 round-4) — no re-assemble.
  *
  * **Zero non-serializable step args:** the ONLY args are plain serializable
  * values. Closures / AbortSignal / bound runners can never pass the step
@@ -204,7 +207,8 @@ function overlayBind(
 
 /**
  * Run this round's toolCalls as one workflow step. Assemble once. Waves at
- * bind-mutators. Live `tool_result` on one held writer.
+ * serial separators (bind-mutators + FS editors). Live `tool_result` on one
+ * held writer.
  */
 export async function toolExecuteStep(
   args: ToolExecuteStepArgs,
@@ -296,7 +300,9 @@ export async function toolExecuteStep(
           () => undefined,
           () => undefined,
         );
-        return p;
+        // Never reject — a live-paint fail must not fail/retry a completed
+        // execute or drop sibling results (adversarial #881 round-3/4).
+        return writeChain;
       };
 
       const runOne = async (call: TurnToolCallDelta): Promise<ToolBatchItem> => {

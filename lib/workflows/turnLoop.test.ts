@@ -3020,6 +3020,111 @@ describe('step wrappers (matrix 4–7)', () => {
     vi.doUnmock('./turnSseWrite');
   });
 
+  it('matrix 6j: read_file then write_file is serial — write sees the grant (adversarial #881 round-4)', async () => {
+    const { createRunFileFreshness } = await import('../agent/fileFreshness');
+    const freshness = createRunFileFreshness();
+    let releaseRead!: () => void;
+    const gateRead = new Promise<void>((r) => {
+      releaseRead = r;
+    });
+    let writeStartedWhileReadGated = false;
+    vi.resetModules();
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: {
+        read_file: {
+          execute: async () => {
+            await gateRead;
+            freshness.recordRead('A', { mtimeMs: 1, size: 1 });
+            return 'A';
+          },
+        },
+        write_file: {
+          execute: async () => {
+            if (!freshness.assertCanEdit('A', { mtimeMs: 1, size: 1 }).ok) {
+              writeStartedWhileReadGated = true;
+              return 'ERROR write_file: read_required';
+            }
+            return 'W';
+          },
+        },
+      },
+      secrets: [],
+      signal: undefined,
+      freshness,
+    }));
+    const p = mod.toolExecuteStep({
+      calls: [
+        { toolName: 'read_file', toolCallId: '1' },
+        { toolName: 'write_file', toolCallId: '2' },
+      ],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writeStartedWhileReadGated).toBe(false);
+    releaseRead();
+    const result = await p;
+    expect(result.ok).toBe(true);
+    expect(writeStartedWhileReadGated).toBe(false);
+    if (result.ok) {
+      expect(result.results.map((r) => (r.ok ? r.result : r.error))).toEqual([
+        'A',
+        'W',
+      ]);
+    }
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('matrix 6k: sibling throw + writer reject does not rethrow the batch (adversarial #881 round-4)', async () => {
+    const execMock = vi.fn(async (_deps: unknown, input: unknown) => {
+      const i = input as { toolName?: string };
+      if (i.toolName === 'boom') throw new Error('transport down');
+      return { ok: true as const, result: `out:${i.toolName}`, freshnessDelta: '[]' };
+    });
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) =>
+        fn(async () => {
+          throw new Error('stream down');
+        }),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: { keep: {}, boom: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    const result = await mod.toolExecuteStep({
+      calls: [
+        { toolName: 'keep', toolCallId: '1', args: {} },
+        { toolName: 'boom', toolCallId: '2', args: {} },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    expect(execMock).toHaveBeenCalledTimes(2);
+    if (result.ok) {
+      expect(result.results[0]).toMatchObject({ ok: true, result: 'out:keep' });
+      expect(result.results[1]).toMatchObject({
+        ok: false,
+        code: 'sandbox_error',
+        error: 'transport down',
+      });
+    }
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
   it('matrix 7: persistStep thin shell → persists via seam (in-memory); returns terminal status', async () => {
     const { seam, persisted } = createInMemoryPersistSeam();
     // The persist seam is a `'use step'`-unsafe function → resolved IN-STEP from
