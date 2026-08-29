@@ -13,7 +13,8 @@ export function formatTurnSse(event: object): string {
 
 /**
  * Live model-step filter: only `reasoning_delta` / `text_delta` / `tool_start`
- * become SSE lines. Terminal + tool-result events stay loop-owned.
+ * become SSE lines. Terminal events stay loop-owned. `tool_result` is written
+ * inside the tool-batch step (plan #880), not here.
  * Structural `ev` — do not import `agentStream` (deploy-gate).
  */
 export function formatLiveModelSse(ev: {
@@ -37,4 +38,25 @@ export function formatLiveModelSse(ev: {
     });
   }
   return null;
+}
+
+/**
+ * Live tool-batch `tool_result` line (plan #880). Typed fields for confirmed
+ * `change_dir` / `meta_sandbox_switch` so the host can fold cwd/sandbox live.
+ */
+export function formatLiveToolResultSse(ev: {
+  name: string;
+  ok: boolean;
+  summary: string;
+  changeDirCwd?: string;
+  activeSandboxId?: string;
+}): string {
+  return formatTurnSse({
+    type: 'tool_result',
+    name: ev.name,
+    ok: ev.ok,
+    summary: ev.summary,
+    ...(ev.changeDirCwd ? { changeDirCwd: ev.changeDirCwd } : {}),
+    ...(ev.activeSandboxId ? { activeSandboxId: ev.activeSandboxId } : {}),
+  });
 }

@@ -3,7 +3,7 @@
  *
  * Covers the plan's 10-case testing matrix:
  *  1. Loop: model returns empty `toolCalls` → breaks after one round; no tools
- *  2. Loop: model returns N tool calls → each runs once via toolExecuteStep; loop continues
+ *  2. Loop: model returns N tool calls → one tool-batch step; loop continues
  *  3. Loop: rounds reach the 512 cap → terminates (never infinite); writable closed
  *  4. Step args serializable (no closures/seams/bound runners cross a boundary)
  *  5. modelGenerateStep thin shell → delegates generateOneRound (delta; FULL tool schemas via shared helper)
@@ -106,7 +106,11 @@ function wiredDeps(overrides: {
           }),
     // Default no-op toolStep; loop tests that fan tools override it. modelStep is
     // always injected per test (matrix 1/8/9/10 stop after the model round).
-    toolStep: async (): Promise<{ ok: false; code: 'tool_not_found'; error: string }> => ({
+    toolStep: async (): Promise<{
+      ok: false;
+      code: 'tool_not_found';
+      error: string;
+    }> => ({
       ok: false,
       code: 'tool_not_found',
       error: 'toolStep not injected',
@@ -117,6 +121,41 @@ function wiredDeps(overrides: {
   };
   const w = { writable: fake.w, lines: fake.lines, closed: fake.closed };
   return { deps: base, w, closed: () => fake.closed };
+}
+
+type ToolCallIn = {
+  calls: ReadonlyArray<{ toolName: string; toolCallId?: string; args?: unknown }>;
+  freshnessSeed?: string;
+  persistRunBind?: { cwd?: string; activeSandboxId?: string };
+};
+
+/** Loop-test helper: one batch result per call (plan #880). */
+function okBatch(
+  handler?: (
+    call: { toolName: string; toolCallId?: string; args?: unknown },
+    args: ToolCallIn,
+  ) => { result: string; freshnessDelta: string },
+) {
+  return async (args: ToolCallIn) => {
+    const results = args.calls.map((c) => {
+      const h = handler
+        ? handler(c, args)
+        : { result: 'ok', freshnessDelta: '[]' };
+      return {
+        ok: true as const,
+        toolName: c.toolName,
+        ...(c.toolCallId ? { toolCallId: c.toolCallId } : {}),
+        result: h.result,
+        freshnessDelta: h.freshnessDelta,
+      };
+    });
+    const last = results[results.length - 1];
+    return {
+      ok: true as const,
+      results,
+      freshnessDelta: last?.freshnessDelta ?? '[]',
+    };
+  };
 }
 
 describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
@@ -182,7 +221,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
           }
         : { ok: true as const, delta: { text: 'done', toolCalls: [], finishReason: 'stop' } };
     });
-    const toolStep = vi.fn(async () => ({ ok: true as const, result: 'ok', freshnessDelta: '[]' }));
+    const toolStep = vi.fn(okBatch());
     const result = await runTurnLoop(
       { ...deps, modelStep, toolStep },
       { userMessage: 'go' },
@@ -206,7 +245,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(events.some((e: { type: string }) => e.type === 'done')).toBe(true);
   });
 
-  it('matrix 2: model returns N tool calls → each tool runs once via toolExecuteStep; loop continues', async () => {
+  it('matrix 2: model returns N tool calls → one tool-batch step; loop continues', async () => {
     const { deps, w, closed } = wiredDeps();
     // Round 1 emits 2 tool calls (both run as tools); round 2 emits none, so the
     // loop breaks cleanly. Non-stateful mocks here would loop to the 512 cap.
@@ -227,24 +266,77 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
           }
         : { ok: true as const, delta: { text: 'done', toolCalls: [] } };
     });
-    const toolStep = vi.fn(async ({ toolName }: { toolName: string }) => ({
-      ok: true as const,
-      result: `out:${toolName}`,
+    const toolStep = vi.fn(okBatch((c) => ({
+      result: `out:${c.toolName}`,
       freshnessDelta: '[]',
-    }));
+    })));
     const result = await runTurnLoop({ ...deps, modelStep, toolStep }, { userMessage: 'go' });
     expect(modelStep).toHaveBeenCalledTimes(2);
-    expect(toolStep).toHaveBeenCalledTimes(2);
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    const batchArg = toolStep.mock.calls[0]?.[0] as ToolCallIn;
+    expect(batchArg.calls.map((c) => c.toolName)).toEqual(['list_dir', 'read_file']);
     expect(result.status).toBe('completed');
     expect(result.rounds).toBe(2);
     expect(closed()).toBe(1);
+    const toolRows = (result.messages as Array<{ role?: string; toolName?: string }>).filter(
+      (m) => m.role === 'tool',
+    );
+    expect(toolRows.map((m) => m.toolName)).toEqual(['list_dir', 'read_file']);
     const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
     expect(events.filter((e: { type: string }) => e.type === 'tool_start')).toEqual([]);
-    expect(events.filter((e: { type: string }) => e.type === 'tool_result').map((e: { name: string }) => e.name)).toEqual([
-      'list_dir',
-      'read_file',
-    ]);
+    // Live tool_result is written inside the tool step, not by the loop.
+    expect(events.filter((e: { type: string }) => e.type === 'tool_result')).toEqual([]);
     expect(events.some((e: { type: string }) => e.type === 'tool_start' && 'toolName' in e)).toBe(false);
+  });
+
+  it('batch item {ok:false} keeps sibling results then fails the turn', async () => {
+    const { deps, closed } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: {
+        text: 'two',
+        toolCalls: [
+          { toolName: 'list_dir', toolCallId: 'a', args: {} },
+          { toolName: 'read_file', toolCallId: 'b', args: {} },
+        ],
+      },
+    }));
+    const toolStep = vi.fn(async (_args: ToolCallIn) => ({
+      ok: true as const,
+      results: [
+        {
+          ok: true as const,
+          toolName: 'list_dir',
+          toolCallId: 'a',
+          result: 'ok-dir',
+          freshnessDelta: '[]',
+        },
+        {
+          ok: false as const,
+          toolName: 'read_file',
+          toolCallId: 'b',
+          code: 'sandbox_error' as const,
+          error: 'boom',
+        },
+      ],
+      freshnessDelta: '[]',
+    }));
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep, persistStep: persistSpy },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    expect(result.error).toBe('boom');
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    const rows = (result.messages as Array<{ role?: string; toolCallId?: string; result?: string; error?: string }>)
+      .filter((m) => m.role === 'tool');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.result).toBe('ok-dir');
+    expect(rows[1]?.error).toBe('boom');
+    // user-line + persist of mixed results, no silent drop
+    expect(persistSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(closed()).toBe(1);
   });
 
   it('matrix 3: loop reaches the cap → terminates (never infinite), writable closed', async () => {
@@ -255,7 +347,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       ok: true as const,
       delta: { text: 'again', toolCalls: [{ toolName: 'list_dir', toolCallId: 'c', args: {} }] },
     }));
-    const toolStep = vi.fn(async () => ({ ok: true as const, result: 'ok', freshnessDelta: '[]' }));
+    const toolStep = vi.fn(okBatch());
     const result = await runTurnLoop(
       { ...deps, maxSteps: 2, modelStep, toolStep },
       { userMessage: 'loop' },
@@ -310,10 +402,10 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     ).toBe(false);
   });
 
-  it('matrix 3b (L6): cap counts steps, so a per-round tool fanout is bounded', async () => {
+  it('matrix 3b (L6): one round of N tools is one batch step; all N run', async () => {
     const { deps, w, closed } = wiredDeps({ maxSteps: 3 });
-    // One round emits FOUR tool calls. cap=3 steps → 1 model + 1 user-line
-    // persist + 1 tool; the remaining tool calls must NOT run.
+    // One round emits FOUR tool calls. cap=3 → 1 model + 1 user-line persist
+    // + 1 batch (all 4). Fanout cannot blow the step budget because it is 1 step.
     const modelStep = vi.fn(async (_args: unknown) => ({
       ok: true as const,
       delta: {
@@ -325,31 +417,26 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
         })),
       },
     }));
-    const toolStep = vi.fn(async () => ({ ok: true as const, result: 'r', freshnessDelta: '[]' }));
+    const toolStep = vi.fn(okBatch());
     const result = await runTurnLoop(
       { ...deps, maxSteps: 3, modelStep, toolStep },
       { userMessage: 'fan' },
     );
     expect(result.status).toBe('capped');
-    // 1 model + 1 user-line persist + 1 tool = 3 steps; tools 2–4 never run.
-    // Terminal persist on cap is a fourth step. Wrap-up does not run extra tools.
+    // 1 model + 1 user-line persist + 1 batch = 3; no persist-after-batch
+    // (budget exhausted). Terminal persist on cap is a fourth step.
     expect(result.steps).toBe(4);
     expect(modelStep).toHaveBeenCalledTimes(2);
     expect((modelStep.mock.calls[1]?.[0] as { disableTools?: boolean }).disableTools).toBe(true);
     expect(toolStep).toHaveBeenCalledTimes(1);
+    const fanArg = toolStep.mock.calls[0]?.[0] as ToolCallIn;
+    expect(fanArg.calls.map((c) => c.toolCallId)).toEqual(['tc0', 'tc1', 'tc2', 'tc3']);
     const fanWrap = modelStep.mock.calls[1]?.[0] as {
       messages: Array<{ role?: string; toolCallId?: string; ok?: boolean }>;
     };
     const fanTools = fanWrap.messages.filter((m) => m.role === 'tool');
     expect(fanTools.map((m) => m.toolCallId).sort()).toEqual(['tc0', 'tc1', 'tc2', 'tc3']);
-    expect(fanTools.filter((m) => m.ok === false)).toHaveLength(3);
-    const fanErrIdx = fanWrap.messages.findIndex((m) => m.role === 'error');
-    const lastToolIdx = fanWrap.messages.reduce(
-      (acc, m, i) => (m.role === 'tool' ? i : acc),
-      -1,
-    );
-    expect(lastToolIdx).toBeGreaterThan(-1);
-    expect(lastToolIdx).toBeLessThan(fanErrIdx);
+    expect(fanTools.filter((m) => m.ok === false)).toHaveLength(0);
     expect(closed()).toBe(1);
     const fanEvents = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
     expect(fanEvents.some((e: { type: string }) => e.type === 'done')).toBe(false);
@@ -366,11 +453,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
         toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
       },
     }));
-    const toolStep = vi.fn(async () => ({
-      ok: true as const,
-      result: 'ok',
-      freshnessDelta: '[]',
-    }));
+    const toolStep = vi.fn(okBatch());
     const result = await runTurnLoop(
       { ...deps, maxSteps: 4, modelStep, toolStep },
       { userMessage: 'go' },
@@ -406,9 +489,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
         (e: { type: string; name?: string; ok?: boolean }) =>
           e.type === 'tool_result' && e.name === 'list_dir',
       ),
-    ).toEqual([
-      expect.objectContaining({ type: 'tool_result', name: 'list_dir', ok: true }),
-    ]);
+    ).toEqual([]);
   });
 
   it('cap persist fold omits wrap-up Error instruction (not canvas copy) [adversarial #879 Major]', async () => {
@@ -587,11 +668,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
           }
         : { ok: true as const, delta: { text: 'done', toolCalls: [] } };
     });
-    const toolStep = vi.fn(async () => ({
-      ok: true as const,
-      result: 'ok',
-      freshnessDelta: '[]',
-    }));
+    const toolStep = vi.fn(okBatch());
     const result = await runTurnLoop(
       { ...deps, persistStep: persistSpy, modelStep, toolStep },
       { userMessage: 'go' },
@@ -621,6 +698,43 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       { role: 'tool', content: 'ok' },
       { role: 'assistant', content: 'done' },
     ]);
+    expect(closed()).toBe(1);
+  });
+
+  it('mid-turn persist: N-tool batch is user-line + after-batch + terminal (not N+2)', async () => {
+    const { deps, closed } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    let first = true;
+    const modelStep = vi.fn(async () => {
+      const f = first;
+      first = false;
+      return f
+        ? {
+            ok: true as const,
+            delta: {
+              text: 'call',
+              toolCalls: [
+                { toolName: 'list_dir', toolCallId: 'c1', args: {} },
+                { toolName: 'read_file', toolCallId: 'c2', args: {} },
+                { toolName: 'read_file', toolCallId: 'c3', args: {} },
+              ],
+            },
+          }
+        : { ok: true as const, delta: { text: 'done', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(okBatch());
+    const result = await runTurnLoop(
+      { ...deps, persistStep: persistSpy, modelStep, toolStep },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    expect((toolStep.mock.calls[0]?.[0] as ToolCallIn).calls).toHaveLength(3);
+    expect(persistSpy).toHaveBeenCalledTimes(3);
+    const flags = persistSpy.mock.calls.map(
+      (c) => (c[0] as { terminal?: boolean }).terminal,
+    );
+    expect(flags).toEqual([false, false, undefined]);
     expect(closed()).toBe(1);
   });
 
@@ -675,11 +789,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
           }
         : { ok: true as const, delta: { text: 'done', toolCalls: [] } };
     });
-    const toolStep = vi.fn(async () => ({
-      ok: true as const,
-      result: 'ok',
-      freshnessDelta: '[]',
-    }));
+    const toolStep = vi.fn(okBatch());
     const result = await runTurnLoop(
       { ...deps, persistStep: persistStepFn, modelStep, toolStep, turnRunId: 'wr_after' },
       { userMessage: 'go' },
@@ -775,22 +885,21 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
         };
       return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
     });
-    const toolStep = vi.fn(async (a: { toolName: string; freshnessSeed?: string }) =>
-      a.toolName === 'read_file'
-        ? { ok: true as const, result: 'R', freshnessDelta: 'LEDGER-R1' }
-        : {
-            // write_file must see the round-1 ledger threaded in
-            ok: true as const,
-            result: `W:${a.freshnessSeed ?? '(none)'}`,
-            freshnessDelta: 'LEDGER-R2',
-          },
+    const toolStep = vi.fn(
+      okBatch((c, args) =>
+        c.toolName === 'read_file'
+          ? { result: 'R', freshnessDelta: 'LEDGER-R1' }
+          : {
+              result: `W:${args.freshnessSeed ?? '(none)'}`,
+              freshnessDelta: 'LEDGER-R2',
+            },
+      ),
     );
     const result = await runTurnLoop({ ...deps, modelStep, toolStep }, { userMessage: 'g' });
     expect(result.status).toBe('completed');
     expect(result.rounds).toBe(3);
-    // The write tool (2nd call) received the round-1 ledger as its seed.
     expect(toolStep).toHaveBeenCalledTimes(2);
-    const writeCall = toolStep.mock.calls[1]?.[0] as { toolName: string; freshnessSeed?: string };
+    const writeCall = toolStep.mock.calls[1]?.[0] as ToolCallIn;
     expect(writeCall.freshnessSeed).toBe('LEDGER-R1');
     expect(closed()).toBe(1);
   });
@@ -930,10 +1039,15 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
           }
         : { ok: true as const, delta: { text: 'done', toolCalls: [] } };
     });
-    const toolStep = vi.fn(async (a: { toolName: string }) =>
-      a.toolName === 'change_dir'
-        ? { ok: true as const, result: 'change_dir lib: ok cwd=lib', freshnessDelta: '[]' }
-        : { ok: true as const, result: 'switched active sandbox to id=sb_b tools=[]', freshnessDelta: '[]' },
+    const toolStep = vi.fn(
+      okBatch((c) =>
+        c.toolName === 'change_dir'
+          ? { result: 'change_dir lib: ok cwd=lib', freshnessDelta: '[]' }
+          : {
+              result: 'switched active sandbox to id=sb_b tools=[]',
+              freshnessDelta: '[]',
+            },
+      ),
     );
     const result = await runTurnLoop(
       {
@@ -981,7 +1095,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
             delta: { text: 'done', toolCalls: [], usage: { source: 'provider', total: 40 } },
           };
     });
-    const toolStep = vi.fn(async () => ({ ok: true as const, result: 'r', freshnessDelta: '[]' }));
+    const toolStep = vi.fn(okBatch());
     const result = await runTurnLoop(
       { ...deps, modelStep, toolStep, turnRunId: 'wr_usage' },
       { userMessage: 'go' },
@@ -1016,27 +1130,29 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       }
       return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
     });
-    const toolStep = vi.fn(async (a: { toolName: string; persistRunBind?: { cwd?: string; activeSandboxId?: string } }) => {
-      if (a.toolName === 'change_dir') {
-        return { ok: true as const, result: 'change_dir lib: ok cwd=lib', freshnessDelta: '[]' };
-      }
-      // list_dir: capture what cwd the loop passed to THIS tool step.
-      return { ok: true as const, result: `cwd=${a.persistRunBind?.cwd ?? '(none)'}`, freshnessDelta: '[]' };
-    });
+    const toolStep = vi.fn(
+      okBatch((c, a) => {
+        if (c.toolName === 'change_dir') {
+          return { result: 'change_dir lib: ok cwd=lib', freshnessDelta: '[]' };
+        }
+        return {
+          result: `cwd=${a.persistRunBind?.cwd ?? '(none)'}`,
+          freshnessDelta: '[]',
+        };
+      }),
+    );
     const result = await runTurnLoop(
       { ...deps, modelStep, toolStep, turnRunId: 'wr_bind', persistRunBind: { cwd: 'app' } },
       { userMessage: 'go' },
     );
     expect(result.status).toBe('completed');
-    // Two tool calls: change_dir then list_dir.
+    // Two rounds: change_dir then list_dir — two batch steps.
     expect(toolStep).toHaveBeenCalledTimes(2);
-    // First tool (change_dir) still sees start bind.
-    const firstCall = toolStep.mock.calls[0]?.[0] as { toolName: string; persistRunBind?: { cwd?: string } };
-    expect(firstCall.toolName).toBe('change_dir');
+    const firstCall = toolStep.mock.calls[0]?.[0] as ToolCallIn;
+    expect(firstCall.calls[0]?.toolName).toBe('change_dir');
     expect(firstCall.persistRunBind?.cwd).toBe('app');
-    // Second tool (list_dir) MUST see the UPDATED cwd from change_dir.
-    const secondCall = toolStep.mock.calls[1]?.[0] as { toolName: string; persistRunBind?: { cwd?: string } };
-    expect(secondCall.toolName).toBe('list_dir');
+    const secondCall = toolStep.mock.calls[1]?.[0] as ToolCallIn;
+    expect(secondCall.calls[0]?.toolName).toBe('list_dir');
     expect(secondCall.persistRunBind?.cwd).toBe('lib');
     expect(closed()).toBe(1);
   });
@@ -1057,21 +1173,24 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       }
       return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
     });
-    const toolStep = vi.fn(async (a: { toolName: string; persistRunBind?: { activeSandboxId?: string } }) => {
-      if (a.toolName === 'meta_sandbox_switch') {
-        return { ok: true as const, result: 'switched active sandbox to id=sb_b tools=[]', freshnessDelta: '[]' };
-      }
-      return { ok: true as const, result: 'ok', freshnessDelta: '[]' };
-    });
+    const toolStep = vi.fn(
+      okBatch((c) =>
+        c.toolName === 'meta_sandbox_switch'
+          ? {
+              result: 'switched active sandbox to id=sb_b tools=[]',
+              freshnessDelta: '[]',
+            }
+          : { result: 'ok', freshnessDelta: '[]' },
+      ),
+    );
     const result = await runTurnLoop(
       { ...deps, modelStep, toolStep, turnRunId: 'wr_switch2', persistRunBind: { activeSandboxId: 'sb_a' } },
       { userMessage: 'go' },
     );
     expect(result.status).toBe('completed');
     expect(toolStep).toHaveBeenCalledTimes(1);
-    // The switch tool itself still sees the start bind (sb_a).
-    const firstCall = toolStep.mock.calls[0]?.[0] as { toolName: string; persistRunBind?: { activeSandboxId?: string } };
-    expect(firstCall.toolName).toBe('meta_sandbox_switch');
+    const firstCall = toolStep.mock.calls[0]?.[0] as ToolCallIn;
+    expect(firstCall.calls[0]?.toolName).toBe('meta_sandbox_switch');
     expect(firstCall.persistRunBind?.activeSandboxId).toBe('sb_a');
     // After switch, the bind is updated → the next model step (round 2) should
     // get the new sandbox id. modelStep was called twice.
@@ -1097,10 +1216,11 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       }
       return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
     });
-    const toolStep = vi.fn(async (a: { toolName: string; persistRunBind?: { cwd?: string } }) => {
-      // change_dir FAILS — the bind must NOT be overwritten.
-      return { ok: false as const, code: 'sandbox_error' as const, error: 'no such dir' };
-    });
+    const toolStep = vi.fn(async (_a: ToolCallIn) => ({
+      ok: false as const,
+      code: 'sandbox_error' as const,
+      error: 'no such dir',
+    }));
     // The first tool call fails → loop terminates with a tool error value.
     // But the loop writes tool_result with error and returns completed, not
     // failed — per the existing "business error as value" convention.
@@ -1111,7 +1231,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     // A failed tool terminates the loop cleanly (business error is a value).
     expect(result.status).toBe('completed');
     expect(toolStep).toHaveBeenCalledTimes(1);
-    const call = toolStep.mock.calls[0]?.[0] as { toolName: string; persistRunBind?: { cwd?: string } };
+    const call = toolStep.mock.calls[0]?.[0] as ToolCallIn;
     expect(call.persistRunBind?.cwd).toBe('app'); // start bind, unchanged
     // modelStep was called once (the tool error terminates before round 2).
     expect(modelStep).toHaveBeenCalledTimes(1);
@@ -1131,11 +1251,12 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       }
       return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
     });
-    const toolStep = vi.fn(async (a: { toolName: string; persistRunBind?: { cwd?: string; activeSandboxId?: string } }) => ({
-      ok: true as const,
-      result: `read cwd=${a.persistRunBind?.cwd} sandbox=${a.persistRunBind?.activeSandboxId}`,
-      freshnessDelta: '[]',
-    }));
+    const toolStep = vi.fn(
+      okBatch((_c, a) => ({
+        result: `read cwd=${a.persistRunBind?.cwd} sandbox=${a.persistRunBind?.activeSandboxId}`,
+        freshnessDelta: '[]',
+      })),
+    );
     const result = await runTurnLoop(
       {
         ...deps,
@@ -1148,8 +1269,8 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     );
     expect(result.status).toBe('completed');
     expect(toolStep).toHaveBeenCalledTimes(1);
-    const first = toolStep.mock.calls[0]?.[0] as { toolName: string; persistRunBind?: { cwd?: string; activeSandboxId?: string } };
-    expect(first.toolName).toBe('read_file');
+    const first = toolStep.mock.calls[0]?.[0] as ToolCallIn;
+    expect(first.calls[0]?.toolName).toBe('read_file');
     expect(first.persistRunBind?.cwd).toBe('myapp');
     expect(first.persistRunBind?.activeSandboxId).toBe('sb_start');
     expect(closed()).toBe(1);
@@ -1189,11 +1310,12 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       }
       return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
     });
-    const toolStep = vi.fn(async (a: { toolName: string }) => ({
-      ok: true as const,
-      result: `result of ${a.toolName}`,
-      freshnessDelta: '[]',
-    }));
+    const toolStep = vi.fn(
+      okBatch((c) => ({
+        result: `result of ${c.toolName}`,
+        freshnessDelta: '[]',
+      })),
+    );
     const result = await runTurnLoop(
       { ...deps, modelStep, toolStep, turnRunId: 'wr_tcid' },
       { userMessage: 'go' },
@@ -1274,18 +1396,15 @@ describe('runTurnLoop reasoning (plan #850 — loop must not dump)', () => {
           }
         : { ok: true as const, delta: { text: 'done', toolCalls: [] } };
     });
-    const toolStep = vi.fn(async () => ({
-      ok: true as const,
-      result: 'ok',
-      freshnessDelta: '[]',
-    }));
+    const toolStep = vi.fn(okBatch());
     await runTurnLoop({ ...deps, modelStep, toolStep }, { userMessage: 'go' });
     const events = parseEvents(w.lines);
     const types = events.map((e) => e.type);
     expect(types).not.toContain('reasoning_delta');
     expect(types).not.toContain('tool_start');
-    expect(types).toContain('tool_result');
-    expect(types.indexOf('tool_result')).toBeLessThan(types.indexOf('done'));
+    // Live tool_result is written inside the tool-batch step; this mock does not.
+    expect(types).not.toContain('tool_result');
+    expect(types).toContain('done');
   });
 
   it('strips reasoning from persist deltas and reconstructed messages (3b)', async () => {
@@ -2177,26 +2296,35 @@ describe('step wrappers (matrix 4–7)', () => {
       code: 'tool_not_found' as const,
       error: 'Tool not found: nope',
     }));
+    vi.resetModules();
     vi.doMock('../agent/executeTool', () => ({ executeTool: m }));
     vi.doMock('../agent/fileFreshness', () => ({
       hydrateRunFileFreshness: (_s: string | undefined) => ({}),
       createRunFileFreshness: () => ({}),
     }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
     const mod = await import('./toolExecuteStep');
     // The tool world (registry) is resolved IN-STEP from the module resolver —
     // never passed as a serialized step arg (adversarial L1).
     mod.setToolWorldResolver(() => ({ registry: {}, secrets: [], signal: undefined, freshness: {} }));
-    const stepArgs = { toolName: 'nope', callArgs: {} };
+    const stepArgs = { calls: [{ toolName: 'nope', args: {} }] };
     // Step args must be plain serializable values.
     expect(JSON.parse(JSON.stringify(stepArgs))).toEqual(stepArgs);
     const result = await mod.toolExecuteStep(stepArgs);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.code).toBe('tool_not_found');
-      expect(result.error).toContain('nope');
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.results[0]?.ok === false).toBe(true);
+    if (result.ok && result.results[0] && !result.results[0].ok) {
+      expect(result.results[0].code).toBe('tool_not_found');
+      expect(result.results[0].error).toContain('nope');
     }
     vi.doUnmock('../agent/executeTool');
     vi.doUnmock('../agent/fileFreshness');
+    vi.doUnmock('./turnSseWrite');
   });
 
   it('matrix 6b (B5 freshness fix): toolExecuteStep with resolver set directly → SAME freshness object identity for createAgentTools (inside shared helper) and executeTool', async () => {
@@ -2217,6 +2345,12 @@ describe('step wrappers (matrix 4–7)', () => {
     // with a different mock resolution).
     vi.resetModules();
     vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
     const mod = await import('./toolExecuteStep');
     // Resolver SET → test path. Pass the marked freshness directly.
     mod.setToolWorldResolver(() => ({
@@ -2226,13 +2360,129 @@ describe('step wrappers (matrix 4–7)', () => {
       freshness: freshnessMarker,
     }));
     const result = await mod.toolExecuteStep({
-      toolName: 'test_tool',
-      callArgs: {},
+      calls: [{ toolName: 'test_tool', args: {} }],
       freshnessSeed: 'seed',
     });
     expect(result.ok).toBe(true);
     expect(execMock).toHaveBeenCalledTimes(1);
     vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('matrix 6c: N calls → N executeTool, one world', async () => {
+    const execMock = vi.fn(async (_deps: unknown, input: unknown) => {
+      const i = input as { toolName?: string };
+      return { ok: true as const, result: `out:${i.toolName}`, freshnessDelta: '[]' };
+    });
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    const world = { registry: { a: {}, b: {} }, secrets: [], signal: undefined, freshness: {} };
+    mod.setToolWorldResolver(() => world);
+    const result = await mod.toolExecuteStep({
+      calls: [
+        { toolName: 'a', toolCallId: '1', args: {} },
+        { toolName: 'b', toolCallId: '2', args: {} },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    expect(execMock).toHaveBeenCalledTimes(2);
+    if (result.ok) {
+      expect(result.results.map((r) => (r.ok ? r.result : r.error))).toEqual([
+        'out:a',
+        'out:b',
+      ]);
+    }
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('matrix 6d: live tool_result SSE is written inside the step (one write per call)', async () => {
+    const execMock = vi.fn(async (_deps: unknown, input: unknown) => {
+      const i = input as { toolName?: string };
+      return { ok: true as const, result: `out:${i.toolName}`, freshnessDelta: '[]' };
+    });
+    const writes: string[] = [];
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async (s) => { writes.push(s); }),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: { a: {}, b: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    const result = await mod.toolExecuteStep({
+      calls: [
+        { toolName: 'a', toolCallId: '1', args: {} },
+        { toolName: 'b', toolCallId: '2', args: {} },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    expect(writes).toHaveLength(2);
+    expect(writes.every((w) => w.includes('"type":"tool_result"'))).toBe(true);
+    expect(writes.some((w) => w.includes('"name":"a"'))).toBe(true);
+    expect(writes.some((w) => w.includes('"name":"b"'))).toBe(true);
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('matrix 6e: successful meta_sandbox_switch re-assembles before the next wave', async () => {
+    const execMock = vi.fn(async (_deps: unknown, input: unknown) => {
+      const i = input as { toolName?: string };
+      if (i.toolName === 'meta_sandbox_switch') {
+        return {
+          ok: true as const,
+          result: 'switched active sandbox to id=sb_b tools=[]',
+          freshnessDelta: '[]',
+        };
+      }
+      return { ok: true as const, result: `out:${i.toolName}`, freshnessDelta: '[]' };
+    });
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    const resolve = vi.fn((_args: unknown) => ({
+      registry: { meta_sandbox_switch: {}, read_file: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    mod.setToolWorldResolver(resolve);
+    const result = await mod.toolExecuteStep({
+      calls: [
+        { toolName: 'meta_sandbox_switch', toolCallId: 's', args: { id: 'sb_b' } },
+        { toolName: 'read_file', toolCallId: 'r', args: { path: 'x' } },
+      ],
+      persistRunBind: { activeSandboxId: 'sb_a' },
+    });
+    expect(result.ok).toBe(true);
+    expect(execMock).toHaveBeenCalledTimes(2);
+    expect(resolve).toHaveBeenCalledTimes(2);
+    const second = resolve.mock.calls[1]?.[0] as {
+      persistRunBind?: { activeSandboxId?: string };
+    };
+    expect(second.persistRunBind?.activeSandboxId).toBe('sb_b');
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
   });
 
   it('matrix 7: persistStep thin shell → persists via seam (in-memory); returns terminal status', async () => {

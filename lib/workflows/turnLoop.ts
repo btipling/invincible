@@ -3,7 +3,7 @@
  *
  * The pure, testable while-loop that drives one prompt run. Per the umbrella
  * (#794) Architecture lock, ONE run = ONE prompt, and ONE step boundary = one
- * model round OR one tool execution OR one persist. The loop lives in workflow
+ * model round OR one tool **batch** (the round's toolCalls) OR one persist. The loop lives in workflow
  * context; it calls the three thin `'use step'` wrappers
  * (`modelGenerateStep` / `toolExecuteStep` / `persistStep`) which each re-resolve
  * the world in-step from serializable args.
@@ -15,17 +15,19 @@
  *
  * Lock discipline (B11 #805, deploy-gate):
  *  - Step I/O = **deltas** (`{text,toolCalls,usage,finishReason,reasoning?}` /
- *    `{result, freshnessDelta}` / terminal persist status), never the full
+ *    `{results[], freshnessDelta}` / terminal persist status), never the full
  *    transcript.
- *  - Tokens ride `getWritable()` (this core writes loop-owned SSE:
- *    `tool_result` / `done` / `error`). Live `reasoning_delta` / `text_delta` /
- *    `tool_start` are written inside `modelGenerateStep`. Transcript/checkpoint
- *    live in Blob (B13 persist).
+ *  - Tokens ride `getWritable()`. Live `reasoning_delta` / `text_delta` /
+ *    `tool_start` are written inside `modelGenerateStep`. Live `tool_result`
+ *    is written inside `toolExecuteStep` (one held writer for the batch —
+ *    plan #880). This core still writes loop-owned `done` / `error` and
+ *    wrap-up skipped-tool `tool_result`. Transcript/checkpoint live in Blob.
  *  - The writable is closed **exactly once** on every terminal path — success,
  *    model/tool/persist fail (`{ok:false}` value), step cap, or cancel. A failed
  *    terminal step never tears down the loop without closing the wire.
  *  - Tool business errors are **values**, not throws: a step returning
- *    `{ok:false}` terminates the loop cleanly (never retried 3× by the SDK).
+ *    `{ok:false}` (or a batch item `{ok:false}`) terminates the loop cleanly
+ *    (never retried 3× by the SDK).
  *  - No `/api/agent` fallback, no wrapping `runAgentStream` in one step.
  *
  * Messages are reconstructed **on replay** from the step deltas this core
@@ -78,8 +80,9 @@ export type TurnToolCallDelta = {
  * NEW workflow-scoped cap (plan #806 Caps table): max workflow **steps** per
  * prompt run, where EVERY step boundary counts ONE (each model round + each
  * tool execution + **each persist**, mid-turn included). This is a STEP bound,
- * not a round bound (adversarial L6): a per-round tool fanout cannot exceed the
- * budget. Rough worst case is `model + user-line persist + n*(tool+persist) +
+ * not a round bound (adversarial L6): a per-round tool fanout is **one**
+ * tool-batch step (plan #880 / #872), so N calls cannot blow the budget.
+ * Rough worst case is `model + user-line persist + 1*(batch+persist) +
  * later model + terminal` ≪ 2k-event slow-replay line (Vercel: 25k events/run,
  * 2 GB entity). Addressable under `MAX_AGENT_MAX_STEPS`
  * (`lib/sandbox/config.ts`, 1_000_000, unchanged — no existing-cap change, no
@@ -133,12 +136,34 @@ export interface ModelStepFn {
   >;
 }
 
-/** Tool-step wrapper contract (eventually `toolExecuteStep`). */
+/** One item in a tool-batch step result (plan #880). */
+export type ToolBatchItem =
+  | {
+      ok: true;
+      toolName: string;
+      toolCallId?: string;
+      result: string;
+      freshnessDelta: string;
+    }
+  | {
+      ok: false;
+      toolName: string;
+      toolCallId?: string;
+      code:
+        | 'tool_not_found'
+        | 'sandbox_error'
+        | 'http_error'
+        | 'mcp_error'
+        | 'violation'
+        | 'cancelled';
+      error: string;
+    };
+
+/** Tool-step wrapper contract (`toolExecuteStep` — one round's toolCalls). */
 export interface ToolStepFn {
   (args: {
-    toolName: string;
-    toolCallId?: string;
-    callArgs?: unknown;
+    /** Every toolCall from this model round. One step regardless of length. */
+    calls: ReadonlyArray<TurnToolCallDelta>;
     /**
      * B5-serialized file-freshness ledger seed from the prior tool step(s) in
      * this run — threaded so read-before-edit grants survive across steps and
@@ -155,7 +180,7 @@ export interface ToolStepFn {
      */
     persistRunBind?: PersistRunBind;
   }): Promise<
-    | { ok: true; result: string; freshnessDelta: string }
+    | { ok: true; results: ToolBatchItem[]; freshnessDelta: string }
     | {
         ok: false;
         code:
@@ -166,6 +191,8 @@ export interface ToolStepFn {
           | 'violation'
           | 'cancelled';
         error: string;
+        /** Present when some calls ran before the fail (don't silently drop). */
+        results?: ToolBatchItem[];
       }
   >;
 }
@@ -233,9 +260,9 @@ export interface TurnLoopResult {
   messages: unknown[];
   rounds: number;
   /**
-   * Total workflow steps executed (model + each tool + persist, each == 1).
+   * Total workflow steps executed (model + each tool-batch + persist, each == 1).
    * Bounded by {@link MAX_WORKFLOW_STEPS} — the cap counts STEPS, not rounds
-   * (adversarial L6), so a per-round tool fanout cannot blow the budget.
+   * (adversarial L6). A per-round tool fanout is one batch step (plan #880).
    */
   steps: number;
   error?: string;
@@ -445,14 +472,15 @@ export function derivePersistFold(
 }
 
 /**
- * Drive one prompt run: `model · (tool)*` until the model returns no tool calls
- * or the 512-step cap is reached, writing delta-only SSE lines to the writable,
- * then persist. Mid-turn persists (user-line after a model that returned tools,
- * and after each successful tool) overlay `running`; the no-tool model round
- * persist overlays `completed`. Closes the writable on EVERY terminal path.
+ * Drive one prompt run: `model · (tool-batch)*` until the model returns no
+ * tool calls or the 512-step cap is reached, writing delta-only SSE lines to
+ * the writable, then persist. Mid-turn persists (user-line after a model that
+ * returned tools, and after each successful **batch**) overlay `running`; the
+ * no-tool model round persist overlays `completed`. Closes the writable on
+ * EVERY terminal path.
  *
  * This core holds no closures that cross a step boundary: every arg passed to a
- * step is a plain serializable value (messages / tool name + args / turnRunId +
+ * step is a plain serializable value (messages / calls[] / turnRunId +
  * deltas). Re-resolution of grants/model/sandbox happens inside the steps.
  */
 export async function runTurnLoop(
@@ -587,62 +615,111 @@ export async function runTurnLoop(
         messages.push({ role: 'persist', status: persisted.status });
       }
 
-      // Each tool call is its OWN step — re-resolve + run THE named tool, seeded
-      // with the run's accumulated file-freshness ledger. The cap counts every
-      // step (model + each tool + persist), so a per-round tool fanout cannot
-      // blow the workflow budget (adversarial L6).
-      for (const call of calls) {
-        if (steps >= cap) break; // no remaining step budget → capped
-        steps += 1; // this tool execution = one step boundary
-        const tool = await deps.toolStep({
-          toolName: call.toolName,
-          toolCallId: call.toolCallId,
-          callArgs: call.args,
-          freshnessSeed: freshness,
-          persistRunBind: bind,
-        });
-        if (tool.ok) {
-          freshness = tool.freshnessDelta;
-          deltas.push(tool);
-          messages.push({ role: 'tool', toolName: call.toolName, toolCallId: call.toolCallId, result: tool.result });
-          // Overlay the running bind from this tool's result — last successful
-          // `change_dir` / `meta_sandbox_switch` wins (adversarial round-3 BLOCK).
-          // The NEXT tool/model step will see the updated cwd/sandbox id.
+      // One tool-batch step for this round's toolCalls (plan #880 / #872).
+      // Independent calls overlap inside the step; bind-mutators split waves.
+      // Live tool_result SSE is written inside the step — do not dump here
+      // (would reintroduce N writeTurnSse Fluid steps).
+      if (steps >= cap) break;
+      steps += 1;
+      const batch = await deps.toolStep({
+        calls,
+        freshnessSeed: freshness,
+        persistRunBind: bind,
+      });
+      const items: ToolBatchItem[] = batch.ok
+        ? batch.results
+        : (batch.results ?? []);
+      if (batch.ok) {
+        freshness = batch.freshnessDelta;
+      }
+
+      for (const item of items) {
+        if (item.ok) {
+          freshness = item.freshnessDelta;
+          deltas.push(item);
+          messages.push({
+            role: 'tool',
+            toolName: item.toolName,
+            toolCallId: item.toolCallId,
+            result: item.result,
+          });
           const rowBind = toolRowBind(messages[messages.length - 1]);
           if (rowBind.cwd !== undefined || rowBind.activeSandboxId !== undefined) {
             bind = { ...bind, ...rowBind };
           }
-          await writable.write(sse(toolResultLine(call.toolName, true, tool.result)));
-          // After each successful tool: persist `running` when budget remains
-          // (same gate as the next tool). Fail-closed like terminal.
-          if (steps < cap) {
-            const persisted = await persistNow(false);
-            if (!persisted.ok) {
-              return fail('failed', round, steps, persisted.error);
-            }
-            deltas.push(persisted);
-            messages.push({ role: 'persist', status: persisted.status });
-          }
         } else {
-          // Business error as a VALUE — never a throw; terminate cleanly.
-          if (tool.code === 'cancelled') {
-            return fail('cancelled', round, steps, tool.error);
-          }
-          await writable.write(sse(toolResultLine(call.toolName, false, tool.error)));
-          deltas.push(tool);
-          messages.push({ role: 'tool', toolName: call.toolName, toolCallId: call.toolCallId, ok: false, error: tool.error });
-          await writable.write(sse({ type: 'error', error: tool.error ?? 'tool failed' }));
-          await writable.close();
-          return {
-            status: 'completed',
-            deltas,
-            messages,
-            rounds: round,
-            steps,
-            error: tool.error,
-          };
+          deltas.push(item);
+          messages.push({
+            role: 'tool',
+            toolName: item.toolName,
+            toolCallId: item.toolCallId,
+            ok: false,
+            error: item.error,
+          });
         }
       }
+
+      const cancelled =
+        (!batch.ok && batch.code === 'cancelled') ||
+        items.some((i) => !i.ok && i.code === 'cancelled');
+      if (cancelled) {
+        const cancelledItem = items.find(
+          (i): i is Extract<ToolBatchItem, { ok: false }> =>
+            !i.ok && i.code === 'cancelled',
+        );
+        const err =
+          !batch.ok && batch.code === 'cancelled'
+            ? batch.error
+            : cancelledItem?.error;
+        return fail('cancelled', round, steps, err);
+      }
+
+      const itemFail = items.find(
+        (i): i is Extract<ToolBatchItem, { ok: false }> => !i.ok,
+      );
+      if (!batch.ok || itemFail) {
+        // Persist whatever ran so successes are not dropped, then fail.
+        if (items.length > 0 && steps < cap) {
+          const persisted = await persistNow(false);
+          if (!persisted.ok) {
+            return fail('failed', round, steps, persisted.error);
+          }
+          deltas.push(persisted);
+          messages.push({ role: 'persist', status: persisted.status });
+        }
+        const err = !batch.ok ? batch.error : itemFail?.error;
+        if (!batch.ok && items.length === 0) {
+          // Whole-step fail before any call (assemble / not-found with no
+          // results). No live tool_result was written — emit one for the
+          // first call so the canvas is not left on a hanging tool_start.
+          const first = calls[0];
+          if (first) {
+            await writable.write(
+              sse(toolResultLine(first.toolName, false, err)),
+            );
+          }
+        }
+        await writable.write(sse({ type: 'error', error: err ?? 'tool failed' }));
+        await writable.close();
+        return {
+          status: 'completed',
+          deltas,
+          messages,
+          rounds: round,
+          steps,
+          error: err,
+        };
+      }
+
+      if (steps < cap) {
+        const persisted = await persistNow(false);
+        if (!persisted.ok) {
+          return fail('failed', round, steps, persisted.error);
+        }
+        deltas.push(persisted);
+        messages.push({ role: 'persist', status: persisted.status });
+      }
+
     }
 
     // Step budget exhausted (model + tool step count hit the cap): never
