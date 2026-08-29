@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { MessageKind } from './harnessBridge';
 import {
   LOCAL_SAVE_QUOTA_ERROR,
+  paintQuotaAfterRebuild,
   pushHostQuotaError,
   tryLocalSave,
   type QuotaWarnFlag,
@@ -76,7 +77,7 @@ describe('tryLocalSave', () => {
     };
     const bridge = mockBridge();
     const warned: QuotaWarnFlag = { current: true };
-    tryLocalSave(store, createEmptySession('s'), bridge, warned);
+    expect(tryLocalSave(store, createEmptySession('s'), bridge, warned)).toBe(false);
     expect(store.save).toHaveBeenCalledTimes(1);
     expect(warned.current).toBe(false);
     expect(bridge.pushMessage).not.toHaveBeenCalled();
@@ -97,12 +98,12 @@ describe('tryLocalSave', () => {
     const store = quotaStore();
     const bridge = mockBridge();
     const warned: QuotaWarnFlag = { current: false };
-    expect(() =>
+    expect(
       tryLocalSave(store, createEmptySession('s'), bridge, warned, { paint: false }),
-    ).not.toThrow();
+    ).toBe(true);
     expect(bridge.pushMessage).not.toHaveBeenCalled();
     expect(warned.current).toBe(false);
-    expect(() => tryLocalSave(store, createEmptySession('s'), bridge, warned)).not.toThrow();
+    expect(tryLocalSave(store, createEmptySession('s'), bridge, warned)).toBe(true);
     expect(bridge.pushMessage).toHaveBeenCalledTimes(1);
     expect(warned.current).toBe(true);
   });
@@ -112,11 +113,11 @@ describe('tryLocalSave', () => {
     const bridge = mockBridge();
     const warned: QuotaWarnFlag = { current: false };
     const running = { ...createEmptySession('s'), turnStatus: 'running' as const };
-    expect(() => tryLocalSave(store, running, bridge, warned)).not.toThrow();
+    expect(tryLocalSave(store, running, bridge, warned)).toBe(true);
     expect(bridge.pushMessage).not.toHaveBeenCalled();
     expect(warned.current).toBe(false);
     const done = { ...createEmptySession('s'), turnStatus: 'completed' as const };
-    expect(() => tryLocalSave(store, done, bridge, warned)).not.toThrow();
+    expect(tryLocalSave(store, done, bridge, warned)).toBe(true);
     expect(bridge.pushMessage).toHaveBeenCalledTimes(1);
     expect(bridge.pushMessage).toHaveBeenCalledWith(MessageKind.Error, LOCAL_SAVE_QUOTA_ERROR);
     expect(warned.current).toBe(true);
@@ -135,7 +136,7 @@ describe('tryLocalSave', () => {
     };
     const bridge = mockBridge();
     const warned: QuotaWarnFlag = { current: false };
-    expect(() => tryLocalSave(store, createEmptySession('s'), bridge, warned)).not.toThrow();
+    expect(tryLocalSave(store, createEmptySession('s'), bridge, warned)).toBe(false);
     expect(bridge.pushMessage).not.toHaveBeenCalled();
     expect(warned.current).toBe(false);
   });
@@ -143,8 +144,41 @@ describe('tryLocalSave', () => {
   it('missing store is a no-op', () => {
     const bridge = mockBridge();
     const warned: QuotaWarnFlag = { current: false };
-    tryLocalSave(null, createEmptySession('s'), bridge, warned);
+    expect(tryLocalSave(null, createEmptySession('s'), bridge, warned)).toBe(false);
     expect(bridge.pushMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('paintQuotaAfterRebuild', () => {
+  it('paints after a wiped once-flag when quota fired', () => {
+    const bridge = mockBridge();
+    const warned: QuotaWarnFlag = { current: true };
+    paintQuotaAfterRebuild(bridge, warned, true);
+    expect(bridge.pushMessage).toHaveBeenCalledTimes(1);
+    expect(bridge.pushMessage).toHaveBeenCalledWith(MessageKind.Error, LOCAL_SAVE_QUOTA_ERROR);
+    expect(warned.current).toBe(true);
+  });
+
+  it('no-ops when quota did not fire (does not clear a live flag)', () => {
+    const bridge = mockBridge();
+    const warned: QuotaWarnFlag = { current: true };
+    paintQuotaAfterRebuild(bridge, warned, false);
+    expect(bridge.pushMessage).not.toHaveBeenCalled();
+    expect(warned.current).toBe(true);
+  });
+
+  it('does not paint a running snapshot so a later terminal persist can', () => {
+    const store = quotaStore();
+    const bridge = mockBridge();
+    const warned: QuotaWarnFlag = { current: false };
+    const running = { ...createEmptySession('s'), turnStatus: 'running' as const };
+    expect(tryLocalSave(store, running, bridge, warned, { paint: false })).toBe(true);
+    paintQuotaAfterRebuild(bridge, warned, true, running);
+    expect(bridge.pushMessage).not.toHaveBeenCalled();
+    expect(warned.current).toBe(false);
+    const done = { ...createEmptySession('s'), turnStatus: 'completed' as const };
+    expect(tryLocalSave(store, done, bridge, warned)).toBe(true);
+    expect(bridge.pushMessage).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -160,7 +194,7 @@ describe('HarnessHost wiring lock — quota save (#870)', () => {
       'tryLocalSave(storeRef.current, next, bridgeRef.current, localSaveQuotaWarnedRef',
     );
     expect(src).toContain(
-      'tryLocalSave(storeRef.current, empty, bridge, localSaveQuotaWarnedRef)',
+      'tryLocalSave(storeRef.current, empty, bridge, localSaveQuotaWarnedRef, {',
     );
   });
 
@@ -169,7 +203,13 @@ describe('HarnessHost wiring lock — quota save (#870)', () => {
   });
 
   it('post-turn persistTurn does not paint while the durable turn is still running', () => {
-    expect(src).toContain('persistTurn(folded, folded.turnStatus !== \'running\')');
-    expect(src).toContain('persistTurn(next, next.turnStatus !== \'running\')');
+    expect(src).toContain("persistTurn(folded, folded.turnStatus !== 'running')");
+    expect(src).toContain("persistTurn(next, next.turnStatus !== 'running')");
+  });
+
+  it('adopt and Clear rebuild the ring before painting quota', () => {
+    expect(src).toContain('writeLocalSession(s, { paintQuota: false })');
+    expect(src).toContain('writeLocalSession(empty, { paintQuota: false })');
+    expect(src).toContain('paintQuotaAfterRebuild(');
   });
 });

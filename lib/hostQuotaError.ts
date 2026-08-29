@@ -14,6 +14,10 @@
  * `runHarnessTurn` — `lastRingRowIsToolRun` is initialized from the snapshot
  * last role, not the ring. Skip paint on running snapshots; a terminal persist
  * still throws and paints once.
+ *
+ * Callers that rebuild the ring after save (`hydrateMessages` / `clearMessages`)
+ * must pass `{ paint: false }` and then `paintQuotaAfterRebuild` so the once-flag
+ * is not spent on a row the rebuild immediately drops (adversarial #870).
  */
 import { MessageKind } from './harnessBridge';
 import { isQuotaExceededError, type SessionSnapshot, type SessionStore } from './sessionStore';
@@ -56,7 +60,27 @@ export function pushHostQuotaError(
 }
 
 /**
- * Wrap `store.save`. Success clears the once-flag (next quota can paint again).
+ * After a ring rebuild (`hydrateMessages` / `clearMessages`), paint if the
+ * save that preceded it quota'd. Clears the once-flag first so a push that
+ * the rebuild just dropped does not spend the episode. Skips while the
+ * snapshot is still `running` (cold attach / hot resume must not see Error
+ * as last). Never throws.
+ */
+export function paintQuotaAfterRebuild(
+  bridge: QuotaErrorBridge | null | undefined,
+  warned: QuotaWarnFlag,
+  quota: boolean,
+  snapshot?: Pick<SessionSnapshot, 'turnStatus'>,
+): void {
+  if (!quota) return;
+  if (snapshot?.turnStatus === 'running') return;
+  warned.current = false;
+  pushHostQuotaError(bridge, warned);
+}
+
+/**
+ * Wrap `store.save`. Returns whether `save` threw quota (even when paint is
+ * skipped). Success clears the once-flag (next quota can paint again).
  * Quota throw → `pushHostQuotaError` unless `{ paint: false }` **or** the
  * snapshot is still `running` (hot resume / Send-while-running may continue
  * the stream). Other throws are not expected (`save` swallows non-quota) and
@@ -68,15 +92,17 @@ export function tryLocalSave(
   bridge: QuotaErrorBridge | null | undefined,
   warned: QuotaWarnFlag,
   opts?: TryLocalSaveOpts,
-): void {
-  if (!store) return;
+): boolean {
+  if (!store) return false;
   try {
     store.save(snapshot);
     warned.current = false;
+    return false;
   } catch (err) {
-    if (!isQuotaExceededError(err)) return;
-    if (opts?.paint === false) return;
-    if (snapshot.turnStatus === 'running') return;
+    if (!isQuotaExceededError(err)) return false;
+    if (opts?.paint === false) return true;
+    if (snapshot.turnStatus === 'running') return true;
     pushHostQuotaError(bridge, warned);
+    return true;
   }
 }

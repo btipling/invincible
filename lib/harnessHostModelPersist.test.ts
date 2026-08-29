@@ -605,7 +605,7 @@ describe('HarnessHost wiring lock — foldPendingModelChange must use writeLocal
     // Assert the meta-only persist helper exists (avoids a false pass on a
     // source that renamed both sides of the wiring).
     expect(src).toContain(
-      'const writeLocalSessionMeta = useCallback((next: SessionSnapshot) => {',
+      'const writeLocalSessionMeta = useCallback((next: SessionSnapshot, opts?: { paintQuota?: boolean }) => {',
     );
     // Lock: foldPendingModelChangeFn's persist arg is writeLocalSessionMeta.
     // If someone dedupes and points back at writeLocalSession, this fails.
