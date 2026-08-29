@@ -41,7 +41,7 @@ Each SSE block is one `data: <json>\n\n` line:
 | `reasoning_delta` | `text` (chunk) | Grow a **Thinking** bubble (protocol v8) |
 | `text_delta` | `text` (chunk) | Grow Assistant bubble(s) |
 | `usage` | `usage` | **Live mid-stream** provider token summary from a `finish` part (aggregate only). `finish-step` never emits this. The host folds the context slot immediately; `done.usage` is the final reconcile. Absent when the part carried no usable counts — never a clear/flicker |
-| `done` | `text`, optional `toolTrace`, optional `cwd`, optional `usage` | Collapse open thinking; finalize session; apply `cwd` on success only; fold bounded provider `usage` (Phase 3 #628 — `done.usage` is the conclusive reconcile); Ready |
+| `done` | `text`, optional `finishReason`, optional `toolTrace`, optional `cwd`, optional `usage` | Collapse open thinking; finalize session; apply `cwd` on success only; fold bounded provider `usage` (Phase 3 #628 — `done.usage` is the conclusive reconcile). **`finishReason: length` / `content-filter` / `error` is not model-finished** — the durable loop sends SSE `error` (`output truncated`) instead, and the host treats a truncated `done` the same way. Real chat end is `stop` or omitted. |
 | `error` | `error`, optional `status` | Collapse open thinking; a host **retryable** failure retries the same turn up to 5 attempts (**1 attempt** if any ring row has already been painted mid-stream — re-painting would duplicate tools/bubbles) before give-up; give-up paints the Error message and the turn lands on **Error** — never consuming the operator queue |
 
 Unknown types are ignored (forward-compatible). String fields are redacted server-side with the same secret list as JSON responses.
@@ -107,13 +107,28 @@ Most harness turns paint a final line. **Detach does not** — losing the live r
 
 | Outcome | Line |
 |---------|------|
-| Model finished (SSE `done`) | `Turn ended · model finished` (System) |
+| Model finished (SSE `done` with `stop`, omitted, or any non-truncated `finishReason`) | `Turn ended · model finished` (System) |
+| Output truncated (provider `finishReason: length` / `content-filter` / `error`, or SSE `error` `output truncated`) | `Turn ended · error · output truncated` (Error). Partial assistant text stays. Envelope is terminal `completed` so refresh does not attach a dead run. |
+| Step budget exhausted (256 workflow steps) | `Turn ended · error · step budget exhausted` (Error). Same envelope rule. |
 | User Stop | `Turn ended · you stopped` (System) |
 | Detach (leave-site abort, or durable reader-drop without `done`/`error` after the run id is folded) | **No** turn-end line. Session keeps `turnRunId` + `turnStatus: 'running'`. Lifecycle Ready. The workflow is not cancelled. |
 | Error / timeout / empty | `Turn ended · error · …` / timed out / empty (Error). A retryable error retries the **same** turn up to **5 attempts** with bounded backoff before give-up (**1 attempt once a ring row has been painted mid-stream**, and **1 attempt once a durable `/api/turns` run has started** — another POST would start a second workflow); on give-up the host sets the turn lifecycle to **Error** (so a queued head is never drained) and, if the operator queue is non-empty, inserts `Continue the current turn` as the new head. Permanent failures (the `PERMANENT_TURN_STATUS` whitelist — 400/401/403/404/413/422) give up after a single attempt; **408/429/5xx and timeout/empty stay retryable before durable start** (retry the same turn up to 5 attempts). After durable SSE start, empty/EOF without `done`/`error` is **detach**, not empty-complete and not a retry. |
 | Standalone chat (`/api/chat`) | `Turn ended · chat finished` (System) — kept helper only; a failed agent turn does **not** fall back here |
 
 These markers are **not** folded as tools into the next prompt.
+
+There is **no in-repo output-token cap**. `finishReason: length` is the **provider** default max completion (not a product `maxOutputTokens`). Folding that as “the model finished” is a lie.
+
+## Turn-end logs (Workflows)
+
+Durable `'use step'` bodies `console.log` one JSON line each. These show on **Observability → Workflows** for that run — **not** HTTP Runtime Logs (`/api/harness/status` is the only HTTP probe on that surface).
+
+| `tag` | When | Fields (allowlisted; never prompt/system/tool args/bodies) |
+|-------|------|--------|
+| `invincible.turn.model` | each model round (success or `{ok:false}`) | `ok`, `finishReason?`, `toolCallCount?`, `textChars?`, `code?` |
+| `invincible.turn.persist` | each persist (terminal or mid-turn) | `ok`, `terminal`, `status?`, `turnRunId?`, `code?` |
+
+A truncated round logs `finishReason: "length"` on the model line, then a terminal persist, then SSE `error`. A natural chat end logs `finishReason: "stop"` (or omits it) and SSE `done`.
 
 ## Caps
 
@@ -145,5 +160,7 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Route SSE vs JSON | `app/api/agent/route.ts` |
 | Logical cwd parse / default | `lib/agent/agentBody.ts`, `lib/sandbox/config.ts`, `lib/agent/workPath.ts` |
 | Host consumer + collapse/caps | `lib/harnessChat.ts`, `lib/agentApi.ts` |
+| Truncated / capped fold | `lib/agent/modelFinish.ts`, `lib/workflows/turnLoop.ts` (empty tools + truncated `finishReason` → SSE `error`, not `done`; 256-step cap same) |
+| Workflows step logs | `lib/workflows/turnLog.ts`, `lib/workflows/modelGenerateStep.ts`, `lib/workflows/persistStep.ts` |
 | Thinking paint | `native/harness/src/ui/thinking.zig` (protocol v8 kind) |
 | Feature divide | [feature-divide.md](feature-divide.md) |

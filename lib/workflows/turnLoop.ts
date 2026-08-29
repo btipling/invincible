@@ -39,6 +39,11 @@ import type { PersistStepFold } from './persistStep';
 // tool rows without dragging in that module's closure — adversarial round-2 L1).
 import { changeDirSuccessCwd, metaSandboxSwitchActiveId } from '../agent/toolResultParsers';
 import { formatTurnSse } from './turnSseFormat';
+import {
+  isTruncatedFinish,
+  OUTPUT_TRUNCATED_ERROR,
+  STEP_BUDGET_ERROR,
+} from '../agent/modelFinish';
 
 /**
  * Local structural model-round delta. Defined here (NOT imported from
@@ -495,21 +500,20 @@ export async function runTurnLoop(
       }
       messages.push({ role: 'assistant', delta: persistDelta });
 
-      // No tool calls → this model round is terminal; persist and close.
-      // Skip a prior `running` write on a no-tool first round — that would
-      // double-persist running→completed on every chat turn.
+      // No tool calls → this model round is terminal unless the provider
+      // truncated (`length` / `content-filter` / `error`). Truncation is
+      // persist-completed + SSE error, not “model finished”.
       const calls: TurnToolCallDelta[] = gen.delta.toolCalls ?? [];
       if (calls.length === 0) {
-        // Derive the fold AT PERSIST TIME from this run's messages +
-        // ACCUMULATED usage (turn total). cwd/activeSandboxId come from THIS
-        // run's LAST tool write, or the pre-run bind only when untouched. NOT a
-        // start arg (the last deltas do not exist at `start()` — only here).
         const persisted = await persistNow(true);
         if (!persisted.ok) {
           return fail('failed', round, steps, persisted.error);
         }
         deltas.push(persisted);
         messages.push({ role: 'persist', status: persisted.status });
+        if (isTruncatedFinish(gen.delta.finishReason)) {
+          return fail('failed', round, steps, OUTPUT_TRUNCATED_ERROR);
+        }
         await writable.write(
           sse(doneLine(assistantText, bind, gen.delta.finishReason)),
         );
@@ -589,17 +593,15 @@ export async function runTurnLoop(
     }
 
     // Step budget exhausted (model + tool step count hit the cap): never
-    // infinite. Terminal state + close.
-    const capped: TurnLoopResult = {
-      status: 'capped',
-      deltas,
-      messages,
-      rounds: round,
-      steps,
-    };
-    await writable.write(sse(doneLine(assistantText, bind)));
-    await writable.close();
-    return capped;
+    // infinite. Terminal persist so F5 does not attach a dead run, then
+    // SSE error — not `done` / model-finished.
+    const persisted = await persistNow(true);
+    if (!persisted.ok) {
+      return fail('failed', round, steps, persisted.error);
+    }
+    deltas.push(persisted);
+    messages.push({ role: 'persist', status: persisted.status });
+    return fail('capped', round, steps, STEP_BUDGET_ERROR);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return fail('failed', round, steps, message);

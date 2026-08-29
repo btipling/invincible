@@ -24,6 +24,7 @@
  * (the loop terminates cleanly; the writable is still closed).
  */
 import { checkpointToSnapshotMessages } from '../agent/messageCheckpoint';
+import { logTurnPersist } from './turnLog';
 
 /** Overlay status for a persist write. Omitted/`true` stays completed (today). */
 export function persistOverlayStatus(
@@ -147,6 +148,12 @@ export async function persistStep(
 
   const sessionId = args.scope?.sessionId;
   if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    logTurnPersist({
+      ok: false,
+      terminal: args.terminal !== false,
+      turnRunId: args.turnRunId,
+      code: 'invalid_scope',
+    });
     return {
       ok: false,
       code: 'invalid_scope',
@@ -190,7 +197,21 @@ export async function persistStep(
     ...(args.fold !== undefined ? { fold: args.fold } : {}),
     ...(args.terminal !== undefined ? { terminal: args.terminal } : {}),
   });
-  if (!result.ok) return { ok: false, code: result.code, error: result.error };
+  if (!result.ok) {
+    logTurnPersist({
+      ok: false,
+      terminal: args.terminal !== false,
+      turnRunId: args.turnRunId,
+      code: result.code,
+    });
+    return { ok: false, code: result.code, error: result.error };
+  }
+  logTurnPersist({
+    ok: true,
+    terminal: args.terminal !== false,
+    status: result.status,
+    turnRunId: args.turnRunId,
+  });
   return {
     ok: true,
     status: result.status,

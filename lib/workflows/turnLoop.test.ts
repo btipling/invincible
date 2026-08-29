@@ -19,7 +19,7 @@
  * (zero banned reach) — walker from `./staticGraph`.
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   runTurnLoop,
   MAX_WORKFLOW_STEPS,
@@ -40,6 +40,13 @@ import type { ObjectScope } from '../sessions/blobStore';
 import { parseCloudSessionSnapshot } from '../sessionRepository';
 
 const LOOP_SCOPE: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_loop' };
+
+beforeEach(() => {
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 function fakeWritable(onClose?: () => void): { w: TurnWritable; lines: string[]; closed: number } {
   const lines: string[] = [];
   // Keep `closed` on the returned object so `wiredDeps`'s `() => fake.closed`
@@ -135,6 +142,68 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(events.some((e: { type: string }) => e.type === 'text')).toBe(false);
   });
 
+  it('finishReason length + empty tools → failed, SSE error, no done, terminal persist', async () => {
+    const { deps, w, closed } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'cut off mid', toolCalls: [], finishReason: 'length' },
+    }));
+    const result = await runTurnLoop(
+      { ...deps, persistStep: persistSpy, modelStep, toolStep: vi.fn() },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('output truncated');
+    expect(closed()).toBe(1);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(false);
+    expect(events.some((e: { type: string; error?: string }) => e.type === 'error' && e.error === 'output truncated')).toBe(true);
+    expect(persistSpy).toHaveBeenCalledTimes(1);
+    expect(persistSpy.mock.calls[0]![0].terminal).toBeUndefined();
+  });
+
+  it('finishReason length WITH toolCalls still runs tools', async () => {
+    const { deps } = wiredDeps();
+    let first = true;
+    const modelStep = vi.fn(async () => {
+      const f = first;
+      first = false;
+      return f
+        ? {
+            ok: true as const,
+            delta: {
+              text: 'call',
+              toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
+              finishReason: 'length',
+            },
+          }
+        : { ok: true as const, delta: { text: 'done', toolCalls: [], finishReason: 'stop' } };
+    });
+    const toolStep = vi.fn(async () => ({ ok: true as const, result: 'ok', freshnessDelta: '[]' }));
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep },
+      { userMessage: 'go' },
+    );
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('completed');
+  });
+
+  it('omitted finishReason + empty tools still done (chat)', async () => {
+    const { deps, w } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'hi', toolCalls: [] },
+    }));
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep: vi.fn() },
+      { userMessage: 'hello' },
+    );
+    expect(result.status).toBe('completed');
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(true);
+  });
+
   it('matrix 2: model returns N tool calls → each tool runs once via toolExecuteStep; loop continues', async () => {
     const { deps, w, closed } = wiredDeps();
     // Round 1 emits 2 tool calls (both run as tools); round 2 emits none, so the
@@ -191,11 +260,20 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     );
     expect(result.status).toBe('capped');
     // cap = TOTAL STEPS: round 1 consumes 1 model step + 1 user-line persist
-    // = 2, budget exhausted before the tool gate → 0 tools. Must never be infinite.
-    expect(result.steps).toBe(2);
+    // = 2, budget exhausted before the tool gate → 0 tools. Terminal persist
+    // on cap adds a third step so the envelope is not left running.
+    expect(result.steps).toBe(3);
     expect(result.rounds).toBe(1);
     expect(toolStep).toHaveBeenCalledTimes(0);
     expect(closed()).toBe(1);
+    const capEvents = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(capEvents.some((e: { type: string }) => e.type === 'done')).toBe(false);
+    expect(
+      capEvents.some(
+        (e: { type: string; error?: string }) =>
+          e.type === 'error' && e.error === 'step budget exhausted',
+      ),
+    ).toBe(true);
   });
 
   it('matrix 3b (L6): cap counts steps, so a per-round tool fanout is bounded', async () => {
@@ -220,9 +298,12 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     );
     expect(result.status).toBe('capped');
     // 1 model + 1 user-line persist + 1 tool = 3 steps; tools 2–4 never run.
-    expect(result.steps).toBe(3);
+    // Terminal persist on cap is a fourth step.
+    expect(result.steps).toBe(4);
     expect(toolStep).toHaveBeenCalledTimes(1);
     expect(closed()).toBe(1);
+    const fanEvents = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(fanEvents.some((e: { type: string }) => e.type === 'done')).toBe(false);
   });
 
   it('mid-turn persist: no-tool run is exactly one completed persist', async () => {
@@ -1070,6 +1151,7 @@ describe('step wrappers (matrix 4–7)', () => {
     // serializes ALL args to a `'use step'` fn — closures become nothing).
     const roundtrip = JSON.parse(JSON.stringify(stepArgs));
     expect(roundtrip).toEqual(stepArgs);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const result = await mod.modelGenerateStep(stepArgs);
     expect(m1).toHaveBeenCalledTimes(1);
     expect(result.ok).toBe(true);
@@ -1094,6 +1176,20 @@ describe('step wrappers (matrix 4–7)', () => {
     expect(writeOnDefaultStream).toHaveBeenCalledWith(
       'data: {"type":"reasoning_delta","text":"Hmm"}\n\n',
     );
+    const modelLogs = logSpy.mock.calls
+      .map((c) => {
+        try {
+          return JSON.parse(String(c[0])) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .filter((r): r is Record<string, unknown> => r != null && r.tag === 'invincible.turn.model');
+    expect(modelLogs).toHaveLength(1);
+    expect(modelLogs[0]!.ok).toBe(true);
+    expect(modelLogs[0]!.toolCallCount).toBe(0);
+    expect(modelLogs[0]!.textChars).toBe(1);
+    logSpy.mockRestore();
     vi.doUnmock('../agent/generateOneRound');
     vi.doUnmock('../di/index');
     vi.doUnmock('./assembleDurableToolWorld');
@@ -1353,6 +1449,38 @@ describe('step wrappers (matrix 4–7)', () => {
     expect(Number.isFinite(body.updatedAt)).toBe(true);
     const parsed = parseCloudSessionSnapshot(body, LOOP_SCOPE.sessionId);
     expect(parsed).not.toBeNull();
+  });
+
+  it('persistStep logs one JSON line with invincible.turn.persist', async () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const { seam } = createInMemoryPersistSeam();
+      setPersistSeamResolver(() => seam);
+      await persistStep({
+        turnRunId: 'wrun_log',
+        deltas: [],
+        scope: LOOP_SCOPE,
+      });
+      const rows = spy.mock.calls
+        .map((c) => {
+          try {
+            return JSON.parse(String(c[0])) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })
+        .filter(
+          (r): r is Record<string, unknown> =>
+            r != null && r.tag === 'invincible.turn.persist',
+        );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.ok).toBe(true);
+      expect(rows[0]!.terminal).toBe(true);
+      expect(rows[0]!.status).toBe('completed');
+      expect(rows[0]!.turnRunId).toBe('wrun_log');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('matrix 7c: persistStep terminal:false returns running (in-memory seam)', async () => {

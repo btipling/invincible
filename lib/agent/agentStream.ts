@@ -60,6 +60,11 @@ export type AgentStreamEvent =
   | {
       type: 'done';
       text: string;
+      /**
+       * Provider `finishReason` when the producer forwarded it (`stop`,
+       * `length`, `tool-calls`, …). Host maps truncated reasons to Error.
+       */
+      finishReason?: string;
       toolTrace?: ToolTraceEntry[];
       cwd?: string;
       /** Resolved active sandbox bind the turn ran against (FS tools bound). */

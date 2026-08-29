@@ -4,6 +4,7 @@
  * reuse the same parser — the SSE event format is identical.
  */
 import { type AgentStreamEvent } from './agent/agentStream';
+import { isTruncatedFinish, OUTPUT_TRUNCATED_ERROR } from './agent/modelFinish';
 
 export function parseSseChunk(
   buffer: string,
@@ -101,6 +102,9 @@ export async function readAgentStream(
           }
           // done.usage is the conclusive reconcile (caller sanitizes).
           usageRaw = ev.usage;
+          if (isTruncatedFinish(ev.finishReason)) {
+            streamError = { ok: false, error: OUTPUT_TRUNCATED_ERROR };
+          }
         } else if (ev.type === 'error') {
           streamError = {
             ok: false,
@@ -136,6 +140,9 @@ export async function readAgentStream(
             streamActiveSandboxId = ev.activeSandboxId;
           }
           usageRaw = ev.usage;
+          if (isTruncatedFinish(ev.finishReason)) {
+            streamError = { ok: false, error: OUTPUT_TRUNCATED_ERROR };
+          }
         } else if (ev.type === 'error') {
           streamError = {
             ok: false,

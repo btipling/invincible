@@ -48,6 +48,7 @@ import {
 } from '../agent/generateOneRound';
 import { toolsWithoutExecutors } from '../agent/generateOneRound';
 import { toModelMessages } from './toModelMessages';
+import { logTurnModel } from './turnLog';
 import { formatLiveModelSse } from './turnSseFormat';
 import { withDefaultStreamWriter } from './turnSseWrite';
 import type { PersistRunBind } from './turnLoop';
@@ -105,6 +106,7 @@ export async function modelGenerateStep(
   );
 
   if (!byok.ok) {
+    logTurnModel({ ok: false, code: 'model_error' });
     return {
       ok: false,
       code: 'model_error',
@@ -128,6 +130,7 @@ export async function modelGenerateStep(
   // cleanly. No handles were opened on this path (sandbox didn't resolve ok,
   // and we haven't called buildToolWorld).
   if (!assembled.ok) {
+    logTurnModel({ ok: false, code: 'model_error' });
     return {
       ok: false,
       code: 'model_error',
@@ -177,6 +180,15 @@ export async function modelGenerateStep(
       },
     ),
   );
-  if (result.ok) return { ok: true, delta: result.delta };
+  if (result.ok) {
+    logTurnModel({
+      ok: true,
+      finishReason: result.delta.finishReason,
+      toolCallCount: result.delta.toolCalls.length,
+      textChars: result.delta.text.length,
+    });
+    return { ok: true, delta: result.delta };
+  }
+  logTurnModel({ ok: false, code: result.code });
   return { ok: false, code: result.code, error: result.error };
 }
