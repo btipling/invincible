@@ -392,6 +392,143 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(closed()).toBe(1);
   });
 
+  it('itemFail at cap still persists the mixed batch (adversarial #881 round-2 Major)', async () => {
+    const { deps, closed } = wiredDeps({ maxSteps: 3 });
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: {
+        text: 'two',
+        toolCalls: [
+          { toolName: 'list_dir', toolCallId: 'a', args: {} },
+          { toolName: 'read_file', toolCallId: 'b', args: {} },
+        ],
+      },
+    }));
+    const toolStep = vi.fn(async (_args: ToolCallIn) => ({
+      ok: true as const,
+      results: [
+        {
+          ok: true as const,
+          toolName: 'list_dir',
+          toolCallId: 'a',
+          result: 'ok-dir',
+          freshnessDelta: '[]',
+        },
+        {
+          ok: false as const,
+          toolName: 'read_file',
+          toolCallId: 'b',
+          code: 'sandbox_error' as const,
+          error: 'boom',
+        },
+      ],
+      freshnessDelta: '[]',
+    }));
+    const result = await runTurnLoop(
+      { ...deps, maxSteps: 3, modelStep, toolStep, persistStep: persistSpy },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    expect(result.error).toBe('boom');
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    // user-line + persist-then-fail of the mixed batch (batch was the last
+    // in-budget step; must still persist — wrap-up never runs on itemFail).
+    expect(persistSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    const rows = (result.messages as Array<{ role?: string; result?: string; error?: string }>)
+      .filter((m) => m.role === 'tool');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.result).toBe('ok-dir');
+    expect(rows[1]?.error).toBe('boom');
+    expect(closed()).toBe(1);
+  });
+
+  it('cancel at cap still persists sibling successes (adversarial #881 round-2 Major)', async () => {
+    const { deps, closed } = wiredDeps({ maxSteps: 3 });
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: {
+        text: 'two',
+        toolCalls: [
+          { toolName: 'list_dir', toolCallId: 'a', args: {} },
+          { toolName: 'read_file', toolCallId: 'b', args: {} },
+        ],
+      },
+    }));
+    const toolStep = vi.fn(async (_args: ToolCallIn) => ({
+      ok: false as const,
+      code: 'cancelled' as const,
+      error: 'Request cancelled.',
+      results: [
+        {
+          ok: true as const,
+          toolName: 'list_dir',
+          toolCallId: 'a',
+          result: 'ok-dir',
+          freshnessDelta: '[]',
+        },
+        {
+          ok: false as const,
+          toolName: 'read_file',
+          toolCallId: 'b',
+          code: 'cancelled' as const,
+          error: 'Request cancelled.',
+        },
+      ],
+    }));
+    const result = await runTurnLoop(
+      { ...deps, maxSteps: 3, modelStep, toolStep, persistStep: persistSpy },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('cancelled');
+    expect(persistSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    const rows = (result.messages as Array<{ role?: string; result?: string }>)
+      .filter((m) => m.role === 'tool');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.result).toBe('ok-dir');
+    expect(closed()).toBe(1);
+  });
+
+  it('whole-step fail with N calls writes tool_result for every call (adversarial #881 round-2 Minor)', async () => {
+    const { deps, w, closed } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: {
+        text: 'three',
+        toolCalls: [
+          { toolName: 'list_dir', toolCallId: 'a', args: {} },
+          { toolName: 'read_file', toolCallId: 'b', args: {} },
+          { toolName: 'write_file', toolCallId: 'c', args: {} },
+        ],
+      },
+    }));
+    const toolStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'sandbox_error' as const,
+      error: 'down',
+    }));
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep, persistStep: persistSpy },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('completed');
+    expect(result.error).toBe('down');
+    // Nothing ran — still only the user-line persist.
+    expect(persistSpy).toHaveBeenCalledTimes(1);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim())) as Array<{
+      type: string;
+      name?: string;
+      ok?: boolean;
+    }>;
+    const results = events.filter((e) => e.type === 'tool_result');
+    expect(results.map((e) => e.name)).toEqual(['list_dir', 'read_file', 'write_file']);
+    expect(results.every((e) => e.ok === false)).toBe(true);
+    expect(events.some((e) => e.type === 'error')).toBe(true);
+    expect(closed()).toBe(1);
+  });
+
   it('matrix 3: loop reaches the cap → terminates (never infinite), writable closed', async () => {
     const { deps, w, closed } = wiredDeps({ maxSteps: 2 });
     // Every model round keeps returning a tool call, so the loop would never stop

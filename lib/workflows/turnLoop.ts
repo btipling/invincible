@@ -671,8 +671,12 @@ export async function runTurnLoop(
         // Persist whatever ran so successes are not dropped, then fail.
         // Cancel used to skip this (adversarial #881 Major) — #871 persist
         // cadence was per-tool; the batch must persist-then-fail the same as
-        // itemFail.
-        if (items.length > 0 && steps < cap) {
+        // itemFail. Do **not** gate on `steps < cap`: the batch is often the
+        // last in-budget step (matrix 3b). Fail/cancel return before wrap-up,
+        // so skipping here drops sibling results (adversarial #881 round-2).
+        // User-line persist and wrap-up persist already increment past cap.
+        if (items.length > 0) {
+
           const persisted = await persistNow(false);
           if (!persisted.ok) {
             return fail('failed', round, steps, persisted.error);
@@ -694,12 +698,12 @@ export async function runTurnLoop(
         const err = !batch.ok ? batch.error : itemFail?.error;
         if (!batch.ok && items.length === 0) {
           // Whole-step fail before any call (assemble / not-found with no
-          // results). No live tool_result was written — emit one for the
-          // first call so the canvas is not left on a hanging tool_start.
-          const first = calls[0];
-          if (first) {
+          // results). No live tool_result was written — emit one per call so
+          // sibling model-step tool_starts are not left `running…` (adversarial
+          // #881 round-2 Minor). Persist stays skipped: nothing ran.
+          for (const call of calls) {
             await writable.write(
-              sse(toolResultLine(first.toolName, false, err)),
+              sse(toolResultLine(call.toolName, false, err)),
             );
           }
         }
