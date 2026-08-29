@@ -13,9 +13,10 @@
  * the route's module state. `setToolWorldResolver` is a TEST-ONLY override:
  * when set (tests), it wins; when unset (prod), the step uses the shared helper.
  *
- * After a successful `meta_sandbox_switch`, the step re-assembles before the
- * next wave (FS execute closures are bound to the previous sandbox client).
- * `change_dir` mutates in-memory `cwdState` — no re-assemble.
+ * After a successful `meta_sandbox_switch` (result parses to an
+ * `activeSandboxId` — not a soft `ERROR …` string), the step re-assembles
+ * before the next wave (FS execute closures are bound to the previous
+ * sandbox client). `change_dir` mutates in-memory `cwdState` — no re-assemble.
  *
  * **Zero non-serializable step args:** the ONLY args are plain serializable
  * values. Closures / AbortSignal / bound runners can never pass the step
@@ -173,6 +174,7 @@ function sseFor(item: ToolBatchItem): string {
       name: item.toolName,
       ok: true,
       summary: item.result,
+      ...(item.toolCallId ? { id: item.toolCallId } : {}),
       ...(cwd ? { changeDirCwd: cwd } : {}),
       ...(sid ? { activeSandboxId: sid } : {}),
     });
@@ -181,6 +183,7 @@ function sseFor(item: ToolBatchItem): string {
     name: item.toolName,
     ok: false,
     summary: item.error,
+    ...(item.toolCallId ? { id: item.toolCallId } : {}),
   });
 }
 
@@ -308,7 +311,13 @@ export async function toolExecuteStep(
           args: call.args,
         });
         const item = toItem(call, r);
-        await writeSafe(sseFor(item));
+        try {
+          await writeSafe(sseFor(item));
+        } catch {
+          // Live paint failed. Do not fail/retry a completed execute
+          // (adversarial #881 round-3 Minor: 1-call writer reject used to
+          // rethrow → SDK 3× re-apply).
+        }
         return item;
       };
 
@@ -345,10 +354,15 @@ export async function toolExecuteStep(
           break;
         }
         const only = wave.calls[0];
-        if (
+        const switchResult =
           !wave.parallel &&
           only?.toolName === 'meta_sandbox_switch' &&
           ran[0]?.ok
+            ? ran[0].result
+            : undefined;
+        if (
+          switchResult !== undefined &&
+          metaSandboxSwitchActiveId(switchResult)
         ) {
           const seed = liveFreshnessDelta(world?.freshness, freshnessDelta);
           await closeHandles(world);

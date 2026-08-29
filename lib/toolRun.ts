@@ -65,6 +65,12 @@ export interface ToolRunItem {
    * `brief`; empty for short single-line results (Wasm paints a static label,
    * no blank expander). Subject to the whole-group encode budget. */
   detail: string;
+  /**
+   * Provider tool-call id from SSE `tool_start.id` / `tool_result.id`.
+   * Host-only pairing key under completion-order live writes; not encoded
+   * onto the Wasm payload (adversarial #881 round-3).
+   */
+  callId?: string;
 }
 
 /**
@@ -152,13 +158,14 @@ export function hasRunningTool(group: ToolRunGroup, name: string): boolean {
   return false;
 }
 
-export function addToolStart(group: ToolRunGroup, name: string): void {
+export function addToolStart(group: ToolRunGroup, name: string, callId?: string): void {
   group.items.push({
     id: group.items.length + 1,
     status: 'running',
     name,
     brief: `${name} · running…`,
     detail: storeDetail(group, ''),
+    ...(callId ? { callId } : {}),
   });
 }
 
@@ -251,11 +258,23 @@ export function addToolResult(
   ok: boolean,
   summary: string,
   preview?: string,
+  callId?: string,
 ): void {
   const line = asciiStatus((summary ?? '').trim());
   const detail = meaningfulDetail(summary, preview);
-  // Complete the most recent running item with the same name (in place), else
-  // append a done item (e.g. a result for a start we never observed).
+  // Prefer provider id (completion-order live writes under Promise.all).
+  // Fall back to most-recent running same name (legacy / no-id path).
+  if (callId) {
+    for (let i = group.items.length - 1; i >= 0; i--) {
+      const it = group.items[i];
+      if (it && it.status === 'running' && it.callId === callId) {
+        it.status = ok ? 'ok' : 'fail';
+        it.brief = briefSafe(compactPreview(line)) || `${name} · ${ok ? 'ok' : 'failed'}`;
+        it.detail = storeDetail(group, detail, it.detail);
+        return;
+      }
+    }
+  }
   for (let i = group.items.length - 1; i >= 0; i--) {
     const it = group.items[i];
     if (it && it.status === 'running' && it.name === name) {
@@ -271,6 +290,7 @@ export function addToolResult(
     name,
     brief: briefSafe(compactPreview(line)) || `${name} · ${ok ? 'ok' : 'failed'}`,
     detail: storeDetail(group, detail),
+    ...(callId ? { callId } : {}),
   });
 }
 

@@ -107,6 +107,7 @@ export type TurnSseLine =
       name: string;
       ok: boolean;
       summary: string;
+      id?: string;
       changeDirCwd?: string;
       activeSandboxId?: string;
     }
@@ -305,12 +306,14 @@ function toolResultLine(
   toolName: string,
   ok: boolean,
   raw: string | undefined,
+  id?: string,
 ): TurnSseLine {
   const ev: Extract<TurnSseLine, { type: 'tool_result' }> = {
     type: 'tool_result',
     name: toolName,
     ok,
     summary: raw ?? '',
+    ...(id ? { id } : {}),
   };
   if (ok && raw) {
     const cwd = changeDirSuccessCwd(raw);
@@ -703,7 +706,7 @@ export async function runTurnLoop(
           // #881 round-2 Minor). Persist stays skipped: nothing ran.
           for (const call of calls) {
             await writable.write(
-              sse(toolResultLine(call.toolName, false, err)),
+              sse(toolResultLine(call.toolName, false, err, call.toolCallId)),
             );
           }
         }
@@ -743,7 +746,7 @@ export async function runTurnLoop(
     const skipped = unpairedToolRows(messages);
     for (const row of skipped) {
       messages.push(row);
-      await writable.write(sse(toolResultLine(row.toolName, false, row.error)));
+      await writable.write(sse(toolResultLine(row.toolName, false, row.error, row.toolCallId)));
     }
     // Wrap-up Error: instruction is model-only — pass a copy, do not push it
     // onto the loop transcript (checkpoint / Blob snapshot / F5).

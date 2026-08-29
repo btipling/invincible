@@ -2692,8 +2692,8 @@ describe('step wrappers (matrix 4–7)', () => {
     expect(result.ok).toBe(true);
     expect(writes).toHaveLength(2);
     expect(writes.every((w) => w.includes('"type":"tool_result"'))).toBe(true);
-    expect(writes.some((w) => w.includes('"name":"a"'))).toBe(true);
-    expect(writes.some((w) => w.includes('"name":"b"'))).toBe(true);
+    expect(writes.some((w) => w.includes('"name":"a"') && w.includes('"id":"1"'))).toBe(true);
+    expect(writes.some((w) => w.includes('"name":"b"') && w.includes('"id":"2"'))).toBe(true);
     vi.doUnmock('../agent/executeTool');
     vi.doUnmock('./turnSseWrite');
   });
@@ -2926,6 +2926,96 @@ describe('step wrappers (matrix 4–7)', () => {
       expect(ids).toEqual(['s', 'r']);
     }
     expect(execMock).toHaveBeenCalledTimes(1);
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('matrix 6h-error: ERROR switch string does not re-assemble (adversarial #881 round-3 Major)', async () => {
+    const execMock = vi.fn(async (_deps: unknown, input: unknown) => {
+      const i = input as { toolName?: string };
+      if (i.toolName === 'meta_sandbox_switch') {
+        return {
+          ok: true as const,
+          result: 'ERROR meta_sandbox_switch: sandbox access denied',
+          freshnessDelta: '[]',
+        };
+      }
+      return { ok: true as const, result: `out:${i.toolName}`, freshnessDelta: '[]' };
+    });
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    const resolve = vi.fn(() => ({
+      registry: { meta_sandbox_switch: {}, read_file: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    mod.setToolWorldResolver(resolve);
+    const result = await mod.toolExecuteStep({
+      calls: [
+        { toolName: 'meta_sandbox_switch', toolCallId: 's', args: { id: 'sb_b' } },
+        { toolName: 'read_file', toolCallId: 'r', args: { path: 'x' } },
+      ],
+      persistRunBind: { activeSandboxId: 'sb_a' },
+    });
+    expect(result.ok).toBe(true);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(execMock).toHaveBeenCalledTimes(2);
+    if (result.ok) {
+      expect(result.results[0]).toMatchObject({
+        ok: true,
+        toolName: 'meta_sandbox_switch',
+        result: 'ERROR meta_sandbox_switch: sandbox access denied',
+      });
+      expect(result.results[1]).toMatchObject({
+        ok: true,
+        toolName: 'read_file',
+        result: 'out:read_file',
+      });
+    }
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('matrix 6i: 1-call writer reject does not rethrow after a successful execute (adversarial #881 round-3 Minor)', async () => {
+    const execMock = vi.fn(async () => ({
+      ok: true as const,
+      result: 'wrote',
+      freshnessDelta: '[]',
+    }));
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) =>
+        fn(async () => {
+          throw new Error('stream down');
+        }),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: { write_file: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    const result = await mod.toolExecuteStep({
+      calls: [{ toolName: 'write_file', toolCallId: '1', args: {} }],
+    });
+    expect(result.ok).toBe(true);
+    expect(execMock).toHaveBeenCalledTimes(1);
+    if (result.ok) {
+      expect(result.results[0]).toMatchObject({ ok: true, result: 'wrote' });
+    }
     vi.doUnmock('../agent/executeTool');
     vi.doUnmock('./turnSseWrite');
   });

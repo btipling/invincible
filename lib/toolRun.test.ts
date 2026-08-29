@@ -98,6 +98,20 @@ describe('toolRun grouping', () => {
     expect(hasRunningTool(g, 'exec')).toBe(false);
   });
 
+  it('pairs completion-order same-name results by callId, not LIFO-by-name (adversarial #881 round-3)', () => {
+    const g = createToolRunGroup();
+    addToolStart(g, 'read_file', 'tc_a');
+    addToolStart(g, 'read_file', 'tc_b');
+    // A finishes first while B is still running — LIFO-by-name would paint on B.
+    addToolResult(g, 'read_file', true, 'body of A', undefined, 'tc_a');
+    expect(g.items[0]!.status).toBe('ok');
+    expect(g.items[0]!.brief).toContain('body of A');
+    expect(g.items[1]!.status).toBe('running');
+    addToolResult(g, 'read_file', true, 'body of B', undefined, 'tc_b');
+    expect(g.items[1]!.status).toBe('ok');
+    expect(g.items[1]!.brief).toContain('body of B');
+  });
+
   it('toolRunIsFull only at the cap', () => {
     const g = createToolRunGroup();
     for (let i = 0; i < TOOL_RUN_ITEMS_MAX - 1; i++) {

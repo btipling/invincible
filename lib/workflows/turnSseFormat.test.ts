@@ -92,4 +92,15 @@ describe('formatLiveToolResultSse (plan #880)', () => {
       }),
     ).toContain('"activeSandboxId":"sb_b"');
   });
+
+  it('attaches provider tool-call id (adversarial #881 round-3)', () => {
+    expect(
+      formatLiveToolResultSse({
+        name: 'read_file',
+        ok: true,
+        summary: 'ok',
+        id: 'tc_a',
+      }),
+    ).toContain('"id":"tc_a"');
+  });
 });

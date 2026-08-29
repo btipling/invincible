@@ -48,6 +48,8 @@ export function formatLiveToolResultSse(ev: {
   name: string;
   ok: boolean;
   summary: string;
+  /** Provider tool-call id — pairs with `tool_start.id` under completion-order writes. */
+  id?: string;
   changeDirCwd?: string;
   activeSandboxId?: string;
 }): string {
@@ -56,6 +58,7 @@ export function formatLiveToolResultSse(ev: {
     name: ev.name,
     ok: ev.ok,
     summary: ev.summary,
+    ...(ev.id ? { id: ev.id } : {}),
     ...(ev.changeDirCwd ? { changeDirCwd: ev.changeDirCwd } : {}),
     ...(ev.activeSandboxId ? { activeSandboxId: ev.activeSandboxId } : {}),
   });
