@@ -26,7 +26,11 @@ export function modelIdLooksReasoningCapable(modelId: string): boolean {
   if (id.includes('non-reasoning') || id.includes('nonreasoning')) {
     return false;
   }
-  return id.includes('reasoning') || id.includes('thinking');
+  if (id.includes('reasoning') || id.includes('thinking')) {
+    return true;
+  }
+  // GLM-5.x always thinks; the id contains neither "reasoning" nor "thinking".
+  return /(^|\/)glm-5(\b|[-.])/.test(id);
 }
 
 /**

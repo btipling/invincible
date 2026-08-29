@@ -2,10 +2,14 @@
  * Provider `finishReason` classification for one model round.
  *
  * `length` is the provider output-token cap (not an HTTP error, not a product
- * maxTokens we set). Folding it as “model finished” is a lie.
+ * maxTokens we set). Folding it as “model finished” is a lie. `content-filter`
+ * and `error` are also not a clean stop — they share the truncated-finish
+ * fold but must not paint the same canvas string as a token cap.
  */
 
 export const OUTPUT_TRUNCATED_ERROR = 'output truncated';
+export const CONTENT_FILTER_ERROR = 'content filtered';
+export const MODEL_FINISH_ERROR = 'model error';
 export const STEP_BUDGET_ERROR = 'step budget exhausted';
 
 /** Model-visible wrap-up after the workflow step cap. Not canvas copy. */
@@ -18,4 +22,14 @@ export const STEP_BUDGET_WRAPUP_SYSTEM =
 
 export function isTruncatedFinish(reason: string | undefined): boolean {
   return reason === 'length' || reason === 'content-filter' || reason === 'error';
+}
+
+/**
+ * SSE / canvas error for a truncated `finishReason`.
+ * `length` keeps the historical `output truncated` string.
+ */
+export function truncatedFinishError(reason: string | undefined): string {
+  if (reason === 'content-filter') return CONTENT_FILTER_ERROR;
+  if (reason === 'error') return MODEL_FINISH_ERROR;
+  return OUTPUT_TRUNCATED_ERROR;
 }

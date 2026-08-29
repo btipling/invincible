@@ -21,7 +21,7 @@ import {
 import { sendTurn, sendTurnStream, attachTurnStream } from './turnApi';
 import { isDetachAbort } from './detachTurn';
 import { type AgentStreamEvent } from './agent/agentStream';
-import { isTruncatedFinish, OUTPUT_TRUNCATED_ERROR } from './agent/modelFinish';
+import { isTruncatedFinish, truncatedFinishError } from './agent/modelFinish';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
 } from './sandbox/config';
@@ -1862,7 +1862,7 @@ export async function runHarnessTurn(
     if (agentResult.ok && isTruncatedFinish(doneFinishReason)) {
       agentResult = {
         ok: false,
-        error: OUTPUT_TRUNCATED_ERROR,
+        error: truncatedFinishError(doneFinishReason),
         ...('turnRunId' in agentResult && agentResult.turnRunId
           ? { turnRunId: agentResult.turnRunId }
           : {}),

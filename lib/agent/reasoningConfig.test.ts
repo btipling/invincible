@@ -13,6 +13,19 @@ describe('modelIdLooksReasoningCapable', () => {
     expect(modelIdLooksReasoningCapable('moonshotai/kimi-k2-thinking')).toBe(true);
     expect(modelIdLooksReasoningCapable('anthropic/claude-sonnet-4')).toBe(false);
   });
+
+  it('treats glm-5* ids as reasoning-capable', () => {
+    expect(modelIdLooksReasoningCapable('zai/glm-5.3-flash')).toBe(true);
+    expect(modelIdLooksReasoningCapable('glm-5.3')).toBe(true);
+    expect(modelIdLooksReasoningCapable('zai/glm-5')).toBe(true);
+    expect(modelIdLooksReasoningCapable('glm-5')).toBe(true);
+  });
+
+  it('does not treat glm-4 / glm-50 as glm-5', () => {
+    expect(modelIdLooksReasoningCapable('zai/glm-4.5')).toBe(false);
+    expect(modelIdLooksReasoningCapable('glm-50')).toBe(false);
+    expect(modelIdLooksReasoningCapable('openglm-5.3')).toBe(false);
+  });
 });
 
 describe('resolveAgentReasoning', () => {
@@ -44,6 +57,12 @@ describe('resolveAgentReasoning', () => {
     ).toBe('provider-default');
     expect(
       resolveAgentReasoning('moonshotai/kimi-k2-thinking', {}),
+    ).toBe('provider-default');
+  });
+
+  it('defaults provider-default for glm-5* when env unset', () => {
+    expect(
+      resolveAgentReasoning('zai/glm-5.3-flash', {}),
     ).toBe('provider-default');
   });
 

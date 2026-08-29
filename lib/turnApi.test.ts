@@ -233,7 +233,29 @@ describe('sendTurnStream (SSE path — production default)', () => {
     );
     const result = await sendTurnStream('hi');
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toBe('output truncated');
+    if (!result.ok) expect(result.error).toBe('content filtered');
+  });
+
+  it('SSE done + finishReason error → ok:false model error', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse(
+          [
+            'data: {"type":"text_delta","text":"thinking painted"}\n\n',
+            'data: {"type":"done","text":"thinking painted","finishReason":"error"}\n\n',
+          ],
+          { 'x-workflow-run-id': 'wr_err' },
+        ),
+      ),
+    );
+    const result = await sendTurnStream('hi');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('model error');
+      expect(result.error).not.toBe('output truncated');
+      expect(result.turnRunId).toBe('wr_err');
+    }
   });
 
   it('SSE done + finishReason stop stays ok:true', async () => {

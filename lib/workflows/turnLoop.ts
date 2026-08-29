@@ -43,7 +43,7 @@ import { changeDirSuccessCwd, metaSandboxSwitchActiveId } from '../agent/toolRes
 import { formatTurnSse } from './turnSseFormat';
 import {
   isTruncatedFinish,
-  OUTPUT_TRUNCATED_ERROR,
+  truncatedFinishError,
   STEP_BUDGET_ERROR,
   STEP_BUDGET_WRAPUP,
 } from '../agent/modelFinish';
@@ -596,7 +596,7 @@ export async function runTurnLoop(
         deltas.push(persisted);
         messages.push({ role: 'persist', status: persisted.status });
         if (isTruncatedFinish(gen.delta.finishReason)) {
-          return fail('failed', round, steps, OUTPUT_TRUNCATED_ERROR);
+          return fail('failed', round, steps, truncatedFinishError(gen.delta.finishReason));
         }
         await writable.write(
           sse(doneLine(assistantText, bind, gen.delta.finishReason)),

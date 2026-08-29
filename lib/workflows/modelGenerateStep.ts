@@ -316,6 +316,12 @@ export async function modelGenerateStep(
         finishReason: result.delta.finishReason,
         toolCallCount: result.delta.toolCalls.length,
         textChars: result.delta.text.length,
+        ...(typeof result.delta.reasoning === 'string'
+          ? { reasoningChars: result.delta.reasoning.length }
+          : {}),
+        ...(typeof result.delta.usage?.completion === 'number'
+          ? { completion: result.delta.usage.completion }
+          : {}),
       });
       return { ok: true, delta: result.delta };
     }
@@ -412,6 +418,12 @@ export async function modelGenerateStep(
       finishReason: result.delta.finishReason,
       toolCallCount: result.delta.toolCalls.length,
       textChars: result.delta.text.length,
+      ...(typeof result.delta.reasoning === 'string'
+        ? { reasoningChars: result.delta.reasoning.length }
+        : {}),
+      ...(typeof result.delta.usage?.completion === 'number'
+        ? { completion: result.delta.usage.completion }
+        : {}),
     });
     return { ok: true, delta: result.delta };
   }

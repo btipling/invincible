@@ -206,6 +206,44 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(persistSpy.mock.calls[0]![0].terminal).toBeUndefined();
   });
 
+  it('finishReason error + empty tools → SSE model error, not output truncated', async () => {
+    const { deps, w, closed } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: '', toolCalls: [], finishReason: 'error' },
+    }));
+    const result = await runTurnLoop(
+      { ...deps, persistStep: persistSpy, modelStep, toolStep: vi.fn() },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('model error');
+    expect(result.error).not.toBe('output truncated');
+    expect(closed()).toBe(1);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(false);
+    expect(events.some((e: { type: string; error?: string }) => e.type === 'error' && e.error === 'model error')).toBe(true);
+    expect(persistSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('finishReason content-filter + empty tools → SSE content filtered', async () => {
+    const { deps, w } = wiredDeps();
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'nope', toolCalls: [], finishReason: 'content-filter' },
+    }));
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep: vi.fn() },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('content filtered');
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(false);
+    expect(events.some((e: { type: string; error?: string }) => e.type === 'error' && e.error === 'content filtered')).toBe(true);
+  });
+
   it('finishReason length WITH toolCalls still runs tools', async () => {
     const { deps } = wiredDeps();
     let first = true;
