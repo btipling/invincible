@@ -5,6 +5,7 @@ import {
   appendMessage,
   createEmptySession,
   formatPromptWithHistory,
+  isQuotaExceededError,
   makeMessage,
   sanitizeAttachedSlugs,
   sanitizeSessionCwd,
@@ -510,6 +511,90 @@ describe('backend-agents A1–A3 — turn-carrier local mirror sanitize', () => 
     expect(s.turnRunId).toBeUndefined();
     expect(s.turnStatus).toBeUndefined();
     expect(s.turnStreamCursor).toBeUndefined();
+  });
+});
+
+describe('isQuotaExceededError', () => {
+  it('is true for QuotaExceededError name', () => {
+    const err = new Error('The quota has been exceeded.');
+    err.name = 'QuotaExceededError';
+    expect(isQuotaExceededError(err)).toBe(true);
+  });
+
+  it('is true for code 22 and 1014 even without the name', () => {
+    expect(isQuotaExceededError({ code: 22 })).toBe(true);
+    expect(isQuotaExceededError({ code: 1014 })).toBe(true);
+  });
+
+  it('is false for SecurityError and unrelated values', () => {
+    const err = new Error('denied');
+    err.name = 'SecurityError';
+    expect(isQuotaExceededError(err)).toBe(false);
+    expect(isQuotaExceededError({ name: 'SecurityError', code: 18 })).toBe(false);
+    expect(isQuotaExceededError(null)).toBe(false);
+    expect(isQuotaExceededError('quota')).toBe(false);
+  });
+});
+
+describe('LocalStorageSessionStore.save quota policy', () => {
+  afterEach(() => {
+    // @ts-expect-error test polyfill
+    delete globalThis.localStorage;
+  });
+
+  function installStorage(setItem: (key: string, value: string) => void) {
+    const data = new Map<string, string>();
+    globalThis.localStorage = {
+      get length() {
+        return data.size;
+      },
+      clear: () => data.clear(),
+      getItem: (key: string) => data.get(key) ?? null,
+      key: (index: number) => [...data.keys()][index] ?? null,
+      removeItem: (key: string) => {
+        data.delete(key);
+      },
+      setItem: (key: string, value: string) => {
+        setItem(key, value);
+        data.set(key, value);
+      },
+    };
+    return data;
+  }
+
+  it('throws on QuotaExceededError and leaves the previous snapshot', () => {
+    const data = installStorage((_key, value) => {
+      if (value.includes('turn-2 user')) {
+        const err = new Error('The quota has been exceeded.');
+        err.name = 'QuotaExceededError';
+        throw err;
+      }
+    });
+    const store = new LocalStorageSessionStore('k');
+    const small = appendMessage(createEmptySession('a'), 'user', 'hi');
+    store.save(small);
+    const running = {
+      ...createEmptySession('a'),
+      messages: [
+        ...small.messages,
+        makeMessage('user', 'turn-2 user ' + 'x'.repeat(200)),
+      ],
+      turnStatus: 'running' as const,
+    };
+    expect(() => store.save(running)).toThrow();
+    expect(store.load()?.messages.some((m) => m.text.includes('turn-2 user'))).toBe(false);
+    expect(data.get('k')).toBe(JSON.stringify(small));
+  });
+
+  it('swallows SecurityError', () => {
+    installStorage(() => {
+      const err = new Error('denied');
+      err.name = 'SecurityError';
+      throw err;
+    });
+    const store = new LocalStorageSessionStore('k');
+    expect(() => store.save(createEmptySession('z'))).not.toThrow();
+    expect(store.load()).toBeNull();
   });
 });
 

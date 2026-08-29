@@ -50,6 +50,7 @@ import {
   flushPendingThenRestore,
   discardPendingModelChange,
 } from '../../lib/harnessHostModelPersist';
+import { paintQuotaAfterRebuild, tryLocalSave } from '../../lib/hostQuotaError';
 import {
   buildSessionCatalogEntries,
   foldPendingSessionSwitch,
@@ -199,6 +200,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bridgeRef = useRef<HarnessBridge | null>(null);
   const storeRef = useRef<SessionStore | null>(null);
+  /** Once-per-episode flag for localStorage quota Error row (plan #865). */
+  const localSaveQuotaWarnedRef = useRef(false);
   /** Cloud multi-session repo (phase 3, #415); disabled on 401 / Redis-off. */
   const repoRef = useRef<IdSessionRepository | null>(null);
   const pollRef = useRef<number | null>(null);
@@ -260,9 +263,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     [],
   );
 
-  const writeLocalSession = useCallback((next: SessionSnapshot) => {
+  const writeLocalSession = useCallback((next: SessionSnapshot, opts?: { paintQuota?: boolean }) => {
     sessionRef.current = next;
-    storeRef.current?.save(next);
+    const quota = tryLocalSave(storeRef.current, next, bridgeRef.current, localSaveQuotaWarnedRef, {
+      paint: opts?.paintQuota !== false,
+    });
     // Incremental pushMessage turns keep the ring on the latest window.
     const latest = latestRingStart(next.messages.length);
     ringWindowStartRef.current = latest;
@@ -271,6 +276,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     } catch {
       /* ignore */
     }
+    return quota;
   }, []);
 
   /**
@@ -282,9 +288,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
    * shows the earlier page — the next send's `needSnap` then says already-latest
    * and paints the turn onto the stale window. A pick is not a transcript change.
    */
-  const writeLocalSessionMeta = useCallback((next: SessionSnapshot) => {
+  const writeLocalSessionMeta = useCallback((next: SessionSnapshot, opts?: { paintQuota?: boolean }) => {
     sessionRef.current = next;
-    storeRef.current?.save(next);
+    return tryLocalSave(storeRef.current, next, bridgeRef.current, localSaveQuotaWarnedRef, {
+      paint: opts?.paintQuota !== false,
+    });
   }, []);
 
   /**
@@ -305,23 +313,30 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       // when the server snapshot has none (plan #626 test 5).
       const merged = mergeAdoptedUsage(next, sessionRef.current);
       const b = bridgeRef.current;
+      let quota = false;
+      const persistNoPaint = (s: SessionSnapshot) => {
+        quota = writeLocalSession(s, { paintQuota: false });
+      };
       if (b) {
         // Flush a pending menu/Next pick onto the CURRENT session before
         // replacing it (PR #618 re-run 5 Minor L1). Restore-by-id never acks.
+        // Adversarial #870: paint after hydrate so the once-flag is not spent
+        // on a row `hydrateMessages` immediately drops.
         flushPendingThenRestore(
           merged,
           b,
           sessionRef,
-          writeLocalSession,
+          persistNoPaint,
           repoRef.current,
           inflightRef.current,
         );
       } else {
-        writeLocalSession(merged);
+        persistNoPaint(merged);
       }
       const bridge = bridgeRef.current;
       if (bridge) {
         hydrateRingWindow(bridge, merged, latestRingStart(merged.messages.length));
+        paintQuotaAfterRebuild(bridge, localSaveQuotaWarnedRef, quota, merged);
       }
       // Ring rebuilt from Blob/local — this heap has not applied the stream.
       heapAppliedRef.current = null;
@@ -390,8 +405,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   );
 
   const persist = useCallback(
-    (next: SessionSnapshot) => {
-      writeLocalSession(next);
+    (next: SessionSnapshot, opts?: { paintQuota?: boolean }) => {
+      writeLocalSession(next, opts);
       // Hybrid cloud push — never blocks the turn; coalesced per session in repo.
       repoRef.current?.put(next.id, next);
     },
@@ -477,7 +492,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       // Adversarial #844: capture the repo object NOW. Unmount cleanup nulls
       // `repoRef` before the abort microtask reaches persistTurn/finally.
       const repo = repoRef.current;
-      const persistTurn = (snapshot: SessionSnapshot) => {
+      const persistTurn = (snapshot: SessionSnapshot, paintQuota = true) => {
         const pendingMintId = pendingMintBindRef.current;
         const action = decideDetachPersist({
           detached: turnEpochRef.current !== epoch,
@@ -505,7 +520,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           }
           return;
         }
-        persist(snapshot);
+        persist(snapshot, { paintQuota });
       };
       setBusy(true);
       setHostNote(null);
@@ -526,12 +541,16 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // turn-end path uses — local write + coalesced cloud PUT.
             // Adversarial #844: late patches after detach take decideDetachPersist
             // (never writeLocal onto a switched session; never PUT a Clear'd id).
-            onSessionPatch: persistTurn,
+            // Adversarial #870: do not paint the quota Error row here — it
+            // becomes last and livePaintToolRun / growAssistant duplicate cards.
+            // persistTurn of a still-running snapshot also skips paint (helper
+            // + call site) so hot resume / Send-while-running cannot steal last.
+            onSessionPatch: (s) => persistTurn(s, false),
             ...(attach ? { attach } : {}),
           },
         );
         if (turnEpochRef.current !== epoch) {
-          persistTurn(next);
+          persistTurn(next, next.turnStatus !== 'running');
           return;
         }
         // Plan #616 (source #610): fold the LIVE selection into the snapshot before
@@ -545,7 +564,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // Always persist — including user Stop/cancel (and late abort after a finished
         // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
         // Load earlier / refresh could wipe the cancelled turn from the ring.
-        persistTurn(folded);
+        persistTurn(folded, folded.turnStatus !== 'running');
         if (folded.turnStatus === 'running' && folded.turnRunId) {
           heapAppliedRef.current = {
             runId: folded.turnRunId,
@@ -793,14 +812,19 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               // during boot is in `local.updatedAt` / `selectedModel` (PR #618
               // re-run 5 Minor L1). activateSession flushes again (no-op).
               const bootBridge = bridgeRef.current;
+              let foldQuota = false;
               if (bootBridge) {
                 // Meta-only persist — never disturbs the ring window (PR #618
                 // re-run 6 Minor L1). The subsequent activateSession/adopt
                 // rehydrates to latest anyway.
+                // Adversarial #870: no paint here — activate hydrates; keep-local
+                // paints below if this save quota'd.
                 foldPendingModelChangeFn(
                   bootBridge,
                   sessionRef,
-                  writeLocalSessionMeta,
+                  (s) => {
+                    foldQuota = writeLocalSessionMeta(s, { paintQuota: false });
+                  },
                   repoRef.current,
                   inflightRef.current,
                 );
@@ -820,6 +844,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               if (restored === local) {
                 setActiveSessionId(id);
                 repoRef.current?.put(id, local);
+                paintQuotaAfterRebuild(
+                  bootBridge,
+                  localSaveQuotaWarnedRef,
+                  foldQuota,
+                  local,
+                );
                 return;
               }
               activateSession(mergeAdoptedUsage({ ...restored, id }, local));
@@ -909,6 +939,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                 const session = sessionRef.current;
                 const nextStart = earlierRingStart(ringWindowStartRef.current);
                 hydrateRingWindow(b, session, nextStart);
+                // Adversarial #870: Load-earlier `clear:true` wipes a ring-only
+                // Error; re-paint if the once-flag is still set. Do not fold
+                // this into hydrateRingWindow — adopt paints from the
+                // paint:false return value and a second clear+push would
+                // duplicate the row.
+                paintQuotaAfterRebuild(
+                  b,
+                  localSaveQuotaWarnedRef,
+                  localSaveQuotaWarnedRef.current,
+                  session,
+                );
               } else if (switched !== 'switched') {
                 const pending = b.takePendingSubmit();
                 if (pending != null && pending.length > 0) {
@@ -916,6 +957,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                   const needSnap = ringWindowStartRef.current !== latest;
                   if (needSnap) {
                     hydrateRingWindow(b, sessionRef.current, latest);
+                    paintQuotaAfterRebuild(
+                      b,
+                      localSaveQuotaWarnedRef,
+                      localSaveQuotaWarnedRef.current,
+                      sessionRef.current,
+                    );
                     void runPrompt(pending, { pushUser: true });
                   } else {
                     void runPrompt(pending);
@@ -1086,10 +1133,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       // else None). The fresh empty session resets cwd + activeSandboxId already
       // (createEmptySession carries neither) and now carries the bound personaId.
       const empty = personaId ? { ...base, personaId } : base;
-      writeLocalSession(empty);
+      writeLocalSession(empty, { paintQuota: false });
       setActiveSessionId(id);
       storeRef.current?.clear();
-      storeRef.current?.save(empty);
+      const quota = tryLocalSave(storeRef.current, empty, bridge, localSaveQuotaWarnedRef, {
+        paint: false,
+      });
       if (bridge) {
         resetHarnessImageSession();
         resetHarnessMathSession();
@@ -1104,6 +1153,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         bridge.setSelectedModel(null);
         bridge.pushMessage(MessageKind.System, 'New session started.');
         bridge.setLifecycle(Lifecycle.Ready);
+        paintQuotaAfterRebuild(bridge, localSaveQuotaWarnedRef, quota, empty);
       }
       setHostNote(null);
       canvasRef.current?.focus();

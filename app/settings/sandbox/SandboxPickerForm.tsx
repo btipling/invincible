@@ -95,10 +95,14 @@ export function SandboxPickerForm({
     const store = createDefaultSessionStore();
     const current = store.load();
     const base = current ?? createEmptySession();
-    store.save({
-      ...base,
-      activeSandboxId: sandboxId,
-    });
+    try {
+      store.save({
+        ...base,
+        activeSandboxId: sandboxId,
+      });
+    } catch {
+      /* quota / private mode — Settings is not the harness canvas */
+    }
   }, [sessionState.ok, sessionState.sandboxId]);
 
 
