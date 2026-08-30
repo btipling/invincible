@@ -491,7 +491,8 @@ describe('applyTurnEvent — live tool card (protocol v11 / #433)', () => {
   it('a successful meta_sandbox_switch applies the Redis-safe bind mid-turn', async () => {
     const { exp, bridge } = makeBridge();
     const patchSession = vi.fn();
-    const ctx = makeCtx(createEmptySession(), { patchSession });
+    const refreshGitStatusSlot = vi.fn(async () => {});
+    const ctx = makeCtx(createEmptySession(), { patchSession, refreshGitStatusSlot });
     const apply = createApplyTurnEvent(bridge, ctx);
 
     await apply({ type: 'tool_start', name: 'meta_sandbox_switch' });
@@ -506,11 +507,21 @@ describe('applyTurnEvent — live tool card (protocol v11 / #433)', () => {
     expect(ctx.next.activeSandboxId).toBe('sbx_abc123');
     expect(exp.__statusSlots[StatusSlot.Sandbox]).toContain('sbx_abc123');
     expect(patchSession).toHaveBeenCalled();
+    // #627: switch probes git against the NEW bind. Called BEFORE livePaint
+    // rebinds `ctx.next` (running → ok card), so match the bind/signal, not
+    // object identity with the post-paint session.
+    expect(refreshGitStatusSlot).toHaveBeenCalledTimes(1);
+    expect(refreshGitStatusSlot.mock.calls[0]![0]).toBe(bridge);
+    expect(refreshGitStatusSlot.mock.calls[0]![1]).toMatchObject({
+      activeSandboxId: 'sbx_abc123',
+    });
+    expect(refreshGitStatusSlot.mock.calls[0]![2]).toBe(ctx.signal);
   });
 
   it('a non-Redis-safe switch id is ignored (fail-closed, no session mutation)', async () => {
     const { bridge } = makeBridge();
-    const ctx = makeCtx(createEmptySession());
+    const refreshGitStatusSlot = vi.fn(async () => {});
+    const ctx = makeCtx(createEmptySession(), { refreshGitStatusSlot });
     const apply = createApplyTurnEvent(bridge, ctx);
 
     await apply({ type: 'tool_start', name: 'meta_sandbox_switch' });
@@ -523,6 +534,35 @@ describe('applyTurnEvent — live tool card (protocol v11 / #433)', () => {
     });
 
     expect(ctx.next.activeSandboxId).toBeUndefined();
+    expect(refreshGitStatusSlot).not.toHaveBeenCalled();
+  });
+
+  it('a successful exec refreshes the git slot with no session mutation (#627)', async () => {
+    const { bridge } = makeBridge();
+    const patchSession = vi.fn();
+    const refreshGitStatusSlot = vi.fn(async () => {});
+    const ctx = makeCtx(createEmptySession(), { patchSession, refreshGitStatusSlot });
+    const apply = createApplyTurnEvent(bridge, ctx);
+
+    await apply({ type: 'tool_start', name: 'exec' });
+    expect(refreshGitStatusSlot).not.toHaveBeenCalled();
+
+    await apply({ type: 'tool_result', name: 'exec', ok: true, summary: 'ls' });
+    expect(refreshGitStatusSlot).toHaveBeenCalledTimes(1);
+    expect(refreshGitStatusSlot.mock.calls[0]![0]).toBe(bridge);
+    expect(refreshGitStatusSlot.mock.calls[0]![2]).toBe(ctx.signal);
+    expect(patchSession).not.toHaveBeenCalled();
+  });
+
+  it('a failed exec does not refresh git', async () => {
+    const { bridge } = makeBridge();
+    const refreshGitStatusSlot = vi.fn(async () => {});
+    const ctx = makeCtx(createEmptySession(), { refreshGitStatusSlot });
+    const apply = createApplyTurnEvent(bridge, ctx);
+
+    await apply({ type: 'tool_start', name: 'exec' });
+    await apply({ type: 'tool_result', name: 'exec', ok: false, summary: 'boom' });
+    expect(refreshGitStatusSlot).not.toHaveBeenCalled();
   });
 });
 

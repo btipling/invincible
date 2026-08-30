@@ -1851,13 +1851,12 @@ export async function runHarnessTurn(
           turnStatus: 'completed',
         };
       }
-      applyCtx.lastUiKind =
+      lastUiKind =
         attachSubscribeFail ||
         fail.kind === 'error' || fail.kind === 'timeout' ||
         fail.kind === 'empty' || fail.kind === 'validation'
           ? 'error'
           : 'system';
-      lastUiKind = applyCtx.lastUiKind;
       // Protocol v13 (plan #538/#541) fail-path fold (PR #543 L1 Major): the
       // success reconcile folds status slots, but a FAILED agent turn never did —
       // leaving the Wasm header showing a STALE sandbox/cwd. On this fail path
