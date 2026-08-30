@@ -1301,6 +1301,7 @@ describe('createHttpSessionRepository — envelope carrier (phase 0 #515)', () =
     const [blobBody, envBody] = putBody as [Record<string, unknown>, Record<string, unknown>];
     expect(blobBody.id).toBe(idA);
     expect((blobBody.messages as { text: string }[])[0]).toMatchObject({ text: 'hi' });
+    expect(blobBody.prev).toBeUndefined();
     expect(envBody).toMatchObject({ id: idA, updatedAt: 30 });
     expect((envBody.meta as { transcriptPointer: string }).transcriptPointer).toBe('tx_obj1');
   });
@@ -1328,6 +1329,108 @@ describe('createHttpSessionRepository — envelope carrier (phase 0 #515)', () =
     if (res.action === 'ok') {
       expect(res.snapshot.id).toBe(idA);
       expect(res.snapshot.updatedAt).toBe(30);
+    }
+  });
+
+  it('get() walks prev and suffix-merges worker chunks (plan #886)', async () => {
+    const headUrl = `${UPLOAD_URL}/read?obj=tx_head`;
+    const prevUrl = `${UPLOAD_URL}/read?obj=tx_prev`;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && u.endsWith('/envelope')) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 40,
+            meta: { transcriptPointer: 'tx_head' },
+            transcriptReadUrl: headUrl,
+          },
+          { status: 200 },
+        );
+      }
+      if (u === headUrl) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 40,
+            messages: [
+              { id: 'm3', role: 'user', text: 'turn-2 user', at: 3 },
+              { id: 'm4', role: 'assistant', text: 'turn-2 assistant', at: 4 },
+            ],
+            prev: 'tx_prev',
+          },
+          { status: 200 },
+        );
+      }
+      if (method === 'GET' && u.includes('/transcript?objectId=tx_prev')) {
+        return Response.json({ readUrl: prevUrl, objectId: 'tx_prev' }, { status: 200 });
+      }
+      if (u === prevUrl) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 20,
+            messages: [
+              { id: 'm1', role: 'user', text: 'turn-1 user', at: 1 },
+              { id: 'm2', role: 'assistant', text: 'turn-1 assistant', at: 2 },
+            ],
+          },
+          { status: 200 },
+        );
+      }
+      return new Response(null, { status: 204 });
+    });
+    const repo = createHttpSessionRepository({ fetchImpl, carrier: 'envelope' });
+    const res = await repo.get(idA);
+    expect(res.action).toBe('ok');
+    if (res.action === 'ok') {
+      expect(res.snapshot.messages.map((m) => m.text)).toEqual([
+        'turn-1 user',
+        'turn-1 assistant',
+        'turn-2 user',
+        'turn-2 assistant',
+      ]);
+    }
+  });
+
+  it('get() fail-closes a missing prev (not this-chunk-only)', async () => {
+    const headUrl = `${UPLOAD_URL}/read?obj=tx_head`;
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && u.endsWith('/envelope')) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 40,
+            meta: { transcriptPointer: 'tx_head', turnStatus: 'running', turnRunId: 'wr_1' },
+            transcriptReadUrl: headUrl,
+          },
+          { status: 200 },
+        );
+      }
+      if (u === headUrl) {
+        return Response.json(
+          {
+            id: idA,
+            updatedAt: 40,
+            messages: [{ id: 'm3', role: 'user', text: 'this-run', at: 3 }],
+            prev: 'tx_missing',
+          },
+          { status: 200 },
+        );
+      }
+      if (method === 'GET' && u.includes('/transcript?objectId=')) {
+        return Response.json({ error: 'not found', code: 'NOT_FOUND' }, { status: 404 });
+      }
+      return new Response(null, { status: 204 });
+    });
+    const repo = createHttpSessionRepository({ fetchImpl, carrier: 'envelope' });
+    const res = await repo.get(idA);
+    expect(res.action).toBe('error');
+    if (res.action === 'ok') {
+      expect(res.snapshot.messages.map((m) => m.text)).not.toEqual(['this-run']);
     }
   });
 

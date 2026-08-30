@@ -54,11 +54,10 @@ import {
 } from '../sessions/sessionStore';
 import {
   truncateMessageCheckpoint,
-  applyPriorMessagesToSnapshotJson,
   snapshotMessagesFromUnknown,
-  type CheckpointRow,
 } from './messageCheckpoint';
 import { persistTranscriptSegment } from './turnWorkerPersist';
+import { reconstructTranscriptChain } from '../sessions/transcriptChunks';
 import {
   overlayWorkerMeta,
   type WorkerMetaPatch,
@@ -101,6 +100,35 @@ export interface TurnPersistSeamDeps {
 
 const toMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
+
+/** This-run snapshot + optional `prev`; non-snapshot test bodies keep stamp-only. */
+function buildThisRunChunk(opts: {
+  content: string;
+  sessionId: string;
+  updatedAt: number;
+  prev: string | undefined;
+}): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(opts.content);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+  const incoming = snapshotMessagesFromUnknown(parsed, opts.sessionId);
+  if (incoming === null) {
+    return stampSnapshotUpdatedAt(opts.content, opts.updatedAt);
+  }
+  const rec: Record<string, unknown> = {
+    id: opts.sessionId,
+    updatedAt: opts.updatedAt,
+    messages: incoming,
+  };
+  if (opts.prev) rec.prev = opts.prev;
+  return JSON.stringify(rec);
+}
 
 /**
  * Build the real B7/B8/B6 persist seam for one session scope. The caller (C14
@@ -187,13 +215,10 @@ export function createTurnPersistSeam(
         });
       }
 
-      // This-run checkpoint is not the full session. Suffix-merge onto a
-      // parseable prior pointer so a newer overlay clock cannot LWW-wipe
-      // earlier turns. Leftover `{ deltas }` (readable JSON, unparseable
-      // snapshot) → this run only. A *bound* pointer whose object is missing
-      // or not JSON must fail closed — Vercel Blob maps timeout/non-2xx to
-      // `null`, and treating that like leftover deltas would LWW-clobber.
-      let priorMessages = null;
+      // Worker chunks (plan #886): this-run messages + `prev` pointing at the
+      // current bound pointer. Reconstruct walks the chain (fail-closed). A
+      // leftover `{ deltas }` object is not a snapshot — this-run only, no prev.
+      let chunkPrev: string | undefined;
       const pointer = stored?.meta?.transcriptPointer;
       if (typeof pointer === 'string' && isObjectIdBoundTo(pointer, scope)) {
         let raw: string | null;
@@ -225,15 +250,39 @@ export function createTurnPersistSeam(
               'bound transcriptPointer body is not JSON — refusing this-run-only replace.',
           });
         }
-        priorMessages = snapshotMessagesFromUnknown(parsed, scope.sessionId);
+        if (snapshotMessagesFromUnknown(parsed, scope.sessionId) !== null) {
+          const walked = await reconstructTranscriptChain({
+            sessionId: scope.sessionId,
+            headId: pointer,
+            headBody: parsed,
+            read: async (objectId) => {
+              const body = await blobStore.read(objectId);
+              if (body === null) return null;
+              try {
+                return JSON.parse(body);
+              } catch {
+                return null;
+              }
+            },
+            isBound: (id) => isObjectIdBoundTo(id, scope),
+          });
+          if (!walked.ok) {
+            return await failWrite({
+              ok: false,
+              code: 'write_failed',
+              error: walked.error,
+            });
+          }
+          chunkPrev = pointer;
+        }
       }
-      const merged =
-        applyPriorMessagesToSnapshotJson(
-          input.content,
-          priorMessages,
-          scope.sessionId,
-        ) ?? input.content;
-      const stampedRaw = stampSnapshotUpdatedAt(merged, updatedAt);
+
+      const stampedRaw = buildThisRunChunk({
+        content: input.content,
+        sessionId: scope.sessionId,
+        updatedAt,
+        prev: chunkPrev,
+      });
       if (stampedRaw === null) {
         return await failWrite({
           ok: false,
@@ -275,7 +324,7 @@ export function createTurnPersistSeam(
         }
       }
 
-      // Transcript (B7): write the stamped snapshot + advance transcriptPointer
+      // Transcript (B7): write this-run chunk + advance transcriptPointer
       // only on a successful PUT (fail-closed, LWW). A failure here returns a
       // value; the pointer is never advanced on a partial write. NOTE (honest
       // partial-commit scope, adversarial L1): this is a SEPARATE committed

@@ -69,23 +69,22 @@ async function resolveTenantFor(
 
 /**
  * Load the envelope so a signed read is **authorization-bound** to this session
- * (reader's Major L2): `GET /transcript?objectId=` may only sign the object the
- * requesting session's envelope actually points to. An arbitrary (even Redis-safe)
- * `objectId` belonging to some other session/user must 404 — never a leaked/guessed
- * id signed under the caller's auth. Returns a 404 response wrapped from the store.
+ * (reader's Major L2). `GET /transcript?objectId=` may sign any object **bound
+ * to this session** (current pointer or a `prev` chunk — plan #886). An id
+ * belonging to another session/user must 404. Returns 404 when the session
+ * envelope does not exist.
  */
-async function resolveOwnedTranscriptPointer(
+async function resolveOwnedSession(
   userId: string,
   tenantId: string,
   id: string,
-): Promise<{ ok: true; pointer: string } | { ok: false; response: Response }> {
+): Promise<{ ok: true } | { ok: false; response: Response }> {
   const resolved = await resolveSessionStore();
   if (!resolved.ok) {
     return { ok: false, response: unavailableResponse(resolved.code, resolved.error) };
   }
   const store = resolved.value;
   if (!isEnvelopeStore(store)) {
-    // No envelope seam → no bound pointer → nothing to sign.
     return {
       ok: false,
       response: Response.json({ error: 'Transcript object not found.', code: 'NOT_FOUND' }, { status: 404 }),
@@ -100,14 +99,7 @@ async function resolveOwnedTranscriptPointer(
       response: Response.json({ error: 'Session not found.', code: 'NOT_FOUND' }, { status: 404 }),
     };
   }
-  const pointer = got.value.meta.transcriptPointer;
-  if (typeof pointer !== 'string' || !pointer) {
-    return {
-      ok: false,
-      response: Response.json({ error: 'Transcript object not found.', code: 'NOT_FOUND' }, { status: 404 }),
-    };
-  }
-  return { ok: true, pointer };
+  return { ok: true };
 }
 
 function invalidIdResponse(id: string | undefined): Response | null {
@@ -215,21 +207,12 @@ export async function GET(req: Request, ctx: Ctx): Promise<Response> {
     );
   }
 
-  // Authorization: only this session's own envelope pointer may be read. Without
-  // this gate, an authed user could ask for another user's leaked/guessed objectId
-  // and get a signed GET of their transcript (reader's Major L2 IDOR).
-  const owned = await resolveOwnedTranscriptPointer(gate.userId, tenant.tenantId, id);
+  // Authorization: only objects bound to THIS session may be signed (current
+  // pointer or a `prev` chunk). Without this gate, an authed user could ask
+  // for another user's leaked/guessed objectId and get a signed GET of their
+  // transcript (reader's Major L2 IDOR).
+  const owned = await resolveOwnedSession(gate.userId, tenant.tenantId, id);
   if (!owned.ok) return owned.response;
-  if (owned.pointer !== objectId) {
-    return Response.json(
-      { error: 'Transcript object not found.', code: 'NOT_FOUND' },
-      { status: 404 },
-    );
-  }
-  // Defense in depth (reader's Major L2): re-derive this session's object-binding
-  // prefix and require the id to match. The envelope pointer is PUT-gated to be
-  // session-bound today, but this guarantees a foreign/planted id is never signed
-  // even if a store double were handed an unbound pointer.
   if (
     !isObjectIdBoundTo(objectId, {
       tenantId: tenant.tenantId,

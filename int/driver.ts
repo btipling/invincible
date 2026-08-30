@@ -8,6 +8,12 @@ import type { SessionSnapshot } from '../lib/sessionStore';
 import type { MemoryBlobTranscriptStore } from '../lib/sessions/blobStores';
 import type { MemorySessionStore } from '../lib/sessions/memorySessionStore';
 import type { SessionRecordKey } from '../lib/sessions/sessionStore';
+import { isObjectIdBoundTo } from '../lib/sessions/blobStore';
+import {
+  flattenReconstructedBody,
+  reconstructTranscriptChain,
+  transcriptChunkPrev,
+} from '../lib/sessions/transcriptChunks';
 import { INT_SCOPE } from './stores';
 
 export async function bootFromMemory(opts: {
@@ -34,6 +40,31 @@ export async function bootFromMemory(opts: {
         blobJson = JSON.parse(raw);
       } catch {
         blobJson = null;
+      }
+    }
+    if (
+      blobJson !== null &&
+      transcriptChunkPrev(blobJson).kind !== 'none'
+    ) {
+      const walked = await reconstructTranscriptChain({
+        sessionId: key.sessionId,
+        headId: pointer,
+        headBody: blobJson,
+        read: async (id) => {
+          const body = await opts.blobStore.read(id);
+          if (body === null) return null;
+          try {
+            return JSON.parse(body);
+          } catch {
+            return null;
+          }
+        },
+        isBound: (id) => isObjectIdBoundTo(id, key),
+      });
+      if (!walked.ok) {
+        blobJson = null;
+      } else {
+        blobJson = flattenReconstructedBody(blobJson, key.sessionId, walked.messages);
       }
     }
   }
