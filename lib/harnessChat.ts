@@ -21,7 +21,7 @@ import {
 import { sendTurn, sendTurnStream, attachTurnStream } from './turnApi';
 import { isDetachAbort } from './detachTurn';
 import { type AgentStreamEvent } from './agent/agentStream';
-import { isTruncatedFinish, truncatedFinishError } from './agent/modelFinish';
+import { isProviderRefusalFinish, truncatedFinishError } from './agent/modelFinish';
 import {
   TOOL_TRACE_SUMMARY_MAX_CHARS,
 } from './sandbox/config';
@@ -1859,7 +1859,7 @@ export async function runHarnessTurn(
     // for tool/text/done/error; this is a no-op when the segment is already closed.
     closeThinkingSegment();
 
-    if (agentResult.ok && isTruncatedFinish(doneFinishReason)) {
+    if (agentResult.ok && isProviderRefusalFinish(doneFinishReason)) {
       agentResult = {
         ok: false,
         error: truncatedFinishError(doneFinishReason),

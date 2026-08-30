@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CONTENT_FILTER_ERROR,
+  isProviderRefusalFinish,
   isTruncatedFinish,
   MODEL_FINISH_ERROR,
   OUTPUT_TRUNCATED_ERROR,
@@ -21,6 +22,16 @@ describe('isTruncatedFinish', () => {
     expect(isTruncatedFinish('stop')).toBe(false);
     expect(isTruncatedFinish(undefined)).toBe(false);
     expect(isTruncatedFinish('tool-calls')).toBe(false);
+  });
+});
+
+describe('isProviderRefusalFinish', () => {
+  it('only content-filter / error fail the turn', () => {
+    expect(isProviderRefusalFinish('content-filter')).toBe(true);
+    expect(isProviderRefusalFinish('error')).toBe(true);
+    expect(isProviderRefusalFinish('length')).toBe(false);
+    expect(isProviderRefusalFinish('stop')).toBe(false);
+    expect(isProviderRefusalFinish(undefined)).toBe(false);
   });
 });
 

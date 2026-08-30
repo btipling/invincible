@@ -21,7 +21,7 @@
  * closures / seams are passed as args.
  *
  * Business errors are values: a persist failure returns `{ok:false, code, error}`.
- * `write_failed` does not kill a useful turn (plan #885); the writable is still closed.
+ * Persist `{ok:false}` of any code does not kill a useful turn; the writable is still closed.
  */
 import { checkpointToSnapshotMessages } from '../agent/messageCheckpoint';
 import { logTurnPersist } from './turnLog';

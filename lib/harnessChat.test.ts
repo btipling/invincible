@@ -1945,8 +1945,8 @@ describe('durable stream EOF is detach (plan #852 / source #849)', () => {
   });
 });
 
-describe('truncated / capped turn-end is Error, not model-finished', () => {
-  it('SSE done + finishReason length is Error, not model-finished; assistant stays', async () => {
+describe('provider refusal is Error; length cap is model-finished', () => {
+  it('SSE done + finishReason length is model-finished (cap is not a failed turn)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const { session: next, result } = await runHarnessTurn(
@@ -1967,7 +1967,7 @@ describe('truncated / capped turn-end is Error, not model-finished', () => {
         },
       },
     );
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
     expect(next.turnStatus).toBe('completed');
     expect(
       next.messages.some((m) => m.role === 'assistant' && m.text === 'cut off mid'),
@@ -1978,13 +1978,13 @@ describe('truncated / capped turn-end is Error, not model-finished', () => {
           m.role === 'error' &&
           m.text === describeTurnEnd('error', 'output truncated'),
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       next.messages.some(
         (m) => m.role === 'system' && m.text === describeTurnEnd('model'),
       ),
-    ).toBe(false);
-    expect(exp.__lifecycle()).toBe(Lifecycle.Error);
+    ).toBe(true);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
   });
 
   it('SSE error output truncated after text_delta is Error, not model-finished', async () => {

@@ -23,12 +23,13 @@
  *    plan #880). This core still writes loop-owned `done` / `error` and
  *    wrap-up skipped-tool `tool_result`. Transcript/checkpoint live in Blob.
  *  - The writable is closed **exactly once** on every terminal path — success,
- *    model/tool fail, persist programmer error (`invalid_scope` /
- *    `not_envelope_store`), step cap, or cancel. Persist `write_failed` /
- *    overlay `read_failed` does **not** fail the turn (plan #885).
+ *    model/provider refusal, step-cap wrap-up, or cancel. Persist `{ok:false}`
+ *    of **any** code does **not** fail the turn. Tool item failures are tool
+ *    results for the next model round, not a turn-end.
  *  - Tool business errors are **values**, not throws: a step returning
- *    `{ok:false}` (or a batch item `{ok:false}`) terminates the loop cleanly
- *    (never retried 3× by the SDK).
+ *    `{ok:false}` (or a batch item `{ok:false}`) is a tool result for the
+ *    next model round. Only user cancel ends the turn from the tool path.
+ *    Never retried 3× by the SDK.
  *  - No `/api/agent` fallback, no wrapping `runAgentStream` in one step.
  *
  * Messages are reconstructed **on replay** from the step deltas this core
@@ -43,7 +44,7 @@ import type { PersistStepFold } from './persistStep';
 import { changeDirSuccessCwd, metaSandboxSwitchActiveId } from '../agent/toolResultParsers';
 import { formatTurnSse } from './turnSseFormat';
 import {
-  isTruncatedFinish,
+  isProviderRefusalFinish,
   truncatedFinishError,
   STEP_BUDGET_ERROR,
   STEP_BUDGET_WRAPUP,
@@ -557,30 +558,14 @@ export async function runTurnLoop(
     });
   };
 
-  const isPersistBookkeepingFail = (code: string): boolean =>
-    code === 'write_failed' ||
-    code === 'pointer_write_failed' ||
-    code === 'checkpoint_write_failed' ||
-    code === 'lww_conflict' ||
-    code === 'read_failed';
-
-  type PersistOutcome =
-    | { kind: 'ok' }
-    | { kind: 'bookkeeping' }
-    | { kind: 'fatal'; error: string };
-
-  const persistOnce = async (terminal: boolean): Promise<PersistOutcome> => {
+  const persistOnce = async (terminal: boolean): Promise<void> => {
     const persisted = await persistNow(terminal);
     if (persisted.ok) {
       deltas.push(persisted);
       messages.push({ role: 'persist', status: persisted.status });
-      return { kind: 'ok' };
+      return;
     }
-    if (isPersistBookkeepingFail(persisted.code)) {
-      messages.push({ role: 'persist', ok: false, code: persisted.code });
-      return { kind: 'bookkeeping' };
-    }
-    return { kind: 'fatal', error: persisted.error };
+    messages.push({ role: 'persist', ok: false, code: persisted.code });
   };
 
   try {
@@ -612,15 +597,12 @@ export async function runTurnLoop(
       messages.push({ role: 'assistant', delta: persistDelta });
 
       // No tool calls → this model round is terminal unless the provider
-      // truncated (`length` / `content-filter` / `error`). Truncation is
-      // persist-completed + SSE error, not “model finished”.
+      // refused (`content-filter` / `error`). `length` is a cap, not a fail:
+      // persist + `done` with the partial text.
       const calls: TurnToolCallDelta[] = gen.delta.toolCalls ?? [];
       if (calls.length === 0) {
-        const persisted = await persistOnce(true);
-        if (persisted.kind === 'fatal') {
-          return fail('failed', round, steps, persisted.error);
-        }
-        if (isTruncatedFinish(gen.delta.finishReason)) {
+        await persistOnce(true);
+        if (isProviderRefusalFinish(gen.delta.finishReason)) {
           return fail('failed', round, steps, truncatedFinishError(gen.delta.finishReason));
         }
         await writable.write(
@@ -634,11 +616,8 @@ export async function runTurnLoop(
       // persist after this in-budget model" pattern as terminal (may increment
       // steps one past the cap). Once per run.
       if (!didUserLinePersist) {
-        const persisted = await persistOnce(false);
+        await persistOnce(false);
         didUserLinePersist = true;
-        if (persisted.kind === 'fatal') {
-          return fail('failed', round, steps, persisted.error);
-        }
       }
 
       // One tool-batch step for this round's toolCalls (plan #880 / #872).
@@ -691,64 +670,48 @@ export async function runTurnLoop(
       const cancelled =
         (!batch.ok && batch.code === 'cancelled') ||
         items.some((i) => !i.ok && i.code === 'cancelled');
-      const itemFail = items.find(
-        (i): i is Extract<ToolBatchItem, { ok: false }> => !i.ok,
-      );
-      if (cancelled || !batch.ok || itemFail) {
+      if (cancelled) {
         // Persist whatever ran so successes are not dropped, then fail.
         // Cancel used to skip this (adversarial #881 Major) — #871 persist
         // cadence was per-tool; the batch must persist-then-fail the same as
-        // itemFail. Do **not** gate on `steps < cap`: the batch is often the
-        // last in-budget step (matrix 3b). Fail/cancel return before wrap-up,
-        // so skipping here drops sibling results (adversarial #881 round-2).
-        // User-line persist and wrap-up persist already increment past cap.
+        // a dying turn. Do **not** gate on `steps < cap`: the batch is often
+        // the last in-budget step (matrix 3b). Fail/cancel return before
+        // wrap-up, so skipping here drops sibling results.
         if (items.length > 0) {
-
-          const persisted = await persistOnce(true);
-          if (persisted.kind === 'fatal') {
-            return fail('failed', round, steps, persisted.error);
-          }
+          await persistOnce(true);
         }
-        if (cancelled) {
-          const cancelledItem = items.find(
-            (i): i is Extract<ToolBatchItem, { ok: false }> =>
-              !i.ok && i.code === 'cancelled',
+        const cancelledItem = items.find(
+          (i): i is Extract<ToolBatchItem, { ok: false }> =>
+            !i.ok && i.code === 'cancelled',
+        );
+        const err =
+          !batch.ok && batch.code === 'cancelled'
+            ? batch.error
+            : cancelledItem?.error;
+        return fail('cancelled', round, steps, err);
+      }
+      if (!batch.ok && items.length === 0) {
+        // Whole-step fail before any call (assemble / not-found with no
+        // results). No live tool_result was written — emit one per call so
+        // sibling model-step tool_starts are not left `running…`, and record
+        // the errors so the next model round sees them (a tool miss is not
+        // a turn-end).
+        for (const call of calls) {
+          messages.push({
+            role: 'tool',
+            toolName: call.toolName,
+            toolCallId: call.toolCallId,
+            ok: false,
+            error: batch.error,
+          });
+          await writable.write(
+            sse(toolResultLine(call.toolName, false, batch.error, call.toolCallId)),
           );
-          const err =
-            !batch.ok && batch.code === 'cancelled'
-              ? batch.error
-              : cancelledItem?.error;
-          return fail('cancelled', round, steps, err);
         }
-        const err = !batch.ok ? batch.error : itemFail?.error;
-        if (!batch.ok && items.length === 0) {
-          // Whole-step fail before any call (assemble / not-found with no
-          // results). No live tool_result was written — emit one per call so
-          // sibling model-step tool_starts are not left `running…` (adversarial
-          // #881 round-2 Minor). Persist stays skipped: nothing ran.
-          for (const call of calls) {
-            await writable.write(
-              sse(toolResultLine(call.toolName, false, err, call.toolCallId)),
-            );
-          }
-        }
-        await writable.write(sse({ type: 'error', error: err ?? 'tool failed' }));
-        await writable.close();
-        return {
-          status: 'completed',
-          deltas,
-          messages,
-          rounds: round,
-          steps,
-          error: err,
-        };
       }
 
       if (steps < cap) {
-        const persisted = await persistOnce(false);
-        if (persisted.kind === 'fatal') {
-          return fail('failed', round, steps, persisted.error);
-        }
+        await persistOnce(false);
       }
 
     }
@@ -758,11 +721,10 @@ export async function runTurnLoop(
     // last in-budget step was the user-line persist after a tools round).
     // Close those pairs first so the wrap-up user Error is a legal next
     // message — otherwise the provider rejects and the model never sees
-    // the cap. A completed last tool may already have closed every pair;
-    // unpairedToolRows then returns [] and wrap-up still runs. Then one
-    // tools-off wrap-up so the model can tell the user what completed
-    // (plan #878). Then terminal persist so F5 does not attach a dead run,
-    // then SSE error — not `done` / model-finished.
+    // the cap. Then one tools-off wrap-up so the model can tell the user
+    // what completed. Terminal persist, then SSE `done` with the wrap-up
+    // text — a loop bound is not a failed turn. A wrap-up inference failure
+    // is a real model error and still fails.
     const skipped = unpairedToolRows(messages);
     for (const row of skipped) {
       messages.push(row);
@@ -782,8 +744,8 @@ export async function runTurnLoop(
         disableTools: true,
       });
     } catch (err) {
-      // Same as `{ok:false}`: still terminal-persist + cap SSE. A throw must
-      // not skip persistNow and leave the envelope running (F5 attach).
+      // Same as `{ok:false}`: still terminal-persist. A throw must not skip
+      // persistNow and leave the envelope running (F5 attach).
       const error = err instanceof Error ? err.message : String(err);
       wrap = { ok: false, code: 'model_error', error };
     }
@@ -801,11 +763,16 @@ export async function runTurnLoop(
       if (wrapDelta.text) assistantText += wrapDelta.text;
       messages.push({ role: 'assistant', delta: wrapDelta });
     }
-    const persisted = await persistOnce(true);
-    if (persisted.kind === 'fatal') {
-      return fail('failed', round, steps, persisted.error);
+    await persistOnce(true);
+    if (!wrap.ok) {
+      return fail('failed', round, steps, wrap.error);
     }
-    return fail('capped', round, steps, STEP_BUDGET_ERROR);
+    if (isProviderRefusalFinish(wrap.delta.finishReason)) {
+      return fail('failed', round, steps, truncatedFinishError(wrap.delta.finishReason));
+    }
+    await writable.write(sse(doneLine(assistantText, bind, wrap.delta.finishReason)));
+    await writable.close();
+    return { status: 'capped', deltas, messages, rounds: round, steps };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return fail('failed', round, steps, message);
