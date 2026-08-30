@@ -263,6 +263,12 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
   if (params.providerOptions) {
     genArgs.providerOptions = params.providerOptions;
   }
+  const reasoning = resolveAgentReasoning(modelId, {
+    request: params.reasoning,
+  });
+  if (reasoning) {
+    genArgs.reasoning = reasoning;
+  }
 
   const result = await generate(genArgs);
 

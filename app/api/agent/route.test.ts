@@ -354,6 +354,46 @@ describe('POST /api/agent', () => {
     }
   });
 
+  it('non-empty Gateway list [high,xhigh] passes reasoning high to runAgent (adversarial-review #899)', async () => {
+    const prev = process.env.AGENT_REASONING;
+    delete process.env.AGENT_REASONING;
+    try {
+      mockAuthedSession();
+      mockMcpEmpty();
+      mockByokOk({ modelId: 'zai/glm-5.2', provider: 'zai' });
+      mockGithubToken();
+      mockResolveSandboxOk();
+      process.env.AI_GATEWAY_API_KEY = 'gw-key';
+      vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+        effortValuesForModel: vi.fn(async () => ['high', 'xhigh']),
+      }));
+      const runAgent = vi.fn(async (_arg: { modelId?: string; reasoning?: string }) => ({
+        text: 'ok',
+        toolTrace: [],
+        cwd: '.',
+      }));
+      vi.doMock('../../../lib/agent/runAgent', () => ({
+        runAgent,
+        runAgentStream: vi.fn(),
+      }));
+      const { POST } = await import('./route');
+      const res = await POST(
+        new Request('http://localhost/api/agent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: 'hi' }),
+        }),
+      );
+      expect(res.status).toBe(200);
+      const arg = runAgent.mock.calls[0]?.[0] as { modelId?: string; reasoning?: string };
+      expect(arg.modelId).toBe('zai/glm-5.2');
+      expect(arg.reasoning).toBe('high');
+    } finally {
+      if (prev === undefined) delete process.env.AGENT_REASONING;
+      else process.env.AGENT_REASONING = prev;
+    }
+  });
+
   it('passes a bounded provider usage summary through on the JSON result (plan #539 / #327)', async () => {
     mockAuthedSession();
     mockMcpEmpty();

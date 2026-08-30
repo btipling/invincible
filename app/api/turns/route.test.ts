@@ -333,6 +333,41 @@ describe('POST /api/turns', () => {
     }
   });
 
+  it('non-empty Gateway list [high,xhigh] passes reasoning high to start() (adversarial-review #899)', async () => {
+    const prev = process.env.AGENT_REASONING;
+    delete process.env.AGENT_REASONING;
+    try {
+      standardHarness();
+      mockAuthedSession();
+      mockStart();
+      servicesState.resolveInferenceForRequest = {
+        resolveByokForRequest: vi.fn(async () => ({
+          ok: true as const,
+          modelId: 'zai/glm-5.2',
+          provider: 'zai',
+          credentials: { apiKey: 'sk-test' },
+          only: ['zai'] as [string],
+          byok: { zai: [{ apiKey: 'sk-test' }] },
+          secretId: 'sec-1',
+          secretsToRedact: ['sk-test'],
+        })),
+      };
+      vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+        effortValuesForModel: vi.fn(async () => ['high', 'xhigh']),
+      }));
+      ({ POST } = await import('./route'));
+
+      const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+      expect(res.status).toBe(200);
+      const startArgs = startMock.mock.calls[0][1][0];
+      expect(startArgs.modelId).toBe('zai/glm-5.2');
+      expect(startArgs.reasoning).toBe('high');
+    } finally {
+      if (prev === undefined) delete process.env.AGENT_REASONING;
+      else process.env.AGENT_REASONING = prev;
+    }
+  });
+
   it('row 2 — missing sessionId → 400 (parseAgentBody would pass; route guard rejects), no start, no running PATCH', async () => {
     standardHarness();
     mockAuthedSession();

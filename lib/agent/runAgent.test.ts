@@ -592,6 +592,86 @@ describe('runAgent http-only / optional sandbox', () => {
   });
 });
 
+describe('runAgent reasoning option (plan #897 / adversarial-review #899)', () => {
+  const client: SandboxClient = {
+    listDir: vi.fn(),
+    readFile: vi.fn(),
+    writeFile: vi.fn(),
+    strReplace: vi.fn(),
+    exec: vi.fn(),
+    stat: vi.fn(),
+  };
+
+  it('JSON generateText gets reasoning low for glm-5.3-flash (not merely runAgent params)', async () => {
+    const prev = process.env.AGENT_REASONING;
+    delete process.env.AGENT_REASONING;
+    try {
+      const generateTextImpl = vi.fn(async (_args: Record<string, unknown>) => ({
+        text: 'ok',
+        steps: [],
+      }));
+      await runAgent({
+        prompt: 'hi',
+        modelId: 'zai/glm-5.3-flash',
+        generateTextImpl: generateTextImpl as never,
+        sandboxClient: client,
+      });
+      expect(generateTextImpl).toHaveBeenCalledTimes(1);
+      const args = generateTextImpl.mock.calls[0]![0];
+      expect(args.reasoning).toBe('low');
+      expect(args.reasoning).not.toBe('provider-default');
+    } finally {
+      if (prev == null) delete process.env.AGENT_REASONING;
+      else process.env.AGENT_REASONING = prev;
+    }
+  });
+
+  it('params.reasoning wins over AGENT_REASONING on generateText', async () => {
+    const prev = process.env.AGENT_REASONING;
+    process.env.AGENT_REASONING = 'high';
+    try {
+      const generateTextImpl = vi.fn(async (_args: Record<string, unknown>) => ({
+        text: 'ok',
+        steps: [],
+      }));
+      await runAgent({
+        prompt: 'hi',
+        modelId: 'zai/glm-5.3-flash',
+        reasoning: 'low',
+        generateTextImpl: generateTextImpl as never,
+        sandboxClient: client,
+      });
+      const args = generateTextImpl.mock.calls[0]![0];
+      expect(args.reasoning).toBe('low');
+    } finally {
+      if (prev == null) delete process.env.AGENT_REASONING;
+      else process.env.AGENT_REASONING = prev;
+    }
+  });
+
+  it('omits generateText reasoning for non-reasoning models when env unset', async () => {
+    const prev = process.env.AGENT_REASONING;
+    delete process.env.AGENT_REASONING;
+    try {
+      const generateTextImpl = vi.fn(async (_args: Record<string, unknown>) => ({
+        text: 'ok',
+        steps: [],
+      }));
+      await runAgent({
+        prompt: 'hi',
+        modelId: 'anthropic/claude-sonnet-4',
+        generateTextImpl: generateTextImpl as never,
+        sandboxClient: client,
+      });
+      const args = generateTextImpl.mock.calls[0]![0];
+      expect(args).not.toHaveProperty('reasoning');
+    } finally {
+      if (prev == null) delete process.env.AGENT_REASONING;
+      else process.env.AGENT_REASONING = prev;
+    }
+  });
+});
+
 describe('runAgentStream reasoning option', () => {
   it('passes resolveAgentReasoning result into streamText', async () => {
     const prev = process.env.AGENT_REASONING;
