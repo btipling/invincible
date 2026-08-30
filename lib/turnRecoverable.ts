@@ -15,20 +15,44 @@ export const AUTO_CONTINUE_PROMPT = 'continue' as const;
 /** NEW cap — one auto-continue per give-up; clears on the next operator submit. */
 export const AUTO_CONTINUE_PER_GIVE_UP = 1 as const;
 
+/**
+ * Space-form needles. `isRecoverableBookkeepingError` folds `_` → space so the
+ * production `error` field (`session store unavailable`) and the `code` token
+ * (`SESSION_STORE_UNAVAILABLE`) match the same row. Do **not** match isolated
+ * `oversize`, Stop, content-filter, truncated, model error, step-budget, or
+ * attach-503 copy (`Unable to attach to run stream (store unavailable).`).
+ */
 const RECOVERABLE_NEEDLES = [
   'transcript segment write failed',
   'object byte ceiling',
-  'session_store_unavailable',
+  'session store unavailable',
 ] as const;
 
 /**
- * Case-insensitive substring allowlist. Does **not** match isolated `oversize`,
- * Stop, content-filter, truncated, model error, or step-budget strings.
+ * Case-insensitive substring allowlist. Underscores fold to spaces so JSON
+ * `code` tokens and human `error` fields hit the same needle.
  */
 export function isRecoverableBookkeepingError(error: string): boolean {
-  const s = (error ?? '').toLowerCase();
+  const s = (error ?? '').toLowerCase().replace(/_/g, ' ');
   if (!s) return false;
   return RECOVERABLE_NEEDLES.some((n) => s.includes(n));
+}
+
+/**
+ * Plan #887 adversarial — `#844` mint-bind remaps `sess_*` → UUID in
+ * `runPrompt` `finally` *after* the one-shot flag is keyed. Move the bit so
+ * cap 1 survives the rewrite (the auto-continue POST uses the UUID).
+ */
+export function migrateAutoContinueFlag(
+  flags: Map<string, boolean>,
+  fromId: string,
+  toId: string,
+): void {
+  if (!fromId || !toId || fromId === toId) return;
+  if (flags.get(fromId) === true) {
+    flags.set(toId, true);
+    flags.delete(fromId);
+  }
 }
 
 export type AutoContinueGiveUpInput = {

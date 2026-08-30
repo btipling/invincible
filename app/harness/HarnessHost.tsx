@@ -54,6 +54,7 @@ import {
 import { paintQuotaAfterRebuild, tryLocalSave } from '../../lib/hostQuotaError';
 import {
   AUTO_CONTINUE_PROMPT,
+  migrateAutoContinueFlag,
   shouldAutoContinueAfterGiveUp,
 } from '../../lib/turnRecoverable';
 import {
@@ -712,6 +713,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               switchInFlight: switchInFlightRef.current,
             })
           ) {
+            // Plan #887 adversarial: flag was keyed on startedId (sess_*) before
+            // this rewrite; auto-continue POSTs as pendingId (UUID).
+            migrateAutoContinueFlag(
+              didAutoContinueBySessionRef.current,
+              startedId,
+              pendingId,
+            );
             const bound = { ...sessionRef.current, id: pendingId };
             writeLocalSession(bound);
             repo?.put(pendingId, bound);
