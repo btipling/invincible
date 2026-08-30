@@ -51,9 +51,9 @@ worker writes a chunk after the first model delta of a turn that still has tools
 to run, after each successful tool **batch**, and when a model round has no tools
 (the turn is finished). Mid-turn
 writes keep the envelope `running`; the finished write marks `completed`. Tokens
-that arrive between those writes are attach-only until the next persist. Each
-worker persist suffix-merges this-run
-checkpoint rows onto a prior **readable** pointer body so a later turn cannot
+that arrive between those writes are attach-only until the next persist. Reconstruct
+suffix-merges this-run
+checkpoint rows onto prior chunks / the host flatten root so a later turn cannot
 replace the accumulated transcript (`tool_run` matches by role; one host live-paint
 card covers a run of checkpoint tools, including tools separated by per-round
 checkpoint assistants — the turn loop emits an assistant delta every model round;
@@ -70,7 +70,7 @@ trailing remainder. Fold requires the winning match to have **skipped** an
 incoming assistant against a prior `tool_run` (mid-turn host card). A worker
 1:1 prior that already is this run (persist retry, including empty last-round)
 does not skip and stays no-append. Persist retry onto a successful mid-turn fold
-(pointer already ends with `+=` of this-run assistant texts) also stays no-append
+(reconstructed prior already ends with `+=` of this-run assistant texts) also stays no-append
 when incoming ends on `tool_run` (empty last-round dropped); the leftover covering
 assistant is this run, not a new reply — only when the incoming prefix is the
 entire this-run. A short prefix whose fold text is a suffix of leftover
@@ -288,7 +288,8 @@ from this run only and does not link `prev`.
   URL via `POST /api/sessions/:id/transcript`; the client PUTs a new segment object
   **directly to Blob** (no fat body through a Function — a server upload through a
   Function still 413s against the 4.5 MiB Vercel payload limit). `GET` with `?objectId=`
-  returns a server-signed read URL so the host pages from Blob.
+  returns a server-signed read URL for any object **bound to this session** (current
+  pointer or a `prev` chunk) so the host can walk the chain from Blob.
 - **Envelope upsert.** `PUT /api/sessions/:id/envelope` writes the small envelope
   (validates ownership + reserved `meta` scalar-only + pointer, enforces `updatedAt` LWW,
   `createdAt` preserved; `409` + server envelope on conflict). The envelope is the source

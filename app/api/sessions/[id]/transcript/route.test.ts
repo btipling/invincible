@@ -150,7 +150,8 @@ describe('/api/sessions/:id/transcript', () => {
     );
     const { GET } = await mockAuthed();
 
-    // Bound pointer → signed read URL (the only object this session may read).
+    // Bound pointer → signed read URL (session-bound ids may be signed, not
+    // pointer-only — plan #886 prev walk).
     const ok = await GET(
       new Request(`http://localhost/api/sessions/abc/transcript?objectId=${mint.objectId}`),
       ctx('abc'),
