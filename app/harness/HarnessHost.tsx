@@ -671,7 +671,6 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             });
           }
         } else if (
-          !repostFollowUp &&
           shouldAutoContinueAfterGiveUp({
             resultOk: result.ok,
             kind: result.ok
@@ -683,6 +682,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             queuedCount: bridge.queuedCount(),
             hasPendingSubmit: bridge.hasPendingSubmit(),
             didAutoContinue: didAutoContinueBySessionRef.current.get(folded.id) === true,
+            repostFollowUp,
           })
         ) {
           didAutoContinueBySessionRef.current.set(folded.id, true);

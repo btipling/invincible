@@ -18,9 +18,22 @@ export const AUTO_CONTINUE_PER_GIVE_UP = 1 as const;
 /**
  * Space-form needles. `isRecoverableBookkeepingError` folds `_` → space so the
  * production `error` field (`session store unavailable`) and the `code` token
- * (`SESSION_STORE_UNAVAILABLE`) match the same row. Do **not** match isolated
- * `oversize`, Stop, content-filter, truncated, model error, step-budget, or
- * attach-503 copy (`Unable to attach to run stream (store unavailable).`).
+ * (`SESSION_STORE_UNAVAILABLE`) match the same row.
+ *
+ * `session store unavailable` is **belt-and-suspenders**, not a live
+ * `runHarnessTurn` `result.error` on POST `/api/turns`:
+ *   - tenant fail → `Unable to resolve tenant for the durable turn.` (route
+ *     swallows tenant `code`/`error`)
+ *   - store resolve fail → fail-open 200 (turn still starts)
+ *   - attach 503 → `Unable to attach to run stream (store unavailable).`
+ *     (D18 keep-`running`; the running gate would skip even if it matched)
+ * Those turn-path copies are intentionally **not** needles (C15 / D18), not
+ * missed allowlist rows. Persist `{ok:false}` after #885 is also non-terminal;
+ * `transcript segment write failed` / `object byte ceiling` fire only if that
+ * overlay regresses (or a throw concatenates the sessions phrase / code token).
+ *
+ * Do **not** match isolated `oversize`, Stop, content-filter, truncated, model
+ * error, step-budget, or the attach-503 copy above.
  */
 const RECOVERABLE_NEEDLES = [
   'transcript segment write failed',
@@ -64,14 +77,18 @@ export type AutoContinueGiveUpInput = {
   queuedCount: number;
   hasPendingSubmit: boolean;
   didAutoContinue: boolean;
+  /** Send-while-running remapped re-POST wins (host `shouldRepostAttachFollowUp`). */
+  repostFollowUp: boolean;
 };
 
 /**
  * After `runHarnessTurn` give-up: one `'continue'` POST iff classified
- * recoverable + `canAutoContinue` + envelope not running + flag unset.
+ * recoverable + `canAutoContinue` + envelope not running + flag unset +
+ * not a remapped attach follow-up.
  */
 export function shouldAutoContinueAfterGiveUp(input: AutoContinueGiveUpInput): boolean {
   if (input.resultOk) return false;
+  if (input.repostFollowUp) return false;
   if (input.kind !== 'error') return false;
   if (!isRecoverableBookkeepingError(input.error)) return false;
   if (input.turnStatus === 'running') return false;
