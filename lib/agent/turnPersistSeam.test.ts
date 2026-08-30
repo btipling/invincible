@@ -49,6 +49,26 @@ class ThrowOnceEnvelopeStore extends MemorySessionStore {
   }
 }
 
+/**
+ * Throw once on the first `readEnvelope` *after* B7 advanced `transcriptPointer`
+ * past `priorId`. Hits B8 overlay's read (plan #885 adversarial-review Major on PR #888).
+ */
+class ThrowOnceAfterPointerAdvance extends MemorySessionStore {
+  private thrown = false;
+  constructor(private readonly priorId: string) {
+    super();
+  }
+  override async readEnvelope(k: SessionRecordKey) {
+    const env = await super.readEnvelope(k);
+    const ptr = env?.meta?.transcriptPointer;
+    if (!this.thrown && typeof ptr === 'string' && ptr !== this.priorId) {
+      this.thrown = true;
+      throw new Error('redis blip after B7');
+    }
+    return env;
+  }
+}
+
 async function makeSeam(
   opts: {
     blobStore?: BlobTranscriptStore;
@@ -1213,6 +1233,45 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     const env = await envelopeStore.readEnvelope(key);
     expect(env?.meta?.transcriptPointer).toBe(priorId);
     // One-shot read blip: failWrite retries overlay and must not leave running.
+    expect(env?.meta?.turnStatus).toBe('completed');
+    expect(env?.meta?.turnRunId).toBe(realRunId);
+  });
+
+  it('overlay read_failed after B7 still overlays completed (pointer kept)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const priorId = newBlobObjectId(scope);
+    const envelopeStore = new ThrowOnceAfterPointerAdvance(priorId);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1000,
+        messages: [{ id: 'h1', role: 'user', text: 'prior', at: 1 }],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_0', role: 'user', text: 'this-run', at: 1 }],
+      }),
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('read_failed');
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.transcriptPointer).toBeDefined();
+    expect(env?.meta?.transcriptPointer).not.toBe(priorId);
     expect(env?.meta?.turnStatus).toBe('completed');
     expect(env?.meta?.turnRunId).toBe(realRunId);
   });

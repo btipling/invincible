@@ -1300,6 +1300,88 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(closed()).toBe(1);
   });
 
+  it('persist read_failed on empty-tools still done, writable closed once', async () => {
+    const { deps, w, closed } = wiredDeps();
+    const persistStep = async () => ({
+      ok: false as const,
+      code: 'read_failed' as const,
+      error: 'redis blip after B7',
+    });
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'done', toolCalls: [] },
+    }));
+    const result = await runTurnLoop({ ...deps, persistStep, modelStep }, { userMessage: 'x' });
+    expect(result.status).toBe('completed');
+    expect(result.error).toBeUndefined();
+    expect(closed()).toBe(1);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.find((e: { type: string }) => e.type === 'done')).toMatchObject({
+      type: 'done',
+      text: 'done',
+    });
+    expect(
+      events.some(
+        (e: { type: string; error?: string }) =>
+          e.type === 'error' && e.error === 'redis blip after B7',
+      ),
+    ).toBe(false);
+  });
+
+  it('itemFail + persist read_failed keeps the tool error', async () => {
+    const { deps, w, closed } = wiredDeps();
+    const persistStep = async () => ({
+      ok: false as const,
+      code: 'read_failed' as const,
+      error: 'redis blip after B7',
+    });
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: {
+        text: 'two',
+        toolCalls: [
+          { toolName: 'list_dir', toolCallId: 'a', args: {} },
+          { toolName: 'read_file', toolCallId: 'b', args: {} },
+        ],
+      },
+    }));
+    const toolStep = vi.fn(async () => ({
+      ok: true as const,
+      results: [
+        {
+          ok: true as const,
+          toolName: 'list_dir',
+          toolCallId: 'a',
+          result: 'ok-dir',
+          freshnessDelta: '[]',
+        },
+        {
+          ok: false as const,
+          toolName: 'read_file',
+          toolCallId: 'b',
+          code: 'sandbox_error' as const,
+          error: 'boom',
+        },
+      ],
+      freshnessDelta: '[]',
+    }));
+    const result = await runTurnLoop({ ...deps, persistStep, modelStep, toolStep }, { userMessage: 'go' });
+    expect(result.status).toBe('completed');
+    expect(result.error).toBe('boom');
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.find((e: { type: string; error?: string }) => e.type === 'error')).toEqual({
+      type: 'error',
+      error: 'boom',
+    });
+    expect(
+      events.some(
+        (e: { type: string; error?: string }) =>
+          e.type === 'error' && e.error === 'redis blip after B7',
+      ),
+    ).toBe(false);
+    expect(closed()).toBe(1);
+  });
+
   it('itemFail + persist write_failed keeps the tool error', async () => {
     const { deps, w, closed } = wiredDeps({ persistFail: true });
     const modelStep = vi.fn(async () => ({

@@ -24,8 +24,8 @@
  *    wrap-up skipped-tool `tool_result`. Transcript/checkpoint live in Blob.
  *  - The writable is closed **exactly once** on every terminal path — success,
  *    model/tool fail, persist programmer error (`invalid_scope` /
- *    `not_envelope_store`), step cap, or cancel. Persist `write_failed` does
- *    **not** fail the turn (plan #885).
+ *    `not_envelope_store`), step cap, or cancel. Persist `write_failed` /
+ *    overlay `read_failed` does **not** fail the turn (plan #885).
  *  - Tool business errors are **values**, not throws: a step returning
  *    `{ok:false}` (or a batch item `{ok:false}`) terminates the loop cleanly
  *    (never retried 3× by the SDK).
@@ -561,7 +561,8 @@ export async function runTurnLoop(
     code === 'write_failed' ||
     code === 'pointer_write_failed' ||
     code === 'checkpoint_write_failed' ||
-    code === 'lww_conflict';
+    code === 'lww_conflict' ||
+    code === 'read_failed';
 
   type PersistOutcome =
     | { kind: 'ok' }

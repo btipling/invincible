@@ -109,8 +109,8 @@ const toMessage = (err: unknown): string =>
  *
  * Business errors are **values**: every failure path returns `{ ok:false, code,
  * error }` (B7/B8 codes surfaced verbatim). Persist bookkeeping (`write_failed` /
- * pointer / checkpoint / LWW) does not fail the turn; `invalid_scope` /
- * `not_envelope_store` still do. Never throws.
+ * pointer / checkpoint / LWW / overlay `read_failed`) does not fail the turn;
+ * `invalid_scope` / `not_envelope_store` still do. Never throws.
  */
 export function createTurnPersistSeam(
   deps: TurnPersistSeamDeps,
@@ -303,7 +303,16 @@ export function createTurnPersistSeam(
         patch,
         updatedAt,
       });
-      if (!overlay.ok) return { ok: false, code: overlay.code, error: overlay.error };
+      if (!overlay.ok) {
+        // B7 already committed the pointer. Retry overlay so a one-shot Redis
+        // blip on B8's read still writes `completed` (failWrite) instead of
+        // leaving `running` for F5 attach.
+        return await failWrite({
+          ok: false,
+          code: overlay.code,
+          error: overlay.error,
+        });
+      }
 
       return {
         ok: true,
