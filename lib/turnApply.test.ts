@@ -511,12 +511,12 @@ describe('applyTurnEvent — live tool card (protocol v11 / #433)', () => {
     // rebinds `ctx.next` (running → ok card), so match the bind/signal, not
     // object identity with the post-paint session.
     expect(refreshGitStatusSlot).toHaveBeenCalledTimes(1);
-    const switchGitCall = refreshGitStatusSlot.mock.calls.at(0);
-    expect(switchGitCall?.[0]).toBe(bridge);
-    expect(switchGitCall?.[1]).toMatchObject({
-      activeSandboxId: 'sbx_abc123',
-    });
-    expect(switchGitCall?.[2]).toBe(ctx.signal);
+    expect(refreshGitStatusSlot).toHaveBeenNthCalledWith(
+      1,
+      bridge,
+      expect.objectContaining({ activeSandboxId: 'sbx_abc123' }),
+      ctx.signal,
+    );
   });
 
   it('a non-Redis-safe switch id is ignored (fail-closed, no session mutation)', async () => {
@@ -550,9 +550,12 @@ describe('applyTurnEvent — live tool card (protocol v11 / #433)', () => {
 
     await apply({ type: 'tool_result', name: 'exec', ok: true, summary: 'ls' });
     expect(refreshGitStatusSlot).toHaveBeenCalledTimes(1);
-    const execGitCall = refreshGitStatusSlot.mock.calls.at(0);
-    expect(execGitCall?.[0]).toBe(bridge);
-    expect(execGitCall?.[2]).toBe(ctx.signal);
+    expect(refreshGitStatusSlot).toHaveBeenNthCalledWith(
+      1,
+      bridge,
+      expect.any(Object),
+      ctx.signal,
+    );
     expect(patchSession).not.toHaveBeenCalled();
   });
 
