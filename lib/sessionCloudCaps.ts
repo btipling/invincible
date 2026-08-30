@@ -41,8 +41,10 @@ export const HARNESS_SESSION_MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 /**
  * Max objects a transcript `prev` walk may visit (plan #886). Loop/DoS bound
- * on reconstruct — not a message cap and not a change to the 8 MiB per-object
- * ceiling. NEW generous cap. The head object counts as 1.
+ * on reconstruct **and** worker persist — not a message cap and not a change
+ * to the 8 MiB per-object ceiling. NEW generous cap. The head object counts
+ * as 1. Persist writes `depth` on worker chunks so it can refuse a 257th
+ * object without walking ancestors (adversarial #889).
  */
 export const TRANSCRIPT_CHUNK_WALK_MAX = 256;
 

@@ -23,7 +23,7 @@ import type { PersistStepSeam } from '../workflows/persistStep';
 import { reachableImports } from '../workflows/staticGraph';
 import { parseCloudSessionSnapshot } from '../sessionRepository';
 import { reconstructTranscriptChain } from '../sessions/transcriptChunks';
-import { HARNESS_SESSION_MAX_BODY_BYTES } from '../sessionCloudCaps';
+import { HARNESS_SESSION_MAX_BODY_BYTES, TRANSCRIPT_CHUNK_WALK_MAX } from '../sessionCloudCaps';
 
 const scope: ObjectScope = {
   tenantId: 'tenant-1',
@@ -487,9 +487,11 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     const chunk = JSON.parse(raw ?? 'null') as {
       messages: { text: string }[];
       prev?: string;
+      depth?: number;
     };
     expect(chunk.messages.map((m) => m.text)).toEqual(['turn-2 user', 'turn-2 assistant']);
     expect(typeof chunk.prev).toBe('string');
+    expect(chunk.depth).toBe(2);
     const parsed = await chainParsed(blobStore, envelopeStore);
     expect(parsed).not.toBeNull();
     expect(parsed?.messages.map((m) => m.text)).toEqual([
@@ -1778,14 +1780,65 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     if (!res.ok) return;
     const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
       prev?: string;
+      depth?: number;
       messages: { text: string }[];
     };
     expect(chunk.prev).toBe(flattenId);
+    expect(chunk.depth).toBe(2);
     expect(chunk.messages.map((m) => m.text)).toEqual([
       'turn-2 user',
       'turn-2 assistant',
     ]);
     const parsed = await chainParsed(blobStore, envelopeStore);
     expect(parsed?.messages.map((m) => m.id)).toEqual(['h1', 'h2', 'h3', 'h4']);
+  });
+
+  it('persist refuses when head depth is at TRANSCRIPT_CHUNK_WALK_MAX (adversarial #889)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const ancestorId = newBlobObjectId(scope);
+    const priorId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: ancestorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1,
+        messages: [{ id: 'a1', role: 'user', text: 'oldest', at: 1 }],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 2,
+        messages: [{ id: 'm1', role: 'user', text: 'head', at: 2 }],
+        prev: ancestorId,
+        depth: TRANSCRIPT_CHUNK_WALK_MAX,
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 2,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_0', role: 'user', text: 'this-run', at: 1 }],
+      }),
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('write_failed');
+    expect(res.error).toContain('walk cap');
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.transcriptPointer).toBe(priorId);
   });
 });

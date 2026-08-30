@@ -2,12 +2,13 @@
  * Transcript chunk chain (plan #886).
  *
  * Worker persist writes **this-run** messages plus optional `prev` (the prior
- * object id). Host terminal PUT omits `prev` (flatten root). Reconstruct walks
+ * object id) and `depth` (1-based chain length ending at that object). Host
+ * terminal PUT omits `prev` and `depth` (flatten root). Reconstruct walks
  * `prev` oldest→newest and suffix-merges so a Blob read of the latest worker
  * chunk is not the full session.
  *
  * Client-safe: no db, no `node:crypto`, no Blob store. Callers inject `read`
- * and `isBound`.
+ * and `isBound`. Persist is **head-only** — it must not call reconstruct.
  */
 import { TRANSCRIPT_CHUNK_WALK_MAX, isRedisSafeOpaqueId } from '../sessionCloudCaps';
 import {
@@ -41,6 +42,24 @@ export function transcriptChunkPrev(body: unknown): ChunkPrev {
   if (prev === undefined || prev === null) return { kind: 'none' };
   if (typeof prev !== 'string' || !isRedisSafeOpaqueId(prev)) return { kind: 'invalid' };
   return { kind: 'id', id: prev };
+}
+
+/**
+ * 1-based length of the chain ending at `body`. Flatten / one-node (no `prev`)
+ * is 1. A worker chunk carries `depth` so persist can refuse a 257th object
+ * without walking ancestors (adversarial #889). Missing `depth` on a body that
+ * still has `prev` is treated as 2 (at least head + one ancestor).
+ */
+export function transcriptChunkChainLength(body: unknown): number {
+  const prev = transcriptChunkPrev(body);
+  if (prev.kind !== 'id') return 1;
+  if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
+    const d = (body as { depth: unknown }).depth;
+    if (typeof d === 'number' && Number.isInteger(d) && d >= 1) {
+      return Math.min(d, TRANSCRIPT_CHUNK_WALK_MAX);
+    }
+  }
+  return 2;
 }
 
 /**
@@ -150,69 +169,7 @@ export async function reconstructTranscriptChain(input: {
   return { ok: true, messages: acc };
 }
 
-/** Read the pointer object, then walk `prev`. */
-export async function reconstructFromPointer(input: {
-  pointer: string;
-  sessionId: string;
-  readRaw: (objectId: string) => Promise<string | null>;
-  isBound: (objectId: string) => boolean;
-  maxWalk?: number;
-}): Promise<ReconstructChainResult> {
-  if (!input.isBound(input.pointer)) {
-    return {
-      ok: false,
-      code: 'foreign_prev',
-      error: 'transcriptPointer is not bound to this session.',
-    };
-  }
-  let raw: string | null;
-  try {
-    raw = await input.readRaw(input.pointer);
-  } catch {
-    return {
-      ok: false,
-      code: 'unreadable',
-      error: 'bound transcriptPointer read failed.',
-    };
-  }
-  if (raw === null) {
-    return {
-      ok: false,
-      code: 'missing',
-      error:
-        'bound transcriptPointer object is missing — refusing this-run-only replace.',
-    };
-  }
-  let headBody: unknown;
-  try {
-    headBody = JSON.parse(raw);
-  } catch {
-    return {
-      ok: false,
-      code: 'unreadable',
-      error:
-        'bound transcriptPointer body is not JSON — refusing this-run-only replace.',
-    };
-  }
-  return reconstructTranscriptChain({
-    sessionId: input.sessionId,
-    headId: input.pointer,
-    headBody,
-    read: async (objectId) => {
-      const body = await input.readRaw(objectId);
-      if (body === null) return null;
-      try {
-        return JSON.parse(body);
-      } catch {
-        return null;
-      }
-    },
-    isBound: input.isBound,
-    maxWalk: input.maxWalk,
-  });
-}
-
-/** Flatten reconstructed rows onto a snapshot-shaped body (no `prev`). */
+/** Flatten reconstructed rows onto a snapshot-shaped body (no `prev` / `depth`). */
 export function flattenReconstructedBody(
   headBody: unknown,
   sessionId: string,
@@ -223,6 +180,7 @@ export function flattenReconstructedBody(
       ? { ...(headBody as Record<string, unknown>) }
       : {};
   delete rec.prev;
+  delete rec.depth;
   rec.id = sessionId;
   rec.messages = messages;
   if (typeof rec.updatedAt !== 'number' || !Number.isFinite(rec.updatedAt)) {

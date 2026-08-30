@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { TRANSCRIPT_CHUNK_WALK_MAX } from '../sessionCloudCaps';
 import {
   flattenReconstructedBody,
-  reconstructFromPointer,
   reconstructTranscriptChain,
+  transcriptChunkChainLength,
   transcriptChunkPrev,
 } from './transcriptChunks';
 
@@ -13,12 +13,13 @@ function msg(id: string, text: string, at = 1) {
   return { id, role: 'user' as const, text, at };
 }
 
-function snap(messages: ReturnType<typeof msg>[], prev?: string) {
+function snap(messages: ReturnType<typeof msg>[], prev?: string, depth?: number) {
   return {
     id: SESSION,
     updatedAt: 1,
     messages,
     ...(prev !== undefined ? { prev } : {}),
+    ...(depth !== undefined ? { depth } : {}),
   };
 }
 
@@ -37,6 +38,25 @@ describe('transcriptChunkPrev', () => {
     });
     expect(transcriptChunkPrev({ prev: 'a:b' }).kind).toBe('invalid');
     expect(transcriptChunkPrev({ prev: 1 }).kind).toBe('invalid');
+  });
+});
+
+describe('transcriptChunkChainLength (adversarial #889)', () => {
+  it('one-node / flatten is 1', () => {
+    expect(transcriptChunkChainLength(snap([msg('m1', 'x')]))).toBe(1);
+    expect(transcriptChunkChainLength(snap([msg('m1', 'x')], undefined, 99))).toBe(1);
+  });
+
+  it('prev + depth is that depth (clamped)', () => {
+    expect(transcriptChunkChainLength(snap([msg('m1', 'x')], 't_old', 2))).toBe(2);
+    expect(transcriptChunkChainLength(snap([msg('m1', 'x')], 't_old', 256))).toBe(256);
+    expect(
+      transcriptChunkChainLength(snap([msg('m1', 'x')], 't_old', 400)),
+    ).toBe(TRANSCRIPT_CHUNK_WALK_MAX);
+  });
+
+  it('prev without depth is 2', () => {
+    expect(transcriptChunkChainLength(snap([msg('m1', 'x')], 't_old'))).toBe(2);
   });
 });
 
@@ -62,6 +82,7 @@ describe('reconstructTranscriptChain (plan #886)', () => {
     const head = snap(
       [msg('m3', 'turn-2 user'), msg('m4', 'turn-2 assistant', 2)],
       't_old_1',
+      2,
     );
     const store = new Map<string, unknown>([['t_old_1', older]]);
     const got = await reconstructTranscriptChain({
@@ -164,22 +185,15 @@ describe('reconstructTranscriptChain (plan #886)', () => {
   });
 });
 
-describe('reconstructFromPointer + flatten', () => {
-  it('pointer miss is missing; flatten drops prev', async () => {
-    const miss = await reconstructFromPointer({
-      pointer: 't_head_1',
-      sessionId: SESSION,
-      readRaw: async () => null,
-      isBound: () => true,
-    });
-    expect(miss).toMatchObject({ ok: false, code: 'missing' });
-
+describe('flatten', () => {
+  it('drops prev and depth', () => {
     const body = flattenReconstructedBody(
-      snap([msg('m1', 'x')], 't_old'),
+      snap([msg('m1', 'x')], 't_old', 2),
       SESSION,
       [msg('m1', 'x')],
     );
     expect(body.prev).toBeUndefined();
+    expect(body.depth).toBeUndefined();
     expect(body.id).toBe(SESSION);
     expect((body.messages as { text: string }[])[0].text).toBe('x');
   });

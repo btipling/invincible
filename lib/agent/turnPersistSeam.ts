@@ -38,6 +38,7 @@
 import {
   HARNESS_SESSION_MAX_BODY_BYTES,
   TURN_MSG_CHECKPOINT_MAX_BYTES,
+  TRANSCRIPT_CHUNK_WALK_MAX,
 } from '../sessionCloudCaps';
 import { fitSnapshotUtf8 } from './fitSnapshotUtf8';
 import {
@@ -57,7 +58,10 @@ import {
   snapshotMessagesFromUnknown,
 } from './messageCheckpoint';
 import { persistTranscriptSegment } from './turnWorkerPersist';
-import { transcriptChunkPrev } from '../sessions/transcriptChunks';
+import {
+  transcriptChunkChainLength,
+  transcriptChunkPrev,
+} from '../sessions/transcriptChunks';
 import {
   overlayWorkerMeta,
   type WorkerMetaPatch,
@@ -101,12 +105,13 @@ export interface TurnPersistSeamDeps {
 const toMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
 
-/** This-run snapshot + optional `prev`; non-snapshot test bodies keep stamp-only. */
+/** This-run snapshot + optional `prev`/`depth`; non-snapshot test bodies keep stamp-only. */
 function buildThisRunChunk(opts: {
   content: string;
   sessionId: string;
   updatedAt: number;
   prev: string | undefined;
+  depth: number | undefined;
 }): string | null {
   let parsed: unknown;
   try {
@@ -127,6 +132,7 @@ function buildThisRunChunk(opts: {
     messages: incoming,
   };
   if (opts.prev) rec.prev = opts.prev;
+  if (opts.depth !== undefined) rec.depth = opts.depth;
   return JSON.stringify(rec);
 }
 
@@ -220,8 +226,11 @@ export function createTurnPersistSeam(
       // ancestor walk cannot LWW-clobber (this-run + prev=pointer never replaces
       // history) and `walked.messages` was unused. Leftover `{ deltas }` is not
       // a snapshot — this-run only, no prev. Foreign/invalid `prev` **on the
-      // head** still fail-closed (confused-deputy / corrupt link).
+      // head** still fail-closed (confused-deputy / corrupt link). `depth` on
+      // the head is the chain length so persist refuses a 257th object without
+      // walking (reconstruct fail-closes the whole blob at 256).
       let chunkPrev: string | undefined;
+      let chunkDepth: number | undefined;
       const pointer = stored?.meta?.transcriptPointer;
       if (typeof pointer === 'string' && isObjectIdBoundTo(pointer, scope)) {
         let raw: string | null;
@@ -269,7 +278,16 @@ export function createTurnPersistSeam(
               error: 'transcript chunk prev is not bound to this session.',
             });
           }
+          const chainLen = transcriptChunkChainLength(parsed);
+          if (chainLen >= TRANSCRIPT_CHUNK_WALK_MAX) {
+            return await failWrite({
+              ok: false,
+              code: 'write_failed',
+              error: `transcript chunk chain length ${chainLen} is at walk cap ${TRANSCRIPT_CHUNK_WALK_MAX} — refusing append.`,
+            });
+          }
           chunkPrev = pointer;
+          chunkDepth = chainLen + 1;
         }
       }
 
@@ -278,6 +296,7 @@ export function createTurnPersistSeam(
         sessionId: scope.sessionId,
         updatedAt,
         prev: chunkPrev,
+        depth: chunkDepth,
       });
       if (stampedRaw === null) {
         return await failWrite({

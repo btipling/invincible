@@ -38,9 +38,12 @@ missing) but the Redis envelope is still `running` with a `turnRunId`, boot
 overlays those three turn carriers onto the kept local snapshot, keeps `?s=`
 pinned, and cold-attaches. Messages stay the local (or LWW-winning) transcript
 until attach SSE catches up. The Blob object at `transcriptPointer` is the
-**latest** transcript chunk (`id`, `updatedAt`, `messages`, optional `prev`).
+**latest** transcript chunk (`id`, `updatedAt`, `messages`, optional `prev`,
+optional `depth`).
 Worker persist writes **this-run messages** plus `prev` pointing at the previous
-object (legacy / host-flattened objects omit `prev` and are a one-node chain).
+object and `depth` (1-based length of the chain ending at that object). Persist
+is head-only: it will not append when `depth` is already **256**. Legacy / host-flattened
+objects omit `prev` and `depth` and are a one-node chain.
 Reconstruct walks `prev` (max **256** objects, each id bound to this session)
 and suffix-merges oldest→newest. Host terminal PUT may **flatten** to a full
 trimmed snapshot with `prev` omitted (new root). Extra keys are ignored. The
@@ -242,7 +245,7 @@ for the open tab).
 | Per-message text | **262 144** UTF-8 bytes | Aligns with bridge `MAX_MSG_LEN` |
 | Function-carried full-record body | **2 MiB** (`HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES`) | `/api/sessions/:id` rollforward PUT/GET gate + host rollforward trim — must stay well under the 4.5 MiB Vercel Function payload ceiling (a raised cap never re-enables a one-shot >4.5 MB Function body) |
 | Blob transcript-object body | **8 MiB** (`HARNESS_SESSION_MAX_BODY_BYTES`) | **Per object** (worker chunk or host flatten root) — client→Blob upload, NOT a Function body. Host `trimForCloudPut` and worker persist both **drop oldest messages** to fit the object. Hitting the ceiling is a trim, not a turn-end. Reconstruct may span many objects. |
-| Transcript `prev` walk | **256** objects (`TRANSCRIPT_CHUNK_WALK_MAX`) | Loop/DoS bound on reconstruct. Fail-closed on cycle / foreign `prev` / missing object (not this-chunk-only). NEW generous cap — not a message cap. |
+| Transcript `prev` walk | **256** objects (`TRANSCRIPT_CHUNK_WALK_MAX`) | Loop/DoS bound on reconstruct **and** worker persist. Fail-closed on cycle / foreign `prev` / missing object (not this-chunk-only). Worker chunks carry `depth` (1-based chain length) so persist refuses a 257th object **without** walking ancestors. Flatten roots omit `prev`/`depth` (length 1). NEW generous cap — not a message cap. |
 | Record id / tenant / user | max **512**, Redis-safe `^[A-Za-z0-9_-]{1,512}$` | so `KEYS`/prefix globs can never bleed |
 | Attached-skill inject | **256 KiB** total (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`) | bodies folded into `skillsPreamble` greedily up to this per-turn budget (count cap alone is not a size cap); a new attach that would exceed it is rejected (`too_large` / `budget`) and never counted as attached |
 
@@ -271,11 +274,13 @@ The **only large surface** of a session — the transcript — lives in
 Redis and never through a Function payload**. Redis keeps the **small, always-fetchable
 envelope** (`harness:envelope:…`): ownership, `createdAt`, `updatedAt` (LWW), reserved
 `meta`, and `meta.transcriptPointer` (the key of the latest transcript object).
-Worker persist writes a **this-run chunk** (`id` + `messages` + optional `prev`)
+Worker persist writes a **this-run chunk** (`id` + `messages` + optional `prev` +
+optional `depth`)
 and **trims oldest messages** in that chunk to the 8 MiB object ceiling so a
 fat tool batch cannot kill the turn. Host terminal PUT writes a full trimmed
-snapshot with **`prev` omitted** (flatten root). Reconstruct walks `prev` when
-present. A leftover `{ deltas }` object is not a snapshot — next persist starts
+snapshot with **`prev` / `depth` omitted** (flatten root). Reconstruct walks `prev` when
+present. Persist refuses to append when the head's chain length is already 256.
+A leftover `{ deltas }` object is not a snapshot — next persist starts
 from this run only and does not link `prev`.
 
 - **Client→Blob uploads only.** The server holds the Blob credential
