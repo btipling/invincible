@@ -387,6 +387,12 @@ export async function POST(req: Request): Promise<Response> {
         { status },
       );
     }
+    // Kick the catalog GET now so it overlaps GH-token / sandbox / tool-world.
+    // Request-body token wins the resolver — skip the GET when already set.
+    const catalogPromise =
+      parsed.reasoning !== undefined
+        ? Promise.resolve([] as string[])
+        : effortValuesForModel(byok.modelId);
     // Per-user GitHub PAT → sandbox exec env (client options only; never tool schema).
     const gh = await services.userGithubToken.decryptUserGithubTokenForServer(
       userId,
@@ -568,7 +574,7 @@ export async function POST(req: Request): Promise<Response> {
         { status: 400 },
       );
     }
-    const options = await effortValuesForModel(runParams.modelId);
+    const options = await catalogPromise;
     const reasoning = resolveAgentReasoning(runParams.modelId, {
       request: parsed.reasoning,
       options,

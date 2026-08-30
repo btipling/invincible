@@ -246,6 +246,13 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json({ error }, { status });
     }
 
+    // Kick the catalog GET now so it overlaps envelope + sandbox probe.
+    // Request-body token wins the resolver — skip the GET when already set.
+    const catalogPromise =
+      parsed.reasoning !== undefined
+        ? Promise.resolve([] as string[])
+        : effortValuesForModel(byok.modelId);
+
     // 2. Resolve the envelope store + session key once — reused for the
     //    persistRunBind read (B13 fallback) AND the post-start running PATCH
     //    (C14d). A store resolve error is best-effort: no bind / no PATCH, but
@@ -380,7 +387,7 @@ export async function POST(req: Request): Promise<Response> {
     // NO `tools` dict — tool schemas are assembled in-step via the shared
     // `assembleDurableToolWorld` helper, so the model sees the same tools
     // the execute step can run.
-    const options = await effortValuesForModel(byok.modelId);
+    const options = await catalogPromise;
     const reasoning = resolveAgentReasoning(byok.modelId, {
       request: parsed.reasoning,
       options,

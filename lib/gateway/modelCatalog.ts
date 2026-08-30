@@ -4,6 +4,10 @@
  * Fetched from `GET https://ai-gateway.vercel.sh/v1/models`. Never call this
  * inside a `'use step'` / `'use workflow'` function; `/api/models` and the
  * turn-start HTTP boundary are the only callers. Fail-open to an empty map.
+ *
+ * Failures (throw / HTTP !ok / abort) are **negatively cached** for the same
+ * TTL as a success so a hung Gateway cannot stall every `/api/turns` start.
+ * Overlapping callers share one in-flight GET (single-flight).
  */
 import {
   GATEWAY_MODELS_CACHE_TTL_MS,
@@ -26,10 +30,12 @@ export type FetchImpl = (
 type CacheEntry = { fetchedAt: number; map: Map<string, string[]> };
 
 let cache: CacheEntry | null = null;
+let inflight: Promise<Map<string, string[]>> | null = null;
 
-/** Test-only: drop the in-process catalog cache. */
+/** Test-only: drop the in-process catalog cache + in-flight GET. */
 export function resetGatewayModelsCache(): void {
   cache = null;
+  inflight = null;
 }
 
 /**
@@ -88,6 +94,8 @@ async function fetchGatewayEffortMap(
 /**
  * Best-effort per-instance catalog. TTL `GATEWAY_MODELS_CACHE_TTL_MS`.
  * Fetch/parse/timeout failure → last good map, else empty (never throws).
+ * Failed fetches write that fallback into cache so the next caller within
+ * TTL does not retry the GET (adversarial-review #899 L5).
  */
 export async function getGatewayEffortMap(opts?: {
   fetchImpl?: FetchImpl;
@@ -97,15 +105,23 @@ export async function getGatewayEffortMap(opts?: {
   if (cache && now - cache.fetchedAt < GATEWAY_MODELS_CACHE_TTL_MS) {
     return cache.map;
   }
-  try {
-    const map = await fetchGatewayEffortMap(
-      opts?.fetchImpl ?? (globalThis.fetch as FetchImpl),
-    );
-    cache = { fetchedAt: now, map };
-    return map;
-  } catch {
-    return cache?.map ?? new Map();
-  }
+  if (inflight) return inflight;
+
+  const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
+  inflight = (async () => {
+    try {
+      const map = await fetchGatewayEffortMap(fetchImpl);
+      cache = { fetchedAt: now, map };
+      return map;
+    } catch {
+      const fallback = cache?.map ?? new Map();
+      cache = { fetchedAt: now, map: fallback };
+      return fallback;
+    } finally {
+      inflight = null;
+    }
+  })();
+  return inflight;
 }
 
 /** Effort values for one model id (empty when unknown / fetch failed). */

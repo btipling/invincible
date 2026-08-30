@@ -301,6 +301,38 @@ describe('POST /api/turns', () => {
     expect(startArgs.tools).toBeUndefined();
   });
 
+  it('omitted body on glm-5.3-flash passes reasoning low to start() (plan #897 DoD)', async () => {
+    const prev = process.env.AGENT_REASONING;
+    delete process.env.AGENT_REASONING;
+    try {
+      standardHarness();
+      mockAuthedSession();
+      mockStart();
+      servicesState.resolveInferenceForRequest = {
+        resolveByokForRequest: vi.fn(async () => ({
+          ok: true as const,
+          modelId: 'zai/glm-5.3-flash',
+          provider: 'zai',
+          credentials: { apiKey: 'sk-test' },
+          only: ['zai'] as [string],
+          byok: { zai: [{ apiKey: 'sk-test' }] },
+          secretId: 'sec-1',
+          secretsToRedact: ['sk-test'],
+        })),
+      };
+      ({ POST } = await import('./route'));
+
+      const res = await postJson({ prompt: 'hi', sessionId: 's1' });
+      expect(res.status).toBe(200);
+      const startArgs = startMock.mock.calls[0][1][0];
+      expect(startArgs.modelId).toBe('zai/glm-5.3-flash');
+      expect(startArgs.reasoning).toBe('low');
+    } finally {
+      if (prev === undefined) delete process.env.AGENT_REASONING;
+      else process.env.AGENT_REASONING = prev;
+    }
+  });
+
   it('row 2 — missing sessionId → 400 (parseAgentBody would pass; route guard rejects), no start, no running PATCH', async () => {
     standardHarness();
     mockAuthedSession();

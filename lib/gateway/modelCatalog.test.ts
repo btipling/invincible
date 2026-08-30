@@ -104,6 +104,15 @@ describe('getGatewayEffortMap', () => {
       now: () => 1_000 + GATEWAY_MODELS_CACHE_TTL_MS + 1,
     });
     expect(stale.get('openai/gpt-5.6')).toEqual(['low', 'high']);
+    expect(boom).toHaveBeenCalledTimes(1);
+
+    // Negative/stale cache: a failed refresh must not be retried inside TTL.
+    const staleAgain = await getGatewayEffortMap({
+      fetchImpl: boom,
+      now: () => 1_000 + GATEWAY_MODELS_CACHE_TTL_MS + 1,
+    });
+    expect(staleAgain.get('openai/gpt-5.6')).toEqual(['low', 'high']);
+    expect(boom).toHaveBeenCalledTimes(1);
   });
 
   it('empty map when first fetch throws', async () => {
@@ -112,6 +121,10 @@ describe('getGatewayEffortMap', () => {
     });
     const map = await getGatewayEffortMap({ fetchImpl, now: () => 0 });
     expect(map.size).toBe(0);
+
+    const again = await getGatewayEffortMap({ fetchImpl, now: () => 0 });
+    expect(again.size).toBe(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('HTTP !ok fail-opens to empty map', async () => {
@@ -122,6 +135,41 @@ describe('getGatewayEffortMap', () => {
     }));
     const map = await getGatewayEffortMap({ fetchImpl, now: () => 0 });
     expect(map.size).toBe(0);
+    const again = await getGatewayEffortMap({ fetchImpl, now: () => 1 });
+    expect(again.size).toBe(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('overlapping callers share one in-flight GET', async () => {
+    type GatewayRes = {
+      ok: boolean;
+      json: () => Promise<unknown>;
+    };
+    let release: ((res: GatewayRes) => void) | undefined;
+    const fetchImpl: FetchImpl = vi.fn(
+      () =>
+        new Promise<GatewayRes>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const a = getGatewayEffortMap({ fetchImpl, now: () => 0 });
+    const b = getGatewayEffortMap({ fetchImpl, now: () => 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    release!({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            id: 'openai/gpt-5.6',
+            reasoning_options: [{ type: 'effort', values: ['low'] }],
+          },
+        ],
+      }),
+    });
+    const [ma, mb] = await Promise.all([a, b]);
+    expect(ma.get('openai/gpt-5.6')).toEqual(['low']);
+    expect(mb.get('openai/gpt-5.6')).toEqual(['low']);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });
 
