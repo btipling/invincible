@@ -1,8 +1,8 @@
 /**
- * Gate for a future host auto-continue (session TODO drain).
+ * Gate for host auto-continue after a recoverable bookkeeping give-up
+ * (plan #887 — `shouldAutoContinueAfterGiveUp` / HarnessHost).
  *
  * Operator queued follow-ups and an unacked pending submit always win.
- * There is no HarnessHost caller yet — do not invent one.
  */
 export function canAutoContinue(opts: {
   inflight: boolean;

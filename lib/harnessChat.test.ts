@@ -661,6 +661,66 @@ describe('runHarnessTurn', () => {
     expect(exp.__messages.some((m) => m.kind === MessageKind.Assistant)).toBe(true);
   });
 
+  it('skipUserAppend: no User row in SessionStore or ring; history fold still sends continue', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    let session = createEmptySession('s-continue');
+    session = appendMessage(session, 'user', 'first');
+    session = appendMessage(session, 'assistant', 'reply');
+    const sendAgent = vi.fn(async (prompt: string): Promise<AgentResult> => {
+      expect(prompt).toContain('User: first');
+      expect(prompt).toContain('Assistant: reply');
+      expect(prompt).toContain('User: continue');
+      return { ok: true, text: 'resumed' };
+    });
+
+    const { session: next } = await runHarnessTurn(bridge, session, 'continue', {
+      sendAgent,
+      pushUser: false,
+      skipUserAppend: true,
+      useHistory: true,
+    });
+
+    expect(sendAgent).toHaveBeenCalledTimes(1);
+    expect(next.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual([
+      'first',
+    ]);
+    expect(next.messages.some((m) => m.role === 'user' && m.text === 'continue')).toBe(
+      false,
+    );
+    expect(exp.__messages.filter((m) => m.kind === MessageKind.User)).toHaveLength(0);
+    expect(next.messages.some((m) => m.role === 'assistant' && m.text === 'resumed')).toBe(
+      true,
+    );
+  });
+
+  it('skipUserAppend on recoverable give-up still omits User continue from SessionStore', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    let session = createEmptySession('s-fail');
+    session = appendMessage(session, 'user', 'first');
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: false,
+      status: 422,
+      error: 'transcript segment write failed: blob 503',
+    }));
+
+    const { result, session: next } = await runHarnessTurn(bridge, session, 'continue', {
+      sendAgent,
+      pushUser: false,
+      skipUserAppend: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(sendAgent).toHaveBeenCalledTimes(1);
+    expect(next.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual([
+      'first',
+    ]);
+    expect(next.messages.some((m) => m.role === 'user' && m.text === 'continue')).toBe(
+      false,
+    );
+  });
+
   it('preferAgent false uses chat only', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
