@@ -34,6 +34,14 @@ import {
   resetLiveToolStreak,
   type TurnApplyCtx,
 } from './turnApply';
+import {
+  collapseThinkingDisplay,
+  foldStatusSlots,
+  pushSkillRow,
+  recordLiveCwd,
+  truncateThinkingDisplay,
+  truncateToolTraceSummary,
+} from './harnessChat';
 
 /** Same mock-exports pattern as `lib/harnessChat.test.ts` (real bridge semantics). */
 function makeMockExports(): HarnessBridgeExports & {
@@ -198,6 +206,13 @@ function makeCtx(
     sawStreamTerminal: false,
     liveCwd: { value: undefined, source: undefined },
     patchSession: () => {},
+    foldStatusSlots,
+    pushSkillRow,
+    refreshGitStatusSlot: async () => {},
+    collapseThinkingDisplay,
+    truncateThinkingDisplay,
+    truncateToolTraceSummary,
+    recordLiveCwd,
     ...overrides,
   };
 }
@@ -386,9 +401,15 @@ describe('applyTurnEvent — producer parity (plan row 3)', () => {
     }
 
     expect(ring(legacy.exp)).toEqual(ring(attach.exp));
+    expect(legacyCtx.heapC).toBe(EVENTS.length);
+    expect(attachCtx.heapC).toBe(EVENTS.length);
     expect(legacyCtx.heapC).toBe(attachCtx.heapC);
+    expect(legacyCtx.streamPainted).toBe(true);
+    expect(attachCtx.streamPainted).toBe(true);
+    expect(legacyCtx.sawStreamTerminal).toBe(true);
     expect(legacyCtx.streamPainted).toBe(attachCtx.streamPainted);
     expect(legacyCtx.sawStreamTerminal).toBe(attachCtx.sawStreamTerminal);
+    expect(ring(legacy.exp).length).toBeGreaterThan(0);
     expect(legacyCtx.assistantAcc).toBe(attachCtx.assistantAcc);
     expect(JSON.stringify(legacyCtx.toolRunGroup)).toBe(
       JSON.stringify(attachCtx.toolRunGroup),
@@ -608,5 +629,17 @@ describe('turn-end helpers (safety-net parity)', () => {
     expect(ctx.lastRingRowIsToolRun).toBe(false);
     expect(ctx.openToolRunId).toBeNull();
     expect(ctx.toolRunGroup.items).toHaveLength(0);
+  });
+});
+
+describe('runHarnessTurn wiring (plan row 1)', () => {
+  it('both producers pass the same onStreamEvent from createApplyTurnEvent', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(fileURLToPath(new URL('./harnessChat.ts', import.meta.url)), 'utf8');
+    const onEventSites = [...src.matchAll(/onEvent:\s*onStreamEvent/g)];
+    expect(onEventSites).toHaveLength(2);
+    expect(src).toMatch(/const onStreamEvent = createApplyTurnEvent\(bridge, applyCtx\)/);
+    expect(src).not.toMatch(/const onStreamEvent = async \(ev/);
   });
 });

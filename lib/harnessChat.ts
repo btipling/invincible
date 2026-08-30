@@ -1346,12 +1346,12 @@ export async function runHarnessTurn(
     // becomes an AgentRetryError so the narrow classifier can map retryable vs
     // permanent from HTTP status + classifyTurnFailure kind.
 
-    // E20 (plan #814) — build the shared ApplyContext once. Its writers are the
-    // turn-scope closures the inline table captured: `patchSession` (with the
-    // #857 cold-backup gate below) and `opts.signal` for the fail-soft git
-    // refresh. BOTH producers (attach + legacy stream) pass the SAME
-    // `onStreamEvent` from `createApplyTurnEvent` — behavior parity is by
-    // construction (one consumer, relocated verbatim into `lib/turnApply.ts`).
+    // E20 (plan #814) — build the shared ApplyContext once. Writers live on
+    // the ctx so `lib/turnApply.ts` never value-imports this module (E19
+    // turnAttach rule): `patchSession` (#857 cold-backup gate), fold/push/git
+    // refresh, collapse/truncate, `recordLiveCwd`. BOTH producers (attach +
+    // legacy stream) pass the SAME `onStreamEvent` from `createApplyTurnEvent`
+    // — behavior parity is by construction.
     const applyCtx: TurnApplyCtx = {
       next,
       heapC,
@@ -1375,6 +1375,13 @@ export async function runHarnessTurn(
       sawStreamTerminal,
       doneFinishReason,
       liveCwd,
+      foldStatusSlots,
+      pushSkillRow,
+      refreshGitStatusSlot,
+      collapseThinkingDisplay,
+      truncateThinkingDisplay,
+      truncateToolTraceSummary,
+      recordLiveCwd,
       patchSession: (s) => {
         // Mid-attach patches must not PUT a truncated (prefix-only) transcript
         // over Blob. Once this-run has painted, `s.messages` is the live rebuild
@@ -1571,8 +1578,6 @@ export async function runHarnessTurn(
         // stream path exactly.
         if (agentResult.skillEvents) {
           for (const ev of agentResult.skillEvents) {
-            applyCtx.lastRingRowIsToolRun = false;
-            applyCtx.lastUiKind = 'assistant';
             lastRingRowIsToolRun = false;
             lastUiKind = 'assistant';
             next = pushSkillRow(bridge, next, ev);

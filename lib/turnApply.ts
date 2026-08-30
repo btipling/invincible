@@ -10,13 +10,15 @@
  *
  * - `TurnApplyCtx` — the captured state (session-under-construction, cursor,
  *   fail-closed paint gate, dedup state, live tool card, segment buffers) plus
- *   the two writer callbacks the table needs (`patchSession`, signal).
+ *   caller-owned writers (`patchSession` + plan #814 fold/push/git/truncate).
  * - `createApplyTurnEvent(bridge, ctx)` — returns the `onEvent` both producers
  *   pass. Behavior parity is the lock: byte-for-byte the same `next` mutations,
  *   bridge writes, and side-effect calls the inline table performed.
  *
- * Reuses the E19 helpers (`lib/turnAttach.ts`) and the `harnessChat`
- * ring/truncate helpers — never a second consumer table (plan #793 class).
+ * Reuses the E19 helpers (`lib/turnAttach.ts`). Ring/truncate/status writers
+ * (`foldStatusSlots`, `pushSkillRow`, `refreshGitStatusSlot`, collapse/truncate,
+ * `recordLiveCwd`) live on the ctx so this module never value-imports
+ * `harnessChat` (E19's `turnAttach` rule; plan #814 writer callbacks).
  * Not in this module: producer transport, retry classification, session
  * persist shape — those stay in `runHarnessTurn`.
  */
@@ -26,22 +28,11 @@ import { isRedisSafeOpaqueId, normalizeSessionCwd } from './sessionCloudCaps';
 import { appendMessage, type SessionSnapshot } from './sessionStore';
 import { scheduleImagesFromMarkdown } from './harnessImages';
 import { HarnessBridge, MessageKind } from './harnessBridge';
-import {
-  collapseThinkingDisplay,
-  foldStatusSlots,
-  pushSkillRow,
-  recordLiveCwd,
-  refreshGitStatusSlot,
-  truncateThinkingDisplay,
-  truncateToolTraceSummary,
-  type LastUiKind,
-  type LiveCwdSource,
-} from './harnessChat';
+import type { LastUiKind, LiveCwdSource } from './harnessChat';
 import {
   addToolResult,
   addToolStart,
   createToolRunGroup,
-  decodeToolRun,
   encodeToolRun,
   hasRunningTool,
   toolRunIsFull,
@@ -121,8 +112,8 @@ export type TurnApplyCtx = {
   /** Provider `finishReason` from the terminal `done` (upstream #881
    * truncated-finish defense). Captured here because the `done` handler lives
    * in this consumer post-E20; `runHarnessTurn` re-syncs it post-stream and
-   * converts a truncated success (`length`/`content-filter`/`error`) to an
-   * Error via `isTruncatedFinish`/`truncatedFinishError`. Optional: absent
+   * converts a provider-refusal success (`content-filter`/`error`) to an
+   * Error via `isProviderRefusalFinish`/`truncatedFinishError`. Optional: absent
    * until a `done` carrying a string `finishReason` arrives. */
   doneFinishReason?: string | undefined;
   /** Last confirmed-successful `change_dir` cwd this turn (#464 / plan #465). */
@@ -136,6 +127,27 @@ export type TurnApplyCtx = {
   patchSession: (s: SessionSnapshot) => void;
   /** Caller abort signal, forwarded to the fail-soft git slot refresh. */
   signal?: AbortSignal;
+  /** Status-slot fold (sandbox / cwd / context). Caller: `foldStatusSlots`. */
+  foldStatusSlots: (bridge: HarnessBridge, session: SessionSnapshot) => void;
+  /** Display-only skill row (kind 7) + session mirror. Caller: `pushSkillRow`. */
+  pushSkillRow: (
+    bridge: HarnessBridge,
+    session: SessionSnapshot,
+    ev: { action: 'attach' | 'detach'; slug: string; ok: boolean },
+  ) => SessionSnapshot;
+  /** Fail-soft git-slot probe. Caller: `refreshGitStatusSlot`. */
+  refreshGitStatusSlot: (
+    bridge: HarnessBridge,
+    session: SessionSnapshot,
+    signal?: AbortSignal,
+  ) => Promise<void>;
+  collapseThinkingDisplay: (text: string) => string;
+  truncateThinkingDisplay: (text: string) => string;
+  truncateToolTraceSummary: (text: string) => string;
+  recordLiveCwd: (
+    state: LiveCwdSource,
+    confirmedCwd: string | undefined,
+  ) => LiveCwdSource;
 };
 
 /**
@@ -161,7 +173,7 @@ export function closeThinkingSegment(
   // Keep full monologue visible — do not collapse to a one-liner.
   // Soft-trim only to Wasm MAX_MSG_LEN via collapseThinkingDisplay.
   if (ctx.thinkingSegmentOpen && ctx.thinkingSegment) {
-    const kept = collapseThinkingDisplay(ctx.thinkingSegment);
+    const kept = ctx.collapseThinkingDisplay(ctx.thinkingSegment);
     if (kept !== ctx.thinkingSegment) {
       if (!bridge.updateLastMessage(MessageKind.Thinking, kept)) {
         /* last row changed — leave as-is */
@@ -203,14 +215,14 @@ export function createApplyTurnEvent(
     closeAssistantSegment();
 
     if (ctx.thinkingSegmentOpen) {
-      ctx.thinkingSegment = truncateThinkingDisplay(ctx.thinkingSegment + chunk);
+      ctx.thinkingSegment = ctx.truncateThinkingDisplay(ctx.thinkingSegment + chunk);
       if (!bridge.updateLastMessage(MessageKind.Thinking, ctx.thinkingSegment)) {
         bridge.pushMessage(MessageKind.Thinking, ctx.thinkingSegment);
       }
       return;
     }
 
-    ctx.thinkingSegment = truncateThinkingDisplay(chunk);
+    ctx.thinkingSegment = ctx.truncateThinkingDisplay(chunk);
     bridge.pushMessage(MessageKind.Thinking, ctx.thinkingSegment);
     ctx.thinkingSegmentOpen = true;
   };
@@ -386,7 +398,7 @@ export function createApplyTurnEvent(
         ctx.toolRunGroup,
         ev.name,
         ev.ok,
-        truncateToolTraceSummary(ev.summary),
+        ctx.truncateToolTraceSummary(ev.summary),
         ev.preview,
         ev.id,
       );
@@ -396,7 +408,7 @@ export function createApplyTurnEvent(
       // `ev.changeDirCwd` field (from the raw, untruncated tool result) — NOT
       // from the truncated display `summary` (adversarial review #470 Major).
       if (ev.name === 'change_dir' && ev.ok) {
-        ctx.liveCwd = recordLiveCwd(ctx.liveCwd, ev.changeDirCwd);
+        ctx.liveCwd = ctx.recordLiveCwd(ctx.liveCwd, ev.changeDirCwd);
         // Phase 2 (#627 / #625): live cwd mutation mid-turn — apply the
         // confirmed cwd to the session and repaint the status bar immediately,
         // without waiting for `done`.
@@ -404,7 +416,7 @@ export function createApplyTurnEvent(
           const cd = normalizeSessionCwd(ev.changeDirCwd);
           if (cd !== undefined) {
             ctx.next = { ...ctx.next, cwd: cd };
-            foldStatusSlots(bridge, ctx.next);
+            ctx.foldStatusSlots(bridge, ctx.next);
             ctx.patchSession(ctx.next);
           }
         }
@@ -418,15 +430,15 @@ export function createApplyTurnEvent(
         const id = ev.activeSandboxId;
         if (isRedisSafeOpaqueId(id)) {
           ctx.next = { ...ctx.next, activeSandboxId: id };
-          foldStatusSlots(bridge, ctx.next);
-          void refreshGitStatusSlot(bridge, ctx.next, ctx.signal);
+          ctx.foldStatusSlots(bridge, ctx.next);
+          void ctx.refreshGitStatusSlot(bridge, ctx.next, ctx.signal);
           ctx.patchSession(ctx.next);
         }
       }
       // Phase 2 (#627 / #625): git refresh on any successful exec — no
       // session mutation, no onSessionPatch. Fail-soft; server rate-limited.
       if (ev.name === 'exec' && ev.ok) {
-        void refreshGitStatusSlot(bridge, ctx.next, ctx.signal);
+        void ctx.refreshGitStatusSlot(bridge, ctx.next, ctx.signal);
       }
     }
     // Paint now — the operator sees `N tools called` on THIS event.
@@ -530,7 +542,7 @@ export function createApplyTurnEvent(
       // separator for the tool-run predicate.
       ctx.lastRingRowIsToolRun = false;
       ctx.lastUiKind = 'assistant';
-      ctx.next = pushSkillRow(bridge, ctx.next, ev);
+      ctx.next = ctx.pushSkillRow(bridge, ctx.next, ev);
       // Phase 2 (#517 / adversarial-review Blocker + "fold-before-persist
       // incl. fail/cancel"): every skill_attached event carries the SAME
       // final set, so last-writes-wins here never clears across events, and
@@ -550,7 +562,7 @@ export function createApplyTurnEvent(
       const liveUsage = sanitizeUsageSummary(ev.usage);
       if (liveUsage) {
         ctx.next = { ...ctx.next, usage: liveUsage };
-        foldStatusSlots(bridge, ctx.next);
+        ctx.foldStatusSlots(bridge, ctx.next);
         ctx.patchSession(ctx.next);
       }
       return;
