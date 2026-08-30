@@ -1,9 +1,9 @@
 /**
  * Plan #813 (E19) — attach-handshake helpers (classify + this-run-window dedup).
  *
- * Pure + unit-testable. Not `applyTurnEvent` (that is E20 #814). The host
- * GET client lives in `turnApi.attachTurnStream`; live grow stays inline in
- * `runHarnessTurn`.
+ * Pure + unit-testable. The shared apply consumer is `lib/turnApply.ts`
+ * (`createApplyTurnEvent`, E20 #814). The host GET client lives in
+ * `turnApi.attachTurnStream`.
  *
  * Caps: none added or changed. Reuses `TURN_STREAM_CURSOR_MAX` / A3 sanitize.
  */

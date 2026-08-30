@@ -36,20 +36,21 @@ import {
   STATUS_SLOT_MAX_BYTES,
 } from './sessionCloudCaps';
 import {
-  bumpStreamCursor,
   foldThisRunAssistant,
   isAttachRunGone,
   lastUserText,
   prefixThroughLastUser,
-  shouldSkipToolResult,
-  shouldSkipToolStart,
-  skillAlreadyHydrated,
-  textDeltaDedup,
   thisRunAssistantText,
   thisRunToolItems,
   thisRunWindow,
   withoutTrailingFollowUpUser,
 } from './turnAttach';
+import {
+  closeThinkingSegment,
+  createApplyTurnEvent,
+  resetLiveToolStreak,
+  type TurnApplyCtx,
+} from './turnApply';
 import {
   SANDBOX_FORBIDDEN_ERROR,
   SANDBOX_SELECTION_REQUIRED_ERROR,
@@ -79,16 +80,12 @@ import {
   type SessionSnapshot,
 } from './sessionStore';
 import {
-  addToolResult,
-  addToolStart,
   buildTraceGroups,
   createToolRunGroup,
   decodeToolRun,
   encodeToolRun,
   encodeToolRunPayload,
-  hasRunningTool,
   mergeToolRunPayloads,
-  toolRunIsFull,
   type ToolRunGroup,
   type ToolRunPayload,
 } from './toolRun';
@@ -323,7 +320,8 @@ export type RunHarnessTurnOptions = Omit<RunHarnessChatOptions, 'history'> & {
   /**
    * Plan #813 (E19) — GET-attach an existing durable run instead of POST
    * `/api/turns`. Skips prompt validation / user push. `dedup` enables the
-   * this-run-window skip (cold attach). Not `applyTurnEvent` (E20).
+   * this-run-window skip (cold attach). E20 (#814) — the shared apply
+   * consumer lives in `lib/turnApply.ts` (`createApplyTurnEvent`).
    */
   attach?: {
     runId: string;
@@ -382,8 +380,12 @@ export function skillRowText(ev: {
  * Push one display-only skill row to the bridge (kind 7 `skill_attached`) and
  * mirror it into the session (role `skill_attached`). Display-only: never folded
  * into the model prompt (staff-of-work bodies are server-side only).
+ *
+ * E20 (#814): exported for `lib/turnApply.ts` — the shared apply consumer
+ * relocated the stream-side caller here; the JSON `skillEvents` path in
+ * `runHarnessTurn` still calls it directly.
  */
-function pushSkillRow(
+export function pushSkillRow(
   bridge: HarnessBridge,
   session: SessionSnapshot,
   ev: { action: 'attach' | 'detach'; slug: string; ok: boolean },
@@ -1246,17 +1248,7 @@ export async function runHarnessTurn(
         /* tests / torn-down bridge */
       }
     }
-    const patchSession = (s: typeof next) => {
-      // Mid-attach patches must not PUT a truncated (prefix-only) transcript
-      // over Blob. Once this-run has painted, `s.messages` is the live rebuild
-      // — persist that, not the boot-time suffix (adversarial #857). Same gate
-      // as the fail-fold restore.
-      if (coldBackup && !streamPainted) {
-        opts?.onSessionPatch?.({ ...s, messages: coldBackup });
-        return;
-      }
-      opts?.onSessionPatch?.(s);
-    };
+
     const hydratedAssistantStart = dedup ? thisRunAssistantText(next.messages) : '';
     let hydratedAssistant = hydratedAssistantStart;
     const hydratedTools = dedup ? thisRunToolItems(next.messages) : [];
@@ -1328,275 +1320,6 @@ export async function runHarnessTurn(
         }
       }
     }
-
-    const resetLiveToolStreak = () => {
-      lastRingRowIsToolRun = false;
-      openToolRunId = null;
-      toolRunGroup = createToolRunGroup();
-    };
-
-    /**
-     * Paint the current in-memory group as the live kind-6 card: grow the open
-     * card in place when `lastRingRowIsToolRun` is true, else push a fresh one
-     * at `1`. Mirrors the ring into the session (patch the open card / append a
-     * new one) so a mid-turn cancel or reload never loses the live card.
-     */
-    const livePaintToolRun = () => {
-      const payload = encodeToolRun(toolRunGroup);
-      if (!payload) return;
-      if (lastRingRowIsToolRun) {
-        // Grow the open card. Guard the rare impossible case where the last row
-        // is not our tool card (a raced ring write): never a stale silent bag —
-        // open a fresh card instead of duplicating state.
-        if (!bridge.updateLastMessage(MessageKind.ToolRun, payload)) {
-          bridge.pushMessage(MessageKind.ToolRun, payload);
-          next = appendMessage(next, 'tool_run', payload);
-          openToolRunId = next.messages[next.messages.length - 1]?.id ?? null;
-        } else if (openToolRunId != null) {
-          // Patch the open card's session row in place (same id anchor) so
-          // session == ring at every instant.
-          next = {
-            ...next,
-            messages: next.messages.map((m) =>
-              m.id === openToolRunId ? { ...m, text: payload } : m,
-            ),
-            updatedAt: Date.now(),
-          };
-        } else {
-          // No anchor yet (shouldn't happen) — append a fresh row and track it.
-          next = appendMessage(next, 'tool_run', payload);
-          openToolRunId = next.messages[next.messages.length - 1]?.id ?? null;
-        }
-      } else {
-        // Open a fresh card at 1.
-        bridge.pushMessage(MessageKind.ToolRun, payload);
-        next = appendMessage(next, 'tool_run', payload);
-        openToolRunId = next.messages[next.messages.length - 1]?.id ?? null;
-        lastRingRowIsToolRun = true;
-      }
-    };
-
-    const handleToolEvent = (ev: AgentStreamEvent) => {
-      if (ev.type !== 'tool_start' && ev.type !== 'tool_result') return;
-      // Live grouping predicate (#433): only continue the open card when the
-      // last ring row is a tool-run; any non-tool row (assistant / user / error
-      // / a thinking row that is last) opens a fresh group for this tool.
-      if (!lastRingRowIsToolRun) resetLiveToolStreak();
-      closeAssistantSegment();
-      closeThinkingSegment();
-      const grows =
-        ev.type === 'tool_start' || !hasRunningTool(toolRunGroup, ev.name);
-      if (grows && toolRunIsFull(toolRunGroup)) {
-        // Group-full roll: the open card already holds TOOL_RUN_ITEMS_MAX. The
-        // next tool opens a FRESH card at 1 — never grows the just-pushed full
-        // card (that card is already the painted live row + its session row).
-        resetLiveToolStreak();
-      }
-      if (ev.type === 'tool_start') {
-        addToolStart(toolRunGroup, ev.name, ev.id);
-      } else {
-        addToolResult(
-          toolRunGroup,
-          ev.name,
-          ev.ok,
-          truncateToolTraceSummary(ev.summary),
-          ev.preview,
-          ev.id,
-        );
-        // Phase 2 (#465): a successful `change_dir` is the durable-live-cwd
-        // signal. Only a confirmed success records it; anything else leaves the
-        // prior value untouched. The cwd is read from the TYPED
-        // `ev.changeDirCwd` field (from the raw, untruncated tool result) — NOT
-        // from the truncated display `summary` (adversarial review #470 Major).
-        if (ev.name === 'change_dir' && ev.ok) {
-          liveCwd = recordLiveCwd(liveCwd, ev.changeDirCwd);
-          // Phase 2 (#627 / #625): live cwd mutation mid-turn — apply the
-          // confirmed cwd to the session and repaint the status bar immediately,
-          // without waiting for `done`.
-          if (ev.changeDirCwd !== undefined) {
-            const cd = toSessionCwd(ev.changeDirCwd);
-            if (cd !== undefined) {
-              next = { ...next, cwd: cd };
-              foldStatusSlots(bridge, next);
-              patchSession(next);
-            }
-          }
-        }
-        // Phase 2 (#627 / #625): live sandbox bind switch mid-turn. A
-        // successful `meta_sandbox_switch` carries the typed target id; apply
-        // it to the session, repaint the sandbox + git slots, and persist the
-        // patched snapshot immediately — the switch envelope write is already
-        // done server-side; this mirrors it on the host.
-        if (ev.name === 'meta_sandbox_switch' && ev.ok && ev.activeSandboxId) {
-          const id = ev.activeSandboxId;
-          if (isRedisSafeOpaqueId(id)) {
-            next = { ...next, activeSandboxId: id };
-            foldStatusSlots(bridge, next);
-            void refreshGitStatusSlot(bridge, next, opts?.signal);
-            patchSession(next);
-          }
-        }
-        // Phase 2 (#627 / #625): git refresh on any successful exec — no
-        // session mutation, no onSessionPatch. Fail-soft; server rate-limited.
-        if (ev.name === 'exec' && ev.ok) {
-          void refreshGitStatusSlot(bridge, next, opts?.signal);
-        }
-      }
-      // Paint now — the operator sees `N tools called` on THIS event.
-      livePaintToolRun();
-      lastUiKind = 'tool_run';
-    };
-
-    const closeAssistantSegment = () => {
-      assistantSegmentOpen = false;
-      assistantSegment = '';
-    };
-
-    const closeThinkingSegment = () => {
-      // Keep full monologue visible — do not collapse to a one-liner.
-      // Soft-trim only to Wasm MAX_MSG_LEN via collapseThinkingDisplay.
-      if (thinkingSegmentOpen && thinkingSegment) {
-        const kept = collapseThinkingDisplay(thinkingSegment);
-        if (kept !== thinkingSegment) {
-          if (!bridge.updateLastMessage(MessageKind.Thinking, kept)) {
-            /* last row changed — leave as-is */
-          }
-        }
-      }
-      thinkingSegmentOpen = false;
-      thinkingSegment = '';
-    };
-
-    const growThinking = (chunk: string) => {
-      if (!chunk) return;
-      // A Thinking row is a NON-tool ring row. Once it lands last it becomes a
-      // physical separator (#433 locked rule): the next tool opens a NEW card at
-      // `1` rather than growing an open tool card below it. The last painted
-      // tool card is already committed live (painted on its event), so we only
-      // clear the live-paint flag here — never buffer the tool group in host
-      // memory until thinking closes (commit-once is removed).
-      lastUiKind = 'thinking';
-      lastRingRowIsToolRun = false;
-      // Thinking is ephemeral UI — do not append to SessionStore.
-      // Close assistant so a later text_delta cannot updateLast-fail and
-      // re-push a full duplicated assistant segment (text→reason→text).
-      closeAssistantSegment();
-
-      if (thinkingSegmentOpen) {
-        thinkingSegment = truncateThinkingDisplay(thinkingSegment + chunk);
-        if (!bridge.updateLastMessage(MessageKind.Thinking, thinkingSegment)) {
-          bridge.pushMessage(MessageKind.Thinking, thinkingSegment);
-        }
-        return;
-      }
-
-      thinkingSegment = truncateThinkingDisplay(chunk);
-      bridge.pushMessage(MessageKind.Thinking, thinkingSegment);
-      thinkingSegmentOpen = true;
-    };
-
-    const growAssistant = (chunk: string) => {
-      // Whitespace-only text_delta is NOT a boundary (plan #364): it never
-      // opens an assistant bubble, closes thinking, or flushes a tool streak.
-      // But it MUST be accumulated faithfully (into the message buffer and any
-      // open bubble) so a boundary `\n\n` between streamed segments survives
-      // into `finalizeAssistant`. If we dropped it, the multi-segment tail-slice
-      // would mis-subtract and glue the finished row against a well-formed
-      // authoritative `done.text` (#387 host seam, phase-1 red fixture).
-      if (!chunk.trim()) {
-        assistantAcc += chunk;
-        if (assistantSegmentOpen) {
-          assistantSegment += chunk;
-          if (!bridge.updateLastMessage(MessageKind.Assistant, assistantSegment)) {
-            bridge.pushMessage(MessageKind.Assistant, assistantSegment);
-          }
-        } else if (assistantStarted) {
-          // Boundary whitespace that arrives AFTER the previous segment closed
-          // (e.g. a tool closed the bubble): buffer it so the next opened
-          // assistant segment leads with it, keeping the inter-segment blank
-          // line on the canvas (#387 after-close residual). Never opens an
-          // empty bubble on its own (plan #364). Leading whitespace before the
-          // FIRST segment (`assistantStarted === false`) is not buffered — it is
-          // a tokenization artifact that the authoritative final rewrites.
-          pendingAssistantWs += chunk;
-        }
-        return;
-      }
-      closeThinkingSegment();
-      assistantAcc += chunk;
-      if (!assistantSegmentOpen) {
-        // Real assistant text begins. The open tool card is already painted live
-        // on its events (not buffered), so this is a boundary reset only — cl
-        // the live-paint flag so a later tool opens a NEW card; never re-push
-        // the already-committed tool row.
-        resetLiveToolStreak();
-        // Reattach any boundary whitespace buffered after the previous segment
-        // closed (tool boundary) so the completed canvas equals authoritative.
-        const leading = pendingAssistantWs;
-        pendingAssistantWs = '';
-        assistantSegment = leading + chunk;
-        bridge.pushMessage(MessageKind.Assistant, assistantSegment);
-        assistantSegmentOpen = true;
-        assistantStarted = true;
-        // Real assistant text is a boundary — later tools open a new group.
-        lastUiKind = 'assistant';
-        return;
-      }
-      assistantSegment += chunk;
-      if (!bridge.updateLastMessage(MessageKind.Assistant, assistantSegment)) {
-        // Last row is not assistant — open a fresh bubble with this segment.
-        bridge.pushMessage(MessageKind.Assistant, assistantSegment);
-      }
-      lastUiKind = 'assistant';
-    };
-
-    const finalizeAssistant = (finalText: string) => {
-      const text = finalText.trim();
-      if (!text) return;
-      if (!assistantStarted) {
-        // The open tool card is already painted live on its events; reset the
-        // flag so the assistant reply (and any later tool) is a fresh boundary.
-        resetLiveToolStreak();
-        bridge.pushMessage(MessageKind.Assistant, text);
-        assistantStarted = true;
-        assistantSegmentOpen = true;
-        assistantSegment = text;
-        lastUiKind = 'assistant';
-      } else if (assistantSegmentOpen) {
-        // Single continuous segment: rewrite to server final when it differs.
-        if (assistantAcc === assistantSegment) {
-          if (text !== assistantSegment) {
-            if (!bridge.updateLastMessage(MessageKind.Assistant, text)) {
-              bridge.pushMessage(MessageKind.Assistant, text);
-            }
-          }
-        } else {
-          // Multi-segment turn: adjust only the open tail if final extends it.
-          const prefixLen = Math.max(0, assistantAcc.length - assistantSegment.length);
-          const prefix = assistantAcc.slice(0, prefixLen);
-          if (text.startsWith(prefix) && text.length >= prefixLen) {
-            const tail = text.slice(prefixLen);
-            if (tail && tail !== assistantSegment) {
-              if (!bridge.updateLastMessage(MessageKind.Assistant, tail)) {
-                bridge.pushMessage(MessageKind.Assistant, tail);
-              }
-              assistantSegment = tail;
-            }
-          }
-          // else: leave streamed segments as-is; session still gets full text
-        }
-      } else {
-        // Stream ended on a tool line — only push if final adds unseen text.
-        if (text !== assistantAcc) {
-          bridge.pushMessage(MessageKind.Assistant, text);
-          assistantSegmentOpen = true;
-          assistantSegment = text;
-        }
-      }
-      assistantAcc = text;
-      scheduleImagesFromMarkdown(bridge, text);
-    };
-
     // Authoritative per-turn cwd (P1/GAP-1, #452): one getter → one request value.
     const sessionCwd = getSessionCwd(session);
 
@@ -1622,141 +1345,57 @@ export async function runHarnessTurn(
     // the lifecycle stays Busy for the whole retry window. A non-ok AgentResult
     // becomes an AgentRetryError so the narrow classifier can map retryable vs
     // permanent from HTTP status + classifyTurnFailure kind.
-    const onStreamEvent = async (ev: AgentStreamEvent) => {
-      // Plan #813: every parsed SSE frame advances this-heap C (including
-      // skipped-by-dedup). One producer write = one getReadable index.
-      heapC = bumpStreamCursor(heapC);
-      next = { ...next, turnStreamCursor: heapC };
-      // Fail-closed retry gate (plan #759 adversarial-review Major): any event
-      // that PAINTS the ring past the user line arms `streamPainted`, so a
-      // retryable-looking failure after it becomes permanent single-attempt
-      // (never replay tools/duplicate bubbles onto the same ring).
-      if (
-        ev.type === 'tool_start' ||
-        ev.type === 'tool_result' ||
-        ev.type === 'reasoning_delta' ||
-        ev.type === 'text_delta' ||
-        ev.type === 'skill_attached'
-      ) {
-        streamPainted = true;
-      }
-      if (ev.type === 'tool_start' || ev.type === 'tool_result') {
-        if (ev.type === 'tool_start') {
-          replayedStarts[ev.name] = (replayedStarts[ev.name] ?? 0) + 1;
-          if (
-            shouldSkipToolStart({
-              enabled: dedup,
-              hydrated: hydratedTools,
-              name: ev.name,
-              replayedStartsOfName: replayedStarts[ev.name] ?? 1,
-              ...(ev.id ? { callId: ev.id } : {}),
-            })
-          ) {
-            return;
-          }
-        } else {
-          replayedResults[ev.name] = (replayedResults[ev.name] ?? 0) + 1;
-          if (
-            shouldSkipToolResult({
-              enabled: dedup,
-              hydrated: hydratedTools,
-              name: ev.name,
-              replayedResultsOfName: replayedResults[ev.name] ?? 1,
-              ...(ev.id ? { callId: ev.id } : {}),
-            })
-          ) {
-            return;
-          }
-        }
-        handleToolEvent(ev);
-        return;
-      }
-      if (ev.type === 'reasoning_delta') {
-        // Thinking is never in Blob — never skip, even on cold attach.
-        growThinking(ev.text);
-        return;
-      }
-      if (ev.type === 'text_delta') {
-        const d = textDeltaDedup({
-          enabled: dedup,
-          hydratedAssistant,
-          replayedBefore: assistantAcc,
-          chunk: ev.text,
-        });
-        if (d.action === 'skip') {
-          assistantAcc += ev.text;
-          // Hydrated this-run assistant already on the ring — do not
-          // finalize-push a duplicate at `done`.
-          if (hydratedAssistant) assistantStarted = true;
+
+    // E20 (plan #814) — build the shared ApplyContext once. Writers live on
+    // the ctx so `lib/turnApply.ts` never value-imports this module (E19
+    // turnAttach rule): `patchSession` (#857 cold-backup gate), fold/push/git
+    // refresh, collapse/truncate, `recordLiveCwd`. BOTH producers (attach +
+    // legacy stream) pass the SAME `onStreamEvent` from `createApplyTurnEvent`
+    // — behavior parity is by construction.
+    const applyCtx: TurnApplyCtx = {
+      next,
+      heapC,
+      streamPainted,
+      dedup,
+      hydratedAssistant,
+      hydratedTools,
+      replayedStarts,
+      replayedResults,
+      toolRunGroup,
+      openToolRunId,
+      lastRingRowIsToolRun,
+      lastUiKind,
+      assistantStarted,
+      assistantAcc,
+      assistantSegment,
+      assistantSegmentOpen,
+      pendingAssistantWs,
+      thinkingSegment,
+      thinkingSegmentOpen,
+      sawStreamTerminal,
+      doneFinishReason,
+      liveCwd,
+      foldStatusSlots,
+      pushSkillRow,
+      refreshGitStatusSlot,
+      collapseThinkingDisplay,
+      truncateThinkingDisplay,
+      truncateToolTraceSummary,
+      recordLiveCwd,
+      patchSession: (s) => {
+        // Mid-attach patches must not PUT a truncated (prefix-only) transcript
+        // over Blob. Once this-run has painted, `s.messages` is the live rebuild
+        // — persist that, not the boot-time suffix (adversarial #857).
+        if (coldBackup && !applyCtx.streamPainted) {
+          opts?.onSessionPatch?.({ ...s, messages: coldBackup });
           return;
         }
-        if (d.action === 'grow-suffix') {
-          if (!assistantSegmentOpen && lastUiKind === 'assistant') {
-            assistantSegmentOpen = true;
-            assistantStarted = true;
-            const last = next.messages[next.messages.length - 1];
-            assistantSegment = last?.role === 'assistant' ? last.text : hydratedAssistant;
-          }
-          assistantAcc = hydratedAssistant;
-          growAssistant(d.chunk);
-          hydratedAssistant = assistantAcc;
-          return;
-        }
-        growAssistant(ev.text);
-        return;
-      }
-      if (ev.type === 'skill_attached') {
-        if (dedup && skillAlreadyHydrated(next.messages, ev)) {
-          if (Array.isArray(ev.attachedSlugs)) {
-            next = { ...next, attachedSlugs: [...ev.attachedSlugs] };
-          }
-          return;
-        }
-        // Server sends skill_attached events at the START of the turn (before
-        // the model). Push the display-only row live; it is a non-tool
-        // separator for the tool-run predicate.
-        lastRingRowIsToolRun = false;
-        lastUiKind = 'assistant';
-        next = pushSkillRow(bridge, next, ev);
-        // Phase 2 (#517 / adversarial-review Blocker + "fold-before-persist
-        // incl. fail/cancel"): every skill_attached event carries the SAME
-        // final set, so last-writes-wins here never clears across events, and
-        // it is applied BEFORE the model runs — so a success, a 502, or a
-        // user Stop/cancel still ends with the host persisting the sticky set
-        // as `meta.attachedSkills` (omitted field = leave untouched; `[]` =
-        // explicit detach-all).
-        if (Array.isArray(ev.attachedSlugs)) {
-          next = { ...next, attachedSlugs: [...ev.attachedSlugs] };
-        }
-        return;
-      }
-      if (ev.type === 'usage') {
-        // Phase 3 (plan #628) — live provider usage mid-stream: fold the
-        // context slot immediately so the operator sees token counts before
-        // the turn completes. `done.usage` is the final reconcile.
-        const liveUsage = sanitizeUsageSummary(ev.usage);
-        if (liveUsage) {
-          next = { ...next, usage: liveUsage };
-          foldStatusSlots(bridge, next);
-          patchSession(next);
-        }
-        return;
-      }
-      if (ev.type === 'done') {
-        sawStreamTerminal = true;
-        if (typeof ev.finishReason === 'string') {
-          doneFinishReason = ev.finishReason;
-        }
-        closeThinkingSegment();
-        finalizeAssistant(ev.text ?? assistantAcc);
-        // Do not re-push toolTrace — live lines already shown.
-        return;
-      }
-      if (ev.type === 'error') {
-        sawStreamTerminal = true;
-        closeThinkingSegment();
-      }
+        opts?.onSessionPatch?.(s);
+      },
+      signal: opts?.signal,
     };
+    const patchSession = (s: typeof next) => applyCtx.patchSession(s);
+    const onStreamEvent = createApplyTurnEvent(bridge, applyCtx);
 
     try {
       agentResult = await withTransientRetry(
@@ -1777,14 +1416,18 @@ export async function runHarnessTurn(
               onEvent: onStreamEvent,
               onTurnStarted: async ({ turnRunId }) => {
                 sawDurableStart = true;
-                next = {
-                  ...next,
+                // E20 (#814): the ctx owns the session during the stream —
+                // mutate the state bag so it stays authoritative.
+                applyCtx.next = {
+                  ...applyCtx.next,
                   turnRunId,
                   turnStatus:
-                    next.turnStatus === 'completed' ? 'completed' : 'running',
-                  turnStreamCursor: heapC,
+                    applyCtx.next.turnStatus === 'completed'
+                      ? 'completed'
+                      : 'running',
+                  turnStreamCursor: applyCtx.heapC,
                 };
-                patchSession(next);
+                applyCtx.patchSession(applyCtx.next);
               },
             });
             if (!r.ok) {
@@ -1810,13 +1453,15 @@ export async function runHarnessTurn(
                 onEvent: onStreamEvent,
                 onTurnStarted: async ({ turnRunId }) => {
                   sawDurableStart = true;
-                  next = {
-                    ...next,
+                  // E20 (#814): the ctx owns the session during the stream —
+                  // mutate the state bag, not the stale local.
+                  applyCtx.next = {
+                    ...applyCtx.next,
                     turnRunId,
                     turnStatus: 'running',
-                    turnStreamCursor: heapC,
+                    turnStreamCursor: applyCtx.heapC,
                   };
-                  patchSession(next);
+                  applyCtx.patchSession(applyCtx.next);
                 },
               })
             : await sendAgentFn(apiPrompt, {
@@ -1850,8 +1495,10 @@ export async function runHarnessTurn(
           // ring would re-run just-painted tools (side-effect duplication) and
           // push duplicate assistant bubbles. `classifyTurnRetry` still owns
           // the status/stop mapping for the clean (never-painted) cases.
+          // E20 (#814): read the LIVE ctx flag — the apply consumer arms it
+          // during the stream.
           classify: (err) =>
-            streamPainted || sawDurableStart || attaching
+            applyCtx.streamPainted || sawDurableStart || attaching
               ? { kind: 'permanent' }
               : classifyTurnRetry(err),
         },
@@ -1861,10 +1508,30 @@ export async function runHarnessTurn(
       agentResult = agentFailureFromRetry(err);
     }
 
+    // E20 (#814): re-sync the turn-scope locals from the shared apply ctx —
+    // the state bag is authoritative after the stream (both producers mutated
+    // it through `onStreamEvent`).
+    next = applyCtx.next;
+    heapC = applyCtx.heapC;
+    streamPainted = applyCtx.streamPainted;
+    assistantStarted = applyCtx.assistantStarted;
+    assistantAcc = applyCtx.assistantAcc;
+    assistantSegment = applyCtx.assistantSegment;
+    assistantSegmentOpen = applyCtx.assistantSegmentOpen;
+    thinkingSegment = applyCtx.thinkingSegment;
+    thinkingSegmentOpen = applyCtx.thinkingSegmentOpen;
+    sawStreamTerminal = applyCtx.sawStreamTerminal;
+    doneFinishReason = applyCtx.doneFinishReason;
+    liveCwd = applyCtx.liveCwd;
+    toolRunGroup = applyCtx.toolRunGroup;
+    openToolRunId = applyCtx.openToolRunId;
+    lastRingRowIsToolRun = applyCtx.lastRingRowIsToolRun;
+    lastUiKind = applyCtx.lastUiKind;
+
     // Safety net: collapse open thinking when the stream ends without a terminal
     // SSE event (abort, network drop, empty body). Mid-stream closes already ran
     // for tool/text/done/error; this is a no-op when the segment is already closed.
-    closeThinkingSegment();
+    closeThinkingSegment(bridge, applyCtx);
 
     if (agentResult.ok && isProviderRefusalFinish(doneFinishReason)) {
       agentResult = {
@@ -1893,7 +1560,7 @@ export async function runHarnessTurn(
       // Live tool cards are already painted + session-mirrored on each event;
       // this clears the live state so the JSON/toolTrace fallback below (when
       // present) is the only writer. No re-push of an already-committed card.
-      resetLiveToolStreak();
+      resetLiveToolStreak(applyCtx);
       if (!streamAgent || !sawStreamTerminal) {
         // JSON path (or stream that returned JSON): aggregate end-of-turn
         // toolTrace into display-only tool_run group(s) instead of System lines;
@@ -2036,7 +1703,7 @@ export async function runHarnessTurn(
       // Live tool cards are already painted + session-mirrored on each event, so
       // the partial live tools persist before abort. Clear live state only — no
       // re-push of already-committed cards.
-      resetLiveToolStreak();
+      resetLiveToolStreak(applyCtx);
       let failedSession = next;
       // Phase 2 (#517 / "fold-before-persist incl. fail/cancel"): the server
       // sends the session's current sticky set on error bodies too, so a FAILED
