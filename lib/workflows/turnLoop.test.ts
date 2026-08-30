@@ -1288,6 +1288,108 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     );
   });
 
+  it('model_error after tools terminal-persists so envelope is not left running [adversarial #888 Major]', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const scope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_model_fail' };
+    const { deps, w, closed } = wiredDeps({ persistScope: scope });
+    setPersistSeamResolver(() =>
+      createTurnPersistSeam({ blobStore, envelopeStore, scope }),
+    );
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'call',
+            toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
+          },
+        };
+      }
+      return { ok: false as const, code: 'model_error' as const, error: 'provider down' };
+    });
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        toolStep: vi.fn(okBatch()),
+        turnRunId: 'wr_model_fail',
+      },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('provider down');
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(false);
+    expect(
+      events.some(
+        (e: { type: string; error?: string }) =>
+          e.type === 'error' && e.error === 'provider down',
+      ),
+    ).toBe(true);
+    const env = await envelopeStore.readEnvelope({
+      tenantId: scope.tenantId,
+      userId: scope.userId,
+      sessionId: scope.sessionId,
+    });
+    expect(env?.meta?.turnStatus).toBe('completed');
+    expect(env?.meta?.turnRunId).toBe('wr_model_fail');
+    expect(closed()).toBe(1);
+  });
+
+  it('model throw after tools terminal-persists so envelope is not left running [adversarial #888 Major]', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const scope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_model_throw' };
+    const { deps, w, closed } = wiredDeps({ persistScope: scope });
+    setPersistSeamResolver(() =>
+      createTurnPersistSeam({ blobStore, envelopeStore, scope }),
+    );
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'call',
+            toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
+          },
+        };
+      }
+      throw new Error('model threw');
+    });
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        toolStep: vi.fn(okBatch()),
+        turnRunId: 'wr_model_throw',
+      },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('model threw');
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(false);
+    expect(
+      events.some(
+        (e: { type: string; error?: string }) =>
+          e.type === 'error' && e.error === 'model threw',
+      ),
+    ).toBe(true);
+    const env = await envelopeStore.readEnvelope({
+      tenantId: scope.tenantId,
+      userId: scope.userId,
+      sessionId: scope.sessionId,
+    });
+    expect(env?.meta?.turnStatus).toBe('completed');
+    expect(env?.meta?.turnRunId).toBe('wr_model_throw');
+    expect(closed()).toBe(1);
+  });
+
   it('matrix 9: writable closed exactly once on success (close guarded)', async () => {
     const { deps, w, closed } = wiredDeps();
     const modelStep = vi.fn(async () => ({

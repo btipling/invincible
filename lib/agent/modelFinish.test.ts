@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   CONTENT_FILTER_ERROR,
   isProviderRefusalFinish,
-  isTruncatedFinish,
   MODEL_FINISH_ERROR,
   OUTPUT_TRUNCATED_ERROR,
   STEP_BUDGET_ERROR,
@@ -11,19 +10,6 @@ import {
   truncatedFinishError,
 } from './modelFinish';
 import { DEFAULT_AGENT_SYSTEM } from './agentSystem';
-describe('isTruncatedFinish', () => {
-  it('length / content-filter / error are truncated', () => {
-    expect(isTruncatedFinish('length')).toBe(true);
-    expect(isTruncatedFinish('content-filter')).toBe(true);
-    expect(isTruncatedFinish('error')).toBe(true);
-  });
-
-  it('stop / omitted / tool-calls are not', () => {
-    expect(isTruncatedFinish('stop')).toBe(false);
-    expect(isTruncatedFinish(undefined)).toBe(false);
-    expect(isTruncatedFinish('tool-calls')).toBe(false);
-  });
-});
 
 describe('isProviderRefusalFinish', () => {
   it('only content-filter / error fail the turn', () => {
@@ -36,13 +22,13 @@ describe('isProviderRefusalFinish', () => {
 });
 
 describe('truncatedFinishError', () => {
-  it('maps length / content-filter / error to distinct canvas strings', () => {
-    expect(truncatedFinishError('length')).toBe(OUTPUT_TRUNCATED_ERROR);
+  it('maps content-filter / error to distinct canvas strings', () => {
     expect(truncatedFinishError('content-filter')).toBe(CONTENT_FILTER_ERROR);
     expect(truncatedFinishError('error')).toBe(MODEL_FINISH_ERROR);
   });
 
-  it('falls back to output truncated for unknown / omitted reasons', () => {
+  it('falls back to output truncated for unknown / omitted / length (not a turn-end)', () => {
+    expect(truncatedFinishError('length')).toBe(OUTPUT_TRUNCATED_ERROR);
     expect(truncatedFinishError(undefined)).toBe(OUTPUT_TRUNCATED_ERROR);
     expect(truncatedFinishError('stop')).toBe(OUTPUT_TRUNCATED_ERROR);
   });

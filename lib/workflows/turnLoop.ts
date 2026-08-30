@@ -577,6 +577,9 @@ export async function runTurnLoop(
       // + cwd, not the stale start snapshot.
       const gen = await deps.modelStep({ messages, persistRunBind: bind });
       if (!gen.ok) {
+        // Irrevocable inference: SSE error. Persist `completed` first so
+        // refresh cannot attach after user-line persist left `running`.
+        await persistOnce(true);
         return fail(gen.code === 'cancelled' ? 'cancelled' : 'failed', round, steps, gen.error);
       }
       const persistDelta: TurnLoopDelta = {
@@ -775,6 +778,11 @@ export async function runTurnLoop(
     return { status: 'capped', deltas, messages, rounds: round, steps };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    try {
+      await persistOnce(true);
+    } catch {
+      // Persist must not skip the writable close on stream death.
+    }
     return fail('failed', round, steps, message);
   }
 }
