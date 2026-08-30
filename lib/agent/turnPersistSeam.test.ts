@@ -1604,6 +1604,139 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(env?.meta?.transcriptPointer).toBe(priorId);
   });
 
+  it('invalid prev on the pointer object fail-closes persist', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1,
+        messages: [{ id: 'm1', role: 'user', text: 'hello', at: 1 }],
+        prev: 'a:b',
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_0', role: 'user', text: 'turn-2', at: 1 }],
+      }),
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('write_failed');
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.transcriptPointer).toBe(priorId);
+  });
+
+  it('missing ancestor does not fail persist (head-only link; adversarial #889)', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const missingAncestor = newBlobObjectId(scope);
+    const priorId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1,
+        messages: [{ id: 'm1', role: 'user', text: 'head', at: 1 }],
+        prev: missingAncestor,
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_0', role: 'user', text: 'this-run', at: 1 }],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const chunk = JSON.parse((await blobStore.read(res.objectId!)) ?? 'null') as {
+      prev?: string;
+      messages: { text: string }[];
+    };
+    expect(chunk.prev).toBe(priorId);
+    expect(chunk.messages.map((m) => m.text)).toEqual(['this-run']);
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.transcriptPointer).toBe(res.objectId);
+  });
+
+  it('persist reads only the current pointer, not ancestor chunks (adversarial #889)', async () => {
+    const reads: string[] = [];
+    class CountingBlobStore extends MemoryBlobTranscriptStore {
+      override async read(objectId: string): Promise<string | null> {
+        reads.push(objectId);
+        return super.read(objectId);
+      }
+    }
+    const blobStore = new CountingBlobStore();
+    const envelopeStore = new MemorySessionStore();
+    const oldestId = newBlobObjectId(scope);
+    const midId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: oldestId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1,
+        messages: [{ id: 'o1', role: 'user', text: 'oldest', at: 1 }],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await blobStore.writeSegment({
+      objectId: midId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 2,
+        messages: [{ id: 'm1', role: 'user', text: 'mid', at: 2 }],
+        prev: oldestId,
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 2,
+      meta: { transcriptPointer: midId },
+    });
+    reads.length = 0;
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_0', role: 'user', text: 'this-run', at: 1 }],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(reads).toEqual([midId]);
+  });
+
   it('host flatten root (no prev) is the full list; next worker chunk prevs it', async () => {
     const blobStore = new MemoryBlobTranscriptStore();
     const envelopeStore = new MemorySessionStore();

@@ -57,7 +57,7 @@ import {
   snapshotMessagesFromUnknown,
 } from './messageCheckpoint';
 import { persistTranscriptSegment } from './turnWorkerPersist';
-import { reconstructTranscriptChain } from '../sessions/transcriptChunks';
+import { transcriptChunkPrev } from '../sessions/transcriptChunks';
 import {
   overlayWorkerMeta,
   type WorkerMetaPatch,
@@ -216,8 +216,11 @@ export function createTurnPersistSeam(
       }
 
       // Worker chunks (plan #886): this-run messages + `prev` pointing at the
-      // current bound pointer. Reconstruct walks the chain (fail-closed). A
-      // leftover `{ deltas }` object is not a snapshot — this-run only, no prev.
+      // current bound pointer. Head-only link check (adversarial #889): a full
+      // ancestor walk cannot LWW-clobber (this-run + prev=pointer never replaces
+      // history) and `walked.messages` was unused. Leftover `{ deltas }` is not
+      // a snapshot — this-run only, no prev. Foreign/invalid `prev` **on the
+      // head** still fail-closed (confused-deputy / corrupt link).
       let chunkPrev: string | undefined;
       const pointer = stored?.meta?.transcriptPointer;
       if (typeof pointer === 'string' && isObjectIdBoundTo(pointer, scope)) {
@@ -251,26 +254,19 @@ export function createTurnPersistSeam(
           });
         }
         if (snapshotMessagesFromUnknown(parsed, scope.sessionId) !== null) {
-          const walked = await reconstructTranscriptChain({
-            sessionId: scope.sessionId,
-            headId: pointer,
-            headBody: parsed,
-            read: async (objectId) => {
-              const body = await blobStore.read(objectId);
-              if (body === null) return null;
-              try {
-                return JSON.parse(body);
-              } catch {
-                return null;
-              }
-            },
-            isBound: (id) => isObjectIdBoundTo(id, scope),
-          });
-          if (!walked.ok) {
+          const prev = transcriptChunkPrev(parsed);
+          if (prev.kind === 'invalid') {
             return await failWrite({
               ok: false,
               code: 'write_failed',
-              error: walked.error,
+              error: 'transcript chunk prev is not a Redis-safe object id.',
+            });
+          }
+          if (prev.kind === 'id' && !isObjectIdBoundTo(prev.id, scope)) {
+            return await failWrite({
+              ok: false,
+              code: 'write_failed',
+              error: 'transcript chunk prev is not bound to this session.',
             });
           }
           chunkPrev = pointer;
