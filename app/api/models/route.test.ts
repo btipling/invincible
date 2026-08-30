@@ -8,6 +8,7 @@ describe('GET /api/models', () => {
     vi.resetModules();
     vi.doUnmock('../../../lib/di');
     vi.doUnmock('../../../lib/tenancy/session');
+    vi.doUnmock('../../../lib/gateway/modelCatalog');
   });
 
   function mockResolveInference(listModelsForUser = vi.fn(async () => [])) {
@@ -18,6 +19,14 @@ describe('GET /api/models', () => {
       createScriptConnection: vi.fn(),
     }));
     return listModelsForUser;
+  }
+
+  function mockGatewayEffortMap(
+    map: Map<string, string[]> = new Map(),
+  ) {
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      getGatewayEffortMap: vi.fn(async () => map),
+    }));
   }
 
   function mockSession(
@@ -40,6 +49,7 @@ describe('GET /api/models', () => {
       ),
     });
     mockResolveInference();
+    mockGatewayEffortMap();
     const { GET } = await import('./route');
     const res = await GET();
     expect(res.status).toBe(401);
@@ -49,6 +59,7 @@ describe('GET /api/models', () => {
     vi.resetModules();
     mockSession({ ok: true, user: { id: '' } });
     mockResolveInference();
+    mockGatewayEffortMap();
     const { GET } = await import('./route');
     const res = await GET();
     expect(res.status).toBe(401);
@@ -60,13 +71,22 @@ describe('GET /api/models', () => {
     mockResolveInference(
       vi.fn(async () => ['anthropic/claude-z', 'anthropic/claude-a']),
     );
+    mockGatewayEffortMap(
+      new Map([
+        ['anthropic/claude-a', ['low', 'high']],
+      ]),
+    );
     const { GET } = await import('./route');
     const res = await GET();
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.models).toEqual([
-      { id: 'anthropic/claude-z', label: 'claude-z' },
-      { id: 'anthropic/claude-a', label: 'claude-a' },
+      { id: 'anthropic/claude-z', label: 'claude-z', reasoningOptions: [] },
+      {
+        id: 'anthropic/claude-a',
+        label: 'claude-a',
+        reasoningOptions: ['low', 'high'],
+      },
     ]);
   });
 
@@ -74,6 +94,7 @@ describe('GET /api/models', () => {
     vi.resetModules();
     mockSession({ ok: true, user: { id: 'u1', email: 'a@t.com' } });
     mockResolveInference();
+    mockGatewayEffortMap();
     const { GET } = await import('./route');
     const res = await GET();
     expect(res.status).toBe(200);
@@ -89,8 +110,27 @@ describe('GET /api/models', () => {
         throw new Error('db down');
       }),
     );
+    mockGatewayEffortMap();
     const { GET } = await import('./route');
     const res = await GET();
     expect(res.status).toBe(503);
+  });
+
+  it('Gateway catalog throw still 200 with empty reasoningOptions', async () => {
+    vi.resetModules();
+    mockSession({ ok: true, user: { id: 'u1', email: 'a@t.com' } });
+    mockResolveInference(vi.fn(async () => ['zai/glm-5.3-flash']));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      getGatewayEffortMap: vi.fn(async () => {
+        throw new Error('gateway down');
+      }),
+    }));
+    const { GET } = await import('./route');
+    const res = await GET();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.models).toEqual([
+      { id: 'zai/glm-5.3-flash', label: 'glm-5.3-flash', reasoningOptions: [] },
+    ]);
   });
 });

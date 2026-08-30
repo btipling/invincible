@@ -1,7 +1,12 @@
 /**
  * Agent reasoning effort seam (AI SDK `reasoning` option).
  * Server-only — never NEXT_PUBLIC_*.
+ *
+ * Product default is **`low`** for reasoning-capable models when Gateway has
+ * not published an effort list (GLM-5.x today). Never auto-select `max` /
+ * `xhigh` / `provider-default`. Env `AGENT_REASONING` remains an ops override.
  */
+import { sanitizeReasoningEffort } from '../sessionCloudCaps';
 
 export type AgentReasoningEffort =
   | 'provider-default'
@@ -10,13 +15,16 @@ export type AgentReasoningEffort =
   | 'medium'
   | 'high';
 
-const ALLOWED: ReadonlySet<string> = new Set([
+const ENV_ALLOWED: ReadonlySet<string> = new Set([
   'provider-default',
   'none',
   'low',
   'medium',
   'high',
 ]);
+
+const DEFAULT_PREFER = ['low', 'minimal', 'medium', 'none'] as const;
+const NEVER_AUTO = new Set(['max', 'xhigh', 'provider-default']);
 
 /** True when model id is marketed as reasoning/thinking (not *non-reasoning*). */
 export function modelIdLooksReasoningCapable(modelId: string): boolean {
@@ -34,24 +42,57 @@ export function modelIdLooksReasoningCapable(modelId: string): boolean {
 }
 
 /**
+ * Pick a conservative default from a Gateway effort list.
+ * Prefer `low` → `minimal` → `medium` → `none` → first remaining that is not
+ * `max` / `xhigh` / `provider-default`. Empty or max-only → `undefined` (omit).
+ * Never auto-select max.
+ */
+export function defaultEffortFromOptions(
+  values: readonly string[],
+): string | undefined {
+  for (const p of DEFAULT_PREFER) {
+    if (values.includes(p)) return p;
+  }
+  for (const v of values) {
+    if (!NEVER_AUTO.has(v)) return v;
+  }
+  return undefined;
+}
+
+export type ResolveAgentReasoningOpts = {
+  /** Sanitized request-body / start-arg token. Invalid values are ignored here. */
+  request?: string | undefined;
+  env?: Record<string, string | undefined>;
+  /** Gateway `type: effort` values for this model id (maybe empty). */
+  options?: readonly string[] | undefined;
+};
+
+/**
  * Resolve streamText `reasoning` option for this request.
- * - AGENT_REASONING env wins when valid.
- * - Else if model id looks reasoning-capable → provider-default.
- * - Else omit (undefined) so non-reasoning models stay unchanged.
+ * Precedence: request → env `AGENT_REASONING` → Gateway list default →
+ * product `low` if the model looks reasoning-capable → omit.
  */
 export function resolveAgentReasoning(
   modelId: string,
-  env: Record<string, string | undefined> = process.env as Record<
-    string,
-    string | undefined
-  >,
-): AgentReasoningEffort | undefined {
+  opts: ResolveAgentReasoningOpts = {},
+): string | undefined {
+  const env = opts.env ?? (process.env as Record<string, string | undefined>);
+
+  const request = sanitizeReasoningEffort(opts.request);
+  if (request) return request;
+
   const raw = env.AGENT_REASONING?.trim().toLowerCase();
-  if (raw && ALLOWED.has(raw)) {
-    return raw as AgentReasoningEffort;
+  if (raw && ENV_ALLOWED.has(raw)) {
+    return raw;
   }
+
+  const options = opts.options;
+  if (options && options.length > 0) {
+    return defaultEffortFromOptions(options);
+  }
+
   if (modelIdLooksReasoningCapable(modelId)) {
-    return 'provider-default';
+    return 'low';
   }
   return undefined;
 }

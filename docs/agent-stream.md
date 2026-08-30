@@ -97,9 +97,12 @@ submit so no ghost request is sent.
 | Control | Effect |
 |---------|--------|
 | Model id (harness picker) | Choose a reasoning-capable granted model when desired |
-| `AGENT_REASONING` | Optional SDK effort: `provider-default` \| `none` \| `low` \| `medium` \| `high` |
+| Request `reasoning` | Optional body field on `POST /api/turns` and `POST /api/agent` (`^[a-z0-9_-]{1,32}$`). Wins over env. |
+| `AGENT_REASONING` | Ops override only: `provider-default` \| `none` \| `low` \| `medium` \| `high`. Not the operator UI. Do not set `max` here. |
+| `GET /api/models` `reasoningOptions` | Per-model Gateway `type: effort` values when published (empty array when not). |
 
-When `AGENT_REASONING` is unset, the server enables `reasoning: provider-default` only if the model id looks reasoning-capable (`reasoning` / `thinking` in the id, but not `non-reasoning`; `glm-5*` ids also match — GLM-5.x always thinks). Other models omit the option. Thinking tokens are still provider completion.
+When `reasoning` is omitted and `AGENT_REASONING` is unset, the server enables `reasoning: low` if the model id looks reasoning-capable (`reasoning` / `thinking` in the id, but not `non-reasoning`; `glm-5*` ids also match — GLM-5.x always thinks) **and** Gateway has not published a non-empty effort list. If Gateway lists efforts, the conservative pick is `low` then `minimal` then `medium` then `none`, then the first remaining value that is not `max` / `xhigh` / `provider-default`. The product never auto-selects `max`. Other models omit the option. Thinking tokens are still provider completion.
+
 
 ## End of turn
 

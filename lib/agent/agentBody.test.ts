@@ -237,4 +237,42 @@ describe('parseAgentBody', () => {
       sessionId: 'sess_1',
     });
   });
+
+  it('accepts reasoning token (lowercase / mixed case)', () => {
+    expect(parseAgentBody({ prompt: 'hi', reasoning: 'low' }, {})).toEqual({
+      ok: true,
+      prompt: 'hi',
+      cwd: '.',
+      reasoning: 'low',
+    });
+    expect(parseAgentBody({ prompt: 'hi', reasoning: 'MAX' }, {})).toEqual({
+      ok: true,
+      prompt: 'hi',
+      cwd: '.',
+      reasoning: 'max',
+    });
+  });
+
+  it('omitted / null / whitespace reasoning → unset', () => {
+    const r = parseAgentBody({ prompt: 'hi' }, {});
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.reasoning).toBeUndefined();
+    const r2 = parseAgentBody({ prompt: 'hi', reasoning: null }, {});
+    expect(r2.ok).toBe(true);
+    if (r2.ok) expect(r2.reasoning).toBeUndefined();
+    const r3 = parseAgentBody({ prompt: 'hi', reasoning: '   ' }, {});
+    expect(r3.ok).toBe(true);
+    if (r3.ok) expect(r3.reasoning).toBeUndefined();
+  });
+
+  it('rejects present invalid reasoning with 400', () => {
+    for (const bad of ['low!', 'has space', 'x'.repeat(33), 3]) {
+      const r = parseAgentBody({ prompt: 'hi', reasoning: bad as never }, {});
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.status).toBe(400);
+        expect(r.error).toMatch(/reasoning/i);
+      }
+    }
+  });
 });

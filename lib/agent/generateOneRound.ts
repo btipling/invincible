@@ -74,6 +74,11 @@ export type GenerateOneRoundDeps = {
   signal?: AbortSignal;
   /** Redaction list (secrets + root server secrets), resolved by the caller. */
   secrets?: Array<string | undefined | null>;
+  /**
+   * Optional request/start-arg reasoning token (plan #897). Passed to
+   * `resolveAgentReasoning` as `request` — wins over env / product default.
+   */
+  reasoning?: string;
 };
 
 /** One-round input: messages + tool SCHEMAS only, plus the event writable. */
@@ -130,7 +135,9 @@ export async function generateOneRound(
   if (deps.providerOptions !== undefined) {
     streamArgs.providerOptions = deps.providerOptions;
   }
-  const reasoningOpt = resolveAgentReasoning(deps.modelId);
+  const reasoningOpt = resolveAgentReasoning(deps.modelId, {
+    request: deps.reasoning,
+  });
   if (reasoningOpt) {
     streamArgs.reasoning = reasoningOpt;
   }

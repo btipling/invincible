@@ -134,6 +134,11 @@ export type RunAgentParams = {
    * each turn), so this is NOT a locked snapshot. Empty/whitespace is dropped.
    */
   skillsPreamble?: string;
+  /**
+   * Optional request reasoning-effort token (plan #897). Wins over env /
+   * product default when set.
+   */
+  reasoning?: string;
 };
 
 export type RunAgentResult = {
@@ -258,6 +263,12 @@ export async function runAgent(params: RunAgentParams): Promise<RunAgentResult> 
   if (params.providerOptions) {
     genArgs.providerOptions = params.providerOptions;
   }
+  const reasoning = resolveAgentReasoning(modelId, {
+    request: params.reasoning,
+  });
+  if (reasoning) {
+    genArgs.reasoning = reasoning;
+  }
 
   const result = await generate(genArgs);
 
@@ -364,7 +375,9 @@ export async function runAgentStream(
   if (params.providerOptions) {
     streamArgs.providerOptions = params.providerOptions;
   }
-  const reasoning = resolveAgentReasoning(modelId);
+  const reasoning = resolveAgentReasoning(modelId, {
+    request: params.reasoning,
+  });
   if (reasoning) {
     streamArgs.reasoning = reasoning;
   }

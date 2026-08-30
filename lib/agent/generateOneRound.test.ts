@@ -323,7 +323,7 @@ async function withAgentReasoningEnv<T>(
 }
 
 describe('generateOneRound reasoning (plan #846)', () => {
-  it('sets streamArgs.reasoning to provider-default for a reasoning-capable model id', async () => {
+  it('sets streamArgs.reasoning to low for a reasoning-capable model id', async () => {
     await withAgentReasoningEnv(undefined, async () => {
       const streamTextImpl = vi.fn(makeStream({ parts: [{ type: 'text-delta', text: 'ok' }] }));
       const result = await generateOneRound(
@@ -333,7 +333,20 @@ describe('generateOneRound reasoning (plan #846)', () => {
       expect(result.ok).toBe(true);
       expect(streamTextImpl).toHaveBeenCalledTimes(1);
       const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
-      expect(args.reasoning).toBe('provider-default');
+      expect(args.reasoning).toBe('low');
+    });
+  });
+
+  it('sets streamArgs.reasoning to low for glm-5.3-flash (not provider-default)', async () => {
+    await withAgentReasoningEnv(undefined, async () => {
+      const streamTextImpl = vi.fn(makeStream({ parts: [{ type: 'text-delta', text: 'ok' }] }));
+      await generateOneRound(
+        { modelId: 'zai/glm-5.3-flash', streamTextImpl },
+        { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+      );
+      const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
+      expect(args.reasoning).toBe('low');
+      expect(args.reasoning).not.toBe('provider-default');
     });
   });
 
@@ -373,6 +386,18 @@ describe('generateOneRound reasoning (plan #846)', () => {
       );
       const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
       expect(args.reasoning).toBe('high');
+    });
+  });
+
+  it('deps.reasoning request wins over AGENT_REASONING env', async () => {
+    await withAgentReasoningEnv('high', async () => {
+      const streamTextImpl = vi.fn(makeStream({ parts: [{ type: 'text-delta', text: 'ok' }] }));
+      await generateOneRound(
+        { modelId: 'zai/glm-5.3-flash', streamTextImpl, reasoning: 'low' },
+        { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+      );
+      const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
+      expect(args.reasoning).toBe('low');
     });
   });
 

@@ -98,6 +98,11 @@ export interface ModelGenerateStepArgs {
    * must see the error and answer, not emit more toolCalls.
    */
   disableTools?: boolean;
+  /**
+   * Optional resolved reasoning-effort token (plan #897). Forwarded to
+   * `generateOneRound` as `request`. Never fetched in-step.
+   */
+  reasoning?: string;
 }
 
 /** Fail-closed step result (same shape as the B9 core). */
@@ -299,6 +304,7 @@ export async function modelGenerateStep(
             },
           },
           secrets: byok.secretsToRedact,
+          ...(args.reasoning !== undefined ? { reasoning: args.reasoning } : {}),
         },
         {
           messages: toModelMessages(args.messages),
@@ -401,6 +407,7 @@ export async function modelGenerateStep(
           },
         },
         secrets: byok.secretsToRedact,
+        ...(args.reasoning !== undefined ? { reasoning: args.reasoning } : {}),
       },
       {
         messages: toModelMessages(args.messages),

@@ -485,3 +485,46 @@ export function normalizeSessionCwd(cwd: unknown): string | undefined {
   return parsed.cwd;
 }
 
+/**
+ * Max UTF-8 byte length of a reasoning-effort token (`low`, `provider-default`,
+ * Gateway `xhigh`, …). Plan #896 / #897. NEW generous cap — longest SDK token
+ * today is `provider-default` (17). Envelope-tiny; ≪ 1 MiB meta / 4.5 MB Function.
+ * No existing cap changed.
+ */
+export const REASONING_EFFORT_MAX_BYTES = 32;
+
+/**
+ * Max effort values kept per model from Gateway `reasoning_options`.
+ * Plan #896 / #897. NEW generous cap — Gateway lists ≤ 6 today.
+ */
+export const REASONING_EFFORT_VALUES_MAX = 16;
+
+/**
+ * In-process TTL for the unauthenticated Gateway `/v1/models` catalog.
+ * Plan #896 / #897. NEW generous cap; best-effort per Function instance.
+ */
+export const GATEWAY_MODELS_CACHE_TTL_MS = 600_000;
+
+/**
+ * Abort a hung Gateway catalog GET so `/api/models` cannot stall a harness boot.
+ * Plan #896 / #897. NEW generous cap (5 s). Fail-open to empty options.
+ */
+export const GATEWAY_MODELS_FETCH_TIMEOUT_MS = 5_000;
+
+const REASONING_EFFORT_RE = /^[a-z0-9_-]+$/;
+
+/**
+ * Client-safe predicate for a reasoning-effort token (request body, session
+ * carrier `meta.reasoningEffort` in phase 2, Gateway values). Trim + lowercase;
+ * charset `^[a-z0-9_-]{1,32}$`. Fail-closed → `undefined`.
+ */
+export function sanitizeReasoningEffort(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const s = value.trim().toLowerCase();
+  if (!s) return undefined;
+  if (s.length > REASONING_EFFORT_MAX_BYTES) return undefined;
+  if (!REASONING_EFFORT_RE.test(s)) return undefined;
+  return s;
+}
+
+

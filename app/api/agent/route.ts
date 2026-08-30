@@ -6,6 +6,8 @@ import {
   missingGatewayKeyError,
 } from '../../../lib/chatServer';
 import { parseAgentBody } from '../../../lib/agent/agentBody';
+import { resolveAgentReasoning } from '../../../lib/agent/reasoningConfig';
+import { effortValuesForModel } from '../../../lib/gateway/modelCatalog';
 import type { SandboxClient } from '../../../lib/sandbox/client';
 import { runAgent, runAgentStream } from '../../../lib/agent/runAgent';
 import {
@@ -385,6 +387,12 @@ export async function POST(req: Request): Promise<Response> {
         { status },
       );
     }
+    // Kick the catalog GET now so it overlaps GH-token / sandbox / tool-world.
+    // Request-body token wins the resolver — skip the GET when already set.
+    const catalogPromise =
+      parsed.reasoning !== undefined
+        ? Promise.resolve([] as string[])
+        : effortValuesForModel(byok.modelId);
     // Per-user GitHub PAT → sandbox exec env (client options only; never tool schema).
     const gh = await services.userGithubToken.decryptUserGithubTokenForServer(
       userId,
@@ -566,11 +574,17 @@ export async function POST(req: Request): Promise<Response> {
         { status: 400 },
       );
     }
+    const options = await catalogPromise;
+    const reasoning = resolveAgentReasoning(runParams.modelId, {
+      request: parsed.reasoning,
+      options,
+    });
     const finalRunParams: Parameters<typeof runAgent>[0] = {
       ...runParams,
       modelId: runParams.modelId,
       ...(personaPreamble ? { personaPreamble } : {}),
       ...(skills?.preamble ? { skillsPreamble: skills.preamble } : {}),
+      ...(reasoning !== undefined ? { reasoning } : {}),
     };
 
     // Soft path only when a REAL tool surface exists to justify it:
