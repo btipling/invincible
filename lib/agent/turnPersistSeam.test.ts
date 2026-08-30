@@ -1212,7 +1212,9 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(res.code).toBe('write_failed');
     const env = await envelopeStore.readEnvelope(key);
     expect(env?.meta?.transcriptPointer).toBe(priorId);
-    expect(env?.meta?.turnStatus).toBeUndefined();
+    // One-shot read blip: failWrite retries overlay and must not leave running.
+    expect(env?.meta?.turnStatus).toBe('completed');
+    expect(env?.meta?.turnRunId).toBe(realRunId);
   });
 
   it('worker-to-worker empty last-round persist retry does not duplicate assts', async () => {

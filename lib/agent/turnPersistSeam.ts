@@ -108,8 +108,9 @@ const toMessage = (err: unknown): string =>
  * via `setPersistSeamResolver` before `start(runTurnWorkflow, …)`.
  *
  * Business errors are **values**: every failure path returns `{ ok:false, code,
- * error }` (B7/B8 codes surfaced verbatim) — the loop terminates cleanly.
- * Never throws.
+ * error }` (B7/B8 codes surfaced verbatim). Persist bookkeeping (`write_failed` /
+ * pointer / checkpoint / LWW) does not fail the turn; `invalid_scope` /
+ * `not_envelope_store` still do. Never throws.
  */
 export function createTurnPersistSeam(
   deps: TurnPersistSeamDeps,
