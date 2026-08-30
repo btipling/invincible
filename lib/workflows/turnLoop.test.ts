@@ -816,7 +816,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     ]);
   });
 
-  it('wrap-up {ok:false} still terminal-persists and SSE-caps [adversarial #879 Minor]', async () => {
+  it('wrap-up {ok:false} still terminal-persists and SSE-errors (inference death is not a cap) [adversarial #879 Minor]', async () => {
     const { deps, w, closed } = wiredDeps({ maxSteps: 2 });
     const persistSpy = vi.fn(deps.persistStep);
     let n = 0;
@@ -856,7 +856,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(closed()).toBe(1);
   });
 
-  it('wrap-up throw still terminal-persists and SSE-caps [adversarial #879 Minor]', async () => {
+  it('wrap-up throw still terminal-persists and SSE-errors (inference death is not a cap) [adversarial #879 Minor]', async () => {
     const { deps, w, closed } = wiredDeps({ maxSteps: 2 });
     const persistSpy = vi.fn(deps.persistStep);
     let n = 0;

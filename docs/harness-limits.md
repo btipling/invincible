@@ -304,7 +304,7 @@ user is signed in — see [session-model.md](session-model.md).
 | First paint | Always from local store (cloud pull is async; never blocks Ready) |
 | Local quota | A `localStorage` quota failure is visible in-canvas (one Error row per episode). A still-running durable turn defers that row until the turn is no longer running, so a live tool or assistant card is not stolen. A ring rebuild (session switch, F5 adopt, Clear, Load earlier, snap-to-latest before Send) paints the row after hydrate, not before — a wiped push does not spend the once-flag. The last snapshot that fit remains; in-memory can be ahead of disk until the next successful save. Cloud persist is unaffected. Not a shipped byte cap. |
 | Cloud API | Redis multi-session via `GET`/`POST` `/api/sessions` + `GET`/`PUT`/`DELETE` `/api/sessions/:id` (path-`:id` write key) — auth required; fail-closed with **401** when unauth. **Phase 0 (#515):** the small envelope carrier adds `PUT`/`GET` `/api/sessions/:id/envelope` (envelope upsert/read incl. `meta.transcriptPointer`) and `POST`/`GET` `/api/sessions/:id/transcript` (client→Blob mint upload + signed read URL); the full-record route stays for legacy roll-forward |
-| Cloud Blob object | **8 MiB** (`HARNESS_SESSION_MAX_BODY_BYTES`) | Per-object ceiling. Worker persist and host PUT **trim oldest messages** to fit. It is **not** a turn-end reason. |
+| Cloud Blob object | **8 MiB** (`HARNESS_SESSION_MAX_BODY_BYTES`) per-object ceiling. Worker persist and host PUT **trim oldest messages** to fit. It is **not** a turn-end reason. |
 | Clear | Local empty + **DELETE** only (never PUT empty) |
 | Secrets | Never in session blobs (local or cloud; the Blob transcript is object-stored under the server credential, never a static client token) |
 

@@ -133,7 +133,7 @@ Durable `'use step'` bodies `console.log` one JSON line each. These show on **Ob
 | `invincible.turn.model` | each model round (success or `{ok:false}`) | `ok`, `finishReason?`, `toolCallCount?`, `textChars?` (assistant text only), `reasoningChars?` (UTF-16 length of accumulated redacted thinking; omitted when none), `completion?` (provider output tokens when reported), `code?` |
 | `invincible.turn.persist` | each persist (terminal or mid-turn) | `ok`, `terminal`, `status?`, `turnRunId?`, `code?` |
 
-A truncated round logs `finishReason: "length"` (or `"content-filter"` / `"error"`) on the model line, then a terminal persist, then SSE `error` with the mapped string. A thinking-only round logs `textChars: 0` and `reasoningChars` for the CoT. A natural chat end logs `finishReason: "stop"` (or omits it) and SSE `done`.
+A truncated round logs `finishReason: "length"` on the model line, then a terminal persist, then SSE `done` with the partial text (a cap is not a failed turn). Provider `content-filter` / `error` log the same finishReason, then terminal persist, then SSE `error` with the mapped string. A thinking-only round logs `textChars: 0` and `reasoningChars` for the CoT. A natural chat end logs `finishReason: "stop"` (or omits it) and SSE `done`.
 
 ## Caps
 
