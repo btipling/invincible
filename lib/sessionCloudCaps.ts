@@ -40,6 +40,16 @@ export const HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES = 2 * 1024 * 1024;
 export const HARNESS_SESSION_MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 /**
+ * Max objects a transcript `prev` walk may visit (plan #886). Loop/DoS bound
+ * on reconstruct **and** worker persist — not a message cap and not a change
+ * to the 8 MiB per-object ceiling. NEW generous cap. The head object counts
+ * as 1. Persist writes `depth` on worker chunks so it can refuse a 257th
+ * object without walking ancestors (adversarial #889).
+ */
+export const TRANSCRIPT_CHUNK_WALK_MAX = 256;
+
+
+/**
  * Single-source skill-slug charset (parent #495 lock, shared with the phase-3
  * slash parser and the phase-1 `meta.attachedSkills` validator). Lives here in
  * the client-safe seam so `lib/sessions/sessionStore.ts` can validate attached

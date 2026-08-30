@@ -26,6 +26,11 @@ import {
   serializeAttachedSkills,
   type TurnStatus,
 } from './sessionCloudCaps';
+import {
+  flattenReconstructedBody,
+  reconstructTranscriptChain,
+  transcriptChunkPrev,
+} from './sessions/transcriptChunks';
 import type { SessionMessage, SessionRole, SessionSnapshot } from './sessionStore';
 import {
   decodeUsageMetaString,
@@ -727,9 +732,9 @@ export function createHttpSessionRepository(
   /**
    * Phase 0 (#515) envelope read: `GET /envelope` then page the transcript object
    * (client→Blob) instead of a whole-record Function GET. Used when the envelope
-   * carrier is active; the transcript object stores the same `{ id, updatedAt,
-   * messages, meta? }` shape the full-record GET returns so `parseCloudSessionSnapshot`
-   * reconstructs the same `SessionSnapshot`.
+   * carrier is active. When the latest object has `prev`, the host walks the
+   * chain (plan #886) and suffix-merges; a missing/foreign/loop chain fail-closes
+   * (never this-chunk-only). Host flatten roots omit `prev` and parse as one node.
    */
   async function getEnvelope(id: string): Promise<CloudGetResult> {
     try {
@@ -777,6 +782,42 @@ export function createHttpSessionRepository(
           blobJson = await t.json();
         } catch {
           blobJson = null;
+        }
+        if (blobJson !== null && transcriptChunkPrev(blobJson).kind !== 'none') {
+          const walked = await reconstructTranscriptChain({
+            sessionId: id,
+            headId: pointer,
+            headBody: blobJson,
+            read: async (objectId) => {
+              try {
+                const signed = await fetchImpl(
+                  `${path}/${encodeURIComponent(id)}/transcript?objectId=${encodeURIComponent(objectId)}`,
+                  { method: 'GET', credentials: 'same-origin' },
+                );
+                if (signed.status === 401) {
+                  disable();
+                  return null;
+                }
+                if (!signed.ok) return null;
+                const body = (await signed.json()) as { readUrl?: unknown };
+                if (typeof body.readUrl !== 'string' || !body.readUrl) return null;
+                const chunk = await fetchImpl(body.readUrl, {
+                  method: 'GET',
+                  credentials: 'omit',
+                });
+                if (!chunk.ok) return null;
+                return await chunk.json();
+              } catch {
+                return null;
+              }
+            },
+            isBound: (oid) => isRedisSafeOpaqueId(oid),
+          });
+          if (!walked.ok) {
+            // Fail-closed: do not paint this-chunk-only on a broken chain.
+            return cloudGetFromEnvelopeMeta(id, env.meta, null);
+          }
+          blobJson = flattenReconstructedBody(blobJson, id, walked.messages);
         }
         return cloudGetFromEnvelopeMeta(id, env.meta, blobJson);
       } catch {

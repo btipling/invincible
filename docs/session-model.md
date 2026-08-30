@@ -37,15 +37,23 @@ independent of that transcript LWW: when the Blob object is unreadable (or
 missing) but the Redis envelope is still `running` with a `turnRunId`, boot
 overlays those three turn carriers onto the kept local snapshot, keeps `?s=`
 pinned, and cold-attaches. Messages stay the local (or LWW-winning) transcript
-until attach SSE catches up. The Blob object at `transcriptPointer` is a session
-snapshot JSON body (`id`, `updatedAt`, `messages`) — the same shape a full-record
-GET returns. Extra keys are ignored. The worker writes that snapshot after the
-first model delta of a turn that still has tools to run, after each successful
-tool **batch**, and when a model round has no tools (the turn is finished). Mid-turn
+until attach SSE catches up. The Blob object at `transcriptPointer` is the
+**latest** transcript chunk (`id`, `updatedAt`, `messages`, optional `prev`,
+optional `depth`).
+Worker persist writes **this-run messages** plus `prev` pointing at the previous
+object and `depth` (1-based length of the chain ending at that object). Persist
+is head-only: it will not append when `depth` is already **256**. Legacy / host-flattened
+objects omit `prev` and `depth` and are a one-node chain.
+Reconstruct walks `prev` (max **256** objects, each id bound to this session)
+and suffix-merges oldest→newest. Host terminal PUT may **flatten** to a full
+trimmed snapshot with `prev` omitted (new root). Extra keys are ignored. The
+worker writes a chunk after the first model delta of a turn that still has tools
+to run, after each successful tool **batch**, and when a model round has no tools
+(the turn is finished). Mid-turn
 writes keep the envelope `running`; the finished write marks `completed`. Tokens
-that arrive between those writes are attach-only until the next persist. Each
-worker persist suffix-merges this-run
-checkpoint rows onto a prior **readable** pointer body so a later turn cannot
+that arrive between those writes are attach-only until the next persist. Reconstruct
+suffix-merges this-run
+checkpoint rows onto prior chunks / the host flatten root so a later turn cannot
 replace the accumulated transcript (`tool_run` matches by role; one host live-paint
 card covers a run of checkpoint tools, including tools separated by per-round
 checkpoint assistants — the turn loop emits an assistant delta every model round;
@@ -62,7 +70,7 @@ trailing remainder. Fold requires the winning match to have **skipped** an
 incoming assistant against a prior `tool_run` (mid-turn host card). A worker
 1:1 prior that already is this run (persist retry, including empty last-round)
 does not skip and stays no-append. Persist retry onto a successful mid-turn fold
-(pointer already ends with `+=` of this-run assistant texts) also stays no-append
+(reconstructed prior already ends with `+=` of this-run assistant texts) also stays no-append
 when incoming ends on `tool_run` (empty last-round dropped); the leftover covering
 assistant is this run, not a new reply — only when the incoming prefix is the
 entire this-run. A short prefix whose fold text is a suffix of leftover
@@ -236,7 +244,8 @@ for the open tab).
 | Messages per record | **no count cap** | Body cap may drop oldest if needed |
 | Per-message text | **262 144** UTF-8 bytes | Aligns with bridge `MAX_MSG_LEN` |
 | Function-carried full-record body | **2 MiB** (`HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES`) | `/api/sessions/:id` rollforward PUT/GET gate + host rollforward trim — must stay well under the 4.5 MiB Vercel Function payload ceiling (a raised cap never re-enables a one-shot >4.5 MB Function body) |
-| Blob transcript-object body | **8 MiB** (`HARNESS_SESSION_MAX_BODY_BYTES`) | **Object** ceiling only — client→Blob upload, NOT a Function body. Host `trimForCloudPut` and worker persist both **drop oldest messages** to fit. Hitting the ceiling is a trim, not a turn-end. |
+| Blob transcript-object body | **8 MiB** (`HARNESS_SESSION_MAX_BODY_BYTES`) | **Per object** (worker chunk or host flatten root) — client→Blob upload, NOT a Function body. Host `trimForCloudPut` and worker persist both **drop oldest messages** to fit the object. Hitting the ceiling is a trim, not a turn-end. Reconstruct may span many objects. |
+| Transcript `prev` walk | **256** objects (`TRANSCRIPT_CHUNK_WALK_MAX`) | Loop/DoS bound on reconstruct **and** worker persist. Fail-closed on cycle / foreign `prev` / missing object (not this-chunk-only). Worker chunks carry `depth` (1-based chain length) so persist refuses a 257th object **without** walking ancestors. Flatten roots omit `prev`/`depth` (length 1). NEW generous cap — not a message cap. |
 | Record id / tenant / user | max **512**, Redis-safe `^[A-Za-z0-9_-]{1,512}$` | so `KEYS`/prefix globs can never bleed |
 | Attached-skill inject | **256 KiB** total (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`) | bodies folded into `skillsPreamble` greedily up to this per-turn budget (count cap alone is not a size cap); a new attach that would exceed it is rejected (`too_large` / `budget`) and never counted as attached |
 
@@ -265,16 +274,22 @@ The **only large surface** of a session — the transcript — lives in
 Redis and never through a Function payload**. Redis keeps the **small, always-fetchable
 envelope** (`harness:envelope:…`): ownership, `createdAt`, `updatedAt` (LWW), reserved
 `meta`, and `meta.transcriptPointer` (the key of the latest transcript object).
-Worker persist writes a merged snapshot of `id` + `messages` (not the this-run
-`deltas` array) and **trims oldest messages** to the 8 MiB object ceiling so a
-fat tool batch cannot kill the turn. Host PUT uses the same trim.
+Worker persist writes a **this-run chunk** (`id` + `messages` + optional `prev` +
+optional `depth`)
+and **trims oldest messages** in that chunk to the 8 MiB object ceiling so a
+fat tool batch cannot kill the turn. Host terminal PUT writes a full trimmed
+snapshot with **`prev` / `depth` omitted** (flatten root). Reconstruct walks `prev` when
+present. Persist refuses to append when the head's chain length is already 256.
+A leftover `{ deltas }` object is not a snapshot — next persist starts
+from this run only and does not link `prev`.
 
 - **Client→Blob uploads only.** The server holds the Blob credential
   (`BLOB_READ_WRITE_TOKEN`) and mints a **short-lived, scoped, credential-checked** upload
   URL via `POST /api/sessions/:id/transcript`; the client PUTs a new segment object
   **directly to Blob** (no fat body through a Function — a server upload through a
   Function still 413s against the 4.5 MiB Vercel payload limit). `GET` with `?objectId=`
-  returns a server-signed read URL so the host pages from Blob.
+  returns a server-signed read URL for any object **bound to this session** (current
+  pointer or a `prev` chunk) so the host can walk the chain from Blob.
 - **Envelope upsert.** `PUT /api/sessions/:id/envelope` writes the small envelope
   (validates ownership + reserved `meta` scalar-only + pointer, enforces `updatedAt` LWW,
   `createdAt` preserved; `409` + server envelope on conflict). The envelope is the source

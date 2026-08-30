@@ -133,7 +133,7 @@ describe('/api/sessions/:id/transcript', () => {
     expect(((await badJson.json()) as { code: string }).code).toBe('INVALID_JSON');
   });
 
-  it('GET signs ONLY the session envelope pointer (authorization-bound); missing → 404; bad objectId → 400', async () => {
+  it('GET signs session-bound objects (current pointer or prev chunk); foreign → 404; bad objectId → 400', async () => {
     // Setup: mint an object AND bind that objectId as this session's envelope pointer.
     const store = new MemorySessionStore();
     setSessionStoreForTests(store);
@@ -150,7 +150,8 @@ describe('/api/sessions/:id/transcript', () => {
     );
     const { GET } = await mockAuthed();
 
-    // Bound pointer → signed read URL (the only object this session may read).
+    // Bound pointer → signed read URL (session-bound ids may be signed, not
+    // pointer-only — plan #886 prev walk).
     const ok = await GET(
       new Request(`http://localhost/api/sessions/abc/transcript?objectId=${mint.objectId}`),
       ctx('abc'),
@@ -159,6 +160,17 @@ describe('/api/sessions/:id/transcript', () => {
     const body = (await ok.json()) as { readUrl: string; objectId: string };
     expect(body.readUrl).toContain('memory://transcript/');
     expect(body.objectId).toBe(mint.objectId);
+
+    // Plan #886: a prior bound chunk that is NOT the current pointer still signs.
+    const prevMint = await blob.mintUpload({
+      scope: { tenantId: TENANT, userId: USER, sessionId: 'abc' },
+      maxBytes: 8 * 1024 * 1024,
+    });
+    const prevOk = await GET(
+      new Request(`http://localhost/api/sessions/abc/transcript?objectId=${prevMint.objectId}`),
+      ctx('abc'),
+    );
+    expect(prevOk.status).toBe(200);
 
     // IDOR: an arbitrary (even Redis-safe) objectId minted for a DIFFERENT session
     // (same user) and NOT on this session's envelope → 404, never signed under the
