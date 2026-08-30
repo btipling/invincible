@@ -331,6 +331,12 @@ export type RunHarnessTurnOptions = Omit<RunHarnessChatOptions, 'history'> & {
     dedup: boolean;
     attachStream?: typeof attachTurnStream;
   };
+  /**
+   * Plan #887 — skip appending a User row to SessionStore (auto-continue).
+   * Independent of `pushUser` (ring). Attaching already skips. History fold
+   * still uses `formatPromptWithHistory(session.messages, prompt)`.
+   */
+  skipUserAppend?: boolean;
 };
 
 export type HarnessTurnResult = {
@@ -1068,7 +1074,8 @@ export async function runHarnessTurn(
   }
 
   const prompt = attaching ? '' : normalizePrompt(rawPrompt);
-  const withUser = attaching ? session : appendMessage(session, 'user', prompt);
+  const skipUserAppend = attaching || opts?.skipUserAppend === true;
+  const withUser = skipUserAppend ? session : appendMessage(session, 'user', prompt);
 
   // Wasm pending-submit path sets pushUser:false (user line already in canvas).
   // Attach (E19) never re-pushes the user line — the ring was hydrated (cold)

@@ -9,6 +9,7 @@ import {
   runHarnessTurn,
   pushSessionToBridge,
   refreshGitStatusSlot,
+  classifyTurnFailure,
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
@@ -52,6 +53,11 @@ import {
 } from '../../lib/harnessHostModelPersist';
 import { paintQuotaAfterRebuild, tryLocalSave } from '../../lib/hostQuotaError';
 import {
+  AUTO_CONTINUE_PROMPT,
+  migrateAutoContinueFlag,
+  shouldAutoContinueAfterGiveUp,
+} from '../../lib/turnRecoverable';
+import {
   buildSessionCatalogEntries,
   foldPendingSessionSwitch,
   foldSessionListResult,
@@ -64,7 +70,12 @@ import HarnessLoading from './HarnessLoading';
 type Phase = 'loading' | 'ready' | 'error';
 
 type RunPromptAttach = { runId: string; startIndex: number; dedup: boolean };
-type RunPromptOpts = { pushUser?: boolean; attach?: RunPromptAttach };
+type RunPromptOpts = {
+  pushUser?: boolean;
+  attach?: RunPromptAttach;
+  skipUserAppend?: boolean;
+  autoContinue?: boolean;
+};
 
 type DvuiModule = {
   dvui: (
@@ -207,6 +218,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const pollRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const inflightRef = useRef(false);
+  /**
+   * Plan #887 — session-scoped one-shot auto-continue flag. Clears on the next
+   * operator submit. Not persisted.
+   */
+  const didAutoContinueBySessionRef = useRef(new Map<string, boolean>());
   /**
    * Plan #813 (E19) — SSE frames **this JS heap** applied for the current
    * `turnRunId`. Null after F5 / adopt / switch (ring rebuilt from Blob).
@@ -445,6 +461,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       const bridge = bridgeRef.current;
       if (!bridge || inflightRef.current) return;
 
+      // Plan #887: next operator submit (not attach, not auto-continue) clears
+      // the one-shot flag so a later recoverable can fire again.
+      if (!opts?.attach && !opts?.autoContinue) {
+        didAutoContinueBySessionRef.current.delete(sessionRef.current.id);
+      }
+
       // Adversarial #857: Send while a durable run is live (503 subscribe-fail,
       // empty-EOF idle) must attach — never POST (C15 409 mixes Turn ended +
       // Error with keep-running). Class follows this-heap applied frames, not a
@@ -535,6 +557,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // Default false: Wasm already painted the user line in queueSubmitFromUi.
             // true when host snapped from a historical ring window before the turn.
             pushUser: attaching ? false : opts?.pushUser ?? false,
+            skipUserAppend: opts?.skipUserAppend === true,
             ...(modelId ? { modelId } : {}),
             // Phase 2 (#627 / #625): persist every mid-turn session patch
             // (cwd change, sandbox switch) via the same persist callback the
@@ -581,12 +604,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           aborted: controller.signal.aborted,
           isDetachAbort: isDetachAbort(controller.signal),
         });
-        if (
-          shouldRepostAttachFollowUp({
-            sendWhileRunning,
-            turnStatus: folded.turnStatus,
-          })
-        ) {
+        const repostFollowUp = shouldRepostAttachFollowUp({
+          sendWhileRunning,
+          turnStatus: folded.turnStatus,
+        });
+        if (repostFollowUp) {
           queueMicrotask(() => {
             void runPromptRef.current(prompt, { pushUser: true });
           });
@@ -648,6 +670,29 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               });
             });
           }
+        } else if (
+          shouldAutoContinueAfterGiveUp({
+            resultOk: result.ok,
+            kind: result.ok
+              ? 'model'
+              : classifyTurnFailure(result.error, result.status, controller.signal).kind,
+            error: result.ok ? '' : result.error,
+            turnStatus: folded.turnStatus,
+            inflight: false,
+            queuedCount: bridge.queuedCount(),
+            hasPendingSubmit: bridge.hasPendingSubmit(),
+            didAutoContinue: didAutoContinueBySessionRef.current.get(folded.id) === true,
+            repostFollowUp,
+          })
+        ) {
+          didAutoContinueBySessionRef.current.set(folded.id, true);
+          queueMicrotask(() => {
+            void runPromptRef.current(AUTO_CONTINUE_PROMPT, {
+              pushUser: false,
+              skipUserAppend: true,
+              autoContinue: true,
+            });
+          });
         }
       } finally {
         const detached = turnEpochRef.current !== epoch;
@@ -668,6 +713,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               switchInFlight: switchInFlightRef.current,
             })
           ) {
+            // Plan #887 adversarial: flag was keyed on startedId (sess_*) before
+            // this rewrite; auto-continue POSTs as pendingId (UUID).
+            migrateAutoContinueFlag(
+              didAutoContinueBySessionRef.current,
+              startedId,
+              pendingId,
+            );
             const bound = { ...sessionRef.current, id: pendingId };
             writeLocalSession(bound);
             repo?.put(pendingId, bound);
