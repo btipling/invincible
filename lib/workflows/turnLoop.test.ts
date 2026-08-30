@@ -185,7 +185,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(events.some((e: { type: string }) => e.type === 'text')).toBe(false);
   });
 
-  it('finishReason length + empty tools → failed, SSE error, no done, terminal persist', async () => {
+  it('finishReason length + empty tools → done with partial text, not a failed turn', async () => {
     const { deps, w, closed } = wiredDeps();
     const persistSpy = vi.fn(deps.persistStep);
     const modelStep = vi.fn(async () => ({
@@ -196,12 +196,15 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       { ...deps, persistStep: persistSpy, modelStep, toolStep: vi.fn() },
       { userMessage: 'go' },
     );
-    expect(result.status).toBe('failed');
-    expect(result.error).toBe('output truncated');
+    expect(result.status).toBe('completed');
+    expect(result.error).toBeUndefined();
     expect(closed()).toBe(1);
     const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
-    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(false);
-    expect(events.some((e: { type: string; error?: string }) => e.type === 'error' && e.error === 'output truncated')).toBe(true);
+    expect(events.find((e: { type: string; text?: string }) => e.type === 'done')).toMatchObject({
+      type: 'done',
+      text: 'cut off mid',
+    });
+    expect(events.some((e: { type: string; error?: string }) => e.type === 'error')).toBe(false);
     expect(persistSpy).toHaveBeenCalledTimes(1);
     expect(persistSpy.mock.calls[0]![0].terminal).toBeUndefined();
   });
@@ -329,19 +332,26 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(events.some((e: { type: string }) => e.type === 'tool_start' && 'toolName' in e)).toBe(false);
   });
 
-  it('batch item {ok:false} keeps sibling results then fails the turn', async () => {
-    const { deps, closed } = wiredDeps();
+  it('batch item {ok:false} keeps sibling results; model continues (not a turn-end)', async () => {
+    const { deps, w, closed } = wiredDeps();
     const persistSpy = vi.fn(deps.persistStep);
-    const modelStep = vi.fn(async () => ({
-      ok: true as const,
-      delta: {
-        text: 'two',
-        toolCalls: [
-          { toolName: 'list_dir', toolCallId: 'a', args: {} },
-          { toolName: 'read_file', toolCallId: 'b', args: {} },
-        ],
-      },
-    }));
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'two',
+            toolCalls: [
+              { toolName: 'list_dir', toolCallId: 'a', args: {} },
+              { toolName: 'read_file', toolCallId: 'b', args: {} },
+            ],
+          },
+        };
+      }
+      return { ok: true as const, delta: { text: 'got the error', toolCalls: [] } };
+    });
     const toolStep = vi.fn(async (_args: ToolCallIn) => ({
       ok: true as const,
       results: [
@@ -367,15 +377,20 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       { userMessage: 'go' },
     );
     expect(result.status).toBe('completed');
-    expect(result.error).toBe('boom');
+    expect(result.error).toBeUndefined();
     expect(toolStep).toHaveBeenCalledTimes(1);
+    expect(modelStep).toHaveBeenCalledTimes(2);
     const rows = (result.messages as Array<{ role?: string; toolCallId?: string; result?: string; error?: string }>)
       .filter((m) => m.role === 'tool');
     expect(rows).toHaveLength(2);
     expect(rows[0]?.result).toBe('ok-dir');
     expect(rows[1]?.error).toBe('boom');
-    // user-line + persist of mixed results, no silent drop
     expect(persistSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(true);
+    expect(events.some((e: { type: string; error?: string }) => e.type === 'error' && e.error === 'boom')).toBe(
+      false,
+    );
     expect(closed()).toBe(1);
   });
 
@@ -428,23 +443,29 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     const lastFold = persistSpy.mock.calls[persistSpy.mock.calls.length - 1]?.[0] as {
       terminal?: boolean;
     };
-    expect(lastFold.terminal).toBe(false);
+    expect(lastFold.terminal).toBeUndefined();
     expect(closed()).toBe(1);
   });
 
-  it('itemFail at cap still persists the mixed batch (adversarial #881 round-2 Major)', async () => {
-    const { deps, closed } = wiredDeps({ maxSteps: 3 });
+  it('itemFail at cap still persists the mixed batch then wrap-up done (adversarial #881 round-2 Major)', async () => {
+    const { deps, w, closed } = wiredDeps({ maxSteps: 3 });
     const persistSpy = vi.fn(deps.persistStep);
-    const modelStep = vi.fn(async () => ({
-      ok: true as const,
-      delta: {
-        text: 'two',
-        toolCalls: [
-          { toolName: 'list_dir', toolCallId: 'a', args: {} },
-          { toolName: 'read_file', toolCallId: 'b', args: {} },
-        ],
-      },
-    }));
+    const modelStep = vi.fn(async (args: unknown) => {
+      const a = args as { disableTools?: boolean };
+      if (a.disableTools) {
+        return { ok: true as const, delta: { text: 'wrap-summary', toolCalls: [] } };
+      }
+      return {
+        ok: true as const,
+        delta: {
+          text: 'two',
+          toolCalls: [
+            { toolName: 'list_dir', toolCallId: 'a', args: {} },
+            { toolName: 'read_file', toolCallId: 'b', args: {} },
+          ],
+        },
+      };
+    });
     const toolStep = vi.fn(async (_args: ToolCallIn) => ({
       ok: true as const,
       results: [
@@ -469,17 +490,20 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       { ...deps, maxSteps: 3, modelStep, toolStep, persistStep: persistSpy },
       { userMessage: 'go' },
     );
-    expect(result.status).toBe('completed');
-    expect(result.error).toBe('boom');
+    expect(result.status).toBe('capped');
+    expect(result.error).toBeUndefined();
     expect(toolStep).toHaveBeenCalledTimes(1);
-    // user-line + persist-then-fail of the mixed batch (batch was the last
-    // in-budget step; must still persist — wrap-up never runs on itemFail).
     expect(persistSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
     const rows = (result.messages as Array<{ role?: string; result?: string; error?: string }>)
       .filter((m) => m.role === 'tool');
     expect(rows).toHaveLength(2);
     expect(rows[0]?.result).toBe('ok-dir');
     expect(rows[1]?.error).toBe('boom');
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(true);
+    expect(events.some((e: { type: string; error?: string }) => e.type === 'error' && e.error === 'boom')).toBe(
+      false,
+    );
     expect(closed()).toBe(1);
   });
 
@@ -530,20 +554,27 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(closed()).toBe(1);
   });
 
-  it('whole-step fail with N calls writes tool_result for every call (adversarial #881 round-2 Minor)', async () => {
+  it('whole-step fail with N calls writes tool_result for every call; model continues', async () => {
     const { deps, w, closed } = wiredDeps();
     const persistSpy = vi.fn(deps.persistStep);
-    const modelStep = vi.fn(async () => ({
-      ok: true as const,
-      delta: {
-        text: 'three',
-        toolCalls: [
-          { toolName: 'list_dir', toolCallId: 'a', args: {} },
-          { toolName: 'read_file', toolCallId: 'b', args: {} },
-          { toolName: 'write_file', toolCallId: 'c', args: {} },
-        ],
-      },
-    }));
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'three',
+            toolCalls: [
+              { toolName: 'list_dir', toolCallId: 'a', args: {} },
+              { toolName: 'read_file', toolCallId: 'b', args: {} },
+              { toolName: 'write_file', toolCallId: 'c', args: {} },
+            ],
+          },
+        };
+      }
+      return { ok: true as const, delta: { text: 'tools missed', toolCalls: [] } };
+    });
     const toolStep = vi.fn(async () => ({
       ok: false as const,
       code: 'sandbox_error' as const,
@@ -554,9 +585,8 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       { userMessage: 'go' },
     );
     expect(result.status).toBe('completed');
-    expect(result.error).toBe('down');
-    // Nothing ran — still only the user-line persist.
-    expect(persistSpy).toHaveBeenCalledTimes(1);
+    expect(result.error).toBeUndefined();
+    expect(modelStep).toHaveBeenCalledTimes(2);
     const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim())) as Array<{
       type: string;
       name?: string;
@@ -565,7 +595,8 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     const results = events.filter((e) => e.type === 'tool_result');
     expect(results.map((e) => e.name)).toEqual(['list_dir', 'read_file', 'write_file']);
     expect(results.every((e) => e.ok === false)).toBe(true);
-    expect(events.some((e) => e.type === 'error')).toBe(true);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(events.some((e) => e.type === 'done')).toBe(true);
     expect(closed()).toBe(1);
   });
 
@@ -611,13 +642,13 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(toolStep).toHaveBeenCalledTimes(0);
     expect(closed()).toBe(1);
     const capEvents = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
-    expect(capEvents.some((e: { type: string }) => e.type === 'done')).toBe(false);
+    expect(capEvents.some((e: { type: string }) => e.type === 'done')).toBe(true);
     expect(
       capEvents.some(
         (e: { type: string; error?: string }) =>
           e.type === 'error' && e.error === 'step budget exhausted',
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       capEvents.some(
         (e: { type: string; name?: string; ok?: boolean; summary?: string }) =>
@@ -669,7 +700,8 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(fanTools.filter((m) => m.ok === false)).toHaveLength(0);
     expect(closed()).toBe(1);
     const fanEvents = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
-    expect(fanEvents.some((e: { type: string }) => e.type === 'done')).toBe(false);
+    expect(fanEvents.some((e: { type: string }) => e.type === 'done')).toBe(true);
+    expect(fanEvents.some((e: { type: string }) => e.type === 'error')).toBe(false);
   });
 
   it('matrix 3c: completed last tool (unpaired empty) still wrap-up [adversarial #879 Minor]', async () => {
@@ -707,13 +739,13 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     ).toBe(false);
     expect(closed()).toBe(1);
     const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
-    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(false);
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(true);
     expect(
       events.some(
         (e: { type: string; error?: string }) =>
           e.type === 'error' && e.error === STEP_BUDGET_ERROR,
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       events.filter(
         (e: { type: string; name?: string; ok?: boolean }) =>
@@ -784,7 +816,7 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     ]);
   });
 
-  it('wrap-up {ok:false} still terminal-persists and SSE-caps [adversarial #879 Minor]', async () => {
+  it('wrap-up {ok:false} still terminal-persists and SSE-errors (inference death is not a cap) [adversarial #879 Minor]', async () => {
     const { deps, w, closed } = wiredDeps({ maxSteps: 2 });
     const persistSpy = vi.fn(deps.persistStep);
     let n = 0;
@@ -805,8 +837,8 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       { ...deps, maxSteps: 2, modelStep, toolStep: vi.fn(), persistStep: persistSpy },
       { userMessage: 'loop' },
     );
-    expect(result.status).toBe('capped');
-    expect(result.error).toBe(STEP_BUDGET_ERROR);
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('wrap boom');
     expect(persistSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
     const last = persistSpy.mock.calls[persistSpy.mock.calls.length - 1]?.[0] as {
       terminal?: boolean;
@@ -817,14 +849,14 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(
       events.some(
         (e: { type: string; error?: string }) =>
-          e.type === 'error' && e.error === STEP_BUDGET_ERROR,
+          e.type === 'error' && e.error === 'wrap boom',
       ),
     ).toBe(true);
-    expect(events.some((e: { error?: string }) => e.error === 'wrap boom')).toBe(false);
+    expect(events.some((e: { error?: string }) => e.error === STEP_BUDGET_ERROR)).toBe(false);
     expect(closed()).toBe(1);
   });
 
-  it('wrap-up throw still terminal-persists and SSE-caps [adversarial #879 Minor]', async () => {
+  it('wrap-up throw still terminal-persists and SSE-errors (inference death is not a cap) [adversarial #879 Minor]', async () => {
     const { deps, w, closed } = wiredDeps({ maxSteps: 2 });
     const persistSpy = vi.fn(deps.persistStep);
     let n = 0;
@@ -845,8 +877,8 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       { ...deps, maxSteps: 2, modelStep, toolStep: vi.fn(), persistStep: persistSpy },
       { userMessage: 'loop' },
     );
-    expect(result.status).toBe('capped');
-    expect(result.error).toBe(STEP_BUDGET_ERROR);
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('wrap threw');
     const last = persistSpy.mock.calls[persistSpy.mock.calls.length - 1]?.[0] as {
       terminal?: boolean;
     };
@@ -855,10 +887,10 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(
       events.some(
         (e: { type: string; error?: string }) =>
-          e.type === 'error' && e.error === STEP_BUDGET_ERROR,
+          e.type === 'error' && e.error === 'wrap threw',
       ),
     ).toBe(true);
-    expect(events.some((e: { error?: string }) => e.error === 'wrap threw')).toBe(false);
+    expect(events.some((e: { error?: string }) => e.error === STEP_BUDGET_ERROR)).toBe(false);
     expect(closed()).toBe(1);
   });
 
@@ -1049,16 +1081,23 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(closed()).toBe(1);
   });
 
-  it('failed tool after user-line persist does not extra-persist', async () => {
+  it('failed tool after user-line persist continues the turn', async () => {
     const { deps, closed } = wiredDeps();
     const persistSpy = vi.fn(deps.persistStep);
-    const modelStep = vi.fn(async () => ({
-      ok: true as const,
-      delta: {
-        text: 'call',
-        toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
-      },
-    }));
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'call',
+            toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
+          },
+        };
+      }
+      return { ok: true as const, delta: { text: 'sandbox down, noted', toolCalls: [] } };
+    });
     const toolStep = vi.fn(async () => ({
       ok: false as const,
       code: 'sandbox_error' as const,
@@ -1069,29 +1108,54 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       { userMessage: 'go' },
     );
     expect(result.status).toBe('completed');
-    expect(result.error).toBe('down');
+    expect(result.error).toBeUndefined();
     expect(toolStep).toHaveBeenCalledTimes(1);
-    expect(persistSpy).toHaveBeenCalledTimes(1);
-    expect((persistSpy.mock.calls[0]?.[0] as { terminal?: boolean }).terminal).toBe(
-      false,
-    );
+    expect(modelStep).toHaveBeenCalledTimes(2);
+    expect(persistSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(closed()).toBe(1);
   });
 
-  it('mid-turn persist {ok:false} fails the loop before tools run', async () => {
-    const { deps, closed } = wiredDeps({ persistFail: true });
-    const modelStep = vi.fn(async () => ({
+  it('mid-turn persist write_failed still runs tools (plan #885)', async () => {
+    const { deps, closed } = wiredDeps();
+    let persistCalls = 0;
+    const persistStep = async (args: Parameters<typeof deps.persistStep>[0]) => {
+      persistCalls += 1;
+      if (persistCalls === 1) {
+        return { ok: false as const, code: 'write_failed' as const, error: 'boom' };
+      }
+      return deps.persistStep(args);
+    };
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'call',
+            toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
+          },
+        };
+      }
+      return { ok: true as const, delta: { text: 'done', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(async () => ({
       ok: true as const,
-      delta: {
-        text: 'call',
-        toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
-      },
+      results: [
+        {
+          ok: true as const,
+          toolName: 'list_dir',
+          toolCallId: 'c1',
+          result: 'ok',
+          freshnessDelta: '[]',
+        },
+      ],
+      freshnessDelta: '[]',
     }));
-    const toolStep = vi.fn();
-    const result = await runTurnLoop({ ...deps, modelStep, toolStep }, { userMessage: 'go' });
-    expect(result.status).toBe('failed');
-    expect(result.error).toBe('boom');
-    expect(toolStep).not.toHaveBeenCalled();
+    const result = await runTurnLoop({ ...deps, persistStep, modelStep, toolStep }, { userMessage: 'go' });
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('completed');
+    expect(result.error).toBeUndefined();
     expect(closed()).toBe(1);
   });
 
@@ -1224,6 +1288,108 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     );
   });
 
+  it('model_error after tools terminal-persists so envelope is not left running [adversarial #888 Major]', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const scope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_model_fail' };
+    const { deps, w, closed } = wiredDeps({ persistScope: scope });
+    setPersistSeamResolver(() =>
+      createTurnPersistSeam({ blobStore, envelopeStore, scope }),
+    );
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'call',
+            toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
+          },
+        };
+      }
+      return { ok: false as const, code: 'model_error' as const, error: 'provider down' };
+    });
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        toolStep: vi.fn(okBatch()),
+        turnRunId: 'wr_model_fail',
+      },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('provider down');
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(false);
+    expect(
+      events.some(
+        (e: { type: string; error?: string }) =>
+          e.type === 'error' && e.error === 'provider down',
+      ),
+    ).toBe(true);
+    const env = await envelopeStore.readEnvelope({
+      tenantId: scope.tenantId,
+      userId: scope.userId,
+      sessionId: scope.sessionId,
+    });
+    expect(env?.meta?.turnStatus).toBe('completed');
+    expect(env?.meta?.turnRunId).toBe('wr_model_fail');
+    expect(closed()).toBe(1);
+  });
+
+  it('model throw after tools terminal-persists so envelope is not left running [adversarial #888 Major]', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const scope: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_model_throw' };
+    const { deps, w, closed } = wiredDeps({ persistScope: scope });
+    setPersistSeamResolver(() =>
+      createTurnPersistSeam({ blobStore, envelopeStore, scope }),
+    );
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'call',
+            toolCalls: [{ toolName: 'list_dir', toolCallId: 'c1', args: {} }],
+          },
+        };
+      }
+      throw new Error('model threw');
+    });
+    const result = await runTurnLoop(
+      {
+        ...deps,
+        modelStep,
+        toolStep: vi.fn(okBatch()),
+        turnRunId: 'wr_model_throw',
+      },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('model threw');
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(false);
+    expect(
+      events.some(
+        (e: { type: string; error?: string }) =>
+          e.type === 'error' && e.error === 'model threw',
+      ),
+    ).toBe(true);
+    const env = await envelopeStore.readEnvelope({
+      tenantId: scope.tenantId,
+      userId: scope.userId,
+      sessionId: scope.sessionId,
+    });
+    expect(env?.meta?.turnStatus).toBe('completed');
+    expect(env?.meta?.turnRunId).toBe('wr_model_throw');
+    expect(closed()).toBe(1);
+  });
+
   it('matrix 9: writable closed exactly once on success (close guarded)', async () => {
     const { deps, w, closed } = wiredDeps();
     const modelStep = vi.fn(async () => ({
@@ -1236,24 +1402,201 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     expect(closed()).toBe(1);
   });
 
-  it('matrix 9b: persist {ok:false} → value, loop terminates cleanly, writable closed once', async () => {
+  it('matrix 9b: persist write_failed on empty-tools still done, writable closed once', async () => {
     const { deps, w, closed } = wiredDeps({ persistFail: true });
     const modelStep = vi.fn(async () => ({
       ok: true as const,
       delta: { text: 'done', toolCalls: [] },
     }));
     const result = await runTurnLoop({ ...deps, modelStep }, { userMessage: 'x' });
-    expect(result.status).toBe('failed');
-    expect(result.error).toBe('boom');
+    expect(result.status).toBe('completed');
+    expect(result.error).toBeUndefined();
     expect(closed()).toBe(1);
     const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
-    expect(events.find((e: { type: string }) => e.type === 'error')).toEqual({
-      type: 'error',
-      error: 'boom',
+    expect(events.find((e: { type: string }) => e.type === 'done')).toMatchObject({
+      type: 'done',
+      text: 'done',
     });
-    expect(events.some((e: { type: string }) => e.type === 'error' && 'message' in e)).toBe(
+    expect(events.some((e: { type: string; error?: string }) => e.type === 'error' && e.error === 'boom')).toBe(
       false,
     );
+  });
+
+  it('persist invalid_scope still completes the turn (persist never fails a turn)', async () => {
+    const { deps, w, closed } = wiredDeps();
+    const persistStep = async () => ({
+      ok: false as const,
+      code: 'invalid_scope' as const,
+      error: 'no scope',
+    });
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'done', toolCalls: [] },
+    }));
+    const result = await runTurnLoop({ ...deps, persistStep, modelStep }, { userMessage: 'x' });
+    expect(result.status).toBe('completed');
+    expect(result.error).toBeUndefined();
+    expect(closed()).toBe(1);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.find((e: { type: string }) => e.type === 'done')).toMatchObject({
+      type: 'done',
+      text: 'done',
+    });
+    expect(events.some((e: { type: string; error?: string }) => e.error === 'no scope')).toBe(false);
+  });
+
+  it('persist not_envelope_store still completes the turn (persist never fails a turn)', async () => {
+    const { deps, w, closed } = wiredDeps();
+    const persistStep = async () => ({
+      ok: false as const,
+      code: 'not_envelope_store' as const,
+      error: 'no envelope',
+    });
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'done', toolCalls: [] },
+    }));
+    const result = await runTurnLoop({ ...deps, persistStep, modelStep }, { userMessage: 'x' });
+    expect(result.status).toBe('completed');
+    expect(result.error).toBeUndefined();
+    expect(closed()).toBe(1);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.find((e: { type: string }) => e.type === 'done')).toMatchObject({
+      type: 'done',
+      text: 'done',
+    });
+    expect(events.some((e: { type: string; error?: string }) => e.error === 'no envelope')).toBe(
+      false,
+    );
+  });
+
+  it('persist read_failed on empty-tools still done, writable closed once', async () => {
+    const { deps, w, closed } = wiredDeps();
+    const persistStep = async () => ({
+      ok: false as const,
+      code: 'read_failed' as const,
+      error: 'redis blip after B7',
+    });
+    const modelStep = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'done', toolCalls: [] },
+    }));
+    const result = await runTurnLoop({ ...deps, persistStep, modelStep }, { userMessage: 'x' });
+    expect(result.status).toBe('completed');
+    expect(result.error).toBeUndefined();
+    expect(closed()).toBe(1);
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.find((e: { type: string }) => e.type === 'done')).toMatchObject({
+      type: 'done',
+      text: 'done',
+    });
+    expect(
+      events.some(
+        (e: { type: string; error?: string }) =>
+          e.type === 'error' && e.error === 'redis blip after B7',
+      ),
+    ).toBe(false);
+  });
+
+  it('itemFail + persist read_failed still done, tool error is a result not a turn-end', async () => {
+    const { deps, w, closed } = wiredDeps();
+    const persistStep = async () => ({
+      ok: false as const,
+      code: 'read_failed' as const,
+      error: 'redis blip after B7',
+    });
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'two',
+            toolCalls: [
+              { toolName: 'list_dir', toolCallId: 'a', args: {} },
+              { toolName: 'read_file', toolCallId: 'b', args: {} },
+            ],
+          },
+        };
+      }
+      return { ok: true as const, delta: { text: 'got boom', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(async () => ({
+      ok: true as const,
+      results: [
+        {
+          ok: true as const,
+          toolName: 'list_dir',
+          toolCallId: 'a',
+          result: 'ok-dir',
+          freshnessDelta: '[]',
+        },
+        {
+          ok: false as const,
+          toolName: 'read_file',
+          toolCallId: 'b',
+          code: 'sandbox_error' as const,
+          error: 'boom',
+        },
+      ],
+      freshnessDelta: '[]',
+    }));
+    const result = await runTurnLoop({ ...deps, persistStep, modelStep, toolStep }, { userMessage: 'go' });
+    expect(result.status).toBe('completed');
+    expect(result.error).toBeUndefined();
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(true);
+    expect(events.some((e: { type: string }) => e.type === 'error')).toBe(false);
+    expect(closed()).toBe(1);
+  });
+
+  it('itemFail + persist write_failed still done, tool error is a result not a turn-end', async () => {
+    const { deps, w, closed } = wiredDeps({ persistFail: true });
+    let round = 0;
+    const modelStep = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          ok: true as const,
+          delta: {
+            text: 'two',
+            toolCalls: [
+              { toolName: 'list_dir', toolCallId: 'a', args: {} },
+              { toolName: 'read_file', toolCallId: 'b', args: {} },
+            ],
+          },
+        };
+      }
+      return { ok: true as const, delta: { text: 'got boom', toolCalls: [] } };
+    });
+    const toolStep = vi.fn(async () => ({
+      ok: true as const,
+      results: [
+        {
+          ok: true as const,
+          toolName: 'list_dir',
+          toolCallId: 'a',
+          result: 'ok-dir',
+          freshnessDelta: '[]',
+        },
+        {
+          ok: false as const,
+          toolName: 'read_file',
+          toolCallId: 'b',
+          code: 'sandbox_error' as const,
+          error: 'boom',
+        },
+      ],
+      freshnessDelta: '[]',
+    }));
+    const result = await runTurnLoop({ ...deps, modelStep, toolStep }, { userMessage: 'go' });
+    expect(result.status).toBe('completed');
+    expect(result.error).toBeUndefined();
+    const events = w.lines.map((l) => JSON.parse(l.replace(/^data: /, '').trim()));
+    expect(events.some((e: { type: string }) => e.type === 'done')).toBe(true);
+    expect(events.some((e: { type: string }) => e.type === 'error')).toBe(false);
+    expect(closed()).toBe(1);
   });
 
   it('B13 integration: real B7/B8/B6 seam wired via resolver — a completed run derives the fold AT PERSIST TIME (usage/checkpoint from THIS run; run-bind from start)', async () => {
@@ -1520,20 +1863,22 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
       code: 'sandbox_error' as const,
       error: 'no such dir',
     }));
-    // The first tool call fails → loop terminates with a tool error value.
-    // But the loop writes tool_result with error and returns completed, not
-    // failed — per the existing "business error as value" convention.
+    // Failed change_dir is a tool result for the next model round, not a
+    // turn-end. Bind stays the start cwd — only a successful change_dir overlays.
     const result = await runTurnLoop(
       { ...deps, modelStep, toolStep, turnRunId: 'wr_failbind', persistRunBind: { cwd: 'app' } },
       { userMessage: 'go' },
     );
-    // A failed tool terminates the loop cleanly (business error is a value).
     expect(result.status).toBe('completed');
+    expect(result.error).toBeUndefined();
     expect(toolStep).toHaveBeenCalledTimes(1);
     const call = toolStep.mock.calls[0]?.[0] as ToolCallIn;
-    expect(call.persistRunBind?.cwd).toBe('app'); // start bind, unchanged
-    // modelStep was called once (the tool error terminates before round 2).
-    expect(modelStep).toHaveBeenCalledTimes(1);
+    expect(call.persistRunBind?.cwd).toBe('app');
+    expect(modelStep).toHaveBeenCalledTimes(2);
+    const modelRound2 = (modelStep.mock.calls[1] as unknown[])?.[0] as
+      | { persistRunBind?: { cwd?: string } }
+      | undefined;
+    expect(modelRound2?.persistRunBind?.cwd).toBe('app');
     expect(closed()).toBe(1);
   });
 
@@ -3390,10 +3735,10 @@ describe('step wrappers (matrix 4–7)', () => {
       id: string;
       updatedAt: number;
       messages: unknown[];
-      deltas: unknown[];
+      deltas?: unknown[];
     };
     expect(body.id).toBe(LOOP_SCOPE.sessionId);
-    expect(body.deltas).toEqual([{ d: 1 }]);
+    expect(body.deltas).toBeUndefined();
     expect(body.messages).toEqual([]);
     expect(Number.isFinite(body.updatedAt)).toBe(true);
     const parsed = parseCloudSessionSnapshot(body, LOOP_SCOPE.sessionId);

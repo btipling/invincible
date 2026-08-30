@@ -194,7 +194,7 @@ describe('sendTurnStream (SSE path — production default)', () => {
     }
   });
 
-  it('SSE done + finishReason length → ok:false output truncated (parser defense)', async () => {
+  it('SSE done + finishReason length → ok:true (cap is not a failed turn)', async () => {
     const types: string[] = [];
     vi.stubGlobal(
       'fetch',
@@ -214,9 +214,9 @@ describe('sendTurnStream (SSE path — production default)', () => {
       },
     });
     expect(types).toEqual(['text_delta', 'done']);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe('output truncated');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.text).toBe('cut off mid');
       expect(result.turnRunId).toBe('wr_trunc');
     }
   });

@@ -1,10 +1,13 @@
 /**
  * Provider `finishReason` classification for one model round.
  *
- * `length` is the provider output-token cap (not an HTTP error, not a product
- * maxTokens we set). Folding it as “model finished” is a lie. `content-filter`
- * and `error` are also not a clean stop — they share the truncated-finish
- * fold but must not paint the same canvas string as a token cap.
+ * `content-filter` and `error` are irrecoverable provider refusals — the turn
+ * ends as SSE `error`. `length` is the provider output-token cap: the model
+ * already produced text, so the turn completes (`done`) with that partial
+ * answer. A cap is not a failed turn.
+ *
+ * There is no `isTruncatedFinish`. That classifier treated `length` as a
+ * turn-end; turn-end uses {@link isProviderRefusalFinish} only.
  */
 
 export const OUTPUT_TRUNCATED_ERROR = 'output truncated';
@@ -20,13 +23,14 @@ export const STEP_BUDGET_WRAPUP =
 export const STEP_BUDGET_WRAPUP_SYSTEM =
   'You are the Invincible coding agent. This wrap-up round has no tools. Do not call tools. Briefly tell the user what you completed this turn and what remains. Be concise.';
 
-export function isTruncatedFinish(reason: string | undefined): boolean {
-  return reason === 'length' || reason === 'content-filter' || reason === 'error';
+/** Provider refused or crashed — the only finishReasons that fail the turn. */
+export function isProviderRefusalFinish(reason: string | undefined): boolean {
+  return reason === 'content-filter' || reason === 'error';
 }
 
 /**
- * SSE / canvas error for a truncated `finishReason`.
- * `length` keeps the historical `output truncated` string.
+ * SSE / canvas error for a provider-refusal `finishReason`.
+ * `length` is not a refusal (callers must not fail the turn on it).
  */
 export function truncatedFinishError(reason: string | undefined): string {
   if (reason === 'content-filter') return CONTENT_FILTER_ERROR;

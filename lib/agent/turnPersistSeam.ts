@@ -36,8 +36,10 @@
  * injected, so this is safe to assemble at the DI root.
  */
 import {
+  HARNESS_SESSION_MAX_BODY_BYTES,
   TURN_MSG_CHECKPOINT_MAX_BYTES,
 } from '../sessionCloudCaps';
+import { fitSnapshotUtf8 } from './fitSnapshotUtf8';
 import {
   newBlobObjectId,
   isObjectIdBoundTo,
@@ -106,8 +108,8 @@ const toMessage = (err: unknown): string =>
  * via `setPersistSeamResolver` before `start(runTurnWorkflow, …)`.
  *
  * Business errors are **values**: every failure path returns `{ ok:false, code,
- * error }` (B7/B8 codes surfaced verbatim) — the loop terminates cleanly.
- * Never throws.
+ * error }` (B7/B8 codes surfaced verbatim). Persist `{ok:false}` of any code
+ * does not fail the turn. Never throws.
  */
 export function createTurnPersistSeam(
   deps: TurnPersistSeamDeps,
@@ -151,18 +153,39 @@ export function createTurnPersistSeam(
       if (input.fold?.usage !== undefined) patch.usage = input.fold.usage;
 
       let stored: SessionEnvelope | null = null;
+      let envelopeReadError: string | null = null;
       if (envelope) {
         try {
           stored = await envelope.readEnvelope(key);
         } catch (err) {
-          return {
-            ok: false,
-            code: 'write_failed',
-            error: `envelope read failed: ${toMessage(err)}`,
-          };
+          envelopeReadError = `envelope read failed: ${toMessage(err)}`;
         }
       }
       const updatedAt = clock(stored?.updatedAt ?? 0);
+
+      const failWrite = async (result: {
+        ok: false;
+        code: string;
+        error: string;
+      }): Promise<PersistStepResult> => {
+        if (status === 'completed') {
+          await overlayWorkerMeta({
+            envelopeStore,
+            key,
+            patch,
+            updatedAt,
+          });
+        }
+        return result;
+      };
+
+      if (envelopeReadError !== null) {
+        return await failWrite({
+          ok: false,
+          code: 'write_failed',
+          error: envelopeReadError,
+        });
+      }
 
       // This-run checkpoint is not the full session. Suffix-merge onto a
       // parseable prior pointer so a newer overlay clock cannot LWW-wipe
@@ -177,30 +200,30 @@ export function createTurnPersistSeam(
         try {
           raw = await blobStore.read(pointer);
         } catch (err) {
-          return {
+          return await failWrite({
             ok: false,
             code: 'write_failed',
             error: `bound transcriptPointer read failed: ${toMessage(err)}`,
-          };
+          });
         }
         if (raw === null) {
-          return {
+          return await failWrite({
             ok: false,
             code: 'write_failed',
             error:
               'bound transcriptPointer object is missing — refusing this-run-only replace.',
-          };
+          });
         }
         let parsed: unknown;
         try {
           parsed = JSON.parse(raw);
         } catch {
-          return {
+          return await failWrite({
             ok: false,
             code: 'write_failed',
             error:
               'bound transcriptPointer body is not JSON — refusing this-run-only replace.',
-          };
+          });
         }
         priorMessages = snapshotMessagesFromUnknown(parsed, scope.sessionId);
       }
@@ -210,14 +233,15 @@ export function createTurnPersistSeam(
           priorMessages,
           scope.sessionId,
         ) ?? input.content;
-      const stamped = stampSnapshotUpdatedAt(merged, updatedAt);
-      if (stamped === null) {
-        return {
+      const stampedRaw = stampSnapshotUpdatedAt(merged, updatedAt);
+      if (stampedRaw === null) {
+        return await failWrite({
           ok: false,
           code: 'write_failed',
           error: 'persist content is not a JSON object — cannot stamp updatedAt.',
-        };
+        });
       }
+      const stamped = fitSnapshotUtf8(stampedRaw, HARNESS_SESSION_MAX_BODY_BYTES);
 
       // Checkpoint (B6): write the bounded `{role,content}` projection as its
       // OWN Blob object; only the object id rides in meta. Runs AFTER the
@@ -227,11 +251,11 @@ export function createTurnPersistSeam(
         const bounded = truncateMessageCheckpoint(input.fold.checkpoint);
         const ckptObjectId = newBlobObjectId(scope);
         if (!isObjectIdBoundTo(ckptObjectId, scope)) {
-          return {
+          return await failWrite({
             ok: false,
             code: 'checkpoint_write_failed',
             error: 'minted checkpoint object id is not bound to the session scope.',
-          };
+          });
         }
         try {
           await blobStore.writeSegment({
@@ -243,11 +267,11 @@ export function createTurnPersistSeam(
           checkpointPointer = ckptObjectId;
           patch.checkpointPointer = ckptObjectId;
         } catch (err) {
-          return {
+          return await failWrite({
             ok: false,
             code: 'checkpoint_write_failed',
             error: `checkpoint blob write failed: ${toMessage(err)}`,
-          };
+          });
         }
       }
 
@@ -268,7 +292,9 @@ export function createTurnPersistSeam(
         // Stored envelopes ignore this and preserve their clock (B7).
         pointerUpdatedAt: 0,
       });
-      if (!seg.ok) return { ok: false, code: seg.code, error: seg.error };
+      if (!seg.ok) {
+        return await failWrite({ ok: false, code: seg.code, error: seg.error });
+      }
 
       const overlay = await overlayWorkerMeta({
         envelopeStore,
@@ -276,7 +302,16 @@ export function createTurnPersistSeam(
         patch,
         updatedAt,
       });
-      if (!overlay.ok) return { ok: false, code: overlay.code, error: overlay.error };
+      if (!overlay.ok) {
+        // B7 already committed the pointer. Retry overlay so a one-shot Redis
+        // blip on B8's read still writes `completed` (failWrite) instead of
+        // leaving `running` for F5 attach.
+        return await failWrite({
+          ok: false,
+          code: overlay.code,
+          error: overlay.error,
+        });
+      }
 
       return {
         ok: true,
