@@ -3,6 +3,10 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   MAX_MODEL_ID_LEN,
+  GATEWAY_MODELS_CACHE_TTL_MS,
+  GATEWAY_MODELS_FETCH_TIMEOUT_MS,
+  REASONING_EFFORT_MAX_BYTES,
+  REASONING_EFFORT_VALUES_MAX,
   REDIS_SAFE_OPAQUE_ID_MAX,
   STATUS_SLOT_MAX_BYTES,
   TURN_RUN_ID_MAX,
@@ -10,6 +14,7 @@ import {
   TURN_STATUS_MAX_BYTES,
   TURN_STATUS_VALUES,
   sanitizeModelId,
+  sanitizeReasoningEffort,
   sanitizeTurnRunId,
   sanitizeTurnStatus,
   sanitizeTurnStreamCursor,
@@ -123,6 +128,34 @@ describe('sanitizeModelId (plan #616 — selected-model carrier predicate + cap)
     // A 128-char printable id is accepted; 129 rejected.
     expect(sanitizeModelId('a'.repeat(MAX_MODEL_ID_LEN))).toBe('a'.repeat(MAX_MODEL_ID_LEN));
     expect(sanitizeModelId('a'.repeat(MAX_MODEL_ID_LEN + 1))).toBeUndefined();
+  });
+});
+
+describe('sanitizeReasoningEffort (plan #897)', () => {
+  it('accepts lowercase tokens and lowercases mixed case', () => {
+    expect(sanitizeReasoningEffort('low')).toBe('low');
+    expect(sanitizeReasoningEffort('MAX')).toBe('max');
+    expect(sanitizeReasoningEffort('provider-default')).toBe('provider-default');
+  });
+
+  it('drops empty, oversize, and illegal charset', () => {
+    expect(sanitizeReasoningEffort(undefined)).toBeUndefined();
+    expect(sanitizeReasoningEffort('')).toBeUndefined();
+    expect(sanitizeReasoningEffort('   ')).toBeUndefined();
+    expect(sanitizeReasoningEffort('has space')).toBeUndefined();
+    expect(sanitizeReasoningEffort('x'.repeat(REASONING_EFFORT_MAX_BYTES + 1))).toBeUndefined();
+    expect(sanitizeReasoningEffort(3)).toBeUndefined();
+  });
+
+  it('NEW cap is 32', () => {
+    expect(REASONING_EFFORT_MAX_BYTES).toBe(32);
+    expect(sanitizeReasoningEffort('a'.repeat(32))).toBe('a'.repeat(32));
+  });
+
+  it('NEW catalog caps match the locked table', () => {
+    expect(REASONING_EFFORT_VALUES_MAX).toBe(16);
+    expect(GATEWAY_MODELS_CACHE_TTL_MS).toBe(600_000);
+    expect(GATEWAY_MODELS_FETCH_TIMEOUT_MS).toBe(5_000);
   });
 });
 

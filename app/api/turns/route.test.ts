@@ -133,6 +133,7 @@ describe('POST /api/turns', () => {
           ...(typeof body?.modelId === 'string' ? { modelId: body.modelId } : {}),
           cwd: '.',
           ...(typeof body?.sessionId === 'string' ? { sessionId: body.sessionId } : {}),
+          ...(typeof body?.reasoning === 'string' ? { reasoning: body.reasoning } : {}),
         };
       },
     );
@@ -162,6 +163,9 @@ describe('POST /api/turns', () => {
     // Mock overlayWorkerMeta — defaults to success via resetServiceState.
     vi.doMock('../../../lib/agent/workerMetaOverlay', () => ({
       overlayWorkerMeta: overlayWorkerMetaMock,
+    }));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: vi.fn(async () => []),
     }));
   }
 
@@ -233,6 +237,7 @@ describe('POST /api/turns', () => {
     vi.doUnmock('../../../lib/tenancy/harnessSessionsRedis');
     vi.doUnmock('../../../lib/sessions/sessionStore');
     vi.doUnmock('workflow/api');
+    vi.doUnmock('../../../lib/gateway/modelCatalog');
     resetServiceState();
   });
 
@@ -262,6 +267,7 @@ describe('POST /api/turns', () => {
     expect(startArgs.scope).toEqual({ tenantId: 't1', userId: 'u1', sessionId: 's1' });
     expect(startArgs.tools).toBeUndefined();
     expect(startArgs.persistRunBind).toEqual({ cwd: 'app', activeSandboxId: 'sb_bind' });
+    expect(startArgs.reasoning).toBeUndefined();
 
     // Probe client was closed after start() succeeded.
     expect(sandboxCloseSpy).toHaveBeenCalledTimes(1);
@@ -280,6 +286,19 @@ describe('POST /api/turns', () => {
     expect(Number.isFinite(patchCall.updatedAt)).toBe(true);
     expect(patchCall.updatedAt).toBeGreaterThanOrEqual(FUTURE_UPDATED_AT + 1);
     expect(patchCall.key).toEqual({ tenantId: 't1', userId: 'u1', sessionId: 's1' });
+  });
+
+  it('body reasoning is passed to start() (plan #897)', async () => {
+    standardHarness();
+    mockAuthedSession();
+    mockStart();
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1', reasoning: 'low' });
+    expect(res.status).toBe(200);
+    const startArgs = startMock.mock.calls[0][1][0];
+    expect(startArgs.reasoning).toBe('low');
+    expect(startArgs.tools).toBeUndefined();
   });
 
   it('row 2 — missing sessionId → 400 (parseAgentBody would pass; route guard rejects), no start, no running PATCH', async () => {

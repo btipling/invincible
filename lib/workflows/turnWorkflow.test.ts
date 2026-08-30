@@ -191,4 +191,21 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
       /\.\.\.\s*\(\s*disableTools\s*\?\s*\{\s*disableTools:\s*true\s*\}\s*:\s*\{\s*\}\s*\)/,
     );
   });
+
+  it('forwards serializable reasoning into modelGenerateStep; does not fetch Gateway (plan #897)', () => {
+    const entry = readFileSync(fileURLToPath(new URL('./turnWorkflow.ts', import.meta.url)), 'utf8');
+    const step = readFileSync(
+      fileURLToPath(new URL('./modelGenerateStep.ts', import.meta.url)),
+      'utf8',
+    );
+    const entryCode = entry.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    const stepCode = step.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(entryCode).toMatch(/reasoning\?:\s*string/);
+    expect(entryCode).toMatch(/args\.reasoning\s*!==\s*undefined/);
+    expect(entryCode).not.toMatch(/modelCatalog/);
+    expect(stepCode).toMatch(/reasoning\?:\s*string/);
+    expect(stepCode).toMatch(/args\.reasoning\s*!==\s*undefined/);
+    expect(stepCode).not.toMatch(/modelCatalog/);
+    expect(stepCode).not.toMatch(/ai-gateway\.vercel\.sh/);
+  });
 });

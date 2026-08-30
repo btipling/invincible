@@ -75,6 +75,11 @@ export interface TurnWorkflowArgs {
    * Plain serializable values only.
    */
   persistRunBind?: PersistRunBind;
+  /**
+   * Optional resolved reasoning-effort token (plan #897). Serializable scalar;
+   * the HTTP boundary resolves Gateway/env/default — this step does not fetch.
+   */
+  reasoning?: string;
 }
 
 /**
@@ -112,6 +117,7 @@ export async function turnWorkflow(
       // model must see FS tools for the CURRENT sandbox + cwd.
       persistRunBind: persistRunBind ?? args.persistRunBind,
       ...(disableTools ? { disableTools: true } : {}),
+      ...(args.reasoning !== undefined ? { reasoning: args.reasoning } : {}),
     });
   };
   const toolStep: ToolStepFn = async ({ calls, freshnessSeed, persistRunBind }) => {

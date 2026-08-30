@@ -49,6 +49,9 @@ describe('POST /api/agent', () => {
       createProdServices: () => servicesState,
       createScriptConnection: vi.fn(),
     }));
+    vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+      effortValuesForModel: vi.fn(async () => []),
+    }));
   }
 
   afterEach(() => {
@@ -66,6 +69,7 @@ describe('POST /api/agent', () => {
     delete servicesState.harnessSessionsRedis;
     delete servicesState.userSkills;
     vi.doUnmock('../../../lib/di');
+    vi.doUnmock('../../../lib/gateway/modelCatalog');
     vi.doUnmock('../../../lib/agent/runAgent');
     vi.doUnmock('../../../lib/tenancy/session');
     vi.doUnmock('../../../lib/mcp/client');

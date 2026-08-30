@@ -6,6 +6,8 @@ import {
   missingGatewayKeyError,
 } from '../../../lib/chatServer';
 import { parseAgentBody } from '../../../lib/agent/agentBody';
+import { resolveAgentReasoning } from '../../../lib/agent/reasoningConfig';
+import { effortValuesForModel } from '../../../lib/gateway/modelCatalog';
 import type { SandboxClient } from '../../../lib/sandbox/client';
 import { runAgent, runAgentStream } from '../../../lib/agent/runAgent';
 import {
@@ -566,11 +568,17 @@ export async function POST(req: Request): Promise<Response> {
         { status: 400 },
       );
     }
+    const options = await effortValuesForModel(runParams.modelId);
+    const reasoning = resolveAgentReasoning(runParams.modelId, {
+      request: parsed.reasoning,
+      options,
+    });
     const finalRunParams: Parameters<typeof runAgent>[0] = {
       ...runParams,
       modelId: runParams.modelId,
       ...(personaPreamble ? { personaPreamble } : {}),
       ...(skills?.preamble ? { skillsPreamble: skills.preamble } : {}),
+      ...(reasoning !== undefined ? { reasoning } : {}),
     };
 
     // Soft path only when a REAL tool surface exists to justify it:

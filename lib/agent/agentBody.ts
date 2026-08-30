@@ -2,7 +2,7 @@
  * Agent-only request body parse. Chat stays on parseChatBody (no cwd).
  */
 import { parseChatBody } from '../chatServer';
-import { isRedisSafeOpaqueId } from '../sessionCloudCaps';
+import { isRedisSafeOpaqueId, sanitizeReasoningEffort } from '../sessionCloudCaps';
 import { parseInitialCwd } from './workPath';
 
 export type ParsedAgentBody =
@@ -22,6 +22,11 @@ export type ParsedAgentBody =
        * no inject (fail closed, no existence leak).
        */
       sessionId?: string;
+      /**
+       * Optional reasoning-effort token (plan #897). Omit/null/whitespace →
+       * unset (server default). Present invalid → 400.
+       */
+      reasoning?: string;
     }
   | { ok: false; error: string; status: number };
 
@@ -47,6 +52,7 @@ export function parseAgentBody(
           sandboxId?: unknown;
           personaId?: unknown;
           sessionId?: unknown;
+          reasoning?: unknown;
         })
       : {};
 
@@ -62,6 +68,17 @@ export function parseAgentBody(
   if (!sessionId.ok) {
     return sessionId;
   }
+  const reasoning = parseReasoning(obj.reasoning);
+  if (!reasoning.ok) {
+    return reasoning;
+  }
+
+  const extra = {
+    ...(sandboxId.value !== undefined ? { sandboxId: sandboxId.value } : {}),
+    ...(personaId.value !== undefined ? { personaId: personaId.value } : {}),
+    ...(sessionId.value !== undefined ? { sessionId: sessionId.value } : {}),
+    ...(reasoning.value !== undefined ? { reasoning: reasoning.value } : {}),
+  };
 
   // Omit / null → '.' always. Distinguish from present invalid (400) or empty (→ ".").
   if (!('cwd' in obj) || obj.cwd === undefined || obj.cwd === null) {
@@ -70,9 +87,7 @@ export function parseAgentBody(
       prompt: base.prompt,
       modelId: base.modelId,
       cwd: '.',
-      ...(sandboxId.value !== undefined ? { sandboxId: sandboxId.value } : {}),
-      ...(personaId.value !== undefined ? { personaId: personaId.value } : {}),
-      ...(sessionId.value !== undefined ? { sessionId: sessionId.value } : {}),
+      ...extra,
     };
   }
 
@@ -86,9 +101,7 @@ export function parseAgentBody(
     prompt: base.prompt,
     modelId: base.modelId,
     cwd: cwdParsed.cwd,
-    ...(sandboxId.value !== undefined ? { sandboxId: sandboxId.value } : {}),
-    ...(personaId.value !== undefined ? { personaId: personaId.value } : {}),
-    ...(sessionId.value !== undefined ? { sessionId: sessionId.value } : {}),
+    ...extra,
   };
 }
 
@@ -157,3 +170,28 @@ function parsePersonaId(
     status: 400,
   };
 }
+
+/**
+ * Parse optional `reasoning`. Omit/null/whitespace → unset (server default).
+ * Present invalid charset/length → 400.
+ */
+function parseReasoning(
+  raw: unknown,
+): { ok: true; value: string | undefined } | { ok: false; error: string; status: 400 } {
+  if (raw === undefined || raw === null) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw === 'string' && raw.trim() === '') {
+    return { ok: true, value: undefined };
+  }
+  const cleaned = sanitizeReasoningEffort(raw);
+  if (cleaned !== undefined) {
+    return { ok: true, value: cleaned };
+  }
+  return {
+    ok: false,
+    error: 'reasoning must be a lowercase effort token (^[a-z0-9_-]{1,32}$).',
+    status: 400,
+  };
+}
+

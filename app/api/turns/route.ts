@@ -49,6 +49,8 @@
  */
 import { start, getRun } from 'workflow/api';
 import { parseAgentBody } from '../../../lib/agent/agentBody';
+import { resolveAgentReasoning } from '../../../lib/agent/reasoningConfig';
+import { effortValuesForModel } from '../../../lib/gateway/modelCatalog';
 import {
   AGENT_STREAM_CONTENT_TYPE,
   wantsAgentStream,
@@ -137,7 +139,7 @@ function isHardSandboxDeny(
  * - `start` throw → 503 fail-closed, no `/api/agent` fallback.
  *
  * The route passes ONLY serializable values to `start()`: `scope`, `modelId`,
- * `userMessage`, and optional `persistRunBind`. NO `tools` dict — tool schemas
+ * `userMessage`, optional `persistRunBind`, optional `reasoning`. NO `tools` dict — tool schemas
  * are assembled in-step via the shared `assembleDurableToolWorld` helper.
  */
 export async function POST(req: Request): Promise<Response> {
@@ -378,12 +380,18 @@ export async function POST(req: Request): Promise<Response> {
     // NO `tools` dict — tool schemas are assembled in-step via the shared
     // `assembleDurableToolWorld` helper, so the model sees the same tools
     // the execute step can run.
+    const options = await effortValuesForModel(byok.modelId);
+    const reasoning = resolveAgentReasoning(byok.modelId, {
+      request: parsed.reasoning,
+      options,
+    });
     const run = await start(turnWorkflow, [
       {
         userMessage: parsed.prompt,
         modelId: byok.modelId,
         scope,
         ...(persistRunBind ? { persistRunBind } : {}),
+        ...(reasoning !== undefined ? { reasoning } : {}),
       },
     ]);
 
