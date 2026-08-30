@@ -166,6 +166,7 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Logical cwd parse / default | `lib/agent/agentBody.ts`, `lib/sandbox/config.ts`, `lib/agent/workPath.ts` |
 | Host consumer + collapse/caps | `lib/harnessChat.ts`, `lib/agentApi.ts` |
 | Truncated / capped fold | `lib/agent/modelFinish.ts` (`truncatedFinishError`), `lib/workflows/turnLoop.ts` (empty tools + truncated `finishReason` → SSE `error` with the mapped string, not `done`; 512-step cap same; one tools-off wrap-up so the model sees the error) |
+| Durable persist | `lib/workflows/persistStep.ts` (Blob JSON is `id` + `messages`, not `deltas`), `lib/agent/turnPersistSeam.ts` (trim oldest to 8 MiB), `lib/workflows/turnLoop.ts` (`write_failed` continues the loop; `invalid_scope` / `not_envelope_store` still fail). Persist oversize is **not** an SSE `error`. |
 | Durable tool batch | `lib/workflows/toolExecuteStep.ts` (`{ calls }` — one step per model round; waves at `change_dir` / `meta_sandbox_switch` / `write_file` / `str_replace`; live `tool_result` on one held writer; `maxRetries = 0` so a timeout/kill cannot replay applied writes; 1-call infra throws retry in-process), `lib/workflows/toolWaves.ts`, `lib/workflows/turnLoop.ts` (persist once after the batch) |
 | Workflows step logs | `lib/workflows/turnLog.ts`, `lib/workflows/modelGenerateStep.ts`, `lib/workflows/persistStep.ts` |
 | Thinking paint | `native/harness/src/ui/thinking.zig` (protocol v8 kind) |

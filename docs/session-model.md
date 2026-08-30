@@ -236,7 +236,7 @@ for the open tab).
 | Messages per record | **no count cap** | Body cap may drop oldest if needed |
 | Per-message text | **262 144** UTF-8 bytes | Aligns with bridge `MAX_MSG_LEN` |
 | Function-carried full-record body | **2 MiB** (`HARNESS_SESSION_MAX_FUNCTION_BODY_BYTES`) | `/api/sessions/:id` rollforward PUT/GET gate + host rollforward trim — must stay well under the 4.5 MiB Vercel Function payload ceiling (a raised cap never re-enables a one-shot >4.5 MB Function body) |
-| Blob transcript-object body | **8 MiB** (`HARNESS_SESSION_MAX_BODY_BYTES`) | **Object** ceiling only — client→Blob upload, NOT a Function body; the envelope/Blob path passes this cap to `trimForCloudPut` |
+| Blob transcript-object body | **8 MiB** (`HARNESS_SESSION_MAX_BODY_BYTES`) | **Object** ceiling only — client→Blob upload, NOT a Function body. Host `trimForCloudPut` and worker persist both **drop oldest messages** to fit. Hitting the ceiling is a trim, not a turn-end. |
 | Record id / tenant / user | max **512**, Redis-safe `^[A-Za-z0-9_-]{1,512}$` | so `KEYS`/prefix globs can never bleed |
 | Attached-skill inject | **256 KiB** total (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`) | bodies folded into `skillsPreamble` greedily up to this per-turn budget (count cap alone is not a size cap); a new attach that would exceed it is rejected (`too_large` / `budget`) and never counted as attached |
 
@@ -260,11 +260,14 @@ the transcript field (same replace contract as PUT).
 
 ### Envelope + Blob transcript carrier (phase 0 #515)
 
-The **only large surface** of a session — the transcript — lives in append-only
+The **only large surface** of a session — the transcript — lives in
 **objects** in Vercel Blob (S3-backed; BYO S3/R2 behind the same seam), **never in
 Redis and never through a Function payload**. Redis keeps the **small, always-fetchable
 envelope** (`harness:envelope:…`): ownership, `createdAt`, `updatedAt` (LWW), reserved
 `meta`, and `meta.transcriptPointer` (the key of the latest transcript object).
+Worker persist writes a merged snapshot of `id` + `messages` (not the this-run
+`deltas` array) and **trims oldest messages** to the 8 MiB object ceiling so a
+fat tool batch cannot kill the turn. Host PUT uses the same trim.
 
 - **Client→Blob uploads only.** The server holds the Blob credential
   (`BLOB_READ_WRITE_TOKEN`) and mints a **short-lived, scoped, credential-checked** upload

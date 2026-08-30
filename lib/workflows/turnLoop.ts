@@ -23,8 +23,9 @@
  *    plan #880). This core still writes loop-owned `done` / `error` and
  *    wrap-up skipped-tool `tool_result`. Transcript/checkpoint live in Blob.
  *  - The writable is closed **exactly once** on every terminal path — success,
- *    model/tool/persist fail (`{ok:false}` value), step cap, or cancel. A failed
- *    terminal step never tears down the loop without closing the wire.
+ *    model/tool fail, persist programmer error (`invalid_scope` /
+ *    `not_envelope_store`), step cap, or cancel. Persist `write_failed` does
+ *    **not** fail the turn (plan #885).
  *  - Tool business errors are **values**, not throws: a step returning
  *    `{ok:false}` (or a batch item `{ok:false}`) terminates the loop cleanly
  *    (never retried 3× by the SDK).
@@ -556,6 +557,31 @@ export async function runTurnLoop(
     });
   };
 
+  const isPersistBookkeepingFail = (code: string): boolean =>
+    code === 'write_failed' ||
+    code === 'pointer_write_failed' ||
+    code === 'checkpoint_write_failed' ||
+    code === 'lww_conflict';
+
+  type PersistOutcome =
+    | { kind: 'ok' }
+    | { kind: 'bookkeeping' }
+    | { kind: 'fatal'; error: string };
+
+  const persistOnce = async (terminal: boolean): Promise<PersistOutcome> => {
+    const persisted = await persistNow(terminal);
+    if (persisted.ok) {
+      deltas.push(persisted);
+      messages.push({ role: 'persist', status: persisted.status });
+      return { kind: 'ok' };
+    }
+    if (isPersistBookkeepingFail(persisted.code)) {
+      messages.push({ role: 'persist', ok: false, code: persisted.code });
+      return { kind: 'bookkeeping' };
+    }
+    return { kind: 'fatal', error: persisted.error };
+  };
+
   try {
     while (steps < cap) {
       round += 1;
@@ -589,12 +615,10 @@ export async function runTurnLoop(
       // persist-completed + SSE error, not “model finished”.
       const calls: TurnToolCallDelta[] = gen.delta.toolCalls ?? [];
       if (calls.length === 0) {
-        const persisted = await persistNow(true);
-        if (!persisted.ok) {
+        const persisted = await persistOnce(true);
+        if (persisted.kind === 'fatal') {
           return fail('failed', round, steps, persisted.error);
         }
-        deltas.push(persisted);
-        messages.push({ role: 'persist', status: persisted.status });
         if (isTruncatedFinish(gen.delta.finishReason)) {
           return fail('failed', round, steps, truncatedFinishError(gen.delta.finishReason));
         }
@@ -609,13 +633,11 @@ export async function runTurnLoop(
       // persist after this in-budget model" pattern as terminal (may increment
       // steps one past the cap). Once per run.
       if (!didUserLinePersist) {
-        const persisted = await persistNow(false);
+        const persisted = await persistOnce(false);
         didUserLinePersist = true;
-        if (!persisted.ok) {
+        if (persisted.kind === 'fatal') {
           return fail('failed', round, steps, persisted.error);
         }
-        deltas.push(persisted);
-        messages.push({ role: 'persist', status: persisted.status });
       }
 
       // One tool-batch step for this round's toolCalls (plan #880 / #872).
@@ -681,12 +703,10 @@ export async function runTurnLoop(
         // User-line persist and wrap-up persist already increment past cap.
         if (items.length > 0) {
 
-          const persisted = await persistNow(false);
-          if (!persisted.ok) {
+          const persisted = await persistOnce(true);
+          if (persisted.kind === 'fatal') {
             return fail('failed', round, steps, persisted.error);
           }
-          deltas.push(persisted);
-          messages.push({ role: 'persist', status: persisted.status });
         }
         if (cancelled) {
           const cancelledItem = items.find(
@@ -724,12 +744,10 @@ export async function runTurnLoop(
       }
 
       if (steps < cap) {
-        const persisted = await persistNow(false);
-        if (!persisted.ok) {
+        const persisted = await persistOnce(false);
+        if (persisted.kind === 'fatal') {
           return fail('failed', round, steps, persisted.error);
         }
-        deltas.push(persisted);
-        messages.push({ role: 'persist', status: persisted.status });
       }
 
     }
@@ -782,12 +800,10 @@ export async function runTurnLoop(
       if (wrapDelta.text) assistantText += wrapDelta.text;
       messages.push({ role: 'assistant', delta: wrapDelta });
     }
-    const persisted = await persistNow(true);
-    if (!persisted.ok) {
+    const persisted = await persistOnce(true);
+    if (persisted.kind === 'fatal') {
       return fail('failed', round, steps, persisted.error);
     }
-    deltas.push(persisted);
-    messages.push({ role: 'persist', status: persisted.status });
     return fail('capped', round, steps, STEP_BUDGET_ERROR);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -21,6 +21,7 @@ import { createTurnPersistSeam } from './turnPersistSeam';
 import type { PersistStepSeam } from '../workflows/persistStep';
 import { reachableImports } from '../workflows/staticGraph';
 import { parseCloudSessionSnapshot } from '../sessionRepository';
+import { HARNESS_SESSION_MAX_BODY_BYTES } from '../sessionCloudCaps';
 
 const scope: ObjectScope = {
   tenantId: 'tenant-1',
@@ -221,10 +222,12 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     if (res.ok) return;
     expect(res.code).toBe('write_failed');
     const env = await envelopeStore.readEnvelope(key);
-    expect(env).toBeNull(); // pointer never advanced; nothing written
+    expect(env?.meta?.transcriptPointer).toBeUndefined();
+    expect(env?.meta?.turnStatus).toBe('completed');
+    expect(env?.meta?.turnRunId).toBe(realRunId);
   });
 
-  it('matrix 6b — checkpoint write fails → {ok:false, code:checkpoint_write_failed}; terminal meta not written', async () => {
+  it('matrix 6b — checkpoint write fails → {ok:false, code:checkpoint_write_failed}; terminal overlay still completed', async () => {
     const { seam, envelopeStore } = await makeSeam({ blobStore: new ThrowingBlobStore() });
     const res = await seam.persist({
       turnRunId: realRunId,
@@ -235,6 +238,20 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.code).toBe('checkpoint_write_failed');
+    const env = await envelopeStore.readEnvelope(key);
+    expect(env?.meta?.transcriptPointer).toBeUndefined();
+    expect(env?.meta?.turnStatus).toBe('completed');
+  });
+
+  it('mid-turn write_failed does not overlay completed', async () => {
+    const { seam, envelopeStore } = await makeSeam({ blobStore: new ThrowingBlobStore() });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: '{"delta":"x"}',
+      terminal: false,
+    });
+    expect(res.ok).toBe(false);
     const env = await envelopeStore.readEnvelope(key);
     expect(env).toBeNull();
   });
@@ -509,7 +526,7 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(res.code).toBe('write_failed');
     const env = await envelopeStore.readEnvelope(key);
     expect(env?.meta?.transcriptPointer).toBe(priorId);
-    expect(env?.meta?.turnStatus).toBeUndefined();
+    expect(env?.meta?.turnStatus).toBe('completed');
     expect(env?.meta?.checkpointPointer).toBeUndefined();
   });
 
@@ -1426,5 +1443,53 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     ]);
     expect(parsed?.messages.filter((m) => m.role === 'user')).toHaveLength(2);
     expect(parsed?.messages.filter((m) => m.role === 'tool_run')).toHaveLength(2);
+  });
+
+  it('merged snapshot over the 8 MiB ceiling trims oldest and still writes (plan #885)', async () => {
+    const fat = 'x'.repeat(200_000);
+    const priorMessages = Array.from({ length: 50 }, (_, i) => ({
+      id: `h${i}`,
+      role: 'user' as const,
+      text: fat,
+      at: i + 1,
+    }));
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1,
+        messages: priorMessages,
+      }),
+      maxBytes: 16 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_new', role: 'user', text: 'newest-line', at: 1 }],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const raw = await blobStore.read(res.objectId!);
+    expect(raw).not.toBeNull();
+    expect(Buffer.byteLength(raw ?? '', 'utf8')).toBeLessThanOrEqual(
+      HARNESS_SESSION_MAX_BODY_BYTES,
+    );
+    const parsed = parseCloudSessionSnapshot(JSON.parse(raw ?? 'null'), scope.sessionId);
+    expect(parsed?.messages.at(-1)?.text).toBe('newest-line');
+    expect(parsed?.messages[0]?.id).not.toBe('h0');
   });
 });

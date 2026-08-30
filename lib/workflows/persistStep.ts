@@ -20,8 +20,8 @@
  * **never** session id, plan lock + the serialized delta log for replay). No
  * closures / seams are passed as args.
  *
- * Business errors are values: a persist failure returns `{ok:false, code, error}`
- * (the loop terminates cleanly; the writable is still closed).
+ * Business errors are values: a persist failure returns `{ok:false, code, error}`.
+ * `write_failed` does not kill a useful turn (plan #885); the writable is still closed.
  */
 import { checkpointToSnapshotMessages } from '../agent/messageCheckpoint';
 import { logTurnPersist } from './turnLog';
@@ -185,10 +185,11 @@ export async function persistStep(
     seam = createProdServices().createPersistStepSeam(args.scope);
   }
 
+  // Tool results already live on checkpoint messages. Deltas stay step args
+  // for Workflows replay — they must not double into the 8 MiB Blob object.
   const content = JSON.stringify({
     id: sessionId,
     messages: checkpointToSnapshotMessages(args.fold?.checkpoint ?? []),
-    deltas: args.deltas,
   });
   const result = await seam.persist({
     turnRunId: args.turnRunId,

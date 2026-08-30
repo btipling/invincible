@@ -36,8 +36,10 @@
  * injected, so this is safe to assemble at the DI root.
  */
 import {
+  HARNESS_SESSION_MAX_BODY_BYTES,
   TURN_MSG_CHECKPOINT_MAX_BYTES,
 } from '../sessionCloudCaps';
+import { fitSnapshotUtf8 } from './fitSnapshotUtf8';
 import {
   newBlobObjectId,
   isObjectIdBoundTo,
@@ -164,6 +166,22 @@ export function createTurnPersistSeam(
       }
       const updatedAt = clock(stored?.updatedAt ?? 0);
 
+      const failWrite = async (result: {
+        ok: false;
+        code: string;
+        error: string;
+      }): Promise<PersistStepResult> => {
+        if (status === 'completed') {
+          await overlayWorkerMeta({
+            envelopeStore,
+            key,
+            patch,
+            updatedAt,
+          });
+        }
+        return result;
+      };
+
       // This-run checkpoint is not the full session. Suffix-merge onto a
       // parseable prior pointer so a newer overlay clock cannot LWW-wipe
       // earlier turns. Leftover `{ deltas }` (readable JSON, unparseable
@@ -177,30 +195,30 @@ export function createTurnPersistSeam(
         try {
           raw = await blobStore.read(pointer);
         } catch (err) {
-          return {
+          return await failWrite({
             ok: false,
             code: 'write_failed',
             error: `bound transcriptPointer read failed: ${toMessage(err)}`,
-          };
+          });
         }
         if (raw === null) {
-          return {
+          return await failWrite({
             ok: false,
             code: 'write_failed',
             error:
               'bound transcriptPointer object is missing — refusing this-run-only replace.',
-          };
+          });
         }
         let parsed: unknown;
         try {
           parsed = JSON.parse(raw);
         } catch {
-          return {
+          return await failWrite({
             ok: false,
             code: 'write_failed',
             error:
               'bound transcriptPointer body is not JSON — refusing this-run-only replace.',
-          };
+          });
         }
         priorMessages = snapshotMessagesFromUnknown(parsed, scope.sessionId);
       }
@@ -210,14 +228,15 @@ export function createTurnPersistSeam(
           priorMessages,
           scope.sessionId,
         ) ?? input.content;
-      const stamped = stampSnapshotUpdatedAt(merged, updatedAt);
-      if (stamped === null) {
-        return {
+      const stampedRaw = stampSnapshotUpdatedAt(merged, updatedAt);
+      if (stampedRaw === null) {
+        return await failWrite({
           ok: false,
           code: 'write_failed',
           error: 'persist content is not a JSON object — cannot stamp updatedAt.',
-        };
+        });
       }
+      const stamped = fitSnapshotUtf8(stampedRaw, HARNESS_SESSION_MAX_BODY_BYTES);
 
       // Checkpoint (B6): write the bounded `{role,content}` projection as its
       // OWN Blob object; only the object id rides in meta. Runs AFTER the
@@ -243,11 +262,11 @@ export function createTurnPersistSeam(
           checkpointPointer = ckptObjectId;
           patch.checkpointPointer = ckptObjectId;
         } catch (err) {
-          return {
+          return await failWrite({
             ok: false,
             code: 'checkpoint_write_failed',
             error: `checkpoint blob write failed: ${toMessage(err)}`,
-          };
+          });
         }
       }
 
@@ -268,7 +287,9 @@ export function createTurnPersistSeam(
         // Stored envelopes ignore this and preserve their clock (B7).
         pointerUpdatedAt: 0,
       });
-      if (!seg.ok) return { ok: false, code: seg.code, error: seg.error };
+      if (!seg.ok) {
+        return await failWrite({ ok: false, code: seg.code, error: seg.error });
+      }
 
       const overlay = await overlayWorkerMeta({
         envelopeStore,
