@@ -1644,3 +1644,71 @@ describe('createHttpSessionRepository — envelope carrier (phase 0 #515)', () =
     expect(res).toEqual({ action: 'notfound' });
   });
 });
+
+describe('backend-agents F21 — persisted submit-queue mirror (plan #815)', () => {
+  const idA = '11111111-1111-4111-8111-111111111111';
+  const UPLOAD_URL = 'https://blob.example/upload';
+
+  it('trimForCloudPut folds the queue mirror into the record body; omits when absent', () => {
+    const out = trimForCloudPut({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      queue: ['one', 'two'],
+    });
+    expect(out.queue).toEqual(['one', 'two']);
+    const bare = trimForCloudPut({ id: 's', updatedAt: 1, messages: [] });
+    expect('queue' in bare).toBe(false);
+  });
+
+  it('trimForCloudPut drops a poisoned mirror (never PUTs junk prompts)', () => {
+    const out = trimForCloudPut({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      queue: 'not an array' as unknown as string[],
+    });
+    expect('queue' in out).toBe(false);
+  });
+
+  it('parseCloudSessionSnapshot restores the queue mirror; poison / empty stays unset', () => {
+    const out = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      queue: [' alpha ', 42, ''],
+    });
+    expect(out?.queue).toEqual(['alpha']);
+
+    const empty = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      queue: [],
+    });
+    expect('queue' in (empty ?? {})).toBe(false);
+
+    const junk = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      queue: 'nope',
+    });
+    expect('queue' in (junk ?? {})).toBe(false);
+  });
+
+  it('overlayEnvelopeMeta leaves the queue mirror untouched (meta is not its carrier)', () => {
+    const transcript: SessionSnapshot = {
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      queue: ['p1'],
+    };
+    const over = overlayEnvelopeMeta(transcript, {
+      transcriptPointer: 'tx_1',
+      turnStatus: 'running',
+    });
+    expect(over.queue).toEqual(['p1']);
+  });
+});
+

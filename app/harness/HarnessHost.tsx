@@ -53,6 +53,13 @@ import {
 } from '../../lib/harnessHostModelPersist';
 import { paintQuotaAfterRebuild, tryLocalSave } from '../../lib/hostQuotaError';
 import {
+  TURN_QUEUE_DRAIN_MAX_ATTEMPTS,
+  queueAppend,
+  queueRestoreHead,
+  rearmQueueFromMirror,
+  removeQueuedText,
+} from '../../lib/turnQueue';
+import {
   AUTO_CONTINUE_PROMPT,
   migrateAutoContinueFlag,
   shouldAutoContinueAfterGiveUp,
@@ -224,6 +231,16 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
    */
   const didAutoContinueBySessionRef = useRef(new Map<string, boolean>());
   /**
+   * backend-agents F21 (plan #815) — per-session failed-queue-start attempts.
+   * A persisted queue item whose POST /api/turns start failed (non-durable
+   * error: pre-header network/5xx/subscribe-fail — never a server-side run)
+   * re-promotes on a later poll tick; this in-memory counter bounds those
+   * host-side retries per session. Cleared when a queue item durably starts
+   * and on give-up (drop-with-paint resets the budget). A reload starts a
+   * fresh budget (the mirror re-arms with a fresh 5).
+   */
+  const drainAttemptsRef = useRef(new Map<string, number>());
+  /**
    * Plan #813 (E19) — SSE frames **this JS heap** applied for the current
    * `turnRunId`. Null after F5 / adopt / switch (ring rebuilt from Blob).
    * Hot resume reads this, never envelope `C`.
@@ -274,6 +291,19 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         windowStart,
       });
       ringWindowStartRef.current = start;
+      // ── backend-agents F21 (plan #815): reload hydration ──
+      // A default `hydrateMessages` clear wipes the Wasm submit FIFO; re-arm
+      // it from the persisted mirror (`session.queue`). Guards inside:
+      // skips when the Wasm queue is non-empty (live FIFO — never
+      // double-enqueues) and on any insert reject (fail-closed; the items
+      // stay in the mirror). Reverse-order `queuedInsertFront` rebuilds the
+      // original FIFO order. `inv_queued_count` parity holds: the mirror was
+      // exactly the set the previous heap drained from.
+      try {
+        rearmQueueFromMirror(bridge, session);
+      } catch {
+        /* torn-down bridge / stub without queue exports */
+      }
       return start;
     },
     [],
@@ -490,6 +520,19 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       const attaching = attach != null;
       const sendWhileRunning =
         opts?.attach == null && attaching && (prompt ?? '').trim().length > 0;
+      // ── backend-agents F21 (plan #815): submit while a run is live ──
+      // The prompt did NOT start a turn (it joins the Wasm band as a queued
+      // follow-up); persist it into the mirror so it survives a reload. The
+      // drain-start reconcile below removes it again when its own turn is
+      // accepted. Host-known items only (band-internal enqueues are not
+      // host-observable without a protocol bump — documented residual).
+      if (sendWhileRunning) {
+        const liveNow = sessionRef.current;
+        const p = (prompt ?? '').trim();
+        if (p && !(liveNow.queue ?? []).includes(p)) {
+          persist(queueAppend(liveNow, p));
+        }
+      }
       const modelId = bridge.getSelectedModel();
       if (!attaching && !modelId) {
         setHostNote('No model selected — catalog empty, failed to load, or not granted.');
@@ -572,8 +615,75 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             ...(attach ? { attach } : {}),
           },
         );
+        // ── backend-agents F21 (plan #815): persisted submit-queue reconcile ──
+        // Runs BEFORE persist so BOTH the live and detached persist paths
+        // carry the reconciled mirror. The mirror rides `session.queue`
+        // (transcript blob carrier). Every non-attach runPrompt call is
+        // host-driven (composer or drain-start); the SAME action that started
+        // the turn also updates the mirror:
+        //   - durable start reached (turn completed, OR the failure blended a
+        //     `x-workflow-run-id` header — the route ACCEPTED the POST and the
+        //     run is live server-side): the prompt left the queue →
+        //     removeQueuedText + reset the budget. Keying on the durable
+        //     start (not the terminal) keeps reload hydration from
+        //     double-enqueueing a prompt whose run survived the crash.
+        //   - failed start before any durable begin (pre-header network /
+        //     5xx / subscribe-fail / 409 live-lock / 429): the prompt is
+        //     still pending → queueRestoreHead (persist + re-arm the band
+        //     head) and count a failed attempt (bounded budget,
+        //     drop-with-paint at TURN_QUEUE_DRAIN_MAX_ATTEMPTS).
+        //   - attach / drain-attach: untouched (this call never started a
+        //     turn from the queue).
+        let reconciled = next;
+        if (!attaching) {
+          const pendingText = (prompt ?? '').trim();
+          const wasQueued =
+            pendingText.length > 0 &&
+            (reconciled.queue ?? []).includes(pendingText);
+          // AgentFailure/AgentSuccess blend `turnRunId` from the response
+          // header (post-headers aborts included, adversarial #844); the
+          // legacy chat result never carries one.
+          const resultRunId =
+            'turnRunId' in result && typeof result.turnRunId === 'string'
+              ? result.turnRunId
+              : undefined;
+          if (result.ok || resultRunId !== undefined) {
+            // Durable start reached: the prompt left the queue. Keying on the
+            // durable start (not the terminal) keeps reload hydration from
+            // double-enqueueing a prompt whose run survived the crash.
+            if (wasQueued) {
+              reconciled = removeQueuedText(reconciled, pendingText);
+            }
+            drainAttemptsRef.current.delete(reconciled.id);
+          } else if (wasQueued) {
+            const attempts =
+              (drainAttemptsRef.current.get(reconciled.id) ?? 0) + 1;
+            if (attempts >= TURN_QUEUE_DRAIN_MAX_ATTEMPTS) {
+              // Give-up: drop-with-paint (Caps table) — never a silent drop.
+              drainAttemptsRef.current.delete(reconciled.id);
+              reconciled = removeQueuedText(reconciled, pendingText);
+              try {
+                bridge.pushMessage(
+                  MessageKind.Error,
+                  `Queued prompt dropped after ${attempts} failed starts: ${result.error}`,
+                );
+              } catch {
+                /* torn-down bridge */
+              }
+            } else {
+              // Defer: stays the head; persist + re-arm the Wasm band head.
+              drainAttemptsRef.current.set(reconciled.id, attempts);
+              reconciled = queueRestoreHead(reconciled, pendingText);
+              try {
+                bridge.queuedInsertFront(pendingText);
+              } catch {
+                /* torn-down bridge — mirror is already restored */
+              }
+            }
+          }
+        }
         if (turnEpochRef.current !== epoch) {
-          persistTurn(next, next.turnStatus !== 'running');
+          persistTurn(reconciled, reconciled.turnStatus !== 'running');
           return;
         }
         // Plan #616 (source #610): fold the LIVE selection into the snapshot before
@@ -582,8 +692,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // just carries that same truth forward into the snapshot).
         const liveId = bridge.getSelectedModel();
         const folded: SessionSnapshot = liveId
-          ? { ...next, selectedModel: liveId }
-          : next;
+          ? { ...reconciled, selectedModel: liveId }
+          : reconciled;
         // Always persist — including user Stop/cancel (and late abort after a finished
         // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
         // Load earlier / refresh could wipe the cancelled turn from the ring.
@@ -596,6 +706,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         } else {
           heapAppliedRef.current = null;
         }
+
         // Adversarial #857: Send-while-running that finished the run (`done` /
         // 404 / post-start SSE error) re-POSTs the remapped prompt — C15 409
         // no longer applies. Wasm follow-up was stripped; pushUser paints it.
@@ -1166,6 +1277,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     // Adversarial #844: mark discarded BEFORE remove so a late persistTurn
     // preserve PUT cannot LWW-upsert this row back into the picker.
     discardedSessionIdsRef.current.add(clearedId);
+    // F21: drop the cleared session's failed-drain budget (fresh session).
+    drainAttemptsRef.current.delete(clearedId);
     // INTENTIONAL ack-only (not flushPendingThenRestore). Clear deletes this
     // row. Fold-after-remove resurrects via a new-epoch PUT; fold-before-remove
     // is a wasted PUT then DELETE. New/switch flush; Clear acks. See

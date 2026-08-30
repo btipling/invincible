@@ -36,6 +36,7 @@ import {
   decodeUsageMetaString,
   encodeUsageMetaString,
 } from './agent/usageSummary';
+import { sanitizeQueue } from './turnQueue';
 
 // Must stay in sync with the server-side role allowlist (`harnessSessions.ts`):
 // a kind-7 `skill_attached` row rides the transcript the host PUTs after `/foo`,
@@ -296,6 +297,12 @@ export function parseCloudSessionSnapshot(
     const usage = decodeUsageMetaString(meta.usage);
     if (usage !== undefined) snapshot.usage = usage;
   }
+  // backend-agents F21 (plan #815): restore the persisted submit-queue mirror
+  // from the transcript body. Fail-closed sanitize (drop blanks/over-cap items,
+  // cap depth); an empty/absent result stays unset — a poisoned blob can never
+  // inject junk prompts into the host drain.
+  const queue = sanitizeQueue(o.queue);
+  if (queue !== undefined && queue.length > 0) snapshot.queue = queue;
   return snapshot;
 }
 
@@ -363,6 +370,12 @@ export function overlayEnvelopeMeta(
   const turnStreamCursor = sanitizeTurnStreamCursor(envMeta.turnStreamCursor);
   if (turnStreamCursor !== undefined) out.turnStreamCursor = turnStreamCursor;
   else delete out.turnStreamCursor;
+
+  // NOTE: the F21 submit-queue mirror (`snapshot.queue`) rides the TRANSCRIPT
+  // blob body (parseCloudSessionSnapshot), NOT the envelope meta — it is
+  // transcript-bulk state, not a scalar carrier. overlayEnvelopeMeta must not
+  // clear it (meta is not the queue's carrier), so there is deliberately no
+  // queue handling here.
 
   return out;
 }
@@ -497,11 +510,17 @@ export function parseSessionSummaryList(body: unknown): SessionSummary[] | null 
   return out;
 }
 
-/** The PUT wire body: `{ id, updatedAt, messages, meta? }` (P1/GAP-1 folds the session-carrier fields into `meta`). */
+/** The PUT wire body: `{ id, updatedAt, messages, queue?, meta? }` (P1/GAP-1 folds the session-carrier fields into `meta`; F21 adds the `queue` mirror). */
 export type CloudPutBody = {
   id: string;
   updatedAt: number;
   messages: SessionMessage[];
+  /**
+   * backend-agents F21 (plan #815) — the persisted submit-queue mirror
+   * (ordered host-known prompts, oldest first). Record-body (transcript-blob)
+   * state, never `meta` (scalar-only). Omitted = no queued prompts.
+   */
+  queue?: string[];
   meta?: {
     activeSandboxId?: string;
     logicalCwd?: string;
@@ -652,11 +671,17 @@ export function trimForCloudPut(
         : m.text,
     at: m.at,
   }));
+  // backend-agents F21 (plan #815): the submit-queue mirror rides the record
+  // body (the transcript object on the envelope carrier / the roll-forward
+  // record). Re-sanitized (fail-closed) — a poisoned local value is dropped,
+  // never PUT. Empty mirror omits the field (absent = clear on adopt-restore).
+  const queue = sanitizeQueue(snapshot.queue);
   const meta = cloudMetaFor(snapshot);
   const fresh = (ms: CloudPutBody['messages']): CloudPutBody => ({
     id: snapshot.id,
     updatedAt: snapshot.updatedAt,
     messages: ms,
+    ...(queue !== undefined && queue.length > 0 ? { queue } : {}),
     ...(meta !== undefined ? { meta } : {}),
   });
 
