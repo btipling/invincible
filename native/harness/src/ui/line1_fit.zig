@@ -72,10 +72,10 @@ test "tight budget ellipsizes then drops provider before touching model" {
 
 test "narrow ~390 px: drop build-id, shrink provider, keep model+effort" {
     const t = @import("std").testing;
-    // Typical 390-wide content ~370 after pad. spinner 13, build 70, model 140,
-    // effort 90, provider 70 → 383 > 370 so drop build (313 remaining widgets
-    // vs rest 357) — provider stays (maybe ellipsized by caller if still over).
-    const d = dropLine1(370, 13, 70, 140, 90, 70);
+    // Content budget 280 (390-wide after pad/safety). spinner 13, rest = 267.
+    // build 70 + model 140 + effort 90 + provider 70 = 370 > 267 → drop build.
+    // after_build 300 > 267, avail = 267-140-90 = 37 → shrink provider (not drop).
+    const d = dropLine1(280, 13, 70, 140, 90, 70);
     try t.expect(!d.paint_build_id);
-    try t.expect(d.provider_max_w > 0);
+    try t.expectEqual(@as(f32, 37), d.provider_max_w);
 }

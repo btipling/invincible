@@ -149,7 +149,7 @@ host env.
 Vercel AI Gateway may resolve the **same** model id to different upstreams
 (for example Together vs Fireworks). That is Gateway routing, not a second
 in-repo model catalog. The harness status bar shows the resolved provider
-slug as a display-only label next to the model menu (hidden when unknown).
+as a display-only label next to the model menu (hidden when unknown).
 
 ## Tools and sandbox
 

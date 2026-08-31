@@ -5,7 +5,11 @@ import {
   extractResolvedProvider,
   formatResolvedProviderLabel,
 } from './resolvedProvider';
-import { sanitizeResolvedProvider } from '../sessionCloudCaps';
+import {
+  RESOLVED_PROVIDER_MAX_BYTES,
+  sanitizeResolvedProvider,
+} from '../sessionCloudCaps';
+import { BYOK_PROVIDER_DEFS } from '../gateway/byokProviders';
 
 describe('extractResolvedProvider', () => {
   it('reads gateway.routing.resolvedProvider then finalProvider (documented Gateway object)', () => {
@@ -118,7 +122,6 @@ describe('extractResolvedProvider', () => {
   });
 });
 
-
 describe('formatResolvedProviderLabel', () => {
   it('maps known slugs and passes unknown slugs through', () => {
     expect(formatResolvedProviderLabel('togetherai')).toBe('Together AI');
@@ -145,6 +148,16 @@ describe('formatResolvedProviderLabel', () => {
       formatResolvedProviderLabel('fireworks'),
     );
     expect(modelId).toBe('moonshotai/kimi-k3');
+  });
+
+  it('every BYOK_PROVIDER_DEFS id maps to its registry label and fits the paint cap', () => {
+    const encoder = new TextEncoder();
+    for (const def of BYOK_PROVIDER_DEFS) {
+      expect(formatResolvedProviderLabel(def.id)).toBe(def.label);
+      expect(encoder.encode(def.label).length).toBeLessThanOrEqual(
+        RESOLVED_PROVIDER_MAX_BYTES,
+      );
+    }
   });
 });
 

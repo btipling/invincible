@@ -114,7 +114,7 @@ export function extractResolvedProvider(meta: unknown): string | undefined {
 
 /** Map a sanitized slug to a short display label. Unknown slugs pass through. */
 export function formatResolvedProviderLabel(slug: string): string {
-  const cleaned = sanitizeResolvedProvider(slug) ?? slug.trim().toLowerCase();
+  const cleaned = sanitizeResolvedProvider(slug);
   if (!cleaned) return slug;
   return RESOLVED_PROVIDER_LABELS[cleaned] ?? cleaned;
 }
