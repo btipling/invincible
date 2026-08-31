@@ -25,6 +25,7 @@ import { ember, teal } from '../../lib/palette';
 import {
   createDefaultSessionStore,
   createEmptySession,
+  appendMessage,
   type SessionSnapshot,
   type SessionStore,
 } from '../../lib/sessionStore';
@@ -656,14 +657,14 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             if (attempts >= TURN_QUEUE_DRAIN_MAX_ATTEMPTS) {
               // Give-up: already stripped at drain-start; paint, never silent.
               drainAttemptsRef.current.delete(reconciled.id);
+              const dropLine = `Queued prompt dropped after ${attempts} failed starts: ${result.error}`;
               try {
-                bridge.pushMessage(
-                  MessageKind.Error,
-                  `Queued prompt dropped after ${attempts} failed starts: ${result.error}`,
-                );
+                bridge.pushMessage(MessageKind.Error, dropLine);
               } catch {
                 /* torn-down bridge */
               }
+              // F21 adversarial #901 Minor: persist the Error so F5 is not silent.
+              reconciled = appendMessage(reconciled, 'error', dropLine);
             } else {
               // Defer: persist + re-arm the Wasm band head.
               drainAttemptsRef.current.set(reconciled.id, attempts);

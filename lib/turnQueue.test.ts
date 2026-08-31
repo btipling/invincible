@@ -211,6 +211,10 @@ describe('HarnessHost F21 wiring source-lock (adversarial #901)', () => {
     resolve(process.cwd(), 'app/harness/HarnessHost.tsx'),
     'utf8',
   );
+  const harnessChat = readFileSync(
+    resolve(process.cwd(), 'lib/harnessChat.ts'),
+    'utf8',
+  );
 
   it('strips a drained prompt from the mirror BEFORE runHarnessTurn (not after the terminal)', () => {
     const start = host.indexOf('await runHarnessTurn(');
@@ -224,5 +228,18 @@ describe('HarnessHost F21 wiring source-lock (adversarial #901)', () => {
     expect(after.indexOf('removeQueuedText(')).toBe(-1);
     expect(after).toContain('queueRestoreHead(');
     expect(after).toContain('drainingQueued');
+  });
+
+  it('give-up Error is appendMessage\'d onto the snapshot (F5 is not silent)', () => {
+    const start = host.indexOf('await runHarnessTurn(');
+    const after = host.slice(start);
+    expect(after).toContain("appendMessage(reconciled, 'error'");
+  });
+
+  it('empty-prompt cold attach preserves the FIFO (kickColdAttach must not wipe a re-arm)', () => {
+    expect(harnessChat).toMatch(/const preserveQueue = attaching;/);
+    expect(harnessChat).not.toMatch(
+      /preserveQueue = attaching && \(rawPrompt/,
+    );
   });
 });
