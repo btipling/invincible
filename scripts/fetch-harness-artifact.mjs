@@ -26,6 +26,9 @@
  *   HARNESS_WAIT_GRACE_MS   — how long to wait for a run to *appear* (default 90000)
  *   HARNESS_POLL_MS         — poll interval while waiting (default 12000)
  *   HARNESS_COMMIT_SHA      — override commit (else VERCEL_GIT_COMMIT_SHA / GITHUB_SHA)
+ *   HARNESS_PR_NUMBER       — CI-only: int-durable on a PR waits for / downloads
+ *                             `harness-wasm-pr-N` from the commit-matched run
+ *                             (never Vercel / never the production name)
  *
  * Owner/repo resolution (see scripts/harnessRepo.mjs):
  *   HARNESS_* → VERCEL_GIT_REPO_* → GITHUB_REPOSITORY → local fallback (off REQUIRE)
@@ -47,8 +50,12 @@ import {
   commitTouchesHarnessBuild,
   isHarnessBuildPath,
   isHarnessRequire,
+  pickLatestNamedArtifact,
   pickLatestShippableHarnessArtifact,
+  prHarnessArtifactName,
+  PRODUCTION_HARNESS_ARTIFACT,
   resolveHarnessRepo,
+  runArtifactName,
 } from './harnessRepo.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -69,7 +76,8 @@ try {
   process.exit(1);
 }
 
-const ARTIFACT_NAME = 'harness-wasm';
+const ARTIFACT_NAME = PRODUCTION_HARNESS_ARTIFACT;
+const RUN_ARTIFACT_NAME = runArtifactName(process.env);
 const WORKFLOW_FILE = 'build-harness.yml';
 const ON_VERCEL = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
 const SKIP = process.env.HARNESS_SKIP_FETCH === '1';
@@ -279,10 +287,7 @@ async function resolveNoRunFallback(tok, sha) {
         `Run: gh workflow run build-harness.yml -f runner=ubuntu-latest (or self-hosted when DO runner is up).`,
     );
   }
-  log(
-    `no ${WORKFLOW_FILE} run for ${sha.slice(0, 7)} after grace — commit does not touch harness paths; using latest artifact`,
-  );
-  return latestArtifact(tok);
+  return fallbackArtifact(tok);
 }
 
 async function artifactForRun(tok, runId) {
@@ -290,9 +295,10 @@ async function artifactForRun(tok, runId) {
     `https://api.github.com/repos/${OWNER}/${REPO}/actions/runs/${runId}/artifacts?per_page=20`,
     tok,
   );
-  return (data.artifacts || []).find((a) => a.name === ARTIFACT_NAME && !a.expired) || null;
+  return (data.artifacts || []).find((a) => a.name === RUN_ARTIFACT_NAME && !a.expired) || null;
 }
 
+/** Newest main-branch production artifact. Never a PR name. */
 async function latestArtifact(tok) {
   const list = await ghJson(
     `https://api.github.com/repos/${OWNER}/${REPO}/actions/artifacts?name=${encodeURIComponent(ARTIFACT_NAME)}&per_page=20`,
@@ -310,6 +316,28 @@ async function latestArtifact(tok) {
 }
 
 /**
+ * CI int-durable: a host-only follow-up on a harness PR should reuse the
+ * already-built `harness-wasm-pr-N`, not main's stale Wasm (protocol mismatch).
+ * Vercel never sets HARNESS_PR_NUMBER, so this cannot poison Production.
+ */
+async function fallbackArtifact(tok) {
+  const prName = prHarnessArtifactName(process.env.HARNESS_PR_NUMBER);
+  if (prName) {
+    const list = await ghJson(
+      `https://api.github.com/repos/${OWNER}/${REPO}/actions/artifacts?name=${encodeURIComponent(prName)}&per_page=20`,
+      tok,
+    );
+    const prArt = pickLatestNamedArtifact(list.artifacts || [], prName);
+    if (prArt) {
+      log(`using latest CI artifact ${prName} (not shippable to Vercel)`);
+      return prArt;
+    }
+    log(`no ${prName} — falling back to latest main ${ARTIFACT_NAME}`);
+  }
+  return latestArtifact(tok);
+}
+
+/**
  * Wait for build-harness on this commit (if any), then return the right artifact.
  * Avoids Vercel Git deploy racing the self-hosted Zig job.
  */
@@ -324,11 +352,23 @@ async function resolveArtifact(tok) {
 
   if (!shouldWait) {
     log(sha ? `sha=${sha.slice(0, 7)} wait disabled — using latest artifact` : 'no commit sha — using latest artifact');
-    return latestArtifact(tok);
+    return fallbackArtifact(tok);
+  }
+
+  // Host-only SHA: don't burn the 90s grace looking for a run that path-filters skip.
+  // A harness PR's follow-up (workflow/docs) reuses `harness-wasm-pr-N` via fallback.
+  try {
+    const paths = await listCommitPaths(tok, sha);
+    if (paths.length > 0 && !commitTouchesHarnessBuild(paths)) {
+      log(`sha=${sha.slice(0, 7)} does not touch harness paths — skip wait`);
+      return fallbackArtifact(tok);
+    }
+  } catch (e) {
+    log('list commit files failed (will wait):', e instanceof Error ? e.message : e);
   }
 
   log(
-    `waiting for ${WORKFLOW_FILE} on ${sha.slice(0, 7)} (grace ${WAIT_GRACE_MS}ms, max ${WAIT_MAX_MS}ms)`,
+    `waiting for ${WORKFLOW_FILE} on ${sha.slice(0, 7)} artifact=${RUN_ARTIFACT_NAME} (grace ${WAIT_GRACE_MS}ms, max ${WAIT_MAX_MS}ms)`,
   );
 
   const started = Date.now();
@@ -378,7 +418,7 @@ async function resolveArtifact(tok) {
     }
 
     throw new Error(
-      `${WORKFLOW_FILE} run ${run.id} succeeded but artifact "${ARTIFACT_NAME}" not found`,
+      `${WORKFLOW_FILE} run ${run.id} succeeded but artifact "${RUN_ARTIFACT_NAME}" not found`,
     );
   }
 

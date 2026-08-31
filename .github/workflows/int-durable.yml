@@ -1,6 +1,11 @@
 # Durable-turn int suite (plan #860). Process-level persist + boot + attach lock.
 # Wasm is the assertion surface; SUT is persist/envelope/boot. ubuntu-latest only.
 #
+# Fetch: wait for a commit-matched `build-harness` artifact when this SHA
+# touches harness paths. Same-repo PRs download `harness-wasm-pr-<n>` (CI-only;
+# never the production name, never Vercel). Host-only SHAs reuse that PR
+# artifact or fall back to latest main `harness-wasm`.
+#
 # Operator: Actions → int-durable (PR + main). Not a Production mutate path.
 name: int-durable
 
@@ -31,8 +36,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      HARNESS_WAIT_MS: "0"
+      # Match Vercel: wait for this SHA's build-harness when native/harness
+      # changed. github.sha on pull_request is the ephemeral merge commit and
+      # never has a harness run — pin the PR head that build-harness compiled.
+      HARNESS_WAIT_MS: "720000"
       HARNESS_REQUIRE: "1"
+      HARNESS_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      HARNESS_PR_NUMBER: ${{ github.event.pull_request.number }}
       # GITHUB_TOKEN is NOT a default runner env var. fetch-harness-artifact.mjs
       # reads GH_TOKEN / GITHUB_TOKEN; without this the step fails closed
       # under HARNESS_REQUIRE=1.
@@ -50,7 +60,7 @@ jobs:
       - name: Install app dependencies
         run: npm ci
 
-      - name: Fetch harness.wasm (latest main artifact)
+      - name: Fetch harness.wasm (commit-matched; PR uses harness-wasm-pr-N)
         run: npm run fetch-harness
 
       - name: Durable-turn int suite

@@ -38,6 +38,8 @@ Local/default: `HARNESS_WAIT_MS=0` → latest **main-branch** artifact immediate
 
 `scripts/fetch-harness-artifact.mjs` `latest` also ignores any `harness-wasm` whose `workflow_run.head_branch !== main`. A host-only `main` deploy that falls back to latest cannot pick up an unmerged PR head.
 
+**int-durable** (ubuntu-latest, not Vercel) is the other consumer. A protocol-bump PR used to fetch latest **main** Wasm with wait off, so `REQUIRED_FNS` fail-closed on missing new exports. It now waits for a commit-matched `build-harness` run when the SHA touches harness paths, pinning `HARNESS_COMMIT_SHA` to the **PR head** (`github.sha` on `pull_request` is the ephemeral merge commit and never has a harness run) and downloading **`harness-wasm-pr-<n>`** via `HARNESS_PR_NUMBER`. Host-only follow-ups on that PR reuse the latest PR-named artifact; they never select it as Vercel `latest` (`isShippableHarnessArtifact` still requires `harness-wasm` from `main`).
+
 **Incident:** a same-repo harness PR uploaded `harness-wasm`; the next Production Git deploy did not touch `native/harness/**`, so fetch fell back to latest and served that PR’s Wasm. `workflow_dispatch` on main rebuilt a good artifact, but `VERCEL_DEPLOY_HOOK_URL` was empty so Vercel never redeployed — Production stayed on the poisoned build. Recovery is a Production Git deploy of `main` (this doc + fetch filter) after a main artifact exists.
 
 Path match helpers: `isHarnessBuildPath` / `commitTouchesHarnessBuild` / `isShippableHarnessArtifact` in `scripts/harnessRepo.mjs` (unit-tested; keep aligned with workflow path filters **and** the main-only upload `if:`).

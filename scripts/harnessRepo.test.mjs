@@ -170,7 +170,11 @@ import {
   commitTouchesHarnessBuild,
   isHarnessBuildPath,
   isShippableHarnessArtifact,
+  pickLatestNamedArtifact,
   pickLatestShippableHarnessArtifact,
+  prHarnessArtifactName,
+  PRODUCTION_HARNESS_ARTIFACT,
+  runArtifactName,
 } from './harnessRepo.mjs';
 
 describe('isHarnessBuildPath / commitTouchesHarnessBuild', () => {
@@ -231,6 +235,40 @@ describe('isShippableHarnessArtifact / pickLatestShippableHarnessArtifact', () =
     expect(pickLatestShippableHarnessArtifact([pr])).toBe(null);
     expect(pickLatestShippableHarnessArtifact([])).toBe(null);
     expect(pickLatestShippableHarnessArtifact(null)).toBe(null);
+  });
+});
+
+describe('prHarnessArtifactName / runArtifactName / pickLatestNamedArtifact', () => {
+  it('names CI-only PR artifacts; rejects junk', () => {
+    expect(prHarnessArtifactName(902)).toBe('harness-wasm-pr-902');
+    expect(prHarnessArtifactName('902')).toBe('harness-wasm-pr-902');
+    expect(prHarnessArtifactName(' 902 ')).toBe('harness-wasm-pr-902');
+    expect(prHarnessArtifactName('')).toBe(null);
+    expect(prHarnessArtifactName(undefined)).toBe(null);
+    expect(prHarnessArtifactName(0)).toBe(null);
+    expect(prHarnessArtifactName(-1)).toBe(null);
+    expect(prHarnessArtifactName('main')).toBe(null);
+  });
+
+  it('runArtifactName is PR-named only when HARNESS_PR_NUMBER is set', () => {
+    expect(runArtifactName({})).toBe(PRODUCTION_HARNESS_ARTIFACT);
+    expect(runArtifactName({ HARNESS_PR_NUMBER: '' })).toBe(PRODUCTION_HARNESS_ARTIFACT);
+    expect(runArtifactName({ HARNESS_PR_NUMBER: '902' })).toBe('harness-wasm-pr-902');
+  });
+
+  it('pickLatestNamedArtifact skips expired and other names; does not require main', () => {
+    const pr = {
+      name: 'harness-wasm-pr-902',
+      expired: false,
+      id: 9,
+      workflow_run: { head_branch: 'plan/reasoning-effort' },
+    };
+    expect(pickLatestNamedArtifact([pr], 'harness-wasm-pr-902')).toEqual(pr);
+    expect(
+      pickLatestNamedArtifact([{ ...pr, expired: true }, pr], 'harness-wasm-pr-902'),
+    ).toEqual(pr);
+    expect(pickLatestNamedArtifact([pr], 'harness-wasm')).toBe(null);
+    expect(isShippableHarnessArtifact(pr, 'harness-wasm-pr-902')).toBe(false);
   });
 });
 

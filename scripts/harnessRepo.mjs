@@ -155,3 +155,51 @@ export function pickLatestShippableHarnessArtifact(artifacts, artifactName = 'ha
   return null;
 }
 
+/** Production artifact name. PRs must never upload this (SECURITY.md). */
+export const PRODUCTION_HARNESS_ARTIFACT = 'harness-wasm';
+
+/**
+ * CI-only name for a same-repo PR compile (`build-harness.yml`).
+ * Never shippable to Vercel — `isShippableHarnessArtifact` rejects it.
+ *
+ * @param {unknown} prNumber
+ * @returns {string | null}
+ */
+export function prHarnessArtifactName(prNumber) {
+  if (prNumber == null || prNumber === '') return null;
+  const n = typeof prNumber === 'number' ? prNumber : Number(String(prNumber).trim());
+  if (!Number.isInteger(n) || n <= 0) return null;
+  return `harness-wasm-pr-${n}`;
+}
+
+/**
+ * Artifact name on a commit-matched `build-harness` run.
+ * PRs upload `harness-wasm-pr-N`; main uploads `harness-wasm`.
+ * Vercel / latest-main must keep using `PRODUCTION_HARNESS_ARTIFACT`.
+ *
+ * @param {NodeJS.ProcessEnv | Record<string, string | undefined>} [env]
+ * @returns {string}
+ */
+export function runArtifactName(env = process.env) {
+  return prHarnessArtifactName(env.HARNESS_PR_NUMBER) || PRODUCTION_HARNESS_ARTIFACT;
+}
+
+/**
+ * Newest non-expired artifact of an exact name (no main-branch filter).
+ * For CI int-durable consuming `harness-wasm-pr-N` only — never Vercel latest.
+ *
+ * @param {unknown} artifacts
+ * @param {string} artifactName
+ * @returns {object | null}
+ */
+export function pickLatestNamedArtifact(artifacts, artifactName) {
+  if (!Array.isArray(artifacts) || !artifactName) return null;
+  for (const a of artifacts) {
+    if (!a || typeof a !== 'object') continue;
+    const art = /** @type {{ expired?: boolean, name?: string }} */ (a);
+    if (art.expired) continue;
+    if (art.name === artifactName) return a;
+  }
+  return null;
+}
+
