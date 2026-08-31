@@ -114,6 +114,7 @@ pub fn build(b: *std.Build) void {
         "inv_set_selected_reasoning",
         "inv_has_pending_reasoning_change",
         "inv_ack_pending_reasoning_change",
+        "inv_set_resolved_provider",
         "inv_clear_session_catalog",
         "inv_push_session_catalog_entry",
         "inv_session_catalog_count",
@@ -789,6 +790,19 @@ pub fn build(b: *std.Build) void {
         });
         reasoning_picker_layout_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
         test_rich.dependOn(&b.addRunArtifact(reasoning_picker_layout_tests).step);
+    }
+
+    // Pure line-1 overflow decisions (plan #906 resolved-provider label).
+    {
+        const line1_fit_tests = b.addTest(.{
+            .name = "line1_fit",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/ui/line1_fit.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(line1_fit_tests).step);
     }
 
     // Host dvui testing-backend tests for `mixed_text.lookalikePaintFont`

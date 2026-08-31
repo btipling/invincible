@@ -24,7 +24,11 @@
  */
 import type { AgentStreamEvent } from './agent/agentStream';
 import { sanitizeUsageSummary } from './agent/usageSummary';
-import { isRedisSafeOpaqueId, normalizeSessionCwd } from './sessionCloudCaps';
+import {
+  applyResolvedProvider,
+  formatResolvedProviderLabel,
+} from './agent/resolvedProvider';
+import { isRedisSafeOpaqueId, normalizeSessionCwd, sanitizeResolvedProvider } from './sessionCloudCaps';
 import { appendMessage, type SessionSnapshot } from './sessionStore';
 import { scheduleImagesFromMarkdown } from './harnessImages';
 import { HarnessBridge, MessageKind } from './harnessBridge';
@@ -567,6 +571,15 @@ export function createApplyTurnEvent(
       }
       return;
     }
+    if (ev.type === 'provider') {
+      const slug = sanitizeResolvedProvider(ev.provider);
+      if (slug) {
+        ctx.next = { ...ctx.next, resolvedProvider: slug };
+        bridge.setResolvedProvider(formatResolvedProviderLabel(slug));
+        ctx.patchSession(ctx.next);
+      }
+      return;
+    }
     if (ev.type === 'done') {
       ctx.sawStreamTerminal = true;
       if (typeof ev.finishReason === 'string') {
@@ -574,7 +587,13 @@ export function createApplyTurnEvent(
       }
       closeThinkingSegment(bridge, ctx);
       finalizeAssistant(ev.text ?? ctx.assistantAcc);
-      // Do not re-push toolTrace — live lines already shown.
+      const doneSlug = sanitizeResolvedProvider(ev.resolvedProvider);
+      if (doneSlug) {
+        ctx.next = { ...ctx.next, resolvedProvider: doneSlug };
+        applyResolvedProvider(ctx.next, bridge);
+        ctx.patchSession(ctx.next);
+      }
+      // Absent at done does **not** clear a pin already shown this turn.
       return;
     }
     if (ev.type === 'error') {

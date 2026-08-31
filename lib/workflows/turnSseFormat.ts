@@ -13,8 +13,9 @@ export function formatTurnSse(event: object): string {
 
 /**
  * Live model-step filter: only `reasoning_delta` / `text_delta` / `tool_start`
- * become SSE lines. Terminal events stay loop-owned. `tool_result` is written
- * inside the tool-batch step (plan #880), not here.
+ * / `provider` become SSE lines. Terminal events stay loop-owned. `tool_result`
+ * is written inside the tool-batch step (plan #880), not here. `usage` is
+ * **not** live on the durable writer (returns null).
  * Structural `ev` — do not import `agentStream` (deploy-gate).
  */
 export function formatLiveModelSse(ev: {
@@ -22,6 +23,7 @@ export function formatLiveModelSse(ev: {
   text?: unknown;
   name?: unknown;
   id?: unknown;
+  provider?: unknown;
   [key: string]: unknown;
 }): string | null {
   if (!ev || typeof ev !== 'object' || typeof ev.type !== 'string') return null;
@@ -36,6 +38,10 @@ export function formatLiveModelSse(ev: {
       name: ev.name,
       ...(typeof ev.id === 'string' && ev.id.length > 0 ? { id: ev.id } : {}),
     });
+  }
+  if (ev.type === 'provider') {
+    if (typeof ev.provider !== 'string' || ev.provider.length === 0) return null;
+    return formatTurnSse({ type: 'provider', provider: ev.provider });
   }
   return null;
 }

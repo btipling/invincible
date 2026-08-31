@@ -47,12 +47,14 @@ import {
 function makeMockExports(): HarnessBridgeExports & {
   __messages: { kind: number; text: string }[];
   __statusSlots: (string | undefined)[];
+  __resolvedProvider: () => string;
 } {
   let buf = new ArrayBuffer(64 * 1024);
   const memory = { get buffer() { return buf; } };
   let nextPtr = 1024;
   const messages: { kind: number; text: string }[] = [];
   const statusSlots: (string | undefined)[] = new Array(8).fill(undefined);
+  let resolvedProvider = '';
 
   const gpa_u8 = (len: number) => {
     if (len <= 0) return 0;
@@ -143,6 +145,15 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_set_selected_reasoning: (_ptr, len) => (len <= 32 ? 1 : 0),
     inv_has_pending_reasoning_change: () => 0,
     inv_ack_pending_reasoning_change: () => {},
+    inv_set_resolved_provider: (ptr, len) => {
+      if (len === 0) {
+        resolvedProvider = '';
+        return 1;
+      }
+      if (len > 32) return 0;
+      resolvedProvider = read(ptr, len);
+      return 1;
+    },
     inv_clear_session_catalog: () => {},
     inv_push_session_catalog_entry: () => 0,
     inv_session_catalog_count: () => 0,
@@ -179,6 +190,7 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_math_cache_clear: () => {},
     __messages: messages,
     __statusSlots: statusSlots,
+    __resolvedProvider: () => resolvedProvider,
   };
 }
 
@@ -694,5 +706,58 @@ describe('runHarnessTurn wiring (plan row 1)', () => {
     expect(onEventSites).toHaveLength(2);
     expect(src).toMatch(/const onStreamEvent = createApplyTurnEvent\(bridge, applyCtx\)/);
     expect(src).not.toMatch(/const onStreamEvent = async \(ev/);
+  });
+});
+
+describe('applyTurnEvent — resolved provider (plan #906)', () => {
+  it('live provider folds the slug and paints the mapped label; catalog id is unchanged', async () => {
+    const { exp, bridge } = makeBridge();
+    const patchSession = vi.fn();
+    const ctx = makeCtx(
+      { ...createEmptySession(), selectedModel: 'moonshotai/kimi-k3' },
+      { patchSession },
+    );
+    await createApplyTurnEvent(bridge, ctx)({ type: 'provider', provider: 'togetherai' });
+    expect(ctx.next.resolvedProvider).toBe('togetherai');
+    expect(ctx.next.selectedModel).toBe('moonshotai/kimi-k3');
+    expect(exp.__resolvedProvider()).toBe('Together AI');
+    expect(patchSession).toHaveBeenCalledWith(ctx.next);
+
+    await createApplyTurnEvent(bridge, ctx)({ type: 'provider', provider: 'Fireworks' });
+    expect(ctx.next.resolvedProvider).toBe('fireworks');
+    expect(ctx.next.selectedModel).toBe('moonshotai/kimi-k3');
+    expect(exp.__resolvedProvider()).toBe('Fireworks');
+  });
+
+  it('done.resolvedProvider replaces; absent at done does not wipe a pin', async () => {
+    const { exp, bridge } = makeBridge();
+    const ctx = makeCtx();
+    const apply = createApplyTurnEvent(bridge, ctx);
+    await apply({ type: 'provider', provider: 'togetherai' });
+    expect(ctx.next.resolvedProvider).toBe('togetherai');
+    expect(exp.__resolvedProvider()).toBe('Together AI');
+
+    await apply({ type: 'done', text: 'ok', resolvedProvider: 'fireworks' });
+    expect(ctx.next.resolvedProvider).toBe('fireworks');
+    expect(exp.__resolvedProvider()).toBe('Fireworks');
+    expect(ctx.sawStreamTerminal).toBe(true);
+
+    const keep = makeCtx({ ...createEmptySession(), resolvedProvider: 'togetherai' });
+    const keepExp = makeBridge();
+    keepExp.bridge.setResolvedProvider('Together AI');
+    await createApplyTurnEvent(keepExp.bridge, keep)({ type: 'done', text: 'ok' });
+    expect(keep.next.resolvedProvider).toBe('togetherai');
+    expect(keepExp.exp.__resolvedProvider()).toBe('Together AI');
+  });
+
+  it('poison / URL / model-id shaped provider is ignored', async () => {
+    const { exp, bridge } = makeBridge();
+    const ctx = makeCtx();
+    await createApplyTurnEvent(bridge, ctx)({
+      type: 'provider',
+      provider: 'moonshotai/kimi-k3',
+    });
+    expect(ctx.next.resolvedProvider).toBeUndefined();
+    expect(exp.__resolvedProvider()).toBe('');
   });
 });

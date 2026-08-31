@@ -26,6 +26,7 @@ import { readAgentStream, type AgentStreamResult } from './agentSse';
 import {
   isRedisSafeOpaqueId,
   sanitizeReasoningEffort,
+  sanitizeResolvedProvider,
   sanitizeTurnRunId,
   sanitizeTurnStreamCursor,
 } from './sessionCloudCaps';
@@ -303,6 +304,7 @@ export const sendTurnStream: SendAgentStreamFn = async (prompt, init) => {
 
   // Accumulate live usage events mid-stream (dispatched through onEvent).
   let streamUsage: UsageSummary | undefined;
+  let streamProvider: string | undefined;
 
   let streamResult: AgentStreamResult;
   try {
@@ -310,6 +312,9 @@ export const sendTurnStream: SendAgentStreamFn = async (prompt, init) => {
       if (init?.onEvent) await init.onEvent(ev);
       if (ev.type === 'usage') {
         streamUsage = sanitizeUsageSummary(ev.usage) ?? streamUsage;
+      }
+      if (ev.type === 'provider') {
+        streamProvider = sanitizeResolvedProvider(ev.provider) ?? streamProvider;
       }
     });
   } catch (err) {
@@ -340,6 +345,8 @@ export const sendTurnStream: SendAgentStreamFn = async (prompt, init) => {
   // done.usage is the conclusive reconcile.
   const doneUsage = sanitizeUsageSummary(streamResult.usageRaw);
   const usage = doneUsage ?? streamUsage;
+  const doneProvider = sanitizeResolvedProvider(streamResult.resolvedProviderRaw);
+  const resolvedProvider = doneProvider ?? streamProvider;
 
   if (!finalText.trim()) {
     return {
@@ -363,6 +370,7 @@ export const sendTurnStream: SendAgentStreamFn = async (prompt, init) => {
       ? { activeSandboxId: streamResult.activeSandboxId }
       : {}),
     ...(usage ? { usage } : {}),
+    ...(resolvedProvider ? { resolvedProvider } : {}),
     ...(turnRunId !== undefined ? { turnRunId } : {}),
     ...(turnWarning !== undefined ? { turnWarning } : {}),
   };
@@ -498,12 +506,16 @@ export async function attachTurnStream(
 
   const reader = res.body.getReader();
   let streamUsage: UsageSummary | undefined;
+  let streamProvider: string | undefined;
   let streamResult: AgentStreamResult;
   try {
     streamResult = await readAgentStream(reader, async (ev) => {
       if (opts.onEvent) await opts.onEvent(ev);
       if (ev.type === 'usage') {
         streamUsage = sanitizeUsageSummary(ev.usage) ?? streamUsage;
+      }
+      if (ev.type === 'provider') {
+        streamProvider = sanitizeResolvedProvider(ev.provider) ?? streamProvider;
       }
     });
   } catch (err) {
@@ -534,6 +546,8 @@ export async function attachTurnStream(
   const toolTrace = parseToolTrace(streamResult.toolTraceRaw);
   const doneUsage = sanitizeUsageSummary(streamResult.usageRaw);
   const usage = doneUsage ?? streamUsage;
+  const doneProvider = sanitizeResolvedProvider(streamResult.resolvedProviderRaw);
+  const resolvedProvider = doneProvider ?? streamProvider;
 
   // Attach may legitimately have empty text (thinking-only, all-dedup, or a
   // still-running producer that EOFs). Do not map that to "Empty model response."
@@ -549,6 +563,7 @@ export async function attachTurnStream(
       ? { activeSandboxId: streamResult.activeSandboxId }
       : {}),
     ...(usage ? { usage } : {}),
+    ...(resolvedProvider ? { resolvedProvider } : {}),
     turnRunId: headerRunId,
     ...(turnWarning !== undefined ? { turnWarning } : {}),
   };

@@ -104,9 +104,76 @@ describe('patchWorkerMeta (pure copy-forward)', () => {
   it('matrix 12 — turnStreamCursor=0 preserved (non-vacuous)', () => {
     expect(patchWorkerMeta({}, { turnStreamCursor: 0 }).turnStreamCursor).toBe(0);
   });
+
+  it('plan #906 — copies resolvedProvider; absent patch keeps previous; poison drops only this key', () => {
+    const current = {
+      resolvedProvider: 'togetherai',
+      turnStatus: 'running',
+      selectedModel: 'moonshotai/kimi-k3',
+    };
+    expect(patchWorkerMeta(current, { resolvedProvider: 'Fireworks' }).resolvedProvider).toBe(
+      'fireworks',
+    );
+    expect(patchWorkerMeta(current, { turnStatus: 'completed' }).resolvedProvider).toBe(
+      'togetherai',
+    );
+    const poisoned = patchWorkerMeta(current, {
+      resolvedProvider: 'moonshotai/kimi-k3',
+    });
+    expect(poisoned.resolvedProvider).toBeUndefined();
+    expect(poisoned.turnStatus).toBe('running');
+    expect(poisoned.selectedModel).toBe('moonshotai/kimi-k3');
+  });
 });
 
 describe('overlayWorkerMeta (LWW copy-forward PATCH)', () => {
+  it('plan #906 — overlay copies resolvedProvider; poison drops only this key', async () => {
+    const store = new MemorySessionStore();
+    await seed(
+      store,
+      {
+        resolvedProvider: 'togetherai',
+        turnStatus: 'running',
+        selectedModel: 'moonshotai/kimi-k3',
+      },
+      1000,
+    );
+    const copy = await overlayWorkerMeta({
+      envelopeStore: store,
+      key,
+      patch: { resolvedProvider: 'Fireworks' },
+      updatedAt: 2000,
+    });
+    expect(copy.ok).toBe(true);
+    if (!copy.ok) return;
+    expect(copy.meta.resolvedProvider).toBe('fireworks');
+    expect(copy.meta.selectedModel).toBe('moonshotai/kimi-k3');
+    expect(copy.meta.turnStatus).toBe('running');
+
+    const keep = await overlayWorkerMeta({
+      envelopeStore: store,
+      key,
+      patch: { turnStatus: 'completed' },
+      updatedAt: 3000,
+    });
+    expect(keep.ok).toBe(true);
+    if (!keep.ok) return;
+    expect(keep.meta.resolvedProvider).toBe('fireworks');
+    expect(keep.meta.turnStatus).toBe('completed');
+
+    const poison = await overlayWorkerMeta({
+      envelopeStore: store,
+      key,
+      patch: { resolvedProvider: 'moonshotai/kimi-k3' },
+      updatedAt: 4000,
+    });
+    expect(poison.ok).toBe(true);
+    if (!poison.ok) return;
+    expect(poison.meta.resolvedProvider).toBeUndefined();
+    expect(poison.meta.selectedModel).toBe('moonshotai/kimi-k3');
+    expect(poison.meta.turnStatus).toBe('completed');
+  });
+
   it('matrix 1 — PATCH one worker key over a host-heavy envelope preserves ALL host keys', async () => {
     const store = new MemorySessionStore();
     const host = {

@@ -29,6 +29,7 @@ function makeStream(overrides: Record<string, any> = {}) {
     usage: Promise.resolve(
       overrides.usage ?? { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
     ),
+    providerMetadata: Promise.resolve(overrides.providerMetadata),
     ...(overrides.steps !== undefined ? { steps: Promise.resolve(overrides.steps) } : {}),
   });
 }
@@ -226,7 +227,7 @@ describe('generateOneRound (backend-agents B9)', () => {
     for (const ev of events) {
       const t = (ev as { type: string }).type;
       expect(
-        ['tool_start', 'tool_result', 'reasoning_delta', 'text_delta', 'skill_attached', 'done', 'usage', 'error'],
+        ['tool_start', 'tool_result', 'reasoning_delta', 'text_delta', 'skill_attached', 'done', 'usage', 'error', 'provider'],
       ).toContain(t);
     }
   });
@@ -475,5 +476,63 @@ describe('generateOneRound reasoning (plan #846)', () => {
     );
     const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
     expect(args.system).toBe('Be concise.');
+  });
+
+  it('plan #906: emits providerHint first; metadata overlay wins; missing stays omit', async () => {
+    const events: unknown[] = [];
+    const hinted = await generateOneRound(
+      { ...deps, streamTextImpl: makeStream({ text: 'ok' }), providerHint: 'togetherai' },
+      {
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: {},
+        onEvent: (ev) => {
+          events.push(ev);
+        },
+      },
+    );
+    expect(hinted.ok).toBe(true);
+    if (!hinted.ok) return;
+    expect(hinted.delta.resolvedProvider).toBe('togetherai');
+    expect((events[0] as { type: string; provider?: string }).type).toBe('provider');
+    expect((events[0] as { provider?: string }).provider).toBe('togetherai');
+
+    const overlayEvents: unknown[] = [];
+    const overlay = await generateOneRound(
+      {
+        ...deps,
+        providerHint: 'togetherai',
+        streamTextImpl: makeStream({
+          text: 'ok',
+          providerMetadata: {
+            gateway: {
+              routing: { resolvedProvider: 'fireworks', finalProvider: 'fireworks' },
+              generationId: 'gen_x',
+            },
+          },
+        }),
+      },
+      {
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: {},
+        onEvent: (ev) => {
+          overlayEvents.push(ev);
+        },
+      },
+    );
+    expect(overlay.ok).toBe(true);
+    if (!overlay.ok) return;
+    expect(overlay.delta.resolvedProvider).toBe('fireworks');
+    const providerEvents = overlayEvents.filter(
+      (e) => (e as { type: string }).type === 'provider',
+    ) as Array<{ provider: string }>;
+    expect(providerEvents.map((e) => e.provider)).toEqual(['togetherai', 'fireworks']);
+
+    const miss = await generateOneRound(
+      { ...deps, streamTextImpl: makeStream({ text: 'ok' }) },
+      { messages: [{ role: 'user', content: 'hi' }], tools: {}, onEvent: async () => {} },
+    );
+    expect(miss.ok).toBe(true);
+    if (!miss.ok) return;
+    expect(miss.delta).not.toHaveProperty('resolvedProvider');
   });
 });

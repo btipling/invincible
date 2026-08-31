@@ -50,7 +50,9 @@ const submit_queue = @import("submit_queue.zig");
 /// `inv_push_reasoning_effort` (host-pushed Gateway list for the current model),
 /// `inv_set_selected_reasoning` restore-by-value + pending-reasoning-change.
 /// Additive, now REQUIRED. (v22 reserved by the concurrent #815 residual.)
-pub const PROTOCOL_VERSION: u32 = 23;
+/// v24 (plan #906): resolved-provider display — `inv_set_resolved_provider`
+/// (UTF-8 display label; len=0 hides). Additive, now REQUIRED.
+pub const PROTOCOL_VERSION: u32 = 24;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -97,6 +99,9 @@ pub const MAX_MODEL_ID_LEN = 128;
 /// current model). Parity-locked to TS `REASONING_EFFORT_MAX_BYTES` / `_VALUES_MAX`.
 pub const MAX_REASONING_EFFORTS = 16;
 pub const MAX_REASONING_EFFORT_LEN = 32;
+/// Protocol v24 resolved-provider display (host-mapped label). Parity-locked
+/// to TS `RESOLVED_PROVIDER_MAX_BYTES`.
+pub const MAX_RESOLVED_PROVIDER_LEN = 32;
 /// Protocol v13 status-slot store (host pushes one status slot value).
 /// Slots are a fixed, bounded array — a host push REPLACES a slot (no append/
 /// accumulation), mirroring the model-catalog pattern but keyed by index so
@@ -211,6 +216,9 @@ var reasoning_count: u32 = 0;
 var selected_reasoning_index: u32 = 0;
 /// Host owns the default; a push does not auto-select (max-only lists stay unset).
 var has_reasoning_selection: bool = false;
+
+var resolved_provider: [MAX_RESOLVED_PROVIDER_LEN]u8 = undefined;
+var resolved_provider_len: u32 = 0;
 
 const StatusSlot = struct {
     len: u32 = 0,
@@ -449,6 +457,7 @@ pub fn reset() void {
     reasoning_count = 0;
     selected_reasoning_index = 0;
     has_reasoning_selection = false;
+    resolved_provider_len = 0;
     for (&status_slots) |*s| s.len = 0;
     turn_elapsed = 0;
     busy_tick = 0;
@@ -999,6 +1008,30 @@ export fn inv_has_pending_reasoning_change() u8 {
 
 export fn inv_ack_pending_reasoning_change() void {
     ackPendingReasoningChange();
+}
+
+/// Protocol v24 — host push of the mapped display label. Empty hides.
+/// Oversize is rejected (previous value kept). Display strings may include
+/// spaces / mixed case (host already mapped the slug).
+export fn inv_set_resolved_provider(ptr: [*]const u8, len: usize) u8 {
+    const ok = setResolvedProvider(if (len == 0) &.{} else ptr[0..len]);
+    refresh();
+    return if (ok) 1 else 0;
+}
+
+pub fn resolvedProviderLabel() []const u8 {
+    return resolved_provider[0..resolved_provider_len];
+}
+
+fn setResolvedProvider(bytes: []const u8) bool {
+    if (bytes.len == 0) {
+        resolved_provider_len = 0;
+        return true;
+    }
+    if (bytes.len > MAX_RESOLVED_PROVIDER_LEN) return false;
+    @memcpy(resolved_provider[0..bytes.len], bytes);
+    resolved_provider_len = @intCast(bytes.len);
+    return true;
 }
 
 // ── Protocol v17 — session-rail catalog + pending switch ──────────────────

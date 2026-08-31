@@ -41,6 +41,20 @@ describe('turnLog', () => {
     expect(row.textChars).toBe(0);
   });
 
+  it('logTurnModel includes provider slug when passed (never credentials)', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    logTurnModel({
+      ok: true,
+      finishReason: 'stop',
+      toolCallCount: 0,
+      textChars: 4,
+      provider: 'togetherai',
+    });
+    const row = JSON.parse(String(spy.mock.calls[0]![0])) as Record<string, unknown>;
+    expect(row.provider).toBe('togetherai');
+    expect(JSON.stringify(row)).not.toMatch(/sk-|api[_-]?key/i);
+  });
+
   it('logTurnPersist writes one JSON line with tag', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     logTurnPersist({

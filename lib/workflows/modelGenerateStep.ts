@@ -62,6 +62,7 @@ import { logTurnModel } from './turnLog';
 import { formatLiveModelSse } from './turnSseFormat';
 import { withDefaultStreamWriter } from './turnSseWrite';
 import type { PersistRunBind } from './turnLoop';
+import { sanitizeResolvedProvider } from '../sessionCloudCaps';
 import type {
   SessionEnvelopeStore,
   SessionRecordKey,
@@ -291,6 +292,8 @@ export async function modelGenerateStep(
     };
   }
 
+  const providerHint = sanitizeResolvedProvider(byok.provider);
+
   if (args.disableTools) {
     const result = await withDefaultStreamWriter(async (write) =>
       generateOneRound(
@@ -305,6 +308,7 @@ export async function modelGenerateStep(
           },
           secrets: byok.secretsToRedact,
           ...(args.reasoning !== undefined ? { reasoning: args.reasoning } : {}),
+          ...(providerHint ? { providerHint } : {}),
         },
         {
           messages: toModelMessages(args.messages),
@@ -317,19 +321,25 @@ export async function modelGenerateStep(
       ),
     );
     if (result.ok) {
+      const delta = result.delta.resolvedProvider
+        ? result.delta
+        : providerHint
+          ? { ...result.delta, resolvedProvider: providerHint }
+          : result.delta;
       logTurnModel({
         ok: true,
-        finishReason: result.delta.finishReason,
-        toolCallCount: result.delta.toolCalls.length,
-        textChars: result.delta.text.length,
-        ...(typeof result.delta.reasoning === 'string'
-          ? { reasoningChars: result.delta.reasoning.length }
+        finishReason: delta.finishReason,
+        toolCallCount: delta.toolCalls.length,
+        textChars: delta.text.length,
+        ...(typeof delta.reasoning === 'string'
+          ? { reasoningChars: delta.reasoning.length }
           : {}),
-        ...(typeof result.delta.usage?.completion === 'number'
-          ? { completion: result.delta.usage.completion }
+        ...(typeof delta.usage?.completion === 'number'
+          ? { completion: delta.usage.completion }
           : {}),
+        ...(delta.resolvedProvider ? { provider: delta.resolvedProvider } : {}),
       });
-      return { ok: true, delta: result.delta };
+      return { ok: true, delta };
     }
     logTurnModel({ ok: false, code: result.code });
     return { ok: false, code: result.code, error: result.error };
@@ -408,6 +418,7 @@ export async function modelGenerateStep(
         },
         secrets: byok.secretsToRedact,
         ...(args.reasoning !== undefined ? { reasoning: args.reasoning } : {}),
+        ...(providerHint ? { providerHint } : {}),
       },
       {
         messages: toModelMessages(args.messages),
@@ -420,19 +431,25 @@ export async function modelGenerateStep(
     ),
   );
   if (result.ok) {
+    const delta = result.delta.resolvedProvider
+      ? result.delta
+      : providerHint
+        ? { ...result.delta, resolvedProvider: providerHint }
+        : result.delta;
     logTurnModel({
       ok: true,
-      finishReason: result.delta.finishReason,
-      toolCallCount: result.delta.toolCalls.length,
-      textChars: result.delta.text.length,
-      ...(typeof result.delta.reasoning === 'string'
-        ? { reasoningChars: result.delta.reasoning.length }
+      finishReason: delta.finishReason,
+      toolCallCount: delta.toolCalls.length,
+      textChars: delta.text.length,
+      ...(typeof delta.reasoning === 'string'
+        ? { reasoningChars: delta.reasoning.length }
         : {}),
-      ...(typeof result.delta.usage?.completion === 'number'
-        ? { completion: result.delta.usage.completion }
+      ...(typeof delta.usage?.completion === 'number'
+        ? { completion: delta.usage.completion }
         : {}),
+      ...(delta.resolvedProvider ? { provider: delta.resolvedProvider } : {}),
     });
-    return { ok: true, delta: result.delta };
+    return { ok: true, delta };
   }
   logTurnModel({ ok: false, code: result.code });
   return { ok: false, code: result.code, error: result.error };

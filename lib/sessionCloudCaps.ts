@@ -527,4 +527,38 @@ export function sanitizeReasoningEffort(value: unknown): string | undefined {
   return s;
 }
 
+/**
+ * NEW cap (plan #906): Gateway-resolved inference provider slug. Generous for
+ * slugs (`togetherai` 10). Envelope scalar; ≪ 1 MiB meta / 4.5 MB Function.
+ * No existing cap changed. Parity-locked to Zig `MAX_RESOLVED_PROVIDER_LEN`.
+ */
+export const RESOLVED_PROVIDER_MAX_BYTES = 32;
+
+/**
+ * Client-safe predicate for a resolved-provider slug (`meta.resolvedProvider`).
+ * Canonicalize: trim, reject `/` or `:` (URLs / catalog model ids), lowercase,
+ * drop characters outside `[a-z0-9._-]`. Fail-closed → `undefined`.
+ * `"Together AI"` → `togetherai`.
+ */
+export function sanitizeResolvedProvider(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.includes('/') || trimmed.includes(':')) return undefined;
+  let out = '';
+  for (const ch of trimmed.toLowerCase()) {
+    if (
+      (ch >= 'a' && ch <= 'z') ||
+      (ch >= '0' && ch <= '9') ||
+      ch === '.' ||
+      ch === '_' ||
+      ch === '-'
+    ) {
+      out += ch;
+    }
+  }
+  if (!out || out.length > RESOLVED_PROVIDER_MAX_BYTES) return undefined;
+  return out;
+}
+
 

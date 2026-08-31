@@ -45,6 +45,8 @@ export interface PersistStepFold {
   activeSandboxId?: string;
   /** Provider usage summary object (B8 encodes/bounds it for `meta.usage`). */
   usage?: unknown;
+  /** Sanitized Gateway-resolved provider slug (plan #906). Worker-owned. */
+  resolvedProvider?: string;
   /** Bounded `{role,content}` checkpoint projection (discarded in-memory seams). */
   checkpoint?: Array<{ role: string; content: string }>;
 }

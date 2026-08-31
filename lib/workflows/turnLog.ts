@@ -11,6 +11,8 @@ export function logTurnModel(entry: {
   reasoningChars?: number;
   completion?: number;
   code?: string;
+  /** Sanitized provider slug only — never credentials. */
+  provider?: string;
 }): void {
   const row: Record<string, unknown> = {
     tag: 'invincible.turn.model',
@@ -22,6 +24,7 @@ export function logTurnModel(entry: {
   if (entry.reasoningChars !== undefined) row.reasoningChars = entry.reasoningChars;
   if (entry.completion !== undefined) row.completion = entry.completion;
   if (entry.code !== undefined) row.code = entry.code;
+  if (entry.provider !== undefined) row.provider = entry.provider;
   console.log(JSON.stringify(row));
 }
 

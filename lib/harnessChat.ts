@@ -1671,6 +1671,9 @@ export async function runHarnessTurn(
       // below deliberately does NOT touch `usage`, so an aborted/cancelled turn
       // keeps its last honest value.
       next = { ...next, usage: agentResult.usage };
+      if (agentResult.resolvedProvider) {
+        next = { ...next, resolvedProvider: agentResult.resolvedProvider };
+      }
       // Plan #811 (D17) — fold durable-turn fields onto the session.
       // `turnRunId` is populated by /api/turns (absent for /api/agent — tests).
       if (agentResult.turnRunId !== undefined) {

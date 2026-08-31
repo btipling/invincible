@@ -688,6 +688,34 @@ describe('cloudMetaFor usage fold', () => {
     // No carriers set → no meta.
     expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [] })).toBeUndefined();
   });
+
+  it('plan #906 — copies resolvedProvider; poison omit; omit = clear', () => {
+    const meta = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      resolvedProvider: 'Together AI',
+    });
+    expect(meta).toEqual({ resolvedProvider: 'togetherai' });
+
+    const fireworks = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      resolvedProvider: 'fireworks',
+    });
+    expect(fireworks).toEqual({ resolvedProvider: 'fireworks' });
+
+    const poisoned = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      resolvedProvider: 'moonshotai/kimi-k3',
+    });
+    expect(poisoned).toBeUndefined();
+
+    expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [] })).toBeUndefined();
+  });
 });
 
 describe('overlayEnvelopeMeta', () => {

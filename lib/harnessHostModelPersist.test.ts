@@ -172,6 +172,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_set_selected_reasoning: (_ptr, len) => (len <= 32 ? 1 : 0),
     inv_has_pending_reasoning_change: () => 0,
     inv_ack_pending_reasoning_change: () => {},
+    inv_set_resolved_provider: (_ptr, len) => (len <= 32 ? 1 : 0),
     inv_clear_session_catalog: () => {},
     inv_push_session_catalog_entry: () => 0,
     inv_session_catalog_count: () => 0,

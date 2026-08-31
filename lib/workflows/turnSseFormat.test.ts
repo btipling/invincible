@@ -58,6 +58,18 @@ describe('formatLiveModelSse (plan #850)', () => {
     expect(formatLiveModelSse({ type: 'tool_start', name: 3 })).toBeNull();
   });
 
+  it('emits provider when the slug is a non-empty string (plan #906)', () => {
+    expect(formatLiveModelSse({ type: 'provider', provider: 'togetherai' })).toBe(
+      'data: {"type":"provider","provider":"togetherai"}\n\n',
+    );
+    expect(formatLiveModelSse({ type: 'provider', provider: 'fireworks' })).toBe(
+      'data: {"type":"provider","provider":"fireworks"}\n\n',
+    );
+    expect(formatLiveModelSse({ type: 'provider', provider: '' })).toBeNull();
+    expect(formatLiveModelSse({ type: 'provider' })).toBeNull();
+    expect(formatLiveModelSse({ type: 'provider', provider: 1 })).toBeNull();
+  });
+
   it('returns null for loop-owned / other event types', () => {
     expect(formatLiveModelSse({ type: 'usage', usage: { total: 1 } })).toBeNull();
     expect(formatLiveModelSse({ type: 'done', text: 'x' })).toBeNull();
