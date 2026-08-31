@@ -121,24 +121,28 @@ describe('parseModelsDevEffortMap', () => {
 });
 
 describe('joinEffortMaps', () => {
-  it('overlay non-empty wins; missing/empty overlay falls to Gateway; both empty → []', () => {
+  it('overlay fills empty/missing Gateway; nonempty Gateway wins disagreement', () => {
     const overlay = new Map<string, string[]>([
-      ['overlay-wins', ['low', 'high', 'max']],
+      ['overlay-fill', ['low', 'high', 'max']],
       ['empty-overlay', []],
       ['overlay-only', ['low']],
+      ['disagreement', ['low', 'medium', 'high']],
     ]);
     const gateway = new Map<string, string[]>([
-      ['overlay-wins', ['high', 'xhigh']],
+      ['overlay-fill', []],
       ['empty-overlay', ['low', 'medium']],
       ['gateway-only', ['none', 'low']],
       ['both-empty', []],
+      ['disagreement', ['none', 'low', 'medium', 'high']],
     ]);
     const joined = joinEffortMaps(overlay, gateway);
-    expect(joined.get('overlay-wins')).toEqual(['low', 'high', 'max']);
+    expect(joined.get('overlay-fill')).toEqual(['low', 'high', 'max']);
     expect(joined.get('empty-overlay')).toEqual(['low', 'medium']);
     expect(joined.get('overlay-only')).toEqual(['low']);
     expect(joined.get('gateway-only')).toEqual(['none', 'low']);
     expect(joined.get('both-empty')).toEqual([]);
+    // Live shape: grok-4.3 — overlay must not drop Gateway `none`.
+    expect(joined.get('disagreement')).toEqual(['none', 'low', 'medium', 'high']);
     expect(joined.get('missing')).toBeUndefined();
   });
 });
@@ -267,7 +271,10 @@ describe('getModelsDevEffortMap', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledWith(
       MODELS_DEV_URL,
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        redirect: 'error',
+      }),
     );
 
     const second = await getModelsDevEffortMap({
@@ -358,6 +365,101 @@ describe('getModelsDevEffortMap', () => {
     decodeSpy.mockRestore();
   });
 
+  it('arrayBuffer success path decodes then parses (production glue)', async () => {
+    const payload = {
+      vercel: {
+        models: {
+          'zai/glm-5.3-flash': {
+            reasoning_options: [{ type: 'effort', values: ['low', 'high', 'max'] }],
+          },
+        },
+      },
+    };
+    const bytes = new TextEncoder().encode(JSON.stringify(payload));
+    const json = vi.fn(async () => {
+      throw new Error('json must not run when arrayBuffer is present');
+    });
+    const fetchImpl: FetchImpl = vi.fn(async () => ({
+      ok: true,
+      json,
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+    }));
+    const map = await getModelsDevEffortMap({ fetchImpl, now: () => 0 });
+    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(json).not.toHaveBeenCalled();
+  });
+
+  it('streaming body success path decodes then parses', async () => {
+    const payload = {
+      vercel: {
+        models: {
+          'zai/glm-5.3-flash': {
+            reasoning_options: [{ type: 'effort', values: ['low', 'high', 'max'] }],
+          },
+        },
+      },
+    };
+    const bytes = new TextEncoder().encode(JSON.stringify(payload));
+    const json = vi.fn(async () => {
+      throw new Error('json must not run when body is present');
+    });
+    const arrayBuffer = vi.fn(async () => {
+      throw new Error('arrayBuffer must not run when body is present');
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+    const fetchImpl: FetchImpl = vi.fn(async () => ({
+      ok: true,
+      json,
+      arrayBuffer,
+      body,
+    }));
+    const map = await getModelsDevEffortMap({ fetchImpl, now: () => 0 });
+    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(json).not.toHaveBeenCalled();
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
+  it('streaming body oversize aborts before assembling the dump', async () => {
+    const decodeSpy = vi.spyOn(TextDecoder.prototype, 'decode');
+    const json = vi.fn(async () => {
+      throw new Error('json must not run when body is present');
+    });
+    const arrayBuffer = vi.fn(async () => {
+      throw new Error('arrayBuffer must not run when body is present');
+    });
+    const chunk = new Uint8Array(64 * 1024);
+    const limit = MODELS_DEV_FETCH_MAX_BYTES + chunk.byteLength;
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent >= limit) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(chunk);
+        sent += chunk.byteLength;
+      },
+    });
+    const fetchImpl: FetchImpl = vi.fn(async () => ({
+      ok: true,
+      json,
+      arrayBuffer,
+      body,
+    }));
+    const map = await getModelsDevEffortMap({ fetchImpl, now: () => 0 });
+    expect(map.size).toBe(0);
+    expect(json).not.toHaveBeenCalled();
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(decodeSpy).not.toHaveBeenCalled();
+    expect(sent).toBeLessThanOrEqual(MODELS_DEV_FETCH_MAX_BYTES + chunk.byteLength);
+    decodeSpy.mockRestore();
+  });
+
   it('resetGatewayModelsCache drops overlay so the next read refetches', async () => {
     const fetchImpl = modelsDevJson({
       'zai/glm-5.3-flash': {
@@ -373,7 +475,7 @@ describe('getModelsDevEffortMap', () => {
 });
 
 describe('getJoinedEffortMap', () => {
-  it('dispatches shared fetchImpl on URL; overlay non-empty wins', async () => {
+  it('dispatches shared fetchImpl on URL; overlay fills empty Gateway', async () => {
     const fetchImpl: FetchImpl = vi.fn(async (input) => {
       if (input === MODELS_DEV_URL) {
         return {

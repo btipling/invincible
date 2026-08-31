@@ -1,6 +1,7 @@
 /**
  * Unauthenticated effort catalogs — Gateway `/v1/models` plus a models.dev
- * `vercel.models` overlay. Join at read (non-empty overlay wins). Never call
+ * `vercel.models` overlay. Join at read: overlay fills a missing/empty
+ * Gateway list; a nonempty Gateway list wins disagreements. Never call
  * this inside a `'use step'` / `'use workflow'` function; `/api/models` and
  * the turn-start HTTP boundary are the only callers. Fail-open to an empty map.
  *
@@ -22,12 +23,13 @@ export const MODELS_DEV_URL = 'https://models.dev/api.json';
 
 export type FetchImpl = (
   input: string,
-  init?: { signal?: AbortSignal },
+  init?: { signal?: AbortSignal; redirect?: RequestRedirect },
 ) => Promise<{
   ok: boolean;
   status?: number;
   json: () => Promise<unknown>;
   arrayBuffer?: () => Promise<ArrayBuffer>;
+  body?: ReadableStream<Uint8Array> | null;
 }>;
 
 type CacheEntry = { fetchedAt: number; map: Map<string, string[]> };
@@ -93,14 +95,20 @@ export function parseModelsDevEffortMap(payload: unknown): Map<string, string[]>
   return out;
 }
 
-/** Non-empty overlay list wins; missing/empty overlay falls through to Gateway. */
+/**
+ * Overlay fills a missing/empty Gateway list (GLM-5.3-flash today).
+ * A nonempty Gateway list wins disagreements — overlay must not drop
+ * Gateway-only tokens (`none` on grok-4.3) or add wire-unknown values.
+ */
 export function joinEffortMaps(
   overlay: Map<string, string[]>,
   gateway: Map<string, string[]>,
 ): Map<string, string[]> {
   const out = new Map(gateway);
   for (const [id, values] of overlay) {
-    if (values.length > 0) out.set(id, values);
+    if (values.length === 0) continue;
+    const existing = out.get(id);
+    if (!existing || existing.length === 0) out.set(id, values);
   }
   return out;
 }
@@ -139,14 +147,52 @@ async function fetchGatewayEffortMap(
   return parseGatewayEffortMap(payload);
 }
 
-async function fetchModelsDevEffortMap(
-  fetchImpl: FetchImpl,
-): Promise<Map<string, string[]>> {
-  const res = await fetchImpl(MODELS_DEV_URL, {
-    signal: AbortSignal.timeout(GATEWAY_MODELS_FETCH_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    throw new Error(`models.dev HTTP ${res.status ?? 'error'}`);
+async function readCappedUtf8(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let n = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      n += value.byteLength;
+      if (n > MODELS_DEV_FETCH_MAX_BYTES) {
+        throw new Error('models.dev payload oversize');
+      }
+      chunks.push(value);
+    }
+  } catch (err) {
+    try {
+      await reader.cancel();
+    } catch {
+      /* already closed / locked */
+    }
+    throw err;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      /* cancel() already released */
+    }
+  }
+  const buf = new Uint8Array(n);
+  let off = 0;
+  for (const c of chunks) {
+    buf.set(c, off);
+    off += c.byteLength;
+  }
+  return new TextDecoder().decode(buf);
+}
+
+async function payloadFromModelsDevResponse(res: {
+  json: () => Promise<unknown>;
+  arrayBuffer?: () => Promise<ArrayBuffer>;
+  body?: ReadableStream<Uint8Array> | null;
+}): Promise<unknown> {
+  if (res.body && typeof res.body.getReader === 'function') {
+    const text = await readCappedUtf8(res.body);
+    return JSON.parse(text) as unknown;
   }
   if (typeof res.arrayBuffer === 'function') {
     const buf = await res.arrayBuffer();
@@ -154,9 +200,22 @@ async function fetchModelsDevEffortMap(
       throw new Error('models.dev payload oversize');
     }
     const text = new TextDecoder().decode(buf);
-    return parseModelsDevEffortMap(JSON.parse(text) as unknown);
+    return JSON.parse(text) as unknown;
   }
-  const payload = await res.json();
+  return res.json();
+}
+
+async function fetchModelsDevEffortMap(
+  fetchImpl: FetchImpl,
+): Promise<Map<string, string[]>> {
+  const res = await fetchImpl(MODELS_DEV_URL, {
+    signal: AbortSignal.timeout(GATEWAY_MODELS_FETCH_TIMEOUT_MS),
+    redirect: 'error',
+  });
+  if (!res.ok) {
+    throw new Error(`models.dev HTTP ${res.status ?? 'error'}`);
+  }
+  const payload = await payloadFromModelsDevResponse(res);
   return parseModelsDevEffortMap(payload);
 }
 
@@ -229,7 +288,7 @@ export async function getModelsDevEffortMap(opts?: {
   return overlayInflight;
 }
 
-/** Overlay then Gateway. Each source fail-opens independently. */
+/** Overlay fills Gateway holes. Each source fail-opens independently. */
 export async function getJoinedEffortMap(opts?: {
   fetchImpl?: FetchImpl;
   now?: () => number;
