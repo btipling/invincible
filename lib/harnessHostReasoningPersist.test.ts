@@ -163,7 +163,9 @@ describe('applySessionReasoning (plan #898)', () => {
   it('stored max restores as xhigh and persists the rewrite', () => {
     const { bridge } = makeEffortBridge();
     const puts: SessionSnapshot[] = [];
-    const ref = { current: { ...createEmptySession('s1'), reasoningEffort: 'max' } };
+    const ref: { current: SessionSnapshot } = {
+      current: { ...createEmptySession('s1'), reasoningEffort: 'max' },
+    };
     applySessionReasoning(
       ref.current,
       ['low', 'high', 'max'],
