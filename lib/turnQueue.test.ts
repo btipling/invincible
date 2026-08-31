@@ -4,6 +4,8 @@
  * reload re-arm (stub bridge, mirrors the lib/harnessChat.test.ts stub).
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   TURN_QUEUE_DRAIN_MAX_ATTEMPTS,
   TURN_QUEUE_MAX_ITEMS,
@@ -186,5 +188,26 @@ describe('rearmQueueFromMirror (F21 reload hydration)', () => {
 
   it('re-arms with a fresh budget available (drain cap exported and generous)', () => {
     expect(TURN_QUEUE_DRAIN_MAX_ATTEMPTS).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('HarnessHost F21 wiring source-lock (adversarial #901)', () => {
+  const host = readFileSync(
+    resolve(process.cwd(), 'app/harness/HarnessHost.tsx'),
+    'utf8',
+  );
+
+  it('strips a drained prompt from the mirror BEFORE runHarnessTurn (not after the terminal)', () => {
+    const start = host.indexOf('await runHarnessTurn(');
+    expect(start).toBeGreaterThan(0);
+    const before = host.slice(0, start);
+    const after = host.slice(start);
+    expect(before).toContain('drainingQueued');
+    expect(before).toContain('removeQueuedText(');
+    expect(before).toContain('queueOf(');
+    // Give-up / restore may mention removeQueuedText only before the call.
+    expect(after.indexOf('removeQueuedText(')).toBe(-1);
+    expect(after).toContain('queueRestoreHead(');
+    expect(after).toContain('drainingQueued');
   });
 });

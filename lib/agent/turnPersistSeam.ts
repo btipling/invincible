@@ -72,6 +72,7 @@ import type {
   PersistStepSeam,
 } from '../workflows/persistStep';
 import { persistOverlayStatus, stampSnapshotUpdatedAt } from '../workflows/persistStep';
+import { sanitizeQueue } from '../turnQueue';
 
 /** Worker-authored envelope clock source for the terminal B8 overlay (LWW). */
 export type OverlayClock = (storedUpdatedAt: number) => number;
@@ -105,6 +106,12 @@ export interface TurnPersistSeamDeps {
 const toMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
 
+/** F21 queue mirror on a snapshot-shaped body; undefined = no/poisoned carrier. */
+function queueFromBody(body: unknown): string[] | undefined {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return undefined;
+  return sanitizeQueue((body as Record<string, unknown>).queue);
+}
+
 /** This-run snapshot + optional `prev`/`depth`; non-snapshot test bodies keep stamp-only. */
 function buildThisRunChunk(opts: {
   content: string;
@@ -112,6 +119,8 @@ function buildThisRunChunk(opts: {
   updatedAt: number;
   prev: string | undefined;
   depth: number | undefined;
+  /** Prior blob's sanitized `queue` (copy-forward when this-run content omits it). */
+  priorQueue?: string[];
 }): string | null {
   let parsed: unknown;
   try {
@@ -133,6 +142,12 @@ function buildThisRunChunk(opts: {
   };
   if (opts.prev) rec.prev = opts.prev;
   if (opts.depth !== undefined) rec.depth = opts.depth;
+  // F21 adversarial #901 Major L1: worker this-run chunks must copy-forward
+  // the submit-queue mirror. The field rides the transcript blob (not meta);
+  // dropping it here lets a cloud adopt wipe a localStorage re-arm.
+  const fromContent = queueFromBody(parsed);
+  const queue = fromContent ?? opts.priorQueue;
+  if (queue !== undefined && queue.length > 0) rec.queue = queue;
   return JSON.stringify(rec);
 }
 
@@ -231,6 +246,7 @@ export function createTurnPersistSeam(
       // walking (reconstruct fail-closes the whole blob at 256).
       let chunkPrev: string | undefined;
       let chunkDepth: number | undefined;
+      let priorQueue: string[] | undefined;
       const pointer = stored?.meta?.transcriptPointer;
       if (typeof pointer === 'string' && isObjectIdBoundTo(pointer, scope)) {
         let raw: string | null;
@@ -288,6 +304,7 @@ export function createTurnPersistSeam(
           }
           chunkPrev = pointer;
           chunkDepth = chainLen + 1;
+          priorQueue = queueFromBody(parsed);
         }
       }
 
@@ -297,6 +314,7 @@ export function createTurnPersistSeam(
         updatedAt,
         prev: chunkPrev,
         depth: chunkDepth,
+        priorQueue,
       });
       if (stampedRaw === null) {
         return await failWrite({

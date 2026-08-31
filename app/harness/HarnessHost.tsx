@@ -55,6 +55,7 @@ import { paintQuotaAfterRebuild, tryLocalSave } from '../../lib/hostQuotaError';
 import {
   TURN_QUEUE_DRAIN_MAX_ATTEMPTS,
   queueAppend,
+  queueOf,
   queueRestoreHead,
   rearmQueueFromMirror,
   removeQueuedText,
@@ -591,6 +592,20 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       setHostNote(null);
 
       try {
+        // ── backend-agents F21 (adversarial #901 Major L1) ──
+        // Strip the drained prompt from the mirror BEFORE runHarnessTurn so
+        // onTurnStarted → onSessionPatch cannot persist the in-flight prompt.
+        // A crash between accept and terminal would otherwise re-arm it and
+        // double-POST on the next Ready. Attach / send-while-running leaves
+        // the mirror alone (that call did not start this prompt's turn).
+        const pendingText = (prompt ?? '').trim();
+        const drainingQueued =
+          !attaching &&
+          pendingText.length > 0 &&
+          (queueOf(sessionRef.current) ?? []).includes(pendingText);
+        if (drainingQueued) {
+          persist(removeQueuedText(sessionRef.current, pendingText));
+        }
         const { result, session: next } = await runHarnessTurn(
           bridge,
           sessionRef.current,
@@ -616,30 +631,16 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           },
         );
         // ── backend-agents F21 (plan #815): persisted submit-queue reconcile ──
-        // Runs BEFORE persist so BOTH the live and detached persist paths
-        // carry the reconciled mirror. The mirror rides `session.queue`
-        // (transcript blob carrier). Every non-attach runPrompt call is
-        // host-driven (composer or drain-start); the SAME action that started
-        // the turn also updates the mirror:
-        //   - durable start reached (turn completed, OR the failure blended a
-        //     `x-workflow-run-id` header — the route ACCEPTED the POST and the
-        //     run is live server-side): the prompt left the queue →
-        //     removeQueuedText + reset the budget. Keying on the durable
-        //     start (not the terminal) keeps reload hydration from
-        //     double-enqueueing a prompt whose run survived the crash.
-        //   - failed start before any durable begin (pre-header network /
-        //     5xx / subscribe-fail / 409 live-lock / 429): the prompt is
-        //     still pending → queueRestoreHead (persist + re-arm the band
-        //     head) and count a failed attempt (bounded budget,
-        //     drop-with-paint at TURN_QUEUE_DRAIN_MAX_ATTEMPTS).
-        //   - attach / drain-attach: untouched (this call never started a
-        //     turn from the queue).
+        // The drain-start strip above already dropped the prompt from the
+        // mirror (so mid-turn patches never carry it). This block only:
+        //   - durable start (result.ok OR blended x-workflow-run-id): reset
+        //     the failed-start budget; mirror already matches.
+        //   - failed start before any durable begin: restore the head
+        //     (queueRestoreHead persist + Wasm queuedInsertFront) and count
+        //     a failed attempt; give-up paints an Error (already stripped).
+        //   - attach / drain-attach: untouched (drainingQueued is false).
         let reconciled = next;
         if (!attaching) {
-          const pendingText = (prompt ?? '').trim();
-          const wasQueued =
-            pendingText.length > 0 &&
-            (reconciled.queue ?? []).includes(pendingText);
           // AgentFailure/AgentSuccess blend `turnRunId` from the response
           // header (post-headers aborts included, adversarial #844); the
           // legacy chat result never carries one.
@@ -648,20 +649,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               ? result.turnRunId
               : undefined;
           if (result.ok || resultRunId !== undefined) {
-            // Durable start reached: the prompt left the queue. Keying on the
-            // durable start (not the terminal) keeps reload hydration from
-            // double-enqueueing a prompt whose run survived the crash.
-            if (wasQueued) {
-              reconciled = removeQueuedText(reconciled, pendingText);
-            }
             drainAttemptsRef.current.delete(reconciled.id);
-          } else if (wasQueued) {
+          } else if (drainingQueued) {
             const attempts =
               (drainAttemptsRef.current.get(reconciled.id) ?? 0) + 1;
             if (attempts >= TURN_QUEUE_DRAIN_MAX_ATTEMPTS) {
-              // Give-up: drop-with-paint (Caps table) — never a silent drop.
+              // Give-up: already stripped at drain-start; paint, never silent.
               drainAttemptsRef.current.delete(reconciled.id);
-              reconciled = removeQueuedText(reconciled, pendingText);
               try {
                 bridge.pushMessage(
                   MessageKind.Error,
@@ -671,7 +665,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                 /* torn-down bridge */
               }
             } else {
-              // Defer: stays the head; persist + re-arm the Wasm band head.
+              // Defer: persist + re-arm the Wasm band head.
               drainAttemptsRef.current.set(reconciled.id, attempts);
               reconciled = queueRestoreHead(reconciled, pendingText);
               try {
