@@ -98,7 +98,7 @@ submit so no ghost request is sent.
 |---------|--------|
 | Model id (harness picker) | Choose a reasoning-capable granted model when desired |
 | Effort (harness picker) | In-canvas menu next to the model (protocol v23). Hidden when Gateway published no values for this id. Live pick is `POST { reasoning }`. `max` is listable if Gateway lists it; never the restore/default. Unset (NEVER_AUTO-only lists) shows `effort` until the operator commits — the trigger must not look like `max` is already selected. |
-| Resolved provider (harness label) | In-canvas text after the effort menu (protocol v24). Hidden when unknown. SSE `provider` is **live on the durable writer** (`formatLiveModelSse` allowlist). Capture: generation `providerMetadata` then BYOK pin. `done.resolvedProvider` is the conclusive replace when present. Catalog id is unchanged. |
+| Resolved provider (harness label) | In-canvas text after the effort menu (protocol v24). Hidden when unknown. SSE `provider` is **live on the durable writer** (`formatLiveModelSse` allowlist). Capture: generation `providerMetadata.gateway.routing.resolvedProvider` (then `finalProvider`, then `providerName`/`provider`) then BYOK pin. `done.resolvedProvider` is the conclusive replace when present. Catalog id is unchanged. |
 | Request `reasoning` | Optional body field on `POST /api/turns` and `POST /api/agent` (`^[a-z0-9_-]{1,32}$`). Wins over env. |
 | `AGENT_REASONING` | Ops override only: `provider-default` \| `none` \| `low` \| `medium` \| `high`. Not the operator UI. Do not set `max` here. |
 | `GET /api/models` `reasoningOptions` | Per-model Gateway `type: effort` values when published (empty array when not). |

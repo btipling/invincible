@@ -72,17 +72,35 @@ function firstProviderField(rec: Record<string, unknown>): string | undefined {
   return sanitizeResolvedProvider(rec.provider);
 }
 
+function fromGatewayRouting(gw: Record<string, unknown>): string | undefined {
+  const routing = gw.routing;
+  if (!routing || typeof routing !== 'object' || Array.isArray(routing)) {
+    return undefined;
+  }
+  const rec = routing as Record<string, unknown>;
+  // Vercel AI Gateway providerMetadata.gateway.routing (no extra GET):
+  // https://vercel.com/docs/ai-gateway/models-and-providers/provider-filtering-and-ordering
+  const fromResolved = sanitizeResolvedProvider(rec.resolvedProvider);
+  if (fromResolved) return fromResolved;
+  return sanitizeResolvedProvider(rec.finalProvider);
+}
+
 /**
  * Pull a sanitized provider slug out of AI SDK / Gateway `providerMetadata`.
- * Prefers `gateway.providerName` then `gateway.provider`; else the first
- * string `providerName` / `provider` under any top-level key. Miss → undefined.
+ * Prefers `gateway.routing.resolvedProvider` then `gateway.routing.finalProvider`
+ * (documented Gateway object). Then `gateway.providerName` / `gateway.provider`.
+ * Else the first string `providerName` / `provider` under any top-level key.
+ * Miss → undefined.
  */
 export function extractResolvedProvider(meta: unknown): string | undefined {
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return undefined;
   const rec = meta as Record<string, unknown>;
   const gateway = rec.gateway;
   if (gateway && typeof gateway === 'object' && !Array.isArray(gateway)) {
-    const fromGateway = firstProviderField(gateway as Record<string, unknown>);
+    const gw = gateway as Record<string, unknown>;
+    const fromRouting = fromGatewayRouting(gw);
+    if (fromRouting) return fromRouting;
+    const fromGateway = firstProviderField(gw);
     if (fromGateway) return fromGateway;
   }
   for (const value of Object.values(rec)) {
@@ -92,6 +110,7 @@ export function extractResolvedProvider(meta: unknown): string | undefined {
   }
   return undefined;
 }
+
 
 /** Map a sanitized slug to a short display label. Unknown slugs pass through. */
 export function formatResolvedProviderLabel(slug: string): string {

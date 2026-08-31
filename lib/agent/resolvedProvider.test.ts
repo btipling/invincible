@@ -8,7 +8,69 @@ import {
 import { sanitizeResolvedProvider } from '../sessionCloudCaps';
 
 describe('extractResolvedProvider', () => {
-  it('prefers gateway.providerName then gateway.provider', () => {
+  it('reads gateway.routing.resolvedProvider then finalProvider (documented Gateway object)', () => {
+    expect(
+      extractResolvedProvider({
+        gateway: {
+          routing: {
+            originalModelId: 'moonshotai/kimi-k3',
+            resolvedProvider: 'fireworks',
+            resolvedProviderApiModelId: 'Kimi-K2.5',
+            finalProvider: 'togetherai',
+          },
+          cost: '0.004',
+          generationId: 'gen_01A2B3C4D5E6F7G8H9J0K1L2M',
+        },
+      }),
+    ).toBe('fireworks');
+    expect(
+      extractResolvedProvider({
+        gateway: {
+          routing: { finalProvider: 'togetherai' },
+          generationId: 'gen_x',
+        },
+      }),
+    ).toBe('togetherai');
+  });
+
+  it('same catalog id, togetherai vs fireworks routing → different slugs', () => {
+    const modelId = 'moonshotai/kimi-k3';
+    const together = extractResolvedProvider({
+      gateway: {
+        routing: {
+          originalModelId: modelId,
+          resolvedProvider: 'togetherai',
+          finalProvider: 'togetherai',
+        },
+      },
+    });
+    const fireworks = extractResolvedProvider({
+      gateway: {
+        routing: {
+          originalModelId: modelId,
+          resolvedProvider: 'fireworks',
+          finalProvider: 'fireworks',
+        },
+      },
+    });
+    expect(together).toBe('togetherai');
+    expect(fireworks).toBe('fireworks');
+    expect(together).not.toBe(fireworks);
+  });
+
+  it('routing.resolvedProvider wins over gateway.providerName / provider', () => {
+    expect(
+      extractResolvedProvider({
+        gateway: {
+          providerName: 'Together AI',
+          provider: 'togetherai',
+          routing: { resolvedProvider: 'fireworks', finalProvider: 'fireworks' },
+        },
+      }),
+    ).toBe('fireworks');
+  });
+
+  it('prefers gateway.providerName then gateway.provider when routing is absent', () => {
     expect(
       extractResolvedProvider({
         gateway: { providerName: 'Together AI', provider: 'fireworks' },
@@ -32,7 +94,7 @@ describe('extractResolvedProvider', () => {
     ).toBe('fireworks');
   });
 
-  it('ignores junk, URLs, and catalog model ids', () => {
+  it('ignores junk, URLs, catalog model ids, and model-id routing fields', () => {
     expect(extractResolvedProvider(undefined)).toBeUndefined();
     expect(extractResolvedProvider(null)).toBeUndefined();
     expect(extractResolvedProvider('togetherai')).toBeUndefined();
@@ -45,8 +107,17 @@ describe('extractResolvedProvider', () => {
     expect(
       extractResolvedProvider({ gateway: { provider: { nested: true } } }),
     ).toBeUndefined();
+    expect(
+      extractResolvedProvider({
+        gateway: {
+          routing: { resolvedProviderApiModelId: 'moonshotai/kimi-k3' },
+          generationId: 'gen_x',
+        },
+      }),
+    ).toBeUndefined();
   });
 });
+
 
 describe('formatResolvedProviderLabel', () => {
   it('maps known slugs and passes unknown slugs through', () => {

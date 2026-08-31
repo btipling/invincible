@@ -503,7 +503,12 @@ describe('generateOneRound reasoning (plan #846)', () => {
         providerHint: 'togetherai',
         streamTextImpl: makeStream({
           text: 'ok',
-          providerMetadata: { gateway: { providerName: 'Fireworks' } },
+          providerMetadata: {
+            gateway: {
+              routing: { resolvedProvider: 'fireworks', finalProvider: 'fireworks' },
+              generationId: 'gen_x',
+            },
+          },
         }),
       },
       {
