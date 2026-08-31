@@ -41,7 +41,7 @@ flowchart TB
   end
 
   turns -->|"start · runId"| entry
-  attach -.->|"getReadable SSE"| entry
+  attach -.->|"getRun.getReadable"| entry
 
   subgraph stores ["Stores"]
     redis["Redis envelope<br/>meta + transcriptPointer"]
@@ -93,9 +93,12 @@ the sandbox.
 
 Production host submit is `POST /api/turns` with `Accept: text/event-stream`. The
 route authenticates, requires `sessionId`, resolves tenant BYOK, then
-`start(turnWorkflow, …)` with **serializable args only** (prompt, `modelId`,
-scope, bind). It never passes a tools dict, API keys, or closures. `turnRunId` is
-the Workflow run id, not the session id. Fail-closed `start` throw is **503** —
+`start(turnWorkflow, …)` with **serializable args only** (`userMessage`,
+`modelId`, `scope`, optional `persistRunBind`, optional `reasoning`). The HTTP
+body field is `prompt`; the workflow arg is `userMessage`. It never passes a
+tools dict, API keys, or closures. `turnRunId` is derived in-workflow from
+`getWorkflowMetadata().workflowRunId` — it is the Workflow run id, not the
+session id, and is not a `start()` arg. Fail-closed `start` throw is **503** —
 never a silent `/api/agent` fallback.
 
 `turnWorkflow` (`"use workflow"`) runs `runTurnLoop`. Each `'use step'`
@@ -108,9 +111,12 @@ re-resolves its world from `scope`:
 | `persistStep` | Blob transcript segment + Redis envelope overlay | None. Persist `{ok:false}` does **not** fail the turn |
 
 The `'use workflow'` orchestrator cannot write the stream. `done` / `error` are
-loop-owned (`writeTurnSse`). Event types match [agent-stream.md](agent-stream.md).
-Leave-tab abort is **detach**: the run keeps going; `GET /api/turns/:runId/stream`
-reattaches via `getReadable`.
+loop-owned (`writeTurnSse`). Live deltas use one held writer per step; writer
+I/O (5xx / 429 / timeout) latches that writer dead and later tokens no-op
+([agent-stream.md](agent-stream.md)). Leave-tab abort is **detach**: the run
+keeps going; `GET /api/turns/:runId/stream` reattaches via
+`getRun(runId).getReadable({startIndex})` (Workflows run handle, not the
+`turnWorkflow` entry function).
 
 Host `runHarnessTurn` uses `/api/turns` only. `POST /api/agent` stays reachable
 as the **legacy tests/JSON** inject path (`sendAgent` / `sendAgentStream`).
@@ -121,7 +127,7 @@ as the **legacy tests/JSON** inject path (`sendAgent` / `sendAgentStream`).
 | Store | Holds | Who writes |
 |-------|-------|------------|
 | **localStorage** | First-paint snapshot | DOM host. Wasm never touches it |
-| **Redis envelope** | Small meta: `transcriptPointer`, `logicalCwd`, `activeSandboxId`, `turnRunId`, selected model | Host `/api/sessions` upserts; `persistStep` overlays live turn keys |
+| **Redis envelope** | Small meta: `transcriptPointer`, `logicalCwd`, `activeSandboxId`, `turnRunId`, `turnStatus`, selected model | Host `/api/sessions` upserts; `persistStep` overlays live turn keys |
 | **Blob** | Transcript object chain (`messages`, optional `prev` / `depth` / `queue`) | Host terminal PUT may flatten; worker persist writes this-run chunks |
 | **Postgres** | Users, tenants, sandbox catalog/grants, BYOK + MCP ciphertext under tenant DEK, personas, skills | Admin / Settings / first-run sign-up. Not the transcript |
 
@@ -133,9 +139,12 @@ is missing. Reconstruct walks `prev` (cap 256). Details:
 
 Admin `/admin/inference` stores provider secrets under the tenant DEK and grants
 model ids. `GET /api/models` is the catalog the host pushes into the Wasm status
-bar. At submit the host sends the live Wasm `modelId`; the turns route and
-`modelGenerateStep` **re-authorize** that id and attach request-scoped Gateway
-BYOK. They never call `streamText` with a bare id from host env.
+bar. At submit the host sends the live Wasm `modelId` and the live Wasm
+reasoning-effort pick (`POST { reasoning }`, protocol v23). The turns route
+resolves that token against Gateway's published list, then `start()` forwards
+the scalar; `modelGenerateStep` **re-authorizes** the model id and attaches
+request-scoped Gateway BYOK. They never call `streamText` with a bare id from
+host env.
 
 Vercel AI Gateway may resolve the **same** model id to different upstreams
 (for example Together vs Fireworks). That is Gateway routing, not a second
@@ -144,9 +153,12 @@ in-repo model catalog.
 ## Tools and sandbox
 
 `assembleDurableToolWorld` (shared by model + tool steps) builds the same surface
-as the legacy agent route: sandbox FS (`list_dir` / `read_file` / `write_file` /
-`str_replace` / `exec` / `search` / `change_dir`), optional `http_get`, enabled
-per-user MCP, and in-process `meta_*` / skill tools. Hard grant-deny is **403**.
+as the legacy agent route: sandbox FS (`pwd` / `list_dir` / `read_file` /
+`write_file` / `str_replace` / `exec` / `search` / `change_dir` /
+`sandbox_info`), optional `http_get`, enabled
+per-user MCP, and in-process `meta_*` / skill tools. Hard grant-deny is **403**
+at the turns route (pre-`start()`). In-step `assembleDurableToolWorld` returns
+`{ok:false, code:'sandbox_forbidden'}` as a value — never an HTTP status.
 Missing workspace with HTTP/MCP still usable is a soft continue.
 
 The **sandbox** is a jailed tools workspace (BYO protocol-v2 daemon **or** a user

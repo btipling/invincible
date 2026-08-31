@@ -21,7 +21,8 @@ optional login chrome).
 | JS ↔ Wasm bridge glue | **DOM** | `lib/harnessBridge.ts` |
 | Poll pending submit | **DOM** | No custom Wasm imports beyond stock dvui `web.js` |
 | `POST /api/chat` | **Vercel backend** | Single-shot inference; `AI_GATEWAY_API_KEY` never in Wasm |
-| `POST /api/agent` | **Vercel backend** | Multi-step tools (sandbox + per-user MCP when configured); server-only secrets |
+| `POST /api/turns` | **Vercel backend** | Production harness turn (Workflows + SSE). Host `runHarnessTurn` default. Same tool surface as `/api/agent` |
+| `POST /api/agent` | **Vercel backend** | Legacy tests/JSON inject; same event types; not the production host path |
 | Fold multi-turn history into prompt | **DOM** | `lib/harnessChat.ts` (user/assistant only; system tool lines display-only) |
 | `SessionStore` load/save/clear | **DOM** | memory / localStorage (first paint) |
 | Cloud session list/mint/pull/push/DELETE (`/api/sessions*`) | **DOM** host + **Vercel backend** | Redis multi-session (+ **phase 0 #515 envelope + Blob transcript**), server-minted ids; hybrid async; never blocks first paint; no dual chat. **Wasm never talks to Redis or Blob** — the DOM host drives the client→Blob upload + envelope upsert |
@@ -93,7 +94,7 @@ User types in Wasm composer
   → Thinking rows **collapse at turn end** into a compact expandable control (in-memory; ephemeral; not SessionStore); the active Busy turn stays fully expanded
   → Tool-run rows paint as a default-collapsed `N tools called` expandable control (counts + two-level detail); see [harness-limits.md](harness-limits.md)
   → User reads the live `N tools called` increment in the Wasm transcript while Busy — the count grows per tool event on the canvas, never withheld until a boundary
-  → The server parses a leading `/skill-name` (or `/unskill slug`) into an attach/detach, injects attached-skill bodies into system context (`skillsPreamble`, after the persona), emits a `skill_attached` SSE event, and the host pushes a display-only `Skill attached: <slug>` row (protocol v12, message kind 7) — never the body
+  → Slash-command `/skill-name` / `/unskill slug` attach still lives on `/api/agent`. The durable model step re-resolves sticky / always-on skills only (`command: none`)
 ```
 
 **toolTrace display (host → Wasm tool_run):** the host aggregates each
@@ -115,17 +116,19 @@ a boundary. On reload/hydrate (`pushSessionToBridge`) consecutive `tool_run`
 rows are coalesced via `mergeToolRunPayloads` into scannable groups (rolling at
 `TOOL_RUN_ITEMS_MAX`), never across an assistant/user/error boundary.
 
-**skill_attached display (server → host → Wasm):** the server parses leading
+**skill_attached display (server → host → Wasm):** `/api/agent` parses leading
 `/skill-name` and `/unskill slug`, resolves attached skill slugs via
 `lib/tenancy/skillInject.ts`, and injects their bodies into system context as a
 `skillsPreamble` appended **after the persona** (bodies stay **server-only**).
-On the wire it emits a `skill_attached {slug, action, ok}` SSE event (or
-`skillEvents` on the JSON path); the host pushes a display-only bridge message
-kind **7** (`MessageKind.SkillAttached`, session role `skill_attached`) whose
-text is just `Skill attached: <slug>` (or detached / not-attached). **Wasm owns
-the row paint** (`paintSkillAttached`, protocol v12); it shows only the skill
-NAME. The body is never shipped to the client and never folded into the model
-prompt — attachment is session-sticky via `meta.attachedSkills` (slugs only),
+The durable model step does **not** parse slash commands (`command: none`); it
+re-resolves sticky / always-on slugs only. On the `/api/agent` wire it emits a
+`skill_attached {slug, action, ok}` SSE event (or `skillEvents` on the JSON
+path); the host pushes a display-only bridge message kind **7**
+(`MessageKind.SkillAttached`, session role `skill_attached`) whose text is just
+`Skill attached: <slug>` (or detached / not-attached). **Wasm owns the row
+paint** (`paintSkillAttached`, protocol v12); it shows only the skill NAME. The
+body is never shipped to the client and never folded into the model prompt —
+attachment is session-sticky via `meta.attachedSkills` (slugs only),
 re-resolved each turn.
 
 ## Key source paths
