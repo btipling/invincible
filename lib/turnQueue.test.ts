@@ -12,6 +12,7 @@ import {
   TURN_QUEUE_TEXT_MAX_CHARS,
   queueAppend,
   queueClear,
+  queueHydratePlan,
   queueOf,
   queueRestoreHead,
   queueWithoutText,
@@ -206,6 +207,16 @@ describe('rearmQueueFromMirror (F21 reload hydration)', () => {
   });
 });
 
+describe('queueHydratePlan (F21 adversarial #901 HEAD)', () => {
+  it('cold: wipe FIFO then re-arm from the mirror', () => {
+    expect(queueHydratePlan('cold')).toEqual({ preserveQueue: false, rearm: true });
+  });
+
+  it('live: keep FIFO and never re-arm (just-promoted head is still in the mirror)', () => {
+    expect(queueHydratePlan('live')).toEqual({ preserveQueue: true, rearm: false });
+  });
+});
+
 describe('HarnessHost F21 wiring source-lock (adversarial #901)', () => {
   const host = readFileSync(
     resolve(process.cwd(), 'app/harness/HarnessHost.tsx'),
@@ -240,6 +251,23 @@ describe('HarnessHost F21 wiring source-lock (adversarial #901)', () => {
     expect(harnessChat).toMatch(/const preserveQueue = attaching;/);
     expect(harnessChat).not.toMatch(
       /preserveQueue = attaching && \(rawPrompt/,
+    );
+  });
+
+  it('Load-earlier and needSnap hydrates are live (no re-arm of a just-promoted head)', () => {
+    // Both live ring snaps pass kind 'live' so queueHydratePlan skips re-arm.
+    expect(host).toContain("hydrateRingWindow(b, session, nextStart, 'live')");
+    expect(host).toContain(
+      "hydrateRingWindow(b, sessionRef.current, latest, 'live')",
+    );
+    expect(host).toContain('queueHydratePlan(kind)');
+    expect(host).toContain('if (plan.rearm)');
+    // Cold sites stay default-cold (3-arg / explicit default), not 'live'.
+    expect(host).toContain(
+      'hydrateRingWindow(bridge, merged, latestRingStart(merged.messages.length))',
+    );
+    expect(host).toContain(
+      'hydrateRingWindow(bridge, restored, latestRingStart(restored.messages.length))',
     );
   });
 });

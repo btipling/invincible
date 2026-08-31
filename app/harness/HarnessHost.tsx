@@ -56,10 +56,12 @@ import { paintQuotaAfterRebuild, tryLocalSave } from '../../lib/hostQuotaError';
 import {
   TURN_QUEUE_DRAIN_MAX_ATTEMPTS,
   queueAppend,
+  queueHydratePlan,
   queueOf,
   queueRestoreHead,
   rearmQueueFromMirror,
   removeQueuedText,
+  type QueueHydrateKind,
 } from '../../lib/turnQueue';
 import {
   AUTO_CONTINUE_PROMPT,
@@ -287,24 +289,33 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const [personaPick, setPersonaPick] = useState<string | null | undefined>(undefined);
 
   const hydrateRingWindow = useCallback(
-    (bridge: HarnessBridge, session: SessionSnapshot, windowStart: number) => {
+    (
+      bridge: HarnessBridge,
+      session: SessionSnapshot,
+      windowStart: number,
+      kind: QueueHydrateKind = 'cold',
+    ) => {
+      const plan = queueHydratePlan(kind);
       const start = pushSessionToBridge(bridge, session, {
         clear: true,
         windowStart,
+        ...(plan.preserveQueue ? { preserveQueue: true } : {}),
       });
       ringWindowStartRef.current = start;
       // ── backend-agents F21 (plan #815): reload hydration ──
-      // A default `hydrateMessages` clear wipes the Wasm submit FIFO; re-arm
-      // it from the persisted mirror (`session.queue`). Guards inside:
-      // skips when the Wasm queue is non-empty (live FIFO — never
-      // double-enqueues) and on any insert reject (fail-closed; the items
-      // stay in the mirror). Reverse-order `queuedInsertFront` rebuilds the
-      // original FIFO order. `inv_queued_count` parity holds: the mirror was
-      // exactly the set the previous heap drained from.
-      try {
-        rearmQueueFromMirror(bridge, session);
-      } catch {
-        /* torn-down bridge / stub without queue exports */
+      // Cold (boot/adopt/switch): default `hydrateMessages` clear wipes the
+      // Wasm submit FIFO; re-arm it from the persisted mirror (`session.queue`).
+      // Live (Load-earlier / needSnap): `inv_clear_ring` keeps the FIFO and
+      // we must NOT re-arm — a just-promoted head is already out of the band
+      // and still in the mirror until runPrompt strips it (adversarial #901
+      // HEAD Major). Guards inside rearm: skip when the Wasm queue is
+      // non-empty and on any insert reject (fail-closed).
+      if (plan.rearm) {
+        try {
+          rearmQueueFromMirror(bridge, session);
+        } catch {
+          /* torn-down bridge / stub without queue exports */
+        }
       }
       return start;
     },
@@ -1096,7 +1107,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               if (switched !== 'switched' && b.takePendingLoadEarlier()) {
                 const session = sessionRef.current;
                 const nextStart = earlierRingStart(ringWindowStartRef.current);
-                hydrateRingWindow(b, session, nextStart);
+                hydrateRingWindow(b, session, nextStart, 'live');
                 // Adversarial #870: Load-earlier `clear:true` wipes a ring-only
                 // Error; re-paint if the once-flag is still set. Do not fold
                 // this into hydrateRingWindow — adopt paints from the
@@ -1114,7 +1125,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                   const latest = latestRingStart(sessionRef.current.messages.length);
                   const needSnap = ringWindowStartRef.current !== latest;
                   if (needSnap) {
-                    hydrateRingWindow(b, sessionRef.current, latest);
+                    hydrateRingWindow(b, sessionRef.current, latest, 'live');
                     paintQuotaAfterRebuild(
                       b,
                       localSaveQuotaWarnedRef,

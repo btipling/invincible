@@ -175,6 +175,11 @@ export function queueClear(session: SessionSnapshot): SessionSnapshot {
  *   mirror, never silently dropped).
  * Returns the number of items re-armed (parity: callers may compare against
  * `bridge.queuedCount()`).
+ *
+ * Callers: only **cold** hydrates (boot / adopt / switch). Live ring snaps
+ * (Load-earlier / needSnap) must use {@link queueHydratePlan} `'live'` and
+ * must not call this — a just-promoted head is already out of the band and
+ * still in the mirror until drain-start strip (adversarial #901 HEAD Major).
  */
 export function rearmQueueFromMirror(
   bridge: HarnessBridge,
@@ -196,3 +201,27 @@ export function rearmQueueFromMirror(
   }
   return inserted;
 }
+
+/**
+ * Cold vs live ring hydrate (adversarial #901 HEAD Major).
+ *
+ * - **cold** (F5 / boot / adopt / switch): wipe the stale FIFO
+ *   (`inv_clear_messages`) then re-arm from this session's mirror.
+ * - **live** (Load-earlier / needSnap before pending submit): keep the current
+ *   FIFO (`inv_clear_ring`) and **do not re-arm**. A just-promoted head is
+ *   already out of the band and still in the mirror until `runPrompt` strips
+ *   it; re-arming would duplicate it and double-POST.
+ *
+ * Do not key re-arm on `queuedCount()===0` after a live clear: that is the
+ * post-promote empty-FIFO (last-item) case.
+ */
+export type QueueHydrateKind = 'cold' | 'live';
+
+export function queueHydratePlan(kind: QueueHydrateKind): {
+  preserveQueue: boolean;
+  rearm: boolean;
+} {
+  if (kind === 'live') return { preserveQueue: true, rearm: false };
+  return { preserveQueue: false, rearm: true };
+}
+
