@@ -83,6 +83,39 @@ describe('resolveAgentReasoning', () => {
     ).toBe('low');
   });
 
+  it('drops request max (not on the language-model wire); does not alias to xhigh', () => {
+    expect(
+      resolveAgentReasoning('zai/glm-5.3-flash', {
+        request: 'max',
+        env: {},
+        options: ['low', 'high', 'max'],
+      }),
+    ).toBe('low');
+    expect(
+      resolveAgentReasoning('zai/glm-5.3-flash', {
+        request: 'MAX',
+        env: {},
+        options: [],
+      }),
+    ).toBe('low');
+    expect(
+      resolveAgentReasoning('any', {
+        request: 'max',
+        env: {},
+        options: ['xhigh'],
+      }),
+    ).toBeUndefined();
+  });
+
+  it('forwards on-wire request tokens including xhigh and minimal', () => {
+    expect(resolveAgentReasoning('any', { request: 'xhigh', env: {} })).toBe(
+      'xhigh',
+    );
+    expect(resolveAgentReasoning('any', { request: 'minimal', env: {} })).toBe(
+      'minimal',
+    );
+  });
+
   it('defaults low for reasoning/thinking model ids when options empty', () => {
     expect(
       resolveAgentReasoning('xai/grok-4.1-fast-reasoning', {

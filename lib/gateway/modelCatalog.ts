@@ -1,9 +1,11 @@
 /**
  * Unauthenticated effort catalogs — Gateway `/v1/models` plus a models.dev
  * `vercel.models` overlay. Join at read: overlay fills a missing/empty
- * Gateway list; a nonempty Gateway list wins disagreements. Never call
- * this inside a `'use step'` / `'use workflow'` function; `/api/models` and
- * the turn-start HTTP boundary are the only callers. Fail-open to an empty map.
+ * Gateway list; a nonempty Gateway list wins disagreements. Both sides
+ * drop tokens not on the language-model `reasoning` wire (`max` today).
+ * Never call this inside a `'use step'` / `'use workflow'` function;
+ * `/api/models` and the turn-start HTTP boundary are the only callers.
+ * Fail-open to an empty map.
  *
  * Failures (throw / HTTP !ok / abort / oversize overlay) are **negatively
  * cached** for the same TTL as a success so a hung catalog cannot stall every
@@ -17,6 +19,7 @@ import {
   REASONING_EFFORT_VALUES_MAX,
   sanitizeReasoningEffort,
 } from '../sessionCloudCaps';
+import { filterGatewayWireEfforts } from './reasoningWire';
 
 export const GATEWAY_MODELS_URL = 'https://ai-gateway.vercel.sh/v1/models';
 export const MODELS_DEV_URL = 'https://models.dev/api.json';
@@ -98,17 +101,23 @@ export function parseModelsDevEffortMap(payload: unknown): Map<string, string[]>
 /**
  * Overlay fills a missing/empty Gateway list (GLM-5.3-flash today).
  * A nonempty Gateway list wins disagreements — overlay must not drop
- * Gateway-only tokens (`none` on grok-4.3) or add wire-unknown values.
+ * Gateway-only tokens (`none` on grok-4.3). Both sides drop tokens that
+ * are not on the Gateway language-model `reasoning` wire (`max` today).
+ * Drop, never alias (`max` is not `xhigh`).
  */
 export function joinEffortMaps(
   overlay: Map<string, string[]>,
   gateway: Map<string, string[]>,
 ): Map<string, string[]> {
-  const out = new Map(gateway);
+  const out = new Map<string, string[]>();
+  for (const [id, values] of gateway) {
+    out.set(id, filterGatewayWireEfforts(values));
+  }
   for (const [id, values] of overlay) {
-    if (values.length === 0) continue;
+    const filtered = filterGatewayWireEfforts(values);
+    if (filtered.length === 0) continue;
     const existing = out.get(id);
-    if (!existing || existing.length === 0) out.set(id, values);
+    if (!existing || existing.length === 0) out.set(id, filtered);
   }
   return out;
 }
