@@ -25,6 +25,7 @@ import {
 } from './sessionRepository';
 import type { SessionSnapshot } from './sessionStore';
 import { formatPromptWithHistory, makeMessage } from './sessionStore';
+import { flattenReconstructedBody } from './sessions/transcriptChunks';
 
 function snap(
   partial: Partial<SessionSnapshot> & { messages?: SessionSnapshot['messages'] },
@@ -1751,6 +1752,25 @@ describe('backend-agents F21 — persisted submit-queue mirror (plan #815)', () 
       turnStatus: 'running',
     });
     expect(over.queue).toEqual(['p1']);
+  });
+
+  it('GET flatten+parse keeps the queue mirror (F21 adversarial #901)', () => {
+    const flat = flattenReconstructedBody(
+      {
+        id: 'sess_x',
+        updatedAt: 1,
+        messages: [],
+        prev: 't_old',
+        depth: 2,
+        queue: ['follow-up B', 'follow-up C'],
+      },
+      'sess_x',
+      [{ id: 'm1', role: 'user', text: 'turn-1', at: 1 }],
+    );
+    expect(flat.prev).toBeUndefined();
+    const parsed = parseCloudSessionSnapshot(flat, 'sess_x');
+    expect(parsed?.queue).toEqual(['follow-up B', 'follow-up C']);
+    expect(parsed?.messages.map((m) => m.text)).toEqual(['turn-1']);
   });
 });
 

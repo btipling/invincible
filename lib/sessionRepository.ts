@@ -689,7 +689,9 @@ export function trimForCloudPut(
   // backend-agents F21 (plan #815): the submit-queue mirror rides the record
   // body (the transcript object on the envelope carrier / the roll-forward
   // record). Re-sanitized (fail-closed) — a poisoned local value is dropped,
-  // never PUT. Empty mirror omits the field (absent = clear on adopt-restore).
+  // never PUT. Empty mirror omits the field (absent = no queued prompts on
+  // this PUT). Same-id adopt does NOT treat omit as a clear — mergeQueues
+  // unions server+local then strips the in-flight last user (adversarial #901).
   const queue = sanitizeQueue(snapshot.queue);
   const meta = cloudMetaFor(snapshot);
   const fresh = (ms: CloudPutBody['messages']): CloudPutBody => ({
