@@ -25,6 +25,7 @@ import { sanitizeUsageSummary, type UsageSummary } from './agent/usageSummary';
 import { readAgentStream, type AgentStreamResult } from './agentSse';
 import {
   isRedisSafeOpaqueId,
+  sanitizeReasoningEffort,
   sanitizeTurnRunId,
   sanitizeTurnStreamCursor,
 } from './sessionCloudCaps';
@@ -55,6 +56,7 @@ function turnRequestBody(
   prompt: string,
   init?: {
     modelId?: string;
+    reasoning?: string;
     cwd?: string;
     sandboxId?: string;
     sessionId?: string;
@@ -63,6 +65,7 @@ function turnRequestBody(
 ): {
   prompt: string;
   modelId?: string;
+  reasoning?: string;
   cwd?: string;
   sandboxId?: string;
   sessionId?: string;
@@ -71,6 +74,7 @@ function turnRequestBody(
   const body: {
     prompt: string;
     modelId?: string;
+    reasoning?: string;
     cwd?: string;
     sandboxId?: string;
     sessionId?: string;
@@ -78,6 +82,8 @@ function turnRequestBody(
   } = { prompt: normalizePrompt(prompt) };
   const mid = init?.modelId?.trim();
   if (mid) body.modelId = mid;
+  const reasoning = sanitizeReasoningEffort(init?.reasoning);
+  if (reasoning) body.reasoning = reasoning;
   const cwd = init?.cwd?.trim();
   if (cwd) body.cwd = cwd;
   const sandboxId = init?.sandboxId?.trim();

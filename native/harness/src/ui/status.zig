@@ -89,7 +89,7 @@ pub fn statusPackMaxWidth() f32 {
 /// Paint the right-aligned status-slot pack into line 2 of the two-line bottom
 /// status bar (protocol v13, plan #538/#541/#554, header merged by plan #570).
 /// Line 2 is a fixed 32 px horizontal row sharing the 64 px bar with the identity
-/// row (line 1: lifecycle · build id · model picker); each line has its own
+/// row (line 1: lifecycle · build id · model picker · effort picker); each line has its own
 /// explicit height so neither can displace the other. A narrow canvas DROPS slots
 /// per `STATUS_SLOT_DROP_ORDER` then pixel-ellipsizes the kept slot to fit.
 /// Sandbox + cwd render as muted TEAL one-liners (WARM when busy); an empty slot

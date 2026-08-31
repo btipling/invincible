@@ -52,6 +52,12 @@ import {
   flushPendingThenRestore,
   discardPendingModelChange,
 } from '../../lib/harnessHostModelPersist';
+import {
+  applySessionReasoning as applySessionReasoningFn,
+  foldPendingReasoningChange as foldPendingReasoningChangeFn,
+  discardPendingReasoningChange,
+} from '../../lib/harnessHostReasoningPersist';
+import { sanitizeReasoningEffort } from '../../lib/sessionCloudCaps';
 import { paintQuotaAfterRebuild, tryLocalSave } from '../../lib/hostQuotaError';
 import {
   TURN_QUEUE_DRAIN_MAX_ATTEMPTS,
@@ -127,7 +133,7 @@ async function fetchHarnessBuildId(): Promise<string> {
 }
 
 type ModelCatalogResult =
-  | { ok: true; models: string[] }
+  | { ok: true; models: string[]; reasoningById: Record<string, string[]> }
   | { ok: false; status: number; message: string };
 
 async function fetchModelCatalogOnce(): Promise<ModelCatalogResult> {
@@ -154,7 +160,9 @@ async function fetchModelCatalogOnce(): Promise<ModelCatalogResult> {
         message: `Model catalog unavailable (${res.status}).`,
       };
     }
-    const data = (await res.json()) as { models?: { id?: string }[] };
+    const data = (await res.json()) as {
+      models?: { id?: string; reasoningOptions?: unknown }[];
+    };
     if (!Array.isArray(data.models)) {
       return {
         ok: false,
@@ -162,10 +170,21 @@ async function fetchModelCatalogOnce(): Promise<ModelCatalogResult> {
         message: 'Model catalog response invalid.',
       };
     }
-    const models = data.models
-      .map((m) => (typeof m?.id === 'string' ? m.id.trim() : ''))
-      .filter(Boolean);
-    return { ok: true, models };
+    const models: string[] = [];
+    const reasoningById: Record<string, string[]> = {};
+    for (const m of data.models) {
+      const id = typeof m?.id === 'string' ? m.id.trim() : '';
+      if (!id) continue;
+      models.push(id);
+      const raw = Array.isArray(m.reasoningOptions) ? m.reasoningOptions : [];
+      const values: string[] = [];
+      for (const v of raw) {
+        const token = sanitizeReasoningEffort(v);
+        if (token && !values.includes(token)) values.push(token);
+      }
+      reasoningById[id] = values;
+    }
+    return { ok: true, models, reasoningById };
   } catch {
     return {
       ok: false,
@@ -270,6 +289,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   /** Server id to bind once the in-flight turn finishes (boot mint mid-turn), #430. */
   const pendingMintBindRef = useRef<string | null>(null);
   const sessionRef = useRef<SessionSnapshot>(createEmptySession());
+  /** Gateway effort lists keyed by model id (from GET /api/models). */
+  const reasoningByIdRef = useRef<Record<string, string[]>>({});
   /** Oldest session.messages index currently hydrated into the Wasm ring. */
   const ringWindowStartRef = useRef(0);
 
@@ -368,6 +389,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     applySessionModelFn(snap, b, sessionRef, writeLocalSession, repoRef.current);
   }, [writeLocalSession]);
 
+  const applySessionReasoning = useCallback((snap: SessionSnapshot) => {
+    const b = bridgeRef.current;
+    if (!b) return;
+    const modelId = b.getSelectedModel();
+    const options = modelId ? (reasoningByIdRef.current[modelId] ?? []) : [];
+    // Meta-only persist (adversarial-review #902 Major L1): this runs on the
+    // 150 ms poll after a model change and must not snap ringWindowStartRef
+    // the way writeLocalSession does (Load-earlier window).
+    applySessionReasoningFn(snap, options, b, sessionRef, writeLocalSessionMeta, repoRef.current);
+  }, [writeLocalSessionMeta]);
+
   /** Apply server snapshot to local store + latest Wasm ring window. */
   const adoptCloudSession = useCallback(
     (next: SessionSnapshot) => {
@@ -382,8 +414,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       if (b) {
         // Flush a pending menu/Next pick onto the CURRENT session before
         // replacing it (PR #618 re-run 5 Minor L1). Restore-by-id never acks.
+        // Plan #898: fold a pending effort pick onto the CURRENT session first
+        // — fold-after-persist would stamp the live pick onto the incoming row.
         // Adversarial #870: paint after hydrate so the once-flag is not spent
         // on a row `hydrateMessages` immediately drops.
+        foldPendingReasoningChangeFn(
+          b,
+          sessionRef,
+          persistNoPaint,
+          repoRef.current,
+          inflightRef.current,
+        );
         flushPendingThenRestore(
           merged,
           b,
@@ -391,6 +432,15 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           persistNoPaint,
           repoRef.current,
           inflightRef.current,
+        );
+        const liveModel = b.getSelectedModel();
+        applySessionReasoningFn(
+          merged,
+          liveModel ? (reasoningByIdRef.current[liveModel] ?? []) : [],
+          b,
+          sessionRef,
+          persistNoPaint,
+          repoRef.current,
         );
       } else {
         persistNoPaint(merged);
@@ -415,6 +465,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     const b = bridgeRef.current;
     if (!b) return;
     foldPendingModelChangeFn(b, sessionRef, writeLocalSessionMeta, repoRef.current, inflightRef.current);
+  }, [writeLocalSessionMeta]);
+
+  const foldPendingReasoningChange = useCallback(() => {
+    const b = bridgeRef.current;
+    if (!b) return;
+    foldPendingReasoningChangeFn(b, sessionRef, writeLocalSessionMeta, repoRef.current, inflightRef.current);
   }, [writeLocalSessionMeta]);
 
   /** Persist the active session id into the URL `?s=` (no new history entry). */
@@ -550,6 +606,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         }
       }
       const modelId = bridge.getSelectedModel();
+      const reasoning = bridge.getSelectedReasoning();
       if (!attaching && !modelId) {
         setHostNote('No model selected — catalog empty, failed to load, or not granted.');
         try {
@@ -632,6 +689,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             pushUser: attaching ? false : opts?.pushUser ?? false,
             skipUserAppend: opts?.skipUserAppend === true,
             ...(modelId ? { modelId } : {}),
+            ...(reasoning ? { reasoning } : {}),
             // Phase 2 (#627 / #625): persist every mid-turn session patch
             // (cwd change, sandbox switch) via the same persist callback the
             // turn-end path uses — local write + coalesced cloud PUT.
@@ -700,9 +758,15 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // still persist (row 12: submit still reads the live `getSelectedModel()`; this
         // just carries that same truth forward into the snapshot).
         const liveId = bridge.getSelectedModel();
-        const folded: SessionSnapshot = liveId
-          ? { ...reconciled, selectedModel: liveId }
-          : reconciled;
+        const liveEffort = bridge.getSelectedReasoning();
+        // F21: persist `reconciled` (queue restore/give-up), not `next`.
+        // Plan #898: fold the live effort pick the same way as the model id.
+        const folded: SessionSnapshot = {
+          ...reconciled,
+          ...(liveId ? { selectedModel: liveId } : {}),
+        };
+        if (liveEffort) folded.reasoningEffort = liveEffort;
+        else delete folded.reasoningEffort;
         // Always persist — including user Stop/cancel (and late abort after a finished
         // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
         // Load earlier / refresh could wipe the cancelled turn from the ring.
@@ -927,11 +991,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         if (cancelled) return;
         if (catalog.ok) {
           bridge.setModelCatalog(catalog.models);
+          reasoningByIdRef.current = catalog.reasoningById;
           if (catalog.models.length === 0) {
             setHostNote('No models granted — ask a tenant admin for inference access.');
           }
         } else {
           bridge.setModelCatalog([]);
+          reasoningByIdRef.current = {};
           setHostNote(catalog.message);
         }
 
@@ -965,6 +1031,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // catalog selects it; null/absent resets to the default. (A revoke/catalog
         // change lands on the default first granted, never a ghost index.)
         applySessionModel(sessionRef.current);
+        applySessionReasoning(sessionRef.current);
 
         // Cloud multi-session boot (phase 3, #415): mint the first session / pin
         // `?s=` / adopt a bound local id — async AFTER local first paint so nothing
@@ -992,6 +1059,15 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                 // Adversarial #870: no paint here — activate hydrates; keep-local
                 // paints below if this save quota'd.
                 foldPendingModelChangeFn(
+                  bootBridge,
+                  sessionRef,
+                  (s) => {
+                    foldQuota = writeLocalSessionMeta(s, { paintQuota: false });
+                  },
+                  repoRef.current,
+                  inflightRef.current,
+                );
+                foldPendingReasoningChangeFn(
                   bootBridge,
                   sessionRef,
                   (s) => {
@@ -1094,9 +1170,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             } else if (inflightRef.current || switchInFlightRef.current) {
               foldPendingSessionSwitch(true, () => b.takePendingSessionSwitch(), () => {});
             } else {
-              // Plan #616 (source #610): fold a user Next cycle into the session
-              // snapshot + persist + ack before any other pending event this tick.
+              // Plan #616 / #898: fold a user model/effort pick before other pending
+              // events this tick. Model switch re-pushes that model's effort list
+              // and drops a sticky pick that is not in the new list.
+              const modelChanged = b.hasPendingModelChange();
               foldPendingModelChange();
+              if (modelChanged) {
+                applySessionReasoning(sessionRef.current);
+                if (b.hasPendingReasoningChange()) b.ackPendingReasoningChange();
+              } else {
+                foldPendingReasoningChange();
+              }
               const switched = foldPendingSessionSwitch(
                 false,
                 () => b.takePendingSessionSwitch(),
@@ -1204,7 +1288,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     refreshSessions,
     setUrlSessionId,
     applySessionModel,
+    applySessionReasoning,
     foldPendingModelChange,
+    foldPendingReasoningChange,
     kickColdAttach,
   ]);
 
@@ -1297,6 +1383,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     // rewrite (useEffect → setSessionCatalog) no longer replays it.
     if (bridge) {
       discardPendingModelChange(bridge);
+      discardPendingReasoningChange(bridge);
       bridge.takePendingSessionSwitch();
     }
 
@@ -1325,6 +1412,17 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // Plan #616 (source #610): New/Clear starts on the default model (index 0);
         // the fresh empty snapshot already omits `selectedModel`.
         bridge.setSelectedModel(null);
+        {
+          const liveModel = bridge.getSelectedModel();
+          applySessionReasoningFn(
+            empty,
+            liveModel ? (reasoningByIdRef.current[liveModel] ?? []) : [],
+            bridge,
+            sessionRef,
+            () => {},
+            null,
+          );
+        }
         bridge.pushMessage(MessageKind.System, 'New session started.');
         bridge.setLifecycle(Lifecycle.Ready);
         paintQuotaAfterRebuild(bridge, localSaveQuotaWarnedRef, quota, empty);

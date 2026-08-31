@@ -20,6 +20,7 @@ import {
   normalizeSessionCwd,
   parseAttachedSkills,
   sanitizeModelId,
+  sanitizeReasoningEffort,
   sanitizeTurnRunId,
   sanitizeTurnStatus,
   sanitizeTurnStreamCursor,
@@ -243,6 +244,7 @@ export function parseCloudSessionSnapshot(
   let activeSandboxId: string | undefined;
   let personaId: string | undefined;
   let selectedModel: string | undefined;
+  let reasoningEffort: string | undefined;
   let turnRunId: string | undefined;
   let turnStatus: import('./sessionCloudCaps').TurnStatus | undefined;
   let turnStreamCursor: number | undefined;
@@ -265,6 +267,10 @@ export function parseCloudSessionSnapshot(
     // session's pick by id. `sanitizeModelId` drops a poisoned / invalid value
     // to unset (restore falls back to the default first-granted model).
     selectedModel = sanitizeModelId(meta.selectedModel);
+    // Plan #898: restore the selected reasoning effort from the reserved
+    // `meta.reasoningEffort`. `sanitizeReasoningEffort` drops poison to unset
+    // (restore falls back to `defaultEffortFromOptions` for the current model).
+    reasoningEffort = sanitizeReasoningEffort(meta.reasoningEffort);
     // backend-agents A1–A3: restore the three turn carriers from the reserved meta
     // keys through the shared client-safe predicates so a poisoned / side-channel
     // value drops to unset instead of becoming a sticky 400. `turnStatus='completed'`
@@ -283,6 +289,7 @@ export function parseCloudSessionSnapshot(
   if (activeSandboxId !== undefined) snapshot.activeSandboxId = activeSandboxId;
   if (personaId !== undefined) snapshot.personaId = personaId;
   if (selectedModel !== undefined) snapshot.selectedModel = selectedModel;
+  if (reasoningEffort !== undefined) snapshot.reasoningEffort = reasoningEffort;
   if (turnRunId !== undefined) snapshot.turnRunId = turnRunId;
   if (turnStatus !== undefined) snapshot.turnStatus = turnStatus;
   if (turnStreamCursor !== undefined) snapshot.turnStreamCursor = turnStreamCursor;
@@ -341,6 +348,10 @@ export function overlayEnvelopeMeta(
   const selectedModel = sanitizeModelId(envMeta.selectedModel);
   if (selectedModel !== undefined) out.selectedModel = selectedModel;
   else delete out.selectedModel;
+
+  const reasoningEffort = sanitizeReasoningEffort(envMeta.reasoningEffort);
+  if (reasoningEffort !== undefined) out.reasoningEffort = reasoningEffort;
+  else delete out.reasoningEffort;
 
   if (envMeta.attachedSkills !== undefined) {
     out.attachedSlugs = parseAttachedSkills(envMeta.attachedSkills);
@@ -554,6 +565,11 @@ export type CloudPutBody = {
      */
     selectedModel?: string;
     /**
+     * Plan #898: the selected reasoning-effort token. Folded from
+     * `snapshot.reasoningEffort` via `sanitizeReasoningEffort`. Absent = clear.
+     */
+    reasoningEffort?: string;
+    /**
      * backend-agents A1 (#795): the Workflow run id, folded from
      * `snapshot.turnRunId` via `sanitizeTurnRunId`. Absent = clear.
      */
@@ -628,6 +644,10 @@ export function cloudMetaFor(
     ? sanitizeModelId(snapshot.selectedModel)
     : undefined;
   if (selectedModel !== undefined) meta.selectedModel = selectedModel;
+  const reasoningEffort = snapshot.reasoningEffort
+    ? sanitizeReasoningEffort(snapshot.reasoningEffort)
+    : undefined;
+  if (reasoningEffort !== undefined) meta.reasoningEffort = reasoningEffort;
   // backend-agents A1–A3: fold the three turn carriers from the snapshot through
   // the shared client-safe predicates (drop-to-unset on poison — never a sticky
   // 400; absent = clear, RESERVED_META_KEYS replace contract). `completed` is a
@@ -646,6 +666,7 @@ export function cloudMetaFor(
     meta.personaId === undefined &&
     meta.attachedSkills === undefined &&
     meta.selectedModel === undefined &&
+    meta.reasoningEffort === undefined &&
     meta.turnRunId === undefined &&
     meta.turnStatus === undefined &&
     meta.turnStreamCursor === undefined &&

@@ -97,6 +97,7 @@ submit so no ghost request is sent.
 | Control | Effect |
 |---------|--------|
 | Model id (harness picker) | Choose a reasoning-capable granted model when desired |
+| Effort (harness picker) | In-canvas menu next to the model (protocol v23). Hidden when Gateway published no values for this id. Live pick is `POST { reasoning }`. `max` is listable if Gateway lists it; never the restore/default. Unset (NEVER_AUTO-only lists) shows `effort` until the operator commits — the trigger must not look like `max` is already selected. |
 | Request `reasoning` | Optional body field on `POST /api/turns` and `POST /api/agent` (`^[a-z0-9_-]{1,32}$`). Wins over env. |
 | `AGENT_REASONING` | Ops override only: `provider-default` \| `none` \| `low` \| `medium` \| `high`. Not the operator UI. Do not set `max` here. |
 | `GET /api/models` `reasoningOptions` | Per-model Gateway `type: effort` values when published (empty array when not). |

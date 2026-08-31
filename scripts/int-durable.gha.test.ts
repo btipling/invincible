@@ -2,9 +2,12 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Locks `.github/workflows/int-durable.yml` against the CI miss on PR #861:
- * `GITHUB_TOKEN` is not a default runner env var, so fetch-harness must be
- * given `${{ github.token }}` (or `secrets.GITHUB_TOKEN`) explicitly.
+ * Locks `.github/workflows/int-durable.yml` against:
+ * - CI miss on PR #861: `GITHUB_TOKEN` is not a default runner env var, so
+ *   fetch-harness must be given `${{ github.token }}` explicitly.
+ * - Protocol-bump miss on PR #902: wait off + latest main Wasm meant
+ *   REQUIRED_FNS fail-closed on missing new exports. Must wait for the PR
+ *   head SHA and download `harness-wasm-pr-N` (never the production name).
  */
 const WORKFLOW = readFileSync(
   new URL('../.github/workflows/int-durable.yml', import.meta.url),
@@ -23,10 +26,15 @@ describe('int-durable.yml — fetch-harness token + runner lock', () => {
     expect(WORKFLOW).toMatch(/permissions:[\s\S]*actions:\s*read/);
   });
 
-  it('fetches latest main artifact (wait off, require on, no commit pin)', () => {
-    expect(WORKFLOW).toMatch(/HARNESS_WAIT_MS:\s*"0"/);
+  it('waits for commit-matched harness (PR head SHA + pr artifact; require on)', () => {
+    expect(WORKFLOW).toMatch(/HARNESS_WAIT_MS:\s*"720000"/);
     expect(WORKFLOW).toMatch(/HARNESS_REQUIRE:\s*"1"/);
-    expect(WORKFLOW).not.toMatch(/HARNESS_COMMIT_SHA/);
+    expect(WORKFLOW).toMatch(
+      /HARNESS_COMMIT_SHA:\s*\$\{\{\s*github\.event\.pull_request\.head\.sha\s*\|\|\s*github\.sha\s*\}\}/,
+    );
+    expect(WORKFLOW).toMatch(
+      /HARNESS_PR_NUMBER:\s*\$\{\{\s*github\.event\.pull_request\.number\s*\}\}/,
+    );
     expect(WORKFLOW).not.toMatch(/^\s*HARNESS_ARTIFACT_TOKEN:/m);
   });
 

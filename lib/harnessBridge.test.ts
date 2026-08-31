@@ -24,6 +24,7 @@ type MockExtras = {
   __busyTick: () => number;
   __setModelPending: (on: boolean) => void;
   __modelPending: () => boolean;
+  __setReasoningPending: (on: boolean) => void;
   __promoteAllowed: () => boolean;
 };
 
@@ -46,6 +47,10 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
   const catalog: string[] = [];
   let selected = 0;
   let modelPending = false;
+  const efforts: string[] = [];
+  let selectedEffort = 0;
+  let hasEffortSelection = false;
+  let reasoningPending = false;
   const sessionCatalog: { id: string; label: string }[] = [];
   let currentSession: string | null = null;
   let sessionSwitchPending: string | null = null;
@@ -205,6 +210,51 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_ack_pending_model_change: () => {
       modelPending = false;
     },
+    inv_clear_reasoning_efforts: () => {
+      efforts.length = 0;
+      selectedEffort = 0;
+      hasEffortSelection = false;
+    },
+    inv_push_reasoning_effort: (ptr: number, len: number) => {
+      if (len <= 0 || len > 32 || efforts.length >= 16) return 0;
+      const id = read(ptr, len);
+      if (!id || !/^[a-z0-9_-]+$/.test(id)) return 0;
+      efforts.push(id);
+      return 1;
+    },
+    inv_reasoning_effort_count: () => efforts.length,
+    inv_selected_reasoning_len: () => {
+      if (efforts.length === 0 || !hasEffortSelection) return 0;
+      const idx = Math.min(selectedEffort, efforts.length - 1);
+      return efforts[idx].length;
+    },
+    inv_selected_reasoning_copy: (outPtr: number, maxLen: number) => {
+      if (efforts.length === 0 || !hasEffortSelection) return 0;
+      const idx = Math.min(selectedEffort, efforts.length - 1);
+      const id = efforts[idx];
+      const n = Math.min(maxLen, id.length);
+      if (n > 0) write(outPtr, id.slice(0, n));
+      return n;
+    },
+    inv_set_selected_reasoning: (ptr, len) => {
+      if (len > 32) return 0;
+      const id = len === 0 ? null : read(ptr, len);
+      if (id == null) {
+        hasEffortSelection = false;
+        selectedEffort = 0;
+        return 1;
+      }
+      if (!/^[a-z0-9_-]+$/.test(id)) return 0;
+      const i = efforts.indexOf(id);
+      if (i < 0) return 0;
+      selectedEffort = i;
+      hasEffortSelection = true;
+      return 1;
+    },
+    inv_has_pending_reasoning_change: () => (reasoningPending ? 1 : 0),
+    inv_ack_pending_reasoning_change: () => {
+      reasoningPending = false;
+    },
     inv_clear_session_catalog: () => {
       sessionCatalog.length = 0;
       currentSession = null;
@@ -290,6 +340,9 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
       modelPending = !!on;
     },
     __modelPending: () => modelPending,
+    __setReasoningPending: (on) => {
+      reasoningPending = !!on;
+    },
     __promoteAllowed: () => promoteAllowed,
   };
 
@@ -305,6 +358,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     __busyTick: base.__busyTick,
     __setModelPending: base.__setModelPending,
     __modelPending: base.__modelPending,
+    __setReasoningPending: base.__setReasoningPending,
     __promoteAllowed: base.__promoteAllowed,
   };
 }
@@ -543,6 +597,52 @@ describe('model persistence (protocol v16, plan #616)', () => {
       'inv_set_selected_model',
       'inv_has_pending_model_change',
       'inv_ack_pending_model_change',
+    ]) {
+      const record = exp as unknown as Record<string, unknown>;
+      const copy = { ...record };
+      delete copy[name];
+      expect(isHarnessBridgeExports(copy as WebAssembly.Exports)).toBe(false);
+    }
+  });
+});
+
+describe('reasoning efforts (protocol v23)', () => {
+  it('empty list → getSelectedReasoning null; push does not auto-select', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    expect(bridge.getSelectedReasoning()).toBeNull();
+    bridge.setReasoningEfforts(['low', 'high', 'max']);
+    expect(bridge.reasoningEffortCount()).toBe(3);
+    expect(bridge.getSelectedReasoning()).toBeNull();
+  });
+
+  it('setSelectedReasoning restore-by-value; unknown rejected; empty clears', () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    bridge.setReasoningEfforts(['low', 'high', 'max']);
+    expect(bridge.setSelectedReasoning('low')).toBe(true);
+    expect(bridge.getSelectedReasoning()).toBe('low');
+    expect(bridge.hasPendingReasoningChange()).toBe(false);
+    expect(bridge.setSelectedReasoning('max')).toBe(true);
+    expect(bridge.getSelectedReasoning()).toBe('max');
+    expect(bridge.setSelectedReasoning('xhigh')).toBe(false);
+    expect(bridge.getSelectedReasoning()).toBe('max');
+    expect(bridge.setSelectedReasoning(null)).toBe(true);
+    expect(bridge.getSelectedReasoning()).toBeNull();
+  });
+
+  it('v23 exports are REQUIRED (fail-closed when any missing)', () => {
+    const exp = makeMockExports() as unknown as WebAssembly.Exports;
+    expect(isHarnessBridgeExports(exp)).toBe(true);
+    for (const name of [
+      'inv_clear_reasoning_efforts',
+      'inv_push_reasoning_effort',
+      'inv_reasoning_effort_count',
+      'inv_selected_reasoning_len',
+      'inv_selected_reasoning_copy',
+      'inv_set_selected_reasoning',
+      'inv_has_pending_reasoning_change',
+      'inv_ack_pending_reasoning_change',
     ]) {
       const record = exp as unknown as Record<string, unknown>;
       const copy = { ...record };
@@ -829,7 +929,7 @@ describe('skill_attached kind (protocol v12)', () => {
     // Distinct from the protocol version (13) — a hardcoded kind 13 would be an
     // unknown kind to the Wasm painter.
     expect(MessageKind.SkillAttached).not.toBe(HARNESS_PROTOCOL_VERSION);
-    expect(HARNESS_PROTOCOL_VERSION).toBe(21);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
   });
 
   it('push/readback round-trips a skill_attached row', () => {
@@ -859,7 +959,7 @@ describe('setTurnElapsed (protocol v14)', () => {
   });
 
   it('version bumped to 20 and the export is REQUIRED (fail-closed when missing)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(21);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     // A rebuilt Wasm that omits inv_set_turn_elapsed fails bridge-load closed,
@@ -928,7 +1028,7 @@ describe('status-slot pack (protocol v13)', () => {
 
 describe('queuedCount (protocol v18)', () => {
   it('reads inv_queued_count and fails closed when the export is missing', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(21);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     expect(bridge.queuedCount()).toBe(0);
@@ -975,7 +1075,7 @@ describe('clearRing / hydrateMessages preserveQueue (protocol v21, adversarial #
   });
 
   it('inv_clear_ring export is REQUIRED (fail-closed when missing)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(21);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     const record = exp as unknown as Record<string, unknown>;
@@ -996,7 +1096,7 @@ describe('setQueuePromoteAllowed (protocol v19, plan #760)', () => {
   });
 
   it('export is REQUIRED (fail-closed when missing from the wasm)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(21);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     const record = exp as unknown as Record<string, unknown>;

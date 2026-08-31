@@ -25,6 +25,19 @@ describe('sendAgent', () => {
     });
   });
 
+  it('includes sanitized reasoning on the JSON body (plan #898)', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ text: 'ok' }));
+    vi.stubGlobal('fetch', fetchMock);
+    await sendAgent('hi', { reasoning: 'HIGH' });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/agent',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ prompt: 'hi', reasoning: 'high' }),
+      }),
+    );
+  });
+
   it('parses success preserving the TYPED change_dir cwd in toolTrace (adversarial review #470)', async () => {
     const LONG_PATH =
       'packages/frontend/src/components/settings/panels/advanced/billing/extra';

@@ -170,6 +170,14 @@ function makeMockExports(): HarnessBridgeExports & {
     inv_set_selected_model: (_ptr, len) => (len <= 128 ? 1 : 0),
     inv_has_pending_model_change: () => 0,
     inv_ack_pending_model_change: () => {},
+    inv_clear_reasoning_efforts: () => {},
+    inv_push_reasoning_effort: () => 0,
+    inv_reasoning_effort_count: () => 0,
+    inv_selected_reasoning_len: () => 0,
+    inv_selected_reasoning_copy: () => 0,
+    inv_set_selected_reasoning: (_ptr, len) => (len <= 32 ? 1 : 0),
+    inv_has_pending_reasoning_change: () => 0,
+    inv_ack_pending_reasoning_change: () => {},
     inv_clear_session_catalog: () => {},
     inv_push_session_catalog_entry: () => 0,
     inv_session_catalog_count: () => 0,
@@ -822,6 +830,26 @@ describe('runHarnessTurn', () => {
       expect.objectContaining({ modelId: 'anthropic/claude-a' }),
     );
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it('forwards live reasoning to sendAgent (plan #898)', async () => {
+    const mock = makeMockExports();
+    const bridge = new HarnessBridge(mock);
+    const sendAgent = vi.fn(async (): Promise<AgentResult> => ({
+      ok: true,
+      text: 'agent-ok',
+      toolTrace: [],
+    }));
+    await runHarnessTurn(bridge, createEmptySession(), 'hi', {
+      sendAgent,
+      pushUser: false,
+      modelId: 'openai/gpt-b',
+      reasoning: 'high',
+    });
+    expect(sendAgent).toHaveBeenCalledWith(
+      'hi',
+      expect.objectContaining({ modelId: 'openai/gpt-b', reasoning: 'high' }),
+    );
   });
 });
 

@@ -293,6 +293,8 @@ export type RunHarnessChatOptions = {
   useHistory?: boolean;
   /** Explicit gateway model id (protocol v3 picker). */
   modelId?: string;
+  /** Live Wasm effort pick (protocol v23). Omit when hidden/empty. */
+  reasoning?: string;
 };
 
 export type RunHarnessTurnOptions = Omit<RunHarnessChatOptions, 'history'> & {
@@ -1449,6 +1451,7 @@ export async function runHarnessTurn(
             ? await sendAgentStreamFn(apiPrompt, {
                 signal: opts?.signal,
                 modelId: opts?.modelId,
+                ...(opts?.reasoning ? { reasoning: opts.reasoning } : {}),
                 cwd: sessionCwd,
                 ...(sessionId ? { sessionId } : {}),
                 ...(boundPersonaId ? { personaId: boundPersonaId } : {}),
@@ -1470,6 +1473,7 @@ export async function runHarnessTurn(
             : await sendAgentFn(apiPrompt, {
                 signal: opts?.signal,
                 modelId: opts?.modelId,
+                ...(opts?.reasoning ? { reasoning: opts.reasoning } : {}),
                 cwd: sessionCwd,
                 ...(sessionId ? { sessionId } : {}),
                 ...(boundPersonaId ? { personaId: boundPersonaId } : {}),
