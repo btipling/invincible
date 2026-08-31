@@ -292,9 +292,10 @@ ops inventory).
   bounded, generous, NEW caps in the plan's Caps table. `maxDuration` stays as
   the plan pinned; a LOWER ceiling would be a human-gated cap change.
 
-IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
-BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).  
-MCP: [`docs/mcp.md`](docs/mcp.md). Builtin HTTP: [`docs/builtin-http.md`](docs/builtin-http.md).  
+IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).
+Architecture: [`docs/architecture.md`](docs/architecture.md).
+BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).
+MCP: [`docs/mcp.md`](docs/mcp.md). Builtin HTTP: [`docs/builtin-http.md`](docs/builtin-http.md).
 Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURITY.md).
 
 ## Public repository policy
@@ -316,7 +317,7 @@ invincible/
 ├── sandbox/             # protocol v2 daemon (BYO tools workspace)
 ├── native/harness/      # Zig + dvui Wasm (CI on self-hosted runner)
 ├── scripts/             # fetch-harness, backfill, runner scripts
-├── docs/                # BYO, sandbox, mcp, builtin-http, feature-divide, limits, deploy race
+├── docs/                # architecture, BYO, sandbox, mcp, builtin-http, feature-divide, limits, deploy race
 ├── public/harness/      # wasm/js gitignored; README only committed
 ├── AGENTS.md
 └── package.json

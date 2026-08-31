@@ -151,10 +151,11 @@ Mismatch → load error; rebuild both sides. Image **bytes** enter only via brid
 
 ## Related
 
-- Visitor front door: [README](../README.md)  
-- Agent sandbox: [sandbox.md](sandbox.md)  
-- Wasm supply / runner: [runner.md](runner.md)  
-- Limits: [harness-limits.md](harness-limits.md)  
-- Session restore: [session-model.md](session-model.md)  
-- Agent SSE: [agent-stream.md](agent-stream.md)  
+- System map: [architecture.md](architecture.md)
+- Visitor front door: [README](../README.md)
+- Agent sandbox: [sandbox.md](sandbox.md)
+- Wasm supply / runner: [runner.md](runner.md)
+- Limits: [harness-limits.md](harness-limits.md)
+- Session restore: [session-model.md](session-model.md)
+- Agent SSE: [agent-stream.md](agent-stream.md)
 - Per-user MCP: [mcp.md](mcp.md)  
