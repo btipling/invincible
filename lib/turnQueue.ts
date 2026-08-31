@@ -98,6 +98,24 @@ export function queueAppend(
 }
 
 /**
+ * Remove the FIRST array entry equal to `text` (exact-trim). Returns the same
+ * reference when text is blank/absent; `undefined` when the result is empty
+ * (unset carrier). Worker copy-forward uses this so a this-run user prompt
+ * cannot stay on the blob after durable start (adversarial #901 HEAD Major).
+ */
+export function queueWithoutText(
+  queue: string[] | undefined,
+  text: string,
+): string[] | undefined {
+  const t = (text ?? '').trim();
+  if (!t || !queue || queue.length === 0) return queue;
+  const idx = queue.indexOf(t);
+  if (idx === -1) return queue;
+  const next = queue.slice(0, idx).concat(queue.slice(idx + 1));
+  return next.length > 0 ? next : undefined;
+}
+
+/**
  * Remove the FIRST mirror entry equal to `text` (the copy whose durable start
  * was accepted). No-op when absent (e.g. an unobserved Wasm-internal enqueue).
  * Equality is exact-trim; duplicate texts remove one copy per accepted start.
@@ -109,12 +127,11 @@ export function removeQueuedText(
   const t = (text ?? '').trim();
   if (!t) return session;
   const current = queueOf(session);
-  if (!current || current.length === 0) return session;
-  const idx = current.indexOf(t);
-  if (idx === -1) return session;
-  const next = current.slice(0, idx).concat(current.slice(idx + 1));
-  const out: SessionSnapshot = { ...session, queue: next, updatedAt: Date.now() };
-  if (next.length === 0) delete out.queue; // empty = unset carrier (no `queue: []` noise)
+  const next = queueWithoutText(current, t);
+  if (next === current) return session;
+  const out: SessionSnapshot = { ...session, updatedAt: Date.now() };
+  if (next === undefined || next.length === 0) delete out.queue;
+  else out.queue = next;
   return out;
 }
 

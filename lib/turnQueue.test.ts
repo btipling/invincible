@@ -14,6 +14,7 @@ import {
   queueClear,
   queueOf,
   queueRestoreHead,
+  queueWithoutText,
   rearmQueueFromMirror,
   removeQueuedText,
   sanitizeQueue,
@@ -100,6 +101,20 @@ describe('queueAppend / queueOf (F21)', () => {
   it('queueAppend bumps updatedAt', () => {
     const next = queueAppend(sess({ updatedAt: 1 }), 'hello');
     expect(next.updatedAt).toBeGreaterThan(1);
+  });
+});
+
+describe('queueWithoutText (F21 adversarial #901 HEAD)', () => {
+  it('removes the FIRST matching copy; empty result is unset', () => {
+    expect(queueWithoutText(['a', 'b', 'a'], 'a')).toEqual(['b', 'a']);
+    expect(queueWithoutText(['only'], 'only')).toBeUndefined();
+  });
+
+  it('no-ops (same reference) on blank / absent / missing carrier', () => {
+    const q = ['a'];
+    expect(queueWithoutText(q, '')).toBe(q);
+    expect(queueWithoutText(q, 'zzz')).toBe(q);
+    expect(queueWithoutText(undefined, 'a')).toBeUndefined();
   });
 });
 

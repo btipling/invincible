@@ -72,7 +72,7 @@ import type {
   PersistStepSeam,
 } from '../workflows/persistStep';
 import { persistOverlayStatus, stampSnapshotUpdatedAt } from '../workflows/persistStep';
-import { sanitizeQueue } from '../turnQueue';
+import { queueWithoutText, sanitizeQueue } from '../turnQueue';
 
 /** Worker-authored envelope clock source for the terminal B8 overlay (LWW). */
 export type OverlayClock = (storedUpdatedAt: number) => number;
@@ -112,6 +112,18 @@ function queueFromBody(body: unknown): string[] | undefined {
   return sanitizeQueue((body as Record<string, unknown>).queue);
 }
 
+/** First non-blank user text on a this-run snapshot (persistStep checkpoint). */
+function firstUserText(
+  messages: Array<{ role: string; text: string }>,
+): string | undefined {
+  for (const m of messages) {
+    if (m.role !== 'user') continue;
+    const t = m.text.trim();
+    if (t) return t;
+  }
+  return undefined;
+}
+
 /** This-run snapshot + optional `prev`/`depth`; non-snapshot test bodies keep stamp-only. */
 function buildThisRunChunk(opts: {
   content: string;
@@ -142,11 +154,17 @@ function buildThisRunChunk(opts: {
   };
   if (opts.prev) rec.prev = opts.prev;
   if (opts.depth !== undefined) rec.depth = opts.depth;
-  // F21 adversarial #901 Major L1: worker this-run chunks must copy-forward
-  // the submit-queue mirror. The field rides the transcript blob (not meta);
-  // dropping it here lets a cloud adopt wipe a localStorage re-arm.
+  // F21 adversarial #901: worker this-run chunks must copy-forward the
+  // submit-queue mirror (field rides the transcript blob, not meta). Dropping
+  // it lets a cloud adopt wipe a localStorage re-arm. Copy-forward of the
+  // *in-flight* prompt (HEAD Major): persistStep content is `{id, messages}`
+  // so fromContent is always unset; a coalesced host strip PUT cannot beat
+  // B7. Strip this-run's first user text (removeQueuedText semantics) so a
+  // drain that has durably started cannot re-arm itself on F5.
   const fromContent = queueFromBody(parsed);
-  const queue = fromContent ?? opts.priorQueue;
+  let queue = fromContent ?? opts.priorQueue;
+  const started = firstUserText(incoming);
+  if (started) queue = queueWithoutText(queue, started);
   if (queue !== undefined && queue.length > 0) rec.queue = queue;
   return JSON.stringify(rec);
 }
