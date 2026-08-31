@@ -12,7 +12,7 @@ The canvas at `/harness` is the product; DOM is host shell only.
 |--|--|
 | **Source** | https://github.com/btipling/invincible |
 | **Prod (sample)** | https://invincible-dun-ten.vercel.app |
-| **Architecture** | [`docs/feature-divide.md`](docs/feature-divide.md) · [README](README.md) |
+| **Architecture** | [`docs/architecture.md`](docs/architecture.md) · [`docs/feature-divide.md`](docs/feature-divide.md) · [README](README.md) |
 | **Deploy** | Vercel (Git-linked) + Actions artifact `harness-wasm` |
 | **GitHub account** | owner **`btipling`** (not display name “Bjorn”) |
 
@@ -207,7 +207,7 @@ ops inventory).
 | Vercel project + Git `main` | **Done** | prod URL above |
 | `AI_GATEWAY_API_KEY` (Vercel) | **Done** | server-side only |
 | Tenant BYOK provider secrets (DB) | **Done** (code) | Admin `/admin/inference`; ciphertext under tenant DEK; grants + model catalog; chat/agent attach request-scoped Gateway BYOK (never env model routing). Schema-only Production: GHA **`db-migrate`** (`confirm=migrate`) |
-| Per-user MCP servers (DB) | **Done** (code) | Settings `/settings/mcp`; header secrets under tenant DEK; tools on `/api/agent` only; SSRF url policy; DEK rotate re-encrypts. Schema: GHA **`db-migrate`**. Ops/smoke: [docs/mcp.md](docs/mcp.md) |
+| Per-user MCP servers (DB) | **Done** (code) | Settings `/settings/mcp`; header secrets under tenant DEK; tools on durable turns (`POST /api/turns`); `/api/agent` remains tests/JSON; SSRF url policy; DEK rotate re-encrypts. Schema: GHA **`db-migrate`**. Ops/smoke: [docs/mcp.md](docs/mcp.md) |
 | Per-user GitHub PAT (DB + inject) | **Done** (code) | Settings `/settings/github`; DEK ciphertext; sandbox **exec** inject `GH_TOKEN`/`GITHUB_TOKEN` (both backends); redact on turn; DEK rotate re-encrypts. Schema: GHA **`db-migrate`**. Ops: [docs/sandbox.md](docs/sandbox.md) |
 | Per-user agent personas (DB + API, phase 1 #486) | **Done** (code) | `user_personas` store + `GET /api/personas` summaries + `meta.{personaId,personaSnapshot}` reserved keys + raised meta budget. Bodies are **non-secret** plaintext (no DEK). Version history + rollback (plan #726, source #534): `user_persona_versions` table (journal 0015) — every create/body-edit/Restore captures an append-only body snapshot capped `PERSONA_VERSION_MAX`=100; Settings Restore/Copy/View via `/api/settings/personas/[id]/{versions,versions/[versionId],rollback}`. Schema: GHA **`db-migrate`** (0010 + 0015). |
 | Per-user agent skills (DB + API, phase 1 #498) | **Done** (code) | `user_skills` store + `GET /api/skills` summaries (no body) + server-side `getSkillBySlug` injection seam. Bodies are **non-secret** plaintext (no DEK); slug charset `^[a-z][a-z0-9_-]{0,127}$` (hyphen allowed) is the single source shared with the phase-3 slash parser. `/api/skills` sits on the **middleware auth edge** (`isApiProtected` + matcher) like `/api/personas` (dual gate: in-route `requireSessionUser` + middleware). Schema: GHA **`db-migrate`** (0011). Attach/injection/UI/tool: later phases |
@@ -292,9 +292,10 @@ ops inventory).
   bounded, generous, NEW caps in the plan's Caps table. `maxDuration` stays as
   the plan pinned; a LOWER ceiling would be a human-gated cap change.
 
-IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).  
-BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).  
-MCP: [`docs/mcp.md`](docs/mcp.md). Builtin HTTP: [`docs/builtin-http.md`](docs/builtin-http.md).  
+IDs and URLs (maintainer sample): [`docs/project-ids.md`](docs/project-ids.md).
+Architecture: [`docs/architecture.md`](docs/architecture.md).
+BYO: [`docs/bring-your-own.md`](docs/bring-your-own.md). Sandbox: [`docs/sandbox.md`](docs/sandbox.md).
+MCP: [`docs/mcp.md`](docs/mcp.md). Builtin HTTP: [`docs/builtin-http.md`](docs/builtin-http.md).
 Runner ops: [`docs/runner.md`](docs/runner.md). Security: [`SECURITY.md`](SECURITY.md).
 
 ## Public repository policy
@@ -316,7 +317,7 @@ invincible/
 ├── sandbox/             # protocol v2 daemon (BYO tools workspace)
 ├── native/harness/      # Zig + dvui Wasm (CI on self-hosted runner)
 ├── scripts/             # fetch-harness, backfill, runner scripts
-├── docs/                # BYO, sandbox, mcp, builtin-http, feature-divide, limits, deploy race
+├── docs/                # architecture, BYO, sandbox, mcp, builtin-http, feature-divide, limits, deploy race
 ├── public/harness/      # wasm/js gitignored; README only committed
 ├── AGENTS.md
 └── package.json
@@ -416,7 +417,7 @@ import { teal, warm, ember } from '@/lib/palette';
 
 | DOM host shell | Wasm harness | Vercel backend |
 |----------------|--------------|----------------|
-| Nav, load module, bridge glue, SessionStore + cloud session repo | Transcript, composer, agent chrome | `/api/chat`, `/api/agent`, `/api/sessions`, AI Gateway, secrets |
+| Nav, load module, bridge glue, SessionStore + cloud session repo | Transcript, composer, agent chrome | `/api/turns` (production), `/api/chat`, `/api/agent` (tests/JSON), `/api/sessions`, AI Gateway, secrets |
 | No competing chat panel | Primary multi-turn UX | Server-only inference + optional sandbox tools |
 
 Do **not** rebuild a React agent chat panel as product UI.  
@@ -426,7 +427,7 @@ See create-plan / plan-review **layer** rules when planning features.
 ## Working rules
 
 - Zig compile **only** on the configured self-hosted runner (`build-harness.yml`; origin sample `invincible-do-1`). After harness source changes: CI → artifact → Vercel (wait-for-SHA prebuild + deploy hook).
-- Inference stays server-side (`POST /api/chat` / `POST /api/agent`). No Gateway or sandbox secrets in client or Wasm.
+- Inference stays server-side (`POST /api/turns` production; `POST /api/chat` single-shot; `POST /api/agent` tests/JSON). No Gateway or sandbox secrets in client or Wasm.
 - Agent sandbox is a **separate process** from the Zig GHA runner — see [`docs/sandbox.md`](docs/sandbox.md).
 - Prefer extending `native/harness` + `HarnessHost` over new infra.
 - **Harness frame budget:** app code in `dvui_update` → `ui.frame()` must not GPA-allocate or do host I/O. Parse / decode / texture belong on the **bridge write** (`inv_push_message` / `inv_update_last` / `inv_*_cache_put`), not paint. Contract + current exceptions: [docs/harness-limits.md](docs/harness-limits.md) · Frame budget.

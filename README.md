@@ -19,9 +19,9 @@ project and keys, and run the same harness on **your** work.
 | | Feature | Notes |
 |---|---------|--------|
 | **Core** | Wasm harness chat | Transcript, composer, and turn UX live in the canvas (`/harness`) |
-| **Core** | AI Gateway inference | `POST /api/chat` — `AI_GATEWAY_API_KEY` stays on the server |
+| **Core** | AI Gateway inference | Production `POST /api/turns` (durable Workflows SSE). `POST /api/chat` is single-shot. `AI_GATEWAY_API_KEY` stays on the server |
 | **Required** | Multi-tenant login + admin | Always on: credentials auth, grants, `/login` + `/admin` on every deploy (see [docs/bring-your-own.md](docs/bring-your-own.md)) |
-| **Optional** | Agent tools + sandbox | `POST /api/agent` — DB grants + per-row `backend` (`byo`|`vercel`) and image; **Settings → Sandbox** durable Workspace (attach-only) — [docs/sandbox.md](docs/sandbox.md); origin dogfood: [dev/README.md](dev/README.md) |
+| **Optional** | Agent tools + sandbox | Durable turns (`POST /api/turns`) — DB grants + per-row `backend` (`byo`|`vercel`) and image; **Settings → Sandbox** durable Workspace (attach-only) — [docs/sandbox.md](docs/sandbox.md); origin dogfood: [dev/README.md](dev/README.md). `POST /api/agent` remains tests/JSON |
 | **Optional** | Builtin HTTPS fetch | `http_get` via a durable HTTP instance a user creates under **Settings → Sandbox** (always-available when running) — [docs/builtin-http.md](docs/builtin-http.md) |
 | **Optional** | Tenant BYOK inference | Admin **Inference keys** (`/admin/inference`), status-bar model menu, request-scoped Gateway BYOK |
 | **Optional** | Per-user MCP tools | Settings → MCP servers; tools on agent turns ([docs/mcp.md](docs/mcp.md)) |
@@ -29,7 +29,7 @@ project and keys, and run the same harness on **your** work.
 | **Optional** | Preferred sandbox + instances | Settings → Sandbox (catalog preference + Workspace/HTTP instance lifecycle) ([docs/sandbox.md](docs/sandbox.md)) |
 | **Optional** | OIDC SSO + SCIM | Code on `main`; enable with env ([docs/bring-your-own.md §4b](docs/bring-your-own.md#4b-optional-sso-oidc--scim)) |
 | **Optional** | Agent personas | Per-user `AGENTS.md`-style standing orders bound to a session and injected server-side ([docs/personas.md](docs/personas.md)) |
-| **Optional** | Built-in meta tools | First-party `meta_persona_*` / `meta_skill_*` tools on `/api/agent` let the agent manage its own personas and skills ([docs/mcp.md](docs/mcp.md)) |
+| **Optional** | Built-in meta tools | First-party `meta_persona_*` / `meta_skill_*` tools on agent turns let the agent manage its own personas and skills ([docs/mcp.md](docs/mcp.md)) |
 
 ## Try it
 
@@ -103,27 +103,32 @@ hardcoding required.
 
 ## Architecture
 
+System map (diagram): [`docs/architecture.md`](docs/architecture.md).
+Ownership table: [`docs/feature-divide.md`](docs/feature-divide.md).
+
 - **Wasm harness** — primary product surface: transcript, composer, busy/error UI.
 - **DOM host** — Next.js shell: route `/harness`, load `web.js` + `harness.wasm`,
-  bridge poll/submit, thin nav/status chips (not a second chat).
-- **Vercel backend** — `POST /api/chat` and `POST /api/agent`; Gateway key and
-  sandbox tokens never enter the client or Wasm.
-- **Session** — local-first `SessionStore` (memory + localStorage) restored into Wasm; optional **cloud multi-device** sync (id-shaped `/api/sessions*`, Redis-backed, server-minted ids) when the user is signed in.
-
-Full ownership table: [`docs/feature-divide.md`](docs/feature-divide.md).
+  bridge poll/submit, thin nav (not a second chat).
+- **Vercel backend** — production turns are `POST /api/turns` → `turnWorkflow`
+  (Workflows steps + SSE). Gateway keys and sandbox tokens never enter the
+  client or Wasm. `POST /api/agent` remains for tests/JSON; `POST /api/chat` is
+  single-shot inference.
+- **Session** — local-first `SessionStore` (memory + localStorage) restored into
+  Wasm; signed-in cloud sync is Redis envelope + Blob transcript
+  (`/api/sessions*`).
 
 ## Stack
 
 | Layer | Tech |
 |-------|------|
 | App (DOM host) | Next.js 15 (App Router) + React 19 — shell only |
-| Inference | Vercel AI Gateway (`ai` SDK) · `POST /api/chat` · `POST /api/agent` |
-| Agent sandbox (optional) | Protocol v1 daemon (`sandbox/`) |
+| Inference | Vercel AI Gateway (`ai` SDK) · production `POST /api/turns` · `POST /api/chat` |
+| Agent sandbox (optional) | Protocol v2 daemon or Vercel Workspace (`sandbox/`) |
 | Harness UI | Zig 0.16 + dvui Wasm (**primary** product surface) |
 | Auth (optional) | Auth.js credentials + optional OIDC; SCIM Users API |
 | Palette | Asteronica TEAL / WARM / EMBER |
 | Session | `lib/sessionStore.ts` + `lib/sessionRepository.ts` (cloud hybrid) |
-| Bridge | Protocol **v9** (`lib/harnessBridge.ts`) |
+| Bridge | Protocol **v23** (`lib/harnessBridge.ts`) |
 | Tests | Vitest |
 
 ## Docs
@@ -137,6 +142,7 @@ Living guides only (process / phase history lives in closed GitHub issues).
 | [dev/README.md](dev/README.md) | Dogfood sandbox image (`dev/Dockerfile` + GHA→VCR) |
 | [builtin-http.md](docs/builtin-http.md) | Operator — builtin HTTPS fetch (`http_get`) |
 | [mcp.md](docs/mcp.md) | Operator — per-user MCP servers + built-in `meta_*` tools + Exa smoke |
+| [architecture.md](docs/architecture.md) | Product — system map (harness, turns, Workflows, persist) |
 | [feature-divide.md](docs/feature-divide.md) | Product — DOM shell vs Wasm harness |
 | [agent-stream.md](docs/agent-stream.md) | Product — agent SSE events, thinking collapse, caps |
 | [runner.md](docs/runner.md) | Operator — self-hosted Zig runner + workflows |

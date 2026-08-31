@@ -179,3 +179,4 @@ Product philosophy: **no live-tool / thinking-segment UX walls** — cancel with
 | Workflows step logs | `lib/workflows/turnLog.ts`, `lib/workflows/modelGenerateStep.ts`, `lib/workflows/persistStep.ts` |
 | Thinking paint | `native/harness/src/ui/thinking.zig` (protocol v8 kind) |
 | Feature divide | [feature-divide.md](feature-divide.md) |
+| System map | [architecture.md](architecture.md) |
