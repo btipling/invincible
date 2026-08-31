@@ -204,7 +204,7 @@ describe('HarnessHost wiring lock — quota save (#870)', () => {
 
   it('post-turn persistTurn does not paint while the durable turn is still running', () => {
     expect(src).toContain("persistTurn(folded, folded.turnStatus !== 'running')");
-    expect(src).toContain("persistTurn(next, next.turnStatus !== 'running')");
+    expect(src).toContain("persistTurn(reconciled, reconciled.turnStatus !== 'running')");
   });
 
   it('adopt and Clear rebuild the ring before painting quota', () => {
@@ -215,10 +215,10 @@ describe('HarnessHost wiring lock — quota save (#870)', () => {
 
   it('Load earlier and needSnap re-paint after hydrate so a wiped row does not spend the episode', () => {
     expect(src).toMatch(
-      /hydrateRingWindow\(b, session, nextStart\);[\s\S]{0,500}?paintQuotaAfterRebuild\(\s*b,\s*localSaveQuotaWarnedRef,\s*localSaveQuotaWarnedRef\.current,\s*session,/,
+      /hydrateRingWindow\(b, session, nextStart, 'live'\);[\s\S]{0,500}?paintQuotaAfterRebuild\(\s*b,\s*localSaveQuotaWarnedRef,\s*localSaveQuotaWarnedRef\.current,\s*session,/,
     );
     expect(src).toMatch(
-      /hydrateRingWindow\(b, sessionRef\.current, latest\);[\s\S]{0,400}?paintQuotaAfterRebuild\(\s*b,\s*localSaveQuotaWarnedRef,\s*localSaveQuotaWarnedRef\.current,\s*sessionRef\.current,/,
+      /hydrateRingWindow\(b, sessionRef\.current, latest, 'live'\);[\s\S]{0,400}?paintQuotaAfterRebuild\(\s*b,\s*localSaveQuotaWarnedRef,\s*localSaveQuotaWarnedRef\.current,\s*sessionRef\.current,/,
     );
   });
 });

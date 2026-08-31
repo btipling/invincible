@@ -383,7 +383,7 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     // still-running post-turn persist also skips paint (hot resume attach).
     expect(run).toContain('onSessionPatch: (s) => persistTurn(s, false)');
     expect(run).toContain("persistTurn(folded, folded.turnStatus !== 'running')");
-    expect(run).toContain("persistTurn(next, next.turnStatus !== 'running')");
+    expect(run).toContain("persistTurn(reconciled, reconciled.turnStatus !== 'running')");
   });
 
   it('preserve + finally mint-bind first-turn UUID (adversarial #844)', () => {
