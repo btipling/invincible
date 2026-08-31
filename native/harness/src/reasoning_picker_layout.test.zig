@@ -68,7 +68,7 @@ test "count 1 unset: trigger still tagged (menu so NEVER_AUTO-only is listable)"
         .selected = 0,
         .busy = false,
         .has_selection = false,
-        .short_label = "max",
+        .short_label = reasoning_picker.UNSET_LABEL,
         .idAt = idAt3,
     }) orelse @panic("tag 'status-effort-trigger' not found");
     try t.expect(rect.h <= reasoning_picker.PICKER_TRIGGER_H * PX + EPS);

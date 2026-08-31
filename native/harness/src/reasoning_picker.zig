@@ -12,6 +12,10 @@ pub const PICKER_TRIGGER_H: f32 = 32;
 /// Menu-item height (px) inside the floating panel.
 pub const PICKER_ITEM_H: f32 = 32;
 
+/// Closed-trigger copy when Gateway listed values but the host has not
+/// committed a pick (NEVER_AUTO-only lists). Must not equal a list token.
+pub const UNSET_LABEL: []const u8 = "effort";
+
 /// Closed **U+25BE ▾** — Geometric Shapes; paint with `fontSymbols()` only.
 const GLYPH_CHEVRON: []const u8 = "\u{25BE}";
 /// Left margin on the caret run (px) — the declared gap between label and ▾.
@@ -129,7 +133,7 @@ fn paintMenuTrigger(view: CatalogView) ?u32 {
         var i: u32 = 0;
         while (i < view.count) : (i += 1) {
             const id = view.idAt(i);
-            const selected = i == view.selected;
+            const selected = view.has_selection and i == view.selected;
             var item_tag_buf: [48]u8 = undefined;
             const item_tag = std.fmt.bufPrint(&item_tag_buf, "status-effort-item-{d}", .{i}) catch "status-effort-item";
             if (dvui.menuItemLabel(@src(), id, .{}, .{

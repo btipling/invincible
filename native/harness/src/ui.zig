@@ -811,8 +811,9 @@ pub fn frame() !void {
             });
             defer line1.deinit();
 
-            // Width budget + drop/ellipsize on narrow viewport (plan #695).
-            // Priority: spinner (always keep) > model label (ellipsize) > build-id (drop).
+            // Width budget + drop/ellipsize on narrow viewport (plan #695 / #898).
+            // Priority: spinner (always keep) > model label (ellipsize) > effort
+            // label (ellipsize) > build-id (drop).
             const budget = @max(0, line1.data().contentRect().w - metrics.STATUS_PACK_BUDGET_SAFETY);
             const body = (dvui.Options{}).fontGet();
             const spinner_w: f32 = rect_spinner.W; // 13 px slot; default TRAIL margin 10 px
@@ -832,7 +833,15 @@ pub fn frame() !void {
             const build_id_gap: f32 = 8; // textLayout left margin
 
             const effort_n = bridge.reasoningEffortCount();
-            var effort_label: []const u8 = if (effort_n == 0) "" else bridge.selectedReasoningLabel();
+            const raw_effort: []const u8 = if (effort_n == 0) "" else bridge.selectedReasoningLabel();
+            // Unset (NEVER_AUTO-only) must not look like a committed token
+            // (adversarial-review #902 re-run Minor L1+L9).
+            var effort_label: []const u8 = if (effort_n == 0)
+                ""
+            else if (raw_effort.len > 0)
+                raw_effort
+            else
+                reasoning_picker.UNSET_LABEL;
             var effort_ellip_buf: [48]u8 = undefined;
             const effort_text_w: f32 = if (effort_label.len > 0) body.textSize(effort_label).w else 0;
             const effort_gap: f32 = 8;

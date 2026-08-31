@@ -322,6 +322,7 @@ test "v23 reasoning list: push, default-unset, restore-by-value, reject unknown"
     try t.expectEqual(@as(u32, 3), bridge.reasoningEffortCount());
     // Host owns the default — a push does not auto-select (never max).
     try t.expectEqualStrings("", bridge.selectedReasoningId());
+    try t.expectEqualStrings("", bridge.selectedReasoningLabel());
     try t.expect(bridge.selectReasoningByValue("low"));
     try t.expectEqualStrings("low", bridge.selectedReasoningId());
     try t.expect(!bridge.hasPendingReasoningChange());
@@ -357,5 +358,15 @@ test "v23 reset clears reasoning list" {
     try t.expectEqual(@as(u32, 0), bridge.reasoningEffortCount());
     try t.expectEqualStrings("", bridge.selectedReasoningId());
     try t.expect(!bridge.hasPendingReasoningChange());
+}
+
+test "v23 NEVER_AUTO-only list: push max does not select; label stays empty" {
+    bridge.reset();
+    try t.expect(bridge.pushReasoningEffort("max"));
+    try t.expectEqual(@as(u32, 1), bridge.reasoningEffortCount());
+    try t.expectEqualStrings("", bridge.selectedReasoningId());
+    try t.expectEqualStrings("", bridge.selectedReasoningLabel());
+    try t.expect(bridge.selectReasoningByValue("max"));
+    try t.expectEqualStrings("max", bridge.selectedReasoningLabel());
 }
 

@@ -165,6 +165,35 @@ describe('applySessionReasoning (plan #898)', () => {
     expect(bridge.getSelectedReasoning()).toBe('max');
   });
 
+  it('NEVER_AUTO-only [max] stays unset (listable, never default) [adversarial-review #902 re-run]', () => {
+    const { bridge } = makeEffortBridge();
+    const ref = { current: createEmptySession('s1') };
+    const puts: SessionSnapshot[] = [];
+    applySessionReasoning(
+      ref.current,
+      ['max'],
+      bridge,
+      ref,
+      (s) => {
+        ref.current = s;
+        puts.push(s);
+      },
+      null,
+    );
+    expect(bridge.reasoningEffortCount()).toBe(1);
+    expect(bridge.getSelectedReasoning()).toBeNull();
+    expect(ref.current.reasoningEffort).toBeUndefined();
+    expect(puts).toHaveLength(0);
+  });
+
+  it('NEVER_AUTO-only [xhigh, max] stays unset', () => {
+    const { bridge } = makeEffortBridge();
+    const ref = { current: createEmptySession('s1') };
+    applySessionReasoning(ref.current, ['xhigh', 'max'], bridge, ref, () => {}, null);
+    expect(bridge.reasoningEffortCount()).toBe(2);
+    expect(bridge.getSelectedReasoning()).toBeNull();
+  });
+
   it('restore poison / unknown → default low; drops sticky high on model switch', () => {
     const { bridge } = makeEffortBridge();
     const puts: SessionSnapshot[] = [];

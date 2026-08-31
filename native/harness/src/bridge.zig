@@ -556,11 +556,11 @@ pub fn selectedReasoningId() []const u8 {
     return e.data[0..e.len];
 }
 
-/// Label for paint: selected token, else first listed (display-only when unset).
+/// Label for paint: the committed token only. Empty when unset — never
+/// fall back to index 0 (adversarial-review #902 re-run: a NEVER_AUTO-only
+/// list would otherwise paint `max` as if selected).
 pub fn selectedReasoningLabel() []const u8 {
-    const sel = selectedReasoningId();
-    if (sel.len > 0) return sel;
-    return reasoningEffortIdAt(0);
+    return selectedReasoningId();
 }
 
 pub fn clearReasoningEfforts() void {
