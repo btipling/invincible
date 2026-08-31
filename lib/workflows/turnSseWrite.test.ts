@@ -1,10 +1,9 @@
 /**
  * withDefaultStreamWriter holds one Workflows writer for a burst of writes.
- * Stream PUT 429 retries then latches; 5xx/timeout latch immediately;
- * AbortError rethrows.
+ * Stream PUT 5xx/429/timeout latch immediately; AbortError rethrows.
  * Mock `workflow` `getWritable` — do not call the real SDK.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const harness = vi.hoisted(() => {
   const write = vi.fn(async (_payload: string) => {});
@@ -19,9 +18,6 @@ vi.mock('workflow', () => ({
 }));
 
 import {
-  STREAM_WRITE_RETRY_ATTEMPTS,
-  STREAM_WRITE_RETRY_BASE_MS,
-  STREAM_WRITE_RETRY_CAP_MS,
   classifyStreamWriteError,
   withDefaultStreamWriter,
   writeOnDefaultStream,
@@ -39,12 +35,7 @@ function abortErr(message = 'aborted'): Error {
   return err;
 }
 
-beforeEach(() => {
-  vi.useFakeTimers();
-});
-
 afterEach(() => {
-  vi.useRealTimers();
   harness.write.mockReset();
   harness.write.mockImplementation(async () => {});
   harness.releaseLock.mockClear();
@@ -61,10 +52,10 @@ describe('classifyStreamWriteError', () => {
     expect(classifyStreamWriteError(new Error(PUT_TIMEOUT))).toBe('drop');
   });
 
-  it('429 (status or HTTP in message) is retryable', () => {
-    expect(classifyStreamWriteError(new Error(HTTP_429))).toBe('retryable');
+  it('429 (status or HTTP in message) is drop — SDK already retried; sink is poisoned', () => {
+    expect(classifyStreamWriteError(new Error(HTTP_429))).toBe('drop');
     expect(classifyStreamWriteError({ message: 'nope', status: 429 })).toBe(
-      'retryable',
+      'drop',
     );
   });
 
@@ -84,7 +75,7 @@ describe('classifyStreamWriteError', () => {
     );
   });
 
-  it('HTTP 408 is drop (not 429)', () => {
+  it('HTTP 408 is drop', () => {
     expect(classifyStreamWriteError(new Error('HTTP 408 Request Timeout'))).toBe(
       'drop',
     );
@@ -100,14 +91,6 @@ describe('classifyStreamWriteError', () => {
         new Error('Internal Server Error on PUT /stream/strm_x_user'),
       ),
     ).toBe('drop');
-  });
-});
-
-describe('caps', () => {
-  it('NEW retry caps are 3 extra / 250ms / 4000ms', () => {
-    expect(STREAM_WRITE_RETRY_ATTEMPTS).toBe(3);
-    expect(STREAM_WRITE_RETRY_BASE_MS).toBe(250);
-    expect(STREAM_WRITE_RETRY_CAP_MS).toBe(4000);
   });
 });
 
@@ -137,7 +120,7 @@ describe('withDefaultStreamWriter', () => {
     expect(harness.releaseLock).toHaveBeenCalledTimes(1);
   });
 
-  it('500 latches immediately — no backoff, later writes no-op, fn still returns', async () => {
+  it('500 latches immediately — later writes no-op, fn still returns', async () => {
     harness.write.mockRejectedValue(new Error(HTTP_500));
     const out = await withDefaultStreamWriter(async (write) => {
       await write('one');
@@ -150,7 +133,7 @@ describe('withDefaultStreamWriter', () => {
     expect(harness.releaseLock).toHaveBeenCalledTimes(1);
   });
 
-  it('timeout latches immediately — no backoff, later writes no-op', async () => {
+  it('timeout latches immediately — later writes no-op', async () => {
     harness.write.mockRejectedValue(new Error(PUT_TIMEOUT));
     const out = await withDefaultStreamWriter(async (write) => {
       await write('tok');
@@ -162,39 +145,20 @@ describe('withDefaultStreamWriter', () => {
     expect(harness.releaseLock).toHaveBeenCalledTimes(1);
   });
 
-  it('429 then success on attempt 2 — both writes delivered, 1 sleep', async () => {
-    harness.write
-      .mockRejectedValueOnce(new Error(HTTP_429))
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(undefined);
-    const p = withDefaultStreamWriter(async (write) => {
-      await write('one');
-      await write('two');
-      return 'ok';
-    });
-    await vi.advanceTimersByTimeAsync(STREAM_WRITE_RETRY_BASE_MS);
-    await expect(p).resolves.toBe('ok');
-    expect(harness.write.mock.calls.map((c) => c[0])).toEqual(['one', 'one', 'two']);
-    expect(harness.releaseLock).toHaveBeenCalledTimes(1);
-  });
-
-  it('4 retryable (429) failures latch; 5th write no-ops without a 5th SDK write', async () => {
+  it('429 latches immediately — no second SDK write (sink is sticky after reject)', async () => {
     harness.write.mockRejectedValue(new Error(HTTP_429));
-    const p = withDefaultStreamWriter(async (write) => {
+    const out = await withDefaultStreamWriter(async (write) => {
       await write('one');
       await write('two');
       return 'ok';
     });
-    await vi.advanceTimersByTimeAsync(STREAM_WRITE_RETRY_BASE_MS);
-    await vi.advanceTimersByTimeAsync(STREAM_WRITE_RETRY_BASE_MS * 2);
-    await vi.advanceTimersByTimeAsync(STREAM_WRITE_RETRY_BASE_MS * 4);
-    await expect(p).resolves.toBe('ok');
-    expect(harness.write).toHaveBeenCalledTimes(STREAM_WRITE_RETRY_ATTEMPTS + 1);
-    expect(harness.write.mock.calls.every((c) => c[0] === 'one')).toBe(true);
+    expect(out).toBe('ok');
+    expect(harness.write).toHaveBeenCalledTimes(1);
+    expect(harness.write.mock.calls[0][0]).toBe('one');
     expect(harness.releaseLock).toHaveBeenCalledTimes(1);
   });
 
-  it('HTTP 400 → 1 attempt, latch, no backoff, later writes no-op', async () => {
+  it('HTTP 400 → 1 attempt, latch, later writes no-op', async () => {
     harness.write.mockRejectedValue(new Error('HTTP 400 Bad Request'));
     const out = await withDefaultStreamWriter(async (write) => {
       await write('one');
@@ -242,14 +206,10 @@ describe('writeOnDefaultStream (sparse loop path)', () => {
     expect(harness.releaseLock).toHaveBeenCalledTimes(2);
   });
 
-  it('429 then success', async () => {
-    harness.write
-      .mockRejectedValueOnce(new Error(HTTP_429))
-      .mockResolvedValueOnce(undefined);
-    const p = writeOnDefaultStream('line');
-    await vi.advanceTimersByTimeAsync(STREAM_WRITE_RETRY_BASE_MS);
-    await expect(p).resolves.toBeUndefined();
-    expect(harness.write).toHaveBeenCalledTimes(2);
+  it('429 returns void without retry (does not throw)', async () => {
+    harness.write.mockRejectedValue(new Error(HTTP_429));
+    await expect(writeOnDefaultStream('line')).resolves.toBeUndefined();
+    expect(harness.write).toHaveBeenCalledTimes(1);
     expect(harness.releaseLock).toHaveBeenCalledTimes(1);
   });
 
@@ -257,17 +217,6 @@ describe('writeOnDefaultStream (sparse loop path)', () => {
     harness.write.mockRejectedValue(new Error(HTTP_500));
     await expect(writeOnDefaultStream('line')).resolves.toBeUndefined();
     expect(harness.write).toHaveBeenCalledTimes(1);
-    expect(harness.releaseLock).toHaveBeenCalledTimes(1);
-  });
-
-  it('429 exhaust returns void (does not throw)', async () => {
-    harness.write.mockRejectedValue(new Error(HTTP_429));
-    const p = writeOnDefaultStream('line');
-    await vi.advanceTimersByTimeAsync(STREAM_WRITE_RETRY_BASE_MS);
-    await vi.advanceTimersByTimeAsync(STREAM_WRITE_RETRY_BASE_MS * 2);
-    await vi.advanceTimersByTimeAsync(STREAM_WRITE_RETRY_BASE_MS * 4);
-    await expect(p).resolves.toBeUndefined();
-    expect(harness.write).toHaveBeenCalledTimes(STREAM_WRITE_RETRY_ATTEMPTS + 1);
     expect(harness.releaseLock).toHaveBeenCalledTimes(1);
   });
 });
