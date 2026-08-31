@@ -25,6 +25,7 @@ const toolrun = @import("ui/toolrun.zig");
 const thinking = @import("ui/thinking.zig");
 const chip = @import("ui/chip.zig");
 const status = @import("ui/status.zig");
+const line1_fit = @import("ui/line1_fit.zig");
 const skill = @import("ui/skill.zig");
 const composer = @import("ui/composer.zig");
 const composer_history = @import("ui/composer_history.zig");
@@ -798,8 +799,9 @@ pub fn frame() !void {
         });
         defer bar.deinit();
 
-        // Line 1: identity (spinner · build id · model picker · effort picker).
-        // Narrow viewport: drop build-id first, then ellipsize model/effort labels (plan #695 / #898).
+        // Line 1: identity (spinner · build id · model picker · effort picker · provider).
+        // Narrow viewport: drop build-id first, then ellipsize/drop provider, then
+        // ellipsize effort, then ellipsize model.
         // Each line gets exactly STATUS_BAR_H/2 = 32 px so the picker trigger
         // (PICKER_TRIGGER_H = 32) fills its row without clipping line 2.
         {
@@ -811,9 +813,9 @@ pub fn frame() !void {
             });
             defer line1.deinit();
 
-            // Width budget + drop/ellipsize on narrow viewport (plan #695 / #898).
-            // Priority: spinner (always keep) > model label (ellipsize) > effort
-            // label (ellipsize) > build-id (drop).
+            // Width budget + drop/ellipsize on narrow viewport.
+            // Locked order: spinner always; drop build-id first; ellipsize/drop
+            // provider; ellipsize effort; ellipsize model.
             const budget = @max(0, line1.data().contentRect().w - metrics.STATUS_PACK_BUDGET_SAFETY);
             const body = (dvui.Options{}).fontGet();
             const spinner_w: f32 = rect_spinner.W; // 13 px slot; default TRAIL margin 10 px
@@ -846,38 +848,59 @@ pub fn frame() !void {
             const effort_text_w: f32 = if (effort_label.len > 0) body.textSize(effort_label).w else 0;
             const effort_gap: f32 = 8;
 
-            var paint_build_id = true;
-            var total: f32 = spinner_w + build_id_w + build_id_gap;
+            var provider_label: []const u8 = bridge.resolvedProviderLabel();
+            var provider_ellip_buf: [bridge.MAX_RESOLVED_PROVIDER_LEN]u8 = undefined;
+            const provider_gap: f32 = 8;
+            const provider_text_w: f32 = if (provider_label.len > 0) body.textSize(provider_label).w else 0;
+            const provider_w: f32 = if (provider_label.len > 0) provider_text_w + provider_gap else 0;
+
+            const model_w: f32 = if (label.len > 0) label_text_w + trigger_overhead + label_gap else 0;
+            const effort_w: f32 = if (effort_n > 0) effort_text_w + trigger_overhead + effort_gap else 0;
+
+            const fit = line1_fit.dropLine1(
+                budget,
+                spinner_w,
+                build_id_w + build_id_gap,
+                model_w,
+                effort_w,
+                provider_w,
+            );
+            const paint_build_id = fit.paint_build_id;
+            if (provider_label.len > 0) {
+                if (fit.provider_max_w <= 0) {
+                    provider_label = "";
+                } else if (fit.provider_max_w + 0.5 < provider_w) {
+                    const text_budget = @max(0, fit.provider_max_w - provider_gap);
+                    provider_label = status.truncateToWidthPx(body, &provider_ellip_buf, provider_label, text_budget);
+                }
+            }
+
+            var total: f32 = spinner_w;
+            if (paint_build_id) total += build_id_w + build_id_gap;
             if (label.len > 0) total += label_text_w + trigger_overhead + label_gap;
             if (effort_n > 0) total += effort_text_w + trigger_overhead + effort_gap;
+            if (provider_label.len > 0) total += body.textSize(provider_label).w + provider_gap;
 
-            // Drop build-id when the row overflows (priority 3).
-            if (total > budget) {
-                paint_build_id = false;
-                total = spinner_w;
-                if (label.len > 0) total += label_text_w + trigger_overhead + label_gap;
-                if (effort_n > 0) total += effort_text_w + trigger_overhead + effort_gap;
-            }
-
-            // Ellipsize model then effort when even spinner + pickers overflow.
-            if (total > budget and label.len > 0) {
-                var reserved: f32 = spinner_w + trigger_overhead + label_gap;
-                if (effort_n > 0) reserved += effort_text_w + trigger_overhead + effort_gap;
-                const label_budget = @max(0, budget - reserved);
-                label = status.truncateToWidthPx(body, &ellip_buf, label, label_budget);
-                total = spinner_w + trigger_overhead + label_gap;
-                if (label.len > 0) total += body.textSize(label).w;
-                if (effort_n > 0) total += effort_text_w + trigger_overhead + effort_gap;
-            }
             if (total > budget and effort_n > 0 and effort_label.len > 0) {
-                // Must reserve the model trigger that is still painted
-                // (adversarial-review #902 Minor L1+L9). A budget of
-                // spinner+effort-only re-expands effort on top of the model
-                // picker and overflows ~390 px.
                 var reserved: f32 = spinner_w + trigger_overhead + effort_gap;
-                if (label.len > 0) reserved += body.textSize(label).w + trigger_overhead + label_gap;
+                if (paint_build_id) reserved += build_id_w + build_id_gap;
+                if (label.len > 0) reserved += label_text_w + trigger_overhead + label_gap;
+                if (provider_label.len > 0) reserved += body.textSize(provider_label).w + provider_gap;
                 const effort_budget = @max(0, budget - reserved);
                 effort_label = status.truncateToWidthPx(body, &effort_ellip_buf, effort_label, effort_budget);
+                total = spinner_w;
+                if (paint_build_id) total += build_id_w + build_id_gap;
+                if (label.len > 0) total += label_text_w + trigger_overhead + label_gap;
+                if (effort_label.len > 0) total += body.textSize(effort_label).w + trigger_overhead + effort_gap;
+                if (provider_label.len > 0) total += body.textSize(provider_label).w + provider_gap;
+            }
+            if (total > budget and label.len > 0) {
+                var reserved: f32 = spinner_w + trigger_overhead + label_gap;
+                if (paint_build_id) reserved += build_id_w + build_id_gap;
+                if (effort_n > 0 and effort_label.len > 0) reserved += body.textSize(effort_label).w + trigger_overhead + effort_gap;
+                if (provider_label.len > 0) reserved += body.textSize(provider_label).w + provider_gap;
+                const label_budget = @max(0, budget - reserved);
+                label = status.truncateToWidthPx(body, &ellip_buf, label, label_budget);
             }
 
             // Spinner: always painted (priority 1).
@@ -922,6 +945,17 @@ pub fn frame() !void {
                 })) |idx| {
                     bridge.setSelectedReasoning(idx);
                 }
+            }
+            // Resolved provider: display-only TEAL label; hidden when unset.
+            if (provider_label.len > 0) {
+                var tl = dvui.textLayout(@src(), .{}, .{
+                    .background = false,
+                    .color_text = palette.teal_text,
+                    .gravity_y = 0.5,
+                    .margin = .{ .x = 8, .y = 0, .w = 0, .h = 0 },
+                });
+                tl.format("{s}", .{provider_label}, .{});
+                tl.deinit();
             }
         }
 

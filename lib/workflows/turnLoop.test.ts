@@ -816,6 +816,22 @@ describe('runTurnLoop (backend-agents B12, matrix 1–3, 8–10)', () => {
     ]);
   });
 
+  it('derivePersistFold copies last-round resolvedProvider (plan #906)', () => {
+    const fold = derivePersistFold(
+      [{ role: 'assistant', delta: { text: 'hi', toolCalls: [] } }],
+      undefined,
+      undefined,
+      'togetherai',
+    );
+    expect(fold?.resolvedProvider).toBe('togetherai');
+    expect(
+      derivePersistFold(
+        [{ role: 'assistant', delta: { text: 'hi', toolCalls: [] } }],
+        undefined,
+      )?.resolvedProvider,
+    ).toBeUndefined();
+  });
+
   it('wrap-up {ok:false} still terminal-persists and SSE-errors (inference death is not a cap) [adversarial #879 Minor]', async () => {
     const { deps, w, closed } = wiredDeps({ maxSteps: 2 });
     const persistSpy = vi.fn(deps.persistStep);

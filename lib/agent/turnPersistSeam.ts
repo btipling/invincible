@@ -220,6 +220,9 @@ export function createTurnPersistSeam(
         patch.activeSandboxId = input.fold.activeSandboxId;
       }
       if (input.fold?.usage !== undefined) patch.usage = input.fold.usage;
+      if (input.fold?.resolvedProvider !== undefined) {
+        patch.resolvedProvider = input.fold.resolvedProvider;
+      }
 
       let stored: SessionEnvelope | null = null;
       let envelopeReadError: string | null = null;

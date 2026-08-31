@@ -70,6 +70,8 @@ export type TurnLoopDelta = {
    * model step). It is also omitted from persist/`messages`.
    */
   reasoning?: string;
+  /** Sanitized Gateway-resolved provider slug (plan #906). Last round wins. */
+  resolvedProvider?: string;
 };
 
 export type TurnToolCallDelta = {
@@ -113,7 +115,7 @@ export type TurnSseLine =
       changeDirCwd?: string;
       activeSandboxId?: string;
     }
-  | { type: 'done'; text: string; finishReason?: string; cwd?: string; activeSandboxId?: string }
+  | { type: 'done'; text: string; finishReason?: string; cwd?: string; activeSandboxId?: string; resolvedProvider?: string }
   | { type: 'error'; error: string };
 
 /** Model-step wrapper contract (eventually `modelGenerateStep`). */
@@ -294,6 +296,7 @@ function doneLine(
   text: string,
   bind: PersistRunBind | undefined,
   finishReason?: string,
+  resolvedProvider?: string,
 ): TurnSseLine {
   return {
     type: 'done',
@@ -301,6 +304,7 @@ function doneLine(
     ...(finishReason ? { finishReason } : {}),
     ...(bind?.cwd ? { cwd: bind.cwd } : {}),
     ...(bind?.activeSandboxId ? { activeSandboxId: bind.activeSandboxId } : {}),
+    ...(resolvedProvider ? { resolvedProvider } : {}),
   };
 }
 
@@ -454,6 +458,7 @@ export function derivePersistFold(
   messages: ReadonlyArray<unknown>,
   usage: unknown,
   runBind?: PersistRunBind,
+  resolvedProvider?: string,
 ): PersistStepFold | undefined {
   const checkpoint: Array<{ role: string; content: string }> = [];
   let cwd: string | undefined = runBind?.cwd;
@@ -465,13 +470,20 @@ export function derivePersistFold(
     if (bind.cwd !== undefined) cwd = bind.cwd;
     if (bind.activeSandboxId !== undefined) activeSandboxId = bind.activeSandboxId;
   }
-  if (checkpoint.length === 0 && usage === undefined && cwd === undefined && activeSandboxId === undefined) {
+  if (
+    checkpoint.length === 0 &&
+    usage === undefined &&
+    cwd === undefined &&
+    activeSandboxId === undefined &&
+    resolvedProvider === undefined
+  ) {
     return undefined;
   }
   return {
     ...(cwd !== undefined ? { cwd } : {}),
     ...(activeSandboxId !== undefined ? { activeSandboxId } : {}),
     ...(usage !== undefined ? { usage } : {}),
+    ...(resolvedProvider !== undefined ? { resolvedProvider } : {}),
     ...(checkpoint.length > 0 ? { checkpoint } : {}),
   };
 }
@@ -524,6 +536,9 @@ export async function runTurnLoop(
   // an earlier round's tokens aren't clobbered by the last (round-2 L1 — the
   // host context-slot aggregate is turn-total, not last-round).
   let usage: unknown;
+  // Last sanitized Gateway-resolved provider slug this turn (plan #906).
+  // Last model-round win; not accumulated like usage.
+  let resolvedProvider: string | undefined;
   // Thread the B5 file-freshness ledger across tool steps — and across rounds.
   // Every tool step seeds from the accumulated serialized ledger and returns the
   // advanced delta, so read-before-edit grants survive the durable loop
@@ -549,7 +564,7 @@ export async function runTurnLoop(
     | { ok: false; code: string; error: string }
   > => {
     steps += 1;
-    const fold = derivePersistFold(messages, usage, deps.persistRunBind);
+    const fold = derivePersistFold(messages, usage, deps.persistRunBind, resolvedProvider);
     return deps.persistStep({
       turnRunId: deps.turnRunId,
       deltas,
@@ -589,9 +604,16 @@ export async function runTurnLoop(
         ...(gen.delta.finishReason !== undefined
           ? { finishReason: gen.delta.finishReason }
           : {}),
+        ...(typeof gen.delta.resolvedProvider === 'string' &&
+        gen.delta.resolvedProvider.length > 0
+          ? { resolvedProvider: gen.delta.resolvedProvider }
+          : {}),
       };
       deltas.push(persistDelta);
       usage = accumulateUsage(usage, persistDelta.usage);
+      if (persistDelta.resolvedProvider) {
+        resolvedProvider = persistDelta.resolvedProvider;
+      }
       // Live reasoning_delta / text_delta / tool_start were written inside the
       // model step. Do **not** dump them again here (would double-paint).
       if (persistDelta.text) {
@@ -609,7 +631,7 @@ export async function runTurnLoop(
           return fail('failed', round, steps, truncatedFinishError(gen.delta.finishReason));
         }
         await writable.write(
-          sse(doneLine(assistantText, bind, gen.delta.finishReason)),
+          sse(doneLine(assistantText, bind, gen.delta.finishReason, resolvedProvider)),
         );
         await writable.close();
         return { status: 'completed', deltas, messages, rounds: round, steps };
@@ -760,9 +782,16 @@ export async function runTurnLoop(
         ...(wrap.delta.finishReason !== undefined
           ? { finishReason: wrap.delta.finishReason }
           : {}),
+        ...(typeof wrap.delta.resolvedProvider === 'string' &&
+        wrap.delta.resolvedProvider.length > 0
+          ? { resolvedProvider: wrap.delta.resolvedProvider }
+          : {}),
       };
       deltas.push(wrapDelta);
       usage = accumulateUsage(usage, wrapDelta.usage);
+      if (wrapDelta.resolvedProvider) {
+        resolvedProvider = wrapDelta.resolvedProvider;
+      }
       if (wrapDelta.text) assistantText += wrapDelta.text;
       messages.push({ role: 'assistant', delta: wrapDelta });
     }
@@ -773,7 +802,7 @@ export async function runTurnLoop(
     if (isProviderRefusalFinish(wrap.delta.finishReason)) {
       return fail('failed', round, steps, truncatedFinishError(wrap.delta.finishReason));
     }
-    await writable.write(sse(doneLine(assistantText, bind, wrap.delta.finishReason)));
+    await writable.write(sse(doneLine(assistantText, bind, wrap.delta.finishReason, resolvedProvider)));
     await writable.close();
     return { status: 'capped', deltas, messages, rounds: round, steps };
   } catch (err) {

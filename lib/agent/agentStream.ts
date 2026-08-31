@@ -40,6 +40,7 @@ export type AgentStreamEvent =
     }
   | { type: 'reasoning_delta'; text: string }
   | { type: 'text_delta'; text: string }
+  | { type: 'provider'; provider: string }
   | {
       /**
        * Protocol v12 / phase 2 (#517): display-only skill attach/detach outcome.
@@ -92,6 +93,12 @@ export type AgentStreamEvent =
        * reports no final usage clears the context slot.
        */
       usage?: UsageSummary;
+      /**
+       * Plan #906 — conclusive Gateway-resolved provider slug. Present when
+       * this round captured a sanitized slug. Absent does **not** clear a pin
+       * already shown this turn (unlike `done.usage`).
+       */
+      resolvedProvider?: string;
     }
   | {
       /**

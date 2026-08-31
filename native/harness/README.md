@@ -115,6 +115,7 @@ Host is dvui’s `web.js`. Required exports (app + backend):
 | `inv_queued_insert_front` | **v20** — insert a prompt as the new queue head (`Continue the current turn` on give-up, plan #759); never pops, fails closed when full/blank |
 | `inv_clear_ring` | **v21** — replace transcript ring + image/math caches; **keeps** submit queue / pause / promote gate (Send-while-running attach). F5/New/switch still use `inv_clear_messages` |
 | `inv_clear_reasoning_efforts` / `inv_push_reasoning_effort` / `inv_set_selected_reasoning` / `inv_selected_reasoning_copy` / `inv_has_pending_reasoning_change` / `inv_ack_pending_reasoning_change` | **v23** — reasoning-effort picker (host-pushed Gateway list for the current model; restore-by-value; pending user pick) |
+| `inv_set_resolved_provider` | **v24** — host push of the mapped display label for the Gateway-resolved provider (Together vs Fireworks); `len=0` hides |
 | `inv_set_turn_elapsed` | **v14** whole-turn busy clock — the host pushes elapsed wall-clock seconds while a turn runs; the Wasm busy row formats/appends `Waiting for model… · mm:ss` in-canvas |
 
 Whitelist: `build.zig` → `export_symbol_names` (Zig 0.16 freestanding + `entry = .disabled` strips unrooted exports).
@@ -126,7 +127,7 @@ Inference stays on the host: `POST /api/chat` and `POST /api/agent` hold
 
 | | |
 |--|--|
-| **Protocol version** | `23` (v17 added the session-rail catalog + pending switch; **v18** adds `inv_queued_count` for the in-canvas submit queue; **v19** adds `inv_set_queue_promote_allowed` — promote when Ready only, so a Stop/Esc/error/timeout Ready never drains; **v20** adds `inv_queued_insert_front` insert-at-front for turn-error Continue; **v21** adds `inv_clear_ring` live-session ring replace that keeps the submit queue; **v23** adds the in-canvas reasoning-effort picker — v22 reserved by the concurrent #815 enqueue-visibility residual) |
+| **Protocol version** | `24` (v17 added the session-rail catalog + pending switch; **v18** adds `inv_queued_count` for the in-canvas submit queue; **v19** adds `inv_set_queue_promote_allowed` — promote when Ready only, so a Stop/Esc/error/timeout Ready never drains; **v20** adds `inv_queued_insert_front` insert-at-front for turn-error Continue; **v21** adds `inv_clear_ring` live-session ring replace that keeps the submit queue; **v23** adds the in-canvas reasoning-effort picker — v22 reserved by the concurrent #815 enqueue-visibility residual; **v24** adds `inv_set_resolved_provider` display-only resolved-provider label) |
 | **TS** | `lib/harnessBridge.ts` |
 | **Zig** | `src/bridge.zig` |
 | **Host** | `app/harness/HarnessHost.tsx` (shell: load + bridge + APIs) |

@@ -26,6 +26,7 @@ type MockExtras = {
   __modelPending: () => boolean;
   __setReasoningPending: (on: boolean) => void;
   __promoteAllowed: () => boolean;
+  __resolvedProvider: () => string;
 };
 
 function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBridgeExports & MockExtras {
@@ -51,6 +52,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
   let selectedEffort = 0;
   let hasEffortSelection = false;
   let reasoningPending = false;
+  let resolvedProvider = '';
   const sessionCatalog: { id: string; label: string }[] = [];
   let currentSession: string | null = null;
   let sessionSwitchPending: string | null = null;
@@ -255,6 +257,15 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     inv_ack_pending_reasoning_change: () => {
       reasoningPending = false;
     },
+    inv_set_resolved_provider: (ptr: number, len: number) => {
+      if (len === 0) {
+        resolvedProvider = '';
+        return 1;
+      }
+      if (len > 32) return 0;
+      resolvedProvider = read(ptr, len);
+      return 1;
+    },
     inv_clear_session_catalog: () => {
       sessionCatalog.length = 0;
       currentSession = null;
@@ -344,6 +355,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
       reasoningPending = !!on;
     },
     __promoteAllowed: () => promoteAllowed,
+    __resolvedProvider: () => resolvedProvider,
   };
 
   return {
@@ -360,6 +372,7 @@ function makeMockExports(overrides?: Partial<HarnessBridgeExports>): HarnessBrid
     __modelPending: base.__modelPending,
     __setReasoningPending: base.__setReasoningPending,
     __promoteAllowed: base.__promoteAllowed,
+    __resolvedProvider: base.__resolvedProvider,
   };
 }
 
@@ -929,7 +942,7 @@ describe('skill_attached kind (protocol v12)', () => {
     // Distinct from the protocol version (13) — a hardcoded kind 13 would be an
     // unknown kind to the Wasm painter.
     expect(MessageKind.SkillAttached).not.toBe(HARNESS_PROTOCOL_VERSION);
-    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(24);
   });
 
   it('push/readback round-trips a skill_attached row', () => {
@@ -959,7 +972,7 @@ describe('setTurnElapsed (protocol v14)', () => {
   });
 
   it('version bumped to 20 and the export is REQUIRED (fail-closed when missing)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(24);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     // A rebuilt Wasm that omits inv_set_turn_elapsed fails bridge-load closed,
@@ -1028,7 +1041,7 @@ describe('status-slot pack (protocol v13)', () => {
 
 describe('queuedCount (protocol v18)', () => {
   it('reads inv_queued_count and fails closed when the export is missing', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(24);
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     expect(bridge.queuedCount()).toBe(0);
@@ -1075,7 +1088,7 @@ describe('clearRing / hydrateMessages preserveQueue (protocol v21, adversarial #
   });
 
   it('inv_clear_ring export is REQUIRED (fail-closed when missing)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(24);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     const record = exp as unknown as Record<string, unknown>;
@@ -1096,7 +1109,7 @@ describe('setQueuePromoteAllowed (protocol v19, plan #760)', () => {
   });
 
   it('export is REQUIRED (fail-closed when missing from the wasm)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(24);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     const record = exp as unknown as Record<string, unknown>;
@@ -1130,6 +1143,32 @@ describe('queuedInsertFront (protocol v20, plan #759)', () => {
     expect(isHarnessBridgeExports(exp)).toBe(true);
     const record = exp as unknown as Record<string, unknown>;
     delete record.inv_queued_insert_front;
+    expect(isHarnessBridgeExports(record as WebAssembly.Exports)).toBe(false);
+  });
+});
+
+describe('setResolvedProvider (protocol v24, plan #906)', () => {
+  it('pushes a display label; empty / null hides; oversize rejects', () => {
+    expect(HARNESS_PROTOCOL_VERSION).toBe(24);
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    expect(bridge.setResolvedProvider('Together AI')).toBe(true);
+    expect(exp.__resolvedProvider()).toBe('Together AI');
+    expect(bridge.setResolvedProvider('Fireworks')).toBe(true);
+    expect(exp.__resolvedProvider()).toBe('Fireworks');
+    expect(bridge.setResolvedProvider(null)).toBe(true);
+    expect(exp.__resolvedProvider()).toBe('');
+    expect(bridge.setResolvedProvider('')).toBe(true);
+    expect(exp.__resolvedProvider()).toBe('');
+    expect(bridge.setResolvedProvider('x'.repeat(33))).toBe(false);
+    expect(exp.__resolvedProvider()).toBe('');
+  });
+
+  it('inv_set_resolved_provider is REQUIRED (fail-closed when missing)', () => {
+    const exp = makeMockExports() as unknown as WebAssembly.Exports;
+    expect(isHarnessBridgeExports(exp)).toBe(true);
+    const record = exp as unknown as Record<string, unknown>;
+    delete record.inv_set_resolved_provider;
     expect(isHarnessBridgeExports(record as WebAssembly.Exports)).toBe(false);
   });
 });

@@ -23,6 +23,8 @@ import { mapProviderUsage, type UsageSummary } from './usageSummary';
 import { redactSecrets } from './redact';
 import { resolveAgentReasoning } from './reasoningConfig';
 import { resolveAgentStopWhen } from './stopWhen';
+import { extractResolvedProvider } from './resolvedProvider';
+import { sanitizeResolvedProvider } from '../sessionCloudCaps';
 
 /** One captured tool-call delta (schemas only — never executed here). */
 export type ToolCallDelta = {
@@ -43,6 +45,8 @@ export type OneRoundDelta = {
   usage?: UsageSummary;
   finishReason?: string;
   reasoning?: string;
+  /** Sanitized Gateway-resolved provider slug (plan #906). */
+  resolvedProvider?: string;
 };
 
 /**
@@ -79,6 +83,12 @@ export type GenerateOneRoundDeps = {
    * `resolveAgentReasoning` as `request` — wins over env / product default.
    */
   reasoning?: string;
+  /**
+   * Optional BYOK pin slug (already known before the round). Emitted as a
+   * live `provider` event before the model stream so Busy can paint. Overlay
+   * from generation `providerMetadata` wins when different.
+   */
+  providerHint?: string;
 };
 
 /** One-round input: messages + tool SCHEMAS only, plus the event writable. */
@@ -142,6 +152,15 @@ export async function generateOneRound(
     streamArgs.reasoning = reasoningOpt;
   }
 
+  let resolvedProvider = sanitizeResolvedProvider(deps.providerHint);
+  if (resolvedProvider) {
+    try {
+      await input.onEvent({ type: 'provider', provider: resolvedProvider });
+    } catch (err) {
+      return failClosed('write_error', err, secrets);
+    }
+  }
+
   let result: any;
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -181,6 +200,17 @@ export async function generateOneRound(
           part.finishReason.length > 0
         ) {
           finishReason = part.finishReason;
+        }
+      }
+      const partMeta = (part as { providerMetadata?: unknown } | undefined)
+        ?.providerMetadata;
+      const fromPart = extractResolvedProvider(partMeta);
+      if (fromPart && fromPart !== resolvedProvider) {
+        resolvedProvider = fromPart;
+        try {
+          await input.onEvent({ type: 'provider', provider: fromPart });
+        } catch (err) {
+          return failClosed('write_error', err, secrets);
         }
       }
       for (const ev of mapFullStreamPart(part, secrets)) {
@@ -223,6 +253,20 @@ export async function generateOneRound(
   } catch {
     usage = undefined;
   }
+  try {
+    const meta = await Promise.resolve(result.providerMetadata);
+    const fromSettle = extractResolvedProvider(meta);
+    if (fromSettle && fromSettle !== resolvedProvider) {
+      resolvedProvider = fromSettle;
+      try {
+        await input.onEvent({ type: 'provider', provider: fromSettle });
+      } catch (err) {
+        return failClosed('write_error', err, secrets);
+      }
+    }
+  } catch {
+    // Missing / rejected providerMetadata is a miss, not a failed round.
+  }
 
   const reasoning = reasoningAcc.trim();
   return {
@@ -233,6 +277,7 @@ export async function generateOneRound(
       ...(usage !== undefined ? { usage } : {}),
       ...(finishReason !== undefined ? { finishReason } : {}),
       ...(reasoning ? { reasoning } : {}),
+      ...(resolvedProvider ? { resolvedProvider } : {}),
     },
   };
 }

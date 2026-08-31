@@ -83,6 +83,12 @@ export type SessionSnapshot = {
    */
   reasoningEffort?: string;
   /**
+   * Plan #906 — last-served Gateway-resolved provider slug (e.g. `togetherai`).
+   * Worker-owned reserved `meta.resolvedProvider`. Omitted = hide the line-1
+   * label. Sanitized with `sanitizeResolvedProvider` on read (drop-to-unset).
+   */
+  resolvedProvider?: string;
+  /**
    * Plan #795 (backend-agents A1) — the Workflow **run id** carrier, mirrored on
    * the local session as the reserved `meta.turnRunId`. Omitted = no run id on the
    * session. Sanitized with `sanitizeTurnRunId` on read (drop-to-unset on poison)
@@ -123,6 +129,7 @@ import {
   isRedisSafeOpaqueId,
   sanitizeModelId,
   sanitizeReasoningEffort,
+  sanitizeResolvedProvider,
   sanitizeSessionCwd,
   sanitizeTurnRunId,
   sanitizeTurnStatus,
@@ -239,6 +246,7 @@ export class LocalStorageSessionStore implements SessionStore {
         usage?: unknown;
         selectedModel?: unknown;
         reasoningEffort?: unknown;
+        resolvedProvider?: unknown;
         turnRunId?: unknown;
         turnStatus?: unknown;
         turnStreamCursor?: unknown;
@@ -264,6 +272,7 @@ export class LocalStorageSessionStore implements SessionStore {
         usage: rawUsage,
         selectedModel: rawSelectedModel,
         reasoningEffort: rawReasoningEffort,
+        resolvedProvider: rawResolvedProvider,
         turnRunId: rawTurnRunId,
         turnStatus: rawTurnStatus,
         turnStreamCursor: rawTurnStreamCursor,
@@ -283,6 +292,7 @@ export class LocalStorageSessionStore implements SessionStore {
       const usage = sanitizeUsageSummary(rawUsage);
       const selectedModel = sanitizeModelId(rawSelectedModel);
       const reasoningEffort = sanitizeReasoningEffort(rawReasoningEffort);
+      const resolvedProvider = sanitizeResolvedProvider(rawResolvedProvider);
       // backend-agents A1–A3: the three turn carriers mirror the reserved meta keys
       // and are re-sanitized on local load (drop-to-unset on poison) so a stale/
       // hand-edited localStorage value never sticks. `turnStatus='completed'` is a
@@ -307,6 +317,8 @@ export class LocalStorageSessionStore implements SessionStore {
       else delete out.selectedModel;
       if (reasoningEffort !== undefined) out.reasoningEffort = reasoningEffort;
       else delete out.reasoningEffort;
+      if (resolvedProvider !== undefined) out.resolvedProvider = resolvedProvider;
+      else delete out.resolvedProvider;
       if (turnRunId !== undefined) out.turnRunId = turnRunId;
       else delete out.turnRunId;
       if (turnStatus !== undefined) out.turnStatus = turnStatus;

@@ -13,7 +13,7 @@ flowchart TB
   subgraph browser ["Browser"]
     wasm["Wasm harness<br/>native/harness<br/>transcript · composer · status bar"]
     host["DOM host<br/>HarnessHost · harnessBridge · harnessChat<br/>local SessionStore"]
-    wasm <-->|"JS/Wasm bridge protocol v23"| host
+    wasm <-->|"JS/Wasm bridge protocol v24"| host
   end
 
   subgraph next ["Vercel Next.js"]
@@ -148,7 +148,8 @@ host env.
 
 Vercel AI Gateway may resolve the **same** model id to different upstreams
 (for example Together vs Fireworks). That is Gateway routing, not a second
-in-repo model catalog.
+in-repo model catalog. The harness status bar shows the resolved provider
+slug as a display-only label next to the model menu (hidden when unknown).
 
 ## Tools and sandbox
 

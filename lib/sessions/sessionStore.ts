@@ -39,6 +39,7 @@ import {
   isRedisSafeOpaqueId,
   sanitizeModelId,
   sanitizeReasoningEffort,
+  sanitizeResolvedProvider,
   sanitizeSessionCwd,
   sanitizeTurnRunId,
   sanitizeTurnStatus,
@@ -76,6 +77,7 @@ export const RESERVED_META_KEYS = [
   'attachedSkills',
   'selectedModel',
   'reasoningEffort',
+  'resolvedProvider',
   'usage',
   'turnRunId',
   'turnStatus',
@@ -420,6 +422,11 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
     if (key === 'reasoningEffort') {
       const cleaned = sanitizeReasoningEffort(v);
       if (cleaned !== undefined) meta.reasoningEffort = cleaned;
+      continue;
+    }
+    if (key === 'resolvedProvider') {
+      const cleaned = sanitizeResolvedProvider(v);
+      if (cleaned !== undefined) meta.resolvedProvider = cleaned;
       continue;
     }
     if (key === 'usage') {

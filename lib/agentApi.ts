@@ -15,7 +15,7 @@ import {
   readAgentStream,
   type AgentStreamResult,
 } from './agentSse';
-import { parseAttachedSkills, sanitizeReasoningEffort } from './sessionCloudCaps';
+import { parseAttachedSkills, sanitizeReasoningEffort, sanitizeResolvedProvider } from './sessionCloudCaps';
 
 export type ToolTraceEntry = {
   name: string;
@@ -66,6 +66,12 @@ export type AgentSuccess = {
    * reported none or the wire value is invalid/non-provider — never a guess.
    */
   usage?: UsageSummary;
+  /**
+   * Plan #906 — last-served Gateway-resolved provider slug parsed from the
+   * stream `provider` / `done.resolvedProvider` events. Absent keeps the prior
+   * honest pin (unlike usage, which a completed turn may clear).
+   */
+  resolvedProvider?: string;
   /**
    * Plan #811 (D17) — the Workflow run id from the `x-workflow-run-id` response
    * header (populated by `/api/turns`; absent for `/api/agent`). The caller folds
@@ -247,6 +253,7 @@ export function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
   const skillEvents = parseSkillEvents(record?.skillEvents);
   const attachedSlugs = attachedSlugsFromRecord(record);
   const usage = sanitizeUsageSummary(record?.usage);
+  const resolvedProvider = sanitizeResolvedProvider(record?.resolvedProvider);
   return {
     ok: true,
     text: textField,
@@ -259,6 +266,7 @@ export function parseJsonAgentBody(res: Response, data: unknown): AgentResult {
     ...(skillEvents ? { skillEvents } : {}),
     ...(attachedSlugs !== undefined ? { attachedSlugs } : {}),
     ...(usage ? { usage } : {}),
+    ...(resolvedProvider ? { resolvedProvider } : {}),
   };
 }
 
@@ -432,6 +440,7 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
 
   // Accumulate live usage events mid-stream (dispatched through onEvent).
   let streamUsage: UsageSummary | undefined;
+  let streamProvider: string | undefined;
 
   let streamResult: AgentStreamResult;
   try {
@@ -441,6 +450,9 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
         // Phase 3 (plan #628) — live provider usage mid-stream. Last honest
         // wins; never step back to empty on a finish part that reported none.
         streamUsage = sanitizeUsageSummary(ev.usage) ?? streamUsage;
+      }
+      if (ev.type === 'provider') {
+        streamProvider = sanitizeResolvedProvider(ev.provider) ?? streamProvider;
       }
     });
   } catch (err) {
@@ -474,6 +486,8 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
   // the completed-turn rule; never falls back to a prior live value).
   const doneUsage = sanitizeUsageSummary(streamResult.usageRaw);
   const usage = doneUsage ?? streamUsage;
+  const doneProvider = sanitizeResolvedProvider(streamResult.resolvedProviderRaw);
+  const resolvedProvider = doneProvider ?? streamProvider;
 
   if (!finalText.trim()) {
     return { ok: false, status: res.status, error: 'Empty model response.' };
@@ -490,5 +504,6 @@ export const sendAgentStream: SendAgentStreamFn = async (prompt, init) => {
       ? { activeSandboxId: streamResult.activeSandboxId }
       : {}),
     ...(usage ? { usage } : {}),
+    ...(resolvedProvider ? { resolvedProvider } : {}),
   };
 };

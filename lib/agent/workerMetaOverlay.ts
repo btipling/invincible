@@ -14,9 +14,9 @@
  *
  * Worker-owned keys (the only keys this PATCH may override):
  * `logicalCwd` / `activeSandboxId` / `usage` / `attachedSkills` / `turnRunId` /
- * `turnStatus` / `turnStreamCursor` / `checkpointPointer`. All host keys
+ * `turnStatus` / `turnStreamCursor` / `checkpointPointer` / `resolvedProvider`. All host keys
  * (`personaId`, `personaSnapshot`, `title`, `selectedModel`, `legacySnapshotId`,
- * `transcriptPointer`) are preserved byte-for-byte — a worker PATCH can never
+ * `transcriptPointer`, `reasoningEffort`) are preserved byte-for-byte — a worker PATCH can never
  * clobber a host value.
  *
  * **Never write `turnRunId: sessionId`.** A worker PATCH value for `turnRunId`
@@ -42,6 +42,7 @@ import {
   isRedisSafeOpaqueId,
   normalizeSessionCwd,
   parseAttachedSkills,
+  sanitizeResolvedProvider,
   sanitizeTurnRunId,
   sanitizeTurnStatus,
   sanitizeTurnStreamCursor,
@@ -66,6 +67,7 @@ export const WORKER_META_KEYS = [
   'turnStatus',
   'turnStreamCursor',
   'checkpointPointer',
+  'resolvedProvider',
 ] as const;
 export type WorkerMetaKey = (typeof WORKER_META_KEYS)[number];
 
@@ -124,6 +126,8 @@ function sanitizeWorkerKeyValue(key: WorkerMetaKey, value: unknown): string | nu
       return typeof value === 'string' && value !== '' && isRedisSafeOpaqueId(value)
         ? value
         : undefined;
+    case 'resolvedProvider':
+      return sanitizeResolvedProvider(value);
   }
 }
 

@@ -53,6 +53,8 @@ export interface AgentStreamResult {
   /** Raw usage from the `done` event — caller sanitizes. Live usage events are
    *  dispatched via `onEvent` and handled by the caller. */
   usageRaw?: unknown;
+  /** Raw resolved-provider slug from the `done` event — caller sanitizes. */
+  resolvedProviderRaw?: unknown;
   error?: { ok: false; error: string; status?: number };
 }
 
@@ -72,6 +74,7 @@ export async function readAgentStream(
   let streamSandboxId: string | undefined;
   let streamActiveSandboxId: string | undefined;
   let usageRaw: unknown;
+  let resolvedProviderRaw: unknown;
   let streamError: { ok: false; error: string; status?: number } | null = null;
 
   try {
@@ -102,6 +105,9 @@ export async function readAgentStream(
           }
           // done.usage is the conclusive reconcile (caller sanitizes).
           usageRaw = ev.usage;
+          if (typeof ev.resolvedProvider === 'string') {
+            resolvedProviderRaw = ev.resolvedProvider;
+          }
           if (isProviderRefusalFinish(ev.finishReason)) {
             streamError = { ok: false, error: truncatedFinishError(ev.finishReason) };
           }
@@ -140,6 +146,9 @@ export async function readAgentStream(
             streamActiveSandboxId = ev.activeSandboxId;
           }
           usageRaw = ev.usage;
+          if (typeof ev.resolvedProvider === 'string') {
+            resolvedProviderRaw = ev.resolvedProvider;
+          }
           if (isProviderRefusalFinish(ev.finishReason)) {
             streamError = { ok: false, error: truncatedFinishError(ev.finishReason) };
           }
@@ -169,6 +178,7 @@ export async function readAgentStream(
       ? { activeSandboxId: streamActiveSandboxId }
       : {}),
     ...(usageRaw !== undefined ? { usageRaw } : {}),
+    ...(resolvedProviderRaw !== undefined ? { resolvedProviderRaw } : {}),
     ...(streamError ? { error: streamError } : {}),
   };
 }

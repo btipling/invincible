@@ -58,6 +58,7 @@ import {
   discardPendingReasoningChange,
 } from '../../lib/harnessHostReasoningPersist';
 import { sanitizeReasoningEffort } from '../../lib/sessionCloudCaps';
+import { applyResolvedProvider } from '../../lib/agent/resolvedProvider';
 import { paintQuotaAfterRebuild, tryLocalSave } from '../../lib/hostQuotaError';
 import {
   TURN_QUEUE_DRAIN_MAX_ATTEMPTS,
@@ -398,6 +399,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     // 150 ms poll after a model change and must not snap ringWindowStartRef
     // the way writeLocalSession does (Load-earlier window).
     applySessionReasoningFn(snap, options, b, sessionRef, writeLocalSessionMeta, repoRef.current);
+    applyResolvedProvider(snap, b);
   }, [writeLocalSessionMeta]);
 
   /** Apply server snapshot to local store + latest Wasm ring window. */
@@ -442,6 +444,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           persistNoPaint,
           repoRef.current,
         );
+        applyResolvedProvider(merged, b);
       } else {
         persistNoPaint(merged);
       }
@@ -1423,6 +1426,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             null,
           );
         }
+        applyResolvedProvider(empty, bridge);
         bridge.pushMessage(MessageKind.System, 'New session started.');
         bridge.setLifecycle(Lifecycle.Ready);
         paintQuotaAfterRebuild(bridge, localSaveQuotaWarnedRef, quota, empty);

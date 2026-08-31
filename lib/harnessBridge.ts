@@ -14,6 +14,7 @@ import {
   MAX_MODEL_ID_LEN,
   REASONING_EFFORT_MAX_BYTES,
   REASONING_EFFORT_VALUES_MAX,
+  RESOLVED_PROVIDER_MAX_BYTES,
   STATUS_SLOT_MAX_BYTES,
   sanitizeReasoningEffort,
 } from './sessionCloudCaps';
@@ -47,7 +48,9 @@ import {
 // v23 (plan #898): reasoning-effort picker — host-pushed Gateway list for the
 // current model + restore-by-value + pending-reasoning-change. Additive, now REQUIRED.
 // (v22 reserved by the concurrent #815 enqueue-visibility residual.)
-export const HARNESS_PROTOCOL_VERSION = 23 as const;
+// v24 (plan #906): resolved-provider display — `inv_set_resolved_provider`
+// (UTF-8 display label; len=0 hides). Additive, now REQUIRED.
+export const HARNESS_PROTOCOL_VERSION = 24 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -67,6 +70,8 @@ export { MAX_MODEL_ID_LEN };
 export const MAX_REASONING_EFFORT_LEN = REASONING_EFFORT_MAX_BYTES;
 /** Must match Zig `MAX_REASONING_EFFORTS`. */
 export const MAX_REASONING_EFFORTS = REASONING_EFFORT_VALUES_MAX;
+/** Must match Zig `MAX_RESOLVED_PROVIDER_LEN` (protocol v24, plan #906). */
+export const MAX_RESOLVED_PROVIDER_LEN = RESOLVED_PROVIDER_MAX_BYTES;
 
 /** Must match Zig `MAX_STATUS_SLOTS` (protocol v13, plan #538/#541). */
 export const MAX_STATUS_SLOTS = 8 as const;
@@ -200,6 +205,8 @@ export type HarnessBridgeExports = {
   inv_set_selected_reasoning: (ptr: number, len: number) => number;
   inv_has_pending_reasoning_change: () => number;
   inv_ack_pending_reasoning_change: () => void;
+  // Protocol v24 (plan #906) — resolved-provider display label.
+  inv_set_resolved_provider: (ptr: number, len: number) => number;
   // Protocol v17 — session-rail catalog + pending switch.
   inv_clear_session_catalog: () => void;
   inv_push_session_catalog_entry: (
@@ -293,6 +300,7 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_set_selected_reasoning',
   'inv_has_pending_reasoning_change',
   'inv_ack_pending_reasoning_change',
+  'inv_set_resolved_provider',
   'inv_clear_session_catalog',
   'inv_push_session_catalog_entry',
   'inv_session_catalog_count',
@@ -857,6 +865,34 @@ export class HarnessBridge {
 
   ackPendingReasoningChange(): void {
     this.exports.inv_ack_pending_reasoning_change();
+  }
+
+  /**
+   * Protocol v24 — host push of the mapped display label. Empty / null hides
+   * the line-1 provider text. Does **not** sanitize as a slug (labels include
+   * spaces); oversize (> 32 UTF-8 bytes) is rejected.
+   */
+  setResolvedProvider(label: string | null): boolean {
+    if (label === null || label.length === 0) {
+      return this.exports.inv_set_resolved_provider(0, 0) !== 0;
+    }
+    const trimmed = label.trim();
+    if (!trimmed) {
+      return this.exports.inv_set_resolved_provider(0, 0) !== 0;
+    }
+    const bytes = utf8Encode.encode(trimmed);
+    if (bytes.length === 0) {
+      return this.exports.inv_set_resolved_provider(0, 0) !== 0;
+    }
+    if (bytes.length > MAX_RESOLVED_PROVIDER_LEN) return false;
+    const ptr = this.exports.gpa_u8(bytes.length);
+    if (!ptr) return false;
+    try {
+      new Uint8Array(this.exports.memory.buffer, ptr, bytes.length).set(bytes);
+      return this.exports.inv_set_resolved_provider(ptr, bytes.length) !== 0;
+    } finally {
+      this.exports.gpa_free(ptr, bytes.length);
+    }
   }
 
   clearSessionCatalog(): void {

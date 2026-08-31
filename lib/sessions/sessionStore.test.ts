@@ -173,6 +173,7 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'attachedSkills',
       'selectedModel',
       'reasoningEffort',
+      'resolvedProvider',
       'usage',
       'turnRunId',
       'turnStatus',
@@ -282,6 +283,28 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       );
       expect(res.ok).toBe(true);
       if (res.ok) expect(res.value.meta.reasoningEffort).toBeUndefined();
+    }
+  });
+
+  it('plan #906 — accepts a valid meta.resolvedProvider and DROPS a poisoned one to unset (never 400)', () => {
+    const ok = validateSessionRecord(
+      makeRecord({ meta: { resolvedProvider: 'togetherai' } as HarnessSessionRecord['meta'] }),
+    );
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.meta.resolvedProvider).toBe('togetherai');
+
+    const labelOk = validateSessionRecord(
+      makeRecord({ meta: { resolvedProvider: 'Together AI' } as HarnessSessionRecord['meta'] }),
+    );
+    expect(labelOk.ok).toBe(true);
+    if (labelOk.ok) expect(labelOk.value.meta.resolvedProvider).toBe('togetherai');
+
+    for (const bad of ['https://x', 'moonshotai/kimi-k3', 'x'.repeat(33), 42 as unknown]) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { resolvedProvider: bad } as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.value.meta.resolvedProvider).toBeUndefined();
     }
   });
 

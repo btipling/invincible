@@ -21,6 +21,7 @@ import {
   parseAttachedSkills,
   sanitizeModelId,
   sanitizeReasoningEffort,
+  sanitizeResolvedProvider,
   sanitizeTurnRunId,
   sanitizeTurnStatus,
   sanitizeTurnStreamCursor,
@@ -245,6 +246,7 @@ export function parseCloudSessionSnapshot(
   let personaId: string | undefined;
   let selectedModel: string | undefined;
   let reasoningEffort: string | undefined;
+  let resolvedProvider: string | undefined;
   let turnRunId: string | undefined;
   let turnStatus: import('./sessionCloudCaps').TurnStatus | undefined;
   let turnStreamCursor: number | undefined;
@@ -271,6 +273,9 @@ export function parseCloudSessionSnapshot(
     // `meta.reasoningEffort`. `sanitizeReasoningEffort` drops poison to unset
     // (restore falls back to `defaultEffortFromOptions` for the current model).
     reasoningEffort = sanitizeReasoningEffort(meta.reasoningEffort);
+    // Plan #906: restore the last-served provider slug. `sanitizeResolvedProvider`
+    // drops poison (URL / model-id / oversize) to unset — never a sticky 400.
+    resolvedProvider = sanitizeResolvedProvider(meta.resolvedProvider);
     // backend-agents A1–A3: restore the three turn carriers from the reserved meta
     // keys through the shared client-safe predicates so a poisoned / side-channel
     // value drops to unset instead of becoming a sticky 400. `turnStatus='completed'`
@@ -290,6 +295,7 @@ export function parseCloudSessionSnapshot(
   if (personaId !== undefined) snapshot.personaId = personaId;
   if (selectedModel !== undefined) snapshot.selectedModel = selectedModel;
   if (reasoningEffort !== undefined) snapshot.reasoningEffort = reasoningEffort;
+  if (resolvedProvider !== undefined) snapshot.resolvedProvider = resolvedProvider;
   if (turnRunId !== undefined) snapshot.turnRunId = turnRunId;
   if (turnStatus !== undefined) snapshot.turnStatus = turnStatus;
   if (turnStreamCursor !== undefined) snapshot.turnStreamCursor = turnStreamCursor;
@@ -352,6 +358,10 @@ export function overlayEnvelopeMeta(
   const reasoningEffort = sanitizeReasoningEffort(envMeta.reasoningEffort);
   if (reasoningEffort !== undefined) out.reasoningEffort = reasoningEffort;
   else delete out.reasoningEffort;
+
+  const resolvedProvider = sanitizeResolvedProvider(envMeta.resolvedProvider);
+  if (resolvedProvider !== undefined) out.resolvedProvider = resolvedProvider;
+  else delete out.resolvedProvider;
 
   if (envMeta.attachedSkills !== undefined) {
     out.attachedSlugs = parseAttachedSkills(envMeta.attachedSkills);
@@ -504,6 +514,7 @@ export function mergeAdoptedUsage(
     const out: SessionSnapshot = {
       ...server,
       usage: server.usage ?? local.usage,
+      resolvedProvider: server.resolvedProvider ?? local.resolvedProvider,
     };
     if (queue !== undefined) out.queue = queue;
     else delete out.queue;
@@ -569,6 +580,11 @@ export type CloudPutBody = {
      * `snapshot.reasoningEffort` via `sanitizeReasoningEffort`. Absent = clear.
      */
     reasoningEffort?: string;
+    /**
+     * Plan #906 — last-served Gateway provider slug. Folded from
+     * `snapshot.resolvedProvider` via `sanitizeResolvedProvider`. Absent = clear.
+     */
+    resolvedProvider?: string;
     /**
      * backend-agents A1 (#795): the Workflow run id, folded from
      * `snapshot.turnRunId` via `sanitizeTurnRunId`. Absent = clear.
@@ -648,6 +664,10 @@ export function cloudMetaFor(
     ? sanitizeReasoningEffort(snapshot.reasoningEffort)
     : undefined;
   if (reasoningEffort !== undefined) meta.reasoningEffort = reasoningEffort;
+  const resolvedProvider = snapshot.resolvedProvider
+    ? sanitizeResolvedProvider(snapshot.resolvedProvider)
+    : undefined;
+  if (resolvedProvider !== undefined) meta.resolvedProvider = resolvedProvider;
   // backend-agents A1–A3: fold the three turn carriers from the snapshot through
   // the shared client-safe predicates (drop-to-unset on poison — never a sticky
   // 400; absent = clear, RESERVED_META_KEYS replace contract). `completed` is a
@@ -667,6 +687,7 @@ export function cloudMetaFor(
     meta.attachedSkills === undefined &&
     meta.selectedModel === undefined &&
     meta.reasoningEffort === undefined &&
+    meta.resolvedProvider === undefined &&
     meta.turnRunId === undefined &&
     meta.turnStatus === undefined &&
     meta.turnStreamCursor === undefined &&
