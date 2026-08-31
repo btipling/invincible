@@ -1,13 +1,22 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   GATEWAY_MODELS_CACHE_TTL_MS,
   GATEWAY_MODELS_FETCH_TIMEOUT_MS,
+  MODELS_DEV_FETCH_MAX_BYTES,
   REASONING_EFFORT_VALUES_MAX,
 } from '../sessionCloudCaps';
 import {
   GATEWAY_MODELS_URL,
+  MODELS_DEV_URL,
+  effortValuesForModel,
   getGatewayEffortMap,
+  getJoinedEffortMap,
+  getModelsDevEffortMap,
+  joinEffortMaps,
   parseGatewayEffortMap,
+  parseModelsDevEffortMap,
   resetGatewayModelsCache,
   type FetchImpl,
 } from './modelCatalog';
@@ -65,6 +74,72 @@ describe('parseGatewayEffortMap', () => {
     expect(parseGatewayEffortMap(null).size).toBe(0);
     expect(parseGatewayEffortMap({}).size).toBe(0);
     expect(parseGatewayEffortMap({ data: 'nope' }).size).toBe(0);
+  });
+});
+
+describe('parseModelsDevEffortMap', () => {
+  it('reads vercel.models object keys; ignores lab maps, toggle, nested row.id', () => {
+    const map = parseModelsDevEffortMap({
+      vercel: {
+        models: {
+          'zai/glm-5.3-flash': {
+            id: 'wrong/id',
+            reasoning_options: [
+              { type: 'effort', values: ['low', 'high', 'max'] },
+              { type: 'toggle' },
+            ],
+          },
+          'zai/glm-5.3': {
+            reasoning_options: [{ type: 'effort', values: ['low', 'high', 'max'] }],
+          },
+          'other/toggle': {
+            reasoning_options: [{ type: 'toggle' }],
+          },
+        },
+      },
+      zai: {
+        models: {
+          'glm-5.3-flash': {
+            reasoning_options: [{ type: 'effort', values: ['should-not'] }],
+          },
+        },
+      },
+    });
+    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(map.get('zai/glm-5.3')).toEqual(['low', 'high', 'max']);
+    expect(map.get('other/toggle')).toEqual([]);
+    expect(map.has('glm-5.3-flash')).toBe(false);
+    expect(map.has('wrong/id')).toBe(false);
+  });
+
+  it('returns empty map on garbage / missing vercel.models', () => {
+    expect(parseModelsDevEffortMap(null).size).toBe(0);
+    expect(parseModelsDevEffortMap({}).size).toBe(0);
+    expect(parseModelsDevEffortMap({ vercel: { models: [] } }).size).toBe(0);
+    expect(parseModelsDevEffortMap({ zai: { models: { x: {} } } }).size).toBe(0);
+  });
+});
+
+describe('joinEffortMaps', () => {
+  it('overlay non-empty wins; missing/empty overlay falls to Gateway; both empty → []', () => {
+    const overlay = new Map<string, string[]>([
+      ['overlay-wins', ['low', 'high', 'max']],
+      ['empty-overlay', []],
+      ['overlay-only', ['low']],
+    ]);
+    const gateway = new Map<string, string[]>([
+      ['overlay-wins', ['high', 'xhigh']],
+      ['empty-overlay', ['low', 'medium']],
+      ['gateway-only', ['none', 'low']],
+      ['both-empty', []],
+    ]);
+    const joined = joinEffortMaps(overlay, gateway);
+    expect(joined.get('overlay-wins')).toEqual(['low', 'high', 'max']);
+    expect(joined.get('empty-overlay')).toEqual(['low', 'medium']);
+    expect(joined.get('overlay-only')).toEqual(['low']);
+    expect(joined.get('gateway-only')).toEqual(['none', 'low']);
+    expect(joined.get('both-empty')).toEqual([]);
+    expect(joined.get('missing')).toBeUndefined();
   });
 });
 
@@ -173,8 +248,222 @@ describe('getGatewayEffortMap', () => {
   });
 });
 
+function modelsDevJson(models: Record<string, unknown>): FetchImpl {
+  return vi.fn(async () => ({
+    ok: true,
+    json: async () => ({ vercel: { models } }),
+  }));
+}
+
+describe('getModelsDevEffortMap', () => {
+  it('fetches, caches, fail-opens last-good, and negative-caches', async () => {
+    const fetchImpl = modelsDevJson({
+      'zai/glm-5.3-flash': {
+        reasoning_options: [{ type: 'effort', values: ['low', 'high', 'max'] }],
+      },
+    });
+    const first = await getModelsDevEffortMap({ fetchImpl, now: () => 1_000 });
+    expect(first.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      MODELS_DEV_URL,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+
+    const second = await getModelsDevEffortMap({
+      fetchImpl,
+      now: () => 1_000 + GATEWAY_MODELS_CACHE_TTL_MS - 1,
+    });
+    expect(second.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    const boom: FetchImpl = vi.fn(async () => {
+      throw new Error('timeout');
+    });
+    const stale = await getModelsDevEffortMap({
+      fetchImpl: boom,
+      now: () => 1_000 + GATEWAY_MODELS_CACHE_TTL_MS + 1,
+    });
+    expect(stale.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(boom).toHaveBeenCalledTimes(1);
+
+    const staleAgain = await getModelsDevEffortMap({
+      fetchImpl: boom,
+      now: () => 1_000 + GATEWAY_MODELS_CACHE_TTL_MS + 1,
+    });
+    expect(staleAgain.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(boom).toHaveBeenCalledTimes(1);
+  });
+
+  it('empty map when first fetch throws; negative-cached', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async () => {
+      throw new Error('down');
+    });
+    const map = await getModelsDevEffortMap({ fetchImpl, now: () => 0 });
+    expect(map.size).toBe(0);
+    const again = await getModelsDevEffortMap({ fetchImpl, now: () => 0 });
+    expect(again.size).toBe(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('overlapping callers share one in-flight GET', async () => {
+    type OverlayRes = {
+      ok: boolean;
+      json: () => Promise<unknown>;
+    };
+    let release: ((res: OverlayRes) => void) | undefined;
+    const fetchImpl: FetchImpl = vi.fn(
+      () =>
+        new Promise<OverlayRes>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const a = getModelsDevEffortMap({ fetchImpl, now: () => 0 });
+    const b = getModelsDevEffortMap({ fetchImpl, now: () => 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    release!({
+      ok: true,
+      json: async () => ({
+        vercel: {
+          models: {
+            'zai/glm-5.3-flash': {
+              reasoning_options: [{ type: 'effort', values: ['low'] }],
+            },
+          },
+        },
+      }),
+    });
+    const [ma, mb] = await Promise.all([a, b]);
+    expect(ma.get('zai/glm-5.3-flash')).toEqual(['low']);
+    expect(mb.get('zai/glm-5.3-flash')).toEqual(['low']);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('oversize arrayBuffer fail-opens without decoding the dump', async () => {
+    const decodeSpy = vi.spyOn(TextDecoder.prototype, 'decode');
+    const arrayBuffer = vi.fn(async () => new ArrayBuffer(MODELS_DEV_FETCH_MAX_BYTES + 1));
+    const json = vi.fn(async () => {
+      throw new Error('json must not run when arrayBuffer is present');
+    });
+    const fetchImpl: FetchImpl = vi.fn(async () => ({
+      ok: true,
+      json,
+      arrayBuffer,
+    }));
+    const map = await getModelsDevEffortMap({ fetchImpl, now: () => 0 });
+    expect(map.size).toBe(0);
+    expect(arrayBuffer).toHaveBeenCalledTimes(1);
+    expect(json).not.toHaveBeenCalled();
+    expect(decodeSpy).not.toHaveBeenCalled();
+    decodeSpy.mockRestore();
+  });
+
+  it('resetGatewayModelsCache drops overlay so the next read refetches', async () => {
+    const fetchImpl = modelsDevJson({
+      'zai/glm-5.3-flash': {
+        reasoning_options: [{ type: 'effort', values: ['low'] }],
+      },
+    });
+    await getModelsDevEffortMap({ fetchImpl, now: () => 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    resetGatewayModelsCache();
+    await getModelsDevEffortMap({ fetchImpl, now: () => 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('getJoinedEffortMap', () => {
+  it('dispatches shared fetchImpl on URL; overlay non-empty wins', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async (input) => {
+      if (input === MODELS_DEV_URL) {
+        return {
+          ok: true,
+          json: async () => ({
+            vercel: {
+              models: {
+                'zai/glm-5.3-flash': {
+                  reasoning_options: [
+                    { type: 'effort', values: ['low', 'high', 'max'] },
+                  ],
+                },
+              },
+            },
+          }),
+        };
+      }
+      if (input === GATEWAY_MODELS_URL) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: [
+              { id: 'zai/glm-5.3-flash', reasoning_options: null },
+              {
+                id: 'openai/gpt-5.6',
+                reasoning_options: [{ type: 'effort', values: ['low', 'high'] }],
+              },
+            ],
+          }),
+        };
+      }
+      throw new Error(`unexpected ${input}`);
+    });
+    const map = await getJoinedEffortMap({ fetchImpl, now: () => 0 });
+    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(map.get('openai/gpt-5.6')).toEqual(['low', 'high']);
+    const urls = vi.mocked(fetchImpl).mock.calls.map((c) => c[0]);
+    expect(urls).toEqual(expect.arrayContaining([MODELS_DEV_URL, GATEWAY_MODELS_URL]));
+    expect(urls).toHaveLength(2);
+  });
+});
+
+describe('effortValuesForModel', () => {
+  it('reads the joined map', async () => {
+    const fetchImpl: FetchImpl = vi.fn(async (input) => {
+      if (input === MODELS_DEV_URL) {
+        return {
+          ok: true,
+          json: async () => ({
+            vercel: {
+              models: {
+                'zai/glm-5.3-flash': {
+                  reasoning_options: [
+                    { type: 'effort', values: ['low', 'high', 'max'] },
+                  ],
+                },
+              },
+            },
+          }),
+        };
+      }
+      if (input === GATEWAY_MODELS_URL) {
+        return { ok: true, json: async () => ({ data: [] }) };
+      }
+      throw new Error(`unexpected ${input}`);
+    });
+    await expect(
+      effortValuesForModel('zai/glm-5.3-flash', { fetchImpl, now: () => 0 }),
+    ).resolves.toEqual(['low', 'high', 'max']);
+    await expect(
+      effortValuesForModel('missing/id', { fetchImpl, now: () => 0 }),
+    ).resolves.toEqual([]);
+  });
+});
+
+describe('catalog source locks', () => {
+  it('never calls getAvailableModels and never sends Authorization', () => {
+    const src = readFileSync(
+      resolve(process.cwd(), 'lib/gateway/modelCatalog.ts'),
+      'utf8',
+    );
+    expect(src.includes('getAvailableModels')).toBe(false);
+    expect(src).not.toMatch(/Authorization/);
+    expect(src).not.toMatch(/AI_GATEWAY_API_KEY/);
+  });
+});
+
 describe('gateway fetch timeout cap', () => {
   it('is the locked NEW cap', () => {
     expect(GATEWAY_MODELS_FETCH_TIMEOUT_MS).toBe(5_000);
+    expect(MODELS_DEV_FETCH_MAX_BYTES).toBe(8 * 1024 * 1024);
   });
 });

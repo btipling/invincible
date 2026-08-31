@@ -1,22 +1,24 @@
 /**
- * Unauthenticated Vercel AI Gateway model catalog — effort values only.
+ * Unauthenticated effort catalogs — Gateway `/v1/models` plus a models.dev
+ * `vercel.models` overlay. Join at read (non-empty overlay wins). Never call
+ * this inside a `'use step'` / `'use workflow'` function; `/api/models` and
+ * the turn-start HTTP boundary are the only callers. Fail-open to an empty map.
  *
- * Fetched from `GET https://ai-gateway.vercel.sh/v1/models`. Never call this
- * inside a `'use step'` / `'use workflow'` function; `/api/models` and the
- * turn-start HTTP boundary are the only callers. Fail-open to an empty map.
- *
- * Failures (throw / HTTP !ok / abort) are **negatively cached** for the same
- * TTL as a success so a hung Gateway cannot stall every `/api/turns` start.
- * Overlapping callers share one in-flight GET (single-flight).
+ * Failures (throw / HTTP !ok / abort / oversize overlay) are **negatively
+ * cached** for the same TTL as a success so a hung catalog cannot stall every
+ * `/api/turns` start. Overlapping callers share one in-flight GET per source
+ * (single-flight).
  */
 import {
   GATEWAY_MODELS_CACHE_TTL_MS,
   GATEWAY_MODELS_FETCH_TIMEOUT_MS,
+  MODELS_DEV_FETCH_MAX_BYTES,
   REASONING_EFFORT_VALUES_MAX,
   sanitizeReasoningEffort,
 } from '../sessionCloudCaps';
 
 export const GATEWAY_MODELS_URL = 'https://ai-gateway.vercel.sh/v1/models';
+export const MODELS_DEV_URL = 'https://models.dev/api.json';
 
 export type FetchImpl = (
   input: string,
@@ -25,17 +27,22 @@ export type FetchImpl = (
   ok: boolean;
   status?: number;
   json: () => Promise<unknown>;
+  arrayBuffer?: () => Promise<ArrayBuffer>;
 }>;
 
 type CacheEntry = { fetchedAt: number; map: Map<string, string[]> };
 
 let cache: CacheEntry | null = null;
 let inflight: Promise<Map<string, string[]>> | null = null;
+let overlayCache: CacheEntry | null = null;
+let overlayInflight: Promise<Map<string, string[]>> | null = null;
 
-/** Test-only: drop the in-process catalog cache + in-flight GET. */
+/** Test-only: drop Gateway + overlay caches and in-flight GETs. */
 export function resetGatewayModelsCache(): void {
   cache = null;
   inflight = null;
+  overlayCache = null;
+  overlayInflight = null;
 }
 
 /**
@@ -53,6 +60,47 @@ export function parseGatewayEffortMap(payload: unknown): Map<string, string[]> {
     if (typeof id !== 'string' || !id.trim()) continue;
     const values = effortValuesFromRow(row);
     out.set(id, values);
+  }
+  return out;
+}
+
+/**
+ * Parse models.dev `api.json` → `vercel.models` record. Object **keys** are
+ * Gateway ids. Lab maps (`zai.models`, …) are ignored. Nested `row.id` is
+ * ignored when it disagrees with the key.
+ */
+export function parseModelsDevEffortMap(payload: unknown): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  if (payload == null || typeof payload !== 'object' || Array.isArray(payload)) {
+    return out;
+  }
+  const vercel = (payload as { vercel?: unknown }).vercel;
+  if (vercel == null || typeof vercel !== 'object' || Array.isArray(vercel)) {
+    return out;
+  }
+  const models = (vercel as { models?: unknown }).models;
+  if (models == null || typeof models !== 'object' || Array.isArray(models)) {
+    return out;
+  }
+  for (const [id, row] of Object.entries(models as Record<string, unknown>)) {
+    if (!id.trim()) continue;
+    if (row == null || typeof row !== 'object' || Array.isArray(row)) {
+      out.set(id, []);
+      continue;
+    }
+    out.set(id, effortValuesFromRow(row));
+  }
+  return out;
+}
+
+/** Non-empty overlay list wins; missing/empty overlay falls through to Gateway. */
+export function joinEffortMaps(
+  overlay: Map<string, string[]>,
+  gateway: Map<string, string[]>,
+): Map<string, string[]> {
+  const out = new Map(gateway);
+  for (const [id, values] of overlay) {
+    if (values.length > 0) out.set(id, values);
   }
   return out;
 }
@@ -91,6 +139,37 @@ async function fetchGatewayEffortMap(
   return parseGatewayEffortMap(payload);
 }
 
+async function fetchModelsDevEffortMap(
+  fetchImpl: FetchImpl,
+): Promise<Map<string, string[]>> {
+  const res = await fetchImpl(MODELS_DEV_URL, {
+    signal: AbortSignal.timeout(GATEWAY_MODELS_FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`models.dev HTTP ${res.status ?? 'error'}`);
+  }
+  if (typeof res.arrayBuffer === 'function') {
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength > MODELS_DEV_FETCH_MAX_BYTES) {
+      throw new Error('models.dev payload oversize');
+    }
+    const text = new TextDecoder().decode(buf);
+    return parseModelsDevEffortMap(JSON.parse(text) as unknown);
+  }
+  const payload = await res.json();
+  return parseModelsDevEffortMap(payload);
+}
+
+function loadCachedMap(
+  entry: CacheEntry | null,
+  now: number,
+): Map<string, string[]> | null {
+  if (entry && now - entry.fetchedAt < GATEWAY_MODELS_CACHE_TTL_MS) {
+    return entry.map;
+  }
+  return null;
+}
+
 /**
  * Best-effort per-instance catalog. TTL `GATEWAY_MODELS_CACHE_TTL_MS`.
  * Fetch/parse/timeout failure → last good map, else empty (never throws).
@@ -102,9 +181,8 @@ export async function getGatewayEffortMap(opts?: {
   now?: () => number;
 }): Promise<Map<string, string[]>> {
   const now = (opts?.now ?? Date.now)();
-  if (cache && now - cache.fetchedAt < GATEWAY_MODELS_CACHE_TTL_MS) {
-    return cache.map;
-  }
+  const hit = loadCachedMap(cache, now);
+  if (hit) return hit;
   if (inflight) return inflight;
 
   const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
@@ -124,11 +202,50 @@ export async function getGatewayEffortMap(opts?: {
   return inflight;
 }
 
+/** models.dev `vercel.models` overlay — same TTL / fail-open / negative-cache. */
+export async function getModelsDevEffortMap(opts?: {
+  fetchImpl?: FetchImpl;
+  now?: () => number;
+}): Promise<Map<string, string[]>> {
+  const now = (opts?.now ?? Date.now)();
+  const hit = loadCachedMap(overlayCache, now);
+  if (hit) return hit;
+  if (overlayInflight) return overlayInflight;
+
+  const fetchImpl = opts?.fetchImpl ?? (globalThis.fetch as FetchImpl);
+  overlayInflight = (async () => {
+    try {
+      const map = await fetchModelsDevEffortMap(fetchImpl);
+      overlayCache = { fetchedAt: now, map };
+      return map;
+    } catch {
+      const fallback = overlayCache?.map ?? new Map();
+      overlayCache = { fetchedAt: now, map: fallback };
+      return fallback;
+    } finally {
+      overlayInflight = null;
+    }
+  })();
+  return overlayInflight;
+}
+
+/** Overlay then Gateway. Each source fail-opens independently. */
+export async function getJoinedEffortMap(opts?: {
+  fetchImpl?: FetchImpl;
+  now?: () => number;
+}): Promise<Map<string, string[]>> {
+  const [overlay, gateway] = await Promise.all([
+    getModelsDevEffortMap(opts),
+    getGatewayEffortMap(opts),
+  ]);
+  return joinEffortMaps(overlay, gateway);
+}
+
 /** Effort values for one model id (empty when unknown / fetch failed). */
 export async function effortValuesForModel(
   modelId: string,
   opts?: { fetchImpl?: FetchImpl; now?: () => number },
 ): Promise<string[]> {
-  const map = await getGatewayEffortMap(opts);
+  const map = await getJoinedEffortMap(opts);
   return map.get(modelId) ?? [];
 }

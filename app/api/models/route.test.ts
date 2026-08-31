@@ -21,11 +21,11 @@ describe('GET /api/models', () => {
     return listModelsForUser;
   }
 
-  function mockGatewayEffortMap(
+  function mockJoinedEffortMap(
     map: Map<string, string[]> = new Map(),
   ) {
     vi.doMock('../../../lib/gateway/modelCatalog', () => ({
-      getGatewayEffortMap: vi.fn(async () => map),
+      getJoinedEffortMap: vi.fn(async () => map),
     }));
   }
 
@@ -49,7 +49,7 @@ describe('GET /api/models', () => {
       ),
     });
     mockResolveInference();
-    mockGatewayEffortMap();
+    mockJoinedEffortMap();
     const { GET } = await import('./route');
     const res = await GET();
     expect(res.status).toBe(401);
@@ -59,7 +59,7 @@ describe('GET /api/models', () => {
     vi.resetModules();
     mockSession({ ok: true, user: { id: '' } });
     mockResolveInference();
-    mockGatewayEffortMap();
+    mockJoinedEffortMap();
     const { GET } = await import('./route');
     const res = await GET();
     expect(res.status).toBe(401);
@@ -71,7 +71,7 @@ describe('GET /api/models', () => {
     mockResolveInference(
       vi.fn(async () => ['anthropic/claude-z', 'anthropic/claude-a']),
     );
-    mockGatewayEffortMap(
+    mockJoinedEffortMap(
       new Map([
         ['anthropic/claude-a', ['low', 'high']],
       ]),
@@ -94,7 +94,7 @@ describe('GET /api/models', () => {
     vi.resetModules();
     mockSession({ ok: true, user: { id: 'u1', email: 'a@t.com' } });
     mockResolveInference();
-    mockGatewayEffortMap();
+    mockJoinedEffortMap();
     const { GET } = await import('./route');
     const res = await GET();
     expect(res.status).toBe(200);
@@ -110,19 +110,19 @@ describe('GET /api/models', () => {
         throw new Error('db down');
       }),
     );
-    mockGatewayEffortMap();
+    mockJoinedEffortMap();
     const { GET } = await import('./route');
     const res = await GET();
     expect(res.status).toBe(503);
   });
 
-  it('Gateway catalog throw still 200 with empty reasoningOptions', async () => {
+  it('catalog throw still 200 with empty reasoningOptions', async () => {
     vi.resetModules();
     mockSession({ ok: true, user: { id: 'u1', email: 'a@t.com' } });
     mockResolveInference(vi.fn(async () => ['zai/glm-5.3-flash']));
     vi.doMock('../../../lib/gateway/modelCatalog', () => ({
-      getGatewayEffortMap: vi.fn(async () => {
-        throw new Error('gateway down');
+      getJoinedEffortMap: vi.fn(async () => {
+        throw new Error('catalog down');
       }),
     }));
     const { GET } = await import('./route');
@@ -131,6 +131,26 @@ describe('GET /api/models', () => {
     const body = await res.json();
     expect(body.models).toEqual([
       { id: 'zai/glm-5.3-flash', label: 'glm-5.3-flash', reasoningOptions: [] },
+    ]);
+  });
+
+  it('glm-5.3-flash overlay list is returned as reasoningOptions', async () => {
+    vi.resetModules();
+    mockSession({ ok: true, user: { id: 'u1', email: 'a@t.com' } });
+    mockResolveInference(vi.fn(async () => ['zai/glm-5.3-flash']));
+    mockJoinedEffortMap(
+      new Map([['zai/glm-5.3-flash', ['low', 'high', 'max']]]),
+    );
+    const { GET } = await import('./route');
+    const res = await GET();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.models).toEqual([
+      {
+        id: 'zai/glm-5.3-flash',
+        label: 'glm-5.3-flash',
+        reasoningOptions: ['low', 'high', 'max'],
+      },
     ]);
   });
 });

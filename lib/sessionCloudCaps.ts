@@ -511,6 +511,13 @@ export const GATEWAY_MODELS_CACHE_TTL_MS = 600_000;
  */
 export const GATEWAY_MODELS_FETCH_TIMEOUT_MS = 5_000;
 
+/**
+ * Max decompressed bytes accepted from `GET https://models.dev/api.json`
+ * before parse. Outbound fetch → Function memory (not a Function request
+ * body). Live dump ~4.4 MiB (2026-08-31). Oversize fail-opens the overlay.
+ */
+export const MODELS_DEV_FETCH_MAX_BYTES = 8 * 1024 * 1024;
+
 const REASONING_EFFORT_RE = /^[a-z0-9_-]+$/;
 
 /**
