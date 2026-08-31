@@ -10,6 +10,8 @@ import {
   TURN_QUEUE_DRAIN_MAX_ATTEMPTS,
   TURN_QUEUE_MAX_ITEMS,
   TURN_QUEUE_TEXT_MAX_CHARS,
+  lastUserContent,
+  mergeQueues,
   queueAppend,
   queueClear,
   queueHydratePlan,
@@ -23,6 +25,7 @@ import {
 } from './turnQueue';
 import { createEmptySession, formatPromptWithHistory, makeMessage, type SessionSnapshot } from './sessionStore';
 import type { HarnessBridge } from './harnessBridge';
+import { HARNESS_QUEUE_MAX_ITEMS } from './harnessChat';
 
 function sess(partial: Partial<SessionSnapshot> = {}): SessionSnapshot {
   return { ...createEmptySession(), ...partial };
@@ -142,6 +145,45 @@ describe('queueTextFromUserContent (F21 adversarial #901 fold unwrap)', () => {
       'follow-up B',
     );
     expect(queueTextFromUserContent(folded)).toBe('follow-up B');
+  });
+});
+
+describe('mergeQueues (F21 adversarial #901 adopt)', () => {
+  it('keeps a local queueAppend the worker head omitted', () => {
+    expect(mergeQueues(undefined, ['follow-up B'], 'turn-1 user')).toEqual([
+      'follow-up B',
+    ]);
+  });
+
+  it('strips an in-flight last user from a stale-long server queue (fold unwrap)', () => {
+    const folded = formatPromptWithHistory(
+      [makeMessage('user', 'turn-1 user'), makeMessage('assistant', 'turn-1 assistant')],
+      'follow-up B',
+    );
+    expect(
+      mergeQueues(['follow-up B', 'follow-up C'], ['follow-up C'], folded),
+    ).toEqual(['follow-up C']);
+  });
+
+  it('union appends local extras after server order; empty union is unset', () => {
+    expect(mergeQueues(['a'], ['a', 'b'])).toEqual(['a', 'b']);
+    expect(mergeQueues(undefined, undefined)).toBeUndefined();
+    expect(mergeQueues(['only'], ['only'], 'only')).toBeUndefined();
+  });
+
+  it('lastUserContent is the TAIL user (reconstructed history), not the first', () => {
+    expect(
+      lastUserContent([
+        { role: 'user', text: 'turn-1' },
+        { role: 'assistant', text: 'ok' },
+        { role: 'user', text: 'follow-up B' },
+      ]),
+    ).toBe('follow-up B');
+    expect(lastUserContent([])).toBeUndefined();
+  });
+
+  it('TURN_QUEUE_MAX_ITEMS tracks HARNESS_QUEUE_MAX_ITEMS (Wasm MAX_ITEMS pin)', () => {
+    expect(TURN_QUEUE_MAX_ITEMS).toBe(HARNESS_QUEUE_MAX_ITEMS);
   });
 });
 

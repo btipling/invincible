@@ -238,10 +238,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
    * backend-agents F21 (plan #815) — per-session failed-queue-start attempts.
    * A persisted queue item whose POST /api/turns start failed (non-durable
    * error: pre-header network/5xx/subscribe-fail — never a server-side run)
-   * re-promotes on a later poll tick; this in-memory counter bounds those
-   * host-side retries per session. Cleared when a queue item durably starts
-   * and on give-up (drop-with-paint resets the budget). A reload starts a
-   * fresh budget (the mirror re-arms with a fresh 5).
+   * is restored to the Wasm band head (`queuedInsertFront`) and the mirror
+   * (`queueRestoreHead`). Failed-start `setFailLifecycle` arms promote-gate
+   * false + Error, so this does **not** auto-promote on a later poll tick;
+   * retries are Play / a later Ready that allows promote. This in-memory
+   * counter bounds those host-side retries per session. Cleared when a queue
+   * item durably starts and on give-up (drop-with-paint resets the budget).
+   * A reload starts a fresh budget (the mirror re-arms with a fresh 5).
    */
   const drainAttemptsRef = useRef(new Map<string, number>());
   /**

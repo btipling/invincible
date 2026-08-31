@@ -179,6 +179,55 @@ export function queueTextFromUserContent(text: string): string {
   return head.slice(idx + marker.length).trim();
 }
 
+/**
+ * Last `user` row text on a snapshot (adopted reconstruct is full history —
+ * the tail user is this-run, not the first prompt).
+ */
+export function lastUserContent(
+  messages: ReadonlyArray<{ role: string; text: string }>,
+): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || m.role !== 'user') continue;
+    const t = (m.text ?? '').trim();
+    if (t) return m.text;
+  }
+  return undefined;
+}
+
+function countItem(arr: readonly string[], item: string): number {
+  let n = 0;
+  for (const x of arr) if (x === item) n += 1;
+  return n;
+}
+
+/**
+ * Same-id adopt merge for the F21 queue mirror (adversarial #901).
+ *
+ * Whole-snapshot server-wins drops a `queueAppend` that lost the coalesced-PUT
+ * race to a later worker B7 (copy-forward of an older prior). Union keeps
+ * local extras; then strip the in-flight last user (unwrap a history fold)
+ * so a stale-long server queue cannot re-arm a drain that already started.
+ * Capped at {@link TURN_QUEUE_MAX_ITEMS}. Empty/absent → unset.
+ */
+export function mergeQueues(
+  serverQueue: unknown,
+  localQueue: unknown,
+  lastUser?: string,
+): string[] | undefined {
+  const server = sanitizeQueue(serverQueue) ?? [];
+  const local = sanitizeQueue(localQueue) ?? [];
+  const out = server.slice();
+  for (const item of local) {
+    if (out.length >= TURN_QUEUE_MAX_ITEMS) break;
+    if (countItem(out, item) < countItem(local, item)) out.push(item);
+  }
+  const started = lastUser ? queueTextFromUserContent(lastUser) : '';
+  const merged = out.length > 0 ? out : undefined;
+  const stripped = started ? queueWithoutText(merged, started) : merged;
+  return stripped !== undefined && stripped.length > 0 ? stripped : undefined;
+}
+
 /** Drop the whole mirror (Clear/New semantics; used when a session is reset). */
 export function queueClear(session: SessionSnapshot): SessionSnapshot {
   if (session.queue === undefined) return session;

@@ -24,6 +24,7 @@ import {
   type SessionSummary,
 } from './sessionRepository';
 import type { SessionSnapshot } from './sessionStore';
+import { formatPromptWithHistory, makeMessage } from './sessionStore';
 
 function snap(
   partial: Partial<SessionSnapshot> & { messages?: SessionSnapshot['messages'] },
@@ -969,6 +970,47 @@ describe('mergeAdoptedUsage (plan #626 test 5)', () => {
     );
     expect(out.usage).toEqual(usageA);
     expect(out.id).toBe('b');
+  });
+
+  it('same id: local queueAppend survives a worker head that omitted it (F21 adversarial #901)', () => {
+    const out = mergeAdoptedUsage(
+      { id: 'a', updatedAt: 10, messages: [{ id: 'm1', role: 'user', text: 'turn-1 user', at: 1 }] },
+      { id: 'a', updatedAt: 5, messages: [], queue: ['follow-up B'] },
+    );
+    expect(out.queue).toEqual(['follow-up B']);
+  });
+
+  it('same id: stale-long server queue strips the in-flight folded last user', () => {
+    const folded = formatPromptWithHistory(
+      [makeMessage('user', 'turn-1 user'), makeMessage('assistant', 'turn-1 assistant')],
+      'follow-up B',
+    );
+    const out = mergeAdoptedUsage(
+      {
+        id: 'a',
+        updatedAt: 10,
+        messages: [{ id: 'm1', role: 'user', text: folded, at: 1 }],
+        queue: ['follow-up B', 'follow-up C'],
+      },
+      { id: 'a', updatedAt: 5, messages: [], queue: ['follow-up C'] },
+    );
+    expect(out.queue).toEqual(['follow-up C']);
+  });
+
+  it('different id: server queue only (no merge)', () => {
+    const out = mergeAdoptedUsage(
+      { id: 'b', updatedAt: 10, messages: [], queue: ['x'] },
+      { id: 'a', updatedAt: 5, messages: [], queue: ['y'] },
+    );
+    expect(out.queue).toEqual(['x']);
+    expect(out.id).toBe('b');
+  });
+
+  it('source-lock: same-id adopt field-merges queue via mergeQueues (F21 adversarial #901)', () => {
+    const src = readFileSync('lib/sessionRepository.ts', 'utf8');
+    const fn = src.slice(src.indexOf('export function mergeAdoptedUsage'));
+    expect(fn).toContain('mergeQueues(');
+    expect(fn).toContain('lastUserContent(server.messages)');
   });
 });
 

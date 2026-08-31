@@ -36,7 +36,7 @@ import {
   decodeUsageMetaString,
   encodeUsageMetaString,
 } from './agent/usageSummary';
-import { sanitizeQueue } from './turnQueue';
+import { mergeQueues, lastUserContent, sanitizeQueue } from './turnQueue';
 
 // Must stay in sync with the server-side role allowlist (`harnessSessions.ts`):
 // a kind-7 `skill_attached` row rides the transcript the host PUTs after `/foo`,
@@ -469,11 +469,15 @@ export function bootCloudSnapshot(input: {
 }
 
 /**
- * Merge `usage` on same-id adopt so a server snapshot without `meta.usage`
- * (other tab on a pre-#626 bundle, or any prior persist that omitted usage)
- * does not wipe an honest local last-completed value.
+ * Merge `usage` and F21 `queue` on same-id adopt.
  *
- * - Same id: `server.usage ?? local.usage` — server wins when it has one.
+ * - `usage`: `server.usage ?? local.usage` — server wins when it has one
+ *   (plan #626: a server snapshot without `meta.usage` must not wipe an
+ *   honest local last-completed value).
+ * - `queue`: union server+local then strip the in-flight last user
+ *   (adversarial #901: whole-snapshot server-wins dropped a `queueAppend`
+ *   that lost the coalesced-PUT race to a later worker B7; a stale-long
+ *   server queue would re-arm a drain that already started).
  * - Different id: server-only (a switch is a different session).
  */
 export function mergeAdoptedUsage(
@@ -481,7 +485,18 @@ export function mergeAdoptedUsage(
   local: SessionSnapshot,
 ): SessionSnapshot {
   if (server.id === local.id) {
-    return { ...server, usage: server.usage ?? local.usage };
+    const queue = mergeQueues(
+      server.queue,
+      local.queue,
+      lastUserContent(server.messages),
+    );
+    const out: SessionSnapshot = {
+      ...server,
+      usage: server.usage ?? local.usage,
+    };
+    if (queue !== undefined) out.queue = queue;
+    else delete out.queue;
+    return out;
   }
   return server;
 }
@@ -1027,9 +1042,9 @@ export function createHttpSessionRepository(
    * with the object's `transcriptPointer`. **Fail-closed:** if the object upload
    * fails (non-2xx / network), the envelope pointer is NOT advanced — a later restore
    * can never land on a missing/empty object hole (reader's Minor L1). The transcript
-   * object stores the same `{ id, updatedAt, messages, meta? }` shape the full-record
-   * PUT sends, so the envelope read (`getEnvelope`) reconstructs the identical
-   * `SessionSnapshot`.
+   * object stores `{ id, updatedAt, messages, queue?, meta? }` (F21 `queue` mirror)
+   * — the same shape `trimForCloudPut` sends — so the envelope read (`getEnvelope`)
+   * reconstructs the identical `SessionSnapshot`.
    */
   async function putEnvelopeOnce(
     id: string,
