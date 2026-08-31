@@ -394,8 +394,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     if (!b) return;
     const modelId = b.getSelectedModel();
     const options = modelId ? (reasoningByIdRef.current[modelId] ?? []) : [];
-    applySessionReasoningFn(snap, options, b, sessionRef, writeLocalSession, repoRef.current);
-  }, [writeLocalSession]);
+    // Meta-only persist (adversarial-review #902 Major L1): this runs on the
+    // 150 ms poll after a model change and must not snap ringWindowStartRef
+    // the way writeLocalSession does (Load-earlier window).
+    applySessionReasoningFn(snap, options, b, sessionRef, writeLocalSessionMeta, repoRef.current);
+  }, [writeLocalSessionMeta]);
 
   /** Apply server snapshot to local store + latest Wasm ring window. */
   const adoptCloudSession = useCallback(

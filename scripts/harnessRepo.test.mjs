@@ -175,6 +175,7 @@ import {
   prHarnessArtifactName,
   PRODUCTION_HARNESS_ARTIFACT,
   runArtifactName,
+  shouldSkipHarnessWait,
 } from './harnessRepo.mjs';
 
 describe('isHarnessBuildPath / commitTouchesHarnessBuild', () => {
@@ -269,6 +270,15 @@ describe('prHarnessArtifactName / runArtifactName / pickLatestNamedArtifact', ()
     ).toEqual(pr);
     expect(pickLatestNamedArtifact([pr], 'harness-wasm')).toBe(null);
     expect(isShippableHarnessArtifact(pr, 'harness-wasm-pr-902')).toBe(false);
+  });
+
+  it('shouldSkipHarnessWait: host-only HEAD still waits on a PR (adversarial-review #902)', () => {
+    expect(shouldSkipHarnessWait({ headTouchesHarness: true })).toBe(false);
+    expect(shouldSkipHarnessWait({ headTouchesHarness: true, prNumber: 902 })).toBe(false);
+    expect(shouldSkipHarnessWait({ headTouchesHarness: false })).toBe(true);
+    expect(shouldSkipHarnessWait({ headTouchesHarness: false, prNumber: '' })).toBe(true);
+    expect(shouldSkipHarnessWait({ headTouchesHarness: false, prNumber: 902 })).toBe(false);
+    expect(shouldSkipHarnessWait({ headTouchesHarness: false, prNumber: '902' })).toBe(false);
   });
 });
 

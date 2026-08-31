@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   HARNESS_PROTOCOL_VERSION,
@@ -232,5 +234,24 @@ describe('foldPendingReasoningChange', () => {
     expect(ref.current.reasoningEffort).toBeUndefined();
     expect(bridge.getSelectedReasoning()).toBe('low');
     expect(bridge.hasPendingReasoningChange()).toBe(false);
+  });
+});
+
+describe('HarnessHost wiring lock — applySessionReasoning must use writeLocalSessionMeta (adversarial-review #902 Major L1)', () => {
+  it('applySessionReasoningFn persist arg is writeLocalSessionMeta, not writeLocalSession', () => {
+    const src = readFileSync(
+      resolve(import.meta.dirname, '..', 'app/harness/HarnessHost.tsx'),
+      'utf-8',
+    );
+    expect(src).toContain(
+      'const writeLocalSessionMeta = useCallback((next: SessionSnapshot, opts?: { paintQuota?: boolean }) => {',
+    );
+    // Poll path after a model change must not snap ringWindowStartRef.
+    expect(src).toContain(
+      'applySessionReasoningFn(snap, options, b, sessionRef, writeLocalSessionMeta, repoRef.current);',
+    );
+    expect(src).toContain(
+      'foldPendingReasoningChangeFn(b, sessionRef, writeLocalSessionMeta, repoRef.current, inflightRef.current);',
+    );
   });
 });

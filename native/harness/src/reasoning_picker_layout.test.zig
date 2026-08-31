@@ -39,23 +39,39 @@ test "count 0: trigger hidden (no tag)" {
         .count = 0,
         .selected = 0,
         .busy = false,
+        .has_selection = false,
         .short_label = "",
         .idAt = idAt3,
     });
     try t.expect(rect == null);
 }
 
-test "count 1: trigger tagged, height ≈ PICKER_TRIGGER_H" {
+test "count 1 + has_selection: trigger tagged, height ≈ PICKER_TRIGGER_H" {
     var tr = try dvui.testing.init(.{});
     defer tr.deinit();
     const rect = paintTrigger(.{
         .count = 1,
         .selected = 0,
         .busy = false,
+        .has_selection = true,
         .short_label = "low",
         .idAt = idAt3,
     }) orelse @panic("tag 'status-effort-trigger' not found");
     try t.expectApproxEqAbs(reasoning_picker.PICKER_TRIGGER_H * PX, rect.h, EPS);
+}
+
+test "count 1 unset: trigger still tagged (menu so NEVER_AUTO-only is listable)" {
+    var tr = try dvui.testing.init(.{});
+    defer tr.deinit();
+    const rect = paintTrigger(.{
+        .count = 1,
+        .selected = 0,
+        .busy = false,
+        .has_selection = false,
+        .short_label = "max",
+        .idAt = idAt3,
+    }) orelse @panic("tag 'status-effort-trigger' not found");
+    try t.expect(rect.h <= reasoning_picker.PICKER_TRIGGER_H * PX + EPS);
 }
 
 test "count > 1: trigger tagged, height still ≤ PICKER_TRIGGER_H + slack" {
@@ -65,6 +81,7 @@ test "count > 1: trigger tagged, height still ≤ PICKER_TRIGGER_H + slack" {
         .count = 3,
         .selected = 0,
         .busy = false,
+        .has_selection = true,
         .short_label = "low",
         .idAt = idAt3,
     }) orelse @panic("tag 'status-effort-trigger' not found");

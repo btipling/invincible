@@ -857,11 +857,17 @@ pub fn frame() !void {
                 const label_budget = @max(0, budget - reserved);
                 label = status.truncateToWidthPx(body, &ellip_buf, label, label_budget);
                 total = spinner_w + trigger_overhead + label_gap;
-                if (label.len > 0) total += if (label.len > 0) body.textSize(label).w else 0;
+                if (label.len > 0) total += body.textSize(label).w;
                 if (effort_n > 0) total += effort_text_w + trigger_overhead + effort_gap;
             }
             if (total > budget and effort_n > 0 and effort_label.len > 0) {
-                const effort_budget = @max(0, budget - spinner_w - trigger_overhead - effort_gap);
+                // Must reserve the model trigger that is still painted
+                // (adversarial-review #902 Minor L1+L9). A budget of
+                // spinner+effort-only re-expands effort on top of the model
+                // picker and overflows ~390 px.
+                var reserved: f32 = spinner_w + trigger_overhead + effort_gap;
+                if (label.len > 0) reserved += body.textSize(label).w + trigger_overhead + label_gap;
+                const effort_budget = @max(0, budget - reserved);
                 effort_label = status.truncateToWidthPx(body, &effort_ellip_buf, effort_label, effort_budget);
             }
 
@@ -901,6 +907,7 @@ pub fn frame() !void {
                     .count = effort_n,
                     .selected = bridge.selectedReasoningIndex(),
                     .busy = busy,
+                    .has_selection = bridge.selectedReasoningId().len > 0,
                     .short_label = effort_label,
                     .idAt = bridge.reasoningEffortIdAt,
                 })) |idx| {

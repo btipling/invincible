@@ -29,15 +29,21 @@ pub const CatalogView = struct {
     count: u32,
     selected: u32,
     busy: bool,
+    /// False when the host has not committed a selection (never-auto lists
+    /// such as max-only). Static count==1 would make that value unlistable.
+    has_selection: bool,
     short_label: []const u8,
     idAt: *const fn (index: u32) []const u8,
 };
 
 /// Paint the trigger (and menu when open). Returns the picked catalog index,
 /// or null when nothing was committed this frame. Count 0 → hidden (no paint).
+/// Count 1 with a committed selection → static (no menu). Count 1 unset →
+/// menu so the operator can commit a NEVER_AUTO-only value (plan #898: max
+/// is listable).
 pub fn paint(view: CatalogView) ?u32 {
     if (view.count == 0) return null;
-    if (view.count == 1) {
+    if (view.count == 1 and view.has_selection) {
         paintStaticTrigger(view);
         return null;
     }

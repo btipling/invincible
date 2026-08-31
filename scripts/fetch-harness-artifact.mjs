@@ -56,6 +56,7 @@ import {
   PRODUCTION_HARNESS_ARTIFACT,
   resolveHarnessRepo,
   runArtifactName,
+  shouldSkipHarnessWait,
 } from './harnessRepo.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -356,12 +357,23 @@ async function resolveArtifact(tok) {
   }
 
   // Host-only SHA: don't burn the 90s grace looking for a run that path-filters skip.
-  // A harness PR's follow-up (workflow/docs) reuses `harness-wasm-pr-N` via fallback.
+  // A harness PR's follow-up (workflow/docs) still compiles because Actions
+  // pull_request path filters are vs merge-base — wait for that SHA's run
+  // (adversarial-review #902 Minor L4). Vercel has no HARNESS_PR_NUMBER.
   try {
     const paths = await listCommitPaths(tok, sha);
-    if (paths.length > 0 && !commitTouchesHarnessBuild(paths)) {
-      log(`sha=${sha.slice(0, 7)} does not touch harness paths — skip wait`);
-      return fallbackArtifact(tok);
+    if (paths.length > 0) {
+      const headTouchesHarness = commitTouchesHarnessBuild(paths);
+      if (shouldSkipHarnessWait({
+        headTouchesHarness,
+        prNumber: process.env.HARNESS_PR_NUMBER,
+      })) {
+        log(`sha=${sha.slice(0, 7)} does not touch harness paths — skip wait`);
+        return fallbackArtifact(tok);
+      }
+      if (!headTouchesHarness) {
+        log(`sha=${sha.slice(0, 7)} HEAD is host-only but PR may still compile; waiting`);
+      }
     }
   } catch (e) {
     log('list commit files failed (will wait):', e instanceof Error ? e.message : e);

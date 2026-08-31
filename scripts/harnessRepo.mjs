@@ -203,3 +203,20 @@ export function pickLatestNamedArtifact(artifacts, artifactName) {
   return null;
 }
 
+/**
+ * Whether fetch-harness can skip waiting for a commit-matched build-harness.
+ *
+ * HEAD-only path lists are NOT enough on a PR: Actions `pull_request` path
+ * filters evaluate vs the merge-base, so a host-only follow-up still compiles
+ * (adversarial-review #902 Minor L4). Vercel never sets HARNESS_PR_NUMBER, so
+ * Production host-only deploys still skip-wait.
+ *
+ * @param {{ headTouchesHarness: boolean, prNumber?: unknown }} opts
+ * @returns {boolean}
+ */
+export function shouldSkipHarnessWait(opts) {
+  if (opts.headTouchesHarness) return false;
+  if (prHarnessArtifactName(opts.prNumber)) return false;
+  return true;
+}
+
