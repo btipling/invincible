@@ -19,7 +19,7 @@ import {
   sanitizeTurnStatus,
   sanitizeTurnStreamCursor,
 } from './sessionCloudCaps';
-import { MAX_MODEL_ID_LEN as BRIDGE_MAX_MODEL_ID_LEN, MAX_STATUS_SLOT_LEN } from './harnessBridge';
+import { MAX_MODEL_ID_LEN as BRIDGE_MAX_MODEL_ID_LEN, MAX_STATUS_SLOT_LEN, MAX_REASONING_EFFORT_LEN as BRIDGE_MAX_REASONING_EFFORT_LEN } from './harnessBridge';
 
 /**
  * Cross-layer equality lock for the status-slot byte cap (PR #543 #4). The 96
@@ -150,6 +150,20 @@ describe('sanitizeReasoningEffort (plan #897)', () => {
   it('NEW cap is 32', () => {
     expect(REASONING_EFFORT_MAX_BYTES).toBe(32);
     expect(sanitizeReasoningEffort('a'.repeat(32))).toBe('a'.repeat(32));
+  });
+
+  it('Zig MAX_REASONING_EFFORT_LEN agrees with the host cap (plan #898)', () => {
+    const src = readFileSync(
+      resolve(process.cwd(), 'native/harness/src/bridge.zig'),
+      'utf8',
+    );
+    const m = src.match(/pub\s+const\s+MAX_REASONING_EFFORT_LEN\s*=\s*(\d+)\s*;/);
+    expect(m, 'MAX_REASONING_EFFORT_LEN const in bridge.zig').toBeTruthy();
+    expect(Number(m![1])).toBe(REASONING_EFFORT_MAX_BYTES);
+    expect(BRIDGE_MAX_REASONING_EFFORT_LEN).toBe(REASONING_EFFORT_MAX_BYTES);
+    const n = src.match(/pub\s+const\s+MAX_REASONING_EFFORTS\s*=\s*(\d+)\s*;/);
+    expect(n, 'MAX_REASONING_EFFORTS const in bridge.zig').toBeTruthy();
+    expect(Number(n![1])).toBe(REASONING_EFFORT_VALUES_MAX);
   });
 
   it('NEW catalog caps match the locked table', () => {

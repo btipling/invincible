@@ -114,6 +114,7 @@ Host is dvui’s `web.js`. Required exports (app + backend):
 | `inv_set_queue_promote_allowed` | **v19** — host arms a one-shot per-terminal promote gate so a Stop/Esc/error/timeout Ready never drains a queued head (plan #760) |
 | `inv_queued_insert_front` | **v20** — insert a prompt as the new queue head (`Continue the current turn` on give-up, plan #759); never pops, fails closed when full/blank |
 | `inv_clear_ring` | **v21** — replace transcript ring + image/math caches; **keeps** submit queue / pause / promote gate (Send-while-running attach). F5/New/switch still use `inv_clear_messages` |
+| `inv_clear_reasoning_efforts` / `inv_push_reasoning_effort` / `inv_set_selected_reasoning` / `inv_selected_reasoning_copy` / `inv_has_pending_reasoning_change` / `inv_ack_pending_reasoning_change` | **v22** — reasoning-effort picker (host-pushed Gateway list for the current model; restore-by-value; pending user pick) |
 | `inv_set_turn_elapsed` | **v14** whole-turn busy clock — the host pushes elapsed wall-clock seconds while a turn runs; the Wasm busy row formats/appends `Waiting for model… · mm:ss` in-canvas |
 
 Whitelist: `build.zig` → `export_symbol_names` (Zig 0.16 freestanding + `entry = .disabled` strips unrooted exports).
@@ -125,12 +126,12 @@ Inference stays on the host: `POST /api/chat` and `POST /api/agent` hold
 
 | | |
 |--|--|
-| **Protocol version** | `21` (v17 added the session-rail catalog + pending switch; **v18** adds `inv_queued_count` for the in-canvas submit queue; **v19** adds `inv_set_queue_promote_allowed` — promote when Ready only, so a Stop/Esc/error/timeout Ready never drains; **v20** adds `inv_queued_insert_front` insert-at-front for turn-error Continue; **v21** adds `inv_clear_ring` live-session ring replace that keeps the submit queue) |
+| **Protocol version** | `22` (v17 added the session-rail catalog + pending switch; **v18** adds `inv_queued_count` for the in-canvas submit queue; **v19** adds `inv_set_queue_promote_allowed` — promote when Ready only, so a Stop/Esc/error/timeout Ready never drains; **v20** adds `inv_queued_insert_front` insert-at-front for turn-error Continue; **v21** adds `inv_clear_ring` live-session ring replace that keeps the submit queue; **v22** adds the in-canvas reasoning-effort picker) |
 | **TS** | `lib/harnessBridge.ts` |
 | **Zig** | `src/bridge.zig` |
 | **Host** | `app/harness/HarnessHost.tsx` (shell: load + bridge + APIs) |
 | **Chat turn** | `lib/harnessChat.ts` → `/api/agent` or `/api/chat` |
-| **Model catalog** | Host fetches `GET /api/models` after load and **pushes** ids into Wasm; selection (cycle / label) stays in the canvas UI |
+| **Model catalog** | Host fetches `GET /api/models` after load and **pushes** ids into Wasm; selection (cycle / label) stays in the canvas UI. Per-model `reasoningOptions` are pushed separately (v22) for the selected id — never stuffed into the id catalog |
 
 ### Message kinds
 

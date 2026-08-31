@@ -63,6 +63,35 @@ describe('sendTurn (JSON path)', () => {
     );
   });
 
+  it('includes sanitized reasoning on the JSON body (plan #898)', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      expect(body.reasoning).toBe('high');
+      expect(body.prompt).toBe('hi');
+      return new Response(JSON.stringify({ text: 'ok' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await sendTurn('hi', { reasoning: 'HIGH', sessionId: 's1' });
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it('omits reasoning when unset or poison (plan #898)', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      expect(body).not.toHaveProperty('reasoning');
+      return new Response(JSON.stringify({ text: 'ok' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await sendTurn('hi', { sessionId: 's1', reasoning: 'has space' });
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
   it('JSON 4xx (missing sessionId) → ok:false with status + error', async () => {
     vi.stubGlobal(
       'fetch',
@@ -115,6 +144,28 @@ describe('sendTurn (JSON path)', () => {
 describe('sendTurnStream (SSE path — production default)', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('SSE POST body includes sanitized reasoning (plan #898)', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      expect(body.reasoning).toBe('high');
+      expect(body.prompt).toBe('hi');
+      return sseResponse(
+        ['data: {"type":"done","text":"ok"}\n\n'],
+        { 'x-workflow-run-id': 'wr_effort' },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await sendTurnStream('hi', { reasoning: 'HIGH', sessionId: 's1' });
+    expect(result.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/turns',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Accept: expect.any(String) }),
+      }),
+    );
   });
 
   it('streams SSE events, requires Accept, blends run header + warning', async () => {

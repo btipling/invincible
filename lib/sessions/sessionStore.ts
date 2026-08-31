@@ -38,6 +38,7 @@ import {
   SKILL_SLUG_RE,
   isRedisSafeOpaqueId,
   sanitizeModelId,
+  sanitizeReasoningEffort,
   sanitizeSessionCwd,
   sanitizeTurnRunId,
   sanitizeTurnStatus,
@@ -74,6 +75,7 @@ export const RESERVED_META_KEYS = [
   'checkpointPointer',
   'attachedSkills',
   'selectedModel',
+  'reasoningEffort',
   'usage',
   'turnRunId',
   'turnStatus',
@@ -413,6 +415,11 @@ export function validateMeta(value: unknown): SessionStoreResult<HarnessSessionM
     if (key === 'selectedModel') {
       const cleaned = sanitizeModelId(v);
       if (cleaned !== undefined) meta.selectedModel = cleaned;
+      continue;
+    }
+    if (key === 'reasoningEffort') {
+      const cleaned = sanitizeReasoningEffort(v);
+      if (cleaned !== undefined) meta.reasoningEffort = cleaned;
       continue;
     }
     if (key === 'usage') {

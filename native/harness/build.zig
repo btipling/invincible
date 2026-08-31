@@ -106,6 +106,14 @@ pub fn build(b: *std.Build) void {
         "inv_set_selected_model",
         "inv_has_pending_model_change",
         "inv_ack_pending_model_change",
+        "inv_clear_reasoning_efforts",
+        "inv_push_reasoning_effort",
+        "inv_reasoning_effort_count",
+        "inv_selected_reasoning_len",
+        "inv_selected_reasoning_copy",
+        "inv_set_selected_reasoning",
+        "inv_has_pending_reasoning_change",
+        "inv_ack_pending_reasoning_change",
         "inv_clear_session_catalog",
         "inv_push_session_catalog_entry",
         "inv_session_catalog_count",
@@ -175,7 +183,7 @@ pub fn build(b: *std.Build) void {
     test_parse.dependOn(&run_parse_tests.step);
 
     // Host unit tests for cache / link allowlist / kind gate (no dvui frame).
-    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, link_click, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + composer_history + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + text_wave (#655) + rect_spinner (#651) + busy_spinner + elapsed_clock + model_catalog + session_catalog + submit_queue + queue_preview + queue_band + composer + paint_diff + toolrun (#732 tofu seams)");
+    const test_rich = b.step("test-rich", "Run rich/* host unit tests (parse, cache, links, link_click, kinds, image_cache, math, math_cache, diff_lang, highlight, unicode_face, blockquote, table, thematic, footnote, deflist) + composer_text + composer_history + cwd_slot + ring_slot (#404 write seam) + chip_preview (#645) + text_wave (#655) + rect_spinner (#651) + busy_spinner + elapsed_clock + model_catalog + reasoning_catalog + session_catalog + submit_queue + queue_preview + queue_band + composer + paint_diff + toolrun (#732 tofu seams)");
     test_rich.dependOn(&run_parse_tests.step);
 
     const cache_tests = b.addTest(.{
@@ -401,6 +409,20 @@ pub fn build(b: *std.Build) void {
             }),
         });
         test_rich.dependOn(&b.addRunArtifact(model_catalog_tests).step);
+    }
+
+    // Host unit tests for reasoning_catalog.zig (plan #898): charset / chooseIndex /
+    // showChevron / canCommit. Pure, no dvui.
+    {
+        const reasoning_catalog_tests = b.addTest(.{
+            .name = "reasoning_catalog",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/reasoning_catalog.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        test_rich.dependOn(&b.addRunArtifact(reasoning_catalog_tests).step);
     }
 
     // Host unit tests for session_catalog.zig (protocol v17 session-rail list).
@@ -752,6 +774,21 @@ pub fn build(b: *std.Build) void {
         });
         model_picker_layout_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
         test_rich.dependOn(&b.addRunArtifact(model_picker_layout_tests).step);
+    }
+
+    // Host dvui testing-backend layout-rect tests for reasoning_picker.zig
+    // (status-bar effort menu, plan #898). Hidden when count == 0.
+    {
+        const reasoning_picker_layout_tests = b.addTest(.{
+            .name = "reasoning_picker_layout",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/reasoning_picker_layout.test.zig"),
+                .target = host_target,
+                .optimize = optimize,
+            }),
+        });
+        reasoning_picker_layout_tests.root_module.addImport("dvui", dvui_testing_dep.module("dvui_testing"));
+        test_rich.dependOn(&b.addRunArtifact(reasoning_picker_layout_tests).step);
     }
 
     // Host dvui testing-backend tests for `mixed_text.lookalikePaintFont`

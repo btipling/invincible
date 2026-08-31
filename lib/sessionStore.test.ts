@@ -428,6 +428,62 @@ describe('selectedModel local sanitize (plan #616)', () => {
   });
 });
 
+describe('reasoningEffort local sanitize (plan #898)', () => {
+  function installMemoryLocalStorage() {
+    const map = new Map<string, string>();
+    const ls = {
+      getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+      setItem: (k: string, v: string) => {
+        map.set(k, String(v));
+      },
+      removeItem: (k: string) => {
+        map.delete(k);
+      },
+      clear: () => {
+        map.clear();
+      },
+    };
+    vi.stubGlobal('localStorage', ls);
+    return ls;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('LocalStorage load keeps a valid token; drop-to-unset on poison', () => {
+    installMemoryLocalStorage();
+    const key = 'test-effort-key';
+    localStorage.setItem(
+      key,
+      JSON.stringify({ id: 's', messages: [], updatedAt: 1, reasoningEffort: 'high' }),
+    );
+    const store = new LocalStorageSessionStore(key);
+    expect(store.load()?.reasoningEffort).toBe('high');
+
+    const poisoned = ['has space', 'x'.repeat(33), 42, 'with\u0007ctl'];
+    for (const bad of poisoned) {
+      localStorage.setItem(
+        key,
+        JSON.stringify({ id: 's', messages: [], updatedAt: 1, reasoningEffort: bad }),
+      );
+      const loaded = store.load();
+      expect(loaded).not.toBeNull();
+      expect(loaded?.reasoningEffort).toBeUndefined();
+    }
+  });
+
+  it('MemorySessionStore round-trips reasoningEffort including max', () => {
+    const store = new MemorySessionStore();
+    store.save({ ...createEmptySession('z'), reasoningEffort: 'max' });
+    expect(store.load()?.reasoningEffort).toBe('max');
+  });
+
+  it('createEmptySession omits reasoningEffort', () => {
+    expect(createEmptySession().reasoningEffort).toBeUndefined();
+  });
+});
+
 describe('backend-agents A1–A3 — turn-carrier local mirror sanitize', () => {
   function installMemoryLocalStorage() {
     const map = new Map<string, string>();

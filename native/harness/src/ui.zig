@@ -13,6 +13,7 @@ const thinking_collapse = @import("thinking_collapse.zig");
 const busy_row = @import("busy_row.zig");
 const transcript_split = @import("transcript_split.zig");
 const model_picker = @import("model_picker.zig");
+const reasoning_picker = @import("reasoning_picker.zig");
 const rect_spinner = @import("rect_spinner.zig");
 
 const state = @import("ui/state.zig");
@@ -797,8 +798,8 @@ pub fn frame() !void {
         });
         defer bar.deinit();
 
-        // Line 1: identity (spinner · build id · model picker).
-        // Narrow viewport: drop build-id first, then ellipsize model label (plan #695).
+        // Line 1: identity (spinner · build id · model picker · effort picker).
+        // Narrow viewport: drop build-id first, then ellipsize model/effort labels (plan #695 / #898).
         // Each line gets exactly STATUS_BAR_H/2 = 32 px so the picker trigger
         // (PICKER_TRIGGER_H = 32) fills its row without clipping line 2.
         {
@@ -830,21 +831,38 @@ pub fn frame() !void {
             const label_gap: f32 = 8; // trigger left margin
             const build_id_gap: f32 = 8; // textLayout left margin
 
+            const effort_n = bridge.reasoningEffortCount();
+            var effort_label: []const u8 = if (effort_n == 0) "" else bridge.selectedReasoningLabel();
+            var effort_ellip_buf: [48]u8 = undefined;
+            const effort_text_w: f32 = if (effort_label.len > 0) body.textSize(effort_label).w else 0;
+            const effort_gap: f32 = 8;
+
             var paint_build_id = true;
             var total: f32 = spinner_w + build_id_w + build_id_gap;
             if (label.len > 0) total += label_text_w + trigger_overhead + label_gap;
+            if (effort_n > 0) total += effort_text_w + trigger_overhead + effort_gap;
 
             // Drop build-id when the row overflows (priority 3).
             if (total > budget) {
                 paint_build_id = false;
                 total = spinner_w;
                 if (label.len > 0) total += label_text_w + trigger_overhead + label_gap;
+                if (effort_n > 0) total += effort_text_w + trigger_overhead + effort_gap;
             }
 
-            // Ellipsize model label when even spinner + model overflows (priority 2).
+            // Ellipsize model then effort when even spinner + pickers overflow.
             if (total > budget and label.len > 0) {
-                const label_budget = @max(0, budget - spinner_w - trigger_overhead - label_gap);
+                var reserved: f32 = spinner_w + trigger_overhead + label_gap;
+                if (effort_n > 0) reserved += effort_text_w + trigger_overhead + effort_gap;
+                const label_budget = @max(0, budget - reserved);
                 label = status.truncateToWidthPx(body, &ellip_buf, label, label_budget);
+                total = spinner_w + trigger_overhead + label_gap;
+                if (label.len > 0) total += if (label.len > 0) body.textSize(label).w else 0;
+                if (effort_n > 0) total += effort_text_w + trigger_overhead + effort_gap;
+            }
+            if (total > budget and effort_n > 0 and effort_label.len > 0) {
+                const effort_budget = @max(0, budget - spinner_w - trigger_overhead - effort_gap);
+                effort_label = status.truncateToWidthPx(body, &effort_ellip_buf, effort_label, effort_budget);
             }
 
             // Spinner: always painted (priority 1).
@@ -875,6 +893,18 @@ pub fn frame() !void {
                     .idAt = bridge.modelCatalogIdAt,
                 })) |idx| {
                     bridge.setSelectedModel(idx);
+                }
+            }
+            // Effort picker: hidden when Gateway published no values (plan #898).
+            {
+                if (reasoning_picker.paint(.{
+                    .count = effort_n,
+                    .selected = bridge.selectedReasoningIndex(),
+                    .busy = busy,
+                    .short_label = effort_label,
+                    .idAt = bridge.reasoningEffortIdAt,
+                })) |idx| {
+                    bridge.setSelectedReasoning(idx);
                 }
             }
         }

@@ -15,7 +15,7 @@ import {
   readAgentStream,
   type AgentStreamResult,
 } from './agentSse';
-import { parseAttachedSkills } from './sessionCloudCaps';
+import { parseAttachedSkills, sanitizeReasoningEffort } from './sessionCloudCaps';
 
 export type ToolTraceEntry = {
   name: string;
@@ -110,6 +110,8 @@ export type SendAgentFn = (
     signal?: AbortSignal;
     path?: string;
     modelId?: string;
+    /** Optional reasoning-effort token (plan #898 live picker). */
+    reasoning?: string;
     cwd?: string;
     /** Session-owned active sandbox id (Redis-safe) → resolve override. */
     sandboxId?: string;
@@ -137,6 +139,8 @@ export type SendAgentStreamFn = (
     signal?: AbortSignal;
     path?: string;
     modelId?: string;
+    /** Optional reasoning-effort token (plan #898 live picker). */
+    reasoning?: string;
     /** Session logical cwd (workspace-relative); omit when unset. */
     cwd?: string;
     /** Session-owned active sandbox id (Redis-safe) → resolve override. */
@@ -266,6 +270,8 @@ function agentRequestBody(
   prompt: string,
   init?: {
     modelId?: string;
+    /** Optional reasoning-effort token (plan #898 live picker). */
+    reasoning?: string;
     cwd?: string;
     sandboxId?: string;
     sessionId?: string;
@@ -274,6 +280,7 @@ function agentRequestBody(
 ): {
   prompt: string;
   modelId?: string;
+  reasoning?: string;
   cwd?: string;
   sandboxId?: string;
   sessionId?: string;
@@ -282,6 +289,7 @@ function agentRequestBody(
   const body: {
     prompt: string;
     modelId?: string;
+    reasoning?: string;
     cwd?: string;
     sandboxId?: string;
     sessionId?: string;
@@ -289,6 +297,8 @@ function agentRequestBody(
   } = { prompt: normalizePrompt(prompt) };
   const mid = init?.modelId?.trim();
   if (mid) body.modelId = mid;
+  const reasoning = sanitizeReasoningEffort(init?.reasoning);
+  if (reasoning) body.reasoning = reasoning;
   const cwd = init?.cwd?.trim();
   if (cwd) body.cwd = cwd;
   const sandboxId = init?.sandboxId?.trim();

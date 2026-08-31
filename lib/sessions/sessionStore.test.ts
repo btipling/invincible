@@ -172,6 +172,7 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
       'checkpointPointer',
       'attachedSkills',
       'selectedModel',
+      'reasoningEffort',
       'usage',
       'turnRunId',
       'turnStatus',
@@ -259,6 +260,28 @@ describe('meta — schema-typed reserved (parent #411 lock)', () => {
     if (res.ok) {
       expect('selectedModel' in res.value.meta).toBe(false);
       expect(res.value.meta.selectedModel).toBeUndefined();
+    }
+  });
+
+  it('plan #898 — accepts a valid meta.reasoningEffort and DROPS a poisoned one to unset (never 400)', () => {
+    const ok = validateSessionRecord(
+      makeRecord({ meta: { reasoningEffort: 'low' } as HarnessSessionRecord['meta'] }),
+    );
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.value.meta.reasoningEffort).toBe('low');
+
+    const maxOk = validateSessionRecord(
+      makeRecord({ meta: { reasoningEffort: 'max' } as HarnessSessionRecord['meta'] }),
+    );
+    expect(maxOk.ok).toBe(true);
+    if (maxOk.ok) expect(maxOk.value.meta.reasoningEffort).toBe('max');
+
+    for (const bad of ['has space', 'x'.repeat(33), 42 as unknown]) {
+      const res = validateSessionRecord(
+        makeRecord({ meta: { reasoningEffort: bad } as HarnessSessionRecord['meta'] }),
+      );
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.value.meta.reasoningEffort).toBeUndefined();
     }
   });
 

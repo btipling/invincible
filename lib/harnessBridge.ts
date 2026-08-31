@@ -12,7 +12,10 @@ import {
   HARNESS_SESSION_LABEL_MAX_BYTES,
   isRedisSafeOpaqueId,
   MAX_MODEL_ID_LEN,
+  REASONING_EFFORT_MAX_BYTES,
+  REASONING_EFFORT_VALUES_MAX,
   STATUS_SLOT_MAX_BYTES,
+  sanitizeReasoningEffort,
 } from './sessionCloudCaps';
 
 /** Must match `PROTOCOL_VERSION` in `native/harness/src/bridge.zig`. */
@@ -41,7 +44,9 @@ import {
 // v21 (adversarial #857): `inv_clear_ring` — live-session ring + image/math
 // cache replace that keeps the submit queue / pause / promote gate. F5 / New /
 // switch still use `inv_clear_messages`. Additive, now REQUIRED.
-export const HARNESS_PROTOCOL_VERSION = 21 as const;
+// v22 (plan #898): reasoning-effort picker — host-pushed Gateway list for the
+// current model + restore-by-value + pending-reasoning-change. Additive, now REQUIRED.
+export const HARNESS_PROTOCOL_VERSION = 22 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -56,6 +61,11 @@ export const MAX_MODEL_CATALOG = 64 as const;
  * `sessionCloudCaps.test.ts`.
  */
 export { MAX_MODEL_ID_LEN };
+
+/** Must match Zig `MAX_REASONING_EFFORT_LEN` (protocol v22, plan #898). */
+export const MAX_REASONING_EFFORT_LEN = REASONING_EFFORT_MAX_BYTES;
+/** Must match Zig `MAX_REASONING_EFFORTS`. */
+export const MAX_REASONING_EFFORTS = REASONING_EFFORT_VALUES_MAX;
 
 /** Must match Zig `MAX_STATUS_SLOTS` (protocol v13, plan #538/#541). */
 export const MAX_STATUS_SLOTS = 8 as const;
@@ -180,6 +190,15 @@ export type HarnessBridgeExports = {
   inv_set_selected_model: (ptr: number, len: number) => number;
   inv_has_pending_model_change: () => number;
   inv_ack_pending_model_change: () => void;
+  // Protocol v22 (plan #898) — reasoning-effort picker.
+  inv_clear_reasoning_efforts: () => void;
+  inv_push_reasoning_effort: (ptr: number, len: number) => number;
+  inv_reasoning_effort_count: () => number;
+  inv_selected_reasoning_len: () => number;
+  inv_selected_reasoning_copy: (outPtr: number, maxLen: number) => number;
+  inv_set_selected_reasoning: (ptr: number, len: number) => number;
+  inv_has_pending_reasoning_change: () => number;
+  inv_ack_pending_reasoning_change: () => void;
   // Protocol v17 — session-rail catalog + pending switch.
   inv_clear_session_catalog: () => void;
   inv_push_session_catalog_entry: (
@@ -265,6 +284,14 @@ const REQUIRED_FNS: Exclude<keyof HarnessBridgeExports, 'memory'>[] = [
   'inv_set_selected_model',
   'inv_has_pending_model_change',
   'inv_ack_pending_model_change',
+  'inv_clear_reasoning_efforts',
+  'inv_push_reasoning_effort',
+  'inv_reasoning_effort_count',
+  'inv_selected_reasoning_len',
+  'inv_selected_reasoning_copy',
+  'inv_set_selected_reasoning',
+  'inv_has_pending_reasoning_change',
+  'inv_ack_pending_reasoning_change',
   'inv_clear_session_catalog',
   'inv_push_session_catalog_entry',
   'inv_session_catalog_count',
@@ -753,6 +780,82 @@ export class HarnessBridge {
   /** Protocol v16 (plan #616) — clear the pending-model-change flag. */
   ackPendingModelChange(): void {
     this.exports.inv_ack_pending_model_change();
+  }
+
+  clearReasoningEfforts(): void {
+    this.exports.inv_clear_reasoning_efforts();
+  }
+
+  /**
+   * Push one Gateway effort token. Returns false if rejected (charset / cap).
+   */
+  pushReasoningEffort(value: string): boolean {
+    const token = sanitizeReasoningEffort(value);
+    if (!token) return false;
+    const { ptr, len } = this.writeUtf8(token);
+    try {
+      return this.exports.inv_push_reasoning_effort(ptr, len) !== 0;
+    } finally {
+      if (len > 0) this.exports.gpa_free(ptr, len);
+    }
+  }
+
+  /** Replace the current model's effort list (clears first). */
+  setReasoningEfforts(values: string[]): void {
+    this.clearReasoningEfforts();
+    for (const v of values) {
+      this.pushReasoningEffort(v);
+    }
+  }
+
+  reasoningEffortCount(): number {
+    return this.exports.inv_reasoning_effort_count() >>> 0;
+  }
+
+  /** Selected effort token, or null when the list is empty / unset. */
+  getSelectedReasoning(): string | null {
+    const len = this.exports.inv_selected_reasoning_len() >>> 0;
+    if (len === 0) return null;
+    const ptr = this.exports.gpa_u8(len);
+    if (!ptr) throw new Error('gpa_u8 failed for selected reasoning');
+    try {
+      const copied = this.exports.inv_selected_reasoning_copy(ptr, len);
+      const text = this.readUtf8(ptr, copied).trim();
+      return text.length > 0 ? text : null;
+    } finally {
+      this.exports.gpa_free(ptr, len);
+    }
+  }
+
+  /**
+   * Protocol v22 — host restore-by-value. Selects the listed token, or clears
+   * selection when `id` is null/empty. Returns true when accepted; rejects
+   * unknown / oversize / bad charset. Never raises the pending flag.
+   */
+  setSelectedReasoning(id: string | null): boolean {
+    if (id === null || id.length === 0) {
+      return this.exports.inv_set_selected_reasoning(0, 0) !== 0;
+    }
+    const token = sanitizeReasoningEffort(id);
+    if (!token) return false;
+    const bytes = utf8Encode.encode(token);
+    if (bytes.length === 0 || bytes.length > MAX_REASONING_EFFORT_LEN) return false;
+    const ptr = this.exports.gpa_u8(bytes.length);
+    if (!ptr) return false;
+    try {
+      new Uint8Array(this.exports.memory.buffer, ptr, bytes.length).set(bytes);
+      return this.exports.inv_set_selected_reasoning(ptr, bytes.length) !== 0;
+    } finally {
+      this.exports.gpa_free(ptr, bytes.length);
+    }
+  }
+
+  hasPendingReasoningChange(): boolean {
+    return this.exports.inv_has_pending_reasoning_change() !== 0;
+  }
+
+  ackPendingReasoningChange(): void {
+    this.exports.inv_ack_pending_reasoning_change();
   }
 
   clearSessionCatalog(): void {

@@ -76,6 +76,13 @@ export type SessionSnapshot = {
    */
   selectedModel?: string;
   /**
+   * Plan #898 — selected reasoning-effort token (Gateway value, e.g. `low` /
+   * `high` / `max`). Session-owned carrier `meta.reasoningEffort`. Omitted =
+   * unset (restore uses `defaultEffortFromOptions` for the current model).
+   * Sanitized with `sanitizeReasoningEffort` on read (drop-to-unset on poison).
+   */
+  reasoningEffort?: string;
+  /**
    * Plan #795 (backend-agents A1) — the Workflow **run id** carrier, mirrored on
    * the local session as the reserved `meta.turnRunId`. Omitted = no run id on the
    * session. Sanitized with `sanitizeTurnRunId` on read (drop-to-unset on poison)
@@ -103,6 +110,7 @@ import {
   SKILL_SLUG_RE,
   isRedisSafeOpaqueId,
   sanitizeModelId,
+  sanitizeReasoningEffort,
   sanitizeSessionCwd,
   sanitizeTurnRunId,
   sanitizeTurnStatus,
@@ -217,6 +225,7 @@ export class LocalStorageSessionStore implements SessionStore {
         attachedSlugs?: unknown;
         usage?: unknown;
         selectedModel?: unknown;
+        reasoningEffort?: unknown;
         turnRunId?: unknown;
         turnStatus?: unknown;
         turnStreamCursor?: unknown;
@@ -225,12 +234,14 @@ export class LocalStorageSessionStore implements SessionStore {
       // Tolerant: keep only safe workspace-relative cwd strings (parent #270 / phase 2),
       // a Redis-safe `activeSandboxId` (P1/GAP-1, #452), a Redis-safe `personaId`
       // (phase 3 #488), a slug-set-valid `attachedSlugs` (phase 2 #517), a
-      // bounded provider-sourced `usage` (phase 3 #539), and a printable-ASCII
-      // ≤ `MAX_MODEL_ID_LEN` `selectedModel` (plan #616); a bad local value can't
+      // bounded provider-sourced `usage` (phase 3 #539), a printable-ASCII
+      // ≤ `MAX_MODEL_ID_LEN` `selectedModel` (plan #616), and a Gateway
+      // effort token `reasoningEffort` (plan #898); a bad local value can't
       // pin. `attachedSlugs` is sanitized so a poisoned local array is dropped
       // rather than spread raw (review #526 re-run 3 residual); a poisoned `usage`
       // (non-provider / over-cap) sanitizes to `undefined` → slot hides; a poisoned
-      // `selectedModel` sanitizes to `undefined` → model restore falls back to default.
+      // `selectedModel` sanitizes to `undefined` → model restore falls back to default;
+      // a poisoned `reasoningEffort` sanitizes to `undefined` → defaultEffortFromOptions.
       const {
         cwd: rawCwd,
         activeSandboxId: rawSandbox,
@@ -238,6 +249,7 @@ export class LocalStorageSessionStore implements SessionStore {
         attachedSlugs: rawAttachedSlugs,
         usage: rawUsage,
         selectedModel: rawSelectedModel,
+        reasoningEffort: rawReasoningEffort,
         turnRunId: rawTurnRunId,
         turnStatus: rawTurnStatus,
         turnStreamCursor: rawTurnStreamCursor,
@@ -255,6 +267,7 @@ export class LocalStorageSessionStore implements SessionStore {
       const attachedSlugs = sanitizeAttachedSlugs(rawAttachedSlugs);
       const usage = sanitizeUsageSummary(rawUsage);
       const selectedModel = sanitizeModelId(rawSelectedModel);
+      const reasoningEffort = sanitizeReasoningEffort(rawReasoningEffort);
       // backend-agents A1–A3: the three turn carriers mirror the reserved meta keys
       // and are re-sanitized on local load (drop-to-unset on poison) so a stale/
       // hand-edited localStorage value never sticks. `turnStatus='completed'` is a
@@ -272,6 +285,8 @@ export class LocalStorageSessionStore implements SessionStore {
       else delete out.usage;
       if (selectedModel !== undefined) out.selectedModel = selectedModel;
       else delete out.selectedModel;
+      if (reasoningEffort !== undefined) out.reasoningEffort = reasoningEffort;
+      else delete out.reasoningEffort;
       if (turnRunId !== undefined) out.turnRunId = turnRunId;
       else delete out.turnRunId;
       if (turnStatus !== undefined) out.turnStatus = turnStatus;

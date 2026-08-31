@@ -12,6 +12,7 @@ const math_cache = @import("rich/math_cache.zig");
 const composer_text = @import("composer_text.zig");
 const ring_slot = @import("ring_slot.zig");
 const model_catalog = @import("model_catalog.zig");
+const reasoning_catalog = @import("reasoning_catalog.zig");
 const session_catalog = @import("session_catalog.zig");
 const submit_queue = @import("submit_queue.zig");
 
@@ -45,7 +46,11 @@ const submit_queue = @import("submit_queue.zig");
 /// without touching the submit queue, pause latch, promote gate, or pending
 /// submit. Live-session surgical hydrate (Send-while-running attach). F5 / New
 /// / switch keep using `inv_clear_messages`. Additive, now REQUIRED.
-pub const PROTOCOL_VERSION: u32 = 21;
+/// v22 (plan #898): reasoning-effort picker — `inv_clear_reasoning_efforts` /
+/// `inv_push_reasoning_effort` (host-pushed Gateway list for the current model),
+/// `inv_set_selected_reasoning` restore-by-value + pending-reasoning-change.
+/// Additive, now REQUIRED.
+pub const PROTOCOL_VERSION: u32 = 22;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -88,6 +93,10 @@ pub const SUBMIT_CAP = 262144;
 /// Protocol v3 model catalog caps (host pushes UTF-8 model ids).
 pub const MAX_CATALOG = 64;
 pub const MAX_MODEL_ID_LEN = 128;
+/// Protocol v22 reasoning-effort list (host pushes Gateway tokens for the
+/// current model). Parity-locked to TS `REASONING_EFFORT_MAX_BYTES` / `_VALUES_MAX`.
+pub const MAX_REASONING_EFFORTS = 16;
+pub const MAX_REASONING_EFFORT_LEN = 32;
 /// Protocol v13 status-slot store (host pushes one status slot value).
 /// Slots are a fixed, bounded array — a host push REPLACES a slot (no append/
 /// accumulation), mirroring the model-catalog pattern but keyed by index so
@@ -169,6 +178,9 @@ var has_pending_cancel: bool = false;
 /// polls this flag, folds the live selection into the session snapshot, persists,
 /// then acks it.
 var has_pending_model_change: bool = false;
+/// Protocol v22 (plan #898) — set by the status-bar effort picker, never by
+/// the host restore-by-value path (`inv_set_selected_reasoning`).
+var has_pending_reasoning_change: bool = false;
 /// Plan #759 / adversarial-review Major — set when a HOST front-insert
 /// (`inv_queued_insert_front`, the give-up `Continue` head) successfully shifts
 /// every queued slot down one. `submit_queue.insertFront` moves the rows but the
@@ -188,6 +200,17 @@ const CatalogEntry = struct {
 var catalog: [MAX_CATALOG]CatalogEntry = [_]CatalogEntry{.{}} ** MAX_CATALOG;
 var catalog_count: u32 = 0;
 var selected_index: u32 = 0;
+
+const ReasoningEntry = struct {
+    len: u32 = 0,
+    data: [MAX_REASONING_EFFORT_LEN]u8 = undefined,
+};
+
+var reasoning_efforts: [MAX_REASONING_EFFORTS]ReasoningEntry = [_]ReasoningEntry{.{}} ** MAX_REASONING_EFFORTS;
+var reasoning_count: u32 = 0;
+var selected_reasoning_index: u32 = 0;
+/// Host owns the default; a push does not auto-select (max-only lists stay unset).
+var has_reasoning_selection: bool = false;
 
 const StatusSlot = struct {
     len: u32 = 0,
@@ -415,6 +438,7 @@ pub fn reset() void {
     has_pending_load_earlier = false;
     has_pending_cancel = false;
     has_pending_model_change = false;
+    has_pending_reasoning_change = false;
     queue_promote_allowed = true; // fresh surface re-arms the legacy default (plan #760)
     queue_paused = false; // plan #777 — pause latch is Wasm-ephemeral like the queue
     has_pending_front_insert = false;
@@ -422,6 +446,9 @@ pub fn reset() void {
     suppress_refresh = false;
     catalog_count = 0;
     selected_index = 0;
+    reasoning_count = 0;
+    selected_reasoning_index = 0;
+    has_reasoning_selection = false;
     for (&status_slots) |*s| s.len = 0;
     turn_elapsed = 0;
     busy_tick = 0;
@@ -504,6 +531,102 @@ pub fn setSelectedModel(index: u32) void {
         has_pending_model_change = true;
         refresh();
     }
+}
+
+pub fn reasoningEffortCount() u32 {
+    return reasoning_count;
+}
+
+pub fn reasoningEffortIdAt(index: u32) []const u8 {
+    if (index >= reasoning_count) return &[_]u8{};
+    const e = &reasoning_efforts[index];
+    return e.data[0..e.len];
+}
+
+pub fn selectedReasoningIndex() u32 {
+    if (reasoning_count == 0 or !has_reasoning_selection) return 0;
+    return @min(selected_reasoning_index, reasoning_count - 1);
+}
+
+/// Selected effort token, or empty when the list is empty / host has not set one.
+pub fn selectedReasoningId() []const u8 {
+    if (reasoning_count == 0 or !has_reasoning_selection) return &[_]u8{};
+    const idx = @min(selected_reasoning_index, reasoning_count - 1);
+    const e = &reasoning_efforts[idx];
+    return e.data[0..e.len];
+}
+
+/// Label for paint: selected token, else first listed (display-only when unset).
+pub fn selectedReasoningLabel() []const u8 {
+    const sel = selectedReasoningId();
+    if (sel.len > 0) return sel;
+    return reasoningEffortIdAt(0);
+}
+
+pub fn clearReasoningEfforts() void {
+    reasoning_count = 0;
+    selected_reasoning_index = 0;
+    has_reasoning_selection = false;
+}
+
+pub fn pushReasoningEffort(src: []const u8) bool {
+    if (!reasoning_catalog.isEffortToken(src, MAX_REASONING_EFFORT_LEN)) return false;
+    if (reasoning_count >= MAX_REASONING_EFFORTS) return false;
+    const slot = &reasoning_efforts[reasoning_count];
+    slot.len = copySlice(&slot.data, src);
+    reasoning_count += 1;
+    return true;
+}
+
+/// Restore-by-value. Empty id clears selection (does not pick index 0).
+/// Unknown / oversize / bad charset → false, selection unchanged. Never pending.
+pub fn selectReasoningByValue(id: []const u8) bool {
+    if (id.len == 0) {
+        has_reasoning_selection = false;
+        selected_reasoning_index = 0;
+        return true;
+    }
+    if (!reasoning_catalog.isEffortToken(id, MAX_REASONING_EFFORT_LEN)) return false;
+    var idx: u32 = 0;
+    var found = false;
+    for (reasoning_efforts[0..reasoning_count], 0..) |*e, i| {
+        if (e.len != id.len) continue;
+        var eq = true;
+        for (e.data[0..e.len], 0..) |cc, j| {
+            if (cc != id[j]) {
+                eq = false;
+                break;
+            }
+        }
+        if (eq) {
+            idx = @intCast(i);
+            found = true;
+            break;
+        }
+    }
+    if (!found) return false;
+    selected_reasoning_index = idx;
+    has_reasoning_selection = true;
+    return true;
+}
+
+/// Status-bar picker: raise pending so the host persists the user pick.
+pub fn setSelectedReasoning(index: u32) void {
+    if (reasoning_catalog.chooseIndex(reasoning_count, index)) |idx| {
+        if (has_reasoning_selection and idx == selected_reasoning_index) return;
+        selected_reasoning_index = idx;
+        has_reasoning_selection = true;
+        has_pending_reasoning_change = true;
+        refresh();
+    }
+}
+
+pub fn hasPendingReasoningChange() bool {
+    return has_pending_reasoning_change;
+}
+
+pub fn ackPendingReasoningChange() void {
+    has_pending_reasoning_change = false;
 }
 
 /// Cycle selection forward. No-op if count ≤ 1.
@@ -831,6 +954,51 @@ export fn inv_has_pending_model_change() u8 {
 /// Protocol v16 — host folded the live selection; clear the flag.
 export fn inv_ack_pending_model_change() void {
     ackPendingModelChange();
+}
+
+// ── Protocol v22 — reasoning-effort picker (plan #898) ────────────────────
+
+export fn inv_clear_reasoning_efforts() void {
+    clearReasoningEfforts();
+    refresh();
+}
+
+/// Append one Gateway effort token. Returns 1 on success, 0 if rejected.
+export fn inv_push_reasoning_effort(ptr: [*]const u8, len: usize) u8 {
+    const ok = pushReasoningEffort(ptr[0..len]);
+    if (ok) refresh();
+    return if (ok) 1 else 0;
+}
+
+export fn inv_reasoning_effort_count() u32 {
+    return reasoning_count;
+}
+
+export fn inv_selected_reasoning_len() u32 {
+    return @intCast(selectedReasoningId().len);
+}
+
+export fn inv_selected_reasoning_copy(out_ptr: [*]u8, max_len: usize) u32 {
+    const id = selectedReasoningId();
+    const n = @min(max_len, id.len);
+    if (n > 0) @memcpy(out_ptr[0..n], id[0..n]);
+    return @intCast(n);
+}
+
+/// Restore-by-value. Empty clears selection. Unknown / oversize → 0.
+/// Never sets the pending flag.
+export fn inv_set_selected_reasoning(ptr: [*]const u8, len: usize) u8 {
+    const accepted = selectReasoningByValue(if (len == 0) &.{} else ptr[0..len]);
+    refresh();
+    return if (accepted) 1 else 0;
+}
+
+export fn inv_has_pending_reasoning_change() u8 {
+    return if (hasPendingReasoningChange()) 1 else 0;
+}
+
+export fn inv_ack_pending_reasoning_change() void {
+    ackPendingReasoningChange();
 }
 
 // ── Protocol v17 — session-rail catalog + pending switch ──────────────────

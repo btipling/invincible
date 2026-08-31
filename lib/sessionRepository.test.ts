@@ -146,6 +146,32 @@ describe('trimForCloudPut', () => {
     expect(bare.meta).toBeUndefined();
   });
 
+  it('folds reasoningEffort into meta.reasoningEffort; drops poison (plan #898)', () => {
+    const out = trimForCloudPut({
+      id: 'sess_a',
+      updatedAt: 6,
+      messages: [],
+      reasoningEffort: 'high',
+    });
+    expect(out.meta).toEqual({ reasoningEffort: 'high' });
+
+    const maxed = trimForCloudPut({
+      id: 'sess_m',
+      updatedAt: 6,
+      messages: [],
+      reasoningEffort: 'max',
+    });
+    expect(maxed.meta).toEqual({ reasoningEffort: 'max' });
+
+    const bad = trimForCloudPut({
+      id: 'sess_b',
+      updatedAt: 6,
+      messages: [],
+      reasoningEffort: 'has space',
+    });
+    expect(bad.meta).toBeUndefined();
+  });
+
   it('normalizes escaping `..` out of meta so a record can never diverge from the request cwd (review #453 residual)', () => {
     // A P1-legal-on-record `..` is normalized before it is persisted: it drops out
     // instead of round-tripping `..` into Redis (request sends `.` on any device).
@@ -426,6 +452,24 @@ describe('parseCloudSessionSnapshot', () => {
     expect(bare?.selectedModel).toBeUndefined();
   });
 
+  it('plan #898 — restores reasoningEffort from stored meta; drops poison to unset', () => {
+    const out = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { reasoningEffort: 'high' },
+    });
+    expect(out?.reasoningEffort).toBe('high');
+
+    const bad = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [{ id: 'm', role: 'user', text: 't', at: 1 }],
+      meta: { reasoningEffort: 'has space' },
+    });
+    expect(bad?.reasoningEffort).toBeUndefined();
+  });
+
   it('backend-agents A1–A3 — restores turnRunId/turnStatus/turnStreamCursor from meta; poison → unset', () => {
     const out = parseCloudSessionSnapshot({
       id: 'sess_x',
@@ -654,6 +698,7 @@ describe('overlayEnvelopeMeta', () => {
       activeSandboxId: 'sbx_old',
       usage: { source: 'provider' as const, prompt: 1 },
       selectedModel: 'anthropic/claude-a',
+      reasoningEffort: 'high',
       attachedSlugs: ['create-plan'],
       personaId: 'pers_old',
     };
@@ -662,6 +707,7 @@ describe('overlayEnvelopeMeta', () => {
       logicalCwd: 'new/path',
       usage: JSON.stringify({ source: 'provider', prompt: 9, completion: 1, total: 10 }),
       selectedModel: 'openai/gpt-a',
+      reasoningEffort: 'low',
       attachedSkills: '["plan-review"]',
       personaId: 'pers_new',
     });
@@ -669,6 +715,7 @@ describe('overlayEnvelopeMeta', () => {
     expect(over.cwd).toBe('new/path');
     expect(over.usage).toEqual({ source: 'provider', prompt: 9, completion: 1, total: 10 });
     expect(over.selectedModel).toBe('openai/gpt-a');
+    expect(over.reasoningEffort).toBe('low');
     expect(over.attachedSlugs).toEqual(['plan-review']);
     expect(over.personaId).toBe('pers_new');
 
@@ -677,6 +724,7 @@ describe('overlayEnvelopeMeta', () => {
     expect(cleared.activeSandboxId).toBeUndefined();
     expect(cleared.usage).toBeUndefined();
     expect(cleared.selectedModel).toBeUndefined();
+    expect(cleared.reasoningEffort).toBeUndefined();
     expect(cleared.attachedSlugs).toBeUndefined();
     expect(cleared.personaId).toBeUndefined();
   });
