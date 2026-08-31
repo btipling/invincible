@@ -49,7 +49,10 @@
  */
 import { start, getRun } from 'workflow/api';
 import { parseAgentBody } from '../../../lib/agent/agentBody';
-import { resolveAgentReasoning } from '../../../lib/agent/reasoningConfig';
+import {
+  resolveAgentReasoning,
+  shouldFetchEffortCatalog,
+} from '../../../lib/agent/reasoningConfig';
 import { effortValuesForModel } from '../../../lib/gateway/modelCatalog';
 import {
   AGENT_STREAM_CONTENT_TYPE,
@@ -247,11 +250,12 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     // Kick the catalog GET now so it overlaps envelope + sandbox probe.
-    // Request-body token wins the resolver — skip the GET when already set.
-    const catalogPromise =
-      parsed.reasoning !== undefined
-        ? Promise.resolve([] as string[])
-        : effortValuesForModel(byok.modelId);
+    // Skip only when the body token is already on the Gateway wire enum
+    // (it wins the resolver). `max` still fetches so coerce can pick
+    // xhigh vs high (#911 adversarial-review).
+    const catalogPromise = shouldFetchEffortCatalog(parsed.reasoning)
+      ? effortValuesForModel(byok.modelId)
+      : Promise.resolve([] as string[]);
 
     // 2. Resolve the envelope store + session key once — reused for the
     //    persistRunBind read (B13 fallback) AND the post-start running PATCH

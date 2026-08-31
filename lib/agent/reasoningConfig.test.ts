@@ -4,6 +4,7 @@ import {
   defaultEffortFromOptions,
   modelIdLooksReasoningCapable,
   resolveAgentReasoning,
+  shouldFetchEffortCatalog,
 } from './reasoningConfig';
 
 describe('modelIdLooksReasoningCapable', () => {
@@ -183,5 +184,19 @@ describe('coerceReasoningForGateway', () => {
   it('drops unknown non-wire tokens', () => {
     expect(coerceReasoningForGateway('budget')).toBeUndefined();
     expect(coerceReasoningForGateway(undefined)).toBeUndefined();
+  });
+});
+
+describe('shouldFetchEffortCatalog (#911 adversarial-review)', () => {
+  it('fetches when the body is omitted or non-wire (max)', () => {
+    expect(shouldFetchEffortCatalog(undefined)).toBe(true);
+    expect(shouldFetchEffortCatalog('max')).toBe(true);
+    expect(shouldFetchEffortCatalog('MAX')).toBe(true);
+  });
+
+  it('skips when the body is already a Gateway wire token', () => {
+    expect(shouldFetchEffortCatalog('low')).toBe(false);
+    expect(shouldFetchEffortCatalog('xhigh')).toBe(false);
+    expect(shouldFetchEffortCatalog('provider-default')).toBe(false);
   });
 });

@@ -86,6 +86,21 @@ export function coerceReasoningForGateway(
   return undefined;
 }
 
+/**
+ * HTTP boundary: skip the joined-catalog GET only when the body token is
+ * already on the Gateway wire enum (it wins the resolver verbatim).
+ * `max` is **not** on the enum — still fetch so coerce can pick `xhigh`
+ * vs `high` (#911 adversarial-review). Omitted request also fetches
+ * (catalog default / product `low`).
+ */
+export function shouldFetchEffortCatalog(
+  request: string | undefined,
+): boolean {
+  const token = sanitizeReasoningEffort(request);
+  if (!token) return true;
+  return !isGatewayReasoningWire(token);
+}
+
 export type ResolveAgentReasoningOpts = {
   /** Sanitized request-body / start-arg token. Invalid values are ignored here. */
   request?: string | undefined;
