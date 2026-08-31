@@ -197,4 +197,22 @@ describe('flatten', () => {
     expect(body.id).toBe(SESSION);
     expect((body.messages as { text: string }[])[0].text).toBe('x');
   });
+
+  it('keeps F21 queue on the head (spread, not a field whitelist) [adversarial #901]', () => {
+    const head = {
+      ...snap([msg('m1', 'x')], 't_old', 2),
+      queue: ['follow-up B', 'follow-up C'],
+    };
+    const body = flattenReconstructedBody(head, SESSION, [
+      msg('m1', 'x'),
+      msg('m2', 'y'),
+    ]);
+    expect(body.queue).toEqual(['follow-up B', 'follow-up C']);
+    expect(body.prev).toBeUndefined();
+    expect(body.depth).toBeUndefined();
+    expect((body.messages as { text: string }[]).map((m) => m.text)).toEqual([
+      'x',
+      'y',
+    ]);
+  });
 });

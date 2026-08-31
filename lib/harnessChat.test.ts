@@ -4974,11 +4974,14 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     ]);
   });
 
-  it('test 2h: F5 cold attach (empty prompt) still clears the submit FIFO', async () => {
+  it('test 2h: F5 cold attach (empty prompt) keeps the submit FIFO (F21 adversarial #901)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     bridge.pushMessage(MessageKind.User, 'hello');
-    exp.__queue.push('stale from previous session');
+    // hydrateRingWindow re-armed these from the persisted mirror; kickColdAttach
+    // must not wipe them (inv_clear_ring, not inv_clear_messages).
+    exp.__queue.push('follow-up B');
+    exp.__queue.push('follow-up C');
     const session = runningSession([['user', 'hello']]);
     await runHarnessTurn(bridge, session, '', {
       attach: {
@@ -4993,7 +4996,7 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
         },
       },
     });
-    expect(exp.__queue).toEqual([]);
+    expect(exp.__queue).toEqual(['follow-up B', 'follow-up C']);
   });
 
   it('test 2i: Send-while-running 503 keeps FIFO and arms promote false', async () => {

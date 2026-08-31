@@ -38,15 +38,22 @@ missing) but the Redis envelope is still `running` with a `turnRunId`, boot
 overlays those three turn carriers onto the kept local snapshot, keeps `?s=`
 pinned, and cold-attaches. Messages stay the local (or LWW-winning) transcript
 until attach SSE catches up. The Blob object at `transcriptPointer` is the
-**latest** transcript chunk (`id`, `updatedAt`, `messages`, optional `prev`,
-optional `depth`).
-Worker persist writes **this-run messages** plus `prev` pointing at the previous
+**latest** transcript chunk (`id`, `updatedAt`, `messages`, optional `queue`,
+optional `prev`, optional `depth`). `queue` is the F21 persisted submit-queue
+mirror (host-known prompts not yet durably started; sanitized on read; omitted
+= no queue). It is first-class transcript-body state, not `meta`, and must be
+copy-forwarded onto worker this-run chunks (minus this-run's user prompt) and
+folded by host `trimForCloudPut`. Same-id adopt field-merges it with local
+(`mergeAdoptedUsage`) so a newer worker clock cannot drop a `queueAppend` that
+lost the coalesced-PUT race, and a stale-long server queue cannot re-arm an
+in-flight drain. Worker persist writes **this-run messages** plus `prev` pointing at the previous
 object and `depth` (1-based length of the chain ending at that object). Persist
 is head-only: it will not append when `depth` is already **256**. Legacy / host-flattened
 objects omit `prev` and `depth` and are a one-node chain.
 Reconstruct walks `prev` (max **256** objects, each id bound to this session)
 and suffix-merges oldest→newest. Host terminal PUT may **flatten** to a full
-trimmed snapshot with `prev` omitted (new root). Extra keys are ignored. The
+trimmed snapshot with `prev` omitted (new root). Unknown extra keys besides
+`queue` are ignored. The
 worker writes a chunk after the first model delta of a turn that still has tools
 to run, after each successful tool **batch**, and when a model round has no tools
 (the turn is finished). Mid-turn

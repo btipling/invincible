@@ -24,6 +24,7 @@ import { reachableImports } from '../workflows/staticGraph';
 import { parseCloudSessionSnapshot } from '../sessionRepository';
 import { reconstructTranscriptChain } from '../sessions/transcriptChunks';
 import { HARNESS_SESSION_MAX_BODY_BYTES, TRANSCRIPT_CHUNK_WALK_MAX } from '../sessionCloudCaps';
+import { formatPromptWithHistory, makeMessage } from '../sessionStore';
 
 const scope: ObjectScope = {
   tenantId: 'tenant-1',
@@ -500,6 +501,167 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
       'turn-2 user',
       'turn-2 assistant',
     ]);
+  });
+
+  it('copy-forwards session.queue onto worker this-run chunks (F21 adversarial #901)', async () => {
+    const { seam, blobStore } = await makeSeam();
+    const first = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'turn-1 user', at: 1 },
+          { id: 'cp_1', role: 'assistant', text: 'turn-1 assistant', at: 2 },
+        ],
+        queue: ['follow-up B', 'follow-up C'],
+      }),
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const firstBody = JSON.parse((await blobStore.read(first.objectId!)) ?? 'null') as {
+      queue?: string[];
+    };
+    expect(firstBody.queue).toEqual(['follow-up B', 'follow-up C']);
+
+    const second = await seam.persist({
+      turnRunId: 'wr_0000_2a3b4c5d6e7f',
+      deltas: [{ d: 2 }],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'turn-2 user', at: 1 },
+          { id: 'cp_1', role: 'assistant', text: 'turn-2 assistant', at: 2 },
+        ],
+      }),
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const chunk = JSON.parse((await blobStore.read(second.objectId!)) ?? 'null') as {
+      queue?: string[];
+      prev?: string;
+    };
+    expect(chunk.queue).toEqual(['follow-up B', 'follow-up C']);
+    expect(typeof chunk.prev).toBe('string');
+    const parsed = parseCloudSessionSnapshot(chunk, scope.sessionId);
+    expect(parsed?.queue).toEqual(['follow-up B', 'follow-up C']);
+  });
+
+  it('copy-forward drops this-run user prompt from the queue (F21 adversarial #901 HEAD)', async () => {
+    const { seam, blobStore } = await makeSeam();
+    const first = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'turn-1 user', at: 1 },
+          { id: 'cp_1', role: 'assistant', text: 'turn-1 assistant', at: 2 },
+        ],
+        queue: ['follow-up B', 'follow-up C'],
+      }),
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = await seam.persist({
+      turnRunId: 'wr_0000_2a3b4c5d6e7f',
+      deltas: [{ d: 2 }],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'follow-up B', at: 1 },
+          { id: 'cp_1', role: 'assistant', text: 'turn-2 assistant', at: 2 },
+        ],
+      }),
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const chunk = JSON.parse((await blobStore.read(second.objectId!)) ?? 'null') as {
+      queue?: string[];
+    };
+    expect(chunk.queue).toEqual(['follow-up C']);
+    const parsed = parseCloudSessionSnapshot(chunk, scope.sessionId);
+    expect(parsed?.queue).toEqual(['follow-up C']);
+  });
+
+  it('copy-forward strips a history-folded this-run userMessage (F21 adversarial #901)', async () => {
+    const { seam, blobStore } = await makeSeam();
+    const first = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'turn-1 user', at: 1 },
+          { id: 'cp_1', role: 'assistant', text: 'turn-1 assistant', at: 2 },
+        ],
+        queue: ['follow-up B', 'follow-up C'],
+      }),
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const folded = formatPromptWithHistory(
+      [makeMessage('user', 'turn-1 user'), makeMessage('assistant', 'turn-1 assistant')],
+      'follow-up B',
+    );
+    expect(folded).not.toBe('follow-up B');
+
+    const second = await seam.persist({
+      turnRunId: 'wr_0000_2a3b4c5d6e7f',
+      deltas: [{ d: 2 }],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: folded, at: 1 },
+          { id: 'cp_1', role: 'assistant', text: 'turn-2 assistant', at: 2 },
+        ],
+      }),
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const chunk = JSON.parse((await blobStore.read(second.objectId!)) ?? 'null') as {
+      queue?: string[];
+    };
+    expect(chunk.queue).toEqual(['follow-up C']);
+    const parsed = parseCloudSessionSnapshot(chunk, scope.sessionId);
+    expect(parsed?.queue).toEqual(['follow-up C']);
+  });
+
+  it('copy-forward unsets the carrier when this-run user was the last queued item', async () => {
+    const { seam, blobStore } = await makeSeam();
+    const first = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'turn-1 user', at: 1 },
+          { id: 'cp_1', role: 'assistant', text: 'turn-1 assistant', at: 2 },
+        ],
+        queue: ['follow-up B'],
+      }),
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = await seam.persist({
+      turnRunId: 'wr_0000_2a3b4c5d6e7f',
+      deltas: [{ d: 2 }],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [{ id: 'cp_0', role: 'user', text: 'follow-up B', at: 1 }],
+      }),
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const chunk = JSON.parse((await blobStore.read(second.objectId!)) ?? 'null') as {
+      queue?: string[];
+    };
+    expect('queue' in chunk).toBe(false);
+    const parsed = parseCloudSessionSnapshot(chunk, scope.sessionId);
+    expect('queue' in (parsed ?? {})).toBe(false);
   });
 
   it('host-shaped prior that already ends with this turn is not duplicated', async () => {

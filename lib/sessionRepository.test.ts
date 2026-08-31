@@ -24,6 +24,8 @@ import {
   type SessionSummary,
 } from './sessionRepository';
 import type { SessionSnapshot } from './sessionStore';
+import { formatPromptWithHistory, makeMessage } from './sessionStore';
+import { flattenReconstructedBody } from './sessions/transcriptChunks';
 
 function snap(
   partial: Partial<SessionSnapshot> & { messages?: SessionSnapshot['messages'] },
@@ -970,6 +972,47 @@ describe('mergeAdoptedUsage (plan #626 test 5)', () => {
     expect(out.usage).toEqual(usageA);
     expect(out.id).toBe('b');
   });
+
+  it('same id: local queueAppend survives a worker head that omitted it (F21 adversarial #901)', () => {
+    const out = mergeAdoptedUsage(
+      { id: 'a', updatedAt: 10, messages: [{ id: 'm1', role: 'user', text: 'turn-1 user', at: 1 }] },
+      { id: 'a', updatedAt: 5, messages: [], queue: ['follow-up B'] },
+    );
+    expect(out.queue).toEqual(['follow-up B']);
+  });
+
+  it('same id: stale-long server queue strips the in-flight folded last user', () => {
+    const folded = formatPromptWithHistory(
+      [makeMessage('user', 'turn-1 user'), makeMessage('assistant', 'turn-1 assistant')],
+      'follow-up B',
+    );
+    const out = mergeAdoptedUsage(
+      {
+        id: 'a',
+        updatedAt: 10,
+        messages: [{ id: 'm1', role: 'user', text: folded, at: 1 }],
+        queue: ['follow-up B', 'follow-up C'],
+      },
+      { id: 'a', updatedAt: 5, messages: [], queue: ['follow-up C'] },
+    );
+    expect(out.queue).toEqual(['follow-up C']);
+  });
+
+  it('different id: server queue only (no merge)', () => {
+    const out = mergeAdoptedUsage(
+      { id: 'b', updatedAt: 10, messages: [], queue: ['x'] },
+      { id: 'a', updatedAt: 5, messages: [], queue: ['y'] },
+    );
+    expect(out.queue).toEqual(['x']);
+    expect(out.id).toBe('b');
+  });
+
+  it('source-lock: same-id adopt field-merges queue via mergeQueues (F21 adversarial #901)', () => {
+    const src = readFileSync('lib/sessionRepository.ts', 'utf8');
+    const fn = src.slice(src.indexOf('export function mergeAdoptedUsage'));
+    expect(fn).toContain('mergeQueues(');
+    expect(fn).toContain('lastUserContent(server.messages)');
+  });
 });
 
 describe('parseSessionSummaryList', () => {
@@ -1644,3 +1687,90 @@ describe('createHttpSessionRepository — envelope carrier (phase 0 #515)', () =
     expect(res).toEqual({ action: 'notfound' });
   });
 });
+
+describe('backend-agents F21 — persisted submit-queue mirror (plan #815)', () => {
+  const idA = '11111111-1111-4111-8111-111111111111';
+  const UPLOAD_URL = 'https://blob.example/upload';
+
+  it('trimForCloudPut folds the queue mirror into the record body; omits when absent', () => {
+    const out = trimForCloudPut({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      queue: ['one', 'two'],
+    });
+    expect(out.queue).toEqual(['one', 'two']);
+    const bare = trimForCloudPut({ id: 's', updatedAt: 1, messages: [] });
+    expect('queue' in bare).toBe(false);
+  });
+
+  it('trimForCloudPut drops a poisoned mirror (never PUTs junk prompts)', () => {
+    const out = trimForCloudPut({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      queue: 'not an array' as unknown as string[],
+    });
+    expect('queue' in out).toBe(false);
+  });
+
+  it('parseCloudSessionSnapshot restores the queue mirror; poison / empty stays unset', () => {
+    const out = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      queue: [' alpha ', 42, ''],
+    });
+    expect(out?.queue).toEqual(['alpha']);
+
+    const empty = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      queue: [],
+    });
+    expect('queue' in (empty ?? {})).toBe(false);
+
+    const junk = parseCloudSessionSnapshot({
+      id: 'sess_x',
+      updatedAt: 1,
+      messages: [],
+      queue: 'nope',
+    });
+    expect('queue' in (junk ?? {})).toBe(false);
+  });
+
+  it('overlayEnvelopeMeta leaves the queue mirror untouched (meta is not its carrier)', () => {
+    const transcript: SessionSnapshot = {
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      queue: ['p1'],
+    };
+    const over = overlayEnvelopeMeta(transcript, {
+      transcriptPointer: 'tx_1',
+      turnStatus: 'running',
+    });
+    expect(over.queue).toEqual(['p1']);
+  });
+
+  it('GET flatten+parse keeps the queue mirror (F21 adversarial #901)', () => {
+    const flat = flattenReconstructedBody(
+      {
+        id: 'sess_x',
+        updatedAt: 1,
+        messages: [],
+        prev: 't_old',
+        depth: 2,
+        queue: ['follow-up B', 'follow-up C'],
+      },
+      'sess_x',
+      [{ id: 'm1', role: 'user', text: 'turn-1', at: 1 }],
+    );
+    expect(flat.prev).toBeUndefined();
+    const parsed = parseCloudSessionSnapshot(flat, 'sess_x');
+    expect(parsed?.queue).toEqual(['follow-up B', 'follow-up C']);
+    expect(parsed?.messages.map((m) => m.text)).toEqual(['turn-1']);
+  });
+});
+
