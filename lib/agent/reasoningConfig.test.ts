@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  coerceReasoningForGateway,
   defaultEffortFromOptions,
   modelIdLooksReasoningCapable,
   resolveAgentReasoning,
@@ -129,5 +130,58 @@ describe('resolveAgentReasoning', () => {
     expect(
       resolveAgentReasoning('anthropic/claude-sonnet-4', { env: {} }),
     ).toBeUndefined();
+  });
+
+  it('coerces request max to high for glm overlay (skip-catalog body path, #911)', () => {
+    expect(
+      resolveAgentReasoning('zai/glm-5.3-flash', {
+        request: 'max',
+        env: {},
+        options: [],
+      }),
+    ).toBe('high');
+    expect(
+      resolveAgentReasoning('zai/glm-5.3-flash', {
+        request: 'max',
+        env: {},
+        options: ['low', 'high'],
+      }),
+    ).toBe('high');
+  });
+
+  it('coerces request max to xhigh when that token is listed', () => {
+    expect(
+      resolveAgentReasoning('openai/gpt-5.6-luna', {
+        request: 'MAX',
+        env: {},
+        options: ['none', 'low', 'medium', 'high', 'xhigh'],
+      }),
+    ).toBe('xhigh');
+  });
+});
+
+describe('coerceReasoningForGateway', () => {
+  it('passes wire tokens through', () => {
+    expect(coerceReasoningForGateway('low')).toBe('low');
+    expect(coerceReasoningForGateway('xhigh', ['high', 'xhigh'])).toBe('xhigh');
+    expect(coerceReasoningForGateway('provider-default')).toBe('provider-default');
+  });
+
+  it('maps max → xhigh if listed, else high', () => {
+    expect(coerceReasoningForGateway('max', ['none', 'high', 'xhigh'])).toBe(
+      'xhigh',
+    );
+    expect(coerceReasoningForGateway('max', ['low', 'high'])).toBe('high');
+    expect(coerceReasoningForGateway('max', [])).toBe('high');
+    expect(coerceReasoningForGateway('max')).toBe('high');
+  });
+
+  it('drops max when the list has neither high nor xhigh', () => {
+    expect(coerceReasoningForGateway('max', ['none', 'minimal'])).toBeUndefined();
+  });
+
+  it('drops unknown non-wire tokens', () => {
+    expect(coerceReasoningForGateway('budget')).toBeUndefined();
+    expect(coerceReasoningForGateway(undefined)).toBeUndefined();
   });
 });

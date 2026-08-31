@@ -5,6 +5,8 @@ import {
   MAX_MODEL_ID_LEN,
   GATEWAY_MODELS_CACHE_TTL_MS,
   GATEWAY_MODELS_FETCH_TIMEOUT_MS,
+  GATEWAY_REASONING_WIRE,
+  isGatewayReasoningWire,
   MODELS_DEV_FETCH_MAX_BYTES,
   REASONING_EFFORT_MAX_BYTES,
   REASONING_EFFORT_VALUES_MAX,
@@ -153,6 +155,24 @@ describe('sanitizeReasoningEffort (plan #897)', () => {
   it('NEW cap is 32', () => {
     expect(REASONING_EFFORT_MAX_BYTES).toBe(32);
     expect(sanitizeReasoningEffort('a'.repeat(32))).toBe('a'.repeat(32));
+  });
+});
+
+describe('GATEWAY_REASONING_WIRE (#911)', () => {
+  it('matches the AI SDK language-model reasoning enum (no max)', () => {
+    expect([...GATEWAY_REASONING_WIRE]).toEqual([
+      'provider-default',
+      'none',
+      'minimal',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+    ]);
+    expect(isGatewayReasoningWire('low')).toBe(true);
+    expect(isGatewayReasoningWire('xhigh')).toBe(true);
+    expect(isGatewayReasoningWire('max')).toBe(false);
+    expect(isGatewayReasoningWire('budget')).toBe(false);
   });
 
   it('Zig MAX_REASONING_EFFORT_LEN agrees with the host cap (plan #898)', () => {

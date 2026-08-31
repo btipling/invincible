@@ -402,6 +402,18 @@ describe('generateOneRound reasoning (plan #846)', () => {
     });
   });
 
+  it('coerces deps.reasoning max to high for glm-5.3-flash (#911 wire enum)', async () => {
+    await withAgentReasoningEnv(undefined, async () => {
+      const streamTextImpl = vi.fn(makeStream({ parts: [{ type: 'text-delta', text: 'ok' }] }));
+      await generateOneRound(
+        { modelId: 'zai/glm-5.3-flash', streamTextImpl, reasoning: 'max' },
+        { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+      );
+      const args = streamTextImpl.mock.calls[0]![0] as Record<string, unknown>;
+      expect(args.reasoning).toBe('high');
+    });
+  });
+
   it('accumulates mapped reasoning_delta events into delta.reasoning', async () => {
     await withAgentReasoningEnv(undefined, async () => {
       const streamTextImpl = makeStream({
