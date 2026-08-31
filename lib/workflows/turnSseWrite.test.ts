@@ -85,6 +85,12 @@ describe('classifyStreamWriteError', () => {
     expect(classifyStreamWriteError(new Error('disk full'))).toBe('drop');
   });
 
+  it('TimeoutError (AbortSignal.timeout name) is drop — not abort', () => {
+    const err = new Error(PUT_TIMEOUT);
+    err.name = 'TimeoutError';
+    expect(classifyStreamWriteError(err)).toBe('drop');
+  });
+
   it('Internal Server Error on a stream PUT is drop', () => {
     expect(
       classifyStreamWriteError(
@@ -216,6 +222,15 @@ describe('writeOnDefaultStream (sparse loop path)', () => {
   it('500 returns void without retry (does not throw)', async () => {
     harness.write.mockRejectedValue(new Error(HTTP_500));
     await expect(writeOnDefaultStream('line')).resolves.toBeUndefined();
+    expect(harness.write).toHaveBeenCalledTimes(1);
+    expect(harness.releaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('AbortError reject → throw, releaseLock (sparse done/error path)', async () => {
+    harness.write.mockRejectedValueOnce(abortErr());
+    await expect(writeOnDefaultStream('line')).rejects.toMatchObject({
+      name: 'AbortError',
+    });
     expect(harness.write).toHaveBeenCalledTimes(1);
     expect(harness.releaseLock).toHaveBeenCalledTimes(1);
   });
