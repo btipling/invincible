@@ -24,6 +24,7 @@ import { reachableImports } from '../workflows/staticGraph';
 import { parseCloudSessionSnapshot } from '../sessionRepository';
 import { reconstructTranscriptChain } from '../sessions/transcriptChunks';
 import { HARNESS_SESSION_MAX_BODY_BYTES, TRANSCRIPT_CHUNK_WALK_MAX } from '../sessionCloudCaps';
+import { formatPromptWithHistory, makeMessage } from '../sessionStore';
 
 const scope: ObjectScope = {
   tenantId: 'tenant-1',
@@ -570,6 +571,50 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
         id: scope.sessionId,
         messages: [
           { id: 'cp_0', role: 'user', text: 'follow-up B', at: 1 },
+          { id: 'cp_1', role: 'assistant', text: 'turn-2 assistant', at: 2 },
+        ],
+      }),
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const chunk = JSON.parse((await blobStore.read(second.objectId!)) ?? 'null') as {
+      queue?: string[];
+    };
+    expect(chunk.queue).toEqual(['follow-up C']);
+    const parsed = parseCloudSessionSnapshot(chunk, scope.sessionId);
+    expect(parsed?.queue).toEqual(['follow-up C']);
+  });
+
+  it('copy-forward strips a history-folded this-run userMessage (F21 adversarial #901)', async () => {
+    const { seam, blobStore } = await makeSeam();
+    const first = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [{ d: 1 }],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: 'turn-1 user', at: 1 },
+          { id: 'cp_1', role: 'assistant', text: 'turn-1 assistant', at: 2 },
+        ],
+        queue: ['follow-up B', 'follow-up C'],
+      }),
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const folded = formatPromptWithHistory(
+      [makeMessage('user', 'turn-1 user'), makeMessage('assistant', 'turn-1 assistant')],
+      'follow-up B',
+    );
+    expect(folded).not.toBe('follow-up B');
+
+    const second = await seam.persist({
+      turnRunId: 'wr_0000_2a3b4c5d6e7f',
+      deltas: [{ d: 2 }],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: folded, at: 1 },
           { id: 'cp_1', role: 'assistant', text: 'turn-2 assistant', at: 2 },
         ],
       }),

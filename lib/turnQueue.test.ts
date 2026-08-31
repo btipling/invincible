@@ -16,11 +16,12 @@ import {
   queueOf,
   queueRestoreHead,
   queueWithoutText,
+  queueTextFromUserContent,
   rearmQueueFromMirror,
   removeQueuedText,
   sanitizeQueue,
 } from './turnQueue';
-import { createEmptySession, type SessionSnapshot } from './sessionStore';
+import { createEmptySession, formatPromptWithHistory, makeMessage, type SessionSnapshot } from './sessionStore';
 import type { HarnessBridge } from './harnessBridge';
 
 function sess(partial: Partial<SessionSnapshot> = {}): SessionSnapshot {
@@ -116,6 +117,31 @@ describe('queueWithoutText (F21 adversarial #901 HEAD)', () => {
     expect(queueWithoutText(q, '')).toBe(q);
     expect(queueWithoutText(q, 'zzz')).toBe(q);
     expect(queueWithoutText(undefined, 'a')).toBeUndefined();
+  });
+});
+
+describe('queueTextFromUserContent (F21 adversarial #901 fold unwrap)', () => {
+  it('passes a bare prompt through (no history)', () => {
+    expect(queueTextFromUserContent('follow-up B')).toBe('follow-up B');
+    expect(queueTextFromUserContent('  hello  ')).toBe('hello');
+  });
+
+  it('unwraps the last User line of a formatPromptWithHistory fold', () => {
+    const folded = formatPromptWithHistory(
+      [makeMessage('user', 'turn-1 user'), makeMessage('assistant', 'turn-1 assistant')],
+      'follow-up B',
+    );
+    expect(folded).toContain('User: turn-1 user');
+    expect(folded).not.toBe('follow-up B');
+    expect(queueTextFromUserContent(folded)).toBe('follow-up B');
+  });
+
+  it('does not treat an earlier User line as this-run', () => {
+    const folded = formatPromptWithHistory(
+      [makeMessage('user', 'follow-up C'), makeMessage('assistant', 'ok')],
+      'follow-up B',
+    );
+    expect(queueTextFromUserContent(folded)).toBe('follow-up B');
   });
 });
 

@@ -156,6 +156,29 @@ export function queueRestoreHead(
   return { ...session, queue: [t, ...rest], updatedAt: Date.now() };
 }
 
+/**
+ * The this-run user text that {@link queueWithoutText} should match.
+ *
+ * persistStep checkpoints carry `turnWorkflow` `userMessage`, which production
+ * `runHarnessTurn` POSTs as `formatPromptWithHistory(session.messages, prompt)`
+ * (`lib/harnessChat.ts` `apiPrompt`). After the first turn that string is the
+ * folded blob, not the raw queue item — exact-match against `session.queue`
+ * no-ops and copy-forward re-arms the in-flight prompt (adversarial #901).
+ *
+ * Bare prompts (no history) pass through. A history fold ends with
+ * `\nUser: ${newUserPrompt}\n\nAssistant:` — take that last User line.
+ */
+export function queueTextFromUserContent(text: string): string {
+  const t = (text ?? '').trim();
+  if (!t) return t;
+  const suffix = '\n\nAssistant:';
+  const head = t.endsWith(suffix) ? t.slice(0, t.length - suffix.length) : t;
+  const marker = '\nUser: ';
+  const idx = head.lastIndexOf(marker);
+  if (idx === -1) return t;
+  return head.slice(idx + marker.length).trim();
+}
+
 /** Drop the whole mirror (Clear/New semantics; used when a session is reset). */
 export function queueClear(session: SessionSnapshot): SessionSnapshot {
   if (session.queue === undefined) return session;

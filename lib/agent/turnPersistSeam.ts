@@ -72,7 +72,7 @@ import type {
   PersistStepSeam,
 } from '../workflows/persistStep';
 import { persistOverlayStatus, stampSnapshotUpdatedAt } from '../workflows/persistStep';
-import { queueWithoutText, sanitizeQueue } from '../turnQueue';
+import { queueTextFromUserContent, queueWithoutText, sanitizeQueue } from '../turnQueue';
 
 /** Worker-authored envelope clock source for the terminal B8 overlay (LWW). */
 export type OverlayClock = (storedUpdatedAt: number) => number;
@@ -112,13 +112,13 @@ function queueFromBody(body: unknown): string[] | undefined {
   return sanitizeQueue((body as Record<string, unknown>).queue);
 }
 
-/** First non-blank user text on a this-run snapshot (persistStep checkpoint). */
+/** First non-blank this-run user prompt (unwraps a history-fold userMessage). */
 function firstUserText(
   messages: Array<{ role: string; text: string }>,
 ): string | undefined {
   for (const m of messages) {
     if (m.role !== 'user') continue;
-    const t = m.text.trim();
+    const t = queueTextFromUserContent(m.text);
     if (t) return t;
   }
   return undefined;
@@ -159,8 +159,10 @@ function buildThisRunChunk(opts: {
   // it lets a cloud adopt wipe a localStorage re-arm. Copy-forward of the
   // *in-flight* prompt (HEAD Major): persistStep content is `{id, messages}`
   // so fromContent is always unset; a coalesced host strip PUT cannot beat
-  // B7. Strip this-run's first user text (removeQueuedText semantics) so a
-  // drain that has durably started cannot re-arm itself on F5.
+  // B7. Strip this-run's user prompt (removeQueuedText semantics) so a drain
+  // that has durably started cannot re-arm itself on F5. Production
+  // userMessage is a formatPromptWithHistory fold, not the raw queue item —
+  // queueTextFromUserContent unwraps the last `User:` line.
   const fromContent = queueFromBody(parsed);
   let queue = fromContent ?? opts.priorQueue;
   const started = firstUserText(incoming);
