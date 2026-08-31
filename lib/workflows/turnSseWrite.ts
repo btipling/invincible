@@ -10,13 +10,15 @@
  * + held writer for the round). `writeOnDefaultStream` is the sparse loop path
  * (one write per `'use step'` call). Do not call `getWritable()` per token.
  *
- * Stream PUT 5xx / 429 / timeout is retried in-process then dropped (live SSE
- * is a viewport; persist is the source of truth). AbortError is never latched.
+ * Stream PUT 429 is retried in-process then dropped. 5xx / timeout latch
+ * immediately (Workflows stream appends are not idempotent — SDK
+ * STREAM_RETRY_OPTIONS retries PUT only on 429). Live SSE is a viewport;
+ * persist is the source of truth. AbortError is never latched.
  */
 
 import { getWritable } from 'workflow';
 
-/** Extra tries after the first write (4 attempts total). NEW cap. */
+/** Extra tries after the first write (4 attempts total). NEW cap. 429 only. */
 export const STREAM_WRITE_RETRY_ATTEMPTS = 3;
 /** Base backoff ms (doubles each retryable miss). NEW cap. */
 export const STREAM_WRITE_RETRY_BASE_MS = 250;
@@ -54,30 +56,21 @@ function httpCodeFromMessage(msg: string): number | undefined {
   return Number.isInteger(n) ? n : undefined;
 }
 
-function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 429 || (status >= 500 && status <= 599);
-}
-
 /**
  * Classify a `writer.write` reject. Never classifies the SSE payload.
  *
- * - `retryable` — 5xx / 429 / 408 / Production PUT timeout / Internal Server Error on a stream PUT
+ * Matches workflow@4.8.4 stream-PUT policy (`STREAM_RETRY_OPTIONS`):
+ * - `retryable` — HTTP 429 only (server rejected before the chunk persisted)
  * - `abort` — AbortError / ResponseAborted / name `cancelled` (rethrow, never latch)
- * - `drop` — other writer I/O (4xx except 429/408, unknown)
+ * - `drop` — 5xx / timeout / other 4xx / unknown (latch, no retry). 5xx and
+ *   PUT timeout can mean the chunk *was* written; retrying duplicates live
+ *   tokens. The turn still continues — persist is SoT.
  */
 export function classifyStreamWriteError(err: unknown): StreamWriteErrorClass {
   if (isAbortWriteErr(err)) return 'abort';
   const msg = errorMessage(err);
   const status = errorStatus(err) ?? httpCodeFromMessage(msg);
-  if (status !== undefined && isRetryableStatus(status)) return 'retryable';
-  if (status !== undefined) return 'drop';
-  if (/timed out after \d+\s*ms/i.test(msg)) return 'retryable';
-  if (/\btimeout\b/i.test(msg) && /\b(put|stream)\b/i.test(msg)) {
-    return 'retryable';
-  }
-  if (/Internal Server Error/i.test(msg) && /\b(put|stream)\b/i.test(msg)) {
-    return 'retryable';
-  }
+  if (status === 429) return 'retryable';
   return 'drop';
 }
 
@@ -96,7 +89,7 @@ function backoffMs(attempt: number): number {
 
 /**
  * Retry a single write. Returns `'ok'` or `'drop'` (exhausted / non-retryable).
- * Rethrows abort. `attempt` 0 is the first try.
+ * Rethrows abort. `attempt` 0 is the first try. Only 429 retries.
  */
 async function writeOnceWithRetry(
   write: (payload: string) => Promise<void>,
@@ -131,8 +124,8 @@ export async function writeOnDefaultStream(payload: string): Promise<void> {
 /**
  * Hold one Workflows writer for a burst of framed SSE writes.
  * One `getWritable()` / one `getWriter()`; `releaseLock` in `finally`. Does not close.
- * Retryable stream PUT failures retry then latch this writer dead (later writes no-op).
- * AbortError is never latched.
+ * Retryable (429) stream PUT failures retry then latch this writer dead (later
+ * writes no-op). 5xx / timeout latch immediately. AbortError is never latched.
  */
 export async function withDefaultStreamWriter<T>(
   fn: (write: (payload: string) => Promise<void>) => Promise<T>,
