@@ -5,12 +5,11 @@
  * Product default is **`low`** for reasoning-capable models when the joined
  * catalog (Gateway list, models.dev overlay filling holes) has not published
  * an effort list (GLM-5.x today). Never auto-select `max` /
- * `xhigh` / `provider-default`. A request token must be on the Gateway
- * language-model wire or it is ignored (`max` is dropped, not aliased).
+ * `xhigh` / `provider-default`. A request token is adapted onto the Gateway
+ * language-model wire (`max` → `xhigh`); other unknown tokens are ignored.
  * Env `AGENT_REASONING` remains an ops override.
  */
-import { isGatewayReasoningWire } from '../gateway/reasoningWire';
-import { sanitizeReasoningEffort } from '../sessionCloudCaps';
+import { toGatewayReasoningWire } from '../gateway/reasoningWire';
 
 export type AgentReasoningEffort =
   | 'provider-default'
@@ -64,7 +63,7 @@ export function defaultEffortFromOptions(
 }
 
 export type ResolveAgentReasoningOpts = {
-  /** Request-body / start-arg token. Off-wire values (`max`) are ignored. */
+  /** Request-body / start-arg token. `max` is rewritten to `xhigh`. */
   request?: string | undefined;
   env?: Record<string, string | undefined>;
   /** Joined catalog `type: effort` values for this model id (maybe empty). */
@@ -73,9 +72,10 @@ export type ResolveAgentReasoningOpts = {
 
 /**
  * Resolve streamText `reasoning` option for this request.
- * Precedence: on-wire request → env `AGENT_REASONING` → joined-catalog list
+ * Precedence: adapted request → env `AGENT_REASONING` → joined-catalog list
  * default → product `low` if the model looks reasoning-capable → omit.
- * A request token the language-model API will reject is not forwarded.
+ * Never forwards `max`; request `max` becomes `xhigh`. Other unknown tokens
+ * are ignored.
  */
 export function resolveAgentReasoning(
   modelId: string,
@@ -83,8 +83,8 @@ export function resolveAgentReasoning(
 ): string | undefined {
   const env = opts.env ?? (process.env as Record<string, string | undefined>);
 
-  const request = sanitizeReasoningEffort(opts.request);
-  if (request && isGatewayReasoningWire(request)) return request;
+  const request = toGatewayReasoningWire(opts.request);
+  if (request) return request;
 
   const raw = env.AGENT_REASONING?.trim().toLowerCase();
   if (raw && ENV_ALLOWED.has(raw)) {

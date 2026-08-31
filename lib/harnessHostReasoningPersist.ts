@@ -4,6 +4,7 @@
  * (`defaultEffortFromOptions`); Wasm only paints + raises pending on click.
  */
 import { defaultEffortFromOptions } from './agent/reasoningConfig';
+import { toGatewayReasoningWire } from './gateway/reasoningWire';
 import type { HarnessBridge } from './harnessBridge';
 import type { IdSessionRepository } from './sessionRepository';
 import type { SessionSnapshot } from './sessionStore';
@@ -12,8 +13,9 @@ import type { ModelPersistSessionRef, PersistLocal } from './harnessHostModelPer
 
 /**
  * Push this model's joined effort list into Wasm and restore-or-default the
- * selection. Stored `max` is accepted if listed; the default algorithm never
- * chooses it. Poison / not-in-list / unset → `defaultEffortFromOptions`.
+ * selection. Catalog / stored `max` is rewritten to `xhigh` (picker label
+ * stays `xhigh`). The default algorithm never chooses `xhigh` / `max`.
+ * Poison / not-in-list / unset → `defaultEffortFromOptions`.
  * Empty options → clear list (picker hidden) and drop the carrier.
  */
 export function applySessionReasoning(
@@ -24,9 +26,13 @@ export function applySessionReasoning(
   persist: PersistLocal,
   repo: IdSessionRepository | null,
 ): void {
-  const cleanedOptions = options
-    .map((v) => sanitizeReasoningEffort(v))
-    .filter((v): v is string => v !== undefined);
+  const cleanedOptions: string[] = [];
+  for (const v of options) {
+    const token = toGatewayReasoningWire(v);
+    if (!token) continue;
+    if (cleanedOptions.includes(token)) continue;
+    cleanedOptions.push(token);
+  }
   bridge.setReasoningEfforts(cleanedOptions);
 
   if (cleanedOptions.length === 0) {
@@ -40,7 +46,8 @@ export function applySessionReasoning(
     return;
   }
 
-  const stored = sanitizeReasoningEffort(snap.reasoningEffort);
+  const storedRaw = sanitizeReasoningEffort(snap.reasoningEffort);
+  const stored = toGatewayReasoningWire(snap.reasoningEffort);
   const pick =
     stored && cleanedOptions.includes(stored)
       ? stored
@@ -49,9 +56,9 @@ export function applySessionReasoning(
   else bridge.setSelectedReasoning(null);
 
   const live = bridge.getSelectedReasoning();
-  // Drop a sticky/poisoned carrier that is not on this model's list.
+  // Drop a sticky/poisoned carrier, or rewrite stored `max` to live `xhigh`.
   // Unset carrier stays omitted (New/Clear: default lives in Wasm only).
-  if (stored && stored !== (live ?? undefined)) {
+  if (storedRaw !== undefined && storedRaw !== (live ?? undefined)) {
     if (live) sessionRef.current.reasoningEffort = live;
     else delete sessionRef.current.reasoningEffort;
     sessionRef.current.updatedAt = Date.now();
@@ -62,8 +69,8 @@ export function applySessionReasoning(
 
 /**
  * User effort-menu pick. Fold the LIVE selection into the snapshot and persist
- * so a pick survives without a turn, then ack. `max` is listable and persists
- * if the operator picked it.
+ * so a pick survives without a turn, then ack. Picker tokens are wire values
+ * (`xhigh`, never `max`).
  */
 export function foldPendingReasoningChange(
   bridge: HarnessBridge,

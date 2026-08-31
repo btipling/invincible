@@ -3,10 +3,11 @@ import {
   GATEWAY_REASONING_WIRE,
   filterGatewayWireEfforts,
   isGatewayReasoningWire,
+  toGatewayReasoningWire,
 } from './reasoningWire';
 
 describe('GATEWAY_REASONING_WIRE', () => {
-  it('is the language-model enum (no max, no alias)', () => {
+  it('is the language-model enum (no max)', () => {
     expect([...GATEWAY_REASONING_WIRE]).toEqual([
       'provider-default',
       'none',
@@ -31,13 +32,30 @@ describe('isGatewayReasoningWire', () => {
   });
 });
 
+describe('toGatewayReasoningWire', () => {
+  it('aliases max to xhigh; forwards wire tokens; drops garbage', () => {
+    expect(toGatewayReasoningWire('max')).toBe('xhigh');
+    expect(toGatewayReasoningWire('MAX')).toBe('xhigh');
+    expect(toGatewayReasoningWire('xhigh')).toBe('xhigh');
+    expect(toGatewayReasoningWire('low')).toBe('low');
+    expect(toGatewayReasoningWire('nope')).toBeUndefined();
+    expect(toGatewayReasoningWire('BAD TOKEN')).toBeUndefined();
+    expect(toGatewayReasoningWire('')).toBeUndefined();
+  });
+});
+
 describe('filterGatewayWireEfforts', () => {
-  it('drops max and junk; keeps xhigh; never aliases max to xhigh', () => {
+  it('rewrites max to xhigh, dedupes, and drops junk', () => {
+    expect(filterGatewayWireEfforts(['low', 'high', 'max'])).toEqual([
+      'low',
+      'high',
+      'xhigh',
+    ]);
     expect(
       filterGatewayWireEfforts(['low', 'high', 'max', 'xhigh', 'BAD', 'low']),
     ).toEqual(['low', 'high', 'xhigh']);
-    expect(filterGatewayWireEfforts(['max'])).toEqual([]);
-    expect(filterGatewayWireEfforts(['MAX'])).toEqual([]);
-    expect(filterGatewayWireEfforts(['max'])).not.toContain('xhigh');
+    expect(filterGatewayWireEfforts(['max'])).toEqual(['xhigh']);
+    expect(filterGatewayWireEfforts(['MAX'])).toEqual(['xhigh']);
+    expect(filterGatewayWireEfforts(['nope', 'v0'])).toEqual([]);
   });
 });

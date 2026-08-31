@@ -151,22 +151,36 @@ describe('applySessionReasoning (plan #898)', () => {
     expect(bridge.reasoningEffortCount()).toBe(0);
   });
 
-  it('push [low,high,max]; unset carrier defaults to low (never max)', () => {
+  it('push [low,high,max]; unset carrier defaults to low (never xhigh)', () => {
     const { bridge } = makeEffortBridge();
     const ref = { current: createEmptySession('s1') };
     applySessionReasoning(ref.current, ['low', 'high', 'max'], bridge, ref, () => {}, null);
     expect(bridge.getSelectedReasoning()).toBe('low');
+    expect(bridge.reasoningEffortCount()).toBe(3);
     expect(ref.current.reasoningEffort).toBeUndefined();
   });
 
-  it('setSelectedReasoning(max) accepted if listed; default algorithm never chooses it', () => {
+  it('stored max restores as xhigh and persists the rewrite', () => {
     const { bridge } = makeEffortBridge();
+    const puts: SessionSnapshot[] = [];
     const ref = { current: { ...createEmptySession('s1'), reasoningEffort: 'max' } };
-    applySessionReasoning(ref.current, ['low', 'high', 'max'], bridge, ref, () => {}, null);
-    expect(bridge.getSelectedReasoning()).toBe('max');
+    applySessionReasoning(
+      ref.current,
+      ['low', 'high', 'max'],
+      bridge,
+      ref,
+      (s) => {
+        ref.current = s;
+        puts.push(s);
+      },
+      null,
+    );
+    expect(bridge.getSelectedReasoning()).toBe('xhigh');
+    expect(ref.current.reasoningEffort).toBe('xhigh');
+    expect(puts[0]?.reasoningEffort).toBe('xhigh');
   });
 
-  it('NEVER_AUTO-only [max] stays unset (listable, never default) [adversarial-review #902 re-run]', () => {
+  it('NEVER_AUTO-only [max] lists xhigh and stays unset (never default)', () => {
     const { bridge } = makeEffortBridge();
     const ref = { current: createEmptySession('s1') };
     const puts: SessionSnapshot[] = [];
@@ -187,11 +201,11 @@ describe('applySessionReasoning (plan #898)', () => {
     expect(puts).toHaveLength(0);
   });
 
-  it('NEVER_AUTO-only [xhigh, max] stays unset', () => {
+  it('NEVER_AUTO-only [xhigh, max] dedupes to xhigh and stays unset', () => {
     const { bridge } = makeEffortBridge();
     const ref = { current: createEmptySession('s1') };
     applySessionReasoning(ref.current, ['xhigh', 'max'], bridge, ref, () => {}, null);
-    expect(bridge.reasoningEffortCount()).toBe(2);
+    expect(bridge.reasoningEffortCount()).toBe(1);
     expect(bridge.getSelectedReasoning()).toBeNull();
   });
 

@@ -1,7 +1,11 @@
 /**
  * Gateway `/v4/ai/language-model` `reasoning` enum.
  * Tokens outside this set 400 the turn (global allowlist, not per-model).
- * `max` is a models.dev / lab token — drop it; never alias to `xhigh`.
+ * Catalog / request `max` is rewritten to `xhigh` (the only wire token that
+ * means top effort). Other lab tokens are dropped. No other aliases.
+ *
+ * Hunch (unproven for GLM-5.3): Gateway may translate `xhigh` to Z.AI `max`
+ * the way Z.AI 5.2 documents. This rewrite does not depend on that mapping.
  */
 import { sanitizeReasoningEffort } from '../sessionCloudCaps';
 
@@ -25,15 +29,26 @@ export function isGatewayReasoningWire(token: string): boolean {
 }
 
 /**
+ * Adapt a catalog / request token onto the language-model wire.
+ * The only lab alias is `max` → `xhigh`. Other unknown tokens are dropped.
+ */
+export function toGatewayReasoningWire(value: unknown): string | undefined {
+  const token = sanitizeReasoningEffort(value);
+  if (!token) return undefined;
+  const adapted = token === 'max' ? 'xhigh' : token;
+  if (!isGatewayReasoningWire(adapted)) return undefined;
+  return adapted;
+}
+
+/**
  * Keep charset-valid tokens that the language-model API accepts.
- * Drops `max` and any other lab / catalog-only value. Does not alias.
+ * Rewrites `max` → `xhigh` and dedupes. Drops other lab / junk values.
  */
 export function filterGatewayWireEfforts(values: readonly string[]): string[] {
   const out: string[] = [];
   for (const v of values) {
-    const token = sanitizeReasoningEffort(v);
+    const token = toGatewayReasoningWire(v);
     if (!token) continue;
-    if (!isGatewayReasoningWire(token)) continue;
     if (out.includes(token)) continue;
     out.push(token);
   }

@@ -83,26 +83,43 @@ describe('resolveAgentReasoning', () => {
     ).toBe('low');
   });
 
-  it('drops request max (not on the language-model wire); does not alias to xhigh', () => {
+  it('rewrites request max to xhigh (does not drop or fall back to low)', () => {
     expect(
       resolveAgentReasoning('zai/glm-5.3-flash', {
         request: 'max',
         env: {},
         options: ['low', 'high', 'max'],
       }),
-    ).toBe('low');
+    ).toBe('xhigh');
     expect(
       resolveAgentReasoning('zai/glm-5.3-flash', {
         request: 'MAX',
         env: {},
         options: [],
       }),
-    ).toBe('low');
+    ).toBe('xhigh');
     expect(
       resolveAgentReasoning('any', {
         request: 'max',
         env: {},
         options: ['xhigh'],
+      }),
+    ).toBe('xhigh');
+  });
+
+  it('drops garbage request tokens', () => {
+    expect(
+      resolveAgentReasoning('zai/glm-5.3-flash', {
+        request: 'nope',
+        env: {},
+        options: ['low', 'high'],
+      }),
+    ).toBe('low');
+    expect(
+      resolveAgentReasoning('any', {
+        request: 'BAD TOKEN',
+        env: {},
+        options: [],
       }),
     ).toBeUndefined();
   });

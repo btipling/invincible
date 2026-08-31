@@ -2,7 +2,7 @@
  * Unauthenticated effort catalogs — Gateway `/v1/models` plus a models.dev
  * `vercel.models` overlay. Join at read: overlay fills a missing/empty
  * Gateway list; a nonempty Gateway list wins disagreements. Both sides
- * drop tokens not on the language-model `reasoning` wire (`max` today).
+ * adapt tokens onto the language-model `reasoning` wire (`max` → `xhigh`).
  * Never call this inside a `'use step'` / `'use workflow'` function;
  * `/api/models` and the turn-start HTTP boundary are the only callers.
  * Fail-open to an empty map.
@@ -101,9 +101,9 @@ export function parseModelsDevEffortMap(payload: unknown): Map<string, string[]>
 /**
  * Overlay fills a missing/empty Gateway list (GLM-5.3-flash today).
  * A nonempty Gateway list wins disagreements — overlay must not drop
- * Gateway-only tokens (`none` on grok-4.3). Both sides drop tokens that
- * are not on the Gateway language-model `reasoning` wire (`max` today).
- * Drop, never alias (`max` is not `xhigh`).
+ * Gateway-only tokens (`none` on grok-4.3). Both sides adapt tokens onto
+ * the language-model wire: `max` → `xhigh` (deduped); other unknown tokens
+ * are dropped.
  */
 export function joinEffortMaps(
   overlay: Map<string, string[]>,

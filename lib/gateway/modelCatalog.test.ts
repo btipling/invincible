@@ -136,7 +136,7 @@ describe('joinEffortMaps', () => {
       ['disagreement', ['none', 'low', 'medium', 'high']],
     ]);
     const joined = joinEffortMaps(overlay, gateway);
-    expect(joined.get('overlay-fill')).toEqual(['low', 'high']);
+    expect(joined.get('overlay-fill')).toEqual(['low', 'high', 'xhigh']);
     expect(joined.get('empty-overlay')).toEqual(['low', 'medium']);
     expect(joined.get('overlay-only')).toEqual(['low']);
     expect(joined.get('gateway-only')).toEqual(['none', 'low']);
@@ -146,10 +146,11 @@ describe('joinEffortMaps', () => {
     expect(joined.get('missing')).toBeUndefined();
   });
 
-  it('drops wire-unknown tokens from overlay and Gateway; does not alias max to xhigh', () => {
+  it('aliases overlay max to xhigh and drops garbage; never publishes max', () => {
     const overlay = new Map<string, string[]>([
       ['zai/glm-5.3-flash', ['low', 'high', 'max']],
       ['max-only', ['max']],
+      ['junk-only', ['nope']],
     ]);
     const gateway = new Map<string, string[]>([
       ['zai/glm-5.3-flash', []],
@@ -157,7 +158,7 @@ describe('joinEffortMaps', () => {
       ['max-only-gateway', ['max']],
     ]);
     const joined = joinEffortMaps(overlay, gateway);
-    expect(joined.get('zai/glm-5.3-flash')).toEqual(['low', 'high']);
+    expect(joined.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'xhigh']);
     expect(joined.get('openai/gpt-5.6')).toEqual([
       'none',
       'low',
@@ -165,10 +166,11 @@ describe('joinEffortMaps', () => {
       'high',
       'xhigh',
     ]);
-    expect(joined.get('max-only')).toBeUndefined();
-    expect(joined.get('max-only-gateway')).toEqual([]);
+    expect(joined.get('max-only')).toEqual(['xhigh']);
+    expect(joined.get('max-only-gateway')).toEqual(['xhigh']);
+    expect(joined.get('junk-only')).toBeUndefined();
     expect(joined.get('openai/gpt-5.6')?.includes('max')).toBe(false);
-    expect(joined.get('zai/glm-5.3-flash')?.includes('xhigh')).toBe(false);
+    expect(joined.get('zai/glm-5.3-flash')?.includes('max')).toBe(false);
   });
 });
 
@@ -535,7 +537,7 @@ describe('getJoinedEffortMap', () => {
       throw new Error(`unexpected ${input}`);
     });
     const map = await getJoinedEffortMap({ fetchImpl, now: () => 0 });
-    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high']);
+    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'xhigh']);
     expect(map.get('openai/gpt-5.6')).toEqual(['low', 'high']);
     const urls = vi.mocked(fetchImpl).mock.calls.map((c) => c[0]);
     expect(urls).toEqual(expect.arrayContaining([MODELS_DEV_URL, GATEWAY_MODELS_URL]));
@@ -569,7 +571,7 @@ describe('effortValuesForModel', () => {
     });
     await expect(
       effortValuesForModel('zai/glm-5.3-flash', { fetchImpl, now: () => 0 }),
-    ).resolves.toEqual(['low', 'high']);
+    ).resolves.toEqual(['low', 'high', 'xhigh']);
     await expect(
       effortValuesForModel('missing/id', { fetchImpl, now: () => 0 }),
     ).resolves.toEqual([]);
