@@ -72,6 +72,7 @@ import type {
   PersistStepSeam,
 } from '../workflows/persistStep';
 import { persistOverlayStatus, stampSnapshotUpdatedAt } from '../workflows/persistStep';
+import { queueTextFromUserContent, queueWithoutText, sanitizeQueue } from '../turnQueue';
 
 /** Worker-authored envelope clock source for the terminal B8 overlay (LWW). */
 export type OverlayClock = (storedUpdatedAt: number) => number;
@@ -105,6 +106,24 @@ export interface TurnPersistSeamDeps {
 const toMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
 
+/** F21 queue mirror on a snapshot-shaped body; undefined = no/poisoned carrier. */
+function queueFromBody(body: unknown): string[] | undefined {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return undefined;
+  return sanitizeQueue((body as Record<string, unknown>).queue);
+}
+
+/** First non-blank this-run user prompt (unwraps a history-fold userMessage). */
+function firstUserText(
+  messages: Array<{ role: string; text: string }>,
+): string | undefined {
+  for (const m of messages) {
+    if (m.role !== 'user') continue;
+    const t = queueTextFromUserContent(m.text);
+    if (t) return t;
+  }
+  return undefined;
+}
+
 /** This-run snapshot + optional `prev`/`depth`; non-snapshot test bodies keep stamp-only. */
 function buildThisRunChunk(opts: {
   content: string;
@@ -112,6 +131,8 @@ function buildThisRunChunk(opts: {
   updatedAt: number;
   prev: string | undefined;
   depth: number | undefined;
+  /** Prior blob's sanitized `queue` (copy-forward when this-run content omits it). */
+  priorQueue?: string[];
 }): string | null {
   let parsed: unknown;
   try {
@@ -133,6 +154,20 @@ function buildThisRunChunk(opts: {
   };
   if (opts.prev) rec.prev = opts.prev;
   if (opts.depth !== undefined) rec.depth = opts.depth;
+  // F21 adversarial #901: worker this-run chunks must copy-forward the
+  // submit-queue mirror (field rides the transcript blob, not meta). Dropping
+  // it lets a cloud adopt wipe a localStorage re-arm. Copy-forward of the
+  // *in-flight* prompt (HEAD Major): persistStep content is `{id, messages}`
+  // so fromContent is always unset; a coalesced host strip PUT cannot beat
+  // B7. Strip this-run's user prompt (removeQueuedText semantics) so a drain
+  // that has durably started cannot re-arm itself on F5. Production
+  // userMessage is a formatPromptWithHistory fold, not the raw queue item —
+  // queueTextFromUserContent unwraps the last `User:` line.
+  const fromContent = queueFromBody(parsed);
+  let queue = fromContent ?? opts.priorQueue;
+  const started = firstUserText(incoming);
+  if (started) queue = queueWithoutText(queue, started);
+  if (queue !== undefined && queue.length > 0) rec.queue = queue;
   return JSON.stringify(rec);
 }
 
@@ -231,6 +266,7 @@ export function createTurnPersistSeam(
       // walking (reconstruct fail-closes the whole blob at 256).
       let chunkPrev: string | undefined;
       let chunkDepth: number | undefined;
+      let priorQueue: string[] | undefined;
       const pointer = stored?.meta?.transcriptPointer;
       if (typeof pointer === 'string' && isObjectIdBoundTo(pointer, scope)) {
         let raw: string | null;
@@ -288,6 +324,7 @@ export function createTurnPersistSeam(
           }
           chunkPrev = pointer;
           chunkDepth = chainLen + 1;
+          priorQueue = queueFromBody(parsed);
         }
       }
 
@@ -297,6 +334,7 @@ export function createTurnPersistSeam(
         updatedAt,
         prev: chunkPrev,
         depth: chunkDepth,
+        priorQueue,
       });
       if (stampedRaw === null) {
         return await failWrite({

@@ -312,7 +312,7 @@ test "inv_clear_messages still clears the queue (F5 / New / switch)" {
     try t.expect(!bridge.isQueuePaused());
 }
 
-test "v22 reasoning list: push, default-unset, restore-by-value, reject unknown" {
+test "v23 reasoning list: push, default-unset, restore-by-value, reject unknown" {
     bridge.reset();
     try t.expectEqual(@as(u32, 0), bridge.reasoningEffortCount());
     try t.expectEqualStrings("", bridge.selectedReasoningId());
@@ -334,7 +334,7 @@ test "v22 reasoning list: push, default-unset, restore-by-value, reject unknown"
     try t.expect(!bridge.pushReasoningEffort("has space"));
 }
 
-test "v22 user pick raises pending; restore-by-value does not; empty clears" {
+test "v23 user pick raises pending; restore-by-value does not; empty clears" {
     bridge.reset();
     _ = bridge.pushReasoningEffort("low");
     _ = bridge.pushReasoningEffort("high");
@@ -349,7 +349,7 @@ test "v22 user pick raises pending; restore-by-value does not; empty clears" {
     try t.expectEqualStrings("", bridge.selectedReasoningId());
 }
 
-test "v22 reset clears reasoning list" {
+test "v23 reset clears reasoning list" {
     bridge.reset();
     _ = bridge.pushReasoningEffort("low");
     bridge.setSelectedReasoning(0);

@@ -581,6 +581,58 @@ describe('backend-agents A1–A3 — turn-carrier local mirror sanitize', () => 
   });
 });
 
+describe('backend-agents F21 — persisted submit-queue local mirror (plan #815 / adversarial #901)', () => {
+  function installMemoryLocalStorage() {
+    const map = new Map<string, string>();
+    const ls = {
+      getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+      setItem: (k: string, v: string) => {
+        map.set(k, String(v));
+      },
+      removeItem: (k: string) => {
+        map.delete(k);
+      },
+      clear: () => {
+        map.clear();
+      },
+    };
+    vi.stubGlobal('localStorage', ls);
+    return ls;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('LocalStorage load round-trips a sanitized queue; poison / empty stays unset', () => {
+    installMemoryLocalStorage();
+    const key = 'test-f21-queue-key';
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        id: 's',
+        messages: [],
+        updatedAt: 1,
+        queue: ['  alpha  ', '', 'beta'],
+      }),
+    );
+    const store = new LocalStorageSessionStore(key);
+    expect(store.load()?.queue).toEqual(['alpha', 'beta']);
+
+    localStorage.setItem(
+      key,
+      JSON.stringify({ id: 's', messages: [], updatedAt: 1, queue: [] }),
+    );
+    expect('queue' in (store.load() ?? {})).toBe(false);
+
+    localStorage.setItem(
+      key,
+      JSON.stringify({ id: 's', messages: [], updatedAt: 1, queue: 'nope' }),
+    );
+    expect('queue' in (store.load() ?? {})).toBe(false);
+  });
+});
+
 describe('isQuotaExceededError', () => {
   it('is true for QuotaExceededError name', () => {
     const err = new Error('The quota has been exceeded.');

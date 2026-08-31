@@ -38,15 +38,22 @@ missing) but the Redis envelope is still `running` with a `turnRunId`, boot
 overlays those three turn carriers onto the kept local snapshot, keeps `?s=`
 pinned, and cold-attaches. Messages stay the local (or LWW-winning) transcript
 until attach SSE catches up. The Blob object at `transcriptPointer` is the
-**latest** transcript chunk (`id`, `updatedAt`, `messages`, optional `prev`,
-optional `depth`).
-Worker persist writes **this-run messages** plus `prev` pointing at the previous
+**latest** transcript chunk (`id`, `updatedAt`, `messages`, optional `queue`,
+optional `prev`, optional `depth`). `queue` is the F21 persisted submit-queue
+mirror (host-known prompts not yet durably started; sanitized on read; omitted
+= no queue). It is first-class transcript-body state, not `meta`, and must be
+copy-forwarded onto worker this-run chunks (minus this-run's user prompt) and
+folded by host `trimForCloudPut`. Same-id adopt field-merges it with local
+(`mergeAdoptedUsage`) so a newer worker clock cannot drop a `queueAppend` that
+lost the coalesced-PUT race, and a stale-long server queue cannot re-arm an
+in-flight drain. Worker persist writes **this-run messages** plus `prev` pointing at the previous
 object and `depth` (1-based length of the chain ending at that object). Persist
 is head-only: it will not append when `depth` is already **256**. Legacy / host-flattened
 objects omit `prev` and `depth` and are a one-node chain.
 Reconstruct walks `prev` (max **256** objects, each id bound to this session)
 and suffix-merges oldest→newest. Host terminal PUT may **flatten** to a full
-trimmed snapshot with `prev` omitted (new root). Extra keys are ignored. The
+trimmed snapshot with `prev` omitted (new root). Unknown extra keys besides
+`queue` are ignored. The
 worker writes a chunk after the first model delta of a turn that still has tools
 to run, after each successful tool **batch**, and when a model round has no tools
 (the turn is finished). Mid-turn
@@ -150,7 +157,7 @@ The **local** blob uses the opaque client snapshot shape:
 | `cwd` | **Optional** logical workspace directory (workspace-root-relative). **Session-owned** (P1/GAP-1, #452) — synced to the cloud record as `meta.logicalCwd`, so it survives a device switch. A **confirmed successful `change_dir`** is persisted even when the turn later cancels / times out / hard-errors, so `cwd` survives across turn outcomes — not just a successful turn |
 | `activeSandboxId` | **Optional** server/origin sandbox id (Redis-safe opaque). **Session-owned, server-resolved** (P1/GAP-1, #452 + #330): synced as `meta.activeSandboxId` and sent on every `/api/agent` POST as the resolve **override**. The host folds it into the turn and, on success, applies the server's post-turn effective bind — `agentResult.activeSandboxId` (the `meta_sandbox_switch` target) with fallback to `sandboxId` — back as the authoritative binding (never the pre-turn `sandboxId` clobbering a switch); a hard 403 of the **grant-honesty class** (set-but-unusable: `Sandbox access denied.` / selection-required) clears the stale value so the next turn honestly re-resolves from preference / selection. A 403 `Workspace instance is not running.` (a usable grant whose instance is down / softContinue) is **kept** — never silently re-resolved to another grant |
 | `selectedModel` | **Optional** selected-model id (non-secret printable-ASCII catalog string, e.g. `provider/model`). **Session-owned** (plan #616 / source #610): synced to the cloud record as `meta.selectedModel` (reserved key), so the pick survives a reload and a device-switch adopt. Restore is **by id** after the model catalog is pushed (additive protocol-**v16** host→Wasm set-by-id export, never index math); a stored id missing from the (revoked/changed) catalog → default first-granted. The host also folds a user **Next** cycle into the snapshot via the **pending-model-change** flag (`inv_has_pending_model_change` / `inv_ack_pending_model_change`) observed by the host poll, so a pick persists without waiting for a turn; submit still reads the **live** Wasm selection (`getSelectedModel()`) — the carrier is never a second source of truth on the POST body. `sanitizeModelId` (≤ `MAX_MODEL_ID_LEN` = 128 bytes, printable ASCII) drops a poisoned value to unset — never brick a record |
-| `reasoningEffort` | **Optional** selected reasoning-effort token (Gateway value, e.g. `low` / `high` / `max`). **Session-owned** (plan #898): synced as reserved `meta.reasoningEffort`. Restore-by-value after the host pushes this model's Gateway list (protocol **v22**). Poison / not-in-list / unset → `defaultEffortFromOptions` (never auto `max`). `sanitizeReasoningEffort` (`^[a-z0-9_-]{1,32}$`) drops poison to unset — never 400. Submit reads live `getSelectedReasoning()` |
+| `reasoningEffort` | **Optional** selected reasoning-effort token (Gateway value, e.g. `low` / `high` / `max`). **Session-owned** (plan #898): synced as reserved `meta.reasoningEffort`. Restore-by-value after the host pushes this model's Gateway list (protocol **v23**). Poison / not-in-list / unset → `defaultEffortFromOptions` (never auto `max`). `sanitizeReasoningEffort` (`^[a-z0-9_-]{1,32}$`) drops poison to unset — never 400. Submit reads live `getSelectedReasoning()` |
 | `usage` | **Optional** last-completed provider token summary (`UsageSummary`, `source === 'provider'`). Rides reserved `meta.usage` as a JSON string (drop-to-unset on poison / non-provider / oversize — never `INVALID_META`). Restore on pull/adopt paints the context slot; **absent = hide**. Capture is live mid-stream (`usage` SSE events from `finish` parts) and reconciled at stream/JSON `done` (the conclusive replace — absent at `done` clears); abort keeps the prior honest in-memory value until the next persist; New/Clear wipe it |
 
 Storage key: `invincible.harness.session.v1`.

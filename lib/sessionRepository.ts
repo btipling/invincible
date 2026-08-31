@@ -37,6 +37,7 @@ import {
   decodeUsageMetaString,
   encodeUsageMetaString,
 } from './agent/usageSummary';
+import { mergeQueues, lastUserContent, sanitizeQueue } from './turnQueue';
 
 // Must stay in sync with the server-side role allowlist (`harnessSessions.ts`):
 // a kind-7 `skill_attached` row rides the transcript the host PUTs after `/foo`,
@@ -303,6 +304,12 @@ export function parseCloudSessionSnapshot(
     const usage = decodeUsageMetaString(meta.usage);
     if (usage !== undefined) snapshot.usage = usage;
   }
+  // backend-agents F21 (plan #815): restore the persisted submit-queue mirror
+  // from the transcript body. Fail-closed sanitize (drop blanks/over-cap items,
+  // cap depth); an empty/absent result stays unset — a poisoned blob can never
+  // inject junk prompts into the host drain.
+  const queue = sanitizeQueue(o.queue);
+  if (queue !== undefined && queue.length > 0) snapshot.queue = queue;
   return snapshot;
 }
 
@@ -374,6 +381,12 @@ export function overlayEnvelopeMeta(
   const turnStreamCursor = sanitizeTurnStreamCursor(envMeta.turnStreamCursor);
   if (turnStreamCursor !== undefined) out.turnStreamCursor = turnStreamCursor;
   else delete out.turnStreamCursor;
+
+  // NOTE: the F21 submit-queue mirror (`snapshot.queue`) rides the TRANSCRIPT
+  // blob body (parseCloudSessionSnapshot), NOT the envelope meta — it is
+  // transcript-bulk state, not a scalar carrier. overlayEnvelopeMeta must not
+  // clear it (meta is not the queue's carrier), so there is deliberately no
+  // queue handling here.
 
   return out;
 }
@@ -467,11 +480,15 @@ export function bootCloudSnapshot(input: {
 }
 
 /**
- * Merge `usage` on same-id adopt so a server snapshot without `meta.usage`
- * (other tab on a pre-#626 bundle, or any prior persist that omitted usage)
- * does not wipe an honest local last-completed value.
+ * Merge `usage` and F21 `queue` on same-id adopt.
  *
- * - Same id: `server.usage ?? local.usage` — server wins when it has one.
+ * - `usage`: `server.usage ?? local.usage` — server wins when it has one
+ *   (plan #626: a server snapshot without `meta.usage` must not wipe an
+ *   honest local last-completed value).
+ * - `queue`: union server+local then strip the in-flight last user
+ *   (adversarial #901: whole-snapshot server-wins dropped a `queueAppend`
+ *   that lost the coalesced-PUT race to a later worker B7; a stale-long
+ *   server queue would re-arm a drain that already started).
  * - Different id: server-only (a switch is a different session).
  */
 export function mergeAdoptedUsage(
@@ -479,7 +496,18 @@ export function mergeAdoptedUsage(
   local: SessionSnapshot,
 ): SessionSnapshot {
   if (server.id === local.id) {
-    return { ...server, usage: server.usage ?? local.usage };
+    const queue = mergeQueues(
+      server.queue,
+      local.queue,
+      lastUserContent(server.messages),
+    );
+    const out: SessionSnapshot = {
+      ...server,
+      usage: server.usage ?? local.usage,
+    };
+    if (queue !== undefined) out.queue = queue;
+    else delete out.queue;
+    return out;
   }
   return server;
 }
@@ -508,11 +536,17 @@ export function parseSessionSummaryList(body: unknown): SessionSummary[] | null 
   return out;
 }
 
-/** The PUT wire body: `{ id, updatedAt, messages, meta? }` (P1/GAP-1 folds the session-carrier fields into `meta`). */
+/** The PUT wire body: `{ id, updatedAt, messages, queue?, meta? }` (P1/GAP-1 folds the session-carrier fields into `meta`; F21 adds the `queue` mirror). */
 export type CloudPutBody = {
   id: string;
   updatedAt: number;
   messages: SessionMessage[];
+  /**
+   * backend-agents F21 (plan #815) — the persisted submit-queue mirror
+   * (ordered host-known prompts, oldest first). Record-body (transcript-blob)
+   * state, never `meta` (scalar-only). Omitted = no queued prompts.
+   */
+  queue?: string[];
   meta?: {
     activeSandboxId?: string;
     logicalCwd?: string;
@@ -673,11 +707,19 @@ export function trimForCloudPut(
         : m.text,
     at: m.at,
   }));
+  // backend-agents F21 (plan #815): the submit-queue mirror rides the record
+  // body (the transcript object on the envelope carrier / the roll-forward
+  // record). Re-sanitized (fail-closed) — a poisoned local value is dropped,
+  // never PUT. Empty mirror omits the field (absent = no queued prompts on
+  // this PUT). Same-id adopt does NOT treat omit as a clear — mergeQueues
+  // unions server+local then strips the in-flight last user (adversarial #901).
+  const queue = sanitizeQueue(snapshot.queue);
   const meta = cloudMetaFor(snapshot);
   const fresh = (ms: CloudPutBody['messages']): CloudPutBody => ({
     id: snapshot.id,
     updatedAt: snapshot.updatedAt,
     messages: ms,
+    ...(queue !== undefined && queue.length > 0 ? { queue } : {}),
     ...(meta !== undefined ? { meta } : {}),
   });
 
@@ -1023,9 +1065,9 @@ export function createHttpSessionRepository(
    * with the object's `transcriptPointer`. **Fail-closed:** if the object upload
    * fails (non-2xx / network), the envelope pointer is NOT advanced — a later restore
    * can never land on a missing/empty object hole (reader's Minor L1). The transcript
-   * object stores the same `{ id, updatedAt, messages, meta? }` shape the full-record
-   * PUT sends, so the envelope read (`getEnvelope`) reconstructs the identical
-   * `SessionSnapshot`.
+   * object stores `{ id, updatedAt, messages, queue?, meta? }` (F21 `queue` mirror)
+   * — the same shape `trimForCloudPut` sends — so the envelope read (`getEnvelope`)
+   * reconstructs the identical `SessionSnapshot`.
    */
   async function putEnvelopeOnce(
     id: string,

@@ -293,7 +293,7 @@ export type RunHarnessChatOptions = {
   useHistory?: boolean;
   /** Explicit gateway model id (protocol v3 picker). */
   modelId?: string;
-  /** Live Wasm effort pick (protocol v22). Omit when hidden/empty. */
+  /** Live Wasm effort pick (protocol v23). Omit when hidden/empty. */
   reasoning?: string;
 };
 
@@ -1176,9 +1176,12 @@ export async function runHarnessTurn(
     const attachOpts = opts?.attach;
     const dedup = attachOpts?.dedup === true;
     // Send-while-running (non-empty composer / promoted queue head) is a live
-    // session: keep the Wasm FIFO. kickColdAttach / hot-resume microtask pass
-    // empty prompt — F5 / switch may clear the (empty) queue.
-    const preserveQueue = attaching && (rawPrompt ?? '').trim().length > 0;
+    // session: keep the Wasm FIFO. F21 (adversarial #901): kickColdAttach's
+    // empty prompt is ALSO a live session — hydrateRingWindow already
+    // clearMessages'd + re-armed from the persisted mirror; a preserveQueue
+    // false here would inv_clear_messages the FIFO we just restored.
+    // F5/switch stale-FIFO wipe is hydrateRingWindow's job, not this attach.
+    const preserveQueue = attaching;
     let heapC = attachOpts != null
       ? (sanitizeTurnStreamCursor(attachOpts.startIndex) ?? 0)
       : 0;
@@ -1230,7 +1233,7 @@ export async function runHarnessTurn(
      * and let skip see an empty this-run window. Always re-hydrate the prefix
      * (even with no suffix) so a Wasm follow-up cannot remain as the last user
      * and so boot-scheduled images are re-put after the ring clear
-     * (`inv_clear_ring` when Send-while-running, else `inv_clear_messages`).
+     * (`inv_clear_ring` — attach always preserves the FIFO; F21 adversarial #901).
      */
     let coldBackup: typeof next.messages | null = null;
     if (attaching && dedup) {

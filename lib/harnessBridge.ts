@@ -44,9 +44,10 @@ import {
 // v21 (adversarial #857): `inv_clear_ring` — live-session ring + image/math
 // cache replace that keeps the submit queue / pause / promote gate. F5 / New /
 // switch still use `inv_clear_messages`. Additive, now REQUIRED.
-// v22 (plan #898): reasoning-effort picker — host-pushed Gateway list for the
+// v23 (plan #898): reasoning-effort picker — host-pushed Gateway list for the
 // current model + restore-by-value + pending-reasoning-change. Additive, now REQUIRED.
-export const HARNESS_PROTOCOL_VERSION = 22 as const;
+// (v22 reserved by the concurrent #815 enqueue-visibility residual.)
+export const HARNESS_PROTOCOL_VERSION = 23 as const;
 
 /** XOR constant used by `inv_ping` on the Wasm side. */
 export const INV_PING_XOR = 0xa5a5 as const;
@@ -62,7 +63,7 @@ export const MAX_MODEL_CATALOG = 64 as const;
  */
 export { MAX_MODEL_ID_LEN };
 
-/** Must match Zig `MAX_REASONING_EFFORT_LEN` (protocol v22, plan #898). */
+/** Must match Zig `MAX_REASONING_EFFORT_LEN` (protocol v23, plan #898). */
 export const MAX_REASONING_EFFORT_LEN = REASONING_EFFORT_MAX_BYTES;
 /** Must match Zig `MAX_REASONING_EFFORTS`. */
 export const MAX_REASONING_EFFORTS = REASONING_EFFORT_VALUES_MAX;
@@ -190,7 +191,7 @@ export type HarnessBridgeExports = {
   inv_set_selected_model: (ptr: number, len: number) => number;
   inv_has_pending_model_change: () => number;
   inv_ack_pending_model_change: () => void;
-  // Protocol v22 (plan #898) — reasoning-effort picker.
+  // Protocol v23 (plan #898) — reasoning-effort picker.
   inv_clear_reasoning_efforts: () => void;
   inv_push_reasoning_effort: (ptr: number, len: number) => number;
   inv_reasoning_effort_count: () => number;
@@ -828,7 +829,7 @@ export class HarnessBridge {
   }
 
   /**
-   * Protocol v22 — host restore-by-value. Selects the listed token, or clears
+   * Protocol v23 — host restore-by-value. Selects the listed token, or clears
    * selection when `id` is null/empty. Returns true when accepted; rejects
    * unknown / oversize / bad charset. Never raises the pending flag.
    */

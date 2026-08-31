@@ -606,7 +606,7 @@ describe('model persistence (protocol v16, plan #616)', () => {
   });
 });
 
-describe('reasoning efforts (protocol v22)', () => {
+describe('reasoning efforts (protocol v23)', () => {
   it('empty list → getSelectedReasoning null; push does not auto-select', () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
@@ -631,7 +631,7 @@ describe('reasoning efforts (protocol v22)', () => {
     expect(bridge.getSelectedReasoning()).toBeNull();
   });
 
-  it('v22 exports are REQUIRED (fail-closed when any missing)', () => {
+  it('v23 exports are REQUIRED (fail-closed when any missing)', () => {
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     for (const name of [
@@ -929,7 +929,7 @@ describe('skill_attached kind (protocol v12)', () => {
     // Distinct from the protocol version (13) — a hardcoded kind 13 would be an
     // unknown kind to the Wasm painter.
     expect(MessageKind.SkillAttached).not.toBe(HARNESS_PROTOCOL_VERSION);
-    expect(HARNESS_PROTOCOL_VERSION).toBe(22);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
   });
 
   it('push/readback round-trips a skill_attached row', () => {
@@ -959,7 +959,7 @@ describe('setTurnElapsed (protocol v14)', () => {
   });
 
   it('version bumped to 20 and the export is REQUIRED (fail-closed when missing)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(22);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     // A rebuilt Wasm that omits inv_set_turn_elapsed fails bridge-load closed,
@@ -1028,7 +1028,7 @@ describe('status-slot pack (protocol v13)', () => {
 
 describe('queuedCount (protocol v18)', () => {
   it('reads inv_queued_count and fails closed when the export is missing', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(22);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     expect(bridge.queuedCount()).toBe(0);
@@ -1075,7 +1075,7 @@ describe('clearRing / hydrateMessages preserveQueue (protocol v21, adversarial #
   });
 
   it('inv_clear_ring export is REQUIRED (fail-closed when missing)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(22);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     const record = exp as unknown as Record<string, unknown>;
@@ -1096,7 +1096,7 @@ describe('setQueuePromoteAllowed (protocol v19, plan #760)', () => {
   });
 
   it('export is REQUIRED (fail-closed when missing from the wasm)', () => {
-    expect(HARNESS_PROTOCOL_VERSION).toBe(22);
+    expect(HARNESS_PROTOCOL_VERSION).toBe(23);
     const exp = makeMockExports() as unknown as WebAssembly.Exports;
     expect(isHarnessBridgeExports(exp)).toBe(true);
     const record = exp as unknown as Record<string, unknown>;

@@ -46,11 +46,11 @@ const submit_queue = @import("submit_queue.zig");
 /// without touching the submit queue, pause latch, promote gate, or pending
 /// submit. Live-session surgical hydrate (Send-while-running attach). F5 / New
 /// / switch keep using `inv_clear_messages`. Additive, now REQUIRED.
-/// v22 (plan #898): reasoning-effort picker — `inv_clear_reasoning_efforts` /
+/// v23 (plan #898): reasoning-effort picker — `inv_clear_reasoning_efforts` /
 /// `inv_push_reasoning_effort` (host-pushed Gateway list for the current model),
 /// `inv_set_selected_reasoning` restore-by-value + pending-reasoning-change.
-/// Additive, now REQUIRED.
-pub const PROTOCOL_VERSION: u32 = 22;
+/// Additive, now REQUIRED. (v22 reserved by the concurrent #815 residual.)
+pub const PROTOCOL_VERSION: u32 = 23;
 
 pub const Lifecycle = enum(u8) {
     boot = 0,
@@ -93,7 +93,7 @@ pub const SUBMIT_CAP = 262144;
 /// Protocol v3 model catalog caps (host pushes UTF-8 model ids).
 pub const MAX_CATALOG = 64;
 pub const MAX_MODEL_ID_LEN = 128;
-/// Protocol v22 reasoning-effort list (host pushes Gateway tokens for the
+/// Protocol v23 reasoning-effort list (host pushes Gateway tokens for the
 /// current model). Parity-locked to TS `REASONING_EFFORT_MAX_BYTES` / `_VALUES_MAX`.
 pub const MAX_REASONING_EFFORTS = 16;
 pub const MAX_REASONING_EFFORT_LEN = 32;
@@ -178,7 +178,7 @@ var has_pending_cancel: bool = false;
 /// polls this flag, folds the live selection into the session snapshot, persists,
 /// then acks it.
 var has_pending_model_change: bool = false;
-/// Protocol v22 (plan #898) — set by the status-bar effort picker, never by
+/// Protocol v23 (plan #898) — set by the status-bar effort picker, never by
 /// the host restore-by-value path (`inv_set_selected_reasoning`).
 var has_pending_reasoning_change: bool = false;
 /// Plan #759 / adversarial-review Major — set when a HOST front-insert
@@ -956,7 +956,7 @@ export fn inv_ack_pending_model_change() void {
     ackPendingModelChange();
 }
 
-// ── Protocol v22 — reasoning-effort picker (plan #898) ────────────────────
+// ── Protocol v23 — reasoning-effort picker (plan #898) ────────────────────
 
 export fn inv_clear_reasoning_efforts() void {
     clearReasoningEfforts();

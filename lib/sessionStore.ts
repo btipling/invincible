@@ -103,6 +103,18 @@ export type SessionSnapshot = {
    * on poison; `0` is a valid value, preserved).
    */
   turnStreamCursor?: number;
+  /**
+   * backend-agents F21 (plan #815) — the persisted submit-queue MIRROR: an
+   * ordered list of host-known prompts not yet durably started (composer
+   * submits made while a turn is live). Oldest first. Rides the existing
+   * transcript blob (localStorage JSON locally; the transcript object on the
+   * envelope+Blob carrier) — never a reserved `meta` key, never a secret.
+   * Absent = no queue. Sanitized on read via `sanitizeQueue` (lib/turnQueue.ts;
+   * drop blanks / over-cap items, cap depth — a poisoned value never sticks).
+   * AS-BUILT scope: host-known items only; Wasm-internal band enqueues are not
+   * host-observable without a protocol bump (documented residual on #815).
+   */
+  queue?: string[];
 };
 
 import {
@@ -117,6 +129,7 @@ import {
   sanitizeTurnStreamCursor,
 } from './sessionCloudCaps';
 import { sanitizeUsageSummary } from './agent/usageSummary';
+import { sanitizeQueue } from './turnQueue';
 export { MAX_MODEL_ID_LEN, isRedisSafeOpaqueId, sanitizeSessionCwd } from './sessionCloudCaps';
 
 /**
@@ -229,6 +242,7 @@ export class LocalStorageSessionStore implements SessionStore {
         turnRunId?: unknown;
         turnStatus?: unknown;
         turnStreamCursor?: unknown;
+        queue?: unknown;
       };
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) return null;
       // Tolerant: keep only safe workspace-relative cwd strings (parent #270 / phase 2),
@@ -253,6 +267,7 @@ export class LocalStorageSessionStore implements SessionStore {
         turnRunId: rawTurnRunId,
         turnStatus: rawTurnStatus,
         turnStreamCursor: rawTurnStreamCursor,
+        queue: rawQueue,
         ...rest
       } = data;
       const cwd = sanitizeSessionCwd(rawCwd);
@@ -275,6 +290,11 @@ export class LocalStorageSessionStore implements SessionStore {
       const turnRunId = sanitizeTurnRunId(rawTurnRunId);
       const turnStatus = sanitizeTurnStatus(rawTurnStatus);
       const turnStreamCursor = sanitizeTurnStreamCursor(rawTurnStreamCursor);
+      // backend-agents F21 (plan #815): the persisted queue mirror re-sanitizes
+      // on local load (drop blanks/over-cap items, cap depth) so a stale or
+      // hand-edited localStorage value never sticks. An EMPTY sanitized list
+      // drops to unset (absent carrier), matching removeQueuedText.
+      const queue = sanitizeQueue(rawQueue);
       const out: SessionSnapshot = { ...rest } as SessionSnapshot;
       if (cwd !== undefined) out.cwd = cwd;
       if (activeSandboxId !== undefined) out.activeSandboxId = activeSandboxId;
@@ -293,6 +313,8 @@ export class LocalStorageSessionStore implements SessionStore {
       else delete out.turnStatus;
       if (turnStreamCursor !== undefined) out.turnStreamCursor = turnStreamCursor;
       else delete out.turnStreamCursor;
+      if (queue !== undefined && queue.length > 0) out.queue = queue;
+      else delete out.queue;
       return out;
     } catch {
       return null;
