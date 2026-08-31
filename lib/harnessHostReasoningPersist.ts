@@ -11,7 +11,7 @@ import { sanitizeReasoningEffort } from './sessionCloudCaps';
 import type { ModelPersistSessionRef, PersistLocal } from './harnessHostModelPersist';
 
 /**
- * Push this model's Gateway effort list into Wasm and restore-or-default the
+ * Push this model's joined effort list into Wasm and restore-or-default the
  * selection. Stored `max` is accepted if listed; the default algorithm never
  * chooses it. Poison / not-in-list / unset → `defaultEffortFromOptions`.
  * Empty options → clear list (picker hidden) and drop the carrier.

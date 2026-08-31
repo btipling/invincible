@@ -97,13 +97,13 @@ submit so no ghost request is sent.
 | Control | Effect |
 |---------|--------|
 | Model id (harness picker) | Choose a reasoning-capable granted model when desired |
-| Effort (harness picker) | In-canvas menu next to the model (protocol v23). Hidden when Gateway published no values for this id. Live pick is `POST { reasoning }`. `max` is listable if Gateway lists it; never the restore/default. Unset (NEVER_AUTO-only lists) shows `effort` until the operator commits — the trigger must not look like `max` is already selected. |
+| Effort (harness picker) | In-canvas menu next to the model (protocol v23). Hidden when neither Gateway nor models.dev `vercel.models[id]` published values for this id. Live pick is `POST { reasoning }`. `max` is listable if the joined catalog lists it; never the restore/default. Unset (NEVER_AUTO-only lists) shows `effort` until the operator commits — the trigger must not look like `max` is already selected. |
 | Resolved provider (harness label) | In-canvas text after the effort menu (protocol v24). Hidden when unknown. SSE `provider` is **live on the durable writer** (`formatLiveModelSse` allowlist). Capture: generation `providerMetadata.gateway.routing.resolvedProvider` (then `finalProvider`, then `providerName`/`provider`) then BYOK pin. `done.resolvedProvider` is the conclusive replace when present. Catalog id is unchanged. |
 | Request `reasoning` | Optional body field on `POST /api/turns` and `POST /api/agent` (`^[a-z0-9_-]{1,32}$`). Wins over env. |
 | `AGENT_REASONING` | Ops override only: `provider-default` \| `none` \| `low` \| `medium` \| `high`. Not the operator UI. Do not set `max` here. |
-| `GET /api/models` `reasoningOptions` | Per-model Gateway `type: effort` values when published (empty array when not). |
+| `GET /api/models` `reasoningOptions` | Per-model joined catalog: Gateway `type: effort` values when published; models.dev `vercel.models[id]` fills when Gateway omitted or empty. Empty array when both miss. |
 
-When `reasoning` is omitted and `AGENT_REASONING` is unset, the server enables `reasoning: low` if the model id looks reasoning-capable (`reasoning` / `thinking` in the id, but not `non-reasoning`; `glm-5*` ids also match — GLM-5.x always thinks) **and** Gateway has not published a non-empty effort list. If Gateway lists efforts, the conservative pick is `low` then `minimal` then `medium` then `none`, then the first remaining value that is not `max` / `xhigh` / `provider-default`. The product never auto-selects `max`. Other models omit the option. Thinking tokens are still provider completion.
+When `reasoning` is omitted and `AGENT_REASONING` is unset, the server enables `reasoning: low` if the model id looks reasoning-capable (`reasoning` / `thinking` in the id, but not `non-reasoning`; `glm-5*` ids also match — GLM-5.x always thinks) **and** the joined catalog has not published a non-empty effort list. If the catalog lists efforts, the conservative pick is `low` then `minimal` then `medium` then `none`, then the first remaining value that is not `max` / `xhigh` / `provider-default`. The product never auto-selects `max`. Other models omit the option. Thinking tokens are still provider completion.
 
 
 ## End of turn

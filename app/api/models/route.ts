@@ -1,5 +1,5 @@
 import { createProdServices } from '../../../lib/di';
-import { getGatewayEffortMap } from '../../../lib/gateway/modelCatalog';
+import { getJoinedEffortMap } from '../../../lib/gateway/modelCatalog';
 import { requireSessionUser } from '../../../lib/tenancy/session';
 
 export const runtime = 'nodejs';
@@ -9,7 +9,7 @@ const { resolveInference } = createProdServices();
 export type ModelCatalogEntry = {
   id: string;
   label: string;
-  /** Gateway `type: effort` values for this id (empty when unpublished). */
+  /** Joined catalog `type: effort` values (empty when unpublished). */
   reasoningOptions: string[];
 };
 
@@ -39,11 +39,11 @@ export async function GET(): Promise<Response> {
 
   try {
     const ids = await resolveInference.listModelsForUser(userId);
-    // Catalog fail-open lives in getGatewayEffortMap (never throws). Extra
+    // Catalog fail-open lives in getJoinedEffortMap (never throws). Extra
     // try keeps a 503 as grants-fail only if that contract ever drifts.
     let effortMap: Map<string, string[]> = new Map();
     try {
-      effortMap = await getGatewayEffortMap();
+      effortMap = await getJoinedEffortMap();
     } catch {
       effortMap = new Map();
     }
