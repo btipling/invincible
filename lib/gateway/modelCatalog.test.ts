@@ -5,7 +5,6 @@ import {
   GATEWAY_MODELS_CACHE_TTL_MS,
   GATEWAY_MODELS_FETCH_TIMEOUT_MS,
   MODELS_DEV_FETCH_MAX_BYTES,
-  REASONING_EFFORT_VALUES_MAX,
 } from '../sessionCloudCaps';
 import {
   GATEWAY_MODELS_URL,
@@ -52,22 +51,66 @@ describe('parseGatewayEffortMap', () => {
       'medium',
       'high',
       'xhigh',
-      'max',
     ]);
     expect(map.get('zai/glm-5.3-flash')).toEqual([]);
     expect(map.get('other/budget')).toEqual([]);
   });
 
-  it('drops junk tokens and caps at REASONING_EFFORT_VALUES_MAX', () => {
-    const values = Array.from({ length: REASONING_EFFORT_VALUES_MAX + 5 }, (_, i) => `v${i}`);
-    values.unshift('BAD TOKEN', '');
+  it('drops junk tokens, duplicates, and non-wire values (max)', () => {
     const map = parseGatewayEffortMap({
-      data: [{ id: 'm', reasoning_options: [{ type: 'effort', values }] }],
+      data: [
+        {
+          id: 'm',
+          reasoning_options: [
+            {
+              type: 'effort',
+              values: [
+                'BAD TOKEN',
+                '',
+                'max',
+                'low',
+                'low',
+                'high',
+                'v0',
+                'xhigh',
+                'none',
+              ],
+            },
+          ],
+        },
+      ],
     });
-    const got = map.get('m') ?? [];
-    expect(got).toHaveLength(REASONING_EFFORT_VALUES_MAX);
-    expect(got[0]).toBe('v0');
-    expect(got.includes('BAD TOKEN' as never)).toBe(false);
+    expect(map.get('m')).toEqual(['low', 'high', 'xhigh', 'none']);
+  });
+
+  it('drops max (not in Gateway language-model wire enum, #911)', () => {
+    const map = parseGatewayEffortMap({
+      data: [
+        {
+          id: 'zai/glm-5.3-flash',
+          reasoning_options: [
+            { type: 'effort', values: ['low', 'high', 'max'] },
+          ],
+        },
+        {
+          id: 'openai/gpt-5.6-luna',
+          reasoning_options: [
+            {
+              type: 'effort',
+              values: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+            },
+          ],
+        },
+      ],
+    });
+    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high']);
+    expect(map.get('openai/gpt-5.6-luna')).toEqual([
+      'none',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+    ]);
   });
 
   it('returns empty map on garbage payload', () => {
@@ -105,8 +148,8 @@ describe('parseModelsDevEffortMap', () => {
         },
       },
     });
-    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
-    expect(map.get('zai/glm-5.3')).toEqual(['low', 'high', 'max']);
+    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high']);
+    expect(map.get('zai/glm-5.3')).toEqual(['low', 'high']);
     expect(map.get('other/toggle')).toEqual([]);
     expect(map.has('glm-5.3-flash')).toBe(false);
     expect(map.has('wrong/id')).toBe(false);
@@ -123,7 +166,7 @@ describe('parseModelsDevEffortMap', () => {
 describe('joinEffortMaps', () => {
   it('overlay fills empty/missing Gateway; nonempty Gateway wins disagreement', () => {
     const overlay = new Map<string, string[]>([
-      ['overlay-fill', ['low', 'high', 'max']],
+      ['overlay-fill', ['low', 'high']],
       ['empty-overlay', []],
       ['overlay-only', ['low']],
       ['disagreement', ['low', 'medium', 'high']],
@@ -136,7 +179,7 @@ describe('joinEffortMaps', () => {
       ['disagreement', ['none', 'low', 'medium', 'high']],
     ]);
     const joined = joinEffortMaps(overlay, gateway);
-    expect(joined.get('overlay-fill')).toEqual(['low', 'high', 'max']);
+    expect(joined.get('overlay-fill')).toEqual(['low', 'high']);
     expect(joined.get('empty-overlay')).toEqual(['low', 'medium']);
     expect(joined.get('overlay-only')).toEqual(['low']);
     expect(joined.get('gateway-only')).toEqual(['none', 'low']);
@@ -263,11 +306,11 @@ describe('getModelsDevEffortMap', () => {
   it('fetches, caches, fail-opens last-good, and negative-caches', async () => {
     const fetchImpl = modelsDevJson({
       'zai/glm-5.3-flash': {
-        reasoning_options: [{ type: 'effort', values: ['low', 'high', 'max'] }],
+        reasoning_options: [{ type: 'effort', values: ['low', 'high'] }],
       },
     });
     const first = await getModelsDevEffortMap({ fetchImpl, now: () => 1_000 });
-    expect(first.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(first.get('zai/glm-5.3-flash')).toEqual(['low', 'high']);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledWith(
       MODELS_DEV_URL,
@@ -281,7 +324,7 @@ describe('getModelsDevEffortMap', () => {
       fetchImpl,
       now: () => 1_000 + GATEWAY_MODELS_CACHE_TTL_MS - 1,
     });
-    expect(second.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(second.get('zai/glm-5.3-flash')).toEqual(['low', 'high']);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
 
     const boom: FetchImpl = vi.fn(async () => {
@@ -291,14 +334,14 @@ describe('getModelsDevEffortMap', () => {
       fetchImpl: boom,
       now: () => 1_000 + GATEWAY_MODELS_CACHE_TTL_MS + 1,
     });
-    expect(stale.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(stale.get('zai/glm-5.3-flash')).toEqual(['low', 'high']);
     expect(boom).toHaveBeenCalledTimes(1);
 
     const staleAgain = await getModelsDevEffortMap({
       fetchImpl: boom,
       now: () => 1_000 + GATEWAY_MODELS_CACHE_TTL_MS + 1,
     });
-    expect(staleAgain.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(staleAgain.get('zai/glm-5.3-flash')).toEqual(['low', 'high']);
     expect(boom).toHaveBeenCalledTimes(1);
   });
 
@@ -370,7 +413,7 @@ describe('getModelsDevEffortMap', () => {
       vercel: {
         models: {
           'zai/glm-5.3-flash': {
-            reasoning_options: [{ type: 'effort', values: ['low', 'high', 'max'] }],
+            reasoning_options: [{ type: 'effort', values: ['low', 'high'] }],
           },
         },
       },
@@ -385,7 +428,7 @@ describe('getModelsDevEffortMap', () => {
       arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
     }));
     const map = await getModelsDevEffortMap({ fetchImpl, now: () => 0 });
-    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high']);
     expect(json).not.toHaveBeenCalled();
   });
 
@@ -394,7 +437,7 @@ describe('getModelsDevEffortMap', () => {
       vercel: {
         models: {
           'zai/glm-5.3-flash': {
-            reasoning_options: [{ type: 'effort', values: ['low', 'high', 'max'] }],
+            reasoning_options: [{ type: 'effort', values: ['low', 'high'] }],
           },
         },
       },
@@ -419,7 +462,7 @@ describe('getModelsDevEffortMap', () => {
       body,
     }));
     const map = await getModelsDevEffortMap({ fetchImpl, now: () => 0 });
-    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high']);
     expect(json).not.toHaveBeenCalled();
     expect(arrayBuffer).not.toHaveBeenCalled();
   });
@@ -485,7 +528,7 @@ describe('getJoinedEffortMap', () => {
               models: {
                 'zai/glm-5.3-flash': {
                   reasoning_options: [
-                    { type: 'effort', values: ['low', 'high', 'max'] },
+                    { type: 'effort', values: ['low', 'high'] },
                   ],
                 },
               },
@@ -510,7 +553,7 @@ describe('getJoinedEffortMap', () => {
       throw new Error(`unexpected ${input}`);
     });
     const map = await getJoinedEffortMap({ fetchImpl, now: () => 0 });
-    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high', 'max']);
+    expect(map.get('zai/glm-5.3-flash')).toEqual(['low', 'high']);
     expect(map.get('openai/gpt-5.6')).toEqual(['low', 'high']);
     const urls = vi.mocked(fetchImpl).mock.calls.map((c) => c[0]);
     expect(urls).toEqual(expect.arrayContaining([MODELS_DEV_URL, GATEWAY_MODELS_URL]));
@@ -529,7 +572,7 @@ describe('effortValuesForModel', () => {
               models: {
                 'zai/glm-5.3-flash': {
                   reasoning_options: [
-                    { type: 'effort', values: ['low', 'high', 'max'] },
+                    { type: 'effort', values: ['low', 'high'] },
                   ],
                 },
               },
@@ -544,7 +587,7 @@ describe('effortValuesForModel', () => {
     });
     await expect(
       effortValuesForModel('zai/glm-5.3-flash', { fetchImpl, now: () => 0 }),
-    ).resolves.toEqual(['low', 'high', 'max']);
+    ).resolves.toEqual(['low', 'high']);
     await expect(
       effortValuesForModel('missing/id', { fetchImpl, now: () => 0 }),
     ).resolves.toEqual([]);

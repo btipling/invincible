@@ -6,7 +6,10 @@ import {
   missingGatewayKeyError,
 } from '../../../lib/chatServer';
 import { parseAgentBody } from '../../../lib/agent/agentBody';
-import { resolveAgentReasoning } from '../../../lib/agent/reasoningConfig';
+import {
+  resolveAgentReasoning,
+  shouldFetchEffortCatalog,
+} from '../../../lib/agent/reasoningConfig';
 import { effortValuesForModel } from '../../../lib/gateway/modelCatalog';
 import type { SandboxClient } from '../../../lib/sandbox/client';
 import { runAgent, runAgentStream } from '../../../lib/agent/runAgent';
@@ -388,11 +391,12 @@ export async function POST(req: Request): Promise<Response> {
       );
     }
     // Kick the catalog GET now so it overlaps GH-token / sandbox / tool-world.
-    // Request-body token wins the resolver — skip the GET when already set.
-    const catalogPromise =
-      parsed.reasoning !== undefined
-        ? Promise.resolve([] as string[])
-        : effortValuesForModel(byok.modelId);
+    // Skip only when the body token is already on the Gateway wire enum
+    // (it wins the resolver). `max` still fetches so coerce can pick
+    // xhigh vs high (#911 adversarial-review).
+    const catalogPromise = shouldFetchEffortCatalog(parsed.reasoning)
+      ? effortValuesForModel(byok.modelId)
+      : Promise.resolve([] as string[]);
     // Per-user GitHub PAT → sandbox exec env (client options only; never tool schema).
     const gh = await services.userGithubToken.decryptUserGithubTokenForServer(
       userId,

@@ -15,6 +15,7 @@ import {
   GATEWAY_MODELS_FETCH_TIMEOUT_MS,
   MODELS_DEV_FETCH_MAX_BYTES,
   REASONING_EFFORT_VALUES_MAX,
+  isGatewayReasoningWire,
   sanitizeReasoningEffort,
 } from '../sessionCloudCaps';
 
@@ -49,7 +50,9 @@ export function resetGatewayModelsCache(): void {
 
 /**
  * Parse Gateway `/v1/models` JSON into model-id → effort-value list.
- * Ignores `toggle` / `budget_tokens`. Drops junk tokens. Caps list length.
+ * Ignores `toggle` / `budget_tokens`. Drops junk tokens and tokens that
+ * are not in the Gateway language-model wire enum (`max` — #911). Caps
+ * list length.
  */
 export function parseGatewayEffortMap(payload: unknown): Map<string, string[]> {
   const out = new Map<string, string[]>();
@@ -125,7 +128,7 @@ function effortValuesFromRow(row: object): string[] {
     if (!Array.isArray(listed)) continue;
     for (const v of listed) {
       const token = sanitizeReasoningEffort(v);
-      if (!token) continue;
+      if (!token || !isGatewayReasoningWire(token)) continue;
       if (values.includes(token)) continue;
       values.push(token);
       if (values.length >= REASONING_EFFORT_VALUES_MAX) return values;

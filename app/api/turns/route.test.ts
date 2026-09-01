@@ -301,6 +301,89 @@ describe('POST /api/turns', () => {
     expect(startArgs.tools).toBeUndefined();
   });
 
+  it('body max + luna list coerces to xhigh (#911 adversarial-review)', async () => {
+    const prev = process.env.AGENT_REASONING;
+    delete process.env.AGENT_REASONING;
+    try {
+      standardHarness();
+      mockAuthedSession();
+      mockStart();
+      servicesState.resolveInferenceForRequest = {
+        resolveByokForRequest: vi.fn(async () => ({
+          ok: true as const,
+          modelId: 'openai/gpt-5.6-luna',
+          provider: 'openai',
+          credentials: { apiKey: 'sk-test' },
+          only: ['openai'] as [string],
+          byok: { openai: [{ apiKey: 'sk-test' }] },
+          secretId: 'sec-1',
+          secretsToRedact: ['sk-test'],
+        })),
+      };
+      vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+        effortValuesForModel: vi.fn(async () => [
+          'none',
+          'low',
+          'medium',
+          'high',
+          'xhigh',
+        ]),
+      }));
+      ({ POST } = await import('./route'));
+
+      const res = await postJson({
+        prompt: 'hi',
+        sessionId: 's1',
+        reasoning: 'max',
+      });
+      expect(res.status).toBe(200);
+      const startArgs = startMock.mock.calls[0][1][0];
+      expect(startArgs.modelId).toBe('openai/gpt-5.6-luna');
+      expect(startArgs.reasoning).toBe('xhigh');
+    } finally {
+      if (prev === undefined) delete process.env.AGENT_REASONING;
+      else process.env.AGENT_REASONING = prev;
+    }
+  });
+
+  it('body max + glm overlay list coerces to high (#911)', async () => {
+    const prev = process.env.AGENT_REASONING;
+    delete process.env.AGENT_REASONING;
+    try {
+      standardHarness();
+      mockAuthedSession();
+      mockStart();
+      servicesState.resolveInferenceForRequest = {
+        resolveByokForRequest: vi.fn(async () => ({
+          ok: true as const,
+          modelId: 'zai/glm-5.3-flash',
+          provider: 'zai',
+          credentials: { apiKey: 'sk-test' },
+          only: ['zai'] as [string],
+          byok: { zai: [{ apiKey: 'sk-test' }] },
+          secretId: 'sec-1',
+          secretsToRedact: ['sk-test'],
+        })),
+      };
+      vi.doMock('../../../lib/gateway/modelCatalog', () => ({
+        effortValuesForModel: vi.fn(async () => ['low', 'high']),
+      }));
+      ({ POST } = await import('./route'));
+
+      const res = await postJson({
+        prompt: 'hi',
+        sessionId: 's1',
+        reasoning: 'max',
+      });
+      expect(res.status).toBe(200);
+      const startArgs = startMock.mock.calls[0][1][0];
+      expect(startArgs.reasoning).toBe('high');
+    } finally {
+      if (prev === undefined) delete process.env.AGENT_REASONING;
+      else process.env.AGENT_REASONING = prev;
+    }
+  });
+
   it('omitted body on glm-5.3-flash passes reasoning low to start() (plan #897 DoD)', async () => {
     const prev = process.env.AGENT_REASONING;
     delete process.env.AGENT_REASONING;

@@ -523,6 +523,33 @@ export const MODELS_DEV_FETCH_MAX_BYTES = 8 * 1024 * 1024;
 const REASONING_EFFORT_RE = /^[a-z0-9_-]+$/;
 
 /**
+ * AI SDK / Gateway language-model `reasoning` closed enum
+ * (`@ai-sdk/provider` LanguageModelV2CallOptions). `max` is **not** in it —
+ * models.dev and some Gateway catalogs still list it; sending it 400s
+ * (`GatewayInvalidRequestError`). Catalog parse drops non-members; the
+ * resolver coerces stored/request `max` (issue #911).
+ */
+export const GATEWAY_REASONING_WIRE = [
+  'provider-default',
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+] as const;
+
+export type GatewayReasoningWire = (typeof GATEWAY_REASONING_WIRE)[number];
+
+const GATEWAY_REASONING_WIRE_SET: ReadonlySet<string> = new Set(
+  GATEWAY_REASONING_WIRE,
+);
+
+export function isGatewayReasoningWire(token: string): boolean {
+  return GATEWAY_REASONING_WIRE_SET.has(token);
+}
+
+/**
  * Client-safe predicate for a reasoning-effort token (request body, session
  * carrier `meta.reasoningEffort` in phase 2, Gateway values). Trim + lowercase;
  * charset `^[a-z0-9_-]{1,32}$`. Fail-closed → `undefined`.

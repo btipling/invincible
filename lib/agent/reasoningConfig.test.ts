@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  coerceReasoningForGateway,
   defaultEffortFromOptions,
   modelIdLooksReasoningCapable,
   resolveAgentReasoning,
+  shouldFetchEffortCatalog,
 } from './reasoningConfig';
 
 describe('modelIdLooksReasoningCapable', () => {
@@ -129,5 +131,72 @@ describe('resolveAgentReasoning', () => {
     expect(
       resolveAgentReasoning('anthropic/claude-sonnet-4', { env: {} }),
     ).toBeUndefined();
+  });
+
+  it('coerces request max to high for glm overlay (skip-catalog body path, #911)', () => {
+    expect(
+      resolveAgentReasoning('zai/glm-5.3-flash', {
+        request: 'max',
+        env: {},
+        options: [],
+      }),
+    ).toBe('high');
+    expect(
+      resolveAgentReasoning('zai/glm-5.3-flash', {
+        request: 'max',
+        env: {},
+        options: ['low', 'high'],
+      }),
+    ).toBe('high');
+  });
+
+  it('coerces request max to xhigh when that token is listed', () => {
+    expect(
+      resolveAgentReasoning('openai/gpt-5.6-luna', {
+        request: 'MAX',
+        env: {},
+        options: ['none', 'low', 'medium', 'high', 'xhigh'],
+      }),
+    ).toBe('xhigh');
+  });
+});
+
+describe('coerceReasoningForGateway', () => {
+  it('passes wire tokens through', () => {
+    expect(coerceReasoningForGateway('low')).toBe('low');
+    expect(coerceReasoningForGateway('xhigh', ['high', 'xhigh'])).toBe('xhigh');
+    expect(coerceReasoningForGateway('provider-default')).toBe('provider-default');
+  });
+
+  it('maps max → xhigh if listed, else high', () => {
+    expect(coerceReasoningForGateway('max', ['none', 'high', 'xhigh'])).toBe(
+      'xhigh',
+    );
+    expect(coerceReasoningForGateway('max', ['low', 'high'])).toBe('high');
+    expect(coerceReasoningForGateway('max', [])).toBe('high');
+    expect(coerceReasoningForGateway('max')).toBe('high');
+  });
+
+  it('drops max when the list has neither high nor xhigh', () => {
+    expect(coerceReasoningForGateway('max', ['none', 'minimal'])).toBeUndefined();
+  });
+
+  it('drops unknown non-wire tokens', () => {
+    expect(coerceReasoningForGateway('budget')).toBeUndefined();
+    expect(coerceReasoningForGateway(undefined)).toBeUndefined();
+  });
+});
+
+describe('shouldFetchEffortCatalog (#911 adversarial-review)', () => {
+  it('fetches when the body is omitted or non-wire (max)', () => {
+    expect(shouldFetchEffortCatalog(undefined)).toBe(true);
+    expect(shouldFetchEffortCatalog('max')).toBe(true);
+    expect(shouldFetchEffortCatalog('MAX')).toBe(true);
+  });
+
+  it('skips when the body is already a Gateway wire token', () => {
+    expect(shouldFetchEffortCatalog('low')).toBe(false);
+    expect(shouldFetchEffortCatalog('xhigh')).toBe(false);
+    expect(shouldFetchEffortCatalog('provider-default')).toBe(false);
   });
 });

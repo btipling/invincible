@@ -6,8 +6,15 @@
  * catalog (Gateway list, models.dev overlay filling holes) has not published
  * an effort list (GLM-5.x today). Never auto-select `max` /
  * `xhigh` / `provider-default`. Env `AGENT_REASONING` remains an ops override.
+ *
+ * Gateway language-model `reasoning` is a closed enum that does **not**
+ * include `max` (#911). Catalog parse drops it; this resolver coerces a
+ * request/stored `max` to `xhigh` (if listed) else `high`.
  */
-import { sanitizeReasoningEffort } from '../sessionCloudCaps';
+import {
+  isGatewayReasoningWire,
+  sanitizeReasoningEffort,
+} from '../sessionCloudCaps';
 
 export type AgentReasoningEffort =
   | 'provider-default'
@@ -60,6 +67,40 @@ export function defaultEffortFromOptions(
   return undefined;
 }
 
+/**
+ * Map a sanitized token onto the Gateway language-model wire enum.
+ * `max` → `xhigh` if the model lists it, else `high` (skip-catalog body
+ * path included — `#911` glm-5.3-flash). Unknown non-wire tokens drop.
+ */
+export function coerceReasoningForGateway(
+  token: string | undefined,
+  options?: readonly string[],
+): string | undefined {
+  if (!token) return undefined;
+  if (isGatewayReasoningWire(token)) return token;
+  if (token === 'max') {
+    const opts = options ?? [];
+    if (opts.includes('xhigh')) return 'xhigh';
+    if (opts.length === 0 || opts.includes('high')) return 'high';
+  }
+  return undefined;
+}
+
+/**
+ * HTTP boundary: skip the joined-catalog GET only when the body token is
+ * already on the Gateway wire enum (it wins the resolver verbatim).
+ * `max` is **not** on the enum — still fetch so coerce can pick `xhigh`
+ * vs `high` (#911 adversarial-review). Omitted request also fetches
+ * (catalog default / product `low`).
+ */
+export function shouldFetchEffortCatalog(
+  request: string | undefined,
+): boolean {
+  const token = sanitizeReasoningEffort(request);
+  if (!token) return true;
+  return !isGatewayReasoningWire(token);
+}
+
 export type ResolveAgentReasoningOpts = {
   /** Sanitized request-body / start-arg token. Invalid values are ignored here. */
   request?: string | undefined;
@@ -79,7 +120,10 @@ export function resolveAgentReasoning(
 ): string | undefined {
   const env = opts.env ?? (process.env as Record<string, string | undefined>);
 
-  const request = sanitizeReasoningEffort(opts.request);
+  const request = coerceReasoningForGateway(
+    sanitizeReasoningEffort(opts.request),
+    opts.options,
+  );
   if (request) return request;
 
   const raw = env.AGENT_REASONING?.trim().toLowerCase();
