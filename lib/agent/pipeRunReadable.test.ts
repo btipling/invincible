@@ -71,6 +71,32 @@ describe('B11: helper stays off the workflow graph', () => {
   });
 });
 
+function routeCodeWithoutComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+}
+
+describe('routes never call getReadable themselves', () => {
+  it('GET /api/turns/:runId/stream uses bodyForRun only', () => {
+    const src = readFileSync(
+      resolve(process.cwd(), 'app/api/turns/[runId]/stream/route.ts'),
+      'utf8',
+    );
+    const code = routeCodeWithoutComments(src);
+    expect(code).toContain('bodyForRun');
+    expect(code).not.toMatch(/getReadable\s*\(/);
+  });
+
+  it('POST /api/turns uses bodyForRun only', () => {
+    const src = readFileSync(
+      resolve(process.cwd(), 'app/api/turns/route.ts'),
+      'utf8',
+    );
+    const code = routeCodeWithoutComments(src);
+    expect(code).toContain('bodyForRun');
+    expect(code).not.toMatch(/getReadable\s*\(/);
+  });
+});
+
 describe('isTerminalRunStatus', () => {
   it('C15 three: completed / failed / cancelled', () => {
     expect(isTerminalRunStatus('completed')).toBe(true);

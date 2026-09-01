@@ -1,8 +1,9 @@
 /**
  * backend-agents C16 (#810) — `GET /api/turns/:runId/stream`: attach/reconnect
- * to a live (or completed) durable-turn SSE stream via `getRun(runId).getReadable()`.
+ * to a durable-turn SSE stream via `bodyForRun` (never call `getReadable()`
+ * in this file). Already-`cancelled`/`failed` is synthetic SSE; `running`/
+ * `completed` wrap `getReadable({ startIndex })`.
  *
- * Pipes the Workflows SDK readable stream for a previously-started turn run.
  * `abort ≠ cancel` — client disconnect closes the reader but never cancels the
  * run. `getRun` is status truth. The producer closed `getWritable()` on all
  * terminal paths (B12 lock), so completed-run streams are valid.
@@ -28,7 +29,7 @@
  *  - 400 for invalid runId/startIndex/sessionId
  *  - 401 for auth failure
  *  - 404 for run not found OR ownership mismatch (tenancy guard)
- *  - 503 fail-closed for tenant resolve / store unavailable / getReadable throw
+ *  - 503 fail-closed for tenant resolve / store unavailable / wrap-path throw
  *
  * No `x-workflow-run-warning` header — this route is read-only (no PATCH).
  */
@@ -59,8 +60,10 @@ const services = createProdServices();
 /**
  * GET /api/turns/:runId/stream?sessionId=...&startIndex=N
  *
- * Attach or reconnect to a durable-turn SSE stream via
- * `getRun(runId).getReadable({startIndex})`. Read-only — no envelope writes.
+ * Attach or reconnect to a durable-turn SSE stream via `bodyForRun`.
+ * Already-`cancelled`/`failed` is synthetic SSE (no `getReadable()`).
+ * `running`/`completed` wrap `getReadable({ startIndex })`. Read-only — no
+ * envelope writes.
  *
  * Tenancy-bound: `sessionId` is REQUIRED and sanitized against
  * `isRedisSafeOpaqueId` (400 on invalid). The handler reads the session
@@ -193,7 +196,7 @@ export async function GET(
     );
   }
 
-  // Attach to the run stream. getRun, exists, and getReadable are all
+  // Attach to the run stream. getRun, exists, and bodyForRun are all
   // wrapped in one try/catch (smoke-route pattern) so any infra throw
   // maps to 503 fail-closed — never an uncaught 500.
   try {

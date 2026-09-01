@@ -40,8 +40,8 @@ flowchart TB
     loop --> persist
   end
 
-  turns -->|"start · runId"| entry
-  attach -.->|"getRun.getReadable"| entry
+  turns -->|"start · bodyForRun"| entry
+  attach -.->|"bodyForRun (synthetic or getReadable)"| entry
 
   subgraph stores ["Stores"]
     redis["Redis envelope<br/>meta + transcriptPointer"]

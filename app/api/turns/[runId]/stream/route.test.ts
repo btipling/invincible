@@ -563,6 +563,7 @@ describe('GET /api/turns/:runId/stream', () => {
   // ── Row 13 — Completed run — stream attached → 200 ──
   it('row 13 — completed run → 200, getReadable() succeeds', async () => {
     standardHarness();
+    mockGetRun({ status: Promise.resolve('completed') });
     mockAuthedSession();
     ({ GET } = await import('./route'));
 
@@ -591,6 +592,26 @@ describe('GET /api/turns/:runId/stream', () => {
     );
     const text = await res.text();
     expect(text).toContain('Request cancelled.');
+    expect(runCancelSpy).not.toHaveBeenCalled();
+    expect(getReadableMock).not.toHaveBeenCalled();
+  });
+
+  it('row 13c — failed hanging getReadable → 200 SSE terminates with Turn failed.', async () => {
+    const hangingStream = new ReadableStream<Uint8Array>({
+      start() {
+        /* never enqueue / close — platform fail hang */
+      },
+    });
+    getReadableMock = vi.fn(() => hangingStream);
+    standardHarness();
+    mockGetRun({ status: Promise.resolve('failed') });
+    mockAuthedSession();
+    ({ GET } = await import('./route'));
+
+    const res = await getStream('wf_turn_123');
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain('Turn failed.');
     expect(runCancelSpy).not.toHaveBeenCalled();
     expect(getReadableMock).not.toHaveBeenCalled();
   });
