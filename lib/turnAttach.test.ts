@@ -18,6 +18,7 @@ import {
   shouldPaintAttachFollowUpDetachNote,
   shouldRepostAttachFollowUp,
   shouldSkipAttachHotResume,
+  shouldKickHotResume,
   prefixThroughLastUser,
   shouldSkipToolResult,
   shouldSkipToolStart,
@@ -194,6 +195,64 @@ describe('decideHotResume (adversarial #857 host glue)', () => {
   });
 });
 
+describe('shouldKickHotResume (plan #919)', () => {
+  const live = {
+    turnStatus: 'running' as const,
+    turnRunId: 'wr_1',
+    operatorStop: false,
+  };
+
+  it('attaching + streamOpened false → false (subscribe-fail)', () => {
+    expect(
+      shouldKickHotResume({
+        ...live,
+        attaching: true,
+        streamOpened: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('attaching + streamOpened true + running → true (SSE-drop)', () => {
+    expect(
+      shouldKickHotResume({
+        ...live,
+        attaching: true,
+        streamOpened: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('POST (!attaching) + running → true even if streamOpened false', () => {
+    expect(
+      shouldKickHotResume({
+        ...live,
+        attaching: false,
+        streamOpened: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('operatorStop or not running → false', () => {
+    expect(
+      shouldKickHotResume({
+        ...live,
+        attaching: true,
+        streamOpened: true,
+        operatorStop: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldKickHotResume({
+        attaching: false,
+        streamOpened: true,
+        operatorStop: false,
+        turnStatus: 'completed',
+        turnRunId: 'wr_1',
+      }),
+    ).toBe(false);
+  });
+});
+
 describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)', () => {
   const host = readFileSync(resolve(process.cwd(), 'app/harness/HarnessHost.tsx'), 'utf8');
 
@@ -242,6 +301,8 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(host).toContain('decideHotResume(');
     expect(host).not.toContain('const progressed =');
     expect(host).toContain('dedup: false');
+    expect(host).toContain('shouldKickHotResume(');
+    expect(host).toContain('streamOpened');
   });
 
   it('Send while running uses decideSendAttach (never POST / C15 409)', () => {
@@ -263,7 +324,7 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
     expect(host).toContain('bridge.pushMessage(MessageKind.System, ATTACH_FOLLOW_UP_NOTE)');
     expect(host).toContain('setHostNote(ATTACH_FOLLOW_UP_DETACH_NOTE)');
     expect(host).toContain('bridge.pushMessage(MessageKind.System, ATTACH_FOLLOW_UP_DETACH_NOTE)');
-    expect(host).toContain('!operatorStop');
+    expect(host).toContain('if (kickHot)');
     expect(host).not.toContain('} else if (sendWhileRunning) {');
     expect(host).toContain('isAttachFollowUpHostNote(hostNote)');
     expect(host).not.toContain(
@@ -300,7 +361,9 @@ describe('harnessChat attach hydrate source-lock (adversarial #857)', () => {
   });
 
   it('attach Stop keep-running is D18-shaped (adversarial #857)', () => {
-    expect(src).toContain('const attachOperatorStop = attaching && fail.kind === \'stop\'');
+    expect(src).toContain(
+      'attaching && fail.kind === \'stop\' && opts?.signal?.aborted === true',
+    );
     expect(src).toContain('fail.kind === \'detach\' || attachSubscribeFail || attachOperatorStop');
     expect(src).toContain('fail.kind !== \'detach\' && !attachOperatorStop');
   });

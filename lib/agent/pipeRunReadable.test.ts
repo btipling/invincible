@@ -6,6 +6,7 @@ import { parseSseChunk } from '../agentSse';
 import {
   isTerminalRunStatus,
   pipeRunReadable,
+  bodyForRun,
   type RunStatusHandle,
 } from './pipeRunReadable';
 import { TURN_STREAM_STATUS_POLL_MS } from '../sessionCloudCaps';
@@ -60,12 +61,39 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
 }
 
 describe('B11: helper stays off the workflow graph', () => {
-  it('turnWorkflow.ts does not import pipeRunReadable', () => {
+  it('turnWorkflow.ts does not import pipeRunReadable or bodyForRun', () => {
     const src = readFileSync(
       resolve(process.cwd(), 'lib/workflows/turnWorkflow.ts'),
       'utf8',
     );
     expect(src).not.toContain('pipeRunReadable');
+    expect(src).not.toContain('bodyForRun');
+  });
+});
+
+function routeCodeWithoutComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+}
+
+describe('routes never call getReadable themselves', () => {
+  it('GET /api/turns/:runId/stream uses bodyForRun only', () => {
+    const src = readFileSync(
+      resolve(process.cwd(), 'app/api/turns/[runId]/stream/route.ts'),
+      'utf8',
+    );
+    const code = routeCodeWithoutComments(src);
+    expect(code).toContain('bodyForRun');
+    expect(code).not.toMatch(/getReadable\s*\(/);
+  });
+
+  it('POST /api/turns uses bodyForRun only', () => {
+    const src = readFileSync(
+      resolve(process.cwd(), 'app/api/turns/route.ts'),
+      'utf8',
+    );
+    const code = routeCodeWithoutComments(src);
+    expect(code).toContain('bodyForRun');
+    expect(code).not.toMatch(/getReadable\s*\(/);
   });
 });
 
@@ -248,5 +276,74 @@ describe('pipeRunReadable', () => {
     status = 'cancelled';
     const text = await consumed;
     expect(text).toBe(formatTurnSse({ type: 'error', error: 'Request cancelled.' }));
+  });
+});
+
+describe('bodyForRun', () => {
+  it('cancelled hanging getReadable is not called; synthetic Request cancelled.; no cancel', async () => {
+    const getReadable = vi.fn(() => hangingReadable());
+    const cancel = vi.fn();
+    const run = {
+      status: Promise.resolve('cancelled'),
+      getReadable,
+      cancel,
+    };
+    const text = await readAll(await bodyForRun(run));
+    expect(text).toBe(formatTurnSse({ type: 'error', error: 'Request cancelled.' }));
+    expect(getReadable).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it('failed hanging getReadable is not called; synthetic Turn failed.', async () => {
+    const getReadable = vi.fn(() => hangingReadable());
+    const run = {
+      status: Promise.resolve('failed'),
+      getReadable,
+    };
+    const text = await readAll(await bodyForRun(run));
+    expect(text).toBe(formatTurnSse({ type: 'error', error: 'Turn failed.' }));
+    expect(getReadable).not.toHaveBeenCalled();
+  });
+
+  it('completed + buffered text_delta then hang still wraps (C16)', async () => {
+    const delta = formatTurnSse({ type: 'text_delta', text: 'hi' });
+    const getReadable = vi.fn(() => bufferedThenHang([delta]));
+    const run = {
+      status: Promise.resolve('completed'),
+      getReadable,
+    };
+    const text = await readAll(await bodyForRun(run, { pollMs: 5 }));
+    expect(getReadable).toHaveBeenCalledTimes(1);
+    expect(text.startsWith(delta)).toBe(true);
+    expect(text).toContain(formatTurnSse({ type: 'done', text: '' }));
+  });
+
+  it('hung status falls through to wrap (C16 replay)', async () => {
+    const delta = formatTurnSse({ type: 'text_delta', text: 'hi' });
+    const getReadable = vi.fn(() => bufferedThenHang([delta]));
+    const run = {
+      status: new Promise<string>(() => {
+        /* never settles */
+      }),
+      getReadable,
+    };
+    const wrapped = await bodyForRun(run, { pollMs: 5 });
+    expect(getReadable).toHaveBeenCalledTimes(1);
+    const first = await wrapped.getReader().read();
+    expect(new TextDecoder().decode(first.value)).toBe(delta);
+  });
+
+  it('running POST arity calls getReadable() with no args', async () => {
+    const getReadable = vi.fn(() => chunksReadable([]));
+    const run = { status: Promise.resolve('running'), getReadable };
+    await readAll(await bodyForRun(run));
+    expect(getReadable).toHaveBeenCalledWith();
+  });
+
+  it('GET startIndex is forwarded', async () => {
+    const getReadable = vi.fn(() => chunksReadable([]));
+    const run = { status: Promise.resolve('running'), getReadable };
+    await readAll(await bodyForRun(run, { startIndex: 42 }));
+    expect(getReadable).toHaveBeenCalledWith({ startIndex: 42 });
   });
 });

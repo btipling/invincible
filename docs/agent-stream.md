@@ -108,7 +108,7 @@ When `reasoning` is omitted and `AGENT_REASONING` is unset, the server enables `
 
 ## End of turn
 
-Most harness turns paint a final line. **Detach does not** — losing the live reader (leave-site abort, or durable `/api/turns` body EOF without a producer `done` / `error` **while the Workflow run is still live**) is not “the turn ended.” If `getRun().status` is already terminal (`completed` / `failed` / `cancelled`) the start/attach wrapper closes the client stream with an existing SSE `done` or `error` — that is a turn end, not detach.
+Most harness turns paint a final line. **Detach does not** — losing the live reader (leave-site abort, or durable `/api/turns` body EOF without a producer `done` / `error` **while the Workflow run is still live**) is not “the turn ended.” If `getRun().status` is already `cancelled` or `failed`, start/attach returns a synthetic SSE `error` **without calling `getReadable()`** — that is a turn end (Stop / error), not detach. `running` / `completed` still wrap `getReadable()` so a later cancel injects SSE and completed replay can drain. Operator Stop/Esc on an attach **aborts this reader only** and keeps `running` (server cancel is a separate seam).
 
 | Outcome | Line |
 |---------|------|

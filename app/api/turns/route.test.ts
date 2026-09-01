@@ -636,7 +636,31 @@ describe('POST /api/turns', () => {
     const text = await res.text();
     expect(text).toContain('Request cancelled.');
     expect(cancel).not.toHaveBeenCalled();
-    expect(getReadable).toHaveBeenCalledTimes(1);
+    expect(getReadable).not.toHaveBeenCalled();
+  });
+
+  it('row 5c — failed hanging getReadable → 200 SSE terminates with Turn failed.', async () => {
+    const hangingStream = new ReadableStream<Uint8Array>({
+      start() {
+        /* never enqueue / close — platform fail hang on start() */
+      },
+    });
+    const cancel = vi.fn();
+    standardHarness();
+    mockAuthedSession();
+    const { getReadable } = mockStart({
+      status: Promise.resolve('failed'),
+      cancel,
+    });
+    getReadable.mockReturnValue(hangingStream);
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' }, 'text/event-stream');
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain('Turn failed.');
+    expect(cancel).not.toHaveBeenCalled();
+    expect(getReadable).not.toHaveBeenCalled();
   });
 
   it('row 6 — Accept: application/json → JSON {runId}, not SSE content-type', async () => {

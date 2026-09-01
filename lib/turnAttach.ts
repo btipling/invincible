@@ -190,6 +190,24 @@ export function decideHotResume(input: {
   return cls;
 }
 
+/**
+ * Host gate: after `runHarnessTurn`, stamp heap + `decideHotResume` only when
+ * this call actually opened a readable (or was a POST). Subscribe-fail
+ * (`Failed to fetch` / 503 before `onTurnStarted`) must not hot-resume.
+ */
+export function shouldKickHotResume(input: {
+  attaching: boolean;
+  streamOpened: boolean;
+  operatorStop: boolean;
+  turnStatus?: TurnStatus;
+  turnRunId?: string;
+}): boolean {
+  if (input.operatorStop) return false;
+  if (input.turnStatus !== 'running' || !input.turnRunId) return false;
+  if (input.attaching && !input.streamOpened) return false;
+  return true;
+}
+
 export type SendAttachSpec =
   | { kind: 'none' }
   | { kind: 'hot'; runId: string; startIndex: number; dedup: false }

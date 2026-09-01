@@ -40,8 +40,8 @@ flowchart TB
     loop --> persist
   end
 
-  turns -->|"start · runId"| entry
-  attach -.->|"getRun.getReadable"| entry
+  turns -->|"start · bodyForRun"| entry
+  attach -.->|"bodyForRun (synthetic or getReadable)"| entry
 
   subgraph stores ["Stores"]
     redis["Redis envelope<br/>meta + transcriptPointer"]
@@ -114,9 +114,10 @@ The `'use workflow'` orchestrator cannot write the stream. `done` / `error` are
 loop-owned (`writeTurnSse`). Live deltas use one held writer per step; writer
 I/O (5xx / 429 / timeout) latches that writer dead and later tokens no-op
 ([agent-stream.md](agent-stream.md)). Leave-tab abort is **detach**: the run
-keeps going; `GET /api/turns/:runId/stream` reattaches via
-`getRun(runId).getReadable({startIndex})` (Workflows run handle, not the
-`turnWorkflow` entry function).
+keeps going; `GET /api/turns/:runId/stream` reattaches. Already-`cancelled` or
+`failed` runs return synthetic SSE **without** calling `getReadable()`. Live
+and `completed` runs use `getRun(runId).getReadable({startIndex})` (Workflows
+run handle, not the `turnWorkflow` entry function).
 
 Host `runHarnessTurn` uses `/api/turns` only. `POST /api/agent` stays reachable
 as the **legacy tests/JSON** inject path (`sendAgent` / `sendAgentStream`).

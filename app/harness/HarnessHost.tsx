@@ -14,7 +14,7 @@ import {
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
 import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort, releaseBusyViewport } from '../../lib/detachTurn';
-import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, coldAttachFromSnapshot, type HeapApplied } from '../../lib/turnAttach';
+import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, shouldKickHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, coldAttachFromSnapshot, type HeapApplied } from '../../lib/turnAttach';
 import {
   HarnessBridge,
   HARNESS_PROTOCOL_VERSION,
@@ -689,7 +689,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         if (drainingQueued) {
           persist(removeQueuedText(sessionRef.current, pendingText));
         }
-        const { result, session: next } = await runHarnessTurn(
+        const { result, session: next, streamOpened = false } = await runHarnessTurn(
           bridge,
           sessionRef.current,
           prompt,
@@ -782,23 +782,30 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
         // Load earlier / refresh could wipe the cancelled turn from the ring.
         persistTurn(folded, folded.turnStatus !== 'running');
-        if (folded.turnStatus === 'running' && folded.turnRunId) {
+        const operatorStop = shouldSkipAttachHotResume({
+          attaching,
+          aborted: controller.signal.aborted,
+          isDetachAbort: isDetachAbort(controller.signal),
+        });
+        const kickHot = shouldKickHotResume({
+          attaching,
+          streamOpened,
+          operatorStop,
+          turnStatus: folded.turnStatus,
+          turnRunId: folded.turnRunId,
+        });
+        if (kickHot && folded.turnRunId) {
           heapAppliedRef.current = {
             runId: folded.turnRunId,
             count: folded.turnStreamCursor ?? 0,
           };
-        } else {
+        } else if (folded.turnStatus !== 'running') {
           heapAppliedRef.current = null;
         }
 
         // Adversarial #857: Send-while-running that finished the run (`done` /
         // 404 / post-start SSE error) re-POSTs the remapped prompt — C15 409
         // no longer applies. Wasm follow-up was stripped; pushUser paints it.
-        const operatorStop = shouldSkipAttachHotResume({
-          attaching,
-          aborted: controller.signal.aborted,
-          isDetachAbort: isDetachAbort(controller.signal),
-        });
         const repostFollowUp = shouldRepostAttachFollowUp({
           sendWhileRunning,
           turnStatus: folded.turnStatus,
@@ -842,11 +849,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // F5 is never this path (heapApplied was nulled; activateSession is cold).
         // Operator Stop during attach: skip auto-resume this tick (D18 reader
         // close, not G22 cancel — adversarial #857).
-        if (
-          folded.turnStatus === 'running' &&
-          folded.turnRunId &&
-          !operatorStop
-        ) {
+        if (kickHot) {
           const resume = decideHotResume({
             turnRunId: folded.turnRunId,
             turnStatus: folded.turnStatus,
