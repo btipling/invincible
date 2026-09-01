@@ -526,8 +526,9 @@ const REASONING_EFFORT_RE = /^[a-z0-9_-]+$/;
  * AI SDK / Gateway language-model `reasoning` closed enum
  * (`@ai-sdk/provider` LanguageModelV2CallOptions). `max` is **not** in it —
  * models.dev and some Gateway catalogs still list it; sending it 400s
- * (`GatewayInvalidRequestError`). Catalog parse drops non-members; the
- * resolver coerces stored/request `max` (issue #911).
+ * (`GatewayInvalidRequestError`). Catalog parse rewrites `max` → `xhigh`
+ * then drops remaining non-members; the resolver coerces stored/request
+ * `max` to `xhigh` when listed (issue #911 follow-up).
  */
 export const GATEWAY_REASONING_WIRE = [
   'provider-default',
@@ -547,6 +548,15 @@ const GATEWAY_REASONING_WIRE_SET: ReadonlySet<string> = new Set(
 
 export function isGatewayReasoningWire(token: string): boolean {
   return GATEWAY_REASONING_WIRE_SET.has(token);
+}
+
+/**
+ * Adapt a sanitized catalog/request token onto the Gateway wire.
+ * The only lab alias is `max` → `xhigh`. Other non-wire tokens drop.
+ */
+export function adaptEffortToken(token: string): string | undefined {
+  const adapted = token === 'max' ? 'xhigh' : token;
+  return isGatewayReasoningWire(adapted) ? adapted : undefined;
 }
 
 /**

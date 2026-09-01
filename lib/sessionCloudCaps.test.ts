@@ -6,6 +6,7 @@ import {
   GATEWAY_MODELS_CACHE_TTL_MS,
   GATEWAY_MODELS_FETCH_TIMEOUT_MS,
   GATEWAY_REASONING_WIRE,
+  adaptEffortToken,
   isGatewayReasoningWire,
   MODELS_DEV_FETCH_MAX_BYTES,
   REASONING_EFFORT_MAX_BYTES,
@@ -173,6 +174,14 @@ describe('GATEWAY_REASONING_WIRE (#911)', () => {
     expect(isGatewayReasoningWire('xhigh')).toBe(true);
     expect(isGatewayReasoningWire('max')).toBe(false);
     expect(isGatewayReasoningWire('budget')).toBe(false);
+  });
+
+  it('adaptEffortToken rewrites max → xhigh; drops garbage', () => {
+    expect(adaptEffortToken('max')).toBe('xhigh');
+    expect(adaptEffortToken('xhigh')).toBe('xhigh');
+    expect(adaptEffortToken('low')).toBe('low');
+    expect(adaptEffortToken('budget')).toBeUndefined();
+    expect(adaptEffortToken('medium')).toBe('medium');
   });
 
   it('Zig MAX_REASONING_EFFORT_LEN agrees with the host cap (plan #898)', () => {

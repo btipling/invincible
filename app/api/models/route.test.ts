@@ -139,7 +139,7 @@ describe('GET /api/models', () => {
     mockSession({ ok: true, user: { id: 'u1', email: 'a@t.com' } });
     mockResolveInference(vi.fn(async () => ['zai/glm-5.3-flash']));
     mockJoinedEffortMap(
-      new Map([['zai/glm-5.3-flash', ['low', 'high']]]),
+      new Map([['zai/glm-5.3-flash', ['low', 'high', 'xhigh']]]),
     );
     const { GET } = await import('./route');
     const res = await GET();
@@ -149,7 +149,7 @@ describe('GET /api/models', () => {
       {
         id: 'zai/glm-5.3-flash',
         label: 'glm-5.3-flash',
-        reasoningOptions: ['low', 'high'],
+        reasoningOptions: ['low', 'high', 'xhigh'],
       },
     ]);
   });

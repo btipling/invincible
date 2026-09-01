@@ -8,10 +8,11 @@
  * `xhigh` / `provider-default`. Env `AGENT_REASONING` remains an ops override.
  *
  * Gateway language-model `reasoning` is a closed enum that does **not**
- * include `max` (#911). Catalog parse drops it; this resolver coerces a
- * request/stored `max` to `xhigh` (if listed) else `high`.
+ * include `max` (#911). Catalog parse rewrites `max` → `xhigh`; this
+ * resolver coerces a request/stored `max` to `xhigh` (if listed) else `high`.
  */
 import {
+  adaptEffortToken,
   isGatewayReasoningWire,
   sanitizeReasoningEffort,
 } from '../sessionCloudCaps';
@@ -69,8 +70,9 @@ export function defaultEffortFromOptions(
 
 /**
  * Map a sanitized token onto the Gateway language-model wire enum.
- * `max` → `xhigh` if the model lists it, else `high` (skip-catalog body
- * path included — `#911` glm-5.3-flash). Unknown non-wire tokens drop.
+ * `max` → `xhigh` if the model lists it, else `high` (last-ditch when the
+ * catalog is empty or in-step re-resolve has no options). Unknown non-wire
+ * tokens drop.
  */
 export function coerceReasoningForGateway(
   token: string | undefined,
@@ -80,7 +82,8 @@ export function coerceReasoningForGateway(
   if (isGatewayReasoningWire(token)) return token;
   if (token === 'max') {
     const opts = options ?? [];
-    if (opts.includes('xhigh')) return 'xhigh';
+    const adapted = adaptEffortToken(token);
+    if (adapted && opts.includes(adapted)) return adapted;
     if (opts.length === 0 || opts.includes('high')) return 'high';
   }
   return undefined;
@@ -90,8 +93,8 @@ export function coerceReasoningForGateway(
  * HTTP boundary: skip the joined-catalog GET only when the body token is
  * already on the Gateway wire enum (it wins the resolver verbatim).
  * `max` is **not** on the enum — still fetch so coerce can pick `xhigh`
- * vs `high` (#911 adversarial-review). Omitted request also fetches
- * (catalog default / product `low`).
+ * when the rewritten catalog lists it, else `high`. Omitted request also
+ * fetches (catalog default / product `low`).
  */
 export function shouldFetchEffortCatalog(
   request: string | undefined,
