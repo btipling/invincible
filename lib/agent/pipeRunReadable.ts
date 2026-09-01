@@ -8,10 +8,13 @@
  * (`formatTurnSse`) and closes the **client** stream. It never calls
  * `run.cancel()` — abort ≠ cancel.
  *
- * Inject never runs in `start()` before a pull: that would drop C16 replay
- * of a completed run's buffered events. Status is still read immediately;
- * if it is already terminal, the first poll delay is 0 so a hung attach
- * unsticks on the first waiting pull (macrotask, after a queued read).
+ * Inject never runs in `start()` — that would drop C16 replay of a completed
+ * run's buffered events, and awaiting `run.status` there would block the
+ * first `pull()` if metadata hangs. Status is read only from the poll (or
+ * on underlying EOF, bounded by one poll interval so a hung `runs.get`
+ * cannot hold the client stream open). The first poll is a 0-delay
+ * macrotask after a waiting pull so a hung already-terminal attach unsticks
+ * without racing buffered reads (`pullWaiting` gate).
  *
  * Directive-free: not imported from `turnWorkflow.ts` (B11). Does not import
  * `workflow/api` or `lib/agent/agentStream.ts`.
@@ -83,7 +86,6 @@ export function pipeRunReadable(
   let sseBuf = '';
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | undefined;
-  let terminalAtSubscribe = false;
   let pollStarted = false;
   let pullWaiting = false;
 
@@ -163,22 +165,17 @@ export function pipeRunReadable(
   };
 
   return new ReadableStream<Uint8Array>({
-    async start(controller) {
+    start(controller) {
       controllerRef = controller;
       reader = readable.getReader();
-      try {
-        const status = await run.status;
-        terminalAtSubscribe =
-          typeof status === 'string' && isTerminalRunStatus(status);
-      } catch {
-        /* fail-soft */
-      }
     },
     async pull(controller) {
       if (closed || !reader) return;
       if (!pollStarted) {
         pollStarted = true;
-        schedulePoll(terminalAtSubscribe ? 0 : pollMs);
+        // 0-delay macrotask: unstick an already-terminal hung readable on
+        // the first waiting pull. Does not await status in start().
+        schedulePoll(0);
       }
       pullWaiting = true;
       let value: Uint8Array | string | undefined;
@@ -195,7 +192,16 @@ export function pipeRunReadable(
       pullWaiting = false;
       if (closed) return;
       if (done) {
-        await checkStatus();
+        // Fail-soft: a hung `run.status` must not block client close after
+        // the producer EOFs (pre-PR the raw readable would end). Cap the
+        // wait at one poll interval; inject if status settles first.
+        await Promise.race([
+          checkStatus(),
+          new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, pollMs);
+            t.unref?.();
+          }),
+        ]);
         closeOnce();
         return;
       }

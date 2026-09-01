@@ -612,6 +612,33 @@ describe('POST /api/turns', () => {
     expect(overlayWorkerMetaMock).toHaveBeenCalledTimes(1);
   });
 
+  it('row 5b — cancelled hanging getReadable → 200 SSE terminates with Request cancelled.', async () => {
+    const hangingStream = new ReadableStream<Uint8Array>({
+      start() {
+        /* never enqueue / close — platform cancel hang on start() */
+      },
+    });
+    const cancel = vi.fn();
+    standardHarness();
+    mockAuthedSession();
+    const { getReadable } = mockStart({
+      status: Promise.resolve('cancelled'),
+      cancel,
+    });
+    getReadable.mockReturnValue(hangingStream);
+    ({ POST } = await import('./route'));
+
+    const res = await postJson({ prompt: 'hi', sessionId: 's1' }, 'text/event-stream');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')?.startsWith('text/event-stream')).toBe(
+      true,
+    );
+    const text = await res.text();
+    expect(text).toContain('Request cancelled.');
+    expect(cancel).not.toHaveBeenCalled();
+    expect(getReadable).toHaveBeenCalledTimes(1);
+  });
+
   it('row 6 — Accept: application/json → JSON {runId}, not SSE content-type', async () => {
     standardHarness();
     mockAuthedSession();

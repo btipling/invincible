@@ -118,6 +118,49 @@ describe('pipeRunReadable', () => {
     expect(text).toBe(delta + formatTurnSse({ type: 'done', text: '' }));
   });
 
+  it('hung run.status does not block C16 replay of buffered events', async () => {
+    const run: RunStatusHandle = {
+      get status() {
+        return new Promise<string>(() => {
+          /* never settles — metadata hang must not gate pull */
+        });
+      },
+    };
+    const delta = formatTurnSse({ type: 'text_delta', text: 'Hi' });
+    const wrapped = pipeRunReadable(run, bufferedThenHang([delta]), { pollMs: 5 });
+    const reader = wrapped.getReader();
+    const dec = new TextDecoder();
+    const first = await Promise.race([
+      reader.read().then((r) => dec.decode(r.value, { stream: true })),
+      new Promise<string>((_, reject) => {
+        setTimeout(() => reject(new Error('blocked on hung run.status')), 200);
+      }),
+    ]);
+    expect(first).toBe(delta);
+    await reader.cancel();
+  });
+
+  it('hung run.status + producer EOF still closes (no inject)', async () => {
+    const run: RunStatusHandle = {
+      get status() {
+        return new Promise<string>(() => {
+          /* never settles */
+        });
+      },
+    };
+    const delta = formatTurnSse({ type: 'text_delta', text: 'Hi' });
+    const textP = readAll(
+      pipeRunReadable(run, chunksReadable([delta]), { pollMs: 20 }),
+    );
+    const text = await Promise.race([
+      textP,
+      new Promise<string>((_, reject) => {
+        setTimeout(() => reject(new Error('EOF blocked on hung run.status')), 200);
+      }),
+    ]);
+    expect(text).toBe(delta);
+  });
+
   it('failed + hanging readable → one Turn failed. error', async () => {
     const run: RunStatusHandle = { status: Promise.resolve('failed') };
     const text = await readAll(pipeRunReadable(run, hangingReadable()));
