@@ -201,3 +201,23 @@ export function shouldSetHostTurnNote(turnStatus?: TurnStatus): boolean {
   return turnStatus !== 'running';
 }
 
+/**
+ * Clear host Busy chrome this tick (Stop poll, and optionally D18 detach).
+ * Does **not** bump turn epoch and does **not** choose an abort reason —
+ * Stop must still land the late stop-fold persist.
+ */
+export type BusyViewportHooks = {
+  inflightRef: { current: boolean };
+  setBusy: (busy: boolean) => void;
+  setQueuePromoteAllowed: (allowed: boolean) => void;
+  setLifecycleReady: () => void;
+};
+
+export function releaseBusyViewport(hooks: BusyViewportHooks): void {
+  hooks.inflightRef.current = false;
+  hooks.setBusy(false);
+  hooks.setQueuePromoteAllowed(false);
+  hooks.setLifecycleReady();
+}
+
+

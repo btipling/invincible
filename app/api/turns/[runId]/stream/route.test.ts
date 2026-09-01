@@ -94,6 +94,7 @@ describe('GET /api/turns/:runId/stream', () => {
       exists: Promise.resolve(true),
       getReadable: getReadableMock,
       cancel: runCancelSpy,
+      status: Promise.resolve('running'),
       ...overrides,
     }));
     vi.doMock('workflow/api', () => ({
@@ -125,6 +126,7 @@ describe('GET /api/turns/:runId/stream', () => {
       sanitizeTurnStreamCursor: sanitizeTurnStreamCursorMock,
       isRedisSafeOpaqueId: isRedisSafeOpaqueIdMock,
       TURN_STREAM_CURSOR_MAX: 1_000_000_000,
+      TURN_STREAM_STATUS_POLL_MS: 1000,
     }));
   }
 
@@ -395,6 +397,7 @@ describe('GET /api/turns/:runId/stream', () => {
       sanitizeTurnStreamCursor: vi.fn(),
       isRedisSafeOpaqueId: vi.fn(() => true),
       TURN_STREAM_CURSOR_MAX: 1_000_000_000,
+      TURN_STREAM_STATUS_POLL_MS: 1000,
     }));
 
     // Still need tenancy mocks for the import to succeed, but they won't be
@@ -569,6 +572,28 @@ describe('GET /api/turns/:runId/stream', () => {
     expect(getReadableMock).toHaveBeenCalledTimes(1);
   });
 
+  it('row 13b — cancelled hanging getReadable → 200 SSE terminates with Request cancelled.', async () => {
+    const hangingStream = new ReadableStream<Uint8Array>({
+      start() {
+        /* never enqueue / close — platform cancel hang */
+      },
+    });
+    getReadableMock = vi.fn(() => hangingStream);
+    standardHarness();
+    mockGetRun({ status: Promise.resolve('cancelled') });
+    mockAuthedSession();
+    ({ GET } = await import('./route'));
+
+    const res = await getStream('wf_turn_123');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')?.startsWith('text/event-stream')).toBe(
+      true,
+    );
+    const text = await res.text();
+    expect(text).toContain('Request cancelled.');
+    expect(runCancelSpy).not.toHaveBeenCalled();
+  });
+
   // ── Row 14 — Missing runId param → 400 (handler guard) ──
   it('row 14 — missing runId param → 400 (Next.js routing contract — not route logic)', async () => {
     mockGetRun();
@@ -580,6 +605,7 @@ describe('GET /api/turns/:runId/stream', () => {
       sanitizeTurnStreamCursor: vi.fn(),
       isRedisSafeOpaqueId: vi.fn(() => true),
       TURN_STREAM_CURSOR_MAX: 1_000_000_000,
+      TURN_STREAM_STATUS_POLL_MS: 1000,
     }));
 
     mockTenancyOk();
@@ -663,6 +689,7 @@ describe('GET /api/turns/:runId/stream', () => {
       sanitizeTurnStreamCursor: vi.fn(),
       isRedisSafeOpaqueId: isRedisSafeOpaqueIdMock,
       TURN_STREAM_CURSOR_MAX: 1_000_000_000,
+      TURN_STREAM_STATUS_POLL_MS: 1000,
     }));
 
     mockTenancyOk();

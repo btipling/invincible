@@ -375,6 +375,17 @@ export function sanitizeTurnStreamCursor(value: unknown): number | undefined {
 export const TURN_START_MIN_INTERVAL_MS = 1000;
 
 /**
+ * How often a start/attach SSE wrapper re-reads `getRun().status` while the
+ * client readable is open. `status` is a snapshot (same as the live-only 409
+ * gate on `POST /api/turns`): a cancelled/failed/completed run whose producer
+ * never closed `getWritable()` would otherwise hang the viewport Busy forever.
+ * **NEW generous cap**: 1 second matches `TURN_START_MIN_INTERVAL_MS`. Only
+ * runs while a start/attach stream is open. Function-local timer — not a
+ * Function body. No existing cap value changed.
+ */
+export const TURN_STREAM_STATUS_POLL_MS = 1000;
+
+/**
  * Row cap for a message checkpoint (plan #800, backend-agents B6). The checkpoint
  * Blob is a multi-turn `{role, content}` projection; bounding its row count keeps a
  * replay/entity footprint bounded (same order as `TURN_FRESHLEDGER_MAX_GRANTS`,

@@ -276,7 +276,8 @@ describe('HarnessHost attach wiring source-lock (plan #813 / adversarial #857)',
       host.indexOf('const detachTurn = useCallback'),
       host.indexOf('const runPrompt = useCallback'),
     );
-    expect(helper).toContain('inflightRef.current = false');
+    expect(helper).toContain('releaseBusyViewport({');
+    expect(helper).toContain('inflightRef,');
   });
 });
 
