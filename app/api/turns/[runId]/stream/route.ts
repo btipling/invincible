@@ -33,7 +33,7 @@
  * No `x-workflow-run-warning` header — this route is read-only (no PATCH).
  */
 import { getRun } from 'workflow/api';
-import { pipeRunReadable } from '../../../../../lib/agent/pipeRunReadable';
+import { bodyForRun } from '../../../../../lib/agent/pipeRunReadable';
 import {
   AGENT_STREAM_CONTENT_TYPE,
 } from '../../../../../lib/agent/agentStream';
@@ -206,13 +206,10 @@ export async function GET(
       );
     }
 
-    // Pipe the readable stream. Client abort closes the reader but NEVER
-    // cancels the run — abort ≠ cancel is the parent lock (C16 row).
-    // Server cancel is G22 (#816). Terminal `run.status` without a producer
-    // `done`/`error` is injected by `pipeRunReadable` (never in start() —
-    // C16 completed-run replay must drain first).
-    const readable = run.getReadable({ startIndex });
-
+    // bodyForRun: already-cancelled/failed → synthetic SSE, never
+    // getReadable(). running/completed wrap getReadable({ startIndex }).
+    // Client abort closes the reader but NEVER cancels the run — abort ≠
+    // cancel (C16). Server cancel is G22 (#816).
     const headers: Record<string, string> = {
       'content-type': AGENT_STREAM_CONTENT_TYPE,
       'Cache-Control': 'no-cache, no-transform',
@@ -220,7 +217,7 @@ export async function GET(
       'x-workflow-run-id': cleanRunId,
     };
 
-    return new Response(pipeRunReadable(run, readable as ReadableStream), {
+    return new Response(await bodyForRun(run, { startIndex }), {
       status: 200,
       headers,
     });

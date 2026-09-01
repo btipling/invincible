@@ -592,6 +592,7 @@ describe('GET /api/turns/:runId/stream', () => {
     const text = await res.text();
     expect(text).toContain('Request cancelled.');
     expect(runCancelSpy).not.toHaveBeenCalled();
+    expect(getReadableMock).not.toHaveBeenCalled();
   });
 
   // ── Row 14 — Missing runId param → 400 (handler guard) ──

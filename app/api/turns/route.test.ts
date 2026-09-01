@@ -636,7 +636,7 @@ describe('POST /api/turns', () => {
     const text = await res.text();
     expect(text).toContain('Request cancelled.');
     expect(cancel).not.toHaveBeenCalled();
-    expect(getReadable).toHaveBeenCalledTimes(1);
+    expect(getReadable).not.toHaveBeenCalled();
   });
 
   it('row 6 — Accept: application/json → JSON {runId}, not SSE content-type', async () => {

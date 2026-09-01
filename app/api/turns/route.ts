@@ -48,7 +48,7 @@
  * `maxDuration = 1800` reuses the `/api/agent` constant verbatim (no cap change).
  */
 import { start, getRun } from 'workflow/api';
-import { pipeRunReadable } from '../../../lib/agent/pipeRunReadable';
+import { bodyForRun } from '../../../lib/agent/pipeRunReadable';
 import { parseAgentBody } from '../../../lib/agent/agentBody';
 import {
   resolveAgentReasoning,
@@ -138,9 +138,9 @@ function isHardSandboxDeny(
  * Body { prompt: string, sessionId: string, modelId?: string }.
  * - `sessionId` REQUIRED → 400 (parseAgentBody treats it optional, but the
  *   persist seam needs a session scope to locate the envelope).
- * - SSE (`Accept: text/event-stream`) → wrap `run.getReadable()` with
- *   `pipeRunReadable` (terminal `getRun().status` injects SSE `done`/`error`
- *   and closes the client stream) + header.
+ * - SSE (`Accept: text/event-stream`) → `bodyForRun` (already-`cancelled`/
+ *   `failed` is synthetic SSE without `getReadable()`; `running`/`completed`
+ *   wrap `getReadable()`) + header.
  * - else → JSON `{ runId }` + `x-workflow-run-id` header.
  * - `start` throw → 503 fail-closed, no `/api/agent` fallback.
  *
@@ -462,7 +462,7 @@ export async function POST(req: Request): Promise<Response> {
       runHeaders['x-workflow-run-warning'] = runWarning;
     }
     if (wantsAgentStream(req)) {
-      return new Response(pipeRunReadable(run, run.getReadable()), {
+      return new Response(await bodyForRun(run), {
         status: 200,
         headers: {
           'content-type': AGENT_STREAM_CONTENT_TYPE,

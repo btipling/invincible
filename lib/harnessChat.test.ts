@@ -5508,7 +5508,7 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const session = runningSession();
-    const { result, session: next } = await runHarnessTurn(bridge, session, '', {
+    const { result, session: next, streamOpened } = await runHarnessTurn(bridge, session, '', {
       attach: {
         runId: 'wr_1',
         startIndex: 0,
@@ -5530,6 +5530,7 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
     expect(next.turnStatus).toBe('running');
     expect(next.turnRunId).toBe('wr_1');
+    expect(streamOpened).toBeFalsy();
   });
 
   it('test 6d: 401 attach is subscribe-fail — EMBER, Ready, keep running, no Turn ended', async () => {
@@ -5737,6 +5738,34 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     expect(
       exp.__messages.some((m) => m.kind === MessageKind.Error),
     ).toBe(false);
+  });
+
+  it('test 6l: producer Request cancelled. without abort clears running (plan #919)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const session = runningSession();
+    const { result, session: next, streamOpened } = await runHarnessTurn(bridge, session, '', {
+      attach: {
+        runId: 'wr_live',
+        startIndex: 0,
+        dedup: true,
+        attachStream: async (runId, opts: AttachInit) => {
+          await opts.onTurnStarted?.({ turnRunId: runId });
+          await opts.onEvent?.({ type: 'error', error: 'Request cancelled.' });
+          return { ok: false as const, error: 'Request cancelled.', turnRunId: runId };
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(streamOpened).toBe(true);
+    expect(next.turnRunId).toBeUndefined();
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(true);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
   });
 
   it('test 6k: Send-while-running attach Stop keeps running, strips follow-up, no still-attached note (adversarial #857)', async () => {

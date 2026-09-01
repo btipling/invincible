@@ -1,20 +1,20 @@
 /**
- * Viewport wrapper for durable-turn `getReadable()` streams.
+ * Viewport wrapper for durable-turn `getReadable()` streams, plus
+ * `bodyForRun` which **does not call `getReadable()`** when `run.status` is
+ * already `cancelled`/`failed` (plain synthetic SSE).
  *
  * `getRun().status` is snapshot truth (same three terminal values as the
  * live-only 409 gate on `POST /api/turns`). Platform cancel does not always
  * run the loop `fail()` close, so a raw readable can hang while the run is
- * already terminal. This wrapper injects one existing SSE terminal
- * (`formatTurnSse`) and closes the **client** stream. It never calls
- * `run.cancel()` — abort ≠ cancel.
+ * already terminal. Already-terminal cancelled/failed attach returns a
+ * **plain** byte stream (`formatTurnSse`) and never touches the SDK
+ * readable. `running`/`completed` still wrap `getReadable()` so a later
+ * cancel injects SSE and C16 completed replay can drain.
  *
- * Inject never runs in `start()` — that would drop C16 replay of a completed
- * run's buffered events, and awaiting `run.status` there would block the
- * first `pull()` if metadata hangs. Status is read only from the poll (or
- * on underlying EOF, bounded by one poll interval so a hung `runs.get`
- * cannot hold the client stream open). The first poll is a 0-delay
- * macrotask after a waiting pull so a hung already-terminal attach unsticks
- * without racing buffered reads (`pullWaiting` gate).
+ * Inject never runs in wrapper `start()` — that would drop C16 replay of a
+ * completed run's buffered events. Status for the wrap path is read only
+ * from the poll (or on underlying EOF). The first poll is a 0-delay
+ * macrotask after a waiting pull.
  *
  * Directive-free: not imported from `turnWorkflow.ts` (B11). Does not import
  * `workflow/api` or `lib/agent/agentStream.ts`.
@@ -26,6 +26,12 @@ import { formatTurnSse } from '../workflows/turnSseFormat';
 /** Structural `getRun()` handle — tests inject a fake; routes pass the SDK run. */
 export type RunStatusHandle = {
   readonly status: PromiseLike<string> | string;
+};
+
+export type RunReadableHandle = RunStatusHandle & {
+  getReadable: (
+    opts?: { startIndex?: number },
+  ) => ReadableStream<Uint8Array | string>;
 };
 
 export type PipeRunReadableOpts = {
@@ -66,6 +72,47 @@ function injectPayload(status: string): Uint8Array | null {
     return sseBytes({ type: 'done', text: '' });
   }
   return null;
+}
+
+function timeoutUndefined(ms: number): Promise<undefined> {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(undefined), ms);
+    t.unref?.();
+  });
+}
+
+function syntheticTerminal(status: 'cancelled' | 'failed'): ReadableStream<Uint8Array> {
+  const bytes = injectPayload(status);
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      if (bytes) controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
+/**
+ * Choose the start/attach Response body **before** touching `getReadable()`.
+ * Already-`cancelled`/`failed` → plain synthetic SSE. Else wrap the SDK
+ * readable (`startIndex` omitted on POST matches `getReadable()` arity).
+ */
+export async function bodyForRun(
+  run: RunReadableHandle,
+  opts?: PipeRunReadableOpts & { startIndex?: number },
+): Promise<ReadableStream<Uint8Array>> {
+  const pollMs = resolvePollMs(opts);
+  const status = await Promise.race([
+    Promise.resolve(run.status),
+    timeoutUndefined(pollMs),
+  ]);
+  if (status === 'cancelled' || status === 'failed') {
+    return syntheticTerminal(status);
+  }
+  const readable =
+    opts?.startIndex === undefined
+      ? run.getReadable()
+      : run.getReadable({ startIndex: opts.startIndex });
+  return pipeRunReadable(run, readable, opts);
 }
 
 /**

@@ -343,6 +343,12 @@ export type HarnessTurnResult = {
   result: ChatResult;
   /** Session after this turn (user + optional system tool lines + assistant/error). */
   session: SessionSnapshot;
+  /**
+   * True only after attach/POST `onTurnStarted` (200 SSE opened).
+   * Omitted / false: validation, fetch-reject, JSON 4xx/5xx. Host hot-resume
+   * must not treat subscribe-fail as a live drop.
+   */
+  streamOpened?: boolean;
 };
 
 function roleToKind(role: SessionRole): MessageKind {
@@ -1697,6 +1703,7 @@ export async function runHarnessTurn(
       return {
         result: { ok: true, text: agentResult.text || assistantAcc },
         session: next,
+        streamOpened: sawDurableStart,
       };
     }
 
@@ -1748,7 +1755,10 @@ export async function runHarnessTurn(
       // durableIncomplete.
       // Attach Stop/Esc: reader-only abort (D18), not G22 server cancel —
       // keep `running`, no Turn ended · you stopped (adversarial #857).
-      const attachOperatorStop = attaching && fail.kind === 'stop';
+      // Producer cancelled SSE (`Request cancelled.` without abort) is a
+      // **terminal** Stop fold — clear `running` (plan #919 / source #918).
+      const attachOperatorStop =
+        attaching && fail.kind === 'stop' && opts?.signal?.aborted === true;
       const attachSubscribeFail =
         attaching &&
         !sawDurableStart &&
@@ -1906,6 +1916,7 @@ export async function runHarnessTurn(
           ...(agentResult.ok ? {} : { status: agentResult.status }),
         },
         session: failedSession,
+        streamOpened: sawDurableStart,
       };
     }
   }
