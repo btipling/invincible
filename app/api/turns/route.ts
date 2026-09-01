@@ -252,7 +252,7 @@ export async function POST(req: Request): Promise<Response> {
     // Kick the catalog GET now so it overlaps envelope + sandbox probe.
     // Skip only when the body token is already on the Gateway wire enum
     // (it wins the resolver). `max` still fetches so coerce can pick
-    // xhigh vs high (#911 adversarial-review).
+    // xhigh (rewritten catalog) vs high (empty-catalog last-ditch).
     const catalogPromise = shouldFetchEffortCatalog(parsed.reasoning)
       ? effortValuesForModel(byok.modelId)
       : Promise.resolve([] as string[]);
