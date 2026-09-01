@@ -16,6 +16,8 @@ import {
   STATUS_SLOT_MAX_BYTES,
   TURN_RUN_ID_MAX,
   TURN_STREAM_CURSOR_MAX,
+  TURN_STREAM_STATUS_POLL_MS,
+  TURN_START_MIN_INTERVAL_MS,
   TURN_STATUS_MAX_BYTES,
   TURN_STATUS_VALUES,
   sanitizeModelId,
@@ -326,6 +328,13 @@ describe('sanitizeTurnStatus + TURN_STATUS_MAX_BYTES (plan #796 — turn-status 
   it('drops over-length values (TURN_STATUS_MAX_BYTES + 1)', () => {
     expect(sanitizeTurnStatus('a'.repeat(TURN_STATUS_MAX_BYTES))).toBeUndefined(); // not a member
     expect(sanitizeTurnStatus('x'.repeat(TURN_STATUS_MAX_BYTES + 1))).toBeUndefined();
+  });
+});
+
+describe('TURN_STREAM_STATUS_POLL_MS (start/attach status poll)', () => {
+  it('is a NEW 1000 ms cap matching TURN_START_MIN_INTERVAL_MS', () => {
+    expect(TURN_STREAM_STATUS_POLL_MS).toBe(1000);
+    expect(TURN_STREAM_STATUS_POLL_MS).toBe(TURN_START_MIN_INTERVAL_MS);
   });
 });
 

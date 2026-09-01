@@ -13,7 +13,7 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
-import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort } from '../../lib/detachTurn';
+import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort, releaseBusyViewport } from '../../lib/detachTurn';
 import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, coldAttachFromSnapshot, type HeapApplied } from '../../lib/turnAttach';
 import {
   HarnessBridge,
@@ -555,8 +555,16 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     }
     if (decision === 'detach' || decision === 'detach-close') {
       turnEpochRef.current += 1;
-      inflightRef.current = false;
-      setBusy(false);
+      releaseBusyViewport({
+        inflightRef,
+        setBusy,
+        setQueuePromoteAllowed: (allowed) => {
+          bridgeRef.current?.setQueuePromoteAllowed(allowed);
+        },
+        setLifecycleReady: () => {
+          bridgeRef.current?.setLifecycle(Lifecycle.Ready);
+        },
+      });
     }
     return decision;
   }, []);
@@ -1170,6 +1178,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // Protocol v9: Stop first — abort inflight and skip starting a turn this tick.
             if (b.takePendingCancel()) {
               abortRef.current?.abort();
+              releaseBusyViewport({
+                inflightRef,
+                setBusy,
+                setQueuePromoteAllowed: (allowed) => b.setQueuePromoteAllowed(allowed),
+                setLifecycleReady: () => b.setLifecycle(Lifecycle.Ready),
+              });
             } else if (inflightRef.current || switchInFlightRef.current) {
               foldPendingSessionSwitch(true, () => b.takePendingSessionSwitch(), () => {});
             } else {

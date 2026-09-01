@@ -1929,6 +1929,37 @@ describe('durable stream EOF is detach (plan #852 / source #849)', () => {
     ).toBe(true);
   });
 
+  it('SSE error Request cancelled. after onTurnStarted is stop, not detach', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { session: next, result } = await runHarnessTurn(
+      bridge,
+      createEmptySession(),
+      'work',
+      {
+        streamAgent: true,
+        sendAgentStream: async (_prompt, init) => {
+          await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+          await init?.onEvent?.({ type: 'error', error: 'Request cancelled.' });
+          return {
+            ok: false as const,
+            error: 'Request cancelled.',
+            turnRunId: 'wr_live',
+          };
+        },
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(next.turnRunId).toBeUndefined();
+    expect(next.turnStatus).toBe('completed');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(true);
+    expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
+  });
+
   it('after onTurnStarted, empty/EOF does not POST a second turn', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);

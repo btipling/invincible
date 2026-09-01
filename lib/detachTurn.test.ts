@@ -20,7 +20,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   abortReasonFor,
   decideDetach,
@@ -29,6 +29,7 @@ import {
   isDetachAbort,
   preserveTargetId,
   putPreservedTurn,
+  releaseBusyViewport,
   shouldAbortReader,
   shouldApplyMintBind,
   shouldSetHostTurnNote,
@@ -300,6 +301,28 @@ describe('preserveTargetId / shouldApplyMintBind (adversarial #844 first-turn mi
   });
 });
 
+describe('releaseBusyViewport', () => {
+  it('clears inflight + busy, promote-gate false, then Ready', () => {
+    const inflightRef = { current: true };
+    const setBusy = vi.fn();
+    const setQueuePromoteAllowed = vi.fn();
+    const setLifecycleReady = vi.fn();
+    releaseBusyViewport({
+      inflightRef,
+      setBusy,
+      setQueuePromoteAllowed,
+      setLifecycleReady,
+    });
+    expect(inflightRef.current).toBe(false);
+    expect(setBusy).toHaveBeenCalledWith(false);
+    expect(setQueuePromoteAllowed).toHaveBeenCalledWith(false);
+    expect(setLifecycleReady).toHaveBeenCalledTimes(1);
+    expect(setQueuePromoteAllowed.mock.invocationCallOrder[0]).toBeLessThan(
+      setLifecycleReady.mock.invocationCallOrder[0],
+    );
+  });
+});
+
 describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
   const host = readFileSync(resolve(process.cwd(), 'app/harness/HarnessHost.tsx'), 'utf8');
   const module = readFileSync(resolve(process.cwd(), 'lib/detachTurn.ts'), 'utf8');
@@ -313,6 +336,7 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(module).toContain('export function putPreservedTurn');
     expect(module).toContain('export function shouldApplyMintBind');
     expect(module).toContain('export function shouldSetHostTurnNote');
+    expect(module).toContain('export function releaseBusyViewport');
     expect(module).toContain('durablePath');
   });
 
@@ -328,6 +352,8 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(helper).toContain('shouldAbortReader(');
     expect(helper).toContain('abortReasonFor(');
     expect(helper).toContain('durablePath: true');
+    expect(helper).toContain('releaseBusyViewport(');
+    expect(helper).toContain('turnEpochRef.current += 1');
   });
 
   it('raw abort() sites: helper (reasoned) + runPrompt supersede + poll Stop', () => {
@@ -339,8 +365,10 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     );
     expect(poll).toContain('takePendingCancel()');
     expect(poll).toContain('abortRef.current?.abort()');
+    expect(poll).toContain('releaseBusyViewport(');
     expect(poll).not.toContain('decideDetach');
     expect(poll).not.toContain('abortReasonFor');
+    expect(poll).not.toContain('turnEpochRef');
   });
 
   it('Clear / New / Switch do not return on inflight before detachTurn', () => {
