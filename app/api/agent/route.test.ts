@@ -440,7 +440,7 @@ describe('POST /api/agent', () => {
     }
   });
 
-  it('body max + glm overlay list coerces to high (#911)', async () => {
+  it('body max + glm published list coerces to xhigh', async () => {
     const prev = process.env.AGENT_REASONING;
     delete process.env.AGENT_REASONING;
     try {
@@ -451,7 +451,7 @@ describe('POST /api/agent', () => {
       mockResolveSandboxOk();
       process.env.AI_GATEWAY_API_KEY = 'gw-key';
       vi.doMock('../../../lib/gateway/modelCatalog', () => ({
-        effortValuesForModel: vi.fn(async () => ['low', 'high']),
+        effortValuesForModel: vi.fn(async () => ['low', 'high', 'xhigh']),
       }));
       const runAgent = vi.fn(async (_arg: { modelId?: string; reasoning?: string }) => ({
         text: 'ok',
@@ -473,7 +473,7 @@ describe('POST /api/agent', () => {
       expect(res.status).toBe(200);
       const arg = runAgent.mock.calls[0]?.[0] as { modelId?: string; reasoning?: string };
       expect(arg.modelId).toBe('zai/glm-5.3-flash');
-      expect(arg.reasoning).toBe('high');
+      expect(arg.reasoning).toBe('xhigh');
     } finally {
       if (prev === undefined) delete process.env.AGENT_REASONING;
       else process.env.AGENT_REASONING = prev;

@@ -8,10 +8,11 @@
  * `xhigh` / `provider-default`. Env `AGENT_REASONING` remains an ops override.
  *
  * Gateway language-model `reasoning` is a closed enum that does **not**
- * include `max` (#911). Catalog parse drops it; this resolver coerces a
- * request/stored `max` to `xhigh` (if listed) else `high`.
+ * include `max` (#911). Catalog parse rewrites `max` → `xhigh`; this
+ * resolver coerces a request/stored `max` to `xhigh` (if listed) else `high`.
  */
 import {
+  adaptEffortToken,
   isGatewayReasoningWire,
   sanitizeReasoningEffort,
 } from '../sessionCloudCaps';
@@ -80,7 +81,8 @@ export function coerceReasoningForGateway(
   if (isGatewayReasoningWire(token)) return token;
   if (token === 'max') {
     const opts = options ?? [];
-    if (opts.includes('xhigh')) return 'xhigh';
+    const adapted = adaptEffortToken(token);
+    if (adapted && opts.includes(adapted)) return adapted;
     if (opts.length === 0 || opts.includes('high')) return 'high';
   }
   return undefined;

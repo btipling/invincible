@@ -346,7 +346,7 @@ describe('POST /api/turns', () => {
     }
   });
 
-  it('body max + glm overlay list coerces to high (#911)', async () => {
+  it('body max + glm published list coerces to xhigh', async () => {
     const prev = process.env.AGENT_REASONING;
     delete process.env.AGENT_REASONING;
     try {
@@ -366,7 +366,7 @@ describe('POST /api/turns', () => {
         })),
       };
       vi.doMock('../../../lib/gateway/modelCatalog', () => ({
-        effortValuesForModel: vi.fn(async () => ['low', 'high']),
+        effortValuesForModel: vi.fn(async () => ['low', 'high', 'xhigh']),
       }));
       ({ POST } = await import('./route'));
 
@@ -377,7 +377,7 @@ describe('POST /api/turns', () => {
       });
       expect(res.status).toBe(200);
       const startArgs = startMock.mock.calls[0][1][0];
-      expect(startArgs.reasoning).toBe('high');
+      expect(startArgs.reasoning).toBe('xhigh');
     } finally {
       if (prev === undefined) delete process.env.AGENT_REASONING;
       else process.env.AGENT_REASONING = prev;

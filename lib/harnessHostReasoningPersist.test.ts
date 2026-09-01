@@ -151,16 +151,16 @@ describe('applySessionReasoning (plan #898)', () => {
     expect(bridge.reasoningEffortCount()).toBe(0);
   });
 
-  it('push [low,high,max]; max is stripped; unset carrier defaults to low', () => {
+  it('push [low,high,max]; max rewrites to xhigh; unset carrier defaults to low', () => {
     const { bridge } = makeEffortBridge();
     const ref = { current: createEmptySession('s1') };
     applySessionReasoning(ref.current, ['low', 'high', 'max'], bridge, ref, () => {}, null);
-    expect(bridge.reasoningEffortCount()).toBe(2);
+    expect(bridge.reasoningEffortCount()).toBe(3);
     expect(bridge.getSelectedReasoning()).toBe('low');
     expect(ref.current.reasoningEffort).toBeUndefined();
   });
 
-  it('stored max coerces to high when high is listed (#911)', () => {
+  it('stored max restores as xhigh when the overlay list includes max', () => {
     const { bridge } = makeEffortBridge();
     const puts: SessionSnapshot[] = [];
     const ref: { current: SessionSnapshot } = {
@@ -177,12 +177,12 @@ describe('applySessionReasoning (plan #898)', () => {
       },
       null,
     );
-    expect(bridge.getSelectedReasoning()).toBe('high');
-    expect(ref.current.reasoningEffort).toBe('high');
-    expect(puts[0]?.reasoningEffort).toBe('high');
+    expect(bridge.getSelectedReasoning()).toBe('xhigh');
+    expect(ref.current.reasoningEffort).toBe('xhigh');
+    expect(puts[0]?.reasoningEffort).toBe('xhigh');
   });
 
-  it('max-only list is stripped to empty (picker hidden) [adversarial-review #902 / #911]', () => {
+  it('max-only list rewrites to xhigh; NEVER_AUTO leaves selection unset', () => {
     const { bridge } = makeEffortBridge();
     const ref = { current: createEmptySession('s1') };
     const puts: SessionSnapshot[] = [];
@@ -197,7 +197,7 @@ describe('applySessionReasoning (plan #898)', () => {
       },
       null,
     );
-    expect(bridge.reasoningEffortCount()).toBe(0);
+    expect(bridge.reasoningEffortCount()).toBe(1);
     expect(bridge.getSelectedReasoning()).toBeNull();
     expect(ref.current.reasoningEffort).toBeUndefined();
     expect(puts).toHaveLength(0);

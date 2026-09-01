@@ -133,7 +133,7 @@ describe('resolveAgentReasoning', () => {
     ).toBeUndefined();
   });
 
-  it('coerces request max to high for glm overlay (skip-catalog body path, #911)', () => {
+  it('coerces request max to high when catalog is empty (skip-catalog fallback)', () => {
     expect(
       resolveAgentReasoning('zai/glm-5.3-flash', {
         request: 'max',
@@ -150,7 +150,14 @@ describe('resolveAgentReasoning', () => {
     ).toBe('high');
   });
 
-  it('coerces request max to xhigh when that token is listed', () => {
+  it('coerces request max to xhigh when the published list includes it', () => {
+    expect(
+      resolveAgentReasoning('zai/glm-5.3-flash', {
+        request: 'max',
+        env: {},
+        options: ['low', 'high', 'xhigh'],
+      }),
+    ).toBe('xhigh');
     expect(
       resolveAgentReasoning('openai/gpt-5.6-luna', {
         request: 'MAX',
