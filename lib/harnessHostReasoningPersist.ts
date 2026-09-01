@@ -47,9 +47,7 @@ export function applySessionReasoning(
   const pick =
     restored && cleanedOptions.includes(restored)
       ? restored
-      : stored && cleanedOptions.includes(stored)
-        ? stored
-        : defaultEffortFromOptions(cleanedOptions);
+      : defaultEffortFromOptions(cleanedOptions);
   if (pick) bridge.setSelectedReasoning(pick);
   else bridge.setSelectedReasoning(null);
 
