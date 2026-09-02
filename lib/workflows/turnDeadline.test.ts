@@ -3,10 +3,12 @@
  * Directive-free — no Workflows transform.
  */
 import { describe, expect, it } from 'vitest';
+import { TURN_WALL_CLOCK_WRAPUP_MAX_MS } from '../sessionCloudCaps';
 import {
   combineAbortSignals,
   deadlineSignal,
   isDeadlineElapsed,
+  wrapUpDeadlineAt,
 } from './turnDeadline';
 
 describe('isDeadlineElapsed', () => {
@@ -21,6 +23,16 @@ describe('isDeadlineElapsed', () => {
 
   it('future deadline is not elapsed', () => {
     expect(isDeadlineElapsed(2_000, 1_000)).toBe(false);
+  });
+});
+
+describe('wrapUpDeadlineAt', () => {
+  it('pins to deadlineAt + WRAPUP_MAX (not now + WRAPUP_MAX)', () => {
+    expect(wrapUpDeadlineAt(1_000, 50_000)).toBe(1_000 + TURN_WALL_CLOCK_WRAPUP_MAX_MS);
+  });
+
+  it('falls back to now + WRAPUP_MAX when no 1h deadline', () => {
+    expect(wrapUpDeadlineAt(undefined, 50_000)).toBe(50_000 + TURN_WALL_CLOCK_WRAPUP_MAX_MS);
   });
 });
 

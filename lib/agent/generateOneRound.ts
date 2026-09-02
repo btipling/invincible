@@ -242,10 +242,14 @@ export async function generateOneRound(
       }
     }
   } catch (err) {
-    if (isAbortErr(err)) {
+    if (isAbortErr(err) || deps.signal?.aborted) {
       // Wall-clock deadline abort (plan #923): the deadline signal fired →
       // dedicated `'wall_clock'` sentinel. A genuine user Stop stays
       // `'cancelled'` (`Request cancelled.`, G22 parity untouched).
+      // Trust `signal.aborted` as well as AbortError/ResponseAborted — the
+      // tool path already does (executeTool); a Gateway "Unknown error"
+      // wrapper on an aborted stream must not become model_error
+      // (adversarial-review #926).
       if (
         deps.wallClockDeadlineAt !== undefined &&
         deps.wallClockDeadlineAt - Date.now() <= 0

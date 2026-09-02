@@ -408,7 +408,9 @@ export const TURN_WALL_CLOCK_MAX_MS = 3_600_000;
  * (`wrapUp === 'wall'`, adversarial-review #926 Major). The wall wrap-up is
  * exempt from the 1-hour deadline so it can complete AFTER the cap fires —
  * but it must not inherit operator `xhigh` CoT or the default Workflows retry
- * budget with no signal (the 4h evidence class). The 512-step wrap-up does
+ * budget with no signal (the 4h evidence class). The bound is
+ * `deadlineAt + TURN_WALL_CLOCK_WRAPUP_MAX_MS` (a single 1h05 window), not
+ * `Date.now() + WRAPUP_MAX` per attempt. The 512-step wrap-up does
  * **not** use this cap; it still carries the 1h `deadlineAt` signal so a
  * wrap-up that starts with remaining > 0 cannot run unbounded past the
  * product lock. **NEW generous cap**; no existing cap value changed →

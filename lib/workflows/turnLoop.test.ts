@@ -2601,6 +2601,7 @@ describe('step wrappers (matrix 4–7)', () => {
     }));
     const mod = await import('./modelGenerateStep');
     const { TURN_WALL_CLOCK_WRAPUP_SYSTEM } = await import('../agent/modelFinish');
+    const deadlineAt = Date.now() - 1; // ALREADY elapsed — the fold runs after the cap.
     const before = Date.now();
     const result = await mod.modelGenerateStep({
       messages: [
@@ -2612,7 +2613,7 @@ describe('step wrappers (matrix 4–7)', () => {
       scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
       disableTools: true,
       wrapUp: 'wall',
-      deadlineAt: Date.now() - 1, // ALREADY elapsed — the fold runs after the cap.
+      deadlineAt,
       reasoning: 'xhigh',
     });
     const after = Date.now();
@@ -2622,16 +2623,16 @@ describe('step wrappers (matrix 4–7)', () => {
     // system / DEFAULT_AGENT_SYSTEM).
     expect(capturedDeps?.system).toBe(TURN_WALL_CLOCK_WRAPUP_SYSTEM);
     // Wrap-up is 1h-exempt but bounded: a live wrap-up signal + wrap deadline
-    // ~now+5min, NEVER the elapsed 1h deadline, and NEVER operator xhigh.
+    // = deadlineAt + 5min (NOT now+5min per attempt), NEVER operator xhigh.
     expect(capturedDeps?.signal).toBeInstanceOf(AbortSignal);
     expect(capturedDeps?.signal?.aborted).toBe(false);
     expect(capturedDeps?.reasoning).toBe('none');
+    expect(capturedDeps?.wallClockDeadlineAt).toBe(
+      deadlineAt + TURN_WALL_CLOCK_WRAPUP_MAX_MS,
+    );
     expect(capturedDeps?.wallClockDeadlineAt).toBeGreaterThan(before);
     expect(capturedDeps?.wallClockDeadlineAt).toBeLessThanOrEqual(
       after + TURN_WALL_CLOCK_WRAPUP_MAX_MS,
-    );
-    expect(capturedDeps?.wallClockDeadlineAt).toBeGreaterThanOrEqual(
-      before + TURN_WALL_CLOCK_WRAPUP_MAX_MS - 50,
     );
     // And the same call WITHOUT the wrapUp tag still fails closed ('wall_clock')
     // on an elapsed deadline (the plain-round cap is untouched).
@@ -2812,7 +2813,7 @@ describe('step wrappers (matrix 4–7)', () => {
         scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
         disableTools: true,
         wrapUp: 'wall',
-        deadlineAt: 1, // 1h already elapsed — wrap-up still runs
+        deadlineAt: 1_000_000 - 1, // 1h elapsed by 1ms — wrap bound still ~5 min out
         reasoning: 'xhigh',
       });
       expect(result.ok).toBe(false);
@@ -2827,6 +2828,119 @@ describe('step wrappers (matrix 4–7)', () => {
       vi.doUnmock('./assembleDurableToolWorld');
       vi.doUnmock('./turnSseWrite');
     }
+  });
+
+  it('elapsed wrap-up bound fails closed even for wrapUp wall (adversarial-review #926)', async () => {
+    vi.resetModules();
+    const writeOnDefaultStream = vi.fn(async () => {});
+    vi.doMock('./turnSseWrite', () => ({
+      writeOnDefaultStream,
+      withDefaultStreamWriter: async (
+        fn: (write: (payload: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(writeOnDefaultStream),
+    }));
+    const m1 = vi.fn(async () => {
+      throw new Error('generate must not run: wrap bound already elapsed');
+    });
+    vi.doMock('../agent/generateOneRound', () => ({
+      generateOneRound: m1,
+      toolsWithoutExecutors: (t: Record<string, unknown>) => t,
+    }));
+    vi.doMock('../di/index', () => ({
+      createProdServices: () => ({
+        resolveInferenceForRequest: {
+          resolveByokForRequest: async () => {
+            throw new Error('BYOK must not run: wrap bound already elapsed');
+          },
+        },
+      }),
+    }));
+    const mod = await import('./modelGenerateStep');
+    const result = await mod.modelGenerateStep({
+      messages: [{ role: 'user', content: 'hi' }],
+      modelId: 'm',
+      userId: 'u1',
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+      disableTools: true,
+      wrapUp: 'wall',
+      // 1h deadline so far in the past that deadlineAt + 5min is also past.
+      deadlineAt: Date.now() - TURN_WALL_CLOCK_WRAPUP_MAX_MS - 1,
+      reasoning: 'xhigh',
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('wall_clock');
+    expect(m1).not.toHaveBeenCalled();
+    vi.doUnmock('../agent/generateOneRound');
+    vi.doUnmock('../di/index');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('tools-on modelGenerateStep threads deadlineSignal into assembleDurableToolWorld (adversarial-review #926)', async () => {
+    vi.resetModules();
+    const writeOnDefaultStream = vi.fn(async () => {});
+    vi.doMock('./turnSseWrite', () => ({
+      writeOnDefaultStream,
+      withDefaultStreamWriter: async (
+        fn: (write: (payload: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(writeOnDefaultStream),
+    }));
+    const m1 = vi.fn(async () => ({
+      ok: true as const,
+      delta: { text: 'm', toolCalls: [] },
+    }));
+    vi.doMock('../agent/generateOneRound', () => ({
+      generateOneRound: m1,
+      toolsWithoutExecutors: (t: Record<string, unknown>) => t,
+    }));
+    vi.doMock('../di/index', () => ({
+      createProdServices: () => ({
+        resolveInferenceForRequest: {
+          resolveByokForRequest: async () => ({
+            ok: true as const,
+            modelId: 'byok-resolved',
+            only: ['anthropic'] as [string],
+            byok: { anthropic: [{ apiKey: 'sk-test' }] },
+            secretsToRedact: ['sk-test'],
+          }),
+        },
+      }),
+    }));
+    let assembledSignal: AbortSignal | undefined;
+    vi.doMock('./assembleDurableToolWorld', () => ({
+      assembleDurableToolWorld: async (args: { signal?: AbortSignal }) => {
+        assembledSignal = args.signal;
+        return {
+          ok: true as const,
+          world: {
+            registry: { list_dir: { description: 'List' } },
+            secrets: [],
+            signal: args.signal ?? new AbortController().signal,
+            freshness: {},
+          },
+        };
+      },
+    }));
+    const mod = await import('./modelGenerateStep');
+    const deadlineAt = Date.now() + 60_000;
+    await mod.modelGenerateStep({
+      messages: [{ role: 'user', content: 'hi' }],
+      modelId: 'm',
+      userId: 'u1',
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+      deadlineAt,
+    });
+    expect(assembledSignal).toBeInstanceOf(AbortSignal);
+    expect(assembledSignal?.aborted).toBe(false);
+    const genDeps = m1.mock.calls[0]?.[0] as {
+      signal?: AbortSignal;
+      wallClockDeadlineAt?: number;
+    };
+    expect(genDeps.signal).toBe(assembledSignal);
+    expect(genDeps.wallClockDeadlineAt).toBe(deadlineAt);
+    vi.doUnmock('../agent/generateOneRound');
+    vi.doUnmock('../di/index');
+    vi.doUnmock('./assembleDurableToolWorld');
+    vi.doUnmock('./turnSseWrite');
   });
 
   it('modelGenerateStep inject throw still passes the base system', async () => {

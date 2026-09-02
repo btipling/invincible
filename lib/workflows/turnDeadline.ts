@@ -6,12 +6,30 @@
  * `deadlineAt` number — never pass a signal/closure across a step boundary.
  */
 
+import { TURN_WALL_CLOCK_WRAPUP_MAX_MS } from '../sessionCloudCaps';
+
 export function isDeadlineElapsed(
   deadlineAt: number | undefined,
   now = Date.now(),
 ): boolean {
   if (deadlineAt === undefined) return false;
   return deadlineAt - now <= 0;
+}
+
+/**
+ * Absolute epoch for the **wall** wrap-up substitute bound.
+ *
+ * Pin to `deadlineAt + TURN_WALL_CLOCK_WRAPUP_MAX_MS` so a retried wrap-up
+ * attempt cannot mint a fresh 5-min window from `Date.now()` (adversarial-
+ * review #926). When the caller never supplied a 1h deadline, fall back to
+ * `now + WRAPUP_MAX` (tests / inert cap).
+ */
+export function wrapUpDeadlineAt(
+  deadlineAt: number | undefined,
+  now = Date.now(),
+): number {
+  if (deadlineAt === undefined) return now + TURN_WALL_CLOCK_WRAPUP_MAX_MS;
+  return deadlineAt + TURN_WALL_CLOCK_WRAPUP_MAX_MS;
 }
 
 /**

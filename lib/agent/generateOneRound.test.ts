@@ -349,6 +349,30 @@ describe('generateOneRound (backend-agents B9)', () => {
     }
   });
 
+  it('plan #923: aborted signal + Unknown error + elapsed deadline → wall_clock (adversarial-review #926)', async () => {
+    const streamTextImpl = () => ({
+      fullStream: (async function* () {
+        throw new Error('Unknown error');
+      })(),
+      text: Promise.resolve(''),
+      usage: Promise.resolve(undefined),
+    });
+    const result = await generateOneRound(
+      {
+        ...deps,
+        streamTextImpl: streamTextImpl as never,
+        signal: AbortSignal.abort(),
+        wallClockDeadlineAt: Date.now() - 1,
+      },
+      { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('wall_clock');
+      expect(result.error).toBe('turn wall clock exceeded');
+    }
+  });
+
   it('secrets are redacted from returned text', async () => {
     const streamTextImpl = makeStream({ text: 'my api key is sk-1234 end' });
     const result = await generateOneRound(
