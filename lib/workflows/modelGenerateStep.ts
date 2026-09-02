@@ -437,10 +437,12 @@ export async function modelGenerateStep(
       return { ok: true, delta };
     }
     logTurnModel({ ok: false, code: result.code });
-    // Wall-clock / wrap-up-bound abort maps to `'wall_clock'`. A genuine user
-    // Stop (cancelled while the 1h deadline is still in the future) stays
-    // `'cancelled'` (G22 parity untouched).
-    if (result.code === 'cancelled' && isDeadlineElapsed(abort.wallClockDeadlineAt)) {
+    // Any failure after the deadline/wrap-bound is the wall sentinel — not
+    // only `'cancelled'`. A Gateway `"Unknown error"` / SSE write abort that
+    // leaked as `'model_error'` / `'write_error'` must still wrap-up (Goal 1;
+    // adversarial-review #926). A genuine user Stop while the bound is still
+    // in the future stays `'cancelled'` (G22).
+    if (isDeadlineElapsed(abort.wallClockDeadlineAt)) {
       return deadlineResult();
     }
     return { ok: false, code: result.code, error: result.error };
@@ -556,9 +558,10 @@ export async function modelGenerateStep(
     return { ok: true, delta };
   }
   logTurnModel({ ok: false, code: result.code });
-  // Wall-clock deadline abort maps to the dedicated `'wall_clock'` sentinel —
-  // a genuine user Stop stays `'cancelled'` (G22 parity untouched).
-  if (result.code === 'cancelled' && isDeadlineElapsed(abort.wallClockDeadlineAt)) {
+  // Any failure after the deadline is the wall sentinel — not only
+  // `'cancelled'` (adversarial-review #926). G22: a genuine user Stop while
+  // the 1h deadline is still in the future stays `'cancelled'`.
+  if (isDeadlineElapsed(abort.wallClockDeadlineAt)) {
     return deadlineResult();
   }
   return { ok: false, code: result.code, error: result.error };

@@ -2884,7 +2884,7 @@ describe('step wrappers (matrix 4–7)', () => {
         fn: (write: (payload: string) => Promise<void>) => Promise<unknown>,
       ) => fn(writeOnDefaultStream),
     }));
-    const m1 = vi.fn(async () => ({
+    const m1 = vi.fn(async (_deps: unknown) => ({
       ok: true as const,
       delta: { text: 'm', toolCalls: [] },
     }));
@@ -2943,6 +2943,84 @@ describe('step wrappers (matrix 4–7)', () => {
     vi.doUnmock('./turnSseWrite');
   });
 
+  it('elapsed deadline remaps model_error → wall_clock (adversarial-review #926)', async () => {
+    // generateOneRound can still leak `'model_error'` (settlement / Unknown
+    // error without a throw on fullStream). The step must not fail() the turn
+    // as a model error after deadlineAt — Goal 1 is the wall terminal.
+    vi.resetModules();
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    try {
+      vi.doMock('./turnSseWrite', () => ({
+        writeOnDefaultStream: async () => {},
+        withDefaultStreamWriter: async (
+          fn: (write: (payload: string) => Promise<void>) => Promise<unknown>,
+        ) => fn(async () => {}),
+      }));
+      const m1 = vi.fn(async (deps: unknown) => {
+        const d = deps as { wallClockDeadlineAt?: number };
+        if (d.wallClockDeadlineAt !== undefined) {
+          vi.setSystemTime(d.wallClockDeadlineAt + 1);
+        }
+        return {
+          ok: false as const,
+          code: 'model_error' as const,
+          error: 'Unknown error',
+        };
+      });
+      vi.doMock('../agent/generateOneRound', () => ({
+        generateOneRound: m1,
+        toolsWithoutExecutors: (t: Record<string, unknown>) => t,
+      }));
+      vi.doMock('../di/index', () => ({
+        createProdServices: () => ({
+          resolveInferenceForRequest: {
+            resolveByokForRequest: async () => ({
+              ok: true as const,
+              modelId: 'byok-resolved',
+              only: ['anthropic'] as [string],
+              byok: { anthropic: [{ apiKey: 'sk-test' }] },
+              secretsToRedact: ['sk-test'],
+            }),
+          },
+        }),
+      }));
+      vi.doMock('./assembleDurableToolWorld', () => ({
+        assembleDurableToolWorld: async () => ({
+          ok: true as const,
+          world: {
+            registry: {},
+            secrets: [],
+            signal: new AbortController().signal,
+            freshness: {},
+          },
+        }),
+      }));
+      const mod = await import('./modelGenerateStep');
+      const result = await mod.modelGenerateStep({
+        messages: [{ role: 'user', content: 'hi' }],
+        modelId: 'm',
+        userId: 'u1',
+        scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+        disableTools: true,
+        // In-budget at entry so generate runs; mock then elapses the bound.
+        deadlineAt: 1_000_000 + 60_000,
+      });
+      expect(m1).toHaveBeenCalled();
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe('wall_clock');
+        expect(result.error).toBe(TURN_WALL_CLOCK_ERROR);
+        expect(result.code).not.toBe('model_error');
+      }
+    } finally {
+      vi.useRealTimers();
+      vi.doUnmock('../agent/generateOneRound');
+      vi.doUnmock('../di/index');
+      vi.doUnmock('./assembleDurableToolWorld');
+      vi.doUnmock('./turnSseWrite');
+    }
+  });
   it('modelGenerateStep inject throw still passes the base system', async () => {
     vi.resetModules();
     const writeOnDefaultStream = vi.fn(async () => {});
