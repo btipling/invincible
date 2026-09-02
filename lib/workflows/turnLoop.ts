@@ -863,8 +863,9 @@ export async function runTurnLoop(
       // Live tool_result SSE is written inside the step — do not dump here
       // (would reintroduce N writeTurnSse Fluid steps).
       // Wall wins over the step-cap break (adversarial-review #926): wrapUp
-      // `'steps'` is unbounded. If deadlineAt is already past, do not fall
-      // through to the 512-step fold.
+      // `'steps'` must not inherit the 5-min wall bound, but it is still
+      // subject to the 1h deadline. If deadlineAt is already past, do not
+      // fall through to the 512-step fold.
       if (deadlineElapsed()) {
         return wallWrapUp(round, steps);
       }
@@ -975,10 +976,11 @@ export async function runTurnLoop(
     }
 
     // Prefer the wall terminal when both caps fire (adversarial-review #926):
-    // `wrapUp: 'steps'` is unbounded (no 5-min signal / keeps operator
-    // reasoning). Running it after `deadlineAt` reintroduces the 4h evidence
-    // class. The `steps >= cap` break above also checks this; this gate
-    // covers the last in-budget tool batch that filled the cap.
+    // `wrapUp: 'steps'` must not inherit the 5-min wall bound / `reasoning:
+    // 'none'`, but it is still subject to the 1h `deadlineAt` signal. Running
+    // it after `deadlineAt` with no signal reintroduces the 4h evidence class.
+    // The `steps >= cap` break above also checks this; this gate covers the
+    // last in-budget tool batch that filled the cap.
     if (deadlineElapsed()) {
       return wallWrapUp(round, steps);
     }
@@ -1040,6 +1042,13 @@ export async function runTurnLoop(
     }
     await persistOnce(true);
     if (!wrap.ok) {
+      // 1h fired during/before the steps wrap-up (adversarial-review #926):
+      // the wrap-up started with remaining > 0 so the loop took this path,
+      // then `deadlineSignal(deadlineAt)` aborted. That is a wall terminal
+      // — not `failed`, and not a second wrap-up round.
+      if (wrap.code === 'wall_clock') {
+        return fail('capped', round, steps, TURN_WALL_CLOCK_ERROR, 'wall');
+      }
       return fail('failed', round, steps, wrap.error);
     }
     if (isProviderRefusalFinish(wrap.delta.finishReason)) {

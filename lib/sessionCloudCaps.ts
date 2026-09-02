@@ -409,7 +409,9 @@ export const TURN_WALL_CLOCK_MAX_MS = 3_600_000;
  * exempt from the 1-hour deadline so it can complete AFTER the cap fires —
  * but it must not inherit operator `xhigh` CoT or the default Workflows retry
  * budget with no signal (the 4h evidence class). The 512-step wrap-up does
- * **not** use this cap. **NEW generous cap**; no existing cap value changed →
+ * **not** use this cap; it still carries the 1h `deadlineAt` signal so a
+ * wrap-up that starts with remaining > 0 cannot run unbounded past the
+ * product lock. **NEW generous cap**; no existing cap value changed →
  * no human gate.
  */
 export const TURN_WALL_CLOCK_WRAPUP_MAX_MS = 300_000;

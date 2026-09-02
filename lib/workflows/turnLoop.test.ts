@@ -2651,13 +2651,14 @@ describe('step wrappers (matrix 4–7)', () => {
     vi.doUnmock('./turnSseWrite');
   });
 
-  it('steps wrap-up does NOT inherit wall bound / reasoning none (adversarial-review #926 follow-up)', async () => {
+  it('steps wrap-up keeps 1h deadline signal, not the 5-min wall bound (adversarial-review #926)', async () => {
     // roundAbort used to gate on wrapUp !== undefined, so the 512-step fold
-    // inherited TURN_WALL_CLOCK_WRAPUP_MAX_MS + reasoning none. A 5-min abort
-    // classifies as wall_clock and the steps path fail()s the turn as
-    // "turn wall clock exceeded". Lock the split: wrapUp:'steps' keeps
-    // operator reasoning, uses STEP_BUDGET_WRAPUP_SYSTEM, and has no 5-min
-    // wrap signal even when the 1h deadline is already elapsed.
+    // inherited TURN_WALL_CLOCK_WRAPUP_MAX_MS + reasoning none. A later pass
+    // dropped the signal entirely, which reintroduced the 4h evidence class
+    // for a wrap-up that starts with remaining > 0. Lock the split: wrapUp:
+    // 'steps' keeps operator reasoning + STEP_BUDGET_WRAPUP_SYSTEM, carries
+    // the 1h deadlineAt signal (NOT the 5-min substitute), and an already-
+    // elapsed 1h deadline fails closed as wall_clock.
     vi.resetModules();
     const writeOnDefaultStream = vi.fn(async () => {});
     vi.doMock('./turnSseWrite', () => ({
@@ -2708,6 +2709,7 @@ describe('step wrappers (matrix 4–7)', () => {
     }));
     const mod = await import('./modelGenerateStep');
     const { STEP_BUDGET_WRAPUP_SYSTEM } = await import('../agent/modelFinish');
+    const deadlineAt = Date.now() + 60_000;
     const result = await mod.modelGenerateStep({
       messages: [
         { role: 'user', content: 'hi' },
@@ -2718,15 +2720,38 @@ describe('step wrappers (matrix 4–7)', () => {
       scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
       disableTools: true,
       wrapUp: 'steps',
-      deadlineAt: Date.now() - 1, // elapsed 1h must not 1h-fail the steps fold
+      deadlineAt,
       reasoning: 'xhigh',
     });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.delta.text).toBe('steps-wrap');
     expect(capturedDeps?.system).toBe(STEP_BUDGET_WRAPUP_SYSTEM);
     expect(capturedDeps?.reasoning).toBe('xhigh');
-    expect(capturedDeps?.signal).toBeUndefined();
-    expect(capturedDeps?.wallClockDeadlineAt).toBeUndefined();
+    expect(capturedDeps?.reasoning).not.toBe('none');
+    expect(capturedDeps?.signal).toBeInstanceOf(AbortSignal);
+    expect(capturedDeps?.signal?.aborted).toBe(false);
+    expect(capturedDeps?.wallClockDeadlineAt).toBe(deadlineAt);
+    expect(capturedDeps?.wallClockDeadlineAt).not.toBeGreaterThan(
+      deadlineAt + 1,
+    );
+    // Elapsed 1h must fail closed as wall_clock (not run unbounded generate).
+    m1.mockClear();
+    const elapsed = await mod.modelGenerateStep({
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'error', content: 'Error: step budget exhausted.' },
+      ],
+      modelId: 'm',
+      userId: 'u1',
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+      disableTools: true,
+      wrapUp: 'steps',
+      deadlineAt: Date.now() - 1,
+      reasoning: 'xhigh',
+    });
+    expect(elapsed.ok).toBe(false);
+    if (!elapsed.ok) expect(elapsed.code).toBe('wall_clock');
+    expect(m1).not.toHaveBeenCalled();
     vi.doUnmock('../agent/generateOneRound');
     vi.doUnmock('../di/index');
     vi.doUnmock('./assembleDurableToolWorld');
@@ -4908,6 +4933,59 @@ describe('runTurnLoop wall-clock cap (plan #923 — hard 1-hour turn wall clock)
     expect(toolStep).toHaveBeenCalledTimes(1);
     expect(wrapSaw).toContain(TURN_WALL_CLOCK_WRAPUP);
     expect(wrapSaw).not.toContain(STEP_BUDGET_WRAPUP);
+    const events = eventsOf(w.lines);
+    expect(events.some((e) => e.type === 'error' && e.error === TURN_WALL_CLOCK_ERROR)).toBe(
+      true,
+    );
+    expect(events.some((e) => e.type === 'done')).toBe(false);
+    expect(closed()).toBe(1);
+  });
+
+  it('row 18: steps wrap-up that crosses deadlineAt becomes wall terminal, not failed (adversarial-review #926)', async () => {
+    // maxSteps=2: model + user-line persist fill the cap with remaining > 0,
+    // so the loop takes wrapUp:'steps'. Wrap-up then returns wall_clock (1h
+    // signal fired mid-round). That must be capped/wall — not fail('failed')
+    // and not a second wrap-up round.
+    const { deps, w, closed } = wiredDeps({ maxSteps: 2 });
+    const deadlineAt = Date.now() + 500;
+    let wrapUpTag: string | undefined;
+    const modelStep = vi.fn(async (args: unknown) => {
+      const a = args as {
+        disableTools?: boolean;
+        wrapUp?: 'steps' | 'wall';
+      };
+      if (a.disableTools) {
+        wrapUpTag = a.wrapUp;
+        while (Date.now() < deadlineAt) {
+          await new Promise((r) => setTimeout(r, 5));
+        }
+        return {
+          ok: false as const,
+          code: 'wall_clock' as const,
+          error: TURN_WALL_CLOCK_ERROR,
+        };
+      }
+      return {
+        ok: true as const,
+        delta: {
+          text: 'call',
+          toolCalls: [{ toolName: 'list_dir', toolCallId: 'c', args: {} }],
+        },
+      };
+    });
+    const toolStep = vi.fn(async () => {
+      throw new Error('tool batch must not run: cap filled before dispatch');
+    });
+    const result = await runTurnLoop(
+      { ...deps, maxSteps: 2, modelStep, toolStep, deadlineAt },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('capped');
+    expect(result.reason).toBe('wall');
+    expect(result.status).not.toBe('failed');
+    expect(result.reason).not.toBe('steps');
+    expect(wrapUpTag).toBe('steps');
+    expect(toolStep).not.toHaveBeenCalled();
     const events = eventsOf(w.lines);
     expect(events.some((e) => e.type === 'error' && e.error === TURN_WALL_CLOCK_ERROR)).toBe(
       true,
