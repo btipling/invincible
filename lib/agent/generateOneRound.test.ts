@@ -296,6 +296,59 @@ describe('generateOneRound (backend-agents B9)', () => {
     }
   });
 
+  it('plan #923 row 9a: wall-clock deadline abort → code wall_clock (turn wall clock exceeded), not user-cancel', async () => {
+    const streamTextImpl = () => ({
+      fullStream: (async function* () {
+        const err = new Error('deadline');
+        err.name = 'AbortError';
+        throw err;
+      })(),
+      text: Promise.resolve(''),
+      usage: Promise.resolve(undefined),
+    });
+    const result = await generateOneRound(
+      {
+        ...deps,
+        streamTextImpl: streamTextImpl as never,
+        // Deadline ALREADY elapsed → the deadline signal fired → wall sentinel.
+        wallClockDeadlineAt: Date.now() - 1,
+      },
+      { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('wall_clock');
+      expect(result.error).toBe('turn wall clock exceeded');
+      expect(result.error).not.toBe('Request cancelled.');
+    }
+  });
+
+  it('plan #923 row 9b: user abort BEFORE the deadline stays cancelled (G22 parity)', async () => {
+    const streamTextImpl = () => ({
+      fullStream: (async function* () {
+        const err = new Error('user stop');
+        err.name = 'AbortError';
+        throw err;
+      })(),
+      text: Promise.resolve(''),
+      usage: Promise.resolve(undefined),
+    });
+    const result = await generateOneRound(
+      {
+        ...deps,
+        streamTextImpl: streamTextImpl as never,
+        // Deadline far in the FUTURE → this abort is a genuine user Stop.
+        wallClockDeadlineAt: Date.now() + 1_000_000,
+      },
+      { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('cancelled');
+      expect(result.error).toBe('Request cancelled.');
+    }
+  });
+
   it('secrets are redacted from returned text', async () => {
     const streamTextImpl = makeStream({ text: 'my api key is sk-1234 end' });
     const result = await generateOneRound(

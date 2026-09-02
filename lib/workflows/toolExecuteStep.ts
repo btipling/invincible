@@ -49,6 +49,7 @@ import {
   changeDirSuccessCwd,
   metaSandboxSwitchActiveId,
 } from '../agent/toolResultParsers';
+import { TURN_WALL_CLOCK_ERROR } from '../agent/modelFinish';
 import type { PersistRunBind, ToolBatchItem, TurnToolCallDelta } from './turnLoop';
 import { formatLiveToolResultSse } from './turnSseFormat';
 import { withDefaultStreamWriter } from './turnSseWrite';
@@ -69,6 +70,13 @@ export interface ToolExecuteStepArgs {
    * for FS tool assembly + sandbox resolution.
    */
   persistRunBind?: PersistRunBind;
+  /**
+   * Absolute epoch deadline (ms) for the 1-hour wall-clock cap (plan #923).
+   * Serialized from the `'use workflow'` entry; NEVER a signal/closure/Date
+   * across the step boundary. The whole-batch boundary check compares it
+   * against this step VM's real clock before dispatching a wave.
+   */
+  deadlineAt?: number;
 }
 
 /** Fail-closed step result (batch). */
@@ -82,7 +90,8 @@ export type ToolExecuteStepResult =
         | 'http_error'
         | 'mcp_error'
         | 'violation'
-        | 'cancelled';
+        | 'cancelled'
+        | 'wall_clock';
       error: string;
       results?: ToolBatchItem[];
     };
@@ -219,6 +228,17 @@ export async function toolExecuteStep(
   'use step';
 
   const calls = args.calls ?? [];
+
+  // Whole-batch wall boundary (plan #923): an ALREADY-elapsed deadline must
+  // not dispatch fresh tool waves — return the dedicated `'wall_clock'`
+  // sentinel so the loop routes to the wall wrap-up. Mid-wave aborts of
+  // already-dispatched calls stay best-effort; the FS-editor wave serialization
+  // (hard-safety) completes the wave, then the loop terminates ≤ 1 wave past
+  // the deadline.
+  if (args.deadlineAt !== undefined && args.deadlineAt - Date.now() <= 0) {
+    return { ok: false, code: 'wall_clock', error: TURN_WALL_CLOCK_ERROR };
+  }
+
   let world: WorldHandles | undefined;
   let bind: PersistRunBind | undefined = args.persistRunBind
     ? { ...args.persistRunBind }
@@ -434,6 +454,15 @@ export async function toolExecuteStep(
         ok: false,
         code: 'cancelled',
         error: cancelled.error,
+        results,
+      };
+    }
+    const wallStopped = results.find((i) => !i.ok && i.code === 'wall_clock');
+    if (wallStopped && !wallStopped.ok) {
+      return {
+        ok: false,
+        code: 'wall_clock',
+        error: wallStopped.error,
         results,
       };
     }

@@ -25,6 +25,7 @@ import { resolveAgentReasoning } from './reasoningConfig';
 import { resolveAgentStopWhen } from './stopWhen';
 import { extractResolvedProvider } from './resolvedProvider';
 import { sanitizeResolvedProvider } from '../sessionCloudCaps';
+import { TURN_WALL_CLOCK_ERROR } from './modelFinish';
 
 /** One captured tool-call delta (schemas only — never executed here). */
 export type ToolCallDelta = {
@@ -52,13 +53,15 @@ export type OneRoundDelta = {
 /**
  * Fail-closed result. On a completed model round this is `{ ok:true, delta }`;
  * on a model-slice / event-writable / abort failure it is `{ ok:false, ... }` —
- * a return value, never an uncaught throw into the orchestrator.
+ * a return value, never an uncaught throw into the orchestrator. A **deadline**
+ * abort (plan #923) carries the dedicated `'wall_clock'` code; a genuine user
+ * Stop stays `'cancelled'` so the G22 cancel path is unambiguous.
  */
 export type GenerateOneRoundResult =
   | { ok: true; delta: OneRoundDelta }
   | {
       ok: false;
-      code: 'model_error' | 'write_error' | 'cancelled';
+      code: 'model_error' | 'write_error' | 'cancelled' | 'wall_clock';
       error: string;
     };
 
@@ -76,6 +79,15 @@ export type GenerateOneRoundDeps = {
   streamTextImpl?: (args: any) => any;
   /** Optional cancellation signal. */
   signal?: AbortSignal;
+  /**
+   * Absolute epoch deadline (ms) for the 1-hour wall-clock cap (plan #923) —
+   * ONLY when this signal was built from a deadline. An abort whose deadline
+   * has elapsed maps to `'wall_clock'` (`turn wall clock exceeded`); a genuine
+   * user Stop (no deadline / deadline not reached) stays `'cancelled'`
+   * (`Request cancelled.`). The caller passes the SAME `deadlineAt` number it
+   * used to build the signal, so the classification cannot drift.
+   */
+  wallClockDeadlineAt?: number;
   /** Redaction list (secrets + root server secrets), resolved by the caller. */
   secrets?: Array<string | undefined | null>;
   /**
@@ -231,6 +243,15 @@ export async function generateOneRound(
     }
   } catch (err) {
     if (isAbortErr(err)) {
+      // Wall-clock deadline abort (plan #923): the deadline signal fired →
+      // dedicated `'wall_clock'` sentinel. A genuine user Stop stays
+      // `'cancelled'` (`Request cancelled.`, G22 parity untouched).
+      if (
+        deps.wallClockDeadlineAt !== undefined &&
+        deps.wallClockDeadlineAt - Date.now() <= 0
+      ) {
+        return { ok: false, code: 'wall_clock', error: TURN_WALL_CLOCK_ERROR };
+      }
       return { ok: false, code: 'cancelled', error: 'Request cancelled.' };
     }
     // Model-slice failure (provider stream / part-map). Return value, never an

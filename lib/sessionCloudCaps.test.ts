@@ -20,6 +20,9 @@ import {
   TURN_START_MIN_INTERVAL_MS,
   TURN_STATUS_MAX_BYTES,
   TURN_STATUS_VALUES,
+  TURN_WALL_CLOCK_MAX_MS,
+  TURN_WALL_CLOCK_DEADLINE_TTL_MS,
+  TURN_WALL_CLOCK_PROBE_EVERY_MS,
   sanitizeModelId,
   sanitizeReasoningEffort,
   sanitizeResolvedProvider,
@@ -335,6 +338,28 @@ describe('TURN_STREAM_STATUS_POLL_MS (start/attach status poll)', () => {
   it('is a NEW 1000 ms cap matching TURN_START_MIN_INTERVAL_MS', () => {
     expect(TURN_STREAM_STATUS_POLL_MS).toBe(1000);
     expect(TURN_STREAM_STATUS_POLL_MS).toBe(TURN_START_MIN_INTERVAL_MS);
+  });
+});
+
+// Plan #923 (backend-agents): hard 1-hour wall-clock cap on a durable turn.
+// `TURN_WALL_CLOCK_MAX_MS` is a NEW cap whose value is the human-authorized
+// product lock (1h). The two `_TTL_`/`_PROBE_EVERY_` seams are NEW cache/probe
+// caps, never enforcement knobs. No existing cap changed → no human gate.
+describe('TURN_WALL_CLOCK caps (plan #923 — hard 1-hour turn wall clock)', () => {
+  it('TURN_WALL_CLOCK_MAX_MS is the Bjorn-authorized 1-hour product lock', () => {
+    expect(TURN_WALL_CLOCK_MAX_MS).toBe(3_600_000);
+    // Enforcement is in-VM (`'use step'` wall bound) — the only ceiling that
+    // matters is that 1h ≪ any Function `maxDuration` (route maxDuration=1800s).
+    expect(TURN_WALL_CLOCK_MAX_MS).toBeLessThanOrEqual(3600 * 1000);
+  });
+
+  it('the cache/probe seams are reserved doc-only seams, never enforcement knobs', () => {
+    // Cache TTL + probe cadence. NOT the cap value — an operator cannot
+    // shorten the 1h enforcement via env (cap value is code, human-gated).
+    expect(TURN_WALL_CLOCK_DEADLINE_TTL_MS).toBe(60_000);
+    expect(TURN_WALL_CLOCK_PROBE_EVERY_MS).toBe(2_000);
+    expect(TURN_WALL_CLOCK_DEADLINE_TTL_MS).toBeLessThan(TURN_WALL_CLOCK_MAX_MS);
+    expect(TURN_WALL_CLOCK_PROBE_EVERY_MS).toBeLessThan(TURN_WALL_CLOCK_MAX_MS);
   });
 });
 

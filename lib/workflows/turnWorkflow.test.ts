@@ -30,8 +30,15 @@ vi.mock('workflow', () => ({
     close: vi.fn(async () => {}),
   }),
   // C14b (#835): turnRunId is DERIVED in-workflow (never a start() arg), so the
-  // entry reads it from getWorkflowMetadata().workflowRunId.
-  getWorkflowMetadata: () => ({ workflowRunId: 'wr_0000_meta' }),
+  // entry reads it from getWorkflowMetadata().workflowRunId. Plan #923: the
+  // entry ALSO reads workflowStartedAt (runtime-pinned, replay-stable Date) to
+  // derive the 1-hour wall-clock deadlineAt — the mock must supply it.
+  getWorkflowMetadata: () => ({
+    workflowRunId: 'wr_0000_meta',
+    // Future Date so the derived deadlineAt is not already elapsed (the entry's
+    // wall-clock deadline would otherwise send the loop straight to wrap-up).
+    workflowStartedAt: new Date(Date.now() + 3_600_000),
+  }),
 }));
 
 vi.mock('../agent/generateOneRound', () => ({

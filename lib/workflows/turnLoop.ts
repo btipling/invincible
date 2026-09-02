@@ -48,7 +48,11 @@ import {
   truncatedFinishError,
   STEP_BUDGET_ERROR,
   STEP_BUDGET_WRAPUP,
+  TURN_WALL_CLOCK_ERROR,
+  TURN_WALL_CLOCK_WRAPUP,
 } from '../agent/modelFinish';
+import { TURN_WALL_CLOCK_MAX_MS } from '../sessionCloudCaps';
+import { logTurnLoop } from './turnLog';
 
 /**
  * Local structural model-round delta. Defined here (NOT imported from
@@ -128,6 +132,15 @@ export interface ModelStepFn {
      */
     disableTools?: boolean;
     /**
+     * Which cap fold this wrap-up round is — `'steps'` (512-step budget,
+     * plan #806/#878) vs `'wall'` (1-hour wall clock, plan #923). Threaded to
+     * `modelGenerateStep`, which picks the wrap-up SYSTEM (the loop never
+     * passes a system string — it stays a serializable tag). The `'wall'`
+     * wrap-up is DEADLINE-EXEMPT: it runs after the deadline elapsed and must
+     * complete once so the model can tell the user what happened.
+     */
+    wrapUp?: 'steps' | 'wall';
+    /**
      * RUNNING sandbox bind (cwd, activeSandboxId) threaded from the loop.
      * Initialised from `deps.persistRunBind` (start snapshot); updated after
      * every successful `change_dir` / `meta_sandbox_switch` tool. The step
@@ -137,7 +150,11 @@ export interface ModelStepFn {
     persistRunBind?: PersistRunBind;
   }): Promise<
     | { ok: true; delta: TurnLoopDelta }
-    | { ok: false; code: 'model_error' | 'write_error' | 'cancelled'; error: string }
+    | {
+        ok: false;
+        code: 'model_error' | 'write_error' | 'cancelled' | 'wall_clock';
+        error: string;
+      }
   >;
 }
 
@@ -160,7 +177,8 @@ export type ToolBatchItem =
         | 'http_error'
         | 'mcp_error'
         | 'violation'
-        | 'cancelled';
+        | 'cancelled'
+        | 'wall_clock';
       error: string;
     };
 
@@ -194,7 +212,8 @@ export interface ToolStepFn {
           | 'http_error'
           | 'mcp_error'
           | 'violation'
-          | 'cancelled';
+          | 'cancelled'
+          | 'wall_clock';
         error: string;
         /** Present when some calls ran before the fail (don't silently drop). */
         results?: ToolBatchItem[];
@@ -227,6 +246,14 @@ export interface TurnLoopDeps {
   writable: TurnWritable;
   /** Cap override for tests. Defaults to {@link MAX_WORKFLOW_STEPS}. */
   maxSteps?: number;
+  /**
+   * Absolute epoch deadline (ms) for the 1-hour wall-clock cap (plan #923).
+   * Derived ONCE in the `'use workflow'` entry from the SDK-pinned
+   * `getWorkflowMetadata().workflowStartedAt` + `TURN_WALL_CLOCK_MAX_MS` — a
+   * plain serializable number (never a signal/closure/Date across a step
+   * boundary). When omitted the wall cap is inert (tests/legacy callers).
+   */
+  deadlineAt?: number;
   /** Workflow run id — NEVER a session id (plan lock). */
   turnRunId: string;
   /**
@@ -271,6 +298,12 @@ export interface TurnLoopResult {
    */
   steps: number;
   error?: string;
+  /**
+   * Cap reason when `status === 'capped'` — `'steps'` (512-step budget,
+   * plan #806/#878) vs `'wall'` (1-hour wall clock, plan #923). The operator
+   * log + docs distinguish the two bounds. Omitted on non-capped results.
+   */
+  reason?: 'steps' | 'wall';
 }
 
 /** Always-serializable writable guard: close exactly once, fail-soft. */
@@ -288,6 +321,20 @@ export function onceWritable(writable: TurnWritable): TurnWritable {
       }
     },
   };
+}
+
+/**
+ * Bounded wall-clock elapsed for the additive `invincible.turn.loop` log row
+ * (plan #923): `deadlineAt` is `startedAt + TURN_WALL_CLOCK_MAX_MS`, so
+ * `now - (deadlineAt - MAX)` is the run's elapsed. Clamped to `[0, 2×cap]` so a
+ * hostile/desynced clock can never log a nonsense large value (the loop can
+ * overrun at most ~one wave + one wrap-up round past the deadline).
+ */
+function boundedElapsedMs(deadlineAt: number): number {
+  const startedAt = deadlineAt - TURN_WALL_CLOCK_MAX_MS;
+  const elapsed = Date.now() - startedAt;
+  if (!Number.isFinite(elapsed)) return 0;
+  return Math.max(0, Math.min(Math.floor(elapsed), TURN_WALL_CLOCK_MAX_MS * 2));
 }
 
 const sse = (line: TurnSseLine): string => formatTurnSse(line);
@@ -332,8 +379,12 @@ function toolResultLine(
 
 /** Synthetic tool rows for assistant toolCalls that never ran (cap mid-fanout).
  *  Providers reject a user message after open tool_calls — wrap-up would never
- *  reach the model without these pairs. */
-function unpairedToolRows(messages: ReadonlyArray<unknown>): Array<{
+ *  reach the model without these pairs. `skipError` distinguishes the wall-cap
+ *  wrap-up (`skipped: turn wall clock exceeded`) from the step-budget one. */
+function unpairedToolRows(
+  messages: ReadonlyArray<unknown>,
+  skipError: string,
+): Array<{
   role: 'tool';
   toolName: string;
   toolCallId: string;
@@ -367,7 +418,7 @@ function unpairedToolRows(messages: ReadonlyArray<unknown>): Array<{
         toolName: call.toolName,
         toolCallId: call.toolCallId,
         ok: false,
-        error: `skipped: ${STEP_BUDGET_ERROR}`,
+        error: `skipped: ${skipError}`,
       });
     }
   }
@@ -514,17 +565,27 @@ export async function runTurnLoop(
     round: number,
     steps: number,
     error?: string,
+    reason?: TurnLoopResult['reason'],
   ): Promise<TurnLoopResult> => {
     if (error) await writable.write(sse({ type: 'error', error }));
     await writable.close();
-    return {
+    const result: TurnLoopResult = {
       status,
       deltas,
       messages,
       rounds: round,
       steps,
       ...(error !== undefined ? { error } : {}),
+      ...(reason !== undefined ? { reason } : {}),
     };
+    logTurnLoop({
+      status: result.status,
+      ...(result.reason !== undefined ? { reason: result.reason } : {}),
+      ...(deps.deadlineAt !== undefined
+        ? { elapsedMs: boundedElapsedMs(deps.deadlineAt) }
+        : {}),
+    });
+    return result;
   };
 
   let round = 0;
@@ -583,15 +644,128 @@ export async function runTurnLoop(
     messages.push({ role: 'persist', ok: false, code: persisted.code });
   };
 
+  /**
+   * Wall-clock cap check — the directive-free core is NOT a workflow function,
+   * so `Date.now()` is truthful here (only the `'use workflow'` entry is
+   * replay-pinned; it derives `deadlineAt` once from SDK `workflowStartedAt`).
+   * `Infinity` when the caller never supplied a deadline (cap inert).
+   */
+  const deadlineElapsed = (): boolean => {
+    if (deps.deadlineAt === undefined) return false;
+    return deps.deadlineAt - Date.now() <= 0;
+  };
+
+  /**
+   * Terminal wall-cap fold (plan #923): close unpaired tool rows with the
+   * wall copy, one tools-off wrap-up round that SEES the wall error, terminal
+   * persist, ONE SSE `error` `turn wall clock exceeded`, writable close once,
+   * and `{status:'capped', reason:'wall'}`. Mirrors the step-budget path but
+   * with distinct copy + an `error` (not `done`) terminal — a wall-cap is a
+   * hard stop mid-work, honest as an error line. A wrap-up inference failure
+   * is a real model error and still fails (`failed` + reason `wall`).
+   */
+  const wallWrapUp = async (
+    round: number,
+    steps: number,
+  ): Promise<TurnLoopResult> => {
+    const skipped = unpairedToolRows(messages, TURN_WALL_CLOCK_ERROR);
+    for (const row of skipped) {
+      messages.push(row);
+      await writable.write(
+        sse(toolResultLine(row.toolName, false, row.error, row.toolCallId)),
+      );
+    }
+    const wrapMessages: unknown[] = [
+      ...messages,
+      { role: 'error', content: TURN_WALL_CLOCK_WRAPUP },
+    ];
+    let wrap: Awaited<ReturnType<ModelStepFn>>;
+    try {
+      wrap = await deps.modelStep({
+        messages: wrapMessages,
+        persistRunBind: bind,
+        disableTools: true,
+        wrapUp: 'wall',
+      });
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      wrap = { ok: false, code: 'model_error', error };
+    }
+    if (wrap.ok) {
+      const wrapDelta: TurnLoopDelta = {
+        text: wrap.delta.text,
+        toolCalls: [], // ignore — wrap-up must not run more tools
+        ...(wrap.delta.usage !== undefined ? { usage: wrap.delta.usage } : {}),
+        ...(wrap.delta.finishReason !== undefined
+          ? { finishReason: wrap.delta.finishReason }
+          : {}),
+        ...(typeof wrap.delta.resolvedProvider === 'string' &&
+        wrap.delta.resolvedProvider.length > 0
+          ? { resolvedProvider: wrap.delta.resolvedProvider }
+          : {}),
+      };
+      deltas.push(wrapDelta);
+      usage = accumulateUsage(usage, wrapDelta.usage);
+      if (wrapDelta.resolvedProvider) {
+        resolvedProvider = wrapDelta.resolvedProvider;
+      }
+      if (wrapDelta.text) assistantText += wrapDelta.text;
+      messages.push({ role: 'assistant', delta: wrapDelta });
+    }
+    await persistOnce(true);
+    if (!wrap.ok) {
+      return fail('failed', round, steps, wrap.error, 'wall');
+    }
+    if (isProviderRefusalFinish(wrap.delta.finishReason)) {
+      return fail(
+        'failed',
+        round,
+        steps,
+        truncatedFinishError(wrap.delta.finishReason),
+        'wall',
+      );
+    }
+    await writable.write(sse({ type: 'error', error: TURN_WALL_CLOCK_ERROR }));
+    await writable.close();
+    const result: TurnLoopResult = {
+      status: 'capped',
+      deltas,
+      messages,
+      rounds: round,
+      steps,
+      reason: 'wall',
+    };
+    logTurnLoop({
+      status: result.status,
+      reason: result.reason,
+      ...(deps.deadlineAt !== undefined
+        ? { elapsedMs: boundedElapsedMs(deps.deadlineAt) }
+        : {}),
+    });
+    return result;
+  };
+
   try {
     while (steps < cap) {
       round += 1;
       steps += 1; // this model round = one step boundary
+      // Wall-clock boundary check (plan #923) — belt-and-suspenders; the
+      // authoritative abort happens in-step via the deadline signal, this
+      // catches the gap between an abort and the step returning. The wrap-up
+      // fold is the SAME terminal as the step sentinel.
+      if (deadlineElapsed()) {
+        return wallWrapUp(round, steps);
+      }
       // ONE model round — schemas only, never execute (B9 core). Delta return.
       // Pass the running bind so the model sees FS tools for the CURRENT sandbox
       // + cwd, not the stale start snapshot.
       const gen = await deps.modelStep({ messages, persistRunBind: bind });
       if (!gen.ok) {
+        if (gen.code === 'wall_clock') {
+          // Dedicated wall sentinel — the wall wrap-up terminal-persists +
+          // closes + writes the SSE error itself (no double-persist here).
+          return wallWrapUp(round, steps);
+        }
         // Irrevocable inference: SSE error. Persist `completed` first so
         // refresh cannot attach after user-line persist left `running`.
         await persistOnce(true);
@@ -634,7 +808,20 @@ export async function runTurnLoop(
           sse(doneLine(assistantText, bind, gen.delta.finishReason, resolvedProvider)),
         );
         await writable.close();
-        return { status: 'completed', deltas, messages, rounds: round, steps };
+        const completedResult: TurnLoopResult = {
+          status: 'completed',
+          deltas,
+          messages,
+          rounds: round,
+          steps,
+        };
+        logTurnLoop({
+          status: completedResult.status,
+          ...(deps.deadlineAt !== undefined
+            ? { elapsedMs: boundedElapsedMs(deps.deadlineAt) }
+            : {}),
+        });
+        return completedResult;
       }
 
       // User-line persist: first model round that returned tools. Same "always
@@ -651,6 +838,13 @@ export async function runTurnLoop(
       // Live tool_result SSE is written inside the step — do not dump here
       // (would reintroduce N writeTurnSse Fluid steps).
       if (steps >= cap) break;
+      // Whole-batch wall boundary (plan #923): before dispatching the batch —
+      // in-wave aborts of already-dispatched calls stay best-effort, but the
+      // batch boundary + deadline signal covers the evidence case (long model
+      // rounds) and the loop terminates ≤ one wave past the deadline.
+      if (deadlineElapsed()) {
+        return wallWrapUp(round, steps);
+      }
       steps += 1;
       const batch = await deps.toolStep({
         calls,
@@ -715,6 +909,19 @@ export async function runTurnLoop(
             : cancelledItem?.error;
         return fail('cancelled', round, steps, err);
       }
+      const wallStopped =
+        (!batch.ok && batch.code === 'wall_clock') ||
+        items.some((i) => !i.ok && i.code === 'wall_clock');
+      if (wallStopped) {
+        // Whole-batch / in-batch wall sentinel (plan #923): persist whatever
+        // partial successes ran (siblings must not be dropped, same rule as the
+        // cancelled-batch path), then the wall wrap-up terminal. The wrap-up
+        // itself persists once more + closes + writes the SSE error.
+        if (items.length > 0) {
+          await persistOnce(true);
+        }
+        return wallWrapUp(round, steps);
+      }
       if (!batch.ok && items.length === 0) {
         // Whole-step fail before any call (assemble / not-found with no
         // results). No live tool_result was written — emit one per call so
@@ -750,7 +957,7 @@ export async function runTurnLoop(
     // what completed. Terminal persist, then SSE `done` with the wrap-up
     // text — a loop bound is not a failed turn. A wrap-up inference failure
     // is a real model error and still fails.
-    const skipped = unpairedToolRows(messages);
+    const skipped = unpairedToolRows(messages, STEP_BUDGET_ERROR);
     for (const row of skipped) {
       messages.push(row);
       await writable.write(sse(toolResultLine(row.toolName, false, row.error, row.toolCallId)));
@@ -767,6 +974,7 @@ export async function runTurnLoop(
         messages: wrapMessages,
         persistRunBind: bind,
         disableTools: true,
+        wrapUp: 'steps',
       });
     } catch (err) {
       // Same as `{ok:false}`: still terminal-persist. A throw must not skip
@@ -804,7 +1012,22 @@ export async function runTurnLoop(
     }
     await writable.write(sse(doneLine(assistantText, bind, wrap.delta.finishReason, resolvedProvider)));
     await writable.close();
-    return { status: 'capped', deltas, messages, rounds: round, steps };
+    const cappedSteps: TurnLoopResult = {
+      status: 'capped',
+      deltas,
+      messages,
+      rounds: round,
+      steps,
+      reason: 'steps',
+    };
+    logTurnLoop({
+      status: cappedSteps.status,
+      reason: cappedSteps.reason,
+      ...(deps.deadlineAt !== undefined
+        ? { elapsedMs: boundedElapsedMs(deps.deadlineAt) }
+        : {}),
+    });
+    return cappedSteps;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     try {

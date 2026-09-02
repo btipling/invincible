@@ -386,6 +386,40 @@ export const TURN_START_MIN_INTERVAL_MS = 1000;
 export const TURN_STREAM_STATUS_POLL_MS = 1000;
 
 /**
+ * Hard wall-clock cap for one durable `/api/turns` run — **1 hour** (plan #923,
+ * Bjorn-authorized product lock). Enforced **inside the Workflow step VM**: the
+ * `'use workflow'` entry derives a deterministic `deadlineAt` from
+ * `getWorkflowMetadata().workflowStartedAt` (runtime-pinned, replay-stable per
+ * the SDK docs) + this value; the directive-free `turnLoop` core checks the
+ * step boundary and the `'use step'` shells rebuild an
+ * `AbortSignal.timeout(remaining)` per attempt from the serialized `deadlineAt`
+ * number, so a long/retried model round or tool batch aborts AT the 1-hour line
+ * (the #923 4h evidence run's class: retried `modelGenerateStep` ~18 min × 5).
+ * The cap value is **code** — no env override (a dynamic value would itself
+ * need the same human gate per AGENTS cap governance). The `_TTL_` /
+ * `_PROBE_EVERY_` seams below are cache/probe-only and never wire into
+ * enforcement. **NEW cap**; no existing cap value changed → no human gate
+ * beyond the #923 product lock (== the 1h value itself).
+ */
+export const TURN_WALL_CLOCK_MAX_MS = 3_600_000;
+
+/**
+ * **Cache TTL only** — bounds a read-side deadline cache (doc-only seam). Never
+ * an enforcement knob: the deadline check uses `workflowStartedAt` +
+ * `TURN_WALL_CLOCK_MAX_MS` directly, so an operator cannot shorten the cap via
+ * env. **NEW generous cap**; no existing cap value changed → no human gate.
+ */
+export const TURN_WALL_CLOCK_DEADLINE_TTL_MS = 60_000;
+
+/**
+ * **Status-slot probe cadence only** — reserved green-field cadence for a future
+ * live elapsed context-slot (`Turn 42m/1h`) during Busy. Never wired to
+ * enforcement; the current DoD ships the Turn-ended error line instead.
+ * **NEW generous cap**; no existing cap value changed → no human gate.
+ */
+export const TURN_WALL_CLOCK_PROBE_EVERY_MS = 2_000;
+
+/**
  * Row cap for a message checkpoint (plan #800, backend-agents B6). The checkpoint
  * Blob is a multi-turn `{role, content}` projection; bounding its row count keeps a
  * replay/entity footprint bounded (same order as `TURN_FRESHLEDGER_MAX_GRANTS`,
