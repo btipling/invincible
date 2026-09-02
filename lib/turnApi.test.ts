@@ -6,7 +6,7 @@
  * `sessionId`/`personaId`/`cwd` on the body, JSON 4xx, SSE success + failure.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { attachTurnStream, sendTurn, sendTurnStream } from './turnApi';
+import { attachTurnStream, cancelTurn, sendTurn, sendTurnStream } from './turnApi';
 
 function sseResponse(chunks: string[], header?: { 'x-workflow-run-id': string }): Response {
   const body = new ReadableStream<Uint8Array>({
@@ -584,6 +584,119 @@ describe('attachTurnStream (GET attach — plan #813 E19)', () => {
     });
     expect(badSession.ok).toBe(false);
     if (!badSession.ok) expect(badSession.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('cancelTurn (POST cancel — plan #816 G22)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('POSTs /api/turns/:runId/cancel?sessionId= → accepted on 200', async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(init?.method).toBe('POST');
+      expect(String(url)).toBe('/api/turns/wr_live/cancel?sessionId=s_1');
+      return Response.json(
+        { runId: 'wr_live', turnStatus: 'cancelling' },
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await cancelTurn('wr_live', { sessionId: 's_1' });
+    expect(result).toEqual({ kind: 'accepted' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('404 → gone (run expired / ownership mismatch)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json(
+          { error: 'Run not found: wr_gone' },
+          { status: 404, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    const result = await cancelTurn('wr_gone', { sessionId: 's_1' });
+    expect(result).toEqual({ kind: 'gone' });
+  });
+
+  it('409 → terminal with the run status from the body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json(
+          { runId: 'wr_done', status: 'completed' },
+          { status: 409, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    const result = await cancelTurn('wr_done', { sessionId: 's_1' });
+    expect(result).toEqual({ kind: 'terminal', status: 'completed' });
+  });
+
+  it('409 with a non-JSON body → terminal with the generic status', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('conflict', { status: 409 })),
+    );
+    const result = await cancelTurn('wr_done', { sessionId: 's_1' });
+    expect(result).toEqual({ kind: 'terminal', status: 'terminal' });
+  });
+
+  it('503 → failed with the server error string', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json(
+          { error: 'Unable to cancel run (fail closed): lost race' },
+          { status: 503, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    const result = await cancelTurn('wr_live', { sessionId: 's_1' });
+    expect(result).toEqual({
+      kind: 'failed',
+      status: 503,
+      error: 'Unable to cancel run (fail closed): lost race',
+    });
+  });
+
+  it('429 → failed (soft guard) with status', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json(
+          { error: 'Too many cancel requests. Please wait before cancelling again.' },
+          { status: 429, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    const result = await cancelTurn('wr_live', { sessionId: 's_1' });
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') expect(result.status).toBe(429);
+  });
+
+  it('network throw → failed (never throws)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Failed to fetch');
+      }),
+    );
+    const result = await cancelTurn('wr_live', { sessionId: 's_1' });
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') expect(result.error).toBe('Failed to fetch');
+  });
+
+  it('invalid runId / sessionId fail closed before fetch', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const badRun = await cancelTurn('bad:id!', { sessionId: 's_1' });
+    expect(badRun).toEqual({ kind: 'failed', status: 400, error: 'Invalid runId' });
+    const badSession = await cancelTurn('wr_1', { sessionId: 'not opaque!' });
+    expect(badSession).toEqual({ kind: 'failed', status: 400, error: 'Invalid sessionId.' });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -25,6 +25,8 @@ import {
   abortReasonFor,
   decideDetach,
   decideDetachPersist,
+  decideStopFoldPost,
+  decideStopFoldPre,
   DETACH_ABORT_REASON,
   isDetachAbort,
   preserveTargetId,
@@ -33,6 +35,7 @@ import {
   shouldAbortReader,
   shouldApplyMintBind,
   shouldSetHostTurnNote,
+  shouldSkipCancelPost,
   type DetachTurnInput,
 } from './detachTurn';
 
@@ -451,6 +454,24 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(run).toContain('shouldSetHostTurnNote(folded.turnStatus)');
     expect(run).not.toMatch(/if \(!result\.ok\) \{\s*setHostNote\(result\.error\);/);
   });
+
+  it('poll Stop wires the G22 server cancel (plan #816)', () => {
+    const poll = host.slice(
+      host.indexOf('const poll = () =>'),
+      host.indexOf('pollRef.current = window.setTimeout(poll, 150)'),
+    );
+    // Cancel POST fires through the turnApi client + the pre/post fold planner.
+    expect(poll).toContain('cancelTurn(');
+    expect(poll).toContain('decideStopFoldPre(');
+    expect(poll).toContain('decideStopFoldPost(');
+    expect(poll).toContain('shouldSkipCancelPost(');
+    // A repeat Stop after 'cancelling' never re-POSTs; a terminal/gone ack
+    // clears the id + folds completed (orphan-unstick); a failed ack keeps
+    // running + paints a soft note (never a fake cancel).
+    expect(poll).toContain("fold.kind === 'clear-terminal'");
+    expect(poll).toContain("fold.kind === 'keep-running'");
+    expect(poll).toContain('setHostNote(');
+  });
 });
 
 describe('shouldSetHostTurnNote (adversarial #853 same-tab detach)', () => {
@@ -462,6 +483,99 @@ describe('shouldSetHostTurnNote (adversarial #853 same-tab detach)', () => {
     expect(shouldSetHostTurnNote('completed')).toBe(true);
     expect(shouldSetHostTurnNote('cancelling')).toBe(true);
     expect(shouldSetHostTurnNote(undefined)).toBe(true);
+  });
+});
+
+describe('G22 Stop/Esc server-cancel fold planner (plan #816)', () => {
+  describe('decideStopFoldPre', () => {
+    it('live durable run (turnRunId + running) → cancelling (route to server cancel)', () => {
+      expect(
+        decideStopFoldPre({ turnRunId: 'wr_live', turnStatus: 'running' }),
+      ).toEqual({ kind: 'cancelling' });
+    });
+
+    it('no run id (legacy /api/agent path) → legacy-clear', () => {
+      expect(decideStopFoldPre({ turnStatus: 'running' })).toEqual({
+        kind: 'legacy-clear',
+      });
+      expect(decideStopFoldPre({})).toEqual({ kind: 'legacy-clear' });
+    });
+
+    it('run id but not running (cancelling / completed / idle) → legacy-clear', () => {
+      // 'cancelling' is handled by shouldSkipCancelPost upstream (no re-POST);
+      // a pre-fold here means the run is not in the live-running state.
+      expect(
+        decideStopFoldPre({ turnRunId: 'wr_1', turnStatus: 'cancelling' }),
+      ).toEqual({ kind: 'legacy-clear' });
+      expect(
+        decideStopFoldPre({ turnRunId: 'wr_1', turnStatus: 'completed' }),
+      ).toEqual({ kind: 'legacy-clear' });
+      expect(decideStopFoldPre({ turnRunId: 'wr_1', turnStatus: 'idle' })).toEqual({
+        kind: 'legacy-clear',
+      });
+    });
+  });
+
+  describe('decideStopFoldPost', () => {
+    const pre = { kind: 'cancelling' as const };
+
+    it('accepted → cancelling (KEEP turnRunId, fold cancelling)', () => {
+      expect(decideStopFoldPost({ pre, outcome: { kind: 'accepted' } })).toEqual({
+        kind: 'cancelling',
+      });
+    });
+
+    it('terminal (409) → clear-terminal (orphan-unstick: clear id + completed)', () => {
+      expect(decideStopFoldPost({ pre, outcome: { kind: 'terminal' } })).toEqual({
+        kind: 'clear-terminal',
+      });
+    });
+
+    it('gone (404) → clear-terminal (orphan-unstick)', () => {
+      expect(decideStopFoldPost({ pre, outcome: { kind: 'gone' } })).toEqual({
+        kind: 'clear-terminal',
+      });
+    });
+
+    it('failed (429/5xx/network) → keep-running (never a fake cancel)', () => {
+      expect(decideStopFoldPost({ pre, outcome: { kind: 'failed' } })).toEqual({
+        kind: 'keep-running',
+      });
+    });
+
+    it('legacy-clear pre never reaches the outcome mapping', () => {
+      expect(
+        decideStopFoldPost({
+          pre: { kind: 'legacy-clear' },
+          outcome: { kind: 'accepted' },
+        }),
+      ).toEqual({ kind: 'legacy-clear' });
+      expect(
+        decideStopFoldPost({
+          pre: { kind: 'legacy-clear' },
+          outcome: { kind: 'failed' },
+        }),
+      ).toEqual({ kind: 'legacy-clear' });
+    });
+  });
+
+  describe('shouldSkipCancelPost', () => {
+    it('cancelling + run id → true (a second Stop never re-POSTs)', () => {
+      expect(
+        shouldSkipCancelPost({ turnRunId: 'wr_live', turnStatus: 'cancelling' }),
+      ).toBe(true);
+    });
+
+    it('running / no id / terminal → false', () => {
+      expect(
+        shouldSkipCancelPost({ turnRunId: 'wr_live', turnStatus: 'running' }),
+      ).toBe(false);
+      expect(shouldSkipCancelPost({ turnStatus: 'cancelling' })).toBe(false);
+      expect(
+        shouldSkipCancelPost({ turnRunId: 'wr_1', turnStatus: 'completed' }),
+      ).toBe(false);
+      expect(shouldSkipCancelPost({})).toBe(false);
+    });
   });
 });
 

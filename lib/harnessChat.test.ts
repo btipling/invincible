@@ -1669,7 +1669,7 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     ).toBe(false);
   });
 
-  it('Stop after onTurnStarted clears this-turn running (adversarial #844)', async () => {
+  it('Stop after onTurnStarted folds cancelling KEEPING this-turn id (G22 plan #816, supersedes #844 clear)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const { runHarnessTurn } = await import('./harnessChat');
@@ -1681,12 +1681,16 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
         await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
         controller.abort();
         // Production abort-after-headers now carries turnRunId; also prove the
-        // omit shape still clears via this-turn running.
+        // omit shape still folds cancelling via this-turn running.
         return { ok: false, error: 'Request cancelled.' };
       },
     });
-    expect(next.turnRunId).toBeUndefined();
-    expect(next.turnStatus).toBe('completed');
+    // G22: a plain operator Stop on a LIVE durable run keeps `turnRunId` and
+    // folds 'cancelling' (the poll already fired the server cancel POST). The
+    // run's own terminal persist owns the terminal status — the old
+    // `turnRunId: undefined` + `completed` fold was a lie over a live run.
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('cancelling');
     expect(
       next.messages.some(
         (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
@@ -1694,7 +1698,7 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     ).toBe(true);
   });
 
-  it('Stop after onTurnStarted with abort result id still clears (adversarial #844)', async () => {
+  it('Stop after onTurnStarted with abort result id folds cancelling KEEPING id (G22 plan #816)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const { runHarnessTurn } = await import('./harnessChat');
@@ -1708,6 +1712,30 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
         return { ok: false, error: 'Request cancelled.', turnRunId: 'wr_live' };
       },
     });
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('cancelling');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(true);
+  });
+
+  it('G22: operator Stop with NO live run id (legacy /api/agent path) keeps the old clear fold', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { runHarnessTurn } = await import('./harnessChat');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async () => {
+        // Legacy path: no onTurnStarted, no turnRunId on the result.
+        controller.abort();
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
+    // No live run id → the legacy `turnRunId: undefined` + `completed` fold.
     expect(next.turnRunId).toBeUndefined();
     expect(next.turnStatus).toBe('completed');
     expect(

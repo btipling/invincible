@@ -1863,13 +1863,37 @@ export async function runHarnessTurn(
         }
       } else if (
         agentResult.turnRunId !== undefined ||
-        (fail.kind === 'stop' && failedSession.turnStatus === 'running')
+        (fail.kind === 'stop' &&
+          // Enter the fold for a this-turn live stop (`running`) OR a legacy
+          // stop with no durable id at all (fold `completed`). A leftover
+          // TERMINAL id (`completed`/`cancelling`) from a PRIOR turn is NOT
+          // this turn's — pre-headers Stop must not clear it (adversarial
+          // #844), so skip the fold and leave it as-is.
+          (failedSession.turnStatus === 'running' ||
+            failedSession.turnRunId === undefined))
       ) {
-        failedSession = {
-          ...failedSession,
-          turnRunId: undefined,
-          turnStatus: 'completed',
-        };
+        // Plan #816 (G22) — a plain operator Stop on a LIVE durable run keeps
+        // `turnRunId` and folds `turnStatus: 'cancelling'` (the poll already
+        // fired the server cancel POST). The run's own terminal persist owns
+        // the terminal status — the old `turnRunId: undefined` + `completed`
+        // fold was a lie on the durable path (persisted meta said `completed`
+        // over a still-live run). It survives ONLY for the legacy `/api/agent`
+        // path (no live run id) and the producer-cancelled SSE terminal
+        // (`Request cancelled.` with no abort — the run is already terminal).
+        // The discriminator is the abort: a genuine operator Stop aborts the
+        // caller's signal; a producer terminal SSE does NOT (plan #919).
+        const keepCancelling =
+          fail.kind === 'stop' &&
+          opts?.signal?.aborted === true &&
+          failedSession.turnStatus === 'running' &&
+          failedSession.turnRunId !== undefined;
+        failedSession = keepCancelling
+          ? { ...failedSession, turnStatus: 'cancelling' }
+          : {
+              ...failedSession,
+              turnRunId: undefined,
+              turnStatus: 'completed',
+            };
       }
       lastUiKind =
         attachSubscribeFail ||

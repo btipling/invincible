@@ -13,7 +13,8 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
-import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort, releaseBusyViewport } from '../../lib/detachTurn';
+import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort, releaseBusyViewport, decideStopFoldPre, decideStopFoldPost, shouldSkipCancelPost } from '../../lib/detachTurn';
+import { cancelTurn } from '../../lib/turnApi';
 import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, shouldKickHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, coldAttachFromSnapshot, type HeapApplied } from '../../lib/turnAttach';
 import {
   HarnessBridge,
@@ -1180,6 +1181,61 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           if (b) {
             // Protocol v9: Stop first — abort inflight and skip starting a turn this tick.
             if (b.takePendingCancel()) {
+              // Plan #816 (G22): Stop on an attached durable run fires the
+              // server cancel ONCE per run id. The abort below unwinds
+              // runHarnessTurn, whose stop fold lands `turnStatus: 'cancelling'`
+              // KEEPING `turnRunId` (the run's own terminal persist owns the
+              // terminal status — the old `turnRunId: undefined` + `completed`
+              // fold was a lie on the durable path). The 'cancelling' fold is
+              // optimistic-before-ack by design: it is what makes a repeat Stop
+              // skip the re-POST (bounded once per run id), and it is honest
+              // even on a cancel-POST failure — the run is still live and
+              // re-resolves via the attach/terminal event. A terminal (409) /
+              // gone (404) ack clears the id + folds `completed` now (the
+              // orphan-unstick), never leaving a stale live marker.
+              const stopSession = sessionRef.current;
+              const stopRunId = stopSession.turnRunId;
+              const stopFoldPre = decideStopFoldPre({
+                turnRunId: stopRunId,
+                turnStatus: stopSession.turnStatus,
+              });
+              if (
+                stopFoldPre.kind === 'cancelling' &&
+                stopRunId !== undefined &&
+                !shouldSkipCancelPost({
+                  turnRunId: stopRunId,
+                  turnStatus: stopSession.turnStatus,
+                })
+              ) {
+                const cancelSessionId = stopSession.id;
+                void cancelTurn(stopRunId, { sessionId: cancelSessionId }).then(
+                  (outcome) => {
+                    if (cancelled) return;
+                    const liveNow = sessionRef.current;
+                    // Never clobber a switched session or a NEWER run id.
+                    if (liveNow.id !== cancelSessionId) return;
+                    if (liveNow.turnRunId !== stopRunId) return;
+                    const fold = decideStopFoldPost({
+                      pre: stopFoldPre,
+                      outcome,
+                    });
+                    if (fold.kind === 'clear-terminal') {
+                      persist({
+                        ...liveNow,
+                        turnRunId: undefined,
+                        turnStatus: 'completed',
+                      });
+                    } else if (fold.kind === 'keep-running') {
+                      // Soft note only — never a fake cancel; the run continues
+                      // to its own terminal (same honesty as detach).
+                      setHostNote(
+                        'Stop signal did not reach the server — the run is still live; it will end on its own.',
+                      );
+                    }
+                    // 'cancelling' — the harnessChat stop fold already landed it.
+                  },
+                );
+              }
               abortRef.current?.abort();
               releaseBusyViewport({
                 inflightRef,

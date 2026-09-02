@@ -220,4 +220,78 @@ export function releaseBusyViewport(hooks: BusyViewportHooks): void {
   hooks.setLifecycleReady();
 }
 
+// ── Plan #816 (G22) — Stop/Esc server-cancel fold planner ──
+
+/** Outcome of the G22 cancel POST, mapped 1:1 from `lib/turnApi.cancelTurn`. */
+export type CancelPostOutcome =
+  | { kind: 'accepted' }
+  | { kind: 'terminal' }
+  | { kind: 'gone' }
+  | { kind: 'failed' };
+
+/**
+ * What the host Stop fold should do with the session after one Stop/Esc tick
+ * (plan #816 Host Stop fold + Cancel race table).
+ *
+ * | Input | Fold |
+ * |-------|------|
+ * | No live `turnRunId` (legacy `/api/agent` path) | `legacy-clear` — old `turnRunId: undefined` + `completed` fold |
+ * | Live run + cancel accepted | `cancelling` — KEEP `turnRunId`, fold `turnStatus: 'cancelling'` |
+ * | Cancel POST failed (429/5xx/network) | `keep-running` — keep `turnRunId` + `running`, paint a soft note |
+ * | Run terminal (409) or gone (404) | `clear-terminal` — clear `turnRunId` + fold `completed` (orphan-unstick) |
+ */
+export type StopFoldAction =
+  | { kind: 'legacy-clear' }
+  | { kind: 'cancelling' }
+  | { kind: 'keep-running' }
+  | { kind: 'clear-terminal' };
+
+/**
+ * Fold the session-side Stop decision BEFORE knowing the cancel POST outcome.
+ * Only the durable path (live `turnRunId` + `running`) routes to the server
+ * cancel; everything else keeps today's legacy clear fold.
+ */
+export function decideStopFoldPre(input: {
+  turnRunId?: string;
+  turnStatus?: TurnStatus;
+}): Extract<StopFoldAction, { kind: 'legacy-clear' | 'cancelling' }> {
+  if (input.turnRunId !== undefined && input.turnStatus === 'running') {
+    return { kind: 'cancelling' };
+  }
+  return { kind: 'legacy-clear' };
+}
+
+/**
+ * Fold the session-side Stop decision AFTER the cancel POST resolves
+ * (plan #816 Cancel race & failure semantics). A `cancelling` pre-fold is
+ * re-resolved by the server truth; `legacy-clear` never reaches here.
+ */
+export function decideStopFoldPost(input: {
+  pre: Extract<StopFoldAction, { kind: 'legacy-clear' | 'cancelling' }>;
+  outcome: CancelPostOutcome;
+}): StopFoldAction {
+  if (input.pre.kind === 'legacy-clear') return { kind: 'legacy-clear' };
+  switch (input.outcome.kind) {
+    case 'accepted':
+      return { kind: 'cancelling' };
+    case 'terminal':
+    case 'gone':
+      return { kind: 'clear-terminal' };
+    case 'failed':
+      return { kind: 'keep-running' };
+  }
+}
+
+/**
+ * True when a session already carries `turnStatus: 'cancelling'` for this
+ * `turnRunId` — a second Stop/Esc must never re-POST the cancel (bounded,
+ * once per run id).
+ */
+export function shouldSkipCancelPost(input: {
+  turnRunId?: string;
+  turnStatus?: TurnStatus;
+}): boolean {
+  return input.turnRunId !== undefined && input.turnStatus === 'cancelling';
+}
+
 
