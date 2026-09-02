@@ -2651,6 +2651,88 @@ describe('step wrappers (matrix 4–7)', () => {
     vi.doUnmock('./turnSseWrite');
   });
 
+  it('steps wrap-up does NOT inherit wall bound / reasoning none (adversarial-review #926 follow-up)', async () => {
+    // roundAbort used to gate on wrapUp !== undefined, so the 512-step fold
+    // inherited TURN_WALL_CLOCK_WRAPUP_MAX_MS + reasoning none. A 5-min abort
+    // classifies as wall_clock and the steps path fail()s the turn as
+    // "turn wall clock exceeded". Lock the split: wrapUp:'steps' keeps
+    // operator reasoning, uses STEP_BUDGET_WRAPUP_SYSTEM, and has no 5-min
+    // wrap signal even when the 1h deadline is already elapsed.
+    vi.resetModules();
+    const writeOnDefaultStream = vi.fn(async () => {});
+    vi.doMock('./turnSseWrite', () => ({
+      writeOnDefaultStream,
+      withDefaultStreamWriter: async (
+        fn: (write: (payload: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(writeOnDefaultStream),
+    }));
+    let capturedDeps:
+      | {
+          system?: string;
+          signal?: AbortSignal;
+          wallClockDeadlineAt?: number;
+          reasoning?: string;
+        }
+      | undefined;
+    const m1 = vi.fn(async (deps: unknown) => {
+      capturedDeps = deps as typeof capturedDeps;
+      return { ok: true as const, delta: { text: 'steps-wrap', toolCalls: [] } };
+    });
+    vi.doMock('../agent/generateOneRound', () => ({
+      generateOneRound: m1,
+      toolsWithoutExecutors: (t: Record<string, unknown>) => t,
+    }));
+    vi.doMock('../di/index', () => ({
+      createProdServices: () => ({
+        resolveInferenceForRequest: {
+          resolveByokForRequest: async () => ({
+            ok: true as const,
+            modelId: 'byok-resolved',
+            only: ['anthropic'] as [string],
+            byok: { anthropic: [{ apiKey: 'sk-test' }] },
+            secretsToRedact: ['sk-test'],
+          }),
+        },
+      }),
+    }));
+    vi.doMock('./assembleDurableToolWorld', () => ({
+      assembleDurableToolWorld: async () => ({
+        ok: true as const,
+        world: {
+          registry: {},
+          secrets: [],
+          signal: new AbortController().signal,
+          freshness: {},
+        },
+      }),
+    }));
+    const mod = await import('./modelGenerateStep');
+    const { STEP_BUDGET_WRAPUP_SYSTEM } = await import('../agent/modelFinish');
+    const result = await mod.modelGenerateStep({
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'error', content: 'Error: step budget exhausted.' },
+      ],
+      modelId: 'm',
+      userId: 'u1',
+      scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+      disableTools: true,
+      wrapUp: 'steps',
+      deadlineAt: Date.now() - 1, // elapsed 1h must not 1h-fail the steps fold
+      reasoning: 'xhigh',
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.delta.text).toBe('steps-wrap');
+    expect(capturedDeps?.system).toBe(STEP_BUDGET_WRAPUP_SYSTEM);
+    expect(capturedDeps?.reasoning).toBe('xhigh');
+    expect(capturedDeps?.signal).toBeUndefined();
+    expect(capturedDeps?.wallClockDeadlineAt).toBeUndefined();
+    vi.doUnmock('../agent/generateOneRound');
+    vi.doUnmock('../di/index');
+    vi.doUnmock('./assembleDurableToolWorld');
+    vi.doUnmock('./turnSseWrite');
+  });
+
   it('wrap-up bound abort remaps cancelled → wall_clock (adversarial-review #926)', async () => {
     vi.resetModules();
     vi.useFakeTimers();

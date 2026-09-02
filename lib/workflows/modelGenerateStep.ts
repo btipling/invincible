@@ -78,18 +78,27 @@ function deadlineResult(): { ok: false; code: 'wall_clock'; error: string } {
   return { ok: false, code: 'wall_clock', error: TURN_WALL_CLOCK_ERROR };
 }
 
-/** Abort + reasoning for this round. Wrap-up is 1h-exempt but bounded. */
+/** Abort + reasoning for this round. Wall wrap-up is 1h-exempt but bounded. */
 function roundAbort(args: ModelGenerateStepArgs): {
   signal?: AbortSignal;
   wallClockDeadlineAt?: number;
   reasoning?: string;
 } {
-  if (args.wrapUp !== undefined) {
+  // Only the 1-hour wall fold gets the substitute bound + reasoning none.
+  // The 512-step wrap-up (`wrapUp: 'steps'`) must not inherit either: a 5-min
+  // abort classifies as `'wall_clock'` and the steps path fail()s the turn as
+  // `turn wall clock exceeded` (adversarial-review #926 follow-up).
+  if (args.wrapUp === 'wall') {
     const wrapDeadline = Date.now() + TURN_WALL_CLOCK_WRAPUP_MAX_MS;
     return {
       signal: deadlineSignal(wrapDeadline),
       wallClockDeadlineAt: wrapDeadline,
       reasoning: 'none',
+    };
+  }
+  if (args.wrapUp === 'steps') {
+    return {
+      ...(args.reasoning !== undefined ? { reasoning: args.reasoning } : {}),
     };
   }
   return {
@@ -132,11 +141,13 @@ export interface ModelGenerateStepArgs {
   /**
    * Which cap fold this round is — `'steps'` (512-step budget, plan #806/#878)
    * or `'wall'` (1-hour wall clock, plan #923). Present ONLY on the terminal
-   * tools-off wrap-up round. The wrap-up is exempt from the **1-hour** deadline
-   * so it can complete after the cap fires; it is NOT unbounded — it gets
-   * `TURN_WALL_CLOCK_WRAPUP_MAX_MS` + `reasoning: 'none'` (adversarial-review
-   * #926). An elapsed 1h `deadlineAt` must not turn the fold into a second
-   * `'wall_clock'` failure.
+   * tools-off wrap-up round. The **wall** wrap-up is exempt from the 1-hour
+   * deadline so it can complete after the cap fires; it is NOT unbounded — it
+   * gets `TURN_WALL_CLOCK_WRAPUP_MAX_MS` + `reasoning: 'none'`
+   * (adversarial-review #926). The **steps** wrap-up does not inherit that
+   * bound or `none` (a 5-min abort would classify as `'wall_clock'` and the
+   * steps path would `fail` the turn). An elapsed 1h `deadlineAt` must not
+   * turn the fold into a second `'wall_clock'` failure.
    */
   wrapUp?: 'steps' | 'wall';
   /**
@@ -327,9 +338,12 @@ export async function modelGenerateStep(
 
   // Wall-clock cap (plan #923): a deadline that is already elapsed cannot
   // usefully run a FRESH model round — fail closed with the dedicated sentinel
-  // BEFORE BYOK/tool-world work. The wrap-up round (`wrapUp` set) is exempt
-  // from the 1-hour deadline (it runs after the cap) but still carries a
-  // short wrap-up bound + reasoning none (adversarial-review #926).
+  // BEFORE BYOK/tool-world work. The wall wrap-up round (`wrapUp === 'wall'`)
+  // is exempt from the 1-hour deadline (it runs after the cap) but still
+  // carries a short wrap-up bound + reasoning none (adversarial-review #926).
+  // The steps wrap-up is also exempt from the 1h early-return (the loop
+  // would have taken the wall fold first if the deadline had fired) and does
+  // not inherit the wall substitute bound.
   const deadlineElapsed = isDeadlineElapsed(args.deadlineAt);
   if (deadlineElapsed && args.wrapUp === undefined) {
     logTurnModel({ ok: false, code: 'wall_clock' });
