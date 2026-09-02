@@ -4807,6 +4807,114 @@ describe('runTurnLoop wall-clock cap (plan #923 — hard 1-hour turn wall clock)
       spy.mockRestore();
     }
   });
+
+  it('row 16: step-cap break after deadline prefers wall wrap-up, not unbounded steps fold (adversarial-review #926)', async () => {
+    // maxSteps=2: model + user-line persist fill the cap, then `steps >= cap`
+    // break. If that break runs BEFORE deadlineElapsed, wrapUp:'steps' (no
+    // signal, operator xhigh) fires after the 1h line — the 4h evidence class.
+    const { deps, w, closed } = wiredDeps({ maxSteps: 2 });
+    const deadlineAt = Date.now() + 40;
+    let wrapSaw: string | undefined;
+    const modelStep = vi.fn(async (args: unknown) => {
+      const a = args as {
+        disableTools?: boolean;
+        messages?: Array<{ role?: string; content?: string }>;
+      };
+      if (a.disableTools) {
+        wrapSaw = a.messages?.find((m) => m.role === 'error')?.content;
+        return { ok: true as const, delta: { text: 'wrap', toolCalls: [] } };
+      }
+      while (Date.now() < deadlineAt) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      return {
+        ok: true as const,
+        delta: {
+          text: 'call',
+          toolCalls: [{ toolName: 'list_dir', toolCallId: 'c', args: {} }],
+        },
+      };
+    });
+    const toolStep = vi.fn(async () => {
+      throw new Error('tool batch must not run: wall should win over the step-cap break');
+    });
+    const result = await runTurnLoop(
+      { ...deps, maxSteps: 2, modelStep, toolStep, deadlineAt },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('capped');
+    expect(result.reason).toBe('wall');
+    expect(result.reason).not.toBe('steps');
+    expect(toolStep).not.toHaveBeenCalled();
+    expect(wrapSaw).toContain(TURN_WALL_CLOCK_WRAPUP);
+    expect(wrapSaw).not.toContain(STEP_BUDGET_WRAPUP);
+    const events = eventsOf(w.lines);
+    expect(events.some((e) => e.type === 'error' && e.error === TURN_WALL_CLOCK_ERROR)).toBe(
+      true,
+    );
+    expect(events.some((e) => e.type === 'done')).toBe(false);
+    expect(closed()).toBe(1);
+  });
+
+  it('row 17: last in-budget tool batch filling the cap after deadline still wall-wraps (while-exit)', async () => {
+    // maxSteps=3: model + user-line persist + tool batch. Tool waits past
+    // deadline then succeeds. while (steps < cap) fails; without a while-exit
+    // deadline gate this was wrapUp:'steps'.
+    const { deps, w, closed } = wiredDeps({ maxSteps: 3 });
+    const deadlineAt = Date.now() + 40;
+    let wrapSaw: string | undefined;
+    const modelStep = vi.fn(async (args: unknown) => {
+      const a = args as {
+        disableTools?: boolean;
+        messages?: Array<{ role?: string; content?: string }>;
+      };
+      if (a.disableTools) {
+        wrapSaw = a.messages?.find((m) => m.role === 'error')?.content;
+        return { ok: true as const, delta: { text: 'wrap', toolCalls: [] } };
+      }
+      return {
+        ok: true as const,
+        delta: {
+          text: 'call',
+          toolCalls: [{ toolName: 'list_dir', toolCallId: 'c', args: {} }],
+        },
+      };
+    });
+    const toolStep = vi.fn(async () => {
+      while (Date.now() < deadlineAt) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      return {
+        ok: true as const,
+        results: [
+          {
+            ok: true as const,
+            toolName: 'list_dir',
+            toolCallId: 'c',
+            result: 'ok-dir',
+            freshnessDelta: '[]',
+          },
+        ],
+        freshnessDelta: '[]',
+      };
+    });
+    const result = await runTurnLoop(
+      { ...deps, maxSteps: 3, modelStep, toolStep, deadlineAt },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('capped');
+    expect(result.reason).toBe('wall');
+    expect(result.reason).not.toBe('steps');
+    expect(toolStep).toHaveBeenCalledTimes(1);
+    expect(wrapSaw).toContain(TURN_WALL_CLOCK_WRAPUP);
+    expect(wrapSaw).not.toContain(STEP_BUDGET_WRAPUP);
+    const events = eventsOf(w.lines);
+    expect(events.some((e) => e.type === 'error' && e.error === TURN_WALL_CLOCK_ERROR)).toBe(
+      true,
+    );
+    expect(events.some((e) => e.type === 'done')).toBe(false);
+    expect(closed()).toBe(1);
+  });
 });
 
 describe('static-graph clean-flag regression (plan #805 lock)', () => {

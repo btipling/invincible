@@ -862,14 +862,17 @@ export async function runTurnLoop(
       // (bind-mutators + FS editors) split waves.
       // Live tool_result SSE is written inside the step — do not dump here
       // (would reintroduce N writeTurnSse Fluid steps).
-      if (steps >= cap) break;
-      // Whole-batch wall boundary (plan #923): before dispatching the batch —
-      // in-wave aborts of already-dispatched calls stay best-effort, but the
-      // batch boundary + deadline signal covers the evidence case (long model
-      // rounds) and the loop terminates ≤ one wave past the deadline.
+      // Wall wins over the step-cap break (adversarial-review #926): wrapUp
+      // `'steps'` is unbounded. If deadlineAt is already past, do not fall
+      // through to the 512-step fold.
       if (deadlineElapsed()) {
         return wallWrapUp(round, steps);
       }
+      if (steps >= cap) break;
+      // Whole-batch wall boundary (plan #923): in-wave aborts of already-
+      // dispatched calls stay best-effort; the batch boundary + deadline
+      // signal cover the evidence case (long model rounds) and the loop
+      // terminates ≤ one wave past the deadline.
       steps += 1;
       const batch = await deps.toolStep({
         calls,
@@ -969,6 +972,15 @@ export async function runTurnLoop(
         await persistOnce(false);
       }
 
+    }
+
+    // Prefer the wall terminal when both caps fire (adversarial-review #926):
+    // `wrapUp: 'steps'` is unbounded (no 5-min signal / keeps operator
+    // reasoning). Running it after `deadlineAt` reintroduces the 4h evidence
+    // class. The `steps >= cap` break above also checks this; this gate
+    // covers the last in-budget tool batch that filled the cap.
+    if (deadlineElapsed()) {
+      return wallWrapUp(round, steps);
     }
 
     // Step budget exhausted (model + tool step count hit the cap): never
