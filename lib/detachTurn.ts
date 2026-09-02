@@ -285,7 +285,8 @@ export function decideStopFoldPost(input: {
 /**
  * True when a session already carries `turnStatus: 'cancelling'` for this
  * `turnRunId` — a second Stop/Esc must never re-POST the cancel (bounded,
- * once per run id).
+ * once per run id) **after an accepted cancel**. A failed POST must persist
+ * `running` so this returns false and Stop can retry (plan #816 race table).
  */
 export function shouldSkipCancelPost(input: {
   turnRunId?: string;
@@ -293,5 +294,31 @@ export function shouldSkipCancelPost(input: {
 }): boolean {
   return input.turnRunId !== undefined && input.turnStatus === 'cancelling';
 }
+
+/**
+ * Apply a G22 Stop-fold action onto a session snapshot.
+ *
+ * Used by the host poll *and* by `persistTurn` so `runHarnessTurn`'s
+ * optimistic `'cancelling'` abort-fold cannot win a race against a failed
+ * cancel POST (plan #816: failed ack keeps `running` so Stop can retry).
+ * A newer `turnRunId` on the snapshot is never clobbered.
+ */
+export function applyStopFoldToSession<
+  T extends { turnRunId?: string; turnStatus?: TurnStatus },
+>(session: T, runId: string, fold: StopFoldAction): T {
+  if (fold.kind === 'legacy-clear') return session;
+  if (session.turnRunId !== undefined && session.turnRunId !== runId) {
+    return session;
+  }
+  switch (fold.kind) {
+    case 'cancelling':
+      return { ...session, turnRunId: runId, turnStatus: 'cancelling' };
+    case 'keep-running':
+      return { ...session, turnRunId: runId, turnStatus: 'running' };
+    case 'clear-terminal':
+      return { ...session, turnRunId: undefined, turnStatus: 'completed' };
+  }
+}
+
 
 

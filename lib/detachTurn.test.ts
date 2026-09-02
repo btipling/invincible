@@ -23,6 +23,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   abortReasonFor,
+  applyStopFoldToSession,
   decideDetach,
   decideDetachPersist,
   decideStopFoldPost,
@@ -421,7 +422,7 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     const runStart = host.indexOf('const runPrompt = useCallback');
     const run = host.slice(runStart, host.indexOf('useEffect(() => {', runStart));
     expect(run).toContain('const repo = repoRef.current');
-    expect(run).toContain('putPreservedTurn(repo, snapshot, startedId, pendingMintId)');
+    expect(run).toContain('putPreservedTurn(repo, foldedSnapshot, startedId, pendingMintId)');
     expect(run).toContain('shouldApplyMintBind(');
     expect(run).toContain('pendingMintBindRef.current');
     expect(run).toContain('switchInFlightRef.current');
@@ -451,7 +452,7 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
   it('runPrompt skips ember hostNote on same-tab running detach (adversarial #853)', () => {
     const runStart = host.indexOf('const runPrompt = useCallback');
     const run = host.slice(runStart, host.indexOf('useEffect(() => {', runStart));
-    expect(run).toContain('shouldSetHostTurnNote(folded.turnStatus)');
+    expect(run).toContain('shouldSetHostTurnNote(persisted.turnStatus)');
     expect(run).not.toMatch(/if \(!result\.ok\) \{\s*setHostNote\(result\.error\);/);
   });
 
@@ -465,12 +466,23 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(poll).toContain('decideStopFoldPre(');
     expect(poll).toContain('decideStopFoldPost(');
     expect(poll).toContain('shouldSkipCancelPost(');
+    expect(poll).toContain('applyStopFoldToSession(');
+    expect(poll).toContain('cancelPostedRunIdsRef');
+    expect(poll).toContain('pendingStopFoldRef');
     // A repeat Stop after 'cancelling' never re-POSTs; a terminal/gone ack
     // clears the id + folds completed (orphan-unstick); a failed ack keeps
-    // running + paints a soft note (never a fake cancel).
+    // running + paints a soft note (never a fake cancel). Failed ack MUST
+    // persist running (adversarial-review #927) so Stop can retry.
     expect(poll).toContain("fold.kind === 'clear-terminal'");
     expect(poll).toContain("fold.kind === 'keep-running'");
     expect(poll).toContain('setHostNote(');
+    expect(poll).toContain('persist(applyStopFoldToSession(');
+    expect(poll).toContain('cancelPostedRunIdsRef.current.delete');
+  });
+
+  it('persistTurn applies pendingStopFold so harnessChat cannot beat a failed ack (adversarial-review #927)', () => {
+    expect(host).toContain('pendingStopFoldRef.current');
+    expect(host).toContain('applyStopFoldToSession(snapshot, pendingFold.runId, pendingFold.fold)');
   });
 });
 
@@ -575,6 +587,48 @@ describe('G22 Stop/Esc server-cancel fold planner (plan #816)', () => {
         shouldSkipCancelPost({ turnRunId: 'wr_1', turnStatus: 'completed' }),
       ).toBe(false);
       expect(shouldSkipCancelPost({})).toBe(false);
+    });
+  });
+
+  describe('applyStopFoldToSession (adversarial-review #927)', () => {
+    const live = { turnRunId: 'wr_live', turnStatus: 'cancelling' as const };
+
+    it('cancelling keeps the id and folds cancelling', () => {
+      expect(
+        applyStopFoldToSession(
+          { turnRunId: 'wr_live', turnStatus: 'running' as const },
+          'wr_live',
+          { kind: 'cancelling' },
+        ),
+      ).toEqual({ turnRunId: 'wr_live', turnStatus: 'cancelling' });
+    });
+
+    it('keep-running reverts optimistic cancelling so Stop can retry', () => {
+      expect(
+        applyStopFoldToSession(live, 'wr_live', { kind: 'keep-running' }),
+      ).toEqual({ turnRunId: 'wr_live', turnStatus: 'running' });
+    });
+
+    it('clear-terminal drops the id and folds completed', () => {
+      expect(
+        applyStopFoldToSession(live, 'wr_live', { kind: 'clear-terminal' }),
+      ).toEqual({ turnRunId: undefined, turnStatus: 'completed' });
+    });
+
+    it('never clobbers a newer run id', () => {
+      expect(
+        applyStopFoldToSession(
+          { turnRunId: 'wr_newer', turnStatus: 'running' as const },
+          'wr_live',
+          { kind: 'keep-running' },
+        ),
+      ).toEqual({ turnRunId: 'wr_newer', turnStatus: 'running' });
+    });
+
+    it('legacy-clear is a no-op on the snapshot', () => {
+      expect(applyStopFoldToSession(live, 'wr_live', { kind: 'legacy-clear' })).toEqual(
+        live,
+      );
     });
   });
 });

@@ -13,7 +13,7 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
-import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort, releaseBusyViewport, decideStopFoldPre, decideStopFoldPost, shouldSkipCancelPost } from '../../lib/detachTurn';
+import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort, releaseBusyViewport, decideStopFoldPre, decideStopFoldPost, shouldSkipCancelPost, applyStopFoldToSession, type StopFoldAction } from '../../lib/detachTurn';
 import { cancelTurn } from '../../lib/turnApi';
 import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, shouldKickHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, coldAttachFromSnapshot, type HeapApplied } from '../../lib/turnAttach';
 import {
@@ -249,6 +249,19 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const repoRef = useRef<IdSessionRepository | null>(null);
   const pollRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /**
+   * Plan #816 (G22) — run ids we have already POSTed cancel for (in-flight or
+   * accepted). Failed ack removes the id so Stop can retry. Distinct from
+   * `shouldSkipCancelPost` (accepted `'cancelling'` marker).
+   */
+  const cancelPostedRunIdsRef = useRef(new Set<string>());
+  /**
+   * Latest Stop-fold action for a run id. `persistTurn` applies this so
+   * `runHarnessTurn`'s optimistic `'cancelling'` cannot beat a failed ack.
+   */
+  const pendingStopFoldRef = useRef<{ runId: string; fold: StopFoldAction } | null>(
+    null,
+  );
   const inflightRef = useRef(false);
   /**
    * Plan #887 — session-scoped one-shot auto-continue flag. Clears on the next
@@ -642,22 +655,27 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       // Adversarial #844: capture the repo object NOW. Unmount cleanup nulls
       // `repoRef` before the abort microtask reaches persistTurn/finally.
       const repo = repoRef.current;
-      const persistTurn = (snapshot: SessionSnapshot, paintQuota = true) => {
+      const persistTurn = (snapshot: SessionSnapshot, paintQuota = true): SessionSnapshot => {
+        const pendingFold = pendingStopFoldRef.current;
+        const foldedSnapshot =
+          pendingFold != null
+            ? applyStopFoldToSession(snapshot, pendingFold.runId, pendingFold.fold)
+            : snapshot;
         const pendingMintId = pendingMintBindRef.current;
         const action = decideDetachPersist({
           detached: turnEpochRef.current !== epoch,
           discarded:
             discardedSessionIdsRef.current.has(startedId) ||
-            discardedSessionIdsRef.current.has(snapshot.id) ||
+            discardedSessionIdsRef.current.has(foldedSnapshot.id) ||
             (pendingMintId != null && discardedSessionIdsRef.current.has(pendingMintId)),
-          turnRunId: snapshot.turnRunId,
-          turnStatus: snapshot.turnStatus,
+          turnRunId: foldedSnapshot.turnRunId,
+          turnStatus: foldedSnapshot.turnStatus,
         });
-        if (action === 'drop') return;
+        if (action === 'drop') return foldedSnapshot;
         if (action === 'preserve') {
           // Adversarial #844: first-turn unmount must PUT the deferred mint UUID,
           // not local sess_*. Switch must not writeLocal (generation token).
-          const { preserved } = putPreservedTurn(repo, snapshot, startedId, pendingMintId);
+          const { preserved } = putPreservedTurn(repo, foldedSnapshot, startedId, pendingMintId);
           if (
             shouldApplyMintBind({
               sessionId: sessionRef.current.id,
@@ -668,9 +686,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           ) {
             writeLocalSession(preserved);
           }
-          return;
+          return preserved;
         }
-        persist(snapshot, { paintQuota });
+        persist(foldedSnapshot, { paintQuota });
+        return foldedSnapshot;
       };
       setBusy(true);
       setHostNote(null);
@@ -782,7 +801,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // Always persist — including user Stop/cancel (and late abort after a finished
         // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
         // Load earlier / refresh could wipe the cancelled turn from the ring.
-        persistTurn(folded, folded.turnStatus !== 'running');
+        const persisted = persistTurn(folded, folded.turnStatus !== 'running');
         const operatorStop = shouldSkipAttachHotResume({
           attaching,
           aborted: controller.signal.aborted,
@@ -792,15 +811,15 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           attaching,
           streamOpened,
           operatorStop,
-          turnStatus: folded.turnStatus,
-          turnRunId: folded.turnRunId,
+          turnStatus: persisted.turnStatus,
+          turnRunId: persisted.turnRunId,
         });
-        if (kickHot && folded.turnRunId) {
+        if (kickHot && persisted.turnRunId) {
           heapAppliedRef.current = {
-            runId: folded.turnRunId,
-            count: folded.turnStreamCursor ?? 0,
+            runId: persisted.turnRunId,
+            count: persisted.turnStreamCursor ?? 0,
           };
-        } else if (folded.turnStatus !== 'running') {
+        } else if (persisted.turnStatus !== 'running') {
           heapAppliedRef.current = null;
         }
 
@@ -809,13 +828,13 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // no longer applies. Wasm follow-up was stripped; pushUser paints it.
         const repostFollowUp = shouldRepostAttachFollowUp({
           sendWhileRunning,
-          turnStatus: folded.turnStatus,
+          turnStatus: persisted.turnStatus,
         });
         if (repostFollowUp) {
           queueMicrotask(() => {
             void runPromptRef.current(prompt, { pushUser: true });
           });
-        } else if (!result.ok && shouldSetHostTurnNote(folded.turnStatus)) {
+        } else if (!result.ok && shouldSetHostTurnNote(persisted.turnStatus)) {
           setHostNote(result.error);
         } else if (
           shouldPaintAttachFollowUpNote({
@@ -1182,17 +1201,14 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // Protocol v9: Stop first — abort inflight and skip starting a turn this tick.
             if (b.takePendingCancel()) {
               // Plan #816 (G22): Stop on an attached durable run fires the
-              // server cancel ONCE per run id. The abort below unwinds
-              // runHarnessTurn, whose stop fold lands `turnStatus: 'cancelling'`
-              // KEEPING `turnRunId` (the run's own terminal persist owns the
-              // terminal status — the old `turnRunId: undefined` + `completed`
-              // fold was a lie on the durable path). The 'cancelling' fold is
-              // optimistic-before-ack by design: it is what makes a repeat Stop
-              // skip the re-POST (bounded once per run id), and it is honest
-              // even on a cancel-POST failure — the run is still live and
-              // re-resolves via the attach/terminal event. A terminal (409) /
-              // gone (404) ack clears the id + folds `completed` now (the
-              // orphan-unstick), never leaving a stale live marker.
+              // server cancel ONCE per run id (in-flight/accepted set +
+              // shouldSkipCancelPost). The abort below unwinds runHarnessTurn,
+              // whose stop fold lands `turnStatus: 'cancelling'` KEEPING
+              // `turnRunId` as an optimistic pre-ack. A failed cancel POST
+              // persists `running` (plan #816 race table / adversarial-review
+              // #927) so Stop can retry — never a fake cancel. A terminal
+              // (409) / gone (404) ack clears the id + folds `completed`
+              // (orphan-unstick).
               const stopSession = sessionRef.current;
               const stopRunId = stopSession.turnRunId;
               const stopFoldPre = decideStopFoldPre({
@@ -1202,37 +1218,48 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
               if (
                 stopFoldPre.kind === 'cancelling' &&
                 stopRunId !== undefined &&
+                !cancelPostedRunIdsRef.current.has(stopRunId) &&
                 !shouldSkipCancelPost({
                   turnRunId: stopRunId,
                   turnStatus: stopSession.turnStatus,
                 })
               ) {
                 const cancelSessionId = stopSession.id;
+                cancelPostedRunIdsRef.current.add(stopRunId);
+                // Optimistic pre-ack: persistTurn after abort folds cancelling.
+                // A failed/terminal ack overwrites this (plan #816 race table).
+                pendingStopFoldRef.current = {
+                  runId: stopRunId,
+                  fold: { kind: 'cancelling' },
+                };
                 void cancelTurn(stopRunId, { sessionId: cancelSessionId }).then(
                   (outcome) => {
                     if (cancelled) return;
                     const liveNow = sessionRef.current;
                     // Never clobber a switched session or a NEWER run id.
                     if (liveNow.id !== cancelSessionId) return;
-                    if (liveNow.turnRunId !== stopRunId) return;
+                    if (liveNow.turnRunId !== stopRunId && liveNow.turnRunId !== undefined) {
+                      return;
+                    }
                     const fold = decideStopFoldPost({
                       pre: stopFoldPre,
                       outcome,
                     });
-                    if (fold.kind === 'clear-terminal') {
-                      persist({
-                        ...liveNow,
-                        turnRunId: undefined,
-                        turnStatus: 'completed',
-                      });
-                    } else if (fold.kind === 'keep-running') {
+                    pendingStopFoldRef.current = { runId: stopRunId, fold };
+                    if (fold.kind === 'keep-running' || fold.kind === 'clear-terminal') {
+                      cancelPostedRunIdsRef.current.delete(stopRunId);
+                    }
+                    persist(applyStopFoldToSession(liveNow, stopRunId, fold));
+                    if (fold.kind === 'keep-running') {
                       // Soft note only — never a fake cancel; the run continues
-                      // to its own terminal (same honesty as detach).
+                      // to its own terminal (same honesty as detach). Stop can
+                      // retry because we persisted `running` and dropped the
+                      // posted-id (adversarial-review #927).
                       setHostNote(
                         'Stop signal did not reach the server — the run is still live; it will end on its own.',
                       );
                     }
-                    // 'cancelling' — the harnessChat stop fold already landed it.
+                    // 'cancelling' — accepted ack; persist already landed it.
                   },
                 );
               }
