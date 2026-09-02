@@ -48,7 +48,7 @@ import {
   TURN_WALL_CLOCK_WRAPUP_SYSTEM,
 } from '../agent/modelFinish';
 import { STEP_BUDGET_WRAPUP_SYSTEM } from '../agent/modelFinish';
-import { TURN_WALL_CLOCK_MAX_MS } from '../sessionCloudCaps';
+import { TURN_WALL_CLOCK_MAX_MS, TURN_WALL_CLOCK_WRAPUP_MAX_MS } from '../sessionCloudCaps';
 
 const LOOP_SCOPE: ObjectScope = { tenantId: 't', userId: 'u', sessionId: 's_loop' };
 
@@ -2538,14 +2538,16 @@ describe('step wrappers (matrix 4–7)', () => {
     vi.doUnmock('../tenancy/skillInject');
   });
 
-  it('wall wrap-up round is deadline-exempt + gets TURN_WALL_CLOCK_WRAPUP_SYSTEM (plan #923 real-step regression)', async () => {
+  it('wall wrap-up round is 1h-exempt but bounded + reasoning none (adversarial-review #926)', async () => {
     // The loop tests mock modelStep, so they CANNOT see this: modelGenerateStep
-    // must run the tools-off wall wrap-up round even when the deadline has
-    // ALREADY elapsed (which is always true when the fold runs), with NO abort
-    // signal attached, and with the WALL wrap-up system (not the step-budget
-    // one / DEFAULT_AGENT_SYSTEM). Without the exemption the fold round returns
+    // must run the tools-off wall wrap-up round even when the 1-hour deadline
+    // has ALREADY elapsed (which is always true when the fold runs), with a
+    // SHORT wrap-up AbortSignal + reasoning none (not operator xhigh / not
+    // unbounded), and with the WALL wrap-up system (not the step-budget one /
+    // DEFAULT_AGENT_SYSTEM). Without the 1h exemption the fold round returns
     // {ok:false, code:'wall_clock'} and the loop reports `failed` instead of
-    // the plan's clean `capped` terminal.
+    // the plan's clean `capped` terminal. Without the wrap-up bound the 4h
+    // evidence class (open-ended CoT + default Workflows retries) comes back.
     vi.resetModules();
     const writeOnDefaultStream = vi.fn(async () => {});
     vi.doMock('./turnSseWrite', () => ({
@@ -2554,13 +2556,12 @@ describe('step wrappers (matrix 4–7)', () => {
         fn: (write: (payload: string) => Promise<void>) => Promise<unknown>,
       ) => fn(writeOnDefaultStream),
     }));
-    // Capture the deps so we can assert the signal was NOT attached to the
-    // deadline-exempt wrap-up round (an already-aborted signal would kill it).
     let capturedDeps:
       | {
           system?: string;
           signal?: AbortSignal;
           wallClockDeadlineAt?: number;
+          reasoning?: string;
         }
       | undefined;
     const m1 = vi.fn(async (deps: unknown) => {
@@ -2600,6 +2601,7 @@ describe('step wrappers (matrix 4–7)', () => {
     }));
     const mod = await import('./modelGenerateStep');
     const { TURN_WALL_CLOCK_WRAPUP_SYSTEM } = await import('../agent/modelFinish');
+    const before = Date.now();
     const result = await mod.modelGenerateStep({
       messages: [
         { role: 'user', content: 'hi' },
@@ -2611,16 +2613,26 @@ describe('step wrappers (matrix 4–7)', () => {
       disableTools: true,
       wrapUp: 'wall',
       deadlineAt: Date.now() - 1, // ALREADY elapsed — the fold runs after the cap.
+      reasoning: 'xhigh',
     });
+    const after = Date.now();
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.delta.text).toBe('wrap-answer');
     // The WALL wrap-up system reached generateOneRound (never the step-budget
     // system / DEFAULT_AGENT_SYSTEM).
     expect(capturedDeps?.system).toBe(TURN_WALL_CLOCK_WRAPUP_SYSTEM);
-    // The deadline-exempt fold carried NO deadline abort signal + no
-    // wall-clock classification (an attached signal would have aborted it).
-    expect(capturedDeps?.signal).toBeUndefined();
-    expect(capturedDeps?.wallClockDeadlineAt).toBeUndefined();
+    // Wrap-up is 1h-exempt but bounded: a live wrap-up signal + wrap deadline
+    // ~now+5min, NEVER the elapsed 1h deadline, and NEVER operator xhigh.
+    expect(capturedDeps?.signal).toBeInstanceOf(AbortSignal);
+    expect(capturedDeps?.signal?.aborted).toBe(false);
+    expect(capturedDeps?.reasoning).toBe('none');
+    expect(capturedDeps?.wallClockDeadlineAt).toBeGreaterThan(before);
+    expect(capturedDeps?.wallClockDeadlineAt).toBeLessThanOrEqual(
+      after + TURN_WALL_CLOCK_WRAPUP_MAX_MS,
+    );
+    expect(capturedDeps?.wallClockDeadlineAt).toBeGreaterThanOrEqual(
+      before + TURN_WALL_CLOCK_WRAPUP_MAX_MS - 50,
+    );
     // And the same call WITHOUT the wrapUp tag still fails closed ('wall_clock')
     // on an elapsed deadline (the plain-round cap is untouched).
     const fresh2 = await mod.modelGenerateStep({
@@ -2637,6 +2649,77 @@ describe('step wrappers (matrix 4–7)', () => {
     vi.doUnmock('../di/index');
     vi.doUnmock('./assembleDurableToolWorld');
     vi.doUnmock('./turnSseWrite');
+  });
+
+  it('wrap-up bound abort remaps cancelled → wall_clock (adversarial-review #926)', async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    try {
+      vi.doMock('./turnSseWrite', () => ({
+        writeOnDefaultStream: async () => {},
+        withDefaultStreamWriter: async (
+          fn: (write: (payload: string) => Promise<void>) => Promise<unknown>,
+        ) => fn(async () => {}),
+      }));
+      const m1 = vi.fn(async (deps: unknown) => {
+        const d = deps as { wallClockDeadlineAt?: number };
+        if (d.wallClockDeadlineAt !== undefined) {
+          vi.setSystemTime(d.wallClockDeadlineAt + 1);
+        }
+        return { ok: false as const, code: 'cancelled' as const, error: 'Request cancelled.' };
+      });
+      vi.doMock('../agent/generateOneRound', () => ({
+        generateOneRound: m1,
+        toolsWithoutExecutors: (t: Record<string, unknown>) => t,
+      }));
+      vi.doMock('../di/index', () => ({
+        createProdServices: () => ({
+          resolveInferenceForRequest: {
+            resolveByokForRequest: async () => ({
+              ok: true as const,
+              modelId: 'byok-resolved',
+              only: ['anthropic'] as [string],
+              byok: { anthropic: [{ apiKey: 'sk-test' }] },
+              secretsToRedact: ['sk-test'],
+            }),
+          },
+        }),
+      }));
+      vi.doMock('./assembleDurableToolWorld', () => ({
+        assembleDurableToolWorld: async () => ({
+          ok: true as const,
+          world: {
+            registry: {},
+            secrets: [],
+            signal: new AbortController().signal,
+            freshness: {},
+          },
+        }),
+      }));
+      const mod = await import('./modelGenerateStep');
+      const result = await mod.modelGenerateStep({
+        messages: [{ role: 'user', content: 'hi' }],
+        modelId: 'm',
+        userId: 'u1',
+        scope: { tenantId: 't1', userId: 'u1', sessionId: 's1' },
+        disableTools: true,
+        wrapUp: 'wall',
+        deadlineAt: 1, // 1h already elapsed — wrap-up still runs
+        reasoning: 'xhigh',
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe('wall_clock');
+        expect(result.error).toBe(TURN_WALL_CLOCK_ERROR);
+      }
+    } finally {
+      vi.useRealTimers();
+      vi.doUnmock('../agent/generateOneRound');
+      vi.doUnmock('../di/index');
+      vi.doUnmock('./assembleDurableToolWorld');
+      vi.doUnmock('./turnSseWrite');
+    }
   });
 
   it('modelGenerateStep inject throw still passes the base system', async () => {
@@ -3421,6 +3504,202 @@ describe('step wrappers (matrix 4–7)', () => {
     }));
     const mod = await import('./toolExecuteStep');
     expect((mod.toolExecuteStep as typeof mod.toolExecuteStep & { maxRetries: number }).maxRetries).toBe(0);
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('toolExecuteStep: elapsed deadline at entry fails closed without dispatching (adversarial-review #926)', async () => {
+    const execMock = vi.fn(async () => ({
+      ok: true as const,
+      result: 'ok',
+      freshnessDelta: '[]',
+    }));
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: { list_dir: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    const result = await mod.toolExecuteStep({
+      calls: [{ toolName: 'list_dir', toolCallId: '1', args: {} }],
+      deadlineAt: Date.now() - 1,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('wall_clock');
+      expect(result.error).toBe(TURN_WALL_CLOCK_ERROR);
+    }
+    expect(execMock).not.toHaveBeenCalled();
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('toolExecuteStep: deadline signal is threaded into executeTool (plan #925 Goal 2)', async () => {
+    let captured: AbortSignal | undefined;
+    const execMock = vi.fn(async (deps: unknown) => {
+      captured = (deps as { signal?: AbortSignal }).signal;
+      return { ok: true as const, result: 'ok', freshnessDelta: '[]' };
+    });
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: { list_dir: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    const result = await mod.toolExecuteStep({
+      calls: [{ toolName: 'list_dir', toolCallId: '1', args: {} }],
+      deadlineAt: Date.now() + 60_000,
+    });
+    expect(result.ok).toBe(true);
+    expect(captured).toBeInstanceOf(AbortSignal);
+    expect(captured?.aborted).toBe(false);
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('toolExecuteStep: between-wave skip fills remaining serial writes with wall_clock (adversarial-review #926)', async () => {
+    const deadlineAt = Date.now() + 40;
+    const execMock = vi.fn(async (_deps: unknown, input: unknown) => {
+      const name = (input as { toolName?: string }).toolName;
+      if (name === 'write_file') {
+        while (Date.now() < deadlineAt) {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        return { ok: true as const, result: 'wrote-a', freshnessDelta: '[]' };
+      }
+      return { ok: true as const, result: 'should-not-run', freshnessDelta: '[]' };
+    });
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: { write_file: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    const result = await mod.toolExecuteStep({
+      calls: [
+        { toolName: 'write_file', toolCallId: '1', args: { path: 'a' } },
+        { toolName: 'write_file', toolCallId: '2', args: { path: 'b' } },
+      ],
+      deadlineAt,
+    });
+    expect(execMock).toHaveBeenCalledTimes(1);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('wall_clock');
+      expect(result.results).toHaveLength(2);
+      expect(result.results?.[0]).toMatchObject({
+        ok: true,
+        toolCallId: '1',
+        result: 'wrote-a',
+      });
+      expect(result.results?.[1]).toMatchObject({
+        ok: false,
+        toolCallId: '2',
+        code: 'wall_clock',
+        error: TURN_WALL_CLOCK_ERROR,
+      });
+    }
+    vi.doUnmock('../agent/executeTool');
+    vi.doUnmock('./turnSseWrite');
+  });
+
+  it('toolExecuteStep: deadline abort remaps cancelled → wall_clock; in-budget Stop stays cancelled (G22)', async () => {
+    vi.resetModules();
+    const execMock = vi.fn(async () => ({
+      ok: false as const,
+      code: 'cancelled' as const,
+      error: 'Request cancelled.',
+    }));
+    vi.doMock('../agent/executeTool', () => ({ executeTool: execMock }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod = await import('./toolExecuteStep');
+    mod.setToolWorldResolver(() => ({
+      registry: { list_dir: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    const inBudget = await mod.toolExecuteStep({
+      calls: [{ toolName: 'list_dir', toolCallId: '1', args: {} }],
+      deadlineAt: Date.now() + 1_000_000,
+    });
+    expect(inBudget.ok).toBe(false);
+    if (!inBudget.ok) {
+      expect(inBudget.code).toBe('cancelled');
+      expect(inBudget.results?.[0]).toMatchObject({ ok: false, code: 'cancelled' });
+    }
+    const deadlineAt = Date.now() + 40;
+    const lateExec = vi.fn(async () => {
+      while (Date.now() < deadlineAt) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      return {
+        ok: false as const,
+        code: 'cancelled' as const,
+        error: 'Request cancelled.',
+      };
+    });
+    vi.resetModules();
+    vi.doMock('../agent/executeTool', () => ({ executeTool: lateExec }));
+    vi.doMock('./turnSseWrite', () => ({
+      withDefaultStreamWriter: async (
+        fn: (write: (s: string) => Promise<void>) => Promise<unknown>,
+      ) => fn(async () => {}),
+      writeOnDefaultStream: async () => {},
+    }));
+    const mod2 = await import('./toolExecuteStep');
+    mod2.setToolWorldResolver(() => ({
+      registry: { list_dir: {} },
+      secrets: [],
+      signal: undefined,
+      freshness: {},
+    }));
+    const late = await mod2.toolExecuteStep({
+      calls: [{ toolName: 'list_dir', toolCallId: '1', args: {} }],
+      deadlineAt,
+    });
+    expect(late.ok).toBe(false);
+    if (!late.ok) {
+      expect(late.code).toBe('wall_clock');
+      expect(late.error).toBe(TURN_WALL_CLOCK_ERROR);
+      expect(late.results?.[0]).toMatchObject({
+        ok: false,
+        code: 'wall_clock',
+        error: TURN_WALL_CLOCK_ERROR,
+      });
+    }
+    vi.doUnmock('../agent/executeTool');
     vi.doUnmock('./turnSseWrite');
   });
 
@@ -4244,6 +4523,127 @@ describe('runTurnLoop wall-clock cap (plan #923 — hard 1-hour turn wall clock)
     expect(last.terminal).toBeUndefined();
     const events = eventsOf(w.lines);
     expect(events.some((e) => e.type === 'error' && e.error === 'wrap boom')).toBe(true);
+    expect(closed()).toBe(1);
+  });
+
+  it('row 7b: wrap-up wall_clock / cancelled stays capped wall, not failed (adversarial-review #926)', async () => {
+    const { deps, w, closed } = wiredDeps();
+    const persistSpy = vi.fn(deps.persistStep);
+    const modelStep = vi.fn(async (args: unknown) => {
+      const a = args as { disableTools?: boolean };
+      if (a.disableTools) {
+        return {
+          ok: false as const,
+          code: 'wall_clock' as const,
+          error: TURN_WALL_CLOCK_ERROR,
+        };
+      }
+      return {
+        ok: true as const,
+        delta: {
+          text: 'work',
+          toolCalls: [{ toolName: 'list_dir', toolCallId: 'c', args: {} }],
+        },
+      };
+    });
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep: vi.fn(), persistStep: persistSpy, deadlineAt: Date.now() - 1 },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('capped');
+    expect(result.reason).toBe('wall');
+    expect(result.error).toBeUndefined();
+    const events = eventsOf(w.lines);
+    expect(events.some((e) => e.type === 'error' && e.error === TURN_WALL_CLOCK_ERROR)).toBe(
+      true,
+    );
+    expect(events.some((e) => e.error === 'wrap boom')).toBe(false);
+    expect(closed()).toBe(1);
+
+    const { deps: deps2, w: w2, closed: closed2 } = wiredDeps();
+    const modelStep2 = vi.fn(async (args: unknown) => {
+      const a = args as { disableTools?: boolean };
+      if (a.disableTools) {
+        return { ok: false as const, code: 'cancelled' as const, error: 'Request cancelled.' };
+      }
+      return {
+        ok: true as const,
+        delta: {
+          text: 'work',
+          toolCalls: [{ toolName: 'list_dir', toolCallId: 'c', args: {} }],
+        },
+      };
+    });
+    const result2 = await runTurnLoop(
+      { ...deps2, modelStep: modelStep2, toolStep: vi.fn(), deadlineAt: Date.now() - 1 },
+      { userMessage: 'go' },
+    );
+    expect(result2.status).toBe('capped');
+    expect(result2.reason).toBe('wall');
+    expect(eventsOf(w2.lines).some((e) => e.type === 'error' && e.error === TURN_WALL_CLOCK_ERROR)).toBe(
+      true,
+    );
+    expect(closed2()).toBe(1);
+  });
+
+  it('row 7c: wall-stopped tool batch does not terminal-persist completed before wrap-up (C15 / adversarial-review #926)', async () => {
+    const { deps, closed } = wiredDeps();
+    let wrapStarted = false;
+    let completedBeforeWrap = false;
+    const persistSpy = vi.fn(async (args: Parameters<typeof deps.persistStep>[0]) => {
+      if (!wrapStarted && args.terminal !== false) completedBeforeWrap = true;
+      return deps.persistStep(args);
+    });
+    const modelStep = vi.fn(async (args: unknown) => {
+      const a = args as { disableTools?: boolean };
+      if (a.disableTools) {
+        wrapStarted = true;
+        return { ok: true as const, delta: { text: 'wrap', toolCalls: [] } };
+      }
+      return {
+        ok: true as const,
+        delta: {
+          text: 'two',
+          toolCalls: [
+            { toolName: 'list_dir', toolCallId: 'a', args: {} },
+            { toolName: 'read_file', toolCallId: 'b', args: {} },
+          ],
+        },
+      };
+    });
+    const toolStep = vi.fn(async () => ({
+      ok: false as const,
+      code: 'wall_clock' as const,
+      error: TURN_WALL_CLOCK_ERROR,
+      results: [
+        {
+          ok: true as const,
+          toolName: 'list_dir',
+          toolCallId: 'a',
+          result: 'ok-dir',
+          freshnessDelta: '[]',
+        },
+        {
+          ok: false as const,
+          toolName: 'read_file',
+          toolCallId: 'b',
+          code: 'wall_clock' as const,
+          error: TURN_WALL_CLOCK_ERROR,
+        },
+      ],
+    }));
+    const result = await runTurnLoop(
+      { ...deps, modelStep, toolStep, persistStep: persistSpy },
+      { userMessage: 'go' },
+    );
+    expect(result.status).toBe('capped');
+    expect(result.reason).toBe('wall');
+    expect(completedBeforeWrap).toBe(false);
+    expect(wrapStarted).toBe(true);
+    const last = persistSpy.mock.calls[persistSpy.mock.calls.length - 1]?.[0] as {
+      terminal?: boolean;
+    };
+    expect(last.terminal).toBeUndefined();
     expect(closed()).toBe(1);
   });
 

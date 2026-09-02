@@ -66,37 +66,37 @@ import { logTurnModel } from './turnLog';
 import { formatLiveModelSse } from './turnSseFormat';
 import { withDefaultStreamWriter } from './turnSseWrite';
 import type { PersistRunBind } from './turnLoop';
-import { sanitizeResolvedProvider } from '../sessionCloudCaps';
+import { TURN_WALL_CLOCK_WRAPUP_MAX_MS, sanitizeResolvedProvider } from '../sessionCloudCaps';
+import { deadlineSignal, isDeadlineElapsed } from './turnDeadline';
 import type {
   SessionEnvelopeStore,
   SessionRecordKey,
 } from '../sessions/sessionStore';
 import type { SessionStoreLite } from '../tenancy/personaInject';
 
-/**
- * Rebuild an abort signal for THIS step attempt from the serialized wall-clock
- * deadline (plan #923). `AbortSignal.timeout` fires on EVERY retried attempt of
- * a retried step (the SDK re-runs the body), so a 72-minute retried model round
- * aborts at the 60-minute line on its final attempts (the #923 4h evidence
- * case). An elapsed deadline returns an already-aborted signal. `undefined`
- * when the caller never supplied a deadline (cap inert). The step VM has the
- * real clock — never call this from the `'use workflow'` body.
- */
-function deadlineSignal(deadlineAt: number | undefined): AbortSignal | undefined {
-  if (deadlineAt === undefined) return undefined;
-  const remaining = deadlineAt - Date.now();
-  if (remaining <= 0) return AbortSignal.abort();
-  return AbortSignal.timeout(remaining);
-}
-
-/**
- * Same signal semantics as {@link deadlineSignal}, but returns the dedicated
- * `'wall_clock'` fail-closed result when the deadline is already elapsed —
- * before any BYOK/tool-world work (an elapsed deadline cannot usefully run a
- * fresh model round). The loop maps `'wall_clock'` → wall wrap-up.
- */
 function deadlineResult(): { ok: false; code: 'wall_clock'; error: string } {
   return { ok: false, code: 'wall_clock', error: TURN_WALL_CLOCK_ERROR };
+}
+
+/** Abort + reasoning for this round. Wrap-up is 1h-exempt but bounded. */
+function roundAbort(args: ModelGenerateStepArgs): {
+  signal?: AbortSignal;
+  wallClockDeadlineAt?: number;
+  reasoning?: string;
+} {
+  if (args.wrapUp !== undefined) {
+    const wrapDeadline = Date.now() + TURN_WALL_CLOCK_WRAPUP_MAX_MS;
+    return {
+      signal: deadlineSignal(wrapDeadline),
+      wallClockDeadlineAt: wrapDeadline,
+      reasoning: 'none',
+    };
+  }
+  return {
+    signal: deadlineSignal(args.deadlineAt),
+    wallClockDeadlineAt: args.deadlineAt,
+    ...(args.reasoning !== undefined ? { reasoning: args.reasoning } : {}),
+  };
 }
 
 /** Serialized `modelGenerateStep` step args — plain values only. */
@@ -132,10 +132,11 @@ export interface ModelGenerateStepArgs {
   /**
    * Which cap fold this round is — `'steps'` (512-step budget, plan #806/#878)
    * or `'wall'` (1-hour wall clock, plan #923). Present ONLY on the terminal
-   * tools-off wrap-up round. The wrap-up is DEADLINE-EXEMPT: it runs after the
-   * deadline elapsed and must complete once so the model can tell the user
-   * what completed (an elapsed `deadlineAt` must not turn the fold into a
-   * second `'wall_clock'` failure).
+   * tools-off wrap-up round. The wrap-up is exempt from the **1-hour** deadline
+   * so it can complete after the cap fires; it is NOT unbounded — it gets
+   * `TURN_WALL_CLOCK_WRAPUP_MAX_MS` + `reasoning: 'none'` (adversarial-review
+   * #926). An elapsed 1h `deadlineAt` must not turn the fold into a second
+   * `'wall_clock'` failure.
    */
   wrapUp?: 'steps' | 'wall';
   /**
@@ -326,13 +327,10 @@ export async function modelGenerateStep(
 
   // Wall-clock cap (plan #923): a deadline that is already elapsed cannot
   // usefully run a FRESH model round — fail closed with the dedicated sentinel
-  // BEFORE BYOK/tool-world work. The wrap-up round (`wrapUp` set) is the ONE
-  // deadline-exempt exception: it runs after the deadline elapsed and must
-  // complete so the model can tell the user what happened. The authoritative
-  // mid-round abort for non-wrap-up rounds happens via the signal threaded
-  // into `generateOneRound`.
-  const deadlineElapsed =
-    args.deadlineAt !== undefined && args.deadlineAt - Date.now() <= 0;
+  // BEFORE BYOK/tool-world work. The wrap-up round (`wrapUp` set) is exempt
+  // from the 1-hour deadline (it runs after the cap) but still carries a
+  // short wrap-up bound + reasoning none (adversarial-review #926).
+  const deadlineElapsed = isDeadlineElapsed(args.deadlineAt);
   if (deadlineElapsed && args.wrapUp === undefined) {
     logTurnModel({ ok: false, code: 'wall_clock' });
     return deadlineResult();
@@ -360,6 +358,7 @@ export async function modelGenerateStep(
   const providerHint = sanitizeResolvedProvider(byok.provider);
 
   if (args.disableTools) {
+    const abort = roundAbort(args);
     const result = await withDefaultStreamWriter(async (write) =>
       generateOneRound(
         {
@@ -375,16 +374,9 @@ export async function modelGenerateStep(
             },
           },
           secrets: byok.secretsToRedact,
-          // The wrap-up is deadline-exempt — its signal must NOT be built from
-          // the (already-elapsed) deadline, or the final answer round aborts
-          // before it can run.
-          signal:
-            args.wrapUp === undefined
-              ? deadlineSignal(args.deadlineAt)
-              : undefined,
-          wallClockDeadlineAt:
-            args.wrapUp === undefined ? args.deadlineAt : undefined,
-          ...(args.reasoning !== undefined ? { reasoning: args.reasoning } : {}),
+          signal: abort.signal,
+          wallClockDeadlineAt: abort.wallClockDeadlineAt,
+          ...(abort.reasoning !== undefined ? { reasoning: abort.reasoning } : {}),
           ...(providerHint ? { providerHint } : {}),
         },
         {
@@ -419,15 +411,10 @@ export async function modelGenerateStep(
       return { ok: true, delta };
     }
     logTurnModel({ ok: false, code: result.code });
-    // Wall-clock deadline abort maps to the dedicated `'wall_clock'` sentinel —
-    // a genuine user Stop stays `'cancelled'` (G22 parity untouched). The
-    // deadline-exempt wrap-up never takes this path (no signal was attached).
-    if (
-      args.wrapUp === undefined &&
-      args.deadlineAt !== undefined &&
-      result.code === 'cancelled' &&
-      args.deadlineAt - Date.now() <= 0
-    ) {
+    // Wall-clock / wrap-up-bound abort maps to `'wall_clock'`. A genuine user
+    // Stop (cancelled while the 1h deadline is still in the future) stays
+    // `'cancelled'` (G22 parity untouched).
+    if (result.code === 'cancelled' && isDeadlineElapsed(abort.wallClockDeadlineAt)) {
       return deadlineResult();
     }
     return { ok: false, code: result.code, error: result.error };
@@ -544,11 +531,7 @@ export async function modelGenerateStep(
   logTurnModel({ ok: false, code: result.code });
   // Wall-clock deadline abort maps to the dedicated `'wall_clock'` sentinel —
   // a genuine user Stop stays `'cancelled'` (G22 parity untouched).
-  if (
-    args.deadlineAt !== undefined &&
-    result.code === 'cancelled' &&
-    args.deadlineAt - Date.now() <= 0
-  ) {
+  if (result.code === 'cancelled' && isDeadlineElapsed(args.deadlineAt)) {
     return deadlineResult();
   }
   return { ok: false, code: result.code, error: result.error };

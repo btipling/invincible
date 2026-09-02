@@ -21,6 +21,7 @@ import {
   TURN_STATUS_MAX_BYTES,
   TURN_STATUS_VALUES,
   TURN_WALL_CLOCK_MAX_MS,
+  TURN_WALL_CLOCK_WRAPUP_MAX_MS,
   TURN_WALL_CLOCK_DEADLINE_TTL_MS,
   TURN_WALL_CLOCK_PROBE_EVERY_MS,
   sanitizeModelId,
@@ -353,6 +354,15 @@ describe('TURN_WALL_CLOCK caps (plan #923 — hard 1-hour turn wall clock)', () 
     expect(TURN_WALL_CLOCK_MAX_MS).toBeLessThanOrEqual(3600 * 1000);
   });
 
+  it('TURN_WALL_CLOCK_WRAPUP_MAX_MS bounds the 1h-exempt wrap-up (adversarial-review #926)', () => {
+    // Wrap-up is exempt from the 1-hour deadline so it can complete AFTER the
+    // cap — but it is not unbounded (the 4h evidence class was open-ended
+    // CoT + default Workflows retries). 5 minutes is generous vs a tools-off
+    // "tell the user what completed" round with reasoning none.
+    expect(TURN_WALL_CLOCK_WRAPUP_MAX_MS).toBe(300_000);
+    expect(TURN_WALL_CLOCK_WRAPUP_MAX_MS).toBeLessThan(TURN_WALL_CLOCK_MAX_MS);
+    expect(TURN_WALL_CLOCK_WRAPUP_MAX_MS).toBeGreaterThan(TURN_WALL_CLOCK_DEADLINE_TTL_MS);
+  });
   it('the cache/probe seams are reserved doc-only seams, never enforcement knobs', () => {
     // Cache TTL + probe cadence. NOT the cap value — an operator cannot
     // shorten the 1h enforcement via env (cap value is code, human-gated).

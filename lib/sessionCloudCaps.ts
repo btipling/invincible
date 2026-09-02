@@ -404,6 +404,15 @@ export const TURN_STREAM_STATUS_POLL_MS = 1000;
 export const TURN_WALL_CLOCK_MAX_MS = 3_600_000;
 
 /**
+ * Substitute bound for the tools-off wrap-up round (adversarial-review #926
+ * Major). The wrap-up is exempt from the 1-hour deadline so it can complete
+ * AFTER the cap fires — but it must not inherit operator `xhigh` CoT or the
+ * default Workflows retry budget with no signal (the 4h evidence class).
+ * **NEW generous cap**; no existing cap value changed → no human gate.
+ */
+export const TURN_WALL_CLOCK_WRAPUP_MAX_MS = 300_000;
+
+/**
  * **Cache TTL only** — bounds a read-side deadline cache (doc-only seam). Never
  * an enforcement knob: the deadline check uses `workflowStartedAt` +
  * `TURN_WALL_CLOCK_MAX_MS` directly, so an operator cannot shorten the cap via

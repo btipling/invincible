@@ -662,7 +662,9 @@ export async function runTurnLoop(
    * and `{status:'capped', reason:'wall'}`. Mirrors the step-budget path but
    * with distinct copy + an `error` (not `done`) terminal — a wall-cap is a
    * hard stop mid-work, honest as an error line. A wrap-up inference failure
-   * is a real model error and still fails (`failed` + reason `wall`).
+   * is a real model error and still fails (`failed` + reason `wall`). A
+   * wrap-up bound abort (`wall_clock` / `cancelled`) stays a clean wall cap —
+   * the 1h lock already fired (adversarial-review #926).
    */
   const wallWrapUp = async (
     round: number,
@@ -714,6 +716,29 @@ export async function runTurnLoop(
     }
     await persistOnce(true);
     if (!wrap.ok) {
+      // Wrap-up bound hit (adversarial-review #926): still a clean wall cap —
+      // the 1h product lock already fired; a 5-min wrap-up timeout is not a
+      // new model failure.
+      if (wrap.code === 'wall_clock' || wrap.code === 'cancelled') {
+        await writable.write(sse({ type: 'error', error: TURN_WALL_CLOCK_ERROR }));
+        await writable.close();
+        const capped: TurnLoopResult = {
+          status: 'capped',
+          deltas,
+          messages,
+          rounds: round,
+          steps,
+          reason: 'wall',
+        };
+        logTurnLoop({
+          status: capped.status,
+          reason: capped.reason,
+          ...(deps.deadlineAt !== undefined
+            ? { elapsedMs: boundedElapsedMs(deps.deadlineAt) }
+            : {}),
+        });
+        return capped;
+      }
       return fail('failed', round, steps, wrap.error, 'wall');
     }
     if (isProviderRefusalFinish(wrap.delta.finishReason)) {
@@ -913,13 +938,11 @@ export async function runTurnLoop(
         (!batch.ok && batch.code === 'wall_clock') ||
         items.some((i) => !i.ok && i.code === 'wall_clock');
       if (wallStopped) {
-        // Whole-batch / in-batch wall sentinel (plan #923): persist whatever
-        // partial successes ran (siblings must not be dropped, same rule as the
-        // cancelled-batch path), then the wall wrap-up terminal. The wrap-up
-        // itself persists once more + closes + writes the SSE error.
-        if (items.length > 0) {
-          await persistOnce(true);
-        }
+        // Whole-batch / in-batch wall sentinel (plan #923): do NOT terminal-
+        // persist `completed` here (adversarial-review #926 Major — C15 live-only
+        // 409 would release a successor POST while wrap-up is still running).
+        // Tool rows are already in `messages`; wrap-up persistOnce(true) writes
+        // them with the wrap-up text.
         return wallWrapUp(round, steps);
       }
       if (!batch.ok && items.length === 0) {
