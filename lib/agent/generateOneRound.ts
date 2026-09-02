@@ -25,6 +25,7 @@ import { resolveAgentReasoning } from './reasoningConfig';
 import { resolveAgentStopWhen } from './stopWhen';
 import { extractResolvedProvider } from './resolvedProvider';
 import { sanitizeResolvedProvider } from '../sessionCloudCaps';
+import { TURN_WALL_CLOCK_ERROR } from './modelFinish';
 
 /** One captured tool-call delta (schemas only — never executed here). */
 export type ToolCallDelta = {
@@ -52,13 +53,15 @@ export type OneRoundDelta = {
 /**
  * Fail-closed result. On a completed model round this is `{ ok:true, delta }`;
  * on a model-slice / event-writable / abort failure it is `{ ok:false, ... }` —
- * a return value, never an uncaught throw into the orchestrator.
+ * a return value, never an uncaught throw into the orchestrator. A **deadline**
+ * abort (plan #923) carries the dedicated `'wall_clock'` code; a genuine user
+ * Stop stays `'cancelled'` so the G22 cancel path is unambiguous.
  */
 export type GenerateOneRoundResult =
   | { ok: true; delta: OneRoundDelta }
   | {
       ok: false;
-      code: 'model_error' | 'write_error' | 'cancelled';
+      code: 'model_error' | 'write_error' | 'cancelled' | 'wall_clock';
       error: string;
     };
 
@@ -76,6 +79,15 @@ export type GenerateOneRoundDeps = {
   streamTextImpl?: (args: any) => any;
   /** Optional cancellation signal. */
   signal?: AbortSignal;
+  /**
+   * Absolute epoch deadline (ms) for the 1-hour wall-clock cap (plan #923) —
+   * ONLY when this signal was built from a deadline. An abort whose deadline
+   * has elapsed maps to `'wall_clock'` (`turn wall clock exceeded`); a genuine
+   * user Stop (no deadline / deadline not reached) stays `'cancelled'`
+   * (`Request cancelled.`). The caller passes the SAME `deadlineAt` number it
+   * used to build the signal, so the classification cannot drift.
+   */
+  wallClockDeadlineAt?: number;
   /** Redaction list (secrets + root server secrets), resolved by the caller. */
   secrets?: Array<string | undefined | null>;
   /**
@@ -157,6 +169,8 @@ export async function generateOneRound(
     try {
       await input.onEvent({ type: 'provider', provider: resolvedProvider });
     } catch (err) {
+      const aborted = abortResult(err, deps);
+      if (aborted) return aborted;
       return failClosed('write_error', err, secrets);
     }
   }
@@ -166,6 +180,8 @@ export async function generateOneRound(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     result = stream(streamArgs) as any;
   } catch (err) {
+    const aborted = abortResult(err, deps);
+    if (aborted) return aborted;
     return failClosed('model_error', err, secrets);
   }
 
@@ -210,6 +226,8 @@ export async function generateOneRound(
         try {
           await input.onEvent({ type: 'provider', provider: fromPart });
         } catch (err) {
+          const aborted = abortResult(err, deps);
+          if (aborted) return aborted;
           return failClosed('write_error', err, secrets);
         }
       }
@@ -224,18 +242,30 @@ export async function generateOneRound(
         } catch (err) {
           // Event-writable failure — fail-closed return, never an uncaught
           // throw into an orchestrator (the live wire is down; no reason to
-          // keep pulling the model stream).
+          // keep pulling the model stream). A deadline abort that surfaces
+          // here (Workflows writer AbortError racing the signal) is still
+          // `'wall_clock'`, not `'write_error'` (adversarial-review #926).
+          const aborted = abortResult(err, deps);
+          if (aborted) return aborted;
           return failClosed('write_error', err, secrets);
         }
       }
     }
   } catch (err) {
-    if (isAbortErr(err)) {
-      return { ok: false, code: 'cancelled', error: 'Request cancelled.' };
-    }
+    const aborted = abortResult(err, deps);
+    if (aborted) return aborted;
     // Model-slice failure (provider stream / part-map). Return value, never an
     // uncaught throw.
     return failClosed('model_error', err, secrets);
+  }
+
+  // Stream ended without throw. If the deadline signal already fired, do not
+  // settle as a successful round (adversarial-review #926). A user Stop after
+  // the stream completed still keeps the answer (G22 does not drop a finished
+  // round).
+  const afterStream = abortResult(undefined, deps);
+  if (afterStream && !afterStream.ok && afterStream.code === 'wall_clock') {
+    return afterStream;
   }
 
   // Final settlement of the single round (conclusive reconcile, same as
@@ -246,6 +276,8 @@ export async function generateOneRound(
   try {
     text = redactSecrets((((await result.text) ?? '') as string).trim(), secrets);
   } catch (err) {
+    const aborted = abortResult(err, deps);
+    if (aborted) return aborted;
     return failClosed('model_error', err, secrets);
   }
   try {
@@ -261,6 +293,8 @@ export async function generateOneRound(
       try {
         await input.onEvent({ type: 'provider', provider: fromSettle });
       } catch (err) {
+        const aborted = abortResult(err, deps);
+        if (aborted) return aborted;
         return failClosed('write_error', err, secrets);
       }
     }
@@ -307,6 +341,31 @@ function isAbortErr(err: unknown): boolean {
     err instanceof Error &&
     (err.name === 'AbortError' || err.name === 'ResponseAborted')
   );
+}
+
+/**
+ * Deadline / user-Stop classification. Trust `signal.aborted` as well as
+ * AbortError/ResponseAborted — the tool path already does (executeTool); a
+ * Gateway "Unknown error" wrapper on an aborted stream must not become
+ * model_error (adversarial-review #926). Used by the `fullStream` catch, the
+ * `onEvent` write catch, and `result.text` settlement.
+ *
+ * `err` may be omitted to classify a silent abort after a "successful" stream
+ * (`signal.aborted` with no throw).
+ */
+function abortResult(
+  err: unknown | undefined,
+  deps: GenerateOneRoundDeps,
+): GenerateOneRoundResult | undefined {
+  const aborted = (err !== undefined && isAbortErr(err)) || !!deps.signal?.aborted;
+  if (!aborted) return undefined;
+  if (
+    deps.wallClockDeadlineAt !== undefined &&
+    deps.wallClockDeadlineAt - Date.now() <= 0
+  ) {
+    return { ok: false, code: 'wall_clock', error: TURN_WALL_CLOCK_ERROR };
+  }
+  return { ok: false, code: 'cancelled', error: 'Request cancelled.' };
 }
 
 /** Map a raw error to a fail-closed `{ok:false}` result. */

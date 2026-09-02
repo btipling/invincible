@@ -49,10 +49,16 @@ import {
   changeDirSuccessCwd,
   metaSandboxSwitchActiveId,
 } from '../agent/toolResultParsers';
+import { TURN_WALL_CLOCK_ERROR } from '../agent/modelFinish';
 import type { PersistRunBind, ToolBatchItem, TurnToolCallDelta } from './turnLoop';
 import { formatLiveToolResultSse } from './turnSseFormat';
 import { withDefaultStreamWriter } from './turnSseWrite';
 import { splitToolWaves } from './toolWaves';
+import {
+  combineAbortSignals,
+  deadlineSignal,
+  isDeadlineElapsed,
+} from './turnDeadline';
 
 /** Serialized `toolExecuteStep` step args — plain values only. */
 export interface ToolExecuteStepArgs {
@@ -69,6 +75,15 @@ export interface ToolExecuteStepArgs {
    * for FS tool assembly + sandbox resolution.
    */
   persistRunBind?: PersistRunBind;
+  /**
+   * Absolute epoch deadline (ms) for the 1-hour wall-clock cap (plan #923).
+   * Serialized from the `'use workflow'` entry; NEVER a signal/closure/Date
+   * across the step boundary. The step rebuilds `AbortSignal.timeout(remaining)`
+   * and threads it into `executeTool` / the assembled world (plan #925 Goal 2;
+   * adversarial-review #926). Between-wave checks skip later serial waves once
+   * the deadline has elapsed.
+   */
+  deadlineAt?: number;
 }
 
 /** Fail-closed step result (batch). */
@@ -82,7 +97,8 @@ export type ToolExecuteStepResult =
         | 'http_error'
         | 'mcp_error'
         | 'violation'
-        | 'cancelled';
+        | 'cancelled'
+        | 'wall_clock';
       error: string;
       results?: ToolBatchItem[];
     };
@@ -193,6 +209,19 @@ function sseFor(item: ToolBatchItem): string {
   });
 }
 
+function remapDeadlineCancel(item: ToolBatchItem, deadlineAt: number | undefined): ToolBatchItem {
+  if (item.ok) return item;
+  if (item.code !== 'cancelled') return item;
+  if (!isDeadlineElapsed(deadlineAt)) return item;
+  return {
+    ok: false,
+    toolName: item.toolName,
+    ...(item.toolCallId ? { toolCallId: item.toolCallId } : {}),
+    code: 'wall_clock',
+    error: TURN_WALL_CLOCK_ERROR,
+  };
+}
+
 function overlayBind(
   bind: PersistRunBind | undefined,
   item: ToolBatchItem,
@@ -219,6 +248,16 @@ export async function toolExecuteStep(
   'use step';
 
   const calls = args.calls ?? [];
+
+  // Whole-batch wall boundary (plan #923): an ALREADY-elapsed deadline must
+  // not dispatch fresh tool waves — return the dedicated `'wall_clock'`
+  // sentinel so the loop routes to the wall wrap-up.
+  if (isDeadlineElapsed(args.deadlineAt)) {
+    return { ok: false, code: 'wall_clock', error: TURN_WALL_CLOCK_ERROR };
+  }
+
+  const wallSignal = deadlineSignal(args.deadlineAt);
+
   let world: WorldHandles | undefined;
   let bind: PersistRunBind | undefined = args.persistRunBind
     ? { ...args.persistRunBind }
@@ -236,6 +275,7 @@ export async function toolExecuteStep(
       ...(freshnessSeed !== undefined ? { freshnessSeed } : {}),
       ...(args.scope ? { scope: args.scope } : {}),
       ...(nextBind ? { persistRunBind: nextBind } : {}),
+      ...(args.deadlineAt !== undefined ? { deadlineAt: args.deadlineAt } : {}),
     };
     try {
       const w = resolveToolWorld(stepArgs);
@@ -244,7 +284,7 @@ export async function toolExecuteStep(
         world: {
           registry: w.registry ?? {},
           secrets: w.secrets ?? [],
-          signal: w.signal ?? new AbortController().signal,
+          signal: combineAbortSignals(w.signal, wallSignal) ?? new AbortController().signal,
           freshness: w.freshness,
           mcpClose: w.mcpClose,
           httpRunner: w.httpRunner,
@@ -264,6 +304,7 @@ export async function toolExecuteStep(
         scope: args.scope,
         persistRunBind: nextBind,
         freshnessSeed,
+        ...(wallSignal ? { signal: wallSignal } : {}),
       });
       if (!assembled.ok) {
         return { ok: false, code: 'sandbox_error', error: assembled.error };
@@ -319,7 +360,7 @@ export async function toolExecuteStep(
           toolName: call.toolName,
           args: call.args,
         });
-        const item = toItem(call, r);
+        const item = remapDeadlineCancel(toItem(call, r), args.deadlineAt);
         try {
           await writeSafe(sseFor(item));
         } catch {
@@ -359,7 +400,12 @@ export async function toolExecuteStep(
         throw lastErr;
       };
 
+      let stoppedByWall = false;
       for (const wave of splitToolWaves(calls)) {
+        if (isDeadlineElapsed(args.deadlineAt)) {
+          stoppedByWall = true;
+          break;
+        }
         const ran = wave.parallel
           ? await Promise.all(wave.calls.map((c) => runOneCaught(c)))
           : [await runOneCaught(wave.calls[0]!)];
@@ -417,9 +463,12 @@ export async function toolExecuteStep(
         );
         const code: FailCode = assembleFail
           ? 'sandbox_error'
-          : failed?.code ?? 'sandbox_error';
+          : stoppedByWall
+            ? 'wall_clock'
+            : failed?.code ?? 'sandbox_error';
         const error =
-          assembleFail ?? failed?.error ?? 'tool batch stopped';
+          assembleFail ??
+          (stoppedByWall ? TURN_WALL_CLOCK_ERROR : failed?.error ?? 'tool batch stopped');
         for (const call of calls.slice(results.length)) {
           const item = failItem(call, code, error);
           results.push(item);
@@ -434,6 +483,15 @@ export async function toolExecuteStep(
         ok: false,
         code: 'cancelled',
         error: cancelled.error,
+        results,
+      };
+    }
+    const wallStopped = results.find((i) => !i.ok && i.code === 'wall_clock');
+    if (wallStopped && !wallStopped.ok) {
+      return {
+        ok: false,
+        code: 'wall_clock',
+        error: wallStopped.error,
         results,
       };
     }

@@ -30,8 +30,15 @@ vi.mock('workflow', () => ({
     close: vi.fn(async () => {}),
   }),
   // C14b (#835): turnRunId is DERIVED in-workflow (never a start() arg), so the
-  // entry reads it from getWorkflowMetadata().workflowRunId.
-  getWorkflowMetadata: () => ({ workflowRunId: 'wr_0000_meta' }),
+  // entry reads it from getWorkflowMetadata().workflowRunId. Plan #923: the
+  // entry ALSO reads workflowStartedAt (runtime-pinned, replay-stable Date) to
+  // derive the 1-hour wall-clock deadlineAt — the mock must supply it.
+  getWorkflowMetadata: () => ({
+    workflowRunId: 'wr_0000_meta',
+    // Future Date so the derived deadlineAt is not already elapsed (the entry's
+    // wall-clock deadline would otherwise send the loop straight to wrap-up).
+    workflowStartedAt: new Date(Date.now() + 3_600_000),
+  }),
 }));
 
 vi.mock('../agent/generateOneRound', () => ({
@@ -190,6 +197,21 @@ describe('turnWorkflow entry (backend-agents B13)', () => {
     expect(code).toMatch(
       /\.\.\.\s*\(\s*disableTools\s*\?\s*\{\s*disableTools:\s*true\s*\}\s*:\s*\{\s*\}\s*\)/,
     );
+  });
+
+  it('forwards deadlineAt + wrapUp into both step adapters (adversarial-review #926)', () => {
+    const src = readFileSync(fileURLToPath(new URL('./turnWorkflow.ts', import.meta.url)), 'utf8');
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    // Derived once from the SDK-pinned startedAt — never a live Date.now() in
+    // the `'use workflow'` body (replay determinism; plan #925 row 10).
+    expect(code).toMatch(
+      /workflowStartedAt\.getTime\(\)\s*\+\s*TURN_WALL_CLOCK_MAX_MS/,
+    );
+    // Both step closures thread the serialized number (the 4h mid-step abort
+    // is dead if either drop is silent — persist-fold bug class).
+    expect(code).toMatch(/deadlineAt,/);
+    expect(code).toMatch(/wrapUp\s*!==\s*undefined/);
+    expect(code).toMatch(/\{\s*wrapUp\s*\}/);
   });
 
   it('forwards serializable reasoning into modelGenerateStep; does not fetch Gateway (plan #897)', () => {

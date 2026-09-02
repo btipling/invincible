@@ -296,6 +296,178 @@ describe('generateOneRound (backend-agents B9)', () => {
     }
   });
 
+  it('plan #923 row 9a: wall-clock deadline abort → code wall_clock (turn wall clock exceeded), not user-cancel', async () => {
+    const streamTextImpl = () => ({
+      fullStream: (async function* () {
+        const err = new Error('deadline');
+        err.name = 'AbortError';
+        throw err;
+      })(),
+      text: Promise.resolve(''),
+      usage: Promise.resolve(undefined),
+    });
+    const result = await generateOneRound(
+      {
+        ...deps,
+        streamTextImpl: streamTextImpl as never,
+        // Deadline ALREADY elapsed → the deadline signal fired → wall sentinel.
+        wallClockDeadlineAt: Date.now() - 1,
+      },
+      { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('wall_clock');
+      expect(result.error).toBe('turn wall clock exceeded');
+      expect(result.error).not.toBe('Request cancelled.');
+    }
+  });
+
+  it('plan #923 row 9b: user abort BEFORE the deadline stays cancelled (G22 parity)', async () => {
+    const streamTextImpl = () => ({
+      fullStream: (async function* () {
+        const err = new Error('user stop');
+        err.name = 'AbortError';
+        throw err;
+      })(),
+      text: Promise.resolve(''),
+      usage: Promise.resolve(undefined),
+    });
+    const result = await generateOneRound(
+      {
+        ...deps,
+        streamTextImpl: streamTextImpl as never,
+        // Deadline far in the FUTURE → this abort is a genuine user Stop.
+        wallClockDeadlineAt: Date.now() + 1_000_000,
+      },
+      { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('cancelled');
+      expect(result.error).toBe('Request cancelled.');
+    }
+  });
+
+  it('plan #923: aborted signal + Unknown error + elapsed deadline → wall_clock (adversarial-review #926)', async () => {
+    const streamTextImpl = () => ({
+      fullStream: (async function* () {
+        throw new Error('Unknown error');
+      })(),
+      text: Promise.resolve(''),
+      usage: Promise.resolve(undefined),
+    });
+    const result = await generateOneRound(
+      {
+        ...deps,
+        streamTextImpl: streamTextImpl as never,
+        signal: AbortSignal.abort(),
+        wallClockDeadlineAt: Date.now() - 1,
+      },
+      { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('wall_clock');
+      expect(result.error).toBe('turn wall clock exceeded');
+    }
+  });
+
+  it('plan #923: result.text AbortError + elapsed deadline → wall_clock (adversarial-review #926)', async () => {
+    const streamTextImpl = () => ({
+      fullStream: (async function* () {
+        yield { type: 'text-delta', text: 'partial' };
+      })(),
+      text: Promise.reject(Object.assign(new Error('Unknown error'), { name: 'AbortError' })),
+      usage: Promise.resolve(undefined),
+    });
+    const result = await generateOneRound(
+      {
+        ...deps,
+        streamTextImpl: streamTextImpl as never,
+        // Signal is NOT pre-aborted — a pre-aborted signal would be classified
+        // after fullStream and never reach result.text settlement.
+        wallClockDeadlineAt: Date.now() - 1,
+      },
+      { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('wall_clock');
+      expect(result.error).toBe('turn wall clock exceeded');
+    }
+  });
+
+  it('plan #923: onEvent AbortError + elapsed deadline → wall_clock, not write_error (adversarial-review #926)', async () => {
+    const streamTextImpl = makeStream({
+      parts: [{ type: 'text-delta', text: 'hi' }],
+      text: 'hi',
+    });
+    const result = await generateOneRound(
+      {
+        ...deps,
+        streamTextImpl,
+        // Signal is NOT pre-aborted — the throw is the abort. A pre-aborted
+        // signal would also hit the after-stream classifier.
+        wallClockDeadlineAt: Date.now() - 1,
+      },
+      {
+        messages: [{ role: 'user', content: 'x' }],
+        tools: {},
+        onEvent: async () => {
+          const err = new Error('writer abort');
+          err.name = 'AbortError';
+          throw err;
+        },
+      },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('wall_clock');
+      expect(result.error).toBe('turn wall clock exceeded');
+      expect(result.code).not.toBe('write_error');
+    }
+  });
+
+  it('plan #923: successful stream + aborted signal + elapsed deadline → wall_clock (adversarial-review #926)', async () => {
+    const streamTextImpl = makeStream({
+      parts: [{ type: 'finish', finishReason: 'stop' }],
+      text: 'done after deadline',
+    });
+    const result = await generateOneRound(
+      {
+        ...deps,
+        streamTextImpl,
+        signal: AbortSignal.abort(),
+        wallClockDeadlineAt: Date.now() - 1,
+      },
+      { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('wall_clock');
+      expect(result.error).toBe('turn wall clock exceeded');
+    }
+  });
+
+  it('plan #923: successful stream + aborted signal BEFORE deadline stays completed (G22 does not drop a finished round)', async () => {
+    const streamTextImpl = makeStream({
+      parts: [{ type: 'finish', finishReason: 'stop' }],
+      text: 'keep me',
+    });
+    const result = await generateOneRound(
+      {
+        ...deps,
+        streamTextImpl,
+        signal: AbortSignal.abort(),
+        wallClockDeadlineAt: Date.now() + 1_000_000,
+      },
+      { messages: [{ role: 'user', content: 'x' }], tools: {}, onEvent: async () => {} },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.delta.text).toBe('keep me');
+  });
+
   it('secrets are redacted from returned text', async () => {
     const streamTextImpl = makeStream({ text: 'my api key is sk-1234 end' });
     const result = await generateOneRound(

@@ -45,3 +45,25 @@ export function logTurnPersist(entry: {
   if (entry.code !== undefined) row.code = entry.code;
   console.log(JSON.stringify(row));
 }
+
+/**
+ * Additive loop-level log row (plan #923) — one line per terminal loop result,
+ * so an operator can tell a wall-cap from a step-cap (`reason`) and see the
+ * bounded elapsed time. No secrets / bodies / tool args. Called from the
+ * directive-free `turnLoop` core (plain vitest-safe, no `'use step'` needed —
+ * the row is allowlisted in `docs/agent-stream.md`).
+ */
+export function logTurnLoop(entry: {
+  status: string;
+  reason?: string;
+  elapsedMs?: number;
+}): void {
+  const row: Record<string, unknown> = {
+    tag: 'invincible.turn.loop',
+    status: entry.status,
+  };
+  if (entry.reason !== undefined) row.reason = entry.reason;
+  if (entry.elapsedMs !== undefined) row.elapsedMs = entry.elapsedMs;
+  console.log(JSON.stringify(row));
+}
+

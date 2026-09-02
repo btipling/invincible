@@ -36,6 +36,7 @@
  */
 
 import { getWorkflowMetadata } from 'workflow';
+import { TURN_WALL_CLOCK_MAX_MS } from '../sessionCloudCaps';
 import {
   runTurnLoop,
   type PersistStepFn,
@@ -96,7 +97,14 @@ export async function turnWorkflow(
   // enqueue, so it can never be a `start()` arg. Thread the workflow's own run
   // id to the loop → terminal persist, so the persist seam's `turnRunId` equals
   // the route-side `run.runId` (never the session id).
-  const { workflowRunId } = getWorkflowMetadata();
+  const { workflowRunId, workflowStartedAt } = getWorkflowMetadata();
+
+  // 1-hour wall-clock cap (plan #923, Bjorn-authorized): derive a deterministic
+  // DEADLINE from the SDK-pinned, replay-stable `workflowStartedAt` + the cap —
+  // NEVER a live `Date.now()` in this workflow body (replay determinism). The
+  // loop + step shells compare the serialized `deadlineAt` number against the
+  // step VMs' real clocks; no signal/closure/Date ever crosses a step boundary.
+  const deadlineAt = workflowStartedAt.getTime() + TURN_WALL_CLOCK_MAX_MS;
 
   // Stream I/O is `'use step'` only (plan #842). Do NOT call getWriter /
   // write / close in this `'use workflow'` function — the Workflows VM throws
@@ -106,7 +114,7 @@ export async function turnWorkflow(
     close: () => closeTurnSse(),
   };
 
-  const modelStep: ModelStepFn = async ({ messages, persistRunBind, disableTools }) => {
+  const modelStep: ModelStepFn = async ({ messages, persistRunBind, disableTools, wrapUp }) => {
     return modelGenerateStep({
       messages,
       modelId: args.modelId,
@@ -116,7 +124,9 @@ export async function turnWorkflow(
       // change_dir/meta_sandbox_switch), NOT the stale start snapshot. The
       // model must see FS tools for the CURRENT sandbox + cwd.
       persistRunBind: persistRunBind ?? args.persistRunBind,
+      deadlineAt,
       ...(disableTools ? { disableTools: true } : {}),
+      ...(wrapUp !== undefined ? { wrapUp } : {}),
       ...(args.reasoning !== undefined ? { reasoning: args.reasoning } : {}),
     });
   };
@@ -127,6 +137,7 @@ export async function turnWorkflow(
       scope: args.scope,
       // Use the RUNNING bind from the loop, NOT the stale start snapshot.
       persistRunBind: persistRunBind ?? args.persistRunBind,
+      deadlineAt,
     });
   };
   // Forward EVERYTHING the loop passes including the derived `fold` — a
@@ -149,6 +160,7 @@ export async function turnWorkflow(
         persistStep: persistStepFn,
         writable: loopWritable,
         turnRunId: workflowRunId,
+        deadlineAt,
         ...(args.persistRunBind !== undefined ? { persistRunBind: args.persistRunBind } : {}),
       },
       { userMessage: args.userMessage },
