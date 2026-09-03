@@ -2254,7 +2254,10 @@ describe('POST /api/agent', () => {
         updatedAt: 1,
         meta: {},
       })),
-      upsertEnvelope: vi.fn(async () => ({ status: 'stored' as const })),
+      upsertEnvelope: vi.fn(async (_k: unknown, input: { meta?: unknown }) => ({
+        status: 'stored' as const,
+        envelope: input,
+      })),
     };
     vi.doMock('../../../lib/tenancy/harnessSessionsRedis', () => ({
       resolveSessionStore: async () => ({ ok: true as const, value: fakeSessionStore }),
