@@ -72,7 +72,8 @@ export type CreateSkillToolsOptions = {
 function summarize(result: ListSkillsResult): string {
   const val = result.ok ? result.value : [];
   if (val.length === 0) return 'No skills found.';
-  // Slug first so the model can follow up with fetch_skill; summaries only, no body.
+  // Unquoted slug first (same shape as buildCatalogLine) so the model can
+  // follow up with fetch_skill; summaries only, no body.
   return val
     .slice(0, SKILL_FIND_RESULT_MAX)
     .map(

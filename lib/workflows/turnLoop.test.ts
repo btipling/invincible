@@ -2511,7 +2511,7 @@ describe('step wrappers (matrix 4–7)', () => {
     const resolveSkillPreamble = vi.fn(
       async (_input: { listUserSkills: unknown }) => ({
         // Catalog inject (plan #557/#931): slug + name + description lines.
-        preamble: '`create-plan` — Create plan: writes a plan.',
+        preamble: 'create-plan — Create plan: writes a plan.',
         attachedSlugs: ['create-plan'],
         attachedSkills: '["create-plan"]',
         events: [],
@@ -2533,7 +2533,7 @@ describe('step wrappers (matrix 4–7)', () => {
     expect(argDeps.system).toContain('<persona_standing_orders>');
     expect(argDeps.system).toContain('Always use tabs.');
     expect(argDeps.system).toContain('<attached_skills>');
-    expect(argDeps.system).toContain('`create-plan` — Create plan: writes a plan.');
+    expect(argDeps.system).toContain('create-plan — Create plan: writes a plan.');
     // Durable catalog seam is a required field — dropping it is a type error,
     // not a silent body-block revert. This assertion still locks the call.
     expect(resolveSkillPreamble).toHaveBeenCalled();

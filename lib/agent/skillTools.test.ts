@@ -9,7 +9,9 @@ import {
 import {
   SKILL_FETCH_MAX_RETURN_BYTES,
   SKILL_FIND_RESULT_MAX,
+  SKILL_SLUG_RE,
 } from '../sessionCloudCaps';
+import { buildCatalogLine } from '../tenancy/skillInject';
 
 /** AI SDK tool.execute options (mirrors lib/agent/httpFetchTools.test.ts). */
 const execOpts = { toolCallId: '1', messages: [] } as never;
@@ -39,6 +41,8 @@ function makeUserSkills(
       value: summaries.map(({ body: _b, ...rest }) => rest),
     })),
     getSkillBySlug: vi.fn(async (_userId: string, slug: string) => {
+      // Mirror store fail-closed: wrapping backticks are not a valid slug.
+      if (!SKILL_SLUG_RE.test(slug)) return { ok: true as const, value: null };
       const hit = summaries.find((s) => s.slug === slug);
       if (!hit) return { ok: true as const, value: null };
       return { ok: true as const, value: hit };
@@ -120,6 +124,36 @@ describe('createSkillTools', () => {
     const us = makeUserSkills();
     const { fetch_skill } = createSkillTools({ userId: 'user-1', userSkills: us });
     const out = String(await fetch_skill.execute!({ slug: 'create-plan' }, execOpts));
+    expect(out).toContain('=== skill: create-plan ===');
+    expect(out).toContain('Plaintext skill body.');
+    expect(us.getSkillBySlug).toHaveBeenCalledWith('user-1', 'create-plan');
+  });
+
+  it('catalog line slug token round-trips through fetch_skill (unquoted, not not_found)', async () => {
+    const entry = {
+      slug: 'create-plan',
+      name: 'Create plan',
+      description: 'writes a plan issue',
+    };
+    const catalogLine = buildCatalogLine(entry);
+    // Same unquoted shape find_skill summarize() already emits.
+    expect(catalogLine).toBe(
+      `${entry.slug} — ${entry.name}: ${entry.description}`,
+    );
+    const token = catalogLine.split(' — ')[0]!;
+    expect(token).toBe(entry.slug);
+    expect(SKILL_SLUG_RE.test(token)).toBe(true);
+
+    const us = makeUserSkills();
+    const { find_skill, fetch_skill } = createSkillTools({
+      userId: 'user-1',
+      userSkills: us,
+    });
+    const findOut = String(await find_skill.execute!({ query: 'create-plan' }, execOpts));
+    expect(findOut.split('\n')[0]).toBe(catalogLine);
+
+    const out = String(await fetch_skill.execute!({ slug: token }, execOpts));
+    expect(out).not.toMatch(/not_found/);
     expect(out).toContain('=== skill: create-plan ===');
     expect(out).toContain('Plaintext skill body.');
     expect(us.getSkillBySlug).toHaveBeenCalledWith('user-1', 'create-plan');

@@ -1731,7 +1731,7 @@ describe('POST /api/agent', () => {
     expect(arg.prompt).toBe('please scaffold a plan');
     // Catalog folded as the skills preamble (plan #557/#931): the slug +
     // summary line, with NO body — bodies ride the on-demand `fetch_skill`.
-    expect(arg.skillsPreamble).toContain('`create-plan` — Create plan: writes a plan issue');
+    expect(arg.skillsPreamble).toContain('create-plan — Create plan: writes a plan issue');
     expect(arg.skillsPreamble).not.toContain('PLAN BODY');
     // JSON path surfaces the skill outcome as slug-only (never a body), and the
     // server persists the sticky set via the envelope seam (updatedAt unchanged).

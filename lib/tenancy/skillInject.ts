@@ -217,9 +217,11 @@ export function buildSkillBlock(slug: string, body: string): string {
 }
 
 /**
- * One catalog line: `` `<slug>` — <name>: <description> `` — the same shape as
- * `find_skill`'s summary line in `lib/agent/skillTools.ts` (slug first so the
- * model can follow up with `fetch_skill`). Summaries only — never a body.
+ * One catalog line: `<slug> — <name>: <description>` — the same unquoted
+ * shape as `find_skill`'s summary line in `lib/agent/skillTools.ts` (slug
+ * first so the model can pass it to `fetch_skill` verbatim). Wrapping the
+ * slug in backticks would fail `SKILL_SLUG_RE` / `getSkillBySlug`. Summaries
+ * only — never a body.
  *
  * Name and description are flattened to a single line (JS `\s` plus U+0085
  * NEXT LINE, which `\s` misses) so a legal stored description cannot split
@@ -232,7 +234,7 @@ export function buildCatalogLine(entry: {
 }): string {
   const name = flattenCatalogText(entry.name);
   const description = flattenCatalogText(entry.description);
-  return `\`${entry.slug}\` — ${name}${description ? `: ${description}` : ''}`;
+  return `${entry.slug} — ${name}${description ? `: ${description}` : ''}`;
 }
 
 /**

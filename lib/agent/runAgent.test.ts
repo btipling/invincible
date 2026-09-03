@@ -1102,10 +1102,10 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
       expect(system).toContain('</persona_standing_orders>');
       const skillsIdx = system.indexOf('<attached_skills>');
       expect(skillsIdx).toBeGreaterThan(personaIdx);
-      expect(system).toContain('`create-plan` — Create plan: writes a plan.');
+      expect(system).toContain('create-plan — Create plan: writes a plan.');
       expect(system).toContain('</attached_skills>');
       expect(
-        system.endsWith('`create-plan` — Create plan: writes a plan.\n</attached_skills>'),
+        system.endsWith('create-plan — Create plan: writes a plan.\n</attached_skills>'),
       ).toBe(true);
       return { text: 'ok', steps: [] };
     });
@@ -1115,7 +1115,7 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
       generateTextImpl: generateTextImpl as never,
       sandboxClient: fsClient(),
       personaPreamble: 'Always use tabs.',
-      skillsPreamble: '`create-plan` — Create plan: writes a plan.',
+      skillsPreamble: 'create-plan — Create plan: writes a plan.',
     });
     expect(generateTextImpl).toHaveBeenCalled();
   });
@@ -1124,7 +1124,7 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
     const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
       const system = String(args.system);
       expect(system).toContain('<attached_skills>');
-      expect(system).toContain('`review` — Review');
+      expect(system).toContain('review — Review');
       expect(system).not.toContain('<persona_standing_orders>');
       return { text: 'ok', steps: [] };
     });
@@ -1133,7 +1133,7 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
       modelId: 'test-model',
       generateTextImpl: generateTextImpl as never,
       sandboxClient: fsClient(),
-      skillsPreamble: '`review` — Review: be adversarial.',
+      skillsPreamble: 'review — Review: be adversarial.',
     });
     expect(generateTextImpl).toHaveBeenCalled();
   });
@@ -1166,7 +1166,7 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
       generateTextImpl: generateTextImpl as never,
       sandboxClient: fsClient(),
       personaPreamble: 'Always use tabs.',
-      skillsPreamble: '`x` — X: body',
+      skillsPreamble: 'x — X: body',
     });
     expect(generateTextImpl).toHaveBeenCalled();
   });

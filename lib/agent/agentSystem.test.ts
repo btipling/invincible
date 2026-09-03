@@ -77,7 +77,7 @@ describe('resolveSystem', () => {
     const system = resolveSystem(
       {
         personaPreamble: 'Always use tabs.',
-        skillsPreamble: '`create-plan` — Create plan: writes a plan.',
+        skillsPreamble: 'create-plan — Create plan: writes a plan.',
       },
       true,
     );
@@ -85,12 +85,12 @@ describe('resolveSystem', () => {
     const skillsAt = system.indexOf('<attached_skills>');
     expect(personaAt).toBeGreaterThan(-1);
     expect(skillsAt).toBeGreaterThan(personaAt);
-    expect(system).toContain('`create-plan` — Create plan: writes a plan.');
+    expect(system).toContain('create-plan — Create plan: writes a plan.');
   });
 
   it('the <attached_skills> intro copy is catalog (fetch-on-demand) semantics, covering sticky ∪ always-on', () => {
     const system = resolveSystem(
-      { skillsPreamble: '`create-plan` — Create plan.' },
+      { skillsPreamble: 'create-plan — Create plan.' },
       true,
     );
     // Copy covers the whole catalog set (sticky ∪ always-on) — it must NOT
