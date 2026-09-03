@@ -1092,7 +1092,7 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
     };
   }
 
-  it('appends the skills preamble AFTER the persona standing orders', async () => {
+  it('appends the skills preamble AFTER the persona standing orders (catalog block)', async () => {
     const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
       const system = String(args.system);
       // Persona block first.
@@ -1102,10 +1102,11 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
       expect(system).toContain('</persona_standing_orders>');
       const skillsIdx = system.indexOf('<attached_skills>');
       expect(skillsIdx).toBeGreaterThan(personaIdx);
-      expect(system).toContain('### Skill attached: create-plan');
-      expect(system).toContain('Plan in YAML sections.');
+      expect(system).toContain('create-plan — Create plan: writes a plan.');
       expect(system).toContain('</attached_skills>');
-      expect(system.endsWith('Plan in YAML sections.\n</attached_skills>')).toBe(true);
+      expect(
+        system.endsWith('create-plan — Create plan: writes a plan.\n</attached_skills>'),
+      ).toBe(true);
       return { text: 'ok', steps: [] };
     });
     await runAgent({
@@ -1114,7 +1115,7 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
       generateTextImpl: generateTextImpl as never,
       sandboxClient: fsClient(),
       personaPreamble: 'Always use tabs.',
-      skillsPreamble: '### Skill attached: create-plan\nPlan in YAML sections.',
+      skillsPreamble: 'create-plan — Create plan: writes a plan.',
     });
     expect(generateTextImpl).toHaveBeenCalled();
   });
@@ -1123,7 +1124,7 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
     const generateTextImpl = vi.fn(async (args: Record<string, unknown>) => {
       const system = String(args.system);
       expect(system).toContain('<attached_skills>');
-      expect(system).toContain('### Skill attached: review');
+      expect(system).toContain('review — Review');
       expect(system).not.toContain('<persona_standing_orders>');
       return { text: 'ok', steps: [] };
     });
@@ -1132,7 +1133,7 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
       modelId: 'test-model',
       generateTextImpl: generateTextImpl as never,
       sandboxClient: fsClient(),
-      skillsPreamble: '### Skill attached: review\nBe adversarial.',
+      skillsPreamble: 'review — Review: be adversarial.',
     });
     expect(generateTextImpl).toHaveBeenCalled();
   });
@@ -1165,7 +1166,7 @@ describe('runAgent skillsPreamble (phase 2 #517)', () => {
       generateTextImpl: generateTextImpl as never,
       sandboxClient: fsClient(),
       personaPreamble: 'Always use tabs.',
-      skillsPreamble: '### Skill attached: x\nbody',
+      skillsPreamble: 'x — X: body',
     });
     expect(generateTextImpl).toHaveBeenCalled();
   });

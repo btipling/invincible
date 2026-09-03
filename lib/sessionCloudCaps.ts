@@ -68,18 +68,26 @@ export const SKILL_SLUG_RE = /^[a-z][a-z0-9_-]{0,127}$/;
 export const HARNESS_SESSION_MAX_ATTACHED_SKILLS = 32;
 
 /**
- * Per-turn **inject** byte budget for attached-skill bodies folded into the model
- * system prompt (`skillsPreamble`, phase 2 #517). Adversarial-review L5 fix: the
- * count cap alone is NOT a size cap — 32 × a 4 MiB body would concatenate 128 MiB
- * into `skillsPreamble` every turn (Function memory / Gateway payload / timeout).
- * `resolveSkillPreamble` builds blocks greedily up to this budget and stops.
+ * Per-turn **inject ceiling** for the attached-skill inject folded into the
+ * model system prompt (`skillsPreamble`). Plan #557 / #931: the default inject
+ * is a bounded **catalog** (one line per candidate skill — slug + name +
+ * description, built from `listUserSkills` summaries; bodies ride the
+ * on-demand `fetch_skill` tool), so this value is now a **safety rail over the
+ * catalog**, not the default inject. A typical 32+8 one-liner catalog is a
+ * few KiB; a maxed CJK name+description library can exceed 256 KiB, so
+ * `skillInject` flattens each entry to one line and packs by remaining
+ * budget (occupancy 1 may use this full ceiling; the 32+8 count caps are the
+ * row ceiling, not a per-line tax) — every resolvable slug still
+ * appears. Kept UNCHANGED as the inject ceiling (not raised, not lowered —
+ * no human cap-gate triggered).
  *
  * This deliberately differs from the **store** cap (`SKILL_BODY_MAX_BYTES`, 4 MiB):
- * the ON-DISK body may be huge (a skill is staff-of-work, stored once), but what
- * actually becomes a standing-order injected block each turn is capped at 256 KiB.
- * A skill whose body alone exceeds this budget FAILS at attach (`too_large`) — it
- * is never added to the sticky set — so a 4 MiB skill can never sit "attached"
- * while silently never being injected (adversarial-review amendment, "silent lie").
+ * the ON-DISK body may be huge (a skill is staff-of-work, stored once). Because
+ * no body is injected at attach time any more, the former attach-time
+ * `too_large` / `budget` rejection is retired for the catalog path: an
+ * over-256 KiB skill can attach and be catalog-listed, and its body is only
+ * ever fetched (truncated to the 256 KiB `SKILL_FETCH_MAX_RETURN_BYTES`
+ * return cap).
  */
 export const HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES = 256 * 1024;
 
@@ -92,9 +100,11 @@ export const HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES = 256 * 1024;
  * inject-budget discipline (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`): the
  * ON-DISK skill body may be large (stored once, staff-of-work), but what crosses
  * the model wire per tool call is capped — a longer body is returned truncated
- * with an explicit `{ truncated: true, byteLength, slug }` marker, never
- * silently dropped. The full body always stays server-side (editable in
- * Settings); these tools never write a body to session/meta.
+ * with a prose marker (`…[truncated to N bytes; full body is M bytes — edit in
+ * Settings]`), never silently dropped. The untruncated stored body stays
+ * editable in Settings; the truncated slice still reaches the client as a
+ * `tool_result` preview → `tool_run` row. These tools never write a body to
+ * session/meta.
  */
 export const SKILL_FIND_RESULT_MAX = 20;
 export const SKILL_FETCH_MAX_RETURN_BYTES = 256 * 1024;
@@ -150,9 +160,11 @@ export const PERSONA_VERSION_MAX = 100;
 /**
  * Max number of skills a user may set as always-on (plan #720 phase 2).
  * Always-on skills auto-attach to every new session regardless of persona.
- * NEW generous cap — 8 × ≤ 256 KiB inject budget fits inside the existing
- * `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` (256 KiB) total inject budget.
- * No existing cap changed.
+ * NEW generous cap — 8 catalog lines (name ≤ 200, description ≤ 2000). A
+ * maxed CJK library of 32 sticky + 8 always-on can exceed the 256 KiB
+ * `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` ceiling; catalog assembly
+ * packs by remaining budget so occupancy 1 is not chopped. No existing
+ * cap changed.
  */
 export const USER_ALWAYS_ON_SKILLS_MAX = 8;
 

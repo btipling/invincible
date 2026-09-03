@@ -311,6 +311,11 @@ async function resolveInStepPreambles(args: {
         userId: args.userId,
         command: { type: 'none' },
         userSkills: args.services.userSkills,
+        // Catalog seam REQUIRED (plan #557/#931): the inject is summaries
+        // only. listUserSkills (SkillSummaryLister) is required on
+        // ResolveSkillCommandInput so dropping it is a type error, not a
+        // silent body-block revert. Happy path is listUserSkillsBySlugs.
+        listUserSkills: args.services.userSkills,
         alwaysOnSlugs,
         ...(envelopeStore && sessionKey
           ? { sessionStore: envelopeStore, sessionKey }

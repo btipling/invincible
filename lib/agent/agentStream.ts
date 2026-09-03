@@ -44,9 +44,11 @@ export type AgentStreamEvent =
   | {
       /**
        * Protocol v12 / phase 2 (#517): display-only skill attach/detach outcome.
-       * Carries ONLY the slug + outcome — never a skill body (bodies stay
-       * server-side in the model's system context). Emitted by the server at the
-       * START of a turn (before the model), or alone on a NO-MODEL `/unskill`.
+       * Carries ONLY the slug + outcome — never a skill body. Catalog inject
+       * is summaries only; a playbook reaches the client/Wasm only as a
+       * `fetch_skill` tool_result preview (`tool_run`), never on this event.
+       * Emitted by the server at the START of a turn (before the model), or
+       * alone on a NO-MODEL `/unskill`.
        */
       type: 'skill_attached';
       slug: string;
@@ -54,13 +56,15 @@ export type AgentStreamEvent =
       ok: boolean;
       reason?: string;
       /**
-       * Phase 2 (#517 / adversarial-review Nit L6): the FINAL attached-skill set
-       * for the session, carried identically on EVERY skill_attached event of a
-       * turn so the host applies it last-writes-wins (never treats a missing
-       * field on event 1 as *clear*). `[]` = explicit detach-all; OMITTED = the
-       * field is absent (host leaves its existing set untouched). The host's
-       * `SessionSnapshot.attachedSlugs` mirrors this so a host PUT persists it
-       * as the reserved `meta.attachedSkills`.
+       * Phase 2 (#517 / adversarial-review Nit L6): the FINAL **sticky** persist
+       * set for the session (always-on stripped — same as JSON `attachedSkills`),
+       * carried identically on EVERY skill_attached event of a turn so the host
+       * applies it last-writes-wins (never treats a missing field on event 1 as
+       * *clear*). `[]` = explicit detach-all; OMITTED = the field is absent (host
+       * leaves its existing set untouched). The host's `SessionSnapshot.attachedSlugs`
+       * mirrors this so a host PUT persists it as reserved `meta.attachedSkills`.
+       * Always-on slugs must never appear here (they are a user-global toggle,
+       * re-resolved from the DB every turn — not session sticky).
        */
       attachedSlugs?: string[];
     }

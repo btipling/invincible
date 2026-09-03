@@ -6,15 +6,29 @@ They are created and edited in **Settings → Skills** and stored in the per-use
 `user_skills` table. Skills are **non-secret plaintext user content** (no DEK)
 and are scoped to exactly one user + tenant.
 
-To use a skill in a session, **attach it with a slash command** — type
-`/skill-name` in the harness composer. The server resolves the skill, injects
-its body into the session's system context, and the transcript shows only a
-`Skill attached: <slug>` row. The agent can also **search / read your own
-skills directly** with the server-side `find_skill` and `fetch_skill` tools,
-**or manage your skills** (create / read / update / delete) through the
-`meta_skill_*` authoring tools
+The session catalog is **sticky ∪ always-on**. On Production `/harness`
+(durable turns via `POST /api/turns`) the durable model step re-resolves
+sticky / always-on skills only (`command: none`) — it does **not** parse
+slash commands. Typing `/skill-name` in the harness composer does **not**
+attach a skill or join the catalog there. Slash-command `/skill-name` /
+`/unskill slug` attach still lives on the legacy `/api/agent` path
+(tests/JSON); Production `runHarnessTurn` posts `/api/turns` and never
+calls `parseSkillCommand`. Toggle a skill **always-on** in Settings to
+have it auto-join every session's catalog. The agent can also **search /
+read your own skills directly** with the server-side `find_skill` and
+`fetch_skill` tools, **or manage your skills** (create / read / update /
+delete) through the `meta_skill_*` authoring tools
 (see [Agent skill-search tools](#agent-skill-search-tools-find_skill--fetch_skill)
 and [Agent skill-authoring tools](#agent-skill-authoring-tools-meta_skill_)).
+
+**Bodies are not injected.** The session's system context carries a bounded
+**catalog** — one line per attached/always-on skill (`<slug> — Name:
+description`) — not the playbook bodies. The agent reads a skill's full body on
+demand with the `fetch_skill` tool whenever it needs it, and discovers other
+skills with `find_skill`. This keeps the per-turn inject small (a few KiB
+instead of up to hundreds of KiB of bodies) and keeps the stable system prefix
+stable across turns (a mid-session skill body edit no longer rewrites the
+block).
 
 ## Creating and editing a skill
 
@@ -76,23 +90,32 @@ works.
 
 ## Using a skill in a session
 
-Type a slash command in the harness composer:
+**Production `/harness` (durable turns):** `runHarnessTurn` posts `/api/turns`
+and never calls `parseSkillCommand`. The durable model step does **not** parse
+slash commands (`command: none`); it re-resolves sticky / always-on slugs
+only. Typing `/skill-name` in the composer does **not** attach a skill or
+populate the catalog. Toggle a skill **always-on** in Settings to auto-join
+every session; sticky slugs already on `meta.attachedSkills` (from a prior
+`/api/agent` attach) still re-resolve.
+
+**`/api/agent` (legacy tests/JSON):** type a slash command in the prompt:
 
 - **`/skill-name`** — attach the skill. `/create-plan please scaffold` attaches
   `create-plan` **and** sends the remaining prose (`please scaffold`) to the
-  model. The skill body is injected into the model's system context for this
-  turn and **stays attached** for the rest of the session.
+  model. The skill joins the session's catalog (see above) and **stays
+  attached** for the rest of the session; the agent reads the body on demand
+  via `fetch_skill` when it needs the playbook.
 - **`/unskill skill-name`** — detach. The whole line is a command (no model
-  turn); the skill stops being re-injected on the next turn.
+  turn); the skill drops from the catalog on the next turn.
 
 Attachment is **session-sticky**: the server remembers which skill slugs are
 attached in the session's `meta.attachedSkills` (a JSON array string, dedupe,
-≤ 32 slugs) and re-resolves their bodies from the store on every turn in that
-session. Because skills are **staff of work** (not a locked identity like a
-persona snapshot), editing a skill's body takes effect from the **next turn** —
-an already-attached session picks up the edited body rather than a frozen copy.
-A skill that is deleted while attached silently stops being injected. **New
-session / Clear** mints a fresh session, so attachments reset there.
+≤ 32 slugs) and re-resolves their summaries from the store on every turn in
+that session. Because skills are **staff of work** (not a locked identity like a
+persona snapshot), editing a skill's description applies from the **next
+turn** — a body edit never rewrites the catalog line for that slug. A skill
+that is deleted while attached silently drops from the catalog. **New session /
+Clear** mints a fresh session, so attachments reset there.
 
 The sticky set is carried on BOTH seams so nothing can wipe it: the server
 persists it via the phase-0 **envelope** (`readEnvelope` / `upsertEnvelope`,
@@ -109,31 +132,37 @@ toggle on each skill row). An always-on skill **auto-attaches to every new
 session**, regardless of the chosen persona. The always-on set is:
 
 - **User-global** — the same set applies to every session for that user.
-- **Re-resolved from the DB every turn** — a skill edit or delete takes
-  effect the next turn (same as sticky attachment).
+- **Re-resolved from the DB every turn** — a description edit applies from
+  the next turn's catalog; a body edit applies on the next `fetch_skill`
+  (not auto standing orders). A delete silently drops the skill from the
+  catalog (same as sticky).
 - **Not persisted in `meta.attachedSkills`** — always-on slugs are never
   session state; they are the user's global toggle.
 - **Capped at 8 skills** (`USER_ALWAYS_ON_SKILLS_MAX`).
 - **Cannot be detached by `/unskill`** — always-on means always-on. Toggle
   it off in Settings to stop auto-attaching.
 
-An always-on skill body still counts toward the same per-turn inject byte
-budget as every other attached skill (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`,
-256 KiB). If you need a skill everywhere by default, flip the always-on toggle.
-If you want persona-specific recommendations instead, see
+An always-on skill appears in the same per-turn catalog inject as every other
+attached skill (see above). If you need a skill everywhere by default, flip the
+always-on toggle. If you want persona-specific recommendations instead, see
 [personas.md](personas.md) — recommended skills.
 
 ### What the UI shows
 
-The transcript shows **only the skill name**: a compact `Skill attached:
-<slug>` row in the canvas. The skill **body is never displayed in the canvas
-and never sent to the client** — it exists only server-side in the model's
-system context.
+The transcript attach row is **name-only**: a compact `Skill attached:
+<slug>` canvas row (message kind 7, display-only). That kind-7 row and the
+system-prompt catalog are summaries only (slug + name + description) — the
+skill **body is not painted on the attach row** and is **not** injected into
+the system prompt. The model reads the body on demand via `fetch_skill`;
+that body reaches the client/Wasm only as a tool result (`tool_result`
+preview → `tool_run` row), never as the kind-7 attach display.
 
 ## Agent skill-search tools (`find_skill` / `fetch_skill`)
 
-The agent gets two read-only tools, assembled server-side on `/api/agent` in
-`lib/agent/skillTools.ts`:
+The agent gets two read-only tools, assembled server-side on Production
+durable turns (`POST /api/turns` → in-step `assembleDurableToolWorld` →
+`buildToolWorld` from `lib/agent/skillTools.ts`). The legacy `/api/agent`
+tests/JSON path assembles the same tools:
 
 - **`find_skill`** — search your skills by a substring (case-insensitive) across
   their **slug, name, and description**. Returns only summaries (no bodies), up
@@ -144,24 +173,29 @@ The agent gets two read-only tools, assembled server-side on `/api/agent` in
   with no partial body (skills are user-scoped — an existence leak is
   impossible). The **model-returned body is capped** at
   `SKILL_FETCH_MAX_RETURN_BYTES` (256 KiB): a longer body is returned truncated
-  with an explicit `{ truncated: true, byteLength, slug }` marker, never
-  silently dropped. The full body always stays server-side (editable in
-  Settings).
+  with a prose marker (`…[truncated to N bytes; full body is M bytes — edit in
+  Settings]`), never silently dropped. The untruncated stored body stays
+  editable in Settings; the truncated slice still reaches the client/Wasm as a
+  `tool_result` preview painted on a `tool_run` row (same as other tool reads).
 
 Both tools are **bound to the caller's identity**: they operate on the
 route-resolved user only, and no identity a model passes is ever used
 (confused-deputy guard). They are pure **reads** of your own skills — the agent
-does not create, edit, or delete a skill through these two tools, and no body
-ever travels to the client/Wasm. Authoring (create / edit / delete) happens
+does not create, edit, or delete a skill through these two tools. A
+`fetch_skill` body reaches the client/Wasm only as a tool result (`tool_result`
+preview → `tool_run` row); it is not injected into the system prompt and is
+not painted on the kind-7 attach row. Authoring (create / edit / delete) happens
 either in Settings or through the separate `meta_skill_*` authoring tools below.
 
 ## Agent skill-authoring tools (`meta_skill_*`)
 
 `meta_skill_*` is the **authoring** counterpart to the read-only search tools
-above. It is a first-party tool family on `/api/agent`
-(`lib/agent/metaTools.ts`), always available, and operates only on the signed-in
+above. It is a first-party tool family assembled on Production durable turns
+(`POST /api/turns` → `assembleDurableToolWorld` / `buildToolWorld` from
+`lib/agent/metaTools.ts`), always available, and operates only on the signed-in
 caller's own skills (same grants as Settings, confused-deputy bound to the
-route user). Tools and their semantics:
+route user). The legacy `/api/agent` tests/JSON path assembles the same family.
+Tools and their semantics:
 
 - **`meta_skill_list`** — list your skills (summaries: id, slug, name,
   description — never body), bounded.
@@ -209,8 +243,10 @@ Because a skill is updated/deleted **by id** while read resolves **by slug**,
 call `meta_skill_list` first to obtain the `id`/`slug` you need. Authoring runs
 **as the signed-in user** with immediate effect (no separate confirm surface),
 consistent with Settings' own mutating actions. Skill bodies are non-secret user
-content: they are returned to the model **only** on an explicit `*_read` and
-never reach the client/Wasm. These are write tools — they are distinct from the
+content: they are returned to the model **only** on an explicit `*_read`. A
+read body reaches the client/Wasm only as a tool result (`tool_result` preview
+→ `tool_run` row), never as the kind-7 attach display or the catalog inject.
+These are write tools — they are distinct from the
 read-only `find_skill` / `fetch_skill`, which stay unchanged.
 
 ## Guidance
@@ -220,14 +256,20 @@ read-only `find_skill` / `fetch_skill`, which stay unchanged.
   skill focused on one job.
 - **Description:** one short line a user can scan; it is shown in discovery
   lists but never the body.
-- **Size & token budget — store cap vs inject cap:** a body is stored up to
+- **Size & token budget — store cap vs catalog inject:** a body is stored up to
   the 4 MiB `SKILL_BODY_MAX_BYTES` cap, but what is **injected into the model's
-  system context every turn** is separately capped at a far smaller budget
-  (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`, 256 KiB total across all attached
-  skills). A new attach whose body would exceed that inject budget is **rejected
-  at attach** (`too_large` when the body alone is over, `budget` when the
-  already-attached set leaves no headroom) and is **never counted as attached** —
-  so a large stored skill can never sit "attached" while silently never being
-  injected (the count cap alone is not a size cap). Keep bodies tight: only the
-  attached **slugs** are stored in session `meta` (never bodies), and only the
-  injectable subset of their bodies reaches the model each turn.
+  system context every turn** is a bounded **catalog** of one line per
+  attached/always-on skill (slug + name + description), not the bodies.
+  Name/description whitespace is flattened so each skill is exactly one line.
+  The catalog is safety-railed by the unchanged **256 KiB**
+  `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` inject ceiling: a maxed CJK
+  name+description library of 32 sticky + 8 always-on can exceed that ceiling,
+  so lines pack by remaining budget (occupancy 1 may use the full 256 KiB; the
+  32+8 count caps are the row ceiling, not a per-line tax) — every resolvable
+  slug still appears (no stored-but-never-listed skip). No cap was raised or
+  lowered. Because no body is injected at attach
+  time, an attach is no longer size-rejected: an over-256 KiB skill can attach
+  and be catalog-listed, and its body is only ever returned by `fetch_skill` /
+  `meta_skill_read` truncated to the 256 KiB `SKILL_FETCH_MAX_RETURN_BYTES`
+  model-return cap. Keep bodies tight anyway — the store cap and the fetch cap
+  both still apply.

@@ -7,10 +7,13 @@ import {
   deleteUserSkill,
   getSkillById,
   getSkillBySlug,
+  skillExistsBySlug,
+  skillExistsBySlugs,
   getSkillVersion,
   listAlwaysOnSkills,
   listSkillVersions,
   listUserSkills,
+  listUserSkillsBySlugs,
   renameUserSkill,
   rollbackSkill,
   setAlwaysOn,
@@ -19,7 +22,13 @@ import {
   updateUserSkillBody,
   updateUserSkillSummary,
 } from './userSkills';
-import { SKILL_VERSION_MAX, USER_ALWAYS_ON_SKILLS_MAX } from '../sessionCloudCaps';
+import {
+  HARNESS_SESSION_MAX_ATTACHED_SKILLS,
+  SKILL_VERSION_MAX,
+  USER_ALWAYS_ON_SKILLS_MAX,
+} from '../sessionCloudCaps';
+import { resolveSystem } from '../agent/agentSystem';
+import { resolveSkillPreamble } from './skillInject';
 import {
   createIsolatedTestDb,
   getSharedDb,
@@ -188,6 +197,102 @@ describe('userSkills', () => {
     expect(malformed.ok).toBe(true);
     if (!malformed.ok) throw new Error('expected ok');
     expect(malformed.value).toBeNull();
+  });
+
+  it('skillExistsBySlug is slug-only (no body): owner true, other-user/missing/malformed false', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const created = await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'body-A-must-not-hydrate' },
+      { db: db as never },
+    );
+    expect(created.ok).toBe(true);
+
+    const own = await skillExistsBySlug(userId, 'a', { db: db as never });
+    expect(own.ok).toBe(true);
+    if (!own.ok) throw new Error('expected ok');
+    expect(own.value).toBe(true);
+    // Result is a boolean — no body field to leak a 4 MiB playbook.
+    expect(typeof own.value).toBe('boolean');
+
+    const { userId: otherId } = await seedUser('t2', 'other@example.com');
+    const cross = await skillExistsBySlug(otherId, 'a', { db: db as never });
+    expect(cross.ok).toBe(true);
+    if (!cross.ok) throw new Error('expected ok');
+    expect(cross.value).toBe(false);
+
+    const missing = await skillExistsBySlug(userId, 'does-not-exist', {
+      db: db as never,
+    });
+    expect(missing.ok).toBe(true);
+    if (!missing.ok) throw new Error('expected ok');
+    expect(missing.value).toBe(false);
+
+    const malformed = await skillExistsBySlug(userId, 'Not-A-Slug', {
+      db: db as never,
+    });
+    expect(malformed.ok).toBe(true);
+    if (!malformed.ok) throw new Error('expected ok');
+    expect(malformed.value).toBe(false);
+  });
+
+  it('skillExistsBySlugs is one IN (no body): owner present, other-user/missing/malformed omitted', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'body-A-must-not-hydrate' },
+      { db: db as never },
+    );
+    await createUserSkill(
+      { userId, name: 'B', slug: 'b', body: 'body-B-must-not-hydrate' },
+      { db: db as never },
+    );
+
+    const own = await skillExistsBySlugs(userId, ['b', 'a', 'a', 'missing', 'Not-A-Slug'], {
+      db: db as never,
+    });
+    expect(own.ok).toBe(true);
+    if (!own.ok) throw new Error('expected ok');
+    expect([...own.value].sort()).toEqual(['a', 'b']);
+    expect(own.value.every((s) => typeof s === 'string')).toBe(true);
+
+    const empty = await skillExistsBySlugs(userId, [], { db: db as never });
+    expect(empty.ok).toBe(true);
+    if (!empty.ok) throw new Error('expected ok');
+    expect(empty.value).toEqual([]);
+
+    const { userId: otherId } = await seedUser('t2', 'other@example.com');
+    const cross = await skillExistsBySlugs(otherId, ['a', 'b'], {
+      db: db as never,
+    });
+    expect(cross.ok).toBe(true);
+    if (!cross.ok) throw new Error('expected ok');
+    expect(cross.value).toEqual([]);
+  });
+
+  it('skillExistsBySlugs slices IN to sticky+always-on+1 (keeps first N)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    await createUserSkill(
+      { userId, name: 'First', slug: 's0', body: 'x' },
+      { db: db as never },
+    );
+    const inCapSlug = `s${HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX}`;
+    const droppedSlug = `s${HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX + 1}`;
+    await createUserSkill(
+      { userId, name: 'InCap', slug: inCapSlug, body: 'x' },
+      { db: db as never },
+    );
+    await createUserSkill(
+      { userId, name: 'Dropped', slug: droppedSlug, body: 'x' },
+      { db: db as never },
+    );
+    const slugs = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX + 2 },
+      (_, i) => `s${i}`,
+    );
+    const listed = await skillExistsBySlugs(userId, slugs, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect([...listed.value].sort()).toEqual(['s0', inCapSlug].sort());
+    expect(listed.value).not.toContain(droppedSlug);
   });
 
   it('getSkillById returns the FULL body for the owner; other-user / foreign id → null (no leak)', async () => {
@@ -393,6 +498,70 @@ describe('userSkills', () => {
     expect(otherList.value).toEqual([]);
   });
 
+  it('listUserSkillsBySlugs is candidate-scoped (slug IN), user-scoped, empty IN skips', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'x', description: 'alpha' },
+      { db: db as never },
+    );
+    await createUserSkill(
+      { userId, name: 'B', slug: 'b', body: 'x', description: 'bravo' },
+      { db: db as never },
+    );
+    await createUserSkill(
+      { userId, name: 'C', slug: 'c', body: 'x', description: 'charlie' },
+      { db: db as never },
+    );
+
+    const subset = await listUserSkillsBySlugs(userId, ['c', 'a', 'a', 'Not-A-Slug'], {
+      db: db as never,
+    });
+    expect(subset.ok).toBe(true);
+    if (!subset.ok) throw new Error('expected ok');
+    expect(subset.value.map((s) => s.slug).sort()).toEqual(['a', 'c']);
+    expect(subset.value.every((s) => !('body' in s))).toBe(true);
+
+    const empty = await listUserSkillsBySlugs(userId, [], { db: db as never });
+    expect(empty.ok).toBe(true);
+    if (!empty.ok) throw new Error('expected ok');
+    expect(empty.value).toEqual([]);
+
+    const { userId: otherId } = await seedUser('t2', 'other@example.com');
+    const cross = await listUserSkillsBySlugs(otherId, ['a', 'b'], {
+      db: db as never,
+    });
+    expect(cross.ok).toBe(true);
+    if (!cross.ok) throw new Error('expected ok');
+    expect(cross.value).toEqual([]);
+  });
+
+  it('listUserSkillsBySlugs slices IN to sticky+always-on+1 (keeps first N)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    await createUserSkill(
+      { userId, name: 'First', slug: 's0', body: 'x' },
+      { db: db as never },
+    );
+    const inCapSlug = `s${HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX}`;
+    const droppedSlug = `s${HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX + 1}`;
+    await createUserSkill(
+      { userId, name: 'InCap', slug: inCapSlug, body: 'x' },
+      { db: db as never },
+    );
+    await createUserSkill(
+      { userId, name: 'Dropped', slug: droppedSlug, body: 'x' },
+      { db: db as never },
+    );
+    const slugs = Array.from(
+      { length: HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX + 2 },
+      (_, i) => `s${i}`,
+    );
+    const listed = await listUserSkillsBySlugs(userId, slugs, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect(listed.value.map((s) => s.slug).sort()).toEqual(['s0', inCapSlug].sort());
+    expect(listed.value.map((s) => s.slug)).not.toContain(droppedSlug);
+  });
+
   it('empty user → empty list; missing userId create → no_membership', async () => {
     const { userId } = await seedUser('t1', 'u@example.com');
     const listed = await listUserSkills(userId, { db: db as never });
@@ -505,6 +674,97 @@ describe('setAlwaysOn + listAlwaysOnSkills (plan #720 phase 2)', () => {
     // Now we have one slot; setting true after freeing a slot works.
     const refill = await setAlwaysOn(userId, ids[USER_ALWAYS_ON_SKILLS_MAX], true, { db: db as never });
     expect(refill.ok).toBe(true);
+  });
+
+  it('listAlwaysOnSkills caps on read at USER_ALWAYS_ON_SKILLS_MAX (race-safe)', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    for (let i = 0; i < USER_ALWAYS_ON_SKILLS_MAX + 1; i++) {
+      const c = await createUserSkill(
+        { userId, name: `S${i}`, slug: `s_${i}`, body: `body ${i}` },
+        { db: db as never },
+      );
+      expect(c.ok).toBe(true);
+    }
+    // Bypass setAlwaysOn write cap (simulates a concurrent race past the cap).
+    await db
+      .update(schema.userSkills)
+      .set({ isAlwaysOn: true })
+      .where(eq(schema.userSkills.userId, userId));
+    const listed = await listAlwaysOnSkills(userId, { db: db as never });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('expected ok');
+    expect(listed.value).toHaveLength(USER_ALWAYS_ON_SKILLS_MAX);
+  });
+
+  it('listAlwaysOnSkills order is slug-stable across a body-only edit', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    const alpha = await createUserSkill(
+      { userId, name: 'Alpha', slug: 'alpha', body: 'body-alpha' },
+      { db: db as never },
+    );
+    expect(alpha.ok).toBe(true);
+    const beta = await createUserSkill(
+      { userId, name: 'Beta', slug: 'beta', body: 'body-beta' },
+      { db: db as never },
+    );
+    expect(beta.ok).toBe(true);
+    expect(
+      (await setAlwaysOn(userId, alpha.ok ? alpha.value.id : '', true, { db: db as never })).ok,
+    ).toBe(true);
+    expect(
+      (await setAlwaysOn(userId, beta.ok ? beta.value.id : '', true, { db: db as never })).ok,
+    ).toBe(true);
+
+    const before = await listAlwaysOnSkills(userId, { db: db as never });
+    expect(before.ok).toBe(true);
+    if (!before.ok) throw new Error('expected ok');
+    expect(before.value).toEqual(['alpha', 'beta']);
+
+    const deps = { db: db as never };
+    const resolvePreamble = (alwaysOnSlugs: string[]) =>
+      resolveSkillPreamble({
+        userId,
+        command: { type: 'none' },
+        alwaysOnSlugs,
+        userSkills: {
+          skillExistsBySlugs: (uid, slugs) => skillExistsBySlugs(uid, slugs, deps),
+        },
+        listUserSkills: {
+          listUserSkillsBySlugs: (uid, slugs) =>
+            listUserSkillsBySlugs(uid, slugs, deps),
+        },
+      });
+    const preambleBefore = await resolvePreamble(before.value);
+
+    // Body-only edit bumps updatedAt; slug order must not flip (Goal 5).
+    const edited = await updateUserSkillBody(
+      userId,
+      beta.ok ? beta.value.id : '',
+      'body-beta-edited-only',
+      { db: db as never },
+    );
+    expect(edited.ok).toBe(true);
+
+    const after = await listAlwaysOnSkills(userId, { db: db as never });
+    expect(after.ok).toBe(true);
+    if (!after.ok) throw new Error('expected ok');
+    expect(after.value).toEqual(['alpha', 'beta']);
+
+    const preambleAfter = await resolvePreamble(after.value);
+    expect(preambleBefore.preamble).toBe(preambleAfter.preamble);
+    const systemBefore = resolveSystem(
+      { skillsPreamble: preambleBefore.preamble },
+      false,
+    );
+    const systemAfter = resolveSystem(
+      { skillsPreamble: preambleAfter.preamble },
+      false,
+    );
+    expect(systemBefore).toContain('<attached_skills>');
+    expect(systemBefore).toBe(systemAfter);
+    expect(systemBefore.indexOf('alpha —')).toBeLessThan(
+      systemBefore.indexOf('beta —'),
+    );
   });
 
   it('setAlwaysOn returns not_found for a foreign/non-existent skill', async () => {

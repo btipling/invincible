@@ -22,6 +22,7 @@
 import { jsonSchema, tool } from 'ai';
 import { SKILL_FETCH_MAX_RETURN_BYTES, SKILL_FIND_RESULT_MAX } from '../sessionCloudCaps';
 import { SKILL_SLUG_RE } from '../sessionCloudCaps';
+import { buildCatalogLine, flattenCatalogText, truncateUtf8 } from '../tenancy/skillInject';
 
 /** System-prompt addendum shown whenever the skill tools are on the tool surface. */
 export const SKILL_TOOLS_SYSTEM_ADDENDUM =
@@ -72,13 +73,11 @@ export type CreateSkillToolsOptions = {
 function summarize(result: ListSkillsResult): string {
   const val = result.ok ? result.value : [];
   if (val.length === 0) return 'No skills found.';
-  // Slug first so the model can follow up with fetch_skill; summaries only, no body.
+  // Shared with the inject catalog so a stored newline/NEL in name or
+  // description cannot split find_skill into a fake second row.
   return val
     .slice(0, SKILL_FIND_RESULT_MAX)
-    .map(
-      (s) =>
-        `${s.slug} — ${s.name}${s.description ? `: ${s.description}` : ''}`,
-    )
+    .map((s) => buildCatalogLine(s))
     .join('\n');
 }
 
@@ -86,10 +85,26 @@ function summarize(result: ListSkillsResult): string {
 function boundBody(slug: string, body: string): string {
   const len = Buffer.byteLength(body, 'utf8');
   if (len <= SKILL_FETCH_MAX_RETURN_BYTES) return body;
-  const buf = Buffer.from(body, 'utf8');
-  const sliced = buf.subarray(0, SKILL_FETCH_MAX_RETURN_BYTES).toString('utf8');
+  // Prefix-preserving: never split a UTF-8 scalar (CJK at the cap must not
+  // become U+FFFD — fetch_skill is the only body path after catalog inject).
+  const sliced = truncateUtf8(body, SKILL_FETCH_MAX_RETURN_BYTES);
   const marker = `\n…[truncated to ${SKILL_FETCH_MAX_RETURN_BYTES} bytes; full body is ${len} bytes — edit in Settings]`;
   return `${sliced}${marker}`;
+}
+
+/**
+ * Normalize a find_skill query or haystack so a copy of a listed catalog
+ * line still hits. `buildCatalogLine` uses an em-dash and a colon
+ * (`slug — name: desc`) while matching is otherwise flattened spaces;
+ * treating those marks as spaces on both sides makes a full-line or
+ * punctuated `name: desc` copy match. Tokenizers/copy-paste often replace
+ * the em-dash with ASCII ` - `; a hyphen with spaces on both sides is a
+ * separator too. Hyphens inside slugs (`create-plan`) stay intact.
+ */
+function normalizeFindText(s: string): string {
+  return flattenCatalogText(
+    s.replace(/[\u2013\u2014:]+/g, ' ').replace(/\s+-\s+/g, ' '),
+  ).toLowerCase();
 }
 
 export function createSkillTools(opts: CreateSkillToolsOptions) {
@@ -118,14 +133,17 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
       try {
         // Bound identity: any identity the model passes is ignored — we always
         // operate on the route-resolved userId closed over at assembly.
-        const query = (input?.query ?? '').trim().toLowerCase();
+        const query = normalizeFindText(input?.query ?? '');
         const result = await userSkills.listUserSkills(userId);
         if (!result.ok) {
           return `ERROR find_skill: ${result.error}`;
         }
         let matched = query
           ? result.value.filter((s) => {
-              const hay = `${s.slug} ${s.name} ${s.description ?? ''}`.toLowerCase();
+              // Haystack is the listed catalog line with the same punctuation
+              // normalize as the query, so a copy of `slug — name: desc` (or
+              // ASCII `slug - name: desc`) hits.
+              const hay = normalizeFindText(buildCatalogLine(s));
               return hay.includes(query);
             })
           : result.value;
@@ -212,9 +230,13 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
           return `not_found: no skill with slug "${slug}" (user-scoped). No partial body.`;
         }
         const s = result.value;
+        // Same flatten as catalog / find_skill so a stored newline or NEL in
+        // name/description cannot inject a fake === / --- framing block.
+        const name = flattenCatalogText(s.name);
+        const description = flattenCatalogText(s.description);
         return [
           `=== skill: ${s.slug} ===`,
-          `${s.name}${s.description ? ` — ${s.description}` : ''}`,
+          `${name}${description ? ` — ${description}` : ''}`,
           '---',
           boundBody(s.slug, s.body),
           '---',

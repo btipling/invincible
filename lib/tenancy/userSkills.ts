@@ -6,17 +6,19 @@
  *
  * Skills attach per-turn via slash command (`/skill-name`, `/unskill`) as
  * session **staff of work**, NOT identity: only the **slugs** are stored in
- * session `meta.attachedSkills`; their **bodies** are re-resolved from this
- * store every turn (a mid-session edit applies next turn, a deleted skill
- * silently stops attaching). They are never snapshotted into `meta` the way a
- * locked persona snapshot is. `getSkillBySlug` is the server injection seam.
+ * session `meta.attachedSkills`. Happy-path attach existence is a summary
+ * lookup (`listUserSkillsBySlugs`); list fail-open uses `skillExistsBySlugs`
+ * (one membership + one `slug IN`, never 40 serial `skillExistsBySlug` trips).
+ * Never `getSkillBySlug` for attach (that hydrates a body). Bodies ride
+ * on-demand `fetch_skill`. They are never snapshotted into `meta` the way a
+ * locked persona snapshot is. `getSkillBySlug` remains the body-read seam.
  *
  * tenantId is always derived from loadSoleMembership — never client input.
  * Every query filters tenantId + userId so a skill can never leak to another
  * user/tenant, and getSkillBySlug returns null for another-user rows (no
  * existence leak).
  */
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
   userSkills,
   userSkillVersions,
@@ -24,7 +26,12 @@ import {
 } from '../../db';
 import { withConnection, type TenancyConnection } from '../di/withConnection';
 import { loadSoleMembership } from './soleMembership';
-import { SKILL_SLUG_RE as SKILL_SLUG_RE_SRC, SKILL_VERSION_MAX, USER_ALWAYS_ON_SKILLS_MAX } from '../sessionCloudCaps';
+import {
+  HARNESS_SESSION_MAX_ATTACHED_SKILLS,
+  SKILL_SLUG_RE as SKILL_SLUG_RE_SRC,
+  SKILL_VERSION_MAX,
+  USER_ALWAYS_ON_SKILLS_MAX,
+} from '../sessionCloudCaps';
 
 /** Display name limits (mirror personas; generously raised in #514). */
 export const SKILL_NAME_MIN = 1;
@@ -626,6 +633,79 @@ export async function getSkillBySlug(
 }
 
 /**
+ * Batched existence check by slug (catalog fail-open GC / attach). One
+ * membership lookup + one `slug IN (...)` SELECT of `slug` only — never the
+ * body — so a maxed 32 sticky + 8 always-on set is not 40 serial
+ * exists+membership round-trips. Same tenant+user scope and charset
+ * fail-closed as `skillExistsBySlug`: other-user / missing / malformed slugs
+ * are omitted from the present list (no existence leak). Store-down →
+ * unavailable. Empty `slugs` returns [] without querying. The IN list is
+ * sliced to sticky + always-on + one pending attach (existing count caps,
+ * not a new cap).
+ */
+export async function skillExistsBySlugs(
+  userId: string,
+  slugs: readonly string[],
+  deps: UserSkillsDeps = {},
+): Promise<UserSkillsResult<string[]>> {
+  const uid = userId?.trim();
+  if (!uid) return { ok: true, value: [] };
+  const max =
+    HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX + 1;
+  const wanted: string[] = [];
+  for (const raw of slugs) {
+    if (wanted.length >= max) break;
+    const slug = typeof raw === 'string' ? raw.trim() : '';
+    if (!SKILL_SLUG_RE.test(slug)) continue;
+    if (wanted.includes(slug)) continue;
+    wanted.push(slug);
+  }
+  if (wanted.length === 0) return { ok: true, value: [] };
+  try {
+    const tid = await resolveTenantId(uid, deps);
+    if (!tid.ok) return tid;
+
+    return await withDb(deps, async (db) => {
+      const rows = await db
+        .select({ slug: userSkills.slug })
+        .from(userSkills)
+        .where(
+          and(
+            eq(userSkills.userId, uid),
+            eq(userSkills.tenantId, tid.value),
+            inArray(userSkills.slug, wanted),
+          ),
+        );
+      return { ok: true as const, value: rows.map((r) => r.slug) };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'user_skills unavailable' };
+    }
+    return { ok: false, code: 'unavailable', error: 'could not check skills' };
+  }
+}
+
+/**
+ * Lightweight existence check by slug (catalog fail-open GC / attach). SELECTs
+ * only `slug` — never the body column — so a maxed 32×4 MiB sticky set cannot
+ * hydrate playbooks just to prove a row is still there. Same tenant+user scope
+ * and charset fail-closed as `getSkillBySlug`: other-user / missing / malformed
+ * → `{ ok: true, value: false }` (no existence leak). Store-down → unavailable.
+ * Delegates to `skillExistsBySlugs` so a single lookup is one membership + IN.
+ */
+export async function skillExistsBySlug(
+  userId: string,
+  slug: string,
+  deps: UserSkillsDeps = {},
+): Promise<UserSkillsResult<boolean>> {
+  const batched = await skillExistsBySlugs(userId, [slug], deps);
+  if (!batched.ok) return batched;
+  const s = typeof slug === 'string' ? slug.trim() : '';
+  return { ok: true as const, value: s.length > 0 && batched.value.includes(s) };
+}
+
+/**
  * Scoped single row including body, resolved by id (server-side injection seam
  * for the `meta_skill_str_replace` patch tool — see plan for #600). Returns
  * null for another-user/tenant rows (no existence leak). Mirrors `getPersonaById`
@@ -1016,7 +1096,10 @@ export async function setAlwaysOn(
 /**
  * List slugs of the user's always-on skills (plan #720 phase 2).
  * Returns only the slugs of rows with `is_always_on = true`, ordered by
- * updatedAt desc (deterministic for the inject merge).
+ * slug (stable across body/name/summary writes so a mid-session playbook
+ * edit cannot rewrite the catalog prefix — plan #931 Goal 5). Caps on
+ * read at `USER_ALWAYS_ON_SKILLS_MAX` so a concurrent `setAlwaysOn` race
+ * cannot overflow the catalog IN slice and GC sticky as a false delete.
  */
 export async function listAlwaysOnSkills(
   userId: string,
@@ -1039,7 +1122,8 @@ export async function listAlwaysOnSkills(
             eq(userSkills.isAlwaysOn, true),
           ),
         )
-        .orderBy(desc(userSkills.updatedAt));
+        .orderBy(asc(userSkills.slug))
+        .limit(USER_ALWAYS_ON_SKILLS_MAX);
       return { ok: true as const, value: rows.map((r) => r.slug) };
     });
   } catch (err) {
@@ -1050,7 +1134,67 @@ export async function listAlwaysOnSkills(
   }
 }
 
-/** List summaries (no body) for discovery. */
+/**
+ * Candidate-scoped summary list (no body) for catalog inject.
+ * A turn passes sticky ∪ always-on ∪ pending-attach slugs so an unbounded
+ * Settings library is not full-scanned every model round. Empty `slugs`
+ * returns [] without querying. Invalid slugs are dropped. The IN list is
+ * sliced to sticky + always-on + one pending attach (existing count caps,
+ * not a new cap). Callers must put the pending attach first so the slice
+ * cannot drop it ahead of sticky/always-on.
+ */
+export async function listUserSkillsBySlugs(
+  userId: string,
+  slugs: readonly string[],
+  deps: UserSkillsDeps = {},
+): Promise<UserSkillsResult<UserSkillSummary[]>> {
+  const uid = userId?.trim();
+  if (!uid) return { ok: true, value: [] };
+  const max =
+    HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX + 1;
+  const wanted: string[] = [];
+  for (const raw of slugs) {
+    if (wanted.length >= max) break;
+    const slug = typeof raw === 'string' ? raw.trim() : '';
+    if (!SKILL_SLUG_RE.test(slug)) continue;
+    if (wanted.includes(slug)) continue;
+    wanted.push(slug);
+  }
+  if (wanted.length === 0) return { ok: true, value: [] };
+  try {
+    const tid = await resolveTenantId(uid, deps);
+    if (!tid.ok) return tid;
+
+    return await withDb(deps, async (db) => {
+      const rows = await db
+        .select({
+          id: userSkills.id,
+          name: userSkills.name,
+          slug: userSkills.slug,
+          description: userSkills.description,
+          isAlwaysOn: userSkills.isAlwaysOn,
+          updatedAt: userSkills.updatedAt,
+        })
+        .from(userSkills)
+        .where(
+          and(
+            eq(userSkills.userId, uid),
+            eq(userSkills.tenantId, tid.value),
+            inArray(userSkills.slug, wanted),
+          ),
+        );
+      rows.sort((a, b) => a.name.localeCompare(b.name));
+      return { ok: true as const, value: rows.map(toSummary) };
+    });
+  } catch (err) {
+    if (isUndefinedTable(err)) {
+      return { ok: false, code: 'unavailable', error: 'user_skills unavailable' };
+    }
+    return { ok: false, code: 'unavailable', error: 'could not list skills' };
+  }
+}
+
+/** List summaries (no body) for discovery (`find_skill` / Settings). */
 export async function listUserSkills(
   userId: string,
   deps: UserSkillsDeps = {},
@@ -1103,6 +1247,13 @@ export function createUserSkills(deps: UserSkillsDeps = {}) {
       deleteUserSkill(userId, id, { ...deps, ...o }),
     getSkillBySlug: (userId: string, slug: string, o?: UserSkillsDeps) =>
       getSkillBySlug(userId, slug, { ...deps, ...o }),
+    skillExistsBySlug: (userId: string, slug: string, o?: UserSkillsDeps) =>
+      skillExistsBySlug(userId, slug, { ...deps, ...o }),
+    skillExistsBySlugs: (
+      userId: string,
+      slugs: readonly string[],
+      o?: UserSkillsDeps,
+    ) => skillExistsBySlugs(userId, slugs, { ...deps, ...o }),
     getSkillById: (userId: string, id: string, o?: UserSkillsDeps) =>
       getSkillById(userId, id, { ...deps, ...o }),
     listSkillVersions: (userId: string, skillId: string, o?: UserSkillsDeps) =>
@@ -1113,6 +1264,11 @@ export function createUserSkills(deps: UserSkillsDeps = {}) {
       rollbackSkill(userId, skillId, versionId, { ...deps, ...o }),
     listUserSkills: (userId: string, o?: UserSkillsDeps) =>
       listUserSkills(userId, { ...deps, ...o }),
+    listUserSkillsBySlugs: (
+      userId: string,
+      slugs: readonly string[],
+      o?: UserSkillsDeps,
+    ) => listUserSkillsBySlugs(userId, slugs, { ...deps, ...o }),
     setAlwaysOn: (userId: string, id: string, value: boolean, o?: UserSkillsDeps) =>
       setAlwaysOn(userId, id, value, { ...deps, ...o }),
     listAlwaysOnSkills: (userId: string, o?: UserSkillsDeps) =>

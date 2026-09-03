@@ -2508,12 +2508,17 @@ describe('step wrappers (matrix 4–7)', () => {
     vi.doMock('../tenancy/personaInject', () => ({
       resolvePersonaPreamble: async () => 'Always use tabs.',
     }));
-    vi.doMock('../tenancy/skillInject', () => ({
-      resolveSkillPreamble: async () => ({
-        preamble: '### Skill attached: create-plan\nPlan in YAML.',
+    const resolveSkillPreamble = vi.fn(
+      async (_input: { listUserSkills: unknown }) => ({
+        // Catalog inject (plan #557/#931): slug + name + description lines.
+        preamble: 'create-plan — Create plan: writes a plan.',
         attachedSlugs: ['create-plan'],
+        attachedSkills: '["create-plan"]',
         events: [],
       }),
+    );
+    vi.doMock('../tenancy/skillInject', () => ({
+      resolveSkillPreamble,
     }));
     const { DEFAULT_AGENT_SYSTEM } = await import('../agent/agentSystem');
     const mod = await import('./modelGenerateStep');
@@ -2528,7 +2533,11 @@ describe('step wrappers (matrix 4–7)', () => {
     expect(argDeps.system).toContain('<persona_standing_orders>');
     expect(argDeps.system).toContain('Always use tabs.');
     expect(argDeps.system).toContain('<attached_skills>');
-    expect(argDeps.system).toContain('### Skill attached: create-plan');
+    expect(argDeps.system).toContain('create-plan — Create plan: writes a plan.');
+    // Durable catalog seam is a required field — dropping it is a type error,
+    // not a silent body-block revert. This assertion still locks the call.
+    expect(resolveSkillPreamble).toHaveBeenCalled();
+    expect(resolveSkillPreamble.mock.calls[0]?.[0]?.listUserSkills).toBeTruthy();
     vi.doUnmock('../agent/generateOneRound');
     vi.doUnmock('../di/index');
     vi.doUnmock('./assembleDurableToolWorld');
