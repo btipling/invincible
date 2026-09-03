@@ -233,13 +233,16 @@ read-only `find_skill` / `fetch_skill`, which stay unchanged.
 - **Size & token budget — store cap vs catalog inject:** a body is stored up to
   the 4 MiB `SKILL_BODY_MAX_BYTES` cap, but what is **injected into the model's
   system context every turn** is a bounded **catalog** of one line per
-  attached/always-on skill (slug + name + description), not the bodies. The
-  catalog is bounded by the `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` (256 KiB)
-  inject **ceiling** as a safety rail — a catalog of ≤ 32 sticky + 8 always-on
-  slugs is a few KiB, far under the ceiling, so the value is unchanged and no
-  cap was raised or lowered. Because no body is injected at attach time, an
-  attach is no longer size-rejected: an over-256 KiB skill can attach and be
-  catalog-listed, and its body is only ever returned by `fetch_skill` /
+  attached/always-on skill (slug + name + description), not the bodies.
+  Name/description whitespace is flattened so each skill is exactly one line.
+  The catalog is safety-railed by the unchanged **256 KiB**
+  `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` inject ceiling: a maxed CJK
+  name+description library of 32 sticky + 8 always-on can exceed that ceiling,
+  so each line is UTF-8-truncated to a per-line budget derived from those
+  count caps — every resolvable slug still appears (no stored-but-never-listed
+  skip). No cap was raised or lowered. Because no body is injected at attach
+  time, an attach is no longer size-rejected: an over-256 KiB skill can attach
+  and be catalog-listed, and its body is only ever returned by `fetch_skill` /
   `meta_skill_read` truncated to the 256 KiB `SKILL_FETCH_MAX_RETURN_BYTES`
   model-return cap. Keep bodies tight anyway — the store cap and the fetch cap
   both still apply.

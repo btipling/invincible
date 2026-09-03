@@ -73,9 +73,12 @@ export const HARNESS_SESSION_MAX_ATTACHED_SKILLS = 32;
  * is a bounded **catalog** (one line per candidate skill — slug + name +
  * description, built from `listUserSkills` summaries; bodies ride the
  * on-demand `fetch_skill` tool), so this value is now a **safety rail over the
- * catalog**, not the default inject — a catalog of ≤ 32 sticky +
- * ≤ 8 always-on slugs is a few KiB, far under 256 KiB. Kept UNCHANGED as the
- * inject ceiling (not raised, not lowered — no human cap-gate triggered).
+ * catalog**, not the default inject. A typical 32+8 one-liner catalog is a
+ * few KiB; a maxed CJK name+description library can exceed 256 KiB, so
+ * `skillInject` flattens each entry to one line and UTF-8-truncates to a
+ * per-line budget derived from those count caps — every resolvable slug still
+ * appears. Kept UNCHANGED as the inject ceiling (not raised, not lowered —
+ * no human cap-gate triggered).
  *
  * This deliberately differs from the **store** cap (`SKILL_BODY_MAX_BYTES`, 4 MiB):
  * the ON-DISK body may be huge (a skill is staff-of-work, stored once). Because
@@ -154,10 +157,11 @@ export const PERSONA_VERSION_MAX = 100;
 /**
  * Max number of skills a user may set as always-on (plan #720 phase 2).
  * Always-on skills auto-attach to every new session regardless of persona.
- * NEW generous cap — 8 catalog lines (name ≤ 200, description ≤ 2000) is a
- * few KiB in the per-turn catalog inject, far under the 256 KiB
- * `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` ceiling (a safety rail over the
- * catalog, not a body-era 8 × 256 KiB inject budget). No existing cap changed.
+ * NEW generous cap — 8 catalog lines (name ≤ 200, description ≤ 2000). A
+ * maxed CJK library of 32 sticky + 8 always-on can exceed the 256 KiB
+ * `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` ceiling; catalog assembly
+ * truncates per line so every resolvable slug still appears. No existing
+ * cap changed.
  */
 export const USER_ALWAYS_ON_SKILLS_MAX = 8;
 

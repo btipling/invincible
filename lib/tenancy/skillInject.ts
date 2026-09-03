@@ -56,7 +56,10 @@
  * (plan #527) instead of being double-paid inside the stable system-prefix
  * block every turn. `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` (256 KiB) stays
  * as the inject **ceiling** (a safety rail over the catalog, never the default
- * inject); the catalog for ≤ 32 sticky + ≤ 8 always-on slugs is a few KiB.
+ * inject). A maxed 32 sticky + 8 always-on catalog of CJK name+description
+ * lines can exceed 256 KiB, so each line is flattened (one line per skill)
+ * and UTF-8-truncated to a per-line budget derived from those count caps —
+ * every resolvable slug still appears; the skip-from-preamble path is gone.
  * Because no body is injected at attach time any more, the former attach-time
  * `too_large` / `budget` body-budget rejection is **retired** for the catalog
  * path: an over-256 KiB skill can now attach and be catalog-listed; its body
@@ -75,7 +78,9 @@ import type {
 } from '../sessions/sessionStore';
 import {
   HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES,
+  HARNESS_SESSION_MAX_ATTACHED_SKILLS,
   SKILL_SLUG_RE,
+  USER_ALWAYS_ON_SKILLS_MAX,
   parseAttachedSkills,
   serializeAttachedSkills,
 } from '../sessionCloudCaps';
@@ -215,17 +220,53 @@ export function buildSkillBlock(slug: string, body: string): string {
  * One catalog line: `` `<slug>` — <name>: <description> `` — the same shape as
  * `find_skill`'s summary line in `lib/agent/skillTools.ts` (slug first so the
  * model can follow up with `fetch_skill`). Summaries only — never a body.
+ *
+ * Name and description are flattened to a single line (`\s+` → one space) so a
+ * legal stored description cannot split the catalog into extra fake entries.
  */
 export function buildCatalogLine(entry: {
   slug: string;
   name: string;
   description: string;
 }): string {
-  return `\`${entry.slug}\` — ${entry.name}${entry.description ? `: ${entry.description}` : ''}`;
+  const name = flattenCatalogText(entry.name);
+  const description = flattenCatalogText(entry.description);
+  return `\`${entry.slug}\` — ${name}${description ? `: ${description}` : ''}`;
+}
+
+/** Collapse whitespace so each catalog entry is exactly one line. */
+export function flattenCatalogText(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
 }
 
 function byteLength(s: string): number {
   return new TextEncoder().encode(s).length;
+}
+
+/**
+ * Per-line UTF-8 budget so a full sticky+always-on catalog cannot skip a
+ * resolvable slug. Derived from existing count caps + the inject ceiling
+ * (join `\n\n` reserved) — not a new cap. 40 × max CJK name+description
+ * lines overflow 256 KiB; truncating each line to this budget keeps every
+ * slug visible and the joined preamble under the ceiling.
+ */
+export function catalogLineMaxBytes(): number {
+  const slots =
+    HARNESS_SESSION_MAX_ATTACHED_SKILLS + USER_ALWAYS_ON_SKILLS_MAX;
+  const joinOverhead = 2 * Math.max(0, slots - 1); // `\n\n` between lines
+  return Math.floor(
+    (HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES - joinOverhead) / slots,
+  );
+}
+
+/** Prefix-preserving UTF-8 truncate (never splits a code point). */
+export function truncateUtf8(s: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '';
+  const buf = new TextEncoder().encode(s);
+  if (buf.length <= maxBytes) return s;
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  return new TextDecoder().decode(buf.subarray(0, end));
 }
 
 /**
@@ -247,9 +288,11 @@ function byteLength(s: string): number {
  * candidate set is persisted and returned** so an in-turn `/skill-name` /
  * `/unskill` is not undone by host leave-untouched, and so `[]` is only ever
  * a real empty set (host detach-all). Deleted slugs are not dropped on that
- * path (we could not re-resolve). The catalog is bounded by the
- * `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` ceiling as a safety rail (a
- * catalog of ≤ 32 + 8 entries is a few KiB — far under 256 KiB).
+ * path (we could not re-resolve). Each catalog line is flattened to one line
+ * and UTF-8-truncated to a per-line budget derived from the existing 32+8
+ * count caps so a maxed CJK library cannot skip a resolvable slug off the
+ * preamble while keeping it sticky (the retired silent-lie class). The joined
+ * catalog stays under `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`.
  *
  * Sticky re-resolves are SILENT (no event). An **attach** emits exactly one
  * event: `ok:true` when the skill is catalog-listable (or existence-confirmed
@@ -349,7 +392,6 @@ export async function resolveSkillPreamble(
   //    (`SKILL_BODY_MAX_BYTES`, 4 MiB) still bounds storage.
   const finalSlugs: string[] = [];
   const blocks: string[] = [];
-  let used = 0;
   let summaries: { slug: string; name: string; description: string }[] = [];
   let storeError = false;
   try {
@@ -401,17 +443,17 @@ export async function resolveSkillPreamble(
       }
       pendingAttach = null;
     }
+    const lineMax = catalogLineMaxBytes();
     for (const slug of set) {
       const summary = bySlug.get(slug);
       if (!summary) continue; // deleted/stale slug silently drops from sticky
       finalSlugs.push(slug); // resolvable candidate slug stays attached
-      const line = buildCatalogLine(summary);
-      const bytes = byteLength(line);
-      if (used + bytes > HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES) {
-        continue; // inject-ceiling safety rail — unreachable at ≤ 32 + 8 entries
+      let line = buildCatalogLine(summary);
+      if (byteLength(line) > lineMax) {
+        line = truncateUtf8(line, lineMax);
       }
+      if (!line) line = `\`${slug}\``;
       blocks.push(line);
-      used += bytes;
     }
   }
 
