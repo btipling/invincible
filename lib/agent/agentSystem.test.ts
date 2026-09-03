@@ -99,6 +99,10 @@ describe('resolveSystem', () => {
     expect(system).toContain('Their BODIES ARE NOT INJECTED');
     expect(system).toContain('fetch_skill');
     expect(system).toContain('find_skill');
+    // Body edits do not auto-apply next turn (they are not in this block).
+    expect(system).not.toContain('an edit to a skill applies on the next turn');
+    expect(system).toContain('a body edit is not in this block');
+    expect(system).toContain('call `fetch_skill` again');
     // No slash-command misattribution of the whole set.
     expect(system).not.toContain('via a `/skill-name` slash command');
   });
