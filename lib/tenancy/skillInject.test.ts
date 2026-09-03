@@ -385,7 +385,7 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     expect(res.preamble).toContain('b — B: second');
   });
 
-  it('store listUserSkills error → fail-open: no catalog, command-applied set persisted (not omit, not detach-all)', async () => {
+  it('store listUserSkills error → fail-open: slug-only catalog, command-applied set persisted (not omit, not detach-all)', async () => {
     for (const mode of ['ok-false', 'throw'] as const) {
       const store = new FakeStore(makeEnvelope({ attachedSkills: '["kept"]' }));
       const res = await resolveSkillPreamble({
@@ -396,7 +396,9 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
         userSkills: readerOf({ kept: { body: 'K' } }),
         listUserSkills: failingLister(mode),
       });
-      expect(res.preamble).toBeUndefined();
+      // Slug-only catalog so the model still sees identity this turn.
+      expect(res.preamble).toBe('kept');
+      expect(res.preamble).not.toContain(' — ');
       // Command-applied set is returned and persisted so a later attach/detach
       // on this path is honored. `[]` would be host detach-all; omit would
       // undo an in-turn command. `["kept"]` is the pre-command set here.
@@ -407,7 +409,7 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     }
   });
 
-  it('store listUserSkills error + /skill-name attach persists the new slug (events ok:true is honest)', async () => {
+  it('store listUserSkills error + /skill-name attach: ok:true still lists the slug in the preamble', async () => {
     const store = new FakeStore(makeEnvelope({ attachedSkills: '["kept"]' }));
     const res = await resolveSkillPreamble({
       userId: KEY.userId,
@@ -420,16 +422,18 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
       }),
       listUserSkills: failingLister('ok-false'),
     });
-    expect(res.preamble).toBeUndefined();
     expect(readEventActions(res)).toEqual([
       { action: 'attach', slug: 'create-plan', ok: true },
     ]);
+    // Strip-/slug is safe only if the model still sees the attached slug.
+    expect(res.preamble).toBe('kept\n\ncreate-plan');
+    expect(res.preamble).not.toContain('PLAN BODY');
     expect(res.attachedSlugs).toEqual(['kept', 'create-plan']);
     expect(res.attachedSkills).toBe('["kept","create-plan"]');
     expect(store.upserts[0]!.meta?.attachedSkills).toBe('["kept","create-plan"]');
   });
 
-  it('store listUserSkills error + /unskill persists the removal (events ok:true is honest)', async () => {
+  it('store listUserSkills error + /unskill persists the removal (remaining slug still catalogued)', async () => {
     const store = new FakeStore(makeEnvelope({ attachedSkills: '["kept","other"]' }));
     const res = await resolveSkillPreamble({
       userId: KEY.userId,
@@ -439,10 +443,10 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
       userSkills: readerOf({ kept: { body: 'K' }, other: { body: 'O' } }),
       listUserSkills: failingLister('throw'),
     });
-    expect(res.preamble).toBeUndefined();
     expect(readEventActions(res)).toEqual([
       { action: 'detach', slug: 'kept', ok: true },
     ]);
+    expect(res.preamble).toBe('other');
     expect(res.attachedSlugs).toEqual(['other']);
     expect(res.attachedSkills).toBe('["other"]');
     expect(store.upserts[0]!.meta?.attachedSkills).toBe('["other"]');
@@ -550,6 +554,20 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     });
     expect(res.preamble).toBeUndefined();
     expect(res.attachedSlugs).toEqual([]);
+  });
+
+  it('store listUserSkills error + always-on still emits a slug-only catalog (not empty preamble)', async () => {
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'none' },
+      alwaysOnSlugs: ['always-slug'],
+      userSkills: readerOf({ 'always-slug': { body: 'B' } }),
+      listUserSkills: failingLister('ok-false'),
+    });
+    // Durable rounds would discard an empty preamble; keep the slug this turn.
+    expect(res.preamble).toBe('always-slug');
+    expect(res.attachedSlugs).toEqual(['always-slug']);
+    expect(res.attachedSkills).toBe('[]');
   });
 
   it('malformed stored attachedSkills fails closed (no sticky, fresh attach still works)', async () => {

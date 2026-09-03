@@ -29,13 +29,15 @@
  *   - store down OR no session key available → fail-open: the attach still
  *     resolves THIS turn, only the sticky `meta.attachedSkills` persist is
  *     skipped when the *envelope* is unavailable (same as persona). A catalog
- *     `listUserSkills` failure is also fail-open for the **preamble** (no
- *     catalog block, the round still runs with the base system) but MUST
- *     still persist and return the **command-applied** sticky set: omit/`[]`
- *     would either drop an in-turn `/skill-name` / `/unskill` (omit = host
- *     leave-untouched restores the pre-command set while events already said
- *     `ok: true`) or wipe the session (`[]` = host detach-all). Returning the
- *     in-memory `set` cannot be detach-all unless that set is actually empty.
+ *     `listUserSkills` failure is also fail-open for the **full** catalog
+ *     (no name/description lines) but MUST still emit a **slug-only**
+ *     catalog from the in-memory set so strip-`/slug` is safe, plus persist
+ *     and return the **command-applied** sticky set: omit/`[]` would either
+ *     drop an in-turn `/skill-name` / `/unskill` (omit = host leave-untouched
+ *     restores the pre-command set while events already said `ok: true`) or
+ *     wipe the session (`[]` = host detach-all). Returning the in-memory
+ *     `set` cannot be detach-all unless that set is actually empty. Never
+ *     paint attach `ok:true` with an empty catalog this turn.
  *   - a malformed stored `attachedSkills` fails closed at read (defense in
  *     depth even beyond the write-side `validateMetaFields` branch).
  *
@@ -291,16 +293,18 @@ export function truncateUtf8(s: string, maxBytes: number): string {
  * built from `listUserSkills` summaries only — bodies are pulled on demand
  * via `fetch_skill`. A sticky/always-on slug whose skill was deleted has no
  * summary and silently drops from the catalog (same as it silently stopped
- * body-injecting). A store error → fail-open for the **preamble** (no catalog
- * block; the round still runs with the base system) but the **command-applied
- * candidate set is persisted and returned** so an in-turn `/skill-name` /
- * `/unskill` is not undone by host leave-untouched, and so `[]` is only ever
- * a real empty set (host detach-all). Deleted slugs are not dropped on that
- * path (we could not re-resolve). Each catalog line is flattened to one line
- * and UTF-8-truncated to a per-line budget derived from the existing 32+8
- * count caps so a maxed CJK library cannot skip a resolvable slug off the
- * preamble while keeping it sticky (the retired silent-lie class). The joined
- * catalog stays under `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`.
+ * body-injecting). A store error → fail-open for the **full** catalog (no
+ * name/description) but still emit a **slug-only** catalog from the
+ * in-memory set so the model keeps identity this turn after strip-`/slug`.
+ * The **command-applied candidate set is persisted and returned** so an
+ * in-turn `/skill-name` / `/unskill` is not undone by host leave-untouched,
+ * and so `[]` is only ever a real empty set (host detach-all). Deleted slugs
+ * are not dropped on that path (we could not re-resolve). Each catalog line
+ * is flattened to one line and UTF-8-truncated to a per-line budget derived
+ * from the existing 32+8 count caps so a maxed CJK library cannot skip a
+ * resolvable slug off the preamble while keeping it sticky (the retired
+ * silent-lie class). The joined catalog stays under
+ * `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`.
  *
  * Sticky re-resolves are SILENT (no event). An **attach** emits exactly one
  * event: `ok:true` when the skill is catalog-listable (or existence-confirmed
@@ -414,10 +418,12 @@ export async function resolveSkillPreamble(
   }
 
   if (storeError) {
-    // Fail-open for the preamble (no catalog this turn). Honor the
-    // command-applied set: confirm a pending attach via getSkillBySlug
+    // Fail-open for the full catalog (no name/description this turn). Honor
+    // the command-applied set: confirm a pending attach via getSkillBySlug
     // (existence only), do not drop deleted slugs (can't re-resolve), persist
-    // and return the in-memory set. `[]` here is a real empty sticky set.
+    // and return the in-memory set. Still emit a slug-only catalog so
+    // strip-/slug is safe — attach ok:true never pairs with an empty
+    // preamble while the set is non-empty. `[]` here is a real empty set.
     if (pendingAttach) {
       const res = await readSkillBody(userId, pendingAttach.slug, userSkills);
       if (!res.value) {
@@ -433,7 +439,11 @@ export async function resolveSkillPreamble(
       }
       pendingAttach = null;
     }
-    for (const slug of set) finalSlugs.push(slug);
+    for (const slug of set) {
+      finalSlugs.push(slug);
+      // Unquoted slug token — same fetch_skill-safe shape as catalog lines.
+      blocks.push(slug);
+    }
   } else {
     const bySlug = new Map(summaries.map((s) => [s.slug, s]));
     if (pendingAttach) {

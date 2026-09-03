@@ -1990,8 +1990,10 @@ describe('POST /api/agent', () => {
         error: 'down',
       })),
     };
+    type RunArg = { skillsPreamble?: string; prompt?: string };
+    const runAgent = vi.fn(async (_arg: RunArg) => ({ text: 'ok', toolTrace: [] }));
     vi.doMock('../../../lib/agent/runAgent', () => ({
-      runAgent: vi.fn(async () => ({ text: 'ok', toolTrace: [] })),
+      runAgent,
       runAgentStream: vi.fn(),
     }));
 
@@ -2012,6 +2014,9 @@ describe('POST /api/agent', () => {
     const parsed = parseJsonAgentBody(res, body);
     expect(parsed.ok).toBe(true);
     if (parsed.ok) expect(parsed.attachedSlugs).toEqual(['create-plan']);
+    // Fail-open still injects a slug-only catalog so the model sees identity.
+    const arg = runAgent.mock.calls[0]?.[0] as RunArg;
+    expect(arg.skillsPreamble).toContain('create-plan');
   });
 
   it('catalog listUserSkills fail-open still carries attachedSkills on 502 (no host wipe)', async () => {
@@ -2117,11 +2122,18 @@ describe('POST /api/agent', () => {
         error: 'down',
       })),
     };
+    type StreamArg = { skillsPreamble?: string; prompt?: string };
+    const runAgentStream = vi.fn(
+      async (
+        _p: StreamArg,
+        handlers: { onEvent: (e: unknown) => Promise<void> },
+      ) => {
+        await handlers.onEvent({ type: 'done', text: 'ok' });
+      },
+    );
     vi.doMock('../../../lib/agent/runAgent', () => ({
       runAgent: vi.fn(),
-      runAgentStream: vi.fn(async (_p, handlers: { onEvent: (e: unknown) => Promise<void> }) => {
-        await handlers.onEvent({ type: 'done', text: 'ok' });
-      }),
+      runAgentStream,
     }));
 
     const { POST } = await loadRoute();
@@ -2155,6 +2167,11 @@ describe('POST /api/agent', () => {
     // `[]` would fold detach-all; omit would drop the in-turn attach.
     expect(skillEv?.attachedSlugs).toEqual(['kept', 'create-plan']);
     expect(fakeSessionStore.upsertEnvelope).toHaveBeenCalled();
+    // Events said attached: the model must still see the slug after strip-/slug.
+    const arg = runAgentStream.mock.calls[0]?.[0] as StreamArg;
+    expect(arg.prompt).toBe('please scaffold a plan');
+    expect(arg.skillsPreamble).toContain('create-plan');
+    expect(arg.skillsPreamble).toContain('kept');
   });
 
   it('seeds resolve from the envelope activeSandboxId when a sessionId is present, no body sandboxId (blocker B1 A1)', async () => {
