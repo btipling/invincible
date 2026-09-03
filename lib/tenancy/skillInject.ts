@@ -29,7 +29,7 @@
  *   - store down OR no session key available → fail-open: the attach still
  *     resolves THIS turn, only the sticky `meta.attachedSkills` persist is
  *     skipped when the *envelope* is unavailable (same as persona). A catalog
- *     `listUserSkills` failure is also fail-open for the **full** catalog
+ *     `listUserSkillsBySlugs` failure is also fail-open for the **full** catalog
  *     (no name/description lines) but MUST still emit a **slug-only**
  *     catalog from the in-memory set so strip-`/slug` is safe, plus persist
  *     and return the **command-applied** sticky set: omit/`[]` would either
@@ -139,13 +139,15 @@ export type SkillExistsReader = {
 };
 
 /**
- * Skill-summary list seam for the catalog. Mirrors the read-only discovery
- * surface (`listUserSkills` → summaries only, no body). Fail-open on error
- * for the preamble; the command-applied sticky set is still returned.
+ * Skill-summary list seam for the catalog. Candidate-scoped (`slug IN`) so a
+ * turn does not full-scan an unbounded Settings library. Same summary
+ * projection as `listUserSkills` (no body). Fail-open on error for the
+ * preamble; the command-applied sticky set is still returned.
  */
 export type SkillSummaryLister = {
-  listUserSkills(
+  listUserSkillsBySlugs(
     userId: string,
+    slugs: readonly string[],
   ): Promise<
     | { ok: true; value: { slug: string; name: string; description: string }[] }
     | { ok: false; code: string; error: string }
@@ -188,7 +190,7 @@ export type ResolveSkillCommandInput = {
   userSkills: SkillExistsReader;
   /**
    * Skill-summary lister (plan #557 / #931). REQUIRED — the inject is a bounded
-   * CATALOG built from `listUserSkills` summaries (no bodies). Omitting this
+   * CATALOG built from candidate-scoped summaries (no bodies). Omitting this
    * used to silently select the legacy greedy body-block inject (up to 256 KiB
    * of playbooks back in the stable prefix); that fallback is gone.
    */
@@ -294,7 +296,7 @@ export function truncateUtf8(s: string, maxBytes: number): string {
  * **Catalog inject (plan #557 / #931):** the preamble is a bounded CATALOG of
  * the candidate set (sticky ∪ always-on, exactly the slugs that used to be
  * body-injected): one line per skill (slug + name + one-line description),
- * built from `listUserSkills` summaries only — bodies are pulled on demand
+ * built from `listUserSkillsBySlugs` summaries only — bodies are pulled on demand
  * via `fetch_skill`. A sticky/always-on slug whose skill was deleted has no
  * summary and silently drops from the catalog (same as it silently stopped
  * body-injecting). A store error → fail-open for the **full** catalog (no
@@ -400,19 +402,28 @@ export async function resolveSkillPreamble(
     }
   }
 
-  // 3. List summaries, then commit a pending attach + build the catalog.
-  //    The former `too_large` / `budget` attach-time body-budget rejection is
-  //    RETIRED (plan #557 / #931): no body is injected any more, so a 4 MiB
-  //    stored body is no longer a prompt-size hazard at attach time — the
-  //    slug joins the catalog and the body is only ever fetched on demand
-  //    (truncated to the 256 KiB `fetch_skill` return cap). The store cap
-  //    (`SKILL_BODY_MAX_BYTES`, 4 MiB) still bounds storage.
+  // 3. List candidate summaries, then commit a pending attach + build the
+  //    catalog. Candidate-scoped (`slug IN`) so this turn does not full-scan
+  //    an unbounded Settings library. The former `too_large` / `budget`
+  //    attach-time body-budget rejection is RETIRED (plan #557 / #931): no
+  //    body is injected any more, so a 4 MiB stored body is no longer a
+  //    prompt-size hazard at attach time — the slug joins the catalog and the
+  //    body is only ever fetched on demand (truncated to the 256 KiB
+  //    `fetch_skill` return cap). The store cap (`SKILL_BODY_MAX_BYTES`, 4 MiB)
+  //    still bounds storage.
   const finalSlugs: string[] = [];
   const blocks: string[] = [];
   let summaries: { slug: string; name: string; description: string }[] = [];
   let storeError = false;
+  const candidateSlugs: string[] = [...set];
+  if (pendingAttach && !candidateSlugs.includes(pendingAttach.slug)) {
+    candidateSlugs.push(pendingAttach.slug);
+  }
   try {
-    const listed = await listUserSkills.listUserSkills(userId);
+    const listed = await listUserSkills.listUserSkillsBySlugs(
+      userId,
+      candidateSlugs,
+    );
     if (listed.ok) {
       summaries = listed.value;
     } else {

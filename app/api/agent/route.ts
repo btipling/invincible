@@ -323,9 +323,8 @@ export async function POST(req: Request): Promise<Response> {
             command: skillCommand,
             userSkills: services.userSkills,
             // Catalog seam (plan #557/#931): build the inject from
-            // `listUserSkills` summaries (no bodies). The store object carries
-            // both methods; the structural `listUserSkills` member satisfies
-            // the `SkillSummaryLister` seam.
+            // candidate-scoped summaries (no bodies). The store object carries
+            // `listUserSkillsBySlugs`; that member satisfies SkillSummaryLister.
             listUserSkills: services.userSkills,
             alwaysOnSlugs,
             ...(sessionStore && parsed.sessionId

@@ -99,9 +99,11 @@ export const HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES = 256 * 1024;
  * inject-budget discipline (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`): the
  * ON-DISK skill body may be large (stored once, staff-of-work), but what crosses
  * the model wire per tool call is capped — a longer body is returned truncated
- * with an explicit `{ truncated: true, byteLength, slug }` marker, never
- * silently dropped. The full body always stays server-side (editable in
- * Settings); these tools never write a body to session/meta.
+ * with a prose marker (`…[truncated to N bytes; full body is M bytes — edit in
+ * Settings]`), never silently dropped. The untruncated stored body stays
+ * editable in Settings; the truncated slice still reaches the client as a
+ * `tool_result` preview → `tool_run` row. These tools never write a body to
+ * session/meta.
  */
 export const SKILL_FIND_RESULT_MAX = 20;
 export const SKILL_FETCH_MAX_RETURN_BYTES = 256 * 1024;

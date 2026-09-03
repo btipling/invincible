@@ -1706,6 +1706,18 @@ describe('POST /api/agent', () => {
           },
         ],
       })),
+      listUserSkillsBySlugs: vi.fn(async () => ({
+        ok: true as const,
+        value: [
+          {
+            id: 's1',
+            name: 'Create plan',
+            slug: 'create-plan',
+            description: 'writes a plan issue',
+            updatedAt: new Date(0),
+          },
+        ],
+      })),
     };
     type RunArg = { skillsPreamble?: string; prompt?: string };
     const runAgent = vi.fn(async (_arg: RunArg) => ({ text: 'ok', toolTrace: [] }));
@@ -1754,6 +1766,18 @@ describe('POST /api/agent', () => {
     process.env.AI_GATEWAY_API_KEY = 'gw-key';
     servicesState.userSkills = {
       listUserSkills: vi.fn(async () => ({
+        ok: true as const,
+        value: [
+          {
+            id: 's1',
+            name: 'Create plan',
+            slug: 'create-plan',
+            description: 'writes a plan issue',
+            updatedAt: new Date(0),
+          },
+        ],
+      })),
+      listUserSkillsBySlugs: vi.fn(async () => ({
         ok: true as const,
         value: [
           {
@@ -1851,6 +1875,13 @@ describe('POST /api/agent', () => {
           { id: 'b', name: 'B', slug: 'other', description: '', updatedAt: new Date(0) },
         ],
       })),
+      listUserSkillsBySlugs: vi.fn(async () => ({
+        ok: true as const,
+        value: [
+          { id: 'a', name: 'A', slug: 'create-plan', description: '', updatedAt: new Date(0) },
+          { id: 'b', name: 'B', slug: 'other', description: '', updatedAt: new Date(0) },
+        ],
+      })),
     };
     const runAgent = vi.fn();
     vi.doMock('../../../lib/agent/runAgent', () => ({
@@ -1926,6 +1957,12 @@ describe('POST /api/agent', () => {
           { id: 'a', name: 'A', slug: 'create-plan', description: '', updatedAt: new Date(0) },
         ],
       })),
+      listUserSkillsBySlugs: vi.fn(async () => ({
+        ok: true as const,
+        value: [
+          { id: 'a', name: 'A', slug: 'create-plan', description: '', updatedAt: new Date(0) },
+        ],
+      })),
     };
     vi.doMock('../../../lib/agent/runAgent', () => ({
       runAgent: vi.fn(async () => {
@@ -1989,6 +2026,11 @@ describe('POST /api/agent', () => {
         value: true,
       })),
       listUserSkills: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unavailable',
+        error: 'down',
+      })),
+      listUserSkillsBySlugs: vi.fn(async () => ({
         ok: false as const,
         code: 'unavailable',
         error: 'down',
@@ -2066,6 +2108,11 @@ describe('POST /api/agent', () => {
         code: 'unavailable',
         error: 'down',
       })),
+      listUserSkillsBySlugs: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unavailable',
+        error: 'down',
+      })),
     };
     vi.doMock('../../../lib/agent/runAgent', () => ({
       runAgent: vi.fn(async () => ({ text: '', toolTrace: [] })),
@@ -2129,6 +2176,11 @@ describe('POST /api/agent', () => {
         value: true,
       })),
       listUserSkills: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unavailable',
+        error: 'down',
+      })),
+      listUserSkillsBySlugs: vi.fn(async () => ({
         ok: false as const,
         code: 'unavailable',
         error: 'down',

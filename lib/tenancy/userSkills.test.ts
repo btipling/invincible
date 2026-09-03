@@ -12,6 +12,7 @@ import {
   listAlwaysOnSkills,
   listSkillVersions,
   listUserSkills,
+  listUserSkillsBySlugs,
   renameUserSkill,
   rollbackSkill,
   setAlwaysOn,
@@ -428,6 +429,43 @@ describe('userSkills', () => {
     expect(otherList.ok).toBe(true);
     if (!otherList.ok) throw new Error('expected ok');
     expect(otherList.value).toEqual([]);
+  });
+
+  it('listUserSkillsBySlugs is candidate-scoped (slug IN), user-scoped, empty IN skips', async () => {
+    const { userId } = await seedUser('t1', 'u@example.com');
+    await createUserSkill(
+      { userId, name: 'A', slug: 'a', body: 'x', description: 'alpha' },
+      { db: db as never },
+    );
+    await createUserSkill(
+      { userId, name: 'B', slug: 'b', body: 'x', description: 'bravo' },
+      { db: db as never },
+    );
+    await createUserSkill(
+      { userId, name: 'C', slug: 'c', body: 'x', description: 'charlie' },
+      { db: db as never },
+    );
+
+    const subset = await listUserSkillsBySlugs(userId, ['c', 'a', 'a', 'Not-A-Slug'], {
+      db: db as never,
+    });
+    expect(subset.ok).toBe(true);
+    if (!subset.ok) throw new Error('expected ok');
+    expect(subset.value.map((s) => s.slug).sort()).toEqual(['a', 'c']);
+    expect(subset.value.every((s) => !('body' in s))).toBe(true);
+
+    const empty = await listUserSkillsBySlugs(userId, [], { db: db as never });
+    expect(empty.ok).toBe(true);
+    if (!empty.ok) throw new Error('expected ok');
+    expect(empty.value).toEqual([]);
+
+    const { userId: otherId } = await seedUser('t2', 'other@example.com');
+    const cross = await listUserSkillsBySlugs(otherId, ['a', 'b'], {
+      db: db as never,
+    });
+    expect(cross.ok).toBe(true);
+    if (!cross.ok) throw new Error('expected ok');
+    expect(cross.value).toEqual([]);
   });
 
   it('empty user → empty list; missing userId create → no_membership', async () => {

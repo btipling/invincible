@@ -91,6 +91,17 @@ function boundBody(slug: string, body: string): string {
   return `${sliced}${marker}`;
 }
 
+/**
+ * Normalize a find_skill query or haystack so a copy of a listed catalog
+ * line still hits. `buildCatalogLine` uses an em-dash and a colon
+ * (`slug — name: desc`) while matching is otherwise flattened spaces;
+ * treating those marks as spaces on both sides makes a full-line or
+ * punctuated `name: desc` copy match. Hyphens inside slugs stay intact.
+ */
+function normalizeFindText(s: string): string {
+  return flattenCatalogText(s.replace(/[\u2013\u2014:]+/g, ' ')).toLowerCase();
+}
+
 export function createSkillTools(opts: CreateSkillToolsOptions) {
   const { userId, userSkills, userPersonas } = opts;
 
@@ -117,19 +128,16 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
       try {
         // Bound identity: any identity the model passes is ignored — we always
         // operate on the route-resolved userId closed over at assembly.
-        const query = (input?.query ?? '').trim().toLowerCase();
+        const query = normalizeFindText(input?.query ?? '');
         const result = await userSkills.listUserSkills(userId);
         if (!result.ok) {
           return `ERROR find_skill: ${result.error}`;
         }
         let matched = query
           ? result.value.filter((s) => {
-              // Same flatten as buildCatalogLine so a query copied from a
-              // listed line still hits when the stored description has
-              // newline/NEL.
-              const hay = flattenCatalogText(
-                `${s.slug} ${s.name} ${s.description ?? ''}`,
-              ).toLowerCase();
+              // Haystack is the listed catalog line with the same punctuation
+              // normalize as the query, so a copy of `slug — name: desc` hits.
+              const hay = normalizeFindText(buildCatalogLine(s));
               return hay.includes(query);
             })
           : result.value;

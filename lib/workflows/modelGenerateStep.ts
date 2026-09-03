@@ -312,8 +312,9 @@ async function resolveInStepPreambles(args: {
         command: { type: 'none' },
         userSkills: args.services.userSkills,
         // Catalog seam REQUIRED (plan #557/#931): the inject is summaries
-        // only. listUserSkills is a required field on ResolveSkillCommandInput
-        // so dropping it is a type error, not a silent body-block revert.
+        // only. listUserSkills (SkillSummaryLister) is required on
+        // ResolveSkillCommandInput so dropping it is a type error, not a
+        // silent body-block revert. Happy path is listUserSkillsBySlugs.
         listUserSkills: args.services.userSkills,
         alwaysOnSlugs,
         ...(envelopeStore && sessionKey

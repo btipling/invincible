@@ -75,8 +75,12 @@ function listerOf(
   rows: { slug: string; name: string; description: string }[],
 ): SkillSummaryLister {
   return {
-    async listUserSkills(_userId: string) {
-      return { ok: true as const, value: rows };
+    async listUserSkillsBySlugs(_userId: string, slugs: readonly string[]) {
+      const wanted = new Set(slugs);
+      return {
+        ok: true as const,
+        value: rows.filter((r) => wanted.has(r.slug)),
+      };
     },
   };
 }
@@ -84,7 +88,7 @@ function listerOf(
 /** Catalog lister that fails like the store (ok:false / throw). */
 function failingLister(mode: 'ok-false' | 'throw'): SkillSummaryLister {
   return {
-    async listUserSkills() {
+    async listUserSkillsBySlugs() {
       if (mode === 'throw') throw new Error('store down');
       return { ok: false as const, code: 'unavailable', error: 'down' };
     },
@@ -280,6 +284,45 @@ describe('resolveSkillPreamble — catalog inject (plan #557 / #931)', () => {
     // Sticky slugs still resolve and persist.
     expect(res.attachedSlugs).toEqual(['create-plan', 'review']);
     expect(store.upserts[0]!.meta?.attachedSkills).toBe('["create-plan","review"]');
+  });
+
+  it('happy-path catalog list is candidate-scoped (slug IN), not a full-library scan', async () => {
+    const seen: string[][] = [];
+    const extra = {
+      slug: 'unrelated-library-row',
+      name: 'Unrelated',
+      description: 'must not be queried',
+    };
+    const lister: SkillSummaryLister = {
+      async listUserSkillsBySlugs(_userId, slugs) {
+        seen.push([...slugs]);
+        return {
+          ok: true as const,
+          value: [...CATALOG_ROWS, extra].filter((r) => slugs.includes(r.slug)),
+        };
+      },
+    };
+    const store = new FakeStore(
+      makeEnvelope({ attachedSkills: '["create-plan"]' }),
+    );
+    const res = await resolveSkillPreamble({
+      userId: KEY.userId,
+      command: { type: 'none' },
+      sessionStore: store,
+      sessionKey: KEY,
+      userSkills: readerOf({
+        'create-plan': { body: 'B' },
+        review: { body: 'B' },
+      }),
+      alwaysOnSlugs: ['review'],
+      listUserSkills: lister,
+    });
+    expect(seen).toHaveLength(1);
+    expect([...seen[0]!].sort()).toEqual(['create-plan', 'review']);
+    expect(seen[0]).not.toContain('unrelated-library-row');
+    expect(res.preamble).toContain('create-plan — Create plan: writes a plan issue');
+    expect(res.preamble).toContain('review — Review: adversarial reviewer');
+    expect(res.preamble).not.toContain('unrelated-library-row');
   });
 
   it('catalog covers sticky ∪ always-on, de-duplicated, always-on first and never persisted', async () => {

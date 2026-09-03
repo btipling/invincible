@@ -270,7 +270,7 @@ describe('createSkillTools', () => {
     expect(findOut).not.toMatch(/^review — /m);
   });
 
-  it('find_skill: query copied from a buildCatalogLine hits despite newline/NEL', async () => {
+  it('find_skill: query copied from a listed catalog line hits (punctuation normalized)', async () => {
     const newlineEntry = {
       slug: 'short-review',
       name: 'Short review',
@@ -289,18 +289,24 @@ describe('createSkillTools', () => {
     });
     const { find_skill } = createSkillTools({ userId: 'user-1', userSkills: us });
 
+    // Full listed line (em-dash + colon) copied as the query still matches.
     const newlineLine = buildCatalogLine(newlineEntry);
-    const newlineQuery = newlineLine.slice(newlineLine.indexOf(': ') + 2);
-    expect(newlineQuery).toBe('short review playbook');
     const newlineOut = String(
-      await find_skill.execute!({ query: newlineQuery }, execOpts),
+      await find_skill.execute!({ query: newlineLine }, execOpts),
     );
     expect(newlineOut).toBe(newlineLine);
 
+    // Punctuated `name: desc` (colon, no em-dash) also hits the same row.
+    const punctuated = `${newlineEntry.name}: ${flattenCatalogText(newlineEntry.description)}`;
+    const punctuatedOut = String(
+      await find_skill.execute!({ query: punctuated }, execOpts),
+    );
+    expect(punctuatedOut).toBe(newlineLine);
+
+    // NEL in the stored description is flattened on the listed line; copying
+    // that listed line still hits.
     const nelLine = buildCatalogLine(nelEntry);
-    const nelQuery = nelLine.slice(nelLine.indexOf(': ') + 2);
-    expect(nelQuery).toBe('nel review playbook');
-    const nelOut = String(await find_skill.execute!({ query: nelQuery }, execOpts));
+    const nelOut = String(await find_skill.execute!({ query: nelLine }, execOpts));
     expect(nelOut).toBe(nelLine);
   });
 

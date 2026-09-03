@@ -132,8 +132,10 @@ toggle on each skill row). An always-on skill **auto-attaches to every new
 session**, regardless of the chosen persona. The always-on set is:
 
 - **User-global** — the same set applies to every session for that user.
-- **Re-resolved from the DB every turn** — a skill edit or delete takes
-  effect the next turn (same as sticky attachment).
+- **Re-resolved from the DB every turn** — a description edit applies from
+  the next turn's catalog; a body edit applies on the next `fetch_skill`
+  (not auto standing orders). A delete silently drops the skill from the
+  catalog (same as sticky).
 - **Not persisted in `meta.attachedSkills`** — always-on slugs are never
   session state; they are the user's global toggle.
 - **Capped at 8 skills** (`USER_ALWAYS_ON_SKILLS_MAX`).
@@ -169,9 +171,10 @@ The agent gets two read-only tools, assembled server-side on `/api/agent` in
   with no partial body (skills are user-scoped — an existence leak is
   impossible). The **model-returned body is capped** at
   `SKILL_FETCH_MAX_RETURN_BYTES` (256 KiB): a longer body is returned truncated
-  with an explicit `{ truncated: true, byteLength, slug }` marker, never
-  silently dropped. The full body always stays server-side (editable in
-  Settings).
+  with a prose marker (`…[truncated to N bytes; full body is M bytes — edit in
+  Settings]`), never silently dropped. The untruncated stored body stays
+  editable in Settings; the truncated slice still reaches the client/Wasm as a
+  `tool_result` preview painted on a `tool_run` row (same as other tool reads).
 
 Both tools are **bound to the caller's identity**: they operate on the
 route-resolved user only, and no identity a model passes is ever used
