@@ -18,6 +18,7 @@ import {
   TURN_STREAM_CURSOR_MAX,
   TURN_STREAM_STATUS_POLL_MS,
   TURN_START_MIN_INTERVAL_MS,
+  TURN_CANCEL_MIN_INTERVAL_MS,
   TURN_STATUS_MAX_BYTES,
   TURN_STATUS_VALUES,
   TURN_WALL_CLOCK_MAX_MS,
@@ -339,6 +340,13 @@ describe('TURN_STREAM_STATUS_POLL_MS (start/attach status poll)', () => {
   it('is a NEW 1000 ms cap matching TURN_START_MIN_INTERVAL_MS', () => {
     expect(TURN_STREAM_STATUS_POLL_MS).toBe(1000);
     expect(TURN_STREAM_STATUS_POLL_MS).toBe(TURN_START_MIN_INTERVAL_MS);
+  });
+});
+
+describe('TURN_CANCEL_MIN_INTERVAL_MS (plan #816 G22 server cancel)', () => {
+  it('is a NEW 1000 ms cap matching TURN_START_MIN_INTERVAL_MS', () => {
+    expect(TURN_CANCEL_MIN_INTERVAL_MS).toBe(1000);
+    expect(TURN_CANCEL_MIN_INTERVAL_MS).toBe(TURN_START_MIN_INTERVAL_MS);
   });
 });
 

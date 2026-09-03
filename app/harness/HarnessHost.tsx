@@ -13,7 +13,30 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
-import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort, releaseBusyViewport } from '../../lib/detachTurn';
+import {
+  decideDetach,
+  shouldAbortReader,
+  abortReasonFor,
+  decideDetachPersist,
+  putPreservedTurn,
+  shouldApplyMintBind,
+  shouldSetHostTurnNote,
+  isDetachAbort,
+  releaseBusyViewport,
+  decideStopFoldPre,
+  decideStopFoldPost,
+  shouldSkipCancelPost,
+  applyStopFoldToSession,
+  decideCancelAckApply,
+  shouldKickCancelRetryAttach,
+  shouldAbortReaderOnCancelAck,
+  abortReasonForCancelAck,
+  decideCancelRetryKickWhen,
+  CANCEL_RETRY_NOTE,
+  CANCEL_FAILED_NOTE,
+  type StopFoldAction,
+} from '../../lib/detachTurn';
+import { cancelTurn } from '../../lib/turnApi';
 import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, shouldKickHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, coldAttachFromSnapshot, type HeapApplied } from '../../lib/turnAttach';
 import {
   HarnessBridge,
@@ -248,6 +271,44 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const repoRef = useRef<IdSessionRepository | null>(null);
   const pollRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /**
+   * Plan #816 (G22) — run ids we have already POSTed cancel for (in-flight or
+   * accepted). Failed ack removes the id so Stop can retry. `shouldSkipCancelPost`
+   * is a named always-false seam (posted-id set is the once-per-run skip).
+   */
+  const cancelPostedRunIdsRef = useRef(new Set<string>());
+  /**
+   * Latest Stop-fold action for a run id, set only **after** cancelTurn
+   * returns. `persistTurn` applies this so an abort-fold cannot beat a failed
+   * ack.
+   */
+  const pendingStopFoldRef = useRef<{ runId: string; fold: StopFoldAction } | null>(
+    null,
+  );
+  /**
+   * Item 5: failed-ack kick armed while the Stop-aborted `runPrompt` is still
+   * in try/finally. `finally` (same generation) performs `kickColdAttach`.
+   */
+  const pendingCancelRetryAttachRef = useRef<{
+    sessionId: string;
+    runId: string;
+  } | null>(null);
+  /**
+   * Item 5: generation of the in-flight `runPrompt`. `finally` only clears
+   * Busy/inflight when this still matches. 0 = no prompt in try/finally.
+   */
+  const promptGenerationRef = useRef(0);
+  const activePromptGenerationRef = useRef(0);
+  /**
+   * Adversarial-review #927 pass 5 — last persistTurn snapshot that carried a
+   * G22 fold. `persist-detached` folds onto this (abort snapshot with
+   * Turn-ended) instead of the Stop-fire capture (pre-abort, stale messages).
+   */
+  const lastStopPersistRef = useRef<{
+    sessionId: string;
+    runId: string;
+    snapshot: SessionSnapshot;
+  } | null>(null);
   const inflightRef = useRef(false);
   /**
    * Plan #887 — session-scoped one-shot auto-continue flag. Clears on the next
@@ -503,7 +564,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   /**
    * Plan #813 — cold attach after the ring was rebuilt from Blob/local
    * (boot / adopt / switch-back). Always `startIndex=0` + dedup. No-ops when
-   * not `running` or a turn is already inflight.
+   * not live (`running`/`cancelling`) or a turn is already inflight.
    */
   const kickColdAttach = useCallback(() => {
     if (inflightRef.current) return;
@@ -539,7 +600,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
    * Clear): close THIS reader only, never classify the turn as stopped.
    * Durable detach aborts with DETACH_ABORT_REASON so classifyTurnFailure
    * returns `'detach'` (not `'stop'`) and the fail fold keeps turnRunId/running.
-   * Stop/Esc is NEVER routed here — the poll's takePendingCancel stays a raw abort.
+   * Stop/Esc is NEVER routed here — the poll POSTs server cancel and aborts
+   * only after ack (legacy `/api/agent` still raw-aborts).
    */
   const detachTurn = useCallback(() => {
     const s = sessionRef.current;
@@ -573,6 +635,16 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
     async (prompt: string, opts?: RunPromptOpts) => {
       const bridge = bridgeRef.current;
       if (!bridge || inflightRef.current) return;
+      // Adversarial-review #927: a leftover Stop fold from the previous
+      // turn must not ride persistTurn of this prompt (pre-headers snapshot
+      // may still carry the old id, or have cleared it). Null only THIS
+      // session's abort snapshot — a destination runPrompt (switch + Send /
+      // kickColdAttach) must not drop the abandoned session's slot
+      // (pass 6: persist-detached would fall back to Stop-fire cancelSnapshot).
+      pendingStopFoldRef.current = null;
+      if (lastStopPersistRef.current?.sessionId === sessionRef.current.id) {
+        lastStopPersistRef.current = null;
+      }
 
       // Plan #887: next operator submit (not attach, not auto-continue) clears
       // the one-shot flag so a later recoverable can fire again.
@@ -636,27 +708,52 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       const controller = new AbortController();
       abortRef.current = controller;
       inflightRef.current = true;
+      const myGeneration = ++promptGenerationRef.current;
+      activePromptGenerationRef.current = myGeneration;
       const epoch = turnEpochRef.current;
       const startedId = sessionRef.current.id;
       // Adversarial #844: capture the repo object NOW. Unmount cleanup nulls
       // `repoRef` before the abort microtask reaches persistTurn/finally.
       const repo = repoRef.current;
-      const persistTurn = (snapshot: SessionSnapshot, paintQuota = true) => {
+      const persistTurn = (snapshot: SessionSnapshot, paintQuota = true): SessionSnapshot => {
+        const pendingFold = pendingStopFoldRef.current;
+        const foldedSnapshot =
+          pendingFold != null
+            ? applyStopFoldToSession(snapshot, pendingFold.runId, pendingFold.fold)
+            : snapshot;
+        const persistRunId = pendingFold?.runId ?? foldedSnapshot.turnRunId;
+        if (
+          persistRunId !== undefined &&
+          (pendingFold != null ||
+            (lastStopPersistRef.current != null &&
+              lastStopPersistRef.current.sessionId === foldedSnapshot.id &&
+              lastStopPersistRef.current.runId === persistRunId))
+        ) {
+          // pendingFold set: record the abort snapshot. pendingFold null:
+          // refresh the existing slot so a destination runPrompt that wiped
+          // pendingStopFoldRef cannot freeze a pre-abort onSessionPatch
+          // (adversarial-review #927 pass 6).
+          lastStopPersistRef.current = {
+            sessionId: foldedSnapshot.id,
+            runId: persistRunId,
+            snapshot: foldedSnapshot,
+          };
+        }
         const pendingMintId = pendingMintBindRef.current;
         const action = decideDetachPersist({
           detached: turnEpochRef.current !== epoch,
           discarded:
             discardedSessionIdsRef.current.has(startedId) ||
-            discardedSessionIdsRef.current.has(snapshot.id) ||
+            discardedSessionIdsRef.current.has(foldedSnapshot.id) ||
             (pendingMintId != null && discardedSessionIdsRef.current.has(pendingMintId)),
-          turnRunId: snapshot.turnRunId,
-          turnStatus: snapshot.turnStatus,
+          turnRunId: foldedSnapshot.turnRunId,
+          turnStatus: foldedSnapshot.turnStatus,
         });
-        if (action === 'drop') return;
+        if (action === 'drop') return foldedSnapshot;
         if (action === 'preserve') {
           // Adversarial #844: first-turn unmount must PUT the deferred mint UUID,
           // not local sess_*. Switch must not writeLocal (generation token).
-          const { preserved } = putPreservedTurn(repo, snapshot, startedId, pendingMintId);
+          const { preserved } = putPreservedTurn(repo, foldedSnapshot, startedId, pendingMintId);
           if (
             shouldApplyMintBind({
               sessionId: sessionRef.current.id,
@@ -667,9 +764,10 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           ) {
             writeLocalSession(preserved);
           }
-          return;
+          return preserved;
         }
-        persist(snapshot, { paintQuota });
+        persist(foldedSnapshot, { paintQuota });
+        return foldedSnapshot;
       };
       setBusy(true);
       setHostNote(null);
@@ -781,7 +879,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // Always persist — including user Stop/cancel (and late abort after a finished
         // stream). Dropping session on signal.aborted left SessionStore behind Wasm:
         // Load earlier / refresh could wipe the cancelled turn from the ring.
-        persistTurn(folded, folded.turnStatus !== 'running');
+        const persisted = persistTurn(folded, folded.turnStatus !== 'running');
         const operatorStop = shouldSkipAttachHotResume({
           attaching,
           aborted: controller.signal.aborted,
@@ -791,15 +889,15 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           attaching,
           streamOpened,
           operatorStop,
-          turnStatus: folded.turnStatus,
-          turnRunId: folded.turnRunId,
+          turnStatus: persisted.turnStatus,
+          turnRunId: persisted.turnRunId,
         });
-        if (kickHot && folded.turnRunId) {
+        if (kickHot && persisted.turnRunId) {
           heapAppliedRef.current = {
-            runId: folded.turnRunId,
-            count: folded.turnStreamCursor ?? 0,
+            runId: persisted.turnRunId,
+            count: persisted.turnStreamCursor ?? 0,
           };
-        } else if (folded.turnStatus !== 'running') {
+        } else if (persisted.turnStatus !== 'running') {
           heapAppliedRef.current = null;
         }
 
@@ -808,13 +906,14 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // no longer applies. Wasm follow-up was stripped; pushUser paints it.
         const repostFollowUp = shouldRepostAttachFollowUp({
           sendWhileRunning,
-          turnStatus: folded.turnStatus,
+          turnStatus: persisted.turnStatus,
+          operatorStop,
         });
         if (repostFollowUp) {
           queueMicrotask(() => {
             void runPromptRef.current(prompt, { pushUser: true });
           });
-        } else if (!result.ok && shouldSetHostTurnNote(folded.turnStatus)) {
+        } else if (!result.ok && shouldSetHostTurnNote(persisted.turnStatus)) {
           setHostNote(result.error);
         } else if (
           shouldPaintAttachFollowUpNote({
@@ -847,8 +946,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // Plan #813: SSE drop while still mounted → hot resume at this-heap C.
         // Empty-EOF GET (applied == startIndex) must not reconnect (spin).
         // F5 is never this path (heapApplied was nulled; activateSession is cold).
-        // Operator Stop during attach: skip auto-resume this tick (D18 reader
-        // close, not G22 cancel — adversarial #857).
+        // Operator Stop during attach: skip auto-resume this tick (G22 cancel
+        // already fired; shouldKickHotResume is false via operatorStop).
         if (kickHot) {
           const resume = decideHotResume({
             turnRunId: folded.turnRunId,
@@ -928,12 +1027,27 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           }
         }
         if (!detached) {
-          inflightRef.current = false;
-          setBusy(false);
+          if (promptGenerationRef.current === myGeneration) {
+            inflightRef.current = false;
+            setBusy(false);
+          }
+        }
+        if (activePromptGenerationRef.current === myGeneration) {
+          activePromptGenerationRef.current = 0;
+        }
+        const pendingRetry = pendingCancelRetryAttachRef.current;
+        if (
+          pendingRetry != null &&
+          !detached &&
+          sessionRef.current.id === pendingRetry.sessionId &&
+          promptGenerationRef.current === myGeneration
+        ) {
+          pendingCancelRetryAttachRef.current = null;
+          queueMicrotask(kickColdAttach);
         }
       }
     },
-    [persist, setUrlSessionId, writeLocalSession],
+    [persist, setUrlSessionId, writeLocalSession, kickColdAttach],
   );
   runPromptRef.current = runPrompt;
 
@@ -1166,9 +1280,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           // or refresh can recover — don't permanently strand local-only this page load.
           if (result.kind === 'local') setCloudEnabled(r.enabled);
           void refreshSessions();
-          // Plan #813: after Blob/local hydrate, cold-attach a still-running
-          // turn. activateSession also kicks; inflightRef de-dupes the pair.
-          // Do not auto-attach completed sessions (`turnStatus !== 'running'`).
+          // Plan #813: after Blob/local hydrate, cold-attach a still-live
+          // turn (`running` or `cancelling`). activateSession also kicks;
+          // inflightRef de-dupes the pair. Do not auto-attach completed.
           if (!cancelled) {
             queueMicrotask(kickColdAttach);
           }
@@ -1178,15 +1292,152 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           if (cancelled) return;
           const b = bridgeRef.current;
           if (b) {
-            // Protocol v9: Stop first — abort inflight and skip starting a turn this tick.
+            // Protocol v9: Stop first — consume pending cancel this tick
+            // (durable: POST cancel, abort only after ack; legacy: abort now).
             if (b.takePendingCancel()) {
-              abortRef.current?.abort();
-              releaseBusyViewport({
-                inflightRef,
-                setBusy,
-                setQueuePromoteAllowed: (allowed) => b.setQueuePromoteAllowed(allowed),
-                setLifecycleReady: () => b.setLifecycle(Lifecycle.Ready),
+              // Plan #816 (G22): Stop on an attached durable run fires the
+              // server cancel ONCE per run id. Do not abort, release Busy, or
+              // persist `'cancelling'` until `cancelTurn` returns (punch-list
+              // items 1–2). keepalive so Stop then F5 does not drop the POST.
+              // Failed ack keeps `running` so Stop can retry. Terminal (409) /
+              // gone (404) clears the id + folds `completed` (orphan-unstick)
+              // and must not paint "you stopped" over a finished run.
+              const stopSession = sessionRef.current;
+              const stopRunId = stopSession.turnRunId;
+              const stopFoldPre = decideStopFoldPre({
+                turnRunId: stopRunId,
+                turnStatus: stopSession.turnStatus,
               });
+              if (
+                stopFoldPre.kind === 'cancelling' &&
+                stopRunId !== undefined &&
+                !cancelPostedRunIdsRef.current.has(stopRunId) &&
+                !shouldSkipCancelPost({
+                  turnRunId: stopRunId,
+                  turnStatus: stopSession.turnStatus,
+                })
+              ) {
+                const cancelSessionId = stopSession.id;
+                // Capture repo + snapshot at Stop fire: unmount cleanup nulls
+                // `repoRef`, and switch replaces `sessionRef`. Failed ack must
+                // PUT keep-running onto THIS session (adversarial-review #927
+                // pass 4) — never onto liveNow.
+                const cancelRepo = repoRef.current;
+                const cancelSnapshot = stopSession;
+                const stopGeneration = activePromptGenerationRef.current;
+                cancelPostedRunIdsRef.current.add(stopRunId);
+                void cancelTurn(stopRunId, {
+                  sessionId: cancelSessionId,
+                  keepalive: true,
+                }).then(
+                  (outcome) => {
+                    const liveNow = sessionRef.current;
+                    const fold = decideStopFoldPost({
+                      pre: stopFoldPre,
+                      outcome,
+                    });
+                    const activeGen = activePromptGenerationRef.current;
+                    // `inflightRef` is the original turn until we abort — not a
+                    // newer prompt. Generation mismatch is the real "new prompt
+                    // owns the tab" signal (item 5; do not reuse inflightRef).
+                    const newerPrompt =
+                      activeGen !== 0 && activeGen !== stopGeneration;
+                    const originalPromptActive =
+                      stopGeneration !== 0 && activeGen === stopGeneration;
+                    const apply = decideCancelAckApply({
+                      unmounted: cancelled,
+                      liveSessionId: liveNow.id,
+                      cancelSessionId,
+                      liveTurnRunId: liveNow.turnRunId,
+                      stopRunId,
+                      discarded: discardedSessionIdsRef.current.has(cancelSessionId),
+                      inflight: newerPrompt,
+                      fold,
+                    });
+                    if (apply.dropPostedId) {
+                      cancelPostedRunIdsRef.current.delete(stopRunId);
+                    }
+                    if (apply.commit === 'drop') return;
+                    if (apply.commit === 'persist-detached') {
+                      const preserved = lastStopPersistRef.current;
+                      const base =
+                        preserved != null &&
+                        preserved.sessionId === cancelSessionId &&
+                        preserved.runId === stopRunId
+                          ? preserved.snapshot
+                          : cancelSnapshot;
+                      const folded = applyStopFoldToSession(
+                        base,
+                        stopRunId,
+                        apply.fold,
+                      );
+                      const detached = { ...folded, id: cancelSessionId };
+                      cancelRepo?.put(cancelSessionId, detached);
+                      pendingStopFoldRef.current = { runId: stopRunId, fold: apply.fold };
+                      if (sessionRef.current.id === cancelSessionId) {
+                        persist(detached);
+                      }
+                    } else {
+                      pendingStopFoldRef.current = { runId: stopRunId, fold: apply.fold };
+                      if (apply.commit === 'persist') {
+                        persist(applyStopFoldToSession(liveNow, stopRunId, apply.fold));
+                      }
+                    }
+                    if (
+                      shouldAbortReaderOnCancelAck({
+                        fold: apply.fold,
+                        commit: apply.commit,
+                      })
+                    ) {
+                      abortRef.current?.abort(abortReasonForCancelAck(apply.fold));
+                      releaseBusyViewport({
+                        inflightRef,
+                        setBusy,
+                        setQueuePromoteAllowed: (allowed) =>
+                          b.setQueuePromoteAllowed(allowed),
+                        setLifecycleReady: () => b.setLifecycle(Lifecycle.Ready),
+                      });
+                    }
+                    const kickWhen = decideCancelRetryKickWhen({
+                      shouldKick: shouldKickCancelRetryAttach({
+                        fold: apply.fold,
+                        commit: apply.commit,
+                        unmounted: cancelled,
+                        liveSessionId: sessionRef.current.id,
+                        cancelSessionId,
+                        inflight: originalPromptActive || newerPrompt,
+                      }),
+                      promptActive: originalPromptActive,
+                    });
+                    if (kickWhen !== 'none') {
+                      setHostNote(CANCEL_RETRY_NOTE);
+                      if (kickWhen === 'pending') {
+                        pendingCancelRetryAttachRef.current = {
+                          sessionId: cancelSessionId,
+                          runId: stopRunId,
+                        };
+                      } else {
+                        pendingCancelRetryAttachRef.current = null;
+                        queueMicrotask(kickColdAttach);
+                      }
+                    } else if (
+                      apply.fold.kind === 'keep-running' &&
+                      !cancelled &&
+                      sessionRef.current.id === cancelSessionId
+                    ) {
+                      setHostNote(CANCEL_FAILED_NOTE);
+                    }
+                  },
+                );
+              } else if (stopFoldPre.kind === 'legacy-clear') {
+                abortRef.current?.abort();
+                releaseBusyViewport({
+                  inflightRef,
+                  setBusy,
+                  setQueuePromoteAllowed: (allowed) => b.setQueuePromoteAllowed(allowed),
+                  setLifecycleReady: () => b.setLifecycle(Lifecycle.Ready),
+                });
+              }
             } else if (inflightRef.current || switchInFlightRef.current) {
               foldPendingSessionSwitch(true, () => b.takePendingSessionSwitch(), () => {});
             } else {

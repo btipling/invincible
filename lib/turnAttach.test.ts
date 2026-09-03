@@ -32,7 +32,7 @@ import {
 import { TURN_STREAM_CURSOR_MAX } from './sessionCloudCaps';
 
 describe('decideAttachClass', () => {
-  it('none when not running / no run id', () => {
+  it('none when not live / no run id', () => {
     expect(
       decideAttachClass({
         turnStatus: 'completed',
@@ -46,6 +46,25 @@ describe('decideAttachClass', () => {
         heapApplied: null,
       }),
     ).toEqual({ kind: 'none' });
+  });
+
+  it('cancelling with a run id is live (F5 after accepted G22 cancel)', () => {
+    expect(
+      decideAttachClass({
+        turnRunId: 'wr_1',
+        turnStatus: 'cancelling',
+        envelopeCursor: 4,
+        heapApplied: null,
+      }),
+    ).toEqual({ kind: 'cold', startIndex: 0 });
+    expect(
+      decideAttachClass({
+        turnRunId: 'wr_1',
+        turnStatus: 'cancelling',
+        envelopeCursor: 4,
+        heapApplied: { runId: 'wr_1', count: 4 },
+      }),
+    ).toEqual({ kind: 'hot', startIndex: 4 });
   });
 
   it('F5 / boot (no heap applied) is cold at 0 even when envelope C is large', () => {
@@ -123,6 +142,14 @@ describe('coldAttachFromSnapshot', () => {
 
   it('cold spec at startIndex 0 + dedup when restored snapshot is running', () => {
     expect(coldAttachFromSnapshot({ turnStatus: 'running', turnRunId: 'wr_1' })).toEqual({
+      runId: 'wr_1',
+      startIndex: 0,
+      dedup: true,
+    });
+  });
+
+  it('cold spec when restored snapshot is cancelling (F5 + live getRun)', () => {
+    expect(coldAttachFromSnapshot({ turnStatus: 'cancelling', turnRunId: 'wr_1' })).toEqual({
       runId: 'wr_1',
       startIndex: 0,
       dedup: true,
@@ -246,7 +273,7 @@ describe('shouldKickHotResume (plan #919)', () => {
         attaching: false,
         streamOpened: true,
         operatorStop: false,
-        turnStatus: 'completed',
+        turnStatus: 'cancelling',
         turnRunId: 'wr_1',
       }),
     ).toBe(false);
@@ -360,12 +387,12 @@ describe('harnessChat attach hydrate source-lock (adversarial #857)', () => {
     expect(src).not.toMatch(/if \(coldBackup\) \{\s*opts\?\.onSessionPatch\?\(\{ \.\.\.s, messages: coldBackup \}\)/);
   });
 
-  it('attach Stop keep-running is D18-shaped (adversarial #857)', () => {
-    expect(src).toContain(
-      'attaching && fail.kind === \'stop\' && opts?.signal?.aborted === true',
-    );
-    expect(src).toContain('fail.kind === \'detach\' || attachSubscribeFail || attachOperatorStop');
-    expect(src).toContain('fail.kind !== \'detach\' && !attachOperatorStop');
+  it('attach Stop is G22 cancelling + Turn-ended only after accepted cancel abort', () => {
+    expect(src).not.toContain('attachOperatorStop');
+    expect(src).toContain('fail.kind === \'detach\' || attachSubscribeFail || abortBeforeAck');
+    expect(src).toContain('} else if (fail.kind !== \'detach\' && !abortBeforeAck) {');
+    expect(src).toContain('failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail)');
+    expect(src).toContain('isG22AcceptedAbort');
   });
 
   it('ATTACH_FOLLOW_UP_NOTE is not a Turn-ended line (canvas System + TEAL host mirror)', () => {
@@ -506,6 +533,29 @@ describe('shouldRepostAttachFollowUp (adversarial #857 remapped prompt)', () => 
       shouldRepostAttachFollowUp({
         sendWhileRunning: false,
         turnStatus: 'completed',
+      }),
+    ).toBe(false);
+  });
+
+  it('does not re-POST on operator Stop even when fold is cancelling (G22 / adversarial-review #927)', () => {
+    expect(
+      shouldRepostAttachFollowUp({
+        sendWhileRunning: true,
+        turnStatus: 'cancelling',
+        operatorStop: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRepostAttachFollowUp({
+        sendWhileRunning: true,
+        turnStatus: 'cancelling',
+      }),
+    ).toBe(false);
+    expect(
+      shouldRepostAttachFollowUp({
+        sendWhileRunning: true,
+        turnStatus: 'completed',
+        operatorStop: true,
       }),
     ).toBe(false);
   });

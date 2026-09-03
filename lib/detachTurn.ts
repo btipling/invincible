@@ -17,6 +17,13 @@ import type { TurnStatus } from './sessionCloudCaps';
 /** `AbortController.abort` reason for a durable detach (not a user Stop). */
 export const DETACH_ABORT_REASON = 'detach';
 
+/**
+ * `AbortController.abort` reason after a G22 cancel POST was **accepted**.
+ * `runHarnessTurn` folds `'cancelling'` + Turn-ended only for this reason.
+ * A raw abort (unload / abort-before-ack) keeps `running` and paints no stop line.
+ */
+export const G22_ACCEPTED_ABORT_REASON = 'g22-accepted';
+
 /** Decision a detach/cancel site should act on. */
 export type DetachDecision = 'detach' | 'detach-close' | 'noop' | 'cancel';
 
@@ -91,6 +98,11 @@ export function isDetachAbort(signal?: AbortSignal): boolean {
   return signal?.aborted === true && signal.reason === DETACH_ABORT_REASON;
 }
 
+/** True when Stop aborted the reader after the cancel POST returned `accepted`. */
+export function isG22AcceptedAbort(signal?: AbortSignal): boolean {
+  return signal?.aborted === true && signal.reason === G22_ACCEPTED_ABORT_REASON;
+}
+
 /**
  * What the host should do with a turn snapshot after a leave-turn site
  * (adversarial #844 re-review).
@@ -99,7 +111,7 @@ export function isDetachAbort(signal?: AbortSignal): boolean {
  * |-------|--------|
  * | Clear/remove discarded the started id | `drop` — never PUT (LWW upsert would resurrect) |
  * | Still on this turn (epoch match) | `live` — writeLocal + put as today |
- * | Detached + running + turnRunId | `preserve` — PUT onto `preserveTargetId` (pending mint UUID, else startedId); never clobber a switched live session |
+ * | Detached + running/cancelling + turnRunId | `preserve` — PUT onto `preserveTargetId` (pending mint UUID, else startedId); never clobber a switched live session. `'cancelling'` is host-held **liveness** (G22 / C15), not terminal. |
  * | Detached without a durable running id | `drop` — skip PUT so we cannot omit-clear C14d |
  */
 export type DetachPersistAction = 'live' | 'preserve' | 'drop';
@@ -121,7 +133,9 @@ export interface DetachPersistInput {
 export function decideDetachPersist(input: DetachPersistInput): DetachPersistAction {
   if (input.discarded) return 'drop';
   if (!input.detached) return 'live';
-  if (input.turnRunId && input.turnStatus === 'running') return 'preserve';
+  if (input.turnRunId && (input.turnStatus === 'running' || input.turnStatus === 'cancelling')) {
+    return 'preserve';
+  }
   return 'drop';
 }
 
@@ -193,12 +207,14 @@ export function shouldApplyMintBind(input: {
  * same-epoch + `{ ok: false }` + `turnStatus: 'running'` — canvas Ready, run
  * still live. A host error string would lie that the turn failed.
  *
- * `running` is the persist contract for detach (D18 fold). Other fail
- * outcomes write `completed` (or leave a leftover terminal status) and
- * still surface the note.
+ * `running` is the persist contract for detach (D18 fold). G22 Stop's
+ * success state is `'cancelling'` (host-held liveness) — the canvas already
+ * has `Turn ended · you stopped`; ember `host: Request cancelled.` would be
+ * dual chrome (adversarial-review #927 pass 6). Other fail outcomes write
+ * `completed` (or leave a leftover terminal status) and still surface the note.
  */
 export function shouldSetHostTurnNote(turnStatus?: TurnStatus): boolean {
-  return turnStatus !== 'running';
+  return turnStatus !== 'running' && turnStatus !== 'cancelling';
 }
 
 /**
@@ -219,5 +235,273 @@ export function releaseBusyViewport(hooks: BusyViewportHooks): void {
   hooks.setQueuePromoteAllowed(false);
   hooks.setLifecycleReady();
 }
+
+// ── Plan #816 (G22) — Stop/Esc server-cancel fold planner ──
+
+/** Outcome of the G22 cancel POST, mapped 1:1 from `lib/turnApi.cancelTurn`. */
+export type CancelPostOutcome =
+  | { kind: 'accepted' }
+  | { kind: 'terminal' }
+  | { kind: 'gone' }
+  | { kind: 'failed' };
+
+/**
+ * What the host Stop fold should do with the session after one Stop/Esc tick
+ * (plan #816 Host Stop fold + Cancel race table).
+ *
+ * | Input | Fold |
+ * |-------|------|
+ * | No live `turnRunId` (legacy `/api/agent` path) | `legacy-clear` — old `turnRunId: undefined` + `completed` fold |
+ * | Live run + cancel accepted | `cancelling` — KEEP `turnRunId`, fold `turnStatus: 'cancelling'` |
+ * | Cancel POST failed (429/5xx/network) | `keep-running` — keep `turnRunId` + `running`, paint a soft note |
+ * | Run terminal (409) or gone (404) | `clear-terminal` — clear `turnRunId` + fold `completed` (orphan-unstick) |
+ */
+export type StopFoldAction =
+  | { kind: 'legacy-clear' }
+  | { kind: 'cancelling' }
+  | { kind: 'keep-running' }
+  | { kind: 'clear-terminal' };
+
+/**
+ * Fold the session-side Stop decision BEFORE knowing the cancel POST outcome.
+ * A live durable id in `running` **or** `cancelling` routes to the server
+ * cancel. `'cancelling'` is the accepted overlay (and a leftover poisoned
+ * marker) — it must still be a POST candidate so a failed ack + switch/unmount
+ * can retry Stop after the posted-id is dropped. The host does **not** persist
+ * `'cancelling'` until the POST returns. The in-memory `cancelPostedRunIdsRef`
+ * is the once-per-run skip. Everything else keeps today's legacy clear fold.
+ */
+export function decideStopFoldPre(input: {
+  turnRunId?: string;
+  turnStatus?: TurnStatus;
+}): Extract<StopFoldAction, { kind: 'legacy-clear' | 'cancelling' }> {
+  if (
+    input.turnRunId !== undefined &&
+    (input.turnStatus === 'running' || input.turnStatus === 'cancelling')
+  ) {
+    return { kind: 'cancelling' };
+  }
+  return { kind: 'legacy-clear' };
+}
+
+/**
+ * Fold the session-side Stop decision AFTER the cancel POST resolves
+ * (plan #816 Cancel race & failure semantics). A `cancelling` pre-fold is
+ * re-resolved by the server truth; `legacy-clear` never reaches here.
+ */
+export function decideStopFoldPost(input: {
+  pre: Extract<StopFoldAction, { kind: 'legacy-clear' | 'cancelling' }>;
+  outcome: CancelPostOutcome;
+}): StopFoldAction {
+  if (input.pre.kind === 'legacy-clear') return { kind: 'legacy-clear' };
+  switch (input.outcome.kind) {
+    case 'accepted':
+      return { kind: 'cancelling' };
+    case 'terminal':
+    case 'gone':
+      return { kind: 'clear-terminal' };
+    case 'failed':
+      return { kind: 'keep-running' };
+  }
+}
+
+/**
+ * True when a second Stop/Esc must not re-POST for this run.
+ *
+ * Pass 4 (adversarial-review #927): session `'cancelling'` is the optimistic
+ * pre-ack marker, **not** the accepted-ack skip. A poisoned `'cancelling'`
+ * (failed ack + switch/unmount/F5) must be able to retry Stop. The in-memory
+ * `cancelPostedRunIdsRef` is the once-per-run skip (in-flight / accepted).
+ * Always false — kept as a named seam so the host poll source-lock still
+ * names it; the posted-id set is the real skip.
+ */
+export function shouldSkipCancelPost(_input: {
+  turnRunId?: string;
+  turnStatus?: TurnStatus;
+}): boolean {
+  return false;
+}
+
+/**
+ * Apply a G22 Stop-fold action onto a session snapshot.
+ *
+ * Used by the host poll *and* by `persistTurn` so a late abort-fold cannot
+ * win a race against a failed cancel POST (plan #816: failed ack keeps
+ * `running` so Stop can retry). The host does not persist `'cancelling'`
+ * until `cancelTurn` returns `accepted`.
+ * A newer `turnRunId` on the snapshot is never clobbered.
+ * A snapshot that already cleared `turnRunId` is never planted back
+ * (adversarial-review #927: leftover pendingFold must not resurrect a
+ * cleared id onto the next prompt's pre-headers persist).
+ */
+export function applyStopFoldToSession<
+  T extends { turnRunId?: string; turnStatus?: TurnStatus },
+>(session: T, runId: string, fold: StopFoldAction): T {
+  if (fold.kind === 'legacy-clear') return session;
+  if (session.turnRunId === undefined || session.turnRunId !== runId) {
+    return session;
+  }
+  switch (fold.kind) {
+    case 'cancelling':
+      return { ...session, turnRunId: runId, turnStatus: 'cancelling' };
+    case 'keep-running':
+      return { ...session, turnRunId: runId, turnStatus: 'running' };
+    case 'clear-terminal':
+      return { ...session, turnRunId: undefined, turnStatus: 'completed' };
+  }
+}
+
+/**
+ * What the G22 cancel-ack `then()` should do (adversarial-review #927 pass 4).
+ *
+ * Pass 1: a failed POST must drop the posted-id and fold `keep-running` so
+ * Stop can retry. Pass 2 skipped the *entire* ack when `inflight` so a slow
+ * persist could not stomp the next prompt — and that return also skipped the
+ * posted-id delete, restoring ghost spend. Pass 3 split the commit but used
+ * `drop` for switch/unmount, which left optimistic `'cancelling'` on the
+ * abandoned session. Pass 4 persists onto `cancelSessionId` for those leave
+ * sites (captured snapshot + captured repo) and only `drop`s Clear.
+ *
+ * | Condition | `commit` | posted-id |
+ * |-----------|----------|-----------|
+ * | discarded (Clear) / newer `turnRunId` on the **same** session | `drop` | still drop on failed/terminal |
+ * | unmount / switched session | `persist-detached` onto `cancelSessionId` | drop on failed/terminal |
+ * | new `runPrompt` inflight (same session) | `pending-only` (set pendingFold, no persist) | drop on failed/terminal |
+ * | same session, idle | `persist` the fold onto `liveNow` | drop on failed/terminal |
+ *
+ * `dropPostedId` is true for `keep-running` / `clear-terminal` (retry / orphan
+ * unstick) and false for `accepted` `'cancelling'` (once per run id).
+ */
+export type CancelAckCommit = 'drop' | 'pending-only' | 'persist' | 'persist-detached';
+
+export type CancelAckApply = {
+  fold: StopFoldAction;
+  dropPostedId: boolean;
+  commit: CancelAckCommit;
+};
+
+export function decideCancelAckApply(input: {
+  unmounted: boolean;
+  liveSessionId: string;
+  cancelSessionId: string;
+  liveTurnRunId?: string;
+  stopRunId: string;
+  discarded: boolean;
+  inflight: boolean;
+  fold: StopFoldAction;
+}): CancelAckApply {
+  const dropPostedId =
+    input.fold.kind === 'keep-running' || input.fold.kind === 'clear-terminal';
+  // Clear resurrection — never PUT a deleted row.
+  if (input.discarded) {
+    return { fold: input.fold, dropPostedId, commit: 'drop' };
+  }
+  const switched = input.liveSessionId !== input.cancelSessionId;
+  const newerOnSameSession =
+    !switched &&
+    input.liveTurnRunId !== input.stopRunId &&
+    input.liveTurnRunId !== undefined;
+  // A newer run id on the same session must not be clobbered by keep-running.
+  if (newerOnSameSession) {
+    return { fold: input.fold, dropPostedId, commit: 'drop' };
+  }
+  // Switch / unmount: persist onto cancelSessionId (captured snapshot + repo),
+  // never onto liveNow. Unmount cleanup nulls repoRef — the host captures the
+  // repo object at Stop fire (same pattern as adversarial #844).
+  if (input.unmounted || switched) {
+    return { fold: input.fold, dropPostedId, commit: 'persist-detached' };
+  }
+  if (input.inflight) {
+    return { fold: input.fold, dropPostedId, commit: 'pending-only' };
+  }
+  return { fold: input.fold, dropPostedId, commit: 'persist' };
+}
+
+/**
+ * Host note when a G22 cancel POST failed (keep-running) **and** this tab
+ * re-attaches so Wasm Busy / ■ Stop return (adversarial-review #927 pass 7).
+ * Must never say the run "will end on its own" — that is the 1h-wall lie.
+ */
+export const CANCEL_RETRY_NOTE =
+  'Stop signal did not reach the server — the run is still live; re-attaching so you can Stop again.';
+
+/**
+ * Host note when a G22 cancel POST failed but this tab cannot re-attach
+ * (pending-only / a follow-up `runPrompt` is already inflight). Honest: the
+ * run is live. Does not claim Stop retry is armed.
+ */
+export const CANCEL_FAILED_NOTE =
+  'Stop signal did not reach the server — the run is still live.';
+
+/**
+ * True when the keep-running ack should cold-attach this tab so Wasm Busy
+ * (and ■ Stop / Esc) return. Stop is Busy-only (`composer_chrome.zig`);
+ * Busy is restored only after the Stop-aborted `runPrompt` `finally` (or
+ * immediately when that invocation already finished). Posted-id is dropped
+ * on keep-running so a later Stop can re-POST — but only if Busy is restored
+ * (adversarial-review #927 pass 7 / punch-list item 5).
+ *
+ * | Condition | Kick? |
+ * |-----------|-------|
+ * | `persist` + keep-running + same session + idle | yes |
+ * | `pending-only` (`runPrompt` inflight) | no — the next prompt owns the tab |
+ * | `persist-detached` (switch/unmount) | no — switch-back cold-attaches |
+ * | `drop` (Clear / newer id) | no |
+ */
+export function shouldKickCancelRetryAttach(input: {
+  fold: StopFoldAction;
+  commit: CancelAckCommit;
+  unmounted: boolean;
+  liveSessionId: string;
+  cancelSessionId: string;
+  inflight: boolean;
+}): boolean {
+  return (
+    input.fold.kind === 'keep-running' &&
+    input.commit === 'persist' &&
+    !input.unmounted &&
+    !input.inflight &&
+    input.liveSessionId === input.cancelSessionId
+  );
+}
+
+/**
+ * Abort + release Busy only after a cancel POST that this tab still owns
+ * (`persist`). Failed keep-running must not abort the live reader (item 1).
+ * Switch/unmount/Clear already detached — never abort the destination reader.
+ */
+export function shouldAbortReaderOnCancelAck(input: {
+  fold: StopFoldAction;
+  commit: CancelAckCommit;
+}): boolean {
+  if (input.commit !== 'persist') return false;
+  return input.fold.kind === 'cancelling' || input.fold.kind === 'clear-terminal';
+}
+
+/** Abort reason after an owned cancel ack. Accepted only; 409/404 stay raw. */
+export function abortReasonForCancelAck(fold: StopFoldAction): string | undefined {
+  return fold.kind === 'cancelling' ? G22_ACCEPTED_ABORT_REASON : undefined;
+}
+
+/**
+ * When the failed-ack kick should run (item 5). Never use `inflightRef` after
+ * `releaseBusyViewport` — that flag is already false while `runPrompt` unwinds.
+ *
+ * | `shouldKick` | prompt still in try/finally | Result |
+ * |--------------|-----------------------------|--------|
+ * | false | * | `none` |
+ * | true | yes | `pending` — `finally` kicks |
+ * | true | no | `now` — invocation already finished |
+ */
+export type CancelRetryKickWhen = 'none' | 'pending' | 'now';
+
+export function decideCancelRetryKickWhen(input: {
+  shouldKick: boolean;
+  promptActive: boolean;
+}): CancelRetryKickWhen {
+  if (!input.shouldKick) return 'none';
+  return input.promptActive ? 'pending' : 'now';
+}
+
 
 

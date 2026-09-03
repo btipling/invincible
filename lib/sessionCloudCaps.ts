@@ -375,6 +375,21 @@ export function sanitizeTurnStreamCursor(value: unknown): number | undefined {
 export const TURN_START_MIN_INTERVAL_MS = 1000;
 
 /**
+ * Min-interval between accepted cancels of the **same** run on
+ * `POST /api/turns/:runId/cancel` (plan #816, backend-agents G22). A
+ * per-process `Map<string,number>` keyed by `sessionId:runId` advances ONLY
+ * on an **accepted** cancel — a terminal 409 / ownership 404 / store-or-cancel
+ * 503 never burns the window. Same Map+boundedSet shape as the C15 start
+ * guard: a **soft** abuse guard (survives one Vercel Function invocation),
+ * not a durable rate limit; it bounds `getRun`+PATCH write amplification from
+ * a hostile repeat-Stop client on one run. Key includes `runId` so an accepted
+ * cancel of wr_1 cannot 429 Stop on wr_2 (adversarial-review #927 pass 8).
+ * **NEW generous cap**: 1 second matches `TURN_START_MIN_INTERVAL_MS`. No
+ * existing cap value changed → **no human gate**.
+ */
+export const TURN_CANCEL_MIN_INTERVAL_MS = 1000;
+
+/**
  * How often a start/attach SSE wrapper re-reads `getRun().status` while the
  * client readable is open. `status` is a snapshot (same as the live-only 409
  * gate on `POST /api/turns`): a cancelled/failed/completed run whose producer

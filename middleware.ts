@@ -16,10 +16,13 @@ function isApiProtected(pathname: string): boolean {
   if (pathname === '/api/settings/personas' || pathname.startsWith('/api/settings/personas/')) {
     return true;
   }
+  // durable-turn start + nested stream/cancel (plan #816 dual gate; adversarial-review #927).
+  if (pathname === '/api/turns' || pathname.startsWith('/api/turns/')) {
+    return true;
+  }
   return (
     pathname === '/api/chat' ||
     pathname === '/api/agent' ||
-    pathname === '/api/turns' ||
     pathname === '/api/models' ||
     pathname === '/api/sandboxes' ||
     pathname === '/api/personas' ||
@@ -111,6 +114,7 @@ export const config = {
     '/api/chat',
     '/api/agent',
     '/api/turns',
+    '/api/turns/:path*',
     '/api/models',
     '/api/sandboxes',
     '/api/personas',

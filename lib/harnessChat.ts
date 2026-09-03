@@ -19,7 +19,7 @@ import {
   type ToolTraceEntry,
 } from './agentApi';
 import { sendTurn, sendTurnStream, attachTurnStream } from './turnApi';
-import { isDetachAbort } from './detachTurn';
+import { isDetachAbort, isG22AcceptedAbort } from './detachTurn';
 import { type AgentStreamEvent } from './agent/agentStream';
 import { isProviderRefusalFinish, truncatedFinishError } from './agent/modelFinish';
 import {
@@ -1753,18 +1753,27 @@ export async function runHarnessTurn(
       // non-terminal EMBER. After onTurnStarted, producer SSE error / 5xx
       // reuses the POST give-up fold. EOF without terminal stays D18 via
       // durableIncomplete.
-      // Attach Stop/Esc: reader-only abort (D18), not G22 server cancel —
-      // keep `running`, no Turn ended · you stopped (adversarial #857).
-      // Producer cancelled SSE (`Request cancelled.` without abort) is a
-      // **terminal** Stop fold — clear `running` (plan #919 / source #918).
-      const attachOperatorStop =
-        attaching && fail.kind === 'stop' && opts?.signal?.aborted === true;
+      // Attach Stop/Esc is G22 server cancel (plan #816 / punch-list): fold
+      // `'cancelling'` + Turn-ended only after an accepted cancel abort
+      // (`G22_ACCEPTED_ABORT_REASON`). A raw abort before ack keeps `running`
+      // with no stop line so F5 can attach. Producer cancelled SSE
+      // (`Request cancelled.` without abort) is a **terminal** Stop fold —
+      // clear `running` (plan #919 / source #918).
       const attachSubscribeFail =
         attaching &&
         !sawDurableStart &&
         fail.kind !== 'stop' &&
         fail.kind !== 'detach' &&
         !isAttachRunGone(agentResult.ok ? undefined : agentResult.status);
+      // Raw abort on a live durable id before the cancel POST was accepted.
+      // Keep `running`, no Turn-ended line (punch-list items 1–2).
+      const abortBeforeAck =
+        fail.kind === 'stop' &&
+        opts?.signal?.aborted === true &&
+        !isG22AcceptedAbort(opts?.signal) &&
+        failedSession.turnRunId !== undefined &&
+        (failedSession.turnStatus === 'running' ||
+          failedSession.turnStatus === 'cancelling');
       // Cold-attach strip: persist the Blob suffix only when nothing was
       // painted (503/404 before events) so we do not LWW a user-only
       // transcript. Thinking-only incomplete GET must keep the stripped
@@ -1790,7 +1799,7 @@ export async function runHarnessTurn(
             : agentResult.error || 'Unable to attach to run stream.'
         ).trim();
         failedSession = paintSubscribeFail(bridge, failedSession, line);
-      } else if (fail.kind !== 'detach' && !attachOperatorStop) {
+      } else if (fail.kind !== 'detach' && !abortBeforeAck) {
         failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail);
       }
       // Phase 2 (#465): a cancel/timeout/hard-error turn still persists the last
@@ -1845,10 +1854,10 @@ export async function runHarnessTurn(
       // onTurnStarted, producer SSE error reuses the POST give-up fold
       // (clear `running`). Attach 404 (run gone) falls through and clears
       // so C15 does not 409 a dead id.
-      // Attach Stop/Esc (adversarial #857): same keep-running as detach —
-      // abort closes this reader only (D18); G22 owns server cancel. POST
-      // Stop still clears (this branch is attach-only).
-      if (fail.kind === 'detach' || attachSubscribeFail || attachOperatorStop) {
+      // Attach Stop/Esc is G22 (plan #816 / punch-list): keep-running on
+      // abort-before-ack. Accepted cancel (`G22_ACCEPTED_ABORT_REASON`) falls
+      // through to the cancelling / Turn-ended fold.
+      if (fail.kind === 'detach' || attachSubscribeFail || abortBeforeAck) {
         const id =
           agentResult.turnRunId ??
           (failedSession.turnStatus === 'running'
@@ -1863,13 +1872,34 @@ export async function runHarnessTurn(
         }
       } else if (
         agentResult.turnRunId !== undefined ||
-        (fail.kind === 'stop' && failedSession.turnStatus === 'running')
+        (fail.kind === 'stop' &&
+          // Enter the fold for a this-turn live stop (`running`) OR a legacy
+          // stop with no durable id at all (fold `completed`). A leftover
+          // TERMINAL id (`completed`/`cancelling`) from a PRIOR turn is NOT
+          // this turn's — pre-headers Stop must not clear it (adversarial
+          // #844), so skip the fold and leave it as-is.
+          (failedSession.turnStatus === 'running' ||
+            failedSession.turnRunId === undefined))
       ) {
-        failedSession = {
-          ...failedSession,
-          turnRunId: undefined,
-          turnStatus: 'completed',
-        };
+        // Plan #816 (G22) — fold `'cancelling'` only after the cancel POST
+        // was accepted (host aborts with `G22_ACCEPTED_ABORT_REASON`). A raw
+        // abort before ack keeps `running` (handled above). Producer
+        // `Request cancelled.` with no abort still clears the id (the run is
+        // already terminal). The old `turnRunId: undefined` + `completed`
+        // fold survives for the legacy `/api/agent` path (no live run id).
+        const keepCancelling =
+          fail.kind === 'stop' &&
+          isG22AcceptedAbort(opts?.signal) &&
+          (failedSession.turnStatus === 'running' ||
+            failedSession.turnStatus === 'cancelling') &&
+          failedSession.turnRunId !== undefined;
+        failedSession = keepCancelling
+          ? { ...failedSession, turnStatus: 'cancelling' }
+          : {
+              ...failedSession,
+              turnRunId: undefined,
+              turnStatus: 'completed',
+            };
       }
       lastUiKind =
         attachSubscribeFail ||
@@ -1906,7 +1936,7 @@ export async function runHarnessTurn(
       // on Error (never consumes the queue head; Continue inserted at head when
       // non-empty) unless this was an operator Stop, which stays Ready (queue
       // untouched, drains only on a later success).
-      setFailLifecycle(bridge, attachSubscribeFail || attachOperatorStop ? 'detach' : fail.kind);
+      setFailLifecycle(bridge, attachSubscribeFail ? 'detach' : fail.kind);
       return {
         result: {
           ok: false,

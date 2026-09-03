@@ -1,6 +1,7 @@
 /**
  * Plan #811 (D17) — host client for POST /api/turns (durable-turn transport).
  * Plan #813 (E19) — GET attach client `attachTurnStream`.
+ * Plan #816 (G22) — POST cancel client `cancelTurn`.
  * Replaces the legacy `/api/agent` transport for production `runPrompt`.
  * `/api/agent` stays reachable via the legacy `sendAgent`/`sendAgentStream`
  * exports — tests inject those via `RunHarnessTurnOptions`.
@@ -388,6 +389,79 @@ export type AttachTurnStreamOpts = {
    */
   onTurnStarted?: (info: { turnRunId: string }) => void | Promise<void>;
 };
+
+/** Plan #816 (G22) — outcome of a `POST /api/turns/:runId/cancel` call. */
+export type CancelTurnResult =
+  | { kind: 'accepted' }
+  | { kind: 'terminal'; status: string }
+  | { kind: 'gone' }
+  | { kind: 'failed'; status?: number; error: string };
+
+/**
+ * Plan #816 (G22) — POST `/api/turns/:runId/cancel?sessionId=`.
+ *
+ * Server-cancel one live durable run. Never throws: every failure path is a
+ * typed result the host Stop fold maps onto its race table —
+ *  - `accepted` (200) → fold `turnStatus: 'cancelling'` KEEPING `turnRunId`.
+ *  - `terminal` (409, body `{status}`) → the run already ended; host clears
+ *    `turnRunId` + folds `completed` (idempotent no-op, not a client error).
+ *  - `gone` (404) → run expired/ownership mismatch; host clears `turnRunId` +
+ *    folds `completed` (the orphan-unstick path).
+ *  - `failed` (429/5xx/network/abort) → host keeps `turnRunId` + `running`,
+ *    paints a soft note; the run continues to its own terminal (never a
+ *    silent fake cancel).
+ */
+export async function cancelTurn(
+  runId: string,
+  opts: { sessionId: string; keepalive?: boolean },
+): Promise<CancelTurnResult> {
+  const cleanRunId = sanitizeTurnRunId(runId);
+  if (cleanRunId === undefined) {
+    return { kind: 'failed', status: 400, error: 'Invalid runId' };
+  }
+  if (!isRedisSafeOpaqueId(opts.sessionId)) {
+    return { kind: 'failed', status: 400, error: 'Invalid sessionId.' };
+  }
+
+  const params = new URLSearchParams();
+  params.set('sessionId', opts.sessionId);
+  const path = `/api/turns/${encodeURIComponent(cleanRunId)}/cancel?${params.toString()}`;
+
+  let res: Response;
+  try {
+    // keepalive: unload must not drop the POST (Stop then F5 before 200).
+    res = await fetch(path, { method: 'POST', keepalive: opts.keepalive !== false });
+  } catch (err) {
+    return {
+      kind: 'failed',
+      error: err instanceof Error ? err.message : 'Network request failed.',
+    };
+  }
+
+  if (res.status === 200) return { kind: 'accepted' };
+  if (res.status === 404) return { kind: 'gone' };
+  if (res.status === 409) {
+    let status = 'terminal';
+    try {
+      const data = (await res.json()) as { status?: unknown };
+      if (typeof data.status === 'string' && data.status) status = data.status;
+    } catch {
+      // Body parse failure keeps the generic 'terminal' status.
+    }
+    return { kind: 'terminal', status };
+  }
+
+  let error = `Request failed (${res.status}).`;
+  try {
+    const data = (await res.json()) as { error?: unknown };
+    if (typeof data.error === 'string' && data.error.trim()) {
+      error = data.error;
+    }
+  } catch {
+    // Non-JSON error body keeps the status-derived message.
+  }
+  return { kind: 'failed', status: res.status, error };
+}
 
 /**
  * Plan #813 (E19) — GET `/api/turns/:runId/stream?sessionId=&startIndex=`.
