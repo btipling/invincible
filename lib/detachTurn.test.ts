@@ -546,6 +546,19 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(thenBody).toContain('pendingStopFoldRef.current =');
   });
 
+  it('feature-divide Stop row matches wait-for-ack (adversarial-review #927)', () => {
+    const divide = readFileSync(resolve(process.cwd(), 'docs/feature-divide.md'), 'utf8');
+    const stopRow = divide.split('\n').find((l) => l.includes('**Stop / cancel turn**')) ?? '';
+    expect(stopRow).toContain('POST /api/turns/:runId/cancel');
+    expect(stopRow).toContain('**before** aborting');
+    expect(stopRow).toContain('releaseBusyViewport');
+    expect(stopRow).toContain('DETACH_ABORT_REASON');
+    expect(stopRow).not.toMatch(/clears Busy \/ Ready \/ clocks this tick/);
+    const clockRow =
+      divide.split('\n').find((l) => l.includes('Whole-turn `mm:ss` clock')) ?? '';
+    expect(clockRow).not.toContain('Stop this tick');
+  });
+
   it('runPrompt generation-gates finally Busy clear and deferred cancel-retry kick', () => {
     const runStart = host.indexOf('const runPrompt = useCallback');
     const run = host.slice(runStart, host.indexOf('useEffect(() => {', runStart));

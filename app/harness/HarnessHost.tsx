@@ -273,8 +273,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   const abortRef = useRef<AbortController | null>(null);
   /**
    * Plan #816 (G22) — run ids we have already POSTed cancel for (in-flight or
-   * accepted). Failed ack removes the id so Stop can retry. Distinct from
-   * `shouldSkipCancelPost` (accepted `'cancelling'` marker).
+   * accepted). Failed ack removes the id so Stop can retry. `shouldSkipCancelPost`
+   * is a named always-false seam (posted-id set is the once-per-run skip).
    */
   const cancelPostedRunIdsRef = useRef(new Set<string>());
   /**
@@ -600,7 +600,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
    * Clear): close THIS reader only, never classify the turn as stopped.
    * Durable detach aborts with DETACH_ABORT_REASON so classifyTurnFailure
    * returns `'detach'` (not `'stop'`) and the fail fold keeps turnRunId/running.
-   * Stop/Esc is NEVER routed here — the poll's takePendingCancel stays a raw abort.
+   * Stop/Esc is NEVER routed here — the poll POSTs server cancel and aborts
+   * only after ack (legacy `/api/agent` still raw-aborts).
    */
   const detachTurn = useCallback(() => {
     const s = sessionRef.current;
@@ -1291,7 +1292,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           if (cancelled) return;
           const b = bridgeRef.current;
           if (b) {
-            // Protocol v9: Stop first — abort inflight and skip starting a turn this tick.
+            // Protocol v9: Stop first — consume pending cancel this tick
+            // (durable: POST cancel, abort only after ack; legacy: abort now).
             if (b.takePendingCancel()) {
               // Plan #816 (G22): Stop on an attached durable run fires the
               // server cancel ONCE per run id. Do not abort, release Busy, or
