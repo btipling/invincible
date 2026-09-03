@@ -84,12 +84,20 @@ export function shouldPaintAttachFollowUpDetachNote(input: {
  * run is no longer live (`done` / 404 / post-start SSE error). C15 409 no
  * longer applies. Never while `running` (EOF / 503 — note path). Never for
  * kickColdAttach / hot-resume (empty prompt, `sendWhileRunning` false).
+ * Never on operator Stop (G22 #816 / adversarial-review #927): Stop folds
+ * `'cancelling'` (`!== 'running'`), which would otherwise auto-POST the
+ * remapped follow-up and set `inflight` before the cancel ack lands.
  */
 export function shouldRepostAttachFollowUp(input: {
   sendWhileRunning: boolean;
   turnStatus?: TurnStatus;
+  operatorStop?: boolean;
 }): boolean {
-  return input.sendWhileRunning && input.turnStatus !== 'running';
+  return (
+    input.sendWhileRunning &&
+    input.turnStatus !== 'running' &&
+    !input.operatorStop
+  );
 }
 
 /**

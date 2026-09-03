@@ -13,7 +13,7 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
-import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort, releaseBusyViewport, decideStopFoldPre, decideStopFoldPost, shouldSkipCancelPost, applyStopFoldToSession, type StopFoldAction } from '../../lib/detachTurn';
+import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort, releaseBusyViewport, decideStopFoldPre, decideStopFoldPost, shouldSkipCancelPost, applyStopFoldToSession, decideCancelAckApply, type StopFoldAction } from '../../lib/detachTurn';
 import { cancelTurn } from '../../lib/turnApi';
 import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, shouldKickHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, coldAttachFromSnapshot, type HeapApplied } from '../../lib/turnAttach';
 import {
@@ -833,6 +833,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         const repostFollowUp = shouldRepostAttachFollowUp({
           sendWhileRunning,
           turnStatus: persisted.turnStatus,
+          operatorStop,
         });
         if (repostFollowUp) {
           queueMicrotask(() => {
@@ -1238,36 +1239,42 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                 };
                 void cancelTurn(stopRunId, { sessionId: cancelSessionId }).then(
                   (outcome) => {
-                    if (cancelled) return;
                     const liveNow = sessionRef.current;
-                    // Never clobber a switched session or a NEWER run id.
-                    if (liveNow.id !== cancelSessionId) return;
-                    if (liveNow.turnRunId !== stopRunId && liveNow.turnRunId !== undefined) {
-                      return;
-                    }
-                    // Adversarial-review #927: a new runPrompt is inflight
-                    // (pre-headers still carries the old id). Do not persist
-                    // this ack onto that generation.
-                    if (inflightRef.current) return;
                     const fold = decideStopFoldPost({
                       pre: stopFoldPre,
                       outcome,
                     });
-                    pendingStopFoldRef.current = { runId: stopRunId, fold };
-                    if (fold.kind === 'keep-running' || fold.kind === 'clear-terminal') {
+                    // Posted-id + pendingFold update even when inflight so a
+                    // failed ack cannot trap Stop (adversarial-review #927).
+                    const apply = decideCancelAckApply({
+                      unmounted: cancelled,
+                      liveSessionId: liveNow.id,
+                      cancelSessionId,
+                      liveTurnRunId: liveNow.turnRunId,
+                      stopRunId,
+                      discarded: discardedSessionIdsRef.current.has(cancelSessionId),
+                      inflight: inflightRef.current,
+                      fold,
+                    });
+                    if (apply.dropPostedId) {
                       cancelPostedRunIdsRef.current.delete(stopRunId);
                     }
-                    persist(applyStopFoldToSession(liveNow, stopRunId, fold));
-                    if (fold.kind === 'keep-running') {
+                    if (apply.commit === 'drop') return;
+                    pendingStopFoldRef.current = { runId: stopRunId, fold: apply.fold };
+                    if (apply.commit === 'persist') {
+                      persist(applyStopFoldToSession(liveNow, stopRunId, apply.fold));
+                    }
+                    if (apply.fold.kind === 'keep-running') {
                       // Soft note only — never a fake cancel; the run continues
                       // to its own terminal (same honesty as detach). Stop can
-                      // retry because we persisted `running` and dropped the
-                      // posted-id (adversarial-review #927).
+                      // retry because we dropped the posted-id and folded
+                      // `running` (or pendingFold for persistTurn).
                       setHostNote(
                         'Stop signal did not reach the server — the run is still live; it will end on its own.',
                       );
                     }
-                    // 'cancelling' — accepted ack; persist already landed it.
+                    // 'cancelling' — accepted ack; persist already landed it
+                    // (or the route overlay PATCH did, when persist is skipped).
                   },
                 );
               }

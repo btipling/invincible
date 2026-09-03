@@ -510,6 +510,29 @@ describe('shouldRepostAttachFollowUp (adversarial #857 remapped prompt)', () => 
     ).toBe(false);
   });
 
+  it('does not re-POST on operator Stop even when fold is cancelling (G22 / adversarial-review #927)', () => {
+    expect(
+      shouldRepostAttachFollowUp({
+        sendWhileRunning: true,
+        turnStatus: 'cancelling',
+        operatorStop: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRepostAttachFollowUp({
+        sendWhileRunning: true,
+        turnStatus: 'cancelling',
+      }),
+    ).toBe(true);
+    expect(
+      shouldRepostAttachFollowUp({
+        sendWhileRunning: true,
+        turnStatus: 'completed',
+        operatorStop: true,
+      }),
+    ).toBe(false);
+  });
+
   it('is mutually exclusive with the follow-up note', () => {
     const running = { sendWhileRunning: true, resultOk: false, turnStatus: 'running' as const };
     const done = { sendWhileRunning: true, resultOk: true, turnStatus: 'completed' as const };

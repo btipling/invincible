@@ -24,6 +24,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   abortReasonFor,
   applyStopFoldToSession,
+  decideCancelAckApply,
   decideDetach,
   decideDetachPersist,
   decideStopFoldPost,
@@ -470,16 +471,22 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(poll).toContain('cancelPostedRunIdsRef');
     expect(poll).toContain('pendingStopFoldRef');
     // A repeat Stop after 'cancelling' never re-POSTs; a terminal/gone ack
-    // clears the id + folds completed (orphan-unstick); a failed ack keeps
-    // running + paints a soft note (never a fake cancel). Failed ack MUST
-    // persist running (adversarial-review #927) so Stop can retry.
-    expect(poll).toContain("fold.kind === 'clear-terminal'");
-    expect(poll).toContain("fold.kind === 'keep-running'");
+    // drops the posted-id (orphan-unstick); a failed ack keeps running +
+    // paints a soft note (never a fake cancel). Failed ack MUST drop the
+    // posted-id even when inflight (adversarial-review #927) so Stop can retry.
+    expect(poll).toContain("apply.fold.kind === 'keep-running'");
     expect(poll).toContain('setHostNote(');
     expect(poll).toContain('persist(applyStopFoldToSession(');
     expect(poll).toContain('cancelPostedRunIdsRef.current.delete');
-    // Adversarial-review #927: late ack must not persist onto a new runPrompt.
-    expect(poll).toContain('if (inflightRef.current) return');
+    // Adversarial-review #927 pass 3: posted-id delete + pendingFold must
+    // run even when inflight; only snapshot persist is skipped. Discarded
+    // sessions never raw-persist (Clear resurrection).
+    expect(poll).toContain('decideCancelAckApply(');
+    expect(poll).toContain('apply.dropPostedId');
+    expect(poll).toContain("apply.commit === 'drop'");
+    expect(poll).toContain("apply.commit === 'persist'");
+    expect(poll).toContain('discardedSessionIdsRef.current.has(cancelSessionId)');
+    expect(poll).not.toContain('if (inflightRef.current) return');
   });
 
   it('runPrompt nulls pendingStopFoldRef so a leftover fold cannot ride the next persistTurn (adversarial-review #927)', () => {
@@ -649,6 +656,86 @@ describe('G22 Stop/Esc server-cancel fold planner (plan #816)', () => {
     it('legacy-clear is a no-op on the snapshot', () => {
       expect(applyStopFoldToSession(live, 'wr_live', { kind: 'legacy-clear' })).toEqual(
         live,
+      );
+    });
+  });
+
+  describe('decideCancelAckApply (adversarial-review #927 pass 3)', () => {
+    const keep = { kind: 'keep-running' as const };
+    const accepted = { kind: 'cancelling' as const };
+    const base = {
+      unmounted: false,
+      liveSessionId: 's1',
+      cancelSessionId: 's1',
+      liveTurnRunId: 'wr_live',
+      stopRunId: 'wr_live',
+      discarded: false,
+      inflight: false,
+    };
+
+    it('failed ack idle → persist + dropPostedId (Stop can retry)', () => {
+      expect(decideCancelAckApply({ ...base, fold: keep })).toEqual({
+        fold: keep,
+        dropPostedId: true,
+        commit: 'persist',
+      });
+    });
+
+    it('failed ack while inflight → pending-only + dropPostedId (no snapshot persist)', () => {
+      expect(
+        decideCancelAckApply({ ...base, inflight: true, fold: keep }),
+      ).toEqual({
+        fold: keep,
+        dropPostedId: true,
+        commit: 'pending-only',
+      });
+    });
+
+    it('accepted ack idle → persist, keep posted-id (once per run id)', () => {
+      expect(decideCancelAckApply({ ...base, fold: accepted })).toEqual({
+        fold: accepted,
+        dropPostedId: false,
+        commit: 'persist',
+      });
+    });
+
+    it('unmount / switch / discarded / newer id → drop (still dropPostedId on failed)', () => {
+      expect(
+        decideCancelAckApply({ ...base, unmounted: true, fold: keep }),
+      ).toEqual({ fold: keep, dropPostedId: true, commit: 'drop' });
+      expect(
+        decideCancelAckApply({
+          ...base,
+          liveSessionId: 's2',
+          fold: keep,
+        }),
+      ).toEqual({ fold: keep, dropPostedId: true, commit: 'drop' });
+      expect(
+        decideCancelAckApply({ ...base, discarded: true, fold: keep }),
+      ).toEqual({ fold: keep, dropPostedId: true, commit: 'drop' });
+      expect(
+        decideCancelAckApply({
+          ...base,
+          liveTurnRunId: 'wr_newer',
+          fold: keep,
+        }),
+      ).toEqual({ fold: keep, dropPostedId: true, commit: 'drop' });
+    });
+
+    it('cleared turnRunId (undefined) is not a newer id — still persist keep-running', () => {
+      expect(
+        decideCancelAckApply({
+          ...base,
+          liveTurnRunId: undefined,
+          fold: keep,
+        }),
+      ).toEqual({ fold: keep, dropPostedId: true, commit: 'persist' });
+    });
+
+    it('terminal/gone fold drops posted-id', () => {
+      const clear = { kind: 'clear-terminal' as const };
+      expect(decideCancelAckApply({ ...base, fold: clear }).dropPostedId).toBe(
+        true,
       );
     });
   });

@@ -323,5 +323,57 @@ export function applyStopFoldToSession<
   }
 }
 
+/**
+ * What the G22 cancel-ack `then()` should do (adversarial-review #927 pass 3).
+ *
+ * Pass 1: a failed POST must drop the posted-id and fold `keep-running` so
+ * Stop can retry. Pass 2 skipped the *entire* ack when `inflight` so a slow
+ * persist could not stomp the next prompt — and that return also skipped the
+ * posted-id delete, restoring ghost spend. Split the commit:
+ *
+ * | Condition | `commit` | posted-id |
+ * |-----------|----------|-----------|
+ * | unmount / switched session / discarded / newer `turnRunId` | `drop` | still drop on failed/terminal |
+ * | new `runPrompt` inflight | `pending-only` (set pendingFold, no persist) | drop on failed/terminal |
+ * | same session, idle | `persist` the fold onto `liveNow` | drop on failed/terminal |
+ *
+ * `dropPostedId` is true for `keep-running` / `clear-terminal` (retry / orphan
+ * unstick) and false for `accepted` `'cancelling'` (once per run id).
+ */
+export type CancelAckCommit = 'drop' | 'pending-only' | 'persist';
+
+export type CancelAckApply = {
+  fold: StopFoldAction;
+  dropPostedId: boolean;
+  commit: CancelAckCommit;
+};
+
+export function decideCancelAckApply(input: {
+  unmounted: boolean;
+  liveSessionId: string;
+  cancelSessionId: string;
+  liveTurnRunId?: string;
+  stopRunId: string;
+  discarded: boolean;
+  inflight: boolean;
+  fold: StopFoldAction;
+}): CancelAckApply {
+  const dropPostedId =
+    input.fold.kind === 'keep-running' || input.fold.kind === 'clear-terminal';
+  if (
+    input.unmounted ||
+    input.liveSessionId !== input.cancelSessionId ||
+    (input.liveTurnRunId !== input.stopRunId &&
+      input.liveTurnRunId !== undefined) ||
+    input.discarded
+  ) {
+    return { fold: input.fold, dropPostedId, commit: 'drop' };
+  }
+  if (input.inflight) {
+    return { fold: input.fold, dropPostedId, commit: 'pending-only' };
+  }
+  return { fold: input.fold, dropPostedId, commit: 'persist' };
+}
+
 
 
