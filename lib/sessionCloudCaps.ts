@@ -68,18 +68,22 @@ export const SKILL_SLUG_RE = /^[a-z][a-z0-9_-]{0,127}$/;
 export const HARNESS_SESSION_MAX_ATTACHED_SKILLS = 32;
 
 /**
- * Per-turn **inject** byte budget for attached-skill bodies folded into the model
- * system prompt (`skillsPreamble`, phase 2 #517). Adversarial-review L5 fix: the
- * count cap alone is NOT a size cap — 32 × a 4 MiB body would concatenate 128 MiB
- * into `skillsPreamble` every turn (Function memory / Gateway payload / timeout).
- * `resolveSkillPreamble` builds blocks greedily up to this budget and stops.
+ * Per-turn **inject ceiling** for the attached-skill inject folded into the
+ * model system prompt (`skillsPreamble`). Plan #557 / #931: the default inject
+ * is a bounded **catalog** (one line per candidate skill — slug + name +
+ * description, built from `listUserSkills` summaries; bodies ride the
+ * on-demand `fetch_skill` tool), so this value is now a **safety rail over the
+ * catalog**, not the default inject — a catalog of ≤ 32 sticky +
+ * ≤ 8 always-on slugs is a few KiB, far under 256 KiB. Kept UNCHANGED as the
+ * inject ceiling (not raised, not lowered — no human cap-gate triggered).
  *
  * This deliberately differs from the **store** cap (`SKILL_BODY_MAX_BYTES`, 4 MiB):
- * the ON-DISK body may be huge (a skill is staff-of-work, stored once), but what
- * actually becomes a standing-order injected block each turn is capped at 256 KiB.
- * A skill whose body alone exceeds this budget FAILS at attach (`too_large`) — it
- * is never added to the sticky set — so a 4 MiB skill can never sit "attached"
- * while silently never being injected (adversarial-review amendment, "silent lie").
+ * the ON-DISK body may be huge (a skill is staff-of-work, stored once). Because
+ * no body is injected at attach time any more, the former attach-time
+ * `too_large` / `budget` rejection is retired for the catalog path: an
+ * over-256 KiB skill can attach and be catalog-listed, and its body is only
+ * ever fetched (truncated to the 256 KiB `SKILL_FETCH_MAX_RETURN_BYTES`
+ * return cap).
  */
 export const HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES = 256 * 1024;
 

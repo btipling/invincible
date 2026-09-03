@@ -5,8 +5,10 @@
  * into the agent-system preamble on every `/api/agent` turn, PLUS handles the
  * per-turn slash commands:
  *
- *   - `/skill-name`  → attach: resolve the body via `userSkills.getSkillBySlug`,
- *                      add the slug to the sticky set, inject its body.
+ *   - `/skill-name`  → attach: resolve the skill via `userSkills.getSkillBySlug`,
+ *                      add the slug to the sticky set. The body is NOT
+ *                      auto-injected — the slug joins the catalog and the model
+ *                      reads the body on demand via `fetch_skill`.
  *   - `/unskill slug` → detach: remove the slug from the sticky set (no-op when
  *                      not-attached); the whole line is consumed (a pure
  *                      `/unskill` is a NO-MODEL turn — never forwarded empty to
@@ -39,15 +41,19 @@
  * (which now folds `attachedSlugs`) is the source of truth, so the agent mirror
  * must never fight it.
  *
- * **Inject byte budget (adversarial-review L5 fix):** the count cap
- * (`HARNESS_SESSION_MAX_ATTACHED_SKILLS`, 32) is NOT a size cap. Bodies are
- * resolved + folded into `skillsPreamble` greedily up to
- * `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` (256 KiB) so 32 × a 4 MiB stored
- * body can never concatenate 128 MiB into the model system prompt every turn.
- * A new **attach** whose body would exceed that budget is rejected
- * (`too_large` / `budget`) and is never added to the sticky set — so a too-big
- * skill can never sit "attached" while silently never being injected (the
- * review's "silent lie" amendment).
+ * **Catalog inject (plan #557 / #931):** the default inject is a bounded
+ * **catalog** (one line per candidate skill — slug + name + one-line
+ * description), NOT the bodies. Bodies ride the on-demand `fetch_skill` tool
+ * (plan #527) instead of being double-paid inside the stable system-prefix
+ * block every turn. `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` (256 KiB) stays
+ * as the inject **ceiling** (a safety rail over the catalog, never the default
+ * inject); the catalog for ≤ 32 sticky + ≤ 8 always-on slugs is a few KiB.
+ * Because no body is injected at attach time any more, the former attach-time
+ * `too_large` / `budget` body-budget rejection is **retired** for the catalog
+ * path: an over-256 KiB skill can now attach and be catalog-listed; its body
+ * is only ever fetched (truncated to the 256 KiB `SKILL_FETCH_MAX_RETURN_BYTES`
+ * return cap). The store cap (`SKILL_BODY_MAX_BYTES`, 4 MiB) still bounds
+ * storage.
  *
  * The session-store seam is injected so this module never constructs I/O
  * (di-gate).
@@ -97,7 +103,11 @@ export function parseSkillCommand(prompt: string): ParsedSkillCommand {
   return { type: 'none' };
 }
 
-/** Minimal skill-body read seam (owned rows only; null = no-row / other-user). */
+/**
+ * Skill-body read seam (owned rows only; null = no-row / other-user).
+ * Used for attach existence checks only — bodies are never injected by the
+ * catalog path (the model pulls them via `fetch_skill`).
+ */
 export type SkillBodyReader = {
   getSkillBySlug(
     userId: string,
@@ -105,6 +115,19 @@ export type SkillBodyReader = {
   ): Promise<
     | { ok: true; value: { body: string } | null }
     | { ok: false; error: string }
+  >;
+};
+
+/**
+ * Skill-summary list seam for the catalog. Mirrors the read-only discovery
+ * surface (`listUserSkills` → summaries only, no body). Fail-open on error.
+ */
+export type SkillSummaryLister = {
+  listUserSkills(
+    userId: string,
+  ): Promise<
+    | { ok: true; value: { slug: string; name: string; description: string }[] }
+    | { ok: false; code: string; error: string }
   >;
 };
 
@@ -142,6 +165,13 @@ export type ResolveSkillCommandInput = {
   sessionStore?: SessionStoreEnvelope;
   sessionKey?: SessionRecordKey;
   userSkills: SkillBodyReader;
+  /**
+   * Skill-summary lister (plan #557 / #931). When set, the inject is a bounded
+   * CATALOG built from `listUserSkills` summaries (no bodies). When omitted,
+   * the resolver falls back to the legacy body-block build (callers without a
+   * lister — kept so the seam stays optional and tests can exercise both).
+   */
+  listUserSkills?: SkillSummaryLister;
 };
 
 export type ResolveSkillResult = {
@@ -160,6 +190,19 @@ export function buildSkillBlock(slug: string, body: string): string {
   return `### Skill attached: ${slug}\n${body}`;
 }
 
+/**
+ * One catalog line: `` `<slug>` — <name>: <description> `` — the same shape as
+ * `find_skill`'s summary line in `lib/agent/skillTools.ts` (slug first so the
+ * model can follow up with `fetch_skill`). Summaries only — never a body.
+ */
+export function buildCatalogLine(entry: {
+  slug: string;
+  name: string;
+  description: string;
+}): string {
+  return `\`${entry.slug}\` — ${entry.name}${entry.description ? `: ${entry.description}` : ''}`;
+}
+
 function byteLength(s: string): number {
   return new TextEncoder().encode(s).length;
 }
@@ -167,22 +210,37 @@ function byteLength(s: string): number {
 /**
  * Resolve the skills preamble for an agent turn.
  *
- * Always re-reads `meta.attachedSkills` (sticky) + re-resolves bodies, then
- * applies the current turn's attach/detach command. Returns an events array
- * (for the display-only `skill_attached` rows) plus a `preamble` to append
- * after the persona, plus the final slug set to persist best-effort.
+ * Always re-reads `meta.attachedSkills` (sticky), then applies the current
+ * turn's attach/detach command. Returns an events array (for the display-only
+ * `skill_attached` rows) plus a `preamble` to append after the persona, plus
+ * the final slug set to persist best-effort.
+ *
+ * **Catalog inject (plan #557 / #931):** when `listUserSkills` is provided the
+ * preamble is a bounded CATALOG of the candidate set (sticky ∪ always-on,
+ * exactly the slugs that used to be body-injected): one line per skill
+ * (slug + name + one-line description), built from summaries only — bodies are
+ * pulled on demand via `fetch_skill`. A sticky/always-on slug whose skill was
+ * deleted has no summary and silently drops from the catalog (same as it
+ * silently stopped body-injecting). A store error → fail-open: no catalog
+ * block, the round still runs with the base system. The catalog is bounded by
+ * the `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` ceiling as a safety rail (a
+ * catalog of ≤ 32 + 8 entries is a few KiB — far under 256 KiB).
+ *
+ * When `listUserSkills` is NOT provided the legacy greedy body-block build is
+ * kept (256 KiB inject budget) so callers without a lister still work.
  *
  * Sticky re-resolves are SILENT (no event). An **attach** emits exactly one
- * event: `ok:true` when the skill is injectable, or `ok:false` with a reason
- * (`unknown skill` / `unavailable` / `too_large` / `budget`). An attach that
- * fails the inject byte budget (`too_large` > 256 KiB, or `budget` when the
- * already-attached set leaves no room) is NEVER added to the sticky set, so no
- * stored-but-never-injected "silent lie" can form.
+ * event: `ok:true` when the skill is catalog-listable, or `ok:false` with a
+ * reason (`unknown skill` / `unavailable` / `invalid slug`). No body is
+ * injected at attach time, so the former `too_large` / `budget` body-budget
+ * rejections no longer fire: an over-256 KiB skill can attach and be
+ * catalog-listed (its body is reachable via `fetch_skill`, truncated to the
+ * 256 KiB return cap).
  */
 export async function resolveSkillPreamble(
   input: ResolveSkillCommandInput,
 ): Promise<ResolveSkillResult> {
-  const { userId, command, sessionStore, sessionKey, userSkills, alwaysOnSlugs } = input;
+  const { userId, command, sessionStore, sessionKey, userSkills, alwaysOnSlugs, listUserSkills } = input;
 
   // 1. Read the sticky set from the envelope (mirrors personaInject's
   //    fail-open/closed store rules). `readEnvelope` rolls forward from a
@@ -233,21 +291,20 @@ export async function resolveSkillPreamble(
     if (i >= 0) set.splice(i, 1);
   };
 
-  // Pending attach resolved for this turn (slug + body); confirmed against the
-  // inject budget in step 3 before being committed to the sticky set.
-  let pendingAttach: { slug: string; body: string } | null = null;
+  // Pending attach resolved for this turn (slug); confirmed against the store
+  // (existence only) before being committed to the sticky set. No body is read
+  // for injection — the catalog path never injects bodies.
+  let pendingAttach: { slug: string } | null = null;
+  // Set when a catalog store error must skip the sticky rewrite (fail-open).
+  let skipStickyPersist = false;
 
   // 2. Apply the current command (attach/detach).
   if (command.type === 'attach') {
     if (!SKILL_SLUG_RE.test(command.slug)) {
       events.push({ action: 'attach', slug: command.slug, ok: false, reason: 'invalid slug' });
     } else if (hasSlug(command.slug)) {
-      // Idempotent re-attach of an already-attached slug still confirms; the
-      // sticky body re-resolves + budget-check below.
-      pendingAttach = {
-        slug: command.slug,
-        body: (await readSkillBody(userId, command.slug, userSkills)).value ?? '',
-      };
+      // Idempotent re-attach of an already-attached slug still confirms.
+      pendingAttach = { slug: command.slug };
     } else {
       const res = await readSkillBody(userId, command.slug, userSkills);
       if (!res.value) {
@@ -258,13 +315,13 @@ export async function resolveSkillPreamble(
           reason: res.unavailable ? 'unavailable' : 'unknown skill',
         });
       } else {
-        pendingAttach = { slug: command.slug, body: res.value };
+        pendingAttach = { slug: command.slug };
       }
     }
   } else if (command.type === 'detach') {
     // Always-on slugs cannot be detached: they are user-global, not session
     // state. Report as always-on so the operator sees WHY detach was refused
-    // (the slug IS in this turn's preamble, just from alwaysOnSlugs, not sticky).
+    // (the slug IS in this turn's catalog, just from alwaysOnSlugs, not sticky).
     if (alwaysOnSet.has(command.slug)) {
       events.push({ action: 'detach', slug: command.slug, ok: false, reason: 'always-on' });
     } else if (hasSlug(command.slug)) {
@@ -275,67 +332,86 @@ export async function resolveSkillPreamble(
     }
   }
 
-  // 3. Budget-gate the pending attach BEFORE it joins the sticky set. A body
-  //    alone > the inject budget → `too_large`; it fits alone but not alongside
-  //    the already-attached injectable set → `budget`. Either way it is NOT
-  //    added to `set` (never a silent never-injected attach).
+  // 3. Commit the pending attach. The former `too_large` / `budget` attach-time
+  //    body-budget rejection is RETIRED (plan #557 / #931): no body is injected
+  //    any more, so a 4 MiB stored body is no longer a prompt-size hazard at
+  //    attach time — the slug joins the catalog and the body is only ever
+  //    fetched on demand (truncated to the 256 KiB `fetch_skill` return cap).
+  //    The store cap (`SKILL_BODY_MAX_BYTES`, 4 MiB) still bounds storage.
   if (pendingAttach) {
-    const bodyBytes = byteLength(pendingAttach.body);
-    const slug = pendingAttach.slug;
-    if (bodyBytes > HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES) {
-      events.push({ action: 'attach', slug, ok: false, reason: 'too_large' });
-      pendingAttach = null;
-    } else {
-      // The already-attached set's current bodies measure the real budget
-      // already in use. When a sticky body fails to resolve, the budget is
-      // unknown → commit optimistically (the greedy build below is the final
-      // word on injection).
-      let used = 0;
-      let allResolve = true;
-      for (const attachedSlug of set) {
-        const res = await readSkillBody(userId, attachedSlug, userSkills);
-        if (!res.value) {
-          allResolve = false;
-          break;
-        }
-        used += byteLength(res.value);
-      }
-      if (allResolve && used + bodyBytes > HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES) {
-        events.push({ action: 'attach', slug, ok: false, reason: 'budget' });
-        pendingAttach = null;
-      } else {
-        // Fits (or budget unknown) → commit the attach (deduped: an idempotent
-        // re-attach of an already-present slug is not appended again) and
-        // confirm with an ok:true event.
-        if (!set.includes(slug)) set.push(slug);
-        events.push({ action: 'attach', slug, ok: true });
-        pendingAttach = null;
-      }
-    }
+    if (!set.includes(pendingAttach.slug)) set.push(pendingAttach.slug);
+    events.push({ action: 'attach', slug: pendingAttach.slug, ok: true });
+    pendingAttach = null;
   }
 
-  // 4. Re-resolve bodies for ALL candidate slugs (staff-of-work: edits
-  //    re-apply; deleted skills silently stop attaching — dropped from the
-  //    sticky set). The STICKY set (`finalSlugs`) is what stays attached and is
-  //    persisted; the PREAMBLE (`blocks`) is the greedy-injectable subset under
-  //    the byte budget. A sticky slug whose body outgrew the budget drops from
-  //    THIS turn's preamble but stays attached (never a silent dis-attach); a
-  //    NEW accepted attach was pre-validated to fit (step 3), so it is always
-  //    in both.
+  // 4. Build the inject.
+  //    - Catalog path (default, plan #557 / #931): with a `listUserSkills`
+  //      seam the inject is the bounded CATALOG of the candidate set
+  //      (sticky ∪ always-on) — one line per skill (slug + name + one-line
+  //      description), NO bodies (the model pulls bodies on demand via
+  //      `fetch_skill`). A slug whose skill was deleted has no summary →
+  //      silently drops from the catalog AND from the sticky set
+  //      (staff-of-work semantics: the sticky set stays resolvable-only). The
+  //      catalog is bounded by the `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`
+  //      inject ceiling as a safety rail — unreachable in practice at ≤ 32
+  //      sticky + 8 always-on entries (a few KiB), never unbounded.
+  //    - Legacy fallback (no lister seam): greedy body blocks under the same
+  //      inject budget — the pre-catalog behavior, kept for callers without
+  //      the seam (the attach-time `too_large` / `budget` rejections live on
+  //      this path only).
   const finalSlugs: string[] = [];
   const blocks: string[] = [];
   let used = 0;
-  for (const slug of set) {
-    const res = await readSkillBody(userId, slug, userSkills);
-    if (!res.value) continue; // deleted/stale slug silently drops from sticky
-    const body = res.value;
-    finalSlugs.push(slug); // resolve-able sticky slug stays attached
-    const bytes = byteLength(body);
-    if (used + bytes > HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES) {
-      continue; // exceeds remaining inject budget → not in this turn's preamble
+  if (listUserSkills) {
+    let summaries: { slug: string; name: string; description: string }[] = [];
+    let storeError = false;
+    try {
+      const listed = await listUserSkills.listUserSkills(userId);
+      if (listed.ok) {
+        summaries = listed.value;
+      } else {
+        storeError = true;
+      }
+    } catch {
+      storeError = true;
     }
-    blocks.push(buildSkillBlock(slug, body));
-    used += bytes;
+    const bySlug = new Map(summaries.map((s) => [s.slug, s]));
+    for (const slug of set) {
+      const summary = bySlug.get(slug);
+      if (!summary) continue; // deleted/stale slug silently drops from sticky
+      finalSlugs.push(slug); // resolvable candidate slug stays attached
+      const line = buildCatalogLine(summary);
+      const bytes = byteLength(line);
+      if (used + bytes > HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES) {
+        continue; // inject-ceiling safety rail — unreachable at ≤ 32 + 8 entries
+      }
+      blocks.push(line);
+      used += bytes;
+    }
+    if (storeError && set.length > 0) {
+      // Fail-open on a catalog store error: no inject this turn (the round
+      // still runs with the base system); also skip the sticky rewrite below
+      // so a store outage can never rewrite `meta.attachedSkills` from a
+      // half-resolved candidate set.
+      finalSlugs.length = 0;
+      blocks.length = 0;
+      skipStickyPersist = true;
+    }
+  } else {
+    // Legacy fallback (no lister seam): greedy body blocks under the inject
+    // budget — the pre-catalog behavior, kept for callers without the seam.
+    for (const slug of set) {
+      const res = await readSkillBody(userId, slug, userSkills);
+      if (!res.value) continue; // deleted/stale slug silently drops from sticky
+      const body = res.value;
+      finalSlugs.push(slug); // resolve-able sticky slug stays attached
+      const bytes = byteLength(body);
+      if (used + bytes > HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES) {
+        continue; // exceeds remaining inject budget → not in this turn's preamble
+      }
+      blocks.push(buildSkillBlock(slug, body));
+      used += bytes;
+    }
   }
 
   // 5. Persist best-effort via the ENVELOPE seam (never legacy get/put), only
@@ -347,7 +423,7 @@ export async function resolveSkillPreamble(
   //    `meta.attachedSkills` — they are re-resolved from the DB every turn.
   const stickySlugs = finalSlugs.filter((s) => !alwaysOnSet.has(s));
   const attachedSkills = serializeAttachedSkills(stickySlugs);
-  if (envelope && sessionStore && sessionKey) {
+  if (envelope && sessionStore && sessionKey && !skipStickyPersist) {
     try {
       const input: SessionEnvelopeInput = {
         id: envelope.id,

@@ -280,8 +280,11 @@ export async function POST(req: Request): Promise<Response> {
     // Phase 2 (#517) — resolve attached skills (sticky re-read from
     // `meta.attachedSkills` + the current `/slug` attach or `/unskill` detach).
     // Modeled on personaInject but WITHOUT the snapshot lock: skills are
-    // staff-of-work, so bodies re-resolve from the store each turn (edits apply
-    // next turn). Fail-open: any store/resolution error → no preamble (turn
+    // staff-of-work. Plan #557/#931: the inject is a bounded CATALOG (one line
+    // per candidate skill — sticky ∪ always-on: slug + name + description),
+    // NOT the bodies — bodies ride the on-demand `fetch_skill` tool, so a
+    // mid-session body edit no longer rewrites the stable system-prefix block.
+    // Fail-open: any store/resolution error → no preamble (turn
     // proceeds), never a 4xx/5xx on the hot path. Sticky persist is best-effort;
     // when no `sessionId`/store is available the attach still injects THIS turn
     // (mirrors persona's offline-safe path), just without a sticky write.
@@ -317,6 +320,11 @@ export async function POST(req: Request): Promise<Response> {
             userId,
             command: skillCommand,
             userSkills: services.userSkills,
+            // Catalog seam (plan #557/#931): build the inject from
+            // `listUserSkills` summaries (no bodies). The store object carries
+            // both methods; the structural `listUserSkills` member satisfies
+            // the `SkillSummaryLister` seam.
+            listUserSkills: services.userSkills,
             alwaysOnSlugs,
             ...(sessionStore && parsed.sessionId
               ? {

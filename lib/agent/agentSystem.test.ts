@@ -73,11 +73,11 @@ describe('resolveSystem', () => {
     );
   });
 
-  it('wraps a skills preamble in <attached_skills> after the persona', () => {
+  it('wraps a skills preamble in <attached_skills> after the persona (catalog semantics)', () => {
     const system = resolveSystem(
       {
         personaPreamble: 'Always use tabs.',
-        skillsPreamble: '### Skill attached: create-plan\nPlan in YAML.',
+        skillsPreamble: '`create-plan` — Create plan: writes a plan.',
       },
       true,
     );
@@ -85,7 +85,22 @@ describe('resolveSystem', () => {
     const skillsAt = system.indexOf('<attached_skills>');
     expect(personaAt).toBeGreaterThan(-1);
     expect(skillsAt).toBeGreaterThan(personaAt);
-    expect(system).toContain('### Skill attached: create-plan');
+    expect(system).toContain('`create-plan` — Create plan: writes a plan.');
+  });
+
+  it('the <attached_skills> intro copy is catalog (fetch-on-demand) semantics, covering sticky ∪ always-on', () => {
+    const system = resolveSystem(
+      { skillsPreamble: '`create-plan` — Create plan.' },
+      true,
+    );
+    // Copy covers the whole catalog set (sticky ∪ always-on) — it must NOT
+    // claim every listed skill was attached via a `/skill-name` slash command
+    // (always-on skills auto-attach and were never slash-attached).
+    expect(system).toContain('Their BODIES ARE NOT INJECTED');
+    expect(system).toContain('fetch_skill');
+    expect(system).toContain('find_skill');
+    // No slash-command misattribution of the whole set.
+    expect(system).not.toContain('via a `/skill-name` slash command');
   });
 
   it('drops empty/whitespace persona and skills preambles', () => {

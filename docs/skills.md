@@ -7,14 +7,23 @@ They are created and edited in **Settings → Skills** and stored in the per-use
 and are scoped to exactly one user + tenant.
 
 To use a skill in a session, **attach it with a slash command** — type
-`/skill-name` in the harness composer. The server resolves the skill, injects
-its body into the session's system context, and the transcript shows only a
+`/skill-name` in the harness composer. The server resolves the skill and adds
+its slug to the session's attached set; the transcript shows a
 `Skill attached: <slug>` row. The agent can also **search / read your own
 skills directly** with the server-side `find_skill` and `fetch_skill` tools,
 **or manage your skills** (create / read / update / delete) through the
 `meta_skill_*` authoring tools
 (see [Agent skill-search tools](#agent-skill-search-tools-find_skill--fetch_skill)
 and [Agent skill-authoring tools](#agent-skill-authoring-tools-meta_skill_)).
+
+**Bodies are not injected.** The session's system context carries a bounded
+**catalog** — one line per attached/always-on skill (`<slug> — Name:
+description`) — not the playbook bodies. The agent reads a skill's full body on
+demand with the `fetch_skill` tool whenever it needs it, and discovers other
+skills with `find_skill`. This keeps the per-turn inject small (a few KiB
+instead of up to hundreds of KiB of bodies) and keeps the stable system prefix
+stable across turns (a mid-session skill body edit no longer rewrites the
+block).
 
 ## Creating and editing a skill
 
@@ -80,19 +89,20 @@ Type a slash command in the harness composer:
 
 - **`/skill-name`** — attach the skill. `/create-plan please scaffold` attaches
   `create-plan` **and** sends the remaining prose (`please scaffold`) to the
-  model. The skill body is injected into the model's system context for this
-  turn and **stays attached** for the rest of the session.
+  model. The skill joins the session's catalog (see above) and **stays
+  attached** for the rest of the session; the agent reads the body on demand
+  via `fetch_skill` when it needs the playbook.
 - **`/unskill skill-name`** — detach. The whole line is a command (no model
-  turn); the skill stops being re-injected on the next turn.
+  turn); the skill drops from the catalog on the next turn.
 
 Attachment is **session-sticky**: the server remembers which skill slugs are
 attached in the session's `meta.attachedSkills` (a JSON array string, dedupe,
-≤ 32 slugs) and re-resolves their bodies from the store on every turn in that
-session. Because skills are **staff of work** (not a locked identity like a
-persona snapshot), editing a skill's body takes effect from the **next turn** —
-an already-attached session picks up the edited body rather than a frozen copy.
-A skill that is deleted while attached silently stops being injected. **New
-session / Clear** mints a fresh session, so attachments reset there.
+≤ 32 slugs) and re-resolves their summaries from the store on every turn in
+that session. Because skills are **staff of work** (not a locked identity like a
+persona snapshot), editing a skill's description applies from the **next
+turn** — a body edit never rewrites the catalog line for that slug. A skill
+that is deleted while attached silently drops from the catalog. **New session /
+Clear** mints a fresh session, so attachments reset there.
 
 The sticky set is carried on BOTH seams so nothing can wipe it: the server
 persists it via the phase-0 **envelope** (`readEnvelope` / `upsertEnvelope`,
@@ -117,10 +127,9 @@ session**, regardless of the chosen persona. The always-on set is:
 - **Cannot be detached by `/unskill`** — always-on means always-on. Toggle
   it off in Settings to stop auto-attaching.
 
-An always-on skill body still counts toward the same per-turn inject byte
-budget as every other attached skill (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`,
-256 KiB). If you need a skill everywhere by default, flip the always-on toggle.
-If you want persona-specific recommendations instead, see
+An always-on skill appears in the same per-turn catalog inject as every other
+attached skill (see above). If you need a skill everywhere by default, flip the
+always-on toggle. If you want persona-specific recommendations instead, see
 [personas.md](personas.md) — recommended skills.
 
 ### What the UI shows
@@ -220,14 +229,16 @@ read-only `find_skill` / `fetch_skill`, which stay unchanged.
   skill focused on one job.
 - **Description:** one short line a user can scan; it is shown in discovery
   lists but never the body.
-- **Size & token budget — store cap vs inject cap:** a body is stored up to
+- **Size & token budget — store cap vs catalog inject:** a body is stored up to
   the 4 MiB `SKILL_BODY_MAX_BYTES` cap, but what is **injected into the model's
-  system context every turn** is separately capped at a far smaller budget
-  (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`, 256 KiB total across all attached
-  skills). A new attach whose body would exceed that inject budget is **rejected
-  at attach** (`too_large` when the body alone is over, `budget` when the
-  already-attached set leaves no headroom) and is **never counted as attached** —
-  so a large stored skill can never sit "attached" while silently never being
-  injected (the count cap alone is not a size cap). Keep bodies tight: only the
-  attached **slugs** are stored in session `meta` (never bodies), and only the
-  injectable subset of their bodies reaches the model each turn.
+  system context every turn** is a bounded **catalog** of one line per
+  attached/always-on skill (slug + name + description), not the bodies. The
+  catalog is bounded by the `HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES` (256 KiB)
+  inject **ceiling** as a safety rail — a catalog of ≤ 32 sticky + 8 always-on
+  slugs is a few KiB, far under the ceiling, so the value is unchanged and no
+  cap was raised or lowered. Because no body is injected at attach time, an
+  attach is no longer size-rejected: an over-256 KiB skill can attach and be
+  catalog-listed, and its body is only ever returned by `fetch_skill` /
+  `meta_skill_read` truncated to the 256 KiB `SKILL_FETCH_MAX_RETURN_BYTES`
+  model-return cap. Keep bodies tight anyway — the store cap and the fetch cap
+  both still apply.

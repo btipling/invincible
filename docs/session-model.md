@@ -271,7 +271,7 @@ All four are **non-critical UX carriers**: a poisoned value **drops to unset**
 | Blob transcript-object body | **8 MiB** (`HARNESS_SESSION_MAX_BODY_BYTES`) | **Per object** (worker chunk or host flatten root) — client→Blob upload, NOT a Function body. Host `trimForCloudPut` and worker persist both **drop oldest messages** to fit the object. Hitting the ceiling is a trim, not a turn-end. Reconstruct may span many objects. |
 | Transcript `prev` walk | **256** objects (`TRANSCRIPT_CHUNK_WALK_MAX`) | Loop/DoS bound on reconstruct **and** worker persist. Fail-closed on cycle / foreign `prev` / missing object (not this-chunk-only). Worker chunks carry `depth` (1-based chain length) so persist refuses a 257th object **without** walking ancestors. Flatten roots omit `prev`/`depth` (length 1). NEW generous cap — not a message cap. |
 | Record id / tenant / user | max **512**, Redis-safe `^[A-Za-z0-9_-]{1,512}$` | so `KEYS`/prefix globs can never bleed |
-| Attached-skill inject | **256 KiB** total (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`) | bodies folded into `skillsPreamble` greedily up to this per-turn budget (count cap alone is not a size cap); a new attach that would exceed it is rejected (`too_large` / `budget`) and never counted as attached |
+| Attached-skill inject | **256 KiB** ceiling (`HARNESS_SESSION_MAX_ATTACHED_BODY_BYTES`) | the default inject is a bounded **catalog** (one line per attached/always-on skill: slug + name + description — a few KiB, far under the ceiling); bodies are never injected (the agent pulls them via `fetch_skill`, capped at `SKILL_FETCH_MAX_RETURN_BYTES` = 256 KiB per call). The 256 KiB value is an unchanged safety-rail ceiling over the catalog — no cap raised or lowered |
 
 Host `trimForCloudPut` folds `cwd` + `activeSandboxId` into `meta.{logicalCwd,activeSandboxId}`
 and `attachedSlugs` into `meta.attachedSkills`, `selectedModel` into `meta.selectedModel`,
@@ -464,7 +464,7 @@ new session, regardless of the chosen persona. The always-on set is:
   not session state.
 - Merged into the candidate set **before** sticky slugs and the current turn's
   slash command, then de-duplicated.
-- Capped at 8 skills (`USER_ALWAYS_ON_SKILLS_MAX`), subject to the same 256 KiB
-  per-turn inject budget as all other attached skills.
+- Capped at 8 skills (`USER_ALWAYS_ON_SKILLS_MAX`), catalog-listed alongside
+  every other attached skill in the same per-turn inject (see the caps table).
 
 See [docs/skills.md](skills.md) — always-on skills.

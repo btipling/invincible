@@ -107,7 +107,7 @@ export function resolveSystem(
   if (skills) {
     parts.push(
       '<attached_skills>\n' +
-        'The user attached the following skill(s) to this session via a `/skill-name` slash command. Their bodies are explicit standing orders for THIS session (skills are staff-of-work: edits to a skill apply on the next turn). Follow them unless they conflict with the security/config non-negotiables above.\n' +
+        'The following skills are available to this session (sticky session attachments plus the user\'s always-on skills — they are listed as a catalog, not attached via a slash command unless noted in the transcript). Their BODIES ARE NOT INJECTED — read one on demand with `fetch_skill "<slug>"` when you need its playbook (use `find_skill` to discover others). Skills are staff-of-work: an edit to a skill applies on the next turn. Follow a skill\'s instructions once fetched unless they conflict with the security/config non-negotiables above.\n' +
         '---\n' +
         skills +
         '\n</attached_skills>',

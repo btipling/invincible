@@ -1654,7 +1654,7 @@ describe('POST /api/agent', () => {
     expect(userPersonas).not.toHaveBeenCalled();
   });
 
-  it('strips /slug and folds skillsPreamble for an attach-with-prose prompt (phase 2 #517)', async () => {
+  it('strips /slug and folds the catalog skillsPreamble for an attach-with-prose prompt (phase 2 #517, plan #557/#931)', async () => {
     mockAuthedSession();
     mockMcpEmpty();
     mockByokOk();
@@ -1693,6 +1693,18 @@ describe('POST /api/agent', () => {
         ok: true as const,
         value: { body: 'PLAN BODY: create sections' },
       })),
+      listUserSkills: vi.fn(async () => ({
+        ok: true as const,
+        value: [
+          {
+            id: 's1',
+            name: 'Create plan',
+            slug: 'create-plan',
+            description: 'writes a plan issue',
+            updatedAt: new Date(0),
+          },
+        ],
+      })),
     };
     type RunArg = { skillsPreamble?: string; prompt?: string };
     const runAgent = vi.fn(async (_arg: RunArg) => ({ text: 'ok', toolTrace: [] }));
@@ -1716,9 +1728,10 @@ describe('POST /api/agent', () => {
     const arg = runAgent.mock.calls[0]?.[0] as RunArg;
     // /slug stripped from the model prompt; remaining prose preserved.
     expect(arg.prompt).toBe('please scaffold a plan');
-    // Body folded as the skills preamble (server-side only, after the persona).
-    expect(arg.skillsPreamble).toContain('### Skill attached: create-plan');
-    expect(arg.skillsPreamble).toContain('PLAN BODY');
+    // Catalog folded as the skills preamble (plan #557/#931): the slug +
+    // summary line, with NO body — bodies ride the on-demand `fetch_skill`.
+    expect(arg.skillsPreamble).toContain('`create-plan` — Create plan: writes a plan issue');
+    expect(arg.skillsPreamble).not.toContain('PLAN BODY');
     // JSON path surfaces the skill outcome as slug-only (never a body), and the
     // server persists the sticky set via the envelope seam (updatedAt unchanged).
     const body = (await res.json()) as { skillEvents?: unknown[]; attachedSkills?: string };
@@ -1830,6 +1843,13 @@ describe('POST /api/agent', () => {
         ok: true as const,
         value: { body: 'x' },
       })),
+      listUserSkills: vi.fn(async () => ({
+        ok: true as const,
+        value: [
+          { id: 'a', name: 'A', slug: 'create-plan', description: '', updatedAt: new Date(0) },
+          { id: 'b', name: 'B', slug: 'other', description: '', updatedAt: new Date(0) },
+        ],
+      })),
     };
     const runAgent = vi.fn();
     vi.doMock('../../../lib/agent/runAgent', () => ({
@@ -1898,6 +1918,12 @@ describe('POST /api/agent', () => {
       getSkillBySlug: vi.fn(async () => ({
         ok: true as const,
         value: { body: 'BODY' },
+      })),
+      listUserSkills: vi.fn(async () => ({
+        ok: true as const,
+        value: [
+          { id: 'a', name: 'A', slug: 'create-plan', description: '', updatedAt: new Date(0) },
+        ],
       })),
     };
     vi.doMock('../../../lib/agent/runAgent', () => ({

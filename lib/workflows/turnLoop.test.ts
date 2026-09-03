@@ -2510,7 +2510,8 @@ describe('step wrappers (matrix 4–7)', () => {
     }));
     vi.doMock('../tenancy/skillInject', () => ({
       resolveSkillPreamble: async () => ({
-        preamble: '### Skill attached: create-plan\nPlan in YAML.',
+        // Catalog inject (plan #557/#931): slug + name + description lines.
+        preamble: '`create-plan` — Create plan: writes a plan.',
         attachedSlugs: ['create-plan'],
         events: [],
       }),
@@ -2528,7 +2529,7 @@ describe('step wrappers (matrix 4–7)', () => {
     expect(argDeps.system).toContain('<persona_standing_orders>');
     expect(argDeps.system).toContain('Always use tabs.');
     expect(argDeps.system).toContain('<attached_skills>');
-    expect(argDeps.system).toContain('### Skill attached: create-plan');
+    expect(argDeps.system).toContain('`create-plan` — Create plan: writes a plan.');
     vi.doUnmock('../agent/generateOneRound');
     vi.doUnmock('../di/index');
     vi.doUnmock('./assembleDurableToolWorld');
