@@ -18,6 +18,11 @@ import {
 
 export type HeapApplied = { runId: string; count: number };
 
+/** Envelope liveness that may still have a live Workflow run (F5 attach). */
+export function isLiveTurnStatus(status?: TurnStatus): boolean {
+  return status === 'running' || status === 'cancelling';
+}
+
 /**
  * Host + in-canvas note when operator Send is remapped to attach
  * (adversarial #857). Not a Turn-ended line; not EMBER. Composer text was
@@ -82,11 +87,9 @@ export function shouldPaintAttachFollowUpDetachNote(input: {
 /**
  * After Send-while-running attach returns: POST the remapped prompt when the
  * run is no longer live (`done` / 404 / post-start SSE error). C15 409 no
- * longer applies. Never while `running` (EOF / 503 — note path). Never for
- * kickColdAttach / hot-resume (empty prompt, `sendWhileRunning` false).
- * Never on operator Stop (G22 #816 / adversarial-review #927): Stop folds
- * `'cancelling'` (`!== 'running'`), which would otherwise auto-POST the
- * remapped follow-up and set `inflight` before the cancel ack lands.
+ * longer applies. Never while `running` or `'cancelling'` (still live). Never
+ * for kickColdAttach / hot-resume (empty prompt, `sendWhileRunning` false).
+ * Never on operator Stop.
  */
 export function shouldRepostAttachFollowUp(input: {
   sendWhileRunning: boolean;
@@ -95,7 +98,7 @@ export function shouldRepostAttachFollowUp(input: {
 }): boolean {
   return (
     input.sendWhileRunning &&
-    input.turnStatus !== 'running' &&
+    !isLiveTurnStatus(input.turnStatus) &&
     !input.operatorStop
   );
 }
@@ -123,6 +126,8 @@ export type AttachDecision =
  * Classify hot resume vs cold attach by **this heap's ring**, not envelope `C`.
  *
  * - No live run → none (do not attach completed sessions on boot).
+ * - `'cancelling'` is still live until the workflow actually ends (accepted
+ *   G22 cancel, or a leftover marker) — F5 must cold-attach so Stop returns.
  * - Heap has not applied this `turnRunId` (F5 / login / new tab / switch) → cold
  *   at `startIndex=0`, even if envelope `C` is large.
  * - Same-heap live ring → hot resume at **heap-applied** count. Envelope `C` is
@@ -135,7 +140,7 @@ export function decideAttachClass(input: {
   envelopeCursor?: number;
   heapApplied: HeapApplied | null;
 }): AttachDecision {
-  if (input.turnStatus !== 'running' || !input.turnRunId) {
+  if (!isLiveTurnStatus(input.turnStatus) || !input.turnRunId) {
     return { kind: 'none' };
   }
   const heap = input.heapApplied;
@@ -151,15 +156,16 @@ export function decideAttachClass(input: {
 export type ColdAttachSpec = { runId: string; startIndex: 0; dedup: true };
 
 /**
- * Predicate of `kickColdAttach`: only a restored snapshot that is still
- * `running` with a `turnRunId` attaches. Envelope liveness is **not** consulted
- * here (F5-stale-local miss).
+ * Predicate of `kickColdAttach`: a restored snapshot that is still
+ * `running` or `cancelling` with a `turnRunId` attaches. Envelope liveness is
+ * **not** consulted here (F5-stale-local miss). `'cancelling'` stays attachable
+ * so F5 after an accepted cancel (run still winding down) restores Busy + Stop.
  */
 export function coldAttachFromSnapshot(s: {
   turnStatus?: TurnStatus;
   turnRunId?: string;
 }): ColdAttachSpec | null {
-  if (s.turnStatus !== 'running' || !s.turnRunId) return null;
+  if (!isLiveTurnStatus(s.turnStatus) || !s.turnRunId) return null;
   return { runId: s.turnRunId, startIndex: 0, dedup: true };
 }
 
@@ -222,7 +228,8 @@ export type SendAttachSpec =
   | { kind: 'cold'; runId: string; startIndex: 0; dedup: true };
 
 /**
- * Classify operator Send while a durable run is still `running`.
+ * Classify operator Send while a durable run is still live (`running` or
+ * `'cancelling'`).
  *
  * Never POST (C15 409 mixes Turn ended + Error with keep-running). Heap with
  * applied frames (`count > 0`) → hot resume at `C`. Count 0 or a different /

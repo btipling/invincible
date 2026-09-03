@@ -19,7 +19,7 @@ import {
   type ToolTraceEntry,
 } from './agentApi';
 import { sendTurn, sendTurnStream, attachTurnStream } from './turnApi';
-import { isDetachAbort } from './detachTurn';
+import { isDetachAbort, isG22AcceptedAbort } from './detachTurn';
 import { type AgentStreamEvent } from './agent/agentStream';
 import { isProviderRefusalFinish, truncatedFinishError } from './agent/modelFinish';
 import {
@@ -1753,19 +1753,27 @@ export async function runHarnessTurn(
       // non-terminal EMBER. After onTurnStarted, producer SSE error / 5xx
       // reuses the POST give-up fold. EOF without terminal stays D18 via
       // durableIncomplete.
-      // Attach Stop/Esc is G22 server cancel (plan #816 / adversarial-review
-      // #927 pass 5): the poll already POSTed `/api/turns/:runId/cancel`.
-      // Fold `'cancelling'` + Turn-ended like POST-path Stop. #857's
-      // reader-only keep-running is superseded — a cancelled attach must not
-      // look like a detach (Ready, no stop line, next Send C15 409).
-      // Producer cancelled SSE (`Request cancelled.` without abort) is a
-      // **terminal** Stop fold — clear `running` (plan #919 / source #918).
+      // Attach Stop/Esc is G22 server cancel (plan #816 / punch-list): fold
+      // `'cancelling'` + Turn-ended only after an accepted cancel abort
+      // (`G22_ACCEPTED_ABORT_REASON`). A raw abort before ack keeps `running`
+      // with no stop line so F5 can attach. Producer cancelled SSE
+      // (`Request cancelled.` without abort) is a **terminal** Stop fold —
+      // clear `running` (plan #919 / source #918).
       const attachSubscribeFail =
         attaching &&
         !sawDurableStart &&
         fail.kind !== 'stop' &&
         fail.kind !== 'detach' &&
         !isAttachRunGone(agentResult.ok ? undefined : agentResult.status);
+      // Raw abort on a live durable id before the cancel POST was accepted.
+      // Keep `running`, no Turn-ended line (punch-list items 1–2).
+      const abortBeforeAck =
+        fail.kind === 'stop' &&
+        opts?.signal?.aborted === true &&
+        !isG22AcceptedAbort(opts?.signal) &&
+        failedSession.turnRunId !== undefined &&
+        (failedSession.turnStatus === 'running' ||
+          failedSession.turnStatus === 'cancelling');
       // Cold-attach strip: persist the Blob suffix only when nothing was
       // painted (503/404 before events) so we do not LWW a user-only
       // transcript. Thinking-only incomplete GET must keep the stripped
@@ -1791,7 +1799,7 @@ export async function runHarnessTurn(
             : agentResult.error || 'Unable to attach to run stream.'
         ).trim();
         failedSession = paintSubscribeFail(bridge, failedSession, line);
-      } else if (fail.kind !== 'detach') {
+      } else if (fail.kind !== 'detach' && !abortBeforeAck) {
         failedSession = pushTurnEnd(bridge, failedSession, fail.kind, fail.detail);
       }
       // Phase 2 (#465): a cancel/timeout/hard-error turn still persists the last
@@ -1846,9 +1854,10 @@ export async function runHarnessTurn(
       // onTurnStarted, producer SSE error reuses the POST give-up fold
       // (clear `running`). Attach 404 (run gone) falls through and clears
       // so C15 does not 409 a dead id.
-      // Attach Stop/Esc is G22 (plan #816 / adversarial-review #927 pass 5):
-      // not keep-running. Falls through to the cancelling / Turn-ended fold.
-      if (fail.kind === 'detach' || attachSubscribeFail) {
+      // Attach Stop/Esc is G22 (plan #816 / punch-list): keep-running on
+      // abort-before-ack. Accepted cancel (`G22_ACCEPTED_ABORT_REASON`) falls
+      // through to the cancelling / Turn-ended fold.
+      if (fail.kind === 'detach' || attachSubscribeFail || abortBeforeAck) {
         const id =
           agentResult.turnRunId ??
           (failedSession.turnStatus === 'running'
@@ -1872,20 +1881,17 @@ export async function runHarnessTurn(
           (failedSession.turnStatus === 'running' ||
             failedSession.turnRunId === undefined))
       ) {
-        // Plan #816 (G22) — a plain operator Stop on a LIVE durable run keeps
-        // `turnRunId` and folds `turnStatus: 'cancelling'` (the poll already
-        // fired the server cancel POST). The run's own terminal persist owns
-        // the terminal status — the old `turnRunId: undefined` + `completed`
-        // fold was a lie on the durable path (persisted meta said `completed`
-        // over a still-live run). It survives ONLY for the legacy `/api/agent`
-        // path (no live run id) and the producer-cancelled SSE terminal
-        // (`Request cancelled.` with no abort — the run is already terminal).
-        // The discriminator is the abort: a genuine operator Stop aborts the
-        // caller's signal; a producer terminal SSE does NOT (plan #919).
+        // Plan #816 (G22) — fold `'cancelling'` only after the cancel POST
+        // was accepted (host aborts with `G22_ACCEPTED_ABORT_REASON`). A raw
+        // abort before ack keeps `running` (handled above). Producer
+        // `Request cancelled.` with no abort still clears the id (the run is
+        // already terminal). The old `turnRunId: undefined` + `completed`
+        // fold survives for the legacy `/api/agent` path (no live run id).
         const keepCancelling =
           fail.kind === 'stop' &&
-          opts?.signal?.aborted === true &&
-          failedSession.turnStatus === 'running' &&
+          isG22AcceptedAbort(opts?.signal) &&
+          (failedSession.turnStatus === 'running' ||
+            failedSession.turnStatus === 'cancelling') &&
           failedSession.turnRunId !== undefined;
         failedSession = keepCancelling
           ? { ...failedSession, turnStatus: 'cancelling' }

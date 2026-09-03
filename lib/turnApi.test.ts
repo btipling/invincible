@@ -596,6 +596,7 @@ describe('cancelTurn (POST cancel — plan #816 G22)', () => {
   it('POSTs /api/turns/:runId/cancel?sessionId= → accepted on 200', async () => {
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       expect(init?.method).toBe('POST');
+      expect(init?.keepalive).toBe(true);
       expect(String(url)).toBe('/api/turns/wr_live/cancel?sessionId=s_1');
       return Response.json(
         { runId: 'wr_live', turnStatus: 'cancelling' },

@@ -1669,7 +1669,7 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     ).toBe(false);
   });
 
-  it('Stop after onTurnStarted folds cancelling KEEPING this-turn id (G22 plan #816, supersedes #844 clear)', async () => {
+  it('abort + Request cancelled. without accepted cancel keeps running, no stop line', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const { runHarnessTurn } = await import('./harnessChat');
@@ -1680,15 +1680,94 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
       sendAgentStream: async (_prompt, init) => {
         await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
         controller.abort();
-        // Production abort-after-headers now carries turnRunId; also prove the
-        // omit shape still folds cancelling via this-turn running.
         return { ok: false, error: 'Request cancelled.' };
       },
     });
-    // G22: a plain operator Stop on a LIVE durable run keeps `turnRunId` and
-    // folds 'cancelling' (the poll already fired the server cancel POST). The
-    // run's own terminal persist owns the terminal status — the old
-    // `turnRunId: undefined` + `completed` fold was a lie over a live run.
+    expect(next.turnRunId).toBe('wr_live');
+    expect(next.turnStatus).toBe('running');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+  });
+
+  it('row 2: failed cancel overlay on abort-before-ack keeps running, no stop line', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { runHarnessTurn } = await import('./harnessChat');
+    const { applyStopFoldToSession } = await import('./detachTurn');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+        controller.abort();
+        return { ok: false, error: 'Request cancelled.', turnRunId: 'wr_live' };
+      },
+    });
+    expect(next.turnStatus).toBe('running');
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+    const folded = applyStopFoldToSession(next, 'wr_live', { kind: 'keep-running' });
+    expect(folded.turnStatus).toBe('running');
+    expect(folded.turnRunId).toBe('wr_live');
+    expect(
+      folded.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+  });
+
+  it('row 3: 409 terminal overlay after raw abort does not claim you stopped', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { runHarnessTurn } = await import('./harnessChat');
+    const { applyStopFoldToSession } = await import('./detachTurn');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+        controller.abort();
+        return { ok: false, error: 'Request cancelled.', turnRunId: 'wr_live' };
+      },
+    });
+    expect(
+      next.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+    const folded = applyStopFoldToSession(next, 'wr_live', { kind: 'clear-terminal' });
+    expect(folded.turnStatus).toBe('completed');
+    expect(folded.turnRunId).toBeUndefined();
+    expect(
+      folded.messages.some(
+        (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
+      ),
+    ).toBe(false);
+  });
+
+  it('accepted cancel abort folds cancelling KEEPING this-turn id (G22 plan #816)', async () => {
+    const exp = makeMockExports();
+    const bridge = new HarnessBridge(exp);
+    const { runHarnessTurn } = await import('./harnessChat');
+    const { G22_ACCEPTED_ABORT_REASON } = await import('./detachTurn');
+    const controller = new AbortController();
+    const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'work', {
+      streamAgent: true,
+      signal: controller.signal,
+      sendAgentStream: async (_prompt, init) => {
+        await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
+        controller.abort(G22_ACCEPTED_ABORT_REASON);
+        return { ok: false, error: 'Request cancelled.' };
+      },
+    });
     expect(next.turnRunId).toBe('wr_live');
     expect(next.turnStatus).toBe('cancelling');
     expect(
@@ -1698,17 +1777,18 @@ describe('runHarnessTurn stream agent (phase 1)', () => {
     ).toBe(true);
   });
 
-  it('Stop after onTurnStarted with abort result id folds cancelling KEEPING id (G22 plan #816)', async () => {
+  it('accepted cancel abort with result id folds cancelling KEEPING id (G22 plan #816)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const { runHarnessTurn } = await import('./harnessChat');
+    const { G22_ACCEPTED_ABORT_REASON } = await import('./detachTurn');
     const controller = new AbortController();
     const { session: next } = await runHarnessTurn(bridge, createEmptySession(), 'work', {
       streamAgent: true,
       signal: controller.signal,
       sendAgentStream: async (_prompt, init) => {
         await init?.onTurnStarted?.({ turnRunId: 'wr_live' });
-        controller.abort();
+        controller.abort(G22_ACCEPTED_ABORT_REASON);
         return { ok: false, error: 'Request cancelled.', turnRunId: 'wr_live' };
       },
     });
@@ -5702,13 +5782,14 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     ).toBe(true);
   });
 
-  it('test 6i: attach Stop after onTurnStarted folds cancelling + Turn-ended (G22 / adversarial-review #927)', async () => {
+  it('test 6i: attach accepted-cancel abort folds cancelling + Turn-ended (G22)', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const session = runningSession();
     const sendAgent = vi.fn(async () => {
       throw new Error('must not POST /api/agent');
     });
+    const { G22_ACCEPTED_ABORT_REASON } = await import('./detachTurn');
     const controller = new AbortController();
     const { result, session: next } = await runHarnessTurn(bridge, session, '', {
       sendAgent,
@@ -5720,7 +5801,7 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
         attachStream: async (runId, opts: AttachInit) => {
           await opts.onTurnStarted?.({ turnRunId: runId });
           await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
-          controller.abort();
+          controller.abort(G22_ACCEPTED_ABORT_REASON);
           return { ok: false as const, error: 'Request cancelled.', turnRunId: runId };
         },
       },
@@ -5740,7 +5821,7 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     );
   });
 
-  it('test 6j: attach Stop before onTurnStarted folds cancelling + Turn-ended, no subscribe-fail EMBER (G22 / adversarial-review #927)', async () => {
+  it('test 6j: attach abort before ack keeps running, no stop line, no subscribe-fail EMBER', async () => {
     const exp = makeMockExports();
     const bridge = new HarnessBridge(exp);
     const session = runningSession();
@@ -5758,14 +5839,14 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
       },
     });
     expect(result.ok).toBe(false);
-    expect(next.turnStatus).toBe('cancelling');
+    expect(next.turnStatus).toBe('running');
     expect(next.turnRunId).toBe('wr_1');
     expect(exp.__lifecycle()).toBe(Lifecycle.Ready);
     expect(
       next.messages.some(
         (m) => m.role === 'system' && m.text === describeTurnEnd('stop'),
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       exp.__messages.some((m) => m.kind === MessageKind.Error),
     ).toBe(false);
@@ -5808,6 +5889,7 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
     const sendAgent = vi.fn(async () => {
       throw new Error('must not POST /api/agent');
     });
+    const { G22_ACCEPTED_ABORT_REASON } = await import('./detachTurn');
     const controller = new AbortController();
     const { result, session: next } = await runHarnessTurn(bridge, session, 'follow-up', {
       sendAgent,
@@ -5819,7 +5901,7 @@ describe('runHarnessTurn attach handshake (plan #813 / E19)', () => {
         attachStream: async (runId, opts: AttachInit) => {
           await opts.onTurnStarted?.({ turnRunId: runId });
           await opts.onEvent?.({ type: 'reasoning_delta', text: 'hmm' });
-          controller.abort();
+          controller.abort(G22_ACCEPTED_ABORT_REASON);
           return { ok: false as const, error: 'Request cancelled.', turnRunId: runId };
         },
       },

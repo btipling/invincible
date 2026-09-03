@@ -23,20 +23,25 @@ import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   abortReasonFor,
+  abortReasonForCancelAck,
   applyStopFoldToSession,
   CANCEL_FAILED_NOTE,
   CANCEL_RETRY_NOTE,
   decideCancelAckApply,
+  decideCancelRetryKickWhen,
   decideDetach,
   decideDetachPersist,
   decideStopFoldPost,
   decideStopFoldPre,
   DETACH_ABORT_REASON,
+  G22_ACCEPTED_ABORT_REASON,
   isDetachAbort,
+  isG22AcceptedAbort,
   preserveTargetId,
   putPreservedTurn,
   releaseBusyViewport,
   shouldAbortReader,
+  shouldAbortReaderOnCancelAck,
   shouldApplyMintBind,
   shouldKickCancelRetryAttach,
   shouldSetHostTurnNote,
@@ -146,6 +151,19 @@ describe('decideDetach (plan #812 D18 contract)', () => {
     stop.abort();
     expect(isDetachAbort(stop.signal)).toBe(false);
     expect(isDetachAbort(undefined)).toBe(false);
+  });
+
+  it('isG22AcceptedAbort: only abort(G22_ACCEPTED_ABORT_REASON)', () => {
+    const accepted = new AbortController();
+    accepted.abort(G22_ACCEPTED_ABORT_REASON);
+    expect(isG22AcceptedAbort(accepted.signal)).toBe(true);
+    const raw = new AbortController();
+    raw.abort();
+    expect(isG22AcceptedAbort(raw.signal)).toBe(false);
+    const detach = new AbortController();
+    detach.abort(DETACH_ABORT_REASON);
+    expect(isG22AcceptedAbort(detach.signal)).toBe(false);
+    expect(isG22AcceptedAbort(undefined)).toBe(false);
   });
 });
 
@@ -372,18 +390,19 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(helper).toContain('turnEpochRef.current += 1');
   });
 
-  it('raw abort() sites: helper (reasoned) + runPrompt supersede + poll Stop', () => {
+  it('raw abort() sites: helper (reasoned) + runPrompt supersede + poll ack + poll legacy', () => {
     const aborts = host.match(/abortRef\.current\?\.abort\(/g) ?? [];
-    expect(aborts.length).toBe(3);
+    expect(aborts.length).toBe(4);
     const poll = host.slice(
       host.indexOf('const poll = () =>'),
       host.indexOf('pollRef.current = window.setTimeout(poll, 150)'),
     );
     expect(poll).toContain('takePendingCancel()');
     expect(poll).toContain('abortRef.current?.abort()');
+    expect(poll).toContain('abortReasonForCancelAck');
     expect(poll).toContain('releaseBusyViewport(');
     expect(poll).not.toContain('decideDetach');
-    expect(poll).not.toContain('abortReasonFor');
+    expect(poll).not.toContain('abortReasonFor(');
     expect(poll).not.toContain('turnEpochRef');
   });
 
@@ -475,20 +494,16 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     );
     // Cancel POST fires through the turnApi client + the pre/post fold planner.
     expect(poll).toContain('cancelTurn(');
+    expect(poll).toContain('keepalive: true');
     expect(poll).toContain('decideStopFoldPre(');
     expect(poll).toContain('decideStopFoldPost(');
     expect(poll).toContain('shouldSkipCancelPost(');
     expect(poll).toContain('applyStopFoldToSession(');
     expect(poll).toContain('cancelPostedRunIdsRef');
     expect(poll).toContain('pendingStopFoldRef');
-    // A repeat Stop after an accepted cancel never re-POSTs (posted-id set);
-    // a terminal/gone ack drops the posted-id (orphan-unstick); a failed ack
-    // keeps running + paints a soft note (never a fake cancel). Failed ack
-    // MUST drop the posted-id even when inflight (adversarial-review #927)
-    // so Stop can retry. Pass 7: Stop is Busy-only, so same-session idle
-    // keep-running must kickColdAttach — never the 1h-wall self-end copy.
     expect(poll).toContain("apply.fold.kind === 'keep-running'");
     expect(poll).toContain('shouldKickCancelRetryAttach(');
+    expect(poll).toContain('decideCancelRetryKickWhen(');
     expect(poll).toContain('kickColdAttach');
     expect(poll).toContain('CANCEL_RETRY_NOTE');
     expect(poll).toContain('CANCEL_FAILED_NOTE');
@@ -496,10 +511,6 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(poll).not.toContain('will end on its own');
     expect(poll).toContain('persist(applyStopFoldToSession(');
     expect(poll).toContain('cancelPostedRunIdsRef.current.delete');
-    // Adversarial-review #927 pass 4: posted-id delete + pendingFold must
-    // run even when inflight; switch/unmount persist-detached onto the
-    // captured cancelSessionId (captured repo — unmount nulls repoRef).
-    // Discarded sessions never raw-persist (Clear resurrection).
     expect(poll).toContain('decideCancelAckApply(');
     expect(poll).toContain('apply.dropPostedId');
     expect(poll).toContain("apply.commit === 'drop'");
@@ -508,12 +519,41 @@ describe('HarnessHost detach wiring source-lock (plan #812 D18)', () => {
     expect(poll).toContain('cancelRepo?.put(cancelSessionId, detached)');
     expect(poll).toContain('discardedSessionIdsRef.current.has(cancelSessionId)');
     expect(poll).not.toContain('if (inflightRef.current) return');
-    // Adversarial-review #927 pass 5: persist-detached folds onto persistTurn's
-    // abort snapshot (Turn-ended), not the Stop-fire capture; failed-ack note
-    // stays on cancelSessionId.
     expect(poll).toContain('lastStopPersistRef');
     expect(poll).toContain('preserved.sessionId === cancelSessionId');
     expect(poll).toContain('sessionRef.current.id === cancelSessionId');
+    expect(poll).toContain('shouldAbortReaderOnCancelAck(');
+    expect(poll).toContain('abortReasonForCancelAck');
+    expect(poll).toContain('pendingCancelRetryAttachRef');
+    expect(poll).toContain('activePromptGenerationRef');
+  });
+
+  it('poll does not abort, release Busy, or persist cancelling before cancelTurn ack', () => {
+    const poll = host.slice(
+      host.indexOf('const poll = () =>'),
+      host.indexOf('pollRef.current = window.setTimeout(poll, 150)'),
+    );
+    const thenAt = poll.indexOf('.then(');
+    expect(thenAt).toBeGreaterThan(0);
+    const beforeThen = poll.slice(0, thenAt);
+    expect(beforeThen).not.toContain('abortRef.current?.abort');
+    expect(beforeThen).not.toContain('releaseBusyViewport');
+    expect(beforeThen).not.toContain('pendingStopFoldRef.current =');
+    expect(beforeThen).toContain('keepalive: true');
+    const thenBody = poll.slice(thenAt);
+    expect(thenBody).toContain('shouldAbortReaderOnCancelAck');
+    expect(thenBody).toContain('releaseBusyViewport');
+    expect(thenBody).toContain('pendingStopFoldRef.current =');
+  });
+
+  it('runPrompt generation-gates finally Busy clear and deferred cancel-retry kick', () => {
+    const runStart = host.indexOf('const runPrompt = useCallback');
+    const run = host.slice(runStart, host.indexOf('useEffect(() => {', runStart));
+    expect(run).toContain('promptGenerationRef.current');
+    expect(run).toContain('activePromptGenerationRef.current');
+    expect(run).toContain('pendingCancelRetryAttachRef.current');
+    expect(run).toContain('promptGenerationRef.current === myGeneration');
+    expect(run).toContain('queueMicrotask(kickColdAttach)');
   });
 
   it('runPrompt nulls pendingStopFoldRef so a leftover fold cannot ride the next persistTurn (adversarial-review #927)', () => {
@@ -884,6 +924,116 @@ describe('G22 Stop/Esc server-cancel fold planner (plan #816)', () => {
       expect(CANCEL_FAILED_NOTE).toContain('the run is still live');
       expect(CANCEL_FAILED_NOTE).not.toContain('will end on its own');
       expect(CANCEL_FAILED_NOTE).not.toContain('re-attaching');
+    });
+  });
+
+  describe('shouldAbortReaderOnCancelAck + abortReasonForCancelAck', () => {
+    it('accepted persist → abort with G22 accepted reason + release', () => {
+      expect(
+        shouldAbortReaderOnCancelAck({
+          fold: { kind: 'cancelling' },
+          commit: 'persist',
+        }),
+      ).toBe(true);
+      expect(abortReasonForCancelAck({ kind: 'cancelling' })).toBe(
+        G22_ACCEPTED_ABORT_REASON,
+      );
+    });
+
+    it('409/404 persist → abort without accepted reason (no "you stopped")', () => {
+      expect(
+        shouldAbortReaderOnCancelAck({
+          fold: { kind: 'clear-terminal' },
+          commit: 'persist',
+        }),
+      ).toBe(true);
+      expect(abortReasonForCancelAck({ kind: 'clear-terminal' })).toBeUndefined();
+    });
+
+    it('failed keep-running never aborts the live reader', () => {
+      expect(
+        shouldAbortReaderOnCancelAck({
+          fold: { kind: 'keep-running' },
+          commit: 'persist',
+        }),
+      ).toBe(false);
+    });
+
+    it('persist-detached / pending-only / drop never abort the destination reader', () => {
+      expect(
+        shouldAbortReaderOnCancelAck({
+          fold: { kind: 'cancelling' },
+          commit: 'persist-detached',
+        }),
+      ).toBe(false);
+      expect(
+        shouldAbortReaderOnCancelAck({
+          fold: { kind: 'cancelling' },
+          commit: 'pending-only',
+        }),
+      ).toBe(false);
+      expect(
+        shouldAbortReaderOnCancelAck({
+          fold: { kind: 'clear-terminal' },
+          commit: 'drop',
+        }),
+      ).toBe(false);
+    });
+  });
+
+  describe('decideCancelRetryKickWhen (item 5)', () => {
+    it('defers kick while the aborted prompt is still in try/finally', () => {
+      expect(
+        decideCancelRetryKickWhen({ shouldKick: true, promptActive: true }),
+      ).toBe('pending');
+    });
+
+    it('kicks now when the aborted invocation already finished', () => {
+      expect(
+        decideCancelRetryKickWhen({ shouldKick: true, promptActive: false }),
+      ).toBe('now');
+    });
+
+    it('pending-only / persist-detached / drop stay none (pass 7)', () => {
+      expect(
+        decideCancelRetryKickWhen({ shouldKick: false, promptActive: true }),
+      ).toBe('none');
+      expect(
+        decideCancelRetryKickWhen({ shouldKick: false, promptActive: false }),
+      ).toBe('none');
+    });
+  });
+
+  describe('G22 cancel ack race rows (punch-list items 1–4)', () => {
+    const live = { turnRunId: 'wr_live', turnStatus: 'running' as const };
+
+    it('row 1: Stop + unload before 200 does not persist cancelling', () => {
+      // No outcome yet — applyStopFold is not called. Envelope stays running.
+      expect(live.turnStatus).toBe('running');
+      expect(live.turnRunId).toBe('wr_live');
+      // Identity keep-running (what a dropped POST would fold if anything).
+      expect(applyStopFoldToSession(live, 'wr_live', { kind: 'keep-running' })).toEqual(
+        live,
+      );
+    });
+
+    it('row 2: 503 ack never leaves a persisted stop line (keep-running)', () => {
+      const folded = applyStopFoldToSession(live, 'wr_live', { kind: 'keep-running' });
+      expect(folded.turnStatus).toBe('running');
+      expect(folded.turnRunId).toBe('wr_live');
+      expect(
+        shouldAbortReaderOnCancelAck({ fold: { kind: 'keep-running' }, commit: 'persist' }),
+      ).toBe(false);
+    });
+
+    it('row 3: 409 terminal does not abort with the accepted reason (no "you stopped")', () => {
+      const folded = applyStopFoldToSession(live, 'wr_live', { kind: 'clear-terminal' });
+      expect(folded.turnStatus).toBe('completed');
+      expect(folded.turnRunId).toBeUndefined();
+      expect(abortReasonForCancelAck({ kind: 'clear-terminal' })).toBeUndefined();
+      expect(abortReasonForCancelAck({ kind: 'cancelling' })).toBe(
+        G22_ACCEPTED_ABORT_REASON,
+      );
     });
   });
 });

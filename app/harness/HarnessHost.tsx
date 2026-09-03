@@ -13,7 +13,29 @@ import {
 } from '../../lib/harnessChat';
 import { resetHarnessImageSession } from '../../lib/harnessImages';
 import { resetHarnessMathSession } from '../../lib/harnessMath';
-import { decideDetach, shouldAbortReader, abortReasonFor, decideDetachPersist, putPreservedTurn, shouldApplyMintBind, shouldSetHostTurnNote, isDetachAbort, releaseBusyViewport, decideStopFoldPre, decideStopFoldPost, shouldSkipCancelPost, applyStopFoldToSession, decideCancelAckApply, shouldKickCancelRetryAttach, CANCEL_RETRY_NOTE, CANCEL_FAILED_NOTE, type StopFoldAction } from '../../lib/detachTurn';
+import {
+  decideDetach,
+  shouldAbortReader,
+  abortReasonFor,
+  decideDetachPersist,
+  putPreservedTurn,
+  shouldApplyMintBind,
+  shouldSetHostTurnNote,
+  isDetachAbort,
+  releaseBusyViewport,
+  decideStopFoldPre,
+  decideStopFoldPost,
+  shouldSkipCancelPost,
+  applyStopFoldToSession,
+  decideCancelAckApply,
+  shouldKickCancelRetryAttach,
+  shouldAbortReaderOnCancelAck,
+  abortReasonForCancelAck,
+  decideCancelRetryKickWhen,
+  CANCEL_RETRY_NOTE,
+  CANCEL_FAILED_NOTE,
+  type StopFoldAction,
+} from '../../lib/detachTurn';
 import { cancelTurn } from '../../lib/turnApi';
 import { decideHotResume, decideSendAttach, shouldPaintAttachFollowUpNote, shouldPaintAttachFollowUpDetachNote, shouldRepostAttachFollowUp, shouldSkipAttachHotResume, shouldKickHotResume, ATTACH_FOLLOW_UP_NOTE, ATTACH_FOLLOW_UP_DETACH_NOTE, isAttachFollowUpHostNote, coldAttachFromSnapshot, type HeapApplied } from '../../lib/turnAttach';
 import {
@@ -256,12 +278,27 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
    */
   const cancelPostedRunIdsRef = useRef(new Set<string>());
   /**
-   * Latest Stop-fold action for a run id. `persistTurn` applies this so
-   * `runHarnessTurn`'s optimistic `'cancelling'` cannot beat a failed ack.
+   * Latest Stop-fold action for a run id, set only **after** cancelTurn
+   * returns. `persistTurn` applies this so an abort-fold cannot beat a failed
+   * ack.
    */
   const pendingStopFoldRef = useRef<{ runId: string; fold: StopFoldAction } | null>(
     null,
   );
+  /**
+   * Item 5: failed-ack kick armed while the Stop-aborted `runPrompt` is still
+   * in try/finally. `finally` (same generation) performs `kickColdAttach`.
+   */
+  const pendingCancelRetryAttachRef = useRef<{
+    sessionId: string;
+    runId: string;
+  } | null>(null);
+  /**
+   * Item 5: generation of the in-flight `runPrompt`. `finally` only clears
+   * Busy/inflight when this still matches. 0 = no prompt in try/finally.
+   */
+  const promptGenerationRef = useRef(0);
+  const activePromptGenerationRef = useRef(0);
   /**
    * Adversarial-review #927 pass 5 — last persistTurn snapshot that carried a
    * G22 fold. `persist-detached` folds onto this (abort snapshot with
@@ -527,7 +564,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
   /**
    * Plan #813 — cold attach after the ring was rebuilt from Blob/local
    * (boot / adopt / switch-back). Always `startIndex=0` + dedup. No-ops when
-   * not `running` or a turn is already inflight.
+   * not live (`running`/`cancelling`) or a turn is already inflight.
    */
   const kickColdAttach = useCallback(() => {
     if (inflightRef.current) return;
@@ -670,6 +707,8 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
       const controller = new AbortController();
       abortRef.current = controller;
       inflightRef.current = true;
+      const myGeneration = ++promptGenerationRef.current;
+      activePromptGenerationRef.current = myGeneration;
       const epoch = turnEpochRef.current;
       const startedId = sessionRef.current.id;
       // Adversarial #844: capture the repo object NOW. Unmount cleanup nulls
@@ -987,12 +1026,27 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           }
         }
         if (!detached) {
-          inflightRef.current = false;
-          setBusy(false);
+          if (promptGenerationRef.current === myGeneration) {
+            inflightRef.current = false;
+            setBusy(false);
+          }
+        }
+        if (activePromptGenerationRef.current === myGeneration) {
+          activePromptGenerationRef.current = 0;
+        }
+        const pendingRetry = pendingCancelRetryAttachRef.current;
+        if (
+          pendingRetry != null &&
+          !detached &&
+          sessionRef.current.id === pendingRetry.sessionId &&
+          promptGenerationRef.current === myGeneration
+        ) {
+          pendingCancelRetryAttachRef.current = null;
+          queueMicrotask(kickColdAttach);
         }
       }
     },
-    [persist, setUrlSessionId, writeLocalSession],
+    [persist, setUrlSessionId, writeLocalSession, kickColdAttach],
   );
   runPromptRef.current = runPrompt;
 
@@ -1225,9 +1279,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           // or refresh can recover — don't permanently strand local-only this page load.
           if (result.kind === 'local') setCloudEnabled(r.enabled);
           void refreshSessions();
-          // Plan #813: after Blob/local hydrate, cold-attach a still-running
-          // turn. activateSession also kicks; inflightRef de-dupes the pair.
-          // Do not auto-attach completed sessions (`turnStatus !== 'running'`).
+          // Plan #813: after Blob/local hydrate, cold-attach a still-live
+          // turn (`running` or `cancelling`). activateSession also kicks;
+          // inflightRef de-dupes the pair. Do not auto-attach completed.
           if (!cancelled) {
             queueMicrotask(kickColdAttach);
           }
@@ -1240,14 +1294,12 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
             // Protocol v9: Stop first — abort inflight and skip starting a turn this tick.
             if (b.takePendingCancel()) {
               // Plan #816 (G22): Stop on an attached durable run fires the
-              // server cancel ONCE per run id (in-flight/accepted set +
-              // shouldSkipCancelPost). The abort below unwinds runHarnessTurn,
-              // whose stop fold lands `turnStatus: 'cancelling'` KEEPING
-              // `turnRunId` as an optimistic pre-ack. A failed cancel POST
-              // persists `running` (plan #816 race table / adversarial-review
-              // #927) so Stop can retry — never a fake cancel. A terminal
-              // (409) / gone (404) ack clears the id + folds `completed`
-              // (orphan-unstick).
+              // server cancel ONCE per run id. Do not abort, release Busy, or
+              // persist `'cancelling'` until `cancelTurn` returns (punch-list
+              // items 1–2). keepalive so Stop then F5 does not drop the POST.
+              // Failed ack keeps `running` so Stop can retry. Terminal (409) /
+              // gone (404) clears the id + folds `completed` (orphan-unstick)
+              // and must not paint "you stopped" over a finished run.
               const stopSession = sessionRef.current;
               const stopRunId = stopSession.turnRunId;
               const stopFoldPre = decideStopFoldPre({
@@ -1270,22 +1322,26 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                 // pass 4) — never onto liveNow.
                 const cancelRepo = repoRef.current;
                 const cancelSnapshot = stopSession;
+                const stopGeneration = activePromptGenerationRef.current;
                 cancelPostedRunIdsRef.current.add(stopRunId);
-                // Optimistic pre-ack: persistTurn after abort folds cancelling.
-                // A failed/terminal ack overwrites this (plan #816 race table).
-                pendingStopFoldRef.current = {
-                  runId: stopRunId,
-                  fold: { kind: 'cancelling' },
-                };
-                void cancelTurn(stopRunId, { sessionId: cancelSessionId }).then(
+                void cancelTurn(stopRunId, {
+                  sessionId: cancelSessionId,
+                  keepalive: true,
+                }).then(
                   (outcome) => {
                     const liveNow = sessionRef.current;
                     const fold = decideStopFoldPost({
                       pre: stopFoldPre,
                       outcome,
                     });
-                    // Posted-id + pendingFold update even when inflight so a
-                    // failed ack cannot trap Stop (adversarial-review #927).
+                    const activeGen = activePromptGenerationRef.current;
+                    // `inflightRef` is the original turn until we abort — not a
+                    // newer prompt. Generation mismatch is the real "new prompt
+                    // owns the tab" signal (item 5; do not reuse inflightRef).
+                    const newerPrompt =
+                      activeGen !== 0 && activeGen !== stopGeneration;
+                    const originalPromptActive =
+                      stopGeneration !== 0 && activeGen === stopGeneration;
                     const apply = decideCancelAckApply({
                       unmounted: cancelled,
                       liveSessionId: liveNow.id,
@@ -1293,7 +1349,7 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                       liveTurnRunId: liveNow.turnRunId,
                       stopRunId,
                       discarded: discardedSessionIdsRef.current.has(cancelSessionId),
-                      inflight: inflightRef.current,
+                      inflight: newerPrompt,
                       fold,
                     });
                     if (apply.dropPostedId) {
@@ -1315,9 +1371,6 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                       );
                       const detached = { ...folded, id: cancelSessionId };
                       cancelRepo?.put(cancelSessionId, detached);
-                      // persistTurn may still be in flight (detached preserve).
-                      // Keep the ack fold so it cannot re-apply optimistic
-                      // cancelling over keep-running / clear-terminal.
                       pendingStopFoldRef.current = { runId: stopRunId, fold: apply.fold };
                       if (sessionRef.current.id === cancelSessionId) {
                         persist(detached);
@@ -1329,42 +1382,60 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
                       }
                     }
                     if (
-                      shouldKickCancelRetryAttach({
+                      shouldAbortReaderOnCancelAck({
+                        fold: apply.fold,
+                        commit: apply.commit,
+                      })
+                    ) {
+                      abortRef.current?.abort(abortReasonForCancelAck(apply.fold));
+                      releaseBusyViewport({
+                        inflightRef,
+                        setBusy,
+                        setQueuePromoteAllowed: (allowed) =>
+                          b.setQueuePromoteAllowed(allowed),
+                        setLifecycleReady: () => b.setLifecycle(Lifecycle.Ready),
+                      });
+                    }
+                    const kickWhen = decideCancelRetryKickWhen({
+                      shouldKick: shouldKickCancelRetryAttach({
                         fold: apply.fold,
                         commit: apply.commit,
                         unmounted: cancelled,
                         liveSessionId: sessionRef.current.id,
                         cancelSessionId,
-                        inflight: inflightRef.current,
-                      })
-                    ) {
-                      // Stop is Busy-only. releaseBusyViewport already ran;
-                      // re-attach restores Busy so a later Stop can re-POST
-                      // (adversarial-review #927 pass 7).
+                        inflight: originalPromptActive || newerPrompt,
+                      }),
+                      promptActive: originalPromptActive,
+                    });
+                    if (kickWhen !== 'none') {
                       setHostNote(CANCEL_RETRY_NOTE);
-                      queueMicrotask(kickColdAttach);
+                      if (kickWhen === 'pending') {
+                        pendingCancelRetryAttachRef.current = {
+                          sessionId: cancelSessionId,
+                          runId: stopRunId,
+                        };
+                      } else {
+                        pendingCancelRetryAttachRef.current = null;
+                        queueMicrotask(kickColdAttach);
+                      }
                     } else if (
                       apply.fold.kind === 'keep-running' &&
                       !cancelled &&
                       sessionRef.current.id === cancelSessionId
                     ) {
-                      // Same session but pending-only (a follow-up runPrompt
-                      // is inflight) — honest note, no re-attach, never the
-                      // 1h-wall "ends by itself" copy.
                       setHostNote(CANCEL_FAILED_NOTE);
                     }
-                    // 'cancelling' — accepted ack; persist already landed it
-                    // (or the route overlay PATCH did, when persist is skipped).
                   },
                 );
+              } else if (stopFoldPre.kind === 'legacy-clear') {
+                abortRef.current?.abort();
+                releaseBusyViewport({
+                  inflightRef,
+                  setBusy,
+                  setQueuePromoteAllowed: (allowed) => b.setQueuePromoteAllowed(allowed),
+                  setLifecycleReady: () => b.setLifecycle(Lifecycle.Ready),
+                });
               }
-              abortRef.current?.abort();
-              releaseBusyViewport({
-                inflightRef,
-                setBusy,
-                setQueuePromoteAllowed: (allowed) => b.setQueuePromoteAllowed(allowed),
-                setLifecycleReady: () => b.setLifecycle(Lifecycle.Ready),
-              });
             } else if (inflightRef.current || switchInFlightRef.current) {
               foldPendingSessionSwitch(true, () => b.takePendingSessionSwitch(), () => {});
             } else {

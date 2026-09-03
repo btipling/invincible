@@ -413,7 +413,7 @@ export type CancelTurnResult =
  */
 export async function cancelTurn(
   runId: string,
-  opts: { sessionId: string },
+  opts: { sessionId: string; keepalive?: boolean },
 ): Promise<CancelTurnResult> {
   const cleanRunId = sanitizeTurnRunId(runId);
   if (cleanRunId === undefined) {
@@ -429,7 +429,8 @@ export async function cancelTurn(
 
   let res: Response;
   try {
-    res = await fetch(path, { method: 'POST' });
+    // keepalive: unload must not drop the POST (Stop then F5 before 200).
+    res = await fetch(path, { method: 'POST', keepalive: opts.keepalive !== false });
   } catch (err) {
     return {
       kind: 'failed',
