@@ -2200,6 +2200,65 @@ describe('createTurnPersistSeam — real B7/B8/B6 persist (backend-agents B13)',
     expect(parsed?.messages.map((m) => m.id)).toEqual(['h1', 'h2', 'h3', 'h4', 'h5']);
   });
 
+  it('plan #934 / adversarial #935 — history-fold this-run covers host composer; no second user row', async () => {
+    const blobStore = new MemoryBlobTranscriptStore();
+    const envelopeStore = new MemorySessionStore();
+    const priorId = newBlobObjectId(scope);
+    const priorMsgs = [
+      { id: 'h1', role: 'user' as const, text: 'turn-1 user', at: 10 },
+      { id: 'h2', role: 'assistant' as const, text: 'turn-1 assistant', at: 11 },
+    ];
+    const composer = 'run the suite';
+    const fold = formatPromptWithHistory(priorMsgs, composer);
+    await blobStore.writeSegment({
+      objectId: priorId,
+      content: JSON.stringify({
+        id: scope.sessionId,
+        updatedAt: 1000,
+        messages: [
+          ...priorMsgs,
+          { id: 'h3', role: 'user', text: composer, at: 20 },
+          { id: 'h4', role: 'tool_run', text: 'exit=1', at: 21 },
+        ],
+      }),
+      maxBytes: 8 * 1024 * 1024,
+    });
+    await envelopeStore.upsertEnvelope(key, {
+      id: scope.sessionId,
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      updatedAt: 1000,
+      meta: { transcriptPointer: priorId },
+    });
+    const seam = createTurnPersistSeam({ blobStore, envelopeStore, scope });
+    const res = await seam.persist({
+      turnRunId: realRunId,
+      deltas: [],
+      content: JSON.stringify({
+        id: scope.sessionId,
+        messages: [
+          { id: 'cp_0', role: 'user', text: fold, at: 1 },
+          { id: 'cp_1', role: 'tool_run', text: 'exit=1', at: 2 },
+          { id: 'cp_2', role: 'assistant', text: 'wrap-up: 3 tests still fail', at: 3 },
+        ],
+      }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const parsed = await chainParsed(blobStore, envelopeStore);
+    expect(parsed?.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
+      composer,
+      'exit=1',
+      'wrap-up: 3 tests still fail',
+    ]);
+    expect(parsed?.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual([
+      'turn-1 user',
+      composer,
+    ]);
+  });
+
   it('plan #934 row 4 — first turn (empty prior): merge reduces to this-run only', async () => {
     const { seam, blobStore, envelopeStore } = await makeSeam();
     const res = await seam.persist({

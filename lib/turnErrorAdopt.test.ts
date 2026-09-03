@@ -429,6 +429,46 @@ describe('shouldHoldCloudPut / recoverWorkerTranscriptBeforePut (adversarial #93
     ]);
   });
 
+  it('GET ok recover of a composer-bearing merged head still copies a same-text retry', async () => {
+    const prior = [
+      { id: 'p1', role: 'user' as const, text: 'earlier', at: 1 },
+      { id: 'p2', role: 'assistant' as const, text: 'ok', at: 2 },
+    ];
+    const local = createEmptySession('sess_1');
+    local.updatedAt = 0;
+    local.messages = [
+      ...prior,
+      { id: 'u1', role: 'user', text: 'run the suite', at: 3 },
+      { id: 'acc', role: 'assistant', text: 'wrap-up: 3 tests sti', at: 8 },
+      { id: 'e1', role: 'error', text: 'Turn ended · turn wall clock exceeded', at: 9 },
+      { id: 'u2', role: 'user', text: 'run the suite', at: 10 },
+      { id: 'a2', role: 'assistant', text: 'retried the suite', at: 11 },
+    ];
+    const worker = createEmptySession('sess_1');
+    worker.updatedAt = 8_000;
+    worker.messages = [
+      ...prior,
+      { id: 'h1', role: 'user', text: 'run the suite', at: 3 },
+      { id: 'h2', role: 'tool_run', text: 'exit=1', at: 4 },
+      { id: 'h3', role: 'assistant', text: 'wrap-up: 3 tests still fail', at: 5 },
+    ];
+    const got = await recoverWorkerTranscriptBeforePut({
+      get: async () => ({ action: 'ok', snapshot: worker }),
+      session: local,
+    });
+    expect(got.skipCloud).toBe(false);
+    expect(got.session.messages.map((m) => m.text)).toEqual([
+      'earlier',
+      'ok',
+      'run the suite',
+      'exit=1',
+      'wrap-up: 3 tests still fail',
+      'Turn ended · turn wall clock exceeded',
+      'run the suite',
+      'retried the suite',
+    ]);
+  });
+
   it('GET ok recover keeps a GET-miss follow-up assistant after the extra user', async () => {
     const local = createEmptySession('sess_1');
     local.updatedAt = 0;
