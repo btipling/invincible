@@ -300,11 +300,17 @@ Redis and never through a Function payload**. Redis keeps the **small, always-fe
 envelope** (`harness:envelope:…`): ownership, `createdAt`, `updatedAt` (LWW), reserved
 `meta`, and `meta.transcriptPointer` (the key of the latest transcript object).
 Worker persist writes a **this-run chunk** (`id` + `messages` + optional `prev` +
-optional `depth`)
-and **trims oldest messages** in that chunk to the 8 MiB object ceiling so a
-fat tool batch cannot kill the turn. Host terminal PUT writes a full trimmed
-snapshot with **`prev` / `depth` omitted** (flatten root). Reconstruct walks `prev` when
-present. Persist refuses to append when the head's chain length is already 256.
+optional `depth`) on mid-turn `running` overlays, and **trims oldest messages**
+in that chunk to the 8 MiB object ceiling so a fat tool batch cannot kill the
+turn. The **terminal** persist (`completed`) suffix-merges this-run messages
+onto the prior readable transcript (the same idempotent `mergeCheckpointOntoPrior`
+reconstruct uses), so the head chunk itself carries prior + this-run history —
+durability is worker-owned and independent of which SSE terminal the host saw
+(plan #934: a wall-clock `error` turn keeps its this-turn assistants + wrap-up
+handoff without any host flatten). Host terminal PUT may additionally **flatten**
+to a full trimmed snapshot with **`prev` / `depth` omitted** (flatten root).
+Reconstruct walks `prev` when present. Persist refuses to append when the
+head's chain length is already 256.
 A leftover `{ deltas }` object is not a snapshot — next persist starts
 from this run only and does not link `prev`.
 

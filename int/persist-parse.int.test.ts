@@ -55,7 +55,12 @@ describe('int persist-parse (#859 row 1 pointer clobber)', () => {
     const raw = await world.blobStore.read(pointer);
     const head = JSON.parse(raw ?? 'null');
     const latest = parseCloudSessionSnapshot(head, INT_SCOPE.sessionId);
+    // Plan #934: the terminal head is suffix-merged — it now carries the prior
+    // turn-1 rows plus this-run, so the head itself (not just the chain walk)
+    // is the full transcript.
     expect(latest?.messages.map((m) => m.text)).toEqual([
+      'turn-1 user',
+      'turn-1 assistant',
       'turn-2 user',
       'turn-2 assistant',
     ]);

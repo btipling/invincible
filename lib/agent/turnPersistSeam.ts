@@ -54,8 +54,10 @@ import {
   type SessionRecordKey,
 } from '../sessions/sessionStore';
 import {
+  mergeCheckpointOntoPrior,
   truncateMessageCheckpoint,
   snapshotMessagesFromUnknown,
+  type CheckpointSnapshotMessage,
 } from './messageCheckpoint';
 import { persistTranscriptSegment } from './turnWorkerPersist';
 import {
@@ -124,7 +126,12 @@ function firstUserText(
   return undefined;
 }
 
-/** This-run snapshot + optional `prev`/`depth`; non-snapshot test bodies keep stamp-only. */
+/** This-run snapshot + optional `prev`/`depth`; non-snapshot test bodies keep stamp-only.
+ *  `mergePrior` (plan #934): when set (TERMINAL persists only), this-run messages are
+ *  suffix-merged onto the prior readable transcript so the head chunk carries the
+ *  full this-run + prior history — a wall-clock `error` terminal is then as durable
+ *  as a `done` terminal, with no host flatten required (idempotent: a prior that
+ *  already covers this-run — host flatten or a persist retry — stays unchanged). */
 function buildThisRunChunk(opts: {
   content: string;
   sessionId: string;
@@ -133,6 +140,8 @@ function buildThisRunChunk(opts: {
   depth: number | undefined;
   /** Prior blob's sanitized `queue` (copy-forward when this-run content omits it). */
   priorQueue?: string[];
+  /** Prior transcript messages to suffix-merge onto (terminal persist only). */
+  mergePrior?: ReadonlyArray<CheckpointSnapshotMessage>;
 }): string | null {
   let parsed: unknown;
   try {
@@ -147,10 +156,14 @@ function buildThisRunChunk(opts: {
   if (incoming === null) {
     return stampSnapshotUpdatedAt(opts.content, opts.updatedAt);
   }
+  const merged =
+    opts.mergePrior !== undefined
+      ? mergeCheckpointOntoPrior(opts.mergePrior, incoming)
+      : incoming;
   const rec: Record<string, unknown> = {
     id: opts.sessionId,
     updatedAt: opts.updatedAt,
-    messages: incoming,
+    messages: merged,
   };
   if (opts.prev) rec.prev = opts.prev;
   if (opts.depth !== undefined) rec.depth = opts.depth;
@@ -270,6 +283,12 @@ export function createTurnPersistSeam(
       let chunkPrev: string | undefined;
       let chunkDepth: number | undefined;
       let priorQueue: string[] | undefined;
+      // Plan #934: prior readable messages captured at the gate. On the
+      // TERMINAL persist these are suffix-merged under this-run (below) so the
+      // head chunk is the full transcript — durability no longer depends on
+      // the host `done` flatten, which a wall-clock `error` terminal skips.
+      // Mid-turn `running` chunks stay this-run-only (transient overlays).
+      let priorMessages: CheckpointSnapshotMessage[] | undefined;
       const pointer = stored?.meta?.transcriptPointer;
       if (typeof pointer === 'string' && isObjectIdBoundTo(pointer, scope)) {
         let raw: string | null;
@@ -328,9 +347,19 @@ export function createTurnPersistSeam(
           chunkPrev = pointer;
           chunkDepth = chainLen + 1;
           priorQueue = queueFromBody(parsed);
-        }
+          const gateMessages = snapshotMessagesFromUnknown(parsed, scope.sessionId);
+          if (gateMessages !== null) priorMessages = gateMessages;        }
       }
 
+      // Plan #934 — terminal persist suffix-merges this-run onto the prior
+      // transcript (source #933): on a wall-capped turn the SSE terminal is
+      // `error`, so the host never runs its `done` flatten and a this-run-only
+      // head would strand this-turn assistants. The merge reuses the shipped,
+      // idempotent `mergeCheckpointOntoPrior` (the same primitive
+      // `reconstructTranscriptChain` uses on read): a prior that already
+      // covers this-run (host-flattened `done` path, mid-turn worker chunk
+      // being retried) stays byte-equal — no duplicate rows. Mid-turn
+      // `running` persists keep the thin this-run chunk (transient overlay).
       const stampedRaw = buildThisRunChunk({
         content: input.content,
         sessionId: scope.sessionId,
@@ -338,6 +367,9 @@ export function createTurnPersistSeam(
         prev: chunkPrev,
         depth: chunkDepth,
         priorQueue,
+        ...(status === 'completed' && priorMessages !== undefined
+          ? { mergePrior: priorMessages }
+          : {}),
       });
       if (stampedRaw === null) {
         return await failWrite({

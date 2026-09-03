@@ -599,6 +599,13 @@ export function createApplyTurnEvent(
     if (ev.type === 'error') {
       ctx.sawStreamTerminal = true;
       closeThinkingSegment(bridge, ctx);
+      // Plan #934 (source #933): the host error path deliberately does NOT
+      // finalize/flatten. A wall-capped turn ends with SSE `error` (never
+      // `done`), and the worker's terminal persist suffix-merges this-run
+      // onto the prior transcript (lib/agent/turnPersistSeam.ts), so this-turn
+      // assistants + the wrap-up handoff are durable worker-side — independent
+      // of which SSE terminal the host saw. Adding a host finalize here would
+      // double-paint the handoff the worker already wrote.
     }
   };
 }
