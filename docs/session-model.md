@@ -46,8 +46,10 @@ copy-forwarded onto worker this-run chunks (minus this-run's user prompt) and
 folded by host `trimForCloudPut`. Same-id adopt field-merges it with local
 (`mergeAdoptedUsage`) so a newer worker clock cannot drop a `queueAppend` that
 lost the coalesced-PUT race, and a stale-long server queue cannot re-arm an
-in-flight drain. Worker persist writes **this-run messages** plus `prev` pointing at the previous
-object and `depth` (1-based length of the chain ending at that object). Persist
+in-flight drain. Mid-turn worker persist writes **this-run messages** plus `prev` pointing at the previous
+object and `depth` (1-based length of the chain ending at that object). The **terminal** persist
+reconstructs that chain, suffix-merges this-run, and writes a **flatten root** (`prev` / `depth`
+omitted) so GET does not walk. Persist
 is head-only: it will not append when `depth` is already **256**. Legacy / host-flattened
 objects omit `prev` and `depth` and are a one-node chain.
 Reconstruct walks `prev` (max **256** objects, each id bound to this session)

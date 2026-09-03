@@ -189,6 +189,28 @@ describe('shouldHoldCloudPut / recoverWorkerTranscriptBeforePut (adversarial #93
     ]);
   });
 
+  it('withLocalOnlySuffix does not copy a local partial assistant onto the worker wrap-up', () => {
+    const worker = [
+      { id: 'h1', role: 'user' as const, text: 'run the suite', at: 1 },
+      { id: 'h2', role: 'assistant' as const, text: 'wrap-up: 3 tests still fail', at: 2 },
+    ];
+    const local = [
+      { id: 'h1', role: 'user' as const, text: 'run the suite', at: 1 },
+      { id: 'acc', role: 'assistant' as const, text: 'wrap-up: 3 tests sti', at: 2 },
+      {
+        id: 'e1',
+        role: 'error' as const,
+        text: 'Turn ended · turn wall clock exceeded',
+        at: 3,
+      },
+    ];
+    expect(withLocalOnlySuffix(worker, local).map((m) => m.text)).toEqual([
+      'run the suite',
+      'wrap-up: 3 tests still fail',
+      'Turn ended · turn wall clock exceeded',
+    ]);
+  });
+
   it('GET ok recover suffixes the follow-up and clears skipCloud so a flatten PUT is safe', async () => {
     const local = createEmptySession('sess_1');
     local.updatedAt = 0;
@@ -212,6 +234,32 @@ describe('shouldHoldCloudPut / recoverWorkerTranscriptBeforePut (adversarial #93
       'wrap-up: 3 tests still fail',
       'Turn ended · turn wall clock exceeded',
       'fix the remaining 3',
+    ]);
+  });
+
+  it('GET ok recover does not suffix a local partial assistant onto the worker wrap-up', async () => {
+    const local = createEmptySession('sess_1');
+    local.updatedAt = 0;
+    local.messages = [
+      { id: 'u1', role: 'user', text: 'run the suite', at: 1 },
+      { id: 'acc', role: 'assistant', text: 'wrap-up: 3 tests sti', at: 8 },
+      { id: 'e1', role: 'error', text: 'Turn ended · turn wall clock exceeded', at: 9 },
+    ];
+    const worker = createEmptySession('sess_1');
+    worker.updatedAt = 8_000;
+    worker.messages = [
+      { id: 'h1', role: 'user', text: 'run the suite', at: 1 },
+      { id: 'h2', role: 'assistant', text: 'wrap-up: 3 tests still fail', at: 2 },
+    ];
+    const got = await recoverWorkerTranscriptBeforePut({
+      get: async () => ({ action: 'ok', snapshot: worker }),
+      session: local,
+    });
+    expect(got.skipCloud).toBe(false);
+    expect(got.session.messages.map((m) => m.text)).toEqual([
+      'run the suite',
+      'wrap-up: 3 tests still fail',
+      'Turn ended · turn wall clock exceeded',
     ]);
   });
 

@@ -102,18 +102,23 @@ export function withHostOnlySuffix(
 }
 
 /**
- * Suffix any local-only rows (new user after the wall, ember Turn-ended, …)
- * the worker snapshot lacks. Used when recovering a GET-miss before the next
- * host PUT so a follow-up prompt is not dropped and the worker head is not
- * replaced by a thin flatten.
+ * Recover-after-GET-miss suffix: host-only error/system rows plus extra **user**
+ * lines the worker snapshot lacks (a follow-up typed after the wall). Do **not**
+ * copy local assistant / tool_run / skill_attached — those are live-paint
+ * encodings (`assistantAcc`, tool cards) that would duplicate the worker
+ * wrap-up on flatten PUT (adversarial #935).
  */
 export function withLocalOnlySuffix(
   worker: ReadonlyArray<SessionMessage>,
   local: ReadonlyArray<SessionMessage>,
 ): SessionMessage[] {
-  const extras = local.filter(
-    (m) => !worker.some((w) => w.role === m.role && w.text === m.text),
-  );
+  const extras = local.filter((m) => {
+    if (m.role === 'user') {
+      return !worker.some((w) => w.role === 'user' && w.text === m.text);
+    }
+    if (!HOST_ONLY_ROLES.has(m.role)) return false;
+    return !worker.some((w) => w.role === m.role && w.text === m.text);
+  });
   if (extras.length === 0) return worker.slice();
   return [...worker, ...extras];
 }
@@ -170,9 +175,9 @@ export async function adoptWorkerTranscriptOnError(opts: {
 
 /**
  * After an error-adopt GET miss (`shouldHoldCloudPut`), GET+merge the worker
- * head before the next host PUT. GET ok → worker transcript + local-only
- * suffix, `skipCloud: false` (a flatten of the merged head is safe). GET miss
- * → keep local, `skipCloud: true` (still do not PUT a thin snapshot).
+ * head before the next host PUT. GET ok → worker transcript + host-only /
+ * extra-user suffix, `skipCloud: false` (a flatten of the merged head is safe).
+ * GET miss → keep local, `skipCloud: true` (still do not PUT a thin snapshot).
  */
 export async function recoverWorkerTranscriptBeforePut(opts: {
   get: ((id: string) => Promise<CloudGetResult>) | undefined;

@@ -177,7 +177,8 @@ host-clock PUT LWW-wins and orphans the worker head). It adopts the worker
 transcript (GET + reconstruct) for local paint only (`skipCloud`) and unions
 F21 queue / host-only error rows onto that snapshot. A GET miss freezes
 `updatedAt` and holds later host PUTs (including model/effort-pick `repo.put`,
-not only `persist()`) until a GET merges the worker head; a held-session local
+not only `persist()`) until a GET merges the worker head (recover suffix is
+host-only error/system rows plus extra user lines — not local assistants); a held-session local
 write does not bump the clock (freeze-0 is the LWW fence — a follow-up prompt
 or F5 must not flatten-clobber it). Host GET of a prev-bearing head fail-closes
 on a broken walk (never this-chunk-only), including `turnStatus=completed` — a
