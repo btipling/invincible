@@ -307,8 +307,8 @@ then suffix-merges this-run messages (the same idempotent `mergeCheckpointOntoPr
 reconstruct uses), so the head chunk itself carries prior + this-run history
 even when the pointer was a this-run-only mid-turn overlay — durability is
 worker-owned. After SSE `error` the host adopts that worker transcript (GET)
-rather than flatten-PUTting a thin local snapshot that never ran `done`
-finalize (plan #934 / source #933). Host terminal PUT on `done` may additionally
+for local paint only and **does not** flatten-PUT (a host-clock PUT would
+LWW-clobber the worker pointer — plan #934 / source #933). Host terminal PUT on `done` may additionally
 **flatten** to a full trimmed snapshot with **`prev` / `depth` omitted**
 (flatten root).
 Reconstruct walks `prev` when present. Persist refuses to append when the

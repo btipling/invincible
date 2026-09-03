@@ -170,12 +170,14 @@ worker's **terminal** persist reconstructs the bound prior chain (so a mid-turn
 `running` overlay is not treated as the whole transcript) then suffix-merges
 this-run checkpoint messages via the shipped `mergeCheckpointOntoPrior`. The
 head itself carries prior + this-run history. A wall-clock `error` terminal is
-therefore as durable as a `done` terminal. The host must **not** flatten-PUT a
-thin local snapshot after SSE `error` (per-round assistants were bridge-only);
-it adopts the worker transcript (GET + reconstruct) before persist. Mid-turn
-`running` persists stay this-run-only (transient overlays), and the merged
-head is still bounded by `HARNESS_SESSION_MAX_BODY_BYTES` via
-`fitSnapshotUtf8` (oldest rows drop first, newest kept).
+therefore as durable as a `done` terminal. The host must **not** flatten-PUT
+after SSE `error` (per-round assistants were bridge-only; a host-clock PUT
+LWW-wins and orphans the worker head). It adopts the worker transcript
+(GET + reconstruct) for local paint only (`skipCloud`) and unions F21 queue /
+host-only error rows onto that snapshot. Mid-turn `running` persists stay
+this-run-only (transient overlays), and the merged head is still bounded by
+`HARNESS_SESSION_MAX_BODY_BYTES` via `fitSnapshotUtf8` (oldest rows drop first,
+newest kept).
 
 ## Turn-end logs (Workflows)
 

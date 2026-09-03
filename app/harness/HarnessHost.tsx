@@ -887,8 +887,9 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
         // Plan #934 / source #933: a durable SSE `error` (wall-clock cap) never
         // ran `done` finalize. Flatten-PUTting that thin local snapshot LWW-wins
         // over the worker terminal persist and drops this-turn assistants.
-        // Adopt the worker transcript (GET + reconstruct) first; if GET fails,
-        // skip the cloud PUT and freeze `updatedAt` so a later GET wins.
+        // Adopt the worker transcript (GET + reconstruct) for local paint only;
+        // always skip the cloud PUT so the worker pointer stays LWW source of
+        // truth. GET fail freezes `updatedAt` so a later GET wins.
         let skipCloud = false;
         if (
           shouldAdoptWorkerTranscriptOnError({
@@ -898,14 +899,11 @@ export default function HarnessHost({ authNav }: { authNav?: ReactNode } = {}) {
           })
         ) {
           const adopted = await adoptWorkerTranscriptOnError({
-            get: repoRef.current
-              ? (id) => repoRef.current!.get(id)
-              : undefined,
+            get: repo ? (id) => repo.get(id) : undefined,
             session: folded,
           });
           folded = {
             ...adopted.session,
-            ...(adopted.skipCloud ? {} : { updatedAt: Date.now() }),
             ...(liveId ? { selectedModel: liveId } : {}),
           };
           if (liveEffort) folded.reasoningEffort = liveEffort;
