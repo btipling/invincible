@@ -196,6 +196,37 @@ describe('/api/sessions/:id/envelope', () => {
     expect(equal.status).toBe(200);
   });
 
+  it('adversarial #937 — host PUT that omits modelMessagesPointer copy-forwards the stored worker pointer', async () => {
+    const store = new MemorySessionStore();
+    setSessionStoreForTests(store);
+    const boundPtr = newBlobObjectId({ tenantId: TENANT, userId: USER, sessionId: 'abc' });
+    await store.upsertEnvelope(
+      { tenantId: TENANT, userId: USER, sessionId: 'abc' },
+      {
+        id: 'abc',
+        userId: USER,
+        tenantId: TENANT,
+        updatedAt: 50,
+        meta: { transcriptPointer: boundPtr, modelMessagesPointer: 't_mm_worker' },
+      },
+    );
+    const { PUT } = await mockAuthed();
+    const put = await PUT(
+      putRequest('abc', {
+        id: 'abc',
+        updatedAt: 60,
+        meta: { transcriptPointer: boundPtr, turnStatus: 'completed' },
+      }),
+      ctx('abc'),
+    );
+    expect(put.status).toBe(200);
+    const stored = (await put.json()) as {
+      meta: { modelMessagesPointer?: string; turnStatus?: string };
+    };
+    expect(stored.meta.modelMessagesPointer).toBe('t_mm_worker');
+    expect(stored.meta.turnStatus).toBe('completed');
+  });
+
   it('GET missing session → 404; envelope never leaks a transcript', async () => {
     const { GET } = await mockAuthed();
     const res = await GET(new Request('http://localhost/api/sessions/missing/envelope'), ctx('missing'));

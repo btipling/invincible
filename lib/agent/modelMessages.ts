@@ -38,9 +38,11 @@
  *     strict providers.
  *
  * Bounding: capped to `MODEL_MSG_CHECKPOINT_MAX_ROWS` rows and
- * `MODEL_MSG_CHECKPOINT_MAX_BYTES` serialized bytes (head-trim, oldest kept —
- * same fail-closed idiom as `truncateMessageCheckpoint`). The projection is its
- * own session-bound Blob object; only the object id rides
+ * `MODEL_MSG_CHECKPOINT_MAX_BYTES` serialized bytes (drop **oldest**, keep
+ * newest — LLM context, not the display-checkpoint head-trim). After the cap,
+ * re-pair: orphan tool-results drop, and assistant `toolCalls` with no remaining
+ * result are stripped so a strict provider never sees an open call. The
+ * projection is its own session-bound Blob object; only the object id rides
  * `meta.modelMessagesPointer` (never the 1 MiB envelope meta).
  *
  * Pure, server/client-safe, never throws — malformed rows fail closed to a
@@ -141,6 +143,36 @@ function collectCallIds(rows: ReadonlyArray<unknown>): Set<string> {
 }
 
 /**
+ * After a cap trim, drop tool rows whose call is gone and strip assistant
+ * `toolCalls` that no longer have a result (Goal 4 / adversarial-review #937).
+ */
+function rePairModelMessages(rows: ModelMessageRow[]): ModelMessageRow[] {
+  const callIds = collectCallIds(rows);
+  const withTools: ModelMessageRow[] = [];
+  const resultIds = new Set<string>();
+  for (const r of rows) {
+    if (r.role === 'tool') {
+      if (!callIds.has(r.toolCallId)) continue;
+      withTools.push(r);
+      resultIds.add(r.toolCallId);
+      continue;
+    }
+    withTools.push(r);
+  }
+  return withTools.map((r) => {
+    if (r.role !== 'assistant') return r;
+    const toolCalls = r.delta.toolCalls.filter(
+      (c) =>
+        typeof c.toolCallId === 'string' &&
+        c.toolCallId.length > 0 &&
+        resultIds.has(c.toolCallId),
+    );
+    if (toolCalls.length === r.delta.toolCalls.length) return r;
+    return { role: 'assistant', delta: { text: r.delta.text, toolCalls } };
+  });
+}
+
+/**
  * Project the loop's reconstructed `messages` onto the persisted model-facing
  * array. Pure + never throws; see the module header for the row mapping and
  * the locked truncation/pairing/orphan invariants.
@@ -222,18 +254,17 @@ export function buildModelMessages(
     truncated = true;
   }
 
-  // Row cap first: keep the head rows (oldest) up to `maxRows`.
+  // Row cap: keep the NEWEST rows (drop oldest) — LLM context, not display checkpoint.
   if (rows.length > maxRows) {
-    rows.length = maxRows;
+    rows.splice(0, rows.length - maxRows);
     truncated = true;
   }
 
-  // Byte cap next: drop tail rows until the serialized form fits (head-trim,
-  // oldest kept — same fail-closed idiom as `truncateMessageCheckpoint`).
+  // Byte cap: drop oldest until the serialized form fits.
   while (rows.length > 0 && utf8Bytes(JSON.stringify(rows)) > maxBytes) {
-    rows.pop();
+    rows.shift();
     truncated = true;
   }
 
-  return { rows, truncated };
+  return { rows: rePairModelMessages(rows), truncated };
 }

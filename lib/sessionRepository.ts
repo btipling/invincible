@@ -621,6 +621,13 @@ export type CloudPutBody = {
      * UsageSummary. Absent = clear (hide the context slot).
      */
     usage?: string;
+    /**
+     * Plan #936 / adversarial #937: worker seed pointer. Folded when the
+     * snapshot has observed it (GET overlay). Envelope PUT also copy-forwards
+     * the stored value when this key is omitted so a host flatten cannot
+     * delete the next-turn seed.
+     */
+    modelMessagesPointer?: string;
   };
 };
 
@@ -635,6 +642,8 @@ export type CloudPutBody = {
  * Reserved-meta write contract (`RESERVED_META_KEYS`): this object is the
  * **full desired set**. A key left off is a **clear**, not a hole. Returns
  * `undefined` when every carrier is unset (empty desired set).
+ * Exception: `modelMessagesPointer` is copy-forwarded on envelope PUT when
+ * omitted (worker-authored seed; adversarial-review #937).
  */
 export function cloudMetaFor(
   snapshot: SessionSnapshot,
@@ -696,6 +705,16 @@ export function cloudMetaFor(
   if (turnStreamCursor !== undefined) meta.turnStreamCursor = turnStreamCursor;
   const usage = encodeUsageMetaString(snapshot.usage);
   if (usage !== undefined) meta.usage = usage;
+  // Plan #936 / adversarial #937: fold the worker seed pointer so a host PUT
+  // that *has* seen GET overlay emits it (omit = clear). Envelope PUT also
+  // copy-forwards this key when the snapshot has not observed it yet.
+  const modelMessagesPointer =
+    typeof snapshot.modelMessagesPointer === 'string' &&
+    snapshot.modelMessagesPointer &&
+    isRedisSafeOpaqueId(snapshot.modelMessagesPointer)
+      ? snapshot.modelMessagesPointer
+      : undefined;
+  if (modelMessagesPointer !== undefined) meta.modelMessagesPointer = modelMessagesPointer;
   return meta.logicalCwd === undefined &&
     meta.activeSandboxId === undefined &&
     meta.personaId === undefined &&
@@ -706,7 +725,8 @@ export function cloudMetaFor(
     meta.turnRunId === undefined &&
     meta.turnStatus === undefined &&
     meta.turnStreamCursor === undefined &&
-    meta.usage === undefined
+    meta.usage === undefined &&
+    meta.modelMessagesPointer === undefined
     ? undefined
     : meta;
 }

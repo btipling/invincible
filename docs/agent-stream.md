@@ -172,14 +172,16 @@ reserved-`meta` carriers are defined in
   stays ephemeral). The projection is written as its **own Blob object** —
   row/byte-capped at `MODEL_MSG_CHECKPOINT_MAX_ROWS` = 4096 /
   `MODEL_MSG_CHECKPOINT_MAX_BYTES` = 8 MiB — and only its object **id** rides in
-  envelope `meta.modelMessagesPointer`. `POST /api/turns` reads that pointer
-  pre-start (confused-deputy `isObjectIdBoundTo`, fail-closed) and seeds the
-  next turn's orchestrator from it (`priorMessages`); when no bound pointer
-  exists the host's `promptHistory` sidecar is the one-shot legacy roll-forward
-  (`formatPromptWithHistory` fold), never a permanent fold. Orphan tool-results
-  (no matching `tool-call`) are dropped with a marker so strict providers accept
-  the seeded array. The 262 144 B/msg paint caps above are the **display** path;
-  the LLM payload is this separate, smaller projection.
+  envelope `meta.modelMessagesPointer`. Envelope PUT copy-forwards that pointer
+  when a host flatten omits it (adversarial-review #937) so the next-turn seed
+  survives LWW. `POST /api/turns` reads that pointer pre-start (confused-deputy
+  `isObjectIdBoundTo`, fail-closed) and seeds the next turn's orchestrator from
+  it (`priorMessages`); when no bound pointer exists the host's `promptHistory`
+  sidecar is the one-shot legacy roll-forward (`formatPromptWithHistory` fold),
+  never a permanent fold. Orphan tool-results (no matching `tool-call`) are
+  dropped with a marker so strict providers accept the seeded array; cap-trim
+  drops oldest rows then re-pairs. The 262 144 B/msg paint caps above are the
+  **display** path; the LLM payload is this separate, smaller projection.
 
 The durable model step (`modelGenerateStep`) passes the **same** `resolveSystem()` string as `POST /api/agent` — base standing orders (including “Be concise”), plus optional persona / attached-skill blocks resolved in-step from the assembled tool registry. Persona inject reads and locks `meta.personaSnapshot` on the envelope (`readEnvelope` / `upsertEnvelope`, `updatedAt` unchanged), not the legacy whole-blob `get`/`put`. A missing system prompt is not an output cap; it is what used to let a provider default `max_tokens` look like a mysterious mid-sentence stop. Slash-command `/skill-name` attach still lives on `/api/agent`; the durable step re-resolves sticky and always-on skills only (`command: none`).
 

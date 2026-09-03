@@ -18,6 +18,7 @@ import {
   type SessionEnvelopeInput,
   isEnvelopeStore,
   validateSessionEnvelope,
+  copyForwardModelMessagesPointer,
 } from '../../../../../lib/sessions/sessionStore';
 import { isObjectIdBoundTo } from '../../../../../lib/sessions/blobStore';
 import { isRedisSafeOpaqueId } from '../../../../../lib/sessionCloudCaps';
@@ -215,15 +216,21 @@ export async function PUT(req: Request, ctx: Ctx): Promise<Response> {
     );
   }
 
+  const key: SessionRecordKey = sessionKeyFor(scope.tenantId, gate.userId, id);
+  let storedMeta: (typeof validated.value.meta) | undefined;
+  try {
+    const stored = await store.readEnvelope(key);
+    storedMeta = stored?.meta;
+  } catch {
+    storedMeta = undefined;
+  }
   const input: SessionEnvelopeInput = {
     id: validated.value.id,
     userId: validated.value.userId,
     tenantId: validated.value.tenantId,
     updatedAt: validated.value.updatedAt,
-    meta: validated.value.meta,
+    meta: copyForwardModelMessagesPointer(validated.value.meta, storedMeta),
   };
-
-  const key: SessionRecordKey = sessionKeyFor(scope.tenantId, gate.userId, id);
   const result = await guardStore(() => store.upsertEnvelope(key, input));
   if (!result.ok) return result.response;
   if (result.value.status === 'conflict') {

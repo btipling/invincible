@@ -64,6 +64,12 @@ import type { SessionMessage } from '../sessionStore';
  * mean to change. Host `cloudMetaFor` omits a key only when the snapshot
  * field is unset (that omit is a clear). Do not add a new reserved key that
  * treats omit as "keep previous."
+ *
+ * Exception (adversarial-review #937): `modelMessagesPointer` is worker-authored
+ * and the host snapshot does not have it until a later GET. Envelope PUT
+ * copy-forwards that one key when incoming omits it (`copyForwardModelMessagesPointer`)
+ * so a host flatten PUT cannot delete the next-turn seed. Clear is DELETE, not
+ * a PUT-omit. The store itself still replace-on-write.
  */
 export const RESERVED_META_KEYS = [
   'activeSandboxId',
@@ -90,6 +96,27 @@ export type HarnessSessionMetaKey = (typeof RESERVED_META_KEYS)[number];
 export type HarnessSessionMeta = {
   [K in HarnessSessionMetaKey]?: string | number | boolean;
 };
+
+/**
+ * Worker-authored `modelMessagesPointer` (plan #936). Host `cloudMetaFor` omits
+ * keys the snapshot does not have; envelope PUT is full-replace (omit = clear).
+ * A host flatten PUT after worker persist would otherwise delete the next-turn
+ * seed (adversarial-review #937). Copy the stored pointer forward when incoming
+ * meta omits the key. An explicit incoming value wins. Clear is DELETE, not a
+ * PUT-omit.
+ */
+export function copyForwardModelMessagesPointer(
+  incoming: HarnessSessionMeta | undefined,
+  stored: HarnessSessionMeta | undefined,
+): HarnessSessionMeta {
+  const out: HarnessSessionMeta = { ...(incoming ?? {}) };
+  if (Object.prototype.hasOwnProperty.call(out, 'modelMessagesPointer')) return out;
+  const prev = stored?.modelMessagesPointer;
+  if (typeof prev === 'string' && prev && isRedisSafeOpaqueId(prev)) {
+    out.modelMessagesPointer = prev;
+  }
+  return out;
+}
 
 /** Server-side multi-session record (Redis JSON value). */
 export type HarnessSessionRecord = {

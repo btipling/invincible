@@ -169,7 +169,7 @@ describe('buildModelMessages (plan #936)', () => {
     }
   });
 
-  it('bounding: row cap keeps the head rows (oldest); over-cap is marked truncated', () => {
+  it('bounding: row cap keeps the NEWEST rows; over-cap is marked truncated', () => {
     const many = Array.from({ length: MODEL_MSG_CHECKPOINT_MAX_ROWS + 10 }, (_, i) => ({
       role: 'user',
       content: `m${i}`,
@@ -177,8 +177,47 @@ describe('buildModelMessages (plan #936)', () => {
     const { rows, truncated } = buildModelMessages(many);
     expect(truncated).toBe(true);
     expect(rows.length).toBe(MODEL_MSG_CHECKPOINT_MAX_ROWS);
-    // Head-trim: the OLDEST rows are kept (index 0 first).
-    expect(rows[0]).toEqual({ role: 'user', content: 'm0' });
+    // Keep newest: the oldest `m0` is gone; last row is the last input.
+    expect(rows[0]).toEqual({
+      role: 'user',
+      content: `m${10}`,
+    });
+    expect(rows[rows.length - 1]).toEqual({
+      role: 'user',
+      content: `m${MODEL_MSG_CHECKPOINT_MAX_ROWS + 9}`,
+    });
+  });
+
+  it('bounding: cap that drops an assistant and keeps a later tool does not seed the orphan', () => {
+    const { rows } = buildModelMessages(
+      [
+        {
+          role: 'assistant',
+          delta: { text: '', toolCalls: [{ toolName: 'read_file', toolCallId: 'old' }] },
+        },
+        { role: 'tool', toolName: 'read_file', toolCallId: 'old', result: 'old bytes' },
+        { role: 'user', content: 'follow-up' },
+      ],
+      { maxRows: 1 },
+    );
+    expect(rows).toEqual([user('follow-up')]);
+  });
+
+  it('bounding: assistant toolCalls whose results were trimmed are stripped (Goal 4)', () => {
+    const { rows } = buildModelMessages(
+      [
+        { role: 'tool', toolName: 'read_file', toolCallId: 'c1', result: 'bytes' },
+        {
+          role: 'assistant',
+          delta: {
+            text: 'a',
+            toolCalls: [{ toolName: 'read_file', toolCallId: 'c1' }],
+          },
+        },
+      ],
+      { maxRows: 1 },
+    );
+    expect(rows).toEqual([assistant('a', [])]);
   });
 
   it('bounding: a lone giant user row is bounded by the byte cap without throwing', () => {

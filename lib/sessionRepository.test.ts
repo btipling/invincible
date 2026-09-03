@@ -716,6 +716,33 @@ describe('cloudMetaFor usage fold', () => {
 
     expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [] })).toBeUndefined();
   });
+
+  it('plan #936 / adversarial #937 — folds modelMessagesPointer; poison omit; omit = clear', () => {
+    const meta = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      modelMessagesPointer: 't_mm_s1_abc',
+    });
+    expect(meta).toEqual({ modelMessagesPointer: 't_mm_s1_abc' });
+    expect(
+      trimForCloudPut({
+        id: 's',
+        updatedAt: 1,
+        messages: [],
+        modelMessagesPointer: 't_mm_s1_abc',
+      }).meta,
+    ).toEqual({ modelMessagesPointer: 't_mm_s1_abc' });
+
+    const poisonedPtr = cloudMetaFor({
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      modelMessagesPointer: 'a:b',
+    });
+    expect(poisonedPtr).toBeUndefined();
+    expect(cloudMetaFor({ id: 's', updatedAt: 1, messages: [] })).toBeUndefined();
+  });
 });
 
 describe('overlayEnvelopeMeta', () => {
@@ -804,6 +831,22 @@ describe('overlayEnvelopeMeta', () => {
     expect(sibling.turnRunId).toBe('run_old');
     expect(sibling.turnStatus).toBe('cancelling');
     expect(sibling.turnStreamCursor).toBe(5);
+  });
+
+
+  it('plan #936 / adversarial #937 — overlays modelMessagesPointer; absent/poison clears', () => {
+    const transcript: SessionSnapshot = {
+      id: 's',
+      updatedAt: 1,
+      messages: [],
+      modelMessagesPointer: 't_mm_old',
+    };
+    const over = overlayEnvelopeMeta(transcript, { modelMessagesPointer: 't_mm_new' });
+    expect(over.modelMessagesPointer).toBe('t_mm_new');
+    const cleared = overlayEnvelopeMeta(transcript, { transcriptPointer: 'tx_1' });
+    expect(cleared.modelMessagesPointer).toBeUndefined();
+    const poison = overlayEnvelopeMeta(transcript, { modelMessagesPointer: 'a:b' });
+    expect(poison.modelMessagesPointer).toBeUndefined();
   });
 
   it('backend-agents A4 — fold → parse → overlay round-trips all three carriers; poison never sticks', () => {

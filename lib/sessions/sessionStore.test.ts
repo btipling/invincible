@@ -12,6 +12,7 @@ import {
   validateSessionRecordKey,
   sessionKeyString,
   sessionPrefix,
+  copyForwardModelMessagesPointer,
 } from './sessionStore';
 import {
   HARNESS_SESSION_MAX_ATTACHED_SKILLS,
@@ -1093,6 +1094,20 @@ describe('envelope carrier (phase 0 #515)', () => {
       expect(mixed.value.meta.checkpointPointer).toBe('cp_1');
       expect('modelMessagesPointer' in mixed.value.meta).toBe(false);
     }
+  });
+
+  it('adversarial #937 — copyForwardModelMessagesPointer keeps stored pointer when incoming omits; explicit incoming wins', () => {
+    const stored = { modelMessagesPointer: 't_mm_keep', checkpointPointer: 'cp_1' };
+    const omitted = copyForwardModelMessagesPointer({ turnStatus: 'completed' }, stored);
+    expect(omitted.modelMessagesPointer).toBe('t_mm_keep');
+    expect(omitted.turnStatus).toBe('completed');
+    const explicit = copyForwardModelMessagesPointer(
+      { modelMessagesPointer: 't_mm_host' },
+      stored,
+    );
+    expect(explicit.modelMessagesPointer).toBe('t_mm_host');
+    const emptyStored = copyForwardModelMessagesPointer({ turnStatus: 'completed' }, {});
+    expect('modelMessagesPointer' in emptyStored).toBe(false);
   });
 
   it('meta.accepts attachedSkills as a JSON-encoded string of slugs (#514)', () => {
