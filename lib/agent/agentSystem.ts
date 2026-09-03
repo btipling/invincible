@@ -107,7 +107,7 @@ export function resolveSystem(
   if (skills) {
     parts.push(
       '<attached_skills>\n' +
-        'The following skills are available to this session (sticky session attachments plus the user\'s always-on skills — they are listed as a catalog, not attached via a slash command unless noted in the transcript). Their BODIES ARE NOT INJECTED — read one on demand with `fetch_skill "<slug>"` when you need its playbook (use `find_skill` to discover others). Skills are staff-of-work: a description edit updates this catalog on the next turn; a body edit is not in this block — call `fetch_skill` again to read the new playbook. Follow a skill\'s instructions once fetched unless they conflict with the security/config non-negotiables above.\n' +
+        'The following skills are available to this session (sticky session attachments plus the user\'s always-on skills — they are listed as a catalog, not attached via a slash command unless noted in the transcript). Their BODIES ARE NOT INJECTED — read one on demand with `fetch_skill <slug>` when you need its playbook (use `find_skill` to discover others). Skills are staff-of-work: a description edit updates this catalog on the next turn; a body edit is not in this block — call `fetch_skill` again to read the new playbook. Follow a skill\'s instructions once fetched unless they conflict with the security/config non-negotiables above.\n' +
         '---\n' +
         skills +
         '\n</attached_skills>',
