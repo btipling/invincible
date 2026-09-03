@@ -294,10 +294,11 @@ export async function POST(req: Request): Promise<Response> {
     // mid-session body edit no longer rewrites the stable system-prefix block.
     // Catalog list fail-open (`listUserSkillsBySlugs` ok:false/throw) still
     // emits a slug-only catalog from the command-applied set so strip-`/slug`
-    // keeps identity — never "no preamble" on that path. Missing sticky drops
-    // when exists still answers; exists-unavailable keeps the slug. A throw
-    // from this whole resolve (outer catch below) still blanks `skills` and
-    // the turn proceeds without 4xx/5xx. Sticky persist is best-effort; when
+    // keeps identity. Attach `ok:true` must not pair with an empty preamble
+    // on that path — never "no preamble". Missing sticky drops when exists
+    // still answers; exists-unavailable keeps the slug. A throw from this
+    // whole resolve (outer catch below) still blanks `skills` and the turn
+    // proceeds without 4xx/5xx. Sticky persist is best-effort; when
     // no `sessionId`/store is available the attach still injects THIS turn
     // (mirrors persona's offline-safe path), just without a sticky write.
     // The store is narrowed to the phase-0 ENVELOPE seam (adversarial-review
